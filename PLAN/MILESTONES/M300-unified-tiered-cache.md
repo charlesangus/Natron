@@ -35,6 +35,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-07 — Phase 300.1 remote gate green at 4cfe3b531 (release, full ctest).
 - 2026-11-07 — **Peer-shared disk tier (user):** any number of sessions use one tier with no lock gating access. Each entry is an immutable file published by atomic rename and read with `pread`; automatic entries aren't mapped. Each build has its own directory. Background publishing is on, bounded by the recompute-versus-write test. A build with no live session is reclaimed after 7 days or sooner under pressure, pins included. A deleted project's pins hold their budget until a clear or a new build. No pixel merging: the larger result replaces the smaller. Consultant's design, not yet built; cost figures are estimates.
 - 2026-11-07 — M300.P1.T4 at 4cfe3b531, phase gate running. `Cache<Image>` with templated members for now, not the note's non-template cache; a large deep render can evict images by LRU until M300.P2.T2. `DeepReadWrite_Test` `EachFrameOfASequenceRendersItsOwnFileThroughTheCache` proves less now that held entries are pinned; tighten it at the next test pass.
 - 2026-11-07 — **Concurrent sessions coexist on the disk tier (user):** two sessions with different projects are very common and with the same project somewhat rare. Locking the tier to the first session is rejected; this replaces the second-instance edge case and the directory lock. Redesign pending before Phase 300.3.

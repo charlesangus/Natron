@@ -98,7 +98,8 @@ try:
                 out.write(("" if y == 0 else ", ") + ", ".join(row))
             out.write("]\n    color3f[] primvars:displayColor = [(0.7, 0.7, 0.7)]\n}\n\n")
             # Something under the edited prim, or the edit changes no pixel and the delegate keeps its frame.
-            out.write('def Xform "Rig"\n{\n    def Cube "Marker"\n    {\n        double size = 1\n    }\n}\n')
+            # It must not be named like the USDXformPrim's path: a root there would be grafted inside itself.
+            out.write('def Xform "Anchor"\n{\n    def Cube "Marker"\n    {\n        double size = 1\n    }\n}\n')
 
     navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
     require(navigation is not None, "Preferences have a viewer3DNavigation parameter")

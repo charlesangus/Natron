@@ -808,6 +808,67 @@ TEST_F(CacheStressTest, RgbThenRgbaRequest)
     }
 }
 
+// The reverse order: an RGBA render leaves an image a later RGB request must read the same pixels from.
+TEST_F(CacheStressTest, RgbaThenRgbRequest)
+{
+    const AppInstancePtr app = getApp();
+    StressGraph g;
+    std::string error;
+    ASSERT_TRUE(buildChain(app, &g, &error)) << error;
+    const NodePtr probe = g.nodes[g.probe];
+    const std::list<ImageLayerDesc> rgb(1, ImageLayerDesc::getRGBComponents());
+
+    clearEverything(app);
+    std::vector<RenderedPlane> reference;
+    ASSERT_TRUE(renderNodePlanesDirect(probe, 1., ViewIdx(0), 0, g.window, rgb, &reference, &error, false)) << error;
+    ASSERT_FALSE(reference.empty());
+
+    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
+    for (RenderSchedulerModeEnum mode : modes) {
+        clearEverything(app);
+        RenderedPlane rgba;
+        ASSERT_TRUE(renderProbe(probe, 1., 0, g.window, mode, false, &rgba, &error)) << error;
+        std::vector<RenderedPlane> planes;
+        ASSERT_TRUE(renderNodePlanesDirect(probe, 1., ViewIdx(0), 0, g.window, rgb, &planes, &error, false)) << error;
+        ASSERT_FALSE(planes.empty());
+        EXPECT_EQ(std::string(), compareExact(reference.front(), planes.front())) << "mode " << (int)mode;
+    }
+}
+
+// Each level of a node is its own entry, so in either order the first request of a mip0/mip1 pair
+// must not change what the second one reads.
+TEST_F(CacheStressTest, Mip0AndMip1Requests)
+{
+    const AppInstancePtr app = getApp();
+    StressGraph g;
+    std::string error;
+    ASSERT_TRUE(buildChain(app, &g, &error)) << error;
+    const NodePtr probe = g.nodes[g.probe];
+    const RectI windows[] = { g.window, g.window.downscalePowerOfTwoSmallestEnclosing(1) };
+
+    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
+    for (RenderSchedulerModeEnum mode : modes) {
+        RenderedPlane references[2];
+        for (unsigned mip = 0; mip < 2; ++mip) {
+            clearEverything(app);
+            ASSERT_TRUE(renderProbe(probe, 1., mip, windows[mip], mode, true, &references[mip], &error)) << error;
+        }
+        for (unsigned first = 0; first < 2; ++first) {
+            const unsigned second = 1 - first;
+            clearEverything(app);
+            RenderedPlane firstPlane;
+            ASSERT_TRUE(renderProbe(probe, 1., first, windows[first], mode, false, &firstPlane, &error)) << error;
+            EXPECT_EQ(std::string(), compareExact(references[first], firstPlane)) << "mode " << (int)mode << " mip " << first;
+            RenderedPlane secondPlane;
+            ASSERT_TRUE(renderProbe(probe, 1., second, windows[second], mode, false, &secondPlane, &error)) << error;
+            EXPECT_EQ(std::string(), compareExact(references[second], secondPlane)) << "mode " << (int)mode << " mip " << second;
+            RenderedPlane firstAgain;
+            ASSERT_TRUE(renderProbe(probe, 1., first, windows[first], mode, false, &firstAgain, &error)) << error;
+            EXPECT_EQ(std::string(), compareExact(references[first], firstAgain)) << "mode " << (int)mode << " mip " << first;
+        }
+    }
+}
+
 // Expressions whose results fall outside the Blur size's range render the clamped size.
 TEST_F(CacheStressTest, ExpressionOutsideRange)
 {

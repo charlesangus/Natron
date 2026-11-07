@@ -1223,11 +1223,15 @@ TEST_F(DeepFlattenLayersTest, EachLayerKeepsItsOwnCacheEntry)
     EXPECT_EQ(4, (int)rgba->getComponentsCount());
     writeSentinel(rgba, -2.f);
 
-    // Both entries live under one key, the node's hash, so a return to this state finds both.
-    EXPECT_TRUE(diffuse->getKey() == rgba->getKey());
-    std::list<ImagePtr> cached;
-    ASSERT_TRUE(appPTR->getImage(diffuse->getKey(), &cached));
-    EXPECT_EQ((std::size_t)2, cached.size());
+    // Each layer has its own key under the node's hash, so a return to this state finds each.
+    EXPECT_FALSE(diffuse->getKey() == rgba->getKey());
+    EXPECT_EQ(diffuse->getKey().getTreeVersion(), rgba->getKey().getTreeVersion());
+    for (const ImagePtr& image : { diffuse, rgba }) {
+        std::list<ImagePtr> cached;
+        ASSERT_TRUE(appPTR->getImage(image->getKey(), &cached));
+        ASSERT_EQ((std::size_t)1, cached.size());
+        EXPECT_EQ(image.get(), cached.front().get());
+    }
 
     const ImagePtr diffuseAgain = renderFlattenedLayer(source, diffuseLayer());
     const ImagePtr rgbaAgain = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
@@ -1329,6 +1333,7 @@ TEST_F(DeepFlattenLayersTest, EveryLayerFollowsTheStateAndAPurgeDropsThemAll)
     writeSentinel(diffuse, -1.f);
     writeSentinel(rgba, -2.f);
     const ImageKey firstKey = diffuse->getKey();
+    const ImageKey firstRgbaKey = rgba->getKey();
     EXPECT_EQ(source->getHashValue(), firstKey.getTreeVersion());
 
     // Another state is another key, flattened afresh.
@@ -1343,6 +1348,7 @@ TEST_F(DeepFlattenLayersTest, EveryLayerFollowsTheStateAndAPurgeDropsThemAll)
     EXPECT_EQ(source->getHashValue(), diffuseOther->getKey().getTreeVersion());
     expectLayeredFlatten(diffuseOther, diffuseChannels);
     const ImageKey otherKey = diffuseOther->getKey();
+    const ImageKey otherRgbaKey = rgbaOther->getKey();
 
     // Back in the first state, every layer cached in it is served again.
     slot->setValue(firstSlot);
@@ -1358,6 +1364,8 @@ TEST_F(DeepFlattenLayersTest, EveryLayerFollowsTheStateAndAPurgeDropsThemAll)
     source->removeAllImagesFromCache(false);
     EXPECT_TRUE(waitUntilFlattenedImagesAbsent(firstKey));
     EXPECT_TRUE(waitUntilFlattenedImagesAbsent(otherKey));
+    EXPECT_TRUE(waitUntilFlattenedImagesAbsent(firstRgbaKey));
+    EXPECT_TRUE(waitUntilFlattenedImagesAbsent(otherRgbaKey));
 
     const ImagePtr diffuseAfter = renderFlattenedLayer(source, diffuseLayer());
     const ImagePtr rgbaAfter = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());

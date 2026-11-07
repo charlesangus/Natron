@@ -2238,47 +2238,31 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                                                     const OSGLContextAttacherPtr& glContextAttacher,
                                                     ImagePtr* image)
 {
-    ImageList cachedImages;
-    bool isCached = false;
+    /// A ptr to a finer level of the image, to downscale
+    ImagePtr imageToConvert;
 
-    ///Find first something in the input images list
-    if ( !inputImages.empty() ) {
+    key.forEachServingKey(mipmapLevel, 0, components, bitdepth, [&](const ImageKey& candidate) {
+        ImageList cachedImages;
+
+        /// Find first something in the input images list
         for (InputImagesMap::const_iterator it = inputImages.begin(); it != inputImages.end(); ++it) {
             for (ImageList::const_iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
-                if ( !it2->get() ) {
-                    continue;
-                }
-                const ImageKey & imgKey = (*it2)->getKey();
-                if (imgKey == key) {
+                if (it2->get() && ((*it2)->getKey() == candidate)) {
                     cachedImages.push_back(*it2);
-                    isCached = true;
                 }
             }
         }
-    }
 
-    if (!isCached) {
-        // For textures, we lookup for a RAM image, if found we convert it to a texture
-        if ( (storage == eStorageModeRAM) || (storage == eStorageModeGLTex) ) {
-            isCached = appPTR->getImage(key, &cachedImages);
-        } else if (storage == eStorageModeDisk) {
-            isCached = appPTR->getImage_diskCache(key, &cachedImages);
+        if (cachedImages.empty()) {
+            // For textures, we lookup for a RAM image, if found we convert it to a texture
+            if ((storage == eStorageModeRAM) || (storage == eStorageModeGLTex)) {
+                appPTR->getImage(candidate, &cachedImages);
+            } else if (storage == eStorageModeDisk) {
+                appPTR->getImage_diskCache(candidate, &cachedImages);
+            }
         }
-    }
-
-    if (stats && stats->isInDepthProfilingEnabled() && !isCached) {
-        stats->addCacheInfosForNode(getNode(), true, false);
-    }
-
-    if (isCached) {
-        ///A ptr to a higher resolution of the image or an image with different comps/bitdepth
-        ImagePtr imageToConvert;
 
         for (ImageList::iterator it = cachedImages.begin(); it != cachedImages.end(); ++it) {
-            unsigned int imgMMlevel = (*it)->getMipmapLevel();
-            const ImageLayerDesc& imgComps = (*it)->getComponents();
-            ImageBitDepthEnum imgDepth = (*it)->getBitDepth();
-
             if ( (*it)->getParams()->isRodProjectFormat() ) {
                 ////If the image was cached with a RoD dependent on the project format, but the project format changed,
                 ////just discard this entry
@@ -2295,102 +2279,111 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 continue;
             }
 
-            ///Throw away images that are not even what the node want to render
-            /*if ( ( imgComps.isColorLayer() && nodePrefComps.isColorLayer() && (imgComps != nodePrefComps) ) || (imgDepth != nodePrefDepth) ) {
-                appPTR->removeFromNodeCache(*it);
-                continue;
-            }*/
-
-            bool convertible = (imgComps.isColorLayer() && components.isColorLayer()) || (imgComps == components);
-            if ( (imgMMlevel == mipmapLevel) && convertible &&
-                 ( getSizeOfForBitDepth(imgDepth) >= getSizeOfForBitDepth(bitdepth) ) /* && imgComps == components && imgDepth == bitdepth*/ ) {
-                ///We found  a matching image
-
+            if (candidate._mipmapLevel == mipmapLevel) {
                 *image = *it;
-                break;
+
+                return true;
+            }
+            if ((*it)->getStorageMode() == eStorageModeRAM) {
+                imageToConvert = *it;
+
+                return true;
+            }
+        }
+
+        return false;
+    });
+
+    if (imageToConvert && !*image) {
+        /// Ensure the image is allocated
+        (imageToConvert)->allocateMemory();
+
+        if (imageToConvert->getMipmapLevel() != mipmapLevel) {
+            ImageParamsPtr oldParams = imageToConvert->getParams();
+
+            assert(imageToConvert->getMipmapLevel() < mipmapLevel);
+
+            // This is the bounds of the upscaled image
+            RectI imgToConvertBounds = imageToConvert->getBounds();
+
+            // The rodParam might be different of oldParams->getRoD() simply because the RoD is dependent on the mipmap level
+            const RectD& rod = rodParam ? *rodParam : oldParams->getRoD();
+
+            RectI downscaledBounds = rod.toPixelEnclosing(mipmapLevel, imageToConvert->getPixelAspectRatio());
+
+            if (boundsParam) {
+                downscaledBounds.merge(*boundsParam);
+            }
+
+            ImageParamsPtr imageParams = Image::makeParams(rod,
+                                                           downscaledBounds,
+                                                           oldParams->getPixelAspectRatio(),
+                                                           mipmapLevel,
+                                                           oldParams->isRodProjectFormat(),
+                                                           oldParams->getComponents(),
+                                                           oldParams->getBitDepth(),
+                                                           oldParams->getFieldingOrder(),
+                                                           eStorageModeRAM);
+
+            ImagePtr img;
+            getOrCreateFromCacheInternal(key, imageParams, imageToConvert->usesBitMap(), &img);
+            if (!img) {
+                return;
+            }
+
+            /*
+               Since the RoDs of the 2 mipmaplevels are different, their bounds do not match exactly as po2
+               To determine which portion we downscale, we downscale the initial image bounds to the mipmap level
+               of the downscale image, clip it against the bounds of the downscale image, re-upscale it to the
+               original mipmap level and ensure that it lies into the original image bounds
+             */
+            int downscaleLevels = img->getMipmapLevel() - imageToConvert->getMipmapLevel();
+            RectI dstRoi = imgToConvertBounds.downscalePowerOfTwoSmallestEnclosing(downscaleLevels);
+            dstRoi.clipIfOverlaps(downscaledBounds);
+            dstRoi = dstRoi.upscalePowerOfTwo(downscaleLevels);
+            dstRoi.clipIfOverlaps(imgToConvertBounds);
+
+            if (imgToConvertBounds.area() > 1) {
+                imageToConvert->downscaleMipmap(rod,
+                                                dstRoi,
+                                                imageToConvert->getMipmapLevel(), img->getMipmapLevel(),
+                                                imageToConvert->usesBitMap(),
+                                                img.get());
             } else {
-                if ( (*it)->getStorageMode() != eStorageModeRAM || (imgMMlevel >= mipmapLevel) || !convertible ||
-                     ( getSizeOfForBitDepth(imgDepth) < getSizeOfForBitDepth(bitdepth) ) ) {
-                    ///Either smaller resolution or not enough components or bit-depth is not as deep, don't use the image
-                    continue;
-                }
+                img->pasteFrom(*imageToConvert, imgToConvertBounds);
+            }
 
-                assert(imgMMlevel < mipmapLevel);
+            imageToConvert = img;
+        }
 
-                if (!imageToConvert) {
-                    imageToConvert = *it;
+        if (storage == eStorageModeGLTex) {
+
+            // When using the GPU, we don't want to retrieve partially rendered image because rendering the portion
+            // needed then reading it back to put it in the CPU image would take much more effort than just computing
+            // the GPU image.
+            std::list<RectI> restToRender;
+            imageToConvert->getRestToRender(roi, restToRender);
+            if (restToRender.empty()) {
+                if (returnStorage == eStorageModeGLTex) {
+                    assert(glContextAttacher);
+                    glContextAttacher->attach();
+                    *image = convertRAMImageToOpenGLTexture(imageToConvert);
                 } else {
-                    ///We found an image which scale is closer to the requested mipmap level we want, use it instead
-                    if ( imgMMlevel > imageToConvert->getMipmapLevel() ) {
-                        imageToConvert = *it;
-                    }
+                    assert(returnStorage == eStorageModeRAM && (imageToConvert->getStorageMode() == eStorageModeRAM || imageToConvert->getStorageMode() == eStorageModeDisk));
+                    // If renderRoI must return a RAM image, don't convert it back again!
+                    *image = imageToConvert;
                 }
             }
-        } //end for
-
-        if (imageToConvert && !*image) {
-            ///Ensure the image is allocated
-            (imageToConvert)->allocateMemory();
-
-
-            if (imageToConvert->getMipmapLevel() != mipmapLevel) {
-                ImageParamsPtr oldParams = imageToConvert->getParams();
-
-                assert(imageToConvert->getMipmapLevel() < mipmapLevel);
-
-                //This is the bounds of the upscaled image
-                RectI imgToConvertBounds = imageToConvert->getBounds();
-
-                //The rodParam might be different of oldParams->getRoD() simply because the RoD is dependent on the mipmap level
-                const RectD & rod = rodParam ? *rodParam : oldParams->getRoD();
-
-                RectI downscaledBounds = rod.toPixelEnclosing(mipmapLevel, imageToConvert->getPixelAspectRatio());
-
-                if (boundsParam) {
-                    downscaledBounds.merge(*boundsParam);
-                }
-
-                ImageParamsPtr imageParams = Image::makeParams(rod,
-                                                               downscaledBounds,
-                                                               oldParams->getPixelAspectRatio(),
-                                                               mipmapLevel,
-                                                               oldParams->isRodProjectFormat(),
-                                                               oldParams->getComponents(),
-                                                               oldParams->getBitDepth(),
-                                                               oldParams->getFieldingOrder(),
-                                                               eStorageModeRAM);
-
-                ImagePtr img;
-                getOrCreateFromCacheInternal(key, imageParams, imageToConvert->usesBitMap(), &img);
-                if (!img) {
-                    return;
-                }
-
-
-                /*
-                   Since the RoDs of the 2 mipmaplevels are different, their bounds do not match exactly as po2
-                   To determine which portion we downscale, we downscale the initial image bounds to the mipmap level
-                   of the downscale image, clip it against the bounds of the downscale image, re-upscale it to the
-                   original mipmap level and ensure that it lies into the original image bounds
-                 */
-                int downscaleLevels = img->getMipmapLevel() - imageToConvert->getMipmapLevel();
-                RectI dstRoi = imgToConvertBounds.downscalePowerOfTwoSmallestEnclosing(downscaleLevels);
-                dstRoi.clipIfOverlaps(downscaledBounds);
-                dstRoi = dstRoi.upscalePowerOfTwo(downscaleLevels);
-                dstRoi.clipIfOverlaps(imgToConvertBounds);
-
-                if (imgToConvertBounds.area() > 1) {
-                    imageToConvert->downscaleMipmap( rod,
-                                                     dstRoi,
-                                                     imageToConvert->getMipmapLevel(), img->getMipmapLevel(),
-                                                     imageToConvert->usesBitMap(),
-                                                     img.get() );
-                } else {
-                    img->pasteFrom(*imageToConvert, imgToConvertBounds);
-                }
-
-                imageToConvert = img;
-            }
+        } else {
+            *image = imageToConvert;
+        }
+        if (stats && stats->isInDepthProfilingEnabled()) {
+            stats->addCacheInfosForNode(getNode(), false, true);
+        }
+    } else if (*image) {
+        /// Ensure the image is allocated
+        if ((*image)->getStorageMode() != eStorageModeGLTex) {
+            (*image)->allocateMemory();
 
             if (storage == eStorageModeGLTex) {
 
@@ -2398,60 +2391,29 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 // needed then reading it back to put it in the CPU image would take much more effort than just computing
                 // the GPU image.
                 std::list<RectI> restToRender;
-                imageToConvert->getRestToRender(roi, restToRender);
+                (*image)->getRestToRender(roi, restToRender);
                 if ( restToRender.empty() ) {
+                    // If renderRoI must return a RAM image, don't convert it back again!
                     if (returnStorage == eStorageModeGLTex) {
                         assert(glContextAttacher);
                         glContextAttacher->attach();
-                        *image = convertRAMImageToOpenGLTexture(imageToConvert);
-                    } else {
-                        assert(returnStorage == eStorageModeRAM && (imageToConvert->getStorageMode() == eStorageModeRAM || imageToConvert->getStorageMode() == eStorageModeDisk));
-                        // If renderRoI must return a RAM image, don't convert it back again!
-                        *image = imageToConvert;
+                        *image = convertRAMImageToOpenGLTexture(*image);
                     }
+                } else {
+                    image->reset();
+                    return;
                 }
-            } else {
-                *image = imageToConvert;
-            }
-            //assert(imageToConvert->getBounds().contains(bounds));
-            if ( stats && stats->isInDepthProfilingEnabled() ) {
-                stats->addCacheInfosForNode(getNode(), false, true);
-            }
-        } else if (*image) { //  else if (imageToConvert && !*image)
-            ///Ensure the image is allocated
-            if ( (*image)->getStorageMode() != eStorageModeGLTex ) {
-                (*image)->allocateMemory();
-
-                if (storage == eStorageModeGLTex) {
-
-                    // When using the GPU, we don't want to retrieve partially rendered image because rendering the portion
-                    // needed then reading it back to put it in the CPU image would take much more effort than just computing
-                    // the GPU image.
-                    std::list<RectI> restToRender;
-                    (*image)->getRestToRender(roi, restToRender);
-                    if ( restToRender.empty() ) {
-                        // If renderRoI must return a RAM image, don't convert it back again!
-                        if (returnStorage == eStorageModeGLTex) {
-                            assert(glContextAttacher);
-                            glContextAttacher->attach();
-                            *image = convertRAMImageToOpenGLTexture(*image);
-                        }
-                    } else {
-                        image->reset();
-                        return;
-                    }
-                }
-            }
-
-            if ( stats && stats->isInDepthProfilingEnabled() ) {
-                stats->addCacheInfosForNode(getNode(), false, false);
-            }
-        } else {
-            if ( stats && stats->isInDepthProfilingEnabled() ) {
-                stats->addCacheInfosForNode(getNode(), true, false);
             }
         }
-    } // isCached
+
+        if (stats && stats->isInDepthProfilingEnabled()) {
+            stats->addCacheInfosForNode(getNode(), false, false);
+        }
+    } else {
+        if (stats && stats->isInDepthProfilingEnabled()) {
+            stats->addCacheInfosForNode(getNode(), true, false);
+        }
+    }
 } // EffectInstance::getImageFromCacheAndConvertIfNeeded
 
 void

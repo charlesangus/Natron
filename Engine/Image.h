@@ -207,6 +207,12 @@ public:
     }
 
     virtual void onMemoryAllocated(bool diskRestoration) OVERRIDE FINAL;
+    /**
+     * @brief Takes key's identity, with this image's own level, layer and depth: an image converted
+     * or downscaled from another inherits the source's identity, not its layout.
+     **/
+    void setKey(const ImageKey& key);
+
     static ImageKey makeKey(const CacheEntryHolder* holder,
                             U64 nodeHashKey,
                             bool frameVaryingOrAnimated,

@@ -682,10 +682,10 @@ Image::printUnrenderedPixels(const RectI& roi) const
 #endif \
     // ifdef DEBUG
 
-Image::Image(const ImageKey & key,
+Image::Image(const ImageKey& key,
              const ImageParamsPtr& params,
              const CacheAPI* cache)
-    : CacheEntryHelper<unsigned char, ImageKey, ImageParams>(key, params, cache)
+    : CacheEntryHelper<unsigned char, ImageKey, ImageParams>(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, cache)
     , _useBitmap(true)
 {
     _bitDepth = params->getBitDepth();
@@ -697,9 +697,9 @@ Image::Image(const ImageKey & key,
     _fielding = params->getFieldingOrder();
 }
 
-Image::Image(const ImageKey & key,
+Image::Image(const ImageKey& key,
              const ImageParamsPtr& params)
-    : CacheEntryHelper<unsigned char, ImageKey, ImageParams>( key, params, NULL )
+    : CacheEntryHelper<unsigned char, ImageKey, ImageParams>(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, NULL)
     , _useBitmap(false)
 {
     _bitDepth = params->getBitDepth();
@@ -716,6 +716,12 @@ Image::Image(const ImageKey & key,
 /*This constructor can be used to allocate a local Image. The deallocation should
    then be handled by the user. Note that no view number is passed in parameter
    as it is not needed.*/
+void
+Image::setKey(const ImageKey& key)
+{
+    CacheEntryHelper<unsigned char, ImageKey, ImageParams>::setKey(key.forEntry(getMipmapLevel(), getComponents(), getBitDepth()));
+}
+
 Image::Image(const ImageLayerDesc& components,
              const RectD& regionOfDefinition, //!< rod in canonical coordinates
              const RectI& bounds, //!< bounds in pixel coordinates

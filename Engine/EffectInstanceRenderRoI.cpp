@@ -83,6 +83,21 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
+// A bypassed render must not find the entry it replaces, nor leave one of its other levels to answer
+// a later request of the layer. An image no wider than 32768 is a single pixel at the last level.
+void
+removeLayerFromCache(const ImageKey& key,
+                     const ImageLayerDesc& layer)
+{
+    const unsigned int coarsestLevel = 15;
+
+    key.forEachServingKey(coarsestLevel, 0, layer, eImageBitDepthByte, [](const ImageKey& candidate) {
+        appPTR->removeFromNodeCache(candidate.getHash());
+
+        return false;
+    });
+}
+
 thread_local EffectInstance::RenderCacheStateEnum s_lastRenderCacheState = EffectInstance::eRenderCacheStateBypass;
 
 // Publishes its state when renderRoI returns, so that renders nested in the same call cannot overwrite it.
@@ -962,10 +977,18 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     // the render fills the cache as usual, which spares the viewer's render the same work.
     bool renderBesideCachedImage = false;
     if (frameArgs->overlayImagePass) {
-        std::list<ImagePtr> entries;
-        appPTR->getImage(*key, &entries);
-        appPTR->getImage(*nonDraftKey, &entries);
-        renderBesideCachedImage = !entries.empty();
+        const auto hasEntry = [](const ImageKey& candidate) {
+            std::list<ImagePtr> entries;
+
+            return appPTR->getImage(candidate, &entries);
+        };
+        for (const ImageLayerDesc& requested : requestedComponents) {
+            const ImageLayerDesc* cachedLayer = ImageKey::cachedLayerForRequest(requested, outputComponents);
+            if (cachedLayer && (key->forEachServingKey(mipmapLevel, 0, *cachedLayer, args.bitdepth, hasEntry) || nonDraftKey->forEachServingKey(mipmapLevel, 0, *cachedLayer, args.bitdepth, hasEntry))) {
+                renderBesideCachedImage = true;
+                break;
+            }
+        }
         if (renderBesideCachedImage) {
             createInCache = false;
         }
@@ -1006,17 +1029,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
              * try to find in the cache the "preferred" components of this node for the color layer.
              * For all other layers, just consider this set of components, we do not allow conversion.
              */
-            const ImageLayerDesc* components = 0;
-            if (!it->isColorLayer()) {
-                components = &(*it);
-            } else {
-                for (std::list<ImageLayerDesc>::const_iterator it2 = outputComponents.begin(); it2 != outputComponents.end(); ++it2) {
-                    if (it2->isColorLayer()) {
-                        components = &(*it2);
-                        break;
-                    }
-                }
-            }
+            const ImageLayerDesc* components = ImageKey::cachedLayerForRequest(*it, outputComponents);
             assert(components);
             if (!components) {
                 continue;
@@ -1034,7 +1047,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                     getImageFromCacheAndConvertIfNeeded(createInCache, storage, args.returnStorage, n == 0 ? *nonDraftKey : *key, lookupMipmapLevel,
                                                         &downscaledImageBounds,
                                                         &rod, args.roi,
-                                                        args.bitdepth, *it,
+                                                        args.bitdepth, *components,
                                                         args.inputImagesList,
                                                         frameArgs->stats,
                                                         glContextLocker,
@@ -1042,7 +1055,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                     if (layer.fullscaleImage) {
                         if (byPassCache) {
                             if (layer.fullscaleImage) {
-                                appPTR->removeFromNodeCache( key->getHash() );
+                                removeLayerFromCache(*key, *components);
                                 layer.fullscaleImage.reset();
                             }
                         } else if (renderMappedMipmapLevel != mipmapLevel) {
@@ -1066,7 +1079,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         getImageFromCacheAndConvertIfNeeded(createInCache, storage, args.returnStorage, n == 0 ? *nonDraftKey : *key, renderMappedMipmapLevel,
                                                             &upscaledImageBounds,
                                                             &rod, roi,
-                                                            args.bitdepth, *it,
+                                                            args.bitdepth, *components,
                                                             args.inputImagesList,
                                                             frameArgs->stats,
                                                             glContextLocker,
@@ -1074,7 +1087,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         if (layer.fullscaleImage) {
                             if (byPassCache) {
                                 if (layer.fullscaleImage) {
-                                    appPTR->removeFromNodeCache( key->getHash() );
+                                    removeLayerFromCache(*key, *components);
                                     layer.fullscaleImage.reset();
                                 }
                             }

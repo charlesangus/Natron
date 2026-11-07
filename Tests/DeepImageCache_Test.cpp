@@ -190,7 +190,7 @@ TEST(DeepImageCacheTest, EvictionRespectsOwnBudgetAndLeavesImageCacheUntouched)
     // pressure is scoped to the Cache instance it happens on, this proves the deep cache's own
     // budget churn below cannot reach it.
     Cache<Image> imageCache("DeepImageCacheTest_ImageSideCache", 1, 64ULL * 1024 * 1024, 1.);
-    ImageKey imgKey = Image::makeKey(NULL, 555, false, 1., ViewIdx(0), false, false);
+    const ImageKey imgKey = Image::makeKey(NULL, 555, false, 1., ViewIdx(0), false, false).forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
     ImageParamsPtr imgParams = Image::makeParams(RectD(0, 0, 4, 4), 1., 0, false,
                                                  ImageLayerDesc::getRGBAComponents(),
                                                  eImageBitDepthFloat,

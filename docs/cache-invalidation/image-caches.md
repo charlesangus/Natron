@@ -180,3 +180,6 @@ not known well enough to rule time out. See hole I1 for what it was before.
   stored for RGB can answer an RGBA request with a synthesized alpha. **Checked in M260:**
   `CacheStressTest.RgbThenRgbaRequest` passes in Legacy and Task graph, so the case does not
   occur and the engine is unchanged.
+  **Since M300 - Unified Tiered Cache:** the key carries mip level, layer and bit depth, so a
+  colour request is served by the node's own colour layer or the RGBA holding it, never by a
+  layout that would make up channels.

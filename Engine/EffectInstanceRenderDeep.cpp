@@ -175,24 +175,18 @@ isSameFlattenedLayout(const ImageLayerDesc& a,
     return (a == b) && (a.getChannels() == b.getChannels());
 }
 
-// Every flattened layer of a frame shares one ImageKey, so its entry is told apart by components.
-// EffectInstance::getImageFromCacheAndConvertIfNeeded() cannot do that: it treats any two colour
-// layouts as interchangeable, and would hand an Alpha flatten back for an RGBA request.
+// EffectInstance::getImageFromCacheAndConvertIfNeeded() cannot serve a flattened layer: it lets a
+// colour request fall back to RGBA, while a flattened image only stands in for its exact layout.
 ImagePtr
 findFlattenedLayerInCache(const ImageKey& key,
                           const ImageLayerDesc& layer,
                           unsigned int mipmapLevel)
 {
     std::list<ImagePtr> cached;
-    if (!appPTR->getImage(key, &cached)) {
-        return ImagePtr();
-    }
-    for (std::list<ImagePtr>::const_iterator it = cached.begin(); it != cached.end(); ++it) {
-        if (!*it || (*it)->getBounds().isNull()) {
-            continue;
-        }
-        if (isSameFlattenedLayout((*it)->getComponents(), layer) && ((*it)->getMipmapLevel() == mipmapLevel) && ((*it)->getBitDepth() == eImageBitDepthFloat)) {
-            return *it;
+    appPTR->getImage(key.forEntry(mipmapLevel, layer, eImageBitDepthFloat), &cached);
+    for (const ImagePtr& image : cached) {
+        if (image && !image->getBounds().isNull()) {
+            return image;
         }
     }
 
@@ -676,7 +670,6 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     // An effect whose output kind is eDataKindDeep never produces Cache<Image> entries of its own
     // -- its renders live in the deep cache under DeepImageKey -- so this node's hash identifies
     // the flattened layers and nothing else, and a purge of the node reaches all of them.
-    // Every layer shares this key; ImageParams' components keep their entries apart.
     const ImageKey key(getNode().get(),
                        nodeHash,
                        true /*frameVaryingOrAnimated*/,
@@ -798,7 +791,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
                 image->allocateMemory();
                 std::list<RectI> restToRender;
                 image->getRestToRender(args.roi, restToRender);
-                if (!args.byPassCache && isSameFlattenedLayout(image->getComponents(), layer.storage) && image->getBounds().contains(args.roi) && restToRender.empty()) {
+                if (!args.byPassCache && image->getBounds().contains(args.roi) && restToRender.empty()) {
                     layer.image = image;
                     layer.needsFlatten = false;
                     continue;

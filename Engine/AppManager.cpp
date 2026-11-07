@@ -2572,7 +2572,7 @@ AppManager::getImageOrCreate(const ImageKey & key,
                              const ImageParamsPtr& params,
                              ImagePtr* returnValue) const
 {
-    return _imp->_nodeCache->getOrCreate(key, params, 0, returnValue);
+    return _imp->_nodeCache->getOrCreate(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, 0, returnValue);
 }
 
 bool
@@ -2587,7 +2587,7 @@ AppManager::getImageOrCreate_diskCache(const ImageKey & key,
                                        const ImageParamsPtr& params,
                                        ImagePtr* returnValue) const
 {
-    return _imp->_diskCache->getOrCreate(key, params, 0, returnValue);
+    return _imp->_diskCache->getOrCreate(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, 0, returnValue);
 }
 
 bool

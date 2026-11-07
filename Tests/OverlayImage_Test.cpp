@@ -103,7 +103,7 @@ cachedImages(const NodePtr& node)
     const ImageKey key(node.get(), node->getHashValue(), false /*frameVaryingOrAnimated*/, 1., ViewIdx(0), 1., false /*draftMode*/, true /*fullScaleWithDownscaleInputs*/);
     std::list<ImagePtr> images;
 
-    appPTR->getImage(key, &images);
+    appPTR->getImage(key.forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat), &images);
 
     return images;
 }

@@ -46,13 +46,13 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Phase 328.2: Heavy walks off main
 
-- [ ] M328.P2.T1 — Move the file closure walk off the main thread
+- [x] M328.P2.T1 — Move the file closure walk off the main thread
   - files: `Engine/Nodes/Scene/USDRead.cpp`, `Engine/Nodes/Scene/SceneFileSource.cpp`, `Engine/Nodes/Scene/SceneOps.cpp`, `Tests/Scene/USDRead_Test.cpp`
   - approach: `knobChanged` no longer calls `SdfLayer::FindOrOpen` or walks sublayers and specs (`USDRead.cpp:314-316`, `SceneFileSource.cpp:191`, `SceneOps.cpp:126,242-244,463-469`). That work happens on the evaluation path, and the closure walk must not open payload arcs.
   - verify: gtest — setting the file knob returns without opening the file, and evaluation doesn't open any building layer; harness — no gap over 100 ms when the file knob is set.
   - size: M
 
-- [ ] M328.P2.T2 — Move framing, counting, cameras and guides off the main thread
+- [x] M328.P2.T2 — Move framing, counting, cameras and guides off the main thread
   - files: `Gui/SceneViewport.{h,cpp}`, `Gui/SceneGuides.{h,cpp}`, `Tests/gui/scene_viewer_framing.py`
   - approach: the traversals at `SceneViewport.cpp:1409,1712,1752,1866` and `SceneGuides.cpp:251` run on the worker and post results. `onSynced` (`:3179-3185`) never traverses. Framing uses a `UsdGeomBBoxCache` that includes unloaded prims. Drop the prim count unless something still reads it.
   - verify: harness — no main-thread gap over 100 ms from first sync on the flat file; GUI test — framing a loaded scene still frames it, and cameras still list.
@@ -75,6 +75,8 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 **Verification gate:** release gate green; harness on the payload city and flat file passes main-thread stall and unrequested-file budgets on the GPU host; `scene_graph_payloads.py` passes; existing panel GUI tests pass.
 
 ## Decisions
+
+- 2026-11-07 — Phase 328.2 at c7cc54871, unbuilt. Until a reader's first evaluation its digest is random per session, so the first image render after opening a project misses a persisted disk cache and re-renders once; a background walk at load would remove this.
 
 - 2026-11-07 — Phase 328.1 remote gate green at f26c43835 (release, full ctest, viewer GUI scripts under llvmpipe). The threaded first render hasn't run on a real GPU.
 

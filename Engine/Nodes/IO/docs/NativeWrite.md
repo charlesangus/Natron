@@ -29,7 +29,7 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `zipCompressionLevel`, `tileSize`, `partSplitting`, `views`,
   `colorspace`, the `ocioContext` group of `contextKey1`..`contextKey4` and
   `contextValue1`..`contextValue4`, the hidden `ocioConfigFile`
-  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
+  and `ocioWorkingSpace`, `startRender`, `metadata`, `readBack`,
   and `reload` (a Reload button on the `readBack` row). The compression, bit-depth and per-format knobs follow the
   file name through `OiioWriteSupport::paramVisibility()`.
 - **Format.** The file always takes the input's format and pixel aspect
@@ -52,10 +52,13 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   part of the output hash. The file is tagged with `oiio:ColorSpace`, set to the space's Color
   Interop ID when the config has one, else to the space name
   (`IoColorSpace::fileTag()`).
-- **Metadata.** With `writeMetadata` on, the upstream metadata is written by
-  `OiioWriteSupport::applyMetadata()`, the inverse of
-  `OiioReadSupport::attributeMetadata()`. The routing rules are in the
-  Metadata section above.
+- **Metadata.** The `metadata` choice picks what of the upstream metadata is
+  written by `OiioWriteSupport::applyMetadata()`, the inverse of
+  `OiioReadSupport::attributeMetadata()`: No Metadata skips the call, Default
+  Metadata writes the keys with a native attribute, All Metadata Except Input
+  (the default) also writes the rest under their full key names, and All
+  Metadata adds the keys that describe the input file. The routing rules are in
+  the Metadata section of `Engine/Nodes/README.md`.
 - **When the file is written.** Only a frame of the Write's own render to
   disk encodes: the panel's Render button, Render Selected, `app.render` and
   the `-w` command-line render all run through `startWritersRendering()` and

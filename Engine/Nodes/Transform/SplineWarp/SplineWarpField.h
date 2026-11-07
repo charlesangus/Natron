@@ -122,6 +122,13 @@ public:
     RectD getSourceBounds() const;
 
     /**
+     * @brief The largest Resampler::kernelScale() of the pixel Jacobian over the field, per source
+     * axis. The Jacobian is bilinear between grid points and a norm is convex, so the grid holds
+     * the largest of every pixel's.
+     **/
+    void getLargestKernelScales(double* scaleX, double* scaleY) const;
+
+    /**
      * @brief The source of canonical point (x, y), which should lie within the window.
      **/
     Point getSource(double x, double y) const;

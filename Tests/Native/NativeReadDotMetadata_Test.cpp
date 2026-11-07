@@ -258,7 +258,7 @@ TEST_F(BaseTest, DotChainMetadataReachesOfxInputClipExactly)
     const double time = 3.;
     const ImageMetadata expected = sourceEffect->getOutputMetadata(time, ViewIdx(0));
 
-    ASSERT_EQ(std::optional<int>(static_cast<int>(time)), expected.getInt(kOfxMetadataKeySourceFrame));
+    ASSERT_EQ(std::optional<int>(static_cast<int>(time)), expected.getInt(kNatronMetadataKeySourceFrame));
     EXPECT_EQ(expected, receivedBy(downstream, time));
 }
 

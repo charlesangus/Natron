@@ -100,6 +100,18 @@ public:
 
     bool notifyOverlaysPenDown(const RenderScale & renderScale, PenType pen, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
 
+    /**
+     * @brief Whether an active overlay takes an Alt+left press at pos, which would otherwise pan
+     * the viewer. Asked before the pan so the press can go to notifyOverlaysPenDown instead.
+     **/
+    bool overlaysClaimAltPenDown(const QPointF& pos, double timestamp);
+
+    /**
+     * @brief Tells the active overlays which modifiers are held at a press, before any of them
+     * sees it.
+     **/
+    void notifyOverlaysPenDownModifiers(Qt::KeyboardModifiers modifiers);
+
     bool notifyOverlaysPenDoubleClick(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos);
 
     bool notifyOverlaysPenMotion(const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
@@ -118,13 +130,23 @@ public:
 
     bool notifyOverlaysFocusLost(const RenderScale & renderScale);
 
+    /**
+     * @brief Accepts a ShortcutOverride event whose key triggers a viewer-context shortcut of an
+     * active node, so the key reaches keyPressEvent instead of a global action.
+     **/
+    bool claimShortcutOverride(QKeyEvent* e);
+
 private:
+    bool overlayTimeAndPosition(const NodePtr& node, const QPointF& pos, double* time, QPointF* transformPos);
 
     bool notifyOverlaysPenDown_internal(const NodePtr& node, const RenderScale & renderScale, PenType pen, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
 
     bool notifyOverlaysPenMotion_internal(const NodePtr& node, const RenderScale & renderScale, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
     bool notifyOverlaysKeyDown_internal(const NodePtr& node, const RenderScale & renderScale, Key k,
                                         KeyboardModifiers km, Qt::Key qKey, const Qt::KeyboardModifiers& mods);
+
+    KnobIPtr findNodeViewerContextShortcut(const NodePtr& node, Qt::Key qKey, const Qt::KeyboardModifiers& mods,
+                                           NodeViewerContextPtr* contextOut);
 
     bool checkNodeViewerContextShortcuts(const NodePtr& node, Qt::Key qKey, const Qt::KeyboardModifiers& mods);
 
@@ -570,6 +592,7 @@ private:
     void manageSlotsForInfoWidget(int textureIndex, bool connect);
 
     virtual bool eventFilter(QObject *target, QEvent* e) OVERRIDE FINAL;
+    virtual bool event(QEvent* e) OVERRIDE FINAL;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;

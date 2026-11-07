@@ -902,6 +902,9 @@ TEST_F(NativeGoldenTest, Transform)
     v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) {
         return centerTransform(g) && num(g, kTransformNodeParamTranslate, { 4.5, -2.25 }) && num(g, kTransformNodeParamRotate, { 20. }) && num(g, kOfxMixParamName, { 0.5 });
     }));
+    v.push_back(variant("sinclobes3", [](const GoldenGraph& g) {
+        return rotateAndScale(g) && choice(g, kResamplerParamFilterType, "sinc") && num(g, kResamplerParamLobes, { 3. });
+    }));
     run(filterSpec("Transform", PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM), v);
 }
 
@@ -928,6 +931,9 @@ TEST_F(NativeGoldenTest, Reformat)
     }));
     v.push_back(variant("flipturn", [](const GoldenGraph& g) {
         return choice(g, kReformatParamType, kReformatParamTypeOptionToBox) && num(g, kReformatParamBoxSize, { 40., 30. }) && num(g, kReformatParamBoxFixed, { 1. }) && choice(g, kReformatParamResize, kReformatParamResizeOptionDistort) && num(g, kReformatParamFlip, { 1. }) && num(g, kReformatParamTurn, { 1. }) && num(g, kResamplerParamFilterClamp, { 1. });
+    }));
+    v.push_back(variant("lanczos3downscale", [](const GoldenGraph& g) {
+        return choice(g, kReformatParamType, kReformatParamTypeOptionScale) && num(g, kReformatParamScale, { 0.25, 0.25 }) && choice(g, kResamplerParamFilterType, "lanczos3");
     }));
     run(plainSpec("Reformat", PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT), v);
 }

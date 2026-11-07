@@ -140,7 +140,7 @@ public:
                                       NodeMetadata& metadata) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Only ofx/framerate and ofx/pixelaspect. ofx/frame is omitted because it numbers an
+     * @brief Only natron/framerate and natron/pixelaspect. natron/frame is omitted because it numbers an
      * image within a source and a generator has none.
      **/
     ImageMetadata deriveOutputMetadata(double time,

@@ -99,7 +99,7 @@ public:
             hook(true);
         }
         m.setString("exr/origin", "source");
-        m.setInt("ofx/frame", static_cast<int>(time));
+        m.setInt("natron/frame", static_cast<int>(time));
         m.merge(_extra, ImageMetadata::eMergePreferOther);
 
         return m;

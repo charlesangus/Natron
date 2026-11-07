@@ -80,6 +80,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
@@ -1404,6 +1405,14 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
             break;
         }
 
+        // A paused viewer keeps its last frame and resolves no input to render from. The stroke's points stay
+        // unconsumed, so the first render after un-pausing picks them all up.
+        if (isViewerPaused(i)) {
+            status[i] = eViewerRenderRetCodeRedraw;
+            args[i].reset();
+            continue;
+        }
+
         AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(i, canAbort, false);
 
         /*FrameRequestMap request;
@@ -1468,9 +1477,12 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 int currentlyPaintedStrokeMultiIndex;
                 getApp()->getStrokeAndMultiStrokeIndex(&currentlyPaintedStroke, &currentlyPaintedStrokeMultiIndex);
 
+                // A render queued for a stroke the user has since replaced has nothing left to draw.
+                if (currentlyPaintedStroke != activeStroke) {
+                    args[i].reset();
 
-                //If this crashes here that means the user could start a new stroke while this one is not done rendering.
-                assert(currentlyPaintedStroke == activeStroke);
+                    return eViewerRenderRetCodeRedraw;
+                }
 
                 //the multi-stroke index in case of a stroke containing multiple strokes from the user
                 int strokeIndex;
@@ -1527,7 +1539,8 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 args[i].reset();
             }
 
-            if (args[i]) {
+            // Redraw arguments resolve no input: there is nothing to render.
+            if (args[i] && (status[i] == eViewerRenderRetCodeRender)) {
                 status[i] = renderViewer_internal(view,
                                                   QThread::currentThread() == qApp->thread(), // singleThreaded
                                                   false, // isSequentialRender
@@ -4384,6 +4397,9 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
         assert(params->roi.contains(texRect));
         uiContext->transferBufferFromRAMtoGPU(it->ramBuffer, it->bytesCount, params->roi, params->roiNotRoundedToTileSize, texRect, params->textureIndex, params->isPartialRect, isFirstTile, &texture);
         isFirstTile = false;
+    }
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteTextureUploaded();
     }
 
     NodePtr rotoPaintNode;

@@ -76,6 +76,8 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Decisions
 
+- 2026-11-07 — Phase 328.2 remote gate green at c7cc54871.
+
 - 2026-11-07 — Phase 328.2 at c7cc54871, unbuilt. Until a reader's first evaluation its digest is random per session, so the first image render after opening a project misses a persisted disk cache and re-renders once; a background walk at load would remove this.
 
 - 2026-11-07 — Phase 328.1 remote gate green at f26c43835 (release, full ctest, viewer GUI scripts under llvmpipe). The threaded first render hasn't run on a real GPU.

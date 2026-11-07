@@ -51,12 +51,15 @@
 #include <QListView>
 #include <QMenu>
 #include <QMimeData>
+#include <QPainter>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStringListModel>
+#include <QStyle>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
@@ -262,6 +265,59 @@ public:
 
 private:
     Gui* _gui;
+};
+
+// Paints a row's payload state at the end of its name. The state is a role, not a decoration, so
+// that the name keeps its type's icon and is elided before it reaches the mark.
+class PayloadBadgeDelegate
+    : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter,
+               const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        const int state = index.data(SceneGraphModel::ePayloadStateRole).toInt();
+
+        if (state == SceneGraphModel::ePayloadStateNone) {
+            QStyledItemDelegate::paint(painter, option, index);
+
+            return;
+        }
+        const int kBadgeSize = 8;
+        const int kBadgeMargin = 4;
+        QStyleOptionViewItem nameOption(option);
+        nameOption.rect.setRight(option.rect.right() - kBadgeSize - 2 * kBadgeMargin);
+        QStyle* style = option.widget ? option.widget->style() : QApplication::style();
+        style->drawPrimitive(QStyle::PE_PanelItemViewItem, &option, painter, option.widget);
+        QStyledItemDelegate::paint(painter, nameOption, index);
+
+        const QRect badge(option.rect.right() - kBadgeSize - kBadgeMargin, option.rect.center().y() - kBadgeSize / 2, kBadgeSize, kBadgeSize);
+        const QColor grey(170, 170, 170);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        switch (state) {
+        case SceneGraphModel::ePayloadStateUnloaded:
+            painter->setPen(QPen(grey, 1.5));
+            painter->setBrush(Qt::NoBrush);
+            break;
+        case SceneGraphModel::ePayloadStateLoading:
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(230, 170, 50));
+            break;
+        case SceneGraphModel::ePayloadStateFailed:
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(220, 70, 60));
+            break;
+        default:
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(grey);
+            break;
+        }
+        painter->drawEllipse(badge);
+        painter->restore();
+    }
 };
 
 } // anon namespace
@@ -605,6 +661,7 @@ struct SceneGraphPanel::Implementation {
         viewport = newViewport;
         if (viewport) {
             QObject::connect(viewport, &SceneViewport::sceneSynced, panel, &SceneGraphPanel::onSceneSynced);
+            QObject::connect(viewport, &SceneViewport::stageLoadsChanged, panel, &SceneGraphPanel::onStageLoadsChanged);
             QObject::connect(viewport, &SceneViewport::selectionChanged, panel, &SceneGraphPanel::onViewportSelectionChanged);
         }
         viewerSource = viewport ? std::make_shared<ViewerStageSource>(viewport) : SceneGraphStageSourcePtr();
@@ -662,6 +719,45 @@ struct SceneGraphPanel::Implementation {
         }
 
         return paths;
+    }
+
+    bool showsViewerStage() const
+    {
+        return viewport && viewerSource && (model->getSource() == viewerSource);
+    }
+
+    void requestLoad(const QStringList& paths,
+                     bool withDescendants)
+    {
+        viewport->requestLoad(paths, withDescendants);
+        model->markLoading(paths);
+    }
+
+    void requestUnload(const QStringList& paths)
+    {
+        for (const QString& path : paths) {
+            const QString below = path + QLatin1Char('/');
+            for (const QString& open : expanded.values()) {
+                if (open.startsWith(below)) {
+                    closeRow(open);
+                }
+            }
+            // Left open, an unloaded row could not be twirled to load it again.
+            if (model->getPayloadState(path) != SceneGraphModel::ePayloadStateNone) {
+                closeRow(path);
+            }
+        }
+        viewport->requestUnload(paths);
+    }
+
+    void closeRow(const QString& path)
+    {
+        const QModelIndex index = model->indexOfPath(path, false);
+
+        if (index.isValid()) {
+            tree->collapse(index);
+        }
+        expanded.remove(path);
     }
 
     void restoreExpansion()
@@ -1183,6 +1279,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _imp->tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     _imp->tree->setUniformRowHeights(true);
+    _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnName, new PayloadBadgeDelegate(_imp->tree));
     _imp->tree->setDragEnabled(true);
     _imp->tree->setDragDropMode(QAbstractItemView::DragOnly);
     _imp->tree->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1453,6 +1550,30 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
     copyPath->setEnabled(view->indexAt(pos).isValid() && !selection.isEmpty());
     QObject::connect(copyPath, &QAction::triggered, this, &SceneGraphPanel::copySelectedPaths);
     menu.addSeparator();
+    bool anyUnloaded = false;
+    bool anyOther = false;
+    for (const QString& path : selection) {
+        // A row of the filter's list may not have been read, so nothing is known of its payload.
+        const bool read = _imp->model->indexOfPath(path, false).isValid();
+        const SceneGraphModel::PayloadStateEnum state = _imp->model->getPayloadState(path);
+        const bool unloaded = (state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed);
+        anyUnloaded = anyUnloaded || unloaded || !read;
+        anyOther = anyOther || !unloaded;
+    }
+    const bool onViewerStage = _imp->showsViewerStage();
+    QAction* load = menu.addAction(tr("Load"));
+    load->setObjectName(QString::fromUtf8("sceneGraphLoad"));
+    load->setEnabled(onViewerStage && anyUnloaded);
+    QObject::connect(load, &QAction::triggered, this, [this, selection]() { _imp->requestLoad(selection, false); });
+    QAction* loadWithDescendants = menu.addAction(tr("Load With Descendants"));
+    loadWithDescendants->setObjectName(QString::fromUtf8("sceneGraphLoadWithDescendants"));
+    loadWithDescendants->setEnabled(onViewerStage && !selection.isEmpty());
+    QObject::connect(loadWithDescendants, &QAction::triggered, this, [this, selection]() { _imp->requestLoad(selection, true); });
+    QAction* unload = menu.addAction(tr("Unload"));
+    unload->setObjectName(QString::fromUtf8("sceneGraphUnload"));
+    unload->setEnabled(onViewerStage && anyOther);
+    QObject::connect(unload, &QAction::triggered, this, [this, selection]() { _imp->requestUnload(selection); });
+    menu.addSeparator();
     QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
     setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
     setOnNode->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DSetSelectionOnNode));
@@ -1482,6 +1603,20 @@ void
 SceneGraphPanel::onViewerSceneChanged()
 {
     _imp->followViewer();
+}
+
+void
+SceneGraphPanel::onStageLoadsChanged()
+{
+    if (!_imp->showsViewerStage()) {
+        return;
+    }
+    _imp->model->settleLoads();
+    if (!_imp->filterPattern.isEmpty()) {
+        _imp->filterDebounce.start();
+    }
+    _imp->updateStatus();
+    _imp->inspectorRefresh.start();
 }
 
 void
@@ -1692,7 +1827,12 @@ SceneGraphPanel::onExpanded(const QModelIndex& index)
     if (_imp->restoringExpansion) {
         return;
     }
-    _imp->expanded.insert(_imp->model->pathOf(index));
+    const QString path = _imp->model->pathOf(index);
+    _imp->expanded.insert(path);
+    const SceneGraphModel::PayloadStateEnum state = _imp->model->getPayloadState(path);
+    if (((state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed)) && _imp->showsViewerStage()) {
+        _imp->requestLoad(QStringList(path), false);
+    }
     _imp->publishState();
 }
 

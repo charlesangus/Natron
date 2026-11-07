@@ -4167,6 +4167,7 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
     startBackgroundFrame();
     publishState();
     update();
+    Q_EMIT stageLoadsChanged();
 }
 
 void
@@ -4252,6 +4253,7 @@ SceneViewport::cancelPendingLoads()
 {
     _imp->renderer.cancelStageLoads();
     publishState();
+    Q_EMIT stageLoadsChanged();
 }
 
 void

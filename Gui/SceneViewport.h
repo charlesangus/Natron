@@ -782,6 +782,10 @@ Q_SIGNALS:
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();
 
+    // Emitted on the main thread after a batch of payload requests is serviced or the waiting ones
+    // are cancelled.
+    void stageLoadsChanged();
+
     // First thing in the destructor, with the renderer still whole (main thread).
     void closing();
 

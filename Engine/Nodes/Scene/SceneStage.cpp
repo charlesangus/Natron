@@ -376,6 +376,7 @@ SceneStage::requestLoad(const PXR_NS::SdfPathVector& paths,
     for (const PXR_NS::SdfPath& path : paths) {
         if (path.IsAbsoluteRootOrPrimPath()) {
             _pendingLoads[path] = withDescendants ? ePendingLoadWithDescendants : ePendingLoadOwn;
+            _loadFailures.erase(path);
         }
     }
 }
@@ -388,6 +389,7 @@ SceneStage::requestUnload(const PXR_NS::SdfPathVector& paths)
     for (const PXR_NS::SdfPath& path : paths) {
         if (path.IsAbsoluteRootOrPrimPath()) {
             _pendingLoads[path] = ePendingUnload;
+            _loadFailures.erase(path);
         }
     }
 }
@@ -409,6 +411,14 @@ SceneStage::hasPendingLoads() const
 }
 
 bool
+SceneStage::hasOutstandingLoads() const
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    return !_pendingLoads.empty() || _servicingLoads;
+}
+
+bool
 SceneStage::serviceLoads(const LockedSection& readLocked,
                          const LockedSection& writeLocked)
 {
@@ -419,10 +429,17 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
             return false;
         }
         batch.swap(_pendingLoads);
-        for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
-            _loadFailures.erase(request.first);
-        }
+        _servicingLoads = true;
     }
+    struct ServicingScope {
+        SceneStage* stage;
+
+        ~ServicingScope()
+        {
+            std::lock_guard<std::mutex> lock(stage->_loadMutex);
+            stage->_servicingLoads = false;
+        }
+    } servicingScope { this };
     if (!_stage) {
         return true;
     }

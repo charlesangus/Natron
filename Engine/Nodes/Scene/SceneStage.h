@@ -127,6 +127,9 @@ public:
 
     bool hasPendingLoads() const;
 
+    // Whether a request is still waiting or in a serviceLoads() that has not returned.
+    bool hasOutstandingLoads() const;
+
     // Runs its argument with the owner's lock held, shared with other readers or exclusively.
     using LockedSection = std::function<void(const std::function<void()>&)>;
 
@@ -192,6 +195,7 @@ private:
     mutable std::mutex _loadMutex;
     std::map<PXR_NS::SdfPath, PendingLoadEnum> _pendingLoads;
     std::map<PXR_NS::SdfPath, std::string> _loadFailures;
+    bool _servicingLoads = false;
     std::atomic<U64> _loadEditCount { 0 };
     std::atomic<double> _lastLoadHoldMs { 0. };
 };

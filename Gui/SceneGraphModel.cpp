@@ -91,10 +91,12 @@ struct PrimData {
     QString type;
     QString kind;
     bool hasChildren = false;
+    // None, Unloaded or Loaded: the other states belong to the model's requests, not the prim.
+    SceneGraphModel::PayloadStateEnum payload = SceneGraphModel::ePayloadStateNone;
 
     bool operator==(const PrimData& other) const
     {
-        return (name == other.name) && (type == other.type) && (kind == other.kind) && (hasChildren == other.hasChildren);
+        return (name == other.name) && (type == other.type) && (kind == other.kind) && (hasChildren == other.hasChildren) && (payload == other.payload);
     }
 };
 
@@ -112,7 +114,10 @@ readPrimData(const UsdPrim& prim)
     if (prim.GetKind(&kind)) {
         data.kind = QString::fromStdString(kind.GetString());
     }
-    data.hasChildren = !prim.GetFilteredChildren(childPredicate()).empty() || (prim.HasAuthoredPayloads() && !prim.IsLoaded());
+    if (prim.HasAuthoredPayloads()) {
+        data.payload = prim.IsLoaded() ? SceneGraphModel::ePayloadStateLoaded : SceneGraphModel::ePayloadStateUnloaded;
+    }
+    data.hasChildren = !prim.GetFilteredChildren(childPredicate()).empty() || (data.payload == SceneGraphModel::ePayloadStateUnloaded);
 
     return data;
 }
@@ -235,6 +240,8 @@ struct SceneGraphModelItem {
     bool namesRead = false;
     TfTokenVector childNames;
     std::vector<std::unique_ptr<SceneGraphModelItem>> children;
+    // Shown after the children while the payload loads. It has no prim, so it is kept out of them.
+    std::unique_ptr<SceneGraphModelItem> loadingRow;
     std::unordered_map<TfToken, int, TfToken::HashFunctor> rowOf;
     bool rowOfValid = false;
 
@@ -266,7 +273,15 @@ struct SceneGraphModelItem {
         for (std::size_t i = 0; i < children.size(); ++i) {
             children[i]->row = (int)i;
         }
+        placeLoadingRow();
         rowOfValid = false;
+    }
+
+    void placeLoadingRow()
+    {
+        if (loadingRow) {
+            loadingRow->row = (int)children.size();
+        }
     }
 
     int subtreeSize() const
@@ -341,6 +356,9 @@ struct SceneGraphModel::Implementation {
     int itemCount = 0;
     int resetCount = 0;
     QSet<QString> changedHere;
+    QSet<QString> loadingPaths;
+    // By prim path, the USD error.
+    QHash<QString, QString> loadFailures;
     // Set while the model changes rows: a slot connected to the change signals must not fetch,
     // since children are not yet a prefix of childNames and a nested insert would land inside
     // the change in flight.
@@ -420,6 +438,62 @@ struct SceneGraphModel::Implementation {
         listenedStage = stage;
     }
 
+    PayloadStateEnum payloadStateOf(const Item* item) const
+    {
+        if (item->data.payload != ePayloadStateUnloaded) {
+            return item->data.payload;
+        }
+        if (loadingPaths.contains(item->pathString)) {
+            return ePayloadStateLoading;
+        }
+
+        return loadFailures.contains(item->pathString) ? ePayloadStateFailed : ePayloadStateUnloaded;
+    }
+
+    Item* findItem(const QString& path)
+    {
+        const std::string pathString = path.toStdString();
+
+        if (!SdfPath::IsValidPathString(pathString)) {
+            return nullptr;
+        }
+        const SdfPath sdfPath(pathString);
+
+        return (sdfPath.IsAbsolutePath() && sdfPath.IsAbsoluteRootOrPrimPath()) ? findItem(sdfPath) : nullptr;
+    }
+
+    void emitRowChanged(Item* item)
+    {
+        Q_EMIT model->dataChanged(indexOf(item), model->createIndex(item->row, eColumnCount - 1, item));
+    }
+
+    void addLoadingRow(Item* item)
+    {
+        if (item->loadingRow) {
+            return;
+        }
+        ChangeScope scope(this);
+        const int row = (int)item->children.size();
+        model->beginInsertRows(indexOf(item), row, row);
+        item->loadingRow.reset(new Item);
+        item->loadingRow->parent = item;
+        item->loadingRow->data.name = SceneGraphModel::tr("Loading...");
+        item->placeLoadingRow();
+        model->endInsertRows();
+    }
+
+    void removeLoadingRow(Item* item)
+    {
+        if (!item->loadingRow) {
+            return;
+        }
+        ChangeScope scope(this);
+        const int row = item->loadingRow->row;
+        model->beginRemoveRows(indexOf(item), row, row);
+        item->loadingRow.reset();
+        model->endRemoveRows();
+    }
+
     std::unique_ptr<Item> makeChild(Item* parent,
                                     const TfToken& name,
                                     const PrimData& data)
@@ -476,6 +550,11 @@ struct SceneGraphModel::Implementation {
         if (anyKept && !update.replaceChildren) {
             update.loadedCount = std::max(update.loadedCount, lastKeptPosition + 1);
         }
+        // A view fetches when a row opens, and this row may have opened before its payload's
+        // children existed.
+        if ((item->data.payload == ePayloadStateUnloaded) && (update.data.payload != ePayloadStateUnloaded)) {
+            update.loadedCount = std::max(update.loadedCount, std::min(update.names.size(), (std::size_t)kFetchBatchSize));
+        }
         for (std::size_t i = 0; i < update.loadedCount; ++i) {
             const TfToken& name = update.names[i];
             if (update.replaceChildren || !item->findChild(name)) {
@@ -502,6 +581,11 @@ struct SceneGraphModel::Implementation {
         const QModelIndex index = indexOf(item);
         bool childrenFlagChanged = false;
 
+        if (update.data.payload != ePayloadStateUnloaded) {
+            loadingPaths.remove(item->pathString);
+            loadFailures.remove(item->pathString);
+            removeLoadingRow(item);
+        }
         if (!(update.data == item->data)) {
             childrenFlagChanged = (update.data.hasChildren != item->data.hasChildren);
             if (item != &root) {
@@ -567,7 +651,7 @@ struct SceneGraphModel::Implementation {
         }
         item->childNames = std::move(update.names);
 
-        return false;
+        return childrenFlagChanged && item->children.empty();
     }
 
     void applyUpdates(std::vector<ItemUpdate>& updates)
@@ -597,6 +681,8 @@ struct SceneGraphModel::Implementation {
         root.namesRead = false;
         root.rowOfValid = false;
         root.data = hasStage ? rootData : PrimData();
+        loadingPaths.clear();
+        loadFailures.clear();
         itemCount = 0;
         ++resetCount;
         model->endResetModel();
@@ -646,6 +732,7 @@ struct SceneGraphModel::Implementation {
             child->row = (int)item->children.size();
             item->children.push_back(std::move(child));
         }
+        item->placeLoadingRow();
         item->rowOfValid = false;
         model->endInsertRows();
 
@@ -886,6 +973,7 @@ SceneGraphModel::addPathRows(const SceneGraphPathRowsPtr& rows)
             child->row = (int)i;
             item->children.push_back(std::move(child));
         }
+        item->placeLoadingRow();
         item->rowOfValid = false;
         endInsertRows();
     }
@@ -973,6 +1061,77 @@ SceneGraphModel::pathOf(const QModelIndex& index) const
     return index.isValid() ? _imp->itemOf(index)->pathString : QString();
 }
 
+SceneGraphModel::PayloadStateEnum
+SceneGraphModel::getPayloadState(const QString& path)
+{
+    const Item* item = _imp->findItem(path);
+
+    return item ? _imp->payloadStateOf(item) : ePayloadStateNone;
+}
+
+void
+SceneGraphModel::markLoading(const QStringList& paths)
+{
+    for (const QString& path : paths) {
+        Item* item = _imp->findItem(path);
+        if (!item || (item == &_imp->root) || (item->data.payload != ePayloadStateUnloaded)) {
+            continue;
+        }
+        _imp->loadFailures.remove(path);
+        _imp->loadingPaths.insert(path);
+        _imp->addLoadingRow(item);
+        _imp->emitRowChanged(item);
+    }
+}
+
+void
+SceneGraphModel::settleLoads()
+{
+    if (!_imp->source) {
+        return;
+    }
+    refresh();
+    QHash<QString, QString> failures;
+    bool outstanding = false;
+    _imp->source->readStage([&](const SceneStage* stage) {
+        if (!stage) {
+            return;
+        }
+        for (const SceneStage::LoadFailure& failure : stage->getLoadFailures()) {
+            failures.insert(QString::fromStdString(failure.prim.GetString()), QString::fromStdString(failure.error));
+        }
+        outstanding = stage->hasOutstandingLoads();
+    });
+    QSet<QString> touched;
+    for (const QString& path : _imp->loadingPaths) {
+        if (!outstanding || failures.contains(path)) {
+            touched.insert(path);
+        }
+    }
+    _imp->loadingPaths -= touched;
+    if (failures != _imp->loadFailures) {
+        for (QHash<QString, QString>::const_iterator it = failures.constBegin(); it != failures.constEnd(); ++it) {
+            if (_imp->loadFailures.value(it.key()) != it.value()) {
+                touched.insert(it.key());
+            }
+        }
+        for (QHash<QString, QString>::const_iterator it = _imp->loadFailures.constBegin(); it != _imp->loadFailures.constEnd(); ++it) {
+            if (!failures.contains(it.key())) {
+                touched.insert(it.key());
+            }
+        }
+        _imp->loadFailures = failures;
+    }
+    for (const QString& path : touched) {
+        if (Item* item = _imp->findItem(path)) {
+            if (item != &_imp->root) {
+                _imp->removeLoadingRow(item);
+                _imp->emitRowChanged(item);
+            }
+        }
+    }
+}
+
 void
 SceneGraphModel::setChangedHere(const QSet<QString>& paths)
 {
@@ -1022,11 +1181,11 @@ SceneGraphModel::index(int row,
         return QModelIndex();
     }
     Item* item = _imp->itemOf(parent);
-    if ((row < 0) || (row >= (int)item->children.size())) {
+    if ((row < 0) || (row >= rowCount(parent))) {
         return QModelIndex();
     }
 
-    return createIndex(row, column, item->children[row].get());
+    return createIndex(row, column, (row < (int)item->children.size()) ? item->children[row].get() : item->loadingRow.get());
 }
 
 QModelIndex
@@ -1046,7 +1205,9 @@ SceneGraphModel::rowCount(const QModelIndex& parent) const
         return 0;
     }
 
-    return (int)_imp->itemOf(parent)->children.size();
+    const Item* item = _imp->itemOf(parent);
+
+    return (int)item->children.size() + (item->loadingRow ? 1 : 0);
 }
 
 int
@@ -1063,7 +1224,7 @@ SceneGraphModel::hasChildren(const QModelIndex& parent) const
     }
     const Item* item = _imp->itemOf(parent);
 
-    return !item->children.empty() || item->data.hasChildren;
+    return !item->children.empty() || item->loadingRow || item->data.hasChildren;
 }
 
 QVariant
@@ -1086,8 +1247,30 @@ SceneGraphModel::data(const QModelIndex& index,
         default:
             return QVariant();
         }
-    case Qt::ToolTipRole:
-        return _imp->changedHere.contains(item->pathString) ? tr("%1\nChanged here").arg(item->pathString) : item->pathString;
+    case Qt::ToolTipRole: {
+        if (item->path.IsEmpty()) {
+            return QVariant();
+        }
+        QString tip = _imp->changedHere.contains(item->pathString) ? tr("%1\nChanged here").arg(item->pathString) : item->pathString;
+        switch (_imp->payloadStateOf(item)) {
+        case ePayloadStateNone:
+            break;
+        case ePayloadStateUnloaded:
+            tip += QLatin1Char('\n') + tr("Payload not loaded");
+            break;
+        case ePayloadStateLoading:
+            tip += QLatin1Char('\n') + tr("Payload loading");
+            break;
+        case ePayloadStateLoaded:
+            tip += QLatin1Char('\n') + tr("Payload loaded");
+            break;
+        case ePayloadStateFailed:
+            tip += QLatin1Char('\n') + tr("Payload failed to load: %1").arg(_imp->loadFailures.value(item->pathString));
+            break;
+        }
+
+        return tip;
+    }
     case Qt::DecorationRole:
         if (index.column() == eColumnName) {
             const QIcon icon = iconForType(item->data.type);
@@ -1101,6 +1284,8 @@ SceneGraphModel::data(const QModelIndex& index,
         return item->pathString;
     case eChangedHereRole:
         return _imp->changedHere.contains(item->pathString);
+    case ePayloadStateRole:
+        return (int)_imp->payloadStateOf(item);
     case Qt::FontRole:
         if ((index.column() == eColumnName) && _imp->changedHere.contains(item->pathString)) {
             QFont font;
@@ -1126,7 +1311,7 @@ SceneGraphModel::headerData(int section,
 Qt::ItemFlags
 SceneGraphModel::flags(const QModelIndex& index) const
 {
-    if (!index.isValid()) {
+    if (!index.isValid() || _imp->itemOf(index)->path.IsEmpty()) {
         return Qt::NoItemFlags;
     }
 

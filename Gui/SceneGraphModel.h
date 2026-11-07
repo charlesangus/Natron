@@ -117,6 +117,9 @@ typedef std::shared_ptr<SceneGraphPathRows> SceneGraphPathRowsPtr;
  * again only the expanded items under the paths the edits resynced, and inserts and removes rows
  * for what changed, keeping the other rows and their persistent indexes. A different stage
  * resets the model.
+ *
+ * Prims under an unloaded payload have no rows until it loads, and its row reports that it can have
+ * children. A load changes only the rows under its prim.
  **/
 class SceneGraphModel
     : public QAbstractItemModel {
@@ -137,6 +140,16 @@ public:
         ePrimPathRole = Qt::UserRole + 1,
         // Whether the prim has a spec in the viewed node's own layers or has a descendant that does, a bool.
         eChangedHereRole,
+        // The row's payload, a PayloadStateEnum.
+        ePayloadStateRole,
+    };
+
+    enum PayloadStateEnum {
+        ePayloadStateNone = 0,
+        ePayloadStateUnloaded,
+        ePayloadStateLoading,
+        ePayloadStateLoaded,
+        ePayloadStateFailed,
     };
 
     // How many children one fetchMore() adds.
@@ -171,6 +184,22 @@ public:
     void addPathRows(const SceneGraphPathRowsPtr& rows);
 
     QString pathOf(const QModelIndex& index) const;
+
+    // None for a prim without a payload, and for a path no row has been read for.
+    PayloadStateEnum getPayloadState(const QString& path);
+
+    /**
+     * @brief Shows the rows at paths whose payloads are unloaded as loading, each with a disabled
+     * row under it, until the stage's notice of their load or settleLoads() says otherwise. Asks
+     * nothing of the stage.
+     **/
+    void markLoading(const QStringList& paths);
+
+    /**
+     * @brief Takes in what the stage has done with its load requests: refresh(), the prims whose
+     * files did not open, and, once no request is left, the end of any row still shown as loading.
+     **/
+    void settleLoads();
 
     /**
      * @brief Marks the rows at paths, which the caller gives with their ancestors. Rows read later

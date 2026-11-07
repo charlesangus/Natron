@@ -117,7 +117,15 @@ public:
     static ImageParamsPtr diskParamsFromBytes(const std::string& bytes, const RectI& bounds);
 
     // False for a file that contradicts itself, which is corrupt. Throws std::bad_alloc.
-    bool diskRestore(const CacheDiskFileInfo& info, CacheDiskSource& source);
+    bool isPinnedBy(const std::string& holderID) const
+    {
+        const CacheEntryHeader* const header = evictionHeader();
+
+        return header && header->pinned.load() && (getKeyHolderID() == holderID);
+    }
+
+    // With mapPayload, the pixels stay in the file, copy-on-write, if it can be mapped.
+    bool diskRestore(const CacheDiskFileInfo& info, CacheDiskSource& source, bool mapPayload = false);
 
     // A partial file claims none of its pixels: the bitmap is not read until the stub is promoted,
     // and a caller planning on a stub must only over-estimate the work left.

@@ -41,6 +41,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class PrivateFileMapping;
+
 enum CacheDiskPayloadKindEnum {
     eCacheDiskPayloadImage = 1,
     eCacheDiskPayloadDeep = 2
@@ -179,6 +181,9 @@ public:
     }
 
     virtual bool read(void* data, std::size_t bytes) = 0;
+    // In place of a read of the rest of the source: maps it. Null if it cannot be, and the source
+    // can then still be read.
+    virtual std::unique_ptr<PrivateFileMapping> mapRest(std::size_t bytes);
 };
 
 /**
@@ -252,6 +257,40 @@ public:
     // Unlinks every params variation of a key, whether or not this session wrote or knows them.
     void retractFiles(const CacheDiskIdentity& identity);
     void clearAuto();
+
+    enum PinOutcomeEnum {
+        ePinOutcomePublished,
+        ePinOutcomeAlreadyThere,
+        // Over the pin budget even after this holder's pins of other node hashes went.
+        ePinOutcomeDoesNotFit,
+        // Nothing to store, a salted key, or a session that fills nothing.
+        ePinOutcomeNotStored,
+        ePinOutcomeFailed
+    };
+
+    // Pins live under <build>/pins/<holder>, outside sampling and on this budget.
+    void setPinBudget(std::uint64_t bytes);
+    std::uint64_t pinBudget() const;
+    // What this build's pins take on disk, read from the directory now.
+    std::uint64_t pinnedBytes() const;
+    std::uint64_t pinnedBytesOf(const std::string& holderID) const;
+    // Marks the holder as used by this session. No I/O after the first call for a holder.
+    void holdPins(const std::string& holderID);
+    bool holdsPins(const std::string& holderID) const;
+    // Removes this session's mark, and the holder's pins unless a live peer holds it too.
+    void releaseHolder(const std::string& holderID);
+    // Unlinks the pins of the holders this session holds. Their marks stay.
+    void clearPins();
+    // Off every lock: this writes the file on the calling thread. The entry stays usable either way
+    // and, unless published or already there, is left an ordinary entry.
+    PinOutcomeEnum publishPin(const std::string& holderID, const CacheEntryPtr& entry);
+    // As probe(), among one holder's pins.
+    bool probePin(const std::string& holderID,
+                  const CacheDiskIdentity& identity,
+                  const std::string* wantedParamsBytes,
+                  std::vector<CacheDiskFileInfo>* candidates);
+    void retractPinFiles(const std::string& holderID, const CacheDiskIdentity& identity);
+    std::uint64_t pinBudgetWarnings() const;
     // Drops what is queued and abandons what is being written, and leaves every file in place.
     void cancelWrites();
 
@@ -286,6 +325,8 @@ public:
         // Fails if the path now holds a different file than the probe saw.
         bool open();
         virtual bool read(void* data, std::size_t bytes) override final;
+        // Checks what it maps through the mapping, as read() checks what it reads.
+        virtual std::unique_ptr<PrivateFileMapping> mapRest(std::size_t bytes) override final;
         // Whether everything in the file was read and matches the checksum.
         bool finish();
 

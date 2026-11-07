@@ -548,15 +548,11 @@ AppManager::~AppManager()
     if (_imp->_nodeCache) {
         _imp->_nodeCache->waitForDeleterThread();
     }
-    if (_imp->_diskCache) {
-        _imp->_diskCache->waitForDeleterThread();
-    }
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
     _imp->_nodeCache.reset();
     _imp->_viewerCache.reset();
-    _imp->_diskCache.reset();
 
     tearDownPython();
     _imp->tearDownGL();
@@ -1145,7 +1141,7 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
         _imp->_nodeCache->useEvictionScore();
         _imp->_nodeCache->setDiskTier(openNodeCacheDiskTier(*_imp->_settings));
-        _imp->_diskCache = std::make_shared<Cache<Image> >("DiskCache", NATRON_CACHE_VERSION, maxDiskCacheNode, 0.);
+        setNodeCachePinBudget(maxDiskCacheNode);
         _imp->_viewerCache = std::make_shared<Cache<FrameEntry>>("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
         _imp->setViewerCacheTileSize();
     } catch (std::logic_error&) {
@@ -1452,7 +1448,9 @@ AppManager::clearDiskCache()
 
     clearLastRenderedTextures();
     _imp->_viewerCache->clear();
-    _imp->_diskCache->clear();
+    if (_imp->_nodeCache) {
+        _imp->_nodeCache->clearPins();
+    }
 }
 
 void
@@ -1517,9 +1515,6 @@ AppManager::clearCaches(bool inRamOnly)
     if (_imp->_nodeCache) {
         _imp->_nodeCache->waitForDeleterThread();
     }
-    if (_imp->_diskCache) {
-        _imp->_diskCache->waitForDeleterThread();
-    }
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
@@ -1528,9 +1523,6 @@ AppManager::clearCaches(bool inRamOnly)
         clearLastRenderedTextures();
         if (_imp->_viewerCache) {
             _imp->_viewerCache->clearInMemoryPortion();
-        }
-        if (_imp->_diskCache) {
-            _imp->_diskCache->clearInMemoryPortion();
         }
         for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
             (*it)->clearAllLastRenderedImages();
@@ -1577,8 +1569,6 @@ AppManager::wipeAndCreateDiskCacheStructure()
 void
 AppManager::rebuildDiskCacheStructure()
 {
-    assert(_imp->_diskCache);
-    _imp->cleanUpCacheDiskStructure( _imp->_diskCache->getCachePath(), false );
     assert(_imp->_viewerCache);
     _imp->cleanUpCacheDiskStructure( _imp->_viewerCache->getCachePath() , true);
 }
@@ -1668,9 +1658,11 @@ AppManager::setApplicationsCachesMaximumViewerDiskSpace(unsigned long long size)
 }
 
 void
-AppManager::setApplicationsCachesMaximumDiskSpace(unsigned long long size)
+AppManager::setNodeCachePinBudget(U64 bytes)
 {
-    _imp->_diskCache->setMaximumCacheSize(size);
+    if (_imp->_nodeCache && _imp->_nodeCache->diskTier()) {
+        _imp->_nodeCache->diskTier()->setPinBudget(bytes);
+    }
 }
 
 void
@@ -2594,8 +2586,6 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
 
     std::size_t viewerCacheMem = 0;
     std::size_t viewerCacheDisk = 0;
-    std::size_t diskCacheMem = 0;
-    std::size_t diskCacheDisk = 0;
     std::size_t nodeCacheMem = 0;
     std::size_t nodeCacheDisk = 0;
     const Node* isNode = dynamic_cast<const Node*>(holder);
@@ -2605,11 +2595,13 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
             _imp->_viewerCache->getMemoryStatsForCacheEntryHolder(holder, &viewerCacheMem, &viewerCacheDisk);
         }
     }
-    _imp->_diskCache->getMemoryStatsForCacheEntryHolder(holder, &diskCacheMem, &diskCacheDisk);
     _imp->_nodeCache->getMemoryStatsForCacheEntryHolder(holder, &nodeCacheMem, &nodeCacheDisk);
 
-    *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem;
-    *diskOccupied = diskCacheDisk + viewerCacheDisk + nodeCacheDisk;
+    const CacheDiskTierPtr tier = _imp->_nodeCache->diskTier();
+    const std::size_t pinnedDisk = tier ? (std::size_t)tier->pinnedBytesOf(holder->getCacheID()) : 0;
+
+    *ramOccupied = viewerCacheMem + nodeCacheMem;
+    *diskOccupied = viewerCacheDisk + nodeCacheDisk + pinnedDisk;
 }
 
 void
@@ -2617,7 +2609,9 @@ AppManager::removeAllCacheEntriesForHolder(const CacheEntryHolder* holder,
                                            bool blocking)
 {
     _imp->_nodeCache->removeAllEntriesForHolderPublic(holder, blocking);
-    _imp->_diskCache->removeAllEntriesForHolderPublic(holder, blocking);
+    if (_imp->_nodeCache->diskTier()) {
+        _imp->_nodeCache->diskTier()->releaseHolder(holder->getCacheID());
+    }
     _imp->_viewerCache->removeAllEntriesForHolderPublic(holder, blocking);
 }
 
@@ -2658,25 +2652,34 @@ AppManager::getImageOrCreate(const ImageKey & key,
 }
 
 bool
-AppManager::getImage_diskCache(const ImageKey & key,
-                               std::list<ImagePtr>* returnValue) const
+AppManager::getPinnedImage(const ImageKey& key,
+                           std::list<ImagePtr>* returnValue) const
 {
-    return _imp->_diskCache->get(key, returnValue);
+    return _imp->_nodeCache->getPinned(key, returnValue);
 }
 
 bool
-AppManager::peekImage_diskCache(const ImageKey& key,
-                                std::list<ImagePtr>* returnValue) const
+AppManager::peekPinnedImage(const ImageKey& key,
+                            std::list<ImagePtr>* returnValue) const
 {
-    return _imp->_diskCache->peek(key, returnValue);
+    return _imp->_nodeCache->peekPinned(key, returnValue);
 }
 
 bool
-AppManager::getImageOrCreate_diskCache(const ImageKey & key,
-                                       const ImageParamsPtr& params,
-                                       ImagePtr* returnValue) const
+AppManager::getPinnedImageOrCreate(const ImageKey& key,
+                                   const ImageParamsPtr& params,
+                                   ImagePtr* returnValue) const
 {
-    return _imp->_diskCache->getOrCreate(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, 0, returnValue);
+    return _imp->_nodeCache->getOrCreatePinned(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, returnValue);
+}
+
+void
+AppManager::pinRenderedImage(const std::string& holderID,
+                             const ImagePtr& image)
+{
+    if (_imp->_nodeCache->diskTier()) {
+        (void)_imp->_nodeCache->diskTier()->publishPin(holderID, image);
+    }
 }
 
 bool
@@ -2724,7 +2727,9 @@ AppManager::getCachesTotalMemorySize() const
 U64
 AppManager::getCachesTotalDiskSize() const
 {
-    return  _imp->_diskCache->getDiskCacheSize() + _imp->_viewerCache->getDiskCacheSize();
+    const CacheDiskTierPtr tier = _imp->_nodeCache->diskTier();
+
+    return (tier ? tier->pinnedBytes() : 0) + _imp->_viewerCache->getDiskCacheSize();
 }
 
 CacheSignalEmitterPtr

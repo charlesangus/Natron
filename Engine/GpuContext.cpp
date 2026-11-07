@@ -611,7 +611,8 @@ gpuHostTransferBytes(const Image& image)
         return 0;
     }
     const std::size_t bytes = (std::size_t)bounds.area() * image.getComponentsCount() * getSizeOfForBitDepth(image.getBitDepth());
-    if ((image.getStorageMode() != eStorageModeRAM) || (bytes < HostImageMemory::minPooledBytes())) {
+    // A mapped file ends with its pixels, so reading the padding of a pooled buffer would fault.
+    if ((image.getStorageMode() != eStorageModeRAM) || (bytes < HostImageMemory::minPooledBytes()) || image.isFileMapped()) {
         return bytes;
     }
 

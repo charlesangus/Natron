@@ -890,14 +890,14 @@ EffectInstance::probeOutputInCache(U64 nodeHash,
     const unsigned int renderLevel = rendersFullScale ? 0 : mipmapLevel;
     const ImageKey nonDraftKey = outputCacheKey(nodeHash, isFrameVaryingOrAnimated, time, view, false, renderLevel);
     const ImageKey draftKey = outputCacheKey(nodeHash, isFrameVaryingOrAnimated, time, view, true, renderLevel);
-    const bool onDisk = dynamic_cast<DiskCacheNode*>(this) != nullptr;
+    const bool pinsOutput = dynamic_cast<DiskCacheNode*>(this) != nullptr;
 
     const auto peekEntry = [&](const ImageKey& key, unsigned int level, const ImageLayerDesc& layer) -> ImagePtr {
         ImagePtr entry;
         key.forEachServingKey(level, 0, layer, bitdepth, [&](const ImageKey& candidate) {
             std::list<ImagePtr> images;
-            if (onDisk) {
-                appPTR->peekImage_diskCache(candidate, &images);
+            if (pinsOutput) {
+                appPTR->peekPinnedImage(candidate, &images);
             } else {
                 appPTR->peekImage(candidate, &images);
             }
@@ -2296,9 +2296,10 @@ EffectInstance::NotifyInputNRenderingStarted_RAII::~NotifyInputNRenderingStarted
 }
 
 static void
-getOrCreateFromCacheInternal(const ImageKey & key,
-                             const ImageParamsPtr & params,
+getOrCreateFromCacheInternal(const ImageKey& key,
+                             const ImageParamsPtr& params,
                              bool useCache,
+                             bool pinned,
                              ImagePtr* image)
 {
     if (!useCache) {
@@ -2307,9 +2308,11 @@ getOrCreateFromCacheInternal(const ImageKey & key,
         assert(params->getStorageInfo().mode != eStorageModeGLTex);
 
         if (params->getStorageInfo().mode == eStorageModeRAM) {
-            appPTR->getImageOrCreate(key, params, image);
-        } else if (params->getStorageInfo().mode == eStorageModeDisk) {
-            appPTR->getImageOrCreate_diskCache(key, params, image);
+            if (pinned) {
+                appPTR->getPinnedImageOrCreate(key, params, image);
+            } else {
+                appPTR->getImageOrCreate(key, params, image);
+            }
         }
 
         if (!*image) {
@@ -2406,7 +2409,7 @@ EffectInstance::convertRAMImageToOpenGLTexture(const ImagePtr& image)
 
     // The creation of the image will use glTexImage2D and will get filled with the PBO
     ImagePtr gpuImage;
-    getOrCreateFromCacheInternal(image->getKey(), params, false /*useCache*/, &gpuImage);
+    getOrCreateFromCacheInternal(image->getKey(), params, false /*useCache*/, false /*pinned*/, &gpuImage);
 
     // it is good idea to release PBOs with ID 0 after use.
     // Once bound with 0, all pixel operations are back to normal ways.
@@ -2452,9 +2455,11 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
         if (cachedImages.empty()) {
             // For textures, we lookup for a RAM image, if found we convert it to a texture
             if ((storage == eStorageModeRAM) || (storage == eStorageModeGLTex)) {
-                appPTR->getImage(candidate, &cachedImages);
-            } else if (storage == eStorageModeDisk) {
-                appPTR->getImage_diskCache(candidate, &cachedImages);
+                if (dynamic_cast<DiskCacheNode*>(this)) {
+                    appPTR->getPinnedImage(candidate, &cachedImages);
+                } else {
+                    appPTR->getImage(candidate, &cachedImages);
+                }
             }
         }
 
@@ -2522,7 +2527,7 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                                                            eStorageModeRAM);
 
             ImagePtr img;
-            getOrCreateFromCacheInternal(key, imageParams, imageToConvert->usesBitMap(), &img);
+            getOrCreateFromCacheInternal(key, imageParams, imageToConvert->usesBitMap(), dynamic_cast<DiskCacheNode*>(this) != nullptr, &img);
             if (!img) {
                 return;
             }
@@ -2565,7 +2570,7 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                     glContextAttacher->attach();
                     *image = convertRAMImageToOpenGLTexture(imageToConvert);
                 } else {
-                    assert(returnStorage == eStorageModeRAM && (imageToConvert->getStorageMode() == eStorageModeRAM || imageToConvert->getStorageMode() == eStorageModeDisk));
+                    assert(returnStorage == eStorageModeRAM && imageToConvert->getStorageMode() == eStorageModeRAM);
                     // If renderRoI must return a RAM image, don't convert it back again!
                     *image = imageToConvert;
                 }
@@ -2739,6 +2744,8 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
                                    ImagePtr* fullScaleImage,
                                    ImagePtr* downscaleImage)
 {
+    const bool pinned = dynamic_cast<DiskCacheNode*>(this) != nullptr;
+
     //If we're rendering full scale and with input images at full scale, don't cache the downscale image since it is cheap to
     //recreate, instead cache the full-scale image
     if (renderFullScaleThenDownscale) {
@@ -2756,7 +2763,7 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
         //The upscaled image will be rendered with input images at full def, it is then the best possibly rendered image so cache it!
 
         fullScaleImage->reset();
-        getOrCreateFromCacheInternal(key, upscaledImageParams, createInCache, fullScaleImage);
+        getOrCreateFromCacheInternal(key, upscaledImageParams, createInCache, pinned, fullScaleImage);
 
         if (!*fullScaleImage) {
             return false;
@@ -2779,7 +2786,7 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
         ///When calling allocateMemory() on the image, the cache already has the lock since it added it
         ///so taking this lock now ensures the image will be allocated completely
 
-        getOrCreateFromCacheInternal(key, cachedImgParams, createInCache, downscaleImage);
+        getOrCreateFromCacheInternal(key, cachedImgParams, createInCache, pinned, downscaleImage);
         if (!*downscaleImage) {
             return false;
         }

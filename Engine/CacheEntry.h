@@ -251,6 +251,8 @@ struct CacheEntryHeader {
     std::atomic<CacheRetentionSignalsPtr> retention;
     std::atomic<std::uint32_t> reuseCount { 0 };
     std::atomic<U64> lastReuseRender { 0 };
+    // Its file lives among a holder's pins, so RAM pressure only drops the entry.
+    std::atomic<bool> pinned { false };
 };
 
 typedef std::shared_ptr<CacheEntryHeader> CacheEntryHeaderPtr;
@@ -598,6 +600,45 @@ public:
  * Maybe should we move this class as an internal class of CacheEntryHelper to prevent elsewhere
  * usages.
  **/
+/**
+ * @brief A copy-on-write view of part of a published file. The file's inode outlives an unlink for as long as
+ * the mapping does, and a write to the view never reaches the file, which peers may have mapped too.
+ **/
+class PrivateFileMapping {
+public:
+    PrivateFileMapping(void* base,
+                       std::size_t mappedBytes,
+                       unsigned char* data,
+                       std::size_t bytes)
+        : _base(base)
+        , _mappedBytes(mappedBytes)
+        , _data(data)
+        , _bytes(bytes)
+    {
+    }
+
+    ~PrivateFileMapping();
+
+    unsigned char* data() const
+    {
+        return _data;
+    }
+
+    std::size_t bytes() const
+    {
+        return _bytes;
+    }
+
+private:
+    PrivateFileMapping(const PrivateFileMapping&) = delete;
+    PrivateFileMapping& operator=(const PrivateFileMapping&) = delete;
+
+    void* _base;
+    std::size_t _mappedBytes;
+    unsigned char* _data;
+    std::size_t _bytes;
+};
+
 template<typename DataType>
 class Buffer
 {
@@ -620,9 +661,21 @@ public:
         deallocate();
     }
 
+    void adoptMapping(std::unique_ptr<PrivateFileMapping> mapping)
+    {
+        _storageMode = eStorageModeRAM;
+        _buffer.reset();
+        _mapping = std::move(mapping);
+    }
+
+    bool isFileMapping() const
+    {
+        return (bool)_mapping;
+    }
+
     void allocateRAM(U64 count)
     {
-        if ( _buffer && (_buffer->size() > 0) ) {
+        if (_mapping || (_buffer && (_buffer->size() > 0))) {
             return;
         }
         _storageMode = eStorageModeRAM;
@@ -725,11 +778,9 @@ public:
     {
         if (_storageMode == eStorageModeRAM) {
             if (other._storageMode == eStorageModeRAM) {
-                if (other._buffer) {
-                    if (!_buffer) {
-                        _buffer.reset( new RamBuffer<DataType>() );
-                    }
+                if (other._buffer || other._mapping) {
                     _buffer.swap(other._buffer);
+                    _mapping.swap(other._mapping);
                 }
             } else {
                 if (!_buffer) {
@@ -793,6 +844,7 @@ public:
     void deallocate()
     {
         if (_storageMode == eStorageModeRAM) {
+            _mapping.reset();
             if (_buffer) {
                 _buffer->clear();
             }
@@ -849,6 +901,10 @@ public:
     size_t size() const
     {
         if (_storageMode == eStorageModeRAM) {
+            if (_mapping) {
+                return _mapping->bytes();
+            }
+
             return _buffer ? _buffer->size() * sizeof(DataType) : 0;
         } else if (_storageMode == eStorageModeDisk) {
             if (_backingFile) {
@@ -868,7 +924,7 @@ public:
 
     bool isAllocated() const
     {
-        return (_buffer && _buffer->size() > 0) || ( _backingFile && _backingFile->data() ) || _cacheFile || _glTexture;
+        return _mapping || (_buffer && _buffer->size() > 0) || (_backingFile && _backingFile->data()) || _cacheFile || _glTexture;
     }
 
     DataType* writable()
@@ -882,6 +938,10 @@ public:
                 return NULL;
             }
         } else if (_storageMode == eStorageModeRAM) {
+            if (_mapping) {
+                return reinterpret_cast<DataType*>(_mapping->data());
+            }
+
             return _buffer ? _buffer->getData() : NULL;
         } else {
             // Other storage modes don't provide direct access to RAM handle
@@ -900,6 +960,10 @@ public:
                 return 0;
             }
         } else if (_storageMode == eStorageModeRAM) {
+            if (_mapping) {
+                return reinterpret_cast<const DataType*>(_mapping->data());
+            }
+
             return _buffer ? _buffer->getData() : NULL;
         } else {
             // Other storage modes don't provide direct access to RAM handle
@@ -941,6 +1005,7 @@ private:
 
     std::string _path;
     std::unique_ptr<RamBuffer<DataType> > _buffer;
+    std::unique_ptr<PrivateFileMapping> _mapping;
 
     /*mutable so the reOpenFileMapping function can reopen the mapped file. It doesn't
        change the underlying data*/
@@ -1070,6 +1135,30 @@ public:
         if (_cache) {
             _cache->notifyEntryAllocated( getTime(), size(), storageInfo.mode );
         }
+    }
+
+    /**
+     * @brief Takes its pixels from a mapped file instead of allocating them. Charged as RAM, as an allocation is.
+     **/
+    void adoptMappedPayload(std::unique_ptr<PrivateFileMapping> mapping)
+    {
+        const std::size_t bytes = mapping->bytes();
+        {
+            QWriteLocker k(&_entryLock);
+            _data.adoptMapping(std::move(mapping));
+            onMemoryAllocated(false);
+        }
+
+        if (_cache) {
+            _cache->notifyEntryAllocated(getTime(), bytes, eStorageModeRAM);
+        }
+    }
+
+    bool isFileMapped() const
+    {
+        QReadLocker k(&_entryLock);
+
+        return _data.isFileMapping();
     }
 
     /**

@@ -224,12 +224,22 @@ public:
     bool getImageOrCreate(const ImageKey & key, const ImageParamsPtr& params,
                           ImagePtr* returnValue) const;
 
-    bool getImage_diskCache(const ImageKey & key, std::list<ImagePtr>* returnValue) const;
+    /**
+     * @brief As getImage(), peekImage() and getImageOrCreate(), for a node that pins its outputs: the key's holder's
+     * pins are looked up too.
+     **/
+    bool getPinnedImage(const ImageKey& key, std::list<ImagePtr>* returnValue) const;
 
-    bool peekImage_diskCache(const ImageKey& key, std::list<ImagePtr>* returnValue) const;
+    bool peekPinnedImage(const ImageKey& key, std::list<ImagePtr>* returnValue) const;
 
-    bool getImageOrCreate_diskCache(const ImageKey & key, const ImageParamsPtr& params,
-                                    ImagePtr* returnValue) const;
+    bool getPinnedImageOrCreate(const ImageKey& key, const ImageParamsPtr& params,
+                                ImagePtr* returnValue) const;
+
+    /**
+     * @brief Writes a rendered image to the holder's pins on this thread. If it cannot be pinned it stays an ordinary
+     * cache entry.
+     **/
+    void pinRenderedImage(const std::string& holderID, const ImagePtr& image);
 
     /**
      * @brief Same as getImage/getImageOrCreate but for deep images, which live in the node cache
@@ -269,7 +279,7 @@ public:
 
     void setApplicationsCachesMaximumViewerDiskSpace(unsigned long long size);
 
-    void setApplicationsCachesMaximumDiskSpace(unsigned long long size);
+    void setNodeCachePinBudget(U64 bytes);
 
     void removeFromNodeCache(const ImagePtr & image);
     void removeFromViewerCache(const FrameEntryPtr & texture);

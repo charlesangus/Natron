@@ -153,7 +153,7 @@ pixels in RAM.
 | `residency` | atomic mask: host, disk, device | tier moves | which tiers hold a copy; a mask because a device and a host copy can coexist |
 | `bytes` | not stored | | payload plus bitmap, from `size()` (`Engine/Image.h`); the scan calls it only on entries nobody holds, where no resize can race it and its `tryLockForRead` cannot wait |
 | `state` | atomic enum: normal, demoting, promoting | tier moves | a move in flight, which a lookup can overtake |
-| `pinned` | bool | at creation | DiskCache node output |
+| `pinned` | bool | when published to or restored from `pins/` | DiskCache node output |
 | `lastUse` | atomic wall-clock ns | every lookup today, real hits only after M300.P2.T5 | age term of the score; wall clock so it survives a restart. `Cache::getInternal` still bumps it for a probe that serves nothing, such as `appPTR->getImage` at the graph-level probes; the non-promoting probe of M300.P2.T5 ends that |
 | `reuseCount` | atomic `U32` | a render served by the entry | reuse multiplier; counted at the render sites, so no probe counts, and once per render request through `lastReuseRender` (the request's `AbortableRenderInfo::getRenderSequence`). The render that stores the entry does not count |
 | `lastReuseRender` | atomic `U64` | store, hit | the request `reuseCount` last counted |
@@ -279,7 +279,7 @@ recency list, which is the cost eviction has always had. The free-RAM check runs
 between them. The number of evictions is what the bytes above the mark require, and each one removes an entry some earlier
 create paid to insert.
 
-Only `NodeCache` opts in (`useEvictionScore`). `ViewerCache` and `DiskCache` keep the recency order until M300.P3.T3.
+Only `NodeCache` opts in (`useEvictionScore`). `ViewerCache` keeps the recency order.
 
 An entry that no longer fits under any budget is not rejected: it lives in RAM while held, as today, and is then the
 first to go.
@@ -370,7 +370,7 @@ refuse, the analysis input is admitted, and everything else goes to the virtual 
 reason depends on the thread's recursion level, so `renderRoI` can admit a node the graph did not plan to share.
 
 `DiskCacheNode` and the test effect keep their overrides, reached through the same virtual, and record no reasons. The
-first is a pin, which M300.P3.T3 takes out of the automatic policy; the second's knob is what its tests control. Neither
+first is a pin, which is outside the automatic policy; the second's knob is what its tests control. Neither
 is a retention question.
 
 - **`all`:** admit every output that passes the non-policy refusals above, including a node nothing reads.
@@ -420,25 +420,31 @@ one (`:1524`). In those stale-marker windows an image can be evicted with its sl
 A deep render hands its consumer a `DeepImagePtr`, not the entry, so that pointer shares ownership with the entry
 (`DeepImageCacheEntry::pinnedDeepImage`, `Engine/DeepImageCacheEntry.h:75`) and pins it as an `ImagePtr` pins an `Image`.
 
-**A pin** is a DiskCache node output (M300.P3.T3):
+**A pin** is a DiskCache node output, kept in a section of `NodeCache`'s disk tier; the node has no cache of its own:
 
-- Forced to disk: `Engine/EffectInstanceRenderRoI.cpp:841` picks `eStorageModeDisk` for that node. It is written straight to
-  a file under `<tier>/<build>/pins/<cacheID>/`, never passing through the host tier, with the same temp file and `rename`
-  as an automatic entry ([Writing](#writing)).
+- Written when the render ends. The node renders into an ordinary RAM entry, and `renderRoI` publishes it on its own thread
+  (`Engine/EffectInstanceRenderRoI.cpp:1802`) to `<tier>/<build>/pins/<cacheID>/`, with the same temp file and `rename` as
+  an automatic entry ([Writing](#writing)). Writing in place could not work: a published inode is never truncated, and a
+  partial render would be visible to peers. Each holder has its own file, since two nodes of equal content share one RAM
+  entry. The RAM copy stays until evicted, and is then dropped without demotion, because the file already exists.
 - Persistent, and outside sampling: the eviction pass never lists `pins/` ([Budget and eviction](#budget-and-eviction)).
-- On its own budget: `maxDiskCacheNode`, default 10 GiB (`Engine/Settings.cpp:1802`). A separate `CacheTier` instance whose
-  `demote` is never called by the automatic policy. It does not count against the 20 GiB automatic tier. Its used figure is
-  kept as the automatic one is, from a scan of `pins/` and the sessions' ledgers.
-- Read in place on a local disk: mapped, counted as RAM while mapped and against the open-file cap, as today
-  (`notifyEntryAllocated`, `Engine/Cache.h:1313`; the cap at `:823`). On a network mount a pin is read into RAM instead,
-  because a peer's unlink there turns a mapping into `ESTALE`, which is `SIGBUS` ([Fallback](#fallback)).
-- Never truncated once published. Extending a pin (a larger render of the same output) copies it to a new temporary file
-  first and renames over it; a peer that has the old inode mapped keeps a valid mapping.
-- Marked by the sessions that hold it: each live session writes `pins/<cacheID>/.live-<session>`.
+- On its own budget: `maxDiskCacheNode`, default 10 GiB (`Engine/Settings.cpp:1827`), across all holders. It does not
+  count against the 20 GiB automatic tier: the scan skips a live build's `pins/`, and a pin write touches no ledger. Its
+  used figure is a listing of `pins/` taken under a lock for each write, since pins are few and written once per output.
+- Read in place on a local disk: privately mapped, with its descriptor closed, so it counts as RAM while mapped and not
+  against the open-file cap (`CacheDiskTier::Reader::mapRest`). A later partial render writes to its own copy of the pages.
+  On a network mount a pin is read into RAM instead, because a peer's unlink there turns a mapping into `ESTALE`, which is
+  `SIGBUS` ([Fallback](#fallback)).
+- Looked up before the automatic tier by the node's own key, and then in it, so that an output that did not fit the budget
+  still hits (`Cache::getPinned`, `Cache::getOrCreatePinned`).
+- Never truncated once published. Extending a pin (a larger render of the same output) writes a new temporary file and
+  renames over the old one; a peer that has the old inode mapped keeps a valid mapping.
+- Marked by the sessions that hold it: each live session writes `pins/<cacheID>/.live-<session>` at its first lookup or
+  publish for that holder.
 
 What removes a pin:
 
-- Deleting the node (`Engine/AppManager.cpp:2543-2546`) removes this session's marker, and unlinks the pins only if no live
+- Deleting the node (`Engine/AppManager.cpp:2608`) removes this session's marker, and unlinks the pins only if no live
   peer's marker remains for that holder. A marker of a dead session does not count, since any session may reap it.
 - Clearing caches removes the pins of the holders this session has, and never another holder's. A peer re-renders and
   re-pins.
@@ -448,16 +454,12 @@ What removes a pin:
 A deleted project's pins are not removed by anything else: they hold their budget until a clear or a new build. This is
 the user's choice.
 
-Today the DiskCache instance evicts by LRU past its budget (`Engine/Cache.h:859`, `:907`); "never evicted" means that
-stops, which leaves the question of a full pin budget. This note's answer:
+A pin is never evicted, which leaves the question of a full pin budget:
 
 1. When a pin would exceed the budget, first drop this holder's pins at a different node hash. They are invalid, not
-   evicted, and `removeAllEntriesWithDifferentNodeHashForHolderPrivate` already does this.
+   evicted.
 2. If it still does not fit, the output is not pinned: the render returns its pixels through RAM, and one warning is
    logged per session.
-
-The milestone does not state this, so the user should confirm it. It can change without touching
-the rest of the design.
 
 ## Persistence
 
@@ -484,6 +486,7 @@ space and the smallest view wins.
 <tier>/<build>/lastlive                            mtime: when a session of this build last ran
 <tier>/<build>/auto/<xxx>/<base>-<variant>-<params>.ntc
 <tier>/<build>/pins/<cacheID>/<base>-<variant>-<params>.ntc
+<tier>/<build>/pins/<cacheID>/.live-<session>      this session holds these pins
 ```
 
 - `base` is the XXH3 of the key without mip level, layer and bit depth. `variant` is the XXH3 of those three, and `params`
@@ -506,7 +509,7 @@ Each file holds, in order:
 Deep payloads are not flat: counts, offsets, then a shared sample vector (`Engine/DeepImage.h:108-109`, `:168`), so each
 payload type provides its own write and read, in those three sections. M300.P1.T2's new key fields and the deep key and
 params need serializers, which live in the file header. `Engine/CacheSerialization.h:83` is not involved: the tier has no
-index for it to extend, and it stays with the viewer cache and DiskCache, which restore through it as before.
+index for it to extend, and it stays with the viewer cache, which restores through it as before.
 
 The name is not an identity. `Hash64` is CRC-64, so two keys can name the same file. Every read compares the full key and
 params in the header with the requested ones and treats a difference as a miss. A node-hash collision remains
@@ -716,7 +719,7 @@ device. A mip-0 output of a non-scaling node is its own entry once mip is in the
 | `CacheEntryHolder` (`Engine/CacheEntryHolder.h:40-57`) | Interface with `getCacheID()`, a UUID on `Node` (`Engine/Node.cpp:912`) | Unchanged. Still owner identity for removal and stats, and now the key into `CacheRetention`, interned on the header |
 | `HostImageMemory` (`Engine/HostImageMemory.h`) | Pooled importable RAM; pool counts against the limit and is trimmed first (`trimTo`, `Engine/Cache.h:839`, `:1170-1176`) | The host tier's allocator, unchanged. The tier trims the idle pool before scoring anything. Promotion allocates here, so a promoted entry stays importable |
 | `DeepImageCacheEntry` (`Engine/DeepImageCacheEntry.h:58-59`) | `CacheEntryHelper<char, …>` with `DeepImagePtr` beside an unused generic buffer; size snapshot at `:86-90`; its own 2 GiB instance | A payload type with a header, without the buffer accounting (done in M300.P1.T4, its instance and setting retired). Its size is real bytes for the score. The old reason for its own budget (`Engine/AppManager.cpp:1112-1113`, a big deep render would evict all 2D) is answered by the score: large and cheap goes first, whatever the type |
-| `MemoryFile` (`Engine/MemoryFile.h`) | One mapped file, not MT-safe (`:43`); destructor keeps the file (`:98-100`) | Backs pins on local disks only, used by one thread at a time; automatic entries use `pread` and `pwrite` on a plain descriptor. Its `ftruncate` at `Engine/MemoryFile.cpp:304` makes a sparse file, so the disk tier reserves with `posix_fallocate` instead |
+| `MemoryFile` (`Engine/MemoryFile.h`) | One mapped file, not MT-safe (`:43`); destructor keeps the file (`:98-100`) | Backs nothing in the tier: a pin on a local disk is a private `mmap` of its published file (`PrivateFileMapping`), and automatic entries use `pread` and `pwrite` on a plain descriptor. Its `ftruncate` at `Engine/MemoryFile.cpp:304` makes a sparse file, so the disk tier reserves with `posix_fallocate` instead |
 
 Also: `ImageKey` gains mip level, layer and bit depth (`Engine/ImageKey.h:42-51`, `Engine/ImageKey.cpp` `fillHash` and
 `operator==`). The filtering at `Engine/EffectInstance.cpp:2279-2326` that this makes redundant goes; the finer-mip downscale

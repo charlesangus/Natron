@@ -794,8 +794,8 @@ Image::~Image()
 void
 Image::onMemoryAllocated(bool /*diskRestoration*/)
 {
-    // A restored entry starts unrendered too: the table of contents does not record which of its pixels were rendered,
-    // and the file may hold a partial render or none at all.
+    // A restored entry starts unrendered too, because the file may hold a partial render. diskRestore then writes the
+    // file's bitmap over this one.
     if (_cache || _useBitmap) {
         _header->bitmap.initialize(_bounds);
     }
@@ -971,7 +971,8 @@ Image::diskWritePayload(const CacheDiskSnapshot& snapshot,
 
 bool
 Image::diskRestore(const CacheDiskFileInfo& info,
-                   CacheDiskSource& source)
+                   CacheDiskSource& source,
+                   bool mapPayload)
 {
     const std::size_t count = (std::size_t)_bounds.area();
 
@@ -979,18 +980,28 @@ Image::diskRestore(const CacheDiskFileInfo& info,
         return false;
     }
 
-    allocateMemory();
+    std::vector<std::uint32_t> runs((std::size_t)(info.bitmapBytes / sizeof(std::uint32_t)));
+    if (!runs.empty() && !source.read(runs.data(), (std::size_t)info.bitmapBytes)) {
+        return false;
+    }
+
+    std::unique_ptr<PrivateFileMapping> mapping;
+    if (mapPayload) {
+        mapping = source.mapRest((std::size_t)info.payloadBytes);
+    }
+    const bool mapped = (bool)mapping;
+    if (mapped) {
+        adoptMappedPayload(std::move(mapping));
+    } else {
+        allocateMemory();
+    }
 
     QWriteLocker k(&_entryLock);
 
     if (!_data.isAllocated() || (_data.size() != info.payloadBytes)) {
         return false;
     }
-    std::vector<std::uint32_t> runs((std::size_t)(info.bitmapBytes / sizeof(std::uint32_t)));
-    if (!runs.empty() && !source.read(runs.data(), (std::size_t)info.bitmapBytes)) {
-        return false;
-    }
-    if (!source.read(_data.writable(), (std::size_t)info.payloadBytes)) {
+    if (!mapped && !source.read(_data.writable(), (std::size_t)info.payloadBytes)) {
         return false;
     }
     if (info.allRendered) {

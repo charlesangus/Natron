@@ -685,6 +685,46 @@ public:
     } // get
 
     /**
+     * @brief As get(), for a key whose holder pins its outputs: its pins come before the automatic tier.
+     **/
+    template <typename PayloadType>
+    bool getPinned(const typename PayloadType::key_type& key,
+                   std::list<std::shared_ptr<PayloadType>>* returnValue) const
+    {
+        bool inMemory;
+        {
+            QMutexLocker memoryLocker(&_lock);
+            reclaimDemotingLocked(key.getHash());
+            inMemory = (bool)findInMemory<PayloadType>(key, NULL);
+        }
+        if (!inMemory) {
+            (void)promotePin<PayloadType>(key, NULL);
+        }
+
+        return get(key, returnValue);
+    }
+
+    /**
+     * @brief As peek(), for a key whose holder pins its outputs.
+     **/
+    template <typename PayloadType>
+    bool peekPinned(const typename PayloadType::key_type& key,
+                    std::list<std::shared_ptr<PayloadType>>* returnValue) const
+    {
+        if (peek(key, returnValue)) {
+            return true;
+        }
+        if constexpr (requires(PayloadType& payload) { payload.diskPrepareStub(true); }) {
+            std::vector<CacheDiskFileInfo> candidates;
+            if (_diskTier && _diskTier->probePin(key.getCacheHolderID(), PayloadType::diskIdentityOfKey(key), NULL, &candidates)) {
+                appendStubs<PayloadType>(key, candidates, returnValue);
+            }
+        }
+
+        return !returnValue->empty();
+    }
+
+    /**
      * @brief Finds entries as get() does without counting as a use of them: the replacement order and the eviction
      * score stay as they were, no signal is emitted and an entry held on disk is not opened, so its data may turn out
      * to be unreadable later. An entry only in the disk tier comes back as an unallocated stub made from its verified
@@ -738,26 +778,71 @@ public:
             if (_diskTier) {
                 std::vector<CacheDiskFileInfo> candidates;
                 if (_diskTier->probe(PayloadType::diskIdentityOfKey(key), NULL, &candidates)) {
-                    for (const CacheDiskFileInfo& info : candidates) {
-                        const std::shared_ptr<typename PayloadType::param_t> params = PayloadType::diskParamsFromBytes(info.paramsBytes, info.bounds);
-                        if (!params) {
-                            continue;
-                        }
-                        try {
-                            const std::shared_ptr<PayloadType> stub = std::make_shared<PayloadType>(key, params, this);
-                            if (stub->getKey() == key) {
-                                stub->diskPrepareStub(info.allRendered);
-                                returnValue->push_back(stub);
-                            }
-                        } catch (const std::bad_alloc&) {
-                        }
-                    }
+                    appendStubs<PayloadType>(key, candidates, returnValue);
                 }
             }
         }
 
         return !returnValue->empty();
     } // peek
+
+    /**
+     * @brief As getOrCreate(), for a key whose holder pins its outputs: its pins come before the automatic tier.
+     **/
+    template <typename PayloadType>
+    bool getOrCreatePinned(const typename PayloadType::key_type& key,
+                           const std::shared_ptr<typename PayloadType::param_t>& params,
+                           std::shared_ptr<PayloadType>* returnValue) const
+    {
+        if (_diskTier) {
+            bool inMemory;
+            {
+                QMutexLocker memoryLocker(&_lock);
+                reclaimDemotingLocked(key.getHash());
+                inMemory = (bool)findInMemory<PayloadType>(key, params.get());
+            }
+            if (!inMemory) {
+                (void)promotePin<PayloadType>(key, params.get());
+            }
+        }
+
+        return getOrCreate(key, params, NULL, returnValue);
+    }
+
+    /**
+     * @brief Drops the pins of this session's holders, on disk and in RAM. Other holders' stay.
+     **/
+    void clearPins()
+    {
+        if (!_diskTier) {
+            return;
+        }
+        _diskTier->clearPins();
+
+        std::list<StoredEntryPtr> toDelete;
+        CacheContainer kept;
+        {
+            QMutexLocker locker(&_lock);
+
+            for (ConstCacheIterator it = _memoryCache.begin(); it != _memoryCache.end(); ++it) {
+                const std::list<StoredEntryPtr>& entries = getValueFromIterator(it);
+                if (entries.empty()) {
+                    continue;
+                }
+                const StoredEntryPtr& front = entries.front();
+                if (_diskTier->holdsPins(front->getKeyHolderID())) {
+                    toDelete.insert(toDelete.end(), entries.begin(), entries.end());
+                } else {
+                    kept.insert(front->getHashKey(), entries);
+                }
+            }
+            _memoryCache = kept;
+        }
+        if (!toDelete.empty()) {
+            _deleterThread.appendToQueue(toDelete);
+            toDelete.clear();
+        }
+    }
 
     /**
      * @brief Connects the disk tier and starts its threads. Call once, before any render.
@@ -1672,7 +1757,7 @@ public:
                 return;
             }
             const CacheEntryHeader* const header = entry->evictionHeader();
-            if (header && !(header->residency.load() & CacheEntryHeader::eResidencyDisk)) {
+            if (header && !header->pinned.load() && !(header->residency.load() & CacheEntryHeader::eResidencyDisk)) {
                 out->push_back(entry);
             }
         });
@@ -1845,6 +1930,7 @@ public:
         removeEntry(key.getHash());
         if constexpr (requires { typename PayloadType::DiskPayloadTag; }) {
             if (_diskTier) {
+                _diskTier->retractPinFiles(key.getCacheHolderID(), PayloadType::diskIdentityOfKey(key));
                 _diskTier->retractFiles(PayloadType::diskIdentityOfKey(key));
             }
         }
@@ -2187,7 +2273,8 @@ private:
     // Off every lock. Null on a miss, which any failure of the file's is.
     template <typename PayloadType>
     std::shared_ptr<PayloadType> restoreFromDisk(const typename PayloadType::key_type& key,
-                                                 const CacheDiskFileInfo& info) const
+                                                 const CacheDiskFileInfo& info,
+                                                 bool pinned) const
     {
         std::shared_ptr<PayloadType> typed;
         const std::shared_ptr<typename PayloadType::param_t> params = PayloadType::diskParamsFromBytes(info.paramsBytes, info.bounds);
@@ -2206,7 +2293,14 @@ private:
             if (!reader.open()) {
                 return std::shared_ptr<PayloadType>();
             }
-            if (!typed->diskRestore(info, reader) || !reader.finish()) {
+            bool restored;
+            if constexpr (requires(PayloadType& payload, CacheDiskSource& source) { payload.diskRestore(info, source, true); }) {
+                // A peer's unlink on a network mount turns a mapping into SIGBUS, so there a pin is read.
+                restored = typed->diskRestore(info, reader, pinned && !_diskTier->isNetworkMount());
+            } else {
+                restored = typed->diskRestore(info, reader);
+            }
+            if (!restored || !reader.finish()) {
                 _diskTier->discardCorrupt(info);
 
                 return std::shared_ptr<PayloadType>();
@@ -2216,6 +2310,7 @@ private:
         }
 
         CacheEntryHeader* const header = typed->evictionHeader();
+        header->pinned.store(pinned);
         header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
         header->reuseCount.store(info.stats.reuseCount + 1, std::memory_order_relaxed);
         header->priority.store(info.stats.priority, std::memory_order_relaxed);
@@ -2243,36 +2338,97 @@ private:
                 return std::shared_ptr<PayloadType>();
             }
 
-            CacheDiskTier::PromotionGate gate(*_diskTier, key.getHash());
-            {
-                QMutexLocker locker(&_lock);
-                const std::shared_ptr<PayloadType> present = findInMemory<PayloadType>(key, wanted);
-                if (present) {
-                    return present;
-                }
-            }
-            for (const CacheDiskFileInfo& info : candidates) {
-                const std::shared_ptr<PayloadType> restored = restoreFromDisk<PayloadType>(key, info);
-                if (!restored) {
-                    continue;
-                }
-                // A render can have created the entry while this one was read.
-                QMutexLocker getlocker(&_getLock);
-                QMutexLocker locker(&_lock);
-                const std::shared_ptr<PayloadType> present = findInMemory<PayloadType>(key, wanted);
-                if (present) {
-                    return present;
-                }
-                sealEntry(restored, true);
-
-                return restored;
-            }
+            return restoreCandidate<PayloadType>(key, wanted, candidates, false);
         } else {
             (void)key;
             (void)wanted;
         }
 
         return std::shared_ptr<PayloadType>();
+    }
+
+    // Off every lock, because it reads or maps the file on the calling render's thread.
+    template <typename PayloadType>
+    std::shared_ptr<PayloadType> promotePin(const typename PayloadType::key_type& key,
+                                            const typename PayloadType::param_t* wanted) const
+    {
+        if constexpr (requires { typename PayloadType::DiskPayloadTag; }) {
+            if (!_diskTier) {
+                return std::shared_ptr<PayloadType>();
+            }
+            const std::string& holderID = key.getCacheHolderID();
+            _diskTier->holdPins(holderID);
+            std::string wantedBytes;
+            if (wanted) {
+                wantedBytes = PayloadType::diskParamsBytes(*wanted);
+            }
+            std::vector<CacheDiskFileInfo> candidates;
+            if (!_diskTier->probePin(holderID, PayloadType::diskIdentityOfKey(key), wanted ? &wantedBytes : NULL, &candidates)) {
+                return std::shared_ptr<PayloadType>();
+            }
+
+            return restoreCandidate<PayloadType>(key, wanted, candidates, true);
+        } else {
+            (void)key;
+            (void)wanted;
+        }
+
+        return std::shared_ptr<PayloadType>();
+    }
+
+    template <typename PayloadType>
+    std::shared_ptr<PayloadType> restoreCandidate(const typename PayloadType::key_type& key,
+                                                  const typename PayloadType::param_t* wanted,
+                                                  const std::vector<CacheDiskFileInfo>& candidates,
+                                                  bool pinned) const
+    {
+        CacheDiskTier::PromotionGate gate(*_diskTier, key.getHash());
+        {
+            QMutexLocker locker(&_lock);
+            const std::shared_ptr<PayloadType> present = findInMemory<PayloadType>(key, wanted);
+            if (present) {
+                return present;
+            }
+        }
+        for (const CacheDiskFileInfo& info : candidates) {
+            const std::shared_ptr<PayloadType> restored = restoreFromDisk<PayloadType>(key, info, pinned);
+            if (!restored) {
+                continue;
+            }
+            // A render can have created the entry while this one was read.
+            QMutexLocker getlocker(&_getLock);
+            QMutexLocker locker(&_lock);
+            const std::shared_ptr<PayloadType> present = findInMemory<PayloadType>(key, wanted);
+            if (present) {
+                return present;
+            }
+            sealEntry(restored, true);
+
+            return restored;
+        }
+
+        return std::shared_ptr<PayloadType>();
+    }
+
+    template <typename PayloadType>
+    void appendStubs(const typename PayloadType::key_type& key,
+                     const std::vector<CacheDiskFileInfo>& candidates,
+                     std::list<std::shared_ptr<PayloadType>>* returnValue) const
+    {
+        for (const CacheDiskFileInfo& info : candidates) {
+            const std::shared_ptr<typename PayloadType::param_t> params = PayloadType::diskParamsFromBytes(info.paramsBytes, info.bounds);
+            if (!params) {
+                continue;
+            }
+            try {
+                const std::shared_ptr<PayloadType> stub = std::make_shared<PayloadType>(key, params, this);
+                if (stub->getKey() == key) {
+                    stub->diskPrepareStub(info.allRendered);
+                    returnValue->push_back(stub);
+                }
+            } catch (const std::bad_alloc&) {
+            }
+        }
     }
 
     static void markUsed(const AbstractCacheEntryBase& entry)

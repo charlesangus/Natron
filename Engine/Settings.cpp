@@ -1577,7 +1577,8 @@ Settings::initializeKnobsCaching()
     _maxDiskCacheNodeGB->disableSlider();
     _maxDiskCacheNodeGB->setMinimum(0);
     _maxDiskCacheNodeGB->setMaximum(100);
-    _maxDiskCacheNodeGB->setHintToolTip( tr("The maximum size that may be used by the DiskCache node on disk (in GiB)") );
+    _maxDiskCacheNodeGB->setHintToolTip(tr("The space that the outputs of DiskCache nodes may take in the disk tier (in GiB), apart from the disk tier's own size. "
+                                           "Past it, an output is not kept on disk and a warning is logged once."));
     _cachingTab->addKnob(_maxDiskCacheNodeGB);
 
     _diskCachePath = AppManager::createKnob<KnobPath>( this, tr("Disk cache path") );
@@ -2533,7 +2534,7 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if ( k == _maxDiskCacheNodeGB.get() ) {
         if (!_restoringSettings) {
-            appPTR->setApplicationsCachesMaximumDiskSpace( getMaximumDiskCacheNodeSize() );
+            appPTR->setNodeCachePinBudget(getMaximumDiskCacheNodeSize());
         }
     } else if (k == _diskTierSize.get()) {
         if (!_restoringSettings) {

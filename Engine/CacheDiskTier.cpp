@@ -55,6 +55,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -92,6 +93,12 @@ const unsigned kShards = 1u << (4 * kShardDigits);
 // Odd, so that it visits every shard, and large, so that a partial walk is not one run of neighbours.
 const unsigned kShardStride = 1597;
 const std::size_t kNameBytes = 3 * kHexDigits + 2 + sizeof(kFileSuffix) - 1;
+const char kPinMarkPrefix[] = ".live-";
+const std::size_t kPinMarkPrefixBytes = sizeof(kPinMarkPrefix) - 1;
+// Stays well under NAME_MAX.
+const std::size_t kMaxPinDirBytes = 128;
+// The node hash starts every key an image writes, and it is what makes a pin invalid.
+const std::size_t kPinKeyHashBytes = sizeof(std::uint64_t);
 
 const double kInitialWriteBytesPerSecond = 500e6;
 // A smaller write times fdatasync's latency, which says nothing about throughput.
@@ -285,6 +292,19 @@ bool
 isEntryName(const std::string& name)
 {
     return name.size() == kNameBytes && name[kHexDigits] == '-' && name[2 * kHexDigits + 1] == '-' && name.compare(3 * kHexDigits + 2, std::string::npos, kFileSuffix) == 0;
+}
+
+// Holders are named by UUIDs, which pass through. Any other name is hashed rather than trusted in a path.
+std::string
+pinDirName(const std::string& holderID)
+{
+    bool safe = !holderID.empty() && (holderID.size() <= kMaxPinDirBytes) && (holderID[0] != '.');
+
+    for (const char c : holderID) {
+        safe = safe && (((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || ((c >= '0') && (c <= '9')) || (c == '-') || (c == '_') || (c == '.'));
+    }
+
+    return safe ? holderID : "h" + hexOf(XXH3_64bits(holderID.data(), holderID.size()));
 }
 
 std::string
@@ -797,6 +817,7 @@ struct CacheDiskTier::Imp {
     std::string session;
     std::string buildDir;
     std::string autoDir;
+    std::string pinsDir;
     std::string sessionsDir;
     std::string tmpDir;
     std::string ledgerPath;
@@ -858,6 +879,14 @@ struct CacheDiskTier::Imp {
     std::atomic<bool> warned;
     bool closing; // set once every thread has been joined
 
+    std::atomic<std::uint64_t> pinBudget { 0 };
+    std::mutex pinMutex; // guards pinReserved, and makes a budget check and its reservation one step
+    std::uint64_t pinReserved = 0;
+    mutable std::mutex heldMutex; // guards heldPins
+    std::set<std::string> heldPins;
+    std::atomic<bool> pinBudgetWarned { false };
+    std::atomic<std::uint64_t> pinBudgetWarnings { 0 };
+
     std::mutex livenessMutex;
     struct PeerBeat {
         std::uint64_t value;
@@ -878,6 +907,45 @@ struct CacheDiskTier::Imp {
     std::string pathOf(const CacheDiskIdentity& identity) const
     {
         return shardDirOf(identity.base) + '/' + entryName(identity);
+    }
+
+    std::string pinDirOf(const std::string& holderID) const
+    {
+        return pinsDir + '/' + pinDirName(holderID);
+    }
+
+    std::uint64_t pinBytesIn(const std::string& dir) const
+    {
+        std::uint64_t total = 0;
+
+        for (const std::string& name : listDirectory(dir)) {
+            struct stat st;
+            if (isEntryName(name) && (::stat((dir + '/' + name).c_str(), &st) == 0)) {
+                total += (std::uint64_t)st.st_size;
+            }
+        }
+
+        return total;
+    }
+
+    std::uint64_t allPinBytes() const
+    {
+        std::uint64_t total = 0;
+
+        for (const std::string& holder : listDirectory(pinsDir)) {
+            total += pinBytesIn(pinsDir + '/' + holder);
+        }
+
+        return total;
+    }
+
+    static void unlinkPinFiles(const std::string& dir)
+    {
+        for (const std::string& name : listDirectory(dir)) {
+            if (isEntryName(name)) {
+                (void)::unlink((dir + '/' + name).c_str());
+            }
+        }
     }
 
     void warnOnce(const std::string& what)
@@ -933,6 +1001,16 @@ struct CacheDiskTier::Imp {
         while (!throughput.compare_exchange_weak(current, current + kThroughputWeight * (measured - current))) {
         }
     }
+
+    // Whether a session other than this one holds the holder of this directory. The mark of a dead
+    // session does not count, and goes.
+    bool peerHoldsPins(const std::string& dir);
+    void dropPinsOfOtherHashes(const std::string& dir, const std::string& keyBytes) const;
+    bool collectCandidate(const std::string& path,
+                          std::uint64_t paramsHash,
+                          const CacheDiskIdentity& identity,
+                          const std::string* wantedParamsBytes,
+                          std::vector<CacheDiskFileInfo>* candidates) const;
 
     void forgetBase(std::uint64_t base)
     {
@@ -1103,6 +1181,13 @@ struct CacheDiskTier::Imp {
         return stats;
     }
 
+    WriteOutcomeEnum writeFile(const AbstractCacheEntryBase& entry,
+                               const WriteItem& item,
+                               const CacheDiskSnapshot& snapshot,
+                               const CacheDiskStats& stats,
+                               const std::string& dir,
+                               const std::string& name,
+                               std::int64_t* addedBytes);
     WriteOutcomeEnum writeEntry(const AbstractCacheEntryBase& entry,
                                 const WriteItem& item);
 
@@ -1178,6 +1263,43 @@ CacheDiskTier::Imp::writeEntry(const AbstractCacheEntryBase& entry,
         return eWriteOutcomeAlreadyThere;
     }
 
+    std::int64_t addedBytes = 0;
+    const WriteOutcomeEnum outcome = writeFile(entry, item, snapshot, stats, shardDir, name, &addedBytes);
+    if (outcome == eWriteOutcomeAlreadyThere) {
+        header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
+
+        return outcome;
+    }
+    if (outcome != eWriteOutcomePublished) {
+        return outcome;
+    }
+    ledgerDelta.fetch_add(addedBytes);
+    published.fetch_add(1);
+    forgetBase(snapshot.identity.base);
+    rememberFile(name, *header);
+
+    // In this order, and retract in the opposite: whichever thread comes second sees the other's
+    // store, so a retraction racing the rename cannot leave the file behind.
+    header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
+    if (item.cancelled.load()) {
+        removeFile(finalPath, snapshot.identity.base);
+
+        return eWriteOutcomeAbandoned;
+    }
+
+    return eWriteOutcomePublished;
+} // CacheDiskTier::Imp::writeEntry
+
+WriteOutcomeEnum
+CacheDiskTier::Imp::writeFile(const AbstractCacheEntryBase& entry,
+                              const WriteItem& item,
+                              const CacheDiskSnapshot& snapshot,
+                              const CacheDiskStats& stats,
+                              const std::string& dir,
+                              const std::string& name,
+                              std::int64_t* addedBytes)
+{
+    const std::string finalPath = dir + '/' + name;
     const std::string tempPath = tmpDir + '/' + name + '.' + std::to_string(tempCounter.fetch_add(1));
     struct RemoveTemp {
         const std::string& path;
@@ -1262,35 +1384,86 @@ CacheDiskTier::Imp::writeEntry(const AbstractCacheEntryBase& entry,
     CacheDiskFileInfo latest;
     const bool hasLatest = readFileInfoAt(finalPath, &latest);
     if (hasLatest && (latest.renderedPixels >= snapshot.renderedPixels)) {
-        header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
-
         return eWriteOutcomeAlreadyThere;
     }
 
     std::error_code ignored;
-    fs::create_directories(shardDir, ignored);
+    fs::create_directories(dir, ignored);
     if (::rename(tempPath.c_str(), finalPath.c_str()) != 0) {
         warnOnce(std::string("cannot publish a file: ") + std::strerror(errno));
 
         return eWriteOutcomeFailed;
     }
     removeTemp.armed = false;
-    ledgerDelta.fetch_add((std::int64_t)fileBytes - (hasLatest ? (std::int64_t)latest.fileBytes : (std::int64_t)0));
-    published.fetch_add(1);
-    forgetBase(snapshot.identity.base);
-    rememberFile(name, *header);
-
-    // In this order, and retract in the opposite: whichever thread comes second sees the other's
-    // store, so a retraction racing the rename cannot leave the file behind.
-    header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
-    if (item.cancelled.load()) {
-        removeFile(finalPath, snapshot.identity.base);
-
-        return eWriteOutcomeAbandoned;
-    }
+    *addedBytes = (std::int64_t)fileBytes - (hasLatest ? (std::int64_t)latest.fileBytes : (std::int64_t)0);
 
     return eWriteOutcomePublished;
-} // CacheDiskTier::Imp::writeEntry
+} // CacheDiskTier::Imp::writeFile
+
+bool
+CacheDiskTier::Imp::peerHoldsPins(const std::string& dir)
+{
+    const std::map<std::string, LedgerRecord> ledgers = readLedgers();
+    bool held = false;
+
+    for (const std::string& name : listDirectory(dir)) {
+        if (name.compare(0, kPinMarkPrefixBytes, kPinMarkPrefix) != 0) {
+            continue;
+        }
+        const std::string owner = name.substr(kPinMarkPrefixBytes);
+        if (owner == session) {
+            continue;
+        }
+        const std::map<std::string, LedgerRecord>::const_iterator ledger = ledgers.find(owner);
+        if ((ledger != ledgers.end()) && !sessionIsDead(owner, ledger->second)) {
+            held = true;
+        } else {
+            (void)::unlink((dir + '/' + name).c_str());
+        }
+    }
+
+    return held;
+}
+
+void
+CacheDiskTier::Imp::dropPinsOfOtherHashes(const std::string& dir,
+                                          const std::string& keyBytes) const
+{
+    for (const std::string& name : listDirectory(dir)) {
+        if (!isEntryName(name)) {
+            continue;
+        }
+        const std::string path = dir + '/' + name;
+        CacheDiskFileInfo info;
+        if (!readFileInfoAt(path, &info) || (info.keyBytes.compare(0, kPinKeyHashBytes, keyBytes, 0, kPinKeyHashBytes) != 0)) {
+            (void)::unlink(path.c_str());
+        }
+    }
+}
+
+bool
+CacheDiskTier::Imp::collectCandidate(const std::string& path,
+                                     std::uint64_t paramsHash,
+                                     const CacheDiskIdentity& identity,
+                                     const std::string* wantedParamsBytes,
+                                     std::vector<CacheDiskFileInfo>* candidates) const
+{
+    CacheDiskFileInfo info;
+
+    if (!readFileInfoAt(path, &info)) {
+        return false;
+    }
+    // The name alone proves nothing: 64-bit hashes collide and a file can be renamed.
+    if ((info.kind != identity.kind) || (info.keyBytes != identity.keyBytes) || (hashBytes(info.paramsBytes.data(), info.paramsBytes.size()) != paramsHash)) {
+        return false;
+    }
+    if (wantedParamsBytes && (info.paramsBytes != *wantedParamsBytes)) {
+        return false;
+    }
+    candidates->push_back(std::move(info));
+
+    return true;
+}
 
 void
 CacheDiskTier::Imp::finishDemotion(const WriteItemPtr& item)
@@ -1420,10 +1593,16 @@ void
 CacheDiskTier::Imp::scanOnce()
 {
     const std::map<std::string, LedgerRecord> ledgers = readLedgers();
+    const std::set<std::string> liveBuilds = liveBuildsOf(ledgers);
     std::uint64_t total = 0;
 
     for (const std::string& build : buildNames()) {
         for (const char* section : { "auto", "pins" }) {
+            // A live build's pins are on their own budget. A dead build's count, so that pressure
+            // reclaims them along with its automatic files.
+            if ((std::strcmp(section, "pins") == 0) && (liveBuilds.count(build) != 0)) {
+                continue;
+            }
             std::error_code error;
             fs::recursive_directory_iterator it(config.root + '/' + build + '/' + section, fs::directory_options::skip_permission_denied, error);
             const fs::recursive_directory_iterator end;
@@ -1963,6 +2142,7 @@ CacheDiskTier::open(const Config& config)
     }
     imp.buildDir = config.root + '/' + config.buildId;
     imp.autoDir = imp.buildDir + "/auto";
+    imp.pinsDir = imp.buildDir + "/pins";
     imp.sessionsDir = config.root + "/sessions";
     imp.tmpDir = config.root + "/tmp/" + imp.session;
     imp.ledgerPath = imp.sessionsDir + '/' + imp.session;
@@ -2174,6 +2354,10 @@ CacheDiskTier::offerDemotion(const CacheEntryPtr& entry)
     if (!entry || !imp.config.publish || imp.stopping.load() || !imp.host || (imp.budget.load() == 0)) {
         return false;
     }
+    const CacheEntryHeader* const pinHeader = entry->evictionHeader();
+    if (pinHeader && pinHeader->pinned.load()) {
+        return false;
+    }
     if (!imp.worthWriting(*entry)) {
         return false;
     }
@@ -2268,7 +2452,11 @@ CacheDiskTier::retract(const CacheEntryPtr& entry,
     const CacheEntryHeader* const header = entry->evictionHeader();
     CacheDiskIdentity identity;
     if (header && (header->residency.load() & CacheEntryHeader::eResidencyDisk) && entry->diskIdentity(&identity)) {
-        imp.removeFile(imp.pathOf(identity), identity.base);
+        if (header->pinned.load()) {
+            (void)::unlink((imp.pinDirOf(entry->getKeyHolderID()) + '/' + entryName(identity)).c_str());
+        } else {
+            imp.removeFile(imp.pathOf(identity), identity.base);
+        }
     }
 }
 
@@ -2281,6 +2469,23 @@ CacheDiskTier::retractFiles(const CacheDiskIdentity& identity)
     imp.forgetBase(identity.base);
     for (const std::string& name : imp.namesFor(identity.base, identity.variant)) {
         imp.removeFile(shardDir + '/' + name, identity.base);
+    }
+}
+
+void
+CacheDiskTier::retractPinFiles(const std::string& holderID,
+                               const CacheDiskIdentity& identity)
+{
+    if (holderID.empty()) {
+        return;
+    }
+    const std::string dir = _imp->pinDirOf(holderID);
+    const std::string prefix = hexOf(identity.base) + '-' + hexOf(identity.variant) + '-';
+
+    for (const std::string& name : listDirectory(dir)) {
+        if (isEntryName(name) && (name.compare(0, prefix.size(), prefix) == 0)) {
+            (void)::unlink((dir + '/' + name).c_str());
+        }
     }
 }
 
@@ -2318,6 +2523,218 @@ CacheDiskTier::clearAuto()
     imp.scanCond.notify_all();
 }
 
+void
+CacheDiskTier::setPinBudget(std::uint64_t bytes)
+{
+    _imp->pinBudget.store(bytes);
+}
+
+std::uint64_t
+CacheDiskTier::pinBudget() const
+{
+    return _imp->pinBudget.load();
+}
+
+std::uint64_t
+CacheDiskTier::pinnedBytes() const
+{
+    return _imp->allPinBytes();
+}
+
+std::uint64_t
+CacheDiskTier::pinnedBytesOf(const std::string& holderID) const
+{
+    return holderID.empty() ? 0 : _imp->pinBytesIn(_imp->pinDirOf(holderID));
+}
+
+std::uint64_t
+CacheDiskTier::pinBudgetWarnings() const
+{
+    return _imp->pinBudgetWarnings.load();
+}
+
+void
+CacheDiskTier::holdPins(const std::string& holderID)
+{
+    Imp& imp = *_imp;
+
+    if (holderID.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(imp.heldMutex);
+        if (!imp.heldPins.insert(holderID).second) {
+            return;
+        }
+    }
+    const std::string dir = imp.pinDirOf(holderID);
+    std::error_code ignored;
+    fs::create_directories(dir, ignored);
+    ScopedFd mark(::open((dir + '/' + kPinMarkPrefix + imp.session).c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0666));
+    (void)imp.peerHoldsPins(dir);
+}
+
+bool
+CacheDiskTier::holdsPins(const std::string& holderID) const
+{
+    std::lock_guard<std::mutex> lock(_imp->heldMutex);
+
+    return _imp->heldPins.count(holderID) != 0;
+}
+
+void
+CacheDiskTier::releaseHolder(const std::string& holderID)
+{
+    Imp& imp = *_imp;
+
+    if (holderID.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(imp.heldMutex);
+        imp.heldPins.erase(holderID);
+    }
+    const std::string dir = imp.pinDirOf(holderID);
+    struct stat st;
+    if (::stat(dir.c_str(), &st) != 0) {
+        return;
+    }
+    (void)::unlink((dir + '/' + kPinMarkPrefix + imp.session).c_str());
+    if (imp.peerHoldsPins(dir)) {
+        return;
+    }
+    Imp::unlinkPinFiles(dir);
+    // Fails if a peer's mark appeared meanwhile, and that peer then renders and pins again.
+    (void)::rmdir(dir.c_str());
+}
+
+void
+CacheDiskTier::clearPins()
+{
+    Imp& imp = *_imp;
+    std::set<std::string> held;
+    {
+        std::lock_guard<std::mutex> lock(imp.heldMutex);
+        held = imp.heldPins;
+    }
+
+    for (const std::string& holderID : held) {
+        Imp::unlinkPinFiles(imp.pinDirOf(holderID));
+    }
+}
+
+CacheDiskTier::PinOutcomeEnum
+CacheDiskTier::publishPin(const std::string& holderID,
+                          const CacheEntryPtr& entry)
+{
+    Imp& imp = *_imp;
+
+    if (!entry || holderID.empty() || !imp.config.publish || imp.stopping.load()) {
+        return ePinOutcomeNotStored;
+    }
+    CacheEntryHeader* const header = entry->evictionHeader();
+    CacheDiskSnapshot snapshot;
+    if (!header || !entry->diskSnapshot(&snapshot) || snapshot.identity.salted || !fitsHeader(snapshot.identity.keyBytes.size(), snapshot.paramsBytes.size())) {
+        return ePinOutcomeNotStored;
+    }
+
+    holdPins(holderID);
+
+    const std::string dir = imp.pinDirOf(holderID);
+    const std::string name = entryName(snapshot.identity);
+    const auto markPinned = [header]() {
+        header->pinned.store(true);
+        header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
+    };
+
+    CacheDiskFileInfo existing;
+    const bool hasExisting = readFileInfoAt(dir + '/' + name, &existing);
+    if (hasExisting && (existing.renderedPixels >= snapshot.renderedPixels)) {
+        markPinned();
+
+        return ePinOutcomeAlreadyThere;
+    }
+
+    const std::uint64_t fileBytes = kBitmapOffset + snapshot.bitmapRuns.size() * sizeof(std::uint32_t) + snapshot.payloadBytes;
+    const std::uint64_t replacedBytes = hasExisting ? existing.fileBytes : 0;
+    {
+        std::lock_guard<std::mutex> lock(imp.pinMutex);
+        const auto fits = [&imp, fileBytes, replacedBytes]() {
+            return imp.allPinBytes() + imp.pinReserved + fileBytes <= imp.pinBudget.load() + replacedBytes;
+        };
+        if (!fits()) {
+            imp.dropPinsOfOtherHashes(dir, snapshot.identity.keyBytes);
+            if (!fits()) {
+                if (!imp.pinBudgetWarned.exchange(true)) {
+                    imp.pinBudgetWarnings.fetch_add(1);
+                    qWarning("Disk tier: the DiskCache node budget is full, so an output was not pinned. Its pixels stay in RAM; this warning is shown once per session.");
+                }
+
+                return ePinOutcomeDoesNotFit;
+            }
+        }
+        imp.pinReserved += fileBytes;
+    }
+
+    const WriteItem item;
+    std::int64_t addedBytes = 0;
+    const WriteOutcomeEnum outcome = imp.writeFile(*entry, item, snapshot, Imp::statsOf(*header), dir, name, &addedBytes);
+    {
+        std::lock_guard<std::mutex> lock(imp.pinMutex);
+        imp.pinReserved -= fileBytes;
+    }
+    switch (outcome) {
+    case eWriteOutcomePublished:
+        markPinned();
+
+        return ePinOutcomePublished;
+    case eWriteOutcomeAlreadyThere:
+        markPinned();
+
+        return ePinOutcomeAlreadyThere;
+    case eWriteOutcomeAbandoned:
+
+        return ePinOutcomeNotStored;
+    case eWriteOutcomeFailed:
+        break;
+    }
+
+    return ePinOutcomeFailed;
+} // CacheDiskTier::publishPin
+
+bool
+CacheDiskTier::probePin(const std::string& holderID,
+                        const CacheDiskIdentity& identity,
+                        const std::string* wantedParamsBytes,
+                        std::vector<CacheDiskFileInfo>* candidates)
+{
+    Imp& imp = *_imp;
+
+    if (identity.salted || holderID.empty()) {
+        return false;
+    }
+    const std::string dir = imp.pinDirOf(holderID);
+    if (wantedParamsBytes) {
+        CacheDiskIdentity named = identity;
+        named.paramsHash = hashBytes(wantedParamsBytes->data(), wantedParamsBytes->size());
+
+        return imp.collectCandidate(dir + '/' + entryName(named), named.paramsHash, identity, wantedParamsBytes, candidates);
+    }
+
+    const std::string prefix = hexOf(identity.base) + '-' + hexOf(identity.variant) + '-';
+    for (const std::string& name : listDirectory(dir)) {
+        std::uint64_t paramsHash;
+        if (isEntryName(name) && (name.compare(0, prefix.size(), prefix) == 0) && parseHex(name.c_str() + prefix.size(), &paramsHash)) {
+            (void)imp.collectCandidate(dir + '/' + name, paramsHash, identity, NULL, candidates);
+        }
+    }
+    std::sort(candidates->begin(), candidates->end(), [](const CacheDiskFileInfo& a, const CacheDiskFileInfo& b) {
+        return a.renderedPixels > b.renderedPixels;
+    });
+
+    return !candidates->empty();
+}
+
 bool
 CacheDiskTier::probe(const CacheDiskIdentity& identity,
                      const std::string* wantedParamsBytes,
@@ -2344,18 +2761,7 @@ CacheDiskTier::probe(const CacheDiskIdentity& identity,
         if (wantedParamsBytes && (paramsHash != hashBytes(wantedParamsBytes->data(), wantedParamsBytes->size()))) {
             continue;
         }
-        CacheDiskFileInfo info;
-        if (!readFileInfoAt(shardDir + '/' + name, &info)) {
-            continue;
-        }
-        // The name alone proves nothing: 64-bit hashes collide and a file can be renamed.
-        if ((info.kind != identity.kind) || (info.keyBytes != identity.keyBytes) || (hashBytes(info.paramsBytes.data(), info.paramsBytes.size()) != paramsHash)) {
-            continue;
-        }
-        if (wantedParamsBytes && (info.paramsBytes != *wantedParamsBytes)) {
-            continue;
-        }
-        candidates->push_back(std::move(info));
+        (void)imp.collectCandidate(shardDir + '/' + name, paramsHash, identity, wantedParamsBytes, candidates);
     }
     std::sort(candidates->begin(), candidates->end(), [](const CacheDiskFileInfo& a, const CacheDiskFileInfo& b) {
         return a.renderedPixels > b.renderedPixels;
@@ -2440,6 +2846,38 @@ CacheDiskTier::Reader::read(void* data,
     return true;
 }
 
+std::unique_ptr<PrivateFileMapping>
+CacheDiskTier::Reader::mapRest(std::size_t bytes)
+{
+    const std::uint64_t page = (std::uint64_t)::sysconf(_SC_PAGESIZE);
+    const std::uint64_t pageStart = _offset & ~(page - 1);
+    const std::size_t lead = (std::size_t)(_offset - pageStart);
+
+    if ((_fd < 0) || (bytes == 0) || (_offset + bytes != _info.fileBytes)) {
+        return std::unique_ptr<PrivateFileMapping>();
+    }
+    void* const base = ::mmap(NULL, lead + bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE, _fd, (off_t)pageStart);
+    if (base == MAP_FAILED) {
+        return std::unique_ptr<PrivateFileMapping>();
+    }
+    std::unique_ptr<PrivateFileMapping> mapping(new PrivateFileMapping(base, lead + bytes, static_cast<unsigned char*>(base) + lead, bytes));
+    XXH3_64bits_update(static_cast<XXH3_state_t*>(_hashState), mapping->data(), bytes);
+    _offset += bytes;
+
+    return mapping;
+}
+
+std::unique_ptr<PrivateFileMapping>
+CacheDiskSource::mapRest(std::size_t /*bytes*/)
+{
+    return std::unique_ptr<PrivateFileMapping>();
+}
+
+PrivateFileMapping::~PrivateFileMapping()
+{
+    (void)::munmap(_base, _mappedBytes);
+}
+
 bool
 CacheDiskTier::Reader::finish()
 {
@@ -2449,6 +2887,11 @@ CacheDiskTier::Reader::finish()
 void
 CacheDiskTier::discardCorrupt(const CacheDiskFileInfo& info)
 {
+    if (info.path.compare(0, _imp->pinsDir.size() + 1, _imp->pinsDir + '/') == 0) {
+        (void)::unlink(info.path.c_str());
+
+        return;
+    }
     std::uint64_t base = 0;
     const std::size_t slash = info.path.rfind('/');
 

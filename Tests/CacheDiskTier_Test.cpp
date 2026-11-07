@@ -1096,3 +1096,346 @@ TEST(CacheDiskTierPersistenceTest, AnExecutableWithoutItsSiblingStampsItselfAndA
     Plugin::executablesStamp(bin + "/gone", bin + "/gone", &stamped);
     EXPECT_FALSE(stamped);
 }
+
+namespace {
+
+const std::uint64_t kAmplePinBudget = 1024ULL * 1024 * 1024;
+const RectI kWholeImage(0, 0, kSide, kSide);
+
+class PinHolder final
+    : public CacheEntryHolder {
+public:
+    explicit PinHolder(const std::string& id)
+        : _id(id)
+    {
+    }
+
+    virtual std::string getCacheID() const override final
+    {
+        return _id;
+    }
+
+private:
+    std::string _id;
+};
+
+ImageKey
+pinKeyOf(const PinHolder& holder,
+         U64 hash)
+{
+    return Image::makeKey(&holder, hash, false, 1., ViewIdx(0), false, false).forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+}
+
+ImagePtr
+renderPinned(Session& session,
+             const PinHolder& holder,
+             U64 hash,
+             float seed,
+             CacheDiskTier::PinOutcomeEnum* outcome,
+             const RectI& rendered = kWholeImage)
+{
+    ImagePtr image;
+
+    if (session.cache.getOrCreatePinned(pinKeyOf(holder, hash), paramsOf(kSide), &image) || !image) {
+        return ImagePtr();
+    }
+    prepare(image, kExpensiveNs, seed, rendered);
+    *outcome = session.tier->publishPin(holder.getCacheID(), image);
+
+    return image;
+}
+
+ImagePtr
+lookupPinned(Session& session,
+             const PinHolder& holder,
+             U64 hash)
+{
+    std::list<ImagePtr> found;
+
+    session.tier->forgetProbes();
+    if (!session.cache.getPinned<Image>(pinKeyOf(holder, hash), &found) || found.empty()) {
+        return ImagePtr();
+    }
+
+    return found.front();
+}
+
+bool
+hasPin(Session& session,
+       const PinHolder& holder,
+       U64 hash)
+{
+    std::vector<CacheDiskFileInfo> candidates;
+
+    return session.tier->probePin(holder.getCacheID(), Image::diskIdentityOfKey(pinKeyOf(holder, hash)), NULL, &candidates) && !candidates.empty();
+}
+
+std::string
+pinDirOf(const QString& root,
+         const PinHolder& holder)
+{
+    return root.toStdString() + '/' + kBuildId + "/pins/" + holder.getCacheID();
+}
+
+std::string
+onlyPinFileIn(const std::string& pinDir)
+{
+    std::string file;
+
+    for (const std::string& name : listNames(pinDir)) {
+        if ((name.size() > 4) && (name.compare(name.size() - 4, 4, ".ntc") == 0)) {
+            EXPECT_TRUE(file.empty());
+            file = pinDir + '/' + name;
+        }
+    }
+
+    return file;
+}
+
+} // anon namespace
+
+TEST(CacheDiskTierPinTest, APinnedOutputHitsWithItsPixelsAndBitmapInANewSession)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const PinHolder holder("holder-a");
+    const RectI rendered(0, 0, kSide, kSide / 2);
+    std::vector<char> expected;
+    {
+        Session first(dir.path(), "CacheDiskTierPin_RestoreFirst");
+        ASSERT_TRUE(first.tier != nullptr);
+        first.tier->setPinBudget(kAmplePinBudget);
+        CacheDiskTier::PinOutcomeEnum outcome = CacheDiskTier::ePinOutcomeFailed;
+        const ImagePtr image = renderPinned(first, holder, 1, 5.f, &outcome, rendered);
+        ASSERT_TRUE(image != nullptr);
+        EXPECT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+        const char* const map = image->getEntryHeader()->bitmap.getBitmap();
+        expected.assign(map, map + kSide * kSide);
+    }
+
+    Session second(dir.path(), "CacheDiskTierPin_RestoreSecond");
+    ASSERT_TRUE(second.tier != nullptr);
+    const ImagePtr restored = lookupPinned(second, holder, 1);
+    ASSERT_TRUE(restored != nullptr);
+    EXPECT_TRUE(matchesPattern(restored, 5.f));
+    EXPECT_EQ(0, std::memcmp(expected.data(), restored->getEntryHeader()->bitmap.getBitmap(), expected.size()));
+    EXPECT_TRUE(restored->isPinnedBy(holder.getCacheID()));
+    EXPECT_EQ(!second.tier->isNetworkMount(), restored->isFileMapped());
+}
+
+TEST(CacheDiskTierPinTest, OverfillingTheAutomaticTierLeavesPinsAndARestartRestoresThem)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const PinHolder holder("holder-a");
+    const U64 kPinnedHash = 1000;
+    std::uint64_t pinned = 0;
+    {
+        Session session(dir.path(), "CacheDiskTierPin_OverfillFirst");
+        ASSERT_TRUE(session.tier != nullptr);
+        session.tier->setPinBudget(kAmplePinBudget);
+        {
+            CacheDiskTier::PinOutcomeEnum outcome = CacheDiskTier::ePinOutcomeFailed;
+            ASSERT_TRUE(renderPinned(session, holder, kPinnedHash, 11.f, &outcome) != nullptr);
+            ASSERT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+        }
+        session.evictEverything();
+        CacheDiskFileInfo info;
+        EXPECT_FALSE(session.fileOf(kPinnedHash, &info));
+        pinned = session.tier->pinnedBytes();
+        ASSERT_GT(pinned, 0U);
+        session.tier->maintainNow(true);
+        EXPECT_EQ(0U, session.tier->used());
+
+        const U64 kEntries = 8;
+        for (U64 hash = 1; hash <= kEntries; ++hash) {
+            ASSERT_TRUE(session.createEntry(hash, kExpensiveNs, (float)hash) != nullptr);
+            session.evictEverything();
+        }
+        session.tier->maintainNow(true);
+        const std::size_t full = session.tier->used();
+        ASSERT_GT(full, 0U);
+        session.tier->setSizeBytes(full / 2);
+        session.tier->maintainNow(true);
+        EXPECT_LE(session.tier->used(), full / 2);
+        EXPECT_EQ(pinned, session.tier->pinnedBytes());
+
+        const ImagePtr image = lookupPinned(session, holder, kPinnedHash);
+        ASSERT_TRUE(image != nullptr);
+        EXPECT_TRUE(matchesPattern(image, 11.f));
+    }
+
+    Session restarted(dir.path(), "CacheDiskTierPin_OverfillRestarted");
+    ASSERT_TRUE(restarted.tier != nullptr);
+    EXPECT_EQ(pinned, restarted.tier->pinnedBytes());
+    const ImagePtr image = lookupPinned(restarted, holder, kPinnedHash);
+    ASSERT_TRUE(image != nullptr);
+    EXPECT_TRUE(matchesPattern(image, 11.f));
+}
+
+TEST(CacheDiskTierPinTest, DeletingANodeKeepsAPeersPinsAndDeletingItInBothRemovesThem)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const PinHolder holder("holder-a");
+    Session a(dir.path(), "CacheDiskTierPin_DeleteA");
+    Session b(dir.path(), "CacheDiskTierPin_DeleteB");
+    ASSERT_TRUE(a.tier != nullptr);
+    ASSERT_TRUE(b.tier != nullptr);
+    a.tier->setPinBudget(kAmplePinBudget);
+    CacheDiskTier::PinOutcomeEnum outcome = CacheDiskTier::ePinOutcomeFailed;
+    ASSERT_TRUE(renderPinned(a, holder, 1, 3.f, &outcome) != nullptr);
+    ASSERT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+
+    const ImagePtr mapped = lookupPinned(b, holder, 1);
+    ASSERT_TRUE(mapped != nullptr);
+
+    a.tier->releaseHolder(holder.getCacheID());
+    EXPECT_GT(b.tier->pinnedBytesOf(holder.getCacheID()), 0U);
+    EXPECT_TRUE(hasPin(b, holder, 1));
+
+    b.tier->releaseHolder(holder.getCacheID());
+    EXPECT_EQ(0U, b.tier->pinnedBytesOf(holder.getCacheID()));
+    EXPECT_FALSE(exists(pinDirOf(dir.path(), holder)));
+    EXPECT_TRUE(matchesPattern(mapped, 3.f));
+}
+
+TEST(CacheDiskTierPinTest, ASessionThatExitedHoldsNoPins)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const PinHolder holder("holder-a");
+    Session survivor(dir.path(), "CacheDiskTierPin_ExitedSurvivor");
+    ASSERT_TRUE(survivor.tier != nullptr);
+    survivor.tier->setPinBudget(kAmplePinBudget);
+    CacheDiskTier::PinOutcomeEnum outcome = CacheDiskTier::ePinOutcomeFailed;
+    ASSERT_TRUE(renderPinned(survivor, holder, 1, 3.f, &outcome) != nullptr);
+    ASSERT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+    {
+        Session exited(dir.path(), "CacheDiskTierPin_ExitedPeer");
+        ASSERT_TRUE(exited.tier != nullptr);
+        exited.tier->holdPins(holder.getCacheID());
+    }
+
+    survivor.tier->releaseHolder(holder.getCacheID());
+    EXPECT_FALSE(exists(pinDirOf(dir.path(), holder)));
+}
+
+TEST(CacheDiskTierPinTest, ClearingDropsThisSessionsHoldersAndNoOthers)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const PinHolder held("holder-a");
+    const PinHolder peers("holder-b");
+    Session a(dir.path(), "CacheDiskTierPin_ClearA");
+    Session b(dir.path(), "CacheDiskTierPin_ClearB");
+    ASSERT_TRUE(a.tier != nullptr);
+    ASSERT_TRUE(b.tier != nullptr);
+    a.tier->setPinBudget(kAmplePinBudget);
+    b.tier->setPinBudget(kAmplePinBudget);
+    CacheDiskTier::PinOutcomeEnum outcome = CacheDiskTier::ePinOutcomeFailed;
+    ASSERT_TRUE(renderPinned(a, held, 1, 3.f, &outcome) != nullptr);
+    ASSERT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+    ASSERT_TRUE(renderPinned(b, peers, 2, 4.f, &outcome) != nullptr);
+    ASSERT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+    const std::uint64_t peersBytes = b.tier->pinnedBytesOf(peers.getCacheID());
+
+    const ImagePtr mappedByB = lookupPinned(b, held, 1);
+    ASSERT_TRUE(mappedByB != nullptr);
+
+    a.cache.clearPins();
+
+    EXPECT_EQ(0U, a.tier->pinnedBytesOf(held.getCacheID()));
+    EXPECT_EQ(peersBytes, a.tier->pinnedBytesOf(peers.getCacheID()));
+    EXPECT_TRUE(lookupPinned(a, held, 1) == nullptr);
+    EXPECT_TRUE(hasPin(b, peers, 2));
+    EXPECT_TRUE(matchesPattern(mappedByB, 3.f));
+}
+
+TEST(CacheDiskTierPinTest, AFullBudgetDropsTheHoldersOtherHashesThenLeavesTheOutputInRamWithOneWarning)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const PinHolder holder("holder-a");
+    const PinHolder other("holder-b");
+    Session session(dir.path(), "CacheDiskTierPin_Budget");
+    ASSERT_TRUE(session.tier != nullptr);
+    session.tier->setPinBudget(kAmplePinBudget);
+
+    CacheDiskTier::PinOutcomeEnum outcome = CacheDiskTier::ePinOutcomeFailed;
+    ASSERT_TRUE(renderPinned(session, holder, 1, 1.f, &outcome) != nullptr);
+    ASSERT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+    const std::uint64_t onePin = session.tier->pinnedBytes();
+    ASSERT_GT(onePin, 0U);
+    session.tier->setPinBudget(onePin + onePin / 2);
+
+    ASSERT_TRUE(renderPinned(session, holder, 2, 2.f, &outcome) != nullptr);
+    EXPECT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+    EXPECT_FALSE(hasPin(session, holder, 1));
+    EXPECT_TRUE(hasPin(session, holder, 2));
+    EXPECT_EQ(onePin, session.tier->pinnedBytes());
+    EXPECT_EQ(0U, session.tier->pinBudgetWarnings());
+
+    const ImagePtr inRam = renderPinned(session, other, 3, 3.f, &outcome);
+    ASSERT_TRUE(inRam != nullptr);
+    EXPECT_EQ(CacheDiskTier::ePinOutcomeDoesNotFit, outcome);
+    EXPECT_FALSE(inRam->isPinnedBy(other.getCacheID()));
+    EXPECT_TRUE(matchesPattern(inRam, 3.f));
+    EXPECT_TRUE(hasPin(session, holder, 2));
+    EXPECT_EQ(1U, session.tier->pinBudgetWarnings());
+
+    ASSERT_TRUE(renderPinned(session, other, 4, 4.f, &outcome) != nullptr);
+    EXPECT_EQ(CacheDiskTier::ePinOutcomeDoesNotFit, outcome);
+    EXPECT_EQ(1U, session.tier->pinBudgetWarnings());
+}
+
+TEST(CacheDiskTierPinTest, ExtendingAPinWritesANewFileAndPeersKeepTheOldPixels)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const PinHolder holder("holder-a");
+    Session writer(dir.path(), "CacheDiskTierPin_ExtendWriter");
+    Session peer(dir.path(), "CacheDiskTierPin_ExtendPeer");
+    Session extender(dir.path(), "CacheDiskTierPin_ExtendExtender");
+    ASSERT_TRUE(writer.tier != nullptr);
+    ASSERT_TRUE(peer.tier != nullptr);
+    ASSERT_TRUE(extender.tier != nullptr);
+    writer.tier->setPinBudget(kAmplePinBudget);
+    extender.tier->setPinBudget(kAmplePinBudget);
+
+    CacheDiskTier::PinOutcomeEnum outcome = CacheDiskTier::ePinOutcomeFailed;
+    ASSERT_TRUE(renderPinned(writer, holder, 1, 6.f, &outcome, RectI(0, 0, kSide, kSide / 2)) != nullptr);
+    ASSERT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+
+    const std::string file = onlyPinFileIn(pinDirOf(dir.path(), holder));
+    ASSERT_FALSE(file.empty());
+    const int oldFile = ::open(file.c_str(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(oldFile, 0);
+    struct stat before;
+    ASSERT_EQ(0, ::fstat(oldFile, &before));
+
+    const ImagePtr mappedByPeer = lookupPinned(peer, holder, 1);
+    const ImagePtr extended = lookupPinned(extender, holder, 1);
+    ASSERT_TRUE(mappedByPeer != nullptr);
+    ASSERT_TRUE(extended != nullptr);
+
+    fillPattern(extended, 7.f);
+    extended->markForRendered(kWholeImage);
+    EXPECT_EQ(CacheDiskTier::ePinOutcomePublished, extender.tier->publishPin(holder.getCacheID(), extended));
+
+    struct stat oldAfter;
+    struct stat current;
+    ASSERT_EQ(0, ::fstat(oldFile, &oldAfter));
+    ::close(oldFile);
+    ASSERT_EQ(0, ::stat(onlyPinFileIn(pinDirOf(dir.path(), holder)).c_str(), &current));
+    EXPECT_NE(before.st_ino, current.st_ino);
+    EXPECT_EQ(before.st_size, oldAfter.st_size);
+    EXPECT_EQ(0U, (unsigned)oldAfter.st_nlink);
+    EXPECT_TRUE(matchesPattern(mappedByPeer, 6.f));
+
+    Session later(dir.path(), "CacheDiskTierPin_ExtendLater");
+    ASSERT_TRUE(later.tier != nullptr);
+    const ImagePtr restored = lookupPinned(later, holder, 1);
+    ASSERT_TRUE(restored != nullptr);
+    EXPECT_TRUE(matchesPattern(restored, 7.f));
+}

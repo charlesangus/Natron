@@ -913,9 +913,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     OSGLContextAttacherPtr glContextLocker;
 
     bool wantsOpenGLRender = false;
-    if ( dynamic_cast<DiskCacheNode*>(this) ) {
-        storage = eStorageModeDisk;
-    } else if (abortInfo && ((openGLSupport == ePluginOpenGLRenderSupportNeeded) || ((openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering))) {
+    if (abortInfo && ((openGLSupport == ePluginOpenGLRenderSupportNeeded) || ((openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering))) {
         wantsOpenGLRender = true;
         // If the plug-in knows how to render on CPU, check if we actually should not render on CPU instead.
         if (openGLSupport == ePluginOpenGLRenderSupportYes) {
@@ -1800,6 +1798,21 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         return renderRoI(args, outputLayers);
     }
 #endif
+
+    if (renderSucceeded && keepRenderedInCache && !renderAborted && !isDuringPaintStroke && dynamic_cast<DiskCacheNode*>(this)) {
+        const std::string holderID = getNode()->getCacheID();
+        std::set<ImagePtr> rendered;
+        for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
+            rendered.insert(it->second.fullscaleImage);
+            rendered.insert(it->second.downscaleImage);
+        }
+        for (const ImagePtr& image : rendered) {
+            // Two nodes of equal content share a RAM entry, and each still needs its own pin.
+            if (image && (hasSomethingToRender || !image->isPinnedBy(holderID))) {
+                appPTR->pinRenderedImage(holderID, image);
+            }
+        }
+    }
 
     if ( renderAborted && (renderRetCode != eRenderRoIStatusImageAlreadyRendered) ) {
         ///Return a NULL image

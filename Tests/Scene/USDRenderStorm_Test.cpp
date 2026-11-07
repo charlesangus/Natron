@@ -147,7 +147,7 @@ const double kMeanTolerance = 0.002;
  * The projection references were recorded on llvmpipe. Storm's samplers ask for 16x anisotropy, and
  * llvmpipe's anisotropic path blurs some fragment quads across a checker edge even on a card seen
  * square on, which radeonsi does not, so the two legitimately disagree this much within
- * kProjectedEdgeReach plate pixels of an edge. Beyond that they agree exactly. It stays a tolerance
+ * kProjectedEdgeReach plate pixels of an edge. Beyond that they agree within kChannelTolerance, and the unchanged mean bound is what catches a small shift. It stays a tolerance
  * rather than an exclusion because a projection that has moved takes these pixels further off.
  **/
 const float kProjectedEdgeTolerance = 0.15f;
@@ -569,8 +569,7 @@ expectedProjection(double u,
     return (sum % 2 == 0) ? eProjectedRed : eProjectedBlue;
 }
 
-// Whether render pixel (x, y) samples the plate within kProjectedEdgeReach of a checker edge. The
-// format's edges are checker edges too, as it holds a whole number of squares each side of its
+// The format's edges are checker edges too, as it holds a whole number of squares each side of its
 // centre; beyond the format nothing projects, so bleed there stays under the strict tolerance.
 bool
 isNearProjectedEdge(int x,

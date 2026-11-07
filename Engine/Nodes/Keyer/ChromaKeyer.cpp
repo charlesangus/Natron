@@ -30,7 +30,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <list>
 #include <memory>
 #include <string>
@@ -360,7 +359,6 @@ public:
 #endif // NATRON_HAVE_GPU
 
 private:
-    // The background key for a positive gain and a lift below 1, before narrowing.
     double keyRamp(double Kfg) const
     {
         // A source bounded for keying keeps Kfg below 2^132 and 1 - lift is at least 2^-53, so with
@@ -369,10 +367,8 @@ private:
         if (_gainXKey >= 0x1p-800) {
             return (Kfg / _gainXKey - _keyLift) / (1. - _keyLift);
         }
-        // The product can underflow to zero, which keys as any vanishing positive gain does.
-        const double scaled = (_gainXKey > 0.) ? quotientOrInfinity(Kfg, _gainXKey) : ((Kfg > 0.) ? std::numeric_limits<double>::infinity() : 0.);
 
-        return quotientOrInfinity(differenceOrInfinity(scaled, _keyLift), 1. - _keyLift);
+        return quotientOrInfinity(differenceOrInfinity(quotientOrInfinity(Kfg, _gainXKey), _keyLift), 1. - _keyLift);
     }
 
     // The unclamped key can take Bg times it past the float range. The double product of two floats

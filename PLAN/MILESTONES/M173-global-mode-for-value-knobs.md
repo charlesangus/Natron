@@ -131,6 +131,8 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
 
 ## Decisions
 
+- 2026-11-07 — Phase 173.2 written at the commit on milestone/m173-global-mode-for-value-knobs: a `KnobValueRoleHolder` base for KnobInt and KnobDouble; a node keeps a list of transform interact knob sets (Roto has two); `classifyGlobalModeValueKey` takes the dimension count; skew moves by the knob increment per pixel. Scene and USD 3D knobs get no role and fall back to name classification. Gate pending.
+
 - 2026-11-07 — Mockups approved (user), with one change: the transform group's HUD gets a reveal disc too, not only the HUD block.
 
 - 2026-10-24 — **Scope set by the user (grilled):** extend global mode to every double/int knob; classify by explicit role hint first, name/label heuristic as fallback: the user wants the special widgets on knobs that declare intent, with a heuristic catching the rest.

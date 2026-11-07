@@ -77,6 +77,8 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 
 ## Decisions
 
+- 2026-11-07 — /dev/shm (user): CI passes a larger `--shm-size`. When /dev/shm is full, the store keeps its hold on the previous image, and the render warns and aborts rather than showing magenta.
+
 - 2026-11-07 — USDWrite with a deleted texture source (user): warn, naming the material, and export the material's own colour; don't fail the export.
 
 - 2026-11-07 — Deleted source implemented at 7c95b00cd: a hidden persistent mark per input set only by node deletion, so a deliberate disconnect clears the slot; USDWrite now fails an export with a deleted source (pending the user's call).

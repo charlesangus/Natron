@@ -2166,6 +2166,11 @@ public:
      **/
     void invalidateTimelineMarkers() const;
 
+    /**
+     * @brief Whether the GUI curve holds edits not yet copied to the internal curve, which happens while a render is running.
+     **/
+    bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
+
 private:
     static void appendDriverKeyTimes(const KnobDriver& driver, std::list<SequenceTime>* times);
 
@@ -2528,7 +2533,6 @@ protected:
     virtual std::shared_ptr<Curve> getGuiCurve(ViewSpec view, int dimension, bool byPassMaster = false) const OVERRIDE FINAL;
 
     void setGuiCurveHasChanged(ViewSpec view, int dimension, bool changed);
-    bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
     void clearExpressionsResultsIfNeeded(std::map<int, Natron::ValueChangedReasonEnum>& modifiedDimensions);
 
 

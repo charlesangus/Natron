@@ -39,12 +39,12 @@ The lock follows the user's `viewer_lock` project (github.com/charlesangus/viewe
 
 ## Phase 338.1: Keys And Focus
 
-- [ ] M338.P1.T1 — Plain number keys never turn the wipe on
+- [x] M338.P1.T1 — Plain number keys never turn the wipe on
   - files: Gui/ViewerTab30.cpp, Engine/ViewerInstance.{h,cpp}, Engine/Settings.{h,cpp}, Tests/gui/m338_viewer_input_keys.py
   - approach: remove the wipe branch in `ViewerTab::onActiveInputsChanged`, `setActivateInputChangeRequestedFromViewer`/`isInputChangeRequestedFromViewer` and the flag handling in `ViewerTab::connectToInput`, and the `autoWipeForViewer` knob, which then gates nothing. Keep the B-side wipe in `InspectorNode::refreshActiveInputs` (`Engine/NodeInputs.cpp`) and in `ViewerTab::onSecondInputNameChanged`. Start the GUI script, modelled on `Tests/gui/m55_node_graph.py`, sending real key events through `QApplication.sendEvent`.
   - verify: script: two connected inputs, viewer focused, press 1 and 2 repeatedly and the operator stays None; `Shift-2` and picking B in the dropdown still set Wipe Under; W toggles it. Fails on current main.
   - size: M
-- [ ] M338.P1.T2 — Route number keys by graph focus
+- [x] M338.P1.T2 — Route number keys by graph focus
   - files: Gui/NodeGraph25.cpp, Gui/NodeGraph30.cpp, Gui/NodeGraph.h, Gui/Gui30.cpp, Tests/gui/m338_viewer_input_keys.py
   - approach: add an A and B digit branch to `NodeGraph::keyPressEvent`, calling `connectCurrentViewerToSelection`; only that path pipes. `Gui::connectInput` (uncaught keys from other panels, and the `actionConnectInput` actions) activates the last-focused graph's viewer through `ViewerTab::connectToInput` and never pipes. `ViewerTab::keyPressEvent` already activates only. In `connectCurrentViewerToSelection`, treat a non-connectable selected node as no selection, and after pushing `ConnectCommand` call `setActiveInputAndRefresh(inputNB, isASide)` so the B side is honoured and an already-piped input still activates. Use the same key matching as the existing `Shift-#` handling, since Shift can change the Qt key.
   - verify: script runs every combination of focus (graph, viewer, properties panel) and selection (none, one, two, viewer, non-connectable) on `#` and `Shift-#`, reading connected inputs and A/B from the viewer. Includes a nested Group graph and a press with the mouse moved from graph to viewer without clicking.
@@ -52,12 +52,12 @@ The lock follows the user's `viewer_lock` project (github.com/charlesangus/viewe
 
 ## Phase 338.2: Several Pipes From One Node
 
-- [ ] M338.P2.T1 — Key the viewer input menus by input number
+- [x] M338.P2.T1 — Key the viewer input menus by input number
   - files: Gui/ViewerTab30.cpp, Gui/ViewerTab40.cpp, Gui/ViewerTabPrivate.h, Gui/ViewerTab.cpp, Tests/gui/m338_viewer_input_keys.py
   - approach: the A and B comboboxes find items by node label (`inputIndexForMenuText`, `itemIndex`, `removeItem` in `ViewerTab::onInputChanged` and `onInputNameChanged`), so duplicate labels collide. Map items to input numbers instead, including `switchInputAAndB` and `refreshInputMenusFromKnobs`. Duplicate labels get a suffix naming the input so the entries can be told apart. Note this collision already exists for two different nodes with the same label.
   - verify: script gives two nodes the same user label on inputs 1 and 2: picking each sets the right input, disconnecting one removes only its entry, renaming one relabels only its entry.
   - size: M
-- [ ] M338.P2.T2 — Allow one node on several viewer inputs
+- [x] M338.P2.T2 — Allow one node on several viewer inputs
   - files: Engine/NodeInputs.cpp, Gui/NodeGraphUndoRedo.cpp, Gui/NodeGraph10.cpp, Tests/gui/m338_viewer_input_keys.py
   - approach: remove the single-pipe rule in `InspectorNode::connectInput` (keep the same-input early return) and the disconnect loop in `ConnectCommand::doConnect`. Check the other `inputIndex` callers (`Engine/NodeInputs.cpp`, `Engine/NodeGroup.cpp`, `Gui/NodeGraph10.cpp`, `Gui/NodeGraphUndoRedo.cpp`), which return only the first match, against a viewer holding the same node twice, and fix any that would leave the second pipe dangling.
   - verify: script pipes one node to inputs 1 and 3, both activate and show it; undo and redo restore each; deleting the node clears both pipes, and undoing that restores both.
@@ -65,22 +65,22 @@ The lock follows the user's `viewer_lock` project (github.com/charlesangus/viewe
 
 ## Phase 338.3: Input Locks
 
-- [ ] M338.P3.T1 — Per-input lock knobs on the viewer
+- [x] M338.P3.T1 — Per-input lock knobs on the viewer
   - files: Engine/ViewerInstance.{h,cpp}, Tests/ViewerKnobs_Test.cpp
   - approach: one hidden persistent string knob per input, built like the M164 knobs with `createViewerKnob` in `ViewerInstance::initializeKnobs`: no animation, no render on change, hash-exempt, secret by default, script names `lockedInput1`..`lockedInput10` with labels matching ("Locked Input 1"). Add getter and setter by input index. A lock holds the node's script name, resolved in the viewer's own collection.
   - verify: `Tests/ViewerKnobs_Test.cpp`: set, get, project.yaml round-trip, unchanged upstream hashes and viewer hash.
   - size: M
-- [ ] M338.P3.T2 — Lock and unlock shortcuts
+- [x] M338.P3.T2 — Lock and unlock shortcuts
   - files: Gui/ActionShortcuts.{h,cpp}, Gui/GuiApplicationManager10.cpp, Gui/NodeGraph25.cpp, Gui/NodeGraph30.cpp, Gui/NodeGraph.h, Tests/gui/m338_viewer_input_keys.py
   - approach: register twenty `kShortcutGroupNodegraph` shortcuts, "Lock Viewer Input N" (`Alt-digit`, with 0 as input 10) and "Unlock Viewer Input N" (`Alt-Shift-digit`). Handle them only in `NodeGraph::keyPressEvent`, so `Alt-1`..`5` stay proxy levels when focus is in the viewer. Lock needs a single selected node that others can connect to and that isn't the viewer: store its script name, pipe it and activate A, with undo restoring both the lock and the pipe. Unlock only clears the knob. Note `Alt-Shift-1`..`5` also match the viewer's proxy shortcuts because Shift is masked; the graph handles these first when it has focus.
   - verify: script: `Alt-3` with a selection sets the knob, the pipe and A; undo restores them; `Alt-Shift-3` clears the knob and changes nothing else; with viewer focus `Alt-1` sets the proxy level and no lock; no selection does nothing.
   - size: M
-- [ ] M338.P3.T3 — Number keys recall locked inputs
+- [x] M338.P3.T3 — Number keys recall locked inputs
   - files: Gui/NodeGraph30.cpp, Gui/NodeGraph.h, Gui/ViewerTab30.cpp, Gui/Gui30.cpp, Tests/gui/m338_viewer_input_keys.py
   - approach: add one resolver, called before routing on every `#` and `Shift-#` path (graph, viewer, other panels). A locked input whose name resolves connects that node with `ConnectCommand` on the viewer's own graph if its pipe differs, then activates on the requested side. A name that doesn't resolve clears the lock and continues as unlocked. Both sides honour the lock; `viewer_lock`'s `Shift-#` skips it only because it looks up index + 10, which is not a behaviour to copy.
   - verify: script runs lock input 3, select another node, press 3 from each focus: pipe unchanged, input active; pipe dragged off input 3 then press 3: restored; plate on 3 selected, press 1: on both; renamed and deleted locked nodes: next press clears the lock and acts unlocked; lock survives save and reload.
   - size: M
-- [ ] M338.P3.T4 — Lock label and colour on the Viewer node
+- [x] M338.P3.T4 — Lock label and colour on the Viewer node
   - files: Gui/NodeGraph30.cpp, Engine/ViewerInstance.cpp, Tests/gui/m338_viewer_input_keys.py
   - approach: as `viewer_lock`'s `update_colour_and_label`: on any lock change, including one cleared on press, rewrite only the `Locked input N to <name>` lines of the node's user label (`kUserLabelKnobName`), keeping the user's other lines. Colour the node dark grey (`0x111111`) while any lock exists, using `Node::setColor`, and restore with `Node::resetColor` when none remain. Lines use the input number as shown to the user, starting at 1.
   - verify: script checks the label and colour after lock, second lock, unlock, cleared-on-press and reload, with a user-written label line preserved. Screenshot of the graph shared with the user.

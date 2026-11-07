@@ -93,12 +93,18 @@ set(Tests_SOURCES
     NodeDestroyWatcher_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    PyRotoCreate_Test.cpp
     CurveTrackLink_Test.cpp
     CurveClipboard_Test.cpp
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp
     BezierIncrementalCopy_Test.cpp
+    BezierSmooth_Test.cpp
+    RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
+    RotoDragUndo_Test.cpp
+    RotoDragRenderThrottle_Test.cpp
+    StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp
@@ -194,6 +200,8 @@ set(Tests_SOURCES
     OfxMetadataBridge_Test.cpp
     OfxRetired_Test.cpp
     OfxTestPlugin_Test.cpp
+    OverlayDrawList_Test.cpp
+    OverlayImage_Test.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on
@@ -314,7 +322,9 @@ set(GuiTests_SOURCES
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
+    OverlayImageRenderer_Test.cpp
     RenderDialogRange_Test.cpp
+    RotoLatencyProbe_Test.cpp
     RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp
     SceneGizmo_Test.cpp
@@ -322,6 +332,7 @@ set(GuiTests_SOURCES
     SceneGuides_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
+    StallMonitor_Test.cpp
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
@@ -385,6 +396,8 @@ find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME RenderProfileReportSelfTest
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/render-profile-report.py --self-test)
+    add_test(NAME GuiBenchCompareSelfTest
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/gui/compare.py --self-test)
     add_test(NAME TabTabTabPython
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/run_tabtabtab_tests.py)
 endif()

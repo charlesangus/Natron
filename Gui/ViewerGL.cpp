@@ -65,6 +65,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/Project.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/Settings.h"
 #include "Engine/Texture.h"
 #include "Engine/Timer.h" // for gettimeofday
@@ -531,7 +532,20 @@ ViewerGL::paintGL()
         }
         glCheckErrorAssert();
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
+
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteFramePainted();
+    }
 } // paintGL
+
+QVariantList
+ViewerGL::canonicalToWidget() const
+{
+    const QPointF origin = toWidgetCoordinates(QPointF(0., 0.));
+    const QPointF unit = toWidgetCoordinates(QPointF(1., 1.));
+
+    return QVariantList { origin.x(), origin.y(), unit.x() - origin.x(), unit.y() - origin.y() };
+}
 
 void
 ViewerGL::clearColorBuffer(double r,
@@ -713,7 +727,14 @@ ViewerGL::drawOverlay(unsigned int mipmapLevel)
             drawWipeControl(screenPixelRatio);
         }
 
-
+        glCheckError();
+        {
+            NodesList overlayNodes;
+            _imp->viewerTab->getGui()->getNodesEntitledForOverlayImages(overlayNodes);
+            // Reversed like the overlays, so that the first panel's images are on top.
+            overlayNodes.reverse();
+            _imp->overlayImageRenderer.draw(overlayNodes, getCurrentlyDisplayedTime(), getCurrentView());
+        }
         glCheckError();
         glColor4f(1., 1., 1., 1.);
 
@@ -2129,6 +2150,9 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     if ( !_imp->viewerTab->getGui() ) {
         return;
     }
@@ -2193,10 +2217,13 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
         mustRedraw = true;
     }
 
-    if ( !overlaysCaught &&
-         ( buttonDownIsMiddle(e) ||
-           ( ( (e)->buttons() == Qt::RightButton ) && ( buttonMetaAlt(e) == Qt::AltModifier) ) ) &&
-         !modifierHasControl(e) ) {
+    if (_imp->overlay) {
+        _imp->viewerTab->notifyOverlaysPenDownModifiers(e->modifiers());
+    }
+
+    // Alt + left pans unless an overlay claims the press for one of its own Alt drags.
+    const bool altLeftForOverlay = !overlaysCaught && (e->buttons() == Qt::LeftButton) && (buttonMetaAlt(e) == Qt::AltModifier) && !modifierHasControl(e) && _imp->overlay && _imp->viewerTab->overlaysClaimAltPenDown(zoomPos, currentTimeForEvent(e));
+    if (!overlaysCaught && !altLeftForOverlay && (buttonDownIsMiddle(e) || (((e)->buttons() == Qt::RightButton) && (buttonMetaAlt(e) == Qt::AltModifier))) && !modifierHasControl(e)) {
         // middle (or Alt + left) or Alt + right = pan
         _imp->ms = eMouseStateDraggingImage;
         overlaysCaught = true;
@@ -2249,6 +2276,10 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
         if (overlaysCaught) {
             mustRedraw = true;
         }
+    }
+    if (!overlaysCaught && altLeftForOverlay) {
+        _imp->ms = eMouseStateDraggingImage;
+        overlaysCaught = true;
     }
 
     if ( !overlaysCaught &&
@@ -2506,6 +2537,9 @@ ViewerGL::mouseReleaseEvent(QMouseEvent* e)
 void
 ViewerGL::mouseMoveEvent(QMouseEvent* e)
 {
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     if ( !penMotionInternal(e->position().x(), e->position().y(), /*pressure=*/ 1., currentTimeForEvent(e), e) ) {
         QOpenGLWidget::mouseMoveEvent(e);
     }
@@ -2514,6 +2548,9 @@ ViewerGL::mouseMoveEvent(QMouseEvent* e)
 void
 ViewerGL::tabletEvent(QTabletEvent* e)
 {
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     qreal pressure = e->pressure();
     if (pressure <= 0.) {
         // Some tablets seem to return pressure between -0.5 and 0.5
@@ -3563,6 +3600,9 @@ ViewerGL::enterEvent(QEnterEvent* e)
 bool
 ViewerGL::event(QEvent* e)
 {
+    if ((e->type() == QEvent::ShortcutOverride) && _imp->viewerTab && _imp->viewerTab->claimShortcutOverride(static_cast<QKeyEvent*>(e))) {
+        return true;
+    }
     if (e->type() == QEvent::ToolTip) {
         // The deep sample list lives in the info bar label's tooltip, which can never be
         // hovered while probing: pop the same list up over the pixel being probed instead.
@@ -4078,6 +4118,20 @@ ViewerGL::getScreenPixelRatio() const
     return devicePixelRatio();
 }
 #endif
+
+void
+ViewerGL::drawOverlayDrawList(const OverlayDrawList& list,
+                              const OverlayDrawState& state)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(QOpenGLContext::currentContext() == context());
+
+    if (!_imp->overlayRenderer) {
+        _imp->overlayRenderer.reset(new NodeOverlayRenderer());
+    }
+    _imp->overlayRenderer->draw(list, state, this);
+}
 
 /**
  * @brief Returns the colour of the background (i.e: clear color) of the viewport.

@@ -916,6 +916,21 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                           false,
                                                           renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
 
+    // Overlay images only exist as a side effect of the render action, so a cached image can't
+    // answer this render. byPassCache would reach the action too but deletes the entry, and an
+    // overlay must leave the cache as it found it: render next to the entry instead. With no entry
+    // the render fills the cache as usual, which spares the viewer's render the same work.
+    bool renderBesideCachedImage = false;
+    if (frameArgs->overlayImagePass) {
+        std::list<ImagePtr> entries;
+        appPTR->getImage(*key, &entries);
+        appPTR->getImage(*nonDraftKey, &entries);
+        renderBesideCachedImage = !entries.empty();
+        if (renderBesideCachedImage) {
+            createInCache = false;
+        }
+    }
+
     bool isDuringPaintStroke = isDuringPaintStrokeCreationThreadLocal();
     // A frame hash the node has already left would key the new image to a state the graph is
     // no longer in. A paint stroke keeps its image cached while its own knobs move: each stroke
@@ -968,7 +983,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             }
             // A writer's render to disk must call the render action, which writes the file; a pull
             // through a writer, and every node upstream, may still use the cache.
-            bool doCacheLookup = !isWriter() || !isRenderingOwnSequence();
+            bool doCacheLookup = !renderBesideCachedImage && (!isWriter() || !isRenderingOwnSequence());
             if (doCacheLookup) {
                 int nLookups = draftModeSupported && frameArgs->draftMode ? 2 : 1;
 

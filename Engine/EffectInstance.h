@@ -2577,6 +2577,24 @@ public:
 
     bool onOverlayPenDown_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp, PenType pen) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether this effect's overlay wants an Alt+left press at pos, which the viewer
+     * otherwise keeps for panning. When true the press is sent through onOverlayPenDown_public.
+     **/
+    virtual bool onOverlayClaimsAltPenDown(double /*time*/,
+                                           const QPointF& /*pos*/) WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The keyboard modifiers held at a pen press in the viewer. An overlay that tracks
+     * modifiers from key events matches its state to these, since a key release can be lost.
+     **/
+    virtual void onOverlayPenDownModifiers(KeyboardModifiers /*modifiers*/)
+    {
+    }
+
     bool onOverlayPenMotion_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp) WARN_UNUSED_RETURN;
 
     bool onOverlayPenDoubleClicked_public(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos) WARN_UNUSED_RETURN;
@@ -2594,6 +2612,79 @@ public:
     bool onOverlayFocusGained_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
 
     bool onOverlayFocusLost_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Rebuilds the overlay draw list with buildOverlay() and returns it. The list is kept
+     * for the pen's handle hit-tests until the next rebuild. Main thread only.
+     **/
+    const OverlayDrawList& buildOverlay_public(double time, const RenderScale& renderScale, ViewIdx view);
+
+    const OverlayDrawList& getOverlayDrawList() const;
+
+    /**
+     * @brief The hovered and pressed handles and the node's overlay colour, as the viewer draws
+     * the list with them.
+     **/
+    OverlayDrawState getOverlayDrawState() const;
+
+    /**
+     * @brief True when the viewer should show this node's overlay images: its view knob is on and
+     * its panel is open.
+     **/
+    bool isOverlayImageRequested() const;
+
+    /**
+     * @brief True while the render running on this thread is the node's overlay image pass, the
+     * only render in which addOverlayImageTile() does anything. Whatever the answer, the render
+     * must write the same pixels to its output: the pass can fill the cache.
+     **/
+    bool isOverlayImageRender() const;
+
+    /**
+     * @brief True while the render running on this thread is an overlay image pass that
+     * refreshOverlayImages() has overtaken: nothing it adds will be published.
+     **/
+    bool isOverlayImagePassSuperseded() const;
+
+    /**
+     * @brief Publishes values, a byte of coverage per pixel of bounds (see
+     * overlayImageCoverageByte()) and row by row from y1, as part of the named overlay plane. bounds
+     * is in pixels at mipmapLevel. Render threads may call it concurrently. The tint of the first
+     * tile added to a plane is the plane's.
+     **/
+    void addOverlayImageTile(const std::string& plane,
+                             const OverlayColor& tint,
+                             const RectI& bounds,
+                             unsigned int mipmapLevel,
+                             std::vector<unsigned char>&& values);
+
+    /**
+     * @brief True if a pass is needed for the viewer to have what request asks for.
+     **/
+    bool overlayImagesStale(const OverlayImageRequest& request) const;
+
+    /**
+     * @brief Runs the node's render action over the part of request.visibleCanonical in its region
+     * of definition and publishes the tiles it adds, all at once, on success. A failed pass publishes
+     * an empty frame, so that the node's last mask does not pass for this state and the failure is not
+     * retried until the state changes. An aborted pass publishes nothing, nor does one that
+     * refreshOverlayImages() overtook while it ran: it may have rendered the view before. Returns
+     * whether the pass published what it rendered. Must not be called under another render's frame
+     * args.
+     **/
+    bool renderOverlayImages(const OverlayImageRequest& request, const AbortableRenderInfoPtr& abortInfo);
+
+    /**
+     * @brief What the viewer should draw for this node at time and view: null when no overlay image
+     * is requested or the last pass is not of this state of the node, time and view.
+     **/
+    OverlayImageFrameConstPtr getOverlayImages(double time, ViewIdx view) const;
+
+    /**
+     * @brief Brings the viewers up to date after the view knob or the panel changed: neither moves
+     * the node's hash, so nothing else would. Main thread only.
+     **/
+    void refreshOverlayImages();
 
     /**
      * @brief Ends the undo step a Viewer gesture opened when its press was taken, if one is open.
@@ -2626,6 +2717,33 @@ public:
      * respectively the width and height of the frame.)
      */
     virtual bool hasOverlay() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Returns the value of the knob that turns the node's overlay images on. That knob must
+     * stay out of the node's hash (Knob::setHashExempt) and its knobChanged must call
+     * refreshOverlayImages().
+     **/
+    virtual bool isOverlayImageViewOn() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Called by refreshOverlayImages() when the viewer no longer wants the node's overlay
+     * images, to free what the node keeps only to produce them. A pass already running can still be
+     * computing: check isOverlayImagePassSuperseded() before keeping anything.
+     **/
+    virtual void releaseOverlayImageResources()
+    {
+    }
+
+    /**
+     * @brief Return true to have the viewer draw the list buildOverlay() fills.
+     **/
+    virtual bool hasOverlayDrawList() const
     {
         return false;
     }
@@ -3196,6 +3314,49 @@ protected:
     {
     }
 
+    /**
+     * @brief Fills list, which arrives empty, with what to draw over the viewer. Called on the
+     * main thread for each viewer redraw while the overlay shows; it must not render or change
+     * knobs. Only called when hasOverlayDrawList() returns true.
+     **/
+    virtual void buildOverlay(double /*time*/,
+                              const RenderScale& /*renderScale*/,
+                              ViewIdx /*view*/,
+                              OverlayDrawList* /*list*/)
+    {
+    }
+
+    /**
+     * @brief The pen went down on the handle id. Return false to let the press through to what is
+     * under it. Knob edits made from these three callbacks with eValueChangedReasonPluginEdited
+     * go on the undo stack, merged as the host interacts' edits are.
+     **/
+    virtual bool onOverlayHandlePressed(int /*id*/,
+                                        double /*time*/,
+                                        ViewIdx /*view*/,
+                                        const QPointF& /*pos*/)
+    {
+        return false;
+    }
+
+    /**
+     * @brief The pen moved while holding the handle id, to pos, delta from where it was.
+     **/
+    virtual void onOverlayHandleDragged(int /*id*/,
+                                        double /*time*/,
+                                        ViewIdx /*view*/,
+                                        const QPointF& /*pos*/,
+                                        const QPointF& /*delta*/)
+    {
+    }
+
+    virtual void onOverlayHandleReleased(int /*id*/,
+                                         double /*time*/,
+                                         ViewIdx /*view*/,
+                                         const QPointF& /*pos*/)
+    {
+    }
+
     virtual bool onOverlayPenDown(double /*time*/,
                                   const RenderScale & /*renderScale*/,
                                   ViewIdx /*view*/,
@@ -3298,6 +3459,11 @@ protected:
     NodeWPtr _node; //< the node holding this effect
 
 private:
+    bool hasAnyOverlay() const;
+
+    bool onOverlayDrawListPenDown(double time, ViewIdx view, const QPointF& pos);
+    bool onOverlayDrawListPenMotion(double time, ViewIdx view, const QPointF& pos);
+    bool onOverlayDrawListPenUp(double time, ViewIdx view, const QPointF& pos);
 
     class Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details

@@ -752,7 +752,9 @@ segmentsHighlights(const float* in,
                    std::uint32_t filters,
                    const std::uint8_t (*xtrans)[6],
                    const SegmentsParams& params,
-                   const ParallelFor& parallel)
+                   const ParallelFor& parallel,
+                   SegmentsMaskEnum maskView,
+                   float* mask)
 {
     if ((width < 3) || (height < 3)) {
         return;
@@ -846,7 +848,11 @@ segmentsHighlights(const float* in,
         hasAllclipped |= (rowAllclipped[row] != 0);
     }
 
-    if (anyclipped < 20) {
+    const bool masking = (maskView != eSegmentsMaskOff) && mask;
+    // Below 20 clipped photosites the reconstruction leaves the mosaic alone, and a mask must not
+    // change that, though darktable goes on to compute the segments for its views.
+    const bool reconstruct = anyclipped >= 20;
+    if (!reconstruct && !masking) {
         return;
     }
 
@@ -867,34 +873,36 @@ segmentsHighlights(const float* in,
         calcPlaneCandidates(plane[p], refavg[p], &isegments[p], cubeCoeffs[p], params.candidating, parallel);
     }
 
-    // Every photosite of a 3x3 block writes the block's plane location; a block row runs in
-    // order so the last of them wins, as in darktable's serial order.
-    parallel((height + 2) / 3, [&](int block) {
-        const int rowEnd = std::min(height - 1, 3 * block + 3);
-        for (int row = std::max(1, 3 * block); row < rowEnd; ++row) {
-            for (int col = 1; col < width - 1; ++col) {
-                const std::size_t idx = (std::size_t)row * width + col;
-                const float inval = std::fmax(0.0f, input.at(row, col));
-                const int color = fcol(row, col, filters, xtrans);
-                if (!(inval > clips[color])) {
-                    continue;
-                }
-                const std::size_t o = rawToPlane(pwidth, row, col);
-                const Segmentation& seg = isegments[color];
-                const std::uint32_t pid = seg.segmentId(o);
-                if (!((pid > 1) && (pid < (std::uint32_t)seg.nr))) {
-                    continue;
-                }
-                const float candidate = seg.val1[pid];
-                if (candidate != 0.0f) {
-                    const float candReference = seg.val2[pid];
-                    const float refavgHere = calcRefavgCroot(input, filters, xtrans, width, height, row, col);
-                    const float oval = fcube(refavgHere + candidate - candReference);
-                    out[idx] = plane[color][o] = std::fmax(inval, oval);
+    if (reconstruct) {
+        // Every photosite of a 3x3 block writes the block's plane location; a block row runs in
+        // order so the last of them wins, as in darktable's serial order.
+        parallel((height + 2) / 3, [&](int block) {
+            const int rowEnd = std::min(height - 1, 3 * block + 3);
+            for (int row = std::max(1, 3 * block); row < rowEnd; ++row) {
+                for (int col = 1; col < width - 1; ++col) {
+                    const std::size_t idx = (std::size_t)row * width + col;
+                    const float inval = std::fmax(0.0f, input.at(row, col));
+                    const int color = fcol(row, col, filters, xtrans);
+                    if (!(inval > clips[color])) {
+                        continue;
+                    }
+                    const std::size_t o = rawToPlane(pwidth, row, col);
+                    const Segmentation& seg = isegments[color];
+                    const std::uint32_t pid = seg.segmentId(o);
+                    if (!((pid > 1) && (pid < (std::uint32_t)seg.nr))) {
+                        continue;
+                    }
+                    const float candidate = seg.val1[pid];
+                    if (candidate != 0.0f) {
+                        const float candReference = seg.val2[pid];
+                        const float refavgHere = calcRefavgCroot(input, filters, xtrans, width, height, row, col);
+                        const float oval = fcube(refavgHere + candidate - candReference);
+                        out[idx] = plane[color][o] = std::fmax(inval, oval);
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 
     float* distance = plane[kRgbPlanes];
     float* gradient = plane[kRgbPlanes + 1];
@@ -904,8 +912,36 @@ segmentsHighlights(const float* in,
 
     Segmentation* segall = &isegments[3];
 
-    const bool doRecovery = (recoveryMode != eSegmentsRecoveryOff) && hasAllclipped && (strength > 0.0f);
-    if (!doRecovery) {
+    const auto writeMask = [&]() {
+        if (!masking) {
+            return;
+        }
+        parallel(height, [&](int row) {
+            float* line = mask + (std::size_t)row * width;
+            for (int col = 0; col < width; ++col) {
+                float value = 0.0f;
+                if ((row > 0) && (col > 0) && (row < height - 1) && (col < width - 1)) {
+                    const std::size_t o = rawToPlane(pwidth, row, col);
+                    const Segmentation& seg = isegments[fcol(row, col, filters, xtrans)];
+                    const std::uint32_t pid = seg.segmentId(o);
+                    if (maskView == eSegmentsMaskCombine) {
+                        value = pid ? 1.0f : 0.0f;
+                    } else if (maskView == eSegmentsMaskCandidating) {
+                        value = (pid && (std::fabs(seg.val1[pid]) > 1e-9f)) ? 1.0f : 0.0f;
+                    } else {
+                        const std::uint32_t allid = segall->segmentId(o);
+                        value = ((allid > 1) && (allid < (std::uint32_t)segall->nr)) ? strength * gradient[o] : 0.0f;
+                    }
+                }
+                line[col] = value;
+            }
+        });
+    };
+
+    const bool doRecovery = reconstruct && (recoveryMode != eSegmentsRecoveryOff) && hasAllclipped && (strength > 0.0f);
+    if (!doRecovery && !(masking && (maskView == eSegmentsMaskStrength))) {
+        writeMask();
+
         return;
     }
 
@@ -926,6 +962,8 @@ segmentsHighlights(const float* in,
 
     const float maxDistance = distanceTransform(distance, pwidth, pheight, parallel);
     if (!(maxDistance > 3.0f)) {
+        writeMask();
+
         return;
     }
     segmentizePlane(segall);
@@ -951,19 +989,22 @@ segmentsHighlights(const float* in,
     }
 
     const float dshift = 2.0f + (float)recoveryClosing[recoveryMode];
-    parallel(height - 2, [&](int r) {
-        const int row = r + 1;
-        for (int col = 1; col < width - 1; ++col) {
-            const std::size_t idx = (std::size_t)row * width + col;
-            const int color = fcol(row, col, filters, xtrans);
-            const float ival = std::fmax(0.0f, input.at(row, col));
-            if (ival > clips[color]) {
-                const std::size_t o = rawToPlane(pwidth, row, col);
-                const float effect = strength / (1.0f + std::exp(-(distance[o] - dshift)));
-                out[idx] += std::fmax(0.0f, gradient[o] * effect);
+    if (doRecovery) {
+        parallel(height - 2, [&](int r) {
+            const int row = r + 1;
+            for (int col = 1; col < width - 1; ++col) {
+                const std::size_t idx = (std::size_t)row * width + col;
+                const int color = fcol(row, col, filters, xtrans);
+                const float ival = std::fmax(0.0f, input.at(row, col));
+                if (ival > clips[color]) {
+                    const std::size_t o = rawToPlane(pwidth, row, col);
+                    const float effect = strength / (1.0f + std::exp(-(distance[o] - dshift)));
+                    out[idx] += std::fmax(0.0f, gradient[o] * effect);
+                }
             }
-        }
-    });
+        });
+    }
+    writeMask();
 } // segmentsHighlights
 } // namespace RawKernels
 

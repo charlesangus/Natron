@@ -140,7 +140,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
   - verify: at the phase build, `ctest -R NativeVectorGenerator` (T2) passes.
   - size: L
 
-- [ ] M217.P2.T2 — Test the VectorGenerator node
+- [x] M217.P2.T2 — Test the VectorGenerator node
   - files: `Tests/Native/NativeVectorGenerator_Test.cpp` (new)
   - approach:
     - Build graphs over a generated moving-texture sequence and check:

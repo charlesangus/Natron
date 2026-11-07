@@ -94,7 +94,7 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
 
 ## Phase 224.5: Host sign-off
 
-- [ ] M224.P5.T1 — Rerun the roto bench on the host and do UAT
+- [x] M224.P5.T1 — Rerun the roto bench on the host and do UAT
   - files: `tools/bench/BASELINE.md`
   - approach: rerun P1.T2 on the release AppImage on the workstation and the modest machine, and record the before/after table.
   - verify: the user signs off at UAT with screenshots.
@@ -116,6 +116,8 @@ Found during M146 - Roto Hosting For Any Node's UAT (user, 2026-10-26): strokes 
   - size: M
 
 ## Decisions
+
+- 2026-11-07 — Merged as 42252a557 (#206). The user approved UAT with Clone and Reveal defaulting to Over. Also fixed: Break Tangents survives save and load, bezier moves keep a broken point broken (Python too), redo of a closing click leaves the draw tool, the feather bar reaches past an axis-aligned feather, a tangent press measures from the press.
 
 - 2026-11-06 — **Reveal also defaults to Over (user),** matching Clone. No further UAT.
 

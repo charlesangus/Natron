@@ -641,11 +641,16 @@ TEST_F(NativeVectorGeneratorTest, AFailedSourceRenderFailsInsteadOfSolvingAgains
     NodePtr source = createMovingTexture();
     NodePtr node = createGenerator(source);
     ASSERT_TRUE(bool(node));
-    ASSERT_TRUE(setKnobValues(source, kMovingTextureParamFailFrame, { 4. }));
 
+    // The same render succeeds while the failing frame is one it does not need, so the failure below is the source's.
+    ASSERT_TRUE(setKnobValues(source, kMovingTextureParamFailFrame, { 100. }));
     std::vector<RenderedPlane> planes;
-    EXPECT_FALSE(renderNodePlanesDirect(node, 3., ViewIdx(0), 0, windowAt(0), std::list<ImageLayerDesc> { forwardLayer() }, &planes));
-    EXPECT_TRUE(node->hasPersistentMessage());
+    ASSERT_TRUE(renderNodePlanesDirect(node, 3., ViewIdx(0), 0, windowAt(0), std::list<ImageLayerDesc> { forwardLayer() }, &planes));
+
+    ASSERT_TRUE(setKnobValues(source, kMovingTextureParamFailFrame, { 4. }));
+    // The host fails a render whose input render failed before this node's render runs, so the node
+    // posts no message of its own for it; the render result is what must not be a solve against black.
+    EXPECT_FALSE(renderNodePlanesDirect(node, 3., ViewIdx(0), 0, windowAt(0), std::list<ImageLayerDesc> { forwardLayer() }, &planes, nullptr, true /*byPassCache*/));
 }
 
 TEST_F(NativeVectorGeneratorTest, ForwardOutputLeavesOutTheBackwardLayerAndItsFrames)

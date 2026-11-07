@@ -151,11 +151,25 @@ struct SegmentsParams {
 };
 
 /**
+ * @brief The photosite masks of darktable's segmentation views (DT_HIGHLIGHTS_MASK_*).
+ **/
+enum SegmentsMaskEnum {
+    eSegmentsMaskOff = 0,
+    eSegmentsMaskCombine,
+    eSegmentsMaskCandidating,
+    eSegmentsMaskStrength
+};
+
+/**
  * @brief darktable's segmentation based highlight reconstruction, _process_segmentation(),
  * over a whole mosaic. in is read in place, photosite (row, col) at in[row * inRowStride + col *
  * inPixelStride]; out holds the Inpaint Opposed result of the mosaic on entry, one float per
  * photosite, row-major and width wide, and the reconstruction on return. The colour planes are
- * a third of the mosaic each way plus a border of 8, as in darktable.
+ * a third of the mosaic each way plus a border of 8, as in darktable. A mask holds width x height
+ * floats and receives what maskView shows, 0 on the mosaic's outermost photosites: 1 where the
+ * photosite's colour has a segment (combine), 1 where that segment has a candidate (candidating),
+ * or the recovery's gradient times strength inside a segment of all-clipped photosites (strength).
+ * Asking for a mask leaves the result in out unchanged.
  **/
 void segmentsHighlights(const float* in,
                         std::ptrdiff_t inRowStride,
@@ -166,7 +180,9 @@ void segmentsHighlights(const float* in,
                         std::uint32_t filters,
                         const std::uint8_t (*xtrans)[6],
                         const SegmentsParams& params,
-                        const ParallelFor& parallel);
+                        const ParallelFor& parallel,
+                        SegmentsMaskEnum maskView = eSegmentsMaskOff,
+                        float* mask = nullptr);
 } // namespace RawKernels
 
 NATRON_NAMESPACE_EXIT

@@ -38,6 +38,37 @@
 
 #include "Global/GlobalDefines.h"
 
+#define kNatronMetadataKeyPrefixStandard "natron/"
+#define kNatronMetadataKeyPrefixExr "exr/"
+#define kNatronMetadataKeyPrefixExif "exif/"
+#define kNatronMetadataKeyPrefixDpx "dpx/"
+#define kNatronMetadataKeyPrefixCin "cin/"
+#define kNatronMetadataKeyPrefixTiff "tiff/"
+#define kNatronMetadataKeyPrefixQuickTime "quicktime/"
+
+#define kNatronMetadataKeyFilePath "natron/filepath"
+#define kNatronMetadataKeySourceFrame "natron/frame"
+#define kNatronMetadataKeyTimecode "natron/timecode"
+#define kNatronMetadataKeyEdgecode "natron/edgecode"
+#define kNatronMetadataKeyMTime "natron/mtime"
+#define kNatronMetadataKeyFileSize "natron/filesize"
+#define kNatronMetadataKeyPixelAspect "natron/pixelaspect"
+#define kNatronMetadataKeyFrameRate "natron/framerate"
+#define kNatronMetadataKeyShutterAngle "natron/shutterangle"
+#define kNatronMetadataKeyWidth "natron/width"
+#define kNatronMetadataKeyHeight "natron/height"
+#define kNatronMetadataKeyBitDepth "natron/bitdepth"
+#define kNatronMetadataKeySampleType "natron/sampletype"
+#define kNatronMetadataKeyCreator "natron/creator"
+#define kNatronMetadataKeyProject "natron/project"
+#define kNatronMetadataKeyCopyright "natron/copyright"
+#define kNatronMetadataKeyComment "natron/comment"
+#define kNatronMetadataKeyFocalLength "natron/focallength"
+#define kNatronMetadataKeyFNumber "natron/fnumber"
+#define kNatronMetadataKeyExposureTime "natron/exposuretime"
+#define kNatronMetadataKeySlateInfo "natron/slateinfo"
+#define kNatronMetadataKeyViewNames "natron/viewnames"
+
 NATRON_NAMESPACE_ENTER
 
 enum class ImageMetadataType {
@@ -49,8 +80,8 @@ enum class ImageMetadataType {
 };
 
 /**
- * @brief The per-frame key/value metadata of an image. Keys carry the ofx/, exr/, exif/
- * and dpx/ prefixes of ofxMetadata.h and iterate in ascending byte order of the key.
+ * @brief The per-frame key/value metadata of an image. Keys carry the prefixes defined above
+ * and iterate in ascending byte order of the key.
  *
  * Copies are O(1): they share one immutable map and the first mutation of a copy
  * detaches it, so a copy never observes a later change to the original. A single

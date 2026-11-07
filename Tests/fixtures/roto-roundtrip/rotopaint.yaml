@@ -4,6 +4,7 @@ knobs:
   projectPaths: "<Name>Project</Name><Value>@TMP@</Value>"
 layers:
   depth: {label: "depth", channelsLabel: "Z", channels: ["Z"], origin: 1}
+  normal: {label: "normal", channelsLabel: "XYZ", channels: ["X", "Y", "Z"], origin: 1}
   primId: {label: "primId", channelsLabel: "id", channels: ["id"], origin: 1}
 timeline: {current: 1}
 nodes:

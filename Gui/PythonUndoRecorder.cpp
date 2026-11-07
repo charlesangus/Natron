@@ -76,6 +76,9 @@ public:
     {
         UndoReplayGuard replaying(_app.lock());
         _command->redo();
+        if (_command->isObsolete()) {
+            setObsolete(true);
+        }
     }
 
 private:

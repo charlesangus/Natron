@@ -65,12 +65,36 @@ typedef std::list<SelectedCp> SelectedCpList;
 typedef BezierPtr BezierPtr;
 typedef std::list<BezierPtr> BezierList;
 
+RefusedEditWatch::RefusedEditWatch(const RotoCurveContextPtr& context)
+    : _context(context)
+    , _refusedBefore(0)
+    , _allowedBefore(0)
+{
+    if (context) {
+        context->getRippleEditCheckCounts(&_refusedBefore, &_allowedBefore);
+    }
+}
+
+bool
+RefusedEditWatch::refusedEverything() const
+{
+    RotoCurveContextPtr context = _context.lock();
+    if (!context) {
+        return false;
+    }
+    quint64 refused, allowed;
+    context->getRippleEditCheckCounts(&refused, &allowed);
+
+    return refused != _refusedBefore && allowed == _allowedBefore;
+}
+
 RotoDragUndoCommand::RotoDragUndoCommand(const RotoCurveInteractPtr& roto,
                                          double time)
     : UndoCommand()
     , UndoGestureMember()
     , _roto(roto)
     , _time(time)
+    , _refusals(roto->getCurveContext())
     , _points()
     , _before()
     , _after()
@@ -1506,6 +1530,7 @@ SmoothCuspUndoCommand::SmoothCuspUndoCommand(const RotoCurveInteractPtr& roto,
                                              const std::pair<double, double>& pixelScale)
     : UndoCommand()
     , _roto(roto)
+    , _refusals(roto->getCurveContext())
     , _firstRedoCalled(false)
     , _time(time)
     , _count(1)

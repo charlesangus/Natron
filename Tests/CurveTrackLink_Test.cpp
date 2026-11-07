@@ -56,8 +56,12 @@
 #include "Engine/RectI.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoPaint.h"
+#include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoUndoCommand.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -503,6 +507,9 @@ TEST_F(CurveTrackLinkTest, RippleModesOnALinkedPoint)
         square->movePointByIndex(0, editTime, 2., 3.);
         square->moveFeatherByIndex(0, editTime, 2., 3.);
         square->collapseRightHandleAtIndex(0, editTime);
+        Transform::Matrix3x3 shift = Transform::matTransformCanonical(2., 3., 1., 1., 0., 0., true, 0., 0., 0.);
+        square->transformPoint(cp, editTime, &shift);
+        square->transformPoint(fp, editTime, &shift);
 
         stateAt(cp, &cpAfter);
         stateAt(fp, &fpAfter);
@@ -536,6 +543,74 @@ TEST_F(CurveTrackLinkTest, RippleModesOnALinkedPoint)
         EXPECT_NE(cusped[0].rx - cusped[0].x, smoothed[0].rx - smoothed[0].x) << "the one offset holds at the first frame too";
         EXPECT_NEAR(smoothed[0].rx - smoothed[0].x, smoothed[2].rx - smoothed[2].x, kTolerance) << "ripple " << enabled;
     }
+}
+
+// A refused edit must not leave an undo step behind: the history drops a step that reports itself
+// obsolete after its first redo. An edit that moves a point the ripple mode does not refuse stays.
+TEST_F(CurveTrackLinkTest, RefusedEditsLeaveNoUndoStep)
+{
+    resetProject();
+    TrackMarkerPtr marker = makeTrack();
+    ASSERT_TRUE(bool(marker));
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoPaint* effect = dynamic_cast<RotoPaint*>(roto->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    RotoPaintInteractPtr ui = effect->getInteract();
+    ASSERT_TRUE(bool(ui));
+    RotoCurveContextPtr context = roto->getCurveContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr square = context->makeSquare(10., 10., 12., kFirstKey);
+    ASSERT_TRUE(bool(square));
+    square->linkPointToTrack(0, marker, kFirstKey);
+    const double editTime = 5.;
+
+    const auto pair = [&](int index) {
+        return std::make_pair(square->getControlPointAtIndex(index), square->getFeatherPointAtIndex(index));
+    };
+    const auto move = [&](const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points) {
+        std::shared_ptr<MoveControlPointsUndoCommand> cmd = std::make_shared<MoveControlPointsUndoCommand>(ui, points, 2., 3., editTime);
+        cmd->redo();
+
+        return cmd;
+    };
+    const auto smooth = [&](const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points) {
+        SmoothCuspUndoCommand::SmoothCuspCurveData data;
+        data.curve = square;
+        data.newPoints = points;
+        std::list<SmoothCuspUndoCommand::SmoothCuspCurveData> datas(1, data);
+        std::shared_ptr<SmoothCuspUndoCommand> cmd = std::make_shared<SmoothCuspUndoCommand>(ui, datas, editTime, false, std::make_pair(1., 1.));
+        cmd->redo();
+
+        return cmd;
+    };
+    const auto transform = [&](const std::list<std::pair<BezierCPPtr, BezierCPPtr>>& points) {
+        std::list<RotoDrawableItemPtr> curves(1, square);
+        ui->setSelection(curves, points);
+        std::shared_ptr<TransformUndoCommand> cmd = std::make_shared<TransformUndoCommand>(ui, 10., 10., 0., 0., 0., 2., 3., 1., 1., editTime);
+        cmd->redo();
+
+        return cmd;
+    };
+
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> linked(1, pair(0));
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> both = linked;
+    both.push_back(pair(1));
+
+    context->setRippleEditEnabled(true);
+    context->setRippleEditRange(3., 7.);
+    context->setRippleEditMode(eRippleEditModeRange);
+    EXPECT_TRUE(move(linked)->isObsolete());
+    EXPECT_TRUE(smooth(linked)->isObsolete());
+    EXPECT_TRUE(transform(linked)->isObsolete());
+    EXPECT_FALSE(move(both)->isObsolete()) << "the unlinked point moved";
+    EXPECT_FALSE(smooth(both)->isObsolete());
+    EXPECT_FALSE(transform(both)->isObsolete());
+
+    context->setRippleEditMode(eRippleEditModeAll);
+    EXPECT_FALSE(move(linked)->isObsolete());
+    EXPECT_FALSE(smooth(linked)->isObsolete());
+    EXPECT_FALSE(transform(linked)->isObsolete());
 }
 
 TEST_F(CurveTrackLinkTest, MovingATrackKeyInvalidatesRotoAndSplineWarp)

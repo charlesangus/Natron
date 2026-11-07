@@ -52,6 +52,22 @@ class RotoCurveInteract;
 class RotoPaintInteract;
 
 /**
+ * @brief Tells whether an edit of points was refused outright by the bounded ripple check: it
+ * saw refusals since it was created and no edit that went through. An undo step that made such
+ * an edit has nothing to undo.
+ **/
+class RefusedEditWatch {
+public:
+    explicit RefusedEditWatch(const RotoCurveContextPtr& context);
+
+    bool refusedEverything() const;
+
+private:
+    RotoCurveContextWPtr _context;
+    quint64 _refusedBefore, _allowedBefore;
+};
+
+/**
  * @brief An undo step for one drag of existing points. It copies the points it edits once, when
  * the first motion of the drag creates it, and every later motion of the same gesture extends it
  * in place, so the cost of a motion does not grow with the keyframes the points carry. Undo
@@ -75,7 +91,12 @@ public:
      **/
     bool isOpenIn(quint64 gestureKey) const
     {
-        return !_undone && UndoGesture::sameGesture(getGestureKey(), gestureKey);
+        return !_undone && !isObsolete() && UndoGesture::sameGesture(getGestureKey(), gestureKey);
+    }
+
+    virtual bool isObsolete() const OVERRIDE FINAL
+    {
+        return _refusals.refusedEverything();
     }
 
 protected:
@@ -109,6 +130,8 @@ protected:
     double _time; //< the time at which the change was made
 
 private:
+    RefusedEditWatch _refusals;
+
     void copyPoint(const BezierCPPtr& point);
 
     std::vector<BezierCPPtr> _points, _before, _after;
@@ -541,8 +564,14 @@ public:
     virtual void redo() OVERRIDE FINAL;
     virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
 
+    virtual bool isObsolete() const OVERRIDE FINAL
+    {
+        return _refusals.refusedEverything();
+    }
+
 private:
     RotoCurveInteractWPtr _roto;
+    RefusedEditWatch _refusals;
     bool _firstRedoCalled;
     double _time;
     int _count;

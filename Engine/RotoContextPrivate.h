@@ -1545,6 +1545,11 @@ public:
     std::list<QMetaObject::Connection> trackLinkConnections;
     bool trackLinkWarningPosted;
 
+    // How many edits of a point the ripple check refused and let through, for an undo step to
+    // tell an edit that changed nothing from one that did.
+    quint64 rippleEditsRefused;
+    quint64 rippleEditsAllowed;
+
     RotoContextPrivate(const NodePtr& n,
                        bool paintNode)
         : rotoContextMutex()
@@ -1569,6 +1574,8 @@ public:
         , globalMergeNodes()
         , trackLinkConnections()
         , trackLinkWarningPosted(false)
+        , rippleEditsRefused(0)
+        , rippleEditsAllowed(0)
     {
         assert( n && n->getEffectInstance() );
         EffectInstancePtr effect = n->getEffectInstance();

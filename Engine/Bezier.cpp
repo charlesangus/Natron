@@ -2617,6 +2617,9 @@ Bezier::transformPoint(const BezierCPPtr & point,
                        double time,
                        Transform::Matrix3x3* matrix)
 {
+    if (refusesBoundedRipple(point.get())) {
+        return;
+    }
     bool autoKeying = getContext()->isAutoKeyingEnabled();
     bool keySet = false;
     bool useGuiCurve = useGuiCurveForEdit();
@@ -2857,10 +2860,14 @@ Bezier::collapseRightHandleAtIndex(int index,
 bool
 Bezier::refusesBoundedRipple(const BezierCP* point)
 {
-    if (!point || !point->isLinkedToTrack() || !getContext()->getRippleEditKeys().isBounded()) {
+    RotoCurveContextPtr context = getContext();
+    if (!point || !point->isLinkedToTrack() || !context->getRippleEditKeys().isBounded()) {
+        context->noteRippleEditCheck(false);
+
         return false;
     }
-    getContext()->warnBoundedRippleOnLinkedPoint();
+    context->noteRippleEditCheck(true);
+    context->warnBoundedRippleOnLinkedPoint();
 
     return true;
 }

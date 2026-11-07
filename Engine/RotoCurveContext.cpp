@@ -2050,6 +2050,24 @@ RotoCurveContext::warnBoundedRippleOnLinkedPoint()
 }
 
 void
+RotoCurveContext::noteRippleEditCheck(bool refused)
+{
+    if (refused) {
+        ++_imp->rippleEditsRefused;
+    } else {
+        ++_imp->rippleEditsAllowed;
+    }
+}
+
+void
+RotoCurveContext::getRippleEditCheckCounts(quint64* refused,
+                                           quint64* allowed) const
+{
+    *refused = _imp->rippleEditsRefused;
+    *allowed = _imp->rippleEditsAllowed;
+}
+
+void
 RotoCurveContext::updateTrackLinks(bool redraw)
 {
     const double time = getTimelineCurrentTime();

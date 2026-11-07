@@ -594,6 +594,18 @@ public:
     void warnBoundedRippleOnLinkedPoint();
 
     /**
+     * @brief Records that an edit of a point was checked against the bounded ripple modes, and
+     * whether it was refused. Main thread only.
+     **/
+    void noteRippleEditCheck(bool refused);
+
+    /**
+     * @brief How many edits noteRippleEditCheck() has seen refused and let through so far.
+     **/
+    void getRippleEditCheckCounts(quint64* refused,
+                                  quint64* allowed) const;
+
+    /**
      * @brief Points loaded links whose track object is unknown at their tracks, found by the
      * tracker node's fully qualified name and the track's script name. Called once every node
      * of a load or paste exists. Links that do not resolve keep their last centre.

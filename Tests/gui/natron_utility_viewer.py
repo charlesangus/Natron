@@ -132,6 +132,12 @@ try:
         return (v is not None and bool(v.property("natronSceneSynced")) and bool(v.property("natronSceneShown"))
                 and not v.property("natronSceneError"))
 
+    def show_in_viewer(node):
+        # connectInput refuses an occupied input.
+        if viewer.getInput(0) is not None:
+            viewer.disconnectInput(0)
+        return viewer.connectInput(0, node)
+
     def key(v, k, modifiers=Qt.NoModifier):
         v.activateWindow()
         v.setFocus()
@@ -299,7 +305,7 @@ try:
         rig.setPosition(0, 75)
         rig.getParam("primPath").setValue("/Rig")
         require(rig.connectInput(0, usd), "connect the USDRead into the USDXformPrim")
-        require(viewer.connectInput(0, rig), "connect the Viewer to the USDXformPrim")
+        require(show_in_viewer(rig), "connect the Viewer to the USDXformPrim")
         usd.getParam("filename").setValue(heavy_path)
         before = prop("natronSceneRefineFrames") or 0
         ok = yield ("until", lambda: (prop("natronSceneRefineFrames") or 0) > before and bool(prop("natronSceneRefineConverged")),
@@ -323,7 +329,7 @@ try:
               "edits during a large render stall the main thread under %d ms (longest gap %.1f ms)"
               % (STALL_BOUND_MS, meter.longest_ms))
 
-        require(viewer.connectInput(0, usd), "connect the Viewer back to the USDRead")
+        require(show_in_viewer(usd), "connect the Viewer back to the USDRead")
         usd.getParam("filename").setValue(scene_path)
         rig.destroy()
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)

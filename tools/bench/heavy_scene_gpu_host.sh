@@ -17,7 +17,15 @@
 #               city twirl      open, then one building twirled open in the Scene Graph panel
 #               lobby           the same building, block and twirl runs on Lobby's own rows
 #               island          building and twirl, last, and only with RAM to spare
-#   fixtures  Only makes the fixtures; needs neither a display nor an AppImage.
+#             and what the viewer draw states have to pass:
+#               draw flat pruned   populate_pruned
+#               draw flat          populate_full, prune_restore, sibling_state, noedit, reveal_cancel,
+#                                  reveal, sibling_shot, orbit10k, boxes_shot
+#               draw city pruned   populate_pruned, then load_all under the pruned root
+#               draw city          populate_full, load_all, then the flat run's scenarios
+#               draw lobby         as draw city, on Lobby's own rows
+#               draw island        populate_full, prune_restore, noedit, under island's RAM guard
+#   fixtures Only makes the fixtures; needs neither a display nor an AppImage.
 #
 # A scenario that outlasts its limit gets a timed_out record and ends its process, so the run moves
 # on: BENCH_SCENARIO_LIMIT_S (default 300) for a load or a twirl, BENCH_OPEN_LIMIT_S (default 1800) for
@@ -255,10 +263,17 @@ launch gate-city-block city "$CITY" open,load BENCH_LOAD_DESCENDANTS=1
 launch gate-city-larger city "$CITY" open,load BENCH_LOAD_PATHS="$LARGE_BLOCKS" BENCH_LOAD_DESCENDANTS=1
 launch gate-city-twirl city "$CITY" open,twirl
 
+DRAW_SCENARIOS="prune_restore,sibling_state,noedit,reveal_cancel,reveal,sibling_shot,orbit10k,boxes_shot"
+launch gate-draw-flat-pruned flat "$FIXTURE_DIR/heavy_flat.usdc" populate_pruned
+launch gate-draw-flat flat "$FIXTURE_DIR/heavy_flat.usdc" "populate_full,$DRAW_SCENARIOS"
+launch gate-draw-city-pruned city "$CITY" populate_pruned,load_all BENCH_LOAD_ALL=1
+launch gate-draw-city city "$CITY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1
+
 if [ -f "$LOBBY" ]; then
     launch gate-lobby-building scene "$LOBBY" open,load
     launch gate-lobby-block scene "$LOBBY" open,load BENCH_LOAD_DESCENDANTS=1
     launch gate-lobby-twirl scene "$LOBBY" open,twirl
+    launch gate-draw-lobby scene "$LOBBY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1
 else
     record_skip gate-lobby "not found by name under '$LOBBY_SRC', $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR or LOBBY_DIR)"
 fi
@@ -275,6 +290,7 @@ elif [ "$AVAILABLE_GB" -ge "$ISLAND_MIN_RAM_GB" ]; then
     echo "island: $AVAILABLE_GB GB available, $ISLAND_MIN_RAM_GB GB wanted (about 12 GB estimated, doubled)"
     launch gate-island-building scene "$ISLAND" open,load
     launch gate-island-twirl scene "$ISLAND" open,twirl
+    launch gate-draw-island scene "$ISLAND" populate_full,prune_restore,noedit
 else
     record_skip gate-island "$AVAILABLE_GB GB available, under the $ISLAND_MIN_RAM_GB GB estimated for it (set ISLAND_MIN_RAM_GB to override)"
 fi

@@ -364,7 +364,8 @@ loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or
 against the scene-graph budgets. Frame rate and time to first frame need a real GPU: without
 `BENCH_GPU=1`, or on a software renderer, they are measured but marked `not_valid`. Stall and
 unrequested-payload checks are valid under llvmpipe. The scenarios are the harness's `ACTIONS` table
-(`open`, `edit`, `orbit`, `load`, `twirl`); `BENCH_SCENARIOS` picks and orders them.
+(`open`, `edit`, `orbit`, `load`, `twirl`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
+and orders them.
 
 `open` reports `first_frame_ms`, from setting the file to the first frame finished after the scene
 reached the viewer.
@@ -381,6 +382,27 @@ in its tree (`BENCH_TWIRL_PATH`; `/World/Block0/B1` on the city), tumbling the v
 loaded and the result is on screen. The stall budget covers the time from the twirl on, not the
 docking. It reports `twirl_ms`, `twirl_rows`, `twirl_mouse_moves`, `twirl_move_gap_ms` and the same
 `load_hold_ms`, `load_edits` and `load_failures`.
+
+The draw state scenarios drive the viewer's `setDrawState`, `clearDrawState` and `setDrawRevealBatch`
+and act on rows `heavy_scene_rows.py` picks, or the fixture's own (`BENCH_ROOT`, `BENCH_BRANCH`,
+`BENCH_SIBLING_ROW`, `BENCH_REVEAL_BRANCH` override them). Each carries `filter_bound`, judged: a viewer
+whose engine lost the filter fails rather than reporting a cheap nothing.
+
+| Scenario | What it does | Reports |
+| --- | --- | --- |
+| `populate_full`, `populate_pruned` | Open the file, in place of `open`; pruned sets `bbox` on the root first | `first_frame_ms`, `prims_added_upstream`, `prims_added_ms`, `hidden_sent` |
+| `load_all` | Loads the root with descendants; `BENCH_LOAD_ALL=1` picks rows from the loaded scene | `load_ms`, `prims_added_upstream`, `load_hold_ms` |
+| `prune_restore` | `bbox` then clear on the branch | `prune_*` and `restore_*`: `apply_ms`, `frame_ms`, `total_ms`; hidden and shown notices |
+| `sibling_state` | The same on one row among many, twice | `sibling_*`; `sibling_resynced_paths` budget 0 |
+| `reveal` | Row `bbox`, then `full` at `BENCH_REVEAL_BATCH` prims per frame, up to `BENCH_REVEAL_MAX_S` | `reveal_prims`, `reveal_frames`, `reveal_fps`, `reveal_worst_frame_ms`, `reveal_complete` |
+| `reveal_cancel` | Starts a reveal at 50 prims per frame, then `bbox` after three frames' worth | `cancel_total_ms`, `cancel_was_active`, `cancel_stopped` |
+| `noedit` | Sets, clears, reveals and cancels on the branch | `stage_edits`, budget 0, counting stage change notices and edit counts |
+| `sibling_shot` | Screen grabs around one change on the sibling row, the branch and the root as control | `*_shot_changed_*`, `*_shot_frame_coverage`, `shot_reading`; `control_changed_pixels` at least 1 |
+| `orbit10k`, `boxes_shot` | `bbox` on the root, then an orbit or a grab with only boxes drawn | `orbit_fps`, `boxes_first_drawn_ms`; skipped until the viewer publishes `natronSceneDrawBoxes` |
+
+`frame_ms` is `total_ms` less `apply_ms`: from the call to the image that shows the change, without the
+render thread's time sending notices. Frame figures are valid only on a real GPU, like the rest.
+`sibling_shot` skips while payloads are unloaded, as nothing is drawn for the control to change.
 
 Every record carries `gl_renderer`, `gl_vendor`, `peak_rss_mb`, `peak_rss_gb` and
 `mem_available_min_gb`. `heavy_scene_watchdog.sh` watches the run from outside Natron, so a hung run
@@ -401,7 +423,8 @@ DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh gate
 
 `gate` runs, one fresh process each: flat open; city open with a one-building load, a one-block load
 with descendants, and 30 blocks with descendants at once, the mouse moving throughout; a city twirl;
-then Lobby's building, block and twirl runs, and Island's building and twirl runs last, skipped under
+the draw state scenarios on flat, on the fully loaded city and on Lobby, with `populate_pruned` runs of
+their own on flat and the city; then Lobby's building, block and twirl runs, and Island's building and twirl runs last, skipped under
 `ISLAND_MIN_RAM_GB`. The results go to `build/bench-gpu/heavy-scene-gate.jsonl`. The script's header
 lists its environment; `SCENE_DIR`, `LOBBY_DIR` and `ISLAND_DIR` say where the scenes are, and Docker
 is only needed while the fixtures are missing.

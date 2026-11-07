@@ -15,6 +15,20 @@
         BENCH_LOAD_DESCENDANTS  1 to load the payloads below those prims too
         BENCH_TWIRL_PATH the payload row the twirl action opens in the Scene Graph panel (default the
                          fixture's twirl_row row)
+        BENCH_LOAD_ALL   1 when the run loads everything (the load_all scenario) before its draw state
+                         scenarios: rows are then picked from the loaded scene
+        BENCH_ROOT       prim path populate_pruned, orbit10k and sibling_shot's control act on (default
+                         the fixture's or scene's root)
+        BENCH_BRANCH     prim path prune_restore, noedit and reveal_cancel act on (default city
+                         /World/Block0, flat /World)
+        BENCH_SIBLING_ROW  prim path sibling_state and sibling_shot act on (default city
+                         /World/Block0/B1, flat /World/c5)
+        BENCH_REVEAL_BRANCH  prim path reveal acts on (default /World)
+        BENCH_REVEAL_BATCH   prims per frame in reveal (default 2000)
+        BENCH_REVEAL_MAX_S   seconds reveal runs before it is cancelled (default 120)
+        BENCH_BOXES      boxes orbit10k asks for (default 10000)
+        BENCH_BOX_DEPTH  path depth of the prims that get a box (default flat 2, city 4, or 3 with
+                         payloads unloaded)
         BENCH_PAYLOAD_MARK  substring of a layer identifier that marks a payload file on flat and city
                          (default heavy_city_payloads)
         BENCH_ROWS_DIR   where a scene's picked rows are cached (default $NATRON_GUI_TEST_OUT/rows)
@@ -25,7 +39,7 @@
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
         BENCH_SCENARIO_LIMIT_S  wall-clock limit of a scenario, from outside Natron (default 300)
-        BENCH_OPEN_LIMIT_S      the same for one that opens the file (default 1800)
+        BENCH_OPEN_LIMIT_S      the same for one that opens or loads the whole file (default 1800)
         BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see heavy_scene_watchdog.sh
         BENCH_RESULT     JSON-lines file the results are appended to
                          (default $NATRON_GUI_TEST_OUT/heavy_scene_bench.jsonl)
@@ -43,9 +57,22 @@ out_of_memory (the memory guard ended the process), aborted (the process ended o
 scenario). heavy_scene_watchdog.sh writes those last three from outside Natron, so a hung run leaves
 a record.
 
+The draw state scenarios drive SceneViewport's setDrawState, clearDrawState and setDrawRevealBatch, and
+wait for natronSceneDrawPresented, which a paint sets only once its image has taken in every change so
+far. populate_full and populate_pruned open the file themselves, once per process, in place of open;
+load_all then loads everything, with draw states on or off. A record's apply_ms is the render thread's
+time sending the notices, total_ms runs from the call to the image that shows it, and frame_ms is the
+one less the other. sibling_shot compares screen grabs around one state change on sibling_row, branch
+and root; the root, which the viewer frames, is the control: if it changes no pixels the state does
+nothing, and if it does, a row that did not is out of frame or ineffective (shot_reading says which,
+from its coverage). It needs geometry on screen, so it skips with payloads unloaded. orbit10k and
+boxes_shot need a viewer that publishes natronSceneDrawBoxes, and skip without one.
+
 Budgets: main-thread stall under 100 ms; first frame under 2 s on a scene with payloads; no payload
-file opened that the action did not request; orbit at or above 30 fps.
+file opened that the action did not request; orbit at or above 30 fps; no stage edit or notice from a
+draw state; the draw filter on this viewer's engine; pixels changed on the control row.
 """
+import hashlib
 import json
 import os
 import re
@@ -55,6 +82,7 @@ import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
+sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "tools", "bench"))
 
 STALL_BUDGET_MS = 100.0
 FIRST_FRAME_BUDGET_MS = 2000.0
@@ -64,18 +92,24 @@ TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
 SCENARIO_LIMIT_S = int(os.environ.get("BENCH_SCENARIO_LIMIT_S", "300"))
 OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
 PICK_LIMIT_S = int(os.environ.get("BENCH_PICK_LIMIT_S", "900"))
-OPEN_SCENARIOS = ("open",)
+OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "load_all")
+DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal", "reveal_cancel", "orbit10k", "boxes_shot",
+                  "sibling_state", "sibling_shot", "noedit")
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
-ROW_RECORD_KEYS = ("root", "prims", "gprims", "instances", "prototypes", "payload_rows", "load_building",
-                   "load_block", "twirl_row", "pick_s")
+ROW_RECORD_KEYS = ("root", "branch", "branch_gprims", "widest_row", "widest_children", "sibling_row", "sibling_kind",
+                   "reveal_branch", "box_depth", "box_depth_rows", "prims", "gprims", "instances", "prototypes",
+                   "payload_rows", "load_building", "load_block", "twirl_row", "pick_s")
+ROW_ENV = {"root": "BENCH_ROOT", "branch": "BENCH_BRANCH", "sibling_row": "BENCH_SIBLING_ROW",
+           "reveal_branch": "BENCH_REVEAL_BRANCH", "twirl_row": "BENCH_TWIRL_PATH"}
 
 try:
-    from PySide6.QtCore import QEvent, QMetaObject, QModelIndex, QPersistentModelIndex, QPoint, QPointF, Q_ARG, QTimer, Qt
-    from PySide6.QtGui import QMouseEvent, QOffscreenSurface, QOpenGLContext
+    from PySide6.QtCore import QEvent, QMetaObject, QModelIndex, QPersistentModelIndex, QPoint, QPointF, QRect, Q_ARG, QTimer, Qt
+    from PySide6.QtGui import QGuiApplication, QImage, QMouseEvent, QOffscreenSurface, QOpenGLContext
     from PySide6.QtWidgets import QApplication, QTreeView
     import NatronEngine
 
-    from guitest import HOST_DISPLAY, OUT, check, finish, plugin_problem, report, require, run, widgets_of
+    from heavy_scene_frame import frame_coverage
+    from guitest import HOST_DISPLAY, OUT, check, finish, plugin_problem, report, require, run, shot, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
     STATE_ROLE = Qt.UserRole + 3
@@ -111,6 +145,11 @@ try:
     label = os.environ.get("BENCH_LABEL", "")
     orbit_s = float(os.environ.get("BENCH_ORBIT_S", "5"))
     load_descendants = os.environ.get("BENCH_LOAD_DESCENDANTS") == "1"
+    load_state = "all" if os.environ.get("BENCH_LOAD_ALL") == "1" else "none"
+    box_count = int(os.environ.get("BENCH_BOXES", "10000"))
+    reveal_batch = int(os.environ.get("BENCH_REVEAL_BATCH", "2000"))
+    reveal_max_s = float(os.environ.get("BENCH_REVEAL_MAX_S", "120"))
+    file_stem = os.path.splitext(os.path.basename(path))[0]
 
     def picker_command():
         beside_natron = os.path.join(os.path.dirname(os.path.realpath("/proc/self/exe")), "natron-python")
@@ -121,10 +160,10 @@ try:
 
     def picked_rows():
         rows_dir = os.environ.get("BENCH_ROWS_DIR", os.path.join(OUT, "rows"))
-        cached = os.path.join(rows_dir, os.path.splitext(os.path.basename(path))[0] + ".json")
+        cached = os.path.join(rows_dir, "%s-load-%s-boxes-%d.json" % (file_stem, load_state, box_count))
         if not os.path.isfile(cached) or os.path.getmtime(cached) < os.path.getmtime(path):
             picker = os.path.join(ROOT, "tools", "bench", "heavy_scene_rows.py")
-            done = subprocess.run(picker_command() + [picker, path, "--out", cached],
+            done = subprocess.run(picker_command() + [picker, path, "--load", load_state, "--boxes", str(box_count), "--out", cached],
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=PICK_LIMIT_S)
             require(done.returncode == 0, "the scene's rows were picked", done.stderr.decode(errors="replace")[-2000:])
         with open(cached) as f:
@@ -132,13 +171,19 @@ try:
 
     def fixture_rows():
         if fixture == "flat":
-            return {"root": "/World"}
-        return {"root": "/World", "load_building": "/World/Block0/B0", "load_block": "/World/Block1", "twirl_row": "/World/Block0/B1"}
+            return {"root": "/World", "branch": "/World", "sibling_row": "/World/c5", "reveal_branch": "/World", "box_depth": 2}
+        return {"root": "/World", "load_building": "/World/Block0/B0", "load_block": "/World/Block1", "twirl_row": "/World/Block0/B1",
+                "branch": "/World/Block0", "sibling_row": "/World/Block0/B1", "reveal_branch": "/World",
+                "box_depth": 4 if load_state == "all" else 3}
 
     rows = picked_rows() if fixture == "scene" else fixture_rows()
     rows["source"] = "picked" if fixture == "scene" else "fixture"
-    if "BENCH_TWIRL_PATH" in os.environ:
-        rows["twirl_row"] = os.environ["BENCH_TWIRL_PATH"]
+    for row_name, variable in ROW_ENV.items():
+        if variable in os.environ:
+            rows[row_name] = os.environ[variable]
+            rows["source"] += "+env"
+    if "BENCH_BOX_DEPTH" in os.environ:
+        rows["box_depth"] = int(os.environ["BENCH_BOX_DEPTH"])
         rows["source"] += "+env"
     default_load = rows.get("load_block" if load_descendants else "load_building") or ""
     load_paths = [p.strip() for p in os.environ.get("BENCH_LOAD_PATHS", default_load).split(",") if p.strip()]
@@ -210,12 +255,14 @@ try:
             self.values = {}
             self.requested_files = []
             self.requested_layers = set()
+            self.all_payloads_requested = False
 
-    def action_open(m):
+    def open_file(m, connected=False):
         t0 = time.time()
         t0_ms = int(t0 * 1000.0)
         usd.getParam("filename").setValue(path)
-        require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
+        if not connected:
+            require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
 
         def scene_frame_drawn():
             # A view with nothing synced yet also finishes frames, so the scene has to have reached it.
@@ -226,6 +273,10 @@ try:
         check(ok, "open: the scene view shows the scene (%r)" % (prop("natronSceneError"),))
         painted = prop("natronSceneLastPaintMs")
         m.values["first_frame_ms"] = round((painted if painted is not None else time.time() * 1000.0) - t0 * 1000.0, 1)
+        return t0_ms
+
+    def action_open(m):
+        yield from open_file(m)
 
     def action_edit(m):
         knob = usd.getParam("frameOffset")
@@ -459,7 +510,353 @@ try:
         m.values["twirl_move_gap_ms"] = longest_gap
         load_results(m, v, "load", edits_before)
 
-    ACTIONS = {"open": action_open, "edit": action_edit, "orbit": action_orbit, "load": action_load, "twirl": action_twirl}
+    def action_load_all(m):
+        require(view() is not None and shown(), "load_all: a scene view is visible and showing the scene")
+        v = view()
+        edits_before = int(v.property("natronSceneLoadEdits") or 0)
+        m.all_payloads_requested = True
+        committed = commit_watch(v)
+        t0 = time.time() * 1000.0
+        require(QMetaObject.invokeMethod(v, "requestLoad", Q_ARG("QStringList", [rows["root"]]), Q_ARG(bool, True)),
+                "load_all: the scene view takes load requests")
+        ok = yield ("until", committed, TIMEOUT_S)
+        check(ok, "load_all: the loaded prims reached the screen (failures %r)" % (v.property("natronSceneLoadFailures"),))
+        m.values["load_ms"] = round(time.time() * 1000.0 - t0, 1)
+        m.values["prims_added_upstream"] = draw_stats().get("inputAdded")
+        m.values["prims_hidden_rules"] = draw_stats().get("ruleCount")
+        load_results(m, v, "load", edits_before)
+
+    def draw_stats():
+        stats = prop("natronSceneDrawStats")
+        return dict(stats) if stats else {}
+
+    def draw_call(v, method, *args):
+        require(QMetaObject.invokeMethod(v, method, *args), "the scene view has %s" % method)
+
+    def presented_after_call(v, label, method, *args):
+        """Calls method and waits for the image that shows it; returns its timings, empty if nothing changed."""
+        posted_before = int(draw_stats().get("posted", 0))
+        started = time.perf_counter()
+        draw_call(v, method, *args)
+        stats = dict(v.property("natronSceneDrawStats") or {})
+        posted = int(stats.get("posted", 0))
+        if posted == posted_before:
+            return {}
+        ok = yield ("until", lambda: int(v.property("natronSceneDrawPresented") or 0) >= posted, TIMEOUT_S)
+        check(ok, "%s: reached the screen" % label)
+        total = (time.perf_counter() - started) * 1000.0
+        apply_ms = float(draw_stats().get("lastApplyMs", 0.0))
+        return {"apply_ms": round(apply_ms, 2), "frame_ms": round(max(total - apply_ms, 0.0), 2), "total_ms": round(total, 2)}
+
+    def set_draw_state(row, state):
+        v = view()
+        require(v is not None, "%s %s: a scene view is visible" % (state, row))
+        timings = yield from presented_after_call(v, "%s %s" % (state, row), "setDrawState", Q_ARG("QString", row), Q_ARG("QString", state))
+        require(bool(timings), "%s %s: the draw state changed something" % (state, row))
+        return timings
+
+    def clear_draw_state(row):
+        v = view()
+        timings = yield from presented_after_call(v, "clear " + row, "clearDrawState", Q_ARG("QString", row))
+        require(bool(timings), "clear %s: the draw state changed something" % row)
+        return timings
+
+    def clear_draw_states():
+        """Every scenario's first step, so that scenarios in one process do not depend on their order."""
+        v = view()
+        require(v is not None, "a scene view is visible")
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
+        yield from presented_after_call(v, "clear all", "clearDrawStates")
+
+    def populate(m, hidden_root):
+        require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
+        # The first render must already find the state, and a scene view exists only with the scene connected.
+        ok = yield ("until", lambda: bool(widgets_of("SceneViewport")), 30)
+        require(ok, "populate: connecting USDRead made a scene view")
+        if hidden_root:
+            target = widgets_of("SceneViewport")[0]
+            draw_call(target, "setDrawState", Q_ARG("QString", rows["root"]), Q_ARG("QString", "bbox"))
+        t0_ms = yield from open_file(m, connected=True)
+        stats = draw_stats()
+        added_at = stats.get("lastInputAddedEpochMs")
+        m.values["prims_added_upstream"] = stats.get("inputAdded")
+        m.values["prims_added_ms"] = round(added_at - t0_ms, 1) if added_at else None
+        m.values["rule_count"] = stats.get("ruleCount")
+        m.values["hidden_sent"] = stats.get("hiddenSent")
+
+    def action_populate_pruned(m):
+        yield from populate(m, True)
+
+    def action_populate_full(m):
+        yield from populate(m, False)
+
+    def action_prune_restore(m):
+        yield from clear_draw_states()
+        heartbeat.start()
+        before = draw_stats()
+        pruned = yield from set_draw_state(rows["branch"], "bbox")
+        restored = yield from clear_draw_state(rows["branch"])
+        after = draw_stats()
+        m.values["branch"] = rows["branch"]
+        m.values["branch_hidden_sent"] = after.get("hiddenSent", 0) - before.get("hiddenSent", 0)
+        m.values["branch_shown_sent"] = after.get("shownSent", 0) - before.get("shownSent", 0)
+        for name, timings in (("prune", pruned), ("restore", restored)):
+            for key, value in timings.items():
+                m.values["%s_%s" % (name, key)] = value
+
+    def action_reveal(m):
+        row = rows["reveal_branch"]
+        yield from clear_draw_states()
+        yield from set_draw_state(row, "bbox")
+        v = view()
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, reveal_batch))
+        heartbeat.start()
+        before = draw_stats()
+        started = time.perf_counter()
+        yield from set_draw_state(row, "full")
+        paints = set()
+        worst = 0.0
+        last = time.perf_counter()
+        deadline = time.time() + reveal_max_s
+        while draw_stats().get("revealing") and time.time() < deadline:
+            yield ("sleep", 0)
+            painted = prop("natronSceneLastPaintMs")
+            if painted is not None and painted not in paints:
+                paints.add(painted)
+                now = time.perf_counter()
+                worst = max(worst, (now - last) * 1000.0)
+                last = now
+        complete = not draw_stats().get("revealing")
+        elapsed = (time.perf_counter() - started) * 1000.0
+        after = draw_stats()
+        if not complete:
+            yield from set_draw_state(row, "bbox")
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
+        m.values["reveal_branch"] = row
+        m.values["reveal_batch"] = reveal_batch
+        m.values["reveal_complete"] = complete
+        m.values["reveal_prims"] = after.get("shownSent", 0) - before.get("shownSent", 0)
+        m.values["reveal_frames"] = len(paints)
+        m.values["reveal_ms"] = round(elapsed, 1)
+        m.values["reveal_fps"] = round(len(paints) * 1000.0 / elapsed, 1) if elapsed > 0 else None
+        m.values["reveal_worst_frame_ms"] = round(worst, 1)
+
+    def action_reveal_cancel(m):
+        row = rows["branch"]
+        cancel_batch = 50
+        yield from clear_draw_states()
+        yield from set_draw_state(row, "bbox")
+        v = view()
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, cancel_batch))
+        heartbeat.start()
+        before = draw_stats().get("shownSent", 0)
+        started = yield from set_draw_state(row, "full")
+
+        def advanced():
+            stats = draw_stats()
+            return stats.get("shownSent", 0) - before >= 3 * cancel_batch or not stats.get("revealing")
+
+        ok = yield ("until", advanced, TIMEOUT_S)
+        check(ok, "reveal_cancel: the reveal advanced")
+        active = draw_stats().get("revealing")
+        prims_before = draw_stats().get("shownSent", 0) - before
+        cancelled = yield from set_draw_state(row, "bbox")
+        settled_at = draw_stats().get("shownSent", 0)
+        yield ("sleep", 200)
+        settled = draw_stats()
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
+        m.values["cancel_branch"] = row
+        m.values["cancel_was_active"] = bool(active)
+        m.values["cancel_total_ms"] = cancelled["total_ms"]
+        m.values["cancel_prims_before"] = prims_before
+        m.values["cancel_stopped"] = not settled.get("revealing") and settled.get("shownSent", 0) == settled_at
+        m.values["reveal_first_frame_ms"] = started["frame_ms"]
+
+    def boxes_drawn():
+        return int(prop("natronSceneDrawBoxes", 0))
+
+    def action_orbit10k(m):
+        yield from clear_draw_states()
+        yield from set_draw_state(rows["root"], "bbox")
+        sent_ms = time.time() * 1000.0
+        ok = yield ("until", lambda: boxes_drawn() > 0, TIMEOUT_S)
+        check(ok, "orbit10k: boxes were drawn")
+        m.values["boxes_requested"] = box_count
+        m.values["boxes_drawn"] = boxes_drawn()
+        m.values["boxes_first_drawn_ms"] = round(time.time() * 1000.0 - sent_ms, 1)
+        heartbeat.start()
+        yield from action_orbit(m)
+
+    def action_boxes_shot(m):
+        yield from clear_draw_states()
+        yield from set_draw_state(rows["root"], "bbox")
+        ok = yield ("until", lambda: boxes_drawn() > 0, TIMEOUT_S)
+        check(ok, "boxes_shot: boxes were drawn")
+        yield ("sleep", 500)
+        m.values["boxes_drawn"] = boxes_drawn()
+        m.values["screenshot"] = shot("boxes_%s.png" % fixture)
+
+    def action_sibling_state(m):
+        row = rows["sibling_row"]
+        yield from clear_draw_states()
+        before = draw_stats()
+        heartbeat.start()
+        for pass_name in ("first", "second"):
+            pruned = yield from set_draw_state(row, "bbox")
+            restored = yield from clear_draw_state(row)
+            for name, timings in (("set", pruned), ("clear", restored)):
+                for key, value in timings.items():
+                    m.values["sibling_%s_%s_%s" % (pass_name, name, key)] = value
+        after = draw_stats()
+        m.values["sibling_row"] = row
+        m.values["sibling_resynced_paths"] = after.get("resyncedPaths", 0) - before.get("resyncedPaths", 0)
+        m.values["sibling_info_only_paths"] = after.get("infoOnlyPaths", 0) - before.get("infoOnlyPaths", 0)
+
+    def viewport_image(file_name, area):
+        return QImage(file_name).copy(area).convertToFormat(QImage.Format_RGBX8888)
+
+    def changed_pixels(first, second):
+        if first.isNull() or first.size() != second.size():
+            return None
+        a = bytes(first.constBits())[:first.sizeInBytes()]
+        b = bytes(second.constBits())[:second.sizeInBytes()]
+        if a == b:
+            return 0
+        return sum(1 for i in range(0, len(a), 4) if a[i:i + 3] != b[i:i + 3])
+
+    def row_bounds(paths):
+        """{"up_axis", "bounds"} for the rows, read from the stage in a picker process; None, with the reason, if it fails."""
+        rows_dir = os.environ.get("BENCH_ROWS_DIR", os.path.join(OUT, "rows"))
+        key = hashlib.sha1("\n".join(sorted(set(paths))).encode()).hexdigest()[:10]
+        cached = os.path.join(rows_dir, "%s-load-%s-bounds-%s.json" % (file_stem, load_state, key))
+        if not os.path.isfile(cached) or os.path.getmtime(cached) < os.path.getmtime(path):
+            picker = os.path.join(ROOT, "tools", "bench", "heavy_scene_rows.py")
+            try:
+                done = subprocess.run(picker_command() + [picker, path, "--load", load_state, "--out", cached, "--bounds"] + sorted(set(paths)),
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=PICK_LIMIT_S)
+            except subprocess.TimeoutExpired:
+                return None, "the bounds query passed %d s" % PICK_LIMIT_S
+            if done.returncode != 0:
+                return None, "the bounds query failed: " + done.stderr.decode(errors="replace")[-300:]
+        with open(cached) as f:
+            return json.load(f), None
+
+    def row_coverage(info, row, v):
+        """The share of the viewport the row's world bound projects onto, and why it is None if it is."""
+        if info is None:
+            return None, "no bounds for the rows"
+        if prop("natronSceneLookThrough"):
+            return None, "the view looks through a camera prim, whose lens is not published"
+        camera = prop("natronSceneFreeCamera")
+        return frame_coverage(info["bounds"].get(row), camera, prop("natronSceneViewMode", "perspective"),
+                              info.get("up_axis") == "Z", v.width() / float(max(1, v.height())))
+
+    def shoot_state_change(m, tag, row, area, info):
+        yield from clear_draw_states()
+        yield ("sleep", 1000)
+        stem = "%s_%s_load-%s" % (tag, file_stem, load_state)
+        before_path = shot(stem + "_0_before.png")
+        before = viewport_image(before_path, area)
+        coverage, why = row_coverage(info, row, view())
+        pruned = yield from set_draw_state(row, "bbox")
+        immediate_path = shot(stem + "_1_set_immediate.png")
+        yield ("sleep", 1000)
+        settled_path = shot(stem + "_2_set_settled.png")
+        restored = yield from clear_draw_state(row)
+        yield ("sleep", 1000)
+        restored_path = shot(stem + "_3_restored.png")
+        m.values[tag + "_shot_row"] = row
+        m.values[tag + "_shot_files"] = [os.path.basename(p) for p in (before_path, immediate_path, settled_path, restored_path)]
+        m.values[tag + "_shot_frame_coverage"] = None if coverage is None else round(coverage, 5)
+        if why:
+            m.values[tag + "_shot_frame_coverage_unavailable"] = why
+        m.values[tag + "_shot_changed_immediate"] = changed_pixels(before, viewport_image(immediate_path, area))
+        m.values[tag + "_shot_changed_settled"] = changed_pixels(before, viewport_image(settled_path, area))
+        m.values[tag + "_shot_changed_restored"] = changed_pixels(before, viewport_image(restored_path, area))
+        m.values[tag + "_shot_set_frame_ms"] = pruned["frame_ms"]
+        m.values[tag + "_shot_clear_frame_ms"] = restored["frame_ms"]
+
+    def read_shots(m, tags):
+        """Whether a state change drew nothing because the state does nothing or because the row is not in frame."""
+        def changed(tag):
+            return max(m.values.get(tag + "_shot_changed_immediate") or 0, m.values.get(tag + "_shot_changed_settled") or 0)
+
+        control = tags["control"]
+        m.values["control_changed_pixels"] = changed(control)
+        if changed(control) == 0:
+            m.values["shot_reading"] = "state_ineffective: the control row %s covering %s of the frame changed no pixels either" % (
+                m.values[control + "_shot_row"], m.values.get(control + "_shot_frame_coverage"))
+            return
+        for tag in tags["rows"]:
+            if tag == control:
+                continue
+            if changed(tag) > 0:
+                reading = "state_visible"
+            else:
+                coverage = m.values.get(tag + "_shot_frame_coverage")
+                if coverage is None:
+                    reading = "no_pixels_changed_but_the_control_did: coverage unknown, so the row may be out of frame"
+                elif coverage < 0.001:
+                    reading = "row_out_of_frame_or_tiny: it projects onto %.5f of the frame and the control changed" % coverage
+                else:
+                    reading = "state_ineffective_on_this_row: it projects onto %.5f of the frame, the control changed and it did not" % coverage
+            m.values[tag + "_shot_reading"] = reading
+        m.values["shot_reading"] = "control_changed"
+
+    def action_sibling_shot(m):
+        v = view()
+        require(v is not None, "sibling_shot: a scene view is visible")
+        corner = v.mapToGlobal(v.rect().topLeft()) - QGuiApplication.primaryScreen().geometry().topLeft()
+        area = QRect(corner.x(), corner.y(), v.width(), v.height())
+        m.values["shot_viewport_pixels"] = v.width() * v.height()
+        # One row of a large scene can cover a few pixels, which cannot tell "drew nothing" from "too
+        # small to see". The branch holds more of the scene, and the root, which the viewer frames,
+        # covers most of the frame; the same state change on the root says what the state can do.
+        shot_rows = [("sibling", rows["sibling_row"])]
+        if rows["branch"] != rows["sibling_row"]:
+            shot_rows.append(("branch", rows["branch"]))
+        control = next((tag for tag, row in shot_rows if row == rows["root"]), None)
+        if control is None:
+            control = "control"
+            shot_rows.append((control, rows["root"]))
+        info, why = row_bounds([row for _, row in shot_rows])
+        if why:
+            m.values["shot_bounds_unavailable"] = why
+        for tag, row in shot_rows:
+            yield from shoot_state_change(m, tag, row, area, info)
+        read_shots(m, {"control": control, "rows": [tag for tag, _ in shot_rows]})
+        # The grabs and the comparison are this harness's cost, not the viewer's.
+        heartbeat.start()
+
+    def action_noedit(m):
+        def edits():
+            stats = draw_stats()
+            return stats.get("stageNotices", 0), stats.get("stageEdits", 0) + stats.get("stageLoadEdits", 0)
+
+        row = rows["branch"]
+        cancel_batch = 50
+        yield from clear_draw_states()
+        heartbeat.start()
+        before = edits()
+        yield from set_draw_state(row, "bbox")
+        yield from clear_draw_state(row)
+        yield from set_draw_state(row, "bbox")
+        draw_call(view(), "setDrawRevealBatch", Q_ARG(int, cancel_batch))
+        yield from set_draw_state(row, "full")
+        yield from set_draw_state(row, "bbox")
+        draw_call(view(), "setDrawRevealBatch", Q_ARG(int, 0))
+        yield from clear_draw_state(row)
+        yield ("sleep", 200)
+        after = edits()
+        m.values["stage_notices"] = after[0] - before[0]
+        m.values["stage_edit_count"] = after[1] - before[1]
+        m.values["stage_edits"] = m.values["stage_notices"] + m.values["stage_edit_count"]
+
+    ACTIONS = {"open": action_open, "edit": action_edit, "orbit": action_orbit, "load": action_load, "twirl": action_twirl,
+               "load_all": action_load_all, "populate_pruned": action_populate_pruned, "populate_full": action_populate_full,
+               "prune_restore": action_prune_restore, "reveal": action_reveal, "reveal_cancel": action_reveal_cancel,
+               "orbit10k": action_orbit10k, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
+               "sibling_shot": action_sibling_shot, "noedit": action_noedit}
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:
@@ -477,6 +874,18 @@ try:
             return "the scene has no payloads to load"
         if name == "twirl" and not rows.get("twirl_row"):
             return "the scene has no payload row to twirl"
+        has_payloads = fixture == "city" or bool(rows.get("payload_rows"))
+        if name == "load_all" and not has_payloads:
+            return "the scene has no payloads to load"
+        needs_row = {"populate_pruned": "root", "prune_restore": "branch", "noedit": "branch", "reveal_cancel": "branch",
+                     "reveal": "reveal_branch", "sibling_state": "sibling_row", "sibling_shot": "sibling_row",
+                     "orbit10k": "box_depth", "boxes_shot": "box_depth"}
+        if name in needs_row and rows.get(needs_row[name]) is None:
+            return "the scene has no such row: no prim here holds the geometry %s needs" % name
+        if name == "sibling_shot" and has_payloads and load_state == "none":
+            return "needs BENCH_LOAD_ALL=1 and load_all: with payloads unloaded no row draws anything to compare"
+        if name in ("orbit10k", "boxes_shot") and prop("natronSceneDrawBoxes") is None:
+            return "this viewer does not publish natronSceneDrawBoxes: it draws no boxes"
         return None
 
     scene_payload_layers = set(rows.get("payload_assets", ()))
@@ -491,7 +900,9 @@ try:
         if "first_frame_ms" in m.values:
             budgets["first_frame_ms"] = verdict(m.values["first_frame_ms"], FIRST_FRAME_BUDGET_MS, True, valid=gpu,
                                                 applicable=(fixture == "city" or bool(rows.get("payload_rows"))))
-        if new_layers is None:
+        if m.all_payloads_requested:
+            budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_applicable"}
+        elif new_layers is None:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_valid"}
         else:
             unrequested = sorted(i for i in new_layers if is_payload_layer(i) and i not in m.requested_layers
@@ -500,11 +911,20 @@ try:
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
         if "orbit_fps" in m.values:
             budgets["orbit_fps"] = verdict(m.values["orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu)
+        if "stage_edits" in m.values:
+            budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True)
+        if "sibling_resynced_paths" in m.values:
+            budgets["sibling_resynced_paths"] = verdict(m.values["sibling_resynced_paths"], 0, True)
+        if "filter_bound" in m.values:
+            budgets["filter_bound"] = verdict(1 if m.values["filter_bound"] else 0, 1, False)
+        if "control_changed_pixels" in m.values:
+            budgets["control_changed_pixels"] = verdict(m.values["control_changed_pixels"], 1, False)
         return budgets
 
     common_fields = {
         "label": label,
         "fixture": fixture,
+        "load_state": load_state,
         "file": os.path.basename(path),
         "gpu": bool(gpu),
         "gl_renderer": gl_renderer_name,
@@ -590,6 +1010,8 @@ try:
             before = loaded_layers()
             heartbeat.start()
             yield from ACTIONS[name](m)
+            if name in DRAW_SCENARIOS:
+                m.values["filter_bound"] = bool(draw_stats().get("filterBound"))
             yield ("sleep", 200)
             stall_ms = heartbeat.stop()
             after = loaded_layers()

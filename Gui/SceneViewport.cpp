@@ -73,6 +73,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -129,6 +130,7 @@
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
+#include "Gui/SceneDrawFilter.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGuides.h"
 #include "Gui/SceneTransformTarget.h"
@@ -581,6 +583,22 @@ const GLenum StormGLStateGuard::kCaps[StormGLStateGuard::kNumCaps] = {
     GL_FRAMEBUFFER_SRGB, GL_PRIMITIVE_RESTART, GL_PRIMITIVE_RESTART_FIXED_INDEX, GL_PROGRAM_POINT_SIZE,
     GL_DEPTH_CLAMP, GL_TEXTURE_CUBE_MAP_SEAMLESS, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_RASTERIZER_DISCARD
 };
+
+// Published so that a harness can hold the viewer to display states never editing the stage.
+class StageNoticeCounter
+    : public TfWeakBase {
+public:
+    void onObjectsChanged(const UsdNotice::ObjectsChanged& notice)
+    {
+        ++count;
+        resyncedPaths += notice.GetResyncedPaths().size();
+        infoOnlyPaths += notice.GetChangedInfoOnlyPaths().size();
+    }
+
+    std::atomic<U64> count { 0 };
+    std::atomic<U64> resyncedPaths { 0 };
+    std::atomic<U64> infoOnlyPaths { 0 };
+};
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -628,6 +646,29 @@ struct SceneViewportRenderer::Implementation {
     // The counts the engine last took in, by whichever render.
     std::atomic<U64> absorbedEditCount { 0 };
     std::atomic<U64> absorbedLoadEditCount { 0 };
+
+    // Draw state deltas from the main thread, queued because applying one sends Hydra notices that
+    // it must not wait for. drawRules is what a filter on a new engine starts from. drawMutex is
+    // never held across a Hydra call, so the main thread's post cannot block on one.
+    struct QueuedDrawDelta {
+        SceneDrawDelta delta;
+        std::size_t revealBatch;
+    };
+    mutable std::mutex drawMutex;
+    std::vector<QueuedDrawDelta> drawQueue;
+    DrawFilterStats drawStats;
+    std::atomic<U64> drawPosted { 0 };
+    std::atomic<U64> drawApplied { 0 };
+    std::atomic<U64> drawAbsorbed { 0 };
+    // A reveal shows one step per presented image; drawRevealStepDue says that image has been seen.
+    std::atomic<bool> drawRevealing { false };
+    std::atomic<bool> drawRevealStepDue { true };
+    std::size_t drawRevealBatch = 0;
+    SceneDrawFilter::Rules drawRules;
+    SceneDrawFilter::WeakPtr drawFilter;
+    StageNoticeCounter stageNotices;
+    bool stageNoticesRegistered = false;
+
     std::atomic<bool> zUp;
     std::atomic<double> metersPerUnit;
     std::atomic<double> timeCodesPerSecond;
@@ -1146,6 +1187,8 @@ struct SceneViewportRenderer::Implementation {
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
+        SceneDrawFilter::registerForAllRenderers();
+        (void)SceneDrawFilter::takeAppendedInstanceId();
         {
             TfErrorMark mark;
             engine.reset(new UsdImagingGLEngine(parameters));
@@ -1162,6 +1205,10 @@ struct SceneViewportRenderer::Implementation {
 
                 return false;
             }
+        }
+        drawFilter = SceneDrawFilter::find(SceneDrawFilter::takeAppendedInstanceId());
+        if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
+            filter->seedRules(drawRules);
         }
         // Without a render output Storm draws straight into the bound framebuffer and the colour
         // correction task, which only acts on the color AOV, leaves scene-linear values on screen.
@@ -1195,6 +1242,8 @@ struct SceneViewportRenderer::Implementation {
         StormGLSection section;
 
         engine.reset();
+        drawFilter = SceneDrawFilter::WeakPtr();
+        drawRevealing = false;
         engineHeld = false;
         backgroundFrame.imageKept = false;
     }
@@ -1206,6 +1255,71 @@ struct SceneViewportRenderer::Implementation {
             absorbedEditCount = sceneStage->getEditCount();
             absorbedLoadEditCount = sceneStage->getLoadEditCount();
         }
+        drawAbsorbed = drawApplied.load();
+        if (!stageNoticesRegistered && sceneStage && sceneStage->getStage()) {
+            stageNoticesRegistered = true;
+            TfNotice::Register(TfCreateWeakPtr(&stageNotices), &StageNoticeCounter::onObjectsChanged, UsdStageWeakPtr(sceneStage->getStage()));
+        }
+        refreshDrawStats();
+    }
+
+    // Needs stageMutex. Reads the filter, which only the thread holding the engine may touch.
+    void refreshDrawStats()
+    {
+        SceneDrawFilter* filter = get_pointer(drawFilter);
+        std::lock_guard<std::mutex> lock(drawMutex);
+        drawStats.filterBound = (filter != nullptr);
+        drawStats.revealing = drawRevealing;
+        drawStats.ruleCount = drawRules.size();
+        if (!filter) {
+            return;
+        }
+        drawStats.inputAdded = filter->getInputAddedCount();
+        drawStats.inputRemoved = filter->getInputRemovedCount();
+        drawStats.inputDirtied = filter->getInputDirtiedCount();
+        drawStats.hiddenSent = filter->getHiddenSentCount();
+        drawStats.shownSent = filter->getShownSentCount();
+        if (drawStats.inputAdded != 0) {
+            // The harness compares this with its own wall clock, and the filter keeps a steady one.
+            const auto sinceAdded = SceneDrawFilter::Clock::now() - filter->getLastInputAddedTime();
+            const auto addedAt = std::chrono::system_clock::now() - std::chrono::duration_cast<std::chrono::system_clock::duration>(sinceAdded);
+            drawStats.lastInputAddedEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(addedAt.time_since_epoch()).count();
+        }
+    }
+
+    // Needs stageMutex, the GL context current and an engine, between renders: the notices reach the
+    // render index directly.
+    void serviceDrawFilter()
+    {
+        std::vector<QueuedDrawDelta> queued;
+        U64 posted = 0;
+        {
+            std::lock_guard<std::mutex> lock(drawMutex);
+            queued.swap(drawQueue);
+            posted = drawPosted;
+        }
+        SceneDrawFilter* filter = get_pointer(drawFilter);
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        for (const QueuedDrawDelta& entry : queued) {
+            SceneDrawFilter::applyToRules(entry.delta, &drawRules);
+            drawRevealBatch = entry.revealBatch;
+            if (filter) {
+                filter->applyDelta(entry.delta, entry.revealBatch);
+            }
+            drawRevealStepDue = true;
+        }
+        std::size_t stepped = 0;
+        if (filter && filter->isRevealing() && drawRevealStepDue.exchange(false)) {
+            stepped = filter->stepReveal(drawRevealBatch);
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        drawRevealing = filter && filter->isRevealing();
+        drawApplied = posted;
+        if (!queued.empty() || (stepped != 0)) {
+            std::lock_guard<std::mutex> lock(drawMutex);
+            drawStats.lastApplyMs = ms;
+        }
+        refreshDrawStats();
     }
 
     // The GL state both kinds of frame start from.
@@ -1890,7 +2004,65 @@ SceneViewportRenderer::needsBackgroundFrame() const
         return false;
     }
 
-    return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount);
+    return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
+        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue);
+}
+
+void
+SceneViewportRenderer::postDrawDelta(const SceneDrawDelta& delta,
+                                     std::size_t revealBatch)
+{
+    std::lock_guard<std::mutex> lock(_imp->drawMutex);
+    _imp->drawQueue.push_back(Implementation::QueuedDrawDelta { delta, revealBatch });
+    ++_imp->drawPosted;
+}
+
+void
+SceneViewportRenderer::applyPendingDrawDeltas()
+{
+    // Before the viewer lock, the order every reader takes them in.
+    SceneWriteBarrier::ReadScope read;
+    {
+        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        // Without an engine the queue waits for the frame that makes one.
+        if (_imp->engine) {
+            StormGLStateGuard guard;
+            StormGLSection section;
+            section.collectWith(_imp->engine->GetHgi());
+            _imp->serviceDrawFilter();
+        }
+    }
+    if (_imp->exclusiveOwed.exchange(false) && _imp->readEnded) {
+        _imp->readEnded();
+    }
+}
+
+bool
+SceneViewportRenderer::isDrawRevealing() const
+{
+    return _imp->drawRevealing;
+}
+
+void
+SceneViewportRenderer::noteDrawRevealPresented()
+{
+    _imp->drawRevealStepDue = true;
+}
+
+SceneViewportRenderer::DrawFilterStats
+SceneViewportRenderer::getDrawFilterStats() const
+{
+    std::lock_guard<std::mutex> lock(_imp->drawMutex);
+    DrawFilterStats stats = _imp->drawStats;
+    stats.posted = _imp->drawPosted;
+    stats.absorbed = _imp->drawAbsorbed;
+    stats.stageEdits = _imp->stageEditCount;
+    stats.stageLoadEdits = _imp->stageLoadEditCount;
+    stats.stageNotices = _imp->stageNotices.count;
+    stats.resyncedPaths = _imp->stageNotices.resyncedPaths;
+    stats.infoOnlyPaths = _imp->stageNotices.infoOnlyPaths;
+
+    return stats;
 }
 
 bool
@@ -1938,6 +2110,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         return;
     }
     section.collectWith(_imp->engine->GetHgi());
+    _imp->serviceDrawFilter();
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
 
     const UsdStageRefPtr stage = _imp->currentStage();
@@ -3006,6 +3179,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         return true;
     }
     section.collectWith(_imp->engine->GetHgi());
+    _imp->serviceDrawFilter();
 
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
@@ -3614,6 +3788,8 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
+    SceneDrawStates drawStates;
+    std::size_t drawRevealBatch = 0;
     QString error;
     bool glInitialized = false;
 
@@ -4517,6 +4693,86 @@ SceneViewport::requestLoad(const QStringList& paths,
 }
 
 void
+SceneViewport::publishDrawStats()
+{
+    const SceneViewportRenderer::DrawFilterStats stats = _imp->renderer.getDrawFilterStats();
+    QVariantMap published;
+    published[QString::fromUtf8("filterBound")] = stats.filterBound;
+    published[QString::fromUtf8("revealing")] = stats.revealing;
+    published[QString::fromUtf8("lastApplyMs")] = stats.lastApplyMs;
+    published[QString::fromUtf8("ruleCount")] = QVariant::fromValue<qulonglong>(stats.ruleCount);
+    published[QString::fromUtf8("posted")] = QVariant::fromValue<qulonglong>(stats.posted);
+    published[QString::fromUtf8("absorbed")] = QVariant::fromValue<qulonglong>(stats.absorbed);
+    published[QString::fromUtf8("inputAdded")] = QVariant::fromValue<qulonglong>(stats.inputAdded);
+    published[QString::fromUtf8("inputRemoved")] = QVariant::fromValue<qulonglong>(stats.inputRemoved);
+    published[QString::fromUtf8("inputDirtied")] = QVariant::fromValue<qulonglong>(stats.inputDirtied);
+    published[QString::fromUtf8("hiddenSent")] = QVariant::fromValue<qulonglong>(stats.hiddenSent);
+    published[QString::fromUtf8("shownSent")] = QVariant::fromValue<qulonglong>(stats.shownSent);
+    published[QString::fromUtf8("lastInputAddedEpochMs")] = QVariant::fromValue<qlonglong>(stats.lastInputAddedEpochMs);
+    published[QString::fromUtf8("stageEdits")] = QVariant::fromValue<qulonglong>(stats.stageEdits);
+    published[QString::fromUtf8("stageLoadEdits")] = QVariant::fromValue<qulonglong>(stats.stageLoadEdits);
+    published[QString::fromUtf8("stageNotices")] = QVariant::fromValue<qulonglong>(stats.stageNotices);
+    published[QString::fromUtf8("resyncedPaths")] = QVariant::fromValue<qulonglong>(stats.resyncedPaths);
+    published[QString::fromUtf8("infoOnlyPaths")] = QVariant::fromValue<qulonglong>(stats.infoOnlyPaths);
+    setProperty("natronSceneDrawStats", published);
+}
+
+void
+SceneViewport::sendDrawDelta(const SceneDrawDelta& delta)
+{
+    if (!delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()) {
+        _imp->renderer.postDrawDelta(delta, _imp->drawRevealBatch);
+        if (_imp->usesRenderThread) {
+            Implementation* imp = _imp.get();
+            _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
+        }
+    }
+    for (const SceneDrawLoadRequest& load : delta.loads) {
+        requestLoad(QStringList(QString::fromStdString(load.path)), load.withDescendants);
+    }
+    publishState();
+    update();
+}
+
+bool
+SceneViewport::setDrawState(const QString& path,
+                            const QString& state)
+{
+    const std::string pathString = path.toStdString();
+    SceneDrawStateEnum parsed = eSceneDrawStateFull;
+    if (!sceneDrawStateFromName(state.toStdString(), &parsed) || !SdfPath::IsValidPathString(pathString) || !SdfPath(pathString).IsAbsoluteRootOrPrimPath()) {
+        return false;
+    }
+    sendDrawDelta(_imp->drawStates.setState(pathString, parsed));
+
+    return true;
+}
+
+void
+SceneViewport::clearDrawState(const QString& path)
+{
+    sendDrawDelta(_imp->drawStates.clearState(path.toStdString()));
+}
+
+void
+SceneViewport::clearDrawStates()
+{
+    sendDrawDelta(_imp->drawStates.clearAllStates());
+}
+
+QString
+SceneViewport::resolvedDrawState(const QString& path) const
+{
+    return QString::fromUtf8(sceneDrawStateName(_imp->drawStates.resolve(path.toStdString()).state));
+}
+
+void
+SceneViewport::setDrawRevealBatch(int prims)
+{
+    _imp->drawRevealBatch = std::size_t((std::max)(prims, 0));
+}
+
+void
 SceneViewport::requestUnload(const QStringList& paths)
 {
     _imp->renderer.requestStageUnload(toStdPaths(paths));
@@ -4602,6 +4858,7 @@ SceneViewport::publishState()
     setProperty("natronSceneLoadsPending", _imp->renderer.hasPendingStageLoads());
     setProperty("natronSceneLoadEdits", QVariant::fromValue<qulonglong>(_imp->renderer.getStageLoadEditCount()));
     setProperty("natronSceneLoadHoldMs", _imp->renderer.getLastStageLoadHoldMs());
+    publishDrawStats();
     {
         QVariantList failures;
         for (const std::pair<std::string, std::string>& failure : _imp->renderer.getStageLoadFailures()) {
@@ -5535,8 +5792,16 @@ SceneViewport::paintGL()
         return;
     }
     _imp->presentedScene = _imp->renderer.hasScene();
+    if (_imp->renderer.isDrawRevealing()) {
+        _imp->renderer.noteDrawRevealPresented();
+        update();
+    }
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
     publishTransformState();
+    publishDrawStats();
+    // A paint gets here only once the frame has taken in every delta posted so far, unlike the stats,
+    // which also change on the way to the screen.
+    setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(_imp->renderer.getDrawFilterStats().absorbed));
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());

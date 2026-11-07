@@ -57,6 +57,7 @@ class QWheelEvent;
 NATRON_NAMESPACE_ENTER
 
 class SceneStage;
+struct SceneDrawDelta;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -222,6 +223,42 @@ public:
      * only drawing.
      **/
     bool needsBackgroundFrame() const;
+
+    /**
+     * @brief Queues a draw state change for this renderer's engine; needsBackgroundFrame() holds
+     * until a frame has taken it in. revealBatch 0 shows everything in one go. Main thread; takes no
+     * lock a frame or a sync holds.
+     **/
+    void postDrawDelta(const SceneDrawDelta& delta, std::size_t revealBatch);
+
+    /** @brief Render thread. Sends what postDrawDelta() queued to the engine's filter. */
+    void applyPendingDrawDeltas();
+
+    bool isDrawRevealing() const;
+
+    /** @brief The image of the last reveal step is on screen, so the next step may go. */
+    void noteDrawRevealPresented();
+
+    struct DrawFilterStats {
+        bool filterBound = false;
+        bool revealing = false;
+        double lastApplyMs = 0.;
+        std::size_t ruleCount = 0;
+        unsigned long long posted = 0;
+        unsigned long long absorbed = 0;
+        unsigned long long inputAdded = 0;
+        unsigned long long inputRemoved = 0;
+        unsigned long long inputDirtied = 0;
+        unsigned long long hiddenSent = 0;
+        unsigned long long shownSent = 0;
+        long long lastInputAddedEpochMs = 0;
+        unsigned long long stageEdits = 0;
+        unsigned long long stageLoadEdits = 0;
+        unsigned long long stageNotices = 0;
+        unsigned long long resyncedPaths = 0;
+        unsigned long long infoOnlyPaths = 0;
+    };
+    DrawFilterStats getDrawFilterStats() const;
 
     /**
      * @brief Copies what renderBackgroundFrame() needs for a width x height frame. False when no
@@ -790,6 +827,18 @@ public Q_SLOTS:
     // Drops the load requests no batch has taken yet; a batch under way finishes.
     void cancelPendingLoads();
 
+    /**
+     * @brief This viewer's draw state on a prim path, by script name: bbox, children, full, fullLoad
+     * or hidden. False if the path or the name is not one. Never edits a stage or waits on Hydra.
+     **/
+    bool setDrawState(const QString& path, const QString& state);
+    void clearDrawState(const QString& path);
+    void clearDrawStates();
+    // The state a path resolves to, effective or inherited.
+    QString resolvedDrawState(const QString& path) const;
+    // What a change shows goes out this many prims per frame; 0 shows it at once.
+    void setDrawRevealBatch(int prims);
+
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
@@ -885,6 +934,8 @@ private:
 
     // Main thread: starts the frame that takes in a stage change, if one is due and can start.
     void startBackgroundFrame();
+    void sendDrawDelta(const SceneDrawDelta& delta);
+    void publishDrawStats();
 
     void onBackgroundFrameDone();
 

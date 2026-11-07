@@ -72,8 +72,9 @@ A stall is any stretch where the main thread doesn't service a 10 ms heartbeat t
 50 ms (`NATRON_STALL_THRESHOLD_MS`). The stall monitor runs only when `NATRON_STALL_LOG` names a
 file, and `run.sh` sets it.
 
-The per-op timeout is checked between events. A single event that hangs is caught only by the
-whole-run timeout.
+The per-op timeout is checked between events. A single event that doesn't return within twice that
+plus 60 s (300 s by default) ends the run with exit 3 and a `timeout` record. With no stalls logged
+over that time, the event is waiting in a nested event loop, usually a modal dialog, not computing.
 
 Ops whose count is larger than the graph are capped at N/2: at N=300, `paste_1000` and
 `delete_1000` move 150 nodes. The record's `count` field gives the real figure.

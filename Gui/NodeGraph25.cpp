@@ -543,13 +543,13 @@ NodeGraph::selectAllNodes(bool onlyInVisiblePortion)
         QRectF r = visibleSceneRect();
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
             QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
-            if ( r.intersects(bbox) && (*it)->isActive() && (*it)->isVisible() ) {
+            if (r.intersects(bbox) && (*it)->isVisible()) {
                 nodes.push_back(*it);
             }
         }
     } else {
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-            if ( (*it)->isActive() && (*it)->isVisible() ) {
+            if ((*it)->isVisible()) {
                 nodes.push_back(*it);
             }
         }

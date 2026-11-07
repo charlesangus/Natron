@@ -67,9 +67,9 @@ WATCHDOG_S = int(os.environ.get("GUI_BENCH_WATCHDOG_S", str(6 * 3600)))
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
+    from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent
-    from PySide6.QtWidgets import QAbstractButton, QApplication, QMainWindow
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QMainWindow, QWidget
 
     import gen_graph
     import guitest as gt
@@ -175,8 +175,24 @@ try:
         return None
 
     def root_graph():
-        graphs = [w for w in gt.widgets_of("NodeGraph") if w.isVisible()]
+        """The project's graph. A group's graph is named after the group; the root's has no name."""
+        graphs = [w for w in gt.widgets_of("NodeGraph") if not w.objectName()]
         return graphs[0] if graphs else None
+
+    def front_root_graph():
+        """Brings the project's graph to the front of its pane. Once a graph has had focus, creating
+        a Group opens the group's graph as a new current tab, so from the second graph of a run on
+        the generator leaves the last group in front of the root."""
+        graph = root_graph()
+        pane = graph.parentWidget()
+        bars = [w for w in pane.findChildren(QWidget) if gt.class_name(w) == "TabBar"]
+        if not graph.isVisible() and len(bars) == 1:
+            for index in range(bars[0].property("count")):
+                QMetaObject.invokeMethod(bars[0], "setCurrentIndex", Q_ARG(int, index))
+                QApplication.processEvents()
+                if graph.isVisible():
+                    break
+        gt.require(graph.isVisible(), "the project's node graph is in front of its pane")
 
     def activate():
         win = main_window()
@@ -454,7 +470,10 @@ try:
             yield None
 
         def after(ctx, st, rep):
+            selected = len(app.getSelectedNodes())
             app.clearSelection()
+            if selected < len(ctx.processing):
+                raise RuntimeError("select all selected %d of %d nodes" % (selected, len(ctx.processing)))
         return {"events": events, "after": after}
 
     def op_rubber_band():
@@ -492,6 +511,8 @@ try:
         def after(ctx, st, rep):
             st["selected"] = len(app.getSelectedNodes())
             app.clearSelection()
+            if not st["selected"]:
+                raise RuntimeError("the rubber band selected nothing")
 
         def teardown(ctx, st):
             st["record"] = {"selected": st.get("selected", 0)}
@@ -898,6 +919,7 @@ try:
         gt.require(summary["nodes"] == n, "%s n=%d: generated %d processing nodes" % (topology, n, summary["nodes"]))
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
+        front_root_graph()
         path = os.path.join(workdir, "%s-%d.ntpz" % (topology, n))
         gt.require(app.saveProjectAs(path), "%s n=%d: saved to %s" % (topology, n, path))
         ctx = Ctx(topology, n, summary, path)
@@ -928,7 +950,7 @@ try:
         return path
 
     def steps():
-        ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)
+        ok = yield ("until", lambda: root_graph() is not None and root_graph().isVisible(), STARTUP_TIMEOUT_S)
         gt.require(ok, "the node graph is up")
         gt.close_all_panels()
         if not STALL_LOG:

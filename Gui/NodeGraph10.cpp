@@ -221,8 +221,9 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
 
     // first test normal nodes, then backdrops.
     // reason is https://github.com/MrKepzie/Natron/issues/1689
+    // isActive() would be the scene's activation, which resetting a project leaves off for good.
     for (std::set<NodeGui*>::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( (*it)->isVisible() && (*it)->isActive() ) {
+        if ((*it)->isVisible()) {
             BackdropGui* isBd = dynamic_cast<BackdropGui*>(*it);
             if (!isBd) {
                 *node = *it;
@@ -232,21 +233,21 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
         }
     }
    for (std::set<NodeGui*>::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( (*it)->isVisible() && (*it)->isActive() ) {
-            QPointF localPoint = (*it)->mapFromScene( mapToScene(mousePosViewport) );
-            BackdropGui* isBd = dynamic_cast<BackdropGui*>(*it);
-            if (isBd) {
-                if ( isBd->isNearbyNameFrame(localPoint) ) {
-                    *node = *it;
+       if ((*it)->isVisible()) {
+           QPointF localPoint = (*it)->mapFromScene(mapToScene(mousePosViewport));
+           BackdropGui* isBd = dynamic_cast<BackdropGui*>(*it);
+           if (isBd) {
+               if (isBd->isNearbyNameFrame(localPoint)) {
+                   *node = *it;
 
-                    return eNearbyItemBackdropFrame;
-                } else if ( isBd->isNearbyResizeHandle(localPoint) ) {
-                    *node = *it;
+                   return eNearbyItemBackdropFrame;
+               } else if (isBd->isNearbyResizeHandle(localPoint)) {
+                   *node = *it;
 
-                    return eNearbyItemBackdropResizeHandle;
-                }
-            }
-        }
+                   return eNearbyItemBackdropResizeHandle;
+               }
+           }
+       }
     }
     if (!edges.empty()) {
         QPointF scenePos = mapToScene(mousePosViewport);

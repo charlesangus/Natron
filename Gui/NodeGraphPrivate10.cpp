@@ -161,8 +161,20 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         }
 
         if (newNodesList.size() > 1) {
-            ///Only compute datas if we're pasting more than 1 node
-            _publicInterface->getGui()->getApp()->getProject()->forceComputeInputDependentDataOnAllTrees();
+            // Only what is downstream of a pasted node can depend on it, and the batch reaches that
+            // from the pasted nodes, so a paste costs what was pasted, whatever the project's size.
+            NodesList pasted;
+            for (NodesGuiList::const_iterator it = newNodesList.begin(); it != newNodesList.end(); ++it) {
+                const NodePtr& node = (*it)->getNode();
+                pasted.push_back(node);
+                if (NodeGroup* isGroup = dynamic_cast<NodeGroup*>(node->getEffectInstance().get())) {
+                    isGroup->getNodes_recursive(pasted, true);
+                }
+            }
+            Node::InputEditBatch batch(_publicInterface->getGui()->getApp());
+            for (NodesList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+                (*it)->refreshInputRelatedDataAfterInputChange();
+            }
         } else if (newNodesList.size() == 1) {
             newNodesList.front()->getNode()->getEffectInstance()->refreshMetadataSideEffects();
         }

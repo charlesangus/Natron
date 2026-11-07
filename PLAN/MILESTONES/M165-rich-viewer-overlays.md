@@ -95,6 +95,7 @@ Filed 2026-10-23 at the user's request.
 
 ## Decisions
 
+- M165 approved by the user 2026-11-06; merged as 678067822 (#204).
 - 2026-11-07 — Review (PR #204) closed: superseded passes can't publish, masks are bytes (168 MB at most at 24 MP, from 672 MB), playback stop restores them, a failed pass draws nothing. Run on 71d08a2ff: all tests, both GUI scripts. An earlier run left 94 pixels on three views; it never recurred.
 - 2026-11-06 — P3.T1, P3.T2: one exclusive Mask View choice per node rather than darktable's separate buttons, drawn over the image with no dimmed backdrop. The 25% screenshot's line is pure (255,0,0), one column wide: it reads grey only when viewed downscaled. Found, not changed: `kClipMagicInpaint` is 1.0 where darktable's inpaint `highlights_clip_magics` entry is 0.987, so Inpaint's clip threshold differs from its Clipped view; changing it alters renders, so it's a user call at the UAT.
 - 2026-11-06 — Phase 165.2 build passes: all tests, and the GUI script shows the mask line in 20 of 20 rows at 25% zoom with the block drawn. In the 25% screenshot the line looks grey rather than red to the eye; P3.T5's parity audit checks its colour.

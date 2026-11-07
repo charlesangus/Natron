@@ -52,6 +52,7 @@ Deps: M80 - Native RAW Support.
 
 ## Decisions
 
+- M296 approved by the user 2026-11-06; merged as 2e50bb08b (#199).
 - 2026-11-06 — Freshness check: P2.T1 and P2.T2 retargeted to `RawDecodeSupport_Test.cpp` and `NativeReadRaw_Test.cpp`, since `RawDevelop_Test.cpp` tests the chain builder.
 - 2026-11-06 — rawspeed already applies both crops: `DngDecoder::handleMetadata` applies ActiveArea (`DngDecoder.cpp:537-539`), then DefaultCropOrigin and DefaultCropSize from its top-left (`:541-576`), silently ignoring out-of-range values. No code fix needed. The fixtures can't tell the two apart: the linear DNG's DefaultCrop equals its ActiveArea and the small reference DNGs carry neither.
 - 2026-11-06 — The Unverified assumption is closed: `resolveSettings` reads only the input's RoD and metadata, never this node's own metadata, so it doesn't re-enter metadata computation.

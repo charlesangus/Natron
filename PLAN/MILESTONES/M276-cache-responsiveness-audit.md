@@ -26,6 +26,7 @@ Measure why a downstream edit re-renders unchanged upstream work, and record the
 
 ## Decisions
 
+- M276 baseline run on the user's host received 2026-11-06 (Radeon RX 7900 XTX) in build/bench/edit-latency/: fit about 610 ms, 100% about 47 ms; four or five upstream executions per edit; GPU on or off makes no difference.
 - 2026-11-06 — Attribution on the software host (16 configs, GPU off): panel closed, 50 executions per config, `not_admitted`; panel open, 40, the new `behind_hit`: the task graph runs a task's dependencies without asking whether its consumer is cached, so `RawInputColor` hits while the four raw nodes above it run. Hashes never moved. M300 - Unified Tiered Cache's gate needs `behind_hit` gone and none of its tasks covers it: `/cat-plan` should add a pruning task there (recommended). `gpu_region_member`, `placement_iscached_miss`, eviction and the drag's draft switch are unmeasured: no region formed under lavapipe.
 - 2026-11-01 — **Broadened from "Cache Responsiveness Audit" (user):** the RAW → Grade report and the GPU-caching question fold in here. The fixes move to M300 - Unified Tiered Cache and M301 - GPU Cache Tier, so this milestone measures and baselines, and fixes only the independent placement-key bug.
 - 2026-11-05 — Freshness check: M276.P2.T1 rebriefed; the lambda's location moved and the test needs a real app and cache.

@@ -320,7 +320,7 @@ future core work has solid ground to build on.
 | M203 | ONNX Inference Backend | done | - |  | E16 | | | [M203-onnx-inference-backend.md](PLAN/MILESTONES/M203-onnx-inference-backend.md) |
 | M204 | AI Model Manager | done | M203 | bosley-native-nodes | E16 | | | [M204-ai-model-manager.md](PLAN/MILESTONES/M204-ai-model-manager.md) |
 | M205 | Object Mask To Roto | done | M203, M204, M146 | bosley-native-nodes | E16 | | | [M205-object-mask-to-roto.md](PLAN/MILESTONES/M205-object-mask-to-roto.md) |
-| M206 | Neural Raw Denoise | doing | M203, M204 | misty-marten | E16 | | | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
+| M206 | Neural Raw Denoise | done | M203, M204 | misty-marten | E16 | | | [M206-neural-raw-denoise.md](PLAN/MILESTONES/M206-neural-raw-denoise.md) |
 | M207 | Neural Denoise | done | M203, M204 | bosley-native-nodes | E16 | | | [M207-neural-denoise.md](PLAN/MILESTONES/M207-neural-denoise.md) |
 | M208 | Neural Upscale | done | M203, M204, M207 | bosley-native-nodes | E16 | | | [M208-neural-upscale.md](PLAN/MILESTONES/M208-neural-upscale.md) |
 | M209 | Edge-Aware Filter Library | done | - | bosley-native-nodes | E17 | | | [M209-edge-aware-filter-library.md](PLAN/MILESTONES/M209-edge-aware-filter-library.md) |

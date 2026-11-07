@@ -14,8 +14,8 @@ the Un-tone-mapped view so screen colours are the image's. The checks:
   - USDProjectUV1 (Scene = USDCard1, Camera = USDCamera1) has its projection knobs and its panel
     opens.
 
-Screenshots: m234_world.png, m234_assigned.png, m234_geometry_moved.png, m234_projectuv_panel.png (full window), each
-scene shot with a _viewer.png crop.
+Screenshots: m234_world.png, m234_assigned.png, m234_geometry_moved.png, m234_two_placements_held.png,
+m234_two_placements.png, m234_projectuv_panel.png (full window), each scene shot with a _viewer.png crop.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -314,20 +314,25 @@ try:
         require(viewer.connectInput(0, assign), "connect the Viewer to USDAssignMaterial1")
 
         def sides_of_a_gap():
-            """The left and right hues around the view's empty middle, or None until two cards show."""
+            """The left and right hues around the widest empty run of columns, or None until two cards show."""
             points = card_pixels(coloured_pixels())
             if len(points) < 20:
                 return None
-            xs = [p[0] for p in points]
-            middle = (min(xs) + max(xs)) / 2.0
-            band = (max(xs) - min(xs)) * 0.05
-            if any(abs(x - middle) < band for x in xs):
+            # The nearer card spans more of the view, so the gap is not at the middle of the two cards' span.
+            xs = sorted(set(p[0] for p in points))
+            width, start = max((b - a, a) for a, b in zip(xs, xs[1:])) if len(xs) > 1 else (0, xs[0])
+            if width < (xs[-1] - xs[0]) * 0.1:
                 return None
-            return (set(h for x, _y, h in points if x < middle), set(h for x, _y, h in points if x > middle))
+            left = [h for x, _y, h in points if x <= start]
+            right = [h for x, _y, h in points if x > start]
+            if len(left) < 20 or len(right) < 20:
+                return None
+            return (set(left), set(right))
 
         ok = yield ("until", lambda: scene_drawn() and sides_of_a_gap() is not None, POLL_TIMEOUT_S)
         check(ok, "both assigned cards show the projected squares")
         yield ("sleep", SETTLE_MS)
+        save_shots("m234_two_placements_held")
         sides = sides_of_a_gap()
         require(sides is not None, "the two cards still show apart")
         check(sides[0] == set("rb") and sides[1] == set("rb"),

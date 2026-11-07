@@ -901,7 +901,8 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
             const PXR_NS::UsdGeomPrimvar framePrimvar = geometryProjection.framePrimvar.empty()
                 ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
                 : PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(geometryProjection.framePrimvar));
-            const bool hasFrame = framePrimvar.HasValue();
+            // HasValue() on a primvar with no attribute throws instead of answering false.
+            const bool hasFrame = !geometryProjection.framePrimvar.empty() && framePrimvar.HasValue();
             const bool varies = cameraVaries || meshMightVary(mesh) || (hasFrame && framePrimvar.ValueMightBeTimeVarying());
             const PXR_NS::UsdPrim over = out->OverridePrim(prim.GetPath());
             if (!over) {

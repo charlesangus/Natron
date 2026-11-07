@@ -219,6 +219,9 @@ public:
     // entry at a time, so a test wanting several files calls this after each.
     void evictEverything()
     {
+        // A write holds its entry and eviction skips a held entry, so one a lookup reclaimed
+        // mid-write would otherwise stay in the table past this call.
+        EXPECT_TRUE(tier->waitIdle(30000));
         cache.setMaximumCacheSize(1024);
         cache.setMaximumInMemorySize(1.);
         cache.clearExceedingEntries();
@@ -597,6 +600,14 @@ TEST(CacheDiskTierTest, LookupDuringADemotionReturnsTheEntry)
         session.cache.clearExceedingEntries();
         session.cache.setMaximumCacheSize(64ULL * 1024 * 1024);
         session.cache.setMaximumInMemorySize(1.);
+
+        // A refused entry was never demoted, which is a different failure from losing a demotion.
+        {
+            std::vector<CacheEntryPtr> demoting;
+            CacheDiskFileInfo info;
+            session.tier->peekDemoting(keyOf(hash).getHash(), &demoting);
+            ASSERT_TRUE(!demoting.empty() || session.fileOf(hash, &info)) << round;
+        }
 
         // Whether this finds the entry queued, mid-write or published, the pixels must be the same.
         const ImagePtr found = session.lookup(hash);

@@ -775,6 +775,7 @@ struct CacheDiskTier::Imp {
     struct ProbeStripe {
         std::mutex mutex;
         std::unordered_map<std::uint64_t, ProbeEntry> entries;
+        std::uint64_t generation = 0;
     };
 
     struct GateStripe {
@@ -1018,6 +1019,7 @@ struct CacheDiskTier::Imp {
         std::lock_guard<std::mutex> lock(stripe.mutex);
 
         stripe.entries.erase(base);
+        ++stripe.generation;
     }
 
     static std::vector<std::string> withVariant(const std::vector<std::string>& names,
@@ -1043,8 +1045,10 @@ struct CacheDiskTier::Imp {
     {
         ProbeStripe& stripe = probes[base % kProbeStripes];
         const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+        std::uint64_t listedAtGeneration;
         {
             std::lock_guard<std::mutex> lock(stripe.mutex);
+            listedAtGeneration = stripe.generation;
             const auto found = stripe.entries.find(base);
             if ((found != stripe.entries.end()) && (now < found->second.expiry)) {
                 std::vector<std::string> matches = withVariant(found->second.names, variant);
@@ -1064,6 +1068,11 @@ struct CacheDiskTier::Imp {
         std::vector<std::string> matches = withVariant(names, variant);
 
         std::lock_guard<std::mutex> lock(stripe.mutex);
+        // A listing that overlapped a publish may lack its file. Stored after the publish's
+        // invalidation, it would answer a miss for the file once the demoting entry has gone.
+        if (stripe.generation != listedAtGeneration) {
+            return matches;
+        }
         if (stripe.entries.size() >= kMaxProbesPerStripe) {
             stripe.entries.clear();
         }
@@ -1259,6 +1268,9 @@ CacheDiskTier::Imp::writeEntry(const AbstractCacheEntryBase& entry,
     if (readFileInfoAt(finalPath, &existing) && (existing.renderedPixels >= snapshot.renderedPixels)) {
         header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
         writeStatsAt(finalPath, stats);
+        // A peer's publish invalidated only the peer's probes, and this entry is about to stop being
+        // the lookup's answer.
+        forgetBase(snapshot.identity.base);
 
         return eWriteOutcomeAlreadyThere;
     }
@@ -1267,6 +1279,7 @@ CacheDiskTier::Imp::writeEntry(const AbstractCacheEntryBase& entry,
     const WriteOutcomeEnum outcome = writeFile(entry, item, snapshot, stats, shardDir, name, &addedBytes);
     if (outcome == eWriteOutcomeAlreadyThere) {
         header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
+        forgetBase(snapshot.identity.base);
 
         return outcome;
     }
@@ -1473,9 +1486,11 @@ CacheDiskTier::Imp::finishDemotion(const WriteItemPtr& item)
         std::lock_guard<std::mutex> lock(queueMutex);
         demotionsInFlight.erase(std::remove(demotionsInFlight.begin(), demotionsInFlight.end(), item), demotionsInFlight.end());
         queuedBytes -= item->bytes;
-        demoting.fetch_sub(1);
         entry = std::move(item->entry);
     }
+    // Eviction skips a held entry, so waitIdle returning must mean no write still holds one.
+    entry.reset();
+    demoting.fetch_sub(1);
 }
 
 void
@@ -2789,6 +2804,7 @@ CacheDiskTier::forgetProbes()
     for (Imp::ProbeStripe& stripe : _imp->probes) {
         std::lock_guard<std::mutex> lock(stripe.mutex);
         stripe.entries.clear();
+        ++stripe.generation;
     }
 }
 

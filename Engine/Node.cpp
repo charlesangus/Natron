@@ -9326,7 +9326,7 @@ Node::refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited)
             // metadata comparison on the viewer's own answer would not run for a format change
             // upstream, so it is forced. One call per viewer reached, not per node.
             isViewer->onChannelsSelectorRefreshed();
-            isViewer->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), true);
+            isViewer->refreshCurrentFrameMetadata(reached[i]->getApp()->getTimeLine()->currentFrame(), true);
         }
     }
 }

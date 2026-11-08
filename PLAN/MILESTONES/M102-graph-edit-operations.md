@@ -83,25 +83,25 @@ Scouting facts (2026-10-11, `main` at `10e0accd5`; re-check line numbers, since 
 
 ## Phase 102.2: Operation model
 
-- [ ] M102.P2.T1 — Operation data types and YAML encoding
+- [x] M102.P2.T1 — Operation data types and YAML encoding
   - files: new `Serialization/Ops/GraphOp.h`, new `Serialization/Ops/GraphOp.cpp`, new `Serialization/Yaml/GraphOpYaml.cpp`, `Serialization/CMakeLists.txt`, new `Tests/Serialization/GraphOpYaml_Test.cpp`
   - approach: implement the variant in **Design**. Encoding reuses the M16 node, knob, roto and tracker encoders. Unknown `op:` values decode to an error result, not an exception that aborts the whole batch.
   - verify: compiled at P2.T5. Every operation kind round-trips encode → decode with field equality; a batch of mixed operations round-trips; an unknown op gives an error entry and the rest still decode.
   - size: M
 
-- [ ] M102.P2.T2 — Apply operations to a plain snapshot
+- [x] M102.P2.T2 — Apply operations to a plain snapshot
   - files: new `Serialization/Ops/ApplyOps.h`, new `Serialization/Ops/ApplyOps.cpp`, new `Tests/Serialization/ApplyOps_Test.cpp`
   - approach: `applyOps(ProjectSerialization&, const std::vector<GraphOp>&) → std::vector<OpResult>`. Find nodes by ID across nested `children`. Deleting a group removes its subtree. `SetInput` to a missing source gives target-missing.
   - verify: compiled at P2.T5. Each operation kind is applied to a built snapshot and checked; a missing target returns the right result and leaves the snapshot unchanged.
   - size: M
 
-- [ ] M102.P2.T3 — Two-way snapshot diff
+- [x] M102.P2.T3 — Two-way snapshot diff
   - files: new `Serialization/Ops/SnapshotDiff.h`, new `Serialization/Ops/SnapshotDiff.cpp`, new `Tests/Serialization/SnapshotDiff_Test.cpp`
   - approach: implement `diffSnapshots` from **Design**: deletes, then creates parent-first, then knob, rename, UI and user-knob changes, then every `SetInput` last. Compare knobs by `KnobSerialization` equality, so default-valued knobs that are absent on both sides are equal.
   - verify: compiled at P2.T5. For 10 hand-built pairs (add, delete, rename, rewire, animate, nested group add and delete, roto change), `applyOps(a, diffSnapshots(a, b)) == b`, and diffing identical snapshots gives no operations.
   - size: M
 
-- [ ] M102.P2.T4 — Apply operations to the live graph
+- [x] M102.P2.T4 — Apply operations to the live graph
   - files: new `Engine/GraphOpApply.h`, new `Engine/GraphOpApply.cpp`, `Engine/CMakeLists.txt`, new `Tests/GraphOpApply_Test.cpp`
   - approach: map each operation onto the existing Engine paths:
     - create through `createNode` with a serialization, keeping its ID;
@@ -116,7 +116,7 @@ Scouting facts (2026-10-11, `main` at `10e0accd5`; re-check line numbers, since 
   - verify: compiled at P2.T5. A gtest applies every operation kind to a live project and checks state through `toSerialization`; a missing target returns target-missing and does not crash.
   - size: L
 
-- [ ] M102.P2.T5 — Phase 102.2 build and test checkpoint
+- [x] M102.P2.T5 — Phase 102.2 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.

@@ -246,7 +246,6 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-
     // Moves the centre to the middle of the source's region of definition, or of the project
     // format without one.
     void resetCenter(double time);

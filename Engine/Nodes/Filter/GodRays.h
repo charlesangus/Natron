@@ -169,7 +169,6 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,

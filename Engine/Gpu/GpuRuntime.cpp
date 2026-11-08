@@ -10,6 +10,8 @@
 
 #include <unistd.h>
 
+#include "Global/FloatingPointExceptions.h"
+
 namespace gpu {
 
 void
@@ -453,6 +455,11 @@ GpuRuntime::build()
     generation_.store(++nextGeneration, std::memory_order_release);
     if (GpuStatus s = GpuDevice::create(options_.device, device_); !s) {
         return s;
+    }
+    if (device_->info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+        // lavapipe compiles shaders on whichever thread drives it, with Mesa's compilers raising float
+        // exceptions. Disarmed before the transfer threads start, as they inherit this thread's float environment.
+        boost_adaptbx::floating_point::disarm_trapping_for_thread();
     }
     if (GpuStatus s = GpuTransfer::create(*device_, options_.transfer, transfer_); !s) {
         teardown();

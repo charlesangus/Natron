@@ -546,6 +546,17 @@ OSGLContext::isSoftwareRendererName(const std::string& rendererName)
     return false;
 }
 
+bool
+OSGLContext::disarmFpTrapsForSoftwareRenderer(const std::string& rendererName)
+{
+    if (!isSoftwareRendererName(rendererName)) {
+        return false;
+    }
+    boost_adaptbx::floating_point::disarm_trapping_for_thread();
+
+    return true;
+}
+
 GLRendererPick
 OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
                           const GpuDeviceSummary* chosenOrNull,

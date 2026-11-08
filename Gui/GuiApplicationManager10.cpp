@@ -47,7 +47,6 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QScreen>
 #include <QSettings>
 #include <QWidget>
-#include <QWindow>
 #include <QtGlobal> // for Q_OS_*
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -60,6 +59,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
@@ -246,49 +246,8 @@ public:
     }
 
 protected:
-
     bool event(QEvent* e);
-
-#ifdef DEBUG
-    bool notify(QObject* receiver, QEvent* e) override;
-#endif
 };
-
-#ifdef DEBUG
-bool
-Application::notify(QObject* receiver, QEvent* e)
-{
-    // Qt creates the QOpenGLWidget contexts and the top-level backing-store context lazily while it
-    // handles these events, and Mesa's llvmpipe raises FE_INVALID compiling its blitter shaders as each
-    // is created. Only windows and QOpenGLWidgets are guarded: other widgets never create a context.
-    switch (e->type()) {
-    case QEvent::Show:
-    case QEvent::ShowToParent:
-    case QEvent::Resize:
-    case QEvent::Paint:
-    case QEvent::UpdateRequest:
-    case QEvent::Expose:
-    case QEvent::WindowChangeInternal:
-    case QEvent::ParentChange: {
-        bool guarded = qobject_cast<QWindow*>(receiver) != nullptr;
-        if (!guarded) {
-            const QWidget* widget = qobject_cast<QWidget*>(receiver);
-            guarded = widget && (widget->isWindow() || widget->inherits("QOpenGLWidget"));
-        }
-        if (guarded) {
-            const boost_adaptbx::floating_point::FpTrapGuard noTraps;
-
-            return QApplication::notify(receiver, e);
-        }
-        break;
-    }
-    default:
-        break;
-    }
-
-    return QApplication::notify(receiver, e);
-}
-#endif
 
 bool
 Application::event(QEvent* e)
@@ -376,7 +335,15 @@ GuiApplicationManager::initializeQApp(int &argc,
 bool
 GuiApplicationManager::checkGLContextRequirements()
 {
-    const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(GuiGLRequirements::probe());
+    const GuiGLRequirements::ContextInfo info = GuiGLRequirements::probe();
+#ifdef DEBUG
+    // Qt makes the GUI's contexts lazily inside window events, and a software rasterizer compiles shaders
+    // in each, so on one the GUI thread cannot scope its guards to the driver calls.
+    if (OSGLContext::disarmFpTrapsForSoftwareRenderer(info.renderer.toStdString())) {
+        qDebug().noquote() << "Float traps are off on the GUI thread: the GL renderer" << info.renderer << "is software.";
+    }
+#endif
+    const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(info);
     if (verdict.accepted) {
         HydraGLContextQt::install();
 

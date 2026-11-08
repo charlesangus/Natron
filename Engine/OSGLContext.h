@@ -224,6 +224,12 @@ public:
     static bool isSoftwareRendererName(const std::string& rendererName);
 
     /**
+     * @brief When @p rendererName is a software rasterizer, turns float trapping off for the calling thread for
+     * the rest of its life in a debug build; returns whether it is one.
+     **/
+    static bool disarmFpTrapsForSoftwareRenderer(const std::string& rendererName);
+
+    /**
      * @brief Returns true if a context is currently set on the current thread.
      **/
     static bool threadHasACurrentContext();

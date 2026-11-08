@@ -136,6 +136,17 @@ namespace boost_adaptbx { namespace floating_point {
       }
   };
 
+  /** Turns trapping off for the calling thread from here on in a debug build; does nothing in a release
+      build. For a thread that drives a software GL or Vulkan driver, whose shader compilers raise these
+      exceptions at times the caller does not control. A scoped guard alive on the thread restores the
+      traps when it ends, so call it outside any. */
+  inline void disarm_trapping_for_thread()
+  {
+#ifdef DEBUG
+      trap_exceptions(false, false, false);
+#endif
+  }
+
   /** Keeps trapping off for the calling thread while it lives in a debug build; does nothing in a
       release build. Third-party maths (OpenColorIO LUT inversion, OIIO colour probing) legitimately
       raises these exceptions, and render threads trap them in debug builds. */

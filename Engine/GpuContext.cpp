@@ -485,6 +485,12 @@ GpuContext::initialize()
         rtOptions.transfer.stripBytes = VkDeviceSize(32) << 20;
         gpu::GpuStatus status = gpu::GpuRuntime::create(rtOptions, runtime);
         const std::chrono::steady_clock::time_point created = std::chrono::steady_clock::now();
+#ifdef DEBUG
+        if (status && runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+            qDebug().noquote() << "Float traps are off on the GPU threads: the Vulkan device"
+                               << QString::fromStdString(runtime->device().info().name) << "is a CPU device.";
+        }
+#endif
         if (!status) {
             failure = status.message.empty() ? "no usable Vulkan device" : status.message;
         } else if (!isDeviceAllowed(_mode, runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU)) {

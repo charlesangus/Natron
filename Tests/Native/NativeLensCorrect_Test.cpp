@@ -508,6 +508,8 @@ protected:
     // A Source reaching 16 pixels past a 32 x 24 format on the left and right, 12 below and above.
     NodePtr makeOverscanSource()
     {
+        // resetProject's format used up the one-shot auto-set; without re-arming it the format is only added.
+        getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
         getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth / 2, kParitySourceHeight / 2, "nativeLensCorrect32x24", 1.));
         NodePtr source = makeSource();
         if (source) {
@@ -543,6 +545,8 @@ protected:
     // A flat Source the size of a 3000 x 2000 format, so that a window is small beside it.
     NodePtr makeLargeSource()
     {
+        // resetProject's format used up the one-shot auto-set; without re-arming it the format is only added.
+        getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
         getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kLargeWidth, kLargeHeight, "nativeLensCorrect3000x2000", 1.));
         NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
         EXPECT_TRUE(bool(constant));

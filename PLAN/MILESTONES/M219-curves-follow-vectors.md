@@ -181,6 +181,7 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
 ## Decisions
 
 - 2026-11-07 — Follow report (user): a clean follow reports silently in a node message the user can read; only a follow that stopped early, was aborted or lost its source opens a dialog. Roto exposes `isFollowingVectors()` and `getLastFollowReport()` for scripts.
+- 2026-11-08 — Follow report (user): a follow the user stops themselves (the follow button pressed again, or an abort from the UI) opens no dialog; it leaves the quiet node message describing what was done (the frames followed so far). Dialogs stay only for real problems: a tracking failure (stopped on a point it could not track, or a pass stop), a read error, and a lost source.
 
 - 2026-11-07 — User: with no key at or before the current frame, Forward tracks backward from the nearest later key (no held-pose seed). Backward mirrors Forward: it bridges and blends with an earlier key, and with no key at or after the current frame it tracks forward from the nearest earlier key. Bridge blend is smoothstep, not linear, since linear jumps in velocity at each anchor and the Scope already specified it.
 

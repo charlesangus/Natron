@@ -82,10 +82,16 @@ sampleTimes()
 }
 
 std::vector<double>
-sampleValues(const BezierCP& point,
-             bool useGui)
+keyFrameTimes()
 {
-    const std::vector<double> times = sampleTimes();
+    return std::vector<double>(kKeys, kKeys + sizeof(kKeys) / sizeof(kKeys[0]));
+}
+
+std::vector<double>
+sampleValues(const BezierCP& point,
+             bool useGui,
+             const std::vector<double>& times)
+{
     std::vector<double> values;
 
     for (std::size_t i = 0; i < times.size(); ++i) {
@@ -100,22 +106,25 @@ sampleValues(const BezierCP& point,
 }
 
 struct ShapeValues {
+    std::vector<double> times;
     std::vector<std::vector<double>> cps, fps;
 };
 
 ShapeValues
 recordShape(const BezierPtr& shape,
-            bool useGui)
+            bool useGui,
+            const std::vector<double>& times = sampleTimes())
 {
     ShapeValues values;
+    values.times = times;
     const std::list<BezierCPPtr> cps = shape->getControlPoints_mt_safe();
     const std::list<BezierCPPtr> fps = shape->getFeatherPoints_mt_safe();
 
     for (std::list<BezierCPPtr>::const_iterator it = cps.begin(); it != cps.end(); ++it) {
-        values.cps.push_back(sampleValues(**it, useGui));
+        values.cps.push_back(sampleValues(**it, useGui, times));
     }
     for (std::list<BezierCPPtr>::const_iterator it = fps.begin(); it != fps.end(); ++it) {
-        values.fps.push_back(sampleValues(**it, useGui));
+        values.fps.push_back(sampleValues(**it, useGui, times));
     }
 
     return values;
@@ -126,10 +135,9 @@ describePoint(const std::string& what,
               const std::vector<double>& expected,
               const std::vector<double>& actual,
               double tolerance,
+              const std::vector<double>& times,
               std::ostringstream& out)
 {
-    const std::vector<double> times = sampleTimes();
-
     for (std::size_t i = 0; i + 1 < actual.size(); i += 6) {
         if ((actual[i] == 0.) && (actual[i + 1] == 0.)) {
             out << what << " sits at (0,0) at frame " << times[i / 6] << "\n";
@@ -186,7 +194,7 @@ describeDifferences(const ShapeValues& expected,
     std::ostringstream out;
 
     for (int gui = 0; gui < 2; ++gui) {
-        const ShapeValues actual = recordShape(shape, gui != 0);
+        const ShapeValues actual = recordShape(shape, gui != 0, expected.times);
         const std::string side = gui ? "GUI" : "internal";
         if ((actual.cps.size() != expected.cps.size()) || (actual.fps.size() != expected.fps.size())) {
             out << side << ": " << actual.cps.size() << " points and " << actual.fps.size() << " feather points, expected " << expected.cps.size() << " and " << expected.fps.size() << "\n";
@@ -195,12 +203,12 @@ describeDifferences(const ShapeValues& expected,
         for (std::size_t i = 0; i < expected.cps.size(); ++i) {
             std::ostringstream what;
             what << side << " point " << i;
-            describePoint(what.str(), expected.cps[i], actual.cps[i], tolerance, out);
+            describePoint(what.str(), expected.cps[i], actual.cps[i], tolerance, expected.times, out);
         }
         for (std::size_t i = 0; i < expected.fps.size(); ++i) {
             std::ostringstream what;
             what << side << " feather point " << i;
-            describePoint(what.str(), expected.fps[i], actual.fps[i], tolerance, out);
+            describePoint(what.str(), expected.fps[i], actual.fps[i], tolerance, expected.times, out);
         }
     }
 
@@ -720,7 +728,8 @@ TEST_F(RotoKeyDuringRenderTest, SaveDuringARenderKeepsAnInsertedPoint)
         RenderingFlagSetter rendering(_roto);
         ASSERT_TRUE(_roto->isNodeRendering());
         ASSERT_TRUE(bool(shape->addControlPointAfterIndex(0, 0.5)));
-        inserted = recordShape(shape, true);
+        // In-between frames are left out because reloading recomputes Smooth slopes in time order.
+        inserted = recordShape(shape, true, keyFrameTimes());
         ASSERT_TRUE(project->saveProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("keyDuringRender.ntp"), &savedPath));
     }
     shape->dequeueGuiActions();

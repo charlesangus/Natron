@@ -158,7 +158,7 @@ future core work has solid ground to build on.
 | M46 | Labelmaker Annotations | blocked | M56, M118 |  | E10 | | | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
 | M56 | Visual And Menu Polish | done | M44, M55 | amber-falcon | E10 | | | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
 | M45 | Native Tab Menu | done | M55 | amber-falcon | E10 | | | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
-| M25 | GL Init FP Guard | todo |  |  | E2 | | | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
+| M25 | GL Init FP Guard | doing |  | bosley-native-nodes | E2 | | | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M29 | ~~Independent Repository~~ | cancelled |  |  | E2 | | | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M68 | Headless GL EGL | todo |  |  | E2 | | | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M19 | USD/Hydra Foundation | done | M17, M161, M107 |  | E9 | | | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
@@ -289,7 +289,7 @@ future core work has solid ground to build on.
 | M169 | Pipelined Strip Member Timing | done | M107, M91 | bosley-faux | E5 | | | [M169-pipelined-strip-member-timing.md](PLAN/MILESTONES/M169-pipelined-strip-member-timing.md) |
 | M173 | Global Mode For Value Knobs | doing | M119 | bosley-native-nodes | E10 | |  | [M173-global-mode-for-value-knobs.md](PLAN/MILESTONES/M173-global-mode-for-value-knobs.md) |
 | M174 | Wayland Support | blocked | - |  | E1 | | | [M174-wayland-support.md](PLAN/MILESTONES/M174-wayland-support.md) |
-| M175 | Build Script Jobs And Test Legs | todo | - |  | E2 | | | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
+| M175 | Build Script Jobs And Test Legs | doing | - | bosley-native-nodes | E2 | | | [M175-build-script-jobs-and-test-legs.md](PLAN/MILESTONES/M175-build-script-jobs-and-test-legs.md) |
 | M176 | Splice-Vertical Regression | done | - |  | E10 | | | [M176-splice-vertical-regression.md](PLAN/MILESTONES/M176-splice-vertical-regression.md) |
 | M178 | Render Context Core | done | M167 |  | E13 | | | [M178-render-context-core.md](PLAN/MILESTONES/M178-render-context-core.md) |
 | M179 | Render Graph Continuation | todo | M178 |  | E6 | | | [M179-render-graph-continuation.md](PLAN/MILESTONES/M179-render-graph-continuation.md) |
@@ -377,7 +377,7 @@ future core work has solid ground to build on.
 | M287 | Utility Renderer Displacement | todo | M289 |  | E19 | | | [M287-utility-renderer-displacement.md](PLAN/MILESTONES/M287-utility-renderer-displacement.md) |
 | M291 | Defocus Reference Harness | todo | M131, M133 |  | E3 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
 | M292 | Traced Lens Bokeh | todo | M131, M133 |  | E3 | F13 | | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
-| M293 | ZDefocus Debug Outputs | todo | M131, M133 |  | E3 | F13 | | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
+| M293 | ZDefocus Debug Outputs | doing | M131, M133 | bosley-native-nodes | E3 | F13 | | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
 | M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E3 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
 | M296 | Raw Prepare Output Format | done | M80 | misty-marten | E3 | | | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
@@ -409,7 +409,7 @@ future core work has solid ground to build on.
 | M326 | Legible Viewer Warning Banner | done | - | misty-marten | E10 | F10 | | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
 | M338 | Viewer Input Keys And Locks | done | - | misty-marten | E10 | F10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
 | M339 | File Knob Reload Button Cleanup | done | M52 | misty-marten | E10 | F10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |
-| M340 | Viewer Gain Gamma On Rendered Pixels | todo | M234 |  | E9 | | | [M340-viewer-gain-gamma-on-rendered-pixels.md](PLAN/MILESTONES/M340-viewer-gain-gamma-on-rendered-pixels.md) |
+| M340 | Viewer Gain Gamma On Rendered Pixels | doing | M234 | bosley-native-nodes | E9 | | | [M340-viewer-gain-gamma-on-rendered-pixels.md](PLAN/MILESTONES/M340-viewer-gain-gamma-on-rendered-pixels.md) |
 | M341 | Per-Placement Geometry Projection | doing | M234 | bosley-native-nodes | E9 | F9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
 | M342 | Sticky Projections On Deforming Geometry | doing | M234 | bosley-native-nodes | E9 | F9 | | [M342-sticky-projections-deforming-geometry.md](PLAN/MILESTONES/M342-sticky-projections-deforming-geometry.md) |
 | M343 | Live Textures In Delegates | doing | M233, M251, M252, M254 | bosley-native-nodes | E9 | F9 | | [M343-live-textures-in-delegates.md](PLAN/MILESTONES/M343-live-textures-in-delegates.md) |

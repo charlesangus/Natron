@@ -136,10 +136,27 @@ struct ViewerKnobValues {
     }
 };
 
+// The display, view and look menus can hold a name the config lacks, which only the entry ID keeps.
+KnobChoicePtr
+displayTransformKnob(const KnobIPtr& knob)
+{
+    const std::string name = knob->getName();
+    if ((name != kViewerParamDisplay) && (name != kViewerParamView) && (name != kViewerParamLook)) {
+        return KnobChoicePtr();
+    }
+
+    return std::dynamic_pointer_cast<KnobChoice>(knob);
+}
+
 ViewerKnobValues
 readViewerKnob(const KnobIPtr& knob)
 {
     ViewerKnobValues values;
+    if (KnobChoicePtr choice = displayTransformKnob(knob)) {
+        values.strings.push_back(choice->getActiveEntry().id);
+
+        return values;
+    }
     const int nDims = knob->getDimension();
 
     for (int i = 0; i < nDims; ++i) {
@@ -164,6 +181,13 @@ writeViewerKnob(const KnobIPtr& knob,
 {
     const ViewerKnobValues current = readViewerKnob(knob);
 
+    if (KnobChoicePtr choice = displayTransformKnob(knob)) {
+        if (!values.strings.empty() && (values != current)) {
+            ViewerInstance::selectDisplayTransformEntry(choice, values.strings[0]);
+        }
+
+        return;
+    }
     for (std::size_t i = 0; i < values.strings.size() && i < current.strings.size(); ++i) {
         if (values.strings[i] != current.strings[i]) {
             dynamic_cast<KnobStringBase*>(knob.get())->setValue(values.strings[i], ViewSpec::all(), (int)i);

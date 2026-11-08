@@ -148,14 +148,8 @@ ViewerTab::getDisplayTransform(std::string* display,
                                std::string* view,
                                std::string* look) const
 {
-    if (display) {
-        *display = _imp->viewerValue<std::string>(kViewerParamDisplay, std::string());
-    }
-    if (view) {
-        *view = _imp->viewerValue<std::string>(kViewerParamView, std::string());
-    }
-    if (look) {
-        *look = _imp->viewerValue<std::string>(kViewerParamLook, std::string());
+    if (_imp->viewerNode) {
+        _imp->viewerNode->getDisplayTransform(display, view, look);
     }
 }
 
@@ -164,9 +158,9 @@ ViewerTab::setDisplayTransform(const std::string& display,
                                const std::string& view,
                                const std::string& look)
 {
-    _imp->setViewerValue<std::string>(kViewerParamDisplay, display);
-    _imp->setViewerValue<std::string>(kViewerParamView, view);
-    _imp->setViewerValue<std::string>(kViewerParamLook, look);
+    if (_imp->viewerNode) {
+        _imp->viewerNode->setDisplayTransform(display, view, look);
+    }
 }
 
 void
@@ -179,6 +173,7 @@ ViewerTab::refreshDisplayTransformMenus()
 
     std::string resolvedDisplay, resolvedView, resolvedLook;
     if (_imp->viewerNode) {
+        _imp->viewerNode->refreshDisplayTransformChoices();
         _imp->viewerNode->getResolvedDisplayTransform(&resolvedDisplay, &resolvedView, &resolvedLook);
     }
     // The View menu lists the views of the display the viewer renders with.

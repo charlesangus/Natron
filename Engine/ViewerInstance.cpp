@@ -69,6 +69,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/MemoryFile.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OfxEffectInstance.h"
@@ -449,6 +450,20 @@ knobChangesDisplay(const std::string& name)
     return (name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamDisplay) || (name == kViewerParamView) || (name == kViewerParamLook);
 }
 
+const char kViewerLookNoneID[] = "none";
+
+// The name a display, view or look menu holds; empty for its first entry, Project default or None.
+std::string
+displayTransformName(const KnobChoicePtr& knob)
+{
+    if (!knob) {
+        return std::string();
+    }
+    const std::string id = knob->getActiveEntry().id;
+
+    return ((id == OcioSpaceKnobs::projectDefaultID()) || (id == kViewerLookNoneID)) ? std::string() : id;
+}
+
 class SetterKnobWrites {
 public:
     explicit SetterKnobWrites(int* depth)
@@ -536,18 +551,20 @@ ViewerInstance::initializeKnobs()
                                                           tr("Draws a checkerboard under input A instead of black."));
     k.checkerboard = checkerboard;
 
-    KnobStringPtr display = createViewerKnob<KnobString>(this, page, tr("Display"), kViewerParamDisplay,
+    KnobChoicePtr display = createViewerKnob<KnobChoice>(this, page, tr("Display"), kViewerParamDisplay,
                                                          tr("The display of the project's OpenColorIO config the image is shown on. "
-                                                            "Empty uses the project's default display and view."));
+                                                            "A saved display the config lacks is kept."));
     k.display = display;
 
-    KnobStringPtr view = createViewerKnob<KnobString>(this, page, tr("View"), kViewerParamView,
-                                                      tr("The view transform of the display. Empty uses the project's default display and view."));
+    KnobChoicePtr view = createViewerKnob<KnobChoice>(this, page, tr("View"), kViewerParamView,
+                                                      tr("The view transform of the display. A saved view the display lacks is kept."));
     k.view = view;
 
-    KnobStringPtr look = createViewerKnob<KnobString>(this, page, tr("Look"), kViewerParamLook,
-                                                      tr("The OpenColorIO look applied before the view. Empty applies none."));
+    KnobChoicePtr look = createViewerKnob<KnobChoice>(this, page, tr("Look"), kViewerParamLook,
+                                                      tr("The OpenColorIO look applied before the view. A saved look the config lacks is kept "
+                                                         "and applies none."));
     k.look = look;
+    refreshDisplayTransformChoices();
 
     std::vector<ChoiceOption> channelEntries;
     channelEntries.push_back(ChoiceOption("Luminance", tr("Luminance").toStdString(), ""));
@@ -749,8 +766,27 @@ ViewerInstance::knobChanged(KnobI* k,
     }
     const std::string name = k->getName();
 
+    if (name == kViewerParamDisplay) {
+        refreshDisplayTransformChoices();
+        // A view the new display lacks would read as missing; Project default follows the display.
+        KnobChoicePtr view = _imp->knobs.view.lock();
+        if (view && view->isActiveEntryUnmatchedByEntries()) {
+            selectDisplayTransformEntry(view, std::string());
+        }
+    }
     if (knobChangesDisplay(name)) {
         redrawOrRenderForColorChange();
+
+        return true;
+    }
+    if (name == kViewerParamEnableUserRoI) {
+        beginKnobEdits();
+        KnobBoolPtr enable = _imp->knobs.enableUserRoI.lock();
+        if (enable && enable->getValue()) {
+            fillUnsetUserRoI();
+        }
+        requestRenderFromKnob();
+        endKnobEdits();
 
         return true;
     }
@@ -776,6 +812,7 @@ void
 ViewerInstance::onKnobsLoaded()
 {
     refreshResolvedLayers();
+    refreshDisplayTransformChoices();
 }
 
 unsigned int
@@ -4571,15 +4608,19 @@ ViewerInstance::setDisplayTransform(const std::string& display,
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    KnobStringPtr knobs[3] = { _imp->knobs.display.lock(), _imp->knobs.view.lock(), _imp->knobs.look.lock() };
+    KnobChoicePtr knobs[3] = { _imp->knobs.display.lock(), _imp->knobs.view.lock(), _imp->knobs.look.lock() };
     const std::string values[3] = { display, view, look };
     bool changed = false;
     {
         SetterKnobWrites guard(&_imp->knobWritesFromSetter);
         for (int i = 0; i < 3; ++i) {
-            if (knobs[i] && (knobs[i]->getValue() != values[i])) {
-                knobs[i]->setValue(values[i]);
+            if (knobs[i] && (displayTransformName(knobs[i]) != values[i])) {
+                selectDisplayTransformEntry(knobs[i], values[i]);
                 changed = true;
+            }
+            if (i == 0) {
+                // The view menu lists the views of the display just set.
+                refreshDisplayTransformChoices();
             }
         }
     }
@@ -4772,12 +4813,9 @@ ViewerInstance::getResolvedDisplayTransform(std::string* display,
                                             std::string* view,
                                             std::string* look) const
 {
-    KnobStringPtr displayKnob = _imp->knobs.display.lock();
-    KnobStringPtr viewKnob = _imp->knobs.view.lock();
-    KnobStringPtr lookKnob = _imp->knobs.look.lock();
-    const std::string savedDisplay = displayKnob ? displayKnob->getValue() : std::string();
-    const std::string savedView = viewKnob ? viewKnob->getValue() : std::string();
-    const std::string savedLook = lookKnob ? lookKnob->getValue() : std::string();
+    const std::string savedDisplay = displayTransformName(_imp->knobs.display.lock());
+    const std::string savedView = displayTransformName(_imp->knobs.view.lock());
+    const std::string savedLook = displayTransformName(_imp->knobs.look.lock());
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
@@ -4802,6 +4840,126 @@ ViewerInstance::getResolvedDisplayTransform(std::string* display,
     if (look) {
         *look = resolvedLook;
     }
+}
+
+void
+ViewerInstance::refreshDisplayTransformChoices()
+{
+    KnobChoicePtr displayKnob = _imp->knobs.display.lock();
+    KnobChoicePtr viewKnob = _imp->knobs.view.lock();
+    KnobChoicePtr lookKnob = _imp->knobs.look.lock();
+    if (!displayKnob || !viewKnob || !lookKnob) {
+        return;
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    std::vector<std::string> displays, views, looks;
+    std::string defaultDisplay, defaultView, resolvedDisplay;
+    if (colorManagement) {
+        std::string projectDisplay, projectView;
+        project->getDefaultDisplayView(&projectDisplay, &projectView);
+        displays = colorManagement->getDisplays();
+        defaultDisplay = firstListedName(displays, std::string(), projectDisplay, colorManagement->getDefaultDisplay());
+        getResolvedDisplayTransform(&resolvedDisplay, NULL, NULL);
+        views = colorManagement->getViews(resolvedDisplay);
+        defaultView = firstListedName(views, std::string(), projectView, colorManagement->getDefaultView(resolvedDisplay));
+        looks = colorManagement->getLooks();
+    }
+
+    std::vector<ChoiceOption> displayEntries(1, OcioSpaceKnobs::projectDefaultOption(defaultDisplay, tr("The project's default display.")));
+    for (const std::string& name : displays) {
+        displayEntries.push_back(ChoiceOption(name, name, std::string()));
+    }
+    std::vector<ChoiceOption> viewEntries(1, OcioSpaceKnobs::projectDefaultOption(defaultView, tr("The project's default view of the display.")));
+    for (const std::string& name : views) {
+        viewEntries.push_back(ChoiceOption(name, name, std::string()));
+    }
+    std::vector<ChoiceOption> lookEntries(1, ChoiceOption(kViewerLookNoneID, tr("None").toStdString(), tr("No look.").toStdString()));
+    for (const std::string& name : looks) {
+        lookEntries.push_back(ChoiceOption(name, name, std::string()));
+    }
+    displayKnob->populateChoices(displayEntries);
+    viewKnob->populateChoices(viewEntries);
+    lookKnob->populateChoices(lookEntries);
+}
+
+void
+ViewerInstance::getDisplayTransform(std::string* display,
+                                    std::string* view,
+                                    std::string* look) const
+{
+    if (display) {
+        *display = displayTransformName(_imp->knobs.display.lock());
+    }
+    if (view) {
+        *view = displayTransformName(_imp->knobs.view.lock());
+    }
+    if (look) {
+        *look = displayTransformName(_imp->knobs.look.lock());
+    }
+}
+
+void
+ViewerInstance::selectDisplayTransformEntry(const KnobChoicePtr& knob,
+                                            const std::string& name)
+{
+    if (!knob || (knob->getNumEntries() == 0)) {
+        return;
+    }
+    const std::vector<ChoiceOption> entries = knob->getEntries_mt_safe();
+    ChoiceOption entry(name, name, std::string());
+    int index = 0;
+    if (name.empty()) {
+        entry = entries[0];
+    } else {
+        index = KnobChoice::choiceMatch(name, entries, &entry);
+    }
+    const int previous = knob->getValue();
+    if ((knob->getActiveEntry().id == entry.id) && ((index < 0) || (index == previous))) {
+        return;
+    }
+    knob->setActiveEntry(entry);
+    if ((index >= 0) && (index != previous)) {
+        knob->setValue(index);
+    } else {
+        // Only the active entry moved, which no value change reports.
+        knob->evaluateValueChange(0, knob->getCurrentTime(), ViewSpec::all(), eValueChangedReasonPluginEdited);
+    }
+}
+
+void
+ViewerInstance::fillUnsetUserRoI()
+{
+    KnobDoublePtr bottomLeft = _imp->knobs.userRoIBottomLeft.lock();
+    KnobDoublePtr size = _imp->knobs.userRoISize.lock();
+    if (!bottomLeft || !size || ((size->getValue(0) > 0) && (size->getValue(1) > 0))) {
+        return;
+    }
+    RectD roi;
+    if (_imp->uiContext) {
+        roi = _imp->uiContext->getUserRegionOfInterest();
+    }
+    if (roi.isNull()) {
+        // The centre half of the project format, as the viewer first draws it.
+        Format format;
+        AppInstancePtr app = getApp();
+        ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        if (project) {
+            project->getProjectDefaultFormat(&format);
+        }
+        const RectD canonical = format.toCanonicalFormat();
+        const double w = canonical.width();
+        const double h = canonical.height();
+        roi = RectD(canonical.x1 + w / 4., canonical.y1 + h / 4., canonical.x2 - w / 4., canonical.y2 - h / 4.);
+    }
+    if (roi.isNull()) {
+        return;
+    }
+    bottomLeft->setValue(roi.x1, ViewSpec::all(), 0);
+    bottomLeft->setValue(roi.y1, ViewSpec::all(), 1);
+    size->setValue(roi.width(), ViewSpec::all(), 0);
+    size->setValue(roi.height(), ViewSpec::all(), 1);
 }
 
 ProjectColorManagement::DisplayProcessorPtr

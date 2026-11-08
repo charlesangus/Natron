@@ -125,10 +125,7 @@ ViewerTab::onEnableViewerRoIButtonToggle(bool b)
 void
 ViewerTab::writeUserRoIEnabled(bool b)
 {
-    // An RoI never set takes the one the viewer draws by default.
-    if (b && (_imp->viewerValue<double>(kViewerParamUserRoISize, 0., 0) <= 0.)) {
-        writeUserRoIKnobs(_imp->viewer->getUserRegionOfInterest());
-    }
+    // The viewer node gives an RoI never set the one drawn by default.
     _imp->setViewerValue<bool>(kViewerParamEnableUserRoI, b);
 }
 

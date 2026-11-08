@@ -1363,14 +1363,9 @@ ViewerGL::getImageRectangleDisplayed(const RectI & imageRoDPixel, // in pixel co
 
     ///to clip against the user roi however clip it against the mipmaplevel of the zoomFactor+proxy
 
-    RectD userRoI;
-    bool userRoiEnabled;
-    {
-        QMutexLocker l(&_imp->userRoIMutex);
-        userRoiEnabled = _imp->userRoIEnabled;
-        userRoI = _imp->userRoI;
-    }
-    if (userRoiEnabled) {
+    // The knobs, not the drawn RoI: a knob edit renders before the drawn RoI follows it.
+    if (isUserRegionOfInterestEnabled()) {
+        const RectD userRoI = getUserRegionOfInterest();
         ///If the user roi is enabled, we want to render the smallest enclosing rectangle in order to avoid black borders.
         const RectI userRoIpixel = userRoI.toPixelEnclosing(mipmapLevel, par);
 

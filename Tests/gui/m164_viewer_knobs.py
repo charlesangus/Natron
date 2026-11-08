@@ -362,6 +362,9 @@ try:
             return None
         if hasattr(p, "getLayer"):
             return p.getLayer()
+        if name in ("display", "view", "look"):
+            option = str(p.getOption(p.get()))
+            return "" if option in ("projectDefault", "none") else option
         v = p.get()
         if hasattr(v, "x") and hasattr(v, "y"):
             return (v.x, v.y)
@@ -733,8 +736,51 @@ try:
         ok = yield ("until", lambda: abs((spin_value(fps_box(V1)) or 0.0) - 12.0) < 0.01, POLL_TIMEOUT_S)
         check(ok, "Viewer1's fps box shows the panel's 12 (%r)" % (spin_value(fps_box(V1)),))
         check(abs((knob_value(viewer2, "desiredFps") or 0.0) - 12.0) > 1e-6, "Viewer2's Desired Fps did not move")
+
+        display1 = widget_of(V1, ("ComboBox",), "display device")
+        require(display1 is not None, "found Viewer1's Display menu")
+        toolbar_displays = combo_items(display1)
+        panel_display = None
+        for c in children_of(panel, ("ComboBox",)):
+            items = combo_items(c)
+            if items and items[0].startswith("Project default") and items[1:] == toolbar_displays:
+                panel_display = c
+        check(panel_display is not None, "the panel's Display is a menu of the toolbar's displays after Project default "
+              "(toolbar %r, panel menus %r)" % (toolbar_displays, [combo_items(c) for c in children_of(panel, ("ComboBox",))]))
+        others = [d for d in toolbar_displays if d != combo_current(display1)]
+        if panel_display is not None and others:
+            set_combo_index(panel_display, toolbar_displays.index(others[0]) + 1)
+            ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == others[0])
+            check(ok, "choosing %r in the panel's Display sets the knob (got %r)" % (others[0], knob_value(viewer1, "display")))
+            ok = yield ("until", lambda: combo_current(display1) == others[0], POLL_TIMEOUT_S)
+            check(ok, "Viewer1's toolbar Display follows the panel (shows %r)" % (combo_current(display1),))
+            view_items = combo_items(widget_of(V1, ("ComboBox",), "How the image is rendered"))
+            panel_views = [combo_items(c)[1:] for c in children_of(panel, ("ComboBox",))
+                           if combo_items(c) and combo_items(c)[0].startswith("Project default") and c is not panel_display]
+            check(view_items in panel_views, "the panel's View lists the toolbar's views of the new display (toolbar %r, panel %r)"
+                  % (view_items, panel_views))
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
+
+        gt.section("python-roi")
+        roi_off = yield from settle_px(V2)
+        require(roi_off is not None, "Viewer2 settles before its RoI is turned on")
+        require(knob_value(viewer2, "enableRegionOfInterest") is False, "Viewer2's RoI starts off")
+        viewer2.getParam("enableRegionOfInterest").set(True)
+        ok = yield from knobs_until(lambda: all(v > 0 for v in (knob_value(viewer2, "userRoISize") or (0.0, 0.0))))
+        check(ok, "turning the RoI on from Python fills its size straight away (got %r)" % (roi_of(viewer2),))
+        viewer2.getParam("userRoIBottomLeft").set(-FAR, -FAR)
+        viewer2.getParam("userRoISize").set(2 * FAR, 2 * FAR)
+        ok = yield from px_until(V2, lambda p: same_px(p, roi_off))
+        check(ok, "an RoI set from Python to cover everything shows the whole image (screen %r, want %r)"
+              % (viewer_px(V2), roi_off))
+        viewer2.getParam("userRoISize").set(1.0, 1.0)
+        ok = yield from px_until(V2, lambda p: p is not None and not same_px(p, roi_off))
+        check(ok, "shrinking the RoI from Python to a far corner re-renders without the image (screen %r)"
+              % (viewer_px(V2),))
+        viewer2.getParam("enableRegionOfInterest").set(False)
+        ok = yield from px_until(V2, lambda p: same_px(p, roi_off))
+        check(ok, "turning the RoI off from Python shows the whole image again")
 
         gt.section("save-reload")
         saved1 = snap(viewer1)

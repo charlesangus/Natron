@@ -32,6 +32,11 @@ Sections, each with numbers and captioned screenshots (a NOTE "caption" line pre
   knobs on to numeric ones, never onto another settings page's knobs.
 - colour: Grade gain still engages as before (plain-label title, C/S/T/V, a stroke edits gain,
   one undo, Esc leaves).
+- crosshair-only: with the Crosshair only feedback, Blur size, Transform rotate and Grade gain show
+  no disc after Ctrl+E, on the press or mid-drag; the cursor stays the cross and the hint block
+  stays up throughout; the stroke still edits the knob and one Ctrl+Z undoes it. Switching back
+  to Crosshair + reveal brings the disc back on the press, and Widget cursor brings it back from
+  engage.
 
 Knob widgets carry no object name; KnobGui puts the knob's script name in bold at the start of its
 tooltip, so that is how a knob's widgets are found.
@@ -64,6 +69,7 @@ SIZE_INCREMENT = 0.1
 
 FEEDBACK_CROSSHAIR = 0
 FEEDBACK_WIDGET = 1
+FEEDBACK_CROSSHAIR_ONLY = 2
 
 try:
     import faulthandler
@@ -264,6 +270,15 @@ try:
         report("NOTE caption %s: %s" % (name, caption))
         report(("SHOT " if pix.save(path) else "NOTE could not save ") + path)
 
+    def shoot_around(centre, name, caption, half=200):
+        """A screenshot of the screen around centre, announced by its caption."""
+        QApplication.processEvents()
+        r = QRect(centre.x() - half, centre.y() - half, 2 * half, 2 * half).intersected(screen_rect())
+        pix = QGuiApplication.primaryScreen().grabWindow(0, r.x(), r.y(), r.width(), r.height())
+        path = os.path.join(gt.OUT, name + ".png")
+        report("NOTE caption %s: %s" % (name, caption))
+        report(("SHOT " if pix.save(path) else "NOTE could not save ") + path)
+
     def drop_stale_wrappers():
         """Collects Python wrappers nothing refers to any more.
 
@@ -455,6 +470,39 @@ try:
         title = hud_knob()
         return check(engaged() and title == expect,
                      "Ctrl+E over %s.%s engages it (HUD title %r, expected %r)" % (node.getLabel(), knob_name, title, expect))
+
+    def crosshair_only_stroke(tag, name, read):
+        """From an engaged global mode, with the Crosshair only feedback: checks that no disc comes up
+        on engage, on the press or mid-drag, that the cross stays the cursor and the hint block stays up,
+        that the stroke edits the knob and that one Ctrl+Z undoes it."""
+        yield ("sleep", SETTLE_MS)
+        check(not reveal_shown(), "%s: no disc after Ctrl+E" % tag)
+        check(cursor_name() == "cross", "%s: the cursor is the cross after Ctrl+E (%s)" % (tag, cursor_name()))
+        check(hud_block() is not None, "%s: the hint block is up after Ctrl+E" % tag)
+        before = read()
+        start = graph_point()
+        QCursor.setPos(start)
+        yield ("sleep", POINTER_SETTLE_MS)
+        gmouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        yield ("sleep", SETTLE_MS)
+        check(not reveal_shown(), "%s: no disc on the press" % tag)
+        check(cursor_name() == "cross", "%s: the cursor stays the cross on the press (%s)" % (tag, cursor_name()))
+        shoot_around(start, name + "-press", "%s, Crosshair only: just pressed at the centre, no disc, only the hint block by the pointer" % tag)
+        for k in range(1, 9):
+            gmouse(QEvent.MouseMove, QPoint(start.x() + 6 * k, start.y() - 3 * k), Qt.NoButton, Qt.LeftButton)
+        yield ("sleep", SETTLE_MS)
+        check(not reveal_shown(), "%s: no disc during the drag" % tag)
+        check(cursor_name() == "cross", "%s: the cursor stays the cross during the drag (%s)" % (tag, cursor_name()))
+        check(hud_block() is not None, "%s: the hint block stays up during the drag" % tag)
+        shoot_around(start, name + "-drag", "%s, Crosshair only: 48 px right and 24 px up into the stroke, still no disc" % tag)
+        gmouse(QEvent.MouseButtonRelease, QPoint(start.x() + 48, start.y() - 24), Qt.LeftButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(not reveal_shown(), "%s: no disc after the release" % tag)
+        after = read()
+        check(after != before, "%s: the stroke changed the knob (%s -> %s)" % (tag, before, after))
+        send_key(Qt.Key_Z, Qt.ControlModifier)
+        yield ("sleep", SETTLE_MS)
+        check(read() == before, "%s: one Ctrl+Z restores the knob (%s)" % (tag, read()))
 
     def steps():
         gt.section("setup")
@@ -984,6 +1032,69 @@ try:
         drop_stale_wrappers()
         leave()
         yield ("sleep", SETTLE_MS)
+
+        # ---- crosshair-only -------------------------------------------------------------------
+        gt.section("crosshair-only")
+        set_pref("colorTrackballFeedback", FEEDBACK_CROSSHAIR_ONLY)
+        check(NatronEngine.natron.getSettings().getParam("colorTrackballFeedback").getValue() == FEEDBACK_CROSSHAIR_ONLY,
+              "the colorTrackballFeedback preference takes Crosshair only")
+        setv(blur, "size", 10.0, 10.0)
+        if engage_on(blur, "size"):
+            yield from crosshair_only_stroke("Blur size", "crosshair-only-blur-size", lambda: val(blur, "size"))
+        leave()
+        yield ("sleep", SETTLE_MS)
+        check(cursor_name() == "none", "Crosshair only: no override cursor after leaving Blur size (%s)" % cursor_name())
+
+        setv(transform, "rotate", 0.0)
+        if engage_on(transform, "rotate"):
+            yield from crosshair_only_stroke("Transform rotate", "crosshair-only-transform-rotate", lambda: val(transform, "rotate"))
+            send_key(Qt.Key_Q)
+            yield ("sleep", 250)
+            check(not reveal_shown(), "Transform group: switching to translate with Q brings up no disc")
+        leave()
+        yield ("sleep", SETTLE_MS)
+
+        for d in range(4):
+            grade.getParam(GAIN).setValue(1.0, d)
+        QApplication.processEvents()
+        raise_panel(grade)
+        gp = panel_of(grade)
+        if hover_knob(gp, GAIN):
+            engage_with_ctrl_e()
+            if check(engaged(), "Crosshair only: Ctrl+E engages Grade gain"):
+                yield from crosshair_only_stroke("Grade gain", "crosshair-only-grade-gain", lambda: val(grade, GAIN))
+                send_key(Qt.Key_S)
+                yield ("sleep", 250)
+                check(not reveal_shown(), "Grade gain: switching to S brings up no disc")
+        else:
+            report("NOTE could not hover the Grade gain")
+        drop_stale_wrappers()
+        leave()
+        yield ("sleep", SETTLE_MS)
+
+        set_pref("colorTrackballFeedback", FEEDBACK_CROSSHAIR)
+        setv(blur, "size", 10.0, 10.0)
+        if engage_on(blur, "size"):
+            yield ("sleep", SETTLE_MS)
+            check(not reveal_shown(), "back to Crosshair + reveal: no disc before the press")
+            start = graph_point()
+            QCursor.setPos(start)
+            yield ("sleep", POINTER_SETTLE_MS)
+            gmouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+            yield ("sleep", SETTLE_MS)
+            check(reveal_shown(), "back to Crosshair + reveal: the disc comes up on the press again")
+            shoot(reveal_window(), "crosshair-only-off-reveal", "Crosshair + reveal again: Blur size's disc at the press point")
+            gmouse(QEvent.MouseButtonRelease, start, Qt.LeftButton, Qt.NoButton)
+            yield ("sleep", SETTLE_MS)
+        leave()
+        yield ("sleep", SETTLE_MS)
+        set_pref("colorTrackballFeedback", FEEDBACK_WIDGET)
+        if engage_on(blur, "size"):
+            yield ("sleep", SETTLE_MS)
+            check(reveal_shown(), "back to Widget cursor: the disc is up from engage again")
+        leave()
+        yield ("sleep", SETTLE_MS)
+        set_pref("colorTrackballFeedback", FEEDBACK_CROSSHAIR)
         check(cursor_name() == "none", "the run ends with no override cursor (%s)" % cursor_name())
         faulthandler.cancel_dump_traceback_later()
 

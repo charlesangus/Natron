@@ -415,6 +415,7 @@ overrideCursorDepth()
 
 const Settings::ColorTrackballFeedbackEnum kCrosshairReveal = Settings::eColorTrackballFeedbackCrosshairReveal;
 const Settings::ColorTrackballFeedbackEnum kWidgetCursor = Settings::eColorTrackballFeedbackWidgetCursor;
+const Settings::ColorTrackballFeedbackEnum kCrosshairOnly = Settings::eColorTrackballFeedbackCrosshairOnly;
 
 Qt::CursorShape
 topCursor()
@@ -436,10 +437,22 @@ syncCursors(ColorGlobalModeCursors& cursors,
 
 } // namespace
 
-TEST(ColorTrackballGlobalModeFeedback, OnlyCrosshairRevealShowsTheCrosshair)
+TEST(ColorTrackballGlobalModeFeedback, OnlyTheCrosshairFeedbacksShowTheCrosshair)
 {
     EXPECT_TRUE(colorGlobalModeFeedbackShowsCrosshair(kCrosshairReveal));
+    EXPECT_TRUE(colorGlobalModeFeedbackShowsCrosshair(kCrosshairOnly));
     EXPECT_FALSE(colorGlobalModeFeedbackShowsCrosshair(kWidgetCursor));
+}
+
+TEST(ColorTrackballGlobalModeFeedback, ASwitchToCrosshairOnlyMidStrokeWaitsForTheStrokeToEnd)
+{
+    ColorGlobalModeFeedbackSwitch sw;
+
+    EXPECT_FALSE(sw.offer(kCrosshairOnly, true));
+    EXPECT_TRUE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).graphicShown);
+    EXPECT_TRUE(sw.strokeEnded());
+    EXPECT_EQ(kCrosshairOnly, sw.getFeedback());
+    EXPECT_FALSE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).graphicShown);
 }
 
 TEST(ColorTrackballGlobalModeFeedback, DefaultIsThePreferencesDefault)
@@ -517,7 +530,7 @@ TEST(ColorTrackballGlobalModeFeedback, AFlipMidStrokeShowsAfterReleaseAndExitLea
         EXPECT_EQ(baseline, overrideCursorDepth());
 
         // Exit mid-stroke with each value.
-        for (Settings::ColorTrackballFeedbackEnum f : { kCrosshairReveal, kWidgetCursor }) {
+        for (Settings::ColorTrackballFeedbackEnum f : { kCrosshairReveal, kWidgetCursor, kCrosshairOnly }) {
             sw.offer(f, false);
             syncCursors(cursors, sw, true, false);
             syncCursors(cursors, sw, true, true);

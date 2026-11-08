@@ -130,7 +130,7 @@ bool colorGlobalModeFeedbackShowsCrosshair(Settings::ColorTrackballFeedbackEnum 
 
 /**
  * @brief Whether the mode graphic stands in for the pointer from engage to exit, rather than
- * coming up at the press point for the stroke's length.
+ * coming up at the press point for the stroke's length or never coming up at all.
  **/
 bool colorGlobalModeFeedbackGraphicIsCursor(Settings::ColorTrackballFeedbackEnum feedback);
 

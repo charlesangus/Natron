@@ -237,7 +237,7 @@ takeColorGlobalModeWheelNotches(int* accumulator,
 bool
 colorGlobalModeFeedbackShowsCrosshair(Settings::ColorTrackballFeedbackEnum feedback)
 {
-    return feedback == Settings::eColorTrackballFeedbackCrosshairReveal;
+    return (feedback == Settings::eColorTrackballFeedbackCrosshairReveal) || (feedback == Settings::eColorTrackballFeedbackCrosshairOnly);
 }
 
 bool
@@ -268,7 +268,7 @@ colorGlobalModeFeedbackState(Settings::ColorTrackballFeedbackEnum feedback,
     if (colorGlobalModeFeedbackGraphicIsCursor(feedback)) {
         state.graphicShown = true;
         state.graphicFollowsPointer = !strokeActive;
-    } else {
+    } else if (feedback == Settings::eColorTrackballFeedbackCrosshairReveal) {
         state.graphicShown = strokeActive;
     }
     state.blankCursor = state.graphicShown;

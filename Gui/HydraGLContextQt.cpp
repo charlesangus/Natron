@@ -33,6 +33,8 @@
 #include <QOpenGLFunctions>
 #include <QSurfaceFormat>
 
+#include "Global/FloatingPointExceptions.h"
+
 #include "Engine/Nodes/Scene/HydraGLContext.h"
 
 NATRON_NAMESPACE_ENTER
@@ -100,6 +102,8 @@ install()
     }
 
     setHydraGLContextFactory([surface](std::string* error) -> std::unique_ptr<HydraGLContext> {
+        // llvmpipe's shader compiles while the context is made raise FE_INVALID, which debug builds trap.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
         const std::string prefix = "USDRender needs an OpenGL 4.5 compatibility context and could not make one: ";
         std::unique_ptr<QOpenGLContext> context(new QOpenGLContext());
         context->setFormat(surface->requestedFormat());

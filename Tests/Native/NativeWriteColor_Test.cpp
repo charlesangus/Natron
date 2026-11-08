@@ -314,6 +314,27 @@ protected:
     QTemporaryDir _dir;
 };
 
+// A render can hold a Write's effect past the reset that destroys its node; the project's colour
+// management and views refreshes must then leave the orphaned effect alone.
+TEST_F(NativeWriteColorTest, AnEffectOutlivingItsResetNodeIgnoresTheProjectRefreshes)
+{
+    setFile(_writer, pathOf("out.png"));
+    EffectInstancePtr effect = _writer->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+    NodeWPtr weakNode = _writer;
+    _writer.reset();
+    _checker.reset();
+
+    project()->reset(false, true);
+
+    EXPECT_TRUE(weakNode.expired());
+    EXPECT_FALSE(bool(effect->getNode()));
+    EXPECT_TRUE(effect->canSetValue());
+    Q_EMIT project()->fileColorSpacesChanged();
+    Q_EMIT project()->projectViewsChanged();
+    project()->reset(false, true);
+}
+
 TEST_F(NativeWriteColorTest, AnEightBitPngTakesTheProjectEightBitDefault)
 {
     setProjectSpace("colorSpace8Bit", kSRGBSpace);

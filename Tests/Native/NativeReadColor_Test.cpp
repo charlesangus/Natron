@@ -872,6 +872,43 @@ TEST_F(NativeReadColorTest, ResettingTheInputColourspaceOfAReadWithoutAFileConve
     EXPECT_EQ(std::string(), fileSpace(node));
 }
 
+// A render can hold a Read's effect past the reset that destroys its node; the project's colour
+// management refresh must then leave the orphaned effect alone.
+TEST_F(NativeReadColorTest, AnEffectOutlivingItsResetNodeIgnoresTheColourManagementRefresh)
+{
+    NodePtr node = createRead();
+    ASSERT_TRUE(bool(node));
+    setFile(node, fixture("png-8bit.png"));
+    EffectInstancePtr effect = node->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+    NodeWPtr weakNode = node;
+    node.reset();
+
+    project()->reset(false, true);
+
+    EXPECT_TRUE(weakNode.expired());
+    EXPECT_FALSE(bool(effect->getNode()));
+    EXPECT_TRUE(effect->canSetValue());
+    Q_EMIT project()->fileColorSpacesChanged();
+    project()->reset(false, true);
+}
+
+// destroyNode() drops the node's effect but the node itself can live on, held elsewhere.
+TEST_F(NativeReadColorTest, AnEffectDroppedByItsDestroyedNodeIgnoresTheColourManagementRefresh)
+{
+    NodePtr node = createRead();
+    ASSERT_TRUE(bool(node));
+    setFile(node, fixture("png-8bit.png"));
+    EffectInstancePtr effect = node->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+
+    node->destroyNode(true, false);
+
+    EXPECT_FALSE(bool(node->getEffectInstance()));
+    Q_EMIT project()->fileColorSpacesChanged();
+    project()->reset(false, true);
+}
+
 // A config whose "shot" colourspace applies the LUT file named by the $LUT context variable.
 class NativeReadContextTest
     : public NativeReadColorTest {

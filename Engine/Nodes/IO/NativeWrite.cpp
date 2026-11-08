@@ -1057,16 +1057,25 @@ NativeWrite::initializeKnobs()
         QObject::connect(engine.get(), &RenderEngine::renderFinished, this, [this](int) { onSequenceRenderFinished(); });
     }
     ProjectPtr project = getApp()->getProject();
-    if (project) {
-        QObject::connect(project.get(), &Project::projectViewsChanged, this, [this]() {
-            refreshViewsMenu();
-            _viewToKeep.clear();
+    NodePtr node = getNode();
+    if (project && node) {
+        // A render can keep this effect alive after its node is destroyed, and refreshing a menu then
+        // reaches the node, so the node scopes the connections. A render thread may also drop the last
+        // reference while the project emits on the main thread, so the slots hold the node, and through
+        // it this effect, or skip once the node no longer holds this effect.
+        NodeWPtr weakNode = node;
+        QObject::connect(project.get(), &Project::projectViewsChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                refreshViewsMenu();
+                _viewToKeep.clear();
+            }
         });
-        // A render thread can drop the last reference and destroy this effect while the project emits on the
-        // main thread, before ~QObject has disconnected the slot, so the slot holds the effect alive or skips.
-        std::weak_ptr<EffectInstance> self = weak_from_this();
-        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this, self]() {
-            if (EffectInstancePtr alive = self.lock()) {
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
                 _outputSpace.sourceChanged();
             }
         });

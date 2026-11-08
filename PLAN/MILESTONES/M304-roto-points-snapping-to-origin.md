@@ -35,22 +35,22 @@ Follow-up from the user's 2026-11-01 UAT approval of M261 - Roto Keyframes In Do
 
 ## Phase 304.2: Fixes
 
-- [ ] M304.P2.T1 — Auto-key reads and writes one side
+- [x] M304.P2.T1 — Auto-key reads and writes one side
   - files: `Engine/Bezier.cpp`, `Engine/Bezier.h`
   - approach: `setKeyframeInternal(time, useGuiCurve)` reads and writes the same side and marks that time dirty; every auto-key caller passes the side it edits.
   - verify: the auto-key cases of M304.P1.T1 pass.
   - size: M
-- [ ] M304.P2.T2 — Whole-shape key operations respect the render
+- [x] M304.P2.T2 — Whole-shape key operations respect the render
   - files: `Engine/Bezier.cpp`
   - approach: `setKeyframe`, `removeKeyframe`, `moveKeyframe`, `removeAnimation`, `unlinkPoint`, `setPointPositionAtKeyframe` and `getPointPositionForEdit` choose their side with `useGuiCurveForEdit()`; the GUI path marks dirty instead of copying internal to GUI; `moveKeyframe` takes `itemMutex`.
   - verify: the remaining M304.P1.T1 cases and M304.P1.T3 pass; the M261 GUI script still passes.
   - size: L
-- [ ] M304.P2.T3 — Undo snapshots keep GUI state
+- [x] M304.P2.T3 — Undo snapshots keep GUI state
   - files: `Engine/RotoUndoCommand.cpp`, `Engine/Bezier.cpp`
   - approach: SmoothCusp, RemoveFeather and TrackLink snapshot and restore with `cloneGuiState`/`restorePointState`, as `RotoDragUndoCommand` does; `removeFeatherAtIndex` uses `cloneGuiState` and marks dirty.
   - verify: the undo cases of M304.P1.T2 pass.
   - size: M
-- [ ] M304.P2.T4 — Saving includes pending GUI edits
+- [x] M304.P2.T4 — Saving includes pending GUI edits
   - files: `Engine/RotoSerializationConvert.cpp`
   - approach: `toSerialization` flushes first, or writes the GUI state while a render runs.
   - verify: the save/load case of M304.P1.T2 passes.

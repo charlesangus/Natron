@@ -98,14 +98,11 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 
-
-#include "Global/ProcInfo.h"
-#include "Global/GLIncludes.h"
-#include "Global/StrUtils.h"
-#ifdef DEBUG
 #include "Global/FloatingPointExceptions.h"
-#endif
+#include "Global/GLIncludes.h"
+#include "Global/ProcInfo.h"
 #include "Global/PythonUtils.h"
+#include "Global/StrUtils.h"
 
 #include "Engine/AbortWatchdog.h"
 #include "Engine/Ai/ModelDownloader.h"

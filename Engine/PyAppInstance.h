@@ -335,6 +335,12 @@ public:
     AppInstancePtr getInternalApp() const;
 
     /**
+     * @brief Returns the node of the project, at any depth, whose persistent ID is id, see
+     * Effect.getNodeId(), or None when no active node has it.
+     **/
+    Effect* getNodeById(const QString& id) const;
+
+    /**
      * @brief Creates a new instance of the plugin identified by the given pluginID.
      * @param majorVersion If different than -1, it will try to load a specific major version
      * of the plug-in, otherwise it will default to the greatest major version found for that plug-in.

@@ -179,6 +179,7 @@ public:
         , label()
         , cacheID()
         , cacheIDClaimed(false)
+        , nodeId()
         , deactivatedState()
         , activatedMutex()
         , activated(true)
@@ -382,6 +383,7 @@ public:
     // A UUID, not the script name: the caches are shared by every project in the process.
     std::string cacheID;
     bool cacheIDClaimed; // protected by nameMutex
+    std::string nodeId; // protected by nameMutex
     DeactivatedState deactivatedState;
     mutable QMutex activatedMutex;
     bool activated;

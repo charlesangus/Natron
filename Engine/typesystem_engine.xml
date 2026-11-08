@@ -841,6 +841,11 @@
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
+        <modify-function signature="getNodeById(QString)const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
         <modify-function signature="getProjectLayer(QString)const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>

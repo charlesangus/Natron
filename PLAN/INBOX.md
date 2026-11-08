@@ -1,9 +1,5 @@
 ## Pending
 
-### 2026-11-07T14:00:00-05:00 — change-request
-- refs: none
-- User asked for a new standalone milestone: Cycles, MoonRay and Natron Utility viewers use the viewer's display transform (OCIO view, gain, gamma, lighting mode) as Storm does. Progressive frames are 8-bit sRGB from `srgbTable()` today, so frames must carry float, and it needs a design pass. This also answers the display transform question logged under M254 - Progressive Viewer Render on the board.
-
 ### 2026-11-07T14:20:00-05:00 — change-request
 - refs: none
 - User asked for one follow-up milestone: a direct material binding on native instance roots, so projection reaches native instanced prims. It covers rigid fallback under M341 - Per-Placement Geometry Projection and M342 - Sticky Projections On Deforming Geometry, which show no projection and warn today. Belongs with F9 - Delegate Projection unless the planner has a reason otherwise.

@@ -642,3 +642,7 @@ Before M53.P5.T4, merge the current tips of M233 - Live Node Textures, M52 - USD
 ### 2026-11-07T16:30:00-05:00 — info
 - refs: none
 - Adds to the delegate cancel responsiveness milestone requested earlier today under F9 - Delegate Projection (user): it also covers Natron Utility. The progressive viewer worker holds the shared stage lock across `engine->Render()` (`HydraRenderImpl.cpp` ~3137), so a large first or dirty-geometry sync freezes the UI. The chosen fix is a worker-owned stage composed from the same node layers, used by every delegate. F7 - Natron Utility Core must not ship before it lands.
+
+### 2026-11-07T14:00:00-05:00 — change-request
+- refs: none
+- User asked for a new standalone milestone: Cycles, MoonRay and Natron Utility viewers use the viewer's display transform (OCIO view, gain, gamma, lighting mode) as Storm does. Progressive frames are 8-bit sRGB from `srgbTable()` today, so frames must carry float, and it needs a design pass. This also answers the display transform question logged under M254 - Progressive Viewer Render on the board.

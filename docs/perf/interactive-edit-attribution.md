@@ -29,7 +29,7 @@ Checks run in this order, and the first match wins.
 | Class | Evidence in the records | Code path | Owner | Software host | Lavapipe |
 |---|---|---|---|---|---|
 | `hash_change` | the node's content hash differs across the edit | `Effect::getContentHash` (`Engine/PyNode.cpp:575`) | none: the render is required | 0 | 0 |
-| `behind_hit` | every consumer in the same frame is a `hit` or itself behind one | every dependency runs: `RenderScheduler::executeTask` (`Engine/RenderScheduler.cpp:1223`); the only cache probe outside `renderRoI` is placement's | M300 - Unified Tiered Cache, by its gate; no task yet | 320 | 48 |
+| `behind_hit` | every consumer in the same frame is a `hit` or itself behind one | at recording, every dependency ran; `RenderScheduler::pruneBehindCacheHits` now removes what only a task with its output cached needs, leaving hits a plan could not foresee | M300 - Unified Tiered Cache, M300.P2.T5 | 320 | 48 |
 | `placement_iscached_miss` | on the device, with a host image stored earlier at this mip | `isCached` (`Engine/GpuPlacement.cpp:1024`, draft key fixed by M276.P2.T1) | M301 - GPU Cache Tier | unmeasured | unmeasured |
 | `gpu_region_member` | on the device, or in a region, with no host image | `storeOutputs` (`Engine/GpuRegionTask.cpp:2978`) writes only the per-frame store, and skips interior members (`:2985`) | M301 - GPU Cache Tier | unmeasured | unmeasured |
 | `not_admitted` | CPU, state `bypass`, real work done | `Node::shouldCacheOutput` (`Engine/Node.cpp:8652`), called at `Engine/EffectInstanceRenderRoI.cpp:933`; state set at `:1366` | M300 - Unified Tiered Cache | 400 | 60 |
@@ -72,8 +72,9 @@ its comment says. The work was wasted anyway, because the image it was needed fo
 
 M300 - Unified Tiered Cache's gate requires no raw-chain execution after the first render. Admitting everything
 would meet that gate, since each task would then hit. Its other policy, admitting above a priority floor, would
-not: a node below the floor re-runs behind a hit, and so does an evicted one. Either M300 prunes the graph behind
-a hit, or the admit-only policy cannot pass its gate. The legacy scheduler was not measured.
+not: a node below the floor re-runs behind a hit, and so does an evicted one. So M300 prunes the graph behind a hit
+([design](../cache/tiered-cache.md#pruning-the-task-graph-behind-a-hit)): a pruned task has no record and reads as not
+executed. The counts above predate that and are not re-recorded yet. The legacy scheduler was not measured.
 
 ## User-host results
 

@@ -9,7 +9,7 @@ where it equals B in the second (the same file may be given twice) and prints B/
 rows of one interleaved run are comparable; the printed load/PSI shows how contended each side was.
 
 Files whose records carry upstream_executed are edit-latency results (edit_latency.sh). They are paired per
-(case, zoom, panel, gpu, autoproxy) and print median and p95 latency_ms and median upstream_executed before
+(scenario, case, zoom, panel, gpu, autoproxy, ram_percent, policy), repetitions pooled, and print median and p95 latency_ms and median upstream_executed before
 and after; --threshold applies to the latency ratio and the upstream ratio. Timed-out edits are counted and
 left out of the statistics; a side with no completed edit, or more timeouts after than before, is flagged.
 """
@@ -117,7 +117,9 @@ def compare_metric(before, after, higher_is_worse, threshold):
     return ratio, ratio < 1.0 / threshold
 
 
-EDIT_KEY_FIELDS = ("case", "zoom", "panel", "gpu", "autoproxy")
+EDIT_KEY_FIELDS = ("scenario", "case", "zoom", "panel", "gpu", "autoproxy", "ram_percent", "policy")
+# Records written before these fields existed ran the defaults.
+EDIT_KEY_DEFAULTS = {"scenario": "chain", "ram_percent": "default", "policy": "default"}
 
 
 def is_edit_latency(path):
@@ -135,7 +137,7 @@ def load_edit_latency(path):
             line = line.strip()
             if line:
                 rec = json.loads(line)
-                groups.setdefault(tuple(rec.get(f) for f in EDIT_KEY_FIELDS), []).append(rec)
+                groups.setdefault(tuple(rec.get(f, EDIT_KEY_DEFAULTS.get(f)) for f in EDIT_KEY_FIELDS), []).append(rec)
     return groups
 
 
@@ -161,7 +163,7 @@ def compare_edit_latency(args):
     after = load_edit_latency(args.after)
     common = sorted(set(before) & set(after), key=lambda k: tuple(str(x) for x in k))
     flagged_any = False
-    print("%-34s %-22s %-22s %-18s %s" % ("case zoom panel gpu proxy", "median ms", "p95 ms", "upstream med", "timed out"))
+    print("%-34s %-22s %-22s %-18s %s" % ("scenario case zoom panel gpu proxy ram policy", "median ms", "p95 ms", "upstream med", "timed out"))
     for key in common:
         b = edit_stats(before[key])
         a = edit_stats(after[key])

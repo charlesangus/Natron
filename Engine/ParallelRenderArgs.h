@@ -54,6 +54,24 @@
 NATRON_NAMESPACE_ENTER
 
 typedef std::map<EffectInstancePtr, RectD> RoIMap; // RoIs are in canonical coordinates
+
+/**
+ * @brief Whether rois names input and says none of inputRod is read. An input it doesn't name stays read, as does any
+ * input whose region of definition isn't known.
+ **/
+inline bool
+inputRoIMissesRoD(const RoIMap& rois,
+                  const EffectInstancePtr& input,
+                  const RectD& inputRod)
+{
+    const RoIMap::const_iterator found = rois.find(input);
+    if (found == rois.end()) {
+        return false;
+    }
+
+    return found->second.isNull() || (!inputRod.isNull() && !found->second.intersects(inputRod));
+}
+
 typedef std::map<ViewIdx, std::vector<RangeD> > FrameRangesMap;
 typedef std::map<int, FrameRangesMap> FramesNeededMap;
 typedef std::shared_ptr<FramesNeededMap> FramesNeededMapPtr;

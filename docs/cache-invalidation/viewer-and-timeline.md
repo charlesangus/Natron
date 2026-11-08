@@ -79,7 +79,7 @@ transform, so skipping them in that mode is correct.
 
 - Any change to a hashed field gives a new key. Old entries stay, so reverting hits them again.
 - `forceRender` removes the looked-up entries (ViewerInstance.cpp:1394-1397).
-- `AppManager::clearViewerCache` (AppManager.cpp:1327) and `clearDiskCache` (:1336-1345, which also
+- `AppManager::clearViewerCache` (AppManager.cpp:1327) and `clearDiskCache` (:1443, which also
   clears the last-rendered textures). `removeFromViewerCache` (:2471, :2489).
 - LRU eviction. `Cache::notifyEntryDestroyed` emits `removedEntry` (Cache.h:1344-1363), and the
   emission runs on the deleter thread.

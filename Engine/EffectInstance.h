@@ -841,7 +841,7 @@ public:
                                std::map<ImageLayerDesc, ImagePtr>* outputLayers) WARN_UNUSED_RETURN;
 
     enum RenderCacheStateEnum {
-        eRenderCacheStateBypass = 0, // not looked up or not stored: byPassCache, uncached output, or nothing to render
+        eRenderCacheStateBypass = 0, // rendered with no entry involved: byPassCache, an unadmitted output nothing was stored for, or nothing to render
         eRenderCacheStateMiss, // the whole RoI was rendered
         eRenderCacheStatePartial, // part of the RoI was already in the cache
         eRenderCacheStateHit // the cache held the whole RoI
@@ -1853,6 +1853,71 @@ public:
                       Transform::Matrix3x3Ptr* transform = 0) WARN_UNUSED_RETURN;
     virtual void aboutToRestoreDefaultValues() OVERRIDE FINAL;
     virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
+
+    /**
+     * @brief Whether this frame stores the effect's output in the cache. The one question renderRoI and the scheduler ask,
+     * so that a planned reuse never assumes an entry that renderRoI would not store. caller is the effect pulling this one,
+     * and may be null where nothing pulls it yet. Says nothing of a lookup: an entry stored earlier serves regardless.
+     **/
+    bool admitsOutputToCache(const RenderContextPtr& context,
+                             const ParallelRenderArgs& frameArgs,
+                             bool isFrameVaryingOrAnimated,
+                             double time,
+                             ViewIdx view,
+                             const EffectInstance* caller) const;
+
+    enum class OutputCacheCoverage {
+        // Nothing can be counted on, including a region another render is working on right now.
+        None,
+        Partial,
+        Full
+    };
+
+    /**
+     * @brief What the cache holds of this effect's output for region, in pixels at mipmapLevel, asking what renderRoI's
+     * lookup would: the same keys in the same order and the same bitmap and being-rendered state. Nothing is counted as a
+     * use, so a plan can ask without changing the eviction order.
+     *
+     * The answer is only a forecast, since the entries found aren't held: a later renderRoI may find less and renders
+     * what is then missing.
+     *
+     * @param rendersFullScale Whether renderRoI renders at level 0 and downscales: an entry at mipmapLevel then only
+     * counts in full, as there.
+     * @param probesDraft Whether renderRoI would also accept a draft entry.
+     * @param acceptsPartial Whether the effect can render a part of its output.
+     * @param missing Set for OutputCacheCoverage::Partial: an enclosing rectangle of what is missing, in canonical
+     * coordinates.
+     **/
+    OutputCacheCoverage probeOutputInCache(U64 nodeHash,
+                                           bool isFrameVaryingOrAnimated,
+                                           double time,
+                                           ViewIdx view,
+                                           unsigned int mipmapLevel,
+                                           bool rendersFullScale,
+                                           bool probesDraft,
+                                           bool acceptsPartial,
+                                           const RectI& region,
+                                           const RectD& rod,
+                                           double par,
+                                           const std::list<ImageLayerDesc>& layers,
+                                           ImageBitDepthEnum bitdepth,
+                                           RectD* missing);
+
+    /**
+     * @brief Whether renderRoI pulls this effect's inputs at level 0 whatever level it is asked for.
+     **/
+    bool pullsInputsAtScaleOne() const;
+
+    /**
+     * @brief The key renderRoI caches this effect's output under when it renders at renderMappedMipmapLevel, before
+     * layer, depth and level are bound by ImageKey::forEachServingKey.
+     **/
+    ImageKey outputCacheKey(U64 nodeHash,
+                            bool isFrameVaryingOrAnimated,
+                            double time,
+                            ViewIdx view,
+                            bool draft,
+                            unsigned int renderMappedMipmapLevel) const;
 
     /**
      * @brief Can be derived to get the region that the plugin is capable of filling.
@@ -3524,16 +3589,17 @@ private:
                                              StorageModeEnum renderStorageMode,
                                              double time,
                                              ViewIdx view,
-                                             const RectD & rod,
-                                             const RectD & canonicalRenderWindow,
-                                             const InputMatrixMapPtr & transformMatrix,
+                                             const RectD& rod,
+                                             const RectD& canonicalRenderWindow,
+                                             const InputMatrixMapPtr& transformMatrix,
                                              unsigned int mipmapLevel,
-                                             const RenderScale & renderMappedScale,
+                                             const RenderScale& renderMappedScale,
                                              bool useScaleOneInputImages,
                                              bool byPassCache,
-                                             const FramesNeededMap & framesNeeded,
-                                             const EffectInstance::ComponentsNeededMap & compsNeeded,
-                                             EffectInstance::InputImagesMap *inputImages,
+                                             bool renderWindowIsPartOfRoI,
+                                             const FramesNeededMap& framesNeeded,
+                                             const EffectInstance::ComponentsNeededMap& compsNeeded,
+                                             EffectInstance::InputImagesMap* inputImages,
                                              RoIMap* inputsRoI);
 
     static ImagePtr convertLayersFormatsIfNeeded(const ImagePtr& inputImage,

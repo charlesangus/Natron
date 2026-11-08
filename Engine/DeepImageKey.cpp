@@ -52,6 +52,11 @@ DeepImageKey::DeepImageKey(const CacheEntryHolder* holder,
 void
 DeepImageKey::fillHash(Hash64* hash) const
 {
+    // A deep and an image entry of one node share the node cache and start from one node hash. This
+    // keeps them out of each other's bucket, which removal by hash would otherwise drop as a whole.
+    static const U64 kDeepKeyDomain = 0x44454550494D4147ULL; // "DEEPIMAG"
+
+    hash->append(kDeepKeyDomain);
     hash->append(_nodeHashKey);
     hash->append(_time);
     hash->append(_view);

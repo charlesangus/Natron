@@ -153,7 +153,11 @@ public:
 
     U64 getMaximumDiskCacheNodeSize() const;
 
-    U64 getMaximumDeepImageCacheSize() const;
+    U64 getDiskTierSizeBytes() const;
+
+    std::string getDiskTierLocation() const;
+
+    static std::string defaultDiskTierLocation();
 
     double getUnreachableRamPercent() const;
 
@@ -419,8 +423,6 @@ public:
      **/
     bool didSettingsExistOnStartup() const;
 
-    bool isAggressiveCachingEnabled() const;
-
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
     GpuComputeModeEnum getGpuComputeMode() const;
@@ -651,7 +653,7 @@ private:
 
     // Caching
     KnobPagePtr _cachingTab;
-    KnobBoolPtr _aggressiveCaching;
+    KnobChoicePtr _cacheAdmissionPolicy;
     ///The percentage of the value held by _maxRAMPercent to dedicate to playback cache (viewer cache's in-RAM portion) only
     KnobStringPtr _maxPlaybackLabel;
 
@@ -675,8 +677,9 @@ private:
 
     /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
     /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
-    KnobIntPtr _maxDeepImageCacheGB;
     KnobPathPtr _diskCachePath;
+    KnobPathPtr _diskTierLocation;
+    KnobIntPtr _diskTierSize;
     KnobButtonPtr _wipeDiskCache;
 
     // Viewer

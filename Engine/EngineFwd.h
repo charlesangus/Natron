@@ -128,6 +128,7 @@ class BlockingBackgroundRender;
 class BufferableObject;
 class CLArgs;
 class CacheEntryHolder;
+class CacheRetentionSignals;
 class CacheSignalEmitter;
 class ContextReadSource;
 class CreateNodeArgs;
@@ -350,6 +351,7 @@ NATRON_PYTHON_NAMESPACE_EXIT
 
 
 typedef std::shared_ptr<AbortableRenderInfo> AbortableRenderInfoPtr;
+typedef std::shared_ptr<CacheRetentionSignals> CacheRetentionSignalsPtr;
 typedef std::shared_ptr<AbstractOfxEffectInstance> AbstractOfxEffectInstancePtr;
 typedef std::shared_ptr<ActionsCache> ActionsCachePtr;
 typedef std::shared_ptr<AppInstance> AppInstancePtr;

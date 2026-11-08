@@ -963,6 +963,8 @@ public:
 
     bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
+    const CacheRetentionSignalsPtr& getRetentionSignals() const;
+
     /**
      * @brief Set the position of the node on the nodegraph. It is stored on the node and, in a
      * GUI session, forwarded to the node's GUI. getPosition() returns the stored value.
@@ -2224,6 +2226,8 @@ private:
     void markHashDirtyInternal(bool includeGroupContents,
                                const char* reason,
                                const KnobI* knob);
+
+    unsigned computeRetentionReasons(bool isFrameVaryingOrAnimated, double time, ViewIdx view) const;
 
     /**
      * @brief Marks the dependents of every node marked since the last flush. Any hash read

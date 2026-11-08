@@ -70,8 +70,6 @@ public:
     typedef std::shared_ptr<ImageCache> ImageCachePtr;
     typedef Cache<FrameEntry> FrameEntryCache;
     typedef std::shared_ptr<FrameEntryCache> FrameEntryCachePtr;
-    typedef Cache<DeepImageCacheEntry> DeepImageCache;
-    typedef std::shared_ptr<DeepImageCache> DeepImageCachePtr;
 
     AppTLS globalTLS;
     AppManager::AppTypeEnum _appType; //< the type of app
@@ -85,9 +83,7 @@ public:
     std::unique_ptr<OfxHost> ofxHost; //< OpenFX host
     std::unique_ptr<KnobFactory> _knobFactory; //< knob maker
     ImageCachePtr _nodeCache; //< Images cache
-    ImageCachePtr _diskCache; //< Images disk cache (used by DiskCache nodes)
     FrameEntryCachePtr _viewerCache; //< Viewer textures cache
-    DeepImageCachePtr _deepImageCache; //< Deep image cache, own memory budget separate from _nodeCache
     mutable QMutex diskCachesLocationMutex;
     QString diskCachesLocation;
     std::unique_ptr<ProcessInputChannel> _backgroundIPC; //< object used to communicate with the main app

@@ -487,6 +487,13 @@ public:
      **/
     virtual NodePtr getActiveViewerNode() const;
 
+    /**
+     * @brief For a render thread, which cannot ask the GUI which viewer is active. With no active viewer recorded, as
+     * in background mode, every viewer counts. The node is only compared, never dereferenced, so it may be stale.
+     **/
+    void setViewerActiveForRenders(const Node* viewer);
+    bool isViewerActiveForRenders(const Node* viewer) const;
+
     bool loadPythonScript(const QFileInfo& file);
     virtual void queueRedrawForAllViewers() {}
 

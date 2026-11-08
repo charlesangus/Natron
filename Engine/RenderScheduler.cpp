@@ -51,6 +51,7 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionTask.h"
@@ -510,6 +511,36 @@ RenderScheduler::~RenderScheduler()
     setGpuPlacementAvailableFunc(nullptr);
 }
 
+namespace {
+
+void
+setBranchFlags(FrameGraph* graph)
+{
+    for (std::size_t i = 0; i < graph->tasks.size(); ++i) {
+        FrameGraph::Task& task = graph->tasks[i];
+        bool allLeaves = true;
+        bool releasesAnInput = false;
+        for (std::vector<int>::const_iterator it = task.dependencies.begin(); it != task.dependencies.end(); ++it) {
+            const FrameGraph::Task& input = graph->tasks[*it];
+            if (!input.dependencies.empty()) {
+                allLeaves = false;
+            }
+            bool onlyConsumer = true;
+            for (std::vector<int>::const_iterator c = input.consumerTasks.begin(); c != input.consumerTasks.end(); ++c) {
+                if (*c != (int)i) {
+                    onlyConsumer = false;
+                    break;
+                }
+            }
+            releasesAnInput = releasesAnInput || onlyConsumer;
+        }
+        task.startsBranch = allLeaves;
+        task.sharesEveryInput = !task.dependencies.empty() && !releasesAnInput;
+    }
+}
+
+} // anonymous namespace
+
 FrameGraph
 RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
                             const NodePtr& root,
@@ -590,6 +621,12 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
 
         task.dfsPostOrder = fvRequest->dfsPostOrder;
         task.isIdentity = fvRequest->globalData.isIdentity;
+        if (task.isIdentity) {
+            const CacheRetentionSignals& identity = *task.key.node->getRetentionSignals();
+            for (const int dependency : task.dependencies) {
+                graph.tasks[dependency].key.node->getRetentionSignals()->inheritInputOfEdited(identity);
+            }
+        }
         // The frame's own layout, not the widest over the sequence, sizes the memory estimate.
         const NodeMetadataConstPtr metadata = effect->getRenderMetadata(context->getArgs(nodeKey), task.key.time, task.key.view);
         task.bitdepth = metadata->getBitDepth(-1);
@@ -612,8 +649,10 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
 
         // Composed transforms can ask for an infinite RoI, which renderRoI clips to the RoD.
         task.renderedRoI = task.roi;
+        task.pixelAspectRatio = par;
         if (!fvRequest->globalData.rod.isNull()) {
             const RectI pixelRoD = fvRequest->globalData.rod.toPixelEnclosing(task.key.mipmapLevel, par);
+            task.pixelRoD = pixelRoD;
             const RectI estimatedRoI = task.roi.intersect(pixelRoD);
             // An effect without tiles support renders its whole RoD whatever the RoI, but when it renders at full
             // scale only the RoI is downscaled.
@@ -622,40 +661,167 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
         }
         task.estimatedBytes = estimateBytes(task.renderedRoI, task.components, task.bitdepth);
 
-        if (!task.isIdentity && !renderContextHasLoopVariables(nodeRequest->second->context)) {
-            if (frameArgs && frameArgs->frameVaryingComputed && effect->shouldCacheOutput(false, task.key.time, task.key.view, frameArgs->visitsCount)) {
+        // A frame with an analysis is not scheduled, so no caller is needed for the analysis answer.
+        if (!task.isIdentity && frameArgs && frameArgs->frameVaryingComputed) {
+            task.cacheKeyHasTime = frameArgs->isFrameVaryingOrAnimated;
+            task.cacheMipmapLevel = rendersFullScale ? 0 : task.key.mipmapLevel;
+            // The cases renderRoI answers without a lookup, or whose entries it doesn't take at face value. A stroke being
+            // painted clears the bitmap of the entry it finds.
+            task.probesCachedOutput = !frameArgs->overlayImagePass && !frameArgs->isDuringPaintStrokeCreation
+                && !(effect->isWriter() && effect->isRenderingOwnSequence())
+                && !renderContextHasLoopVariables(nodeRequest->second->context);
+            if (effect->admitsOutputToCache(nodeRequest->second->context, *frameArgs, frameArgs->isFrameVaryingOrAnimated, task.key.time, task.key.view, nullptr)) {
                 task.sharesCachedOutput = true;
                 task.nodeHash = nodeRequest->second->nodeHash;
-                task.cacheKeyHasTime = frameArgs->isFrameVaryingOrAnimated;
-                task.cacheMipmapLevel = rendersFullScale ? 0 : task.key.mipmapLevel;
             }
         }
     }
 
-    for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
-        FrameGraph::Task& task = graph.tasks[i];
-        bool allLeaves = true;
-        bool releasesAnInput = false;
-        for (std::vector<int>::const_iterator it = task.dependencies.begin(); it != task.dependencies.end(); ++it) {
-            const FrameGraph::Task& input = graph.tasks[*it];
-            if (!input.dependencies.empty()) {
-                allLeaves = false;
-            }
-            bool onlyConsumer = true;
-            for (std::vector<int>::const_iterator c = input.consumerTasks.begin(); c != input.consumerTasks.end(); ++c) {
-                if (*c != (int)i) {
-                    onlyConsumer = false;
-                    break;
-                }
-            }
-            releasesAnInput = releasesAnInput || onlyConsumer;
-        }
-        task.startsBranch = allLeaves;
-        task.sharesEveryInput = !task.dependencies.empty() && !releasesAnInput;
-    }
+    setBranchFlags(&graph);
 
     return graph;
 } // RenderScheduler::buildGraph
+
+namespace {
+
+// Whether the part of the task's output a partial cache hit left to render reads dep. Anything this can't show to be
+// unread stays a dependency: a render that does read it would pull it unplanned.
+bool
+missingPartReads(const FrameGraph::Task& dep,
+                 const FrameViewRequest& request,
+                 const FrameRequestMap& requests,
+                 const RoIMap& missingPartRoIs)
+{
+    bool foundEdge = false;
+    const EffectInstancePtr depEffect = dep.key.node->getEffectInstance();
+    for (const FrameViewRequest::TaskEdge& edge : request.dependencies) {
+        if ((edge.node.lock() != dep.key.node) || (edge.time != dep.key.time) || (edge.view != dep.key.view)
+            || (edge.mipmapLevel != dep.key.mipmapLevel) || (edge.contextKey != dep.key.contextKey)) {
+            continue;
+        }
+        foundEdge = true;
+        if (edge.inputNb < 0) {
+            return true;
+        }
+        const FrameViewRequest* depRequest = requests.findFrameViewRequest(NodeCtxKey(dep.key.node, dep.key.contextKey), dep.key.time, dep.key.view);
+        if (!depRequest || !inputRoIMissesRoD(missingPartRoIs, depEffect, depRequest->globalData.rod)) {
+            return true;
+        }
+    }
+
+    return !foundEdge;
+}
+
+} // anonymous namespace
+
+void
+RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
+                                      const FrameRenderContextPtr& context)
+{
+    if (graph.tasks.empty() || !context || !context->getRequest() || !appPTR) {
+        return;
+    }
+    const FrameRequestMap& requests = *context->getRequest();
+    const int count = (int)graph.tasks.size();
+
+    // A task is only known to be needed once all its consumers have decided.
+    std::vector<int> undecidedConsumers(count);
+    std::vector<int> order;
+    order.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        undecidedConsumers[i] = (int)graph.tasks[i].consumerTasks.size();
+        if (undecidedConsumers[i] == 0) {
+            order.push_back(i);
+        }
+    }
+    for (std::size_t next = 0; next < order.size(); ++next) {
+        for (const int dep : graph.tasks[order[next]].dependencies) {
+            if (--undecidedConsumers[dep] == 0) {
+                order.push_back(dep);
+            }
+        }
+    }
+    if ((int)order.size() != count) {
+        return;
+    }
+
+    std::vector<char> needed(count, 0);
+    needed[0] = 1;
+    std::vector<std::vector<int>> keptDependencies(count);
+    bool droppedAny = false;
+    for (const int index : order) {
+        if (!needed[index]) {
+            continue;
+        }
+        FrameGraph::Task& task = graph.tasks[index];
+        std::vector<int>& kept = keptDependencies[index];
+        kept = task.dependencies;
+
+        const NodeCtxKey nodeKey(task.key.node, task.key.contextKey);
+        const FrameRequestMap::const_iterator nodeRequest = requests.find(nodeKey);
+        const FrameViewRequest* request = requests.findFrameViewRequest(nodeKey, task.key.time, task.key.view);
+        const EffectInstancePtr effect = task.key.node->getEffectInstance();
+        const ParallelRenderArgsPtr frameArgs = context->getArgs(nodeKey);
+        if (task.probesCachedOutput && effect && (nodeRequest != requests.end()) && nodeRequest->second && request && frameArgs) {
+            // The viewer sets its root's RoI after planning it, and the planned region doesn't follow.
+            RectI region = task.renderedRoI;
+            const RectI clippedRoI = task.roi.intersect(task.pixelRoD);
+            if (!clippedRoI.isNull()) {
+                region.merge(clippedRoI);
+            }
+
+            const bool rendersFullScale = (task.key.mipmapLevel != 0) && (task.cacheMipmapLevel == 0);
+            RectD missing;
+            const EffectInstance::OutputCacheCoverage coverage = effect->probeOutputInCache(nodeRequest->second->nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, task.key.mipmapLevel,
+                                                                                            rendersFullScale, frameArgs->draftMode && task.key.node->isDraftModeUsed(), frameArgs->tilesSupported,
+                                                                                            region, request->globalData.rod, task.pixelAspectRatio, task.components, task.bitdepth, &missing);
+            if (coverage == EffectInstance::OutputCacheCoverage::Full) {
+                kept.clear();
+                task.servedFromCache = true;
+            } else if ((coverage == EffectInstance::OutputCacheCoverage::Partial) && !kept.empty() && (!request->globalData.transforms || request->globalData.transforms->empty())) {
+                RoIMap missingPartRoIs;
+                effect->getRegionsOfInterest_public(task.key.time, nodeRequest->second->mappedScale, request->globalData.rod, missing, task.key.view, &missingPartRoIs);
+                const std::size_t before = kept.size();
+                kept.erase(std::remove_if(kept.begin(), kept.end(), [&](int dep) {
+                               return !missingPartReads(graph.tasks[dep], *request, requests, missingPartRoIs);
+                           }),
+                           kept.end());
+                task.servedFromCache = kept.size() != before;
+            }
+        }
+        droppedAny = droppedAny || (kept.size() != task.dependencies.size());
+        for (const int dep : kept) {
+            needed[dep] = 1;
+        }
+    }
+    if (!droppedAny) {
+        return;
+    }
+
+    std::vector<int> newIndex(count, -1);
+    std::vector<FrameGraph::Task> tasks;
+    for (int i = 0; i < count; ++i) {
+        if (needed[i]) {
+            newIndex[i] = (int)tasks.size();
+            tasks.push_back(std::move(graph.tasks[i]));
+            tasks.back().dependencies.clear();
+            tasks.back().consumerTasks.clear();
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        if (needed[i]) {
+            for (const int dep : keptDependencies[i]) {
+                tasks[newIndex[i]].dependencies.push_back(newIndex[dep]);
+                tasks[newIndex[dep]].consumerTasks.push_back(newIndex[i]);
+            }
+        }
+    }
+    for (FrameGraph::Task& task : tasks) {
+        task.consumers = (int)task.consumerTasks.size();
+    }
+    graph.tasks = std::move(tasks);
+    setBranchFlags(&graph);
+} // RenderScheduler::pruneBehindCacheHits
 
 FrameFuturePtr
 RenderScheduler::submit(const FrameRenderContextPtr& context,

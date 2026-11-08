@@ -682,7 +682,7 @@ TEST_F(CacheStressGpuTest, LutSwapsReachTheGpuFrame)
     EXPECT_FALSE(counts.empty()) << "no task ran on the GPU, so nothing was tested";
 }
 
-// Images a DiskCache node serves are mapped files, which the GPU import cache never hears freed.
+// Images a DiskCache node restores are mapped files, which the GPU import cache never hears freed.
 // Clearing the disk cache unmaps them, and the next entries can be mapped at the same addresses:
 // an import cached by address would then upload the old pixels.
 TEST_F(CacheStressGpuTest, DiskCacheSourcesAreNotImportedByAddress)

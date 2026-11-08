@@ -6,12 +6,23 @@ RawDemosaic -> RawInputColor -> <edited node> -> Viewer, where the edited node i
 "grade") or an HSVKeyer (case "hsv"). After a warm-up the script changes one knob of the edited node
 N times and writes one JSON line per edit.
 
+Scenario "offbranch" adds work off the active viewer's branch: RawInputColor -> K Grades, each with an
+animated multiply -> Merge input A, with the edited node on input B, -> Viewer2 in a pane of its own.
+Viewer1 is made the active viewer, so only the chain and the edited node carry the viewer-branch signal.
+Every edit re-renders both viewers. The K Grades keep their hashes across edits, and being animated
+they carry no static-output reason, so they are what the two admission policies treat differently.
+
 Environment:
   NATRON_RENDER_PROFILE  required: the prefix of the render profile; the process appends its pid
   BENCH_CASE             grade (default) or hsv
+  BENCH_SCENARIO         chain (default) or offbranch
+  BENCH_OFFBRANCH_NODES  K, the off-branch Grades of "offbranch" (default 8)
   BENCH_ZOOM             fit (default) or 100: the viewer's zoom while editing
   BENCH_PANEL            closed (default) or open: whether the edited node's settings panel is open
   BENCH_AUTOPROXY        off (default) or on: the "autoProxyScrubbing" preference
+  BENCH_RAM_PERCENT      the "maxRAMPercent" preference, set before the first render; empty or
+                         "default" leaves it alone
+  BENCH_REP              repetition index, recorded only
   BENCH_EDITS            edits recorded (default 20)
   BENCH_WARMUP           untimed edits before them (default 3)
   BENCH_RAW_FILE         the raw file (default Tests/fixtures/raw/canon-eos-5d-mark-iii.cr2)
@@ -19,6 +30,14 @@ Environment:
   BENCH_RESULT           JSON-lines file appended to (default $NATRON_GUI_TEST_OUT/edit_latency.jsonl)
   BENCH_TIMEOUT_S        per-wait timeout (default 600 for the first frame, 120 for an edit)
   NATRON_GPU             recorded only; it is read by Natron at startup
+  NATRON_CACHE_ADMISSION recorded as "policy" ("default" when unset); it is read by Natron at startup
+
+Memory and disk, read after each edit has settled: vm_hwm_mb and vm_rss_mb (VmHWM and VmRSS of
+/proc/self/status, so vm_hwm_mb of the last edit is the run's peak), io_write_bytes (write_bytes of
+/proc/self/io since just before the first render, which counts the disk tier's writes with every other
+write of the process) and io_write_bytes_edit (the same across this edit alone), and tier_bytes and
+tier_files (allocated bytes and file count under the disk tier's directory), with tier_fs its
+filesystem type. The tier has no counter reachable from Python.
 
 Each line holds latency_ms, the time from setting the knob to the profile file being written with
 the first completed viewer frame of the edit. The file is flushed when a frame finishes, so its
@@ -27,6 +46,10 @@ milliseconds). detect_ms is the same interval as seen by a 50 ms poll, an upper 
 for the completing frame, each node's device, cache state and whether it executed (any state but a
 whole-image cache hit). "upstream_executed" counts the executed nodes other than the edited one and
 the frame's root.
+
+In "offbranch" the viewed frame is the first completed frame without the Merge, and "offbranch" holds
+the first completed frame with it: its latency_ms, upstream_executed, offbranch_executed (how many of the
+K Grades executed) and nodes.
 
 Edits are set programmatically, not dragged, so auto-proxy's drag-start draft switch is not exercised;
 the preference still governs the viewer's other proxy paths.
@@ -113,6 +136,67 @@ class Profile:
         return False
 
 
+def config_tag(r):
+    """The configuration's directory name under the out-dir; tools/bench/edit_latency.sh builds the same."""
+    return "%s-%s-%s-panel-%s-gpu-%s-proxy-%s-ram-%s-adm-%s-rep-%s" % (
+        r.get("scenario", "chain"), r["case"], r["zoom"], r["panel"], r["gpu"], r["autoproxy"],
+        r.get("ram_percent", "default"), r.get("policy", "default"), r.get("rep", 0))
+
+
+def proc_fields(path, names):
+    found = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                key, _, value = line.partition(":")
+                if key.strip() in names:
+                    found[key.strip()] = int(value.split()[0])
+    except OSError:
+        pass
+    return found
+
+
+def memory_mb():
+    status = proc_fields("/proc/self/status", ("VmHWM", "VmRSS"))
+    return {"vm_hwm_mb": round(status.get("VmHWM", 0) / 1024.0, 1), "vm_rss_mb": round(status.get("VmRSS", 0) / 1024.0, 1)}
+
+
+def write_bytes():
+    return proc_fields("/proc/self/io", ("write_bytes",)).get("write_bytes")
+
+
+def tier_usage(root):
+    allocated = 0
+    files = 0
+    for directory, _, names in os.walk(root):
+        for name in names:
+            try:
+                st = os.lstat(os.path.join(directory, name))
+            except OSError:
+                continue
+            allocated += st.st_blocks * 512
+            files += 1
+    return allocated, files
+
+
+def filesystem_of(path):
+    path = os.path.realpath(path)
+    best = ("", "unknown")
+    try:
+        with open("/proc/self/mounts") as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) < 3:
+                    continue
+                mount = fields[1].replace("\\040", " ")
+                inside = path == mount or path.startswith(mount.rstrip("/") + "/")
+                if inside and len(mount) > len(best[0]):
+                    best = (mount, fields[2])
+    except OSError:
+        pass
+    return best[1]
+
+
 def frame_roots(tasks):
     """The task no other task of the frame depends on."""
     depended = set()
@@ -167,7 +251,7 @@ def summarise(frames, edited_node):
 
 CAUSES = collections.OrderedDict([
     ("not_admitted", ("M300 - Unified Tiered Cache", "Node::shouldCacheOutput false, so renderRoI sets createInCache false")),
-    ("behind_hit", ("M300 - Unified Tiered Cache", "the task graph runs every dependency though a consumer's image is cached")),
+    ("behind_hit", ("M300 - Unified Tiered Cache", "a dependency ran though its consumer's image was cached by then: planning prunes only the hits it can see")),
     ("gpu_region_member", ("M301 - GPU Cache Tier", "GpuRegionTask storeOutputs writes only the per-frame store")),
     ("mip_or_draft_key", ("M303 - Interactive Edit Latency", "no cached image at this mip; draft is in ImageKey")),
     ("placement_iscached_miss", ("M301 - GPU Cache Tier", "placed on the device although the host cache held the image")),
@@ -307,8 +391,7 @@ def classify_main(out_dir):
     for line in open(os.path.join(out_dir, "edit_latency.jsonl")):
         if line.strip():
             r = json.loads(line)
-            tag = "%s-%s-panel-%s-gpu-%s-proxy-%s" % (r["case"], r["zoom"], r["panel"], r["gpu"], r["autoproxy"])
-            groups.setdefault(tag, []).append(r)
+            groups.setdefault(config_tag(r), []).append(r)
     unclassified = 0
     names = [c for c in CAUSES]
     print("| configuration | edits | upstream executions | " + " | ".join(names) + " | no work | wall ms per edit |")
@@ -336,7 +419,8 @@ if "--classify" in getattr(sys, "argv", []):
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QMetaObject, Q_ARG
+    from PySide6.QtCore import QEvent, QMetaObject, QPointF, Q_ARG, Qt
+    from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
     import guitest as gt
     from guitest import FIXTURES, OUT, check, require, run
@@ -358,11 +442,27 @@ try:
     require(panel in ("open", "closed"), "BENCH_PANEL is open or closed")
     require(autoproxy in ("on", "off"), "BENCH_AUTOPROXY is on or off")
     require(os.path.isfile(raw), "the raw file exists: " + raw)
+    scenario = os.environ.get("BENCH_SCENARIO", "chain")
+    offbranch_count = int(os.environ.get("BENCH_OFFBRANCH_NODES", "8"))
+    ram_percent = os.environ.get("BENCH_RAM_PERCENT", "") or "default"
+    policy = os.environ.get("NATRON_CACHE_ADMISSION", "") or "default"
+    require(scenario in ("chain", "offbranch"), "BENCH_SCENARIO is chain or offbranch")
+    require(offbranch_count > 0, "BENCH_OFFBRANCH_NODES is positive")
 
     settings = NatronEngine.natron.getSettings()
     proxy_param = settings.getParam("autoProxyScrubbing")
     require(proxy_param is not None, "the autoProxyScrubbing preference exists")
     proxy_param.setValue(autoproxy == "on")
+    if ram_percent != "default":
+        ram_param = settings.getParam("maxRAMPercent")
+        require(ram_param is not None, "the maxRAMPercent preference exists")
+        ram_param.setValue(int(ram_percent))
+        require(ram_param.getValue() == int(ram_percent), "maxRAMPercent is " + ram_percent)
+    tier_param = settings.getParam("diskTierLocation")
+    tier_root = (tier_param.getValue() if tier_param is not None else "") or os.path.join(os.path.expanduser("~"), ".cache", "Natron", "tier")
+    tier_size_param = settings.getParam("diskTierSize")
+    tier_size_gib = tier_size_param.getValue() if tier_size_param is not None else None
+    tier_disabled = os.environ.get("NATRON_CACHE_DISK_TIER") == "off" or tier_size_gib == 0
 
     read = app.createReader(raw)
     require(read is not None, "create a reader for the raw file")
@@ -382,6 +482,32 @@ try:
     edited.connectInput(0, previous)
     edited_name = edited.getScriptName()
     chain_nodes.append(edited)
+
+    offbranch_names = []
+    merge_name = None
+    if scenario == "offbranch":
+        off_previous = previous
+        for i in range(offbranch_count):
+            off = app.createNode("Grade")
+            require(off is not None, "create off-branch Grade %d" % i)
+            off.connectInput(0, off_previous)
+            multiply = off.getParam("multiply")
+            require(multiply is not None, "the off-branch Grade has multiply")
+            for dimension in range(3):
+                multiply.setValueAtTime(0.9 - 0.01 * i, 0, dimension)
+                multiply.setValueAtTime(1.1, 1000, dimension)
+            preview = off.getParam("enablePreview")
+            if preview is not None:
+                preview.setValue(False)
+            off_previous = off
+            offbranch_names.append(off.getScriptName())
+            chain_nodes.append(off)
+        merge = app.createNode("Merge")
+        require(merge is not None, "create the Merge")
+        require(merge.connectInput(0, edited), "connect the edited node to Merge B")
+        require(merge.connectInput(1, off_previous), "connect the off-branch to Merge A")
+        merge_name = merge.getScriptName()
+        chain_nodes.append(merge)
 
     def content_hashes():
         return {n.getScriptName(): n.getContentHash() for n in chain_nodes}
@@ -410,6 +536,21 @@ try:
         found = [w for w in gt.widgets_of(class_name) if w.isVisible()]
         return found[0] if found else None
 
+    def ancestor_of_class(widget, name):
+        w = widget
+        while w is not None:
+            if gt.class_name(w) == name:
+                return w
+            w = w.parentWidget()
+        return None
+
+    def viewer_in_pane(class_name, pane_name):
+        for w in gt.widgets_of(class_name):
+            pane = ancestor_of_class(w, "TabWidget")
+            if w.isVisible() and pane is not None and pane.objectName() == pane_name:
+                return w
+        return None
+
     def set_panel():
         gt.close_all_panels()
         if panel == "open":
@@ -424,9 +565,7 @@ try:
         else:
             require(not gt.any_panel_open(), "no settings panel is open")
 
-    def set_zoom():
-        gl = visible("ViewerGL")
-        tab = visible("ViewerTab")
+    def set_zoom(gl, tab):
         require(gl is not None and tab is not None, "a viewer is visible")
         KEEP.extend([gl, tab])
         # invokeMethod only warns about a name that is no slot, so the outcome has to be checked.
@@ -437,8 +576,20 @@ try:
         require(invoked is not False, "the zoom slot ran")
         QApplication.processEvents()
 
+    def make_active(gl):
+        """Only a press in a viewer makes it the active viewer. A middle press and release pans by nothing."""
+        centre = QPointF(gl.width() / 2.0, gl.height() / 2.0)
+        for kind, buttons in ((QEvent.MouseButtonPress, Qt.MiddleButton), (QEvent.MouseButtonRelease, Qt.NoButton)):
+            event = QMouseEvent(kind, centre, QPointF(gl.mapToGlobal(centre.toPoint())), Qt.MiddleButton, buttons, Qt.NoModifier)
+            QApplication.sendEvent(gl, event)
+        QApplication.processEvents()
+
     profile = Profile(prefix)
-    pending = {"frames": {}, "complete": False, "at_ns": None}
+    pending = {"frames": {}, "done": {}}
+    expected_kinds = ("viewed",)
+
+    def kind_of(tasks):
+        return "offbranch" if merge_name is not None and any(r["node"] == merge_name for r in tasks.values()) else "viewed"
 
     def collect():
         for rec in profile.read_new():
@@ -447,34 +598,77 @@ try:
             frame = pending["frames"].setdefault(rec["frame"], {})
             frame[rec["task"]] = rec
             root = frame_roots(frame)
-            if root is not None and frame[root].get("ok", True) and not pending["complete"]:
-                pending["complete"] = True
-                pending["at_ns"] = profile.grew_at_ns
-        return pending["complete"]
+            kind = kind_of(frame)
+            if root is not None and frame[root].get("ok", True) and kind not in pending["done"]:
+                pending["done"][kind] = profile.grew_at_ns
+        return all(k in pending["done"] for k in expected_kinds)
 
     def reset():
         pending["frames"] = {}
-        pending["complete"] = False
-        pending["at_ns"] = None
+        pending["done"] = {}
 
     def settled():
         collect()
         return profile.quiet_for(SETTLE_S)
 
+    def frames_of(kind):
+        return {seq: tasks for seq, tasks in pending["frames"].items() if kind_of(tasks) == kind}
+
+    def ms_since(t0_ns, at_ns):
+        return round(max(0.0, (at_ns - t0_ns) / 1e6), 2) if at_ns else None
+
+    def tier_fields():
+        if tier_disabled:
+            return {"tier_bytes": None, "tier_files": None}
+        allocated, files = tier_usage(tier_root)
+        return {"tier_bytes": allocated, "tier_files": files}
+
     def steps():
+        global expected_kinds
         set_panel()
         reset()
+        io_base = write_bytes()
         require(viewer.connectInput(0, edited), "connect the Viewer")
         ok = yield ("until", collect, first_timeout)
         require(ok, "the viewer renders the first frame")
         ok = yield ("until", settled, first_timeout)
         require(ok, "the first frame settles")
-        set_zoom()
+        gl1 = visible("ViewerGL")
+        tab1 = visible("ViewerTab")
+        set_zoom(gl1, tab1)
         reset()
         yield ("sleep", 1000)
         ok = yield ("until", settled, first_timeout)
         require(ok, "the view settles after the zoom change")
-        gt.shot("%s-%s-%s-%s.png" % (case, zoom, panel, autoproxy))
+
+        if scenario == "offbranch":
+            home = ancestor_of_class(tab1, "TabWidget")
+            require(home is not None, "Viewer1 is in a pane")
+            home_name = home.objectName()
+            viewer2 = app.createNode("Viewer")
+            require(viewer2 is not None, "create the second Viewer")
+            QApplication.processEvents()
+            split = app.getTabWidget(home_name).splitHorizontally()
+            require(split is not None, "split Viewer1's pane")
+            split_name = split.getScriptName()
+            require(app.moveTab(viewer2.getScriptName(), split), "move the second Viewer to its own pane")
+            split = None
+            QApplication.processEvents()
+            ok = yield ("until", lambda: viewer_in_pane("ViewerGL", home_name) is not None and viewer_in_pane("ViewerGL", split_name) is not None, 30)
+            require(ok, "both viewers are visible")
+            gl1 = viewer_in_pane("ViewerGL", home_name)
+            set_zoom(viewer_in_pane("ViewerGL", split_name), viewer_in_pane("ViewerTab", split_name))
+            make_active(gl1)
+            require(app.getActiveViewer() is not None, "a viewer is active after the press in Viewer1")
+            reset()
+            expected_kinds = ("offbranch",)
+            require(viewer2.connectInput(0, merge), "connect the second Viewer to the Merge")
+            ok = yield ("until", collect, first_timeout)
+            require(ok, "the second viewer renders its first frame")
+            ok = yield ("until", settled, first_timeout)
+            require(ok, "the second viewer's first frame settles")
+            expected_kinds = ("viewed", "offbranch")
+        gt.shot("%s-%s-%s-%s-%s.png" % (scenario, case, zoom, panel, autoproxy))
 
         recorded = 0
         for i in range(warmup + edits):
@@ -483,24 +677,29 @@ try:
             check(ok, "quiet before edit %d" % i)
             reset()
             hashes_before = content_hashes()
+            io_before = write_bytes()
             t0_ns = time.time_ns()
             value = set_edit(i)
             ok = yield ("until", collect, edit_timeout)
             detected_ns = time.time_ns()
-            timed_out = not ok
+            timed_out = "viewed" not in pending["done"]
             if ok:
                 yield ("until", settled, edit_timeout)
             if i < warmup:
                 continue
-            summary = summarise(pending["frames"], edited_name) if ok else None
-            at_ns = pending["at_ns"]
+            summary = summarise(frames_of("viewed"), edited_name) if not timed_out else None
+            io_now = write_bytes()
             record = {
                 "label": os.environ.get("BENCH_LABEL", ""),
+                "scenario": scenario,
                 "case": case,
                 "zoom": zoom,
                 "panel": panel,
                 "autoproxy": autoproxy,
                 "gpu": os.environ.get("NATRON_GPU", "unset"),
+                "policy": policy,
+                "ram_percent": ram_percent,
+                "rep": int(os.environ.get("BENCH_REP", "0")),
                 "edited": edited_name,
                 "hashes_before": hashes_before,
                 "hashes": content_hashes(),
@@ -509,12 +708,29 @@ try:
                 "edit": i - warmup,
                 "value": round(value, 6),
                 "timed_out": timed_out,
-                "latency_ms": round(max(0.0, (at_ns - t0_ns) / 1e6), 2) if at_ns else None,
+                "latency_ms": ms_since(t0_ns, pending["done"].get("viewed")),
                 "detect_ms": round((detected_ns - t0_ns) / 1e6, 2),
                 "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "io_write_bytes": io_now - io_base if io_now is not None and io_base is not None else None,
+                "io_write_bytes_edit": io_now - io_before if io_now is not None and io_before is not None else None,
+                "tier_fs": filesystem_of(tier_root if os.path.isdir(tier_root) else os.path.dirname(tier_root)),
+                "tier_size_gib": tier_size_gib,
             }
+            record.update(memory_mb())
+            record.update(tier_fields())
             if summary:
                 record.update(summary)
+            if scenario == "offbranch":
+                off_timed_out = "offbranch" not in pending["done"]
+                off = summarise(frames_of("offbranch"), edited_name) if not off_timed_out else None
+                record["offbranch_nodes"] = len(offbranch_names)
+                record["offbranch"] = {"timed_out": off_timed_out, "latency_ms": ms_since(t0_ns, pending["done"].get("offbranch"))}
+                if off:
+                    off["offbranch_executed"] = sum(1 for n in offbranch_names if off["nodes"].get(n, {}).get("executed"))
+                    record["offbranch"].update(off)
+                    if summary:
+                        record["frame"] = min(summary["frame"], off["frame"])
+                check(not off_timed_out, "edit %d reached the second viewer" % (i - warmup))
             with open(result_path, "a") as f:
                 f.write(json.dumps(record) + "\n")
             recorded += 1
@@ -522,7 +738,8 @@ try:
             if summary:
                 expected_mip = summary["mip"] == 0 if zoom == "100" else summary["mip"] > 0
                 check(expected_mip, "edit %d rendered at the zoom's mip (%d)" % (i - warmup, summary["mip"]))
-        gt.report("NOTE %s zoom=%s panel=%s autoproxy=%s: %d edits recorded in %s" % (case, zoom, panel, autoproxy, recorded, result_path))
+        gt.report("NOTE %s %s zoom=%s panel=%s autoproxy=%s policy=%s ram=%s: %d edits recorded in %s" % (
+            scenario, case, zoom, panel, autoproxy, policy, ram_percent, recorded, result_path))
 
     run(steps())
 except Exception:

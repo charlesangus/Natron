@@ -28,10 +28,13 @@
 
 #include "Global/Macros.h"
 
-#include <iostream>
+#include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <cstdio> // for std::remove
 #include <cstring> // for std::memcpy
+#include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 #ifndef _WIN32
@@ -45,11 +48,12 @@
 #include <windows.h>
 #endif
 
+#include <QDebug>
+#include <QDir>
 #include <QFile>
 #include <QMutex>
 #include <QReadWriteLock>
-#include <QDir>
-#include <QDebug>
+#include <QWaitCondition>
 
 #ifdef DEBUG
 #include <SequenceParsing.h> // for removePath
@@ -59,13 +63,199 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Hash64.h"
 #include "Engine/HostImageMemory.h"
+#include "Engine/KeyHelper.h"
 #include "Engine/MemoryFile.h"
 #include "Engine/NonKeyParams.h"
+#include "Engine/RectI.h"
 #include "Engine/Texture.h"
 #include "Global/GlobalDefines.h"
 #include "Global/StrUtils.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct CacheDiskIdentity;
+struct CacheDiskSnapshot;
+class CacheDiskSink;
+
+class Bitmap {
+public:
+    Bitmap(const RectI& bounds)
+        : _bounds(bounds)
+        , _map(bounds.area())
+        , _dirtyZone()
+        , _dirtyZoneSet(false)
+    {
+        // The bounds may be empty: an entry that is a link to another image is an empty image with 0 bytes of data.
+        std::fill(_map.begin(), _map.end(), 0);
+    }
+
+    Bitmap()
+        : _bounds()
+        , _map()
+        , _dirtyZone()
+        , _dirtyZoneSet(false)
+    {
+    }
+
+    void initialize(const RectI& bounds)
+    {
+        _bounds = bounds;
+        _map.assign(_bounds.area(), 0);
+    }
+
+    ~Bitmap()
+    {
+    }
+
+    void setTo1();
+
+    const RectI& getBounds() const
+    {
+        return _bounds;
+    }
+
+#if NATRON_ENABLE_TRIMAP
+    void minimalNonMarkedRects_trimap(const RectI& roi, std::list<RectI>& ret, bool* isBeingRenderedElsewhere) const;
+    RectI minimalNonMarkedBbox_trimap(const RectI& roi, bool* isBeingRenderedElsewhere) const;
+#endif
+
+    void minimalNonMarkedRects(const RectI& roi, std::list<RectI>& ret) const;
+    RectI minimalNonMarkedBbox(const RectI& roi) const;
+
+    // returns true if the roi only contains 0s
+    bool isNonMarked(const RectI& roi) const;
+
+    /// Fill with 1 the roi
+    void markForRendered(const RectI& roi) { markFor(roi, 1); }
+
+#if NATRON_ENABLE_TRIMAP
+    /// Fill with 2 the roi
+    void markForRendering(const RectI& roi);
+#endif
+
+    void clear(const RectI& roi) { markFor(roi, 0); }
+
+    void swap(Bitmap& other);
+
+    const char* getBitmap() const
+    {
+        return &_map.front();
+    }
+
+    char* getBitmap()
+    {
+        return &_map.front();
+    }
+
+    const char* getBitmapAt(int x, int y) const;
+    char* getBitmapAt(int x, int y);
+
+    void copyRowPortion(int x1, int x2, int y, const Bitmap& other);
+
+    void copyBitmapPortion(const RectI& roi, const Bitmap& other);
+
+    void setDirtyZone(const RectI& zone)
+    {
+        _dirtyZone = zone;
+        _dirtyZoneSet = true;
+    }
+
+private:
+    void markFor(const RectI& roi, char value);
+
+private:
+    RectI _bounds;
+    std::vector<char> _map;
+
+    /**
+     * This represents the zone that has potentially something to render. In minimalNonMarkedRects
+     * we intersect the region of interest with the dirty zone. This is useful to optimize the bitmap checking
+     * when we are sure multiple threads are not using the image and we have a very small RoI to render.
+     * For now it's only used for the rotopaint while painting.
+     **/
+    RectI _dirtyZone;
+    bool _dirtyZoneSet;
+};
+
+/**
+ * @brief The renders currently reserving regions of one entry. A render that finds a region reserved waits on cond
+ * instead of rendering it again.
+ **/
+struct ImageBeingRendered {
+    QWaitCondition cond;
+    QMutex lock;
+    int refCount;
+    bool failed;
+    bool retracted; //< failed because the image left the cache, not because its render failed
+
+    ImageBeingRendered()
+        : cond()
+        , lock()
+        , refCount(0)
+        , failed(false)
+        , retracted(false)
+    {
+    }
+};
+
+typedef std::shared_ptr<ImageBeingRendered> ImageBeingRenderedPtr;
+
+/**
+ * @brief What a storage tier and the eviction policy see of a cache entry, whichever payload it holds. It is owned
+ * separately from the payload because an entry held by another tier has no pixels in RAM.
+ *
+ * bounds and bitmap are guarded by the owning entry's _entryLock, because a resize replaces them together with the
+ * pixels. A being-rendered update also holds ImageBeingRendered::lock around them, so that a waiter misses no wake-up.
+ **/
+struct CacheEntryHeader {
+    enum ResidencyEnum {
+        eResidencyHost = 1 << 0,
+        eResidencyDisk = 1 << 1,
+        eResidencyDevice = 1 << 2
+    };
+
+    CacheEntryHeader()
+        : key()
+        , bounds()
+        , bitmap()
+        , pendingLock()
+        , pending()
+        , residency(0)
+        , lastUse(0)
+        , priority(0.f)
+        , recomputeCostNs(0.f)
+    {
+    }
+
+    // Set once at creation, and null outside a cache: only a cached entry is ever looked up, and a temporary image is
+    // made per tile, where a copy of the key would be one more allocation for nothing.
+    std::shared_ptr<const KeyHelper<U64>> key;
+
+    RectI bounds;
+    Bitmap bitmap;
+
+    // Separate from the reservation stripes because those are held across whole bitmap scans, and finishing a render
+    // must not wait on another render's scan. Taken before ImageBeingRendered::lock; _entryLock is never taken under it.
+    // Starts a cache line because any thread writes from here on, and every bitmap check and pixelAt() reads above.
+    alignas(64) QMutex pendingLock;
+    // Null while nothing is reserved. Guarded by pendingLock.
+    ImageBeingRenderedPtr pending;
+
+    std::atomic<unsigned char> residency; // mask of ResidencyEnum
+    std::atomic<U64> lastUse; // wall clock in ns, so that it survives a restart
+    std::atomic<float> priority;
+    std::atomic<float> recomputeCostNs;
+
+    // Shared with the node rather than naming it: the score scan runs under the cache lock and must not look a node up,
+    // and the entry can outlive the node.
+    std::atomic<CacheRetentionSignalsPtr> retention;
+    std::atomic<std::uint32_t> reuseCount { 0 };
+    std::atomic<U64> lastReuseRender { 0 };
+    // Its file lives among a holder's pins, so RAM pressure only drops the entry.
+    std::atomic<bool> pinned { false };
+};
+
+typedef std::shared_ptr<CacheEntryHeader> CacheEntryHeaderPtr;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////BUFFER////////////////////////////////////////////////////
@@ -333,6 +523,38 @@ public:
 
     virtual void syncBackingFile() const = 0;
 
+    // What a cache does to an entry without knowing which payload it carries.
+    virtual U64 getHashKey() const = 0;
+    virtual const std::string& getKeyHolderID() const = 0;
+    virtual U64 getKeyTreeVersion() const = 0;
+    virtual bool isStoredOnDisk() const = 0;
+    virtual void deallocate() = 0;
+    virtual void removeAnyBackingFile() const = 0;
+    virtual void reOpenFileMapping() const = 0;
+    virtual void scheduleForDestruction() = 0;
+
+    virtual CacheEntryHeader* evictionHeader() const
+    {
+        return NULL;
+    }
+
+    // An entry whose payload cannot be stored in the disk tier answers false to all three.
+    virtual bool diskIdentity(CacheDiskIdentity* /*identity*/) const
+    {
+        return false;
+    }
+
+    virtual bool diskSnapshot(CacheDiskSnapshot* /*snapshot*/) const
+    {
+        return false;
+    }
+
+    virtual bool diskWritePayload(const CacheDiskSnapshot& /*snapshot*/,
+                                  CacheDiskSink& /*sink*/) const
+    {
+        return false;
+    }
+
 protected:
 
     AbstractCacheEntryBase(const AbstractCacheEntryBase&) = delete;
@@ -361,10 +583,7 @@ public:
     {
     }
 
-    virtual const KeyType & getKey() const = 0;
-    virtual hash_type getHashKey() const = 0;
-
-
+    virtual const KeyType& getKey() const = 0;
 };
 
 /** @brief Buffer represents  an internal buffer that can be allocated on different devices.
@@ -381,6 +600,45 @@ public:
  * Maybe should we move this class as an internal class of CacheEntryHelper to prevent elsewhere
  * usages.
  **/
+/**
+ * @brief A copy-on-write view of part of a published file. The file's inode outlives an unlink for as long as
+ * the mapping does, and a write to the view never reaches the file, which peers may have mapped too.
+ **/
+class PrivateFileMapping {
+public:
+    PrivateFileMapping(void* base,
+                       std::size_t mappedBytes,
+                       unsigned char* data,
+                       std::size_t bytes)
+        : _base(base)
+        , _mappedBytes(mappedBytes)
+        , _data(data)
+        , _bytes(bytes)
+    {
+    }
+
+    ~PrivateFileMapping();
+
+    unsigned char* data() const
+    {
+        return _data;
+    }
+
+    std::size_t bytes() const
+    {
+        return _bytes;
+    }
+
+private:
+    PrivateFileMapping(const PrivateFileMapping&) = delete;
+    PrivateFileMapping& operator=(const PrivateFileMapping&) = delete;
+
+    void* _base;
+    std::size_t _mappedBytes;
+    unsigned char* _data;
+    std::size_t _bytes;
+};
+
 template<typename DataType>
 class Buffer
 {
@@ -403,9 +661,21 @@ public:
         deallocate();
     }
 
+    void adoptMapping(std::unique_ptr<PrivateFileMapping> mapping)
+    {
+        _storageMode = eStorageModeRAM;
+        _buffer.reset();
+        _mapping = std::move(mapping);
+    }
+
+    bool isFileMapping() const
+    {
+        return (bool)_mapping;
+    }
+
     void allocateRAM(U64 count)
     {
-        if ( _buffer && (_buffer->size() > 0) ) {
+        if (_mapping || (_buffer && (_buffer->size() > 0))) {
             return;
         }
         _storageMode = eStorageModeRAM;
@@ -508,11 +778,9 @@ public:
     {
         if (_storageMode == eStorageModeRAM) {
             if (other._storageMode == eStorageModeRAM) {
-                if (other._buffer) {
-                    if (!_buffer) {
-                        _buffer.reset( new RamBuffer<DataType>() );
-                    }
+                if (other._buffer || other._mapping) {
                     _buffer.swap(other._buffer);
+                    _mapping.swap(other._mapping);
                 }
             } else {
                 if (!_buffer) {
@@ -576,6 +844,7 @@ public:
     void deallocate()
     {
         if (_storageMode == eStorageModeRAM) {
+            _mapping.reset();
             if (_buffer) {
                 _buffer->clear();
             }
@@ -632,6 +901,10 @@ public:
     size_t size() const
     {
         if (_storageMode == eStorageModeRAM) {
+            if (_mapping) {
+                return _mapping->bytes();
+            }
+
             return _buffer ? _buffer->size() * sizeof(DataType) : 0;
         } else if (_storageMode == eStorageModeDisk) {
             if (_backingFile) {
@@ -651,7 +924,7 @@ public:
 
     bool isAllocated() const
     {
-        return (_buffer && _buffer->size() > 0) || ( _backingFile && _backingFile->data() ) || _cacheFile || _glTexture;
+        return _mapping || (_buffer && _buffer->size() > 0) || (_backingFile && _backingFile->data()) || _cacheFile || _glTexture;
     }
 
     DataType* writable()
@@ -665,6 +938,10 @@ public:
                 return NULL;
             }
         } else if (_storageMode == eStorageModeRAM) {
+            if (_mapping) {
+                return reinterpret_cast<DataType*>(_mapping->data());
+            }
+
             return _buffer ? _buffer->getData() : NULL;
         } else {
             // Other storage modes don't provide direct access to RAM handle
@@ -683,6 +960,10 @@ public:
                 return 0;
             }
         } else if (_storageMode == eStorageModeRAM) {
+            if (_mapping) {
+                return reinterpret_cast<const DataType*>(_mapping->data());
+            }
+
             return _buffer ? _buffer->getData() : NULL;
         } else {
             // Other storage modes don't provide direct access to RAM handle
@@ -724,6 +1005,7 @@ private:
 
     std::string _path;
     std::unique_ptr<RamBuffer<DataType> > _buffer;
+    std::unique_ptr<PrivateFileMapping> _mapping;
 
     /*mutable so the reOpenFileMapping function can reopen the mapped file. It doesn't
        change the underlying data*/
@@ -856,6 +1138,30 @@ public:
     }
 
     /**
+     * @brief Takes its pixels from a mapped file instead of allocating them. Charged as RAM, as an allocation is.
+     **/
+    void adoptMappedPayload(std::unique_ptr<PrivateFileMapping> mapping)
+    {
+        const std::size_t bytes = mapping->bytes();
+        {
+            QWriteLocker k(&_entryLock);
+            _data.adoptMapping(std::move(mapping));
+            onMemoryAllocated(false);
+        }
+
+        if (_cache) {
+            _cache->notifyEntryAllocated(getTime(), bytes, eStorageModeRAM);
+        }
+    }
+
+    bool isFileMapped() const
+    {
+        QReadLocker k(&_entryLock);
+
+        return _data.isFileMapping();
+    }
+
+    /**
      * @brief To be called for disk-cached entries when restoring them from a file.
      **/
     void restoreMetadataFromFile(std::size_t size, const std::string& filePath, std::size_t dataOffset)
@@ -907,6 +1213,16 @@ public:
         return _key.getHash();
     }
 
+    virtual const std::string& getKeyHolderID() const OVERRIDE FINAL
+    {
+        return _key.getCacheHolderID();
+    }
+
+    virtual U64 getKeyTreeVersion() const OVERRIDE FINAL
+    {
+        return _key.getTreeVersion();
+    }
+
     std::string generateStringFromHash(const std::string & path,
                                        U64 hashKey) const
     {
@@ -943,7 +1259,7 @@ public:
      * living only in the disk portion of the cache. No locking is required here because the
      * caller is already preventing other threads to call this function.
      **/
-    void reOpenFileMapping() const
+    virtual void reOpenFileMapping() const OVERRIDE FINAL
     {
         if (_cache && _cache->isTileCache()) {
             return;
@@ -960,7 +1276,7 @@ public:
     /**
      * @brief Can be called several times without harm
      **/
-    void deallocate()
+    virtual void deallocate() OVERRIDE
     {
         std::size_t sz = size();
         bool dataAllocated;
@@ -1025,8 +1341,7 @@ public:
         return _data.getOffsetInFile();
     }
 
-
-    bool isStoredOnDisk() const
+    virtual bool isStoredOnDisk() const OVERRIDE FINAL
     {
         return _data.getStorageMode() == eStorageModeDisk;
     }
@@ -1047,7 +1362,7 @@ public:
     /**
      * @brief An entry stored on disk is effectively destroyed when its backing file is removed.
      **/
-    void removeAnyBackingFile() const
+    virtual void removeAnyBackingFile() const OVERRIDE FINAL
     {
         if ( !isStoredOnDisk() || _cache->isTileCache()) {
             return;
@@ -1075,7 +1390,7 @@ public:
     /**
      * @brief To be called when an entry is going to be removed from the cache entirely.
      **/
-    void scheduleForDestruction()
+    virtual void scheduleForDestruction() OVERRIDE FINAL
     {
         QWriteLocker k(&_entryLock);
 

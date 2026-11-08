@@ -38,6 +38,9 @@ set(_natron_long_suite_timeouts
     NativeDenoiseProfiledGpuTest 900
     # Debug: about 440 s, almost all of it the 204,800 renders of the long feedback chain.
     NativeLoopFeedbackTest 1500
+    # Debug: about 180 s alone and up to 315 s beside other suites, as each of its uncached variants
+    # decodes and develops a whole raw.
+    NativeRawColorCalibrationReferenceTest 900
 )
 
 set(_natron_long_suites "")

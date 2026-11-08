@@ -1026,7 +1026,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
         Hash64 hash;
         hash.append(mergeNodeHash);
         hash.computeHash();
-        rotoHash = hash.value();
+        rotoHash = ContentHasher::withSaltFlag(hash.value(), ContentHasher::isSalted(mergeNodeHash));
         assert(mergeNodeHash != rotoHash);
     }
     std::unique_ptr<ImageKey> key( new ImageKey(this,

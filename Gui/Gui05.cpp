@@ -45,6 +45,7 @@
 #include "Engine/RFV.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Gui/AboutWindow.h"
 #include "Gui/AutoHideToolBar.h"
@@ -310,6 +311,7 @@ Gui::setActiveViewer(ViewerTab* viewer)
         return;
     }
     _imp->_activeViewer = viewer;
+    getApp()->setViewerActiveForRenders(viewer ? viewer->getInternalNode()->getNode().get() : NULL);
     Q_EMIT activeViewerChanged();
     // RFVRead lists what reaches it from the active viewer.
     RFV::scheduleReaderRefresh(getApp());

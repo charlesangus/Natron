@@ -28,6 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
+#include <list>
+#include <string>
+
+#include "Global/Enums.h"
+
 #include "Engine/KeyHelper.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
@@ -50,6 +56,10 @@ public:
     //hence it is probably not very high quality, even though the mipmap level is 0
     bool _fullScaleWithDownscaleInputs;
 
+    unsigned int _mipmapLevel;
+    std::string _layer;
+    int /*ImageBitDepthEnum*/ _bitDepth; // store it locally as an int for easier serialization
+
     ImageKey();
 
     ImageKey(const CacheEntryHolder* holder,
@@ -60,6 +70,34 @@ public:
              double pixelAspect,
              bool draftMode,
              bool fullScaleWithDownscaleInputs);
+
+    /**
+     * @brief This key for the one entry of the given level, layer and depth. The constructor leaves
+     * those three blank; an Image completes its key from its own params, so a key with them blank
+     * addresses nothing in the cache.
+     **/
+    ImageKey forEntry(unsigned int mipmapLevel, const ImageLayerDesc& layer, ImageBitDepthEnum bitdepth) const;
+
+    /**
+     * @brief The layer a request is cached under: a colour request shares the node's first colour
+     * output whichever colour layout it asked for, any other layer is itself. Null if the node has
+     * no colour output for a colour request.
+     **/
+    static const ImageLayerDesc* cachedLayerForRequest(const ImageLayerDesc& requested, const std::list<ImageLayerDesc>& outputComponents);
+
+    /**
+     * @brief Calls visitor with each key whose entry can answer a request, best first, until it
+     * returns true, and returns whether it did. Levels run from coarsestMipmapLevel down to
+     * finestMipmapLevel; within a level, layer before the RGBA that holds its channels, and within
+     * a layer, bitdepth before deeper ones.
+     *
+     * A miss costs one lookup per combination: at most 2 layers and 4 depths per level.
+     **/
+    bool forEachServingKey(unsigned int coarsestMipmapLevel,
+                           unsigned int finestMipmapLevel,
+                           const ImageLayerDesc& layer,
+                           ImageBitDepthEnum bitdepth,
+                           const std::function<bool(const ImageKey&)>& visitor) const;
 
     void fillHash(Hash64* hash) const;
 

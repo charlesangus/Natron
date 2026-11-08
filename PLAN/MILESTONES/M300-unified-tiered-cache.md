@@ -145,7 +145,7 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Phase 300.4: Measure and guard
 
-- [ ] M300.P4.T1 — Benchmark both admission policies and set the default
+- [x] M300.P4.T1 — Benchmark both admission policies and set the default
   - files: `tools/bench/baselines/edit-latency.jsonl`, `docs/cache/tiered-cache.md` (results section), `Engine/Settings.cpp` (default)
   - approach: Run M276 - Upstream Reuse On Edits' edit-latency benchmark with `NATRON_GPU=off` under each policy on the user's host, plus an off-branch graph, since the viewer-branch signal admits the whole chain under both policies. Record latency, upstream executions, peak RAM and disk writes. Put the numbers to the user; set the default they choose.
   - verify: The results are recorded, the user's choice is in `## Decisions`, and the default matches it.

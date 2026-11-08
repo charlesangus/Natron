@@ -36,11 +36,13 @@
 NATRON_NAMESPACE_ENTER
 
 struct VectorFollowParams;
+struct VectorFollowReport;
 
 /**
  * @brief Runs a follow off the main thread: it reads vectors and reduces there, and applies each
  * frame back on the main thread as it arrives, so the viewer stays live and shows the shapes moving.
- * The report ends up in the node's message. Everything public is main thread.
+ * The report is posted as an information message of the node, which the GUI shows as a dialog and
+ * does not keep, and is kept here until the next follow starts. Everything public is main thread.
  **/
 class VectorFollowTask
     : public GenericSchedulerThread {
@@ -60,6 +62,10 @@ public:
 
     // A follow that was running ends with what it had done so far. With wait, it has ended on return.
     void abortFollow(bool wait);
+
+    // False when no follow has ended since the last forgetLastReport() or startFollow().
+    bool getLastReport(VectorFollowReport* report) const;
+    void forgetLastReport();
 
 Q_SIGNALS:
 

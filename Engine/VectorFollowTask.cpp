@@ -81,6 +81,7 @@ struct VectorFollowTask::Imp {
     std::deque<PendingFrame> frames;
     int framesTotal = 1;
     int framesDone = 0;
+    std::unique_ptr<VectorFollowReport> lastReport;
 
     std::function<bool()> abortCheck()
     {
@@ -139,6 +140,7 @@ VectorFollowTask::startFollow(const VectorFollowParams& params,
         return false;
     }
 
+    _imp->lastReport.reset();
     _imp->params = params;
     _imp->run = std::move(run);
     _imp->sampler.reset(new VectorSampler(params.source));
@@ -174,6 +176,23 @@ VectorFollowTask::abortFollow(bool wait)
         waitForAbortToComplete_enforce_blocking();
         onPhaseDone(ePhaseCompute, _imp->generation);
     }
+}
+
+bool
+VectorFollowTask::getLastReport(VectorFollowReport* report) const
+{
+    if (!_imp->lastReport) {
+        return false;
+    }
+    *report = *_imp->lastReport;
+
+    return true;
+}
+
+void
+VectorFollowTask::forgetLastReport()
+{
+    _imp->lastReport.reset();
 }
 
 void
@@ -317,6 +336,9 @@ VectorFollowTask::onPhaseDone(int phase,
     // One that went on past an unreadable frame has none either: its report tells of that frame.
     const std::string error = (_imp->aborted || !_imp->run->wasAborted()) ? std::string() : _imp->sampler->lastError();
     const VectorFollowReport report = _imp->run->finish(sourceLost, error);
+    // Kept before the message is posted: in the GUI that opens a modal dialog, whose event loop
+    // may already ask for the report.
+    _imp->lastReport.reset(new VectorFollowReport(report));
     _imp->run.reset();
     _imp->sampler.reset();
     _imp->job.reset();

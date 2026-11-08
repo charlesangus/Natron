@@ -2477,6 +2477,15 @@
                 return %PYARG_0;
             </inject-code>
         </modify-function>
+        <modify-function signature="getLastFollowReport()const">
+            <modify-argument index="return">
+                <replace-type modified-type="PyObject"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = %CPPSELF.%FUNCTION_NAME();
+                return %PYARG_0;
+            </inject-code>
+        </modify-function>
         <modify-function signature="getBaseLayer()const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>

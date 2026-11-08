@@ -36,6 +36,7 @@ NATRON_NAMESPACE_ENTER
 
 struct RotoPaintPrivate;
 class VectorFollowControls;
+struct VectorFollowReport;
 
 class RotoPaint
     : public EffectInstance
@@ -152,6 +153,7 @@ public:
 
     void abortVectorFollow(bool wait);
     bool isVectorFollowRunning() const;
+    bool getLastVectorFollowReport(VectorFollowReport* report) const;
 
     virtual RotoCurvePanelHook* getCurvePanelHook() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

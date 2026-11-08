@@ -226,6 +226,22 @@ public:
                             double tolerance = 0.5,
                             double confidenceThreshold = 0.5);
 
+    /**
+     * @brief True while a follow started from the Follow Vectors buttons or the curve panel's
+     * Follow Vectors... entry runs. Such a follow runs in the background and returns at once.
+     **/
+    bool isFollowingVectors() const;
+
+    /**
+     * @brief The report of the last follow started from the Follow Vectors buttons or the curve
+     * panel's Follow Vectors... entry, or None while it runs, after a press that was refused (the
+     * reason is then the node's warning message), and before any. A report is a dict:
+     * {"status": "done", "aborted", "sourceLost" or "error", "error": the error or "", "message":
+     * the text shown to the user, "shapes": the items' names to entries as followVectors() returns
+     * them}. On "sourceLost" the follow was reverted. followVectors() does not change it.
+     **/
+    PyObject* getLastFollowReport() const;
+
 private:
     RotoCurveContextPtr _ctx;
 };

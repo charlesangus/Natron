@@ -39,6 +39,7 @@ NATRON_NAMESPACE_ENTER
 
 class RotoCurveInteract;
 class VectorFollowTask;
+struct VectorFollowReport;
 
 /**
  * @brief The Follow Vectors group of a curve host: its knobs, what its buttons do with the host's
@@ -62,6 +63,10 @@ public:
 
     bool isFollowing() const;
     void abortFollow(bool wait);
+
+    // The report of the last follow a button or the panel menu ran, until the next press; false
+    // while it runs, after a refused press, and before any.
+    bool getLastReport(VectorFollowReport* report) const;
 
     virtual std::vector<Column> getColumns() const OVERRIDE FINAL;
     virtual std::string getItemText(const RotoItemPtr& item, int column) const OVERRIDE FINAL;

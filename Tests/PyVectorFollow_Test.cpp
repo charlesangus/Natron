@@ -24,8 +24,12 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <set>
 #include <string>
+
+#include <QtCore/QCoreApplication>
+#include <QtCore/QThread>
 
 #include <gtest/gtest.h>
 
@@ -36,10 +40,14 @@
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoCurvePanelHook.h"
+#include "Engine/RotoPaint.h"
+#include "Engine/TimeLine.h"
 #include "Engine/VectorFollow.h"
 #include "Engine/ViewIdx.h"
 
@@ -250,6 +258,55 @@ TEST_F(PyVectorFollowTest, UnknownNamesRaise)
 {
     expectScriptPasses(expectValueError(followCall(_generator, "sideways", "perPoint")));
     expectScriptPasses(expectValueError(followCall(_generator, "forward", "wobble")));
+}
+
+TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
+{
+    RotoPaint* paint = dynamic_cast<RotoPaint*>(_roto->getEffectInstance().get());
+    ASSERT_TRUE(paint);
+    RotoCurvePanelHook* hook = paint->getCurvePanelHook();
+    ASSERT_TRUE(hook);
+    KnobChoicePtr source = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followSource"));
+    KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
+    KnobIntPtr out = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
+    ASSERT_TRUE(source && range && out);
+    const std::string sourceName = _generator->getFullyQualifiedName();
+    source->setActiveEntry(ChoiceOption(sourceName, sourceName, ""));
+    range->setValue(1, ViewSpec::all(), 0);
+    out->setValue(12, ViewSpec::all(), 0);
+    getApp()->getTimeLine()->seekFrame(5, false, NULL, eTimelineChangeReasonOtherSeek);
+
+    expectScriptPasses("assert roto.getLastFollowReport() is None\n"
+                       "assert not roto.isFollowingVectors()\n");
+
+    hook->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>(1, _bezier));
+    ASSERT_TRUE(paint->isVectorFollowRunning()) << "the follow was refused or did not start";
+    expectScriptPasses("assert roto.isFollowingVectors()\n"
+                       "assert roto.getLastFollowReport() is None\n");
+
+    for (int i = 0; i < 6000 && paint->isVectorFollowRunning(); ++i) {
+        QCoreApplication::processEvents();
+        QThread::msleep(10);
+    }
+    ASSERT_FALSE(paint->isVectorFollowRunning()) << "the follow did not end in time";
+
+    expectScriptPasses("report = roto.getLastFollowReport()\n"
+                       "assert not roto.isFollowingVectors()\n"
+                       "assert report is not None\n"
+                       "assert report['status'] == 'done', str(report)\n"
+                       "assert report['error'] == '', str(report)\n"
+                       "assert report['message'].startswith('Follow Vectors is done.'), str(report)\n"
+                       "entry = report['shapes'][shape.getScriptName()]\n"
+                       "assert entry['stopFrame'] is None, str(entry)\n"
+                       "assert entry['passStops'] == [], str(entry)\n");
+    const FollowPoint end = positionAt(12.);
+    EXPECT_NEAR(end.x, 90. + kShiftX * 7., kFollowTolerance);
+    EXPECT_NEAR(end.y, 70. + kShiftY * 7., kFollowTolerance);
+
+    hook->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>());
+    EXPECT_FALSE(paint->isVectorFollowRunning());
+    expectScriptPasses("assert roto.getLastFollowReport() is None\n"
+                       "assert not roto.isFollowingVectors()\n");
 }
 
 } // anonymous namespace

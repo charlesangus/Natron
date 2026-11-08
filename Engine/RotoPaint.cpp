@@ -1165,6 +1165,12 @@ RotoPaint::isVectorFollowRunning() const
     return _vectorFollow && _vectorFollow->isFollowing();
 }
 
+bool
+RotoPaint::getLastVectorFollowReport(VectorFollowReport* report) const
+{
+    return _vectorFollow && _vectorFollow->getLastReport(report);
+}
+
 RotoCurvePanelHook*
 RotoPaint::getCurvePanelHook() const
 {

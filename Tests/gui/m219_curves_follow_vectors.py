@@ -39,8 +39,10 @@ renders TV-L1 vectors, so give the run time:
 Without NATRON_STALL_LOG the harness's 50 ms stall check is skipped and only the script's own tick
 gap is checked.
 """
+import html
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -56,6 +58,7 @@ SHOT_MS = 900
 POLL_TIMEOUT_S = 30.0
 FOLLOW_TIMEOUT_S = 600.0
 ABORT_TIMEOUT_S = 1200.0
+DIALOG_TIMEOUT_S = 3.0
 TICK_MS = 20
 PANEL_MENU_DELAY_MS = 400
 
@@ -113,7 +116,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QPointF, QTimer, Qt
     from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QMouseEvent, QPainter
-    from PySide6.QtWidgets import QApplication, QTreeWidget, QTreeWidgetItemIterator
+    from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QTreeWidget, QTreeWidgetItemIterator
 
     import guitest as gt
     import roto_gui as rg
@@ -298,9 +301,16 @@ try:
     def message(node):
         return str(node.getPersistentMessage() or "")
 
-    def follow_finished(node):
-        text = message(node)
-        return text.startswith("Follow Vectors") and ("is done" in text or "aborted" in text or "reverted" in text or ": " in text[:20])
+    def report_dialog():
+        """The modal dialog showing a follow's report, as (dialog, its plain text), or None. The GUI shows an
+        information message of a node as a modal dialog and does not keep it as the node's message."""
+        w = QApplication.activeModalWidget()
+        if w is None or not w.isVisible():
+            return None
+        texts = [w.text()] if isinstance(w, QMessageBox) else []
+        texts += [lab.text() for lab in w.findChildren(QLabel)]
+        text = html.unescape(re.sub(r"<[^>]*>", " ", "\n".join(texts))).replace("\xa0", " ")
+        return (w, text) if "Follow Vectors" in text else None
 
     def press(node, name):
         param(node, name).trigger()
@@ -317,11 +327,14 @@ try:
         p.setValue(options.index(source.getScriptName()))
         QApplication.processEvents()
 
-    def wait_follow(node, timeout, on_tick=None):
-        """Ticks the GUI thread every TICK_MS until the follow's report arrives; returns (finished, stats)."""
+    def wait_follow(scene, label, timeout, on_tick=None):
+        """Ticks the GUI thread every TICK_MS until Roto.isFollowingVectors() turns false, then takes the
+        report Roto.getLastFollowReport() keeps, which is None when the press was refused, and closes the
+        report's dialog. Returns (the report, stats)."""
         stats = {"ticks": 0, "max_gap": 0.0, "start": mono_ms(), "end": 0.0}
         deadline = time.time() + timeout
         last = time.time()
+        ended = False
         while time.time() < deadline:
             yield ("sleep", TICK_MS)
             now = time.time()
@@ -330,19 +343,35 @@ try:
             last = now
             if on_tick is not None:
                 on_tick()
-            if follow_finished(node):
-                stats["end"] = mono_ms()
-                return True, stats
+            if not scene.ctx.isFollowingVectors():
+                ended = True
+                break
         stats["end"] = mono_ms()
-        return False, stats
+        require(ended, "%s: the follow ends within %.0f s" % (label, timeout))
+        outcome = scene.ctx.getLastFollowReport()
+        require(outcome is not None, "%s: the follow ran and left a report (node message %r)" % (label, message(scene.roto)))
+        yield from close_report_dialog(scene, label, outcome)
+        return outcome, stats
 
-    def run_follow(node, button, label, timeout=FOLLOW_TIMEOUT_S):
-        press(node, button)
-        ok, stats = yield from wait_follow(node, timeout)
-        require(ok, "%s: the follow ended with a report (message %r)" % (label, message(node)))
-        report("NOTE %s: the follow took %.0f ms, %d ticks, worst GUI tick gap %.0f ms; message %r"
-               % (label, stats["end"] - stats["start"], stats["ticks"], stats["max_gap"], message(node)))
-        return stats
+    def close_report_dialog(scene, label, outcome):
+        shown = yield ("until", lambda: report_dialog() is not None, DIALOG_TIMEOUT_S)
+        text = ""
+        if shown:
+            dialog, text = report_dialog()
+            dialog.done(0)
+            # The dialog's event loop only returns once this tick does.
+            yield ("sleep", SETTLE_MS)
+        headline = outcome["message"].split("\n")[0]
+        check(headline in text or headline in message(scene.roto),
+              "%s: the user is shown the report %r (dialog %r, node message %r)" % (label, headline, text, message(scene.roto)))
+
+    def run_follow(scene, button, label, timeout=FOLLOW_TIMEOUT_S):
+        press(scene.roto, button)
+        outcome, stats = yield from wait_follow(scene, label, timeout)
+        report("NOTE %s: the follow took %.0f ms, %d ticks, worst GUI tick gap %.0f ms; report %r"
+               % (label, stats["end"] - stats["start"], stats["ticks"], stats["max_gap"], outcome["message"]))
+        check(outcome["status"] == "done", "%s: the follow is done (status %r, %r)" % (label, outcome["status"], outcome["message"]))
+        return outcome
 
     def read_stalls():
         if not STALL_LOG or not os.path.isfile(STALL_LOG):
@@ -436,8 +465,7 @@ try:
         p0 = [pos(bez, i, START) for i in range(POINTS)]
         select_shapes([bez])
         yield from go_to(START)
-        yield from run_follow(scene.roto, "followForwardToEnd", "viewer row, Per Point, forward to the end")
-        check("is done" in message(scene.roto), "viewer row: the node message reports the follow is done (%r)" % message(scene.roto))
+        yield from run_follow(scene, "followForwardToEnd", "viewer row, Per Point, forward to the end")
         worst = check_per_point_follow(bez, p0, "viewer row")
         yield from go_to(MAIN_LAST)
         yield from settle()
@@ -481,9 +509,9 @@ try:
         right_click_item(tree, item)
         check(any(s.startswith("Follow Vectors") for s in seen["labels"]), "the panel menu has a Follow Vectors entry (entries %r)" % (seen["labels"],))
         check(seen["enabled"] and seen["triggered"], "the Follow Vectors entry is enabled for a shape and was triggered")
-        ok, stats = yield from wait_follow(scene.roto, FOLLOW_TIMEOUT_S)
-        require(ok, "panel entry: the follow ended with a report (message %r)" % message(scene.roto))
-        report("NOTE panel entry: %d ticks, worst GUI tick gap %.0f ms; message %r" % (stats["ticks"], stats["max_gap"], message(scene.roto)))
+        outcome, stats = yield from wait_follow(scene, "panel entry", FOLLOW_TIMEOUT_S)
+        report("NOTE panel entry: %d ticks, worst GUI tick gap %.0f ms; report %r" % (stats["ticks"], stats["max_gap"], outcome["message"]))
+        check(outcome["status"] == "done", "panel entry: the follow is done (status %r, %r)" % (outcome["status"], outcome["message"]))
         worst = check_per_point_follow(bez, p0, "panel entry")
         yield from go_to(MAIN_LAST)
         yield from settle()
@@ -500,7 +528,7 @@ try:
             keys_before = keys_of(bez)
             select_shapes([bez])
             yield from go_to(START)
-            yield from run_follow(scene.roto, "followForwardToEnd", model)
+            yield from run_follow(scene, "followForwardToEnd", model)
             label = "%s fit" % model
             unmoved = max_deviation(bez, [START, MAIN_LAST], lambda t, i: p0[i])
             check(keys_of(bez) == keys_before, "%s: the points' keys are untouched (%r -> %r)" % (label, keys_before, keys_of(bez)))
@@ -558,7 +586,7 @@ try:
         require(keys == [float(START), float(BRIDGE_KEY)], "the shape has keys at %d and %d (keys %r)" % (START, BRIDGE_KEY, keys))
         select_shapes([bez])
         yield from go_to(START)
-        yield from run_follow(scene.roto, "followForwardToEnd", "bridge, Forward at frame %d with a key at frame %d" % (START, BRIDGE_KEY))
+        yield from run_follow(scene, "followForwardToEnd", "bridge, Forward at frame %d with a key at frame %d" % (START, BRIDGE_KEY))
 
         at_start = max_deviation(bez, [START], lambda t, i: key_start[i])
         at_key = max_deviation(bez, [BRIDGE_KEY], lambda t, i: key_end[i])
@@ -612,8 +640,7 @@ try:
 
         select_shapes([bez])
         yield from go_to(current)
-        yield from run_follow(scene.roto, "followBackwardToStart", "backward bridge, Backward at frame %d with keys at %d and %d" % (current, START, after))
-        check("is done" in message(scene.roto), "backward bridge: the follow is done (%r)" % message(scene.roto))
+        yield from run_follow(scene, "followBackwardToStart", "backward bridge, Backward at frame %d with keys at %d and %d" % (current, START, after))
 
         at_start = max_deviation(bez, [START], lambda t, i: p0[i])
         at_current = max_deviation(bez, [current], lambda t, i: shown[i])
@@ -661,8 +688,7 @@ try:
 
         select_shapes([bez])
         yield from go_to(START)
-        yield from run_follow(scene.roto, "followForwardToEnd", "later key only, Forward at frame %d with the only key at frame %d" % (START, late))
-        check("is done" in message(scene.roto), "later key only: the follow is done (%r)" % message(scene.roto))
+        yield from run_follow(scene, "followForwardToEnd", "later key only, Forward at frame %d with the only key at frame %d" % (START, late))
 
         at_key = max_deviation(bez, [late], lambda t, i: held[i])
         check(at_key <= KEY_TOL, "later key only: the key is met exactly (off by %.2e)" % at_key)
@@ -706,12 +732,13 @@ try:
               "a backward follow of the forward-only source is refused naming %s and its missing backward motion layer (message %r)" % (name, text))
         check(keys_of(bez) == keys_before and all(snapshot(bez, frames)[t] == before[t] for t in frames),
               "the refused follow keyed nothing and moved nothing")
+        check(not scene.ctx.isFollowingVectors() and scene.ctx.getLastFollowReport() is None,
+              "the refused follow never ran (following %r, report %r)" % (scene.ctx.isFollowingVectors(), scene.ctx.getLastFollowReport()))
         shot("m219-forward-only-refused.png", "Backward To Start on %s, which has no backward motion layer, is refused: %s" % (name, text.replace("\n", " ")))
 
         yield from go_to(START)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
-        yield from run_follow(scene.roto, "followForwardToEnd", "forward-only source, forward")
-        check("is done" in message(scene.roto), "forward-only: a forward follow of the forward-only source completes (%r)" % message(scene.roto))
+        yield from run_follow(scene, "followForwardToEnd", "forward-only source, forward")
         worst = check_per_point_follow(bez, p0, "forward-only source")
         yield from go_to(MAIN_LAST)
         yield from settle()
@@ -734,22 +761,22 @@ try:
         state = {"aborted_at": None, "keys_at_abort": 0}
 
         def on_tick():
-            if state["aborted_at"] is None and len(keys_of(bez)) >= ABORT_AFTER_KEYS:
+            # A press after the follow ended would start another one instead of stopping it.
+            if state["aborted_at"] is None and len(keys_of(bez)) >= ABORT_AFTER_KEYS and scene.ctx.isFollowingVectors():
                 state["keys_at_abort"] = len(keys_of(bez))
                 state["aborted_at"] = mono_ms()
                 press(scene.roto, "followForwardToEnd")
 
         press(scene.roto, "followForwardToEnd")
-        ok, stats = yield from wait_follow(scene.roto, ABORT_TIMEOUT_S, on_tick)
-        require(ok, "abort: the follow ended with a report (message %r)" % message(scene.roto))
-        require(state["aborted_at"] is not None, "abort: the follow was still running when %d keys had been baked; it finished first (message %r)"
-                % (ABORT_AFTER_KEYS, message(scene.roto)))
-        text = message(scene.roto)
+        outcome, stats = yield from wait_follow(scene, "abort", ABORT_TIMEOUT_S, on_tick)
+        require(state["aborted_at"] is not None, "abort: the follow was still running when %d keys had been baked; it finished first (report %r)"
+                % (ABORT_AFTER_KEYS, outcome["message"]))
+        text = outcome["message"]
         keys = keys_of(bez)
         last_key = max(keys)
-        report("NOTE abort: pressed at %d keys, ended with keys %r, %d ticks, worst GUI tick gap %.0f ms; message %r"
+        report("NOTE abort: pressed at %d keys, ended with keys %r, %d ticks, worst GUI tick gap %.0f ms; report %r"
                % (state["keys_at_abort"], keys, stats["ticks"], stats["max_gap"], text))
-        check("aborted" in text, "abort: the report says the follow was aborted (%r)" % text)
+        check(outcome["status"] == "aborted" and "aborted" in text, "abort: the report says the follow was aborted (status %r, %r)" % (outcome["status"], text))
         check(len(keys) >= ABORT_AFTER_KEYS and last_key < PLATE_FRAMES, "abort: the baked frames stay and the range is not finished (keys %r)" % (keys,))
         worst = max_deviation(bez, [int(k) for k in keys], lambda t, i: shifted(p0[i], *known_shift(t)))
         check(worst <= TVL1_TOL, "abort: every baked frame is within %.1f px of the known position (largest error %.3f)" % (TVL1_TOL, worst))
@@ -791,7 +818,7 @@ try:
             extra_before = [[param_of_shape(b, "extraMatrix").getValueAtTime(MAIN_LAST, d) for d in range(9)] for b in shapes]
             select_shapes(shapes)
             yield from go_to(START)
-            yield from run_follow(scene.roto, "followForwardToEnd", "undo, %s on two shapes" % model)
+            yield from run_follow(scene, "followForwardToEnd", "undo, %s on two shapes" % model)
             done = [snapshot(b, frames) for b in shapes]
             extra_done = [[param_of_shape(b, "extraMatrix").getValueAtTime(MAIN_LAST, d) for d in range(9)] for b in shapes]
             if model == "Per Point":

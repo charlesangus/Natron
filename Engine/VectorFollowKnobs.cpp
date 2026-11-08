@@ -183,6 +183,10 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
 
         return;
     }
+    // A refused press must not leave the previous follow's report looking like its own.
+    if (task) {
+        task->forgetLastReport();
+    }
 
     VectorFollowParams params = shapes;
     if (params.items.empty()) {
@@ -439,6 +443,12 @@ VectorFollowControls::abortFollow(bool wait)
     if (_imp->task) {
         _imp->task->abortFollow(wait);
     }
+}
+
+bool
+VectorFollowControls::getLastReport(VectorFollowReport* report) const
+{
+    return _imp->task && _imp->task->getLastReport(report);
 }
 
 std::vector<RotoCurvePanelHook::Column>

@@ -932,5 +932,54 @@ Roto::followVectors(const std::list<ItemBase*>& items,
     return followReportToPython(report);
 }
 
+namespace {
+
+const RotoPaint*
+followHost(const RotoCurveContextPtr& context)
+{
+    const NodePtr host = context ? context->getNode() : NodePtr();
+    const EffectInstancePtr effect = host ? host->getEffectInstance() : EffectInstancePtr();
+
+    return dynamic_cast<const RotoPaint*>(effect.get());
+}
+
+const char*
+followStatusName(const VectorFollowReport& report)
+{
+    if (report.sourceLost) {
+        return "sourceLost";
+    }
+    if (!report.error.empty()) {
+        return "error";
+    }
+
+    return report.aborted ? "aborted" : "done";
+}
+
+} // anonymous namespace
+
+bool
+Roto::isFollowingVectors() const
+{
+    const RotoPaint* paint = followHost(_ctx);
+
+    return paint && paint->isVectorFollowRunning();
+}
+
+PyObject*
+Roto::getLastFollowReport() const
+{
+    const RotoPaint* paint = followHost(_ctx);
+    VectorFollowReport report;
+    if (!paint || !paint->getLastVectorFollowReport(&report)) {
+        Py_RETURN_NONE;
+    }
+    PyObject* shapes = followReportToPython(report);
+    const std::string message = formatVectorFollowReport(report);
+
+    // N hands the reference to shapes over to the dict.
+    return Py_BuildValue("{s:s,s:s,s:s,s:N}", "status", followStatusName(report), "error", report.error.c_str(), "message", message.c_str(), "shapes", shapes);
+}
+
 NATRON_PYTHON_NAMESPACE_EXIT
 NATRON_NAMESPACE_EXIT

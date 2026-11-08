@@ -218,7 +218,7 @@ future core work has solid ground to build on.
 | M100 | Content Node Hashing | done | M93 | bosley-native-nodes | E7 | | | [M100-content-node-hashing.md](PLAN/MILESTONES/M100-content-node-hashing.md) |
 | M16 | Project Format Redesign | done | M93 | bosley-native-nodes | E7 | | | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M114 | Global Undo Correctness | done | M93 | bosley-native-nodes | E7 | | | [M114-global-undo-correctness.md](PLAN/MILESTONES/M114-global-undo-correctness.md) |
-| M102 | Graph Edit Operations | todo | M16 |  | E7 | | | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |
+| M102 | Graph Edit Operations | doing | M16 | bosley-native-nodes | E7 | | | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |
 | M103 | Graph Diff And Merge | todo | M102 |  | E12 | | | [M103-graph-diff-and-merge.md](PLAN/MILESTONES/M103-graph-diff-and-merge.md) |
 | M104 | Merge Resolution UI | todo | M103 |  | E12 | | | [M104-merge-resolution-ui.md](PLAN/MILESTONES/M104-merge-resolution-ui.md) |
 | M105 | Live Session Core | todo | M102 |  | E11 | F5 | | [M105-live-session-core.md](PLAN/MILESTONES/M105-live-session-core.md) |
@@ -311,7 +311,7 @@ future core work has solid ground to build on.
 | M194 | Kiss Connections | done | M192, M193 | bosley-native-nodes | E10 | | | [M194-kiss-connections.md](PLAN/MILESTONES/M194-kiss-connections.md) |
 | M195 | Shake And Cut Disconnect | done | M194 | bosley-native-nodes | E10 | | | [M195-shake-and-cut-disconnect.md](PLAN/MILESTONES/M195-shake-and-cut-disconnect.md) |
 | M196 | Copy-Compute Contention | done | M156 | gpu | E5 | | | [M196-copy-compute-contention.md](PLAN/MILESTONES/M196-copy-compute-contention.md) |
-| M197 | Python Undo Step API | todo | M114 |  | E7 | | | [M197-python-undo-step-api.md](PLAN/MILESTONES/M197-python-undo-step-api.md) |
+| M197 | Python Undo Step API | doing | M114 | bosley-native-nodes | E7 | | | [M197-python-undo-step-api.md](PLAN/MILESTONES/M197-python-undo-step-api.md) |
 | M198 | RenderEngine On Node | todo | M177 |  | E14 | | | [M198-renderengine-on-node.md](PLAN/MILESTONES/M198-renderengine-on-node.md) |
 | M199 | Remove Legacy Scheduler | todo | - |  | E14 | | | [M199-remove-legacy-scheduler.md](PLAN/MILESTONES/M199-remove-legacy-scheduler.md) |
 | M200 | Folded Knob Shared Storage | todo | - |  | E14 | | | [M200-folded-knob-shared-storage.md](PLAN/MILESTONES/M200-folded-knob-shared-storage.md) |

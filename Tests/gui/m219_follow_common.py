@@ -264,8 +264,8 @@ def message(node):
 
 def report_dialog():
     """The modal dialog showing a follow's report, as (dialog, its plain text), or None. Only a follow that
-    stopped early, was aborted or lost its source opens one; a clean follow keeps the report as the node's
-    message."""
+    stopped on a point it could not track, failed to read or lost its source opens one; a clean follow, or
+    one the user stopped, keeps the report as the node's message."""
     w = QApplication.activeModalWidget()
     if w is None or not w.isVisible():
         return None
@@ -320,6 +320,11 @@ def wait_follow(scene, label, timeout, on_tick=None):
     yield from close_report_dialog(scene, label, outcome)
     return outcome, stats
 
+def is_user_stop(outcome):
+    if outcome["status"] != "aborted" or not outcome["message"].startswith("Follow Vectors was aborted"):
+        return False
+    return all(not e["passStops"] and not e.get("stopped") for e in outcome["shapes"].values())
+
 def is_clean(outcome):
     if outcome["status"] != "done":
         return False
@@ -329,13 +334,13 @@ def close_report_dialog(scene, label, outcome):
     headline = outcome["message"].split("\n")[0]
     stored = message(scene.roto)
     check(stored == outcome["message"], "%s: the node keeps the report as its message (message %r, report %r)" % (label, stored, outcome["message"]))
-    if is_clean(outcome):
+    if is_clean(outcome) or is_user_stop(outcome):
         yield ("sleep", SETTLE_MS)
         shown = report_dialog()
         if shown is not None:
             shown[0].done(0)
             yield ("sleep", SETTLE_MS)
-        check(shown is None, "%s: a clean follow opens no dialog (dialog %r)" % (label, shown[1] if shown else None))
+        check(shown is None, "%s: a clean or user-stopped follow opens no dialog (dialog %r)" % (label, shown[1] if shown else None))
         return
     shown = yield ("until", lambda: report_dialog() is not None, DIALOG_TIMEOUT_S)
     text = ""

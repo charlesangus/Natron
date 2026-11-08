@@ -348,7 +348,7 @@ VectorFollowTask::onPhaseDone(int phase,
         host->getApp()->progressEnd(host);
         const std::string text = formatVectorFollowReport(report);
         host->setQuietInfoMessage(text);
-        if (!isCleanVectorFollowReport(report)) {
+        if (!isCleanVectorFollowReport(report) && !isUserStopVectorFollowReport(report)) {
             host->message(eMessageTypeInfo, text);
         }
     }

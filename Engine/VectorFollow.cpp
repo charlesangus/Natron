@@ -803,6 +803,21 @@ isCleanVectorFollowReport(const VectorFollowReport& report)
     return true;
 }
 
+bool
+isUserStopVectorFollowReport(const VectorFollowReport& report)
+{
+    if (!report.aborted || report.sourceLost || !report.error.empty()) {
+        return false;
+    }
+    for (const VectorFollowShapeReport& shape : report.shapes) {
+        if (!shape.passStops.empty() || shape.stopped) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 std::string
 formatVectorFollowReport(const VectorFollowReport& report)
 {

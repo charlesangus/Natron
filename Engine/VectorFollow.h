@@ -207,6 +207,9 @@ struct VectorFollowReport {
 
 std::string formatVectorFollowReport(const VectorFollowReport& report);
 
+// A follow the user stopped, with no read error, no lost source and no shape that stopped on a point it could not track.
+bool isUserStopVectorFollowReport(const VectorFollowReport& report);
+
 // A follow that ran to its end on every shape with no pass stop and no unfollowed frame.
 bool isCleanVectorFollowReport(const VectorFollowReport& report);
 

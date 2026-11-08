@@ -281,6 +281,8 @@ TEST_F(VectorFollowBakeTest, AnAbortKeepsTheFramesAlreadyDone)
     UndoCommandPtr undo;
     const VectorFollowReport report = context()->followVectors(params, &undo);
     EXPECT_TRUE(report.aborted);
+    EXPECT_TRUE(isUserStopVectorFollowReport(report));
+    EXPECT_FALSE(isCleanVectorFollowReport(report));
 
     std::set<double> keys;
     bezier->getKeyframeTimes(&keys);

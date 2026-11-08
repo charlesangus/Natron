@@ -71,9 +71,8 @@ try:
                 state["keys_at_abort"] = keys
                 state["aborted_at"] = mono_ms()
                 report("NOTE abort: second press at %d keys, %.0f ms after the first" % (keys, state["aborted_at"] - state["started"]))
-                # No processEvents here, unlike press(): the abort can end the follow within it, and the
-                # aborted follow's modal report dialog would then run its event loop inside this tick,
-                # where nothing can close it.
+                # No processEvents here, unlike press(): the abort can end the follow within it, and
+                # the report would then be taken inside this tick.
                 param(scene.roto, "followForwardToEnd").trigger()
                 return (ABORT_END_S, "abort: the follow ends within %.0f s of the second press" % ABORT_END_S)
             return None
@@ -90,6 +89,8 @@ try:
         report("NOTE abort: pressed at %d keys, ended with keys %r, %d ticks, worst GUI tick gap %.0f ms; report %r"
                % (state["keys_at_abort"], keys, stats["ticks"], stats["max_gap"], text))
         check(outcome["status"] == "aborted" and "aborted" in text, "abort: the report says the follow was aborted (status %r, %r)" % (outcome["status"], text))
+        check(message(scene.roto) == text, "abort: the node keeps the report as its quiet message (message %r)" % (message(scene.roto),))
+        check(report_dialog() is None, "abort: a follow the user stopped opens no dialog (dialog %r)" % (report_dialog(),))
         check(len(keys) >= ABORT_AFTER_KEYS and last_key < PLATE_FRAMES, "abort: the baked frames stay and the range is not finished (keys %r)" % (keys,))
         worst = max_deviation(bez, [int(k) for k in keys], lambda t, i: shifted(p0[i], *known_shift(t)))
         check(worst <= TVL1_TOL, "abort: every baked frame is within %.1f px of the known position (largest error %.3f)" % (TVL1_TOL, worst))

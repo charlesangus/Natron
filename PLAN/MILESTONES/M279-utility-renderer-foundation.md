@@ -106,6 +106,8 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 
 ## Decisions
 
+- 2026-11-07 — Screenshots approved (user), on condition the GUI script confirms numerically that Natron Utility and Storm frame the cube identically through the same camera. Flat unlit shading and one centred ray per pixel are expected here (M281, M283).
+
 - 2026-11-07 — Review round 1 (PR #216): transform refit, purpose sync and the Nuke name fixed at b73c1af46; the instancer dirty-state finding was declined because pinned USD 26.08 clears it in `_SyncInstancerAndParents`. The stage lock held across the first sync (UI stall on large scenes) moves to the F9 - Delegate Projection responsiveness milestone (user): a worker-owned stage for every delegate. M279 merges into F7 with that known gap, and F7 can't ship before that milestone lands.
 
 - 2026-11-07 — Golden (user): NatronUtility depth compares within about one window-depth ulp, since runner CPUs differ; colour and primId stay strict. No re-record.

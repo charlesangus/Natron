@@ -37,7 +37,7 @@ Code facts, read at `origin/main` on 2026-10-27. Re-check line numbers before st
   (~2990+). This rewrite never checks the holder type. A project knob's own expression has no
   `thisParam`, so its dependencies can't be tracked today. Renames rewrite expressions at
   ~3485–3508 and ~5625, and only generate the `thisGroup.`/`app.<node>.` forms.
-- **GUI.** `DockablePanel::onManageUserParametersActionTriggered` (`Gui/DockablePanel.cpp`
+- **GUI (superseded by M373 - In-Panel Knob Editor, which removes the dialogs).** `DockablePanel::onManageUserParametersActionTriggered` (`Gui/DockablePanel.cpp`
   ~1635) returns early unless the holder is an EffectInstance. Most of `ManageUserParamsDialog`
   goes through `panel->getHolder()`. Its title and listener lookup are effect-specific, and
   `AddKnobDialog` has one EffectInstance cast. The project panel is a `DockablePanel` built in
@@ -47,7 +47,7 @@ Code facts, read at `origin/main` on 2026-10-27. Re-check line numbers before st
 
 **In:**
 - User pages and knobs on the Project: create, edit, reorder and delete them from the project
-  settings panel's "Manage user parameters..." dialog and from Python, and save and load them in
+  settings panel's in-panel knob editor (M373 - In-Panel Knob Editor) and from Python, and save and load them in
   `.ntpz`.
 - `root` as a Python name for the project. It's an alias of `app`, so `root.<knob>`,
   `root.getProjectParam()` and `root.create*Param()` all work. It's defined in the knob
@@ -121,10 +121,10 @@ Code facts, read at `origin/main` on 2026-10-27. Re-check line numbers before st
 
 ## Phase 247.3: GUI
 
-- [ ] M247.P3.T1 — Open "Manage user parameters..." on the project settings panel
-  - files: Gui/DockablePanel.cpp, Gui/ManageUserParamsDialog.cpp, Gui/AddKnobDialog.cpp, Gui/ProjectGui.cpp
-  - approach: Let `onManageUserParametersActionTriggered` accept a Project holder: skip the PyPlug warning and the node lookup for it. Remove the EffectInstance assumptions from ManageUserParamsDialog (title: "Project Settings"; the listener lookup) and AddKnobDialog (the cast at ~427). Validate a new knob's name against the project's knobs and App attributes, matching P2.T1's rule. Give the project panel the menu entry, and make sure its knob GUIs rebuild after the dialog edits them (`recreateUserKnobs`).
-  - verify: Build. Then pass a new Xvfb GUI test (Tests/gui/m247_project_user_params.py, run through Tests/gui/run-gui-test.sh). It opens Project Settings, adds an Int "Shot Number" through the dialog, checks the knob shows on a user page in the panel, sets it, gives a Blur the expression `root.shotNumber.get()`, and checks the Blur's value. It saves screenshots of the dialog and of the panel.
+- [ ] M247.P3.T1 — Enable the in-panel knob editor on the project settings panel
+  - files: Gui/ProjectGui.cpp, Gui/DockablePanel.cpp, Gui/KnobEditMode.cpp, Engine/UserKnobEdit.cpp, Engine/PythonUndoCommands.cpp, new Tests/gui/m247_project_user_params.py
+  - approach: M373 - In-Panel Knob Editor replaced the Manage dialog with an edit mode on the panel, and M372 - User Knob Engine Edits' undo scope is node-only. Turn edit mode on for the Project Settings `DockablePanel` (pencil and right-click entry; no PyPlug confirm), extend M372's `UserKnobsUndoScope` and the editor's holder checks to the Project using the P1.T2 generic helpers, and reject names that collide with built-in project knobs, Python keywords or `App`/`Group` attributes in `validateSpec`.
+  - verify: Build. Then pass a new Xvfb GUI test (Tests/gui/m247_project_user_params.py, run through Tests/gui/run-gui-test.sh). It opens Project Settings, enters edit mode, adds an Int "Shot Number" from the palette, checks it shows on a user page, sets it, gives a Blur the expression `root.shotNumber.get()`, checks the Blur follows, and undoes the add with one Ctrl+Z.
   - size: L
 
 **Verification gate:** run a full build and ctest, green, including the new ProjectSerialization
@@ -139,3 +139,4 @@ knob, drive a node from `root.<knob>`, then save, reopen and confirm both surviv
   reason to convert it. `App` gains `UserParamHolder` bound to the Project, so `root.create*Param`,
   `root.<knob>` and `root.getNodes()` all work on one object, as `nuke.root()` does.
 - 2026-10-27 — `root` resolves in both knob expressions and the global Python namespace (user).
+- 2026-11-08 — The project panel uses M373 - In-Panel Knob Editor instead of the old Manage dialog, and this milestone depends on it (user, F16 grill).

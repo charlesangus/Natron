@@ -65,6 +65,16 @@ App::getAppID() const
     return getInternalApp()->getAppID();
 }
 
+Effect*
+App::getNodeById(const QString& id) const
+{
+    AppInstancePtr app = getInternalApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    NodePtr node = project ? project->findNodeById(id.toStdString()) : NodePtr();
+
+    return node ? new Effect(node) : NULL;
+}
+
 AppInstancePtr
 App::getInternalApp() const
 {

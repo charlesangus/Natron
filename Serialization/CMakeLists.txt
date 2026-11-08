@@ -24,8 +24,10 @@ file(GLOB_RECURSE NatronSerializationBundle_HEADERS Bundle/*.h)
 file(GLOB_RECURSE NatronSerializationBundle_SOURCES Bundle/*.cpp)
 file(GLOB_RECURSE NatronSerializationYaml_HEADERS Yaml/*.h)
 file(GLOB_RECURSE NatronSerializationYaml_SOURCES Yaml/*.cpp)
-list(APPEND NatronSerialization_HEADERS ${NatronSerializationBundle_HEADERS} ${NatronSerializationYaml_HEADERS})
-list(APPEND NatronSerialization_SOURCES ${NatronSerializationBundle_SOURCES} ${NatronSerializationYaml_SOURCES})
+file(GLOB_RECURSE NatronSerializationOps_HEADERS Ops/*.h)
+file(GLOB_RECURSE NatronSerializationOps_SOURCES Ops/*.cpp)
+list(APPEND NatronSerialization_HEADERS ${NatronSerializationBundle_HEADERS} ${NatronSerializationYaml_HEADERS} ${NatronSerializationOps_HEADERS})
+list(APPEND NatronSerialization_SOURCES ${NatronSerializationBundle_SOURCES} ${NatronSerializationYaml_SOURCES} ${NatronSerializationOps_SOURCES})
 
 add_library(NatronSerialization STATIC ${NatronSerialization_HEADERS} ${NatronSerialization_SOURCES})
 

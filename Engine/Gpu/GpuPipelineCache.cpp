@@ -12,6 +12,8 @@
 
 #include <unistd.h>
 
+#include "Global/FloatingPointExceptions.h"
+
 namespace gpu {
 
 namespace {
@@ -345,8 +347,12 @@ GpuPipelineCache::build(const Key& key, std::string_view source, ShaderStage sta
     VkPipelineCacheCreateInfo ci { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
     ci.initialDataSize = blob.size();
     ci.pInitialData = blob.empty() ? nullptr : blob.data();
-    if (vkCreatePipelineCache(device_.device(), &ci, nullptr, &vkCache) != VK_SUCCESS) {
-        vkCache = VK_NULL_HANDLE;
+    {
+        // A driver may validate or rebuild the cached blob here with float work that debug builds trap.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+        if (vkCreatePipelineCache(device_.device(), &ci, nullptr, &vkCache) != VK_SUCCESS) {
+            vkCache = VK_NULL_HANDLE;
+        }
     }
 
     std::unique_ptr<GpuKernel> kernel;

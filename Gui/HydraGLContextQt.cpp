@@ -87,6 +87,8 @@ namespace HydraGLContextQt {
 void
 install()
 {
+    // supportsThreadedOpenGL() makes Qt create a dummy GLX context, which runs llvmpipe's shader compiles.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     if (!QOpenGLContext::supportsThreadedOpenGL()) {
         return;
     }

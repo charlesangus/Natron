@@ -47,6 +47,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QScreen>
 #include <QSettings>
 #include <QWidget>
+#include <QWindow>
 #include <QtGlobal> // for Q_OS_*
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -247,7 +248,47 @@ public:
 protected:
 
     bool event(QEvent* e);
+
+#ifdef DEBUG
+    bool notify(QObject* receiver, QEvent* e) override;
+#endif
 };
+
+#ifdef DEBUG
+bool
+Application::notify(QObject* receiver, QEvent* e)
+{
+    // Qt creates the QOpenGLWidget contexts and the top-level backing-store context lazily while it
+    // handles these events, and Mesa's llvmpipe raises FE_INVALID compiling its blitter shaders as each
+    // is created. Only windows and QOpenGLWidgets are guarded: other widgets never create a context.
+    switch (e->type()) {
+    case QEvent::Show:
+    case QEvent::ShowToParent:
+    case QEvent::Resize:
+    case QEvent::Paint:
+    case QEvent::UpdateRequest:
+    case QEvent::Expose:
+    case QEvent::WindowChangeInternal:
+    case QEvent::ParentChange: {
+        bool guarded = qobject_cast<QWindow*>(receiver) != nullptr;
+        if (!guarded) {
+            const QWidget* widget = qobject_cast<QWidget*>(receiver);
+            guarded = widget && (widget->isWindow() || widget->inherits("QOpenGLWidget"));
+        }
+        if (guarded) {
+            const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+
+            return QApplication::notify(receiver, e);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    return QApplication::notify(receiver, e);
+}
+#endif
 
 bool
 Application::event(QEvent* e)

@@ -372,9 +372,11 @@ jobs:
 
       # lavapipe is the CPU Vulkan device; without it the Gpu tests would
       # skip silently, so REQUIRE_GPU turns that into a failure.
+      # GALLIUM_OVERRIDE_CPU_CAPS=avx keeps llvmpipe's JIT off AVX-512, where it hangs or zeroes some kernels on Xeon runners.
       - name: Run ctest suite (debug)
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
           NATRON_TEST_REQUIRE_GPU: 1
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           # One case per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.

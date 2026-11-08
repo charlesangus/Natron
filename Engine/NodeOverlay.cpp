@@ -28,6 +28,7 @@
 #include <QThread>
 
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeGuiI.h"
 
@@ -160,12 +161,17 @@ Node::setLayoutFromGuiOverlayColor(bool hasColor,
                                    double g,
                                    double b)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->overlayColorSet = hasColor;
-    _imp->overlayColor[0] = hasColor ? r : 0.;
-    _imp->overlayColor[1] = hasColor ? g : 0.;
-    _imp->overlayColor[2] = hasColor ? b : 0.;
+        _imp->overlayColorSet = hasColor;
+        _imp->overlayColor[0] = hasColor ? r : 0.;
+        _imp->overlayColor[1] = hasColor ? g : 0.;
+        _imp->overlayColor[2] = hasColor ? b : 0.;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void

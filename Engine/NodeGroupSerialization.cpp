@@ -337,6 +337,7 @@ NodeCollection::restoreFromSerialization(const std::list<Serialization::NodeSeri
         }
         if (!createNodes && n) {
             // If we created the node using a PyPlug, deserialize the project too to override any modification made by the user.
+            n->restoreSerializedNodeId((*it)->id);
             n->fromSerialization(**it);
         }
         assert(n);

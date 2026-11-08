@@ -45,6 +45,7 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
@@ -1745,11 +1746,15 @@ KnobGroup::isTab() const
 namespace {
 
 // The holder's declarations follow the children of its RFV groups: retaken after each change.
+// The project's variables, in their order, are part of its edit history.
 void
 refreshRFVDeclarations(const KnobGroup& group)
 {
     if (group.isRFVGroup()) {
         RFV::refreshDeclarationSnapshot(group.getHolder());
+        if (GraphEditRecorder::isActive() && dynamic_cast<Project*>(group.getHolder())) {
+            GraphEditRecorder::onKnobListChanged(group.getHolder());
+        }
     }
 }
 } // anonymous namespace

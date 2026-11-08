@@ -71,12 +71,54 @@ per op. An `op` record holds:
 
 - `median_ms`, `p95_ms`, `min_ms`, `max_ms` of the per-rep wall time;
 - `per_event_max_ms`, the longest single event;
+- `step_wall_median_ms`/`step_wall_max_ms`, `step_cpu_median_ms`/`step_cpu_max_ms` and
+  `loop_pass_median_ms`/`loop_pass_max_ms`, over every event of every rep (see below);
 - `stalls`: the count, max and total of the stalls whose midpoint falls inside a timed rep;
 - `status`: `ok`, `timeout` or `error`.
 
 An op runs its events one at a time on the Qt event loop, so timers and deferred paints land
 between events, as they would for a user. Interaction events force a synchronous viewport
 repaint. Setup and restore steps are not timed.
+
+The per-rep wall time folds three things together, so each event is also timed in parts:
+
+- `step_wall_*`: wall time of the event's own step, including its forced repaint;
+- `step_cpu_*`: main-thread CPU time of the same step (`time.thread_time()`); a gap to
+  `step_wall_*` is waiting, not work;
+- `loop_pass_*`: wall time from the step returning to the next step starting, which is the Qt
+  event-loop pass (`singleShot(0)`) that runs deferred paints and timers. Only gaps between two
+  consecutive plain events count; deliberate sleeps and waits are excluded.
+
+The split fields are absent from older results. `compare.py` prints them under an op only when
+both sides have them.
+
+`--no-forced-repaint` (`GUI_BENCH_FORCED_REPAINT=0`) swaps the forced `viewport().repaint()` after
+each interaction event for `QApplication.processEvents()` inside the step. Paints then happen as
+Qt schedules them (coalesced), which is closer to what a user sees; the host record carries
+`forced_repaint`. Do not compare a run made with it against one made without.
+
+## Profiling one op
+
+`perf` is not available in the container, so profile with wall-clock stack samples. Use an Xvfb
+run of a release build on the `comp` topology at N=3000, one rep, one op:
+
+```
+tools/bench/gui/run.sh --xvfb --topologies comp --sizes 3000 --reps 1 --ops pan --out build/bench/profile
+```
+
+That prints the result path and detaches. While the op runs, find the Natron PID and sample it
+from inside the container as root (ptrace needs `-u root --privileged`):
+
+```
+docker exec -u root --privileged natron-dev tools/bench/sample_stacks.sh PID 200 0.25 build/bench/profile/pan.stacks
+```
+
+`sample_stacks.sh PID COUNT INTERVAL OUT` runs `eu-stack` on every thread COUNT times, INTERVAL
+seconds apart, and stops when the process exits. Sample only the op: size COUNT x INTERVAL to the
+op's duration from an earlier run's `median_ms`, and start sampling once the log says the op has
+begun (the graph is generated and loaded first). Summarise the top frames with
+`tools/bench/analyze_stacks.py`. Read `step_cpu_*` against `step_wall_*` first: a step that is
+mostly wall time is waiting, not computing.
 
 A stall is any stretch where the main thread doesn't service a 10 ms heartbeat timer for over
 50 ms (`NATRON_STALL_THRESHOLD_MS`). The stall monitor runs only when `NATRON_STALL_LOG` names a

@@ -13,6 +13,8 @@ Configured by the environment:
     GUI_BENCH_OP_TIMEOUT_S  per-op budget; an op past it is recorded as "timeout" (default 120)
     GUI_BENCH_SEED        generator seed (default 1)
     GUI_BENCH_IDLE_S      length of the idle op (default 5)
+    GUI_BENCH_FORCED_REPAINT  0 replaces each interaction event's forced viewport repaint with a
+                          processEvents pass (default 1)
     GUI_BENCH_SELF_CHECK  1 adds an op that blocks the main thread for 300 ms once and checks
                           that the stall log attributes exactly one stall to it
     GUI_BENCH_OUT         JSON-lines output (default $NATRON_GUI_TEST_OUT/gui_bench.jsonl)
@@ -23,6 +25,9 @@ Configured by the environment:
 
 Output: one host record, then per (topology, n) one graph record and one record per op with the
 median, p95, min and max of the per-rep wall times, the longest single event, and the stalls.
+Each op also reports, over all its events, the median and max of the timed step's wall time
+(step_wall_*), its main-thread CPU time (step_cpu_*) and the event-loop pass that follows it
+(loop_pass_*), which the per-rep wall time folds together.
 Each rep's events run on the Qt event loop, one at a time, so timers and deferred paints land
 between them as they would for a user; interaction events force a synchronous viewport repaint,
 so paint cost lands inside the event that caused it.
@@ -63,6 +68,7 @@ OP_TIMEOUT_S = float(os.environ.get("GUI_BENCH_OP_TIMEOUT_S", "120"))
 SEED = int(os.environ.get("GUI_BENCH_SEED", "1"))
 IDLE_S = float(os.environ.get("GUI_BENCH_IDLE_S", "5"))
 SELF_CHECK = os.environ.get("GUI_BENCH_SELF_CHECK", "0") == "1"
+FORCED_REPAINT = os.environ.get("GUI_BENCH_FORCED_REPAINT", "1") != "0"
 STALL_LOG = os.environ.get("NATRON_STALL_LOG", "")
 WATCHDOG_S = int(os.environ.get("GUI_BENCH_WATCHDOG_S", str(6 * 3600)))
 
@@ -137,6 +143,7 @@ try:
             "natron_version": NatronEngine.natron.getNatronVersionString(),
             "stall_log": bool(STALL_LOG),
             "reps": REPS,
+            "forced_repaint": FORCED_REPAINT,
             "seed": SEED,
             "op_timeout_s": OP_TIMEOUT_S,
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -249,8 +256,10 @@ try:
         return answered[0]
 
     def repaint():
-        graph = root_graph()
-        graph.viewport().repaint()
+        if FORCED_REPAINT:
+            root_graph().viewport().repaint()
+        else:
+            QApplication.processEvents()
 
     root_offset = [0.0, 0.0]
 
@@ -843,6 +852,7 @@ try:
         st = {}
         times, windows = [], []
         event_max = 0.0
+        step_wall, step_cpu, loop_pass = [], [], []
         events_per_rep = 0
         status, error = "ok", None
         deadline = time.monotonic() + OP_TIMEOUT_S
@@ -860,16 +870,25 @@ try:
                 gen = op["events"](ctx, st, rep)
                 count = 0
                 t0 = mono_ms()
+                step_end = None
                 while True:
                     e0 = mono_ms()
+                    if step_end is not None:
+                        loop_pass.append(e0 - step_end)
+                    c0 = time.thread_time()
                     try:
                         cmd = next(gen)
                         done = False
                     except StopIteration:
                         done = True
-                    event_max = max(event_max, mono_ms() - e0)
+                    step_end = mono_ms()
+                    event_max = max(event_max, step_end - e0)
                     if done:
                         break
+                    step_wall.append(step_end - e0)
+                    step_cpu.append((time.thread_time() - c0) * 1000.0)
+                    if cmd and tuple(cmd) != ("sleep", 0):
+                        step_end = None
                     count += 1
                     if time.monotonic() > deadline:
                         status = "timeout"
@@ -903,6 +922,10 @@ try:
         if times:
             record.update({"median_ms": round(statistics.median(times), 3), "p95_ms": round(p95(times), 3),
                            "min_ms": round(min(times), 3), "max_ms": round(max(times), 3)})
+        for field, values in (("step_wall", step_wall), ("step_cpu", step_cpu), ("loop_pass", loop_pass)):
+            if values:
+                record[field + "_median_ms"] = round(statistics.median(values), 3)
+                record[field + "_max_ms"] = round(max(values), 3)
         if error:
             record["error"] = error
         record.update(st.get("record", {}))

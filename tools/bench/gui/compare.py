@@ -9,6 +9,9 @@ A regression is an op whose median grew by more than --tol (a fraction) and by m
 --min-ms milliseconds, an op whose status fell from ok (a new timeout or error), an op missing
 from the run, or an op with a stall longer than --long-stall-ms (default 250) where the baseline had none. Medians within --min-ms of each other are too close to timer noise to judge.
 
+When both runs carry the per-event split (step_wall_*, step_cpu_*, loop_pass_*), a line under
+each op shows the medians of the step's wall time, its main-thread CPU and the loop pass after it.
+
 --scaling fits log(median) against log(n) per (op, topology) over the sizes present and marks
 slopes above --superlinear (default 1.2) as superlinear, steepest first: those are the ops whose cost grows faster
 than the graph.
@@ -68,7 +71,24 @@ def compare(base_ops, run_ops, tol, min_ms, long_stall_ms=250.0):
         if regressed:
             regressions.append(key)
         rows.append("%s  %10.2f -> %10.2f ms  %+7.1f%%  %s" % (label, bm, rm, 100.0 * change, verdict))
+        split = split_row(label, b, r)
+        if split:
+            rows.append(split)
     return rows, regressions
+
+
+SPLIT_FIELDS = (("step_wall_median_ms", "wall"), ("step_cpu_median_ms", "cpu"), ("loop_pass_median_ms", "loop"))
+
+
+def split_row(label, b, r):
+    """A line comparing the per-event timing split, or None when either side lacks it."""
+    parts = []
+    for field, name in SPLIT_FIELDS:
+        bv, rv = b.get(field), r.get(field)
+        if bv is None or rv is None:
+            return None
+        parts.append("%s %.2f -> %.2f" % (name, bv, rv))
+    return "%s    per event ms: %s" % (label, ", ".join(parts))
 
 
 def slope(points):
@@ -140,6 +160,11 @@ def self_test():
     assert set(result) == {("lin", "mixed"), ("quad", "mixed")}, result
     assert abs(result[("lin", "mixed")][0] - 1.0) < 1e-9 and not result[("lin", "mixed")][1], result
     assert abs(result[("quad", "mixed")][0] - 2.0) < 1e-9 and result[("quad", "mixed")][1], result
+    with_split = dict(op("a", 300, 10.0), step_wall_median_ms=4.0, step_cpu_median_ms=3.5, loop_pass_median_ms=6.0)
+    rows, _ = compare({("a", "mixed", 300): with_split}, {("a", "mixed", 300): with_split}, 0.2, 5.0)
+    assert len(rows) == 2 and "cpu 3.50 -> 3.50" in rows[1], rows
+    rows, _ = compare({("a", "mixed", 300): op("a", 300, 10.0)}, {("a", "mixed", 300): with_split}, 0.2, 5.0)
+    assert len(rows) == 1, rows
     print("compare.py self-test passed")
     return 0
 

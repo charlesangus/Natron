@@ -11,6 +11,8 @@
 #   --reps N                 repetitions per op (default 5)
 #   --ops OP[,OP...]         run only these ops (default all)
 #   --out DIR                result directory (default build/bench/gui)
+#   --no-forced-repaint      replace each interaction event's forced viewport repaint with a
+#                            processEvents pass inside the step (gui driver)
 #   --self-check             add the 300 ms blocked-main-thread check per graph
 #   --wait                   --xvfb only: run in the foreground rather than detached
 #
@@ -53,6 +55,7 @@ reps=5
 ops=""
 outdir="$repo/build/bench/gui"
 self_check=0
+forced_repaint=1
 detach=-1
 while [ $# -gt 0 ]; do
     case $1 in
@@ -66,6 +69,7 @@ while [ $# -gt 0 ]; do
         --ops) ops=${2:?--ops needs a list}; shift ;;
         --out) outdir=${2:?--out needs a directory}; shift ;;
         --self-check) self_check=1 ;;
+        --no-forced-repaint) forced_repaint=0 ;;
         --wait) detach=0 ;;
         --detached-child) detach=0 ;;
         -h|--help) usage ;;
@@ -96,6 +100,7 @@ if [ "$mode" = host ] && [ -z "$appimage" ]; then
 fi
 # Normalised, so a re-exec (detached or in the container) sees absolute paths.
 args=("--$mode" --driver "$driver" --sizes "$sizes" --topologies "$topologies" --reps "$reps" --out "$outdir")
+[ "$forced_repaint" = 0 ] && args+=(--no-forced-repaint)
 [ -n "$appimage" ] && args+=(--appimage "$appimage")
 [ -n "$ops" ] && args+=(--ops "$ops")
 [ "$self_check" -eq 1 ] && args+=(--self-check)
@@ -143,6 +148,7 @@ mkdir -p "$home/.config/INRIA" "$home/.cache"
 printf '[General]\ncheckForUpdates=false\n' > "$home/.config/INRIA/Natron.conf"
 
 export GUI_BENCH_SIZES=$sizes GUI_BENCH_TOPOLOGIES=$topologies GUI_BENCH_REPS=$reps GUI_BENCH_OPS=$ops
+export GUI_BENCH_FORCED_REPAINT=$forced_repaint
 export GUI_BENCH_SELF_CHECK=$self_check GUI_BENCH_OUT=$result GUI_BENCH_MODE=$mode
 export GUI_BENCH_GIT_SHA
 GUI_BENCH_GIT_SHA=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)

@@ -154,6 +154,52 @@ TEST_F(TransformGroupGlobalModeTargetTest, RStrokesBothSkewsInOneUndoStep)
     EXPECT_DOUBLE_EQ(skewY, _skewY->getValue(0));
 }
 
+TEST_F(TransformGroupGlobalModeTargetTest, SwitchingMemberMidStrokeIsStillOneUndoStep)
+{
+    const double rotate = _rotate->getValue(0);
+    const double tx = _translate->getValue(0);
+    const double ty = _translate->getValue(1);
+    const int before = container().undoStack.count();
+
+    ASSERT_TRUE(_target->beginStroke());
+    _target->moveStroke(20., 0., 1.);
+    EXPECT_TRUE(_target->handleKey(Qt::Key_Q, Qt::NoModifier, true));
+    EXPECT_EQ(eGlobalModeGroupMemberTranslate, _target->getMember());
+    EXPECT_TRUE(_target->isStroking());
+    _target->moveStroke(10., -5., 1.);
+    _target->endStroke();
+
+    const double rotated = _rotate->getValue(0);
+
+    EXPECT_NE(rotate, rotated);
+    EXPECT_DOUBLE_EQ(tx + 10., _translate->getValue(0));
+    EXPECT_DOUBLE_EQ(ty + 5., _translate->getValue(1));
+    ASSERT_EQ(before + 1, container().undoStack.count());
+
+    container().undoStack.undo();
+    EXPECT_DOUBLE_EQ(rotate, _rotate->getValue(0));
+    EXPECT_DOUBLE_EQ(tx, _translate->getValue(0));
+    EXPECT_DOUBLE_EQ(ty, _translate->getValue(1));
+
+    container().undoStack.redo();
+    EXPECT_DOUBLE_EQ(rotated, _rotate->getValue(0));
+    EXPECT_DOUBLE_EQ(tx + 10., _translate->getValue(0));
+    EXPECT_DOUBLE_EQ(ty + 5., _translate->getValue(1));
+}
+
+TEST_F(TransformGroupGlobalModeTargetTest, AMemberWithEveryDimensionDisabledCannotBeSwitchedTo)
+{
+    _translate->setEnabled(0, false);
+    _translate->setEnabled(1, false);
+
+    EXPECT_FALSE(_target->hasMember(eGlobalModeGroupMemberTranslate));
+    EXPECT_FALSE(_target->handleKey(Qt::Key_Q, Qt::NoModifier, false));
+    EXPECT_EQ(eGlobalModeGroupMemberRotate, _target->getMember());
+
+    _translate->setEnabled(1, true);
+    EXPECT_TRUE(_target->hasMember(eGlobalModeGroupMemberTranslate));
+}
+
 TEST_F(TransformGroupGlobalModeTargetTest, TwoLocksTheStrokeToY)
 {
     EXPECT_TRUE(_target->handleKey(Qt::Key_R, Qt::NoModifier, false));

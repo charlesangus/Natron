@@ -444,15 +444,19 @@ TEST(ColorTrackballGlobalModeFeedback, OnlyTheCrosshairFeedbacksShowTheCrosshair
     EXPECT_FALSE(colorGlobalModeFeedbackShowsCrosshair(kWidgetCursor));
 }
 
-TEST(ColorTrackballGlobalModeFeedback, ASwitchToCrosshairOnlyMidStrokeWaitsForTheStrokeToEnd)
+TEST(ColorTrackballGlobalModeFeedback, ASwitchToCrosshairOnlyMidStrokeAppliesAtOnce)
 {
-    ColorGlobalModeFeedbackSwitch sw;
+    for (Settings::ColorTrackballFeedbackEnum from : { kCrosshairReveal, kWidgetCursor }) {
+        ColorGlobalModeFeedbackSwitch sw;
 
-    EXPECT_FALSE(sw.offer(kCrosshairOnly, true));
-    EXPECT_TRUE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).graphicShown);
-    EXPECT_TRUE(sw.strokeEnded());
-    EXPECT_EQ(kCrosshairOnly, sw.getFeedback());
-    EXPECT_FALSE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).graphicShown);
+        sw.offer(from, false);
+        ASSERT_TRUE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).graphicShown);
+        EXPECT_TRUE(sw.offer(kCrosshairOnly, true));
+        EXPECT_EQ(kCrosshairOnly, sw.getFeedback());
+        EXPECT_FALSE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).graphicShown);
+        EXPECT_FALSE(sw.strokeEnded());
+        EXPECT_EQ(kCrosshairOnly, sw.getFeedback());
+    }
 }
 
 TEST(ColorTrackballGlobalModeFeedback, DefaultIsThePreferencesDefault)

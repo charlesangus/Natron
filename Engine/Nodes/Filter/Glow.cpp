@@ -1151,6 +1151,7 @@ GlowOp::createKnobs(KnobHolder* holderArg,
     rotate = addDoubleKnob(holder, page, kGlowParamRotate, EffectInstance::tr("Rotate"),
                            EffectInstance::tr("Rotate the stretched glow, in degrees: the stretch, horizontal at 0, turns clockwise by this angle. It has no effect when Stretch is 0."), 0., -DBL_MAX, -360., 360.);
     rotate.lock()->setValueRole(eValueRoleRotate);
+    rotate.lock()->setValueRoleClockwise(true);
     ratio = addDoubleKnob(holder, page, kGlowParamRatio, EffectInstance::tr("Ratio"),
                           EffectInstance::tr("How many times larger each blur is than the previous one. At 1 or less, there is a single blur."), 2., 1., 1., 4.);
     ratio.lock()->setMaximum(BloomKernels::kMaxRatio);

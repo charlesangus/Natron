@@ -99,6 +99,16 @@ TEST(GlobalModeStroke, RotateRightOrUpTurnsCounterClockwise)
     EXPECT_NEAR(-2.5, strokeOnce({ 0. }, spec(eGlobalModeKindRotate, { 0.1 }), 0., 10.)[0], kEps);
 }
 
+TEST(GlobalModeStroke, ClockwisePositiveRotateStillTurnsCounterClockwise)
+{
+    GlobalModeValueStrokeSpec clockwise = spec(eGlobalModeKindRotate, { 0.1 });
+
+    clockwise.clockwisePositive = true;
+    EXPECT_NEAR(-2.5, strokeOnce({ 0. }, clockwise, 10., 0.)[0], kEps);
+    EXPECT_NEAR(-2.5, strokeOnce({ 0. }, clockwise, 0., -10.)[0], kEps);
+    EXPECT_NEAR(2.5, strokeOnce({ 0. }, clockwise, -10., 0.)[0], kEps);
+}
+
 TEST(GlobalModeStroke, ScaleIsUniformAndMultiplicative)
 {
     const std::vector<double> grown = strokeOnce({ 2., 2. }, spec(eGlobalModeKindScale, { 0.01, 0.01 }), 100., 0.);

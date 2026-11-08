@@ -422,7 +422,7 @@ isGlobalModeKnob(KnobGui* knobGui)
 
     KnobIPtr knob = knobGui->getKnob();
 
-    if (!knob || !knob->isEnabled(0)) {
+    if (!isGlobalModeKnobEditable(knob)) {
         return false;
     }
     if (KnobGuiColor* color = dynamic_cast<KnobGuiColor*>(knobGui)) {

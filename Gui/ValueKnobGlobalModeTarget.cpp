@@ -293,6 +293,9 @@ ValueGlobalModeTargetBase::fullSpec() const
         if (std::dynamic_pointer_cast<KnobInt>(knob)) {
             spec.isInt = true;
         }
+        if (const KnobValueRoleHolder* role = dynamic_cast<const KnobValueRoleHolder*>(knob.get())) {
+            spec.clockwisePositive = spec.clockwisePositive || role->isValueRoleClockwise();
+        }
     }
 
     return spec;
@@ -348,13 +351,20 @@ void
 ValueGlobalModeTargetBase::switchStrokeKnobs(const std::function<void()>& change)
 {
     const bool wasStroking = _session.isActive();
+    const QString label = getStrokeLabel();
 
-    if (wasStroking) {
-        _session.end(getStrokeLabel());
-    }
     change();
     if (wasStroking) {
-        beginStroke();
+        const std::vector<KnobGuiPtr> knobGuis = getStrokeKnobGuis();
+
+        // The physical stroke stays one undo step: the session keeps what the knobs switched
+        // away from have been given, and travel carries on from the new knobs' latest values.
+        if (!knobGuis.empty() && _session.switchKnobs(knobGuis)) {
+            touchGlobalModeKnob(knobGuis.front().get());
+            _stroke.begin(_session.getCurrentValues());
+        } else {
+            _session.end(label);
+        }
     }
     refreshHighlight();
 }

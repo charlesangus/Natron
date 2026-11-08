@@ -117,8 +117,8 @@ protected:
 
     /**
      * @brief Applies change, which swaps the knobs being edited, so that a running stroke
-     * commits what it did to the old knobs as its own undo step and carries on with the new
-     * ones.
+     * carries on with the new ones and still ends as one undo step covering every knob it
+     * edited.
      **/
     void switchStrokeKnobs(const std::function<void()>& change);
 

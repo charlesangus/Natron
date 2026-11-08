@@ -687,9 +687,10 @@ AutoStraighten::initializeKnobs()
     };
 
     KnobDoublePtr rotation = makeDouble(tr("Rotation"), kAutoStraightenParamRotation,
-                                        tr("Rotate the image, in degrees."),
+                                        tr("Rotate the image, in degrees. Positive angles turn it clockwise."),
                                         0., -Ashift::kRotationRange, Ashift::kRotationRange, -10., 10.);
     rotation->setValueRole(eValueRoleRotate);
+    rotation->setValueRoleClockwise(true);
     op().rotation = rotation;
 
     KnobDoublePtr lensShiftV = makeDouble(tr("Lens Shift V"), kAutoStraightenParamLensShiftV,

@@ -44,14 +44,107 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/Gui.h"
 #include "Gui/KnobGui.h"
+#include "Gui/KnobGuiValue.h"
 #include "Gui/KnobUndoCommand.h"
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+/**
+ * @brief Holds the fold state of every listed knob's panel row while its dimensions are written
+ * one at a time, then refreshes each knob once. A refresh between two of the writes would see
+ * the dimensions differ and unfold a knob whose dimensions all end up equal again.
+ **/
+class ValueKnobRefreshBatch {
+public:
+    explicit ValueKnobRefreshBatch(const std::vector<KnobIWPtr>& knobs)
+        : _knobs(knobs)
+        , _held()
+    {
+        for (std::size_t i = 0; i < _knobs.size(); ++i) {
+            KnobGuiPtr gui = KnobGui::getLiveGui(_knobs[i].lock());
+
+            if (KnobGuiValue* value = dynamic_cast<KnobGuiValue*>(gui.get())) {
+                value->setFoldStateHeld(true);
+                _held.push_back(gui);
+            }
+        }
+    }
+
+    ~ValueKnobRefreshBatch()
+    {
+        for (std::size_t i = 0; i < _held.size(); ++i) {
+            if (KnobGuiValue* value = dynamic_cast<KnobGuiValue*>(_held[i].lock().get())) {
+                value->setFoldStateHeld(false);
+            }
+        }
+        for (std::size_t i = 0; i < _knobs.size(); ++i) {
+            if (KnobIPtr knob = _knobs[i].lock()) {
+                KnobGui::refreshLiveGui(knob, -1);
+            }
+        }
+    }
+
+private:
+    ValueKnobRefreshBatch(const ValueKnobRefreshBatch&) = delete;
+    ValueKnobRefreshBatch& operator=(const ValueKnobRefreshBatch&) = delete;
+
+    std::vector<KnobIWPtr> _knobs;
+    std::vector<KnobGuiWPtr> _held;
+};
+
+/**
+ * @brief A whole stroke's undo step: one KnobUndoCommand child per edited dimension, undone and
+ * redone inside one ValueKnobRefreshBatch over every knob they touch.
+ **/
+class ValueKnobStrokeCommand
+    : public QUndoCommand {
+public:
+    explicit ValueKnobStrokeCommand(const std::vector<KnobIWPtr>& knobs)
+        : QUndoCommand()
+        , _knobs(knobs)
+    {
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        ValueKnobRefreshBatch batch(_knobs);
+
+        QUndoCommand::undo();
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        ValueKnobRefreshBatch batch(_knobs);
+
+        QUndoCommand::redo();
+    }
+
+private:
+    std::vector<KnobIWPtr> _knobs;
+};
+
+void
+addKnobOnce(const KnobIPtr& knob,
+            std::vector<KnobIWPtr>* knobs,
+            std::vector<KnobI*>* seen)
+{
+    for (std::size_t i = 0; i < seen->size(); ++i) {
+        if ((*seen)[i] == knob.get()) {
+            return;
+        }
+    }
+    seen->push_back(knob.get());
+    knobs->push_back(knob);
+}
+
+} // namespace
+
 ValueKnobEditSession::ValueKnobEditSession()
     : _slots()
+    , _live()
     , _active(false)
-    , _moved(false)
     , _gui()
 {
 }
@@ -61,47 +154,81 @@ ValueKnobEditSession::~ValueKnobEditSession()
     abandon();
 }
 
+int
+ValueKnobEditSession::findSlot(const KnobIPtr& knob,
+                               int dimension) const
+{
+    for (std::size_t i = 0; i < _slots.size(); ++i) {
+        if ((_slots[i].dimension == dimension) && (_slots[i].knob.lock() == knob)) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+bool
+ValueKnobEditSession::collectSlots(const std::vector<KnobGuiPtr>& knobGuis,
+                                   std::vector<int>* live)
+{
+    const std::size_t heldBefore = _slots.size();
+    std::vector<int> collected;
+    bool anyWritable = false;
+
+    for (std::size_t k = 0; k < knobGuis.size(); ++k) {
+        const KnobGuiPtr& knobGui = knobGuis[k];
+        KnobIPtr knob = knobGui ? knobGui->getKnob() : KnobIPtr();
+        KnobIntPtr asInt = std::dynamic_pointer_cast<KnobInt>(knob);
+        KnobDoublePtr asDouble = std::dynamic_pointer_cast<KnobDouble>(knob);
+
+        if (!asInt && !asDouble) {
+            anyWritable = false;
+            break;
+        }
+        for (int d = 0; d < knob->getDimension(); ++d) {
+            int index = findSlot(knob, d);
+
+            if (index < 0) {
+                Slot slot;
+
+                slot.gui = knobGui;
+                slot.knob = knob;
+                slot.dimension = d;
+                slot.isInt = bool(asInt);
+                slot.writable = isGlobalModeDimensionWritable(knob, d);
+                slot.start = asInt ? (double)asInt->getValue(d) : asDouble->getValue(d);
+                slot.current = slot.start;
+                index = (int)_slots.size();
+                _slots.push_back(slot);
+            }
+            collected.push_back(index);
+            anyWritable = anyWritable || _slots[index].writable;
+        }
+    }
+    if (!anyWritable) {
+        _slots.resize(heldBefore);
+
+        return false;
+    }
+    *live = collected;
+
+    return true;
+}
+
 bool
 ValueKnobEditSession::begin(const std::vector<KnobGuiPtr>& knobGuis,
                             const QString& /*label*/)
 {
     abandon();
     _slots.clear();
-
-    bool anyWritable = false;
-
-    for (std::size_t k = 0; k < knobGuis.size(); ++k) {
-        const KnobGuiPtr& knobGui = knobGuis[k];
-        KnobIPtr knob = knobGui ? knobGui->getKnob() : KnobIPtr();
-        const bool isInt = bool(std::dynamic_pointer_cast<KnobInt>(knob));
-        const bool isDouble = bool(std::dynamic_pointer_cast<KnobDouble>(knob));
-
-        if (!isInt && !isDouble) {
-            _slots.clear();
-
-            return false;
-        }
-        for (int d = 0; d < knob->getDimension(); ++d) {
-            Slot slot;
-
-            slot.gui = knobGui;
-            slot.knob = knob;
-            slot.dimension = d;
-            slot.isInt = isInt;
-            slot.writable = isGlobalModeDimensionWritable(knob, d);
-            slot.start = isInt ? (double)std::dynamic_pointer_cast<KnobInt>(knob)->getValue(d) : std::dynamic_pointer_cast<KnobDouble>(knob)->getValue(d);
-            slot.current = slot.start;
-            anyWritable = anyWritable || slot.writable;
-            _slots.push_back(slot);
-        }
-    }
-    if (!anyWritable) {
+    _live.clear();
+    if (knobGuis.empty() || !collectSlots(knobGuis, &_live)) {
         _slots.clear();
+        _live.clear();
 
         return false;
     }
     _active = true;
-    _moved = false;
 
     // Held on its own: when a knob's GUI goes first, abandon() must still reach the Gui to turn
     // draft render back off.
@@ -114,9 +241,19 @@ ValueKnobEditSession::begin(const std::vector<KnobGuiPtr>& knobGuis,
 }
 
 bool
+ValueKnobEditSession::switchKnobs(const std::vector<KnobGuiPtr>& knobGuis)
+{
+    if (!_active) {
+        return false;
+    }
+
+    return collectSlots(knobGuis, &_live);
+}
+
+bool
 ValueKnobEditSession::isSlotWritable(int slot) const
 {
-    return (slot >= 0) && (slot < (int)_slots.size()) && _slots[slot].writable;
+    return (slot >= 0) && (slot < (int)_live.size()) && _slots[_live[slot]].writable;
 }
 
 std::vector<double>
@@ -124,9 +261,9 @@ ValueKnobEditSession::getStartValues() const
 {
     std::vector<double> values;
 
-    values.reserve(_slots.size());
-    for (std::size_t i = 0; i < _slots.size(); ++i) {
-        values.push_back(_slots[i].start);
+    values.reserve(_live.size());
+    for (std::size_t i = 0; i < _live.size(); ++i) {
+        values.push_back(_slots[_live[i]].start);
     }
 
     return values;
@@ -137,47 +274,52 @@ ValueKnobEditSession::getCurrentValues() const
 {
     std::vector<double> values;
 
-    values.reserve(_slots.size());
-    for (std::size_t i = 0; i < _slots.size(); ++i) {
-        values.push_back(_slots[i].current);
+    values.reserve(_live.size());
+    for (std::size_t i = 0; i < _live.size(); ++i) {
+        values.push_back(_slots[_live[i]].current);
     }
 
     return values;
 }
 
 // Writes the listed slots' current values, one knob at a time inside its own beginChanges, so
-// a multi-dimension knob renders once per move.
+// a multi-dimension knob renders once per move. Each knob is locked again at its turn: a write
+// to an earlier one can run code that deletes it.
 void
 ValueKnobEditSession::write(const std::vector<int>& slots)
 {
-    std::map<KnobI*, std::vector<int>> byKnob;
-    std::vector<KnobI*> order;
+    std::vector<KnobIWPtr> knobs;
+    std::vector<KnobI*> seen;
 
     for (std::size_t i = 0; i < slots.size(); ++i) {
-        KnobIPtr knob = _slots[slots[i]].knob.lock();
+        if (KnobIPtr knob = _slots[slots[i]].knob.lock()) {
+            addKnobOnce(knob, &knobs, &seen);
+        }
+    }
+
+    ValueKnobRefreshBatch batch(knobs);
+
+    for (std::size_t k = 0; k < knobs.size(); ++k) {
+        KnobIPtr knob = knobs[k].lock();
 
         if (!knob) {
             continue;
         }
-        if (byKnob.find(knob.get()) == byKnob.end()) {
-            order.push_back(knob.get());
-        }
-        byKnob[knob.get()].push_back(slots[i]);
-    }
-    for (std::size_t k = 0; k < order.size(); ++k) {
-        const std::vector<int>& knobSlots = byKnob[order[k]];
-        KnobIPtr knob = _slots[knobSlots.front()].knob.lock();
-
         knob->beginChanges();
-        for (std::size_t j = 0; j < knobSlots.size(); ++j) {
-            Slot& slot = _slots[knobSlots[j]];
+        for (std::size_t j = 0; j < slots.size(); ++j) {
+            Slot& slot = _slots[slots[j]];
+
+            if (slot.knob.lock() != knob) {
+                continue;
+            }
+
             KeyFrame key;
             int ret;
 
             if (slot.isInt) {
-                ret = KnobGui::setKnobValue<int>(knob, slot.dimension, (int)std::lround(slot.current), &key, true, eValueChangedReasonUserEdited);
+                ret = KnobGui::setKnobValue<int>(knob, slot.dimension, (int)std::lround(slot.current), &key, false, eValueChangedReasonUserEdited);
             } else {
-                ret = KnobGui::setKnobValue<double>(knob, slot.dimension, slot.current, &key, true, eValueChangedReasonUserEdited);
+                ret = KnobGui::setKnobValue<double>(knob, slot.dimension, slot.current, &key, false, eValueChangedReasonUserEdited);
             }
             // Only the first write can add the key: every later one at the same frame modifies it.
             if (!slot.written && (ret == KnobHelper::eValueChangedReturnCodeKeyframeAdded)) {
@@ -199,20 +341,19 @@ ValueKnobEditSession::move(const std::vector<double>& values)
 
     std::vector<int> changed;
 
-    for (std::size_t i = 0; (i < _slots.size()) && (i < values.size()); ++i) {
-        Slot& slot = _slots[i];
+    for (std::size_t i = 0; (i < _live.size()) && (i < values.size()); ++i) {
+        Slot& slot = _slots[_live[i]];
         const double v = slot.isInt ? (double)std::lround(values[i]) : values[i];
 
         if (!slot.writable || (v == slot.current)) {
             continue;
         }
         slot.current = v;
-        changed.push_back((int)i);
+        changed.push_back(_live[i]);
     }
     if (changed.empty()) {
         return;
     }
-    _moved = true;
     if (appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly()) {
         return;
     }
@@ -224,6 +365,19 @@ ValueKnobEditSession::move(const std::vector<double>& values)
 void
 ValueKnobEditSession::restore()
 {
+    std::vector<KnobIWPtr> knobs;
+    std::vector<KnobI*> seen;
+
+    for (std::size_t i = 0; i < _slots.size(); ++i) {
+        KnobIPtr knob = _slots[i].knob.lock();
+
+        if (_slots[i].written && knob) {
+            addKnobOnce(knob, &knobs, &seen);
+        }
+    }
+
+    ValueKnobRefreshBatch batch(knobs);
+
     for (std::size_t i = 0; i < _slots.size(); ++i) {
         Slot& slot = _slots[i];
         KnobIPtr knob = slot.knob.lock();
@@ -232,9 +386,9 @@ ValueKnobEditSession::restore()
             continue;
         }
         if (slot.isInt) {
-            KnobGui::setKnobValue<int>(knob, slot.dimension, (int)std::lround(slot.start), NULL, true, eValueChangedReasonNatronGuiEdited);
+            KnobGui::setKnobValue<int>(knob, slot.dimension, (int)std::lround(slot.start), NULL, false, eValueChangedReasonNatronGuiEdited);
         } else {
-            KnobGui::setKnobValue<double>(knob, slot.dimension, slot.start, NULL, true, eValueChangedReasonNatronGuiEdited);
+            KnobGui::setKnobValue<double>(knob, slot.dimension, slot.start, NULL, false, eValueChangedReasonNatronGuiEdited);
         }
         if (slot.keyAdded) {
             KnobGui::removeKnobKeyframe(knob, slot.keyTime, slot.dimension, ViewIdx(0));
@@ -267,15 +421,34 @@ ValueKnobEditSession::end(const QString& label)
     finish();
     restore();
 
+    std::vector<KnobIWPtr> knobs;
+    std::vector<KnobI*> seen;
     KnobGuiPtr owner;
-    QUndoCommand* step = new QUndoCommand();
-    int children = 0;
+
+    for (std::size_t i = 0; i < _slots.size(); ++i) {
+        const Slot& slot = _slots[i];
+        KnobGuiPtr knobGui = slot.gui.lock();
+        KnobIPtr knob = slot.knob.lock();
+
+        if (!slot.writable || (slot.current == slot.start) || !knobGui || !knob) {
+            continue;
+        }
+        addKnobOnce(knob, &knobs, &seen);
+        if (!owner) {
+            owner = knobGui;
+        }
+    }
+    if (!owner) {
+        return;
+    }
+
+    ValueKnobStrokeCommand* step = new ValueKnobStrokeCommand(knobs);
 
     for (std::size_t i = 0; i < _slots.size(); ++i) {
         const Slot& slot = _slots[i];
         KnobGuiPtr knobGui = slot.gui.lock();
 
-        if (!slot.writable || (slot.current == slot.start) || !knobGui) {
+        if (!slot.writable || (slot.current == slot.start) || !knobGui || !slot.knob.lock()) {
             continue;
         }
         if (slot.isInt) {
@@ -283,15 +456,6 @@ ValueKnobEditSession::end(const QString& label)
         } else {
             new KnobUndoCommand<double>(knobGui, slot.start, slot.current, slot.dimension, true, step);
         }
-        if (!owner) {
-            owner = knobGui;
-        }
-        ++children;
-    }
-    if (!owner || (children == 0)) {
-        delete step;
-
-        return;
     }
 
     KnobIPtr knob = owner->getKnob();

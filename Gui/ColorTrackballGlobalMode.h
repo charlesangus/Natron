@@ -166,7 +166,8 @@ public:
     ColorGlobalModeFeedbackSwitch();
 
     /**
-     * @brief Takes latest: at once outside a stroke, at strokeEnded() during one. True when the
+     * @brief Takes latest: at once outside a stroke, at strokeEnded() during one, except that
+     * crosshairOnly, which only ever hides the graphic, always applies at once. True when the
      * value in effect changed.
      **/
     bool offer(Settings::ColorTrackballFeedbackEnum latest, bool strokeActive);
@@ -533,6 +534,7 @@ private:
     void setTarget(const std::shared_ptr<GlobalModeTarget>& target);
     void clearTarget();
     void onTargetGone();
+    std::shared_ptr<GlobalModeTarget> pinTarget() const;
     DockablePanel* getTargetPanel() const;
     ColorGlobalModeTarget* getColorTarget() const;
     void setGear(double gearFactor);

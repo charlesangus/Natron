@@ -51,10 +51,22 @@ enum GlobalModeKindEnum {
 };
 
 /**
- * @brief Whether a global-mode gesture may write this dimension: one driven by an expression
- * or a link is left to its driver.
+ * @brief Whether a global-mode gesture may write this dimension: it must be enabled, and one
+ * driven by an expression or a link is left to its driver.
  **/
 bool isGlobalModeDimensionWritable(const KnobIPtr& knob, int dimension);
+
+/**
+ * @brief Whether isGlobalModeDimensionWritable() holds for at least one of knob's dimensions.
+ **/
+bool hasGlobalModeWritableDimension(const KnobIPtr& knob);
+
+/**
+ * @brief Whether global mode may target knob at all: a colour knob, whose gesture writes every
+ * channel at once, when its first dimension is enabled; any other knob when
+ * hasGlobalModeWritableDimension() holds.
+ **/
+bool isGlobalModeKnobEditable(const KnobIPtr& knob);
 
 /**
  * @brief The role a knob's script name or label suggests, matched case-insensitively against
@@ -67,7 +79,7 @@ ValueRoleEnum valueRoleFromName(const std::string& scriptName, const std::string
 
 /**
  * @brief The global-mode kind of knob. Colour knobs are always colour. Otherwise a knob that is
- * neither a KnobDouble nor a KnobInt, or whose every dimension is driven, is ineligible; an
+ * neither a KnobDouble nor a KnobInt, or with no writable dimension, is ineligible; an
  * explicit value role wins; then the name/label heuristic; then a 2D spatial double is
  * genericSpatial2D; any other numeric knob is generic.
  **/

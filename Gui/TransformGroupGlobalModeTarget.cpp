@@ -168,7 +168,7 @@ TransformGroupGlobalModeTarget::hasMember(GlobalModeGroupMemberEnum member) cons
     const std::vector<KnobGuiPtr> knobGuis = memberKnobGuis(member);
 
     for (std::size_t i = 0; i < knobGuis.size(); ++i) {
-        if (!knobGuis[i]->isSecretRecursive()) {
+        if (!knobGuis[i]->isSecretRecursive() && hasGlobalModeWritableDimension(knobGuis[i]->getKnob())) {
             return true;
         }
     }

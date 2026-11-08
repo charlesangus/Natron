@@ -38,6 +38,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/Glow.h"
 #include "Engine/Nodes/Transform/Transform.h"
 
 NATRON_NAMESPACE_USING
@@ -139,4 +140,44 @@ TEST_F(BaseTest, GlobalModeKindSkipsKnobsWhoseEveryDimensionIsDriven)
     ASSERT_TRUE(size->slaveTo(1, master, 0));
     EXPECT_FALSE(isGlobalModeDimensionWritable(size, 1));
     EXPECT_EQ(eGlobalModeKindIneligible, classifyGlobalModeKind(size));
+}
+
+TEST_F(BaseTest, GlobalModeEditableDimensionIsEnabled)
+{
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(bool(transform));
+    KnobIPtr translate = transform->getKnobByName(kTransformNodeParamTranslate);
+    ASSERT_TRUE(bool(translate));
+
+    translate->setEnabled(1, false);
+    EXPECT_TRUE(isGlobalModeDimensionWritable(translate, 0));
+    EXPECT_FALSE(isGlobalModeDimensionWritable(translate, 1));
+
+    // Eligibility asks whether any dimension can be edited, not just the first.
+    translate->setEnabled(1, true);
+    translate->setEnabled(0, false);
+    EXPECT_FALSE(isGlobalModeDimensionWritable(translate, 0));
+    EXPECT_TRUE(hasGlobalModeWritableDimension(translate));
+    EXPECT_TRUE(isGlobalModeKnobEditable(translate));
+    EXPECT_EQ(eGlobalModeKindTranslate, classifyGlobalModeKind(translate));
+
+    translate->setEnabled(1, false);
+    EXPECT_FALSE(hasGlobalModeWritableDimension(translate));
+    EXPECT_FALSE(isGlobalModeKnobEditable(translate));
+    EXPECT_EQ(eGlobalModeKindIneligible, classifyGlobalModeKind(translate));
+}
+
+TEST_F(BaseTest, GlobalModeRotateDirectionComesFromTheValueRole)
+{
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    NodePtr glow = createNode(QString::fromUtf8(PLUGINID_NATRON_GLOW), PLUGIN_MAJOR_NATRON_GLOW);
+    ASSERT_TRUE(transform && glow);
+
+    KnobDoublePtr transformRotate = std::dynamic_pointer_cast<KnobDouble>(transform->getKnobByName(kTransformNodeParamRotate));
+    KnobDoublePtr glowRotate = std::dynamic_pointer_cast<KnobDouble>(glow->getKnobByName(kGlowParamRotate));
+    ASSERT_TRUE(transformRotate && glowRotate);
+
+    EXPECT_EQ(eValueRoleRotate, glowRotate->getValueRole());
+    EXPECT_TRUE(glowRotate->isValueRoleClockwise());
+    EXPECT_FALSE(transformRotate->isValueRoleClockwise());
 }

@@ -60,6 +60,9 @@ struct GlobalModeValueStrokeSpec {
     std::vector<double> increments;
     bool isInt = false;
     int lockDimension = kGlobalModeLockAll;
+    // A rotate knob whose positive angles turn clockwise, so that the stroke still turns the
+    // image counter-clockwise on right-or-up travel.
+    bool clockwisePositive = false;
 };
 
 /**
@@ -71,9 +74,9 @@ struct GlobalModeValueStrokeSpec {
  *
  * dx and dy are screen pixels, y pointing down. Translate, skew and genericSpatial2D map x to
  * the first dimension and up to the second, and any later dimension to right-or-up travel. The
- * other kinds move with right-or-up travel on either axis: rotate turns counter-clockwise,
- * scale grows by scaleFractionPerPixel compounded per pixel, and size and generic add their
- * increment per pixel. Colour and ineligible kinds leave the start untouched.
+ * other kinds move with right-or-up travel on either axis: rotate turns counter-clockwise
+ * (lowering a clockwisePositive angle), scale grows by scaleFractionPerPixel compounded per
+ * pixel, and size and generic add their increment per pixel. Colour and ineligible kinds leave the start untouched.
  **/
 class GlobalModeValueStroke {
 public:

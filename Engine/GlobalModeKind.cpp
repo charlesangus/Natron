@@ -124,7 +124,29 @@ bool
 isGlobalModeDimensionWritable(const KnobIPtr& knob,
                               int dimension)
 {
-    return knob && knob->getExpression(dimension).empty() && !knob->isSlave(dimension);
+    return knob && knob->isEnabled(dimension) && knob->getExpression(dimension).empty() && !knob->isSlave(dimension);
+}
+
+bool
+hasGlobalModeWritableDimension(const KnobIPtr& knob)
+{
+    for (int d = 0; knob && (d < knob->getDimension()); ++d) {
+        if (isGlobalModeDimensionWritable(knob, d)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+isGlobalModeKnobEditable(const KnobIPtr& knob)
+{
+    if (dynamic_cast<const KnobColor*>(knob.get())) {
+        return knob->isEnabled(0);
+    }
+
+    return hasGlobalModeWritableDimension(knob);
 }
 
 ValueRoleEnum
@@ -152,11 +174,7 @@ classifyGlobalModeKind(const KnobIPtr& knob)
         return eGlobalModeKindIneligible;
     }
 
-    bool anyWritable = false;
-    for (int d = 0; d < knob->getDimension() && !anyWritable; ++d) {
-        anyWritable = isGlobalModeDimensionWritable(knob, d);
-    }
-    if (!anyWritable) {
+    if (!hasGlobalModeWritableDimension(knob)) {
         return eGlobalModeKindIneligible;
     }
 

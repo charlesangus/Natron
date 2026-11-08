@@ -27,14 +27,19 @@
 
 #include <vector>
 
+#include <QHBoxLayout>
 #include <QString>
+#include <QVBoxLayout>
+#include <QWidget>
 
 #include <gtest/gtest.h>
 
 #include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ViewIdx.h"
 
+#include "Gui/KnobGuiValue.h"
 #include "Gui/ValueKnobEditSession.h"
 
 #include "GlobalModeTestSupport.h"
@@ -192,6 +197,169 @@ TEST_F(ValueKnobEditSessionTest, AbandonedStrokeRestoresWithoutAnUndoStep)
 
     EXPECT_DOUBLE_EQ(start, rotate->getValue(0));
     EXPECT_EQ(0, container().undoStack.count());
+}
+
+TEST_F(ValueKnobEditSessionTest, DisabledDimensionIsNotWritten)
+{
+    KnobDoublePtr translate = doubleKnob(_transform, kTransformNodeParamTranslate);
+
+    ASSERT_TRUE(bool(translate));
+    translate->setEnabled(1, false);
+
+    const double startX = translate->getValue(0);
+    const double startY = translate->getValue(1);
+    std::vector<KnobGuiPtr> guis(1, container().guiFor(translate));
+    ValueKnobEditSession session;
+
+    ASSERT_TRUE(session.begin(guis, QString::fromUtf8("Global edit")));
+    EXPECT_TRUE(session.isSlotWritable(0));
+    EXPECT_FALSE(session.isSlotWritable(1));
+
+    std::vector<double> values;
+
+    values.push_back(startX + 5.);
+    values.push_back(startY + 5.);
+    session.move(values);
+    session.end(QString::fromUtf8("Global edit"));
+
+    EXPECT_DOUBLE_EQ(startX + 5., translate->getValue(0));
+    EXPECT_DOUBLE_EQ(startY, translate->getValue(1));
+}
+
+TEST_F(ValueKnobEditSessionTest, SwitchingKnobsMidGestureIsOneUndoStep)
+{
+    KnobDoublePtr rotate = doubleKnob(_transform, kTransformNodeParamRotate);
+    KnobDoublePtr translate = doubleKnob(_transform, kTransformNodeParamTranslate);
+
+    ASSERT_TRUE(rotate && translate);
+
+    const double startR = rotate->getValue(0);
+    const double startX = translate->getValue(0);
+    const double startY = translate->getValue(1);
+    const std::vector<KnobGuiPtr> rotateGuis(1, container().guiFor(rotate));
+    const std::vector<KnobGuiPtr> translateGuis(1, container().guiFor(translate));
+    ValueKnobEditSession session;
+
+    ASSERT_TRUE(session.begin(rotateGuis, QString::fromUtf8("Global edit")));
+    session.move(std::vector<double>(1, startR + 10.));
+
+    ASSERT_TRUE(session.switchKnobs(translateGuis));
+    EXPECT_EQ(2, session.getSlotCount());
+    EXPECT_DOUBLE_EQ(startX, session.getStartValues()[0]);
+
+    std::vector<double> values;
+
+    values.push_back(startX + 3.);
+    values.push_back(startY - 4.);
+    session.move(values);
+
+    // Back on rotate, the gesture carries on from its latest value but keeps its first start.
+    ASSERT_TRUE(session.switchKnobs(rotateGuis));
+    EXPECT_DOUBLE_EQ(startR, session.getStartValues()[0]);
+    EXPECT_DOUBLE_EQ(startR + 10., session.getCurrentValues()[0]);
+    session.move(std::vector<double>(1, startR + 20.));
+    session.end(QString::fromUtf8("Global edit"));
+
+    EXPECT_DOUBLE_EQ(startR + 20., rotate->getValue(0));
+    EXPECT_DOUBLE_EQ(startX + 3., translate->getValue(0));
+    EXPECT_DOUBLE_EQ(startY - 4., translate->getValue(1));
+    ASSERT_EQ(1, container().undoStack.count());
+
+    container().undoStack.undo();
+    EXPECT_DOUBLE_EQ(startR, rotate->getValue(0));
+    EXPECT_DOUBLE_EQ(startX, translate->getValue(0));
+    EXPECT_DOUBLE_EQ(startY, translate->getValue(1));
+}
+
+TEST_F(ValueKnobEditSessionTest, AKnobDeletedMidGestureIsSkipped)
+{
+    KnobDoublePtr rotate = doubleKnob(_transform, kTransformNodeParamRotate);
+    KnobDoublePtr doomed = _transform->getEffectInstance()->createDoubleKnob("doomed", "Doomed", 1);
+
+    ASSERT_TRUE(rotate && doomed);
+
+    const double startR = rotate->getValue(0);
+    std::vector<KnobGuiPtr> guis;
+
+    guis.push_back(container().guiFor(rotate));
+    guis.push_back(container().guiFor(doomed));
+
+    ValueKnobEditSession session;
+
+    ASSERT_TRUE(session.begin(guis, QString::fromUtf8("Global edit")));
+
+    std::vector<double> values;
+
+    values.push_back(startR + 5.);
+    values.push_back(1.);
+    session.move(values);
+
+    _transform->getEffectInstance()->deleteKnob(doomed.get(), false);
+    doomed.reset();
+
+    values[0] = startR + 10.;
+    values[1] = 2.;
+    session.move(values);
+    session.end(QString::fromUtf8("Global edit"));
+
+    EXPECT_DOUBLE_EQ(startR + 10., rotate->getValue(0));
+    ASSERT_EQ(1, container().undoStack.count());
+
+    container().undoStack.undo();
+    EXPECT_DOUBLE_EQ(startR, rotate->getValue(0));
+}
+
+TEST_F(ValueKnobEditSessionTest, UniformScaleStrokeKeepsTheRowFolded)
+{
+    KnobDoublePtr scale = doubleKnob(_transform, kTransformNodeParamScale);
+
+    ASSERT_TRUE(bool(scale));
+
+    // A row with real widgets, the way a settings panel builds it: only then do value refreshes
+    // reach KnobGuiValue::updateGUI(), which records a knob as unfolded.
+    QWidget page;
+
+    new QVBoxLayout(&page);
+
+    GlobalModeTestContainer panel(&page);
+    KnobGuiPtr gui = std::make_shared<KnobGuiDouble>(scale, &panel);
+
+    gui->initialize();
+
+    QWidget* label = new QWidget(&page);
+    QWidget* field = new QWidget(&page);
+    QHBoxLayout* fieldLayout = new QHBoxLayout(field);
+
+    fieldLayout->setContentsMargins(0, 0, 0, 0);
+    gui->createGUI(field, label, 0, 0, fieldLayout, true, 0, std::vector<KnobIPtr>());
+    page.layout()->addWidget(field);
+    panel.guis[scale.get()] = gui;
+    ASSERT_FALSE(scale->getDimensionsUnfoldedInGui());
+
+    const double start = scale->getValue(0);
+    ValueKnobEditSession session;
+
+    ASSERT_TRUE(session.begin(std::vector<KnobGuiPtr>(1, gui), QString::fromUtf8("Global edit")));
+    session.move(std::vector<double>(2, start * 1.5));
+    session.move(std::vector<double>(2, start * 2.));
+    session.end(QString::fromUtf8("Global edit"));
+
+    EXPECT_DOUBLE_EQ(start * 2., scale->getValue(0));
+    EXPECT_DOUBLE_EQ(start * 2., scale->getValue(1));
+    EXPECT_FALSE(scale->getDimensionsUnfoldedInGui());
+    ASSERT_EQ(1, panel.undoStack.count());
+
+    panel.undoStack.undo();
+    EXPECT_DOUBLE_EQ(start, scale->getValue(0));
+    EXPECT_DOUBLE_EQ(start, scale->getValue(1));
+    EXPECT_FALSE(scale->getDimensionsUnfoldedInGui());
+
+    panel.undoStack.redo();
+    EXPECT_DOUBLE_EQ(start * 2., scale->getValue(1));
+    EXPECT_FALSE(scale->getDimensionsUnfoldedInGui());
+
+    panel.undoStack.clear();
+    panel.guis.clear();
 }
 
 } // namespace

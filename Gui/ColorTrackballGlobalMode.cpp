@@ -53,6 +53,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/AppManager.h"
+#include "Engine/GlobalModeKind.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -290,7 +291,7 @@ ColorGlobalModeFeedbackSwitch::offer(Settings::ColorTrackballFeedbackEnum latest
 {
     _pending = true;
     _pendingFeedback = latest;
-    if (strokeActive) {
+    if (strokeActive && (latest != Settings::eColorTrackballFeedbackCrosshairOnly)) {
         return false;
     }
 
@@ -697,6 +698,15 @@ ColorTrackballGlobalMode::getGlobalModeTarget() const
     return _target.get();
 }
 
+// A knob change made from inside a target call can destroy one of the target's KnobGuis, and
+// onTargetGone() then drops _target; every call into the target holds this copy so the target
+// and its edit session outlive the call that is still running on them.
+std::shared_ptr<GlobalModeTarget>
+ColorTrackballGlobalMode::pinTarget() const
+{
+    return getGlobalModeTarget() ? _target : std::shared_ptr<GlobalModeTarget>();
+}
+
 ColorGlobalModeTarget*
 ColorTrackballGlobalMode::getColorTarget() const
 {
@@ -767,7 +777,7 @@ ColorTrackballGlobalMode::getTargetPosition(int* n,
 
         if (knobs[i] == current) {
             position = legal + 1;
-        } else if (!knob || !knob->isEnabled(0) || knobs[i]->isSecretRecursive()) {
+        } else if (!isGlobalModeKnobEditable(knob) || knobs[i]->isSecretRecursive()) {
             continue;
         }
         ++legal;
@@ -976,13 +986,21 @@ ColorTrackballGlobalMode::exit()
 bool
 ColorTrackballGlobalMode::stepKnob(int direction)
 {
-    GlobalModeTarget* target = getGlobalModeTarget();
-    DockablePanel* panel = getTargetPanel();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
-    if (!_engaged || !target || !panel) {
+    if (!_engaged || !target || !getTargetPanel()) {
         return false;
     }
     endStroke();
+    if (_target != target) {
+        return false;
+    }
+
+    DockablePanel* panel = getTargetPanel();
+
+    if (!panel) {
+        return false;
+    }
 
     KnobGui* currentKnob = target->getKnobGui();
     std::vector<KnobGui*> knobs = orderedGlobalModeKnobs(panel, currentKnob);
@@ -995,7 +1013,7 @@ ColorTrackballGlobalMode::stepKnob(int direction)
         ColorKnobInfo info;
 
         info.scriptName = knob ? knob->getName() : std::string();
-        info.enabled = knob && knob->isEnabled(0);
+        info.enabled = isGlobalModeKnobEditable(knob);
         info.visible = !knobs[i]->isSecretRecursive();
         infos.push_back(info);
         if (knobs[i] == currentKnob) {
@@ -1052,9 +1070,9 @@ ColorTrackballGlobalMode::releaseStrokeGrab()
 void
 ColorTrackballGlobalMode::beginStroke()
 {
-    GlobalModeTarget* target = getGlobalModeTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
-    if (!target || !target->beginStroke()) {
+    if (!target || !target->beginStroke() || (_target != target)) {
         return;
     }
     _strokeActive = true;
@@ -1123,7 +1141,7 @@ ColorTrackballGlobalMode::moveStroke(const QPointF& globalPos,
         return;
     }
 
-    GlobalModeTarget* target = getGlobalModeTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
     if (!target) {
         return;
@@ -1144,7 +1162,7 @@ ColorTrackballGlobalMode::endStroke()
     _strokeActive = false;
     _warpPending = false;
 
-    GlobalModeTarget* target = getGlobalModeTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
     if (target) {
         target->endStroke();
@@ -1209,7 +1227,7 @@ void
 ColorTrackballGlobalMode::syncReveal()
 {
     const ColorGlobalModeFeedbackState state = colorGlobalModeFeedbackState(_feedback.getFeedback(), _engaged, _strokeActive);
-    GlobalModeTarget* target = getGlobalModeTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
     _cursors.sync(state.crosshair, state.blankCursor);
     syncHudBlock(state);
@@ -1467,7 +1485,7 @@ ColorTrackballGlobalMode::undoOnTargetPanel(bool redo)
 {
     // Straight to the target's own panel stack: the Edit menu's Undo follows whichever stack
     // was last made active, which hovering the node graph or a viewer quietly changes.
-    GlobalModeTarget* target = getGlobalModeTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
     if (!target) {
         return;
@@ -1496,9 +1514,9 @@ ColorTrackballGlobalMode::handleKeyPress(QKeyEvent* e)
     case eColorGlobalModeKeySetMode:
         // The mode keys and the dimension or member keys belong to the target: C, S, T, V on a
         // colour knob, Q/W/E/R/A on a lone value knob, Q/W/E/R/T and 1/2/A in a transform group.
-        if (GlobalModeTarget* target = getGlobalModeTarget()) {
+        if (std::shared_ptr<GlobalModeTarget> target = pinTarget()) {
             if (target->handleKey(key, mods, _strokeActive)) {
-                if (ColorGlobalModeTarget* colour = dynamic_cast<ColorGlobalModeTarget*>(target)) {
+                if (ColorGlobalModeTarget* colour = dynamic_cast<ColorGlobalModeTarget*>(target.get())) {
                     _colorMode = colour->getMode();
                 }
                 Q_EMIT stateChanged();

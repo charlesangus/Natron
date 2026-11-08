@@ -64,6 +64,7 @@ NATRON_NAMESPACE_ENTER
 
 KnobValueRoleHolder::KnobValueRoleHolder()
     : _valueRole(eValueRoleNone)
+    , _valueRoleClockwise(false)
 {
 }
 
@@ -77,6 +78,18 @@ ValueRoleEnum
 KnobValueRoleHolder::getValueRole() const
 {
     return _valueRole;
+}
+
+void
+KnobValueRoleHolder::setValueRoleClockwise(bool clockwise)
+{
+    _valueRoleClockwise = clockwise;
+}
+
+bool
+KnobValueRoleHolder::isValueRoleClockwise() const
+{
+    return _valueRoleClockwise;
 }
 
 /******************************KnobInt**************************************/

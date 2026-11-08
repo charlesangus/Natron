@@ -86,8 +86,17 @@ public:
 
     ValueRoleEnum getValueRole() const;
 
+    /**
+     * @brief For eValueRoleRotate, whether a positive angle turns the image clockwise on
+     * screen rather than counter-clockwise. Off by default.
+     **/
+    void setValueRoleClockwise(bool clockwise);
+
+    bool isValueRoleClockwise() const;
+
 private:
     ValueRoleEnum _valueRole;
+    bool _valueRoleClockwise;
 };
 
 /******************************KnobInt**************************************/

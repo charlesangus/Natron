@@ -120,6 +120,9 @@ GlobalModeValueStroke::evaluate(const GlobalModeValueStrokeSpec& spec,
             break;
         case eGlobalModeKindRotate:
             delta = travel * rates.rotateDegreesPerPixel;
+            if (spec.clockwisePositive) {
+                delta = -delta;
+            }
             break;
         default:
             delta = travel * incrementOf(spec, d);

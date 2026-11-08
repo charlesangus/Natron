@@ -67,6 +67,14 @@ public:
      **/
     bool begin(const std::vector<KnobGuiPtr>& knobGuis, const QString& label);
 
+    /**
+     * @brief Points the running gesture at knobGuis instead, laid out as begin() lays them out,
+     * keeping every edit made so far in the same undo step. A dimension the gesture already
+     * holds keeps its start value and carries on from its latest one. False, with the slots
+     * unchanged, when no new slot is writable or a knob is not numeric; the gesture runs on.
+     **/
+    bool switchKnobs(const std::vector<KnobGuiPtr>& knobGuis);
+
     bool isActive() const
     {
         return _active;
@@ -74,13 +82,13 @@ public:
 
     int getSlotCount() const
     {
-        return (int)_slots.size();
+        return (int)_live.size();
     }
 
     bool isSlotWritable(int slot) const;
 
     /**
-     * @brief Every slot's value when the gesture began.
+     * @brief Every slot's value when the gesture first held it.
      **/
     std::vector<double> getStartValues() const;
 
@@ -120,13 +128,17 @@ private:
         double keyTime = 0.;
     };
 
+    int findSlot(const KnobIPtr& knob, int dimension) const;
+    bool collectSlots(const std::vector<KnobGuiPtr>& knobGuis, std::vector<int>* live);
     void write(const std::vector<int>& slots);
     void restore();
     void finish();
 
+    // Every dimension the gesture has held, across switchKnobs(); end() and abandon() cover them all.
     std::vector<Slot> _slots;
+    // The indices into _slots of the knobs the gesture is on now, in slot order.
+    std::vector<int> _live;
     bool _active;
-    bool _moved;
     QPointer<Gui> _gui;
 };
 

@@ -81,7 +81,8 @@ public:
     }
 
     /**
-     * @brief Whether member exists on the node and is shown, which switching to it requires.
+     * @brief Whether member exists on the node, is shown and has a writable dimension, which
+     * switching to it requires.
      **/
     bool hasMember(GlobalModeGroupMemberEnum member) const;
 

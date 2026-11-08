@@ -338,7 +338,7 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
 ```
 [NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
   [GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n> GTEST_REPEAT=<n>] \
-  tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+  tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
 ```
 
 - `ctest` runs against the build dir. By default (`NATRON_CTEST_JOBS` unset)
@@ -351,6 +351,14 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on
   `RB-2.6`, and `test.sh` will tell you plainly and exit if it's missing on
   your checkout.
+- `startup` starts the built `App/Natron` under a GLX-capable Xvfb on software
+  GL (`Tests/gui/run-gui-test.sh Tests/gui/debug_startup.py`) and fails unless
+  the main window is exposed. Run it against `debug`: that build arms the
+  floating-point traps for the whole process, which Mesa's llvmpipe trips
+  while compiling its shaders unless the GL init path disarms them around the
+  driver calls, and no ctest case ever starts the GUI. A SIGFPE shows up as
+  exit status 136. `check-startup.sh` cannot take this role, as it needs a
+  staged bundle and a debug build is not packaged in the container.
 - `NATRON_RENDER_SCHEDULER` selects the render scheduler for `ctest` and
   `smoke`; unset leaves Natron's default. It is forwarded into the container
   when set.

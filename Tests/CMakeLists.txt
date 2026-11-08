@@ -138,6 +138,7 @@ set(Tests_SOURCES
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
     PoolSharing_Test.cpp
+    FpTrapGuard_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
     QueuedInputEdit_Test.cpp

@@ -31,6 +31,7 @@
 #include <list>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -39,8 +40,8 @@
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
-#define PLUGINID_NATRON_REFORMAT "net.sf.openfx.Reformat"
-#define PLUGIN_MAJOR_NATRON_REFORMAT 3
+#define PLUGINID_NATRON_REFORMAT "Reformat"
+#define PLUGIN_MAJOR_NATRON_REFORMAT 1
 
 #define kReformatParamUseRoD "useRoD"
 #define kReformatParamType "reformatType"
@@ -79,7 +80,7 @@ struct ReformatParams {
     double time = 0.;
     ViewIdx view;
     bool identity = false;
-    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    Resampler::FilterSpec filter;
     bool clamp = false;
     bool blackOutside = false;
 };
@@ -110,7 +111,7 @@ struct ReformatOp {
         .grouping = PLUGIN_GROUP_TRANSFORM,
         .majorVersion = PLUGIN_MAJOR_NATRON_REFORMAT,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Reformat.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Reformat.png",
         .inputs = kReformatInputs,
     };
 
@@ -159,6 +160,7 @@ struct ReformatOp {
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
     KnobBoolWPtr blackOutside;
+    Resampler::FilterKnobs filterKnobs;
 };
 
 static_assert(GpuResampleOp<ReformatOp>);
@@ -320,7 +322,7 @@ private:
      **/
     void refreshVisibility();
 
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     KnobBoolWPtr _useRoD;
     KnobChoiceWPtr _type;

@@ -1,4 +1,5 @@
 import gradeops;
+import exactdivide;
 
 // The per-pixel wrapping of a CPU point op: divide by the "(Un)premult by" channel,
 // the op, multiply back, blend with the undivided source by mask x mix, and pass unprocessed
@@ -51,6 +52,7 @@ struct WrapParams
 
 static const uint kWrapMask = 1;
 static const uint kWrapMaskInvert = 2;
+static const uint kWrapClampAlpha = 4;
 
 // The op sees and returns pixels in channel-bit order, absent channels reading as zero, and only
 // the channels in channelMask of its result are kept.
@@ -116,7 +118,7 @@ float4 wrapDivide(float4 v, float d)
         if (int(c) != wrap.skipChannel)
         {
             const uint bit = wrapChannelBit(n, c);
-            precise float q = v[bit] / d;
+            precise float q = divideRounded(v[bit], d);
             v[bit] = q;
         }
     }
@@ -167,6 +169,9 @@ void wrapWrite(uint2 tid, int2 p, float4 src, float4 result, float d)
         {
             precise float blended = v * alpha + (1.0 - alpha) * s;
             v = blended;
+            // A comparison rather than clamp(), so that a NaN gives 0 as on the CPU.
+            if (bit == 3 && (wrap.flags & kWrapClampAlpha) != 0)
+                v = (v > 0.0) ? min(v, 1.0) : 0.0;
         }
         wrapDst[base + c] = v;
     }

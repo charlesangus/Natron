@@ -1059,6 +1059,8 @@ Bilateral::readsGpuInput(int inputNb,
 
 RectI
 Bilateral::opPassesInputRoI(int inputNb,
+                            double time,
+                            ViewIdx view,
                             const RectI& outputRect,
                             const RenderScale& scale) const
 {
@@ -1066,7 +1068,7 @@ Bilateral::opPassesInputRoI(int inputNb,
         return outputRect;
     }
 
-    return passListSourceRoI(outputRect, opPasses(getCurrentTime(), getCurrentView(), scale));
+    return passListSourceRoI(outputRect, opPasses(time, view, scale));
 }
 
 GpuWeight

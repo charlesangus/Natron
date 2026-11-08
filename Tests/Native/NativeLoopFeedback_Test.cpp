@@ -499,9 +499,9 @@ TEST_F(NativeLoopFeedbackTest, FiveOnePixelErodesAreAFivePixelErode)
 {
     NodePtr source = createParitySource("rgba");
     NodePtr begin = createLoopBegin();
-    NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
+    NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE));
     NodePtr end = createFeedbackEnd(5);
-    NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
+    NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE));
     ASSERT_TRUE(source && begin && erode && end && reference);
     ASSERT_TRUE(setKnobValues(erode, kErodeDilateParamSize, { 1., 1. }));
     ASSERT_TRUE(setKnobValues(reference, kErodeDilateParamSize, { 5., 5. }));
@@ -560,9 +560,9 @@ TEST_F(NativeLoopFeedbackTest, TheRegionAskedOfTheInputGrowsByEveryIteration)
     const int radius = 2;
     NodePtr source = createParitySource("rgba");
     NodePtr begin = createLoopBegin();
-    NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
+    NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE));
     NodePtr end = createFeedbackEnd(iterations);
-    NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
+    NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE));
     ASSERT_TRUE(source && begin && erode && end && reference);
     ASSERT_TRUE(setKnobValues(erode, kErodeDilateParamSize, { (double)radius, (double)radius }));
     ASSERT_TRUE(setKnobValues(reference, kErodeDilateParamSize, { (double)(iterations * radius), (double)(iterations * radius) }));
@@ -589,7 +589,7 @@ TEST_F(NativeLoopFeedbackTest, SinglePassIsTheLoopCutShort)
 {
     NodePtr source = createParitySource("rgba");
     NodePtr begin = createLoopBegin();
-    NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE));
+    NodePtr erode = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE));
     NodePtr end = createFeedbackEnd(5);
     ASSERT_TRUE(source && begin && erode && end);
     ASSERT_TRUE(setKnobValues(erode, kErodeDilateParamSize, { 1., 1. }));

@@ -215,9 +215,9 @@ try:
 
         # ---- a fast shake disconnects the node's input and output during the drag; one undo.
         gt.section("shake")
-        src = create("net.sf.openfx.ConstantPlugin", 0, 0)
-        mover = create("net.sf.cimg.CImgBlur", 0, 0)
-        down = create("net.sf.cimg.CImgBlur", 0, 0)
+        src = create("Constant", 0, 0)
+        mover = create("Blur", 0, 0)
+        down = create("Blur", 0, 0)
         place_under(src, mover, 120.0)
         place_under(mover, down, 120.0)
         check(mover.connectInput(0, src), "shake: connect the middle node to the source")
@@ -261,10 +261,10 @@ try:
 
         # ---- a shaken selection keeps the pipe between its nodes and loses the ones leaving it.
         gt.section("multi-selection")
-        a = create("net.sf.openfx.ConstantPlugin", 2000, 0)
-        b = create("net.sf.cimg.CImgBlur", 0, 0)
-        c = create("net.sf.cimg.CImgBlur", 0, 0)
-        d = create("net.sf.cimg.CImgBlur", 0, 0)
+        a = create("Constant", 2000, 0)
+        b = create("Blur", 0, 0)
+        c = create("Blur", 0, 0)
+        d = create("Blur", 0, 0)
         place_under(a, b, 100.0)
         place_under(b, c, 100.0)
         place_under(c, d, 100.0)
@@ -290,9 +290,9 @@ try:
 
         # ---- a Dot shakes loose like any node.
         gt.section("dot")
-        src = create("net.sf.openfx.ConstantPlugin", 4000, 0)
-        dot = create("fr.inria.built-in.Dot", 0, 0)
-        out = create("net.sf.cimg.CImgBlur", 0, 0)
+        src = create("Constant", 4000, 0)
+        dot = create("Dot", 0, 0)
+        out = create("Blur", 0, 0)
         place_under(src, dot, 100.0)
         place_under(dot, out, 100.0)
         check(dot.connectInput(0, src) and out.connectInput(0, dot), "dot: chain source-dot-blur")
@@ -307,16 +307,16 @@ try:
 
         # ---- a shaken backdrop carries its contents along without cutting any of their pipes.
         gt.section("backdrop")
-        outer_src = create("net.sf.openfx.ConstantPlugin", 10000, 0)
-        inner_a = create("net.sf.cimg.CImgBlur", 0, 0)
-        inner_b = create("net.sf.cimg.CImgBlur", 0, 0)
-        outer_out = create("net.sf.cimg.CImgBlur", 0, 0)
+        outer_src = create("Constant", 10000, 0)
+        inner_a = create("Blur", 0, 0)
+        inner_b = create("Blur", 0, 0)
+        outer_out = create("Blur", 0, 0)
         place_under(outer_src, inner_a, 200.0)
         place_under(inner_a, inner_b, 100.0)
         place_under(inner_b, outer_out, 200.0)
         check(inner_a.connectInput(0, outer_src) and inner_b.connectInput(0, inner_a)
               and outer_out.connectInput(0, inner_b), "backdrop: chain source-a-b-out")
-        backdrop = create("fr.inria.built-in.BackDrop", 0, 0)
+        backdrop = create("Backdrop", 0, 0)
         ax, ay, aw, ah = box(inner_a)
         bx, by, bw, bh = box(inner_b)
         backdrop.setPosition(min(ax, bx) - 60.0, ay - 60.0)
@@ -339,12 +339,12 @@ try:
 
         # ---- cut: Ctrl-drag across two pipes highlights them, then cuts both in one undo step.
         gt.section("cut")
-        s1 = create("net.sf.openfx.ConstantPlugin", 6000, 0)
-        s2 = create("net.sf.openfx.ConstantPlugin", 6400, 0)
-        s3 = create("net.sf.openfx.ConstantPlugin", 6800, 0)
-        m1 = create("net.sf.cimg.CImgBlur", 0, 0)
-        m2 = create("net.sf.cimg.CImgBlur", 0, 0)
-        m3 = create("net.sf.cimg.CImgBlur", 0, 0)
+        s1 = create("Constant", 6000, 0)
+        s2 = create("Constant", 6400, 0)
+        s3 = create("Constant", 6800, 0)
+        m1 = create("Blur", 0, 0)
+        m2 = create("Blur", 0, 0)
+        m3 = create("Blur", 0, 0)
         for s, m in ((s1, m1), (s2, m2), (s3, m3)):
             place_under(s, m, 200.0)
             check(m.connectInput(0, s), "cut: connect " + m.getScriptName())

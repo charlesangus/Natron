@@ -661,15 +661,34 @@ Settings::initializeKnobsProjectSetup()
     _developRawOnRead->setName("developRawOnRead");
     _developRawOnRead->setHintToolTip(tr("If checked, creating a Read of a camera raw file in the interface (from the node menu, by "
                                          "dropping a file or opening one) also creates RawPrepare, RawTemperature, RawHighlights, "
-                                         "RawDemosaic, RawInputColor and RawColorCalibration below it, in a backdrop titled \"Develop RAW\". Loading a project "
+                                         "RawDemosaic (or RawNeuralDenoise, see Develop RAW Demosaic), RawInputColor and RawColorCalibration below it, in a backdrop titled \"Develop RAW\". Loading a project "
                                          "or creating a Read from Python never does."));
     _projectsPage->addKnob(_developRawOnRead);
 
+    _developRawDemosaic = AppManager::createKnob<KnobChoice>(this, tr("Develop RAW Demosaic"));
+    _developRawDemosaic->setName("developRawDemosaic");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("classic",
+                                       tr("Classic (RawDemosaic)").toStdString(),
+                                       tr("RawDemosaic, with its default method.").toStdString()));
+        entries.push_back(ChoiceOption("neural",
+                                       tr("Neural (RawNIND)").toStdString(),
+                                       tr("RawNeuralDenoise, which denoises and demosaics in one pass, when the raw file has a Bayer "
+                                          "sensor and its default model is installed. Otherwise RawDemosaic.")
+                                           .toStdString()));
+        _developRawDemosaic->populateChoices(entries);
+    }
+    _developRawDemosaic->setHintToolTip(tr("Which node demosaics in the Develop RAW chain created on reading a camera raw file. Neural "
+                                           "needs AI enabled and the RawNIND Bayer model installed (Preferences > AI Models), and a "
+                                           "Bayer sensor; X-Trans files always get RawDemosaic."));
+    _projectsPage->addKnob(_developRawDemosaic);
     _developRawDenoise = AppManager::createKnob<KnobBool>(this, tr("Develop RAW Denoise"));
     _developRawDenoise->setName("developRawDenoise");
     _developRawDenoise->setHintToolTip(tr("If checked, the Develop RAW chain also has DenoiseProfiled between RawDemosaic and "
                                           "RawInputColor, where darktable runs its denoise (profiled), with the camera's noise "
-                                          "profile found from the file."));
+                                          "profile found from the file. It is left out when Develop RAW Demosaic uses the neural "
+                                          "denoise, which already denoises."));
     _projectsPage->addKnob(_developRawDenoise);
 
     _autoPreviewEnabledForNewProjects = AppManager::createKnob<KnobBool>( this, tr("Auto-preview enabled by default for new projects") );
@@ -728,8 +747,9 @@ Settings::initializeKnobsUserInterface()
 
     _renderOnEditingFinished = AppManager::createKnob<KnobBool>( this, tr("Refresh viewer only when editing is finished") );
     _renderOnEditingFinished->setName("renderOnEditingFinished");
-    _renderOnEditingFinished->setHintToolTip( tr("When checked, the viewer triggers a new render only when mouse is released when editing parameters, curves "
-                                                 " or the timeline. This setting doesn't apply to roto splines editing.") );
+    _renderOnEditingFinished->setHintToolTip(tr("When checked, the viewer triggers a new render only when mouse is released when editing parameters, curves "
+                                                " or the timeline. This setting doesn't apply to roto splines editing. "
+                                                "The Interactive Updates action in the Render menu toggles it."));
     _uiPage->addKnob(_renderOnEditingFinished);
 
     _maxPanelsOpened = AppManager::createKnob<KnobInt>( this, tr("Maximum number of open settings panels (0=\"unlimited\")") );
@@ -1322,6 +1342,33 @@ Settings::initializeKnobsViewers()
                                             "inputs.") );
     _viewersTab->addKnob(_viewerOverlaysPath);
 
+    _rotoShapeDragRender = AppManager::createKnob<KnobChoice>(this, tr("Roto Shape Drag Render"));
+    _rotoShapeDragRender->setName("rotoShapeDragRender");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)eRotoShapeDragRenderAdaptive);
+        entries.push_back(ChoiceOption("adaptive",
+                                       tr("Adaptive").toStdString(),
+                                       tr("Render while dragging, and wait for the release once a render takes longer than 100 ms.").toStdString()));
+        assert(entries.size() == (int)eRotoShapeDragRenderAlwaysLive);
+        entries.push_back(ChoiceOption("live",
+                                       tr("Always Live").toStdString(),
+                                       tr("Render while dragging however long each render takes.").toStdString()));
+        assert(entries.size() == (int)eRotoShapeDragRenderOnRelease);
+        entries.push_back(ChoiceOption("onRelease",
+                                       tr("On Release").toStdString(),
+                                       tr("Render only when the drag ends.").toStdString()));
+        _rotoShapeDragRender->populateChoices(entries);
+    }
+    _rotoShapeDragRender->setHintToolTip(tr("When the viewer renders a Roto or RotoPaint shape while its points, tangents, "
+                                            "feather or transform box are dragged.\n"
+                                            "Adaptive renders while dragging, one render at a time with the latest edit, and "
+                                            "waits for the release for the rest of the drag once a render takes longer than "
+                                            "100 ms.\n"
+                                            "Always Live renders while dragging however long each render takes.\n"
+                                            "On Release renders only when the drag ends."));
+    _viewersTab->addKnob(_rotoShapeDragRender);
+
     _viewer3DNavigation = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Navigation"));
     _viewer3DNavigation->setName("viewer3DNavigation");
     {
@@ -1365,6 +1412,19 @@ Settings::initializeKnobsViewers()
                                                 "is inserted after the viewed node, its pattern naming the dragged prims. Each drag is one "
                                                 "undo step."));
     _viewersTab->addKnob(_viewer3DTransformTarget);
+
+    _viewer3DLighting = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Lighting"));
+    _viewer3DLighting->setName("viewer3DLighting");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("auto", "Auto", tr("The scene's lights when it has any, else a light at the camera.").toStdString()));
+        entries.push_back(ChoiceOption("scene", "Scene Lights", tr("Only the scene's lights: a scene with none shows its lit surfaces black, as USDRender does by default.").toStdString()));
+        entries.push_back(ChoiceOption("headlight", "Headlight", tr("Only a light at the camera.").toStdString()));
+        _viewer3DLighting->populateChoices(entries);
+    }
+    _viewer3DLighting->setHintToolTip(tr("What lights the shaded mode of the viewer's 3D views, all of them alike. Also chosen from "
+                                         "the 3D view's Display > Lighting menu."));
+    _viewersTab->addKnob(_viewer3DLighting);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1759,6 +1819,7 @@ Settings::setDefaultValues()
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
     _developRawOnRead->setDefaultValue(true);
+    _developRawDemosaic->setDefaultValue(0);
     _developRawDenoise->setDefaultValue(false);
     _autoPreviewEnabledForNewProjects->setDefaultValue(true, 0);
     _fixPathsOnProjectPathChanged->setDefaultValue(true);
@@ -1808,9 +1869,11 @@ Settings::setDefaultValues()
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
     _viewerOverlaysPath->setDefaultValue(true);
+    _rotoShapeDragRender->setDefaultValue((int)eRotoShapeDragRenderAdaptive);
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
     _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
+    _viewer3DLighting->setDefaultValue((int)eViewer3DLightingScene);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2532,6 +2595,15 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
+    } else if (k == _renderOnEditingFinished.get()) {
+        const AppInstanceVec& apps = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
+            NodesList nodes;
+            (*it)->getProject()->getNodes_recursive(nodes, false);
+            for (NodesList::const_iterator node = nodes.begin(); node != nodes.end(); ++node) {
+                (*node)->refreshHostDrivenOverlayParams();
+            }
+        }
     } else if (k == _renderSchedulerMode.get()) {
         appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
     } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {
@@ -2699,6 +2771,25 @@ bool
 Settings::viewerOverlaysPath() const
 {
     return _viewerOverlaysPath->getValue();
+}
+
+Settings::RotoShapeDragRenderEnum
+Settings::getRotoShapeDragRender() const
+{
+    return (RotoShapeDragRenderEnum)_rotoShapeDragRender->getValue();
+}
+
+Settings::Viewer3DLightingEnum
+Settings::getViewer3DLighting() const
+{
+    return (Viewer3DLightingEnum)_viewer3DLighting->getValue();
+}
+
+void
+Settings::setViewer3DLighting(Viewer3DLightingEnum lighting)
+{
+    _viewer3DLighting->setValue((int)lighting);
+    saveSetting(_viewer3DLighting.get());
 }
 
 GpuComputeModeEnum
@@ -3509,6 +3600,7 @@ void
 Settings::setRenderOnEditingFinishedOnly(bool render)
 {
     _renderOnEditingFinished->setValue(render);
+    saveSetting(_renderOnEditingFinished.get());
 }
 
 std::string
@@ -3569,6 +3661,12 @@ bool
 Settings::isDevelopRawOnReadEnabled() const
 {
     return _developRawOnRead->getValue();
+}
+
+bool
+Settings::isDevelopRawNeuralDemosaic() const
+{
+    return _developRawDemosaic->getValue() == 1;
 }
 
 bool

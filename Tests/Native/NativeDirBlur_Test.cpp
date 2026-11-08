@@ -39,6 +39,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "Native/NativeBlurRange.h"
 #include "NativeGolden.h"
 #include "NativeParity.h"
@@ -385,7 +386,7 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
     ASSERT_TRUE(bool(max));
     EXPECT_FALSE(max->getValue());
 
-    // The Transform node's filter knobs and defaults; Clamp is enabled only for a filter that honours it.
+    // The Transform node's filter knobs and defaults; Clamp is shown only for a filter that honours it.
     KnobChoicePtr filter = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kResamplerParamFilterType));
     ASSERT_TRUE(bool(filter));
     EXPECT_EQ((int)Resampler::eFilterCubic, filter->getValue());
@@ -393,11 +394,11 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
     KnobBoolPtr clamp = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterClamp));
     ASSERT_TRUE(bool(clamp));
     EXPECT_FALSE(clamp->getValue());
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
-    EXPECT_TRUE(clamp->isEnabled(0));
+    EXPECT_FALSE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
     KnobBoolPtr blackOutside = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterBlackOutside));
     ASSERT_TRUE(bool(blackOutside));
     EXPECT_TRUE(blackOutside->getValue());
@@ -422,7 +423,7 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
 
 // Each mode shows only the knobs that change its result: Direction, Use Target and Target belong
 // to Directional, Pixel Offset to Zoom, and Center to Radial, Zoom and a targeted Directional
-// blur. The rest are shown in every mode.
+// blur. The rest but the filter parameters are shown in every mode.
 TEST_F(NativeDirBlurTest, KnobVisibilityFollowsTheMode)
 {
     resetProject();
@@ -437,7 +438,6 @@ TEST_F(NativeDirBlurTest, KnobVisibilityFollowsTheMode)
         kDirBlurParamFalloff,
         kDirBlurParamMax,
         kResamplerParamFilterType,
-        kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,
         kDirBlurParamTintGroup,
         kDirBlurParamFromColor,
@@ -879,6 +879,8 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
         { kDirBlurParamModeZoom, true, "impulse", false, false },
         { kDirBlurParamModeDirectional, true, "notch", false, false },
         { kDirBlurParamModeRadial, false, "simon", true, false },
+        { kDirBlurParamModeZoom, false, "sinc", false, true },
+        { kDirBlurParamModeDirectional, true, "lanczos4", true, false },
     };
     for (const auto& tc : cases) {
         const char* mode = tc.mode;
@@ -1193,4 +1195,23 @@ TEST_F(NativeDirBlurTest, Golden)
         return setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });
     }));
     runGoldenCases(getApp(), spec, v);
+}
+
+// Every copy samples between pixel centres, so the filter and its parameters reach the result.
+TEST_F(NativeDirBlurTest, HonoursTheNewFiltersAndTheirParameters)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 0, 0);
+    NodePtr node = makeDirBlur(source, kDirBlurParamModeDirectional);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15.5 }));
+    ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
+
+    const RectI window = pixelRoD(node);
+    EXPECT_TRUE(filterChoiceChangesTheRender(node, window, kTime, Resampler::eFilterCubic, Resampler::eFilterLanczos3));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
 }

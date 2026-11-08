@@ -452,10 +452,10 @@ Node::isInputOnlyAlpha(int inputNb) const
 int
 Node::getNInputs() const
 {
-    ///MT-safe, never changes
-    assert(_imp->effect);
-
-    return _imp->effect->getNInputs();
+    /// MT-safe, never changes
+    // A destroyed node has none, and an output with a queued input edit still reads it until the
+    // edit lands.
+    return _imp->effect ? _imp->effect->getNInputs() : 0;
 }
 
 void

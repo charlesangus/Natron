@@ -35,7 +35,9 @@
 
 #include "Engine/ContentHasher.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
@@ -166,6 +168,8 @@ bool
 checkUsdRuntime(std::string* errorMessage)
 {
     static const std::string missing = []() {
+        // A no-op once AppManager has registered them; reached first only by code running without it.
+        SceneCaches::registerLiveTextures(nullptr);
         std::string names;
         PXR_NS::PlugRegistry& registry = PXR_NS::PlugRegistry::GetInstance();
         for (const char* name : { "ar", "sdf", "sdr", "usd", "usdGeom", "usdLux", "usdShade" }) {
@@ -313,6 +317,70 @@ getLayers(const ScenePayload& payload)
     return layers;
 }
 
+namespace {
+    void
+    collectLiveTextures(const ScenePayloadImpl* link,
+                        std::set<const ScenePayloadImpl*>* visited,
+                        std::set<const LiveTextureSourceList*>* seen,
+                        LiveTextureSourceList* sources)
+    {
+        // A link already visited was reached with everything below it.
+        for (; link && visited->insert(link).second; link = link->base.get()) {
+            const SceneLayerEntry& entry = link->top;
+            if (entry.liveTextures && seen->insert(entry.liveTextures.get()).second) {
+                sources->insert(sources->end(), entry.liveTextures->begin(), entry.liveTextures->end());
+            }
+            if (entry.dependencies) {
+                for (const ScenePayload& stack : entry.dependencies->stacks) {
+                    collectLiveTextures(stack.getImpl().get(), visited, seen, sources);
+                }
+            }
+        }
+    }
+} // anonymous namespace
+
+LiveTextureSourceList
+getLiveTextures(const ScenePayload& payload)
+{
+    LiveTextureSourceList sources;
+    std::set<const ScenePayloadImpl*> visited;
+    std::set<const LiveTextureSourceList*> seen;
+
+    collectLiveTextures(payload.getImpl().get(), &visited, &seen, &sources);
+
+    return sources;
+}
+
+namespace {
+    bool
+    findDeferredProjections(const ScenePayloadImpl* link,
+                            std::set<const ScenePayloadImpl*>* visited)
+    {
+        for (; link && visited->insert(link).second; link = link->base.get()) {
+            if (link->top.deferredProjections) {
+                return true;
+            }
+            if (link->top.dependencies) {
+                for (const ScenePayload& stack : link->top.dependencies->stacks) {
+                    if (findDeferredProjections(stack.getImpl().get(), visited)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+} // anonymous namespace
+
+bool
+hasDeferredProjections(const ScenePayload& payload)
+{
+    std::set<const ScenePayloadImpl*> visited;
+
+    return findDeferredProjections(payload.getImpl().get(), &visited);
+}
+
 SceneMetadata
 readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
                   const SceneMetadata& weaker)
@@ -341,6 +409,10 @@ readLayerMetadata(const PXR_NS::SdfLayerRefPtr& layer,
     }
     if (layer->HasTimeCodesPerSecond()) {
         metadata.timeCodesPerSecond = layer->GetTimeCodesPerSecond();
+    }
+    std::string renderSettingsPrimPath;
+    if (layer->HasField(root, PXR_NS::UsdRenderTokens->renderSettingsPrimPath, &renderSettingsPrimPath)) {
+        metadata.renderSettingsPrimPath = renderSettingsPrimPath;
     }
 
     return metadata;
@@ -391,6 +463,13 @@ writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
     if (!applied || (applied->timeCodesPerSecond != metadata.timeCodesPerSecond)) {
         root->SetTimeCodesPerSecond(metadata.timeCodesPerSecond);
     }
+    if (!applied || (applied->renderSettingsPrimPath != metadata.renderSettingsPrimPath)) {
+        if (metadata.renderSettingsPrimPath.empty()) {
+            root->EraseField(rootPath, PXR_NS::UsdRenderTokens->renderSettingsPrimPath);
+        } else {
+            root->SetField(rootPath, PXR_NS::UsdRenderTokens->renderSettingsPrimPath, metadata.renderSettingsPrimPath);
+        }
+    }
 }
 
 namespace {
@@ -431,8 +510,22 @@ compose(const ScenePayload& payload)
     }
     root->SetSubLayerPaths(getSubLayerPaths(payload));
     writeRootMetadata(root, payload.getMetadata(), nullptr);
+    PXR_NS::UsdStageRefPtr stage = openStage(root);
+    if (!stage || !hasDeferredProjections(payload)) {
+        return stage;
+    }
+    // Resolved into a root no stage listens to yet, then composed once more, rather than edited
+    // into the open stage one recomposition per value.
+    PXR_NS::SdfLayerRefPtr resolved = PXR_NS::SdfLayer::CreateAnonymous("natron-scene-root");
+    if (!resolved) {
+        return stage;
+    }
+    resolved->SetSubLayerPaths(getSubLayerPaths(payload));
+    writeRootMetadata(resolved, payload.getMetadata(), nullptr);
+    SceneProjectionCameras::resolve(stage, resolved, nullptr);
+    stage = PXR_NS::UsdStageRefPtr();
 
-    return openStage(root);
+    return openStage(resolved);
 }
 
 std::vector<PXR_NS::SdfLayerRefPtr>
@@ -1580,6 +1673,10 @@ SceneLayerMemo::produce(const Key& key,
     edit.materialsScope = key.materialsScope;
     SceneLinkIndex sublayerLinks;
     edit.sublayerLinks = &sublayerLinks;
+    LiveTextureSourceList liveTextures;
+    edit.liveTextures = &liveTextures;
+    bool deferredProjections = false;
+    edit.deferredProjections = &deferredProjections;
     std::shared_ptr<const SceneLayerDependencies> dependencies;
     edit.dependencies = &dependencies;
     if (!edit.layer) {
@@ -1607,6 +1704,10 @@ SceneLayerMemo::produce(const Key& key,
     SceneLinkIndex links = SceneOps::findLayerLinks(edit.layer);
     links.insert(links.end(), sublayerLinks.begin(), sublayerLinks.end());
     entry.links = shareLinks(std::move(links));
+    if (!liveTextures.empty()) {
+        entry.liveTextures = std::make_shared<const LiveTextureSourceList>(std::move(liveTextures));
+    }
+    entry.deferredProjections = deferredProjections;
     entry.dependencies = dependencies;
     if (keyStillValid && !keyStillValid(key)) {
         // The layer is not what key describes, so it must not hash like one authored under it:

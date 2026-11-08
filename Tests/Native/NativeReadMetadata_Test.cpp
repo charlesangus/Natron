@@ -62,7 +62,6 @@
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
-#include <ofxMetadata.h>
 #include <ofxhClip.h>
 #include <ofxhPropertySuite.h>
 
@@ -268,16 +267,16 @@ TEST_F(NativeReadMetadataTest, ExrAttributesAndTheStandardKeys)
 
     const ImageMetadata metadata = metadataOf(read, 2.);
 
-    EXPECT_EQ(std::optional<std::string>(framePath(dir, "meta", 2)), metadata.getString("ofx/filepath"));
-    EXPECT_EQ(std::optional<int>(2), metadata.getInt("ofx/frame"));
-    EXPECT_FALSE(metadata.contains("ofx/framerate"));
-    EXPECT_EQ(std::optional<double>(2.), metadata.getDouble("ofx/pixelaspect"));
-    EXPECT_EQ(std::optional<std::string>("01:02:03:04"), metadata.getString("ofx/timecode"));
+    EXPECT_EQ(std::optional<std::string>(framePath(dir, "meta", 2)), metadata.getString("natron/filepath"));
+    EXPECT_EQ(std::optional<int>(2), metadata.getInt("natron/frame"));
+    EXPECT_FALSE(metadata.contains("natron/framerate"));
+    EXPECT_EQ(std::optional<double>(2.), metadata.getDouble("natron/pixelaspect"));
+    EXPECT_EQ(std::optional<std::string>("01:02:03:04"), metadata.getString("natron/timecode"));
 
-    const std::optional<double> size = metadata.getDouble("ofx/filesize");
+    const std::optional<double> size = metadata.getDouble("natron/filesize");
     ASSERT_TRUE(size.has_value());
     EXPECT_GT(*size, 0.);
-    const std::optional<double> mtime = metadata.getDouble("ofx/mtime");
+    const std::optional<double> mtime = metadata.getDouble("natron/mtime");
     ASSERT_TRUE(mtime.has_value());
     EXPECT_GT(*mtime, 0.);
 
@@ -306,7 +305,7 @@ TEST_F(NativeReadMetadataTest, JpegExifFieldsAppearUnderExif)
 
     const ImageMetadata metadata = metadataOf(read, 1.);
 
-    EXPECT_EQ(std::optional<std::string>(path), metadata.getString("ofx/filepath"));
+    EXPECT_EQ(std::optional<std::string>(path), metadata.getString("natron/filepath"));
     EXPECT_EQ(std::optional<std::string>("NatronCam"), metadata.getString("exif/Make"));
     EXPECT_EQ(std::optional<std::string>("Model One"), metadata.getString("exif/Model"));
     EXPECT_EQ(std::optional<double>(2.), metadata.getDouble("exif/ExposureTime"));
@@ -328,19 +327,19 @@ TEST_F(NativeReadMetadataTest, FrameKeysFollowTheTimeOffsetAndTheFilename)
     ASSERT_TRUE(bool(read));
 
     // Past the end of the range the last frame is held.
-    EXPECT_EQ(std::optional<int>(3), metadataOf(read, 12.).getInt("ofx/frame"));
+    EXPECT_EQ(std::optional<int>(3), metadataOf(read, 12.).getInt("natron/frame"));
 
-    userSetInt(read, "timeOffset", 10);
+    userSetInt(read, "frameOffset", 10);
 
     ImageMetadata metadata = metadataOf(read, 12.);
-    EXPECT_EQ(std::optional<int>(2), metadata.getInt("ofx/frame"));
-    EXPECT_EQ(std::optional<std::string>(framePath(dir, "a", 2)), metadata.getString("ofx/filepath"));
+    EXPECT_EQ(std::optional<int>(2), metadata.getInt("natron/frame"));
+    EXPECT_EQ(std::optional<std::string>(framePath(dir, "a", 2)), metadata.getString("natron/filepath"));
     EXPECT_EQ(std::optional<int>(2), metadata.getInt("exr/frameTag"));
 
     setFile(read, patternPath(dir, "b"));
 
     metadata = metadataOf(read, 12.);
-    EXPECT_EQ(std::optional<std::string>(framePath(dir, "b", 2)), metadata.getString("ofx/filepath"));
+    EXPECT_EQ(std::optional<std::string>(framePath(dir, "b", 2)), metadata.getString("natron/filepath"));
 }
 
 // Each frame of a sequence whose files differ in size, PAR and channels reports its own file's
@@ -406,13 +405,13 @@ TEST_F(NativeReadMetadataTest, AFrameThatLoadsBlackHasNoFileKeys)
 
     const ImageMetadata metadata = metadataOf(read, 3.);
 
-    EXPECT_FALSE(metadata.contains("ofx/filepath"));
-    EXPECT_FALSE(metadata.contains("ofx/frame"));
-    EXPECT_FALSE(metadata.contains("ofx/filesize"));
-    EXPECT_FALSE(metadata.contains("ofx/mtime"));
+    EXPECT_FALSE(metadata.contains("natron/filepath"));
+    EXPECT_FALSE(metadata.contains("natron/frame"));
+    EXPECT_FALSE(metadata.contains("natron/filesize"));
+    EXPECT_FALSE(metadata.contains("natron/mtime"));
     EXPECT_FALSE(metadata.contains("exr/myString"));
-    EXPECT_FALSE(metadata.contains("ofx/framerate"));
-    EXPECT_TRUE(metadata.contains("ofx/pixelaspect"));
+    EXPECT_FALSE(metadata.contains("natron/framerate"));
+    EXPECT_TRUE(metadata.contains("natron/pixelaspect"));
 }
 
 TEST_F(NativeReadMetadataTest, ReadWithoutAFileHasOnlyTheAspect)
@@ -423,8 +422,8 @@ TEST_F(NativeReadMetadataTest, ReadWithoutAFileHasOnlyTheAspect)
     const ImageMetadata metadata = metadataOf(read, 1.);
 
     EXPECT_EQ(1u, metadata.size());
-    EXPECT_FALSE(metadata.contains("ofx/framerate"));
-    EXPECT_TRUE(metadata.contains("ofx/pixelaspect"));
+    EXPECT_FALSE(metadata.contains("natron/framerate"));
+    EXPECT_TRUE(metadata.contains("natron/pixelaspect"));
 }
 
 TEST_F(NativeReadMetadataTest, AFileFrameRateIsPlainMetadataAndNotTheOutputRate)
@@ -443,7 +442,7 @@ TEST_F(NativeReadMetadataTest, AFileFrameRateIsPlainMetadataAndNotTheOutputRate)
 
     const ImageMetadata metadata = metadataOf(read, 1.);
 
-    EXPECT_FALSE(metadata.contains("ofx/framerate"));
+    EXPECT_FALSE(metadata.contains("natron/framerate"));
     EXPECT_EQ(std::optional<double>(24000. / 1001.), metadata.getDouble("exr/FramesPerSecond"));
     EXPECT_DOUBLE_EQ(empty->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate(), read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate());
     EXPECT_NE(24000. / 1001., read->getEffectInstance()->getTimeInvariantMetadata()->getOutputFrameRate());
@@ -464,7 +463,7 @@ TEST_F(NativeReadMetadataTest, KeysReachANativeNodePastADot)
 
     const ImageMetadata expected = metadataOf(read, 1.);
 
-    ASSERT_EQ(std::optional<std::string>(framePath(dir, "dot", 1)), expected.getString("ofx/filepath"));
+    ASSERT_EQ(std::optional<std::string>(framePath(dir, "dot", 1)), expected.getString("natron/filepath"));
     ASSERT_EQ(std::optional<std::string>("hello"), expected.getString("exr/myString"));
     EXPECT_EQ(expected, metadataOf(grade, 1.));
 }
@@ -485,7 +484,7 @@ TEST_F(NativeReadMetadataTest, KeysReachAnOfxInputClipPastADot)
 
     const ImageMetadata expected = metadataOf(read, 1.);
 
-    ASSERT_EQ(std::optional<std::string>(framePath(dir, "ofx", 1)), expected.getString("ofx/filepath"));
+    ASSERT_EQ(std::optional<std::string>(framePath(dir, "ofx", 1)), expected.getString("natron/filepath"));
     EXPECT_EQ(expected, receivedBy(downstream, 1.));
 }
 
@@ -504,6 +503,6 @@ TEST_F(NativeReadMetadataTest, KeysReachAnOfxInputClipDirectly)
     const ImageMetadata received = receivedBy(downstream, 1.);
 
     EXPECT_EQ(metadataOf(read, 1.), received);
-    EXPECT_EQ(std::optional<std::string>(framePath(dir, "direct", 1)), received.getString("ofx/filepath"));
+    EXPECT_EQ(std::optional<std::string>(framePath(dir, "direct", 1)), received.getString("natron/filepath"));
     EXPECT_EQ(std::optional<std::string>("hello"), received.getString("exr/myString"));
 }

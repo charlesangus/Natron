@@ -41,6 +41,7 @@
 
 #include "BaseTest.h"
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+#include "OfxTestPlugins/natronTestMetadata/NatronTestMetadataPluginIDs.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -49,6 +50,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
@@ -67,9 +69,9 @@ struct MetadataPluginFixture
     : public BaseTest {
 };
 
-const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
-const char kMetadataPrintID[] = "org.openfx.examples.metadataPrint";
-const char kMetadataTimeCodeID[] = "org.openfx.examples.metadataTimeCode";
+const char kMetadataContributeID[] = kNatronTestMetadataContributePluginID;
+const char kMetadataPrintID[] = kNatronTestMetadataPrintPluginID;
+const char kMetadataTimeCodeID[] = kNatronTestMetadataTimeCodePluginID;
 
 // A generator and a colour plug-in from the test OpenFX bundle: the cases that read an OpenFX clip of either
 // end of a connection use these. PointMatrix does not trap the get metadata action, so its output
@@ -535,7 +537,7 @@ TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadat
 // host has to carry its keys across to that clip.
 TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
 {
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const std::string pattern = (tmp.path() + QLatin1String("/downstreamReaderMetadata.####.exr")).toStdString();
@@ -841,11 +843,11 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
     Format small(0, 0, 64, 64, "metadataConcurrentFormat", 1.);
     getApp()->getProject()->setOrAddProjectFormat(small);
 
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     NodePtr contribute = createNode(QString::fromUtf8(kMetadataContributeID));
     NodePtr print = createNode(QString::fromUtf8(kMetadataPrintID));
     NodePtr writer = createNativeWriter();
-    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
+    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_NATRON_CONSTANT;
     ASSERT_TRUE(bool(contribute)) << "node creation failed for " << kMetadataContributeID;
     ASSERT_TRUE(bool(print)) << "node creation failed for " << kMetadataPrintID;
     ASSERT_TRUE(bool(writer)) << "node creation failed for " << _writePluginID.toStdString();
@@ -865,8 +867,8 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
     ASSERT_TRUE(writerEffect != NULL);
 
     // Raised last, after every input and knob change: Node::refreshDynamicProperties() puts the
-    // plug-in's own level back and both of those run it. The example plug-ins never call
-    // setRenderThreadSafety(), so they take the OFX default of instance safe, and their render
+    // plug-in's own level back and both of those run it. The metadata test plug-ins declare no
+    // render thread safety, so they take the OFX default of instance safe, and their render
     // bodies -- a per window pixel copy of images the host hands them, plus a read of metadata
     // the host owns -- meet fully safe. The generator declares fully safe for itself and
     // is left alone.
@@ -995,9 +997,9 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
 // a count at the project's rate cannot also be explained by the param.
 TEST_F(MetadataPluginFixture, MetadataTimeCodeAdvancesFrameByFrameAtTheHostFrameRate)
 {
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
     NodePtr timecode = createNode(QString::fromUtf8(kMetadataTimeCodeID));
-    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
+    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_NATRON_CONSTANT;
     ASSERT_TRUE(bool(timecode)) << "node creation failed for " << kMetadataTimeCodeID;
 
     connectNodes(generator, timecode, 0, true);

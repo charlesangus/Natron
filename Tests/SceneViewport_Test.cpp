@@ -26,13 +26,17 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,13 +53,29 @@
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
 #include <QPoint>
+#include <QSettings>
 #include <QSurfaceFormat>
 
 #include "Engine/AppManager.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
+#include "Engine/ProjectColorManagement.h"
+#include "Engine/Settings.h"
+#include "Engine/ViewerInstance.h"
 #include "Gui/GuiGLRequirements.h"
+#include "Tests/Scene/CyclesTestUtils.h"
+
+#include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/token.h>
+#include <pxr/base/vt/value.h>
+#include <pxr/imaging/hd/driver.h>
+#include <pxr/imaging/hdSt/renderDelegate.h>
+#include <pxr/imaging/hgi/tokens.h>
+#include <pxr/usdImaging/usdImagingGL/engine.h>
 
 NATRON_NAMESPACE_USING
 
@@ -115,6 +135,147 @@ referenceScene()
     return SceneOps::appendLayer(ScenePayload(), layer, 0x5ce7e5ULL);
 }
 
+// base with a layer on top authoring /Render/rs, a RenderSettings prim the stage's
+// renderSettingsPrimPath names: natron:renderer when renderer is not empty, and Cycles' and
+// MoonRay's samples. hash tells the layers apart.
+ScenePayload
+withSettingsPrim(const ScenePayload& base,
+                 const std::string& renderer,
+                 int cyclesSamples,
+                 int moonRaySamples,
+                 U64 hash)
+{
+    std::string text = "#usda 1.0\n"
+                       "(\n"
+                       "    renderSettingsPrimPath = \"/Render/rs\"\n"
+                       ")\n"
+                       "def Scope \"Render\"\n"
+                       "{\n"
+                       "    def RenderSettings \"rs\"\n"
+                       "    {\n";
+    if (!renderer.empty()) {
+        text += "        uniform token natron:renderer = \"" + renderer + "\"\n";
+    }
+    text += "        int cycles:samples = " + std::to_string(cyclesSamples) + "\n"
+                                                                              "        bool cycles:integrator:use_adaptive_sampling = 0\n"
+                                                                              "        int moonray:sceneVariable:pixel_samples = "
+        + std::to_string(moonRaySamples) + "\n"
+                                           "    }\n"
+                                           "}\n";
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportSettings");
+    if (!layer->ImportFromString(text)) {
+        ADD_FAILURE() << "cannot read the render settings layer";
+
+        return base;
+    }
+
+    return SceneOps::appendLayer(base, layer, hash);
+}
+
+PXR_NS::UsdGeomMesh
+defineQuad(const PXR_NS::UsdStageRefPtr& stage,
+           const char* path,
+           float halfSize,
+           float z)
+{
+    PXR_NS::UsdGeomMesh mesh = PXR_NS::UsdGeomMesh::Define(stage, PXR_NS::SdfPath(path));
+    PXR_NS::VtVec3fArray points(4);
+
+    points[0] = PXR_NS::GfVec3f(-halfSize, -halfSize, z);
+    points[1] = PXR_NS::GfVec3f(halfSize, -halfSize, z);
+    points[2] = PXR_NS::GfVec3f(halfSize, halfSize, z);
+    points[3] = PXR_NS::GfVec3f(-halfSize, halfSize, z);
+    mesh.CreatePointsAttr(PXR_NS::VtValue(points));
+    mesh.CreateFaceVertexCountsAttr(PXR_NS::VtValue(PXR_NS::VtIntArray(1, 4)));
+    PXR_NS::VtIntArray indices(4);
+    for (int i = 0; i < 4; ++i) {
+        indices[i] = i;
+    }
+    mesh.CreateFaceVertexIndicesAttr(PXR_NS::VtValue(indices));
+    mesh.CreateSubdivisionSchemeAttr(PXR_NS::VtValue(PXR_NS::UsdGeomTokens->none));
+
+    return mesh;
+}
+
+// /World/Card, a 4-unit square at z = 0, carries the projection material as USDProject3D authors
+// it: the plate is a UsdUVTexture without a file, so it shows its fallback, half-transparent red
+// in straight colour, as live textures hold it, which the shader premultiplies to (0.6, 0, 0, 0.5). The projector's frame covers the card's left half, x -2..0; Crop on and
+// Outside transparent leave the right half undrawn. /World/Backdrop, an opaque 6-unit square at
+// z = -1 with an emissive blue preview surface, so it shows without lights, lies behind the whole
+// card. From the fixture's free camera the card spans pixels 66..190 and the backdrop 44..212 on
+// both axes.
+ScenePayload
+projectedCardScene(std::string* error)
+{
+    const std::string shaderPath = USDProject3D::getShaderPath();
+
+    if (shaderPath.empty()) {
+        *error = "the installation lacks " kUSDProject3DShaderFile;
+
+        return ScenePayload();
+    }
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportProjection");
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    if (!stage) {
+        *error = "USD could not open a stage on the layer";
+
+        return ScenePayload();
+    }
+
+    PXR_NS::UsdGeomMesh backdrop = defineQuad(stage, "/World/Backdrop", 3.f, -1.f);
+    const PXR_NS::SdfPath backdropMaterialPath("/World/BackdropMaterial");
+    PXR_NS::UsdShadeMaterial backdropMaterial = PXR_NS::UsdShadeMaterial::Define(stage, backdropMaterialPath);
+    PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(stage, backdropMaterialPath.AppendChild(PXR_NS::TfToken("Surface")));
+    surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
+    surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 1.f));
+    surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
+    backdropMaterial.CreateSurfaceOutput().ConnectToSource(surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
+    PXR_NS::UsdShadeMaterialBindingAPI::Apply(backdrop.GetPrim()).Bind(backdropMaterial);
+    PXR_NS::UsdGeomMesh card = defineQuad(stage, "/World/Card", 2.f, 0.f);
+
+    const PXR_NS::SdfPath materialPath("/World/Projection");
+    PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterial::Define(stage, materialPath);
+    PXR_NS::UsdShadeShader shader = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken("Project")));
+    shader.SetSourceAsset(PXR_NS::SdfAssetPath(shaderPath), PXR_NS::TfToken("glslfx"));
+    // Row vectors: u = (x + 2) / 2 and v = (y + 2) / 4, w = 1.
+    PXR_NS::GfMatrix4d worldToProjector(0.5, 0., 0., 0.,
+                                        0., 0.25, 0., 0.,
+                                        0., 0., 1., 0.,
+                                        1., 0.5, 0., 1.);
+    shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector), PXR_NS::SdfValueTypeNames->Matrix4d).Set(worldToProjector);
+    shader.CreateInput(PXR_NS::TfToken("projectorOrigin"), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(-1.f, 0.f, 5.f, 1.f));
+    shader.CreateInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(1.f, 1.f, 0.f, 0.f));
+    const std::pair<const char*, int> ints[] = {
+        { kUSDProject3DInputProjectionSpace, 0 },
+        { "projectOn", 0 },
+        { "crop", 1 },
+        { "clip", 0 },
+        { "outside", 1 },
+    };
+    for (const std::pair<const char*, int>& value : ints) {
+        shader.CreateInput(PXR_NS::TfToken(value.first), PXR_NS::SdfValueTypeNames->Int).Set(value.second);
+    }
+    material.CreateSurfaceOutput().ConnectToSource(shader.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
+
+    PXR_NS::UsdShadeShader reader = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken("StReader")));
+    reader.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_float2")));
+    reader.CreateInput(PXR_NS::TfToken("varname"), PXR_NS::SdfValueTypeNames->String).Set(std::string("st"));
+    PXR_NS::UsdShadeShader texture = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken("Plate")));
+    texture.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdUVTexture")));
+    texture.CreateInput(PXR_NS::TfToken("st"), PXR_NS::SdfValueTypeNames->Float2)
+        .ConnectToSource(reader.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float2));
+    for (const char* name : { "wrapS", "wrapT" }) {
+        texture.CreateInput(PXR_NS::TfToken(name), PXR_NS::SdfValueTypeNames->Token).Set(PXR_NS::TfToken("clamp"));
+    }
+    texture.CreateInput(PXR_NS::TfToken("fallback"), PXR_NS::SdfValueTypeNames->Float4).Set(PXR_NS::GfVec4f(1.2f, 0.f, 0.f, 0.5f));
+    shader.CreateInput(PXR_NS::TfToken("plate"), PXR_NS::SdfValueTypeNames->Float4)
+        .ConnectToSource(texture.CreateOutput(PXR_NS::TfToken("rgba"), PXR_NS::SdfValueTypeNames->Float4));
+
+    PXR_NS::UsdShadeMaterialBindingAPI::Apply(card.GetPrim()).Bind(material);
+
+    return SceneOps::appendLayer(ScenePayload(), layer, 0x9c0ec7ULL);
+}
+
 struct Rgb {
     int r, g, b;
 };
@@ -138,16 +299,50 @@ isBluish(const Rgb& c)
     return (c.b > 90) && (c.b > c.r + 40) && (c.b > c.g + 20);
 }
 
-bool
-isBackground(const Rgb& c)
+int
+codeValue(float v)
 {
-    float rgb[3];
-
-    SceneViewportRenderer::getBackgroundColor(rgb);
-    const int grey = int(std::lround(rgb[0] * 255.f));
-
-    return (std::abs(c.r - grey) <= 20) && (std::abs(c.g - grey) <= 20) && (std::abs(c.b - grey) <= 20);
+    return int(std::lround(std::min(std::max(v, 0.f), 1.f) * 255.f));
 }
+
+float
+srgbEncode(float linear)
+{
+    return (linear <= 0.0031308f) ? 12.92f * linear : 1.055f * std::pow(linear, 1.f / 2.4f) - 0.055f;
+}
+
+const char* const kStudioURI = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
+const char* const kWorkingSpace = "ACEScg";
+const char* const kDisplay = "sRGB - Display";
+const char* const kSDRView = "ACES 2.0 - SDR 100 nits (Rec.709)";
+
+// Sets $OCIO, without which Hydra's colour correction ignores OpenColorIO, and puts it and OCIO's
+// current config back when it goes.
+class ScopedOcioEnv {
+public:
+    explicit ScopedOcioEnv(const char* value)
+        : _had(std::getenv("OCIO") != nullptr)
+        , _previous(_had ? std::getenv("OCIO") : "")
+        , _config(OCIO_NAMESPACE::GetCurrentConfig())
+    {
+        setenv("OCIO", value, 1);
+    }
+
+    ~ScopedOcioEnv()
+    {
+        if (_had) {
+            setenv("OCIO", _previous.c_str(), 1);
+        } else {
+            unsetenv("OCIO");
+        }
+        OCIO_NAMESPACE::SetCurrentConfig(_config);
+    }
+
+private:
+    bool _had;
+    std::string _previous;
+    OCIO_NAMESPACE::ConstConfigRcPtr _config;
+};
 
 class SceneViewportStorm
     : public ::testing::Test {
@@ -238,7 +433,17 @@ protected:
         return Rgb { c.red(), c.green(), c.blue() };
     }
 
-    static int countNonBackground(const QImage& image)
+    bool isBackground(const Rgb& c) const
+    {
+        float rgb[3];
+
+        _renderer.getBackgroundColor(rgb);
+        const int grey = codeValue(rgb[0]);
+
+        return (std::abs(c.r - grey) <= 20) && (std::abs(c.g - grey) <= 20) && (std::abs(c.b - grey) <= 20);
+    }
+
+    int countNonBackground(const QImage& image) const
     {
         int n = 0;
 
@@ -251,6 +456,37 @@ protected:
         }
 
         return n;
+    }
+
+    // Renders until done says the refinement is where it should be and the render drew its
+    // converged frame, the delegate fails, or the time is up. True if both held.
+    bool refineUntil(const std::function<bool(const SceneViewportRenderer::RefineStatus&)>& done)
+    {
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+
+        while (std::chrono::steady_clock::now() < end) {
+            const bool drawn = _renderer.render(_fbo->handle(), kSize, kSize);
+            if (!_renderer.getRendererError().empty()) {
+                ADD_FAILURE() << _renderer.getRendererError();
+
+                return false;
+            }
+            if (drawn && done(_renderer.getRefineStatus())) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ADD_FAILURE() << "the refinement did not get there in 120 s";
+
+        return false;
+    }
+
+    // The refinement converged on cap samples.
+    bool refineTo(int cap)
+    {
+        return refineUntil([cap](const SceneViewportRenderer::RefineStatus& status) {
+            return status.active && status.converged && (status.maxSamples == cap) && (status.samples == cap);
+        });
     }
 
     bool _skip = false;
@@ -317,6 +553,260 @@ TEST_F(SceneViewportStorm, PicksThePrimDrawnAtAPixel)
     const Rgb back = pixel(cleared, 128, 128);
     EXPECT_LE(std::abs(back.r - before.r) + std::abs(back.g - before.g) + std::abs(back.b - before.b), 6)
         << "clearing the selection left the highlight: " << before << " -> " << back;
+}
+
+// The projection's material is translucent, drawn in Storm's blended pass, which writes no prim
+// ids; the pick runs its own id pass over every material tag, which applies no alpha threshold
+// to translucent materials, and the projection discards the fragments where it is transparent,
+// so the projected card picks wherever it shows and not where it is transparent.
+TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    // Unshaded draws display colours and leaves every surface shader out.
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const QImage unselected = render();
+    const Rgb projected = pixel(unselected, 97, 128);
+    const Rgb beside = pixel(unselected, 159, 128);
+    EXPECT_TRUE(isBluish(beside)) << "the backdrop where the card is transparent: " << beside;
+    // (0.6, 0, 0, 0.5) premultiplied over linear blue is (0.6, 0, 0.5), (203, 0, 188) once in sRGB.
+    EXPECT_NEAR(codeValue(srgbEncode(0.6f)), projected.r, 8) << "the projected plate: " << projected;
+    EXPECT_NEAR(codeValue(srgbEncode(0.5f)), projected.b, 8) << "the backdrop through the plate: " << projected;
+    EXPECT_LT(projected.g, 10) << projected;
+    EXPECT_TRUE(isBackground(pixel(unselected, 20, 128))) << pixel(unselected, 20, 128);
+
+    EXPECT_EQ(std::string("/World/Card"), _renderer.pick(97, 128, kSize, kSize));
+    EXPECT_EQ(std::string("/World/Card"), _renderer.pick(76, 76, kSize, kSize));
+    EXPECT_EQ(std::string("/World/Backdrop"), _renderer.pick(159, 128, kSize, kSize));
+    EXPECT_EQ(std::string("/World/Backdrop"), _renderer.pick(97, 200, kSize, kSize));
+    EXPECT_EQ(std::string(), _renderer.pick(20, 128, kSize, kSize));
+
+    // Storm's translucent pass draws no selection highlight, so only the backdrop is checked.
+    _renderer.setSelectedPrims({ "/World/Card" });
+    const QImage selected = render();
+    const Rgb besideSelected = pixel(selected, 159, 128);
+    EXPECT_LE(std::abs(besideSelected.r - beside.r) + std::abs(besideSelected.g - beside.g) + std::abs(besideSelected.b - beside.b), 6)
+        << "the card's transparent half highlighted the backdrop: " << beside << " -> " << besideSelected;
+}
+
+// Through the studio config, the card and the background show as the 2D viewer shows images: from
+// the working space through the display and view, each pixel as OpenColorIO's CPU processor
+// computes it. A view whose GPU shader needs 1D or 2D LUT textures (the ACES 2.0 output
+// transforms), which Hydra's colour correction cannot bind, reaches Hydra baked into a shaper and
+// a 3D LUT, which needs neither and stays within 2/255 of the exact transform on these colours.
+// Without a config the sRGB transform comes back.
+TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
+{
+    if (_skip) {
+        return;
+    }
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    const ScopedOcioEnv env(kStudioURI);
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const Rgb srgb { codeValue(srgbEncode(0.6f)), 0, codeValue(srgbEncode(0.5f)) };
+    const float bakeTolerance = 2.f / 255.f;
+
+    for (const char* view : { "Un-tone-mapped", kSDRView }) {
+        SceneViewportRenderer::DisplayTransform transform;
+        transform.config = cm.getConfig();
+        transform.colorSpace = kWorkingSpace;
+        transform.display = kDisplay;
+        transform.view = view;
+
+        OCIO_NAMESPACE::DisplayViewTransformRcPtr displayView = OCIO_NAMESPACE::DisplayViewTransform::Create();
+        displayView->setSrc(kWorkingSpace);
+        displayView->setDisplay(kDisplay);
+        displayView->setView(view);
+        OCIO_NAMESPACE::ConstProcessorRcPtr processor = cm.getConfig()->getProcessor(displayView);
+        OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+        shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+        processor->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
+        const bool needsTextures = shader->getNumTextures() > 0;
+        // The SDR view must exercise the bake, the un-tone-mapped one the direct path.
+        ASSERT_EQ(std::string(view) == kSDRView, needsTextures) << view;
+
+        _renderer.setDisplayTransform(transform);
+        ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << view;
+
+        const OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = processor->getDefaultCPUProcessor();
+        float plate[3] = { 0.6f, 0.f, 0.5f };
+        cpu->applyRGB(plate);
+        float background[3] = { 0.05f, 0.05f, 0.05f };
+        cpu->applyRGB(background);
+        const Rgb expected { codeValue(plate[0]), codeValue(plate[1]), codeValue(plate[2]) };
+        // Otherwise the checks below could not tell the view from sRGB.
+        ASSERT_GT(std::abs(expected.r - srgb.r) + std::abs(expected.b - srgb.b), 20) << view << ": " << expected;
+
+        float reported[3];
+        _renderer.getBackgroundColor(reported);
+        EXPECT_NEAR(background[0], reported[0], bakeTolerance) << view;
+
+        const QImage image = render();
+        const Rgb projected = pixel(image, 97, 128);
+        EXPECT_NEAR(expected.r, projected.r, 8) << view << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.g, projected.g, 8) << view << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.b, projected.b, 8) << view << ": " << projected << " expected " << expected;
+        const Rgb outside = pixel(image, 20, 128);
+        EXPECT_NEAR(codeValue(background[0]), outside.r, 4) << view << ": " << outside;
+        EXPECT_NEAR(codeValue(background[2]), outside.b, 4) << view << ": " << outside;
+
+        if (!needsTextures) {
+            continue;
+        }
+        // Hydra built its pass from OpenColorIO's current config, which now holds the bake.
+        OCIO_NAMESPACE::DisplayViewTransformRcPtr bakedView = OCIO_NAMESPACE::DisplayViewTransform::Create();
+        bakedView->setSrc("Natron 3D Viewport Input");
+        bakedView->setDisplay("Natron 3D Viewport");
+        bakedView->setView("Baked");
+        OCIO_NAMESPACE::ConstProcessorRcPtr baked = OCIO_NAMESPACE::GetCurrentConfig()->getProcessor(bakedView);
+        OCIO_NAMESPACE::GpuShaderDescRcPtr bakedShader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+        bakedShader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+        baked->getDefaultGPUProcessor()->extractGpuShaderInfo(bakedShader);
+        EXPECT_EQ(0u, bakedShader->getNumTextures());
+        EXPECT_EQ(1u, bakedShader->getNum3DTextures());
+        const OCIO_NAMESPACE::ConstCPUProcessorRcPtr bakedCpu = baked->getDefaultCPUProcessor();
+        float bakedPlate[3] = { 0.6f, 0.f, 0.5f };
+        bakedCpu->applyRGB(bakedPlate);
+        float bakedBackground[3] = { 0.05f, 0.05f, 0.05f };
+        bakedCpu->applyRGB(bakedBackground);
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_NEAR(plate[c], bakedPlate[c], bakeTolerance) << c;
+            EXPECT_NEAR(background[c], bakedBackground[c], bakeTolerance) << c;
+        }
+        // The configured views stay listed as they were; the bake adds none.
+        EXPECT_EQ(cm.getConfig()->getNumDisplays(), OCIO_NAMESPACE::GetCurrentConfig()->getNumDisplays());
+    }
+
+    _renderer.setDisplayTransform(SceneViewportRenderer::DisplayTransform());
+    EXPECT_FALSE(_renderer.isUsingOpenColorIO());
+    const Rgb projected = pixel(render(), 97, 128);
+    EXPECT_NEAR(srgb.r, projected.r, 8) << projected;
+    EXPECT_NEAR(srgb.b, projected.b, 8) << projected;
+}
+
+// The viewer's gain and gamma reach the card and the background as applyViewerDisplayTransform(),
+// the 2D viewer's own maths, computes them: gain before the display transform, gamma after, a
+// gamma of 0 a threshold at 1. Through a view Hydra draws analytically and one it is given baked,
+// and, without a config, around the sRGB transform. Back at 1 they leave the plain transform.
+TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
+{
+    if (_skip) {
+        return;
+    }
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    const ScopedOcioEnv env(kStudioURI);
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    struct Case {
+        const char* view;
+        double gain;
+        double gamma;
+    };
+    const Case cases[] = {
+        { "Un-tone-mapped", 0.5, 1.8 },
+        { "Un-tone-mapped", 4., 0. },
+        { kSDRView, 0.25, 1.8 },
+        { kSDRView, 2., 0.6 },
+    };
+    // The bake's error, up to 2/255 before gamma, grows a little through it.
+    const float bakeTolerance = 3.f / 255.f;
+
+    for (const Case& c : cases) {
+        const std::string label = std::string(c.view) + " gain " + std::to_string(c.gain) + " gamma " + std::to_string(c.gamma);
+        const ProjectColorManagement::DisplayProcessorPtr processor = cm.getDisplayProcessor(kWorkingSpace, kDisplay, c.view, std::string(), &error);
+        ASSERT_TRUE(processor != nullptr) << error;
+        float plain[8] = { 0.6f, 0.f, 0.5f, 1.f, 0.05f, 0.05f, 0.05f, 1.f };
+        applyViewerDisplayTransform(*processor, plain, 2, 1., 0., 1.);
+        float graded[8] = { 0.6f, 0.f, 0.5f, 1.f, 0.05f, 0.05f, 0.05f, 1.f };
+        applyViewerDisplayTransform(*processor, graded, 2, c.gain, 0., c.gamma);
+        const Rgb plainPlate { codeValue(plain[0]), codeValue(plain[1]), codeValue(plain[2]) };
+        const Rgb expected { codeValue(graded[0]), codeValue(graded[1]), codeValue(graded[2]) };
+        // Otherwise the checks below could not tell gain and gamma from their absence.
+        ASSERT_GT(std::abs(expected.r - plainPlate.r) + std::abs(expected.b - plainPlate.b), 20) << label << ": " << expected;
+
+        SceneViewportRenderer::DisplayTransform transform;
+        transform.config = cm.getConfig();
+        transform.colorSpace = kWorkingSpace;
+        transform.display = kDisplay;
+        transform.view = c.view;
+        transform.gain = c.gain;
+        transform.gamma = c.gamma;
+        _renderer.setDisplayTransform(transform);
+        ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << label;
+
+        float reported[3];
+        _renderer.getBackgroundColor(reported);
+        EXPECT_NEAR(std::min(std::max(graded[4], 0.f), 1.f), reported[0], bakeTolerance) << label;
+
+        const QImage image = render();
+        const Rgb projected = pixel(image, 97, 128);
+        EXPECT_NEAR(expected.r, projected.r, 8) << label << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.g, projected.g, 8) << label << ": " << projected << " expected " << expected;
+        EXPECT_NEAR(expected.b, projected.b, 8) << label << ": " << projected << " expected " << expected;
+        const Rgb outside = pixel(image, 20, 128);
+        EXPECT_NEAR(codeValue(graded[4]), outside.r, 4) << label << ": " << outside;
+
+        // Rendering made what Hydra was given OpenColorIO's current config.
+        OCIO_NAMESPACE::DisplayViewTransformRcPtr viewportView = OCIO_NAMESPACE::DisplayViewTransform::Create();
+        viewportView->setSrc("Natron 3D Viewport Input");
+        viewportView->setDisplay("Natron 3D Viewport");
+        viewportView->setView("Baked");
+        OCIO_NAMESPACE::ConstProcessorRcPtr given = OCIO_NAMESPACE::GetCurrentConfig()->getProcessor(viewportView);
+        OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+        shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+        given->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
+        EXPECT_EQ(0u, shader->getNumTextures()) << label;
+        float givenPixels[6] = { 0.6f, 0.f, 0.5f, 0.05f, 0.05f, 0.05f };
+        OCIO_NAMESPACE::PackedImageDesc givenImage(givenPixels, 2, 1, 3);
+        given->getDefaultCPUProcessor()->apply(givenImage);
+        for (int i = 0; i < 3; ++i) {
+            EXPECT_NEAR(graded[i], givenPixels[i], bakeTolerance) << label << " plate " << i;
+            EXPECT_NEAR(graded[4 + i], givenPixels[3 + i], bakeTolerance) << label << " background " << i;
+        }
+
+        transform.gain = 1.;
+        transform.gamma = 1.;
+        _renderer.setDisplayTransform(transform);
+        ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << label;
+        const Rgb restored = pixel(render(), 97, 128);
+        EXPECT_NEAR(plainPlate.r, restored.r, 8) << label << ": " << restored << " expected " << plainPlate;
+        EXPECT_NEAR(plainPlate.b, restored.b, 8) << label << ": " << restored << " expected " << plainPlate;
+        if (std::string(c.view) != kSDRView) {
+            EXPECT_FALSE(OCIO_NAMESPACE::GetCurrentConfig()->getColorSpace("Natron 3D Viewport Input")) << label << ": the plain view needs no copy of the config";
+        }
+    }
+
+    SceneViewportRenderer::DisplayTransform srgbGraded;
+    srgbGraded.gain = 0.5;
+    srgbGraded.gamma = 1.8;
+    _renderer.setDisplayTransform(srgbGraded);
+    EXPECT_TRUE(_renderer.isUsingOpenColorIO());
+    const Rgb graded = pixel(render(), 97, 128);
+    EXPECT_NEAR(codeValue(std::pow(srgbEncode(0.3f), 1.f / 1.8f)), graded.r, 8) << graded;
+    EXPECT_NEAR(codeValue(std::pow(srgbEncode(0.25f), 1.f / 1.8f)), graded.b, 8) << graded;
+
+    _renderer.setDisplayTransform(SceneViewportRenderer::DisplayTransform());
+    EXPECT_FALSE(_renderer.isUsingOpenColorIO());
+    const Rgb plain = pixel(render(), 97, 128);
+    EXPECT_NEAR(codeValue(srgbEncode(0.6f)), plain.r, 8) << plain;
+    EXPECT_NEAR(codeValue(srgbEncode(0.5f)), plain.b, 8) << plain;
 }
 
 TEST_F(SceneViewportStorm, PicksThePrimsInARectangleAndHighlightsThemAll)
@@ -463,8 +953,10 @@ TEST_F(SceneViewportStorm, DrawModesAndGridChangeTheImage)
 
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
     const QImage shaded = render();
-    // Lit head-on by the light at the camera.
-    EXPECT_TRUE(isReddish(pixel(shaded, 128, 128))) << "shaded box: " << pixel(shaded, 128, 128);
+    // The fixture has no light, and the view adds none: the shaded box is black against the grey.
+    const Rgb unlit = pixel(shaded, 128, 128);
+    EXPECT_TRUE((unlit.r < 40) && (unlit.g < 40) && (unlit.b < 40)) << "shaded box with no light: " << unlit;
+    EXPECT_FALSE(isBackground(unlit)) << "shaded box with no light: " << unlit;
 
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeWireframe);
     const QImage wireframe = render();
@@ -480,6 +972,67 @@ TEST_F(SceneViewportStorm, DrawModesAndGridChangeTheImage)
     _renderer.setShowGrid(true);
     const int withGrid = countNonBackground(render());
     EXPECT_GT(withGrid, withoutGrid + 100) << "the grid drew nothing";
+}
+
+// The fixture has no light: the shaded box is black under Scene Lights, the default, lit under
+// Headlight and Auto, and black again back under Scene Lights, all with the same engine.
+TEST_F(SceneViewportStorm, TheHeadlightLightsTheShadedSceneOnlyWhenChosen)
+{
+    if (_skip) {
+        return;
+    }
+    EXPECT_EQ(SceneViewportRenderer::eLightingModeScene, _renderer.getLightingMode()) << "the headlight is off by default";
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const Rgb off = pixel(render(), 128, 128);
+    EXPECT_TRUE((off.r < 40) && (off.g < 40) && (off.b < 40)) << "shaded box, scene lights: " << off;
+    EXPECT_TRUE(_renderer.isSceneLit());
+
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeHeadlight);
+    const Rgb on = pixel(render(), 128, 128);
+    EXPECT_TRUE(isReddish(on)) << "shaded box, headlight: " << on;
+    EXPECT_FALSE(_renderer.isSceneLit());
+
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeAuto);
+    const Rgb automatic = pixel(render(), 128, 128);
+    EXPECT_TRUE(isReddish(automatic)) << "shaded box, auto with no scene light: " << automatic;
+
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeScene);
+    const Rgb offAgain = pixel(render(), 128, 128);
+    EXPECT_TRUE((offAgain.r < 40) && (offAgain.g < 40) && (offAgain.b < 40)) << "shaded box, scene lights again: " << offAgain;
+    EXPECT_EQ(U64(1), _renderer.getEngineCount()) << "changing the lighting keeps the engine";
+}
+
+// The 3D views' lighting is the Viewer 3D Lighting preference: Scene Lights (no headlight) by
+// default, and saved and restored like any other.
+TEST(SceneViewportLighting, ThePreferenceIsSceneLightsByDefaultAndSavesAndLoads)
+{
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    ASSERT_TRUE(bool(settings));
+    KnobChoicePtr knob = settings->getKnobByNameAndType<KnobChoice>("viewer3DLighting");
+    ASSERT_TRUE(bool(knob));
+    EXPECT_EQ((int)Settings::eViewer3DLightingScene, knob->getDefaultValue(0));
+    EXPECT_EQ(std::string("Viewer 3D Lighting"), knob->getLabel());
+
+    const bool wasSaving = settings->getSaveSettings();
+    const Settings::Viewer3DLightingEnum was = settings->getViewer3DLighting();
+    settings->setSaveSettings(true);
+    settings->setViewer3DLighting(Settings::eViewer3DLightingHeadlight);
+    {
+        QSettings saved(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
+        EXPECT_TRUE(saved.contains(QString::fromUtf8("viewer3DLighting")));
+    }
+    knob->setValue((int)Settings::eViewer3DLightingScene);
+    ASSERT_EQ(Settings::eViewer3DLightingScene, settings->getViewer3DLighting());
+    settings->restoreKnobsFromSettings(std::vector<KnobI*>(1, knob.get()));
+    EXPECT_EQ(Settings::eViewer3DLightingHeadlight, settings->getViewer3DLighting()) << "the saved lighting is restored";
+
+    {
+        QSettings saved(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
+        saved.remove(QString::fromUtf8("viewer3DLighting"));
+    }
+    knob->setValue((int)was);
+    settings->setSaveSettings(wasSaving);
 }
 
 // The viewer's own drawing relies on the GL state it set before the scene view drew.
@@ -822,4 +1375,222 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     ASSERT_TRUE(_renderer.hasEngine());
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     EXPECT_EQ(engines + 1, _renderer.getEngineCount());
+}
+
+// Scene Default renders with the renderer the stage's active render settings prim names
+// (natron:renderer), Storm without one, and follows the prim as the scene changes.
+TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
+{
+    if (_skip) {
+        return;
+    }
+    const std::string stub = "NatronTestStubRendererPlugin";
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+
+    _renderer.setRendererId(kRenderDelegateSceneDefaultId);
+    EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+
+    // A prim without natron:renderer: still Storm.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 4, 4, 0x5e771ULL), &error)) << error;
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+
+    // A prim naming a renderer that is not installed: the view says so instead of drawing.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e772ULL), &error)) << error;
+    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    EXPECT_EQ(stub, _renderer.getActiveRendererId());
+    EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
+    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
+
+    // The prim gone, Storm again.
+    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+    EXPECT_TRUE(_renderer.getRendererError().empty()) << _renderer.getRendererError();
+
+    // A renderer chosen beats the prim's.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e773ULL), &error)) << error;
+    _renderer.setRendererId(kRenderDelegateStormId);
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+}
+
+// The active prim's settings for the viewer's renderer reach its refinement: Cycles refines to
+// the prim's cycles:samples, Max Samples applies over them, an edit of MoonRay's settings alone
+// does not restart the refinement, and one of Cycles' makes it take the new samples.
+TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e781ULL), &error)) << error;
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(6));
+
+    _renderer.setMaxSamples(3);
+    ASSERT_TRUE(refineTo(3));
+    const U64 restarts = _renderer.getRefineStatus().restarts;
+    const U64 frames = _renderer.getRefineStatus().frames;
+
+    // The MoonRay tab's edit: only /Render changes, in a namespace Cycles does not read.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 128, 0x5e782ULL), &error)) << error;
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < end) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(restarts, _renderer.getRefineStatus().restarts);
+    EXPECT_EQ(frames, _renderer.getRefineStatus().frames);
+    EXPECT_TRUE(_renderer.getRefineStatus().converged);
+
+    // The Cycles tab's edit, without the cap: the prim's new samples.
+    _renderer.setMaxSamples(0);
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
+    ASSERT_TRUE(refineTo(9));
+    EXPECT_GT(_renderer.getRefineStatus().restarts, restarts);
+}
+
+// The frame count starts over with each delegate, so a frame after a switch can have the serial of
+// the one in the texture: it must be drawn all the same.
+TEST_F(SceneViewportStorm, TheRefinementDrawsItsNewFrameAfterASwitchOfRenderer)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    _renderer.setMaxSamples(1);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    const QImage first = _fbo->toImage();
+
+    _renderer.setRendererId(kRenderDelegateStormId);
+    (void)render();
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth = 60.;
+    _renderer.setFreeCamera(camera);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    EXPECT_NE(first, _fbo->toImage());
+}
+
+// A throw on the refinement's worker shows as the renderer's error only until the next edit.
+TEST_F(SceneViewportStorm, ARefinementFailureClearsAtTheNextSceneEdit)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e791ULL), &error)) << error;
+    std::atomic<bool> armed(true);
+    RenderDelegates::setRenderFaultHook([&armed]() {
+        if (armed.exchange(false)) {
+            throw std::runtime_error("texture commit failed");
+        }
+    });
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    RenderDelegates::setRenderFaultHook(nullptr);
+    EXPECT_NE(std::string::npos, _renderer.getRendererError().find("texture commit failed")) << _renderer.getRendererError();
+
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 64, 0x5e792ULL), &error)) << error;
+    while (!_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_TRUE(refineTo(9));
+}
+
+// A guide Storm picks at a pixel is picked there on a delegate's frame too.
+TEST_F(SceneViewportStorm, ARefinementPicksAGuide)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    // The fixture's camera sits in the plane of the default view's eye, so its guide would project
+    // behind or outside the frame; pulled back, it is on screen and in front of the box.
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.distance = 30.;
+    _renderer.setFreeCamera(camera);
+    _renderer.setGuideSize(4.);
+    _renderer.setShowGuides(true);
+    _renderer.setRecordDrawnGuides(true);
+    (void)render();
+    SceneViewportRenderer::DrawnGuide aimed;
+    for (const SceneViewportRenderer::DrawnGuide& guide : _renderer.getDrawnGuides()) {
+        if (_renderer.pick((int)guide.x, (int)guide.y, kSize, kSize) == guide.path) {
+            aimed = guide;
+            break;
+        }
+    }
+    ASSERT_FALSE(aimed.path.empty()) << "no guide Storm can pick";
+
+    _renderer.setMaxSamples(1);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    EXPECT_EQ(aimed.path, _renderer.pick((int)aimed.x, (int)aimed.y, kSize, kSize));
+}
+
+TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRenderMakesAnother)
+{
+    if (_skip) {
+        return;
+    }
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    const U64 engines = _renderer.getEngineCount();
+
+    RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
+    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_FALSE(_renderer.hasEngine());
+    const std::string error = _renderer.takeRenderError();
+    EXPECT_NE(std::string::npos, error.find("texture commit failed")) << error;
+    EXPECT_TRUE(_renderer.takeRenderError().empty());
+
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    EXPECT_EQ(engines + 1, _renderer.getEngineCount());
+}
+
+// applyStormPtexBudget reaches the engine's resource registry through a delegate of its own given
+// the engine's Hgi, which only works while Storm shares one registry per Hgi. Neither the engine's
+// delegate nor the registry's per-type memory request can be read back, so the sharing is all that
+// can be checked.
+TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
+{
+    if (_skip) {
+        return;
+    }
+    PXR_NS::UsdImagingGLEngine::Parameters parameters;
+    parameters.rendererPluginId = PXR_NS::TfToken(kRenderDelegateStormId);
+    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine(new PXR_NS::UsdImagingGLEngine(parameters));
+    PXR_NS::Hgi* hgi = engine->GetHgi();
+    ASSERT_TRUE(hgi != nullptr);
+
+    {
+        // The delegates release their registry in their destructors, which needs the Hgi the
+        // engine owns, so they must be gone before the engine is.
+        PXR_NS::HdDriver driver { PXR_NS::HgiTokens->renderDriver, PXR_NS::VtValue(hgi) };
+        PXR_NS::HdStRenderDelegate first;
+        PXR_NS::HdStRenderDelegate second;
+        first.SetDrivers({ &driver });
+        second.SetDrivers({ &driver });
+
+        ASSERT_TRUE(first.GetResourceRegistry() != nullptr);
+        EXPECT_EQ(first.GetResourceRegistry().get(), second.GetResourceRegistry().get());
+    }
+
+    engine.reset();
 }

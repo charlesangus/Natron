@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 #include <limits>
 #include <list>
 #include <map>
@@ -57,15 +58,16 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
+#include "Engine/RippleEditKeys.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
 
 #define ROTO_DEFAULT_OPACITY 1.
 #define ROTO_DEFAULT_FEATHER 1.5
@@ -331,10 +333,6 @@ enum RotoPaintItemLifeTimeTypeEnum
 #define kRotoResetCenterParamLabel "Reset Center"
 #define kRotoResetCenterParamHint "Reset the transform center"
 
-#define kRotoTransformInteractive "RotoTransformInteractive"
-#define kRotoTransformInteractiveLabel "Interactive"
-#define kRotoTransformInteractiveHint "When check, modifying the transform will directly render the shape in the viewer. When unchecked, modifications are applied when releasing the mouse button."
-
 #define kRotoMotionBlurModeParam "motionBlurMode"
 #define kRotoMotionBlurModeParamLabel "Mode"
 #define kRotoMotionBlurModeParamHint "Per-shape motion blurs applies motion blur independently to each shape and then blends them together." \
@@ -394,6 +392,8 @@ struct RotoTriangles
     std::list<Point> vertices;
 };
 
+struct BezierOverlayPolygons;
+
 struct BezierPrivate
 {
     BezierCPs points; //< the control points of the curve
@@ -416,6 +416,16 @@ struct BezierPrivate
     bool guiDirtyAll;
     std::set<double> guiDirtyTimes;
     std::set<BezierCPPtr> guiDirtyPoints;
+    // Advanced by each edit of the GUI copy alone, which leaves the content hash as it was.
+    std::atomic<U64> guiEditGeneration;
+
+    // The last Bezier::getOverlayPolygons() result and what it was evaluated from.
+    mutable std::shared_ptr<const BezierOverlayPolygons> overlayPolygons;
+    mutable double overlayTime;
+    mutable U64 overlayGeometryGeneration;
+    mutable U64 overlayGuiEditGeneration;
+    mutable U64 overlayTrackLinkHash;
+    mutable Transform::Matrix3x3 overlayTransform;
 
     BezierPrivate(bool isOpenBezier)
         : points()
@@ -433,6 +443,13 @@ struct BezierPrivate
         , guiDirtyAll(false)
         , guiDirtyTimes()
         , guiDirtyPoints()
+        , guiEditGeneration(0)
+        , overlayPolygons()
+        , overlayTime(0.)
+        , overlayGeometryGeneration(0)
+        , overlayGuiEditGeneration(0)
+        , overlayTrackLinkHash(0)
+        , overlayTransform()
     {
     }
 
@@ -440,6 +457,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         guiDirtyAll = true;
     }
 
@@ -447,6 +465,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         if (!guiDirtyAll) {
             guiDirtyTimes.insert(time);
         }
@@ -456,6 +475,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         if (!guiDirtyAll && point) {
             guiDirtyPoints.insert(point);
         }
@@ -1427,6 +1447,8 @@ public:
     std::list<RotoLayerPtr> layers;
     bool autoKeying;
     bool rippleEdit;
+    RippleEditModeEnum rippleEditMode;
+    double rippleEditRangeFirst, rippleEditRangeLast;
     bool featherLink;
     bool isCurrentlyLoading;
     NodeWPtr node;
@@ -1471,7 +1493,6 @@ public:
     KnobDoubleWPtr rotateKnob;
     KnobDoubleWPtr scaleKnob;
     KnobBoolWPtr scaleUniformKnob;
-    KnobBoolWPtr transformInteractiveKnob;
     KnobDoubleWPtr skewXKnob;
     KnobDoubleWPtr skewYKnob;
     KnobChoiceWPtr skewOrderKnob;
@@ -1503,9 +1524,16 @@ public:
     RotoItemPtr lastInsertedItem;
     RotoItemPtr lastLockedItem;
     mutable QMutex doingNeatRenderMutex;
-    QWaitCondition doingNeatRenderCond;
     bool doingNeatRender;
     bool mustDoNeatRender;
+    // The neat render's frame is on its way to a viewer; the render has landed once that frame is uploaded.
+    bool awaitingNeatDisplay;
+    unsigned int neatDisplayGeneration;
+
+    // Main thread only.
+    std::list<std::function<void()>> neatRenderLandedCallbacks;
+    RotoStrokeItemWPtr displayedStroke;
+    std::vector<int> displayedStrokeAges;
 
     /*
      * A merge node (or more if there are more than 64 items) used when all items share the same compositing operator to make the rotopaint tree shallow
@@ -1517,6 +1545,11 @@ public:
     std::list<QMetaObject::Connection> trackLinkConnections;
     bool trackLinkWarningPosted;
 
+    // How many edits of a point the ripple check refused and let through, for an undo step to
+    // tell an edit that changed nothing from one that did.
+    quint64 rippleEditsRefused;
+    quint64 rippleEditsAllowed;
+
     RotoContextPrivate(const NodePtr& n,
                        bool paintNode)
         : rotoContextMutex()
@@ -1524,15 +1557,25 @@ public:
         , layers()
         , autoKeying(true)
         , rippleEdit(false)
+        , rippleEditMode(eRippleEditModeAll)
+        , rippleEditRangeFirst(1.)
+        , rippleEditRangeLast(100.)
         , featherLink(true)
         , isCurrentlyLoading(false)
         , node(n)
         , age(0)
         , doingNeatRender(false)
         , mustDoNeatRender(false)
+        , awaitingNeatDisplay(false)
+        , neatDisplayGeneration(0)
+        , neatRenderLandedCallbacks()
+        , displayedStroke()
+        , displayedStrokeAges()
         , globalMergeNodes()
         , trackLinkConnections()
         , trackLinkWarningPosted(false)
+        , rippleEditsRefused(0)
+        , rippleEditsAllowed(0)
     {
         assert( n && n->getEffectInstance() );
         EffectInstancePtr effect = n->getEffectInstance();
@@ -1816,8 +1859,7 @@ public:
             resetCloneTransformKnob = resetCloneTransform;
 
             node.lock()->addTransformInteract(translate, scale, scaleUniform, rotate, skewX, skewY, skewOrder, center,
-                                              KnobBoolPtr() /*invert*/,
-                                              KnobBoolPtr() /*interactive*/);
+                                              KnobBoolPtr() /*invert*/);
 
             KnobChoicePtr filter = AppManager::createKnob<KnobChoice>(effect.get(), tr(kRotoBrushFilterParamLabel), 1, true);
             filter->setName(kRotoBrushFilterParam);
@@ -2019,8 +2061,7 @@ public:
 
         node.lock()->addTransformInteract(translateKnob.lock(), scaleKnob.lock(), scaleUniformKnob.lock(), rotateKnob.lock(),
                                           skewXKnob.lock(), skewYKnob.lock(), skewOrderKnob.lock(), centerKnob.lock(),
-                                          KnobBoolPtr() /*invert*/,
-                                          transformInteractiveKnob.lock() /*interactive*/);
+                                          KnobBoolPtr() /*invert*/);
 
 #ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
         KnobPagePtr mbPage = AppManager::createKnob<KnobPage>(effect.get(), tr("Motion Blur"), 1, true);
@@ -2173,12 +2214,10 @@ public:
 
     /**
      * @brief Creates the translate, rotate, scale, skew, center and extra matrix knobs on page, tied
-     * to the selected items like the other context knobs, and their two reset buttons. Without
-     * withInteractive there is no Interactive knob, and the transform handle follows the
-     * "Refresh viewer only when editing is finished" preference.
+     * to the selected items like the other context knobs, and their two reset buttons. The
+     * transform handle follows the "Refresh viewer only when editing is finished" preference.
      **/
-    void createTransformKnobs(const KnobPagePtr& transformPage,
-                              bool withInteractive = true)
+    void createTransformKnobs(const KnobPagePtr& transformPage)
     {
         EffectInstancePtr effect = node.lock()->getEffectInstance();
 
@@ -2282,18 +2321,6 @@ public:
         knobs.push_back(resetCenter);
         resetCenterKnob = resetCenter;
 
-        KnobBoolPtr transformInteractive;
-        if (withInteractive) {
-            transformInteractive = AppManager::createKnob<KnobBool>(effect.get(), tr(kRotoTransformInteractiveLabel), 1, true);
-            transformInteractive->setName(kRotoTransformInteractive);
-            transformInteractive->setHintToolTip(tr(kRotoTransformInteractiveHint));
-            transformInteractive->setDefaultValue(true);
-            transformInteractive->setAllDimensionsEnabled(false);
-            transformPage->addKnob(transformInteractive);
-            knobs.push_back(transformInteractive);
-            transformInteractiveKnob = transformInteractive;
-        }
-
         KnobDoublePtr extraMatrix = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
         extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
         extraMatrix->setHintToolTip(tr(kRotoDrawableItemExtraMatrixParamHint));
@@ -2316,12 +2343,9 @@ public:
 
         // Off until a selection turns them on, as createPaintKnobs() makes every context knob.
         const KnobIPtr created[] = {
-            translate, rotate, scale, scaleUniform, skewX, skewY, skewOrder, center, resetCenter, transformInteractive, extraMatrix, resetTransform
+            translate, rotate, scale, scaleUniform, skewX, skewY, skewOrder, center, resetCenter, extraMatrix, resetTransform
         };
         for (const KnobIPtr& k : created) {
-            if (!k) {
-                continue;
-            }
             transformKnobs.push_back(k);
             k->setDefaultAllDimensionsEnabled(false);
         }

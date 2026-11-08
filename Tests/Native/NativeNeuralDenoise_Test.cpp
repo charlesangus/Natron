@@ -217,7 +217,7 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_NEURALDENOISE, -1, PLUGIN_MAJOR_NATRON_NEURALDENOISE);
+        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_NEURALDENOISE, PLUGIN_MAJOR_NATRON_NEURALDENOISE);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(pair.native && dynamic_cast<NeuralDenoise*>(pair.native->getEffectInstance().get()));
@@ -373,7 +373,7 @@ TEST_F(NativeNeuralDenoiseTest, KnobsListBothTasksAndLabelsMatchScriptNames)
     EXPECT_EQ(model->getActiveEntry().id, kLinearModel);
 
     const std::pair<const char*, const char*> labels[] = {
-        { kModelColourspaceParam "Index", "Model Colourspace" },
+        { kModelColourspaceParam, "Model Colourspace" },
         { kNeuralDenoiseParamStrength, "Strength" },
         { kNeuralDenoiseParamPreserveWideGamut, "Preserve Wide Gamut" },
         { kNeuralDenoiseParamShadowBoost, "Shadow Boost" },
@@ -511,21 +511,23 @@ TEST_F(NativeNeuralDenoiseTest, ColourspaceFollowsTheModelUntilTheUserPicksOne)
     ASSERT_TRUE(bool(pair.native));
 
     EXPECT_EQ(std::string(ModelColourspaceKnobs::kDefaultSpace), std::string(kSRGB));
+    NeuralDenoise* effect = effectOf(pair.native);
+    ASSERT_TRUE(effect != nullptr);
+    const ModelColourspaceKnobs& colourspace = effect->colourspaceKnobs();
+
     // The linear model is the default, and takes linear Rec.2020.
-    EXPECT_EQ(kLinearRec2020, stringValue(pair.native, kModelColourspaceParam));
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), choiceID(pair.native, kModelColourspaceParam));
+    EXPECT_EQ(kLinearRec2020, colourspace.space());
 
     ASSERT_TRUE(setKnobValue(pair.native, "model", kSrgbModel));
-    EXPECT_EQ(std::string(kSRGB), stringValue(pair.native, kModelColourspaceParam));
+    EXPECT_EQ(std::string(kSRGB), colourspace.space());
     ASSERT_TRUE(setKnobValue(pair.native, "model", kLinearModel));
-    EXPECT_EQ(kLinearRec2020, stringValue(pair.native, kModelColourspaceParam));
+    EXPECT_EQ(kLinearRec2020, colourspace.space());
 
     // A space the user picked stays.
-    KnobBoolPtr spaceSet = std::dynamic_pointer_cast<KnobBool>(pair.native->getKnobByName(kModelColourspaceParam "Set"));
-    ASSERT_TRUE(bool(spaceSet));
     ASSERT_TRUE(setKnobValue(pair.native, kModelColourspaceParam, "ACEScct"));
-    spaceSet->setValue(true);
     ASSERT_TRUE(setKnobValue(pair.native, "model", kSrgbModel));
-    EXPECT_EQ(std::string("ACEScct"), stringValue(pair.native, kModelColourspaceParam));
+    EXPECT_EQ(std::string("ACEScct"), colourspace.space());
 }
 
 TEST_F(NativeNeuralDenoiseTest, DefaultSpaceResolvesThroughTheConfig)
@@ -768,7 +770,9 @@ TEST_F(NativeNeuralDenoiseTest, UnknownColourspaceFailsWithAnErrorUntilFixed)
     ASSERT_TRUE(bool(pair.native));
     const RectI window = paritySourceWindow(pair.source, kTime, 0);
 
-    ASSERT_TRUE(setKnobValue(pair.native, kModelColourspaceParam, "No Such Space"));
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(pair.native->getKnobByName(kModelColourspaceParam));
+    ASSERT_TRUE(bool(menu));
+    menu->setActiveEntry(ChoiceOption("No Such Space", "No Such Space", ""));
     EXPECT_TRUE(renderFails(pair.native, window));
     EXPECT_NE(errorOf(pair.native).find("Model Colourspace \"No Such Space\""), std::string::npos) << errorOf(pair.native);
 

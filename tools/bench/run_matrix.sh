@@ -11,7 +11,7 @@
 # Each configuration waits for the load average to drop (BENCH_MAX_LOAD, BENCH_COOLDOWN_TIMEOUT)
 # and then sleeps BENCH_COOLDOWN seconds, and its CPU clock is logged to
 # build/bench/freq-<tag>-<topo>-<n>.txt and summarised into the result record.
-# BENCH_IMPL (ofx|native) is forwarded to graph_bench.py. BENCH_RENDERER_DIR (default build/release)
+# BENCH_RENDERER_DIR (default build/release)
 # and BENCH_PLUGIN_PATH (default build/assets/Plugins) select another build and OFX plugin set,
 # both resolved against the repo root when relative.
 # shellcheck source-path=SCRIPTDIR
@@ -49,7 +49,7 @@ for spec in "$@"; do
             -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" -e BENCH_NAMED="${BENCH_NAMED:-1}" \
             -e BENCH_SETTINGS="${BENCH_SETTINGS:-}" -e BENCH_TIMEOUT="${BENCH_TIMEOUT:-1800}" -e REPO="$repo" \
             -e OMP_WAIT_POLICY -e GOMP_SPINCOUNT -e OMP_THREAD_LIMIT -e OMP_DISPLAY_ENV -e BENCH_RENDER_STATS -e BENCH_PLATES_DIR \
-            -e NATRON_GPU -e NATRON_RENDER_SCHEDULER -e BENCH_IMPL -e BENCH_RENDERER="$renderer_dir/Renderer/NatronRenderer" -e BENCH_RENDERER_DIR="$renderer_dir" \
+            -e NATRON_GPU -e NATRON_RENDER_SCHEDULER -e BENCH_RENDERER="$renderer_dir/Renderer/NatronRenderer" -e BENCH_RENDERER_DIR="$renderer_dir" \
             -e OFX_PLUGIN_PATH="$plugin_path" natron-dev bash -lc "$inner" \
             > "$log" 2>&1
         code=$?

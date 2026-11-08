@@ -33,13 +33,15 @@ No transform, white tints and Max off is the identity.
 
 ## Resampling
 
-Filter, Clamp and Black outside are the Transform node's knobs, with its filter set and semantics.
-The CPU resamples each copy with `Resampler::resampleRow`, supersampling minified copies as
-Transform does. Draft renders use Impulse.
+Filter, Clamp, Black outside, Lobes, Bicubic B and Bicubic C are the Transform node's knobs, with
+its filter set and semantics; see [Transform](../../Transform/docs/Transform.md). The CPU resamples
+each copy with `Resampler::resampleRow`, widening the kernel of a minified copy as Transform does.
+Draft renders use Impulse.
 
 - **Filter** defaults to Cubic.
-- **Clamp** works only for the filters that honour it (Keys, Simon, Rifman, Mitchell) and is
-  disabled otherwise.
+- **Clamp** is shown only for the filters that can overshoot (Keys, Simon, Rifman, Mitchell, the
+  Lanczos filters, Sinc and Bicubic).
+- **Lobes** is shown only for Sinc, **Bicubic B** and **Bicubic C** only for Bicubic.
 - **Black outside** (default on): a copy reads black beyond the Source's image, and the region of
   definition grows by one pixel. Off, a copy reads the Source's edge pixels, extended outwards.
 
@@ -77,8 +79,11 @@ mask and mix knobs follow. There is no "(Un)premult by": GodRays is a filter.
 | `samples` | Samples | 32 | Copies, 1 to 512 |
 | `max` | Max | off | Per channel maximum of the tinted copies instead of their mean |
 | `filter` | Filter | Cubic | The Transform node's filters |
-| `clamp` | Clamp | off | Clamp the filter's overshoot (Keys, Simon, Rifman, Mitchell) |
+| `clamp` | Clamp | off | Clamp the filter's overshoot |
 | `black_outside` | Black outside | on | Read black beyond the Source; off repeats its edge pixels |
+| `lobes` | Lobes | 4 | Sinc's lobe count and radius, 2 to 8 |
+| `bicubicB` | Bicubic B | 1/3 | Bicubic's B; higher blurs more |
+| `bicubicC` | Bicubic C | 1/3 | Bicubic's C; higher sharpens more |
 
 `uniform` and `skewOrder` are hidden: only the Viewer's transform handle uses them. The Viewer shows
 the Transform node's handle (centre, translate, rotate, scale, skew).

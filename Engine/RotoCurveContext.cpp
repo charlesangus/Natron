@@ -355,8 +355,13 @@ RotoCurveContext::setRippleEditEnabled(bool enabled)
     /// MT-safe: only called on the main-thread
     assert(QThread::currentThread() == qApp->thread());
 
-    QMutexLocker l(&_imp->rotoContextMutex);
-    _imp->rippleEdit = enabled;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->rippleEdit = enabled;
+    }
+    if (_imp->trackLinkWarningPosted) {
+        updateTrackLinks(false);
+    }
 }
 
 bool
@@ -368,6 +373,48 @@ RotoCurveContext::isRippleEditEnabled() const
     QMutexLocker l(&_imp->rotoContextMutex);
 
     return _imp->rippleEdit;
+}
+
+void
+RotoCurveContext::setRippleEditMode(RippleEditModeEnum mode)
+{
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->rippleEditMode = mode;
+    }
+    if (_imp->trackLinkWarningPosted) {
+        updateTrackLinks(false);
+    }
+}
+
+RippleEditModeEnum
+RotoCurveContext::getRippleEditMode() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+
+    return _imp->rippleEditMode;
+}
+
+void
+RotoCurveContext::setRippleEditRange(double first,
+                                     double last)
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    _imp->rippleEditRangeFirst = first;
+    _imp->rippleEditRangeLast = last;
+}
+
+RippleEditKeys
+RotoCurveContext::getRippleEditKeys() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    RippleEditKeys keys;
+    keys.enabled = _imp->rippleEdit;
+    keys.mode = _imp->rippleEditMode;
+    keys.rangeFirst = _imp->rippleEditRangeFirst;
+    keys.rangeLast = _imp->rippleEditRangeLast;
+
+    return keys;
 }
 
 NodePtr
@@ -757,7 +804,7 @@ void
 RotoCurveContext::createTransformKnobs(const KnobPagePtr& page)
 {
     assert(_imp->transformKnobs.empty());
-    _imp->createTransformKnobs(page, false /*withInteractive*/);
+    _imp->createTransformKnobs(page);
 }
 
 RotoCurveContext::TransformKnobs
@@ -774,7 +821,6 @@ RotoCurveContext::getTransformKnobs() const
     knobs.skewOrder = _imp->skewOrderKnob.lock();
     knobs.center = _imp->centerKnob.lock();
     knobs.extraMatrix = _imp->extraMatrixKnob.lock();
-    knobs.interactive = _imp->transformInteractiveKnob.lock();
     knobs.resetCenter = _imp->resetCenterKnob.lock();
     knobs.resetTransform = _imp->resetTransformKnob.lock();
 
@@ -1990,6 +2036,35 @@ RotoCurveContext::getTrackLinkedCurves() const
     }
 
     return ret;
+}
+
+void
+RotoCurveContext::warnBoundedRippleOnLinkedPoint()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    node->setPersistentMessage(eMessageTypeWarning, tr("A point that follows a track has one offset for all frames, so ripple edit cannot limit an edit of it to some keyframes. The point was left unchanged: set ripple edit to All, or turn it off, to edit it.").toStdString());
+    _imp->trackLinkWarningPosted = true;
+}
+
+void
+RotoCurveContext::noteRippleEditCheck(bool refused)
+{
+    if (refused) {
+        ++_imp->rippleEditsRefused;
+    } else {
+        ++_imp->rippleEditsAllowed;
+    }
+}
+
+void
+RotoCurveContext::getRippleEditCheckCounts(quint64* refused,
+                                           quint64* allowed) const
+{
+    *refused = _imp->rippleEditsRefused;
+    *allowed = _imp->rippleEditsAllowed;
 }
 
 void

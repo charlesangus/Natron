@@ -66,6 +66,9 @@
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayImage.h"
+#include "Engine/OverlaySupport.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
@@ -1635,10 +1638,18 @@ EffectInstance::getImage(int inputNb,
         inputImages.insert(std::make_pair(renderedComps, storedImages.front()));
     } else {
         // Store images in another depth or storage go through renderRoI(), which finds them by key and converts them.
-        EffectInstance::InputImagesMap seededInputImages;
+        // Only this input's images: identical inputs share an image key, and the image pre-rendered for
+        // another one covers that input's region, not this one's.
+        EffectInstance::InputImagesMap thisInputImages;
+        if (!inputImagesThreadLocal.empty()) {
+            ImageList& images = thisInputImages[inputNb];
+            EffectInstance::InputImagesMap::const_iterator preRendered = inputImagesThreadLocal.find(inputNb);
+            if (preRendered != inputImagesThreadLocal.end()) {
+                images = preRendered->second;
+            }
+        }
         if (fromStore) {
-            seededInputImages = inputImagesThreadLocal;
-            ImageList& seeded = seededInputImages[inputNb];
+            ImageList& seeded = thisInputImages[inputNb];
             seeded.insert(seeded.end(), storedImages.begin(), storedImages.end());
         }
         RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
@@ -1654,7 +1665,7 @@ EffectInstance::getImage(int inputNb,
                                                                         this,
                                                                         returnStorage,
                                                                         thisEffectRenderTime,
-                                                                        fromStore ? seededInputImages : inputImagesThreadLocal),
+                                                                        thisInputImages),
                                                           &inputImages);
 
         if (retCode != eRenderRoIRetCodeOk) {
@@ -4032,7 +4043,7 @@ EffectInstance::drawOverlay_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay() && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return;
     }
 
@@ -4048,10 +4059,359 @@ EffectInstance::drawOverlay_public(double time,
     _imp->setDuringInteractAction(true);
     bool drawHostOverlay = shouldDrawHostOverlay();
     drawOverlay(time, actualScale, view);
+    if (hasOverlayDrawList() && _imp->overlaysViewport) {
+        const OverlayDrawList& list = buildOverlay_public(time, actualScale, view);
+        if (!list.empty()) {
+            _imp->overlaysViewport->drawOverlayDrawList(list, getOverlayDrawState());
+        }
+    }
     if (drawHostOverlay) {
         getNode()->drawHostOverlay(time, actualScale, view);
     }
     _imp->setDuringInteractAction(false);
+}
+
+const OverlayDrawList&
+EffectInstance::buildOverlay_public(double time,
+                                    const RenderScale& renderScale,
+                                    ViewIdx view)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    _imp->overlayDrawList.clear();
+    if (hasOverlayDrawList()) {
+        buildOverlay(time, renderScale, view, &_imp->overlayDrawList);
+    }
+    double x, y;
+    if ((_imp->overlayHoveredHandle != OverlayDrawList::kNoHandle) && !_imp->overlayDrawList.getHandlePosition(_imp->overlayHoveredHandle, &x, &y)) {
+        _imp->overlayHoveredHandle = OverlayDrawList::kNoHandle;
+    }
+
+    return _imp->overlayDrawList;
+}
+
+const OverlayDrawList&
+EffectInstance::getOverlayDrawList() const
+{
+    return _imp->overlayDrawList;
+}
+
+OverlayDrawState
+EffectInstance::getOverlayDrawState() const
+{
+    OverlayDrawState state;
+
+    state.hoveredHandle = _imp->overlayHoveredHandle;
+    state.pressedHandle = _imp->overlayPressedHandle;
+    double r, g, b;
+    if (getNode()->getOverlayColor(&r, &g, &b)) {
+        state.nodeR = (float)r;
+        state.nodeG = (float)g;
+        state.nodeB = (float)b;
+    }
+
+    return state;
+}
+
+bool
+EffectInstance::isOverlayImageRequested() const
+{
+    return isOverlayImageViewOn() && getNode()->isSettingsPanelVisible();
+}
+
+bool
+EffectInstance::isOverlayImageRender() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && args->overlayImagePass;
+}
+
+bool
+EffectInstance::isOverlayImagePassSuperseded() const
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    return args && args->overlayImagePass && (args->overlayImagePass->generation() != getNode()->getOverlayImageGeneration());
+}
+
+void
+EffectInstance::addOverlayImageTile(const std::string& plane,
+                                    const OverlayColor& tint,
+                                    const RectI& bounds,
+                                    unsigned int mipmapLevel,
+                                    std::vector<unsigned char>&& values)
+{
+    const ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+
+    if (args && args->overlayImagePass) {
+        args->overlayImagePass->addTile(plane, tint, bounds, mipmapLevel, std::move(values));
+    }
+}
+
+bool
+EffectInstance::overlayImagesStale(const OverlayImageRequest& request) const
+{
+    if (request.visibleCanonical.isNull()) {
+        return false;
+    }
+    const NodePtr node = getNode();
+    if (!node) {
+        return false;
+    }
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+    U64 hash = 0;
+
+    return !frame || !node->getHashValueIfUpToDate(&hash) || !frame->satisfies(hash, request);
+}
+
+bool
+EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
+                                    const AbortableRenderInfoPtr& abortInfo)
+{
+    const NodePtr node = getNode();
+    if (!node) {
+        return false;
+    }
+    ParallelRenderArgsSetter frameArgs(request.time,
+                                       request.view,
+                                       true /*isRenderUserInteraction*/,
+                                       false /*isSequential*/,
+                                       abortInfo,
+                                       node,
+                                       0 /*textureIndex*/,
+                                       node->getApp()->getTimeLine().get(),
+                                       NodePtr() /*rotoPaintNode*/,
+                                       false /*isAnalysis*/,
+                                       request.draftMode,
+                                       RenderStatsPtr());
+    const std::uint64_t generation = node->getOverlayImageGeneration();
+    const OverlayImagePassPtr pass = std::make_shared<OverlayImagePass>(request.mipmapLevel, generation);
+
+    getParallelRenderArgsTLS()->overlayImagePass = pass;
+
+    U64 hash = 0;
+    double par = 1.;
+    const auto publish = [&](std::vector<OverlayImagePlane>&& planes) {
+        std::shared_ptr<OverlayImageFrame> frame = std::make_shared<OverlayImageFrame>();
+        frame->nodeHash = hash;
+        frame->request = request;
+        frame->pixelAspectRatio = par;
+        frame->planes = std::move(planes);
+
+        return node->setOverlayImageFrame(frame, generation);
+    };
+
+    // A failed pass must not stop the viewer's own render, which reports the error if it has it too.
+    try {
+        hash = getRenderHash();
+        const RenderScale scale = RenderScale::fromMipmapLevel(request.mipmapLevel);
+        RectD rod;
+        bool isProjectFormat;
+        if (getRegionOfDefinition_public(hash, request.time, scale, request.view, &rod, &isProjectFormat) == eStatusFailed) {
+            publish({});
+
+            return false;
+        }
+        par = getRenderMetadata(request.time, request.view)->getPixelAspectRatio(-1);
+        const RectD visible(request.visibleCanonical.x1, request.visibleCanonical.y1, request.visibleCanonical.x2, request.visibleCanonical.y2);
+        const RectD canonicalRoI = rod.intersect(visible);
+        const RectI roi = canonicalRoI.toPixelEnclosing(request.mipmapLevel, par);
+
+        if (!roi.isNull()) {
+            std::shared_ptr<FrameRequestMap> requestPass = std::make_shared<FrameRequestMap>();
+            if (computeRequestPass(request.time, request.view, request.mipmapLevel, canonicalRoI, node, *requestPass) == eStatusFailed) {
+                publish({});
+
+                return false;
+            }
+            frameArgs.updateNodesRequest(*requestPass);
+
+            std::list<ImageLayerDesc> components;
+            components.push_back(ImageLayerDesc::getRGBAComponents());
+            RenderRoIArgs args(request.time,
+                               scale,
+                               request.mipmapLevel,
+                               request.view,
+                               false /*byPassCache*/,
+                               roi,
+                               rod,
+                               components,
+                               eImageBitDepthFloat,
+                               false /*calledFromGetImage*/,
+                               0 /*caller*/,
+                               eStorageModeRAM,
+                               request.time);
+            // The side buffer is CPU memory, and a GPU route of a node has no tile to hand over.
+            args.allowGPURendering = false;
+
+            std::map<ImageLayerDesc, ImagePtr> planes;
+            const RenderRoIRetCode ret = renderRoI(args, &planes);
+            if ((ret == eRenderRoIRetCodeAborted) || aborted()) {
+                return false;
+            }
+            if (ret != eRenderRoIRetCodeOk) {
+                publish({});
+
+                return false;
+            }
+        }
+
+        return publish(pass->takePlanes());
+    } catch (const std::exception& e) {
+        qDebug() << "Overlay image render failed:" << e.what();
+    }
+    publish({});
+
+    return false;
+}
+
+OverlayImageFrameConstPtr
+EffectInstance::getOverlayImages(double time,
+                                 ViewIdx view) const
+{
+    if (!isOverlayImageRequested()) {
+        return OverlayImageFrameConstPtr();
+    }
+    const OverlayImageFrameConstPtr frame = getNode()->getOverlayImageFrame();
+    U64 hash = 0;
+    if (!frame || !getNode()->getHashValueIfUpToDate(&hash) || (frame->nodeHash != hash) || (frame->request.time != time) || (frame->request.view != view)) {
+        return OverlayImageFrameConstPtr();
+    }
+
+    return frame;
+}
+
+void
+EffectInstance::refreshOverlayImages()
+{
+    const AppInstancePtr app = getApp();
+
+    if (!app) {
+        return;
+    }
+    // View knobs stay out of the hash, so the frame of the view before this one would still pass for
+    // current and the pass would never run.
+    const bool hadFrame = getNode()->clearOverlayImageFrame();
+
+    if (isOverlayImageRequested()) {
+        app->renderAllViewers(true /*canAbort*/);
+    } else {
+        releaseOverlayImageResources();
+        if (hadFrame) {
+            app->redrawAllViewers();
+        }
+    }
+}
+
+bool
+EffectInstance::hasAnyOverlay() const
+{
+    return hasOverlay() || hasOverlayDrawList() || getNode()->hasHostOverlay();
+}
+
+namespace {
+
+// Brackets a handle callback so its knob edits make one undoable command, as the host interacts do.
+class OverlayHandleEdit {
+public:
+    explicit OverlayHandleEdit(EffectInstance* effect)
+        : _effect(effect)
+    {
+        _effect->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
+    }
+
+    ~OverlayHandleEdit()
+    {
+        _effect->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+    }
+
+private:
+    EffectInstance* _effect;
+};
+
+} // anon namespace
+
+bool
+EffectInstance::onOverlayDrawListPenDown(double time,
+                                         ViewIdx view,
+                                         const QPointF& pos)
+{
+    if (!hasOverlayDrawList() || !_imp->overlaysViewport) {
+        return false;
+    }
+    double scaleX, scaleY;
+    _imp->overlaysViewport->getPixelScale(scaleX, scaleY);
+    const int id = _imp->overlayDrawList.hitTestHandle(pos.x(), pos.y(), scaleX, scaleY);
+    if (id == OverlayDrawList::kNoHandle) {
+        return false;
+    }
+    bool taken;
+    {
+        OverlayHandleEdit edit(this);
+        taken = onOverlayHandlePressed(id, time, view, pos);
+    }
+    if (!taken) {
+        return false;
+    }
+    _imp->overlayPressedHandle = id;
+    _imp->overlayHoveredHandle = id;
+    _imp->overlayLastPenPos = pos;
+    redrawOverlayInteract();
+
+    return true;
+}
+
+bool
+EffectInstance::onOverlayDrawListPenMotion(double time,
+                                           ViewIdx view,
+                                           const QPointF& pos)
+{
+    if (!hasOverlayDrawList()) {
+        return false;
+    }
+    if (_imp->overlayPressedHandle != OverlayDrawList::kNoHandle) {
+        const QPointF delta = pos - _imp->overlayLastPenPos;
+        _imp->overlayLastPenPos = pos;
+        {
+            OverlayHandleEdit edit(this);
+            onOverlayHandleDragged(_imp->overlayPressedHandle, time, view, pos, delta);
+        }
+        redrawOverlayInteract();
+
+        return true;
+    }
+    if (!_imp->overlaysViewport) {
+        return false;
+    }
+    double scaleX, scaleY;
+    _imp->overlaysViewport->getPixelScale(scaleX, scaleY);
+    const int hovered = _imp->overlayDrawList.hitTestHandle(pos.x(), pos.y(), scaleX, scaleY);
+    if (hovered == _imp->overlayHoveredHandle) {
+        return false;
+    }
+    _imp->overlayHoveredHandle = hovered;
+    redrawOverlayInteract();
+
+    return true;
+}
+
+bool
+EffectInstance::onOverlayDrawListPenUp(double time,
+                                       ViewIdx view,
+                                       const QPointF& pos)
+{
+    if (_imp->overlayPressedHandle == OverlayDrawList::kNoHandle) {
+        return false;
+    }
+    const int id = _imp->overlayPressedHandle;
+    _imp->overlayPressedHandle = OverlayDrawList::kNoHandle;
+    {
+        OverlayHandleEdit edit(this);
+        onOverlayHandleReleased(id, time, view, pos);
+    }
+    redrawOverlayInteract();
+
+    return true;
 }
 
 bool
@@ -4067,7 +4427,7 @@ EffectInstance::onOverlayPenDown_public(double time,
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
     closeOpenOverlayEditStep();
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4095,6 +4455,9 @@ EffectInstance::onOverlayPenDown_public(double time,
                 ret |= getNode()->onOverlayPenDownDefault(time, actualScale, view, viewportPos, pos, pressure);
             }
         }
+        if (!ret) {
+            ret = onOverlayDrawListPenDown(time, view, pos);
+        }
 
         _imp->setDuringInteractAction(false);
     }
@@ -4115,7 +4478,7 @@ EffectInstance::onOverlayPenDoubleClicked_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4161,7 +4524,7 @@ EffectInstance::onOverlayPenMotion_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4177,7 +4540,9 @@ EffectInstance::onOverlayPenMotion_public(double time,
     _imp->setDuringInteractAction(true);
     bool ret;
     bool drawHostOverlay = shouldDrawHostOverlay();
-    if (!shouldPreferPluginOverlayOverHostOverlay()) {
+    if (_imp->overlayPressedHandle != OverlayDrawList::kNoHandle) {
+        ret = onOverlayDrawListPenMotion(time, view, pos);
+    } else if (!shouldPreferPluginOverlayOverHostOverlay()) {
         ret = drawHostOverlay ? getNode()->onOverlayPenMotionDefault(time, actualScale, view, viewportPos, pos, pressure) : false;
         if (!ret) {
             ret |= onOverlayPenMotion(time, actualScale, view, viewportPos, pos, pressure, timestamp);
@@ -4187,6 +4552,9 @@ EffectInstance::onOverlayPenMotion_public(double time,
         if (!ret && drawHostOverlay) {
             ret |= getNode()->onOverlayPenMotionDefault(time, actualScale, view, viewportPos, pos, pressure);
         }
+    }
+    if (!ret) {
+        ret = onOverlayDrawListPenMotion(time, view, pos);
     }
 
     _imp->setDuringInteractAction(false);
@@ -4207,7 +4575,7 @@ EffectInstance::onOverlayPenUp_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         closeOverlayEditStepOf(this);
 
         return false;
@@ -4225,7 +4593,9 @@ EffectInstance::onOverlayPenUp_public(double time,
         NON_RECURSIVE_ACTION();
         _imp->setDuringInteractAction(true);
         bool drawHostOverlay = shouldDrawHostOverlay();
-        if (!shouldPreferPluginOverlayOverHostOverlay()) {
+        if (onOverlayDrawListPenUp(time, view, pos)) {
+            ret = true;
+        } else if (!shouldPreferPluginOverlayOverHostOverlay()) {
             ret = drawHostOverlay ? getNode()->onOverlayPenUpDefault(time, actualScale, view, viewportPos, pos, pressure) : false;
             if (!ret) {
                 ret |= onOverlayPenUp(time, actualScale, view, viewportPos, pos, pressure, timestamp);
@@ -4288,7 +4658,7 @@ EffectInstance::onOverlayKeyDown_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4324,7 +4694,7 @@ EffectInstance::onOverlayKeyUp_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4360,7 +4730,7 @@ EffectInstance::onOverlayKeyRepeat_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay()  && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4393,7 +4763,7 @@ EffectInstance::onOverlayFocusGained_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay() && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         return false;
     }
 
@@ -4427,7 +4797,7 @@ EffectInstance::onOverlayFocusLost_public(double time,
 {
     ///cannot be run in another thread
     assert( QThread::currentThread() == qApp->thread() );
-    if ( !hasOverlay() && !getNode()->hasHostOverlay() ) {
+    if (!hasAnyOverlay()) {
         closeOverlayEditStepOf(this);
 
         return false;
@@ -6148,7 +6518,7 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
     if ( kh && ( QThread::currentThread() == qApp->thread() ) &&
          originatedFromMainThread && ( reason != eValueChangedReasonTimeChanged) ) {
         ///Run the following only in the main-thread
-        if ( hasOverlay() && node->shouldDrawOverlay() && !node->hasHostOverlayForParam(k) ) {
+        if ((hasOverlay() || hasOverlayDrawList()) && node->shouldDrawOverlay() && !node->hasHostOverlayForParam(k)) {
             // Some plugins (e.g. by digital film tools) forget to set kOfxInteractPropSlaveToParam.
             // Most hosts trigger a redraw if the plugin has an active overlay.
             incrementRedrawNeededCounter();

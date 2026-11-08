@@ -30,10 +30,10 @@ SETTLE_MS = 1500
 FALLBACK_SIZE = (1920.0, 1080.0)
 ALL_SECTIONS = ("cat-eye", "swirl", "chromatic", "aspect", "zdefocus")
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-PLUGIN_RECTANGLE = "net.sf.openfx.Rectangle"
+PLUGIN_CHECKER = "CheckerBoard"
+PLUGIN_RECTANGLE = "Rectangle"
 PLUGIN_MERGE = "Merge"
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
+PLUGIN_VIEWER = "Viewer"
 PLUGIN_DEFOCUS = "Defocus"
 PLUGIN_ZDEFOCUS = "ZDefocus"
 

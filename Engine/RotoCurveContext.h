@@ -46,6 +46,7 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Global/GlobalDefines.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/RippleEditKeys.h"
 #include "Engine/RotoItem.h"
 #include "Engine/ViewIdx.h"
 
@@ -135,6 +136,19 @@ public:
      **/
     void setRippleEditEnabled(bool enabled);
     bool isRippleEditEnabled() const;
+
+    /**
+     * @brief Which keyframes ripple edit carries an edit to: all, the ones up to or from the edited
+     * time, or a fixed frame range.
+     **/
+    void setRippleEditMode(RippleEditModeEnum mode);
+    RippleEditModeEnum getRippleEditMode() const;
+    void setRippleEditRange(double first, double last);
+
+    /**
+     * @brief The ripple edit state in one read, for the edits that walk every keyframe.
+     **/
+    RippleEditKeys getRippleEditKeys() const;
 
     int getTimelineCurrentTime() const;
 
@@ -290,7 +304,6 @@ public:
         KnobChoicePtr skewOrder;
         KnobDoublePtr center;
         KnobDoublePtr extraMatrix;
-        KnobBoolPtr interactive;
         KnobButtonPtr resetCenter;
         KnobButtonPtr resetTransform;
     };
@@ -572,6 +585,25 @@ public:
      * tracks. Called whenever links or items change, on the main thread.
      **/
     void refreshTrackLinkListeners();
+
+    /**
+     * @brief Tells the user that an edit of a point that follows a track was refused because ripple
+     * edit is limited to some keyframes. The warning lasts until the ripple settings or the links
+     * change. Main thread only.
+     **/
+    void warnBoundedRippleOnLinkedPoint();
+
+    /**
+     * @brief Records that an edit of a point was checked against the bounded ripple modes, and
+     * whether it was refused. Main thread only.
+     **/
+    void noteRippleEditCheck(bool refused);
+
+    /**
+     * @brief How many edits noteRippleEditCheck() has seen refused and let through so far.
+     **/
+    void getRippleEditCheckCounts(quint64* refused,
+                                  quint64* allowed) const;
 
     /**
      * @brief Points loaded links whose track object is unknown at their tracks, found by the

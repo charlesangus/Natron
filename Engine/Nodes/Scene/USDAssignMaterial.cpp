@@ -27,6 +27,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <map>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -39,6 +41,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
@@ -51,6 +54,71 @@ struct RootMatches {
     std::vector<PXR_NS::SdfPath> paths;
     std::vector<PXR_NS::TfToken> existingBindings;
 };
+
+// What a projection in Geometry space takes from the prims it is assigned to. Matrices is empty
+// when the matches hold no geometry.
+struct ProjectionPlacement {
+    std::map<double, PXR_NS::GfMatrix4d> matrices;
+    bool animated = false;
+    std::string followed;
+    std::string othersAt;
+};
+
+ProjectionPlacement
+readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
+                        const std::vector<RootMatches>& roots,
+                        const SceneMaterialGraft& projection,
+                        const ScenePayload& scene,
+                        const SceneLayerEdit& range,
+                        double framesPerSecond)
+{
+    ProjectionPlacement placement;
+    std::vector<PXR_NS::UsdPrim> gprims;
+    PXR_NS::SdfPathSet seen;
+    for (const RootMatches& matches : roots) {
+        for (const PXR_NS::SdfPath& path : matches.paths) {
+            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(stage->GetPrimAtPath(path))) {
+                if (prim.IsA<PXR_NS::UsdGeomGprim>() && seen.insert(prim.GetPath()).second) {
+                    gprims.push_back(prim);
+                }
+            }
+        }
+    }
+    if (gprims.empty()) {
+        return placement;
+    }
+    placement.followed = gprims.front().GetPath().GetString();
+
+    std::vector<double> frames;
+    if (projection.projectionHeld) {
+        frames.push_back(projection.projectionHoldFrame);
+    } else {
+        for (const PXR_NS::UsdPrim& prim : gprims) {
+            placement.animated = placement.animated || SceneProjectionCameras::transformMightVary(prim);
+        }
+        if (placement.animated) {
+            frames = SceneNodeAuthoring::getSampleFrames(range);
+        } else {
+            frames.push_back(range.firstFrame);
+        }
+    }
+    PXR_NS::SdfPathSet elsewhere;
+    for (double frame : frames) {
+        PXR_NS::UsdGeomXformCache cache(PXR_NS::UsdTimeCode(SceneOps::frameToTimeCode(scene, frame, framesPerSecond)));
+        const PXR_NS::GfMatrix4d matrix = cache.GetLocalToWorldTransform(gprims.front());
+        placement.matrices[frame] = matrix;
+        for (const PXR_NS::UsdPrim& prim : gprims) {
+            if (!PXR_NS::GfIsClose(matrix, cache.GetLocalToWorldTransform(prim), 1e-9)) {
+                elsewhere.insert(prim.GetPath());
+            }
+        }
+    }
+    for (const PXR_NS::SdfPath& path : elsewhere) {
+        placement.othersAt += (placement.othersAt.empty() ? "" : ", ") + path.GetString();
+    }
+
+    return placement;
+} // readProjectionPlacement
 
 std::string
 hexSuffix(const std::string& text)
@@ -86,8 +154,16 @@ getRootPrim(const PXR_NS::SdfPath& path)
 }
 } // anonymous namespace
 
+struct USDAssignMaterial::PlacementMemo {
+    std::mutex lock;
+    bool valid = false;
+    U64 key = 0;
+    ProjectionPlacement placement;
+};
+
 USDAssignMaterial::USDAssignMaterial(NodePtr node)
     : NativeEffectBase(node)
+    , _placementMemo(new PlacementMemo)
 {
 }
 
@@ -211,6 +287,8 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
 
     ScenePayload base = upstream;
     std::string materialPath;
+    SceneMaterialGraft projection;
+    ProjectionPlacement placement;
     if (materialConnected) {
         SceneMaterialGraft graft;
         if (!SceneNodeAuthoring::graftSharedMaterial(args.getInputScene(kUSDAssignMaterialInputMaterial), scope, getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
@@ -228,6 +306,9 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             base = SceneOps::appendEntry(base, entry);
         }
         materialPath = graft.materialPath;
+        projection.geometryProjectionShader = graft.geometryProjectionShader;
+        projection.projectionHeld = graft.projectionHeld;
+        projection.projectionHoldFrame = graft.projectionHoldFrame;
         if (!graft.unmappedLinks.empty()) {
             QString warning = tr("These relationship targets and connections of the material lie under no root prim of the "
                                  "Material input, so the grafted properties are authored without them:");
@@ -307,6 +388,49 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                 warnings += tr("%1 is not a material in the input scene; the binding is authored anyway.").arg(QString::fromStdString(materialPath));
             }
         }
+        if (!roots.empty() && !projection.geometryProjectionShader.empty()) {
+            SceneLayerEdit range;
+            app->getProject()->getFrameRange(&range.firstFrame, &range.lastFrame);
+            const double framesPerSecond = app->getProject()->getProjectFrameRate();
+            ContentHasher keyHasher;
+            keyHasher.appendU64(upstream.getStackHash());
+            SceneNodeAuthoring::appendUpstreamMetadata(upstream, &keyHasher);
+            keyHasher.appendString(projection.geometryProjectionShader);
+            keyHasher.appendBool(projection.projectionHeld);
+            keyHasher.appendDouble(projection.projectionHoldFrame);
+            keyHasher.appendDouble(range.firstFrame);
+            keyHasher.appendDouble(range.lastFrame);
+            keyHasher.appendDouble(framesPerSecond);
+            for (const RootMatches& matches : roots) {
+                keyHasher.appendU64(matches.paths.size());
+                for (const PXR_NS::SdfPath& path : matches.paths) {
+                    keyHasher.appendString(path.GetString());
+                }
+            }
+            const U64 placementKey = keyHasher.finalize();
+            bool memoized = false;
+            {
+                std::lock_guard<std::mutex> l(_placementMemo->lock);
+                if (_placementMemo->valid && (_placementMemo->key == placementKey)) {
+                    placement = _placementMemo->placement;
+                    memoized = true;
+                }
+            }
+            if (!memoized) {
+                placement = readProjectionPlacement(stage, roots, projection, upstream, range, framesPerSecond);
+                std::lock_guard<std::mutex> l(_placementMemo->lock);
+                _placementMemo->valid = true;
+                _placementMemo->key = placementKey;
+                _placementMemo->placement = placement;
+            }
+            if (!placement.othersAt.empty()) {
+                warnings += tr("A projection in Geometry space takes one placement per material, and the matches lie at "
+                               "several: it follows %1, so %2 shows it offset. Project them in World space, or through a "
+                               "projection of their own.")
+                                .arg(QString::fromStdString(placement.followed))
+                                .arg(QString::fromStdString(placement.othersAt));
+            }
+        }
     }
 
     if (roots.empty()) {
@@ -336,8 +460,8 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
     }
     binding.strength = (strengthKnob->getValue() == (int)eStrengthWeakerThanDescendants) ? PXR_NS::UsdShadeTokens->weakerThanDescendants : PXR_NS::UsdShadeTokens->strongerThanDescendants;
 
-    SceneLayerMemo::AuthorFunc author = [this, roots, binding](const SceneLayerEdit& edit,
-                                                               std::string* error) {
+    SceneLayerMemo::AuthorFunc author = [this, roots, binding, projection, placement](const SceneLayerEdit& edit,
+                                                                                      std::string* error) {
         PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
         if (!stage) {
             if (error->empty()) {
@@ -353,6 +477,19 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             if (!SceneNodeAuthoring::authorCollectionBinding(stage->OverridePrim(matches.root), rootBinding, error)) {
                 return false;
             }
+        }
+        if (placement.matrices.empty()) {
+            return true;
+        }
+        const auto frameAt = [&placement](double frame) {
+            const std::map<double, PXR_NS::GfMatrix4d>::const_iterator found = placement.matrices.find(frame);
+
+            return (found != placement.matrices.end()) ? found->second : placement.matrices.begin()->second;
+        };
+        if (!SceneNodeAuthoring::authorProjectionGeometryFrame(stage, edit, projection, placement.animated, frameAt)) {
+            *error = tr("USD could not author the projection's geometry frame.").toStdString();
+
+            return false;
         }
 
         return true;
@@ -376,10 +513,20 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             facts.appendString(name.GetString());
         }
     }
+    facts.appendU64(placement.matrices.size());
+    if (!placement.matrices.empty()) {
+        facts.appendString(projection.geometryProjectionShader);
+        facts.appendBool(projection.projectionHeld);
+        facts.appendBool(placement.animated);
+        for (const std::pair<const double, PXR_NS::GfMatrix4d>& sample : placement.matrices) {
+            facts.appendDouble(sample.first);
+            facts.appendBytes(sample.second.data(), 16 * sizeof(double));
+        }
+    }
     SceneLayerReads reads;
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
     reads.factsDigest = facts.finalize();
-    reads.frameRange = false;
+    reads.frameRange = placement.animated;
     if (!emitSceneLayer(base, reads, author, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 

@@ -80,6 +80,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
@@ -464,6 +465,36 @@ public:
 private:
     int* _depth;
 };
+
+std::vector<EffectInstancePtr>
+effectsRequestingOverlayImagesUpstream(const NodePtr& viewerNode,
+                                       int inputNb)
+{
+    std::vector<EffectInstancePtr> effects;
+    std::set<Node*> visited;
+    // The real input keeps a group in the walk, the redirected one steps into it or out of a
+    // GroupInput.
+    std::list<NodePtr> queue = { viewerNode->getRealInput(inputNb), viewerNode->getInput(inputNb) };
+
+    while (!queue.empty()) {
+        const NodePtr node = queue.front();
+        queue.pop_front();
+        if (!node || !visited.insert(node.get()).second) {
+            continue;
+        }
+        const EffectInstancePtr effect = node->getEffectInstance();
+        if (effect && effect->isOverlayImageRequested() && !node->isNodeDisabled() && !effect->producesDeepData() && !effect->producesSceneData()) {
+            effects.push_back(effect);
+        }
+        const int nInputs = node->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            queue.push_back(node->getRealInput(i));
+            queue.push_back(node->getInput(i));
+        }
+    }
+
+    return effects;
+}
 } // namespace
 
 void
@@ -686,6 +717,19 @@ ViewerInstance::initializeKnobs()
         downscaleLevel->populateChoices(entries);
     }
     k.downscaleLevel = downscaleLevel;
+
+    KnobIntPtr maxSamples = createViewerKnob<KnobInt>(this, page, tr("Max Samples"), kViewerParamMaxSamples,
+                                                      tr("The samples per pixel a progressive renderer refines the 3D view to; "
+                                                         "0 uses the renderer's default. A change restarts the render."));
+    maxSamples->setMinimum(0);
+    maxSamples->setDisplayMinimum(0);
+    maxSamples->setDisplayMaximum(4096);
+    k.maxSamples = maxSamples;
+
+    KnobBoolPtr refinementPaused = createViewerKnob<KnobBool>(this, page, tr("Refinement Paused"), kViewerParamRefinementPaused,
+                                                              tr("Holds a progressive renderer's refinement of the 3D view at its "
+                                                                 "current samples; off continues from them. Edits wait until it is off."));
+    k.refinementPaused = refinementPaused;
 
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
@@ -1361,6 +1405,14 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
             break;
         }
 
+        // A paused viewer keeps its last frame and resolves no input to render from. The stroke's points stay
+        // unconsumed, so the first render after un-pausing picks them all up.
+        if (isViewerPaused(i)) {
+            status[i] = eViewerRenderRetCodeRedraw;
+            args[i].reset();
+            continue;
+        }
+
         AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(i, canAbort, false);
 
         /*FrameRequestMap request;
@@ -1425,9 +1477,12 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 int currentlyPaintedStrokeMultiIndex;
                 getApp()->getStrokeAndMultiStrokeIndex(&currentlyPaintedStroke, &currentlyPaintedStrokeMultiIndex);
 
+                // A render queued for a stroke the user has since replaced has nothing left to draw.
+                if (currentlyPaintedStroke != activeStroke) {
+                    args[i].reset();
 
-                //If this crashes here that means the user could start a new stroke while this one is not done rendering.
-                assert(currentlyPaintedStroke == activeStroke);
+                    return eViewerRenderRetCodeRedraw;
+                }
 
                 //the multi-stroke index in case of a stroke containing multiple strokes from the user
                 int strokeIndex;
@@ -1484,7 +1539,8 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 args[i].reset();
             }
 
-            if (args[i]) {
+            // Redraw arguments resolve no input: there is nothing to render.
+            if (args[i] && (status[i] == eViewerRenderRetCodeRender)) {
                 status[i] = renderViewer_internal(view,
                                                   QThread::currentThread() == qApp->thread(), // singleThreaded
                                                   false, // isSequentialRender
@@ -1567,6 +1623,12 @@ ViewerInstance::renderViewer(ViewIdx view,
                 }
             }
             if (args[i]) {
+                for (const EffectInstancePtr& effect : args[i]->staleOverlayImageEffects) {
+                    // The A and B inputs can share a node: the first of them may have refreshed it.
+                    if (effect->overlayImagesStale(args[i]->overlayImageRequest)) {
+                        effect->renderOverlayImages(args[i]->overlayImageRequest, args[i]->params->abortInfo);
+                    }
+                }
                 ret[i] = renderViewer_internal(view, singleThreaded, isSequentialRender, viewerHash, canAbort, rotoPaintNode, useTLS, request,
                                                i == 0 ? stats : RenderStatsPtr(),
                                                *args[i]);
@@ -2069,7 +2131,8 @@ ViewerInstance::getRoDAndLookupCache(const bool useOnlyRoDCache,
 {
     // We never use the texture cache when the user RoI is enabled or while painting or when auto-contrast is on, otherwise we would have
     // zillions of textures in the cache, each a few pixels different.
-    const bool useTextureCache = !outArgs->userRoIEnabled && !outArgs->autoContrast && !rotoPaintNode.get() && !outArgs->isDoingPartialUpdates;
+    // A texture found in the cache would end the job here, before its overlay images get a pass.
+    const bool useTextureCache = !outArgs->userRoIEnabled && !outArgs->autoContrast && !rotoPaintNode.get() && !outArgs->isDoingPartialUpdates && outArgs->staleOverlayImageEffects.empty();
 
     // If it's eSupportsMaybe and mipmapLevel!=0, don't forget to update
     // this after the first call to getRegionOfDefinition().
@@ -2221,6 +2284,26 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     // Fetch the render parameters from the Viewer UI
     setupMinimalUpdateViewerParams(time, view, textureIndex, abortInfo, isSequential, outArgs);
 
+    // Playback gets no overlay images: they serve a node being edited, and a pass per played frame
+    // would render every such node twice.
+    outArgs->staleOverlayImageEffects.clear();
+    outArgs->overlayImagePassesPending.clear();
+    if (!isSequential && !rotoPaintNode) {
+        const int maxCoord = std::numeric_limits<int>::max() / 2;
+        OverlayImageRequest& request = outArgs->overlayImageRequest;
+        request.time = time;
+        request.view = view;
+        request.draftMode = outArgs->draftModeEnabled;
+        request.mipmapLevel = outArgs->draftModeEnabled ? outArgs->mipmapLevelWithDraft : outArgs->mipmapLevelWithoutDraft;
+        request.visibleCanonical = _imp->uiContext->getImageRectangleDisplayed(RectI(-maxCoord, -maxCoord, maxCoord, maxCoord), 1., 0);
+        for (const EffectInstancePtr& effect : effectsRequestingOverlayImagesUpstream(getNode(), outArgs->activeInputIndex)) {
+            if (effect->overlayImagesStale(request)) {
+                outArgs->staleOverlayImageEffects.push_back(effect);
+                outArgs->overlayImagePassesPending.push_back(effect->getNode()->markOverlayImagePassPending());
+            }
+        }
+    }
+
     // A scene has no RoD or texture to look up; it is evaluated on the render thread.
     if (outArgs->sceneUpstream) {
         return eViewerRenderRetCodeRender;
@@ -2284,6 +2367,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                       const RenderStatsPtr& stats,
                                       ViewerArgs& inArgs)
 {
+    assert(inArgs.activeInputToRender);
+
+    // The request was queued behind a render and its node may have been destroyed since.
+    const NodePtr activeInputNode = inArgs.activeInputToRender->getNode();
+    if (!activeInputNode) {
+        return eViewerRenderRetCodeRedraw;
+    }
+
     if (inArgs.sceneUpstream) {
         return evaluateSceneInput(inArgs);
     }
@@ -2303,7 +2394,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                      getTimeline().get(),
                                                                      false,
                                                                      rotoPaintNode,
-                                                                     inArgs.activeInputToRender->getNode(),
+                                                                     activeInputNode,
                                                                      inArgs.draftModeEnabled,
                                                                      stats);
     }
@@ -2346,7 +2437,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
      * 3) Single frame non-abortable render: the canAbort flag is set to false and the isSequentialRender flag is set to false.
      */
 
-    const bool useTextureCache = !inArgs.forceRender && !inArgs.userRoIEnabled && !inArgs.autoContrast && rotoPaintNode.get() == 0 && !inArgs.isDoingPartialUpdates;
+    const bool useTextureCache = !inArgs.forceRender && !inArgs.userRoIEnabled && !inArgs.autoContrast && rotoPaintNode.get() == 0 && !inArgs.isDoingPartialUpdates && inArgs.staleOverlayImageEffects.empty();
     RectI roi = inArgs.params->roi;
 
     // We might already have some tiles cached, get their bounding box to see if it is less than the actual RoI
@@ -2372,11 +2463,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
     }
 
-    assert(inArgs.activeInputToRender);
-
     ///Check that we were not aborted already
-    if ( !isSequentialRender && ( (inArgs.activeInputToRender->getHash() != inArgs.activeInputHash) ||
-                                  ( inArgs.params->time != getTimeline()->currentFrame() ) ) ) {
+    if (!isSequentialRender && ((activeInputNode->getHashValue() != inArgs.activeInputHash) || (inArgs.params->time != getTimeline()->currentFrame()))) {
         return eViewerRenderRetCodeRedraw;
     }
 
@@ -4314,6 +4402,9 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
         assert(params->roi.contains(texRect));
         uiContext->transferBufferFromRAMtoGPU(it->ramBuffer, it->bytesCount, params->roi, params->roiNotRoundedToTileSize, texRect, params->textureIndex, params->isPartialRect, isFirstTile, &texture);
         isFirstTile = false;
+    }
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteTextureUploaded();
     }
 
     NodePtr rotoPaintNode;

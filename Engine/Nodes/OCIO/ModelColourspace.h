@@ -49,13 +49,14 @@ NATRON_NAMESPACE_ENTER
  * it before building the tensor and its unpack converts the model's output back. Nothing else is
  * done to the pixels: no clamp, exposure or range handling.
  *
- * Until the user picks a space, the knob follows the space the selected model was trained in
- * (sRGB Encoded Rec.709 for an sRGB model, Linear Rec.2020 for a linear Rec.2020 one), resolved
- * through the config's names and aliases.
+ * Its Project default entry stands for the space the selected model was trained in (sRGB Encoded
+ * Rec.709 for an sRGB model, Linear Rec.2020 for a linear Rec.2020 one), resolved through the
+ * config's names and aliases.
  *
  * The node calls watchConfig() from initializeKnobs(), refreshMenus() from onKnobsLoaded(),
  * modelChanged() from onEffectCreated() and whenever its model changes, knobChanged() from
- * knobChanged(), and unwatchConfig() from its destructor.
+ * knobChanged(), appendHash() from appendNodeContentHash(), and unwatchConfig() from its
+ * destructor.
  **/
 class ModelColourspaceKnobs {
 public:
@@ -87,7 +88,10 @@ public:
     bool knobChanged(KnobI* k,
                      ValueChangedReasonEnum reason);
 
-    // The chosen space as the knob holds it.
+    // What the Project default entry stands for while it is chosen.
+    void appendHash(ContentHasher& h) const;
+
+    // The space chosen, or with Project default chosen the one it stands for.
     std::string space() const;
 
     Conversion conversion(double time) const;

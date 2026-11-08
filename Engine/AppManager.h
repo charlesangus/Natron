@@ -197,11 +197,10 @@ public:
     void setRenderFailed();
     bool hasRenderFailed() const WARN_UNUSED_RETURN;
     const PluginsMap & getPluginsList() const WARN_UNUSED_RETURN;
-    Plugin* getPluginBinary(const QString & pluginId,
+    Plugin* getPluginBinary(const QString& pluginId,
                             int majorVersion,
                             int minorVersion,
                             bool convertToLowerCase) const WARN_UNUSED_RETURN;
-    Plugin* getPluginBinaryFromOldID(const QString & pluginId, int majorVersion, int minorVersion) const WARN_UNUSED_RETURN;
 
     /*Find a builtin format with the same resolution and aspect ratio*/
     Format findExistingFormat(int w, int h, double par = 1.0) const WARN_UNUSED_RETURN;
@@ -505,6 +504,14 @@ public:
     virtual double getLogicalDPIYRATIO() const
     {
         return 72;
+    }
+
+    /**
+     * @brief The device pixel ratio of the screens the GUI draws on; 1 without a GUI.
+     **/
+    virtual double getScreenDevicePixelRatio() const
+    {
+        return 1.;
     }
 
     template <typename T>

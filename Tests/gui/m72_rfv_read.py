@@ -34,11 +34,11 @@ SETTLE_MS = 500
 POLL_TIMEOUT_S = 15.0
 SCREEN = (1920, 1080)
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
+PLUGIN_CHECKER = "CheckerBoard"
 PLUGIN_READ = "RFVRead"
 PLUGIN_SET = "RFVSet"
 PLUGIN_SWITCH = "RFVSwitch"
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
+PLUGIN_VIEWER = "Viewer"
 VARIABLES = "variables"
 
 try:

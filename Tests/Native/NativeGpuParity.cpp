@@ -401,7 +401,7 @@ bool
 prepareFrame(const NodePtr& root,
              double time,
              const RectI& window,
-             unsigned int mipmapLevel,
+             unsigned mipmapLevel,
              FrameRun* run,
              std::string* error)
 {
@@ -424,8 +424,8 @@ prepareFrame(const NodePtr& root,
                                        false /*draftMode*/,
                                        run->stats);
     std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
-    const double toCanonical = 1 << mipmapLevel;
-    const RectD rod(window.x1 * toCanonical, window.y1 * toCanonical, window.x2 * toCanonical, window.y2 * toCanonical);
+    const RectI canonical = window.upscalePowerOfTwo(mipmapLevel);
+    const RectD rod(canonical.x1, canonical.y1, canonical.x2, canonical.y2);
     if (EffectInstance::computeRequestPass(time, ViewIdx(0), mipmapLevel, rod, root, *request) == eStatusFailed) {
         *error = "request pass failed";
 
@@ -593,7 +593,7 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
                double time,
                const GpuContextReady& onGpuContext,
                const GpuFrameDone& onGpuFrame,
-               unsigned int mipmapLevel)
+               unsigned mipmapLevel)
 {
     EndToEndResult result;
     result.window = window;

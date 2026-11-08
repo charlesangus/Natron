@@ -196,21 +196,8 @@ if [[ ! -d "${OFX_PLUGIN_PATH}" || -z "$(ls -A "${OFX_PLUGIN_PATH}" 2>/dev/null)
     exit 1
 fi
 
-# Plug-ins only the tests load. ctest gets them on its path; the smoke test
-# does not, as it asserts OFX_PLUGIN_PATH holds exactly the shipped set.
+# Plug-ins built at refs other than the ones fetch-assets.sh pins would test something else.
 "${SCRIPT_DIR}/fetch-assets.sh" --check-pins || exit 1
-
-TEST_PLUGINS_DIR="${ASSETS_DIR}/TestPlugins"
-
-if [[ "${SUBCOMMAND}" == "ctest" ]]; then
-    if [[ ! -d "${TEST_PLUGINS_DIR}" || -z "$(ls -A "${TEST_PLUGINS_DIR}" 2>/dev/null)" ]]; then
-        echo "test.sh: ERROR: build/assets is missing or incomplete." >&2
-        echo "Expected a non-empty ${TEST_PLUGINS_DIR}." >&2
-        echo "Run tools/ci/local/fetch-assets.sh first." >&2
-        exit 1
-    fi
-    OFX_PLUGIN_PATH="${OFX_PLUGIN_PATH}:${TEST_PLUGINS_DIR}"
-fi
 
 export OFX_PLUGIN_PATH
 
@@ -248,21 +235,23 @@ case "${SUBCOMMAND}" in
         # ctest only rewrites this list when it gets as far as running cases, so
         # a leftover from an earlier run must not trigger a re-run.
         rm -f "${FAILED_LIST}"
-        if xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --timeout "${CTEST_TIMEOUT_SECONDS}" --output-on-failure; then
-            rc=0
-        else
-            rc=$?
+        CTEST_STDOUT="${BUILD_DIR}/Testing/Temporary/ctest-stdout.log"
+        mkdir -p "$(dirname "${CTEST_STDOUT}")"
+        # The capture feeds ctest-summary.sh; rc must stay ctest's own status, not tee's.
+        set +e
+        xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --timeout "${CTEST_TIMEOUT_SECONDS}" --output-on-failure 2>&1 | tee "${CTEST_STDOUT}"
+        pipe_status=("${PIPESTATUS[@]}")
+        rc=${pipe_status[0]}
+        tee_rc=${pipe_status[1]:-0}
+        set -e
+        if [[ "${tee_rc}" -ne 0 ]]; then
+            echo "test.sh: warning: could not write ${CTEST_STDOUT}" >&2
         fi
         FULL_LOG="${BUILD_DIR}/Testing/Temporary/LastTest.log"
-        # A failing suite's ctest line names only the suite; gtest names the case.
-        if [[ "${rc}" -ne 0 && -f "${FULL_LOG}" ]]; then
-            FAILED_CASES="$(grep -E '^\[  FAILED  \] [^ ]+\.[^ ]+' "${FULL_LOG}" | sed -E 's/^\[  FAILED  \] ([^ ,]+).*/\1/' | sort -u || true)"
-            if [[ -n "${FAILED_CASES}" ]]; then
-                echo "Failing cases:"
-                while IFS= read -r failed_case; do
-                    echo "[  FAILED  ] ${failed_case}"
-                done <<<"${FAILED_CASES}"
-            fi
+        # A failing suite's ctest line names only the suite; the summary adds the gtest
+        # cases and the tests that died before reporting any.
+        if [[ "${rc}" -ne 0 && -f "${CTEST_STDOUT}" ]]; then
+            "${SCRIPT_DIR}/ctest-summary.sh" "${CTEST_STDOUT}"
         fi
         if [[ -f "${FULL_LOG}" ]]; then
             echo "Complete output of every case: ${FULL_LOG}"

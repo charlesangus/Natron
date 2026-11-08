@@ -27,8 +27,10 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -55,6 +57,7 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+
 // The UV rows one band keeps: the coordinates of rows y - 1, y and y + 1 over the window grown
 // by one pixel on each side, rolled down as the band moves up.
 struct CoordRows {
@@ -197,6 +200,8 @@ IDistort::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _filterKnobs.create(this, page, filter, clamp);
+
     _map.createKnobs(this, page, kMapWarpKnobHints);
 
     addStageKnobs(page);
@@ -208,26 +213,20 @@ IDistort::initializeKnobs()
     }
     _map.declareLayerKnob(node, kIDistortInputMap);
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // IDistort::initializeKnobs
 
 void
-IDistort::updateClampEnabled(double time,
-                             ViewIdx view)
+IDistort::updateFilterVisibility(double time,
+                                 ViewIdx view)
 {
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr clamp = _clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    _filterKnobs.updateVisibility(time, view);
 }
 
 void
 IDistort::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -239,7 +238,7 @@ IDistort::knobChanged(KnobI* k,
 {
     KnobChoicePtr filter = _filter.lock();
     if (filter && (k == filter.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
@@ -252,13 +251,7 @@ IDistort::readSettings(double time,
                        ViewIdx view,
                        Settings* settings) const
 {
-    KnobChoicePtr filter = _filter.lock();
-    if (filter) {
-        const int value = filter->getValueAtTime(time, 0, view);
-        if ((value >= (int)Resampler::eFilterImpulse) && (value <= (int)Resampler::eFilterNotch)) {
-            settings->filter = (Resampler::FilterEnum)value;
-        }
-    }
+    settings->filter = _filterKnobs.read(time, view);
     KnobBoolPtr clamp = _clamp.lock();
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
@@ -431,10 +424,10 @@ IDistort::renderOp(const RenderActionArgs& args,
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
-    const bool impulse = settings.filter == Resampler::eFilterImpulse;
+    const bool impulse = settings.filter.filter == Resampler::eFilterImpulse;
     const OfxPointD s = args.mappedScale.toOfxPointD();
-    const double uScale = settings.uScale * s.x;
-    const double vScale = settings.vScale * s.y;
+    const double uScale = productOrInfinity(settings.uScale, s.x);
+    const double vScale = productOrInfinity(settings.vScale, s.y);
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
     // into a cached image this render would otherwise already hold a read lock on. The Map is
@@ -609,8 +602,8 @@ IDistort::renderOp(const RenderActionArgs& args,
         const double cy = (double)y + 0.5;
         if (!mapped) {
             for (int i = 0; i < gridWidth; ++i) {
-                sx[i] = (float)((double)(gridX0 + i) + 0.5 + ((double)uRow[i] - settings.uOffset) * uScale);
-                sy[i] = (float)(cy + ((double)vRow[i] - settings.vOffset) * vScale);
+                sx[i] = knobValueAsFloat((double)(gridX0 + i) + 0.5 + productOrInfinity((double)uRow[i] - settings.uOffset, uScale));
+                sy[i] = knobValueAsFloat(cy + productOrInfinity((double)vRow[i] - settings.vOffset, vScale));
             }
 
             return;
@@ -624,8 +617,8 @@ IDistort::renderOp(const RenderActionArgs& args,
                 sy[i] = (float)cy;
                 continue;
             }
-            sx[i] = (float)(cx + ((double)uRow[i] - settings.uOffset) * uScale * (double)m);
-            sy[i] = (float)(cy + ((double)vRow[i] - settings.vOffset) * vScale * (double)m);
+            sx[i] = knobValueAsFloat(cx + productOrInfinity(productOrInfinity((double)uRow[i] - settings.uOffset, uScale), (double)m));
+            sy[i] = knobValueAsFloat(cy + productOrInfinity(productOrInfinity((double)vRow[i] - settings.vOffset, vScale), (double)m));
         }
     };
 
@@ -868,12 +861,16 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     const OfxPointD s = query.mappedScale.toOfxPointD();
 
     WarpGpuParams params;
-    params.filter = (uint32_t)settings.filter;
-    params.flags = (settings.clamp ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
     setWarpGpuDouble(settings.uOffset, params.uOffset);
     setWarpGpuDouble(settings.vOffset, params.vOffset);
-    setWarpGpuDouble(settings.uScale * s.x, params.uScale);
-    setWarpGpuDouble(settings.vScale * s.y, params.vScale);
+    setWarpGpuDouble(productOrInfinity(settings.uScale, s.x), params.uScale);
+    setWarpGpuDouble(productOrInfinity(settings.vScale, s.y), params.vScale);
 
     WarpGpuMap map;
     map.input = kIDistortInputMap;

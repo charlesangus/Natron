@@ -4,30 +4,28 @@
 # need: the openfx-io OFX plugin bundle that Tests/BaseTest.cpp loads
 # through OFX_PLUGIN_PATH, the openfx-misc/openfx-arena OFX plugin bundles
 # that ship with Natron -- built here so CI proves they still build against
-# the pinned toolchain, the same way the rest of Natron is proven to build --
-# and the openfx metadata example plug-ins: Compare, Contribute and TimeCode
-# ship, Print is a test-only fixture.
+# the pinned toolchain, the same way the rest of Natron is proven to build.
 #
 # Result (idempotent, safe to re-run):
 #   build/assets/Plugins/IO.ofx.bundle/
 #   build/assets/Plugins/Misc.ofx.bundle/
 #   build/assets/Plugins/CImg.ofx.bundle/
 #   build/assets/Plugins/Arena.ofx.bundle/
-#   build/assets/Plugins/metadataCompare.ofx.bundle/
-#   build/assets/Plugins/metadataContribute.ofx.bundle/
-#   build/assets/Plugins/metadataTimeCode.ofx.bundle/
-#   build/assets/TestPlugins/metadataPrint.ofx.bundle/   (tests only)
 #   build/assets/plugin-src/deps-install/  (lcms2, libzip, ImageMagick --
 #                                           for openfx-arena)
 #   build/assets/rawspeed/                 (rawspeed, linked statically into
 #                                           Natron itself, with cameras.xml)
+#   build/assets/lensfun/                  (lensfun, linked statically into
+#                                           Natron itself, with its lens
+#                                           database)
 #   build/assets/onnxruntime/              (the official ONNX Runtime CPU
 #                                           release: headers for the build,
 #                                           the library for the bundle)
 #
 # A second run does no network or compile work if the plugin bundles already look
-# complete and the plugin stamp matches the pins below, and rawspeed's install
-# and the ONNX Runtime unpack are complete and their own stamps match their pins.
+# complete and the plugin stamp matches the pins below, and rawspeed's and
+# lensfun's installs and the ONNX Runtime unpack are complete and their own
+# stamps match their pins.
 #
 # --- Why the plugins are BUILT here, not downloaded -----------------------
 #
@@ -150,7 +148,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # #2-#3.
 #
 # This revision excludes the OFX Shuffle plugin, so Natron does not ship it
-# alongside the native fr.natron.Shuffle and fr.natron.ShuffleCopy.
+# alongside the native Shuffle and ShuffleCopy.
 #
 # It also has Grade, Premult/Unpremult, ColorCorrect, ColorSuppress,
 # ContactSheet and LayerContactSheet accept alpha-only (1-component) images,
@@ -165,9 +163,9 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # This revision excludes the OFX Grade, ColorCorrect, Saturation, Clamp,
 # Invert, Add, Multiply and Gamma plugins; the native nodes in Engine/Nodes/Color
 # take their IDs. It also excludes Merge (with its presets, MergeRoto and the
-# Merge 1.0 compat factories), Dissolve, Constant (Solid) and CheckerBoard,
+# Merge 1.0 compat factories), Dissolve, Constant, Solid and CheckerBoard,
 # which the native nodes in Engine/Nodes/Merge and Engine/Nodes/Generator take over.
-# It also excludes Transform and TransformMasked (DirBlur stays OFX), Crop, Position,
+# It also excludes Transform, TransformMasked (DirBlur stays OFX), Crop, Position,
 # Reformat (with its 1.1 compat factory) and CImgBlur, which the native nodes in
 # Engine/Nodes/Transform and Engine/Nodes/Filter take over.
 # It also excludes Keyer, ChromaKeyer, ColorLookup, CImgErode, CImgDilate and
@@ -238,16 +236,6 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
 OPENFX_ARENA_REF="88e6bc92ba81afa832ce98acc25521ebded02a74"
 
-# OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
-# whose Support/Plugins/Metadata* examples exercise the clip and image
-# metadata suite. Compare, Contribute and TimeCode have no native equivalent
-# and ship in Plugins/. Copy, Modify and View are redundant with the native
-# metadata nodes and are not built. Print is only a test fixture, so it goes
-# to TestPlugins/: tools/release/stage-bundle.sh ships every bundle under
-# Plugins/, and smoke_test.py asserts that set exactly.
-OPENFX_METADATA_REPO="https://github.com/charlesangus/openfx.git"
-OPENFX_METADATA_REF="ba379b1f7bba325e6d52bdb6a315309e48c236dc"
-
 # RAWSPEED_REF: darktable-org/rawspeed at the commit darktable's release
 # below pins as its src/external/rawspeed submodule, so the decoder and the
 # modules ported from that release agree. Not a plugin: Natron's own Engine
@@ -270,6 +258,15 @@ DARKTABLE_REF="20891f6c6fa7be995e5bf9dff9d1ee5062051773"
 # rendered at, this second revision. Its EIGF (src/common/eigf.h, gaussian.c) is the release's.
 DARKTABLE_MASTER_REF="fee19b421fdbf1bddd74307b68499943394993b6"
 
+# LENSFUN_REF: lensfun/lensfun master, the 0.3.99 development line, which
+# darktable's lens module supports through its LF_0395 API path. Not the image's
+# own lensfun: aswf/ci-vfxall ships the 0.3.4 release, whose bundled database
+# (format version 1, timestamped 2022-02) predates every recent camera body,
+# while master carries the maintained format-version-2 database. Linked
+# statically like rawspeed, with its own stamp, into a directory CI caches.
+LENSFUN_REPO="https://github.com/lensfun/lensfun.git"
+LENSFUN_REF="052c3ec6380aaa172caa6d7ea3a5eaafe0b052da"
+
 # ONNXRUNTIME_VERSION: microsoft/onnxruntime's official Linux x64 CPU release,
 # downloaded prebuilt and checked against the sha256 below. Natron never links
 # it: Engine/Ai includes onnxruntime_c_api.h and dlopen()s the library at run
@@ -281,20 +278,23 @@ ONNXRUNTIME_SHA256="c849e36a1ef3e22d4ff217b9d1ce4a3cf5b9467b975610913ae959ad5b16
 ONNXRUNTIME_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
 
 PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
-TEST_PLUGINS_TARGET="${ASSETS_DIR}/TestPlugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
 DEPS_PREFIX="${PLUGINS_SRC_DIR}/deps-install"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
 # CImg.h outlives plugin-src/ (which CI does not cache) because the native
 # kernel tests compare against it; Tests/CMakeLists.txt reads this path.
 CIMG_HEADER_KEPT="${ASSETS_DIR}/CImg/CImg.h"
-PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF} imagemagick=${IMAGEMAGICK_REF} openfx-arena=${OPENFX_ARENA_REF} openfx-metadata=${OPENFX_METADATA_REF}"
+PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF} imagemagick=${IMAGEMAGICK_REF} openfx-arena=${OPENFX_ARENA_REF}"
 
 RAWSPEED_PREFIX="${ASSETS_DIR}/rawspeed"
 RAWSPEED_STAMP="${RAWSPEED_PREFIX}/.natron-rawspeed-pin"
 # recipe= changes whenever the build flags below change, so a local re-run
 # rebuilds even though the ref did not move.
 RAWSPEED_WANT="rawspeed=${RAWSPEED_REF} recipe=1"
+
+LENSFUN_PREFIX="${ASSETS_DIR}/lensfun"
+LENSFUN_STAMP="${LENSFUN_PREFIX}/.natron-lensfun-pin"
+LENSFUN_WANT="lensfun=${LENSFUN_REF} recipe=1"
 
 ONNXRUNTIME_PREFIX="${ASSETS_DIR}/onnxruntime"
 ONNXRUNTIME_STAMP="${ONNXRUNTIME_PREFIX}/.natron-onnxruntime-pin"
@@ -312,6 +312,12 @@ if [[ "${CHECK_PINS}" -eq 1 ]]; then
         echo "fetch-assets.sh: ${RAWSPEED_PREFIX} was not built at the pinned ref." >&2
         echo "  built:  $(cat "${RAWSPEED_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
         echo "  pinned: ${RAWSPEED_WANT}" >&2
+        pins_ok=0
+    fi
+    if [ ! -f "${LENSFUN_STAMP}" ] || [ "$(cat "${LENSFUN_STAMP}")" != "${LENSFUN_WANT}" ]; then
+        echo "fetch-assets.sh: ${LENSFUN_PREFIX} was not built at the pinned ref." >&2
+        echo "  built:  $(cat "${LENSFUN_STAMP}" 2>/dev/null || echo "<no stamp>")" >&2
+        echo "  pinned: ${LENSFUN_WANT}" >&2
         pins_ok=0
     fi
     if [ ! -f "${ONNXRUNTIME_STAMP}" ] || [ "$(cat "${ONNXRUNTIME_STAMP}")" != "${ONNXRUNTIME_WANT}" ]; then
@@ -353,29 +359,16 @@ MISC_OFX="${PLUGINS_TARGET}/Misc.ofx.bundle/Contents/Linux-x86-64/Misc.ofx"
 CIMG_OFX="${PLUGINS_TARGET}/CImg.ofx.bundle/Contents/Linux-x86-64/CImg.ofx"
 ARENA_OFX="${PLUGINS_TARGET}/Arena.ofx.bundle/Contents/Linux-x86-64/Arena.ofx"
 
-# The openfx-metadata example plugins, one bundle each. Directory name
-# (Support/Plugins/<dir> in the fork) paired with the lowerCamel plugin/bundle
-# name it produces, which is also the tail of that plugin's
-# org.openfx.examples.<name> identifier, and the directory it is installed to.
-METADATA_PLUGIN_DIRS=(MetadataCompare MetadataContribute MetadataTimeCode MetadataPrint)
-METADATA_PLUGIN_NAMES=(metadataCompare metadataContribute metadataTimeCode metadataPrint)
-METADATA_PLUGIN_TARGETS=("${PLUGINS_TARGET}" "${PLUGINS_TARGET}" "${PLUGINS_TARGET}" "${TEST_PLUGINS_TARGET}")
-METADATA_OFX=()
-for i in "${!METADATA_PLUGIN_NAMES[@]}"; do
-    METADATA_OFX+=("${METADATA_PLUGIN_TARGETS[$i]}/${METADATA_PLUGIN_NAMES[$i]}.ofx.bundle/Contents/Linux-x86-64/${METADATA_PLUGIN_NAMES[$i]}.ofx")
-done
+# A cached assets directory can still hold any OpenFX metadata example bundle
+# (Compare, Contribute, TimeCode, Print, Copy, Modify, View, ...) and the
+# TestPlugins directory that used to hold them. The native metadata nodes
+# replace them, and a leftover bundle would load beside them and ship. This runs
+# before the stamp check so the fast path cleans too.
+rm -rf "${PLUGINS_TARGET:?}"/metadata*.ofx.bundle \
+       "${ASSETS_DIR:?}/TestPlugins" \
+       "${PLUGINS_SRC_DIR:?}/openfx-metadata"
 
-# The stamp lives in Plugins/, so a cache that restored Plugins/ without
-# TestPlugins/ would otherwise pass for complete.
-metadata_plugins_present() {
-    local ofx
-    for ofx in "${METADATA_OFX[@]}"; do
-        [ -f "${ofx}" ] || return 1
-    done
-    return 0
-}
-
-if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ] && [ -f "${CIMG_HEADER_KEPT}" ] && metadata_plugins_present; then
+if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ] && [ -f "${CIMG_HEADER_KEPT}" ]; then
     echo "[Plugins] already built at the pinned refs -- skipping."
     echo "[Plugins]   ${PLUGINS_WANT}"
 else
@@ -391,7 +384,6 @@ else
     clone_at_ref "${LIBZIP_REPO}"      "${LIBZIP_REF}"      "${PLUGINS_SRC_DIR}/libzip"
     clone_at_ref "${IMAGEMAGICK_REPO}" "${IMAGEMAGICK_REF}" "${PLUGINS_SRC_DIR}/ImageMagick"
     clone_at_ref "${OPENFX_ARENA_REPO}" "${OPENFX_ARENA_REF}" "${PLUGINS_SRC_DIR}/openfx-arena"
-    clone_at_ref "${OPENFX_METADATA_REPO}" "${OPENFX_METADATA_REF}" "${PLUGINS_SRC_DIR}/openfx-metadata"
 
     # --- lcms2 ---------------------------------------------------------
     # `configure` is checked into the tag (not generated at release time
@@ -590,20 +582,6 @@ else
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     cmake --build "${ARENA_BUILD}" -j "$(nproc)"
 
-    # --- openfx-metadata plugins -------------------------------------------
-    # `make`, not the top-level CMake build: openfx's CMakeLists.txt:70 does
-    # `find_package(opengl_system REQUIRED)` for BUILD_EXAMPLE_PLUGINS, which
-    # is a Conan package and Conan is not available here. Each
-    # Support/Plugins/<Name> directory instead has its own standalone
-    # Makefile (via Makefile.master) that needs only libGL and the C++
-    # toolchain, so `make CONFIG=release` builds it straight from this
-    # container's own libraries.
-    echo "[Plugins] building the openfx-metadata example plugins..."
-    METADATA_SRC="${PLUGINS_SRC_DIR}/openfx-metadata"
-    for dir in "${METADATA_PLUGIN_DIRS[@]}"; do
-        make -C "${METADATA_SRC}/Support/Plugins/${dir}" CONFIG=release
-    done
-
     # All three projects' install targets already emit the OFX bundle layout
     # (<Name>.ofx.bundle/Contents/{Linux-x86-64,Resources,Info.plist}), which
     # is exactly what OFX_PLUGIN_PATH expects -- no hand-assembly needed.
@@ -611,24 +589,13 @@ else
     # CImg.ofx.bundle) into the same prefix as IO.ofx.bundle; the rm -rf
     # happens once, before any --install, so a run interrupted partway never
     # leaves PLUGINS_TARGET in a mixed old/new state.
-    rm -rf "${PLUGINS_TARGET}" "${TEST_PLUGINS_TARGET}"
-    mkdir -p "${PLUGINS_TARGET}" "${TEST_PLUGINS_TARGET}"
+    rm -rf "${PLUGINS_TARGET}"
+    mkdir -p "${PLUGINS_TARGET}"
     cmake --install "${IO_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
     cmake --install "${MISC_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
     cmake --install "${ARENA_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
 
-    # openfx-metadata's Makefile build emits its own bundle layout directly
-    # under Support/Plugins/<Name>/Linux-64-release/, one bundle per plugin --
-    # copy each into its target. This has to happen after the rm -rf
-    # above, not before, or it gets deleted along with the previous run's
-    # bundles.
-    for dir_i in "${!METADATA_PLUGIN_DIRS[@]}"; do
-        dir="${METADATA_PLUGIN_DIRS[$dir_i]}"
-        name="${METADATA_PLUGIN_NAMES[$dir_i]}"
-        cp -R "${METADATA_SRC}/Support/Plugins/${dir}/Linux-64-release/${name}.ofx.bundle" "${METADATA_PLUGIN_TARGETS[$dir_i]}/"
-    done
-
-    for ofx in "${IO_OFX}" "${MISC_OFX}" "${CIMG_OFX}" "${ARENA_OFX}" "${METADATA_OFX[@]}"; do
+    for ofx in "${IO_OFX}" "${MISC_OFX}" "${CIMG_OFX}" "${ARENA_OFX}"; do
         if [ ! -f "${ofx}" ]; then
             echo "[Plugins] ERROR: build produced no ${ofx}" >&2
             exit 1
@@ -687,11 +654,6 @@ else
             exit 1
         fi
     done
-
-    # The openfx-metadata IDs can't be checked with `strings` here -- same
-    # contiguous-bytes problem as net.fxarena.openfx.Text, see the comment
-    # by ARENA_PROBE_OUT below. They're asserted from the verify_plugin_loads
-    # probe output instead, further down.
 
     echo "${PLUGINS_WANT}" > "${PLUGINS_STAMP}"
     echo "[Plugins] done -> ${PLUGINS_TARGET}"
@@ -833,6 +795,105 @@ CONFIG
 fi
 
 # ---------------------------------------------------------------------------
+# lensfun (built from source, linked statically into Natron's Engine)
+# ---------------------------------------------------------------------------
+#
+# Static for the same reason as rawspeed. Its one dependency, glib-2.0, is the
+# image's system library, which Qt already links and the bundle's excludelist
+# leaves to the host. The headers are installed under include/lensfun and that
+# directory is the include root, so `#include <lensfun.h>` can never pick up the
+# image's older /usr/local/include/lensfun/lensfun.h.
+#
+# Flags:
+#   BUILD_STATIC=ON                  -- liblensfun.a, compiled with
+#                                       CONF_LENSFUN_STATIC, which consumers
+#                                       must define too.
+#   CMAKE_POSITION_INDEPENDENT_CODE  -- linkable into any Natron target.
+#   BUILD_TESTS/LENSTOOL/DOC=OFF,
+#   INSTALL_PYTHON_MODULE/HELPER_SCRIPTS=OFF -- only the library, its header
+#                                       and the database are needed.
+#   CMAKE_INSTALL_LIBDIR=lib         -- not lib64, so the config below can name
+#                                       one fixed path.
+#
+# The database lands in share/lensfun/version_2; Engine/CMakeLists.txt copies
+# it to Resources/lensfun beside every executable.
+LENSFUN_LIB="${LENSFUN_PREFIX}/lib/liblensfun.a"
+LENSFUN_HEADER="${LENSFUN_PREFIX}/include/lensfun/lensfun.h"
+LENSFUN_DB_DIR="${LENSFUN_PREFIX}/share/lensfun/version_2"
+LENSFUN_CONFIG="${LENSFUN_PREFIX}/lib/cmake/lensfun/lensfunConfig.cmake"
+LENSFUN_DEP_GLIB="/usr/lib64/libglib-2.0.so"
+
+if [ -f "${LENSFUN_STAMP}" ] && [ "$(cat "${LENSFUN_STAMP}")" = "${LENSFUN_WANT}" ] \
+    && [ -f "${LENSFUN_LIB}" ] && [ -f "${LENSFUN_HEADER}" ] && [ -d "${LENSFUN_DB_DIR}" ] && [ -f "${LENSFUN_CONFIG}" ]; then
+    echo "[lensfun] already built at the pinned ref -- skipping."
+    echo "[lensfun]   ${LENSFUN_WANT}"
+else
+    echo "[lensfun] building lensfun from source..."
+    echo "[lensfun]   ${LENSFUN_WANT}"
+
+    if [ ! -f "${LENSFUN_DEP_GLIB}" ] || ! pkg-config --exists glib-2.0; then
+        echo "[lensfun] ERROR: glib-2.0 (${LENSFUN_DEP_GLIB} and its pkg-config file) is missing from this image; lensfun needs it." >&2
+        exit 1
+    fi
+
+    mkdir -p "${PLUGINS_SRC_DIR}"
+    LENSFUN_SRC="${PLUGINS_SRC_DIR}/lensfun"
+    LENSFUN_BUILD="${PLUGINS_SRC_DIR}/lensfun-build"
+    LENSFUN_STAGE="${LENSFUN_PREFIX}.partial"
+    clone_at_ref "${LENSFUN_REPO}" "${LENSFUN_REF}" "${LENSFUN_SRC}"
+
+    rm -rf "${LENSFUN_BUILD}"
+    cmake -S "${LENSFUN_SRC}" -B "${LENSFUN_BUILD}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_INSTALL_DATAROOTDIR=share \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_STATIC=ON \
+        -DBUILD_TESTS=OFF \
+        -DBUILD_LENSTOOL=OFF \
+        -DBUILD_DOC=OFF \
+        -DINSTALL_PYTHON_MODULE=OFF \
+        -DINSTALL_HELPER_SCRIPTS=OFF \
+        > /dev/null
+    cmake --build "${LENSFUN_BUILD}" --target lensfun -j "$(nproc)"
+
+    rm -rf "${LENSFUN_STAGE}"
+    cmake --install "${LENSFUN_BUILD}" --prefix "${LENSFUN_STAGE}" > /dev/null
+    for installed in lib/liblensfun.a include/lensfun/lensfun.h share/lensfun/version_2/timestamp.txt; do
+        if [ ! -f "${LENSFUN_STAGE}/${installed}" ]; then
+            echo "[lensfun] ERROR: the install produced no ${installed}" >&2
+            exit 1
+        fi
+    done
+    if ! compgen -G "${LENSFUN_STAGE}/share/lensfun/version_2/*.xml" > /dev/null; then
+        echo "[lensfun] ERROR: the install produced no database XML under share/lensfun/version_2" >&2
+        exit 1
+    fi
+    mkdir -p "${LENSFUN_STAGE}/lib/cmake/lensfun"
+
+    cat > "${LENSFUN_STAGE}/lib/cmake/lensfun/lensfunConfig.cmake" <<CONFIG
+# Generated by tools/ci/local/fetch-assets.sh. Do not edit.
+get_filename_component(_lensfun_prefix "\${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+set(lensfun_REF "${LENSFUN_REF}")
+set(lensfun_DATABASE_DIR "\${_lensfun_prefix}/share/lensfun/version_2")
+if(NOT TARGET lensfun::lensfun)
+    add_library(lensfun::lensfun STATIC IMPORTED)
+    set_target_properties(lensfun::lensfun PROPERTIES
+        IMPORTED_LOCATION "\${_lensfun_prefix}/lib/liblensfun.a"
+        INTERFACE_INCLUDE_DIRECTORIES "\${_lensfun_prefix}/include/lensfun"
+        INTERFACE_COMPILE_DEFINITIONS CONF_LENSFUN_STATIC
+        INTERFACE_LINK_LIBRARIES "${LENSFUN_DEP_GLIB}")
+endif()
+unset(_lensfun_prefix)
+CONFIG
+
+    echo "${LENSFUN_WANT}" > "${LENSFUN_STAGE}/.natron-lensfun-pin"
+    rm -rf "${LENSFUN_PREFIX}"
+    mv "${LENSFUN_STAGE}" "${LENSFUN_PREFIX}"
+    echo "[lensfun] done -> ${LENSFUN_PREFIX}"
+fi
+
+# ---------------------------------------------------------------------------
 # ONNX Runtime (the official CPU release, unpacked as published)
 # ---------------------------------------------------------------------------
 ONNXRUNTIME_LIB="${ONNXRUNTIME_PREFIX}/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION}"
@@ -904,32 +965,13 @@ if [ ! -x "${VERIFY_LOADER_BIN}" ] || [ "${VERIFY_LOADER_SRC}" -nt "${VERIFY_LOA
         -o "${VERIFY_LOADER_BIN}"
 fi
 
-# Misc.ofx, CImg.ofx, Arena.ofx and the openfx-metadata bundles are all
-# self-contained (see the "openfx-misc is built the same way" note above,
-# and the library-staging comment in the openfx-arena build step; the
-# openfx-metadata plugins link only libGL/libstdc++/libc, all resolved by
-# the container itself), so a failed dlopen() here is always a real
-# regression -- fail loudly.
+# Misc.ofx, CImg.ofx and Arena.ofx are all self-contained (see the
+# "openfx-misc is built the same way" note above, and the library-staging
+# comment in the openfx-arena build step), so a failed dlopen() here is
+# always a real regression -- fail loudly.
 for ofx in "${MISC_OFX}" "${CIMG_OFX}" "${ARENA_OFX}"; do
     echo "[verify_plugin_loads] probing ${ofx##*/}..."
     "${VERIFY_LOADER_BIN}" "${ofx}"
-done
-
-# The openfx-metadata IDs have the same "not one contiguous run of
-# bytes" problem as net.fxarena.openfx.Text below -- see the comment by
-# ARENA_PROBE_OUT -- so each is asserted from this probe's own output
-# rather than via `strings`. Capture to a file first for the same
-# anti-pipefail reason as ARENA_PROBE_OUT: never `| grep -q` directly.
-for id_i in "${!METADATA_OFX[@]}"; do
-    metadata_ofx="${METADATA_OFX[$id_i]}"
-    id="org.openfx.examples.${METADATA_PLUGIN_NAMES[$id_i]}"
-    echo "[verify_plugin_loads] probing ${metadata_ofx##*/}..."
-    metadata_probe_out="${PLUGINS_SRC_DIR}/${METADATA_PLUGIN_NAMES[$id_i]}-probe-out.txt"
-    "${VERIFY_LOADER_BIN}" "${metadata_ofx}" > "${metadata_probe_out}"
-    if ! grep -Fq -- "${id} " "${metadata_probe_out}"; then
-        echo "[verify_plugin_loads] ERROR: ${metadata_ofx##*/} does not report plugin ${id}" >&2
-        exit 1
-    fi
 done
 
 # net.fxarena.openfx.Text, the pango Text that only this plugin owns (the

@@ -799,6 +799,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionRenderAll, kShortcutDescActionRenderAll, Qt::NoModifier, Qt::Key_F5);
 
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionEnableRenderStats, kShortcutDescActionEnableRenderStats, Qt::NoModifier, Qt::Key_F2);
+    registerKeybind(kShortcutGroupGlobal, kShortcutIDActionToggleInteractive, kShortcutDescActionToggleInteractive, Qt::AltModifier, Qt::Key_U);
 
     // Note: keys 0-1 are handled by Gui::handleNativeKeys(), and should thus work even on international keyboards
     registerKeybind(kShortcutGroupGlobal, kShortcutIDActionConnectViewerToInput1, kShortcutDescActionConnectViewerToInput1, Qt::NoModifier, Qt::Key_1);
@@ -1162,7 +1163,7 @@ GuiApplicationManager::releaseSceneViewEngines()
         for (ViewerTab* viewer : viewers) {
             SceneViewport* view = viewer->getSceneViewport();
             // Other delegates hold host memory, not the GPU's.
-            if (view && RenderDelegates::isStorm(view->getRenderer().getRendererId())) {
+            if (view && RenderDelegates::isStorm(view->getRenderer().getActiveRendererId())) {
                 view->releaseEngine();
             }
         }

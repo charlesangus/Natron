@@ -222,7 +222,7 @@ TEST_F(NativeDirBlurGpuTest, InputRegionIsTheSourceRegionOfInterest)
                 RectD srcRoD;
                 EffectInstancePtr sourceEffect = source->getEffectInstance();
                 ASSERT_NE(eStatusFailed, sourceEffect->getRegionOfDefinition(sourceEffect->getRenderHash(), kTime, scale, ViewIdx(0), &srcRoD));
-                const RectD region = DirBlur::sourceRegion(DirBlur::canonicalSamples(params, effect->zoomReference(kTime, ViewIdx(0))), window, scale, 1., srcRoD, params.blackOutside);
+                const RectD region = DirBlur::sourceRegion(DirBlur::canonicalSamples(params, effect->zoomReference(kTime, ViewIdx(0))), window, scale, 1., params.filter, srcRoD, params.blackOutside);
                 RectI expected = rect;
                 if (!region.isNull()) {
                     expected.merge(region.toPixelEnclosing(scale, 1.));

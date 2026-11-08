@@ -117,6 +117,9 @@
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/GPUContextPool.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDevice.h"
+#endif
 #include "Engine/GpuDeviceList.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
@@ -149,7 +152,10 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NativeRegistry.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
+#include "Engine/Nodes/Test/OverlayTestNode.h"
 
 #include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
@@ -418,6 +424,17 @@ AppManager::loadFromArgs(const CLArgs& cl)
 #else
              qputenv( "FONTCONFIG_PATH", stdFcPath.c_str() );
 #endif
+        }
+    }
+
+    // Before Python or a scene lists Hydra renderers: registers the bundled MoonRay delegate.
+    MoonRayRuntime::setUp(QCoreApplication::applicationDirPath().toStdString());
+
+    // Before Python or a scene asks OpenUSD for its resolver, which reads the registered ones once.
+    {
+        std::string liveTextureError;
+        if (!SceneCaches::registerLiveTextures(&liveTextureError)) {
+            std::cerr << liveTextureError << std::endl;
         }
     }
 
@@ -837,6 +854,10 @@ AppManager::loadInternal(const CLArgs& cl)
                 ",Max GPU Memory:" << printAsRAM(it->maxMemBytes);;
         }
     }
+    // setenv races with getenv on other threads, and the GPU context starts one, so the token must be set first.
+#ifdef NATRON_HAVE_GPU
+    gpu::requestTransferOnlyFamily();
+#endif
     const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
     _imp->_settings->populateGpuDevices(gpuDevices);
 
@@ -1200,13 +1221,16 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
                     wasKilled = false;
                 }
             }
-            if (!wasKilled) {
+            // The interpreter reset its projects before Python finalised; resetting again would run
+            // the close callback without Python.
+            if (!wasKilled && (_imp->_appType != eAppTypeInterpreter)) {
                 try {
                     mainInstance->getProject()->reset(true/*aboutToQuit*/, true /*blocking*/);
                 } catch (std::logic_error&) {
                     // ignore
                 }
-
+            }
+            if (!wasKilled) {
                 try {
                     mainInstance->quitNow();
                 } catch (std::logic_error&) {
@@ -1428,6 +1452,7 @@ void
 AppManager::freeGpuMemory()
 {
     SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseLiveTextures();
     releaseSceneViewEngines();
     if (_imp->gpuContext) {
         _imp->gpuContext->releaseIdleMemory();
@@ -1468,6 +1493,7 @@ AppManager::clearAllCaches()
     SceneCaches::releaseIdleQueryStages();
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
     SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseLiveTextures();
     SceneCaches::releaseCpuRenderEngines();
 
     ///for each app instance clear all its nodes cache
@@ -1796,6 +1822,11 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
 
 #include "NativeRegistryAll.inc"
+
+    if (qgetenv(kNatronGuiTestNodesEnvVar) == "1") {
+        registerNativePlugin<OverlayTestNode>();
+        registerNativePlugin<OverlayImageGuiTestNode>();
+    }
 
     // Registered in the background too, so that a script that loads and saves a project keeps its
     // viewers. Without a viewer widget a viewer never renders.
@@ -2376,88 +2407,6 @@ AppManager::getKnobFactory() const
 }
 
 Plugin*
-AppManager::getPluginBinaryFromOldID(const QString & pluginId,
-                                     int majorVersion,
-                                     int minorVersion) const
-{
-    std::map<int, Plugin*> matches;
-
-    if ( pluginId == QString::fromUtf8("Viewer") ) {
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_VIEWER), majorVersion, minorVersion);
-    } else if ( pluginId == QString::fromUtf8("Dot") ) {
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_DOT), majorVersion, minorVersion );
-    } else if ( pluginId == QString::fromUtf8("DiskCache") ) {
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_DISKCACHE), majorVersion, minorVersion);
-    } else if ( pluginId == QString::fromUtf8("Backdrop") ) { // DO NOT change the capitalization, even if it's wrong
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_BACKDROP), majorVersion, minorVersion);
-    } else if ( pluginId == QString::fromUtf8("RotoOFX  [Draw]") ) {
-        return _imp->findPluginById(QString::fromUtf8(PLUGINID_NATRON_ROTO), majorVersion, minorVersion);
-    }
-
-    ///Try remapping these ids to old ids we had in Natron < 1.0 for backward-compat
-    for (PluginsMap::const_iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
-        assert( !it->second.empty() );
-        PluginVersionsOrdered::const_reverse_iterator itver = it->second.rbegin();
-        QString friendlyLabel = (*itver)->getPluginLabel();
-        const QStringList& s = (*itver)->getGrouping();
-        QString grouping;
-        if (s.size() > 0) {
-            grouping = s[0];
-        }
-        friendlyLabel += QString::fromUtf8("  [") + grouping + QChar::fromLatin1(']');
-
-        if (friendlyLabel == pluginId) {
-            if (majorVersion == -1) {
-                // -1 means we want to load the highest version existing
-                return *( it->second.rbegin() );
-            }
-
-            PluginsMap::const_iterator foundID = it;
-            
-            // see also OFX::Host::PluginCache::getPluginById()
-            // see also AppManager::getPluginBinary()
-
-            // Let's be a bit smarter than HostSupport.
-            // The best compatible plugin is, by order of preference
-            // - the plugin with the same major version and the highest minor
-            // - the plugin with the closest major above and the highest minor
-            // - the plugin with the highest major and the highest minor
-            //
-            // For example, if versions (1,0) (1,2) (3,1) (3,4) (4,2) are available,
-            // - asking for (1,0) returns (1,2)
-            // - asking for (2,7) returns (3,4)
-            // - asking for (3,1) returns (3,4)
-            // - asking for (6,0) returns (4,2)
-
-            // Try to find the exact major version, with the highest minor
-            // (thus the reverse iterator)
-            Plugin* nextPlugin = *(foundID->second.rbegin());
-            int nextVersion = nextPlugin->getMajorVersion();
-            for (PluginVersionsOrdered::const_reverse_iterator itver = foundID->second.rbegin(); itver != foundID->second.rend(); ++itver) {
-                int thisMajorVersion = (*itver)->getMajorVersion();
-                if (thisMajorVersion == majorVersion) {
-                    return *itver;
-                } else if (thisMajorVersion > majorVersion &&
-                           thisMajorVersion < nextVersion) {
-                    nextPlugin = *itver;
-                    nextVersion = thisMajorVersion;
-                } else if (thisMajorVersion < majorVersion) {
-                    // no need to continue
-                    break;
-                }
-            }
-            assert(nextPlugin != NULL); // there should be at least one version
-
-            // Could not find the exact version... get the major version above,
-            // else the highest version.
-            return nextPlugin;
-        }
-    }
-
-    return 0;
-}
-
-Plugin*
 AppManager::getPluginBinary(const QString & pluginId,
                             int majorVersion,
                             int minorVersion,
@@ -2470,12 +2419,9 @@ AppManager::getPluginBinary(const QString & pluginId,
         foundID = _imp->_plugins.end();
         for (PluginsMap::const_iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
             QString pID = QString::fromUtf8( it->first.c_str() );
-            if ( !pluginId.startsWith( QString::fromUtf8(NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.") ) ) {
-                QString lowerCase = pID.toLower();
-                if (lowerCase == pluginId) {
-                    foundID = it;
-                    break;
-                }
+            if (pID.toLower() == pluginId) {
+                foundID = it;
+                break;
             }
         }
     }
@@ -2484,7 +2430,6 @@ AppManager::getPluginBinary(const QString & pluginId,
         assert( !foundID->second.empty() );
 
         // see also OFX::Host::PluginCache::getPluginById()
-        // see also AppManager::getPluginBinaryFromOldID()
 
         if (majorVersion == -1) {
             // -1 means we want to load the highest version existing
@@ -3462,6 +3407,52 @@ AppManager::initBuiltinPythonModules()
     }
 }
 
+namespace {
+// Py_Main finalises Python before it returns, and resetting a project runs Python: its close
+// callback and the removal of each node's variable. The projects are reset from Python's exit
+// handlers instead, which run before it finalises.
+PyObject*
+resetProjectsBeforePythonExit(PyObject* /*self*/,
+                              PyObject* /*args*/)
+{
+    if (appPTR) {
+        // A node's processing may need the Python lock to finish.
+        PythonGILUnlocker unlocker;
+        const AppInstanceVec instances = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+            // No exception may cross Python's frames.
+            try {
+                (*it)->getProject()->reset(true /*aboutToQuit*/, true /*blocking*/);
+            } catch (const std::exception& e) {
+                std::cerr << "Resetting a project before Python exits failed: " << e.what() << std::endl;
+            }
+        }
+    }
+    Py_RETURN_NONE;
+}
+
+PyMethodDef resetProjectsBeforePythonExitDef = { "resetProjectsBeforePythonExit", resetProjectsBeforePythonExit, METH_NOARGS, nullptr };
+
+bool
+registerProjectsResetAtPythonExit()
+{
+    PyObject* atexitModule = PyImport_ImportModule("atexit");
+    PyObject* function = atexitModule ? PyCFunction_New(&resetProjectsBeforePythonExitDef, nullptr) : nullptr;
+    PyObject* result = function ? PyObject_CallMethod(atexitModule, "register", "O", function) : nullptr;
+
+    Py_XDECREF(result);
+    Py_XDECREF(function);
+    Py_XDECREF(atexitModule);
+    if (!result) {
+        PyErr_Print();
+
+        return false;
+    }
+
+    return true;
+}
+} // anon namespace
+
 void
 AppManager::launchPythonInterpreter()
 {
@@ -3480,6 +3471,10 @@ AppManager::launchPythonInterpreter()
 #if PY_VERSION_HEX >= 0x030400F0
     assert(PyGILState_Check()); // Not available prior to Python 3.4
 #endif
+
+    if (!registerProjectsResetAtPythonExit()) {
+        throw std::runtime_error("AppManager::launchPythonInterpreter(): could not register the projects' reset with Python's atexit.");
+    }
 
     Py_Main(1, &_imp->commandLineArgsWide[0]);
 }

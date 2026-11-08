@@ -479,12 +479,7 @@ NodeGui::initialize(NodeGraph* dag,
 
     //Refresh the merge operator icon
     if (internalNode->getPluginID() == PLUGINID_NATRON_NATIVE_MERGE) {
-        KnobIPtr knob = internalNode->getKnobByName(kNatronOfxParamStringSublabelName);
-        assert(knob);
-        KnobString* strKnob = dynamic_cast<KnobString*>( knob.get() );
-        if (strKnob) {
-            refreshNodeText( QString::fromUtf8( strKnob->getValue().c_str() ) );
-        }
+        refreshNodeText(QString::fromUtf8(internalNode->getSublabel().c_str()));
     }
 
     if ( internalNode->makePreviewByDefault() ) {
@@ -752,6 +747,13 @@ NodeGui::onSettingsPanelClosed(bool closed)
         EffectInstancePtr effect = closedNode ? closedNode->getEffectInstance() : EffectInstancePtr();
         if (effect) {
             effect->closeOverlayEditStepIfOwner();
+        }
+    }
+    {
+        NodePtr node = getNode();
+        EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+        if (effect) {
+            effect->refreshOverlayImages();
         }
     }
     // A node nobody looks at is left dirty by the edits upstream of it, and its panel shows it.
@@ -4828,6 +4830,9 @@ public:
     virtual void redo() OVERRIDE FINAL
     {
         _command->redo();
+        if (_command->isObsolete()) {
+            setObsolete(true);
+        }
     }
 
     virtual void undo() OVERRIDE FINAL

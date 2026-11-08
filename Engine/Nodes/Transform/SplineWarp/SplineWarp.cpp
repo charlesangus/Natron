@@ -387,7 +387,7 @@ SplineWarp::initializeKnobs()
         context->createTransformKnobs(transformPage);
         const RotoCurveContext::TransformKnobs knobs = context->getTransformKnobs();
         getNode()->addTransformInteract(knobs.translate, knobs.scale, knobs.scaleUniform, knobs.rotate, knobs.skewX, knobs.skewY,
-                                        knobs.skewOrder, knobs.center, KnobBoolPtr() /*invert*/, knobs.interactive);
+                                        knobs.skewOrder, knobs.center, KnobBoolPtr() /*invert*/);
     }
 
     const KnobPagePtr renderPage = createKnob<KnobPage>(tr("Render"));
@@ -511,6 +511,8 @@ SplineWarp::initializeKnobs()
     renderPage->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _filterKnobs.create(this, renderPage, filter, clamp);
+
     KnobChoicePtr bbox = createKnob<KnobChoice>(tr("BBox"));
     bbox->setName(kSplineWarpParamBBox);
     bbox->setHintToolTip(tr("The region of definition of the output."));
@@ -612,7 +614,7 @@ SplineWarp::initializeKnobs()
         });
     }
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
     updateCookieKnobsEnabled();
     registerOutputMaskLayer();
@@ -628,16 +630,10 @@ SplineWarp::selectDefaultTool()
 }
 
 void
-SplineWarp::updateClampEnabled(double time,
-                               ViewIdx view)
+SplineWarp::updateFilterVisibility(double time,
+                                   ViewIdx view)
 {
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr clamp = _clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    _filterKnobs.updateVisibility(time, view);
 }
 
 void
@@ -963,7 +959,7 @@ SplineWarp::shouldDrawHostOverlay() const
 void
 SplineWarp::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateSmoothnessVisibility();
     syncAmountKnobs();
     syncTransformKnobs();
@@ -986,7 +982,7 @@ SplineWarp::knobChanged(KnobI* k,
 
     KnobChoicePtr filter = _filter.lock();
     if (filter && (k == filter.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
@@ -1206,13 +1202,7 @@ SplineWarp::readSettings(double time,
     if (fieldResolution) {
         settings->fieldResolution = std::max(1., fieldResolution->getValueAtTime(time, 0, view));
     }
-    KnobChoicePtr filter = _filter.lock();
-    if (filter) {
-        const int value = filter->getValueAtTime(time, 0, view);
-        if ((value >= (int)Resampler::eFilterImpulse) && (value <= (int)Resampler::eFilterNotch)) {
-            settings->filter = (Resampler::FilterEnum)value;
-        }
-    }
+    settings->filter = _filterKnobs.read(time, view);
     KnobBoolPtr clamp = _clamp.lock();
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
@@ -1741,9 +1731,13 @@ SplineWarp::getRegionsOfInterest(double time,
             }
             SplineWarpFieldConstPtr field = computeField(warps[i].warp, warps[i].time, settings, window, s.x / par, s.y, subFrames);
             if (field && !field->isIdentity()) {
-                const double grow = Resampler::filterRoIExpansion(settings.filter);
+                double scaleX = 1.;
+                double scaleY = 1.;
+                field->getLargestKernelScales(&scaleX, &scaleY);
+                const double growX = Resampler::filterRoIExpansion(settings.filter, scaleX) * par / s.x;
+                const double growY = Resampler::filterRoIExpansion(settings.filter, scaleY) / s.y;
                 const RectD bounds = field->getSourceBounds();
-                region.merge(bounds.x1 - grow * par / s.x, bounds.y1 - grow / s.y, bounds.x2 + grow * par / s.x, bounds.y2 + grow / s.y);
+                region.merge(bounds.x1 - growX, bounds.y1 - growY, bounds.x2 + growX, bounds.y2 + growY);
             }
         }
     }
@@ -1802,7 +1796,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
     const int sourceInput = plan.sourceInput;
     Settings settings;
     readSettings(args.time, args.view, &settings, args.draftMode);
-    const bool impulse = settings.filter == Resampler::eFilterImpulse;
+    const bool impulse = settings.filter.filter == Resampler::eFilterImpulse;
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double par = getOutputPixelAspectRatio(args.time, args.view);
     const bool crop = !settings.cropFormat.isNull();
@@ -2180,9 +2174,13 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     const double par = getOutputPixelAspectRatio(query.time, query.view);
 
     SplineWarpGpuParams params;
-    params.filter = (uint32_t)settings.filter;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter)) ? kSplineWarpGpuClamp : 0u) | (settings.blackOutside ? kSplineWarpGpuBlackOutside : 0u)
-        | ((settings.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kSplineWarpGpuClamp : 0u) | (settings.blackOutside ? kSplineWarpGpuBlackOutside : 0u)
+        | ((settings.filter.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
 
     gpu::GpuRecordContext& ctx = args.context;
     const bool maskPlane = isOutputMaskPlane(query.plane, query.time, query.view);

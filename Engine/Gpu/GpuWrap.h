@@ -47,6 +47,7 @@ static_assert(sizeof(GpuWrapParams) <= GpuKernel::kMaxPushConstantBytes);
 
 inline constexpr uint32_t kGpuWrapFlagMask = 1;
 inline constexpr uint32_t kGpuWrapFlagMaskInvert = 2;
+inline constexpr uint32_t kGpuWrapFlagClampAlpha = 4;
 
 // Bindings of every kernel built on pixelwrap.slang: source, destination, mask, then the op's
 // parameter block (the filtered result for wrap_finish).
@@ -88,6 +89,8 @@ struct GpuWrap {
     uint32_t maskChannel = 0;
     bool maskInvert = false;
     float mix = 1.0f;
+    // Limits a blended alpha to 0 to 1.
+    bool clampAlpha = false;
     // The "(Un)premult by" channel as a component of the source pixel, -1 for none; outside the
     // source it reads 1.
     int32_t divisorChannel = -1;

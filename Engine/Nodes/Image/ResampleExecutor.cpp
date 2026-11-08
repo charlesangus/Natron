@@ -246,6 +246,7 @@ regionParams(const ResampleRequest& request,
     params.isIdentity = settings.transformIsIdentity;
     params.doMasking = stages.doMasking;
     params.mix = stages.mix;
+    params.readsUnprocessed = stages.readsUnprocessed;
 
     return params;
 }
@@ -376,14 +377,17 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
                         const GpuImageView& dst,
                         const RectI& rect)
 {
-    const Resampler::FilterEnum filter = draftMode ? Resampler::eFilterImpulse : settings.filter;
+    const Resampler::FilterSpec filter = draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : settings.filter;
     gpu::GpuResample resample;
     if (source.buffer) {
         resample.src = PassExec::toGpuBlurImage(source);
     }
     resample.channels = (uint32_t)nComps;
-    resample.filter = (uint32_t)filter;
-    resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter);
+    resample.filter = (uint32_t)filter.filter;
+    resample.lobes = filter.lobes;
+    resample.B = filter.B;
+    resample.C = filter.C;
+    resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter.filter);
     resample.blackOutside = settings.blackOutside;
     resample.matrices.resize(transforms.invTransforms.size());
     for (std::size_t i = 0; i < transforms.invTransforms.size(); ++i) {
@@ -396,23 +400,16 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
         if (!transforms.alphas.empty()) {
             m.weight = transforms.alphas[i];
         }
+        m.scaleX = Resampler::kernelScale(H(0, 0), H(0, 1));
+        m.scaleY = Resampler::kernelScale(H(1, 0), H(1, 1));
         // The Jacobian the CPU samples an affine matrix with, by which axes fall inside the
         // source. The kernel works a projective matrix's out per pixel.
         for (int state = 1; state < 4 && !m.isProjective(); ++state) {
             const bool x = (state & 1) != 0;
             const bool y = (state & 2) != 0;
-            const double Jxx = x ? H(0, 0) : 0.;
-            const double Jxy = x ? H(0, 1) : 0.;
-            const double Jyx = y ? H(1, 0) : 0.;
-            const double Jyy = y ? H(1, 1) : 0.;
-            gpu::GpuResampleJacobian& j = m.jacobians[state];
-            j.zero = (Jxx == 0.) && (Jxy == 0.) && (Jyx == 0.) && (Jyy == 0.);
-            int levelX = 0;
-            int levelY = 0;
-            if (!j.zero && Resampler::supersampleLevels(Jxx, Jxy, Jyx, Jyy, &levelX, &levelY)) {
-                j.levelX = (uint32_t)levelX;
-                j.levelY = (uint32_t)levelY;
-            }
+            const bool zeroX = !x || (H(0, 0) == 0. && H(0, 1) == 0.);
+            const bool zeroY = !y || (H(1, 0) == 0. && H(1, 1) == 0.);
+            m.jacobians[state].zero = zeroX && zeroY;
         }
     }
     if (resample.matrices.size() > 1) {
@@ -490,7 +487,7 @@ runResampleCpu(EffectInstance& effect,
         return eStatusOK;
     }
 
-    Resampler::FilterEnum filter = request.settings.filter;
+    Resampler::FilterSpec filter = request.settings.filter;
     if (args.draftMode) {
         filter = Resampler::eFilterImpulse;
     }
@@ -684,7 +681,7 @@ resampleRegionOfDefinition(EffectInstance& effect,
     rod->x2 = srcRoD.x2 + dx;
     rod->y1 = srcRoD.y1 + dy;
     rod->y2 = srcRoD.y2 + dy;
-    if (stages.doMasking || (stages.mix != 1.)) {
+    if (stages.doMasking || (stages.mix != 1.) || stages.readsUnprocessed) {
         rod->merge(srcRoD);
     }
 
@@ -710,7 +707,7 @@ resampleRegionsOfInterest(EffectInstance& effect,
     const bool hasSrcRoD = sourceRegionOfDefinition(input, time, scale, view, &srcRoD);
     const OfxPointD s = scale.toOfxPointD();
     const double srcPar = effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput);
-    const bool readsReference = stages.maskMix && (stages.doMasking || (stages.mix != 1.)) && !renderWindow.isNull();
+    const bool readsReference = ((stages.maskMix && (stages.doMasking || (stages.mix != 1.))) || stages.passThrough) && !renderWindow.isNull();
 
     RectD srcRoI = renderWindow;
     if (request.form == ResampleRequest::Form::Matrix) {
@@ -718,7 +715,7 @@ resampleRegionsOfInterest(EffectInstance& effect,
             srcRoD = RectD();
         }
         const Resampler::RegionParams params = regionParams(request, stages);
-        Resampler::getRegionOfInterest(request.transform, renderWindow, srcRoD, projectRect(effect), time, srcPar, s.x, s.y, params, &srcRoI);
+        Resampler::getRegionOfInterest(request.transform, renderWindow, srcRoD, projectRect(effect), time, srcPar, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1), s.x, s.y, params, &srcRoI);
         // Under concatenation the reference row is resampled with the op's filter, and the engine
         // maps this region through the concatenated transform.
         if (readsReference) {

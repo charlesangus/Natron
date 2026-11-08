@@ -49,7 +49,7 @@
 #include "Engine/Nodes/Raw/RawColorCalibrationMath.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWCOLORCALIBRATION "fr.natron.RawColorCalibration"
+#define PLUGINID_NATRON_RAWCOLORCALIBRATION "RawColorCalibration"
 #define PLUGIN_MAJOR_NATRON_RAWCOLORCALIBRATION 1
 
 #define kRawColorCalibrationParamCatOverride "catOverride"
@@ -105,6 +105,7 @@
 #define kRawColorCalibrationParamCheckerBottomLeft "checkerBottomLeft"
 #define kRawColorCalibrationParamCheckerCornerEnable "checkerCornerEnable"
 #define kRawColorCalibrationParamCheckerOverlayPoints "checkerOverlayPoints"
+#define kRawColorCalibrationParamCheckerShowPatches "checkerShowPatches"
 #define kRawColorCalibrationParamCheckerReport "checkerReport"
 #define kRawColorCalibrationParamCalibrate "calibrate"
 #define kRawColorCalibrationParamValidate "validate"
@@ -367,6 +368,7 @@ struct RawColorCalibrationOp {
     KnobDoubleWPtr checkerCorners[4];
     KnobBoolWPtr checkerCornerEnable[4];
     KnobChoiceWPtr checkerOverlayPoints;
+    KnobBoolWPtr checkerShowPatches;
     KnobStringWPtr checkerReport;
     KnobButtonWPtr calibrate;
     KnobButtonWPtr validate;
@@ -416,6 +418,13 @@ public:
      **/
     bool validateChecker(double time,
                          ViewIdx view);
+
+    virtual bool hasOverlayDrawList() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void buildOverlay(double time,
+                              const RenderScale& renderScale,
+                              ViewIdx view,
+                              OverlayDrawList* list) OVERRIDE FINAL;
 
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -510,6 +519,9 @@ private:
     float _lastDaylightTemperature;
     float _lastBlackBodyTemperature;
     bool _syncing;
+    // The delta E per patch of the last Calibrate or Validate: kept for the session only, and,
+    // as in darktable, it does not follow the corners until the next one.
+    std::vector<float> _checkerDeltaE;
 };
 
 NATRON_NAMESPACE_EXIT

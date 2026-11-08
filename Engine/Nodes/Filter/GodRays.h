@@ -32,6 +32,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/DirBlur.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Image/TransformMath.h"
@@ -71,7 +72,7 @@ struct GodRaysParams {
     int samples = 32;
     bool max = false;
     // How every copy is resampled, as the Transform node's Filter, Clamp and Black outside.
-    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    Resampler::FilterSpec filter;
     bool clamp = false;
     bool blackOutside = true;
 };
@@ -160,8 +161,6 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
-    // Enables Clamp only for the filters that honour it.
-    void updateClampEnabled(double time, ViewIdx view);
 
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
@@ -192,6 +191,7 @@ private:
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
+    Resampler::FilterKnobs _filterKnobs;
 };
 
 NATRON_NAMESPACE_EXIT

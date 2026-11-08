@@ -373,6 +373,30 @@ TEST_F(PersistentMessageTest, UpstreamCollectorFindsTheErroringShuffleOnlyWhileI
     EXPECT_FALSE(contains(found, unrelated));
 }
 
+// A viewer reconnected while it renders still reads its old input until the render ends, and that
+// input can be destroyed by then.
+TEST_F(PersistentMessageTest, WalksUpstreamStopAtADestroyedNode)
+{
+    NodePtr upstream = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(upstream));
+    NodePtr destroyed = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(destroyed));
+    connectNodes(upstream, destroyed, 0, true);
+    upstream->setPersistentMessage(eMessageTypeError, "upstream of the destroyed node");
+
+    destroyed->destroyNode(true, false);
+    EXPECT_EQ(0, destroyed->getNInputs());
+
+    NodesList roots;
+    roots.push_back(destroyed);
+    NodesList found;
+    Node::getNodesWithPersistentMessageUpstream(roots, &found);
+    EXPECT_TRUE(found.empty());
+
+    destroyed->clearPersistentMessage(true);
+    EXPECT_TRUE(upstream->hasPersistentMessage());
+}
+
 TEST_F(PersistentMessageTest, PreviewKeepsAChannelSelectorErrorAndClearsAGenericOne)
 {
     NodePtr reader = createReader("flat-three-layers.exr");

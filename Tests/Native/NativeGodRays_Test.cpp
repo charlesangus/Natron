@@ -38,6 +38,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "Native/NativeBlurRange.h"
 #include "NativeGolden.h"
 #include "NativeParity.h"
@@ -300,8 +301,12 @@ TEST_F(NativeGodRaysTest, InputsAndKnobs)
         { kGodRaysParamSamples, "Samples", false },
         { kGodRaysParamMax, "Max", false },
         { kResamplerParamFilterType, "Filter", false },
-        { kResamplerParamFilterClamp, "Clamp", false },
+        { kResamplerParamFilterClamp, "Clamp", true },
         { kResamplerParamFilterBlackOutside, "Black outside", false },
+        // Shown only for the filters that read them.
+        { kResamplerParamLobes, "Lobes", true },
+        { kResamplerParamBicubicB, "Bicubic B", true },
+        { kResamplerParamBicubicC, "Bicubic C", true },
         // Only the Viewer's transform handle uses these.
         { kGodRaysParamUniform, "Uniform", true },
         { kGodRaysParamSkewOrder, "Skew Order", true },
@@ -350,15 +355,15 @@ TEST_F(NativeGodRaysTest, InputsAndKnobs)
     ASSERT_TRUE(bool(max));
     EXPECT_FALSE(max->getValue());
 
-    // The Transform node's filter knobs and defaults; Clamp is enabled only for a filter that honours it.
+    // The Transform node's filter knobs and defaults; Clamp is shown only for a filter that honours it.
     KnobChoicePtr filter = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kResamplerParamFilterType));
     ASSERT_TRUE(bool(filter));
     EXPECT_EQ((int)Resampler::eFilterCubic, filter->getValue());
     KnobBoolPtr clamp = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterClamp));
     ASSERT_TRUE(bool(clamp));
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
-    EXPECT_TRUE(clamp->isEnabled(0));
+    EXPECT_FALSE(clamp->getIsSecret());
     KnobBoolPtr blackOutside = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterBlackOutside));
     ASSERT_TRUE(bool(blackOutside));
     EXPECT_TRUE(blackOutside->getValue());
@@ -546,6 +551,8 @@ TEST_F(NativeGodRaysTest, TileMatchesFullFrame)
         { "cubic", false, true, true },
         { "keys", true, false, false },
         { "impulse", false, false, true },
+        { "lanczos3", true, false, false },
+        { "sinc", false, true, true },
     };
     for (const auto& tc : cases) {
         NodePtr node = makeGodRays(source);
@@ -743,4 +750,22 @@ TEST_F(NativeGodRaysTest, Golden)
         return setKnobValues(g.node, kGodRaysParamScale, { 1.4, 1.4 }) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });
     }));
     runGoldenCases(getApp(), spec, v);
+}
+
+// The copies sample between pixel centres, so the filter and its parameters reach the result.
+TEST_F(NativeGodRaysTest, HonoursTheNewFiltersAndTheirParameters)
+{
+    resetProject();
+    NodePtr source = makeParitySource(0, 0);
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeGodRays(source);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kGodRaysParamTranslate, { 3.3, -2.6 }));
+    ASSERT_TRUE(setKnobValues(node, kGodRaysParamScale, { 0.7, 0.7 }));
+    ASSERT_TRUE(setKnobValues(node, kGodRaysParamSamples, { 9. }));
+
+    const RectI window = pixelRoD(node);
+    EXPECT_TRUE(filterChoiceChangesTheRender(node, window, kTime, Resampler::eFilterCubic, Resampler::eFilterLanczos3));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
 }

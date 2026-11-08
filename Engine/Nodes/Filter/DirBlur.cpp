@@ -63,7 +63,7 @@ using TransformMath::Mat3;
 namespace {
 #ifdef NATRON_HAVE_GPU
 // dirblur.slang's parameter block layout.
-constexpr std::size_t kDirBlurGpuHeaderWords = 3;
+constexpr std::size_t kDirBlurGpuHeaderWords = 6;
 constexpr std::size_t kDirBlurGpuSampleWords = 16;
 constexpr uint32_t kDirBlurGpuSourceValid = 1;
 constexpr uint32_t kDirBlurGpuMax = 2;
@@ -102,14 +102,16 @@ constexpr ImagePipelineSpec kDirBlurPipeline = {
 };
 
 // The source pixels a sample of a matrix with linear part (a b; d e) reads around its centre, at
-// most: the widest (4-tap) filter's footprint and the supersampling of a minifying sample.
+// most: the filter's radius widened by the matrix's minification, which bounds kernelScale() of
+// either Jacobian row, and the box's integration, plus the pixel a tap range rounds out to.
 double
 footprint(const Mat3& m,
-          double par)
+          double par,
+          const Resampler::FilterSpec& filter)
 {
     const double spread = std::fabs(m(0, 0)) + std::fabs(m(0, 1)) + std::fabs(m(1, 0)) + std::fabs(m(1, 1));
 
-    return 2. + std::ceil(spread * std::max(par, 1. / par));
+    return 1. + std::ceil(filter.radius() * std::max(1., spread * std::max(par, 1. / par)));
 }
 
 RectD
@@ -333,6 +335,8 @@ DirBlur::initializeKnobs()
     page->addKnob(blackOutsideKnob);
     _blackOutside = blackOutsideKnob;
 
+    _filterKnobs.create(this, page, filterKnob, clampKnob);
+
     KnobGroupPtr tintGroup = AppManager::createKnob<KnobGroup>(this, tr("Tint"));
     tintGroup->setName(kDirBlurParamTintGroup);
     tintGroup->setHintToolTip(tr("The tint of the copies along the blur."));
@@ -371,7 +375,7 @@ DirBlur::initializeKnobs()
     _ramp = rampKnob;
 
     addStageKnobs(page);
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateModeVisibility();
 } // DirBlur::initializeKnobs
 
@@ -403,8 +407,7 @@ DirBlur::getParams(double time,
     }
     params.ramp = (reader.value(_ramp) == (int)eDirBlurRampExponential) ? eDirBlurRampExponential : eDirBlurRampLinear;
     params.max = reader.value(_max);
-    const int filter = reader.value(_filter);
-    params.filter = ((filter >= (int)Resampler::eFilterImpulse) && (filter <= (int)Resampler::eFilterNotch)) ? (Resampler::FilterEnum)filter : Resampler::eFilterCubic;
+    params.filter = _filterKnobs.read(reader);
     params.clamp = reader.value(_clamp);
     params.blackOutside = reader.value(_blackOutside);
 
@@ -451,7 +454,7 @@ DirBlur::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = _filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        _filterKnobs.updateVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
@@ -464,18 +467,6 @@ DirBlur::knobChanged(KnobI* k,
     }
 
     return StagedImageEffect::knobChanged(k, reason, view, time, originatedFromMainThread);
-}
-
-void
-DirBlur::updateClampEnabled(double time,
-                            ViewIdx view)
-{
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr clamp = _clamp.lock();
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
 }
 
 void
@@ -508,7 +499,7 @@ DirBlur::updateModeVisibility()
 void
 DirBlur::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
     updateModeVisibility();
 }
 
@@ -666,6 +657,7 @@ DirBlur::sourceRegion(const std::vector<DirBlurSample>& canonical,
                       const RectD& window,
                       const RenderScale& scale,
                       double par,
+                      const Resampler::FilterSpec& filter,
                       const RectD& srcRoD,
                       bool blackOutside)
 {
@@ -681,7 +673,7 @@ DirBlur::sourceRegion(const std::vector<DirBlurSample>& canonical,
         if (r.isNull()) {
             continue;
         }
-        const double grow = footprint(s.inverse, par);
+        const double grow = footprint(s.inverse, par, filter);
         r.x1 -= grow * par / sx;
         r.x2 += grow * par / sx;
         r.y1 -= grow / sy;
@@ -776,7 +768,7 @@ DirBlur::getRegionsOfInterest(double time,
         // The window itself too, which the mask and mix blend with.
         RectD roi = renderWindow;
         if (moves) {
-            mergeInto(sourceRegion(canonical, renderWindow, scale, par, sourceRoD(time, view, scale), params.blackOutside), &roi);
+            mergeInto(sourceRegion(canonical, renderWindow, scale, par, params.filter, sourceRoD(time, view, scale), params.blackOutside), &roi);
         }
         (*ret)[source] = roi;
     }
@@ -798,8 +790,8 @@ DirBlur::renderOp(const RenderActionArgs& args,
 {
     const DirBlurParams params = getParams(args.time, args.view);
     const std::vector<DirBlurSample> samples = pixelSamples(canonicalSamples(params, zoomReference(args.time, args.view)), args.time, args.mappedScale, outputPar(args.time, args.view));
-    const Resampler::FilterEnum filter = args.draftMode ? Resampler::eFilterImpulse : params.filter;
-    const bool clamp = params.clamp && Resampler::filterHonoursClamp(filter);
+    const Resampler::FilterSpec filter = args.draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : params.filter;
+    const bool clamp = params.clamp && Resampler::filterHonoursClamp(filter.filter);
     const bool takeMax = params.max;
 
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
@@ -937,7 +929,7 @@ DirBlur::getOpGpuInputRoI(int inputNb,
     const double sx = scale.toOfxPointD().x;
     const double sy = scale.toOfxPointD().y;
     const RectD window(outputRect.x1 * par / sx, outputRect.y1 / sy, outputRect.x2 * par / sx, outputRect.y2 / sy);
-    const RectD read = sourceRegion(canonicalSamples(params, zoomReference(time, view)), window, scale, par, sourceRoD(time, view, scale), params.blackOutside);
+    const RectD read = sourceRegion(canonicalSamples(params, zoomReference(time, view)), window, scale, par, params.filter, sourceRoD(time, view, scale), params.blackOutside);
     RectI roi = outputRect;
     if (!read.isNull()) {
         roi.merge(read.toPixelEnclosing(scale, par));
@@ -957,7 +949,7 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
     const StagePlan plan = resolveGpuPlan(query);
     const DirBlurParams params = getParams(query.time, query.view);
     const std::vector<DirBlurSample> samples = pixelSamples(canonicalSamples(params, zoomReference(query.time, query.view)), query.time, query.mappedScale, outputPar(query.time, query.view));
-    const Resampler::FilterEnum filter = query.draftMode ? Resampler::eFilterImpulse : params.filter;
+    const Resampler::FilterSpec filter = query.draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : params.filter;
 
     // The source cropped to its region of definition, as the CPU fetches it, is both sampled and
     // blended under the mask and mix.
@@ -969,19 +961,24 @@ DirBlur::renderOpGpu(const GpuRenderArgs& args)
     }
     const bool hasSource = sourceSlot && cropped.inputs[sourceInput].buffer;
 
-    // dirblur.slang's parameter block: filter, flags, count, then per sample the matrix's two rows as
-    // (hi, lo) float pairs and the four factors.
+    // dirblur.slang's parameter block: filter, flags, count, lobes, B, C, then per sample the
+    // matrix's two rows as (hi, lo) float pairs and the four factors.
     std::vector<uint32_t> words(kDirBlurGpuHeaderWords + samples.size() * kDirBlurGpuSampleWords, 0u);
     uint32_t flags = (hasSource ? kDirBlurGpuSourceValid : 0u) | (params.max ? kDirBlurGpuMax : 0u);
-    if (params.clamp && Resampler::filterHonoursClamp(filter)) {
+    if (params.clamp && Resampler::filterHonoursClamp(filter.filter)) {
         flags |= kDirBlurGpuClamp;
     }
     if (params.blackOutside) {
         flags |= kDirBlurGpuBlackOutside;
     }
-    words[0] = (uint32_t)filter;
+    const float bicubicB = (float)filter.B;
+    const float bicubicC = (float)filter.C;
+    words[0] = (uint32_t)filter.filter;
     words[1] = flags;
     words[2] = (uint32_t)samples.size();
+    words[3] = (uint32_t)filter.lobes;
+    std::memcpy(&words[4], &bicubicB, sizeof(float));
+    std::memcpy(&words[5], &bicubicC, sizeof(float));
     for (std::size_t i = 0; i < samples.size(); ++i) {
         uint32_t* w = &words[kDirBlurGpuHeaderWords + i * kDirBlurGpuSampleWords];
         const Mat3& m = samples[i].inverse;

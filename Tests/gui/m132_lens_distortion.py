@@ -27,8 +27,8 @@ SETTLE_MS = 700
 FALLBACK_SIZE = (1920.0, 1080.0)
 ALL_SECTIONS = ("plugin-ids", "models", "round-trip", "stmap", "settings-panel")
 
-PLUGIN_CHECKER = "net.sf.openfx.CheckerBoardPlugin"
-PLUGIN_VIEWER = "fr.inria.built-in.Viewer"
+PLUGIN_CHECKER = "CheckerBoard"
+PLUGIN_VIEWER = "Viewer"
 PLUGIN_LENS = "LensDistortion"
 
 PIXEL_DIFF_MIN = 60

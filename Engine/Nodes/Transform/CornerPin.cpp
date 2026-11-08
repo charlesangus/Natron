@@ -271,15 +271,6 @@ CornerPinOp::createKnobs(KnobHolder* holder,
     page->addKnob(overlayKnob);
     overlayPoints = overlayKnob;
 
-    KnobBoolPtr interactiveKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Interactive Update"));
-    interactiveKnob->setName(kCornerPinNodeParamInteractive);
-    interactiveKnob->setHintToolTip(EffectInstance::tr("If checked, update the parameter values during interaction with the image viewer, else update the values when pen is released."));
-    interactiveKnob->setDefaultValue(true);
-    interactiveKnob->setAnimationEnabled(false);
-    interactiveKnob->setEvaluateOnChange(false);
-    page->addKnob(interactiveKnob);
-    interactive = interactiveKnob;
-
     KnobBoolPtr invertKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Invert"));
     invertKnob->setName(kCornerPinNodeParamInvert);
     invertKnob->setHintToolTip(EffectInstance::tr("Invert the transform, extra matrix included."));
@@ -319,6 +310,8 @@ CornerPinOp::createKnobs(KnobHolder* holder,
     blackOutsideKnob->setDefaultValue(true);
     page->addKnob(blackOutsideKnob);
     blackOutside = blackOutsideKnob;
+
+    filterKnobs.create(holder, page, filterKnob, clampKnob);
 
     KnobDoublePtr motionBlurKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Motion Blur"));
     motionBlurKnob->setName(kCornerPinNodeParamMotionBlur);
@@ -391,7 +384,7 @@ CornerPinOp::bake(const KnobReader& reader) const
     }
 
     params.invert = reader.value(invert);
-    params.filter = (Resampler::FilterEnum)reader.value(filter);
+    params.filter = filterKnobs.read(reader);
     params.clamp = reader.value(clamp);
     params.blackOutside = reader.value(blackOutside);
 
@@ -745,7 +738,7 @@ CornerPinNode::initializeKnobs()
     page->addKnob(srcClipChanged);
     _srcClipChanged = srcClipChanged;
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
@@ -753,27 +746,21 @@ CornerPinNode::initializeKnobs()
         node->addCornerPinInteract(o.from[0].lock(), o.from[1].lock(), o.from[2].lock(), o.from[3].lock(),
                                    o.to[0].lock(), o.to[1].lock(), o.to[2].lock(), o.to[3].lock(),
                                    o.enable[0].lock(), o.enable[1].lock(), o.enable[2].lock(), o.enable[3].lock(),
-                                   o.overlayPoints.lock(), o.invert.lock(), o.interactive.lock());
+                                   o.overlayPoints.lock(), o.invert.lock());
     }
 } // CornerPinNode::initializeKnobs
 
 void
-CornerPinNode::updateClampEnabled(double time,
-                                  ViewSpec view)
+CornerPinNode::updateFilterVisibility(double time,
+                                      ViewSpec view)
 {
-    KnobChoicePtr filter = op().filter.lock();
-    KnobBoolPtr clamp = op().clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    op().filterKnobs.updateVisibility(time, view);
 }
 
 void
 CornerPinNode::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -878,7 +865,7 @@ CornerPinNode::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = o.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

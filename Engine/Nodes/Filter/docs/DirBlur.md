@@ -41,13 +41,15 @@ Length 0 with no Pixel Offset is the identity, whatever the tints or Max.
 
 ## Resampling
 
-Filter, Clamp and Black outside are the Transform node's knobs, with its filter set and semantics.
-The CPU uses `Resampler::resampleRow` per copy, and minified copies are supersampled as Transform
-does.
+Filter, Clamp, Black outside, Lobes, Bicubic B and Bicubic C are the Transform node's knobs, with
+its filter set and semantics; see [Transform](../../Transform/docs/Transform.md). The CPU uses
+`Resampler::resampleRow` per copy, and a minified copy widens the filter's kernel as Transform does.
 
 - **Filter** defaults to Cubic, as in Transform. Draft renders use Impulse.
-- **Clamp** works only for the filters that honour it (Keys, Simon, Rifman, Mitchell) and is
-  disabled otherwise. It keeps the filter's overshoot within the neighbouring pixels' range.
+- **Clamp** is shown only for the filters that can overshoot (Keys, Simon, Rifman, Mitchell, the
+  Lanczos filters, Sinc and Bicubic). It keeps the filter's overshoot within the range of the
+  pixels the filter reads.
+- **Lobes** is shown only for Sinc, **Bicubic B** and **Bicubic C** only for Bicubic.
 - **Black outside** (default on): a copy reads black beyond the Source's image, and the region of
   definition grows by one pixel. Off, a copy reads the Source's edge pixels, extended outwards, and
   the region of definition is the union of the copies' regions, not grown. To keep a tile equal to
@@ -59,8 +61,8 @@ does.
 
 The region of definition is the union of the Source's region of definition carried by every copy's
 forward matrix, grown by a pixel with Black outside, plus the Source's own region under a mask or a
-mix below 1. Each input is read over the window's preimage under every copy, grown by the widest
-filter's footprint and by the supersampling of a minifying copy (`DirBlur::sourceRegion`). The CPU
+mix below 1. Each input is read over the window's preimage under every copy, grown by the
+filter's radius, widened by a minifying copy's scale (`DirBlur::sourceRegion`). The CPU
 region of interest and the GPU input region are the same region in canonical coordinates. Each copy
 is resampled on its own and summed in sample order, so a pixel does not depend on the tile it is
 rendered in.
@@ -86,8 +88,11 @@ shown; the others are hidden, and come back with their values when the Mode chan
 | `resetCenter` | Reset Center | | Center to the middle of the Source's region of definition |
 | `pixelOffset` | Pixel Offset | 0 | Zoom only: moves every copy this many pixels further along the blur at the corners |
 | `filter` | Filter | Cubic | The Transform node's filters |
-| `clamp` | Clamp | off | Clamp the filter's overshoot (Keys, Simon, Rifman, Mitchell) |
+| `clamp` | Clamp | off | Clamp the filter's overshoot |
 | `black_outside` | Black outside | on | Read black beyond the Source; off repeats its edge pixels |
+| `lobes` | Lobes | 4 | Sinc's lobe count and radius, 2 to 8 |
+| `bicubicB` | Bicubic B | 1/3 | Bicubic's B; higher blurs more |
+| `bicubicC` | Bicubic C | 1/3 | Bicubic's C; higher sharpens more |
 | `fromColor` | From Color | (1, 1, 1, 1) | Tint at the start of the blur |
 | `toColor` | To Color | (1, 1, 1, 1) | Tint at the end of the blur |
 | `ramp` | Ramp | Linear | Linear or Exponential tint between the colours |

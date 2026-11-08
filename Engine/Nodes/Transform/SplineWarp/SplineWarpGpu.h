@@ -66,9 +66,12 @@ struct SplineWarpGpuParams {
     int32_t sampleX2 = 0;
     int32_t sampleY2 = 0;
     uint32_t sampleNComps = 0;
+    int32_t lobes = 4;
+    float bicubicB = 1.f / 3.f;
+    float bicubicC = 1.f / 3.f;
 };
 
-static_assert(sizeof(SplineWarpGpuParams) == 20 * 4, "splinewarp.slang reads 20 words");
+static_assert(sizeof(SplineWarpGpuParams) == 23 * 4, "splinewarp.slang reads 23 words");
 
 inline constexpr uint32_t kSplineWarpGpuSubFrameWords = 11;
 

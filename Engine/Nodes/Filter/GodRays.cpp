@@ -62,7 +62,7 @@ using TransformMath::Mat3;
 namespace {
 #ifdef NATRON_HAVE_GPU
 // dirblur.slang's parameter block layout.
-constexpr std::size_t kGodRaysGpuHeaderWords = 3;
+constexpr std::size_t kGodRaysGpuHeaderWords = 6;
 constexpr std::size_t kGodRaysGpuSampleWords = 16;
 constexpr uint32_t kGodRaysGpuSourceValid = 1;
 constexpr uint32_t kGodRaysGpuMax = 2;
@@ -350,12 +350,14 @@ GodRays::initializeKnobs()
     page->addKnob(blackOutsideKnob);
     _blackOutside = blackOutsideKnob;
 
+    _filterKnobs.create(this, page, filterKnob, clampKnob);
+
     addStageKnobs(page);
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
-        node->addTransformInteract(translateKnob, scaleKnob, uniformKnob, rotateKnob, skewXKnob, skewYKnob, skewOrderKnob, centerKnob, KnobBoolPtr(), KnobBoolPtr());
+        node->addTransformInteract(translateKnob, scaleKnob, uniformKnob, rotateKnob, skewXKnob, skewYKnob, skewOrderKnob, centerKnob, KnobBoolPtr());
     }
 } // GodRays::initializeKnobs
 
@@ -387,8 +389,7 @@ GodRays::getParams(double time,
     params.gamma = (gamma > 0.) ? gamma : 1.;
     params.samples = std::min(kMaxSamples, std::max(1, (int)reader.value(_samples)));
     params.max = reader.value(_max);
-    const int filter = reader.value(_filter);
-    params.filter = ((filter >= (int)Resampler::eFilterImpulse) && (filter <= (int)Resampler::eFilterNotch)) ? (Resampler::FilterEnum)filter : Resampler::eFilterCubic;
+    params.filter = _filterKnobs.read(reader);
     params.clamp = reader.value(_clamp);
     params.blackOutside = reader.value(_blackOutside);
 
@@ -463,7 +464,7 @@ GodRays::knobChanged(KnobI* k,
 {
     KnobChoicePtr filterKnob = _filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        _filterKnobs.updateVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
@@ -472,21 +473,9 @@ GodRays::knobChanged(KnobI* k,
 }
 
 void
-GodRays::updateClampEnabled(double time,
-                            ViewIdx view)
-{
-    KnobChoicePtr filter = _filter.lock();
-    KnobBoolPtr clamp = _clamp.lock();
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
-}
-
-void
 GodRays::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 double
@@ -576,7 +565,7 @@ GodRays::getRegionsOfInterest(double time,
     // The window itself too, which the mask and mix blend with.
     RectD roi = renderWindow;
     if (!TransformMath::isIdentity(params.transform)) {
-        mergeInto(DirBlur::sourceRegion(canonicalSamples(params), renderWindow, scale, outputPar(time, view), sourceRoD(time, view, scale), params.blackOutside), &roi);
+        mergeInto(DirBlur::sourceRegion(canonicalSamples(params), renderWindow, scale, outputPar(time, view), params.filter, sourceRoD(time, view, scale), params.blackOutside), &roi);
     }
     (*ret)[source] = roi;
 }
@@ -596,8 +585,8 @@ GodRays::renderOp(const RenderActionArgs& args,
 {
     const GodRaysParams params = getParams(args.time, args.view);
     const std::vector<DirBlurSample> samples = DirBlur::pixelSamples(canonicalSamples(params), args.time, args.mappedScale, outputPar(args.time, args.view));
-    const Resampler::FilterEnum filter = args.draftMode ? Resampler::eFilterImpulse : params.filter;
-    const bool clamp = params.clamp && Resampler::filterHonoursClamp(filter);
+    const Resampler::FilterSpec filter = args.draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : params.filter;
+    const bool clamp = params.clamp && Resampler::filterHonoursClamp(filter.filter);
     const bool takeMax = params.max;
 
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
@@ -735,7 +724,7 @@ GodRays::getOpGpuInputRoI(int inputNb,
     const double sx = scale.toOfxPointD().x;
     const double sy = scale.toOfxPointD().y;
     const RectD window(outputRect.x1 * par / sx, outputRect.y1 / sy, outputRect.x2 * par / sx, outputRect.y2 / sy);
-    const RectD read = DirBlur::sourceRegion(canonicalSamples(params), window, scale, par, sourceRoD(time, view, scale), params.blackOutside);
+    const RectD read = DirBlur::sourceRegion(canonicalSamples(params), window, scale, par, params.filter, sourceRoD(time, view, scale), params.blackOutside);
     RectI roi = outputRect;
     if (!read.isNull()) {
         roi.merge(read.toPixelEnclosing(scale, par));
@@ -755,7 +744,7 @@ GodRays::renderOpGpu(const GpuRenderArgs& args)
     const StagePlan plan = resolveGpuPlan(query);
     const GodRaysParams params = getParams(query.time, query.view);
     const std::vector<DirBlurSample> samples = DirBlur::pixelSamples(canonicalSamples(params), query.time, query.mappedScale, outputPar(query.time, query.view));
-    const Resampler::FilterEnum filter = query.draftMode ? Resampler::eFilterImpulse : params.filter;
+    const Resampler::FilterSpec filter = query.draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : params.filter;
 
     // The source cropped to its region of definition, as the CPU fetches it, is both sampled and
     // blended under the mask and mix.
@@ -767,19 +756,24 @@ GodRays::renderOpGpu(const GpuRenderArgs& args)
     }
     const bool hasSource = sourceSlot && cropped.inputs[sourceInput].buffer;
 
-    // dirblur.slang's parameter block: filter, flags, count, then per
+    // dirblur.slang's parameter block: filter, flags, count, lobes, B, C, then per
     // copy the matrix's two rows as (hi, lo) float pairs and the four factors.
     std::vector<uint32_t> words(kGodRaysGpuHeaderWords + samples.size() * kGodRaysGpuSampleWords, 0u);
     uint32_t flags = (hasSource ? kGodRaysGpuSourceValid : 0u) | (params.max ? kGodRaysGpuMax : 0u);
-    if (params.clamp && Resampler::filterHonoursClamp(filter)) {
+    if (params.clamp && Resampler::filterHonoursClamp(filter.filter)) {
         flags |= kGodRaysGpuClamp;
     }
     if (params.blackOutside) {
         flags |= kGodRaysGpuBlackOutside;
     }
-    words[0] = (uint32_t)filter;
+    const float bicubicB = (float)filter.B;
+    const float bicubicC = (float)filter.C;
+    words[0] = (uint32_t)filter.filter;
     words[1] = flags;
     words[2] = (uint32_t)samples.size();
+    words[3] = (uint32_t)filter.lobes;
+    std::memcpy(&words[4], &bicubicB, sizeof(float));
+    std::memcpy(&words[5], &bicubicC, sizeof(float));
     for (std::size_t i = 0; i < samples.size(); ++i) {
         uint32_t* w = &words[kGodRaysGpuHeaderWords + i * kGodRaysGpuSampleWords];
         const Mat3& m = samples[i].inverse;

@@ -1,5 +1,7 @@
 # ITransform
 
+The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
+
 Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
@@ -8,7 +10,7 @@ Tolerance:
 | ITransform | resampling | `kWarpTolerance` = `ParityTolerance::resampling()` (GPU) | the GPU against the CPU, Map connected, disconnected and outside its image, masked and mixed |
 
 The variable Transform: Transform's translate, rotate, scale, skew and centre, applied per output pixel by an
-amount the Map input gives. Transform (`net.sf.openfx.TransformPlugin`) is its base node in the I-variant registry
+amount the Map input gives. Transform (`Transform`) is its base node in the I-variant registry
 (`ITransform.reg.inc`); every knob they share has the same name.
 
 - **Map.** The Map input, from `MapInput` (`MapInput.h`), is an aux input: the host does not blend it, and the

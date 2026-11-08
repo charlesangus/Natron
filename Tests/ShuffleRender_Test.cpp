@@ -404,7 +404,7 @@ protected:
                         double left = 0.,
                         double bottom = 0.)
     {
-        *constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+        *constant = createNode(QString::fromUtf8("Constant"));
         ASSERT_TRUE(bool(*constant));
         KnobColor* color = dynamic_cast<KnobColor*>((*constant)->getKnobByName("color").get());
         ASSERT_TRUE(color != NULL);

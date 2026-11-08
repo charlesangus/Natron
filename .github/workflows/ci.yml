@@ -73,6 +73,8 @@ jobs:
       CCACHE_MAXSIZE: 3G
       # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
       NATRON_BUILD_JOBS: 4
+      # Several debug links at once, beside the compiles, exhaust the runner's memory and get it killed.
+      NATRON_LINK_JOBS: 1
 
     steps:
       - name: Checkout branch
@@ -146,6 +148,9 @@ jobs:
       # headers, cameras.xml) the Natron build links, built by its own
       # stamped step, so a hit skips that compile too.
       #
+      # build/assets/lensfun is the same for lensfun (static library,
+      # header, lens database).
+      #
       # build/assets/onnxruntime is the unpacked ONNX Runtime CPU release
       # whose headers the build includes and whose library the bundle ships.
       - name: Cache test assets
@@ -153,9 +158,9 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
@@ -263,9 +268,9 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
+            build/assets/lensfun
             build/assets/onnxruntime
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 

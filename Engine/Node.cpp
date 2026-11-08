@@ -860,6 +860,14 @@ Node::getStoredContentHash() const
     return _imp->contentHash;
 }
 
+U64
+Node::getStoredBaseContentHash() const
+{
+    QReadLocker l(&_imp->contentHashMutex);
+
+    return _imp->baseContentHash;
+}
+
 bool
 Node::getHashValueIfUpToDate(U64* hash) const
 {
@@ -931,7 +939,9 @@ Node::computeHashInternal(U64 projectDigest,
 
     // Computed before taking contentHashMutex: knob content hashing and input reads must not run
     // under this node's write lock.
-    const U64 contentHash = computeContentHash(projectDigest, inputs);
+    HashNamespacesConstPtr namespaces;
+    U64 baseContentHash = 0;
+    const U64 contentHash = computeContentHash(projectDigest, inputs, nullptr, &namespaces, &baseContentHash);
 
     U64 oldContentHash;
     {
@@ -939,11 +949,38 @@ Node::computeHashInternal(U64 projectDigest,
 
         oldContentHash = _imp->contentHash;
         _imp->contentHash = contentHash;
+        _imp->baseContentHash = baseContentHash;
+        _imp->hashNamespaces = namespaces;
     }
     *newContentHash = contentHash;
 
     return oldContentHash != contentHash;
 } // Node::computeHashInternal
+
+namespace {
+// The digest of the entries in hashNamespace; empty is the knobs of the content hash.
+template <class Entries>
+U64
+digestKnobsDigestEntries(const Entries& entries,
+                         const std::string& hashNamespace)
+{
+    ContentHasher h;
+    U64 count = 0;
+
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].hashNamespace != hashNamespace) {
+            continue;
+        }
+        h.appendString(entries[i].name);
+        const KnobIPtr liveKnob = entries[i].liveKnob.lock();
+        h.appendU64(liveKnob ? liveKnob->getContentHash() : entries[i].hash);
+        ++count;
+    }
+    h.appendU64(count);
+
+    return h.finalize();
+}
+} // anon namespace
 
 U64
 Node::getKnobsContentDigest(bool* hasExpression) const
@@ -973,6 +1010,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
             Implementation::KnobsDigestEntry entry;
             entry.name = knob->getName();
             entry.hash = 0;
+            entry.hashNamespace = knob->getHashNamespace();
             // A knob owned by another holder invalidates that holder's generation, not this one,
             // so it is hashed live like a knob that reads another knob or a file.
             if (readsOutsideKnob || (knob->getHolder() != holder)) {
@@ -992,13 +1030,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         _imp->knobsDigestGeneration = generation;
         _imp->knobsDigestValid = true;
         if (!anyLive) {
-            ContentHasher h;
-            h.appendU64(entries.size());
-            for (std::size_t i = 0; i < entries.size(); ++i) {
-                h.appendString(entries[i].name);
-                h.appendU64(entries[i].hash);
-            }
-            _imp->knobsDigest = h.finalize();
+            _imp->knobsDigest = digestKnobsDigestEntries(entries, std::string());
         }
     }
 
@@ -1007,26 +1039,80 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         return _imp->knobsDigest;
     }
 
+    return digestKnobsDigestEntries(_imp->knobsDigestEntries, std::string());
+} // Node::getKnobsContentDigest
+
+std::map<std::string, U64>
+Node::getKnobsNamespaceDigests() const
+{
+    std::map<std::string, U64> digests;
+
+    if (!_imp->effect) {
+        return digests;
+    }
+    // Brings the entries up to date.
+    bool hasExpression = false;
+    (void)getKnobsContentDigest(&hasExpression);
+
+    QMutexLocker l(&_imp->knobsDigestMutex);
     const std::vector<Implementation::KnobsDigestEntry>& entries = _imp->knobsDigestEntries;
-    ContentHasher h;
-    h.appendU64(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        h.appendString(entries[i].name);
-        const KnobIPtr liveKnob = entries[i].liveKnob.lock();
-        h.appendU64(liveKnob ? liveKnob->getContentHash() : entries[i].hash);
+        const std::string& hashNamespace = entries[i].hashNamespace;
+        if (!hashNamespace.empty() && !digests.count(hashNamespace)) {
+            digests[hashNamespace] = digestKnobsDigestEntries(entries, hashNamespace);
+        }
     }
 
-    return h.finalize();
-} // Node::getKnobsContentDigest
+    return digests;
+}
+
+HashNamespacesConstPtr
+Node::getHashNamespaces() const
+{
+    QReadLocker l(&_imp->contentHashMutex);
+
+    return _imp->hashNamespaces;
+}
+
+void
+HashNamespaces::appendAll(ContentHasher& h) const
+{
+    h.appendU64(scopes.size());
+    for (std::map<std::string, Scope>::const_iterator scope = scopes.begin(); scope != scopes.end(); ++scope) {
+        h.appendString(scope->first);
+        h.appendString(scope->second.defaultRenderer);
+        h.appendBool(scope->second.settled);
+        h.appendU64(scope->second.digests.size());
+        for (std::map<std::string, U64>::const_iterator digest = scope->second.digests.begin(); digest != scope->second.digests.end(); ++digest) {
+            h.appendString(digest->first);
+            h.appendU64(digest->second);
+        }
+    }
+    h.appendString(active);
+    h.appendBool(uncertain);
+    h.appendBool(activeSettled);
+}
+
+void
+HashNamespaces::unsettle()
+{
+    uncertain = true;
+    activeSettled = false;
+    for (std::map<std::string, Scope>::iterator scope = scopes.begin(); scope != scopes.end(); ++scope) {
+        scope->second.settled = false;
+    }
+}
 
 U64
 Node::computeContentHash(U64 projectDigest,
                          const HashInputs& inputs,
-                         const std::function<U64(const Node&)>* inputHash) const
+                         const std::function<U64(const Node&)>* inputHash,
+                         HashNamespacesConstPtr* namespaces,
+                         U64* baseHash) const
 {
     ContentHasher h;
     auto hashOf = [inputHash](const Node& input) -> U64 {
-        return inputHash ? (*inputHash)(input) : input.getStoredContentHash();
+        return inputHash ? (*inputHash)(input) : input.getStoredBaseContentHash();
     };
 
     h.appendString(getPluginID());
@@ -1120,8 +1206,120 @@ Node::computeContentHash(U64 projectDigest,
 
     h.appendU64(projectDigest ? projectDigest : project->getContentDigest());
 
-    return h.finalize();
+    // The namespaced knobs upstream are in the stage this node reads, so every node folds them
+    // all, but an effect that folds what it reads of them itself and outputs no stage. They are
+    // folded last and kept out of the base hash: the inputs' base hashes are what a node folds, so
+    // a consumer is not moved by the namespaces it leaves out.
+    HashNamespacesConstPtr table;
+    if (!_imp->effect->consumesHashNamespaces()) {
+        table = mergeHashNamespaces(inputs);
+    }
+    if (namespaces) {
+        *namespaces = table;
+    }
+    const U64 base = h.finalize();
+    if (baseHash) {
+        *baseHash = base;
+    }
+    if (!table) {
+        return base;
+    }
+    ContentHasher full;
+    full.appendU64(base);
+    table->appendAll(full);
+
+    return full.finalize();
 } // Node::computeContentHash
+
+HashNamespacesConstPtr
+Node::mergeHashNamespaces(const HashInputs& inputs) const
+{
+    // The inputs' tables, weakest first, as USDMerge stacks a later input's layers over an
+    // earlier one's, then the node's own on top.
+    std::shared_ptr<HashNamespaces> merged;
+    HashNamespacesConstPtr only;
+    int tables = 0;
+    bool unsettled = false;
+    for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+        const NodePtr& input = inputs.bySlot[i].second;
+        HashNamespacesConstPtr table = input ? input->getHashNamespaces() : HashNamespacesConstPtr();
+        if (!table) {
+            continue;
+        }
+        if (tables++ == 0) {
+            only = table;
+            continue;
+        }
+        if (!merged) {
+            merged = std::make_shared<HashNamespaces>(*only);
+            unsettled = only->uncertain;
+        }
+        unsettled = unsettled || table->uncertain;
+        for (std::map<std::string, HashNamespaces::Scope>::const_iterator scope = table->scopes.begin(); scope != table->scopes.end(); ++scope) {
+            HashNamespaces::Scope& into = merged->scopes[scope->first];
+            for (std::map<std::string, U64>::const_iterator digest = scope->second.digests.begin(); digest != scope->second.digests.end(); ++digest) {
+                ContentHasher h;
+                h.appendU64(into.digests[digest->first]);
+                h.appendU64(digest->second);
+                into.digests[digest->first] = h.finalize();
+            }
+            if (scope->second.defaultRenderer.empty()) {
+                continue;
+            }
+            // A layer two inputs share keeps its weakest position in the merge, so the later
+            // input is not stronger for what it shares: two renderers on a prim stay unsettled.
+            if (!into.defaultRenderer.empty() && (into.defaultRenderer != scope->second.defaultRenderer)) {
+                unsettled = true;
+            }
+            into.defaultRenderer = scope->second.defaultRenderer;
+        }
+        if (!table->active.empty()) {
+            if (!merged->active.empty() && (merged->active != table->active)) {
+                unsettled = true;
+            }
+            merged->active = table->active;
+        }
+    }
+
+    // A file read may author render settings prims, naming another renderer or active prim.
+    if (_imp->effect && _imp->effect->mayAuthorUntrackedRenderSettings()) {
+        unsettled = true;
+    }
+
+    std::string path, defaultRenderer;
+    bool active = false;
+    const bool authors = _imp->effect && _imp->effect->getHashNamespaceScope(&path, &defaultRenderer, &active);
+    if (!authors && !unsettled) {
+        return merged ? HashNamespacesConstPtr(merged) : only;
+    }
+    if (!merged) {
+        merged = only ? std::make_shared<HashNamespaces>(*only) : std::make_shared<HashNamespaces>();
+    }
+    if (unsettled) {
+        merged->unsettle();
+    }
+    if (!authors) {
+        return merged;
+    }
+    HashNamespaces::Scope& own = merged->scopes[path];
+    const std::map<std::string, U64> digests = getKnobsNamespaceDigests();
+    for (std::map<std::string, U64>::const_iterator digest = digests.begin(); digest != digests.end(); ++digest) {
+        // What upstream authors on the prim stays where this node authors nothing.
+        ContentHasher h;
+        h.appendU64(own.digests[digest->first]);
+        h.appendU64(digest->second);
+        own.digests[digest->first] = h.finalize();
+    }
+    // The node's layer is over everything upstream, so what it authors is settled.
+    own.defaultRenderer = defaultRenderer;
+    own.settled = true;
+    if (active) {
+        merged->active = path;
+        merged->activeSettled = true;
+    }
+
+    return merged;
+} // Node::mergeHashNamespaces
 
 void
 Node::walkLoopBody(const std::vector<NodePtr>& begins,
@@ -2948,6 +3146,7 @@ Node::fromSerialization(const Serialization::NodeSerialization& serialization,
 
     if (OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
         isOfxEffect->syncMultiplaneTwinsAfterLoad();
+        refreshHostDrivenOverlayParams();
     }
 
     // The serialized age is not read: the node cache key is a content hash, so a saved age carries
@@ -2975,31 +3174,63 @@ Node::restoreSublabel()
         QString labeltext = QString::fromUtf8( labelKnob->getValue().c_str() );
         int foundNatronCustomTag = labeltext.indexOf( QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START) );
         if (foundNatronCustomTag == -1) {
-            KnobIPtr sublabelKnob = getKnobByName(kNatronOfxParamStringSublabelName);
-            if (sublabelKnob) {
-                KnobString* sublabelKnobIsString = dynamic_cast<KnobString*>( sublabelKnob.get() );
-                if (sublabelKnobIsString) {
-                    QString sublabel = QString::fromUtf8( sublabelKnobIsString->getValue(0).c_str() );
-                    if ( !sublabel.isEmpty() ) {
-                        int fontEndTagFound = labeltext.lastIndexOf( QString::fromUtf8(kFontEndTag) );
-                        if (fontEndTagFound == -1) {
-                            labeltext.append( QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START) );
-                            labeltext.append( QLatin1Char('(') + sublabel + QLatin1Char(')') );
-                            labeltext.append( QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_END) );
-                        } else {
-                            QString toAppend( QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START) );
-                            toAppend += QLatin1Char('(');
-                            toAppend += sublabel;
-                            toAppend += QLatin1Char(')');
-                            toAppend += QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_END);
-                            labeltext.insert(fontEndTagFound, toAppend);
-                        }
-                        labelKnob->setValue( labeltext.toStdString() );
-                    }
+            QString sublabel = QString::fromUtf8(getSublabel().c_str());
+            if (!sublabel.isEmpty()) {
+                int fontEndTagFound = labeltext.lastIndexOf(QString::fromUtf8(kFontEndTag));
+                if (fontEndTagFound == -1) {
+                    labeltext.append(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START));
+                    labeltext.append(QLatin1Char('(') + sublabel + QLatin1Char(')'));
+                    labeltext.append(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_END));
+                } else {
+                    QString toAppend(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START));
+                    toAppend += QLatin1Char('(');
+                    toAppend += sublabel;
+                    toAppend += QLatin1Char(')');
+                    toAppend += QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_END);
+                    labeltext.insert(fontEndTagFound, toAppend);
                 }
+                labelKnob->setValue(labeltext.toStdString());
             }
         }
     }
+}
+
+std::string
+Node::getSublabel() const
+{
+    KnobIPtr sublabelKnob = getKnobByName(kNatronOfxParamStringSublabelName);
+    if (sublabelKnob) {
+        KnobString* isString = dynamic_cast<KnobString*>(sublabelKnob.get());
+
+        return isString ? isString->getValue(0) : std::string();
+    }
+
+    return _imp->effect ? _imp->effect->getSublabel() : std::string();
+}
+
+void
+Node::refreshSublabel()
+{
+    if (QThread::currentThread() != qApp->thread()) {
+        QMetaObject::invokeMethod(this, [this]() { refreshSublabel(); }, Qt::QueuedConnection);
+
+        return;
+    }
+    if (!_imp->effect) {
+        return;
+    }
+    showSublabel(QString::fromUtf8(_imp->effect->getSublabel().c_str()));
+}
+
+void
+Node::showSublabel(const QString& sublabel)
+{
+    QString data = sublabel;
+    if (!data.isEmpty()) {
+        data.prepend(QLatin1Char('('));
+        data.append(QLatin1Char(')'));
+    }
+    replaceCustomDataInlabel(data);
 }
 
 void
@@ -3766,19 +3997,65 @@ Node::createHostMixKnob(const KnobPagePtr& mainPage)
     _imp->mixWithSource = mixKnob;
 }
 
+std::vector<KnobIPtr>
+Node::moveClampKnobsToFooter(const KnobPagePtr& mainPage)
+{
+    std::vector<KnobIPtr> moved;
+    if (!mainPage) {
+        return moved;
+    }
+    KnobBoolPtr clampBlack = _imp->effect->getKnobByNameAndType<KnobBool>("clampBlack");
+    KnobBoolPtr clampWhite = _imp->effect->getKnobByNameAndType<KnobBool>("clampWhite");
+    if (clampBlack && (clampBlack->getParentKnob() != mainPage)) {
+        clampBlack.reset();
+    }
+    if (clampWhite && (clampWhite->getParentKnob() != mainPage)) {
+        clampWhite.reset();
+    }
+    if (clampBlack) {
+        clampBlack->setAddNewLine(!clampWhite);
+        mainPage->removeKnob(clampBlack.get());
+        mainPage->addKnob(clampBlack);
+        moved.push_back(clampBlack);
+    }
+    if (clampWhite) {
+        clampWhite->setAddNewLine(true);
+        mainPage->removeKnob(clampWhite.get());
+        mainPage->addKnob(clampWhite);
+        moved.push_back(clampWhite);
+    }
+
+    return moved;
+}
+
 void
-Node::createStageFooterSeparator(const KnobPagePtr& mainPage)
+Node::createFooterSeparator(const KnobPagePtr& mainPage,
+                            const std::vector<KnobIPtr>& footerKnobs)
 {
     if (!mainPage) {
         return;
     }
     const KnobsVec children = mainPage->getChildren();
-    if (children.empty() || dynamic_cast<KnobSeparator*>(children.back().get())) {
+    int first = -1;
+    for (int i = 0; i < (int)children.size(); ++i) {
+        if (std::find(footerKnobs.begin(), footerKnobs.end(), children[i]) != footerKnobs.end()) {
+            first = i;
+            break;
+        }
+    }
+    if (first <= 0) {
+        return;
+    }
+    int previous = first - 1;
+    while ((previous >= 0) && children[previous]->getIsSecret()) {
+        --previous;
+    }
+    if ((previous < 0) || dynamic_cast<KnobSeparator*>(children[previous].get())) {
         return;
     }
     KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(_imp->effect.get(), std::string(), 1, false);
     sep->setName("advancedSep");
-    mainPage->addKnob(sep);
+    mainPage->insertKnob(first, sep);
 }
 
 void
@@ -3839,6 +4116,75 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
     }
     _imp->unPremultBySelector = channel;
 } // Node::createUnPremultSelector
+
+namespace {
+
+enum HostDrivenOverlayParamEnum {
+    eHostDrivenOverlayParamNone,
+    eHostDrivenOverlayParamInteractive,
+    eHostDrivenOverlayParamHiDPI
+};
+
+HostDrivenOverlayParamEnum
+hostDrivenOverlayParam(const KnobIPtr& knob)
+{
+    if (!dynamic_cast<KnobBool*>(knob.get())) {
+        return eHostDrivenOverlayParamNone;
+    }
+    const std::string& name = knob->getName();
+    if ((name == "interactive") || (name == "transformInteractive") || (name == "rampInteractive")) {
+        return eHostDrivenOverlayParamInteractive;
+    }
+    if (name == "hidpi") {
+        return eHostDrivenOverlayParamHiDPI;
+    }
+
+    return eHostDrivenOverlayParamNone;
+}
+
+} // anon namespace
+
+void
+Node::adoptHostDrivenOverlayParams()
+{
+    // openfx-supportext overlays each carry their own "interactive" and "hidpi" toggles; the
+    // host has one global toggle and knows the screen, so it hides theirs and drives them.
+    if (!dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
+        return;
+    }
+    const KnobsVec& knobs = _imp->effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (hostDrivenOverlayParam(*it) == eHostDrivenOverlayParamNone) {
+            continue;
+        }
+        (*it)->setSecret(true);
+        (*it)->setSecretLocked(true);
+        (*it)->setIsPersistent(false);
+    }
+    refreshHostDrivenOverlayParams();
+}
+
+void
+Node::refreshHostDrivenOverlayParams()
+{
+    if (!dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
+        return;
+    }
+    const bool interactive = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
+    const bool hiDPI = appPTR->getScreenDevicePixelRatio() >= 1.5;
+    const KnobsVec& knobs = _imp->effect->getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const HostDrivenOverlayParamEnum role = hostDrivenOverlayParam(*it);
+        if (role == eHostDrivenOverlayParamNone) {
+            continue;
+        }
+        KnobBool* param = static_cast<KnobBool*>(it->get());
+        const bool value = (role == eHostDrivenOverlayParamInteractive) ? interactive : hiDPI;
+        if (param->getValue() != value) {
+            param->setValue(value);
+        }
+    }
+}
 
 KnobChannelSelectPtr
 Node::getUnPremultBySelector() const
@@ -3992,12 +4338,11 @@ Node::createLabelKnob(const KnobPagePtr& settingsPage,
 void
 Node::adoptChannelQuad()
 {
-    // KeyMix's quad picks source A vs source B per channel, DenoiseSharpen's collapses R/G/B
-    // into a single "process chroma" flag, and ClipTest's ORs the selected channels into one
-    // zebra-stripe decision: none of the three is a per-channel output mask, so forcing the
-    // quad true and letting the host mask instead would silently change what they compute.
+    // DenoiseSharpen's quad collapses R/G/B into a single "process chroma" flag and ClipTest's
+    // ORs the selected channels into one zebra-stripe decision: neither is a per-channel output
+    // mask, so forcing the quad true and letting the host mask instead would silently change what
+    // they compute.
     static const std::set<std::string> pluginsOwningChannelMask = {
-        "net.sf.openfx.KeyMix",
         "net.sf.openfx.DenoiseSharpen",
         "net.sf.openfx.ClipTestPlugin"
     };
@@ -4242,17 +4587,10 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
 
     assert(foundPluginDefaultKnobsToReorder.size() > 0 && foundPluginDefaultKnobsToReorder[0].first == kOfxMaskInvertParamName);
 
-    // Spec'd nodes put the whole footer under one separator; the generic one below would split
-    // (Un)premult by from the mask rows.
-    const StagedImageEffect* stagedEffect = dynamic_cast<const StagedImageEffect*>(_imp->effect.get());
-    if (stagedEffect) {
-        const bool hasMaskSelector = std::any_of(hasMaskChannelSelector.begin(), hasMaskChannelSelector.end(),
-                                                 [](const std::pair<bool, bool>& p) { return p.first; });
-        if (hasMaskSelector || stagedEffect->wantsHostUnPremultSelector() || stagedEffect->imagePipelineSpec().stages.has(Stage::MaskMix)) {
-            createStageFooterSeparator(mainPage);
-        }
-    }
+    std::vector<KnobIPtr> footerKnobs = moveClampKnobsToFooter(mainPage);
     createUnPremultSelector(mainPage);
+    footerKnobs.push_back(_imp->unPremultBySelector.lock());
+    adoptHostDrivenOverlayParams();
 
     OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
     if (isOfxEffect && isOfxEffect->isMultiPlanar()) {
@@ -4282,41 +4620,13 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
             if (foundPluginDefaultKnobsToReorder[i].second->getParentKnob() == mainPage) {
                 mainPage->removeKnob( foundPluginDefaultKnobsToReorder[i].second.get() );
                 mainPage->addKnob(foundPluginDefaultKnobsToReorder[i].second);
+                footerKnobs.push_back(foundPluginDefaultKnobsToReorder[i].second);
             }
         }
     }
-
-    if (stagedEffect) {
-        lastKnobBeforeAdvancedOption.reset();
-    }
-
-    if (lastKnobBeforeAdvancedOption && mainPage) {
-
-        KnobsVec mainPageChildren = mainPage->getChildren();
-        int i = 0;
-        for (KnobsVec::iterator it = mainPageChildren.begin(); it != mainPageChildren.end(); ++it, ++i) {
-            if (*it == lastKnobBeforeAdvancedOption) {
-                if (i > 0) {
-                    int j = i - 1;
-                    KnobsVec::iterator prev = it;
-                    --prev;
-                    while (j >= 0 && (*prev)->getIsSecret()) {
-                        --j;
-                        --prev;
-                    }
-
-                    if ( j >= 0 && !dynamic_cast<KnobSeparator*>( prev->get() ) ) {
-                        KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(_imp->effect.get(), std::string(), 1, false);
-                        sep->setName("advancedSep");
-                        mainPage->insertKnob(i, sep);
-                    }
-                }
-
-                break;
-            }
-        }
-    }
-
+    footerKnobs.push_back(lastKnobBeforeAdvancedOption);
+    footerKnobs.push_back(_imp->mixWithSource.lock());
+    createFooterSeparator(mainPage, footerKnobs);
 
     createNodePage(settingsPage);
 
@@ -6118,6 +6428,64 @@ Node::clearPersistentMessageForPreview()
     }
 }
 
+OverlayImageFrameConstPtr
+Node::getOverlayImageFrame() const
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    return _imp->overlayImageFrame;
+}
+
+std::uint64_t
+Node::getOverlayImageGeneration() const
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    return _imp->overlayImageGeneration;
+}
+
+bool
+Node::setOverlayImageFrame(const OverlayImageFrameConstPtr& frame,
+                           std::uint64_t generation)
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+
+    if (generation != _imp->overlayImageGeneration) {
+        return false;
+    }
+    _imp->overlayImageFrame = frame;
+
+    return true;
+}
+
+bool
+Node::clearOverlayImageFrame()
+{
+    QMutexLocker l(&_imp->overlayImageFrameMutex);
+    const bool hadFrame = (bool)_imp->overlayImageFrame;
+
+    _imp->overlayImageFrame.reset();
+    ++_imp->overlayImageGeneration;
+
+    return hadFrame;
+}
+
+std::shared_ptr<void>
+Node::markOverlayImagePassPending()
+{
+    const std::shared_ptr<std::atomic<int>> pending = _imp->overlayImagePassesPending;
+
+    ++*pending;
+
+    return std::shared_ptr<void>(nullptr, [pending](void*) { --*pending; });
+}
+
+bool
+Node::isOverlayImagePassPending() const
+{
+    return *_imp->overlayImagePassesPending > 0;
+}
+
 void
 Node::getNodesWithPersistentMessageUpstream(const NodesList& roots,
                                             NodesList* nodes)
@@ -6947,7 +7315,7 @@ Node::onFileNameParameterChanged(KnobI* fileKnob)
             std::string pattern = fileParam->getValue();
             if ((pattern.find("%v") != std::string::npos) || (pattern.find("%V") != std::string::npos)) {
                 //We found view pattern
-                KnobIPtr viewsKnob = getKnobByName(kWriteOIIOParamViewsSelector);
+                KnobIPtr viewsKnob = getKnobByName(kWriteParamViews);
                 if (viewsKnob) {
                     KnobChoice* viewsSelector = dynamic_cast<KnobChoice*>( viewsKnob.get() );
                     if (viewsSelector) {
@@ -7324,22 +7692,15 @@ Node::onEffectKnobValueChanged(KnobI* what,
     } else if ( what == _imp->nodeLabelKnob.lock().get() ) {
         Q_EMIT nodeExtraLabelChanged( QString::fromUtf8( _imp->nodeLabelKnob.lock()->getValue().c_str() ) );
     } else if (what->getName() == kNatronOfxParamStringSublabelName) {
-        //special hack for the merge node and others so we can retrieve the sublabel and display it in the node's label
         KnobString* strKnob = dynamic_cast<KnobString*>(what);
         if (strKnob) {
-            QString operation = QString::fromUtf8( strKnob->getValue().c_str() );
-            if ( !operation.isEmpty() ) {
-                operation.prepend( QString::fromUtf8("(") );
-                operation.append( QString::fromUtf8(")") );
-            }
-            replaceCustomDataInlabel(operation);
+            showSublabel(QString::fromUtf8(strKnob->getValue().c_str()));
         }
-    } else if ( what == _imp->hideInputs.lock().get() ) {
+    } else if (what == _imp->hideInputs.lock().get()) {
         Q_EMIT hideInputsKnobChanged( _imp->hideInputs.lock()->getValue() );
-    } else if ( _imp->effect->isReader() && (what->getName() == kReadOIIOAvailableViewsKnobName) ) {
+    } else if (_imp->effect->isReader() && (what->getName() == kReadOIIOAvailableViewsKnobName)) {
         refreshCreatedViews(what, false /*silent*/);
-    } else if ( what == _imp->refreshInfoButton.lock().get() ||
-               (what == _imp->infoPage.lock().get() && reason == eValueChangedReasonUserEdited) ) {
+    } else if (what == _imp->refreshInfoButton.lock().get() || (what == _imp->infoPage.lock().get() && reason == eValueChangedReasonUserEdited)) {
         std::stringstream ssinfo;
         int maxinputs = getNInputs();
         for (int i = 0; i < maxinputs; ++i) {
@@ -7413,7 +7774,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
         }
         ssinfo << "</font>";
         _imp->nodeInfos.lock()->setValue( ssinfo.str() );
-    } else if ( what == _imp->openglRenderingEnabledKnob.lock().get() ) {
+    } else if (what == _imp->openglRenderingEnabledKnob.lock().get()) {
         // Do nothing. Knob value will be checked in getCurrentOpenGLRenderSupport() calls.
     } else {
         ret = false;
@@ -9049,9 +9410,12 @@ Node::refreshShownDownstreamInputRelatedData()
         if (hasChannelSelectorMessage || reached[i]->isSettingsPanelVisible()) {
             reached[i]->refreshPanelInputRelatedData();
         } else if (ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(reached[i]->_imp->effect.get())) {
-            // A viewer's layer menu is on screen with its panel closed, and lists what its inputs
-            // present at the current frame, so it only needs telling that the list may differ.
+            // A viewer's layer menu and displayed format are on screen with its panel closed.
+            // The format reaches the viewer only through the current-frame hook, which a
+            // metadata comparison on the viewer's own answer would not run for a format change
+            // upstream, so it is forced. One call per viewer reached, not per node.
             isViewer->onChannelsSelectorRefreshed();
+            isViewer->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), true);
         }
     }
 }

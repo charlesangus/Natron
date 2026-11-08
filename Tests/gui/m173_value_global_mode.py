@@ -23,7 +23,7 @@ Sections, each with numbers and captioned screenshots (a NOTE "caption" line pre
 - reveal: crosshair mode shows the disc centred on the press point at the documented diameter
   with the puck moving mid-stroke; widget-cursor mode shows the live glyph per kind (group
   translate, rotate, scale, skew, centre, and lone size, translate, generic) and the glyphs
-  differ pairwise, except centre which shares translate's.
+  differ pairwise, except group centre and lone translate, which share translate's.
 - cursor: the override cursor before, during and after a stroke in both feedback modes; the
   widget cursor's disc follows the pointer, freezes on press and resumes on release.
 - hud: the hint block follows the pointer, its title is "<node>: <knob>", and a screenshot of
@@ -238,16 +238,16 @@ try:
                     bad += 1
         return bad / float(a.width() * a.height())
 
-    def first_diff_x(a, b, tolerance=6):
-        """The leftmost column holding a pixel that differs between a and b, or -1."""
-        if a.size() != b.size() or a.isNull():
+    def first_colour_x(img, rgb, tolerance=12):
+        """The leftmost column holding a pixel within tolerance of rgb, or -1."""
+        if img is None or img.isNull():
             return -1
-        for x in range(a.width()):
-            for y in range(a.height()):
-                pa, pb = a.pixel(x, y), b.pixel(x, y)
-                if (abs(((pa >> 16) & 255) - ((pb >> 16) & 255)) > tolerance
-                        or abs(((pa >> 8) & 255) - ((pb >> 8) & 255)) > tolerance
-                        or abs((pa & 255) - (pb & 255)) > tolerance):
+        for x in range(img.width()):
+            for y in range(img.height()):
+                p = img.pixel(x, y)
+                if (abs(((p >> 16) & 255) - ((rgb >> 16) & 255)) <= tolerance
+                        and abs(((p >> 8) & 255) - ((rgb >> 8) & 255)) <= tolerance
+                        and abs((p & 255) - (rgb & 255)) <= tolerance):
                     return x
         return -1
 
@@ -601,8 +601,12 @@ try:
                 ia, iq, iw, ie = (chip_images[k] for k in ("A", "Q", "W", "E"))
                 check(image_diff(ia, iq) > 0.0005 and image_diff(iq, iw) > 0.0005,
                       "the HUD chips differ for A, Q and W (the lit chip moves)")
-                xq, xw = first_diff_x(iq, ia), first_diff_x(iw, ia)
-                check(0 <= xq < xw, "the Q chip sits left of the W chip (leftmost differing column %d < %d)" % (xq, xw))
+                # The chip row is centred and a lit caption is bold, so the whole row shifts with
+                # the lock: diffing against A finds that shift, not the lit chip. The lit chip is
+                # the only one filled with the accent colour.
+                accent = selection_rgb()
+                xq, xw = first_colour_x(iq, accent), first_colour_x(iw, accent)
+                check(0 <= xq < xw, "the lit Q chip sits left of the lit W chip (leftmost accent column %d < %d)" % (xq, xw))
                 check(image_diff(iw, ie) < 0.0005, "E (ignored) leaves the HUD as W had it")
             send_key(Qt.Key_Q)
             send_key(Qt.Key_A)
@@ -752,7 +756,7 @@ try:
                 check(img_a is not None and img_b is not None and image_diff(img_a, img_b) > 0.001,
                       "the disc changes between the press and the middle of the stroke")
                 shoot(reveal_window(), "reveal-group-rotate-drag", "Transform group, rotate: the same disc 48 px into the stroke, puck displaced")
-                check(cursor_name() == "cross", "the cross cursor holds during the stroke (%s)" % cursor_name())
+                check(cursor_name() == "blank", "the pointer is hidden while the disc stands in for it (%s)" % cursor_name())
             gmouse(QEvent.MouseButtonRelease, QPoint(start.x() + 48, start.y()), Qt.LeftButton, Qt.NoButton)
             yield ("sleep", SETTLE_MS)
             check(not reveal_shown(), "the disc goes away on release")
@@ -792,14 +796,14 @@ try:
 
         labels = sorted(glyphs)
         report("NOTE glyphs captured: %s" % ", ".join(labels))
-        # Centre reuses translate's glyph, so that pair is the one that must match.
+        # Center reuses translate's glyph and mapping, so every pairing of the three translate
+        # glyphs must match.
+        translate_glyphs = {"group-translate", "group-center", "lone-translate"}
         pairs = [(a, b) for i, a in enumerate(labels) for b in labels[i + 1:]]
         for a, b in pairs:
             diff = image_diff(glyphs[a], glyphs[b])
-            if {a, b} == {"group-translate", "group-center"}:
-                check(diff <= SHARED_GLYPH_DIFF_MAX, "%s and %s share one glyph (%.4f differing)" % (a, b, diff))
-            elif {a, b} == {"group-translate", "lone-translate"}:
-                report("NOTE %s vs %s: %.4f of pixels differ" % (a, b, diff))
+            if {a, b} <= translate_glyphs:
+                check(diff <= SHARED_GLYPH_DIFF_MAX, "%s and %s share the translate glyph (%.4f differing)" % (a, b, diff))
             else:
                 check(diff >= GLYPH_DIFF_MIN, "%s and %s have different glyphs (%.4f differing)" % (a, b, diff))
 
@@ -843,7 +847,8 @@ try:
                     check(c is not None and (c - (start + QPoint(150, 80))).manhattanLength() <= 40,
                           "Widget cursor: the disc follows again after the release")
                 else:
-                    yield from stroke(30, 0, mid=lambda: check(cursor_name() == "cross", "Crosshair: cursor during the stroke is the cross"))
+                    yield from stroke(30, 0, mid=lambda: check(cursor_name() == "blank",
+                                                               "Crosshair: cursor is blank during the stroke, under the reveal disc (%s)" % cursor_name()))
                     check(cursor_name() == "cross", "Crosshair: cursor after the stroke is the cross (%s)" % cursor_name())
             leave()
             yield ("sleep", SETTLE_MS)

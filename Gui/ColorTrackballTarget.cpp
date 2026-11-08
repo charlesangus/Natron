@@ -516,7 +516,7 @@ makeGlobalModeTarget(KnobGui* knobGui)
         GlobalModeGroupMemberEnum member = eGlobalModeGroupMemberTranslate;
 
         if (TransformGroupGlobalModeTarget::memberOf(group, knob.get(), &member)) {
-            return std::make_shared<TransformGroupGlobalModeTarget>(knobGui->getContainer(), group, member);
+            return std::make_shared<TransformGroupGlobalModeTarget>(knobGui->getContainer(), group, member, knob.get());
         }
     }
 

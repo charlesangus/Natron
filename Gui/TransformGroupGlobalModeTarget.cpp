@@ -78,7 +78,8 @@ kindOf(GlobalModeGroupMemberEnum member)
 
 TransformGroupGlobalModeTarget::TransformGroupGlobalModeTarget(KnobGuiContainerI* container,
                                                                const TransformInteractKnobs& knobs,
-                                                               GlobalModeGroupMemberEnum member)
+                                                               GlobalModeGroupMemberEnum member,
+                                                               const KnobI* entryKnob)
     : ValueGlobalModeTargetBase()
     , _translate(guiFor(container, knobs.translate))
     , _rotate(guiFor(container, knobs.rotate))
@@ -87,6 +88,7 @@ TransformGroupGlobalModeTarget::TransformGroupGlobalModeTarget(KnobGuiContainerI
     , _skewY(guiFor(container, knobs.skewY))
     , _center(guiFor(container, knobs.center))
     , _member(member)
+    , _skewOnY(knobs.skewY && (entryKnob == knobs.skewY.get()))
     , _lock(kGlobalModeLockAll)
 {
 }
@@ -177,6 +179,12 @@ TransformGroupGlobalModeTarget::hasMember(GlobalModeGroupMemberEnum member) cons
 KnobGui*
 TransformGroupGlobalModeTarget::getKnobGui() const
 {
+    if ((_member == eGlobalModeGroupMemberSkew) && _skewOnY) {
+        if (KnobGuiPtr y = _skewY.lock()) {
+            return y.get();
+        }
+    }
+
     const std::vector<KnobGuiPtr> knobGuis = memberKnobGuis(_member);
 
     return knobGuis.empty() ? 0 : knobGuis.front().get();
@@ -256,6 +264,7 @@ TransformGroupGlobalModeTarget::handleKey(int key,
 
         switchStrokeKnobs([this, member]() {
             _member = member;
+            _skewOnY = false;
         });
 
         return true;

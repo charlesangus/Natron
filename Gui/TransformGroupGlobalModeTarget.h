@@ -47,9 +47,14 @@ struct TransformInteractKnobs;
 class TransformGroupGlobalModeTarget
     : public ValueGlobalModeTargetBase {
 public:
+    /**
+     * @brief Engaged on member; entryKnob, when it is skewY, makes skewY the skew member's knob
+     * so that stepping on from it moves past both skew knobs.
+     **/
     TransformGroupGlobalModeTarget(KnobGuiContainerI* container,
                                    const TransformInteractKnobs& knobs,
-                                   GlobalModeGroupMemberEnum member);
+                                   GlobalModeGroupMemberEnum member,
+                                   const KnobI* entryKnob = 0);
     virtual ~TransformGroupGlobalModeTarget() OVERRIDE;
 
     /**
@@ -95,6 +100,7 @@ private:
     KnobGuiWPtr _skewY;
     KnobGuiWPtr _center;
     GlobalModeGroupMemberEnum _member;
+    bool _skewOnY;
     int _lock;
 };
 

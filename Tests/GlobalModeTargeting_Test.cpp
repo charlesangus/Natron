@@ -163,6 +163,8 @@ TEST_F(GlobalModeTargetingTest, HoveredKnobEngagesTheRightTarget)
 
     ASSERT_TRUE(bool(group));
     EXPECT_EQ(eGlobalModeGroupMemberSkew, group->getMember());
+    // Stepping looks the current knob up by getKnobGui(); reporting skewX here would step back onto skewY forever.
+    EXPECT_EQ(skewY.get(), group->getKnobGui());
 
     KnobGuiPtr multiply = buildRow(_grade->getKnobByName(kGradeParamMultiply));
     std::shared_ptr<GlobalModeTarget> colour = makeGlobalModeTarget(multiply.get());

@@ -170,11 +170,12 @@ public:
 
     /**
      * @brief Opens a step that gathers what is pushed and recorded until the matching closeStep()
-     * into one entry, labelled text unless it ends up holding a single command. A step opened
-     * inside an open step or an executing pushed command adds to it; one opened while an entry is
-     * undone or redone gathers nothing.
+     * into one entry, labelled text unless it ends up holding a single command, which keeps its
+     * own text when keepsText is false. A step opened inside an open step or an executing pushed
+     * command adds to it; one opened while an entry is undone or redone gathers nothing.
      **/
-    void openStep(const QString& text);
+    void openStep(const QString& text,
+                  bool keepsText = false);
 
     void closeStep();
 

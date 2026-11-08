@@ -49,6 +49,8 @@ public:
 
     virtual void openStep(const std::string& text) OVERRIDE FINAL;
 
+    virtual void openLabelledStep(const std::string& text) OVERRIDE FINAL;
+
     virtual void closeStep() OVERRIDE FINAL;
 
     virtual bool isCapturing() const OVERRIDE FINAL;

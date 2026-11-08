@@ -243,6 +243,7 @@ private:
 struct CaptureFrame {
     bool isStep;
     QString text;
+    bool keepsText;
 
     // Steps opened inside this frame, which add to it.
     int nestedSteps;
@@ -252,6 +253,7 @@ struct CaptureFrame {
     CaptureFrame()
         : isStep(false)
         , text()
+        , keepsText(false)
         , nestedSteps(0)
         , children()
         , scopes()
@@ -801,7 +803,8 @@ UndoHistory::clear()
 }
 
 void
-UndoHistory::openStep(const QString& text)
+UndoHistory::openStep(const QString& text,
+                      bool keepsText)
 {
     if (_imp->replaying) {
         ++_imp->ignoredSteps;
@@ -814,6 +817,7 @@ UndoHistory::openStep(const QString& text)
         return;
     }
     _imp->openFrame(true, text);
+    _imp->frames.back().keepsText = keepsText;
 }
 
 void
@@ -848,6 +852,9 @@ UndoHistory::closeStep()
         // A step holding a single command is that command, owner included.
         entryCmd = frame.children.front();
         entryScope = frame.scopes.front();
+        if (frame.keepsText) {
+            entryCmd->setText(frame.text);
+        }
     } else {
         QString text = frame.text.isEmpty() ? frame.children.front()->text() : frame.text;
         entryCmd = new CompoundUndoCommand(&_imp->replayHook, 0, frame.children, text);

@@ -2,7 +2,7 @@
 handler that wraps knob edits in app.newUndoStep("Panel Edit") leaves one entry, which the Edit
 menu offers as "Undo Panel Edit" and which undoes and redoes all its edits in one step; a handler
 that raises inside its step still leaves one entry holding the edits made before the exception;
-a handler's app.noUndoStep() block leaves no entry.
+a handler's app.noUndoStep() block leaves no entry; a step editing a single knob keeps its label.
 
 Run with NatronRenderer instead, the same script makes the same edits with no undo history and
 must complete without error.
@@ -117,9 +117,11 @@ try:
             edit_button = QPushButton("Edit")
             fail_button = QPushButton("Fail")
             quiet_button = QPushButton("Quiet")
+            single_button = QPushButton("Single")
             panel.addWidget(edit_button)
             panel.addWidget(fail_button)
             panel.addWidget(quiet_button)
+            panel.addWidget(single_button)
             failures = []
 
             def on_edit():
@@ -134,11 +136,16 @@ try:
             def on_quiet():
                 edit_unrecorded(blur)
 
+            def on_single():
+                with app.newUndoStep("Panel Single"):
+                    blur.getParam("cropToFormat").setValue(False)
+
             edit_button.clicked.connect(on_edit)
             fail_button.clicked.connect(on_fail)
             quiet_button.clicked.connect(on_quiet)
-            keep.update(panel=panel, buttons=(edit_button, fail_button, quiet_button),
-                        handlers=(on_edit, on_fail, on_quiet))
+            single_button.clicked.connect(on_single)
+            keep.update(panel=panel, buttons=(edit_button, fail_button, quiet_button, single_button),
+                        handlers=(on_edit, on_fail, on_quiet, on_single))
             panel.show()
             yield ("sleep", SETTLE_MS)
 
@@ -170,6 +177,14 @@ try:
             QApplication.processEvents()
             check(blur.getParam("size").getValue(0) == 7.0, "the noUndoStep edit is applied")
             check(undo_text() == baseline, "the noUndoStep handler leaves no entry (got %r, want %r)" % (undo_text(), baseline))
+
+            gt.section("handler step editing one knob")
+            single_button.click()
+            QApplication.processEvents()
+            check(undo_text() == "Undo Panel Single",
+                  "a step editing one knob keeps its label (got %r)" % (undo_text(),))
+            trigger("Undo")
+            check(blur.getParam("cropToFormat").getValue(), "one undo reverts the single edit")
 
             panel.close()
             faulthandler.cancel_dump_traceback_later()

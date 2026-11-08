@@ -203,6 +203,82 @@ TEST_F(PythonUndoStep, ANestedStepFoldsIntoTheOuterOne)
     EXPECT_TRUE(_crop->getValue());
 }
 
+TEST_F(PythonUndoStep, ABlockEditingOneKnobKeepsItsLabel)
+{
+    const std::string script = "with " + appPy() + ".newUndoStep(\"One knob\"):\n"
+        + setSize(2.0, 0, "    ")
+        + setSize(3.0, 0, "    ");
+    ASSERT_TRUE(run(script));
+
+    ASSERT_EQ(1, _history->count());
+    EXPECT_EQ(QString::fromUtf8("One knob"), _history->undoText());
+
+    _history->undo();
+    EXPECT_EQ(1.0, _size->getValue(0));
+    EXPECT_EQ(QString::fromUtf8("One knob"), _history->redoText());
+}
+
+TEST_F(PythonUndoStep, ANestedBlockEditingOneKnobKeepsTheOuterLabel)
+{
+    const std::string script = "with " + appPy() + ".newUndoStep(\"Outer\"):\n"
+        + "    with " + appPy() + ".newUndoStep(\"Inner\"):\n"
+        + setCrop(false, "        ");
+    ASSERT_TRUE(run(script));
+
+    ASSERT_EQ(1, _history->count());
+    EXPECT_EQ(QString::fromUtf8("Outer"), _history->undoText());
+}
+
+TEST_F(PythonUndoStep, AnUnlabelledStepWithOneEditKeepsTheEditsText)
+{
+    {
+        UndoStepGuard step(_app, "Script");
+        ASSERT_TRUE(run(setCrop(false, "")));
+    }
+
+    ASSERT_EQ(1, _history->count());
+    EXPECT_EQ(QString::fromUtf8(("Edit " + _crop->getLabel()).c_str()), _history->undoText());
+}
+
+// The suppressed edit is not the step's: undo leaves it in place and redo does not replay it.
+TEST_F(PythonUndoStep, NoUndoStepEditOfAnotherDimensionOfAStepsKnobSurvivesUndoAndRedo)
+{
+    const std::string script = "with " + appPy() + ".newUndoStep(\"Partly\"):\n"
+        + setSize(2.0, 0, "    ")
+        + "    with " + appPy() + ".noUndoStep():\n"
+        + setSize(3.0, 1, "        ");
+    ASSERT_TRUE(run(script));
+
+    ASSERT_EQ(1, _history->count());
+    _history->undo();
+    EXPECT_EQ(1.0, _size->getValue(0));
+    EXPECT_EQ(3.0, _size->getValue(1));
+
+    _history->redo();
+    EXPECT_EQ(2.0, _size->getValue(0));
+    EXPECT_EQ(3.0, _size->getValue(1));
+}
+
+// The suppressed edit overwrites the step's edit of that dimension, so undoing the step leaves it,
+// while the step's later edit of the same dimension still undoes back to it.
+TEST_F(PythonUndoStep, NoUndoStepEditOfTheSameDimensionIsWhatUndoReturnsTo)
+{
+    const std::string script = "with " + appPy() + ".newUndoStep(\"Same\"):\n"
+        + setSize(2.0, 0, "    ")
+        + "    with " + appPy() + ".noUndoStep():\n"
+        + setSize(5.0, 0, "        ")
+        + setSize(7.0, 0, "    ");
+    ASSERT_TRUE(run(script));
+
+    ASSERT_EQ(1, _history->count());
+    EXPECT_EQ(7.0, _size->getValue(0));
+    _history->undo();
+    EXPECT_EQ(5.0, _size->getValue(0));
+    EXPECT_EQ(1.0, _size->getValue(1));
+    _history->redo();
+    EXPECT_EQ(7.0, _size->getValue(0));
+}
+
 TEST_F(PythonUndoStep, NoUndoStepRecordsNothing)
 {
     const std::string script = "with " + appPy() + ".noUndoStep():\n"

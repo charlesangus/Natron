@@ -665,7 +665,7 @@ UndoStepContext::~UndoStepContext()
 void
 UndoStepContext::enter()
 {
-    _steps.push_back(std::make_shared<UndoStepGuard>(_app.lock(), _label));
+    _steps.push_back(std::make_shared<UndoStepGuard>(_app.lock(), _label, true));
 }
 
 void

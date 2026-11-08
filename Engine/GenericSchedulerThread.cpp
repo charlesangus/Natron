@@ -542,6 +542,7 @@ GenericSchedulerThread::run()
             
             
             if ( args && !args->isNull() ) {
+                boost_adaptbx::floating_point::follow_software_renderer();
                 // Do the work!
                 state = threadLoopOnce(args);
             }

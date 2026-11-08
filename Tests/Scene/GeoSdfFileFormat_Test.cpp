@@ -176,11 +176,11 @@ TEST(GeoSdfFileFormat, OpensProviderAndBuildsOnlyReadPartitions)
 {
     Served served("geoSdfFileFormatTest_open");
     const SdfLayerRefPtr layer = SdfLayer::FindOrOpen(served.identifier());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     EXPECT_EQ(layer->GetIdentifier(), served.identifier());
 
     const std::shared_ptr<const GeoUsdConvert> convert = geoLayerConvert(layer);
-    ASSERT_TRUE(convert);
+    ASSERT_TRUE(convert != nullptr);
     const int a = partitionAt(*convert, SdfPath("/geo/a"));
     const int b = partitionAt(*convert, SdfPath("/geo/b"));
     ASSERT_GE(a, 0);
@@ -199,12 +199,12 @@ TEST(GeoSdfFileFormat, StageMeshMatchesDetail)
 {
     Served served("geoSdfFileFormatTest_stage");
     const SdfLayerRefPtr layer = SdfLayer::FindOrOpen(served.identifier());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     const UsdStageRefPtr stage = UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
 
     const UsdGeomMesh mesh(stage->GetPrimAtPath(SdfPath("/geo/a")));
-    ASSERT_TRUE(mesh);
+    ASSERT_TRUE(static_cast<bool>(mesh));
     const VtVec3fArray points = meshPoints(stage, "/geo/a");
     ASSERT_EQ(points.size(), 4u);
     EXPECT_EQ(points[0], GfVec3f(0.f, 0.f, 0.f));
@@ -222,9 +222,9 @@ TEST(GeoSdfFileFormat, PointEditIsAnInfoOnlyChange)
 {
     Served served("geoSdfFileFormatTest_points");
     const SdfLayerRefPtr layer = SdfLayer::FindOrOpen(served.identifier());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     const UsdStageRefPtr stage = UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
     ASSERT_EQ(meshPoints(stage, "/geo/a").size(), 4u);
 
     NoticeLog log(stage);
@@ -248,9 +248,9 @@ TEST(GeoSdfFileFormat, TopologyEditResyncsOnlyItsPrim)
 {
     Served served("geoSdfFileFormatTest_topology");
     const SdfLayerRefPtr layer = SdfLayer::FindOrOpen(served.identifier());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     const UsdStageRefPtr stage = UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
 
     NoticeLog log(stage);
     served.set(makeDetail(0., true));
@@ -275,7 +275,7 @@ TEST(GeoSdfFileFormat, SaveFails)
 {
     Served served("geoSdfFileFormatTest_save");
     const SdfLayerRefPtr layer = SdfLayer::FindOrOpen(served.identifier());
-    ASSERT_TRUE(layer);
+    ASSERT_TRUE(static_cast<bool>(layer));
     TfErrorMark mark;
     EXPECT_FALSE(layer->Save(true));
     mark.Clear();

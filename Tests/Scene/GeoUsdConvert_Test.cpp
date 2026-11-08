@@ -108,11 +108,11 @@ TEST(GeoUsdConvert, PathPartitionsBecomeMeshes)
     ASSERT_EQ(convert.partitionCount(), 2u);
     const SdfLayerRefPtr layer = authored(convert);
     const UsdStageRefPtr stage = UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
 
     for (const char* name : { "/geo/a", "/geo/b" }) {
         const UsdGeomMesh mesh(stage->GetPrimAtPath(SdfPath(name)));
-        ASSERT_TRUE(mesh) << name;
+        ASSERT_TRUE(static_cast<bool>(mesh)) << name;
         VtVec3fArray points;
         ASSERT_TRUE(mesh.GetPointsAttr().Get(&points));
         ASSERT_EQ(points.size(), 4u);
@@ -135,14 +135,14 @@ TEST(GeoUsdConvert, PathPartitionsBecomeMeshes)
     }
 
     const UsdGeomSubset subset(stage->GetPrimAtPath(SdfPath("/geo/a/sel")));
-    ASSERT_TRUE(subset);
+    ASSERT_TRUE(static_cast<bool>(subset));
     VtIntArray members;
     subset.GetIndicesAttr().Get(&members);
     EXPECT_EQ(members, VtIntArray({ 0 }));
     TfToken elementType;
     subset.GetElementTypeAttr().Get(&elementType);
     EXPECT_EQ(elementType, UsdGeomTokens->face);
-    EXPECT_FALSE(stage->GetPrimAtPath(SdfPath("/geo/b/sel")));
+    EXPECT_FALSE(static_cast<bool>(stage->GetPrimAtPath(SdfPath("/geo/b/sel"))));
 }
 
 TEST(GeoUsdConvert, RoundTripKeepsContentHash)
@@ -151,7 +151,7 @@ TEST(GeoUsdConvert, RoundTripKeepsContentHash)
     const GeoUsdConvert convert(detail, GeoUsdConvertOptions());
     const SdfLayerRefPtr layer = authored(convert);
     const UsdStageRefPtr stage = UsdStage::Open(layer);
-    ASSERT_TRUE(stage);
+    ASSERT_TRUE(static_cast<bool>(stage));
 
     GeoDetailBuilder b;
     std::vector<std::string> warnings;
@@ -209,15 +209,15 @@ TEST(GeoUsdConvert, NoPathFallsBackToPerTypePrims)
     const GeoUsdConvert convert(std::make_shared<const GeoDetail>(b.finish()), GeoUsdConvertOptions());
 
     const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
-    ASSERT_TRUE(stage);
-    EXPECT_TRUE(UsdGeomMesh(stage->GetPrimAtPath(SdfPath("/geo/mesh_0"))));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_TRUE(static_cast<bool>(UsdGeomMesh(stage->GetPrimAtPath(SdfPath("/geo/mesh_0")))));
     const UsdGeomBasisCurves curves(stage->GetPrimAtPath(SdfPath("/geo/curves_0")));
-    ASSERT_TRUE(curves);
+    ASSERT_TRUE(static_cast<bool>(curves));
     VtIntArray counts;
     curves.GetCurveVertexCountsAttr().Get(&counts);
     EXPECT_EQ(counts, VtIntArray({ 3 }));
     const UsdGeomPoints points(stage->GetPrimAtPath(SdfPath("/geo/points_0")));
-    ASSERT_TRUE(points);
+    ASSERT_TRUE(static_cast<bool>(points));
     VtVec3fArray positions;
     points.GetPointsAttr().Get(&positions);
     EXPECT_EQ(positions.size(), 2u);

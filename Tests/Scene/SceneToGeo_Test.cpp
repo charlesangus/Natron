@@ -211,9 +211,9 @@ private:
 TEST_F(SceneToGeoTest, PackedGivesOnePackedPrimitivePerPrimAndNoTopology)
 {
     const NodePtr toGeo = chain(kReferenceScene, "/World/*");
-    ASSERT_TRUE(toGeo);
+    ASSERT_TRUE(toGeo != nullptr);
     const GeoDetailConstPtr detail = evaluate(toGeo);
-    ASSERT_TRUE(detail);
+    ASSERT_TRUE(detail != nullptr);
 
     const char* const expected[] = { "/World/Box", "/World/Ball", "/World/Cam" };
     ASSERT_EQ(detail->primitiveCount(), GeoIndex(3));
@@ -243,7 +243,7 @@ TEST_F(SceneToGeoTest, PackedGivesOnePackedPrimitivePerPrimAndNoTopology)
 TEST_F(SceneToGeoTest, PackedTransformsFollowTheFrame)
 {
     const NodePtr toGeo = chain(kReferenceScene, "/World/Ball");
-    ASSERT_TRUE(toGeo);
+    ASSERT_TRUE(toGeo != nullptr);
     const GeoDetailConstPtr first = evaluate(toGeo, 1.);
     const GeoDetailConstPtr last = evaluate(toGeo, 24.);
     ASSERT_TRUE(first && last);
@@ -256,10 +256,10 @@ TEST_F(SceneToGeoTest, PackedTransformsFollowTheFrame)
 TEST_F(SceneToGeoTest, UnpackGivesPolygonsInOnePointPoolAndListsSkippedPrims)
 {
     const NodePtr toGeo = chain(writeScene("meshes.usda", kMeshScene), "/World/*");
-    ASSERT_TRUE(toGeo);
+    ASSERT_TRUE(toGeo != nullptr);
     setBool(toGeo, kUSDToGeoParamUnpack, true);
     const GeoDetailConstPtr detail = evaluate(toGeo);
-    ASSERT_TRUE(detail);
+    ASSERT_TRUE(detail != nullptr);
 
     ASSERT_EQ(detail->primitiveCount(), GeoIndex(2));
     EXPECT_EQ(detail->pointCount(), GeoIndex(7));
@@ -282,11 +282,11 @@ TEST_F(SceneToGeoTest, UnpackGivesPolygonsInOnePointPoolAndListsSkippedPrims)
 TEST_F(SceneToGeoTest, FlattenMovesATranslatedPrimsPoints)
 {
     const NodePtr toGeo = chain(writeScene("meshes.usda", kMeshScene), "/World/A /World/B");
-    ASSERT_TRUE(toGeo);
+    ASSERT_TRUE(toGeo != nullptr);
     setBool(toGeo, kUSDToGeoParamUnpack, true);
     setBool(toGeo, kUSDToGeoParamFlattenTransforms, true);
     const GeoDetailConstPtr detail = evaluate(toGeo);
-    ASSERT_TRUE(detail);
+    ASSERT_TRUE(detail != nullptr);
 
     ASSERT_EQ(detail->primitiveCount(), GeoIndex(2));
     const GeoVertexRange quad = detail->topology().primitiveVertices(0);
@@ -317,10 +317,10 @@ TEST_F(SceneToGeoTest, AuthoredDetailReadsBackUnpackedAsTheSameDetail)
     ASSERT_TRUE(layer->Export(file));
 
     const NodePtr toGeo = chain(file, "/geo/*");
-    ASSERT_TRUE(toGeo);
+    ASSERT_TRUE(toGeo != nullptr);
     setBool(toGeo, kUSDToGeoParamUnpack, true);
     const GeoDetailConstPtr back = evaluate(toGeo);
-    ASSERT_TRUE(back);
+    ASSERT_TRUE(back != nullptr);
     EXPECT_EQ(back->primitiveCount(), source->primitiveCount());
     EXPECT_EQ(back->pointCount(), source->pointCount());
     EXPECT_EQ(back->contentHash(), source->contentHash());

@@ -401,6 +401,48 @@ TEST(GeoDetailTest, TopologyChangesDropTheReverseTopology)
     expectConsistent(edited);
 }
 
+TEST(GeoDetailTest, CopiesOfABuildingDetailKeepTheirOwnReverseTopology)
+{
+    const GeoDetail base = makeStrip(8);
+    GeoDetailBuilder builder(base);
+    const GeoDetail before = builder.detail();
+
+    const std::array<GeoOffset, 2> line { 0, 7 };
+    builder.appendPrimitive(eGeoPrimitivePolyline, line);
+    EXPECT_EQ(1u, before.reverseTopology()->pointVertices(7).size());
+    EXPECT_EQ(2u, builder.detail().reverseTopology()->pointVertices(7).size());
+    EXPECT_EQ(1u, before.reverseTopology()->pointVertices(7).size());
+
+    const GeoDetail during = builder.detail();
+    builder.appendPrimitive(eGeoPrimitivePolyline, line);
+    EXPECT_EQ(3u, builder.detail().reverseTopology()->pointVertices(7).size());
+    EXPECT_EQ(2u, during.reverseTopology()->pointVertices(7).size());
+
+    const GeoDetail edited = builder.finish();
+    EXPECT_EQ(3u, edited.reverseTopology()->pointVertices(7).size());
+    expectConsistent(before);
+    expectConsistent(during);
+    expectConsistent(edited);
+}
+
+TEST(GeoDetailTest, FinishedHashCoversWritesThroughAHeldPagePointer)
+{
+    GeoDetailBuilder builder;
+    builder.appendPoints(4);
+    GeoAttribute& weight = builder.addAttribute(eGeoAttribClassPoint, makeDesc("weight", eGeoStorageFloat32));
+    float* page = weight.pageForWriting<float>(0);
+    page[2] = 1.f;
+    const U64 midway = builder.detail().contentHash();
+    page[2] = 2.f;
+    const GeoDetail finished = builder.finish();
+
+    GeoDetailBuilder reference;
+    reference.appendPoints(4);
+    reference.addAttribute(eGeoAttribClassPoint, makeDesc("weight", eGeoStorageFloat32)).set<float>(2, 2.f);
+    EXPECT_EQ(reference.finish().contentHash(), finished.contentHash());
+    EXPECT_NE(midway, finished.contentHash());
+}
+
 TEST(GeoDetailTest, PositionPrecisionRoundTrips)
 {
     GeoDetailBuilder builder(makeStrip(kPage + 5));

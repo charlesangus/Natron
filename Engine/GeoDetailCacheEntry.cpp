@@ -70,7 +70,8 @@ GeoDetailCacheEntry::~GeoDetailCacheEntry()
 void
 GeoDetailCacheEntry::setGeoDetail(const GeoDetailConstPtr& detail)
 {
-    if (!_sizeAccounted) {
+    std::lock_guard<std::mutex> lock(_detailMutex);
+    if (!_sizeAccounted.load(std::memory_order_relaxed)) {
         _detail = detail;
     }
 }

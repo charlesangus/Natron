@@ -29,67 +29,67 @@ Requires M54 - Native Geometry Data Model. All nodes are `NativeEffectBase` subc
 
 ## Phase 359.1: Operators
 
-- [ ] M359.P1.T1 — `GeoImportOBJ`
+- [x] M359.P1.T1 — `GeoImportOBJ`
   - files: `Engine/Nodes/Geometry/GeoImportOBJ.h`/`.cpp`/`.reg.inc`, `Engine/Nodes/Geometry/ObjParser.h`/`.cpp`, `Tests/GeoImportOBJ_Test.cpp`, a tiny committed `.obj`
   - approach: minimal OBJ parser (v/vt/vn/f with n-gons) into one shared point pool. `vt` → vertex `uv`, `vn` → vertex `N`. Groups become primitive groups, and objects set the `name` primitive attribute, as Houdini's File SOP does. USD/Alembic import is `USDRead` → `USDToGeo`, so this node is OBJ only. A missing file sets a node error.
   - verify: unit test — the committed `.obj` loads with matching counts, `uv`, two groups and two `name` values.
   - size: M
 
-- [ ] M359.P1.T2 — `GeoTransform`
+- [x] M359.P1.T2 — `GeoTransform`
   - files: `Engine/Nodes/Geometry/GeoTransform.h`/`.cpp`/`.reg.inc`, `Tests/GeoTransform_Test.cpp`
   - approach: TRS + pivot knobs (same layout as `USDEditTransform`), optional group restriction. It transforms `P` and every attribute by its type info, as the Transform SOP does: point and vector attributes by the matrix, normals by the inverse transpose, quaternions by rotation. Only the pages it writes detach. Packed primitives get their transform multiplied instead, since they have no points to move.
   - verify: unit test — transform moves points; `uv` pages are shared with the input's; `N` stays unit and correct under non-uniform scale; a packed primitive's transform is multiplied and its bounds move with it.
   - size: M
 
-- [ ] M359.P1.T3 — `GeoMerge`
+- [x] M359.P1.T3 — `GeoMerge`
   - files: `Engine/Nodes/Geometry/GeoMerge.h`/`.cpp`/`.reg.inc`, `Tests/GeoMerge_Test.cpp`
   - approach: multi-input concatenation as the Merge SOP does it. Point, vertex and primitive pools are appended in input order. An attribute missing on one input is created with its default there, and conflicting types promote as Houdini does (int → float, smaller tuple → larger). Groups union by name. `path` and `name` are ordinary attributes and are never renamed.
   - verify: unit test — merging two details keeps every primitive with consistent vertex → point indices; an attribute present on one input only is defaulted on the other's elements; same-named groups union.
   - size: M
 
-- [ ] M359.P1.T4 — `GeoGroup`
+- [x] M359.P1.T4 — `GeoGroup`
   - files: `Engine/Nodes/Geometry/GeoGroup.h`/`.cpp`/`.reg.inc`, `Tests/GeoGroup_Test.cpp`
   - approach: creates a named point, primitive, vertex or edge group from one of: a bounding box, a number pattern (`0-10 20 !5`, Houdini group syntax, plus existing group names), or an attribute comparison (`@attr op value`, scalar attributes). The output is the input with the group added, and only group storage detaches.
   - verify: unit test — a bbox group of a grid selects exactly the left-half points; a number pattern selects exactly those primitives; an attribute comparison over a point float attribute selects the expected set; an edge group from a bbox holds exactly the edges inside it.
   - size: M
 
-- [ ] M359.P1.T5 — `GeoDelete`
+- [x] M359.P1.T5 — `GeoDelete`
   - files: `Engine/Nodes/Geometry/GeoDelete.h`/`.cpp`/`.reg.inc`, `Tests/GeoDelete_Test.cpp`
   - approach: removes the members of a named group, or its complement, by tombstoning (M54.P1.T5) rather than compacting. Deleting points removes every primitive and vertex using them; deleting primitives optionally deletes their now-unused points, as the Blast SOP does. Attribute data does not move.
   - verify: unit test — deleting a grid's left-half point group leaves the right half valid in number order, and attribute pages not containing deleted elements stay shared; "delete non-selected" gives the complement; a defragment afterwards gives a dense, identical-content detail.
   - size: M
 
-- [ ] M359.P1.T6 — `GeoNormals`
+- [x] M359.P1.T6 — `GeoNormals`
   - files: `Engine/Nodes/Geometry/GeoNormals.h`/`.cpp`/`.reg.inc`, `Tests/GeoNormals_Test.cpp`
   - approach: computes area-weighted `N` on points (default) or vertices (with a cusp angle, as the Normal SOP does), or on primitives. It uses the detail's cached reverse topology. Exposes the computation as a static helper that other nodes (`GeoDisplace`, `GeoEdit`) call after moving points.
   - verify: unit test — normals of a cube are unit length and outward; a flat grid's are all +Z; vertex normals with a 60° cusp keep a cube's faces flat.
   - size: M
 
-- [ ] M359.P1.T7 — `GeoDisplace`
+- [x] M359.P1.T7 — `GeoDisplace`
   - files: `Engine/Nodes/Geometry/GeoDisplace.h`/`.cpp`/`.reg.inc`, `Tests/GeoDisplace_Test.cpp`
   - approach: moves points along `N` by a scalar from a noise knob or an optional **Image** input sampled at `uv` (luminance), with amplitude and offset knobs and optional group restriction. Recomputes normals via `GeoNormals`' helper afterwards, and computes them first if the input has none.
   - verify: unit test — a flat grid displaced by a constant image moves every point by the same amount along +Z and its normals stay +Z.
   - size: M
 
-- [ ] M359.P1.T8 — `GeoSubdivide` via OpenSubdiv
+- [x] M359.P1.T8 — `GeoSubdivide` via OpenSubdiv
   - files: `Engine/Nodes/Geometry/GeoSubdivide.h`/`.cpp`/`.reg.inc`, `Tests/GeoSubdivide_Test.cpp`, CMake (link OpenSubdiv, already found in `cmake/NatronUsd.cmake`)
   - approach: Catmull-Clark or Loop, level knob 1–4. It interpolates point and vertex attributes through the refiner (vertex `uv` as face-varying channels), and primitive attributes and groups carry to child faces. Uses OpenSubdiv's Far refiner directly rather than Hydra.
   - verify: unit test — cube at level 1 has the expected face count and stays closed; `uv` is interpolated; a primitive group survives on the child faces.
   - size: M
 
-- [ ] M359.P1.T9 — `GeoUVProject`
+- [x] M359.P1.T9 — `GeoUVProject`
   - files: `Engine/Nodes/Geometry/GeoUVProject.h`/`.cpp`/`.reg.inc`, `Tests/GeoUVProject_Test.cpp`
   - approach: writes vertex `uv` from a planar (axis + TRS) or camera projection (inputs: optional Scene for the camera; camera path knob).
   - verify: unit test — planar projection of a grid yields `uv` equal to its normalized XY; camera projection of a camera-facing quad yields 0–1.
   - size: M
 
-- [ ] M359.P1.T10 — `GeoScatter`
+- [x] M359.P1.T10 — `GeoScatter`
   - files: `Engine/Nodes/Geometry/GeoScatter.h`/`.cpp`/`.reg.inc`, `Tests/GeoScatter_Test.cpp`
   - approach: the Scatter SOP's core. Scatters a point count (or density × area) over polygon surfaces, area-weighted, with a seed and an optional primitive-group restriction. Optional relaxation iterations. Optionally interpolates chosen source attributes (`N`, `uv`, `Cd`) onto the points and records `sourceprim`/`sourceprimuv`, as Houdini does. Output is unconnected points.
   - verify: unit test — 1000 points on a unit grid all lie on it, the count is exact, the same seed reproduces them, and interpolated `N` is +Z.
   - size: M
 
-- [ ] M359.P1.T11 — `GeoCopyToPoints`
+- [x] M359.P1.T11 — `GeoCopyToPoints`
   - files: `Engine/Nodes/Geometry/GeoCopyToPoints.h`/`.cpp`/`.reg.inc`, `Tests/GeoCopyToPoints_Test.cpp`
   - approach: the Copy to Points SOP. Inputs are source geometry and target points. Each copy is oriented by Houdini's template-point attributes, in the same precedence: `transform`, `orient`, `N`/`up`, `pscale`/`scale`, `trans`, `pivot`. "Pack and Instance" (default off, as in Houdini) emits one Packed Geometry primitive per point, all sharing the source detail. Otherwise copies are expanded into the pool. Chosen target attributes are copied onto each copy's elements.
   - verify: unit test — copying a cube onto 100 scattered points yields 100 cubes at the point positions, oriented by `N` and scaled by `pscale`; with Pack and Instance on, 100 packed primitives share one detail allocation.

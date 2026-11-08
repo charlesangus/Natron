@@ -85,6 +85,7 @@ set(Tests_SOURCES
     HashPluginSweep_Test.cpp
     IdentityHop_Test.cpp
     Image_Test.cpp
+    KernelParser_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
     KnobLayerSelect_Test.cpp

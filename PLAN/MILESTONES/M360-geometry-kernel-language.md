@@ -69,13 +69,13 @@ Requires M54 - Native Geometry Data Model. Nodes register through their own `.re
 
 ## Phase 360.4: The wrangle node
 
-- [ ] M360.P4.T1 — The kernel wrangle node
+- [x] M360.P4.T1 — The kernel wrangle node
   - files: `Engine/Nodes/Geometry/GeoWrangle.h`/`.cpp`/`.reg.inc`, `Engine/Nodes/Geometry/docs/GeoWrangle.md`, `Tests/GeoWrangle_Test.cpp`
   - approach: the Attribute Wrangle (node name: Scope assumption). Knobs: snippet (multi-line `KnobString`), "Run Over" (points, primitives, vertices, detail), optional group restriction. It compiles once per snippet change and runs through M360.P3.T1. A compile error becomes a node error with line and column. The doc page lists the language, bindings and builtins.
   - verify: unit test — a snippet doubling `@P.z` doubles Z; running over primitives with a group touches only that group; a compile error reports line and column on the node without aborting the render thread.
   - size: M
 
-- [ ] M360.P4.T2 — `ch()` functions and the create-parameters button
+- [x] M360.P4.T2 — `ch()` functions and the create-parameters button
   - files: `Engine/Nodes/Geometry/GeoWrangle.cpp`, `Engine/Geo/GeoKernelBinding.cpp`, `Tests/GeoWrangleParams_Test.cpp`
   - approach: `ch`/`chi`/`chf`/`chv`/`chs`/`chramp` read user knobs on the node at the render time, resolved by name at compile time, so the node's frame-varying hash follows the knobs (an animated knob makes the node time-varying). A button scans the snippet for `ch*` calls and adds the missing user knobs with types from the call (`chf` → float, `chv` → 3D double, `chramp` → curve), through Natron's existing user-knob mechanism, so they animate, link and serialise like any knob. Knobs already present are left alone.
   - verify: unit test — `@P.y += chf("amp")` follows an animated `amp` knob across frames; the button creates `amp` as a float knob and a second press adds nothing; a renamed knob gives a compile error naming it.
@@ -84,6 +84,8 @@ Requires M54 - Native Geometry Data Model. Nodes register through their own `.re
 **Verification gate:** M360.P1.T1's report exists and the user's backend choice is recorded; CI green with every Phase 360.2–360.4 test; a 10M-point `@P.y += 1` run is recorded on the GPU host in the PR body; the pre-existing ctest suite is green.
 
 ## Decisions
+
+- 2026-11-08 — Phase 360.4 done (5b583099f): GeoWrangle node, ch() functions, Create Parameters. Release gate run 42523793527: GeoWrangleTest and GeoWrangleParamsTest pass; the only failure is NativeLensCorrectGpuFilterTest on an AVX-512 runner (lavapipe, also seen on M130; not M360 code). Remaining: the 10M-point `@P.y += 1` run on the GPU host for the PR body.
 
 - 2026-11-08 — Execution engine (user): the batched bytecode interpreter. Spike (PLAN/DESIGN/2026-11-08-geo-kernel-execution-spike.md, 10M points, 4 threads): level with the LLVM JIT on add/maths, faster on nearpoint, JIT 1.4x faster only on noise; edits recompile in ~0.1 ms vs 11–80 ms; no LLVM to ship and no clash with Mesa's LLVM. Follow-ups for P3.T1: batch-form builtins (noise first), a runtime-selected x86-64-v3 path, compacting active lanes for expensive branches.
 

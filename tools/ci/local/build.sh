@@ -41,6 +41,8 @@
 #                            written to $GITHUB_OUTPUT as build_dir.
 #
 # Environment:
+#   NATRON_BUILD_JOBS=<n>  -> ninja job count. Default: min(nproc - 1,
+#                             MemAvailable / 2 GiB) of the host, at least 1.
 #   NATRON_SKIP_SUBMODULE_UPDATE=1
 #                          -> skip the host-side `git submodule update --init
 #                             --recursive`, which resets every submodule to the
@@ -265,6 +267,19 @@ if ! in_container; then
     if [[ -n "${NATRON_LINK_JOBS:-}" ]]; then
         ENV_FORWARD+=("NATRON_LINK_JOBS=${NATRON_LINK_JOBS}")
     fi
+    # The container's nproc and /proc/meminfo can differ from the host's, so the
+    # default is derived here; an explicit NATRON_BUILD_JOBS wins.
+    if [[ -z "${NATRON_BUILD_JOBS:-}" ]]; then
+        HOST_CORES="$(nproc)"
+        HOST_MEM_KB="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || true)"
+        HOST_JOBS=$(( HOST_CORES - 1 ))
+        if [[ "${HOST_MEM_KB}" =~ ^[0-9]+$ ]]; then
+            MEM_JOBS=$(( HOST_MEM_KB / (2 * 1024 * 1024) ))
+            (( MEM_JOBS < HOST_JOBS )) && HOST_JOBS=${MEM_JOBS}
+        fi
+        (( HOST_JOBS < 1 )) && HOST_JOBS=1
+        ENV_FORWARD+=("NATRON_BUILD_JOBS=${HOST_JOBS}" "NATRON_BUILD_JOBS_SOURCE=host (min of nproc-1 and MemAvailable/2GiB)")
+    fi
     exec "${SCRIPT_DIR}/devshell.sh" env "${ENV_FORWARD[@]}" "${REPO_ROOT}/tools/ci/local/build.sh" "${ORIG_ARGS[@]}"
 fi
 
@@ -340,16 +355,21 @@ else
     ( cd "${BUILD_DIR}" && cmake "${CMAKE_ARGS[@]}" )
 fi
 
-# Parallelism: defaults to 3, overridable via NATRON_BUILD_JOBS, e.g.
-# NATRON_BUILD_JOBS=2 tools/ci/local/build.sh. The dev machine has 4 cores
-# and 15 GB; -j3 leaves one core for the editor/agent and keeps peak memory
-# (the big Gui/Engine TUs run 1-2 GB each at -O2) well under the ceiling.
-# The earlier -j2 habit was a workaround for the agent harness's spurious
-# "low on memory" kill, which the detached-launch recipe avoids -- it cost
-# ~2x on every build for no reason.
-JOBS="${NATRON_BUILD_JOBS:-3}"
+# Parallelism: NATRON_BUILD_JOBS wins, e.g. NATRON_BUILD_JOBS=2
+# tools/ci/local/build.sh. Otherwise the host-side re-exec above picks
+# min(nproc - 1, MemAvailable / 2 GiB), at least 1: one core stays free for the
+# editor/agent, and the big Gui/Engine TUs run 1-2 GB each at -O2. Inside CI's own
+# container there is no re-exec, so nproc - 1 is used there.
+if [[ -n "${NATRON_BUILD_JOBS:-}" ]]; then
+    JOBS="${NATRON_BUILD_JOBS}"
+    JOBS_SOURCE="${NATRON_BUILD_JOBS_SOURCE:-NATRON_BUILD_JOBS}"
+else
+    JOBS=$(( $(nproc) - 1 ))
+    (( JOBS < 1 )) && JOBS=1
+    JOBS_SOURCE="nproc - 1"
+fi
 
-echo "== build.sh: building (${BUILD_TYPE}) with ninja -j${JOBS} =="
+echo "== build.sh: building (${BUILD_TYPE}) with ninja -j${JOBS} (${JOBS_SOURCE}) =="
 echo "+ cd ${BUILD_DIR}"
 echo "+ ninja -j${JOBS}"
 if [[ -n "${CI:-}" ]]; then free -m; fi

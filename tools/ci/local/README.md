@@ -272,8 +272,9 @@ Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 This is also what re-execs you into the dev container (see "Getting a
 shell" below) -- you don't need to start one yourself first.
 
-`ninja` parallelism defaults to `-j3`, overridable via `NATRON_BUILD_JOBS`,
-e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
+`ninja` parallelism defaults to the smaller of the host's `nproc - 1` and its
+`MemAvailable` divided by 2 GiB, at least 1, and the build banner names the
+source. It is overridable via `NATRON_BUILD_JOBS`, e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
 core count shouldn't dictate memory pressure.
 
 Edits to `Global/Enums.h` or `Global/GlobalDefines.h` recompile essentially

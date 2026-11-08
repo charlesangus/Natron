@@ -104,6 +104,8 @@ HINTS = {
     "threshold": "A vector with less confidence than this",
 }
 MODELS = ["Per Point", "Translate", "Affine", "Perspective"]
+# getOptions() returns the option ids, not the labels the menu shows.
+MODEL_IDS = {"Per Point": "perPoint", "Translate": "translate", "Affine": "affine", "Perspective": "perspective"}
 
 try:
     import faulthandler
@@ -149,11 +151,11 @@ try:
     def seek(frame):
         app.getViewer(viewer_node().getScriptName()).seek(frame)
 
-    def set_choice(node, name, label):
+    def set_choice(node, name, option_id):
         p = param(node, name)
         options = [str(o) for o in p.getOptions()]
-        require(label in options, "%s.%s offers %r (has %r)" % (node.getLabel(), name, label, options))
-        p.setValue(options.index(label))
+        require(option_id in options, "%s.%s offers %r (has %r)" % (node.getLabel(), name, option_id, options))
+        p.setValue(options.index(option_id))
 
     def set_project_range(first, last):
         app.getProjectParam("frameRange").set(first, last)
@@ -184,12 +186,12 @@ try:
                       "-d", "float", "-o", path])
         return os.path.join(directory, "plate.####.exr")
 
-    def make_generator(read, x, y, outputs="Forward+Backward", method="DIS"):
+    def make_generator(read, x, y, outputs="forwardBackward", method="dis"):
         node = app.createNode("VectorGenerator")
         require(node is not None, "create a VectorGenerator", gt.plugin_problem("VectorGenerator"))
         node.setPosition(x, y)
         require(node.connectInput(0, read), "connect %s to %s" % (node.getLabel(), read.getLabel()))
-        set_choice(node, "quality", "Fine")
+        set_choice(node, "quality", "fine")
         set_choice(node, "method", method)
         set_choice(node, "outputs", outputs)
         return keep(node)
@@ -412,7 +414,7 @@ try:
         yield from settle()
         count = yield from check_row("Roto")
         models = [str(o) for o in param(scene.roto, "followModel").getOptions()]
-        check(models == MODELS, "Roto: the model menu offers %r (has %r)" % (MODELS, models))
+        check(models == [MODEL_IDS[m] for m in MODELS], "Roto: the model menu offers %r (has %r)" % ([MODEL_IDS[m] for m in MODELS], models))
         shot("m219-row-roto.png", "Roto: the Follow Vectors row in the viewer, %d of %d controls found" % (count, len(HINTS)))
 
     def check_per_point_follow(bez, p0, label, tol=POS_TOL):
@@ -429,7 +431,7 @@ try:
         set_project_range(START, MAIN_LAST)
         reset_shapes(scene.ctx)
         ensure_source(scene.roto, scene.gen)
-        set_choice(scene.roto, "followModel", "Per Point")
+        set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
         select_shapes([bez])
@@ -453,7 +455,7 @@ try:
         gt.section("panel-entry")
         reset_shapes(scene.ctx)
         ensure_source(scene.roto, scene.gen)
-        set_choice(scene.roto, "followModel", "Per Point")
+        set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
         tree = select_shapes([bez])
@@ -492,7 +494,7 @@ try:
         for model in MODELS[1:]:
             reset_shapes(scene.ctx)
             ensure_source(scene.roto, scene.gen)
-            set_choice(scene.roto, "followModel", model)
+            set_choice(scene.roto, "followModel", MODEL_IDS[model])
             bez = new_shape(scene.ctx)
             p0 = [pos(bez, i, START) for i in range(POINTS)]
             keys_before = keys_of(bez)
@@ -544,7 +546,7 @@ try:
         gt.section("bridge")
         reset_shapes(scene.ctx)
         ensure_source(scene.roto, scene.gen)
-        set_choice(scene.roto, "followModel", "Per Point")
+        set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
         key_start = p0
@@ -689,7 +691,7 @@ try:
         check(scene.read.getScriptName() not in options, "a node with no motion layers is not listed (%r)" % (options,))
         check(scene.roto.getScriptName() not in options, "the host itself is not listed (%r)" % (options,))
 
-        set_choice(scene.roto, "followModel", "Per Point")
+        set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         frames = list(range(START, MAIN_LAST + 1))
         before = snapshot(bez, frames)
@@ -720,7 +722,7 @@ try:
         set_project_range(START, PLATE_FRAMES)
         reset_shapes(scene.ctx)
         ensure_source(scene.roto, scene.slow_gen)
-        set_choice(scene.roto, "followModel", "Per Point")
+        set_choice(scene.roto, "followModel", MODEL_IDS["Per Point"])
         bez = new_shape(scene.ctx)
         p0 = [pos(bez, i, START) for i in range(POINTS)]
         frames = list(range(START, PLATE_FRAMES + 1))
@@ -780,7 +782,7 @@ try:
         for model in ("Per Point", "Affine"):
             reset_shapes(scene.ctx)
             ensure_source(scene.roto, scene.gen)
-            set_choice(scene.roto, "followModel", model)
+            set_choice(scene.roto, "followModel", MODEL_IDS[model])
             first = new_shape(scene.ctx)
             second = new_shape(scene.ctx, SQ2_X, SQ2_Y)
             shapes = [first, second]
@@ -832,7 +834,7 @@ try:
         yield from settle()
         count = yield from check_row("RotoPaint")
         models = [str(o) for o in param(paint, "followModel").getOptions()]
-        check(models == MODELS, "RotoPaint: the model menu offers %r (has %r)" % (MODELS, models))
+        check(models == [MODEL_IDS[m] for m in MODELS], "RotoPaint: the model menu offers %r (has %r)" % ([MODEL_IDS[m] for m in MODELS], models))
         shot("m219-row-rotopaint.png", "RotoPaint: the Follow Vectors row in the viewer, %d of %d controls found" % (count, len(HINTS)))
 
     def steps():
@@ -852,8 +854,8 @@ try:
         scene.read.setPosition(0, 0)
         set_project_range(START, MAIN_LAST)
         scene.gen = make_generator(scene.read, 0, 150)
-        scene.forward_gen = make_generator(scene.read, 150, 150, outputs="Forward")
-        scene.slow_gen = make_generator(scene.read, 300, 150, method="TV-L1")
+        scene.forward_gen = make_generator(scene.read, 150, 150, outputs="forward")
+        scene.slow_gen = make_generator(scene.read, 300, 150, method="tvl1")
         yield ("sleep", SETTLE_MS)
 
         yield from section_rows_roto(scene)

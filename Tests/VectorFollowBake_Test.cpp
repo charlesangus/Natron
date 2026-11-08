@@ -59,7 +59,7 @@ constexpr int kSpan = 20;
 // starts from what kStart shows.
 constexpr int kEarlier = kStart - 2;
 
-class VectorFollowBakeTest
+class VectorFollowBakeBase
     : public NativeTimeNodeTest {
 public:
     void SetUp() override
@@ -67,10 +67,16 @@ public:
         NativeTimeNodeTest::SetUp();
         registerFollowTextureOnce();
         _generator = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, createNode(QString::fromUtf8(kTestPluginIDFollowTexture), 1));
-        // Medium solves at half resolution and undershoots this half-pixel motion by 0.03 px a
-        // frame, more than kFollowTolerance by frame +20. These tests measure the follower.
-        setKnob<KnobChoice>(_generator, kVectorGeneratorParamQuality, (int)eFlowQualityFine);
+        setKnob<KnobChoice>(_generator, kVectorGeneratorParamQuality, (int)eFlowQualityMedium);
         _roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    }
+
+    // Medium solves at half resolution and undershoots this half-pixel motion by 0.03 px a
+    // frame, more than kFollowTolerance by frame +20. Only the cases that assert a position pay
+    // for Fine; the rest check keys, undo and aborts, which do not depend on the solve quality.
+    void useFine()
+    {
+        setKnob<KnobChoice>(_generator, kVectorGeneratorParamQuality, (int)eFlowQualityFine);
     }
 
     RotoCurveContextPtr context() const
@@ -128,8 +134,18 @@ public:
     NodePtr _roto;
 };
 
+// Two suites so each stays well inside the ctest timeout on the slower task-graph leg.
+class VectorFollowBakeTest
+    : public VectorFollowBakeBase {
+};
+
+class VectorFollowBlendTest
+    : public VectorFollowBakeBase {
+};
+
 TEST_F(VectorFollowBakeTest, PerPointFollowsAndLandsOnTheVectors)
 {
+    useFine();
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
 
@@ -189,6 +205,7 @@ TEST_F(VectorFollowBakeTest, AnExistingKeyIsAnAnchorAndStaysExact)
 
 TEST_F(VectorFollowBakeTest, SelectedPointsMoveAndTheRestStaysPut)
 {
+    useFine();
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint moved = positionAt(bezier, 0, kStart);
     const FollowPoint still = positionAt(bezier, 2, kStart);
@@ -205,6 +222,7 @@ TEST_F(VectorFollowBakeTest, SelectedPointsMoveAndTheRestStaysPut)
 
 TEST_F(VectorFollowBakeTest, FitsKeyTheTransformAndLeaveThePointKeysAlone)
 {
+    useFine();
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
 
@@ -230,6 +248,7 @@ TEST_F(VectorFollowBakeTest, FitsKeyTheTransformAndLeaveThePointKeysAlone)
 
 TEST_F(VectorFollowBakeTest, AStrokeFollowsByItsTransform)
 {
+    useFine();
     // Detached and without internal nodes: only its points and transform take part.
     RotoStrokeItemPtr stroke = std::make_shared<RotoStrokeItem>(eRotoStrokeTypeSolid, context(), std::string("stroke"), RotoLayerPtr());
     CurvePtr xCurve = std::make_shared<Curve>();
@@ -299,8 +318,9 @@ TEST_F(VectorFollowBakeTest, ReducesInsideTheSameUndoStep)
     EXPECT_EQ(keys.size(), 1u);
 }
 
-TEST_F(VectorFollowBakeTest, AForwardFollowWithALaterKeyMeetsBothAndBlendsBetween)
+TEST_F(VectorFollowBlendTest, AForwardFollowWithALaterKeyMeetsBothAndBlendsBetween)
 {
+    useFine();
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
     bezier->setKeyframe(kEarlier);
@@ -335,7 +355,7 @@ TEST_F(VectorFollowBakeTest, AForwardFollowWithALaterKeyMeetsBothAndBlendsBetwee
     }
 }
 
-TEST_F(VectorFollowBakeTest, ABlendedFollowUndoesAsOneStep)
+TEST_F(VectorFollowBlendTest, ABlendedFollowUndoesAsOneStep)
 {
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
@@ -365,7 +385,7 @@ TEST_F(VectorFollowBakeTest, ABlendedFollowUndoesAsOneStep)
     EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 3).y, followed.y);
 }
 
-TEST_F(VectorFollowBakeTest, AnAbortMidBlendKeepsFinishedFramesAndTheLaterKey)
+TEST_F(VectorFollowBlendTest, AnAbortMidBlendKeepsFinishedFramesAndTheLaterKey)
 {
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
@@ -417,8 +437,9 @@ TEST_F(VectorFollowBakeTest, AnAbortMidBlendKeepsFinishedFramesAndTheLaterKey)
     EXPECT_EQ(keys.size(), 2u);
 }
 
-TEST_F(VectorFollowBakeTest, AFitLandsOnALaterKeyOfItsOwn)
+TEST_F(VectorFollowBlendTest, AFitLandsOnALaterKeyOfItsOwn)
 {
+    useFine();
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
@@ -446,8 +467,9 @@ TEST_F(VectorFollowBakeTest, AFitLandsOnALaterKeyOfItsOwn)
     }
 }
 
-TEST_F(VectorFollowBakeTest, AForwardOnlySourceFollowsForward)
+TEST_F(VectorFollowBlendTest, AForwardOnlySourceFollowsForward)
 {
+    useFine();
     setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
@@ -464,7 +486,7 @@ TEST_F(VectorFollowBakeTest, AForwardOnlySourceFollowsForward)
     EXPECT_NEAR(end.y, start.y + kShiftY * kSpan, kFollowTolerance);
 }
 
-TEST_F(VectorFollowBakeTest, ABackwardFollowOfAForwardOnlySourceReportsTheMissingLayer)
+TEST_F(VectorFollowBlendTest, ABackwardFollowOfAForwardOnlySourceReportsTheMissingLayer)
 {
     setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
     BezierPtr bezier = makeSquare(kStart + kSpan);
@@ -481,8 +503,9 @@ TEST_F(VectorFollowBakeTest, ABackwardFollowOfAForwardOnlySourceReportsTheMissin
     EXPECT_EQ(keys.size(), 1u);
 }
 
-TEST_F(VectorFollowBakeTest, ATwoWayFollowOfAForwardOnlySourceFallsBackToForwardAndReportsIt)
+TEST_F(VectorFollowBlendTest, ATwoWayFollowOfAForwardOnlySourceFallsBackToForwardAndReportsIt)
 {
+    useFine();
     setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
@@ -508,8 +531,9 @@ TEST_F(VectorFollowBakeTest, ATwoWayFollowOfAForwardOnlySourceFallsBackToForward
     EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).y, held.y);
 }
 
-TEST_F(VectorFollowBakeTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
+TEST_F(VectorFollowBlendTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
 {
+    useFine();
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
     const FollowPoint held = positionAt(bezier, 0, later);
@@ -540,8 +564,9 @@ TEST_F(VectorFollowBakeTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
     EXPECT_EQ(keys, std::set<double> { (double)later });
 }
 
-TEST_F(VectorFollowBakeTest, AFitWithOnlyALaterKeyOfItsOwnTracksBackFromIt)
+TEST_F(VectorFollowBlendTest, AFitWithOnlyALaterKeyOfItsOwnTracksBackFromIt)
 {
+    useFine();
     const int later = kStart + 10;
     // The point key on the start frame is no key to a fit, which keys the transform.
     BezierPtr bezier = makeSquare(kStart);
@@ -569,8 +594,9 @@ TEST_F(VectorFollowBakeTest, AFitWithOnlyALaterKeyOfItsOwnTracksBackFromIt)
     }
 }
 
-TEST_F(VectorFollowBakeTest, AForwardFollowOfAForwardOnlySourceWithOnlyALaterKeyReportsTheMissingLayer)
+TEST_F(VectorFollowBlendTest, AForwardFollowOfAForwardOnlySourceWithOnlyALaterKeyReportsTheMissingLayer)
 {
+    useFine();
     setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
@@ -595,8 +621,9 @@ TEST_F(VectorFollowBakeTest, AForwardFollowOfAForwardOnlySourceWithOnlyALaterKey
     EXPECT_NEAR(positionAt(bezier, 0, kStart + kSpan).x, held.x + kShiftX * 10, kFollowTolerance);
 }
 
-TEST_F(VectorFollowBakeTest, ABackwardFollowWithAnEarlierKeyMeetsBothAndBlendsBetween)
+TEST_F(VectorFollowBlendTest, ABackwardFollowWithAnEarlierKeyMeetsBothAndBlendsBetween)
 {
+    useFine();
     const int current = kStart + 10;
     BezierPtr bezier = makeSquare(kStart);
     bezier->setKeyframe(current + 2);
@@ -634,7 +661,7 @@ TEST_F(VectorFollowBakeTest, ABackwardFollowWithAnEarlierKeyMeetsBothAndBlendsBe
     }
 }
 
-TEST_F(VectorFollowBakeTest, ABackwardBlendUndoesAsOneStep)
+TEST_F(VectorFollowBlendTest, ABackwardBlendUndoesAsOneStep)
 {
     const int current = kStart + 10;
     BezierPtr bezier = makeSquare(kStart);
@@ -664,7 +691,7 @@ TEST_F(VectorFollowBakeTest, ABackwardBlendUndoesAsOneStep)
     EXPECT_DOUBLE_EQ(positionAt(bezier, 0, kStart + 7).y, followed.y);
 }
 
-TEST_F(VectorFollowBakeTest, AnAbortMidBackwardBlendKeepsFinishedFramesNextToTheCurrentFrame)
+TEST_F(VectorFollowBlendTest, AnAbortMidBackwardBlendKeepsFinishedFramesNextToTheCurrentFrame)
 {
     const int current = kStart + 10;
     BezierPtr bezier = makeSquare(kStart);
@@ -718,8 +745,9 @@ TEST_F(VectorFollowBakeTest, AnAbortMidBackwardBlendKeepsFinishedFramesNextToThe
     EXPECT_EQ(keys.size(), 2u);
 }
 
-TEST_F(VectorFollowBakeTest, ABackwardFitLandsOnAnEarlierKeyOfItsOwn)
+TEST_F(VectorFollowBlendTest, ABackwardFitLandsOnAnEarlierKeyOfItsOwn)
 {
+    useFine();
     const int current = kStart + 10;
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
@@ -748,8 +776,9 @@ TEST_F(VectorFollowBakeTest, ABackwardFitLandsOnAnEarlierKeyOfItsOwn)
     }
 }
 
-TEST_F(VectorFollowBakeTest, ABackwardFollowWithOnlyAnEarlierKeyTracksForwardFromIt)
+TEST_F(VectorFollowBlendTest, ABackwardFollowWithOnlyAnEarlierKeyTracksForwardFromIt)
 {
+    useFine();
     const int earlier = kStart + 10;
     BezierPtr bezier = makeSquare(earlier);
     const FollowPoint held = positionAt(bezier, 0, earlier);
@@ -782,7 +811,7 @@ TEST_F(VectorFollowBakeTest, ABackwardFollowWithOnlyAnEarlierKeyTracksForwardFro
     EXPECT_EQ(keys, std::set<double> { (double)earlier });
 }
 
-TEST_F(VectorFollowBakeTest, ARefusedSourceWritesNothing)
+TEST_F(VectorFollowBlendTest, ARefusedSourceWritesNothing)
 {
     BezierPtr bezier = makeSquare(kStart);
 

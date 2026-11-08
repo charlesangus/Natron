@@ -455,7 +455,7 @@ try:
     def trackball_action():
         win = main_window()
         for a in win.actions():
-            if "Colour Trackball" in a.text():
+            if a.shortcut().toString() == "Ctrl+E" or "Hovered or Last-Touched" in a.text():
                 return a
         return None
 
@@ -992,7 +992,7 @@ try:
 
         # =========================================================================================
         gt.section("fresh-engage")
-        require(trackball_action() is not None, "found the Engage Colour Trackball action")
+        require(trackball_action() is not None, "found the Ctrl+E global mode action")
         globe = child_named(knob_row(gp, GAIN), "ColorGlobalModeButton")
         globe.click()
         yield ("sleep", SETTLE_MS)

@@ -54,6 +54,7 @@
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Transform/LensfunRuntime.h"
@@ -1092,40 +1093,6 @@ LensCorrect::getRegionOfDefinition(U64 hash,
     return status;
 } // LensCorrect::getRegionOfDefinition
 
-void
-LensCorrect::getRegionsOfInterest(double time,
-                                  const RenderScale& scale,
-                                  const RectD& outputRoD,
-                                  const RectD& renderWindow,
-                                  ViewIdx view,
-                                  RoIMap* ret)
-{
-    StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
-
-    EffectInstancePtr source = getInput(kLensCorrectInputSource);
-    if (!source) {
-        return;
-    }
-    // Lensfun's map has no bound short of the whole image, so the whole Source is read.
-    RectD sourceRoI = renderWindow;
-    RectD sourceRoD;
-    bool isProjectFormat = false;
-    const RenderScale inputScale = source->supportsRenderScale() ? scale : RenderScale::identity;
-    if ((source->getRegionOfDefinition_public(source->getRenderHash(), time, inputScale, view, &sourceRoD, &isProjectFormat) != eStatusFailed) && !sourceRoD.isNull()) {
-        sourceRoI.merge(sourceRoD);
-    }
-    (*ret)[source] = sourceRoI;
-}
-
-bool
-LensCorrect::isOpIdentity(double /*time*/,
-                          const RenderScale& /*scale*/,
-                          const RectI& /*roi*/,
-                          ViewIdx /*view*/)
-{
-    return false;
-}
-
 namespace {
 // Maps output pixels at the render scale to Source pixels at the render scale through the profile.
 // Lensfun's pixels have their centres on integers and y down, over the Source format at scale 1.
@@ -1161,7 +1128,247 @@ struct PixelMapper {
         }
     }
 };
+
+// Positions past this are lensfun's markers for a point it has no answer for.
+const double kNoAnswerPosition = 1e7;
+
+// The lattice sizes per axis tried in turn, each containing the last.
+const int kLatticeSizes[] = { 33, 65, 129 };
+
+// Keeps both ends, which hold the window's corners.
+std::vector<int>
+latticeAxis(int first,
+            int last,
+            int n)
+{
+    std::vector<int> axis;
+    const int span = last - first;
+    if (span + 1 <= n) {
+        for (int x = first; x <= last; ++x) {
+            axis.push_back(x);
+        }
+
+        return axis;
+    }
+    for (int i = 0; i < n; ++i) {
+        axis.push_back(first + (int)std::lround((double)i * span / (n - 1)));
+    }
+
+    return axis;
+}
+
+/*
+ * The box of Source pixels the render of output pixels `pixels` reads: every red, green and blue
+ * position the mapper gives them, grown by the filter's reach at the kernel scale the Jacobians
+ * can reach there. False when a position has no answer, as a fisheye's far side has none.
+ *
+ * The map is evaluated on a lattice that always holds the window's corners and edges' ends, and
+ * between lattice points it is bounded by its bilinear interpolant plus that interpolant's error,
+ * (h^2 / 8) |f''|, taken here eight times over with f'' from the lattice's second divided
+ * differences. Lensfun's failures are radial, so a window with any point past the failure radius
+ * has a corner past it, and corners are lattice points.
+ */
+bool
+sourceSampleBox(const PixelMapper& mapper,
+                const RectI& pixels,
+                double filterRadius,
+                RectD* box)
+{
+    // The Jacobians' central differences map one pixel past the window on every side.
+    const int x0 = pixels.x1 - 1;
+    const int x1 = pixels.x2;
+    const int y0 = pixels.y1 - 1;
+    const int y1 = pixels.y2;
+    const int nSizes = (int)(sizeof(kLatticeSizes) / sizeof(kLatticeSizes[0]));
+
+    for (int level = 0; level < nSizes; ++level) {
+        const std::vector<int> xs = latticeAxis(x0, x1, kLatticeSizes[level]);
+        const std::vector<int> ys = latticeAxis(y0, y1, kLatticeSizes[level]);
+        const int nx = (int)xs.size();
+        const int ny = (int)ys.size();
+        std::vector<double> v((std::size_t)nx * ny * 6);
+        for (int j = 0; j < ny; ++j) {
+            for (int i = 0; i < nx; ++i) {
+                float lf[6], s[6];
+                mapper.map(xs[i], ys[j], lf, s);
+                for (int k = 0; k < 6; ++k) {
+                    if (!std::isfinite(s[k]) || (std::fabs(s[k]) > kNoAnswerPosition)) {
+                        return false;
+                    }
+                    v[((std::size_t)j * nx + i) * 6 + k] = s[k];
+                }
+            }
+        }
+        const auto at = [&](int i, int j, int k) {
+            return v[((std::size_t)j * nx + i) * 6 + k];
+        };
+
+        // A dense axis has no pixel between its lattice points to interpolate.
+        int hx = 0;
+        for (int i = 0; i + 1 < nx; ++i) {
+            hx = std::max(hx, xs[i + 1] - xs[i]);
+        }
+        int hy = 0;
+        for (int j = 0; j + 1 < ny; ++j) {
+            hy = std::max(hy, ys[j + 1] - ys[j]);
+        }
+        const double gapX = (hx > 1) ? hx : 0.;
+        const double gapY = (hy > 1) ? hy : 0.;
+
+        double lo[6], hi[6], slopeX[6], slopeY[6], curveX[6], curveY[6];
+        for (int k = 0; k < 6; ++k) {
+            lo[k] = hi[k] = at(0, 0, k);
+            slopeX[k] = slopeY[k] = curveX[k] = curveY[k] = 0.;
+        }
+        for (int j = 0; j < ny; ++j) {
+            for (int i = 0; i < nx; ++i) {
+                for (int k = 0; k < 6; ++k) {
+                    const double f = at(i, j, k);
+                    lo[k] = std::min(lo[k], f);
+                    hi[k] = std::max(hi[k], f);
+                    if (i + 1 < nx) {
+                        slopeX[k] = std::max(slopeX[k], std::fabs(at(i + 1, j, k) - f) / (xs[i + 1] - xs[i]));
+                    }
+                    if (j + 1 < ny) {
+                        slopeY[k] = std::max(slopeY[k], std::fabs(at(i, j + 1, k) - f) / (ys[j + 1] - ys[j]));
+                    }
+                    if (i + 2 < nx) {
+                        const double d0 = (at(i + 1, j, k) - f) / (xs[i + 1] - xs[i]);
+                        const double d1 = (at(i + 2, j, k) - at(i + 1, j, k)) / (xs[i + 2] - xs[i + 1]);
+                        curveX[k] = std::max(curveX[k], 2. * std::fabs(d1 - d0) / (xs[i + 2] - xs[i]));
+                    }
+                    if (j + 2 < ny) {
+                        const double d0 = (at(i, j + 1, k) - f) / (ys[j + 1] - ys[j]);
+                        const double d1 = (at(i, j + 2, k) - at(i, j + 1, k)) / (ys[j + 2] - ys[j + 1]);
+                        curveY[k] = std::max(curveY[k], 2. * std::fabs(d1 - d0) / (ys[j + 2] - ys[j]));
+                    }
+                }
+            }
+        }
+
+        double interpolationError = 0.;
+        double kernelScale = 1.;
+        for (int k = 0; k < 6; ++k) {
+            interpolationError = std::max(interpolationError, curveX[k] * gapX * gapX + curveY[k] * gapY * gapY);
+            // A lattice slope is the mean over its gap, short of the steepest by at most f'' * gap.
+            const double row = slopeX[k] + curveX[k] * gapX + slopeY[k] + curveY[k] * gapY;
+            kernelScale = std::max(kernelScale, 1.25 * row);
+        }
+        const bool dense = (gapX == 0.) && (gapY == 0.);
+        if (!dense && (interpolationError > 1.) && (level + 1 < nSizes)) {
+            continue;
+        }
+
+        double extent = 0.;
+        for (int k = 0; k < 6; ++k) {
+            extent = std::max(extent, std::max(std::fabs(lo[k]), std::fabs(hi[k])));
+        }
+        // Beyond the unscaled filter's taps, the Resampler's bilinear reads spread over a scaled
+        // footprint, and the slack covers the GPU's float positions and approximate trigonometry.
+        const double reach = std::max(2., filterRadius) * kernelScale + 2.;
+        const double slack = 2. + 1e-4 * extent;
+        const double margin = interpolationError + reach + slack;
+        *box = RectD(std::min(lo[0], std::min(lo[2], lo[4])) - margin,
+                     std::min(lo[1], std::min(lo[3], lo[5])) - margin,
+                     std::max(hi[0], std::max(hi[2], hi[4])) + margin,
+                     std::max(hi[1], std::max(hi[3], hi[5])) + margin);
+
+        return true;
+    }
+
+    return false;
+}
+
+// need, moved onto rod: the Resampler clamps a read outside its bounds to their edge, so a need
+// wholly past one side of rod still needs rod's last row or column on that side.
+RectI
+projectOntoRoD(const RectI& need,
+               const RectI& rod)
+{
+    RectI r;
+    r.x1 = std::min(std::max(need.x1, rod.x1), rod.x2 - 1);
+    r.x2 = std::max(std::min(need.x2, rod.x2), r.x1 + 1);
+    r.y1 = std::min(std::max(need.y1, rod.y1), rod.y2 - 1);
+    r.y2 = std::max(std::min(need.y2, rod.y2), r.y1 + 1);
+
+    return r;
+}
 } // namespace
+
+void
+LensCorrect::getRegionsOfInterest(double time,
+                                  const RenderScale& scale,
+                                  const RectD& outputRoD,
+                                  const RectD& renderWindow,
+                                  ViewIdx view,
+                                  RoIMap* ret)
+{
+    StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+
+    EffectInstancePtr source = getInput(kLensCorrectInputSource);
+    if (!source) {
+        return;
+    }
+    // The mask and mix, and a pass-through of unprocessed channels, read the Source under the window.
+    RectD sourceRoI = renderWindow;
+    RectD sourceRoD;
+    bool isProjectFormat = false;
+    const RenderScale inputScale = source->supportsRenderScale() ? scale : RenderScale::identity;
+    if ((source->getRegionOfDefinition_public(source->getRenderHash(), time, inputScale, view, &sourceRoD, &isProjectFormat) == eStatusFailed) || sourceRoD.isNull()) {
+        (*ret)[source] = sourceRoI;
+
+        return;
+    }
+    const RectD wholeSource = RectD(std::min(sourceRoD.x1, renderWindow.x1), std::min(sourceRoD.y1, renderWindow.y1),
+                                    std::max(sourceRoD.x2, renderWindow.x2), std::max(sourceRoD.y2, renderWindow.y2));
+    NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    NodeMetadataConstPtr sourceMetadata = source->getRenderMetadata(time, view);
+    if (!metadata || !sourceMetadata || sourceRoD.isInfinite() || renderWindow.isInfinite() || renderWindow.isNull()) {
+        (*ret)[source] = wholeSource;
+
+        return;
+    }
+
+    Settings settings;
+    readSettings(time, view, &settings);
+    const Model model = buildModel(time, view, settings);
+    if (model.format.isNull()) {
+        (*ret)[source] = sourceRoI;
+
+        return;
+    }
+    PixelMapper mapper;
+    mapper.profile = &model.profile;
+    mapper.scaleX = scale.toOfxPointD().x;
+    mapper.scaleY = scale.toOfxPointD().y;
+    mapper.x1 = model.format.x1;
+    mapper.y2 = model.format.y2;
+
+    const double sourcePar = sourceMetadata->getPixelAspectRatio(-1);
+    const RectI windowPixels = PassExec::toPixelEnclosing(renderWindow, scale, metadata->getPixelAspectRatio(-1));
+    const RectI rodPixels = PassExec::toPixelEnclosing(sourceRoD, scale, sourcePar);
+    RectD box;
+    // A draft render's impulse reaches no further than the knob's filter, so one region serves both.
+    if (windowPixels.isNull() || rodPixels.isNull() || !sourceSampleBox(mapper, windowPixels, settings.filter.radius(), &box)) {
+        (*ret)[source] = wholeSource;
+
+        return;
+    }
+    const double limit = (double)INT_MAX / 4;
+    const RectI need((int)std::floor(std::max(box.x1, -limit)), (int)std::floor(std::max(box.y1, -limit)),
+                     (int)std::floor(std::min(box.x2, limit)) + 1, (int)std::floor(std::min(box.y2, limit)) + 1);
+    sourceRoI.merge(PassExec::toCanonical(projectOntoRoD(need, rodPixels), scale, sourcePar));
+    (*ret)[source] = sourceRoI;
+}
+
+bool
+LensCorrect::isOpIdentity(double /*time*/,
+                          const RenderScale& /*scale*/,
+                          const RectI& /*roi*/,
+                          ViewIdx /*view*/)
+{
+    return false;
+}
 
 StatusEnum
 LensCorrect::renderOp(const RenderActionArgs& args,
@@ -1430,7 +1637,7 @@ LensCorrect::getOpGpuInputRoI(int inputNb,
                               const RenderScale& scale) const
 {
     if (inputNb == kLensCorrectInputSource) {
-        return warpGpuInputRoI(*this, inputNb, kLensCorrectInputSource, -1, time, view, outputRect, scale);
+        return resampleGpuSourceRoI(*this, inputNb, time, view, outputRect, scale);
     }
 
     return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);

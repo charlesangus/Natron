@@ -220,13 +220,13 @@ TEST(GeoKernelRunnerTest, VertexRunReadsPointAndPrimitiveAttributes)
     builder.appendPrimitive(eGeoPrimitivePolygon, quad);
     builder.appendPrimitive(eGeoPrimitivePolygon, tri);
     GeoAttributeDesc w;
-    w.name = "w";
+    w.name = "weight";
     w.storage = eGeoStorageFloat32;
     builder.addAttribute(eGeoAttribClassPrimitive, w);
-    builder.attributeForWriting(eGeoAttribClassPrimitive, "w")->set<float>(1, 10.f);
+    builder.attributeForWriting(eGeoAttribClassPrimitive, "weight")->set<float>(1, 10.f);
     const GeoDetail input = builder.finish();
 
-    const GeoKernelRunResult result = run(input, "f@s = @P.x + @w; i@pt = @ptnum; i@pr = @primnum;", 2, eGeoAttribClassVertex);
+    const GeoKernelRunResult result = run(input, "f@s = @P.x + @weight; i@pt = @ptnum; i@pr = @primnum;", 2, eGeoAttribClassVertex);
     ASSERT_EQ(KernelRunStatus::eDone, result.status) << result.error;
     const GeoAttribute* s = result.detail.findAttribute(eGeoAttribClassVertex, "s");
     const GeoAttribute* pt = result.detail.findAttribute(eGeoAttribClassVertex, "pt");

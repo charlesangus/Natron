@@ -27,8 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
-
-#include <cairo/cairo.h>
+#include <vector>
 
 #include "Engine/Bezier.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
@@ -114,40 +113,16 @@ renderSplineWarpCookieMask(const std::list<BezierPtr>& curves,
     if (window.isNull() || curves.empty()) {
         return mask;
     }
-    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_A8, window.width(), window.height());
-    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        cairo_surface_destroy(surface);
-
-        return mask;
-    }
-    cairo_surface_set_device_offset(surface, -window.x1, -window.y1);
-    cairo_t* cr = cairo_create(surface);
-    cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
-    // As Roto renders a shape: an antialiased fill leaves seams where the inner polygon meets the
-    // feather's mesh, so the edge's softness comes from the feather.
-    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
-    // The curves are drawn in canonical coordinates at full scale; the matrix takes them to pixels.
-    cairo_scale(cr, scaleX, scaleY);
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        RotoContextPrivate::renderBezier(cr, it->get(), 1., time, time, time, 1., 0);
-    }
-    cairo_surface_flush(surface);
-
     mask.bounds = window;
     mask.pixels.assign((std::size_t)window.width() * window.height(), 0.f);
-    const unsigned char* data = cairo_image_surface_get_data(surface);
-    const int stride = cairo_image_surface_get_stride(surface);
-    if (data) {
-        for (int y = 0; y < window.height(); ++y) {
-            const unsigned char* row = data + (std::size_t)y * stride;
-            float* dst = &mask.pixels[(std::size_t)y * window.width()];
-            for (int x = 0; x < window.width(); ++x) {
-                dst[x] = row[x] * (1.f / 255.f);
-            }
+    std::vector<float> curveAlpha;
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        // The curves are in canonical coordinates at full scale; the scale takes them to pixels.
+        RotoContextPrivate::renderBezier(it->get(), time, time, time, 1., 0, scaleX, scaleY, window, &curveAlpha);
+        for (std::size_t i = 0; i < mask.pixels.size(); ++i) {
+            mask.pixels[i] = curveAlpha[i] + mask.pixels[i] * (1.f - curveAlpha[i]);
         }
     }
-    cairo_destroy(cr);
-    cairo_surface_destroy(surface);
 
     return mask;
 }

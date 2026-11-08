@@ -65,6 +65,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/RippleEditKeys.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoFeatherRaster.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
@@ -2405,8 +2406,13 @@ public:
                                double opacity,
                                double time,
                                unsigned int mipmapLevel);
-    static void renderBezier(cairo_t* cr, const Bezier* bezier, double opacity, double time, double startTime, double endTime, double mbFrameStep, unsigned int mipmapLevel);
-    static void renderFeather(const Bezier * bezier, double time, unsigned int mipmapLevel, double shapeColor[3], double opacity, double featherDist, double fallOff, cairo_pattern_t * mesh);
+    /**
+     * @brief Renders the closed shape with its feather into alpha (roi.width() x roi.height(), row 0
+     * at roi.y1), each motion blur sample over the previous ones. The shape is drawn in its
+     * coordinates at mipmapLevel, scaled by scaleX and scaleY into the pixels roi is in.
+     **/
+    static void renderBezier(const Bezier* bezier, double time, double startTime, double endTime, double mbFrameStep, unsigned int mipmapLevel, double scaleX, double scaleY, const RectI& roi, std::vector<float>* alpha);
+    static void computeFeatherQuads(const Bezier* bezier, double time, unsigned int mipmapLevel, double featherDist, std::vector<RotoFeatherQuad>* quads);
     static void renderFeather_cairo(const std::list<RotoFeatherVertex>& vertices, double shapeColor[3],  double fallOff, cairo_pattern_t * mesh);
     static void renderInternalShape_cairo(const std::list<RotoTriangles>& triangles,
                                           const std::list<RotoTriangleFans>& fans,
@@ -2415,7 +2421,6 @@ public:
     static void computeTriangles(const Bezier * bezier, double time, unsigned int mipmapLevel,  double featherDist, std::list<RotoFeatherVertex>* featherMesh, std::list<RotoTriangleFans>* internalFans, std::list<RotoTriangles>* internalTriangles,std::list<RotoTriangleStrips>* internalStrips);
     static void renderInternalShape(double time, unsigned int mipmapLevel, double shapeColor[3], double opacity, const Transform::Matrix3x3 & transform, cairo_t * cr, cairo_pattern_t * mesh, const BezierCPs &cps);
     static void bezulate(double time, const BezierCPs& cps, std::list<BezierCPs>* patches);
-    static void applyAndDestroyMask(cairo_t* cr, cairo_pattern_t* mesh);
 };
 
 NATRON_NAMESPACE_EXIT

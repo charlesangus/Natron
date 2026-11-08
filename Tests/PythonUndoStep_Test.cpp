@@ -229,6 +229,61 @@ TEST_F(PythonUndoStep, ANestedBlockEditingOneKnobKeepsTheOuterLabel)
     EXPECT_EQ(QString::fromUtf8("Outer"), _history->undoText());
 }
 
+TEST_F(PythonUndoStep, ALabelledBlockInAnAutomaticStepNamesTheEntryForOneEdit)
+{
+    {
+        UndoStepGuard step(_app, "Script Editor");
+        ASSERT_TRUE(run("with " + appPy() + ".newUndoStep(\"Foo\"):\n" + setCrop(false, "    ")));
+    }
+
+    ASSERT_EQ(1, _history->count());
+    EXPECT_EQ(QString::fromUtf8("Foo"), _history->undoText());
+}
+
+TEST_F(PythonUndoStep, ALabelledBlockInAnAutomaticStepNamesTheEntryForSeveralEdits)
+{
+    {
+        UndoStepGuard step(_app, "Script Editor");
+        ASSERT_TRUE(run("with " + appPy() + ".newUndoStep(\"Foo\"):\n" + setSize(2.0, 0, "    ") + setCrop(false, "    ")));
+    }
+
+    ASSERT_EQ(1, _history->count());
+    EXPECT_EQ(QString::fromUtf8("Foo"), _history->undoText());
+    _history->undo();
+    EXPECT_EQ(1.0, _size->getValue(0));
+    EXPECT_TRUE(_crop->getValue());
+}
+
+TEST_F(PythonUndoStep, TwoLabelledBlocksInAnAutomaticStepShowTheFirstLabel)
+{
+    {
+        UndoStepGuard step(_app, "Script Editor");
+        const std::string script = "with " + appPy() + ".newUndoStep(\"First\"):\n"
+            + setSize(2.0, 0, "    ")
+            + "with " + appPy() + ".newUndoStep(\"Second\"):\n"
+            + setCrop(false, "    ");
+        ASSERT_TRUE(run(script));
+    }
+
+    ASSERT_EQ(1, _history->count());
+    EXPECT_EQ(QString::fromUtf8("First"), _history->undoText());
+}
+
+TEST_F(PythonUndoStep, AnExplicitlyLabelledOuterStepKeepsItsLabelOverAnAutomaticOne)
+{
+    {
+        UndoStepGuard step(_app, "Script Editor");
+        const std::string script = "with " + appPy() + ".newUndoStep(\"Outer\"):\n"
+            + setSize(2.0, 0, "    ")
+            + "    with " + appPy() + ".newUndoStep(\"Inner\"):\n"
+            + setCrop(false, "        ");
+        ASSERT_TRUE(run(script));
+    }
+
+    ASSERT_EQ(1, _history->count());
+    EXPECT_EQ(QString::fromUtf8("Outer"), _history->undoText());
+}
+
 TEST_F(PythonUndoStep, AnUnlabelledStepWithOneEditKeepsTheEditsText)
 {
     {

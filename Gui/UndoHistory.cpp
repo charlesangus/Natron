@@ -812,7 +812,13 @@ UndoHistory::openStep(const QString& text,
         return;
     }
     if (!_imp->frames.empty()) {
-        ++_imp->frames.back().nestedSteps;
+        CaptureFrame& top = _imp->frames.back();
+        // The enclosing step's own text is an automatic one, so the first labelled step inside takes it over.
+        if (keepsText && top.isStep && !top.keepsText) {
+            top.text = text;
+            top.keepsText = true;
+        }
+        ++top.nestedSteps;
 
         return;
     }

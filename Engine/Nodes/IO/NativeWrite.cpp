@@ -1052,18 +1052,24 @@ NativeWrite::initializeKnobs()
     page->addKnob(reload);
     _reload = reload;
 
+    // A render can keep this effect alive after its node is destroyed, and purging caches or refreshing
+    // a menu then reaches the node, so the node scopes the connections. A render thread may also drop
+    // the last reference while a slot is about to run on the main thread, so the slots hold the node,
+    // and through it this effect, or skip once the node no longer holds this effect.
+    NodePtr node = getNode();
+    NodeWPtr weakNode = node;
     RenderEnginePtr engine = getRenderEngine();
-    if (engine) {
-        QObject::connect(engine.get(), &RenderEngine::renderFinished, this, [this](int) { onSequenceRenderFinished(); });
+    if (engine && node) {
+        QObject::connect(engine.get(), &RenderEngine::renderFinished, node.get(), [this, weakNode](int) {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                onSequenceRenderFinished();
+            }
+        });
     }
     ProjectPtr project = getApp()->getProject();
-    NodePtr node = getNode();
     if (project && node) {
-        // A render can keep this effect alive after its node is destroyed, and refreshing a menu then
-        // reaches the node, so the node scopes the connections. A render thread may also drop the last
-        // reference while the project emits on the main thread, so the slots hold the node, and through
-        // it this effect, or skip once the node no longer holds this effect.
-        NodeWPtr weakNode = node;
         QObject::connect(project.get(), &Project::projectViewsChanged, node.get(), [this, weakNode]() {
             NodePtr aliveNode = weakNode.lock();
             EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();

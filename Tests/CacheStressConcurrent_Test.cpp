@@ -1151,6 +1151,13 @@ demotionUnderAWaitingRender(const AppInstancePtr& app,
     if (tier.publishedFiles() <= publishedBefore) {
         return "no entry reached the disk";
     }
+    // The automatic tier is most of what the node graph reports as the disk cache.
+    tier.maintainNow(false);
+    const U64 automaticBytes = tier.used();
+    const U64 diskBytes = automaticBytes + tier.pinnedBytes();
+    if ((automaticBytes == 0) || (appPTR->getCachesTotalDiskSize() < diskBytes)) {
+        return "the reported disk cache size leaves out the automatic tier";
+    }
 
     tier.forgetProbes();
 

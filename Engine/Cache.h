@@ -1292,13 +1292,13 @@ public:
         const PublishPaused paused(*this);
         // Freed off the lock, after everything else.
         std::vector<CacheEntryPtr> droppedDemotions;
-        std::vector<const AbstractCacheEntryBase*> abandonedPublishes;
+        std::vector<const AbstractCacheEntryBase*> abandonedWrites;
 
         // Demotions are dropped under the same lock that empties RAM, so that no lookup reclaims
         // one in between, and the tier's files go after, so that the idle publisher has no cleared
         // entry left to write there.
         if (_diskTier) {
-            _diskTier->cancelWrites(&abandonedPublishes);
+            _diskTier->cancelWrites(&abandonedWrites);
         }
         {
             QMutexLocker k(&_tileCacheMutex);
@@ -1314,13 +1314,13 @@ public:
         {
             QMutexLocker locker(&_lock);
             if (_diskTier) {
-                _diskTier->cancelDemotions(&droppedDemotions);
+                _diskTier->cancelDemotions(&droppedDemotions, &abandonedWrites);
             }
             {
                 // Destroyed while _clearingCache is set, which is what lets a tiled cache remove a
                 // tile file the last of them frees.
                 std::list<StoredEntryPtr> cleared;
-                takeUnheldFromMemoryLocked(abandonedPublishes, &cleared);
+                takeUnheldFromMemoryLocked(abandonedWrites, &cleared);
                 for (const StoredEntryPtr& entry : cleared) {
                     if (!_isTiled && entry->isStoredOnDisk()) {
                         entry->removeAnyBackingFile();
@@ -1397,6 +1397,7 @@ public:
     {
         // Freed off the lock.
         std::vector<CacheEntryPtr> droppedDemotions;
+        std::vector<const AbstractCacheEntryBase*> abandonedWrites(abandonedPublishes);
         std::list<StoredEntryPtr> cleared;
 
         if (_signalEmitter) {
@@ -1406,9 +1407,9 @@ public:
         QMutexLocker locker(&_lock);
         // A demotion left queued would come back into the emptied RAM on its key's next lookup.
         if (_diskTier) {
-            _diskTier->cancelDemotions(&droppedDemotions);
+            _diskTier->cancelDemotions(&droppedDemotions, &abandonedWrites);
         }
-        takeUnheldFromMemoryLocked(abandonedPublishes, &cleared);
+        takeUnheldFromMemoryLocked(abandonedWrites, &cleared);
         for (const StoredEntryPtr& evicted : cleared) {
             // Move back the entry on disk if it can be store on disk
             // For tiled caches, the tile is sharing the same file with other entries
@@ -2298,10 +2299,11 @@ private:
         Cache& _cache;
     };
 
-    // Under _lock. An abandoned publish holds its entry until its write returns, which can be after
-    // the clear: it is no use of the entry, and only another holder keeps the entry in RAM. A
-    // file-backed entry's file may still be read, so any holder keeps it.
-    void takeUnheldFromMemoryLocked(const std::vector<const AbstractCacheEntryBase*>& abandonedPublishes,
+    // Under _lock. An abandoned publish or demotion holds its entry until its write returns, which
+    // can be after the clear: it is no use of the entry, and only another holder keeps the entry in
+    // RAM. A demotion's entry is in RAM when a lookup reclaimed it mid-write. A file-backed entry's
+    // file may still be read, so any holder keeps it.
+    void takeUnheldFromMemoryLocked(const std::vector<const AbstractCacheEntryBase*>& abandonedWrites,
                                     std::list<StoredEntryPtr>* taken)
     {
         std::vector<StoredEntryPtr> unheld;
@@ -2310,7 +2312,7 @@ private:
             for (const StoredEntryPtr& entry : getValueFromIterator(it)) {
                 long holders = entry.use_count();
                 if (!entry->isStoredOnDisk()) {
-                    holders -= (long)std::count(abandonedPublishes.begin(), abandonedPublishes.end(), entry.get());
+                    holders -= (long)std::count(abandonedWrites.begin(), abandonedWrites.end(), entry.get());
                 }
                 if (holders <= 1) {
                     unheld.push_back(entry);

@@ -429,7 +429,10 @@ A deep render hands its consumer a `DeepImagePtr`, not the entry, so that pointe
 - Persistent, and outside sampling: the eviction pass never lists `pins/` ([Budget and eviction](#budget-and-eviction)).
 - On its own budget: `maxDiskCacheNode`, default 10 GiB (`Engine/Settings.cpp:1827`), across all holders. It does not
   count against the 20 GiB automatic tier: the scan skips a live build's `pins/`, and a pin write touches no ledger. Its
-  used figure is a listing of `pins/` taken under a lock for each write, since pins are few and written once per output.
+  used figure is a listing of `pins/` taken for each write, since pins are few and written once per output. The listing,
+  the admission and the write up to its rename hold the build's byte of `pins.lock`, so that sessions in other processes
+  pinning at once cannot all measure the same free space; a peer's pin is visible to a listing only once renamed. On a
+  mount without these locks only this process's pins in progress are counted.
 - Read in place on a local disk: privately mapped, with its descriptor closed, so it counts as RAM while mapped and not
   against the open-file cap (`CacheDiskTier::Reader::mapRest`). A later partial render writes to its own copy of the pages.
   On a network mount a pin is read into RAM instead, because a peer's unlink there turns a mapping into `ESTALE`, which is
@@ -466,8 +469,8 @@ Applies to the automatic tier and the pins. The `Cache<FrameEntry>` playback cac
 contents (`Engine/AppManagerPrivate.cpp:408`, `:458`).
 
 The tier is shared by any number of sessions (the GUI, background renderers, several GUIs), none of them privileged. The
-protocol's correctness rests on `rename` alone. No lock gates access, and the locks and caches below only make it faster.
-Every file is immutable once published, so a reader sees a whole old file or a whole new one.
+protocol's correctness rests on `rename` alone. No lock gates access: readers take none, and the locks and caches below
+only make it faster or keep writers from undoing each other. Every file is immutable once published, so a reader sees a whole old file or a whole new one.
 
 ### Location and size
 
@@ -482,6 +485,8 @@ space and the smallest view wins.
 <tier>/sessions/<host>-<boot>-<pid>-<start>        one writer: build, signed byte delta, heartbeat, closed
 <tier>/tmp/<session>/
 <tier>/evict.lock                                  try-lock, optimisation only
+<tier>/publish.lock                                one byte per stripe of file paths, held for a writer's last check and rename
+<tier>/pins.lock                                   one byte per build, held for a pin's admission and write
 <tier>/<build>/lastlive                            mtime: when a session of this build last ran
 <tier>/<build>/auto/<xxx>/<base>-<variant>-<params>.ntc
 <tier>/<build>/pins/<cacheID>/<base>-<variant>-<params>.ntc
@@ -521,8 +526,12 @@ bits, and about 5×10⁻⁹ with 300,000 entries (computed from the birthday bou
    (`Engine/MemoryFile.cpp:304`), which makes a sparse file; the sparse file is the reason for the call, and `ENOSPC` is
    then a clean failure at this step.
 2. `pwrite` the header, bitmap and payload, then `fdatasync`.
-3. If a file of that name exists in `auto/<xxx>/` (a `stat` and a header read) and has at least as many rendered pixels,
-   skip: remove the temporary file. Otherwise `rename` it over the old one. The larger result replaces the smaller.
+3. Take the write lock on the path's byte of `publish.lock` (an open-file-description lock, `F_OFD_SETLKW`, which excludes
+   threads of one process as well as processes). Under it, if a file of that name exists in `auto/<xxx>/` (a `stat` and a
+   header read) and has at least as many rendered pixels, skip: remove the temporary file. Otherwise `rename` it over the
+   old one, and charge the difference from the file it replaced. The larger result replaces the smaller, which a check
+   and rename racing another writer's could not promise. A mount without these locks writes unguarded, where the last
+   rename wins.
 4. Mark the entry disk-resident, and free its RAM and bitmap if this was a demotion. Add the file's size to this session's
    ledger.
 
@@ -548,7 +557,8 @@ publisher sample an entry still in RAM and write it into the emptied tier, where
 publish batch sampled before any cancellation is dropped rather than queued after it, and the idle publisher samples
 nothing while a clear runs. Emptying RAM keeps an entry only while something other than the cache holds it: the reference
 of a publish the clear abandoned is not such a use, though the write may hold it until after RAM is emptied, and a held
-entry no longer shields the entries behind it in eviction order. Queued demotions are dropped under
+entry no longer shields the entries behind it in eviction order. A demotion the clear cancelled mid-write is the same: a
+lookup may have taken its entry back into RAM, and its reference is not a use either. Queued demotions are dropped under
 the same lock that empties RAM, and a write the clear cancelled is never handed back to a lookup, even while it is still
 running: either would put the cleared entry back in RAM. A promotion that read its file before or during a clear finds
 the clear generation moved and returns a miss instead of adding the entry.

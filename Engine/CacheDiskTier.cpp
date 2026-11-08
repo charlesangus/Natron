@@ -123,6 +123,10 @@ const std::size_t kPublishScan = 256;
 const std::size_t kPublishBatch = 8;
 const int kPublishBackoffMs = 30000;
 const std::size_t kMaxKnownFiles = 65536;
+// Files whose paths hash to the same stripe of the publish lock wait for each other's renames.
+const std::uint64_t kPublishLockStripes = 65536;
+const char kPublishLockName[] = "publish.lock";
+const char kPinLockName[] = "pins.lock";
 
 const std::uint64_t kLedgerMagic = 0x4e544c4544474552ULL;
 
@@ -752,6 +756,36 @@ private:
     const int _fd;
 };
 
+// A write lock on one byte of a lock file, held by its own open file description: it excludes the
+// other threads of this process as well as other processes, and closing the descriptor releases
+// it. On a mount without such locks the holder goes on unguarded, which costs only what the lock
+// guards and never access to the tier.
+class ByteLock {
+public:
+    ByteLock(const std::string& path,
+             std::uint64_t offset)
+        : _fd(::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0666))
+    {
+        if (_fd.get() < 0) {
+            return;
+        }
+        struct flock range;
+        std::memset(&range, 0, sizeof(range));
+        range.l_type = F_WRLCK;
+        range.l_whence = SEEK_SET;
+        range.l_start = (off_t)offset;
+        range.l_len = 1;
+        while ((::fcntl(_fd.get(), F_OFD_SETLKW, &range) != 0) && (errno == EINTR)) {
+        }
+    }
+
+    ByteLock(const ByteLock&) = delete;
+    ByteLock& operator=(const ByteLock&) = delete;
+
+private:
+    ScopedFd _fd;
+};
+
 } // namespace
 
 namespace {
@@ -819,6 +853,8 @@ struct CacheDiskTier::Imp {
     std::string buildDir;
     std::string autoDir;
     std::string pinsDir;
+    std::string publishLockPath;
+    std::string pinLockPath;
     std::string sessionsDir;
     std::string tmpDir;
     std::string ledgerPath;
@@ -883,7 +919,9 @@ struct CacheDiskTier::Imp {
     bool closing; // set once every thread has been joined
 
     std::atomic<std::uint64_t> pinBudget { 0 };
-    std::mutex pinMutex; // guards pinReserved, and makes a budget check and its reservation one step
+    // Guards pinReserved, and makes a budget check and its reservation one step. The pin lock makes
+    // it so across processes, and this is what remains where that lock is unavailable.
+    std::mutex pinMutex;
     std::uint64_t pinReserved = 0;
     mutable std::mutex heldMutex; // guards heldPins
     std::set<std::string> heldPins;
@@ -1137,7 +1175,8 @@ struct CacheDiskTier::Imp {
         }
     }
 
-    void dropDemotions(std::vector<CacheEntryPtr>* dropped)
+    void dropDemotions(std::vector<CacheEntryPtr>* dropped,
+                       std::vector<const AbstractCacheEntryBase*>* abandonedInFlight = NULL)
     {
         std::lock_guard<std::mutex> lock(queueMutex);
 
@@ -1149,6 +1188,9 @@ struct CacheDiskTier::Imp {
         demotionQueue.clear();
         for (const WriteItemPtr& item : demotionsInFlight) {
             item->cancelled.store(true);
+            if (abandonedInFlight) {
+                abandonedInFlight->push_back(item->raw);
+            }
         }
     }
 
@@ -1400,6 +1442,9 @@ CacheDiskTier::Imp::writeFile(const AbstractCacheEntryBase& entry,
     }
     noteThroughput((std::size_t)fileBytes, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
 
+    // Without it two writers of one name could both find the file in place smaller than theirs,
+    // and the smaller could then rename over the larger, with both charging their whole size.
+    const ByteLock publishing(publishLockPath, hashBytes(finalPath.data(), finalPath.size()) % kPublishLockStripes);
     if (item.cancelled.load() || stopping.load()) {
         return eWriteOutcomeAbandoned;
     }
@@ -1409,6 +1454,9 @@ CacheDiskTier::Imp::writeFile(const AbstractCacheEntryBase& entry,
     const bool hasLatest = readFileInfoAt(finalPath, &latest);
     if (hasLatest && (latest.renderedPixels >= snapshot.renderedPixels)) {
         return eWriteOutcomeAlreadyThere;
+    }
+    if (config.renameStarts) {
+        config.renameStarts();
     }
 
     std::error_code ignored;
@@ -2227,6 +2275,8 @@ CacheDiskTier::open(const Config& config)
         return abandon();
     }
     imp.evictFd = ::open((config.root + "/evict.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+    imp.publishLockPath = config.root + '/' + kPublishLockName;
+    imp.pinLockPath = config.root + '/' + kPinLockName;
     imp.networkMount = isNetworkFilesystem(config.root);
 
     // A write past RLIMIT_FSIZE has to come back as EFBIG, to be dropped like any other write
@@ -2470,9 +2520,10 @@ CacheDiskTier::reclaimDemoting(std::uint64_t hash,
 }
 
 void
-CacheDiskTier::cancelDemotions(std::vector<CacheEntryPtr>* dropped)
+CacheDiskTier::cancelDemotions(std::vector<CacheEntryPtr>* dropped,
+                               std::vector<const AbstractCacheEntryBase*>* writing)
 {
-    _imp->dropDemotions(dropped);
+    _imp->dropDemotions(dropped, writing);
 }
 
 void
@@ -2705,6 +2756,9 @@ CacheDiskTier::publishPin(const std::string& holderID,
         header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
     };
 
+    // Held until the file is renamed: a peer measures the pins by listing them, and sees this
+    // write's bytes only once it is published.
+    const ByteLock admitting(imp.pinLockPath, hashBytes(imp.config.buildId.data(), imp.config.buildId.size()) % kPublishLockStripes);
     CacheDiskFileInfo existing;
     const bool hasExisting = readFileInfoAt(dir + '/' + name, &existing);
     if (hasExisting && (existing.renderedPixels >= snapshot.renderedPixels)) {

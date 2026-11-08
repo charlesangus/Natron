@@ -2729,7 +2729,7 @@ AppManager::getCachesTotalDiskSize() const
 {
     const CacheDiskTierPtr tier = _imp->_nodeCache->diskTier();
 
-    return (tier ? tier->pinnedBytes() : 0) + _imp->_viewerCache->getDiskCacheSize();
+    return (tier ? (U64)tier->used() + tier->pinnedBytes() : 0) + _imp->_viewerCache->getDiskCacheSize();
 }
 
 CacheSignalEmitterPtr

@@ -221,6 +221,9 @@ public:
         std::function<void()> demotionWriteStarts;
         // The same for a publish, called while the publisher holds the entry it writes.
         std::function<void()> publishWriteStarts;
+        // Runs on any writer holding its file's publish lock, after its last look at the file in place
+        // and before its rename, so that a test can hold a writer there.
+        std::function<void()> renameStarts;
     };
 
     // Null if the location cannot be created or fails the rename self-test.
@@ -260,8 +263,10 @@ public:
     void peekDemoting(std::uint64_t hash, std::vector<CacheEntryPtr>* entries) const;
     // Drops every queued demotion and cancels those being written. Called under the cache's lock
     // together with emptying RAM, no offer or reclaim can fall between the two; the dropped entries
-    // come back so that the caller frees them off that lock.
-    void cancelDemotions(std::vector<CacheEntryPtr>* dropped);
+    // come back so that the caller frees them off that lock. `writing` receives, once per cancelled
+    // write, the entry it holds until the write returns, which a lookup may have reclaimed into RAM.
+    void cancelDemotions(std::vector<CacheEntryPtr>* dropped,
+                         std::vector<const AbstractCacheEntryBase*>* writing = NULL);
 
     // Cancels the entry's queued write. With removeFile, also unlinks the file it published.
     void retract(const CacheEntryPtr& entry, bool removeFile);

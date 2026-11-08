@@ -37,6 +37,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -190,7 +191,8 @@ public:
                      const char* build = kBuildId,
                      int heartbeatStaleMs = 60000,
                      std::function<void()> demotionWriteStarts = std::function<void()>(),
-                     std::function<void()> publishWriteStarts = std::function<void()>())
+                     std::function<void()> publishWriteStarts = std::function<void()>(),
+                     std::function<void()> renameStarts = std::function<void()>())
         : cache(name, 1, 64ULL * 1024 * 1024, 1.)
     {
         CacheDiskTier::Config config;
@@ -204,6 +206,7 @@ public:
         config.publishIntervalMs = 10;
         config.demotionWriteStarts = demotionWriteStarts;
         config.publishWriteStarts = publishWriteStarts;
+        config.renameStarts = renameStarts;
         tier = CacheDiskTier::open(config);
         cache.useEvictionScore();
         cache.setDiskTier(tier);
@@ -332,6 +335,29 @@ public:
     {
         _gate.release();
     }
+
+private:
+    WriteGate& _gate;
+};
+
+// Opens the gate before joining, so that a thread held there finishes whichever assertion ends the
+// test.
+class JoinOnExit {
+public:
+    explicit JoinOnExit(WriteGate& gate)
+        : _gate(gate)
+    {
+    }
+
+    ~JoinOnExit()
+    {
+        _gate.release();
+        for (std::thread& thread : threads) {
+            thread.join();
+        }
+    }
+
+    std::vector<std::thread> threads;
 
 private:
     WriteGate& _gate;
@@ -641,6 +667,47 @@ TEST(CacheDiskTierTest, LargerResultReplacesASmallerOneAndNeverTheReverse)
     EXPECT_TRUE(matchesPattern(promoted, 11.f));
 }
 
+// Two sessions write one key, as two processes would. Were the smaller result's last look at the
+// file in place and its rename not one step, the larger result could be published in between and
+// then be replaced by the smaller.
+TEST(CacheDiskTierTest, APartialResultNeverRenamesOverACompleteOnePublishedMeanwhile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    WriteGate gate;
+    Session partialWriter(dir.path(), "CacheDiskTierTest_PartialWriter", false, kBuildId, 60000, std::function<void()>(), std::function<void()>(),
+                          [&gate] { gate.enter(); });
+    const OpenOnExit opener(gate);
+    Session completeWriter(dir.path(), "CacheDiskTierTest_CompleteWriter");
+    ASSERT_TRUE(partialWriter.tier != nullptr);
+    ASSERT_TRUE(completeWriter.tier != nullptr);
+    Cache<Image> owner("CacheDiskTierTest_PublishRaceOwner", 1, 64ULL * 1024 * 1024, 1.);
+    const U64 hash = 11;
+
+    ImagePtr partial = std::make_shared<Image>(keyOf(hash), paramsOf(kSide), &owner);
+    prepare(partial, kExpensiveNs, 20.f, RectI(0, 0, kSide, 2));
+    ASSERT_TRUE(partialWriter.tier->offerDemotion(partial));
+    partial.reset();
+    ASSERT_TRUE(gate.waitEntered());
+
+    ImagePtr complete = std::make_shared<Image>(keyOf(hash), paramsOf(kSide), &owner);
+    prepare(complete, kExpensiveNs, 21.f, RectI(0, 0, kSide, kSide));
+    ASSERT_TRUE(completeWriter.tier->offerDemotion(complete));
+    complete.reset();
+    // Long enough for an unguarded write to publish. A guarded one waits for the held rename.
+    (void)completeWriter.tier->waitIdle(1000);
+
+    gate.release();
+    ASSERT_TRUE(partialWriter.tier->waitIdle(30000));
+    ASSERT_TRUE(completeWriter.tier->waitIdle(30000));
+    CacheDiskFileInfo info;
+    ASSERT_TRUE(completeWriter.fileOf(hash, &info));
+    EXPECT_EQ((std::uint64_t)kSide * kSide, info.renderedPixels);
+    const ImagePtr promoted = completeWriter.lookup(hash);
+    ASSERT_TRUE(promoted != nullptr);
+    EXPECT_TRUE(matchesPattern(promoted, 21.f));
+}
+
 TEST(CacheDiskTierTest, LookupDuringADemotionReturnsTheEntry)
 {
     QTemporaryDir dir;
@@ -766,6 +833,62 @@ TEST(CacheDiskTierTest, ClearDuringAPublishLeavesNothingInRam)
 TEST(CacheDiskTierTest, ClearInRamDuringAPublishLeavesNothingInRam)
 {
     clearDuringAPublish(eClearKindRam);
+}
+
+namespace {
+
+// A lookup takes a demoting entry back into RAM while its write still holds it, and the reader
+// lets it go. The clear cancels that write, whose reference then lasts past the clear: counted as
+// a use, it would keep the cleared result in RAM.
+void
+clearDuringAReclaimedDemotion(ClearKindEnum kind)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    WriteGate gate;
+    Session session(dir.path(), kind == eClearKindEverything ? "CacheDiskTierTest_ClearReclaimed" : "CacheDiskTierTest_ClearRamReclaimed",
+                    false, kBuildId, 60000, [&gate] { gate.enter(); });
+    const OpenOnExit opener(gate);
+    ASSERT_TRUE(session.tier != nullptr);
+
+    const U64 hash = 9;
+    ASSERT_TRUE(session.createEntry(hash, kExpensiveNs, 4.f) != nullptr);
+    session.cache.setMaximumCacheSize(1024);
+    session.cache.setMaximumInMemorySize(1.);
+    session.cache.clearExceedingEntries();
+    session.cache.setMaximumCacheSize(64ULL * 1024 * 1024);
+    session.cache.setMaximumInMemorySize(1.);
+    ASSERT_TRUE(gate.waitEntered());
+    {
+        const ImagePtr reclaimed = session.lookup(hash);
+        ASSERT_TRUE(reclaimed != nullptr);
+        EXPECT_TRUE(matchesPattern(reclaimed, 4.f));
+    }
+
+    if (kind == eClearKindEverything) {
+        session.cache.clear();
+    } else {
+        session.cache.clearInRam();
+    }
+    EXPECT_FALSE(session.lookup(hash) != nullptr);
+
+    gate.release();
+    ASSERT_TRUE(session.tier->waitIdle(30000));
+    CacheDiskFileInfo info;
+    EXPECT_FALSE(session.fileOf(hash, &info));
+    EXPECT_FALSE(session.lookup(hash) != nullptr);
+}
+
+} // anon namespace
+
+TEST(CacheDiskTierTest, ClearAfterALookupReclaimedADemotionLeavesNothingInRam)
+{
+    clearDuringAReclaimedDemotion(eClearKindEverything);
+}
+
+TEST(CacheDiskTierTest, ClearInRamAfterALookupReclaimedADemotionLeavesNothingInRam)
+{
+    clearDuringAReclaimedDemotion(eClearKindRam);
 }
 
 TEST(CacheDiskTierTest, PeekReportsAFileAsAnUnallocatedStub)
@@ -1552,6 +1675,58 @@ TEST(CacheDiskTierPinTest, AFullBudgetDropsTheHoldersOtherHashesThenLeavesTheOut
     ASSERT_TRUE(renderPinned(session, other, 4, 4.f, &outcome) != nullptr);
     EXPECT_EQ(CacheDiskTier::ePinOutcomeDoesNotFit, outcome);
     EXPECT_EQ(1U, session.tier->pinBudgetWarnings());
+}
+
+// Two sessions share one build's pin budget, as two processes would. Each measures the pins by
+// listing them, so one session's write in progress has to keep the other's admission waiting.
+TEST(CacheDiskTierPinTest, TwoSessionsPinningAtOnceStayWithinTheSharedBudget)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const PinHolder measured("holder-measured");
+    const PinHolder first("holder-first");
+    const PinHolder second("holder-second");
+    WriteGate gate;
+    Session a(dir.path(), "CacheDiskTierPin_SharedBudgetA", false, kBuildId, 60000, std::function<void()>(), std::function<void()>(),
+              [&gate] { gate.enter(); });
+    const OpenOnExit opener(gate);
+    Session b(dir.path(), "CacheDiskTierPin_SharedBudgetB");
+    ASSERT_TRUE(a.tier != nullptr);
+    ASSERT_TRUE(b.tier != nullptr);
+
+    b.tier->setPinBudget(kAmplePinBudget);
+    CacheDiskTier::PinOutcomeEnum outcome = CacheDiskTier::ePinOutcomeFailed;
+    ASSERT_TRUE(renderPinned(b, measured, 9, 9.f, &outcome) != nullptr);
+    ASSERT_EQ(CacheDiskTier::ePinOutcomePublished, outcome);
+    const std::uint64_t onePin = b.tier->pinnedBytes();
+    ASSERT_GT(onePin, 0U);
+    b.tier->releaseHolder(measured.getCacheID());
+    ASSERT_EQ(0U, b.tier->pinnedBytes());
+
+    const std::uint64_t budget = onePin + onePin / 2;
+    a.tier->setPinBudget(budget);
+    b.tier->setPinBudget(budget);
+
+    CacheDiskTier::PinOutcomeEnum firstOutcome = CacheDiskTier::ePinOutcomeFailed;
+    CacheDiskTier::PinOutcomeEnum secondOutcome = CacheDiskTier::ePinOutcomeFailed;
+    std::promise<void> secondDone;
+    std::future<void> secondFinished = secondDone.get_future();
+    {
+        JoinOnExit pins(gate);
+        pins.threads.emplace_back([&] { (void)renderPinned(a, first, 1, 1.f, &firstOutcome); });
+        ASSERT_TRUE(gate.waitEntered());
+        pins.threads.emplace_back([&] {
+            (void)renderPinned(b, second, 2, 2.f, &secondOutcome);
+            secondDone.set_value();
+        });
+        // Long enough for an unguarded admission to measure and publish. A guarded one waits.
+        (void)secondFinished.wait_for(std::chrono::seconds(1));
+    }
+    EXPECT_EQ(CacheDiskTier::ePinOutcomePublished, firstOutcome);
+    EXPECT_EQ(CacheDiskTier::ePinOutcomeDoesNotFit, secondOutcome);
+    EXPECT_LE(a.tier->pinnedBytes(), budget);
+    EXPECT_TRUE(hasPin(a, first, 1));
+    EXPECT_FALSE(hasPin(b, second, 2));
 }
 
 TEST(CacheDiskTierPinTest, ExtendingAPinWritesANewFileAndPeersKeepTheOldPixels)

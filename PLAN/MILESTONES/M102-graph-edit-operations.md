@@ -124,37 +124,37 @@ Scouting facts (2026-10-11, `main` at `10e0accd5`; re-check line numbers, since 
 
 ## Phase 102.3: Recording edits
 
-- [ ] M102.P3.T1 — Recorder core and knob-edit recording
+- [x] M102.P3.T1 — Recorder core and knob-edit recording
   - files: new `Engine/GraphEditRecorder.h`, new `Engine/GraphEditRecorder.cpp`, `Engine/Knob.cpp`, `Engine/CMakeLists.txt`, new `Tests/GraphEditRecorder_Test.cpp`
   - approach: a per-project recorder with subscribe and unsubscribe, the `Suppress` RAII guard, and a coalescing buffer flushed at the end of the event-loop turn (or explicitly in tests). Hook value, keyframe, expression and default-reset changes in `evaluateValueChange` and the curve and expression setters. Each emits one `SetKnob` with the knob's whole serialization. Skip anything during project load or under `Suppress`.
   - verify: compiled at P3.T6. gtest: setting a value, a keyframe, an expression and a reset each emit one coalesced `SetKnob`; 100 sets in one turn emit one; edits during load or under `Suppress` emit nothing.
   - size: M
 
-- [ ] M102.P3.T2 — Record node creation and deletion
+- [x] M102.P3.T2 — Record node creation and deletion
   - files: `Engine/GraphEditRecorder.cpp`, `Engine/AppInstance.cpp`, `Engine/NodeMain.cpp`, `Engine/Node.cpp` (`activate`/`deactivate`)
   - approach: create emits `CreateNode` with the node's full serialization, captured after its knobs are initialised. `destroyNode` and `deactivate` emit `DeleteNode`, and `activate` emits `CreateNode`, so undo of a delete re-creates the node with the same ID. Compound GUI actions such as group-from-selection and inline-group come out as their primitive operations.
   - verify: compiled at P3.T6. gtests in `Tests/GraphEditRecorder_Test.cpp` cover create, delete, delete followed by reactivate (same ID), and group-from-selection.
   - size: M
 
-- [ ] M102.P3.T3 — Record input, rename and node UI edits
+- [x] M102.P3.T3 — Record input, rename and node UI edits
   - files: `Engine/GraphEditRecorder.cpp`, `Engine/NodeInputs.cpp`, `Engine/NodeName.cpp`, `Engine/Node.cpp` (`setPosition`, size and colour setters)
   - approach: `connectInput`, `replaceInput` and `disconnectInput` emit `SetInput`, keyed by input label. `setScriptName` emits `Rename`, and position, size and colour emit `SetNodeUi`, coalesced per turn so a node drag sends one operation per node.
   - verify: compiled at P3.T6. gtests in `Tests/GraphEditRecorder_Test.cpp` cover each kind, including a 50-step drag that emits one `SetNodeUi`.
   - size: M
 
-- [ ] M102.P3.T4 — Record roto, tracker, user-knob and project-level edits
+- [x] M102.P3.T4 — Record roto, tracker, user-knob and project-level edits
   - files: `Engine/GraphEditRecorder.cpp`, `Engine/RotoContext.cpp`, `Engine/TrackerContext.cpp`, `Engine/Knob.cpp` (user-knob add and remove, page changes), `Engine/Project.cpp`
   - approach: any change to a roto item, stroke or shape marks the node dirty, and the turn flush emits one `SetRotoData`. Tracker works the same way with `SetTrackerData`. User-knob and page edits emit `SetUserKnobs`, and project formats or layer-registry changes emit `SetProjectData`.
   - verify: compiled at P3.T6. gtests: drawing a stroke emits one `SetRotoData`, adding a track one `SetTrackerData`, adding a user knob one `SetUserKnobs`.
   - size: M
 
-- [ ] M102.P3.T5 — Record-and-replay invariant test
+- [x] M102.P3.T5 — Record-and-replay invariant test
   - files: new `Tests/GraphEditReplay_Test.cpp`
   - approach: build S0 (a generator, Grade, Merge, RotoPaint, Tracker and a group), subscribe, then run a scripted session of about 30 edits of every kind, including delete with undo-style reactivation, rename, rewire, animation, a group-from-selection and a roto stroke. Snapshot S1. Replay the recorded operations on a fresh load of S0 and compare the encoded `project.yaml` text. Also check `applyOps(S0, diffSnapshots(S0, S1)) == S1`.
   - verify: compiled at P3.T6, where it passes. A deliberately dropped hook, tried locally and reverted, makes it fail.
   - size: M
 
-- [ ] M102.P3.T6 — Phase 102.3 build, full ctest and smoke
+- [x] M102.P3.T6 — Phase 102.3 build, full ctest and smoke
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug` and `smoke debug`.
   - verify: everything green. The build is required.

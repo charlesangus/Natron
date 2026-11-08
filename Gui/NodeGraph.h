@@ -125,9 +125,9 @@ public:
     void centerOnItem(QGraphicsItem* item);
 
     /**
-     * @brief Redraws the loop blocks once control returns to the event loop; topology also
-     * recomputes which nodes form each block, after a connection or a node came or went, and
-     * emits topologyChanged.
+     * @brief Redraws the loop blocks and the GPU region overlay once control returns to the event
+     * loop; topology also recomputes which nodes form each block and maps the GPU regions onto the
+     * nodes again, after a connection or a node came or went, and emits topologyChanged.
      **/
     void scheduleLoopBlockRefresh(bool topology);
 
@@ -321,6 +321,8 @@ public Q_SLOTS:
     void onNodeNameEditDialogFinished();
 
     void toggleAutoTurbo();
+
+    void toggleGpuRegionOverlay();
 
     void onGroupNameChanged(const QString& name);
     void onGroupScriptNameChanged(const QString& name);

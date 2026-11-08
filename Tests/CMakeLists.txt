@@ -310,6 +310,7 @@ set(GuiTests_SOURCES
     DisplayLegendColour_Test.cpp
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GpuOverlayMapping_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp

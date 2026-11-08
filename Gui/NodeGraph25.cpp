@@ -453,6 +453,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         toggleSelectedNodesEnabled();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowLinkLines, modifiers, key)) {
         toggleKnobLinksVisible();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowGpuRegions, modifiers, key)) {
+        toggleGpuRegionOverlay();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview, modifiers, key)) {
         toggleAutoPreview();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, modifiers, key)) {
@@ -533,6 +535,13 @@ void
 NodeGraph::toggleAutoTurbo()
 {
     appPTR->getCurrentSettings()->setAutoTurboModeEnabled( !appPTR->getCurrentSettings()->isAutoTurboEnabled() );
+}
+
+void
+NodeGraph::toggleGpuRegionOverlay()
+{
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    settings->setGpuRegionOverlayEnabled(!settings->isGpuRegionOverlayEnabled());
 }
 
 void

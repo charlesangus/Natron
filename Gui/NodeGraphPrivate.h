@@ -233,6 +233,7 @@ public:
     }
 };
 
+class GpuRegionOverlay;
 class LoopBlockOverlay;
 
 class NodeGraphPrivate
@@ -260,6 +261,7 @@ public:
     QGraphicsItem* _root; ///< this is the parent of all items in the graph
     QGraphicsItem* _nodeRoot; ///< this is the parent of all nodes
     LoopBlockOverlay* _loopBlocks;
+    GpuRegionOverlay* _gpuRegions;
     QGraphicsSimpleTextItem* _cacheSizeText;
     bool cacheSizeHidden;
     QTimer _refreshCacheTextTimer;

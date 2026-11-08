@@ -579,20 +579,21 @@ TEST_F(SceneDrawFilterTest, SeededRulesApplyWithoutNotices)
     EXPECT_FALSE(fresh->GetPrim(SdfPath("/World/b/m3")).primType.IsEmpty());
 }
 
-TEST_F(SceneDrawFilterTest, LightsStopInBBox)
+TEST_F(SceneDrawFilterTest, LightsKeepLightingInBBox)
 {
     addLights(scene);
     ASSERT_TRUE(drawn("/World/rig/key"));
+    recorder.reset();
 
     filter->applyDelta(states.setState("/World/rig", eSceneDrawStateBBox));
 
-    EXPECT_FALSE(drawn("/World/rig/key"));
-    EXPECT_FALSE(drawn("/World/rig/key/fill"));
-    EXPECT_FALSE(drawn("/World/rig/dome"));
-    EXPECT_FALSE(drawn("/World/rig/subrig/spot"));
-    EXPECT_EQ(1u, recorder.hides.count("/World/rig/dome"));
-    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/rig/dome")).primType.IsEmpty());
-    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/rig/dome")).dataSource == nullptr);
+    EXPECT_TRUE(drawn("/World/rig/key"));
+    EXPECT_TRUE(drawn("/World/rig/key/fill"));
+    EXPECT_TRUE(drawn("/World/rig/dome"));
+    EXPECT_TRUE(drawn("/World/rig/subrig/spot"));
+    EXPECT_FALSE(drawn("/World/rig/mesh"));
+    EXPECT_EQ((PathSet { "/World/rig/mesh" }), recorder.hides);
+    EXPECT_TRUE(filter->hasDrawnLights());
 }
 
 TEST_F(SceneDrawFilterTest, LightsStopInHidden)
@@ -604,50 +605,105 @@ TEST_F(SceneDrawFilterTest, LightsStopInHidden)
     EXPECT_FALSE(drawn("/World/rig/subrig/spot"));
     EXPECT_TRUE(drawn("/World/rig/dome"));
     EXPECT_EQ((PathSet { "/World/rig/subrig/spot" }), recorder.hides);
+
+    recorder.reset();
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateHidden));
+
+    EXPECT_FALSE(drawn("/World/rig/key"));
+    EXPECT_FALSE(drawn("/World/rig/key/fill"));
+    EXPECT_EQ(1u, recorder.hides.count("/World/rig/dome"));
+    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/rig/dome")).dataSource == nullptr);
 }
 
-TEST_F(SceneDrawFilterTest, LightsComeBackWithTheirTypeWhenDrawnInFull)
+TEST_F(SceneDrawFilterTest, LightsComeBackWithTheirTypeWhenAHiddenRowIsBoxedOrDrawn)
 {
     addLights(scene);
-    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateHidden));
     recorder.reset();
 
-    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateFull));
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateBBox));
 
     EXPECT_EQ(1u, recorder.shows.count("/World/rig/dome"));
     EXPECT_EQ(HdPrimTypeTokens->domeLight, filter->GetPrim(SdfPath("/World/rig/dome")).primType);
     EXPECT_EQ(HdPrimTypeTokens->sphereLight, filter->GetPrim(SdfPath("/World/rig/subrig/spot")).primType);
+    EXPECT_FALSE(drawn("/World/rig/mesh"));
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateFull));
+
+    EXPECT_TRUE(drawn("/World/rig/dome"));
+    EXPECT_TRUE(drawn("/World/rig/mesh"));
 }
 
-TEST_F(SceneDrawFilterTest, AChildrenRowKeepsItsOwnLightAndDrawnRowsButNotItsBoxedChildren)
+TEST_F(SceneDrawFilterTest, AChildrenRowKeepsEveryLightAndOnlyBoxesItsGeometry)
 {
     addLights(scene);
 
     filter->applyDelta(states.setState("/World/rig", eSceneDrawStateChildren));
-    EXPECT_FALSE(drawn("/World/rig/key"));
-    EXPECT_FALSE(drawn("/World/rig/dome"));
-    EXPECT_FALSE(drawn("/World/rig/subrig/spot"));
 
-    filter->applyDelta(states.setState("/World/rig/key", eSceneDrawStateChildren));
     EXPECT_TRUE(drawn("/World/rig/key"));
-    EXPECT_FALSE(drawn("/World/rig/key/fill"));
-
-    filter->applyDelta(states.setState("/World/rig/dome", eSceneDrawStateFull));
+    EXPECT_TRUE(drawn("/World/rig/key/fill"));
     EXPECT_TRUE(drawn("/World/rig/dome"));
-
-    filter->applyDelta(states.setState("/World/rig/subrig/spot", eSceneDrawStateFull));
     EXPECT_TRUE(drawn("/World/rig/subrig/spot"));
+    EXPECT_FALSE(drawn("/World/rig/mesh"));
 }
 
-TEST_F(SceneDrawFilterTest, ALightAddedBelowABoxedRowDoesNotReachHydra)
+TEST_F(SceneDrawFilterTest, ALightRigBesideADeepFullRowKeepsLighting)
+{
+    addLights(scene);
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World/a/deep/m2", eSceneDrawStateFull));
+
+    EXPECT_TRUE(drawn("/World/a/deep/m2"));
+    EXPECT_FALSE(drawn("/World/b/m3"));
+    EXPECT_TRUE(drawn("/World/rig/key"));
+    EXPECT_TRUE(drawn("/World/rig/dome"));
+    EXPECT_TRUE(drawn("/World/rig/subrig/spot"));
+    EXPECT_TRUE(filter->hasDrawnLights());
+}
+
+TEST_F(SceneDrawFilterTest, ALightAddedBelowABoxedRowReachesHydraAndBelowAHiddenRowDoesNot)
 {
     filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateHidden));
     recorder.reset();
 
     scene->AddPrims({ { SdfPath("/World/b/late"), HdPrimTypeTokens->rectLight, someData() } });
+    EXPECT_TRUE(recorder.hides.empty());
+    EXPECT_TRUE(drawn("/World/b/late"));
 
-    EXPECT_EQ((PathSet { "/World/b/late" }), recorder.hides);
-    EXPECT_FALSE(drawn("/World/b/late"));
+    scene->AddPrims({ { SdfPath("/World/a/late"), HdPrimTypeTokens->rectLight, someData() } });
+    EXPECT_EQ((PathSet { "/World/a/late" }), recorder.hides);
+    EXPECT_FALSE(drawn("/World/a/late"));
+}
+
+TEST_F(SceneDrawFilterTest, NoDrawnLightsUntilOneIsDrawn)
+{
+    EXPECT_FALSE(filter->hasDrawnLights());
+
+    addLights(scene);
+    EXPECT_TRUE(filter->hasDrawnLights());
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateHidden));
+    EXPECT_FALSE(filter->hasDrawnLights());
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateBBox), 1);
+    EXPECT_FALSE(filter->hasDrawnLights());
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+    }
+    EXPECT_TRUE(filter->hasDrawnLights());
+}
+
+TEST_F(SceneDrawFilterTest, RemovingTheLightsLeavesNoneDrawn)
+{
+    addLights(scene);
+    ASSERT_TRUE(filter->hasDrawnLights());
+
+    scene->RemovePrims({ { SdfPath("/World/rig") } });
+
+    EXPECT_FALSE(filter->hasDrawnLights());
 }
 
 TEST_F(SceneDrawFilterTest, HiddenPrimsLeaveARealRenderIndex)

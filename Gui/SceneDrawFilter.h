@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstddef>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -62,8 +63,8 @@ NATRON_NAMESPACE_ENTER
  * the whole subtree, and so a hide or a show announces each prim: HdsiPrefixPathPruningSceneIndex is
  * out too, since a prefix is its only unit of change and it cannot release part of a subtree.
  *
- * Only a row drawn in full, or a Children row's own prim, lights the scene: the same rule that hides
- * geometry takes the light away.
+ * Lights stop only under a Hidden row. A BBox row, or a row boxed by a Children parent, hides
+ * geometry and leaves its lights, so drilling into a scene never darkens it.
  *
  * Every method that changes state sends notices that reach the render index directly, so callers
  * hold the viewer lock and the GL context, between renders. Hydra reads GetPrim() from its sync
@@ -79,7 +80,9 @@ public:
         eRuleShow,
         eRuleHide,
         // The prim itself shows, and everything below without a rule of its own hides.
-        eRuleExpand
+        eRuleExpand,
+        // As eRuleHide, and lights below go too.
+        eRuleHidden
     };
 
     using Rules = std::map<PXR_NS::SdfPath, RuleEnum>;
@@ -118,6 +121,13 @@ public:
     std::size_t stepReveal(std::size_t maxPrims);
     bool isRevealing() const { return _revealing; }
 
+    /**
+     * @brief Whether any light of the input scene is drawn: one the rules keep, or a reveal has
+     * announced. Hydra gets no light otherwise, so a renderer lit by the scene is dark then. Only
+     * the thread that changes the filter may call it.
+     */
+    bool hasDrawnLights() const;
+
     const Rules& getRules() const { return _rules; }
     unsigned long long getInputAddedCount() const { return _inputAdded; }
     unsigned long long getInputRemovedCount() const { return _inputRemoved; }
@@ -134,7 +144,8 @@ protected:
 private:
     explicit SceneDrawFilter(const PXR_NS::HdSceneIndexBaseRefPtr& input);
 
-    bool isHidden(const PXR_NS::SdfPath& path) const;
+    bool isHidden(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType) const;
+    void trackLights(const PXR_NS::HdSceneIndexObserver::AddedPrimEntries& entries);
     bool mayChangeBelow(const PXR_NS::SdfPath& path, bool toHidden) const;
     void finishRevealIfDone();
 
@@ -146,6 +157,11 @@ private:
     std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _revealed;
     std::vector<PXR_NS::SdfPath> _revealStack;
     std::vector<PXR_NS::SdfPath> _revealRoots;
+
+    // Every light the input has announced, whether drawn or not.
+    std::set<PXR_NS::SdfPath> _lights;
+    mutable bool _drawnLightsValid = false;
+    mutable bool _drawnLights = false;
 
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;

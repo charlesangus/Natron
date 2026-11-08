@@ -912,15 +912,24 @@ struct SceneViewportRenderer::Implementation {
         case eLightingModeAuto: {
             const std::shared_ptr<const StageSummary> summary = getStageSummary();
 
-            return summary && summary->hasLights;
+            return summary && summary->hasLights && drawsLights();
         }
         case eLightingModeScene:
-            return true;
+            return drawsLights();
         case eLightingModeHeadlight:
             return false;
         }
 
         return false;
+    }
+
+    // Hydra holds no light once every one is under a Hidden row, and nothing lights a scene then.
+    // Reads the filter, so only the thread that holds the engine may call it.
+    bool drawsLights() const
+    {
+        const SceneDrawFilter* filter = get_pointer(drawFilter);
+
+        return !filter || filter->hasDrawnLights();
     }
 
     // The project frame mapped by seconds, as SceneOps::frameToTimeCode.
@@ -2099,7 +2108,6 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
 
-    frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
     StormGLSection section;
@@ -2111,6 +2119,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     }
     section.collectWith(_imp->engine->GetHgi());
     _imp->serviceDrawFilter();
+    frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
 
     const UsdStageRefPtr stage = _imp->currentStage();
@@ -2124,6 +2133,13 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
         _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
         converged = _imp->engine->IsConverged();
+        // The first render is what puts the stage's lights into Hydra, and so into the filter.
+        const bool lit = _imp->usesSceneLights(frame.lightingMode);
+        if (lit != frame.params.enableSceneLights) {
+            frame.params.enableSceneLights = lit;
+            _imp->setLights(lit);
+            converged = false;
+        }
     }
     _imp->noteStageAbsorbed();
     frame.fbo = fbo;
@@ -3184,7 +3200,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     _imp->sceneLit = _imp->usesSceneLights();
-    const UsdImagingGLRenderParams params = _imp->renderParams();
+    UsdImagingGLRenderParams params = _imp->renderParams();
     const bool kept = _imp->takeBackgroundImage(fbo, width, height, frustum, params);
     Implementation::bindFrameTarget(fbo, width, height);
     bool converged = kept;
@@ -3195,6 +3211,13 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
             _imp->engine->Render(stage->GetPseudoRoot(), params);
             converged = _imp->engine->IsConverged();
+            const bool lit = _imp->usesSceneLights();
+            if (lit != _imp->sceneLit) {
+                _imp->sceneLit = lit;
+                params.enableSceneLights = lit;
+                _imp->setLights(lit);
+                converged = false;
+            }
         }
     }
     _imp->noteStageAbsorbed();

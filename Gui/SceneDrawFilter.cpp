@@ -114,12 +114,34 @@ hiddenBy(const SceneDrawFilter::Rules& rules,
     case SceneDrawFilter::eRuleShow:
         return false;
     case SceneDrawFilter::eRuleHide:
+    case SceneDrawFilter::eRuleHidden:
         return true;
     case SceneDrawFilter::eRuleExpand:
         return rule->first != path;
     }
 
     return false;
+}
+
+// A light is hidden by a Hidden row alone: boxed geometry is no reason to darken the scene.
+bool
+lightsHiddenBy(const SceneDrawFilter::Rules& rules,
+               const SdfPath& path)
+{
+    if (rules.empty()) {
+        return false;
+    }
+    const SceneDrawFilter::Rules::const_iterator rule = SdfPathFindLongestPrefix(rules, path);
+
+    return (rule != rules.end()) && (rule->second == SceneDrawFilter::eRuleHidden);
+}
+
+bool
+hiddenFor(const SceneDrawFilter::Rules& rules,
+          const SdfPath& path,
+          const TfToken& primType)
+{
+    return HdPrimTypeIsLight(primType) ? lightsHiddenBy(rules, path) : hiddenBy(rules, path);
 }
 
 // Whether a descendant of `path` with no rule of its own is hidden, which needs no child's path.
@@ -225,7 +247,7 @@ SceneDrawFilter::applyToRules(const SceneDrawDelta& delta,
         (*rules)[SdfPath(path)] = eRuleHide;
     }
     for (const std::string& path : delta.hidden) {
-        (*rules)[SdfPath(path)] = eRuleHide;
+        (*rules)[SdfPath(path)] = eRuleHidden;
     }
 }
 
@@ -248,13 +270,45 @@ SceneDrawFilter::~SceneDrawFilter()
 }
 
 bool
-SceneDrawFilter::isHidden(const SdfPath& path) const
+SceneDrawFilter::isHidden(const SdfPath& path,
+                          const TfToken& primType) const
 {
-    if (hiddenBy(_rules, path)) {
+    if (hiddenFor(_rules, path, primType)) {
         return true;
     }
 
-    return _revealing && hiddenBy(_revealFrom, path) && (_revealed.count(path) == 0);
+    return _revealing && hiddenFor(_revealFrom, path, primType) && (_revealed.count(path) == 0);
+}
+
+bool
+SceneDrawFilter::hasDrawnLights() const
+{
+    if (!_drawnLightsValid) {
+        _drawnLights = false;
+        for (const SdfPath& light : _lights) {
+            if (!isHidden(light, HdPrimTypeTokens->rectLight)) {
+                _drawnLights = true;
+                break;
+            }
+        }
+        _drawnLightsValid = true;
+    }
+
+    return _drawnLights;
+}
+
+void
+SceneDrawFilter::trackLights(const HdSceneIndexObserver::AddedPrimEntries& entries)
+{
+    for (const HdSceneIndexObserver::AddedPrimEntry& entry : entries) {
+        if (HdPrimTypeIsLight(entry.primType)) {
+            if (_lights.insert(entry.primPath).second) {
+                _drawnLightsValid = false;
+            }
+        } else if (_lights.erase(entry.primPath) != 0) {
+            _drawnLightsValid = false;
+        }
+    }
 }
 
 // False lets a walk stop here: a row that goes on hiding a million prims must not visit them.
@@ -266,14 +320,18 @@ SceneDrawFilter::mayChangeBelow(const SdfPath& path,
         return true;
     }
 
-    return (hiddenBelow(_rules, path) == toHidden) && (hiddenBelow(_revealFrom, path) != toHidden);
+    if ((hiddenBelow(_rules, path) == toHidden) && (hiddenBelow(_revealFrom, path) != toHidden)) {
+        return true;
+    }
+
+    return (lightsHiddenBy(_rules, path) == toHidden) && (lightsHiddenBy(_revealFrom, path) != toHidden);
 }
 
 HdSceneIndexPrim
 SceneDrawFilter::GetPrim(const SdfPath& primPath) const
 {
     HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(primPath);
-    if (isHidden(primPath) && isHideable(prim.primType)) {
+    if (isHidden(primPath, prim.primType) && isHideable(prim.primType)) {
         return HdSceneIndexPrim();
     }
 
@@ -290,6 +348,7 @@ void
 SceneDrawFilter::seedRules(const Rules& rules)
 {
     _rules = rules;
+    _drawnLightsValid = false;
 }
 
 void
@@ -298,17 +357,21 @@ SceneDrawFilter::applyDelta(const SceneDrawDelta& delta,
 {
     Rules target = _rules;
     applyToRules(delta, &target);
+    _drawnLightsValid = false;
 
     std::set<SdfPath> hideRoots;
     std::set<SdfPath> showRoots;
     addPaths(delta.boxed, &hideRoots);
+    addPaths(delta.boxed, &showRoots);
     addPaths(delta.hidden, &hideRoots);
+    addPaths(delta.hidden, &showRoots);
     addPaths(delta.expanded, &hideRoots);
     addPaths(delta.expanded, &showRoots);
     addPaths(delta.drawn, &showRoots);
     for (const std::string& cleared : delta.cleared) {
         const SdfPath path(cleared);
-        (hiddenBelow(target, path) ? hideRoots : showRoots).insert(path);
+        hideRoots.insert(path);
+        showRoots.insert(path);
     }
 
     HdSceneIndexObserver::AddedPrimEntries hides;
@@ -341,7 +404,8 @@ SceneDrawFilter::applyDelta(const SceneDrawDelta& delta,
     while (!walk.empty()) {
         const SdfPath path = walk.back();
         walk.pop_back();
-        if (hiddenBy(_rules, path) && !hiddenBy(_revealFrom, path) && isHideable(input->GetPrim(path).primType)) {
+        const TfToken primType = input->GetPrim(path).primType;
+        if (hiddenFor(_rules, path, primType) && !hiddenFor(_revealFrom, path, primType) && isHideable(primType)) {
             hides.push_back(HdSceneIndexObserver::AddedPrimEntry(path, TfToken()));
         }
         if (mayChangeBelow(path, true)) {
@@ -377,8 +441,8 @@ SceneDrawFilter::stepReveal(std::size_t maxPrims)
     while (!_revealStack.empty() && (std::size_t(entries.size()) < maxPrims)) {
         const SdfPath path = _revealStack.back();
         _revealStack.pop_back();
-        if (!hiddenBy(_rules, path) && hiddenBy(_revealFrom, path)) {
-            const TfToken primType = input->GetPrim(path).primType;
+        const TfToken primType = input->GetPrim(path).primType;
+        if (!hiddenFor(_rules, path, primType) && hiddenFor(_revealFrom, path, primType)) {
             if (isHideable(primType) && _revealed.insert(path).second) {
                 entries.push_back(HdSceneIndexObserver::AddedPrimEntry(path, primType));
             }
@@ -388,6 +452,7 @@ SceneDrawFilter::stepReveal(std::size_t maxPrims)
             _revealStack.insert(_revealStack.end(), children.rbegin(), children.rend());
         }
     }
+    _drawnLightsValid = false;
     finishRevealIfDone();
     const std::size_t sent = entries.size();
     if (sent != 0) {
@@ -416,6 +481,7 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
 {
     _inputAdded += entries.size();
     _lastInputAdded = Clock::now();
+    trackLights(entries);
     if (_rules.empty() && !_revealing) {
         _SendPrimsAdded(entries);
 
@@ -427,13 +493,14 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
         if (!isHideable(entry.primType)) {
             continue;
         }
-        if (_revealing && !hiddenBy(_rules, entry.primPath) && hiddenBy(_revealFrom, entry.primPath)) {
+        if (_revealing && !hiddenFor(_rules, entry.primPath, entry.primType) && hiddenFor(_revealFrom, entry.primPath, entry.primType)) {
             // The reveal's walk may be past this prim's parent, and nothing would announce it then.
             _revealed.insert(entry.primPath);
+            _drawnLightsValid = false;
 
             continue;
         }
-        if (isHidden(entry.primPath)) {
+        if (isHidden(entry.primPath, entry.primType)) {
             if (rewritten.empty()) {
                 rewritten = entries;
             }
@@ -448,6 +515,13 @@ SceneDrawFilter::_PrimsRemoved(const HdSceneIndexBase& /*sender*/,
                                const HdSceneIndexObserver::RemovedPrimEntries& entries)
 {
     _inputRemoved += entries.size();
+    for (const HdSceneIndexObserver::RemovedPrimEntry& entry : entries) {
+        std::set<SdfPath>::iterator it = _lights.lower_bound(entry.primPath);
+        while ((it != _lights.end()) && it->HasPrefix(entry.primPath)) {
+            it = _lights.erase(it);
+            _drawnLightsValid = false;
+        }
+    }
     _SendPrimsRemoved(entries);
 }
 
@@ -464,7 +538,8 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
     const HdSceneIndexBaseRefPtr& input = _GetInputSceneIndex();
     HdSceneIndexObserver::DirtiedPrimEntries kept;
     for (const HdSceneIndexObserver::DirtiedPrimEntry& entry : entries) {
-        if (!isHidden(entry.primPath) || !isHideable(input->GetPrim(entry.primPath).primType)) {
+        const TfToken primType = input->GetPrim(entry.primPath).primType;
+        if (!isHidden(entry.primPath, primType) || !isHideable(primType)) {
             kept.push_back(entry);
         }
     }

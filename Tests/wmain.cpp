@@ -94,6 +94,9 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
+    registerTestBuiltInPlugin<DataKindTestGeometrySource>();
+    registerTestBuiltInPlugin<DataKindTestGeometrySink>();
+    registerTestBuiltInPlugin<DataKindTestSceneSink>();
 }
 
 void

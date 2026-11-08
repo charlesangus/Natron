@@ -1158,6 +1158,12 @@ Settings::initializeKnobsNodeGraphColors()
     _edgeRawColor->setHintToolTip(tr("The color used to tint node graph edges carrying camera Raw data, connected or not."));
     _nodegraphColorsTab->addKnob(_edgeRawColor);
 
+    _edgeGeometryColor = AppManager::createKnob<KnobColor>(this, tr("Geometry edges"), 3);
+    _edgeGeometryColor->setName("edgeGeometryColor");
+    _edgeGeometryColor->setSimplified(true);
+    _edgeGeometryColor->setHintToolTip(tr("The color used to tint node graph edges carrying Geometry data, connected or not."));
+    _nodegraphColorsTab->addKnob(_edgeGeometryColor);
+
     _linkLineColor = AppManager::createKnob<KnobColor>(this, tr("Link lines"), 3);
     _linkLineColor->setName("linkLineColor");
     _linkLineColor->setSimplified(true);
@@ -2087,6 +2093,9 @@ Settings::setDefaultValues()
     _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
     _edgeRawColor->setDefaultValue(121. / 255., 1);
     _edgeRawColor->setDefaultValue(167. / 255., 2);
+    _edgeGeometryColor->setDefaultValue(0. / 255., 0); // Okabe-Ito bluish green
+    _edgeGeometryColor->setDefaultValue(158. / 255., 1);
+    _edgeGeometryColor->setDefaultValue(115. / 255., 2);
     _linkLineColor->setDefaultValue(70. / 255., 0); // also the colour of linked parameter names
     _linkLineColor->setDefaultValue(140. / 255., 1);
     _linkLineColor->setDefaultValue(255. / 255., 2);
@@ -3513,6 +3522,16 @@ Settings::getEdgeRawColor(float* r,
 }
 
 void
+Settings::getEdgeGeometryColor(float* r,
+                               float* g,
+                               float* b) const
+{
+    *r = _edgeGeometryColor->getValue(0);
+    *g = _edgeGeometryColor->getValue(1);
+    *b = _edgeGeometryColor->getValue(2);
+}
+
+void
 Settings::getLinkLineColor(float* r,
                            float* g,
                            float* b) const
@@ -3559,6 +3578,9 @@ Settings::getEdgeKindColor(DataKindEnum kind,
         return true;
     case eDataKindRaw:
         getEdgeRawColor(r, g, b);
+        return true;
+    case eDataKindGeometry:
+        getEdgeGeometryColor(r, g, b);
         return true;
     case eDataKindImage:
     case eDataKindPolymorphic:

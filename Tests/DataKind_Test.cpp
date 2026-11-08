@@ -602,3 +602,58 @@ TEST_F(BaseTest, ProjectLoadReportsRawIntoImageConflict)
     ASSERT_TRUE(bool(source2));
     EXPECT_FALSE(source2->hasPersistentMessage());
 }
+
+// Scene and geometry are different payloads, so a geometry output can never land on a scene input.
+TEST_F(BaseTest, GeometrySourceRejectedBySceneSink)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr sceneSink = createNode(QString::fromUtf8(kTestPluginIDDataKindSceneSink));
+
+    ASSERT_TRUE(geoSource && sceneSink);
+
+    NodePtr conflictingNode;
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, sceneSink->canConnectInput(geoSource, 0, &conflictingNode));
+    EXPECT_EQ(geoSource.get(), conflictingNode.get());
+}
+
+TEST_F(BaseTest, GeometrySourceRejectedByImageSink)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(geoSource && imageSink);
+
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(geoSource, 0));
+}
+
+TEST_F(BaseTest, GeometrySourceConnectsThroughDotToGeometrySink)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr geoSink = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySink));
+
+    ASSERT_TRUE(geoSource && dot && geoSink);
+
+    connectNodes(geoSource, dot, 0, true);
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindGeometry, dot->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, geoSink->canConnectInput(dot, 0));
+    connectNodes(dot, geoSink, 0, true);
+    EXPECT_EQ(eDataKindGeometry, geoSink->getEffectiveOutputDataKind());
+    EXPECT_FALSE(geoSink->hasPersistentMessage());
+}
+
+// A Dot typed as geometry by its source refuses a downstream scene consumer.
+TEST_F(BaseTest, GeometryTypedDotRejectedBySceneSink)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr sceneSink = createNode(QString::fromUtf8(kTestPluginIDDataKindSceneSink));
+
+    ASSERT_TRUE(geoSource && dot && sceneSink);
+
+    connectNodes(geoSource, dot, 0, true);
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, sceneSink->canConnectInput(dot, 0));
+}

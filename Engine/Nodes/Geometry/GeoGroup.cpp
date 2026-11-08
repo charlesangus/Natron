@@ -201,13 +201,13 @@ valueAt(const std::weak_ptr<Knob<T>>& knob,
 }
 
 KnobChoicePtr
-createChoiceKnob(GeoGroup* holder,
-                 const KnobPagePtr& page,
-                 const QString& label,
-                 const char* name,
-                 const QString& toolTip,
-                 const std::vector<ChoiceOption>& options,
-                 int defaultValue)
+makeChoiceKnob(GeoGroup* holder,
+               const KnobPagePtr& page,
+               const QString& label,
+               const char* name,
+               const QString& toolTip,
+               const std::vector<ChoiceOption>& options,
+               int defaultValue)
 {
     KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(holder, label.toStdString());
     knob->setName(name);
@@ -221,12 +221,12 @@ createChoiceKnob(GeoGroup* holder,
 }
 
 KnobBoolPtr
-createBoolKnob(GeoGroup* holder,
-               const KnobPagePtr& page,
-               const QString& label,
-               const char* name,
-               const QString& toolTip,
-               bool defaultValue)
+makeBoolKnob(GeoGroup* holder,
+             const KnobPagePtr& page,
+             const QString& label,
+             const char* name,
+             const QString& toolTip,
+             bool defaultValue)
 {
     KnobBoolPtr knob = AppManager::createKnob<KnobBool>(holder, label.toStdString());
     knob->setName(name);
@@ -239,12 +239,12 @@ createBoolKnob(GeoGroup* holder,
 }
 
 KnobDoublePtr
-createVectorKnob(GeoGroup* holder,
-                 const KnobPagePtr& page,
-                 const QString& label,
-                 const char* name,
-                 const QString& toolTip,
-                 double defaultValue)
+makeVectorKnob(GeoGroup* holder,
+               const KnobPagePtr& page,
+               const QString& label,
+               const char* name,
+               const QString& toolTip,
+               double defaultValue)
 {
     KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(holder, label.toStdString(), 3);
     knob->setName(name);
@@ -499,8 +499,8 @@ GeoGroup::initializeKnobs()
     types.push_back(ChoiceOption("primitives", tr("Primitives").toStdString(), ""));
     types.push_back(ChoiceOption("vertices", tr("Vertices").toStdString(), ""));
     types.push_back(ChoiceOption("edges", tr("Edges").toStdString(), tr("Pairs of points joined by a polygon or polyline side.").toStdString()));
-    _groupType = createChoiceKnob(this, page, tr("Group Type"), kGeoGroupParamGroupType, tr("The kind of element the group holds."),
-                                  types, (int)eGeoGroupElementPrimitives);
+    _groupType = makeChoiceKnob(this, page, tr("Group Type"), kGeoGroupParamGroupType, tr("The kind of element the group holds."),
+                                types, (int)eGeoGroupElementPrimitives);
 
     std::vector<ChoiceOption> merges;
     merges.push_back(ChoiceOption("replace", tr("Replace").toStdString(), tr("The group holds exactly the selection.").toStdString()));
@@ -508,12 +508,12 @@ GeoGroup::initializeKnobs()
     merges.push_back(ChoiceOption("intersect", tr("Intersect").toStdString(),
                                   tr("Only the members that are also selected stay.").toStdString()));
     merges.push_back(ChoiceOption("subtract", tr("Subtract").toStdString(), tr("The selection is removed from the group.").toStdString()));
-    _initialMerge = createChoiceKnob(this, page, tr("Initial Merge"), kGeoGroupParamInitialMerge,
-                                     tr("How the selection combines with the members a group of this name already has."),
-                                     merges, (int)eGeoGroupMergeReplace);
+    _initialMerge = makeChoiceKnob(this, page, tr("Initial Merge"), kGeoGroupParamInitialMerge,
+                                   tr("How the selection combines with the members a group of this name already has."),
+                                   merges, (int)eGeoGroupMergeReplace);
 
-    _usePattern = createBoolKnob(this, page, tr("Use Pattern"), kGeoGroupParamUsePattern,
-                                 tr("Selects with the pattern."), true);
+    _usePattern = makeBoolKnob(this, page, tr("Use Pattern"), kGeoGroupParamUsePattern,
+                               tr("Selects with the pattern."), true);
 
     KnobStringPtr pattern = createKnob<KnobString>(tr("Pattern").toStdString());
     pattern->setName(kGeoGroupParamPattern);
@@ -527,21 +527,21 @@ GeoGroup::initializeKnobs()
     page->addKnob(pattern);
     _pattern = pattern;
 
-    _useBounding = createBoolKnob(this, page, tr("Use Bounding"), kGeoGroupParamUseBounding,
-                                  tr("Keeps only what lies inside the bounding box or sphere."), false);
+    _useBounding = makeBoolKnob(this, page, tr("Use Bounding"), kGeoGroupParamUseBounding,
+                                tr("Keeps only what lies inside the bounding box or sphere."), false);
 
     std::vector<ChoiceOption> shapes;
     shapes.push_back(ChoiceOption("box", tr("Box").toStdString(), ""));
     shapes.push_back(ChoiceOption("sphere", tr("Sphere").toStdString(), tr("An ellipsoid filling the box.").toStdString()));
-    _boundingType = createChoiceKnob(this, page, tr("Bounding Type"), kGeoGroupParamBoundingType,
-                                     tr("The shape of the bounding region."), shapes, (int)eGeoBoundingTypeBox);
-    _centre = createVectorKnob(this, page, tr("Centre"), kGeoGroupParamCentre, tr("The centre of the bounding region."), 0.);
-    _size = createVectorKnob(this, page, tr("Size"), kGeoGroupParamSize,
-                             tr("The bounding region's size along the X, Y and Z axes."), 1.);
-    _includePartlyInside = createBoolKnob(this, page, tr("Include Partly Inside"), kGeoGroupParamIncludePartlyInside,
-                                          tr("Primitives and edges with any of their points inside count as inside; "
-                                             "otherwise all their points must be."),
-                                          false);
+    _boundingType = makeChoiceKnob(this, page, tr("Bounding Type"), kGeoGroupParamBoundingType,
+                                   tr("The shape of the bounding region."), shapes, (int)eGeoBoundingTypeBox);
+    _centre = makeVectorKnob(this, page, tr("Centre"), kGeoGroupParamCentre, tr("The centre of the bounding region."), 0.);
+    _size = makeVectorKnob(this, page, tr("Size"), kGeoGroupParamSize,
+                           tr("The bounding region's size along the X, Y and Z axes."), 1.);
+    _includePartlyInside = makeBoolKnob(this, page, tr("Include Partly Inside"), kGeoGroupParamIncludePartlyInside,
+                                        tr("Primitives and edges with any of their points inside count as inside; "
+                                           "otherwise all their points must be."),
+                                        false);
 
     updateVisibility();
 }

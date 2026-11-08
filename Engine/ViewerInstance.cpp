@@ -823,7 +823,10 @@ ViewerInstance::redrawOrRenderForColorChange()
     if (!_imp->uiContext) {
         return;
     }
-    if ((_imp->uiContext->getBitDepth() == eImageBitDepthByte) && !getApp()->getProject()->isLoadingProject()) {
+    // A scene has no 8-bit texture to bake into: the 3D view grades its own pixels, and a render
+    // would only re-evaluate the scene and resync it.
+    const bool bakesDisplay = (_imp->uiContext->getBitDepth() == eImageBitDepthByte) && (getActiveInputDataKind() != eDataKindScene);
+    if (bakesDisplay && !getApp()->getProject()->isLoadingProject()) {
         renderCurrentFrame(true);
     } else {
         _imp->uiContext->redraw();

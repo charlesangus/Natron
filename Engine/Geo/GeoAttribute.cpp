@@ -30,7 +30,11 @@
 #include <limits>
 #include <new>
 
+#include <QThreadPool>
+
 #include "Engine/ContentHasher.h"
+#include "Engine/PoolParallelFor.h"
+#include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -59,6 +63,34 @@ struct ArrayPair {
 };
 
 } // namespace
+
+void
+geoParallelFor(std::size_t count,
+               const std::function<void(std::size_t)>& body,
+               std::size_t minParallelCount)
+{
+    int threads = AppTLS::currentThreadBudget();
+    if (threads <= 0) {
+        threads = QThreadPool::globalInstance()->maxThreadCount();
+    }
+    if (count < std::max<std::size_t>(minParallelCount, 2) || threads <= 1) {
+        for (std::size_t i = 0; i < count; ++i) {
+            body(i);
+        }
+        return;
+    }
+    // A few chunks per thread evens out pages that cost more than others (dense vs constant).
+    const std::size_t chunks = std::min(count, static_cast<std::size_t>(threads) * 4);
+    const std::size_t perChunk = (count + chunks - 1) / chunks;
+    const int chunkCount = static_cast<int>((count + perChunk - 1) / perChunk);
+    parallelForOnGlobalPool(chunkCount, threads, [&](int c) {
+        const std::size_t begin = static_cast<std::size_t>(c) * perChunk;
+        const std::size_t end = std::min(count, begin + perChunk);
+        for (std::size_t i = begin; i < end; ++i) {
+            body(i);
+        }
+    });
+}
 
 // ---------------------------------------------------------------------------------------------
 // GeoPage
@@ -456,28 +488,29 @@ GeoPagedColumn::gathered(std::span<const std::size_t> sourceOffsets) const
     out._size = sourceOffsets.size();
     const std::size_t pages = (out._size + kGeoPageMask) >> kGeoPageBits;
     out._pages = std::make_shared<PageTable>(pages);
-    for (std::size_t pi = 0; pi < pages; ++pi) {
+    geoParallelFor(pages, [&](std::size_t pi) {
         const std::size_t pageBegin = pi << kGeoPageBits;
         const std::size_t count = std::min(kGeoPageSize, out._size - pageBegin);
         const std::size_t* src = sourceOffsets.data() + pageBegin;
 
-        bool identity = pi < pageCount();
-        for (std::size_t k = 0; k < count && identity; ++k) {
-            identity = src[k] == pageBegin + k;
+        const std::size_t first = src[0];
+        bool shared = (first & kGeoPageMask) == 0 && first + count <= _size;
+        for (std::size_t k = 1; k < count && shared; ++k) {
+            shared = src[k] == first + k;
         }
-        if (identity && count < kGeoPageSize) {
-            const GeoPage& page = *(*_pages)[pi];
+        if (shared && count < kGeoPageSize) {
+            const GeoPage& page = *(*_pages)[first >> kGeoPageBits];
             if (page.isConstant()) {
-                identity = elementIsDefault(page, 0);
+                shared = elementIsDefault(page, 0);
             } else {
-                for (std::size_t k = count; k < kGeoPageSize && identity; ++k) {
-                    identity = elementIsDefault(page, k);
+                for (std::size_t k = count; k < kGeoPageSize && shared; ++k) {
+                    shared = elementIsDefault(page, k);
                 }
             }
         }
-        if (identity) {
-            (*out._pages)[pi] = (*_pages)[pi];
-            continue;
+        if (shared) {
+            (*out._pages)[pi] = (*_pages)[first >> kGeoPageBits];
+            return;
         }
 
         std::shared_ptr<GeoPage> page = GeoPage::makeDenseUninitialized(_elementBytes);
@@ -492,7 +525,7 @@ GeoPagedColumn::gathered(std::span<const std::size_t> sourceOffsets) const
         } else {
             (*out._pages)[pi] = std::move(page);
         }
-    }
+    });
 
     return out;
 }
@@ -829,6 +862,17 @@ GeoAttribute::compactArrayPool()
         _values.setElement(i, &pair);
     }
     _pool = std::move(pool);
+}
+
+void
+GeoAttribute::copyElement(std::size_t dstOffset,
+                          std::size_t srcOffset)
+{
+    // Writing may replace the page the source element lives in, so it is copied out first.
+    unsigned char buffer[kMaxTupleSize * sizeof(std::int64_t)];
+    static_assert(sizeof(buffer) >= sizeof(ArrayPair));
+    std::memcpy(buffer, _values.element(checkedOffset(srcOffset)), _values.elementBytes());
+    _values.setElement(checkedOffset(dstOffset), buffer);
 }
 
 GeoAttribute

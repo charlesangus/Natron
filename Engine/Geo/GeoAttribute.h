@@ -300,6 +300,9 @@ public:
         _values.setElement(checkedOffset(offset), tuple.data());
     }
 
+    /** @brief Copies the whole element; an array element then shares the source's pool range. */
+    void copyElement(std::size_t dstOffset, std::size_t srcOffset);
+
     std::string_view getString(std::size_t offset, int component = 0) const;
     void setString(std::size_t offset, std::string_view value, int component = 0);
 

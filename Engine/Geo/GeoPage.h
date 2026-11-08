@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -41,6 +42,13 @@ NATRON_NAMESPACE_ENTER
 inline constexpr unsigned kGeoPageBits = 10;
 inline constexpr std::size_t kGeoPageSize = std::size_t(1) << kGeoPageBits;
 inline constexpr std::size_t kGeoPageMask = kGeoPageSize - 1;
+
+/**
+ * @brief Calls body(i) for every i in [0, count) and returns once all calls have returned. Splits
+ * the range across the global thread pool, within the current task's thread budget, once count
+ * reaches minParallelCount; runs serially otherwise. Rethrows the first exception a call threw.
+ **/
+void geoParallelFor(std::size_t count, const std::function<void(std::size_t)>& body, std::size_t minParallelCount = 64);
 
 /**
  * @brief True when @p p is the only owner of its object, so the caller may mutate it in place.
@@ -209,7 +217,8 @@ public:
 
     /**
      * @brief A column whose element i is this column's element sourceOffsets[i]. A destination
-     * page whose elements all map onto themselves keeps sharing the source page.
+     * page whose elements map in order onto one whole source page keeps sharing that page, so
+     * pages a defragment only shifts by whole pages stay shared too. Large gathers run in parallel.
      **/
     GeoPagedColumn gathered(std::span<const std::size_t> sourceOffsets) const;
 

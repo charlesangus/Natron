@@ -63,6 +63,7 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GeoAttribute_Test.cpp
+    GeoDetail_Test.cpp
     GeoIndexMap_Test.cpp
     GLScheduler_Test.cpp
     GpuContext_Test.cpp

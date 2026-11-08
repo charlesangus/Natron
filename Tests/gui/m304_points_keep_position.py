@@ -182,6 +182,7 @@ try:
                 tree.expand(nxt)
                 QApplication.processEvents()
             idx = nxt
+        tree.executeDelayedItemsLayout()
         tree.scrollTo(idx)
         QApplication.processEvents()
         rect = tree.visualRect(idx)
@@ -293,7 +294,27 @@ try:
         yield ("sleep", SETTLE_MS)
         require(show_dope_sheet(), "the dope sheet tab is current")
         yield ("sleep", SETTLE_MS)
-        ok = yield ("until", lambda: shape_row_y(names) is not None, 10.0)
+        seen = {"why": "never polled", "n": 0}
+
+        def row_found():
+            # guitest.run() turns a raising predicate into False, so keep the reason here.
+            seen["n"] += 1
+            try:
+                found, why = shape_row_probe(names)
+            except Exception:
+                seen["why"] = "predicate raised: " + traceback.format_exc()
+                return False
+            seen["why"] = why
+            return found is not None
+        ok = yield ("until", row_found, 10.0)
+        if not ok:
+            report("NOTE row wait gave up after %d polls; last reason: %s" % (seen["n"], seen["why"]))
+            # The wait's deadline is wall time and the GUI thread can be held by the render, so the
+            # row may have appeared after the last poll; look once more before failing.
+            try:
+                ok = shape_row_probe(names)[0] is not None
+            except Exception:
+                ok = False
         if not ok:
             tree = hierarchy()
             report("NOTE dope sheet rows: %r" % (tree_rows(tree) if tree is not None else None,))

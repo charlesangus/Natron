@@ -1,0 +1,70 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 0.01
+    timeCodesPerSecond = 24
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Below" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2.5, -1, 0), (-0.5, -1, 0), (-0.5, 1, 0), (-2.5, 1, 0)]
+        rel material:binding = </World/Looks/Below>
+    }
+
+    def Mesh "Above" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0.5, -1, 0), (2.5, -1, 0), (2.5, 1, 0), (0.5, 1, 0)]
+        rel material:binding = </World/Looks/Above>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Below"
+        {
+            token outputs:surface.connect = </World/Looks/Below/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.8, 0.8, 0.8)
+                float inputs:opacity = 0.3
+                float inputs:opacityThreshold = 0.5
+                token outputs:surface
+            }
+        }
+
+        def Material "Above"
+        {
+            token outputs:surface.connect = </World/Looks/Above/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.8, 0.8, 0.8)
+                float inputs:opacity = 0.7
+                float inputs:opacityThreshold = 0.5
+                token outputs:surface
+            }
+        }
+    }
+
+    def Camera "Cam"
+    {
+        float focalLength = 35
+        float horizontalAperture = 20.955
+        float verticalAperture = 20.955
+        double3 xformOp:translate = (0, 0, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

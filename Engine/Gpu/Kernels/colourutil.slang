@@ -1,4 +1,5 @@
 import pixelwrap;
+import exactdivide;
 
 // Premult and Unpremult run under a Divisor stage: v is the undivided source and d the
 // "(Un)premult by" channel, 1 where there is none. Neither reads its parameter block.
@@ -48,7 +49,7 @@ struct UnpremultOp : IDivisorPixelOp
         [ForceUnroll]
         for (uint c = 0; c < 4; ++c)
         {
-            precise float x = v[c] / d;
+            precise float x = divideRounded(v[c], d);
             o[c] = (int(c) == skip) ? v[c] : x;
         }
         return o;
@@ -134,7 +135,7 @@ struct ThresholdOp : IPixelOp
             {
                 precise float t = x - low[c];
                 precise float w = high[c] - low[c];
-                precise float q = t / w;
+                precise float q = divideRounded(t, w);
                 o[c] = q;
             }
         }

@@ -4,7 +4,7 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| Colorspace | transcendental | `ParityTolerance::transcendental()` | the cube root, arctangent and sine run as fixed polynomial and Newton steps on both sides, so only rounding differs; Vulkan division is within 2.5 ulp |
+| Colorspace | transcendental | `ParityTolerance::transcendental()` | the cube root, arctangent and sine run as fixed polynomial and Newton steps on both sides, and divisions go through `divideRounded`, correctly rounded while the operands and the quotient lie between 2^-100 and 2^100; outside that the device's quotient (within 2.5 ulp) stands, and a device may flush subnormals |
 | Colorspace, from xyY | transcendental, plus an absolute bound | `toleranceFor()` | x·Y/y magnifies the rounding of the division by Y/y before the matrix to RGB cancels terms, so 1e-4 absolute |
 
 Round trips through every model hold to 1e-5 relative in ACEScg and in Linear Rec.709

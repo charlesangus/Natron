@@ -35,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -45,9 +46,11 @@
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/LensModels3DE.h"
 #include "Engine/Nodes/Transform/LensModelsGpu.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -56,6 +59,7 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+
 // Which models a knob belongs to, one bit per LensModels::ModelType.
 constexpr unsigned
 modelBit(LensModels::ModelType type)
@@ -420,6 +424,8 @@ LensDistortion::initializeKnobs()
     page->addKnob(blackOutside);
     _blackOutside = blackOutside;
 
+    _filterKnobs.create(this, page, filter, clamp);
+
     KnobBoolPtr cropToFormat = createKnob<KnobBool>(tr("Crop To Format"));
     cropToFormat->setName(kLensDistortionParamCropToFormat);
     cropToFormat->setHintToolTip(tr("If the source is inside its format and the distortion extends it outside of the output "
@@ -444,6 +450,7 @@ LensDistortion::initializeKnobs()
     addStageKnobs(page);
     _extentKnobs.finishKnobs();
     updateModelVisibility();
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // LensDistortion::initializeKnobs
 
 void
@@ -464,12 +471,13 @@ LensDistortion::onKnobsLoaded()
 {
     _extentKnobs.updateVisibility();
     updateModelVisibility();
+    _filterKnobs.updateVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
 LensDistortion::knobChanged(KnobI* k,
                             ValueChangedReasonEnum reason,
-                            ViewSpec /*view*/,
+                            ViewSpec view,
                             double time,
                             bool /*originatedFromMainThread*/)
 {
@@ -479,6 +487,12 @@ LensDistortion::knobChanged(KnobI* k,
     KnobChoicePtr model = _model.lock();
     if (model && (k == model.get())) {
         updateModelVisibility();
+
+        return true;
+    }
+    KnobChoicePtr filter = _filter.lock();
+    if (filter && (k == filter.get())) {
+        _filterKnobs.updateVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
@@ -570,10 +584,7 @@ LensDistortion::readSettings(double time,
     if (outputMode) {
         settings->stmap = (outputMode->getValueAtTime(time, 0, view) == 1);
     }
-    KnobChoicePtr filter = _filter.lock();
-    if (filter) {
-        settings->filter = (Resampler::FilterEnum)filter->getValueAtTime(time, 0, view);
-    }
+    settings->filter = _filterKnobs.read(time, view);
     KnobBoolPtr clamp = _clamp.lock();
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
@@ -992,7 +1003,7 @@ LensDistortion::renderOp(const RenderActionArgs& args,
     if (args.draftMode) {
         settings.filter = Resampler::eFilterImpulse;
     }
-    const bool jacobians = (settings.filter != Resampler::eFilterImpulse);
+    const bool jacobians = (settings.filter.filter != Resampler::eFilterImpulse);
 
     Geometry geometry;
     getGeometry(args.time, args.view, false, &geometry);
@@ -1062,12 +1073,12 @@ LensDistortion::renderOp(const RenderActionArgs& args,
                     if (!model.map(inverse, x, y, &s) || !std::isfinite(s.x) || !std::isfinite(s.y)) {
                         continue;
                     }
-                    const double u = (s.x * toSourceX - sourceFormat.x1) / sourceFormat.width();
+                    const double u = (productOrInfinity(s.x, toSourceX) - sourceFormat.x1) / sourceFormat.width();
                     const double v = (s.y - sourceFormat.y1) / sourceFormat.height();
                     const bool inside = (u >= 0.) && (u < 1.) && (v >= 0.) && (v < 1.);
                     const float values[4] = {
-                        (float)u,
-                        (float)v,
+                        knobValueAsFloat(u),
+                        knobValueAsFloat(v),
                         0.f,
                         inside ? 1.f : 0.f,
                     };
@@ -1102,15 +1113,15 @@ LensDistortion::renderOp(const RenderActionArgs& args,
                         }
                         continue;
                     }
-                    sx[i] = (float)(s.x * toSourceX * scaleX);
-                    sy[i] = (float)(s.y * scaleY);
+                    sx[i] = knobValueAsFloat(productOrInfinity(productOrInfinity(s.x, toSourceX), scaleX));
+                    sy[i] = knobValueAsFloat(productOrInfinity(s.y, scaleY));
                     if (jacobians) {
                         // d(source at scale) / d(output at scale), from the model's full-resolution one.
                         float* J = &jacobian[(std::size_t)4 * i];
-                        J[0] = (float)(s.J[0] * toSourceX);
-                        J[1] = (float)(s.J[1] * toSourceX * scaleX / scaleY);
-                        J[2] = (float)(s.J[2] * scaleY / scaleX);
-                        J[3] = (float)s.J[3];
+                        J[0] = knobValueAsFloat(productOrInfinity(s.J[0], toSourceX));
+                        J[1] = knobValueAsFloat(quotientOrInfinity(productOrInfinity(productOrInfinity(s.J[1], toSourceX), scaleX), scaleY));
+                        J[2] = knobValueAsFloat(quotientOrInfinity(productOrInfinity(s.J[2], scaleY), scaleX));
+                        J[3] = knobValueAsFloat(s.J[3]);
                     }
                 }
                 Resampler::resampleRowFromCoords(source, &sx[0], &sy[0], jacobians ? &jacobian[0] : 0, io.width,
@@ -1157,11 +1168,15 @@ struct LensDistortionGpuParams {
     float sourceHeight[2] = { 1.f, 0.f };
     uint32_t pad[2] = { 0, 0 };
     LensModelGpu model;
+    int32_t lobes = 4;
+    float bicubicB = 1.f / 3.f;
+    float bicubicC = 1.f / 3.f;
 };
 
-// lensdistortion.slang's kLensDistortionModelBase.
+// lensdistortion.slang's kLensDistortionModelBase and kLensDistortionLobesWord.
 static_assert(offsetof(LensDistortionGpuParams, model) == 20 * 4, "lensdistortion.slang reads the model from word 20");
-static_assert(sizeof(LensDistortionGpuParams) == 120 * 4, "lensdistortion.slang reads 120 words");
+static_assert(offsetof(LensDistortionGpuParams, lobes) == 120 * 4, "lensdistortion.slang reads lobes, B and C from word 120");
+static_assert(sizeof(LensDistortionGpuParams) == 123 * 4, "lensdistortion.slang reads 123 words");
 
 const uint32_t kLensDistortionGpuClamp = 1;
 const uint32_t kLensDistortionGpuBlackOutside = 2;
@@ -1231,8 +1246,12 @@ LensDistortion::renderOpGpu(const GpuRenderArgs& args)
     const LensModels::Model model = buildModel(query.time, query.view, geometry);
 
     LensDistortionGpuParams params;
-    params.filter = (uint32_t)settings.filter;
-    params.flags = (settings.clamp ? kLensDistortionGpuClamp : 0u) | (settings.blackOutside ? kLensDistortionGpuBlackOutside : 0u) | ((settings.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
+    const Resampler::FilterSpec spec(settings.filter);
+    params.filter = (uint32_t)spec.filter;
+    params.lobes = spec.lobes;
+    params.bicubicB = (float)spec.B;
+    params.bicubicC = (float)spec.C;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kLensDistortionGpuClamp : 0u) | (settings.blackOutside ? kLensDistortionGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kLensDistortionGpuJacobian : 0u);
     if (model.valid) {
         if (!settings.stmap) {
             params.flags |= kLensDistortionGpuSample;

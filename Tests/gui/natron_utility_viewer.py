@@ -38,6 +38,12 @@ STALL_BOUND_MS = 500.0
 TICK_MS = 5
 STALL_EDITS = 8
 STALL_EDIT_GAP_MS = 150
+# Storm antialiases its edges and Natron Utility shoots one ray per pixel.
+BBOX_TOLERANCE_PX = 1
+MIN_IOU = 0.98
+CENTROID_TOLERANCE_PX = 1.0
+# Per-channel distance from the background beyond which a pixel belongs to the silhouette.
+SILHOUETTE_DISTANCE = 30
 
 # The ball sits inside the box's silhouette because the view frames the box alone while the render
 # purpose is off, and the ball must be in that frame when it appears.
@@ -180,6 +186,33 @@ try:
                     n += 1
         return n
 
+    def silhouette(image, is_member=None):
+        """Pixels of the view that differ clearly from the background at the left edge of their row, or that
+        pass is_member when given. Returns a set of (x, y)."""
+        pixels = set()
+        for y in range(HUD_MARGIN, image.height() - HUD_MARGIN):
+            ref = image.pixelColor(2, y)
+            for x in range(image.width()):
+                c = image.pixelColor(x, y)
+                if is_member is not None:
+                    inside = is_member(c)
+                else:
+                    inside = (abs(c.red() - ref.red()) > SILHOUETTE_DISTANCE
+                              or abs(c.green() - ref.green()) > SILHOUETTE_DISTANCE
+                              or abs(c.blue() - ref.blue()) > SILHOUETTE_DISTANCE)
+                if inside:
+                    pixels.add((x, y))
+        return pixels
+
+    def bounds(pixels):
+        xs = [p[0] for p in pixels]
+        ys = [p[1] for p in pixels]
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def centroid(pixels):
+        n = float(len(pixels))
+        return (sum(p[0] for p in pixels) / n, sum(p[1] for p in pixels) / n)
+
     def bluish(c):
         return c.blue() > 60 and c.blue() > c.red() + 40 and c.blue() > c.green() + 20
 
@@ -256,8 +289,11 @@ try:
         check(ok, "Display > Purposes > Render turns the render purpose %s" % ("on" if shown else "off"))
         yield settle()
 
+    frames = {}
+
     def check_purpose_toggle(v, label, tag):
         image = save_view("natron-utility-%s-default" % tag)
+        frames[(tag, "default")] = image
         grey = count(image, greyish)
         blue = count(image, bluish)
         report("NOTE %s with Render off: %d grey, %d blue" % (label, grey, blue))
@@ -266,6 +302,7 @@ try:
 
         yield from set_render_purpose(v, True)
         image = save_view("natron-utility-%s-render-purpose" % tag)
+        frames[(tag, "purpose")] = image
         blue = count(image, bluish)
         report("NOTE %s with Render on: %d blue" % (label, blue))
         check(blue >= MIN_PIXELS, "%s shows the render-purpose ball (%d blue pixels)" % (label, blue))
@@ -273,6 +310,48 @@ try:
         yield from set_render_purpose(v, False)
         blue = count(crop(), bluish)
         check(blue < MIN_PIXELS, "%s hides the ball again (%d blue pixels)" % (label, blue))
+
+    def compare_with_storm():
+        sizes = {}
+        for tag in ("utility", "storm"):
+            for stage in ("default", "purpose"):
+                image = frames.get((tag, stage))
+                sizes[(tag, stage)] = (image.width(), image.height()) if image is not None else None
+        report("NOTE view sizes: %r" % (sizes,))
+        check(len(set(sizes.values())) == 1 and None not in sizes.values(),
+              "all four shots are taken at one view size (%r)" % (sizes,))
+        if len(set(sizes.values())) != 1 or None in sizes.values():
+            return
+
+        cubes = {tag: silhouette(frames[(tag, "default")]) for tag in ("utility", "storm")}
+        for tag, pixels in cubes.items():
+            check(len(pixels) >= MIN_PIXELS, "%s has a cube silhouette (%d pixels)" % (tag, len(pixels)))
+        if any(len(pixels) < MIN_PIXELS for pixels in cubes.values()):
+            return
+        utility_box = bounds(cubes["utility"])
+        storm_box = bounds(cubes["storm"])
+        union = len(cubes["utility"] | cubes["storm"])
+        iou = len(cubes["utility"] & cubes["storm"]) / float(union)
+        deltas = [abs(a - b) for a, b in zip(utility_box, storm_box)]
+        report("NOTE cube bounding box (x0, y0, x1, y1): Natron Utility %r, Storm %r, differences %r" % (
+            utility_box, storm_box, deltas))
+        report("NOTE cube mask IoU %.4f (%d vs %d pixels)" % (iou, len(cubes["utility"]), len(cubes["storm"])))
+        check(max(deltas) <= BBOX_TOLERANCE_PX,
+              "Natron Utility frames the cube like Storm: bounding box corners within %d px (%r)" % (BBOX_TOLERANCE_PX, deltas))
+        check(iou >= MIN_IOU, "the cube masks overlap (IoU %.4f, at least %.2f)" % (iou, MIN_IOU))
+
+        balls = {tag: silhouette(frames[(tag, "purpose")], bluish) for tag in ("utility", "storm")}
+        for tag, pixels in balls.items():
+            check(len(pixels) >= MIN_PIXELS, "%s has a render-purpose sphere mask (%d pixels)" % (tag, len(pixels)))
+        if any(len(pixels) < MIN_PIXELS for pixels in balls.values()):
+            return
+        utility_centre = centroid(balls["utility"])
+        storm_centre = centroid(balls["storm"])
+        offset = max(abs(utility_centre[0] - storm_centre[0]), abs(utility_centre[1] - storm_centre[1]))
+        report("NOTE sphere mask centroid: Natron Utility (%.2f, %.2f), Storm (%.2f, %.2f)" % (
+            utility_centre + storm_centre))
+        check(offset <= CENTROID_TOLERANCE_PX,
+              "Natron Utility places the sphere like Storm: centroids within %.1f px (%.2f)" % (CENTROID_TOLERANCE_PX, offset))
 
     class StallMeter:
         """The longest gap between ticks of a main-thread timer."""
@@ -356,12 +435,17 @@ try:
         section("Natron Utility")
         yield from pick_renderer(v, "Natron Utility", UTILITY_ID)
         yield from check_purpose_toggle(v, "Natron Utility", "utility")
-        section("Natron Utility: main-thread stall during an edit in a large render")
-        yield from measure_edit_stall(v)
 
         section("Storm")
         yield from pick_renderer(v, "Storm", STORM_ID)
         yield from check_purpose_toggle(v, "Storm", "storm")
+
+        section("Natron Utility frames the scene like Storm")
+        compare_with_storm()
+
+        section("Natron Utility: main-thread stall during an edit in a large render")
+        yield from pick_renderer(v, "Natron Utility", UTILITY_ID)
+        yield from measure_edit_stall(v)
 
         navigation.setValue(original_navigation)
         lighting.setValue(original_lighting)

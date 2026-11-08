@@ -332,6 +332,7 @@ cgroup_memory_limit_kb() {
 # Prints "<compile jobs> <link jobs>". Cores and memory can be overridden for
 # testing: default_build_jobs <cores> <available kB> [<total kB>]; the total
 # defaults to the available figure.
+# shellcheck disable=SC2120
 default_build_jobs() {
     local cores="${1:-$(nproc)}" mem_kb="${2-}" total_kb="${3-}" cg_kb jobs link
     if [[ $# -lt 2 ]]; then
@@ -364,6 +365,7 @@ default_build_jobs() {
     echo "${jobs} ${link}"
 }
 
+# shellcheck disable=SC2119
 read -r DEFAULT_JOBS DEFAULT_LINK_JOBS <<< "$(default_build_jobs)"
 if [[ -n "${NATRON_BUILD_JOBS:-}" ]]; then
     JOBS="${NATRON_BUILD_JOBS}"

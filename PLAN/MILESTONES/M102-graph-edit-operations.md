@@ -166,6 +166,8 @@ pair. No `Serialization/**` file includes Engine or Gui.
 
 ## Decisions
 
+- 2026-11-08 — Session state is not an edit (PM, from PR #225 review): timeline position, project ID, saved-by data and cache IDs are excluded from diffs and recording; `applyOps(a, diffSnapshots(a, b))` equals `b` on the editable state, compared exactly. A live node always has a position, so clearing it applies only to plain snapshots.
+
 - 2026-11-07 — Phase 102.1 written at b2d1e36b5: a new `id` field separate from `cacheID` (which is reissued on a second open); IDs applied only during project load, so copies get new IDs; the index lives in Project; clipboard and preset files carry no IDs (YAML flag renamed `withIdentity`). P1.T3 build checkpoint pending.
 
 - 2026-10-11 — **User decision:** persist a node ID (live sessions need one), but treat it as one matching signal among several for merge; M103 - Graph Diff And Merge's spike sets the matching policy.

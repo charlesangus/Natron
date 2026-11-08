@@ -6835,7 +6835,10 @@ EffectInstance::onNodeHashChanged(U64 hash)
 bool
 EffectInstance::canSetValue() const
 {
-    return !getNode()->isNodeRendering() || appPTR->isBackground();
+    // A render can keep the effect alive after its node is destroyed; nothing renders the node then.
+    NodePtr node = getNode();
+
+    return !node || !node->isNodeRendering() || appPTR->isBackground();
 }
 
 void

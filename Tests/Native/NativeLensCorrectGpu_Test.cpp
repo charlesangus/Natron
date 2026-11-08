@@ -26,7 +26,9 @@
 
 #include <algorithm>
 #include <bitset>
+#include <climits>
 #include <cmath>
+#include <fstream>
 #include <list>
 #include <memory>
 #include <sstream>
@@ -171,6 +173,57 @@ protected:
         expectParityOver(node, rod.toPixelEnclosing(mipmapLevel, 1.), what, mipmapLevel);
     }
 
+    // Mismatches only seen on some CI runners: the runner's CPU, since llvmpipe JITs for it, and
+    // whether whole samples come back as zero (every channel of a pixel) rather than drift.
+    static std::string describeMismatches(const std::vector<float>& cpu,
+                                          const std::vector<float>& gpu,
+                                          const RectI& window)
+    {
+        const ParityTolerance tolerance = lensCorrectTolerance();
+        std::size_t perChannel[4] = { 0, 0, 0, 0 };
+        std::size_t pixels = 0;
+        std::size_t allZero = 0;
+        std::size_t greenAlphaZero = 0;
+        RectI box(INT_MAX, INT_MAX, INT_MIN, INT_MIN);
+        const int width = window.width();
+        for (std::size_t p = 0; p * 4 < cpu.size(); ++p) {
+            bool any = false;
+            for (int c = 0; c < 4; ++c) {
+                if (!tolerance.accepts(cpu[p * 4 + c], gpu[p * 4 + c])) {
+                    ++perChannel[c];
+                    any = true;
+                }
+            }
+            if (!any) {
+                continue;
+            }
+            ++pixels;
+            const float* g = &gpu[p * 4];
+            allZero += (g[0] == 0.f && g[1] == 0.f && g[2] == 0.f && g[3] == 0.f);
+            greenAlphaZero += (g[1] == 0.f && g[3] == 0.f);
+            const int x = window.x1 + (int)(p % width);
+            const int y = window.y1 + (int)(p / width);
+            box.x1 = std::min(box.x1, x);
+            box.y1 = std::min(box.y1, y);
+            box.x2 = std::max(box.x2, x + 1);
+            box.y2 = std::max(box.y2, y + 1);
+        }
+        std::string cpuModel = "unknown";
+        std::ifstream cpuinfo("/proc/cpuinfo");
+        for (std::string line; std::getline(cpuinfo, line);) {
+            if (line.compare(0, 10, "model name") == 0) {
+                const std::size_t colon = line.find(':');
+                cpuModel = colon == std::string::npos ? line : line.substr(colon + 1);
+                break;
+            }
+        }
+        std::ostringstream text;
+        text << "; mismatches per channel " << perChannel[0] << "/" << perChannel[1] << "/" << perChannel[2] << "/" << perChannel[3] << " over " << pixels
+             << " pixels in [" << box.x1 << "," << box.y1 << "," << box.x2 << "," << box.y2 << "), gpu all zero at " << allZero << ", gpu green and alpha zero at "
+             << greenAlphaZero << "; cpu" << cpuModel;
+        return text.str();
+    }
+
     void expectParityOver(const NodePtr& node,
                           const RectI& window,
                           const std::string& what,
@@ -195,7 +248,8 @@ protected:
             return text.str();
         };
         const std::string where = diff.mismatches == 0 ? std::string() : ", first at " + valueAt(diff.firstMismatchIndex) + ", worst at " + valueAt(diff.worstIndex);
-        EXPECT_LE(diff.mismatches, flips.values) << what << ": worst " << diff.worstAbsolute << where;
+        EXPECT_LE(diff.mismatches, flips.values) << what << ": worst " << diff.worstAbsolute << where
+                                                 << (diff.mismatches > flips.values ? describeMismatches(result.cpu, result.gpu, window) : std::string());
         if (flips.values != 0) {
             EXPECT_LE(diff.worstAbsolute, flips.worst) << what << where;
         }

@@ -2237,6 +2237,7 @@ RenderThreadTask::run()
 #ifdef TRACE_SCHEDULER
         qDebug() << "Parallel Render Thread: Picking frame to render: " << time;
 #endif
+        boost_adaptbx::floating_point::follow_software_renderer();
         renderFrame(time, viewsToRender, enableRenderStats);
 
         appPTR->getAppTLS()->cleanupTLSForThread();

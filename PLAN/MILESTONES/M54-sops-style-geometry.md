@@ -60,19 +60,19 @@ wherever a choice arises.
 
 ## Phase 54.1: Data kind, detail, cache, pull path
 
-- [ ] M54.P1.T1 — `eDataKindGeometry` declared and drawn
+- [x] M54.P1.T1 — `eDataKindGeometry` declared and drawn
   - files: `Global/Enums.h`, `Gui/Edge.cpp`, `Gui/NodeGui.cpp`, `Tests/DataKind_Test.cpp`, `Engine/Nodes/README.md`
   - approach: append `eDataKindGeometry` after `eDataKindRaw` in `DataKindEnum` (the enum now holds Image, Deep, Scene, Polymorphic and Raw). Style the edge and node silhouette per the 2026-09-05 design doc's "Communicating kind" rules, distinct from image, deep, scene and raw. Connection typing needs no change, since it is kind-agnostic. Document the kind in the README's "Data kinds" section with the same "declaration only until 54.1 lands" caveat deep carried.
   - verify: `DataKind_Test` extended — a geometry source into a scene input is refused, geometry → `Dot` → geometry consumer resolves; Xvfb GUI screenshot shows the new edge style.
   - size: M
 
-- [ ] M54.P1.T2 — Paged copy-on-write attribute storage
+- [x] M54.P1.T2 — Paged copy-on-write attribute storage
   - files: `Engine/Geo/GeoAttribute.h`/`.cpp`, `Engine/Geo/GeoPage.h`, `Tests/GeoAttribute_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: Houdini GA-style columns with no pxr types. An attribute is a name, a storage type (int32, int64, float32, float64, string), a tuple size 1–16, a type-info tag (none, vector, normal, point, colour, matrix, quaternion) and an array flag, stored as a page table of `shared_ptr<const Page>`. A page holds 1024 elements (Scope assumption). A page whose elements all share one value stores that value once, as a constant page. Writing an element detaches only its page. Strings are stored as indices into a shared per-attribute string table. Array attributes store per-element offsets into a paged value pool. Expose typed per-element get/set and a page visitor. Also expose `copyDense(range)`/`scatterDense(range)` for consumers that need contiguous data.
   - verify: unit tests — copying an attribute shares every page; writing 5 elements of a 10M-element attribute detaches exactly the pages containing them (page pointers compared); a constant page stays one value until written; round-trips for every storage type, tuple size and array attribute.
   - size: L
 
-- [ ] M54.P1.T5 — Element index maps with tombstones and defragment
+- [x] M54.P1.T5 — Element index maps with tombstones and defragment
   - files: `Engine/Geo/GeoIndexMap.h`/`.cpp`, `Tests/GeoIndexMap_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: Houdini's offset/index split. Each element class (point, vertex, primitive) maps dense element numbers to storage offsets, holes included. Deleting tombstones offsets without moving attribute data, and appending reuses nothing until a defragment. `defragment()` returns a new map plus a remap table that the detail applies to every attribute of that class (page-aware, so untouched pages stay shared where offsets don't move). The map is itself copy-on-write.
   - verify: unit tests — delete then iterate yields the surviving elements in number order; number ↔ offset round-trips; defragment compacts and the remap table moves the right values; a defragment with no holes is a no-op that shares everything.

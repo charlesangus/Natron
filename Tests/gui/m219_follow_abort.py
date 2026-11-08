@@ -59,17 +59,26 @@ try:
         select_shapes([bez])
         yield from go_to(START)
 
-        state = {"aborted_at": None, "keys_at_abort": 0}
+        state = {"aborted_at": None, "keys_at_abort": 0, "keys_seen": len(keys_before), "started": mono_ms()}
 
         def on_tick():
+            keys = len(keys_of(bez))
+            if keys != state["keys_seen"]:
+                state["keys_seen"] = keys
+                report("NOTE abort: %d keys %.0f ms after the first press" % (keys, mono_ms() - state["started"]))
             # A press after the follow ended would start another one instead of stopping it.
-            if state["aborted_at"] is None and len(keys_of(bez)) >= ABORT_AFTER_KEYS and scene.ctx.isFollowingVectors():
-                state["keys_at_abort"] = len(keys_of(bez))
+            if state["aborted_at"] is None and keys >= ABORT_AFTER_KEYS and scene.ctx.isFollowingVectors():
+                state["keys_at_abort"] = keys
                 state["aborted_at"] = mono_ms()
+                report("NOTE abort: second press at %d keys, %.0f ms after the first" % (keys, state["aborted_at"] - state["started"]))
                 press(scene.roto, "followForwardToEnd")
+                return (ABORT_END_S, "abort: the follow ends within %.0f s of the second press" % ABORT_END_S)
+            return None
 
         press(scene.roto, "followForwardToEnd")
         outcome, stats = yield from wait_follow(scene, "abort", ABORT_TIMEOUT_S, on_tick)
+        if state["aborted_at"] is not None:
+            report("NOTE abort: the follow ended %.0f ms after the second press" % (stats["end"] - state["aborted_at"]))
         require(state["aborted_at"] is not None, "abort: the follow was still running when %d keys had been baked; it finished first (report %r)"
                 % (ABORT_AFTER_KEYS, outcome["message"]))
         text = outcome["message"]

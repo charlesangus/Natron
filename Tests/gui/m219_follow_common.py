@@ -31,7 +31,9 @@ SEEK_MS = 400
 SHOT_MS = 900
 POLL_TIMEOUT_S = 30.0
 FOLLOW_TIMEOUT_S = 600.0
-ABORT_TIMEOUT_S = 1200.0
+# Under the runner's 900 s, so a follow that never ends fails with the script's notes written, not a kill.
+ABORT_TIMEOUT_S = 600.0
+ABORT_END_S = 10.0
 DIALOG_TIMEOUT_S = 3.0
 TICK_MS = 20
 PANEL_MENU_DELAY_MS = 400
@@ -290,9 +292,11 @@ def ensure_source(node, source):
 def wait_follow(scene, label, timeout, on_tick=None):
     """Ticks the GUI thread every TICK_MS until Roto.isFollowingVectors() turns false, then takes the
     report Roto.getLastFollowReport() keeps, which is None when the press was refused, and closes the
-    report's dialog. Returns (the report, stats)."""
+    report's dialog. on_tick may return (seconds, label) to end the wait that many seconds later
+    instead, failing with that label. Returns (the report, stats)."""
     stats = {"ticks": 0, "max_gap": 0.0, "start": mono_ms(), "end": 0.0}
     deadline = time.time() + timeout
+    what = "%s: the follow ends within %.0f s" % (label, timeout)
     last = time.time()
     ended = False
     while time.time() < deadline:
@@ -302,12 +306,15 @@ def wait_follow(scene, label, timeout, on_tick=None):
         stats["ticks"] += 1
         last = now
         if on_tick is not None:
-            on_tick()
+            tightened = on_tick()
+            if tightened is not None:
+                deadline = time.time() + tightened[0]
+                what = tightened[1]
         if not scene.ctx.isFollowingVectors():
             ended = True
             break
     stats["end"] = mono_ms()
-    require(ended, "%s: the follow ends within %.0f s" % (label, timeout))
+    require(ended, what)
     outcome = scene.ctx.getLastFollowReport()
     require(outcome is not None, "%s: the follow ran and left a report (node message %r)" % (label, message(scene.roto)))
     yield from close_report_dialog(scene, label, outcome)

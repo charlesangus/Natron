@@ -175,6 +175,8 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion):
 
 ## Decisions
 
+- 2026-11-07 — Review round 2 closed at c8211fe7f (viewer pixel-grid snap moved into the zoom context). Gate: ctest and the M217 and m275 GUI scripts pass; m164 hit the pre-existing TimeLineGui refresh-timer crash, fixed on F10 at 515d775a3, not caused here. Waiting on the user's UAT of the refreshed AppImage.
+
 - 2026-11-07 — Overlay (user): the overlay pass requests every produced plane, so it never solves twice; a cold RGBA view with the overlay on waits behind a cancellable solve. First and last frames stay truthful: the direction with no neighbour tints the whole picture.
 
 - 2026-11-07 — User: the TV-L1 confidence bar for the uncovered strip moves to 0.4. `confidenceThreshold` stays and gets a real overlay with an engine hook, so the node gains that task before merging.

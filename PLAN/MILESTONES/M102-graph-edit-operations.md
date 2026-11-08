@@ -75,7 +75,7 @@ Scouting facts (2026-10-11, `main` at `10e0accd5`; re-check line numbers, since 
   - verify: compiled at P1.T3. A gtest covers lookup after create, after a move into a group, and after delete (empty result) followed by undo. A Python test round-trips `app.getNodeById(n.getNodeId())`.
   - size: M
 
-- [ ] M102.P1.T3 — Phase 102.1 build and test checkpoint
+- [x] M102.P1.T3 — Phase 102.1 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.

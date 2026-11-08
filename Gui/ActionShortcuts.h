@@ -222,7 +222,7 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutDescActionCloseTab "Close Tab"
 
 #define kShortcutIDActionColorTrackball "colorTrackball"
-#define kShortcutDescActionColorTrackball "Engage Colour Trackball (C/S/T/V modes)"
+#define kShortcutDescActionColorTrackball "Engage Global Mode on the Hovered or Last-Touched Knob"
 
 /////////VIEWER SHORTCUTS
 #define kShortcutIDActionLuminance "luminance"

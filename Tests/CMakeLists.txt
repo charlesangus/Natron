@@ -312,6 +312,7 @@ set(GuiTests_SOURCES
     DisplayLegendColour_Test.cpp
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GlobalModeTargeting_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp
@@ -340,7 +341,10 @@ set(GuiTests_SOURCES
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
+    TransformGroupGlobalModeTarget_Test.cpp
     UndoHistory_Test.cpp
+    ValueKnobEditSession_Test.cpp
+    ValueKnobGlobalModeTarget_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )

@@ -50,6 +50,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Settings.h"
 
 #include "Gui/ColorTrackballTarget.h"
+#include "Gui/GlobalModeTarget.h"
 #include "Gui/GuiFwd.h"
 
 class QEvent;
@@ -323,6 +324,77 @@ private:
 };
 
 /**
+ * @brief Global mode on one colour knob: C, S, T and V strokes through the knob's own edit
+ * session, the four mode keys, the trackball HUD legend and the wheel or mode disc on the
+ * reveal.
+ **/
+class ColorGlobalModeTarget
+    : public GlobalModeTarget {
+public:
+    explicit ColorGlobalModeTarget(const KnobGuiColorPtr& knob);
+    virtual ~ColorGlobalModeTarget() OVERRIDE;
+
+    KnobGuiColor* getColorKnobGui() const;
+
+    virtual KnobGui* getKnobGui() const OVERRIDE FINAL;
+    virtual std::vector<KnobGui*> getKnobGuis() const OVERRIDE FINAL;
+    virtual DockablePanel* getPanel() const OVERRIDE FINAL;
+    virtual void attach() OVERRIDE FINAL;
+    virtual void detach() OVERRIDE FINAL;
+    virtual bool beginStroke() OVERRIDE FINAL;
+    virtual void moveStroke(double dx, double dy, double gearFactor) OVERRIDE FINAL;
+    virtual void endStroke() OVERRIDE FINAL;
+    virtual void abandonStroke() OVERRIDE FINAL;
+    virtual bool handleKey(int key, Qt::KeyboardModifiers modifiers, bool strokeActive) OVERRIDE FINAL;
+    virtual void fillHudState(ColorTrackballHudState* state) const OVERRIDE FINAL;
+    virtual void syncReveal(ColorTrackballReveal* reveal, bool strokeActive) OVERRIDE FINAL;
+
+    ColorGlobalModeEnum getMode() const
+    {
+        return _mode;
+    }
+
+    /**
+     * @brief True when mode differs from the current one. Mid-stroke the travel so far is
+     * folded into a new start, so the new mode accumulates from where the old one left the
+     * value instead of reinterpreting the old mode's pixels.
+     **/
+    bool setMode(ColorGlobalModeEnum mode);
+
+    double getRememberedHue() const
+    {
+        return _rememberedHue;
+    }
+
+    void setRememberedHue(double hueDegrees)
+    {
+        _rememberedHue = hueDegrees;
+    }
+
+    /**
+     * @brief The stroke's latest value mid-stroke, else the knob's current value.
+     **/
+    KnobColorValue getLiveValue() const;
+
+private:
+    QString strokeLabel() const;
+
+    std::weak_ptr<KnobGuiColor> _knob;
+    QPointer<KnobGuiColor> _knobObject;
+    ColorGlobalModeEnum _mode;
+    TrackballRates _rates;
+    double _rememberedHue;
+    bool _strokeActive;
+    ColorGlobalModeStroke _stroke;
+    KnobColorValue _strokeValue;
+    ColorKnobRoleEnum _strokeRole;
+    LumaBasis _strokeBasis;
+    ColorGlobalModeEnum _strokeMode;
+    QPointer<ColorTrackballReveal> _revealConfigured;
+    ColorKnobRoleEnum _revealRole;
+};
+
+/**
  * @brief The global trackball mode: once engaged on a colour knob, a click-drag anywhere in
  * the application's windows adjusts that knob (C = a trackball translate of hue and
  * saturation together, S = hue on x and saturation on y, T = temperature and tint, V = value),
@@ -359,6 +431,12 @@ public:
     bool engage(const KnobGuiColorPtr& target);
 
     /**
+     * @brief Engages on any target, or moves an engaged mode onto it. A colour target takes the
+     * colour mode as engage(const KnobGuiColorPtr&) describes. False for a null target.
+     **/
+    bool engage(const std::shared_ptr<GlobalModeTarget>& target);
+
+    /**
      * @brief Accepts whatever the strokes did and leaves the mode. There is no cancel: every
      * stroke is already its own undo step.
      **/
@@ -369,21 +447,26 @@ public:
         return _engaged;
     }
 
+    /**
+     * @brief The colour knob engaged on, or null when not engaged or on a non-colour target.
+     **/
     KnobGuiColor* getTarget() const;
 
+    GlobalModeTarget* getGlobalModeTarget() const;
+
     /**
-     * @brief The target's 1-based position n among its panel's legal colour knobs and their
-     * count N, for an "n/N" readout; both 0 when not engaged.
+     * @brief The target's 1-based position n among its panel's legal global-mode knobs and
+     * their count N, for an "n/N" readout; both 0 when not engaged.
      **/
     void getTargetPosition(int* n, int* count) const;
 
     /**
-     * @brief The current mode. Reset to C by every fresh engage(), so it does not carry over
-     * between invocations or nodes; only retargeting an engaged mode keeps it.
+     * @brief The current colour mode. Reset to C by every fresh engage(), so it does not carry
+     * over between invocations or nodes; only retargeting an engaged mode keeps it.
      **/
     ColorGlobalModeEnum getMode() const
     {
-        return _mode;
+        return _colorMode;
     }
 
     void setMode(ColorGlobalModeEnum mode);
@@ -402,8 +485,8 @@ public:
     }
 
     /**
-     * @brief The value the user is looking at: the stroke's latest value mid-stroke, else the
-     * target knob's current value.
+     * @brief The value the user is looking at on a colour target: the stroke's latest value
+     * mid-stroke, else the target knob's current value.
      **/
     KnobColorValue getLiveValue() const;
 
@@ -421,8 +504,9 @@ public:
     void setPassThroughShortcuts(const QList<QKeySequence>& shortcuts);
 
     /**
-     * @brief Moves to the previous (-1) or next (+1) legal colour knob on the target's panel,
-     * ending any running stroke first. False, with knobListEndReached emitted, at either end.
+     * @brief Moves to the previous (-1) or next (+1) legal global-mode knob on the target's
+     * panel, ending any running stroke first. False, with knobListEndReached emitted, at either
+     * end.
      **/
     bool stepKnob(int direction);
 
@@ -439,19 +523,18 @@ Q_SIGNALS:
     void stateChanged();
 
     /**
-     * @brief A knob switch hit the top (-1) or bottom (+1) of the panel's colour knobs.
+     * @brief A knob switch hit the top (-1) or bottom (+1) of the panel's global-mode knobs.
      **/
     void knobListEndReached(int direction);
 
 private:
     explicit ColorTrackballGlobalMode(Gui* gui);
 
-    void setTarget(const KnobGuiColorPtr& target);
+    void setTarget(const std::shared_ptr<GlobalModeTarget>& target);
     void clearTarget();
     void onTargetGone();
     DockablePanel* getTargetPanel() const;
-    void revealTarget();
-    QString strokeLabel() const;
+    ColorGlobalModeTarget* getColorTarget() const;
     void setGear(double gearFactor);
 
     ColorTrackballHudBlock* ensureHudBlock();
@@ -486,20 +569,16 @@ private:
 
     Gui* _gui;
     bool _engaged;
-    std::weak_ptr<KnobGuiColor> _target;
-    QPointer<KnobGuiColor> _targetObject;
+    std::shared_ptr<GlobalModeTarget> _target;
+    std::vector<QPointer<KnobGui>> _targetObjects;
     std::vector<QMetaObject::Connection> _targetConnections;
-    ColorGlobalModeEnum _mode;
-    double _gear;
-    TrackballRates _rates;
+    // Carried from one colour target to the next, so a colour mode and hue survive stepping
+    // through value knobs in between.
+    ColorGlobalModeEnum _colorMode;
     double _rememberedHue;
+    double _gear;
 
     bool _strokeActive;
-    ColorGlobalModeStroke _stroke;
-    KnobColorValue _strokeValue;
-    ColorKnobRoleEnum _strokeRole;
-    LumaBasis _strokeBasis;
-    ColorGlobalModeEnum _strokeMode;
 
     Qt::MouseButtons _heldButtons;
     QPointF _lastPos;
@@ -522,8 +601,6 @@ private:
     QPointer<ColorTrackballHudBlock> _hudBlock;
     QPointer<ColorTrackballReveal> _reveal;
     bool _revealFollowing;
-    const void* _revealKnob;
-    ColorKnobRoleEnum _revealRole;
     std::vector<QPointer<WindowHighlightFrame>> _highlightFrames;
     QString _endOfListMessage;
 };

@@ -78,25 +78,25 @@ wherever a choice arises.
   - verify: unit tests — delete then iterate yields the surviving elements in number order; number ↔ offset round-trips; defragment compacts and the remap table moves the right values; a defragment with no holes is a no-op that shares everything.
   - size: L
 
-- [ ] M54.P1.T6 — `GeoDetail`: classes, topology, groups, hash
+- [x] M54.P1.T6 — `GeoDetail`: classes, topology, groups, hash
   - files: `Engine/GeoDetail.h`/`.cpp`, `Engine/Geo/GeoTopology.h`/`.cpp`, `Engine/Geo/GeoGroup.h`/`.cpp`, `Tests/GeoDetail_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: the detail holds four attribute sets (detail, primitive, vertex, point) on M54.P1.T2's columns and M54.P1.T5's index maps. Topology is stored as attributes, as in Houdini: vertex → point offset, primitive → vertex list (paged start and count), and primitive → type (polygon, polyline, packed geometry, packed USD). `P` is a required float32 point attribute, with a detail flag for 64-bit. Point, primitive, vertex and edge groups are paged bitsets, or sets of point-number pairs for edges. A lazily built, cached reverse topology (point → vertices → primitives) is dropped whenever topology changes (Scope assumption). `contentHash` is a U64 combined from per-page hashes and cached. `getSizeInBytes()` is aliasing-blind like `DeepImage`. Copies share every page; mutation goes through a builder that detaches only what it writes.
   - verify: unit tests — moving 5 points detaches only `P` pages holding them, and topology and other attributes stay shared; identical content hashes identically; adding a polygon and deleting a point keep vertex → point consistent; groups survive a defragment; `Engine/GeoDetail.h` and `Engine/Geo/` include no pxr header (grep-enforced, as M19.P1.T2).
   - size: L
 
-- [ ] M54.P1.T7 — Packed primitives
+- [x] M54.P1.T7 — Packed primitives
   - files: `Engine/Geo/GeoPacked.h`/`.cpp`, `Engine/GeoDetail.cpp`, `Tests/GeoPacked_Test.cpp`
   - approach: a packed primitive is Houdini's: one vertex on one point (its pivot), plus intrinsics stored per primitive — local transform, and bounds. Packed Geometry also holds a `shared_ptr<const GeoDetail>` (immutable and shared, so a million copies cost a million pointers). Packed USD holds a source prim path and its parent's world transform, so a writeback can turn a new world transform back into a local one. The contained detail's hash feeds the outer hash once per unique pointer.
   - verify: unit tests — copying a detail with 1000 packed-geometry instances of one detail shares that detail (one allocation); changing one instance's transform changes the hash and detaches nothing else; bounds transform with the packed primitive.
   - size: M
 
-- [ ] M54.P1.T3 — `Cache<GeoDetail>` with its own budget
+- [x] M54.P1.T3 — `Cache<GeoDetail>` with its own budget
   - files: `Engine/GeoDetailKey.h`/`.cpp`, `Engine/GeoDetailCacheEntry.h`/`.cpp`, `Engine/Settings.cpp`/`.h` (budget knob), `Tests/GeoDetailCache_Test.cpp`
   - approach: third instantiation of the templated cache, mirroring `DeepImageKey`/`DeepImageCacheEntry` from M18. The key is (nodeHash, time, view), and time is part of the key only when something upstream varies with time (2026-10-25 decision). Cost = `getSizeInBytes()`, a pure function of shape at allocate and deallocate (the 2026-09-09 amendment rule). A separate memory budget knob keeps geometry from ever evicting the image cache.
   - verify: unit test — store/fetch by key; a time-invariant chain hits the cache at a different frame; budget clamp evicts; counter returns to zero after eviction.
   - size: M
 
-- [ ] M54.P1.T4 — `renderGeometry()` capability virtual and pull path
+- [x] M54.P1.T4 — `renderGeometry()` capability virtual and pull path
   - files: `Engine/EffectInstance.h`/`.cpp`, `Engine/Nodes/NativeEffectBase.h`/`.cpp`, `Tests/GeoRender_Test.cpp`
   - approach: mirror the deep path M18 added (`renderDeep()` and its `renderDeepRoI`-shaped pull): `EffectInstance::renderGeometry(const GeoRenderActionArgs&, GeoDetailPtr*)` plus a pull that walks typed inputs, honours `getFramesNeeded()`, abort flags and the scheduler, consults `Cache<GeoDetail>` first, and ignores RoI (whole-detail pull, as scene). `NativeEffectBase` gains `renderGeometryFromInput(args, input, mutate)` (fetch input detail, hand a COW copy to `mutate`) and a generator variant. Trivial proof node `GeoConstant` (one triangle), used by the test only (`internalUseOnly = true`).
   - verify: unit test — `GeoConstant` → passthrough → consumer pulls the detail through the cache (second pull is a cache hit); abort mid-pull returns cleanly.

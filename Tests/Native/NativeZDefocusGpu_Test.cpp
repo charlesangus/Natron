@@ -26,7 +26,6 @@
 #include "Global/Macros.h"
 
 #include <bit>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -51,7 +50,6 @@
 #include "Engine/Nodes/Filter/ZDefocus.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
-#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -70,8 +68,8 @@ const RectI kWindow(0, 0, kParitySourceWidth, kParitySourceHeight);
 // evaluates the circle of confusion in float, which may tip a pixel's tent weight slightly.
 const ParityTolerance kZDefocusTolerance = ParityTolerance::make(1e-4, 1e-3);
 
-// The width of a depth stripe: even, so that it is a whole pixel at half size.
-const int kStripe = 2;
+// The parity source cells that place exact depths.
+const int kDepthCells = (kParitySourceWidth / kParitySourceCellSize) * (kParitySourceHeight / kParitySourceCellSize);
 
 GpuQuery
 eligibleQuery()
@@ -151,45 +149,11 @@ protected:
         return constant;
     }
 
-    // `box` of `color` over `under`.
-    NodePtr makeBoxOver(const NodePtr& under,
-                        const RectI& box,
-                        const std::vector<double>& color)
-    {
-        NodePtr inside = makeConstant(box, color);
-        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
-
-        EXPECT_TRUE(bool(under) && bool(inside) && bool(merge));
-        if (!under || !inside || !merge) {
-            return NodePtr();
-        }
-        EXPECT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
-        connectNodes(under, merge, 0, true);
-        connectNodes(inside, merge, 1, true);
-
-        return merge;
-    }
-
-    // Vertical stripes of `depths` in red, each kStripe wide from the left, over a depth of 0.
-    NodePtr makeDepthStripes(const std::vector<float>& depths)
-    {
-        NodePtr stripes = makeConstant(kWindow, { 0., 0., 0., 1. });
-        for (std::size_t i = 0; (i < depths.size()) && stripes; ++i) {
-            stripes = makeBoxOver(stripes, RectI((int)i * kStripe, 0, ((int)i + 1) * kStripe, kWindow.height()), { depths[i], 0., 0., 1. });
-        }
-
-        return stripes;
-    }
-
-    // Each step of classes at the first depth of it and the one below, up to the stripes the window
-    // holds but one.
+    // Each step of classes at the first depth of it and the one below.
     static std::vector<float> stepDepths(const ZDefocusDepthClasses& classes)
     {
         std::vector<float> depths;
         for (uint32_t start : classes.starts) {
-            if ((int)depths.size() + 3 > kWindow.width() / kStripe) {
-                break;
-            }
             depths.push_back(std::bit_cast<float>(start - 1u));
             depths.push_back(std::bit_cast<float>(start));
         }
@@ -463,7 +427,9 @@ TEST_F(NativeZDefocusGpuTest, DebugOutputsMatchTheCpuAtClassSteps)
         getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "nativeZDefocusGpuSteps", par));
         for (unsigned level : { 0u, 1u }) {
             const std::string at = ", level " + std::to_string(level) + ", aspect " + std::to_string(par);
-            NodePtr zdefocus = makeZDefocus(NodePtr());
+            NodePtr source = makeParitySource();
+            ASSERT_TRUE(bool(source));
+            NodePtr zdefocus = makeZDefocus(source);
             ASSERT_TRUE(bool(zdefocus));
             ASSERT_TRUE(setDepthChannel(zdefocus, std::string(kNatronColorViewRGBA) + ".R"));
             ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamLayers, { 16. }));
@@ -478,9 +444,8 @@ TEST_F(NativeZDefocusGpuTest, DebugOutputsMatchTheCpuAtClassSteps)
             std::vector<float> depths = stepDepths(ZDefocus::sliceClasses(params, context, dof, sliceList));
             ASSERT_FALSE(depths.empty());
             depths.push_back(0.98888886f);
-            NodePtr source = makeDepthStripes(depths);
-            ASSERT_TRUE(bool(source));
-            connectNodes(source, zdefocus, kZDefocusInputSource, true);
+            ASSERT_LE((int)depths.size(), kDepthCells);
+            setParitySourceCells(source, depths);
             ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputSlices)));
             expectParity(zdefocus, "slices" + at, NULL, level);
 
@@ -493,9 +458,8 @@ TEST_F(NativeZDefocusGpuTest, DebugOutputsMatchTheCpuAtClassSteps)
             depths = stepDepths(ZDefocus::blurRadiusClasses(lens));
             ASSERT_FALSE(depths.empty());
             depths.push_back(0.005f);
-            source = makeDepthStripes(depths);
-            ASSERT_TRUE(bool(source));
-            connectNodes(source, zdefocus, kZDefocusInputSource, true);
+            ASSERT_LE((int)depths.size(), kDepthCells);
+            setParitySourceCells(source, depths);
             ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputBlurRadius)));
             expectParity(zdefocus, "blur radius, lens" + at, NULL, level);
 
@@ -503,9 +467,8 @@ TEST_F(NativeZDefocusGpuTest, DebugOutputsMatchTheCpuAtClassSteps)
             const ZDefocusParams lensParams = effect->getParams(kTime, ViewIdx(0));
             depths = stepDepths(ZDefocus::sliceClasses(lensParams, context, lens, ZDefocus::slices(lensParams, context)));
             if (!depths.empty()) {
-                source = makeDepthStripes(depths);
-                ASSERT_TRUE(bool(source));
-                connectNodes(source, zdefocus, kZDefocusInputSource, true);
+                ASSERT_LE((int)depths.size(), kDepthCells);
+                setParitySourceCells(source, depths);
                 expectParity(zdefocus, "slices, lens" + at, NULL, level);
             }
         }

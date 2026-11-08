@@ -781,6 +781,7 @@ TEST_F(NativeZDefocusTest, DebugDepthClassesAreTheModelsAtEveryStep)
     // The render agrees: the left half at the focal length, the right half just beyond it.
     NodePtr stripes = makeBoxOver(makeConstant(kWindow, { aboveMin, 0., 0., 1. }), RectI(0, 0, kWindow.width() / 2, kWindow.height()), { minDepth, 0., 0., 1. });
     ASSERT_TRUE(bool(stripes));
+    disconnectNodes(source, zdefocus, true);
     connectNodes(stripes, zdefocus, kZDefocusInputSource, true);
     ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputBlurRadius)));
     RenderedPlane actual;

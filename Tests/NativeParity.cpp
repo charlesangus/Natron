@@ -344,6 +344,7 @@ ParitySourceTestEffect::ParitySourceTestEffect(NodePtr n)
     , _origin()
     , _noise()
     , _nonFinite()
+    , _cells()
 {
     setSupportsRenderScaleMaybe(eSupportsYes);
 }
@@ -405,6 +406,13 @@ ParitySourceTestEffect::initializeKnobs()
     }
     page->addKnob(nonFinite);
     _nonFinite = nonFinite;
+
+    KnobStringPtr cells = createKnob<KnobString>(std::string("Cells"));
+    cells->setName(kParitySourceParamCells);
+    cells->setAnimationEnabled(false);
+    cells->setDefaultValue(std::string());
+    page->addKnob(cells);
+    _cells = cells;
 }
 
 int
@@ -459,6 +467,24 @@ ParitySourceTestEffect::getNonFinite() const
     }
 
     return RectI(nonFinite->getValue(0), nonFinite->getValue(1), nonFinite->getValue(2), nonFinite->getValue(3));
+}
+
+std::vector<float>
+ParitySourceTestEffect::getCells() const
+{
+    KnobStringPtr cells = _cells.lock();
+    std::vector<float> values;
+
+    if (!cells) {
+        return values;
+    }
+    std::istringstream stream(cells->getValue());
+    std::string word;
+    while (stream >> word) {
+        values.push_back(std::bit_cast<float>(static_cast<uint32_t>(std::strtoul(word.c_str(), NULL, 16))));
+    }
+
+    return values;
 }
 
 StatusEnum
@@ -516,6 +542,7 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
     const int step = 1 << mipmapLevel;
     const bool noise = hasNoise();
     const RectI nonFinite = getNonFinite();
+    const std::vector<float> cells = getCells();
     const float nonFiniteValues[3] = { std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() };
     int ox, oy;
     getOrigin(&ox, &oy);
@@ -549,6 +576,8 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
                 if (!pixel) {
                     return eStatusFailed;
                 }
+                const bool inside = (cx >= 0) && (cy >= 0) && (cx < kParitySourceWidth);
+                const int cell = inside ? (cy / kParitySourceCellSize) * (kParitySourceWidth / kParitySourceCellSize) + cx / kParitySourceCellSize : -1;
                 for (int c = 0; c < nComps; ++c) {
                     const int channel = isColor ? colorChannel[c] : c;
                     float v = isColor ? paritySourceColorValue(channel, cx, cy, args.time) : paritySourceExtraValue(channel, cx, cy, args.time);
@@ -559,6 +588,9 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
                         } else if ((v != 0.f) && (v != 1.f)) {
                             v = std::min(1.f, std::max(0.f, v + n));
                         }
+                    }
+                    if (isColor && (channel == 0) && (cell >= 0) && (cell < (int)cells.size())) {
+                        v = cells[cell];
                     }
                     if (isColor && (channel < 3) && nonFinite.contains(cx, cy)) {
                         v = nonFiniteValues[channel];
@@ -808,6 +840,19 @@ setParitySourceNonFinite(const NodePtr& source,
                          const RectI& rect)
 {
     setKnobValues(source, kParitySourceParamNonFinite, { (double)rect.x1, (double)rect.y1, (double)rect.x2, (double)rect.y2 });
+}
+
+void
+setParitySourceCells(const NodePtr& source,
+                     const std::vector<float>& values)
+{
+    std::ostringstream text;
+
+    text << std::hex;
+    for (float value : values) {
+        text << std::bit_cast<uint32_t>(value) << ' ';
+    }
+    setKnobValue(source, kParitySourceParamCells, text.str());
 }
 
 void

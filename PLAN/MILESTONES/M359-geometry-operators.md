@@ -97,7 +97,7 @@ Requires M54 - Native Geometry Data Model. All nodes are `NativeEffectBase` subc
 
 ## Phase 359.2: Python wrangle
 
-- [ ] M359.P2.T1 — Python wrangle over the detail
+- [x] M359.P2.T1 — Python wrangle over the detail
   - files: `Engine/Nodes/Geometry/GeoPython.h`/`.cpp`/`.reg.inc`, `Engine/Nodes/Geometry/GeoPyBuffer.h`/`.cpp`, `Tests/GeoPython_Test.cpp`
   - approach: Houdini's Python SOP model (node name: Scope assumption). A script knob (multi-line `KnobString`) runs in Natron's embedded Python under the GIL during `renderGeometry()`. A `geo` object exposes attributes per class (`geo.points["P"]`, `geo.prims["name"]`, `geo.vertices["uv"]`, `geo.detail[...]`) via the CPython buffer protocol (a small hand-written extension type, no Shiboken typesystem changes, no pxr Python). On first access it builds a dense, defragmented copy in number order (`copyDense`), shaped (N, tupleSize). At script end it scatters written arrays back (`scatterDense`), so only changed pages detach. Scripts never see pages or holes. Creating an attribute by assignment is allowed. numpy is optional (`np.frombuffer(view)` if present). A wrong-length write or a script error becomes a node error with the traceback.
   - verify: unit test — a script doubling every `P` z doubles Z and leaves untouched pages shared; a syntax error and a wrong-length write each report on the node without aborting the render thread.

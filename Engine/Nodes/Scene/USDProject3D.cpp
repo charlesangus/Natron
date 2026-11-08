@@ -682,7 +682,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         warnings.push_back(tr("Nothing is connected to the Image input: the projection is black."));
     } else {
         const std::string uri = plate.getUri(args.time);
-        const std::string failure = LiveTextureStore::instance().getFailure(uri);
+        const std::string failure = SceneNodeAuthoring::getLiveTextureFailure(plate, args.time);
         if (!failure.empty()) {
             warnings.push_back(tr("The live texture %1 shows magenta, the missing-texture colour: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
         }

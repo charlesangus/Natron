@@ -113,6 +113,14 @@ bool getLiveTextureSource(const EffectInstance& consumer,
                           LiveTextureSource* source);
 
 /**
+ * @brief Why source, from getLiveTextureSource(), shows kLiveTextureMissingColour at time, or empty
+ * when nothing says it does. A deleted source is known from the source alone, so its consumer warns
+ * however its texture was last rendered, even when no render has failed since the store was emptied.
+ **/
+std::string getLiveTextureFailure(const LiveTextureSource& source,
+                                  double time);
+
+/**
  * @brief The knob of a node with live textures that remembers which inputs lost their source to a
  * deletion: only a deletion leaves them magenta, while an input never connected or disconnected on
  * purpose keeps the material's own colour, and the empty input looks the same in all of them. It

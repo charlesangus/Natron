@@ -46,6 +46,7 @@
 #include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NonTrappingMath.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
@@ -992,6 +993,19 @@ getLiveTextureSource(const EffectInstance& consumer,
     }
 
     return true;
+}
+
+std::string
+getLiveTextureFailure(const LiveTextureSource& source,
+                      double time)
+{
+    const NodePtr node = source.node.lock();
+
+    if (!source.nodeName.empty() && (!node || !node->isActivated())) {
+        return "the node " + source.nodeName + " that feeds it no longer exists";
+    }
+
+    return LiveTextureStore::instance().getFailure(source.getUri(time));
 }
 
 void

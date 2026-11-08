@@ -108,6 +108,14 @@ LiveTextureResolver::~LiveTextureResolver()
 {
 }
 
+bool
+LiveTextureResolver::isMissingTexture(const char* bytes)
+{
+    const LiveTextureBufferConstPtr& missing = missingTexture();
+
+    return bytes && missing && (bytes == missing->getBytes().get());
+}
+
 std::string
 LiveTextureResolver::_CreateIdentifier(const std::string& assetPath,
                                        const PXR_NS::ArResolvedPath& /*anchorAssetPath*/) const

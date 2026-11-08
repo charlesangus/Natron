@@ -53,6 +53,12 @@ public:
     LiveTextureResolver();
     virtual ~LiveTextureResolver() OVERRIDE;
 
+    /**
+     * @brief Whether bytes, an opened asset's buffer, are the 1x1 image of kLiveTextureMissingColour
+     * served for a failed URI.
+     **/
+    static bool isMissingTexture(const char* bytes);
+
 protected:
     virtual std::string _CreateIdentifier(const std::string& assetPath,
                                           const PXR_NS::ArResolvedPath& anchorAssetPath) const OVERRIDE;

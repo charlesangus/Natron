@@ -90,6 +90,8 @@ Make a projection stick to animated geometry (user, 2026-11-05). M234 - Camera P
 
 ## Decisions
 
+- 2026-11-07 — Shimmer (user): leave the rounding noise at checker edges on moving projections unless it shows on real projections.
+
 - 2026-11-07 — Clash warning (user): held projections only. Unheld projections share one name and stay silent, even when values clash.
 
 - 2026-11-07 — Projections at one hold keep sharing a primvar, with a warning on a real clash (user, after Codex raised the overwrite): a prim whose values differ between two assigns at one hold, such as `Assign → Transform → Assign`, stays wrong on screen but warns. Per-projection primvars were rejected: about 12 MB per million points per projection and a Storm shader variant per name, on every multi-projection scene, for a rare graph shape.

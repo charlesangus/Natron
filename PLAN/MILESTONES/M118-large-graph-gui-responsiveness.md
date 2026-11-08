@@ -177,6 +177,8 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 
 ## Decisions
 
+- 2026-11-07 — GPU host bench session (user): one sitting covers M118 (against M117 as before), M300 - Unified Tiered Cache admission policies, M329 - Viewer Draw States draw-state budget, and the M328 - Deferred Viewer Stage heavy scene gate. The M130 - Native Edge-Preserving And Directional Filters hot-pixel check (GPU compute Off against Auto) rides along.
+
 - 2026-11-07 — Bulk delete prompt written (code on milestone/m118-large-graph-gui-responsiveness): one summary, capped at 12 link lines with an "and N more" line; none when nothing breaks.
 
 - 2026-11-07 — Bulk delete (user): deleting several nodes whose knobs other nodes link to shows one summary prompt listing what breaks, not one prompt per node.

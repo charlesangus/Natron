@@ -48,6 +48,7 @@
 #include <pxr/imaging/hd/sprim.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/unitTestNullRenderDelegate.h>
+#include <pxr/imaging/hd/visibilitySchema.h>
 #ifdef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #define emit
@@ -59,6 +60,16 @@ NATRON_NAMESPACE_USING
 namespace {
 using PathSet = std::set<std::string>;
 
+bool
+visible(const HdSceneIndexPrim& prim)
+{
+    const HdBoolDataSourceHandle visibility = HdVisibilitySchema::GetFromParent(prim.dataSource).GetVisibility();
+
+    return !visibility || visibility->GetTypedValue(0.f);
+}
+
+// hides and shows hold every prim that stopped or started being drawn; leftHydra and invisible say
+// which of the hides took the prim out of Hydra and which kept it there, invisible.
 class Recorder
     : public HdSceneIndexObserver {
 public:
@@ -66,7 +77,12 @@ public:
                     const AddedPrimEntries& entries) override
     {
         for (const AddedPrimEntry& entry : entries) {
-            (entry.primType.IsEmpty() ? hides : shows).insert(entry.primPath.GetString());
+            if (entry.primType.IsEmpty()) {
+                hides.insert(entry.primPath.GetString());
+                leftHydra.insert(entry.primPath.GetString());
+            } else {
+                shows.insert(entry.primPath.GetString());
+            }
         }
     }
 
@@ -78,11 +94,19 @@ public:
         }
     }
 
-    void PrimsDirtied(const HdSceneIndexBase& /*sender*/,
+    void PrimsDirtied(const HdSceneIndexBase& sender,
                       const DirtiedPrimEntries& entries) override
     {
+        static const HdDataSourceLocatorSet visibilityOnly { HdVisibilitySchema::GetDefaultLocator() };
         for (const DirtiedPrimEntry& entry : entries) {
-            dirtied.insert(entry.primPath.GetString());
+            if (entry.dirtyLocators != visibilityOnly) {
+                dirtied.insert(entry.primPath.GetString());
+            } else if (visible(sender.GetPrim(entry.primPath))) {
+                shows.insert(entry.primPath.GetString());
+            } else {
+                hides.insert(entry.primPath.GetString());
+                invisible.insert(entry.primPath.GetString());
+            }
         }
     }
 
@@ -96,12 +120,21 @@ public:
     {
         hides.clear();
         shows.clear();
+        leftHydra.clear();
+        invisible.clear();
         removed.clear();
         dirtied.clear();
     }
 
+    bool empty() const
+    {
+        return hides.empty() && shows.empty() && removed.empty() && dirtied.empty();
+    }
+
     PathSet hides;
     PathSet shows;
+    PathSet leftHydra;
+    PathSet invisible;
     PathSet removed;
     PathSet dirtied;
 };
@@ -281,7 +314,9 @@ protected:
 
     bool drawn(const char* path) const
     {
-        return !filter->GetPrim(SdfPath(path)).primType.IsEmpty();
+        const HdSceneIndexPrim prim = filter->GetPrim(SdfPath(path));
+
+        return !prim.primType.IsEmpty() && visible(prim);
     }
 
     PathSet drawnGeometry() const
@@ -321,9 +356,21 @@ TEST_F(SceneDrawFilterTest, PruneHidesOnlyRprimsAndInstancersBelow)
     EXPECT_EQ(HdPrimTypeTokens->material, filter->GetPrim(SdfPath("/World/Looks/mat")).primType);
     EXPECT_EQ(HdPrimTypeTokens->material, filter->GetPrim(SdfPath("/World/a/Looks/mat")).primType);
     EXPECT_EQ(HdPrimTypeTokens->camera, filter->GetPrim(SdfPath("/World/cam")).primType);
-    const HdSceneIndexPrim hidden = filter->GetPrim(SdfPath("/World/c"));
-    EXPECT_TRUE(hidden.primType.IsEmpty());
-    EXPECT_TRUE(hidden.dataSource == nullptr);
+    EXPECT_TRUE(visible(filter->GetPrim(SdfPath("/World/cam"))));
+}
+
+TEST_F(SceneDrawFilterTest, BoxingKeepsPrimsInHydraInvisibleWithTheirData)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), recorder.invisible);
+    EXPECT_TRUE(recorder.leftHydra.empty());
+    const HdSceneIndexPrim boxed = filter->GetPrim(SdfPath("/World/a/m1"));
+    EXPECT_EQ(HdPrimTypeTokens->mesh, boxed.primType);
+    EXPECT_FALSE(visible(boxed));
+    ASSERT_TRUE(boxed.dataSource != nullptr);
+    EXPECT_TRUE(boxed.dataSource->Get(TfToken("marker")) != nullptr);
+    EXPECT_EQ(2u, filter->getHeldInvisibleCount());
 }
 
 TEST_F(SceneDrawFilterTest, PruneKeepsTheHierarchy)
@@ -334,11 +381,69 @@ TEST_F(SceneDrawFilterTest, PruneKeepsTheHierarchy)
     EXPECT_EQ(scene->GetChildPrimPaths(SdfPath("/World/a")), filter->GetChildPrimPaths(SdfPath("/World/a")));
 }
 
-TEST_F(SceneDrawFilterTest, HiddenAndBoxedAreTheSameToHydra)
+TEST_F(SceneDrawFilterTest, HiddenTakesPrimsOutOfHydraWhereBBoxKeepsThem)
 {
     filter->applyDelta(states.setState("/World/a", eSceneDrawStateHidden));
 
-    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), recorder.hides);
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), recorder.leftHydra);
+    EXPECT_TRUE(recorder.invisible.empty());
+    const HdSceneIndexPrim hidden = filter->GetPrim(SdfPath("/World/a/m1"));
+    EXPECT_TRUE(hidden.primType.IsEmpty());
+    EXPECT_TRUE(hidden.dataSource == nullptr);
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, HidingABoxedRowTakesItsPrimsOutAndBoxingItAgainLeavesThemOut)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateHidden));
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), recorder.leftHydra);
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/a/m1")).primType.IsEmpty());
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull));
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), recorder.shows);
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+}
+
+TEST_F(SceneDrawFilterTest, ChangesAppliedTogetherThatCancelOutSendNothing)
+{
+    const SceneDrawDelta boxed = states.setState("/World/a", eSceneDrawStateBBox);
+    const SceneDrawDelta full = states.setState("/World/a", eSceneDrawStateFull);
+    const unsigned long long sentBefore = filter->getHiddenSentCount() + filter->getShownSentCount();
+
+    filter->applyDeltas({ &boxed, &full });
+
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_EQ(sentBefore, filter->getHiddenSentCount() + filter->getShownSentCount());
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_TRUE(filter->getRules().empty());
+}
+
+TEST_F(SceneDrawFilterTest, ChangesAppliedTogetherAnnounceEachPrimOnce)
+{
+    const SceneDrawDelta boxed = states.setState("/World/a", eSceneDrawStateBBox);
+    const SceneDrawDelta full = states.setState("/World/a", eSceneDrawStateFull);
+    const SceneDrawDelta deepHidden = states.setState("/World/a/deep", eSceneDrawStateHidden);
+
+    filter->applyDeltas({ &boxed, &full, &deepHidden });
+
+    EXPECT_EQ((PathSet { "/World/a/deep/m2" }), recorder.leftHydra);
+    EXPECT_TRUE(recorder.invisible.empty());
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_EQ(1u, filter->getHiddenSentCount());
+    EXPECT_EQ(0u, filter->getShownSentCount());
+    EXPECT_TRUE(drawn("/World/a/m1"));
 }
 
 TEST_F(SceneDrawFilterTest, RestoreAnnouncesWhatWasHiddenWithItsType)
@@ -470,15 +575,16 @@ TEST_F(SceneDrawFilterTest, InputNoticesBelowARuleAreRewritten)
     EXPECT_EQ((PathSet { "/World/a/loadedMat", "/World/b/loaded" }), recorder.shows);
 }
 
-TEST_F(SceneDrawFilterTest, DirtyingAHiddenPrimIsDropped)
+TEST_F(SceneDrawFilterTest, DirtyingABoxedPrimReachesHydraAndAHiddenOneIsDropped)
 {
     filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateHidden));
     recorder.reset();
     const HdDataSourceLocatorSet all { HdDataSourceLocator::EmptyLocator() };
 
     scene->DirtyPrims({ { SdfPath("/World/a/m1"), all }, { SdfPath("/World/a/Looks/mat"), all }, { SdfPath("/World/b/m3"), all } });
 
-    EXPECT_EQ((PathSet { "/World/a/Looks/mat", "/World/b/m3" }), recorder.dirtied);
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/Looks/mat" }), recorder.dirtied);
 }
 
 TEST_F(SceneDrawFilterTest, RemovalsPassThrough)
@@ -765,6 +871,46 @@ TEST_F(SceneDrawFilterTest, HiddenPrimsLeaveARealRenderIndex)
 
     EXPECT_TRUE(index->GetRprim(mesh));
     EXPECT_TRUE(index->GetSprim(HdPrimTypeTokens->rectLight, light));
+}
+
+// What makes boxing a row cheap in Storm: no rprim enters or leaves the render index, so the draw
+// items are not gathered again and the draw batches are kept.
+TEST_F(SceneDrawFilterTest, BoxingOnePrimChangesItsVisibilityAndNotTheRenderIndex)
+{
+    CountingRenderDelegate delegate;
+    std::unique_ptr<HdRenderIndex> index(HdRenderIndex::New(&delegate, HdDriverVector()));
+    ASSERT_TRUE(index != nullptr);
+    index->InsertSceneIndex(filter, SdfPath::AbsoluteRootPath());
+    const SdfPath mesh("/World/a/deep/m2");
+    ASSERT_TRUE(index->GetRprim(mesh));
+    HdChangeTracker& tracker = index->GetChangeTracker();
+    tracker.MarkRprimClean(mesh);
+    const unsigned indexVersion = tracker.GetRprimIndexVersion();
+    const unsigned visibilityChanges = tracker.GetVisibilityChangeCount();
+
+    filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateBBox));
+
+    EXPECT_EQ(indexVersion, tracker.GetRprimIndexVersion());
+    EXPECT_NE(visibilityChanges, tracker.GetVisibilityChangeCount());
+    EXPECT_NE(0u, tracker.GetRprimDirtyBits(mesh) & HdChangeTracker::DirtyVisibility);
+    ASSERT_TRUE(index->GetRprim(mesh));
+    HdSceneDelegate* sceneDelegate = index->GetSceneDelegateForRprim(mesh);
+    ASSERT_TRUE(sceneDelegate != nullptr);
+    EXPECT_FALSE(sceneDelegate->GetVisible(mesh));
+    EXPECT_EQ(0, delegate.rprimsDestroyed);
+
+    tracker.MarkRprimClean(mesh);
+    filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateFull));
+
+    EXPECT_EQ(indexVersion, tracker.GetRprimIndexVersion());
+    EXPECT_NE(0u, tracker.GetRprimDirtyBits(mesh) & HdChangeTracker::DirtyVisibility);
+    EXPECT_TRUE(sceneDelegate->GetVisible(mesh));
+
+    filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateHidden));
+
+    EXPECT_NE(indexVersion, tracker.GetRprimIndexVersion());
+    EXPECT_FALSE(index->GetRprim(mesh));
+    EXPECT_EQ(1, delegate.rprimsDestroyed);
 }
 
 TEST_F(SceneDrawFilterTest, RegisteringTwiceIsHarmless)

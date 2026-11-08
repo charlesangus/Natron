@@ -34,6 +34,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -56,20 +57,33 @@ NATRON_NAMESPACE_ENTER
  * @brief Hides geometry and lights from what one engine's render index sees, by subtree, without
  * touching the stage.
  *
- * A hidden rprim, instancer or light keeps its place in this scene index with an empty type and no
- * data source, the way HdsiPrimTypePruningSceneIndex (pxr/imaging/hdsi/primTypePruningSceneIndex.h)
- * preserves hierarchy. The render index holds nothing for an empty type, so the prim leaves Hydra
- * and its memory goes with it. Every other prim passes through, because drawn geometry keeps needing
- * a material or camera that lives under a boxed row. That rules out a RemovedPrimEntry, which takes
- * the whole subtree, and so a hide or a show announces each prim: HdsiPrefixPathPruningSceneIndex is
- * out too, since a prefix is its only unit of change and it cannot release part of a subtree.
+ * A hidden rprim, instancer or light is either out of Hydra or held invisible in it.
+ *
+ * Out of Hydra, it keeps its place in this scene index with an empty type and no data source, the
+ * way HdsiPrimTypePruningSceneIndex (pxr/imaging/hdsi/primTypePruningSceneIndex.h) preserves
+ * hierarchy. The render index holds nothing for an empty type, so its memory goes. Everything under a
+ * Hidden row is out of Hydra, and so is a prim Hydra has never held, such as one under a boxed row
+ * since the scene opened or since its payload loaded.
+ *
+ * Held invisible, it keeps its type and data with an HdVisibilitySchema of false on top. That is
+ * what a prim gets when a boxed row hides it while Hydra holds it, and showing it again only flips
+ * it back. Adding or removing an rprim makes Storm gather its draw items and rebuild its draw batches
+ * again, at a cost that grows with every draw item in the scene (hd/changeTracker.h
+ * GetRprimIndexVersion); a visibility change reaches HdStCommandBuffer::SyncDrawItemVisibility
+ * instead (hdSt/commandBuffer.h) and keeps the batches. A Hidden row then takes the prim out.
+ *
+ * Every other prim passes through, because drawn geometry keeps needing a material or camera that
+ * lives under a boxed row. That rules out a RemovedPrimEntry, which takes the whole subtree, and so a
+ * hide or a show announces each prim: HdsiPrefixPathPruningSceneIndex is out too, since a prefix is
+ * its only unit of change and it cannot release part of a subtree.
  *
  * Lights stop only under a Hidden row. A BBox row, or a row boxed by a Children parent, hides
  * geometry and leaves its lights, so drilling into a scene never darkens it.
  *
- * Every method that changes state sends notices that reach the render index directly, so callers
- * hold the viewer lock and the GL context, between renders. Hydra reads GetPrim() from its sync
- * threads, which is safe only because nothing changes during a render.
+ * The notices of one call go out together, once per prim, and a prim that ends where it started
+ * sends none. They reach the render index directly, so callers hold the viewer lock and the GL
+ * context, between renders. Hydra reads GetPrim() from its sync threads, which is safe only because
+ * nothing changes during a render.
  */
 class SceneDrawFilter final
     : public PXR_NS::HdSingleInputFilteringSceneIndexBase {
@@ -118,6 +132,9 @@ public:
      */
     void applyDelta(const SceneDrawDelta& delta, std::size_t revealBatch = 0);
 
+    /** @brief As applyDelta() on each in turn, with the notices of all of them sent at once. */
+    void applyDeltas(const std::vector<const SceneDrawDelta*>& deltas, std::size_t revealBatch = 0);
+
     /** @brief Announces up to maxPrims more prims of the reveal under way. */
     std::size_t stepReveal(std::size_t maxPrims);
     bool isRevealing() const { return _revealing; }
@@ -142,6 +159,9 @@ public:
     unsigned long long getInputDirtiedCount() const { return _inputDirtied; }
     unsigned long long getHiddenSentCount() const { return _hiddenSent; }
     unsigned long long getShownSentCount() const { return _shownSent; }
+    // The hides and shows that went as a visibility change, with the prim kept in Hydra.
+    unsigned long long getVisibilitySentCount() const { return _visibilitySent; }
+    std::size_t getHeldInvisibleCount() const { return _invisible.size(); }
     Clock::time_point getLastInputAddedTime() const { return _lastInputAdded; }
 
 protected:
@@ -150,12 +170,29 @@ protected:
     void _PrimsDirtied(const PXR_NS::HdSceneIndexBase& sender, const PXR_NS::HdSceneIndexObserver::DirtiedPrimEntries& entries) override;
 
 private:
+    enum OutputEnum {
+        eOutputShown,
+        eOutputInvisible,
+        eOutputAbsent
+    };
+
+    struct Change {
+        PXR_NS::SdfPath path;
+        PXR_NS::TfToken primType;
+        OutputEnum before;
+        OutputEnum after;
+    };
+
     explicit SceneDrawFilter(const PXR_NS::HdSceneIndexBaseRefPtr& input);
 
     bool isHidden(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType) const;
     void trackLights(const PXR_NS::HdSceneIndexObserver::AddedPrimEntries& entries);
     bool mayChangeBelow(const PXR_NS::SdfPath& path, bool toHidden) const;
     void finishRevealIfDone();
+    std::size_t revealUpTo(std::size_t maxPrims);
+    OutputEnum heldOutput(const PXR_NS::SdfPath& path) const;
+    void transition(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType, OutputEnum before, OutputEnum after);
+    void sendChanges();
 
     Rules _rules;
     // While a reveal runs, _revealFrom holds the rules it started from: a prim those hid and _rules
@@ -169,11 +206,19 @@ private:
     // Every light the input has announced, whether drawn or not.
     std::set<PXR_NS::SdfPath> _lights;
 
+    // The hidden prims Hydra still holds, invisible. Any other hidden prim is out of Hydra.
+    std::set<PXR_NS::SdfPath> _invisible;
+
+    // What a call has changed so far, one entry per prim, sent by sendChanges().
+    std::vector<Change> _changes;
+    std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> _changeAt;
+
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;
     unsigned long long _inputDirtied = 0;
     unsigned long long _hiddenSent = 0;
     unsigned long long _shownSent = 0;
+    unsigned long long _visibilitySent = 0;
     Clock::time_point _lastInputAdded;
 };
 

@@ -73,7 +73,8 @@ def main():
                 record = json.loads(line)
             except ValueError:
                 continue
-            budget_run = str(record.get("label", "")).startswith("budget-")
+            label = str(record.get("label", ""))
+            budget_run = label.startswith("budget-") or (label.startswith("gate-draw-") and not label.endswith("-pruned"))
             if record.get("scenario") == "draw_budget" and record.get("draw_changes") is not None:
                 found = True
                 print_record(record)

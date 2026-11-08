@@ -176,6 +176,8 @@ struct SceneDrawTiming::Record {
     Clock::time_point frameDoneAt;
     Clock::time_point presentedAt;
     bool traced = false;
+    unsigned long long traceId = 0;
+    bool tracePending = false;
     std::string traceSkipped;
     bool traceThreadFound = false;
     double traceCollectMs = 0.;
@@ -193,10 +195,19 @@ SceneDrawTiming::enabledByEnvironment()
     return value && (std::strcmp(value, "1") == 0);
 }
 
+struct SceneDrawTiming::TraceResult {
+    bool threadFound = false;
+    std::map<std::string, double> stagesMs;
+    std::map<std::string, double> stageCounts;
+};
+
 SceneDrawTiming::SceneDrawTiming() = default;
 
 SceneDrawTiming::~SceneDrawTiming()
 {
+    if (_reader.joinable()) {
+        _reader.join();
+    }
     if (_tracing) {
         TraceCollector::GetInstance().SetEnabled(false);
         HdPerfLog::GetInstance().Disable();
@@ -211,8 +222,18 @@ SceneDrawTiming::setTraceNext(bool trace)
 }
 
 void
+SceneDrawTiming::setTraceReadCallback(const std::function<void()>& callback)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    _traceRead = callback;
+}
+
+void
 SceneDrawTiming::startTrace()
 {
+    if (_reader.joinable()) {
+        _reader.join();
+    }
     _countersAtStart = readCounters();
     HdPerfLog::GetInstance().Enable();
     TraceCollector& collector = TraceCollector::GetInstance();
@@ -225,7 +246,7 @@ void
 SceneDrawTiming::applyStarting()
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    if (_open || _tracing || !_traceNext) {
+    if (_open || _tracing || _reading || !_traceNext) {
         return;
     }
     bool expected = false;
@@ -252,7 +273,7 @@ SceneDrawTiming::applied(unsigned long long firstPosted,
         _open->firstApplyStart = applyStart;
         _open->traced = _tracing;
         if (_traceNext && !_tracing) {
-            _open->traceSkipped = "another viewer holds the trace";
+            _open->traceSkipped = _reading ? "the last trace is still being read" : "another viewer holds the trace";
         }
     }
     Record& record = *_open;
@@ -283,19 +304,30 @@ SceneDrawTiming::frameStarting(Clock::time_point renderStart)
     return true;
 }
 
+// Render thread, with the mutex held.
 void
-SceneDrawTiming::finishTrace(Record* record)
+SceneDrawTiming::stopTrace(Record* record)
 {
-    const Clock::time_point start = Clock::now();
-    TraceCollector& collector = TraceCollector::GetInstance();
-    collector.SetEnabled(false);
-    HdPerfLog& log = HdPerfLog::GetInstance();
+    TraceCollector::GetInstance().SetEnabled(false);
     record->counterValues = readCounters();
-    log.Disable();
+    HdPerfLog::GetInstance().Disable();
     for (const auto& value : record->counterValues) {
         record->counterDeltas[value.first] = value.second - _countersAtStart[value.first];
     }
+    _tracing = false;
+    _reading = true;
+    record->traceId = ++_lastTraceId;
+    record->tracePending = true;
+}
 
+// Reading a trace takes seconds on a large scene, which no record may count as its own.
+void
+SceneDrawTiming::readTrace(unsigned long long traceId,
+                           const std::string& thread)
+{
+    const Clock::time_point start = Clock::now();
+    TraceCollector& collector = TraceCollector::GetInstance();
+    TraceResult result;
     // The source listens for the collection the collector announces, so it has to exist first.
     TraceReporterDataSourceCollector::ThisRefPtr source = TraceReporterDataSourceCollector::New();
     collector.CreateCollection();
@@ -304,13 +336,12 @@ SceneDrawTiming::finishTrace(Record* record)
     TraceEventNodeRefPtr root = reporter->GetEventRoot();
 
     // The render thread's own scopes, so that time spent in parallel workers is not added up.
-    const std::string thread = TraceThreadId().ToString();
     TraceEventNodeRefPtr walked = root;
     if (root) {
         for (const TraceEventNodeRefPtr& child : root->GetChildrenRef()) {
             if (child && (child->GetKey().GetString() == thread)) {
                 walked = child;
-                record->traceThreadFound = true;
+                result.threadFound = true;
                 break;
             }
         }
@@ -319,8 +350,8 @@ SceneDrawTiming::finishTrace(Record* record)
     for (const Stage& stage : kStages) {
         if (std::find(stageNames.begin(), stageNames.end(), stage.name) == stageNames.end()) {
             stageNames.push_back(stage.name);
-            record->stagesMs[stage.name] = 0.;
-            record->stageCounts[stage.name] = 0.;
+            result.stagesMs[stage.name] = 0.;
+            result.stageCounts[stage.name] = 0.;
         }
     }
     struct Pending {
@@ -341,8 +372,8 @@ SceneDrawTiming::finishTrace(Record* record)
             if (!inside[slot] && holdsScope(key, kStages[i].scope)) {
                 const TraceEvent::TimeStamp begin = current.node->GetBeginTime();
                 const TraceEvent::TimeStamp end = current.node->GetEndTime();
-                record->stagesMs[kStages[i].name] += (end > begin) ? (double(ArchTicksToNanoseconds(end - begin)) / 1e6) : 0.;
-                record->stageCounts[kStages[i].name] += 1.;
+                result.stagesMs[kStages[i].name] += (end > begin) ? (double(ArchTicksToNanoseconds(end - begin)) / 1e6) : 0.;
+                result.stageCounts[kStages[i].name] += 1.;
                 inside[slot] = true;
             }
         }
@@ -353,9 +384,28 @@ SceneDrawTiming::finishTrace(Record* record)
         }
     }
     collector.Clear();
-    _tracing = false;
+    const double collectMs = msBetween(start, Clock::now());
+    std::function<void()> traceRead;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (std::deque<std::unique_ptr<Record>>* records : { &_rendered, &_completed }) {
+            for (const std::unique_ptr<Record>& record : *records) {
+                if (record->traceId == traceId) {
+                    record->tracePending = false;
+                    record->traceThreadFound = result.threadFound;
+                    record->traceCollectMs = collectMs;
+                    record->stagesMs = std::move(result.stagesMs);
+                    record->stageCounts = std::move(result.stageCounts);
+                }
+            }
+        }
+        _reading = false;
+        traceRead = _traceRead;
+    }
     traceHeld = false;
-    record->traceCollectMs = msBetween(start, Clock::now());
+    if (traceRead) {
+        traceRead();
+    }
 }
 
 void
@@ -364,11 +414,8 @@ SceneDrawTiming::frameEnded(Clock::time_point renderEnd,
                             double gpuTailMs,
                             bool onPaint)
 {
-    std::unique_ptr<Record> record;
-    {
-        std::lock_guard<std::mutex> lock(_mutex);
-        record = std::move(_open);
-    }
+    std::lock_guard<std::mutex> lock(_mutex);
+    std::unique_ptr<Record> record = std::move(_open);
     if (!record) {
         return;
     }
@@ -377,9 +424,13 @@ SceneDrawTiming::frameEnded(Clock::time_point renderEnd,
     record->gpuTailMs = gpuTailMs;
     record->onPaint = onPaint;
     if (record->traced && _tracing) {
-        finishTrace(record.get());
+        stopTrace(record.get());
+        if (_reader.joinable()) {
+            _reader.join();
+        }
+        // The trace keys each thread's events by its id, so the render thread's is taken here.
+        _reader = std::thread(&SceneDrawTiming::readTrace, this, record->traceId, TraceThreadId().ToString());
     }
-    std::lock_guard<std::mutex> lock(_mutex);
     _rendered.push_back(std::move(record));
 }
 
@@ -441,6 +492,7 @@ SceneDrawTiming::records() const
             map[QString::fromUtf8("traceSkipped")] = QString::fromStdString(record->traceSkipped);
         }
         if (record->traced) {
+            map[QString::fromUtf8("tracePending")] = record->tracePending;
             map[QString::fromUtf8("traceThreadFound")] = record->traceThreadFound;
             map[QString::fromUtf8("traceCollectMs")] = record->traceCollectMs;
             map[QString::fromUtf8("stagesMs")] = toVariantMap(record->stagesMs);

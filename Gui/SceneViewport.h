@@ -255,6 +255,9 @@ public:
         unsigned long long inputDirtied = 0;
         unsigned long long hiddenSent = 0;
         unsigned long long shownSent = 0;
+        // Of hiddenSent and shownSent, those sent as a visibility change.
+        unsigned long long visibilitySent = 0;
+        unsigned long long heldInvisible = 0;
         long long lastInputAddedEpochMs = 0;
         unsigned long long stageEdits = 0;
         unsigned long long stageLoadEdits = 0;

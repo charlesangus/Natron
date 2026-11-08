@@ -21,12 +21,13 @@
 #             and what the viewer draw states have to pass:
 #               draw flat pruned   populate_pruned
 #               draw flat          populate_full, prune_restore, sibling_state, noedit, reveal_cancel,
-#                                  reveal, sibling_shot, orbit10k, boxes_shot
+#                                  reveal, sibling_shot, orbit10k, boxes_shot, draw_budget
 #               draw city pruned   populate_pruned, then load_all under the pruned root
 #               draw city          populate_full, load_all, then the flat run's scenarios
 #               draw lobby         as draw city, on Lobby's own rows
-#               draw island        populate_full, prune_restore, noedit, under island's RAM guard
-#             then the budget runs below.
+#               draw island        populate_full, prune_restore, noedit, draw_budget, under island's
+#                                  RAM guard
+#             The draw runs other than pruned ones set NATRON_DRAW_STATE_TIMING=1.
 #   budget    Only where a draw state change's time goes, with NATRON_DRAW_STATE_TIMING=1, one process
 #             per scene: draw_budget on the sibling and the widest row, after populate_full on flat,
 #             populate_full and load_all on city and Lobby, and populate_full on Island under its RAM
@@ -320,17 +321,19 @@ launch gate-city-block city "$CITY" open,load BENCH_LOAD_DESCENDANTS=1
 launch gate-city-larger city "$CITY" open,load BENCH_LOAD_PATHS="$LARGE_BLOCKS" BENCH_LOAD_DESCENDANTS=1
 launch gate-city-twirl city "$CITY" open,twirl
 
-DRAW_SCENARIOS="prune_restore,sibling_state,noedit,reveal_cancel,reveal,sibling_shot,orbit10k,boxes_shot"
+# The gate's draw runs carry draw_budget and the timing records the time to picture is judged on, so
+# the budget runs need not repeat them.
+DRAW_SCENARIOS="prune_restore,sibling_state,noedit,reveal_cancel,reveal,sibling_shot,orbit10k,boxes_shot,draw_budget"
 launch gate-draw-flat-pruned flat "$FIXTURE_DIR/heavy_flat.usdc" populate_pruned
-launch gate-draw-flat flat "$FIXTURE_DIR/heavy_flat.usdc" "populate_full,$DRAW_SCENARIOS"
+launch gate-draw-flat flat "$FIXTURE_DIR/heavy_flat.usdc" "populate_full,$DRAW_SCENARIOS" NATRON_DRAW_STATE_TIMING=1
 launch gate-draw-city-pruned city "$CITY" populate_pruned,load_all BENCH_LOAD_ALL=1
-launch gate-draw-city city "$CITY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1
+launch gate-draw-city city "$CITY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
 
 if [ -f "$LOBBY" ]; then
     launch gate-lobby-building scene "$LOBBY" open,load
     launch gate-lobby-block scene "$LOBBY" open,load BENCH_LOAD_DESCENDANTS=1
     launch gate-lobby-twirl scene "$LOBBY" open,twirl
-    launch gate-draw-lobby scene "$LOBBY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1
+    launch gate-draw-lobby scene "$LOBBY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
 else
     record_skip gate-lobby "not found by name under '$LOBBY_SRC', $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR or LOBBY_DIR)"
 fi
@@ -339,10 +342,9 @@ ISLAND_REASON="$(island_unfit)"
 if [ -z "$ISLAND_REASON" ]; then
     launch gate-island-building scene "$ISLAND" open,load
     launch gate-island-twirl scene "$ISLAND" open,twirl
-    launch gate-draw-island scene "$ISLAND" populate_full,prune_restore,noedit
+    launch gate-draw-island scene "$ISLAND" populate_full,prune_restore,noedit,draw_budget NATRON_DRAW_STATE_TIMING=1
 else
     record_skip gate-island "$ISLAND_REASON"
 fi
 
-budget_runs
 summarize

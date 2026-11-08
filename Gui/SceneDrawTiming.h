@@ -31,10 +31,12 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include <QtCore/QVariant>
 
@@ -49,7 +51,9 @@ NATRON_NAMESPACE_ENTER
  * GPU to finish them, the frame's arrival on the main thread and its presentation. Changes applied
  * before the same frame share its record. Steady-clock spans only, unless a trace is requested: then
  * the next record also runs TraceCollector and HdPerfLog from its apply to the end of its frame and
- * splits the time by Hydra and Storm scope. A traced record's own times include that overhead.
+ * splits the time by Hydra and Storm scope. A traced record's own times include the overhead of
+ * tracing, though not of reading the trace: that runs on a thread of its own once the frame is
+ * done, and the record says tracePending until it has.
  *
  * The main thread stamps a change and its presentation; everything else runs on the render thread,
  * and the mutex is never held across Hydra or GL work.
@@ -104,11 +108,17 @@ public:
     // Main thread: the completed records, oldest first, as maps for scripts.
     QVariantList records() const;
 
+    // Called on the thread reading a trace once its record holds the result.
+    void setTraceReadCallback(const std::function<void()>& callback);
+
 private:
     struct Record;
 
+    struct TraceResult;
+
     void startTrace();
-    void finishTrace(Record* record);
+    void stopTrace(Record* record);
+    void readTrace(unsigned long long traceId, const std::string& thread);
 
     mutable std::mutex _mutex;
     std::unique_ptr<Record> _open;
@@ -116,7 +126,12 @@ private:
     std::deque<std::unique_ptr<Record>> _completed;
     std::atomic<bool> _traceNext { false };
     bool _tracing = false;
+    // A stopped trace is still being read: no other may start until it is done.
+    bool _reading = false;
+    unsigned long long _lastTraceId = 0;
     std::map<std::string, double> _countersAtStart;
+    std::function<void()> _traceRead;
+    std::thread _reader;
 };
 
 NATRON_NAMESPACE_EXIT

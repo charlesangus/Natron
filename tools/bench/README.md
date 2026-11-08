@@ -431,8 +431,10 @@ frame and adds `stages_ms` and `stage_counts` (render-thread wall time and calls
 for `HdStCommandBuffer::_RebuildDrawBatches`, `executeDraw` for `HdStCommandBuffer::ExecuteDraw`, and
 the others in `Gui/SceneDrawTiming.cpp`'s table; nested scopes are counted in both), `counter_deltas` and
 `counter_values` (HdPerfLog's `rebuildBatches`, `drawItemsFetched` and the like), `trace_collect_ms`,
-and `trace_thread_found` (false: the scopes were summed over every thread). Tracing slows the change,
-so traced changes and their stall are never judged.
+and `trace_thread_found` (false: the scopes were summed over every thread). The viewer reads a trace on
+a thread of its own after the frame, so `trace_collect_ms` is in none of the other parts; the record
+says `tracePending` until then, and `draw_budget` waits for it before the next change. Tracing slows
+the change, so traced changes and their stall are never judged.
 `sibling_shot` skips while payloads are unloaded, as nothing is drawn for the control to change.
 
 Every record carries `gl_renderer`, `gl_vendor`, `peak_rss_mb`, `peak_rss_gb` and
@@ -456,13 +458,16 @@ DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh gate
 with descendants, and 30 blocks with descendants at once, the mouse moving throughout; a city twirl;
 the draw state scenarios on flat, on the fully loaded city and on Lobby, with `populate_pruned` runs of
 their own on flat and the city; then Lobby's building, block and twirl runs, and Island's building and twirl runs last, skipped under
-`ISLAND_MIN_RAM_GB`; then the budget runs. The results go to `build/bench-gpu/heavy-scene-gate.jsonl`.
+`ISLAND_MIN_RAM_GB`. Each scene's draw run ends with `draw_budget` and runs with
+`NATRON_DRAW_STATE_TIMING=1`, so the gate holds the budget records and its `prune_restore` and
+`sibling_state` times to picture are valid; the timing costs a `glFinish` on every frame that takes in
+a change, reveal steps included. The results go to `build/bench-gpu/heavy-scene-gate.jsonl`.
 
 ```
 DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh budget /path/to/Natron.AppImage
 ```
 
-`budget` runs only `draw_budget`, with `NATRON_DRAW_STATE_TIMING=1`: on flat after `populate_full`, on
+`budget` runs only `draw_budget`, with `NATRON_DRAW_STATE_TIMING=1`, for a budget table without the gate: on flat after `populate_full`, on
 the city and Lobby after `populate_full` and `load_all`, and on Island after `populate_full`, under its
 RAM guard. Both modes end with `heavy_scene_budget_table.py`'s table: each scene's stall and time to
 picture against 100 ms, one line per change with the parts above, and each traced change's stages and

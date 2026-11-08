@@ -1303,6 +1303,8 @@ struct SceneViewportRenderer::Implementation {
         drawStats.inputDirtied = filter->getInputDirtiedCount();
         drawStats.hiddenSent = filter->getHiddenSentCount();
         drawStats.shownSent = filter->getShownSentCount();
+        drawStats.visibilitySent = filter->getVisibilitySentCount();
+        drawStats.heldInvisible = filter->getHeldInvisibleCount();
         if (drawStats.inputAdded != 0) {
             // The harness compares this with its own wall clock, and the filter keeps a steady one.
             const auto sinceAdded = SceneDrawFilter::Clock::now() - filter->getLastInputAddedTime();
@@ -1335,11 +1337,18 @@ struct SceneViewportRenderer::Implementation {
             }
         }
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        // One call for the lot, so a prim that several queued edits touch reaches Hydra once, or not
+        // at all if it ends where it started.
+        std::vector<const SceneDrawDelta*> deltas;
+        deltas.reserve(queued.size());
         for (const QueuedDrawDelta& entry : queued) {
             SceneDrawFilter::applyToRules(entry.delta, &drawRules);
             drawRevealBatch = entry.revealBatch;
+            deltas.push_back(&entry.delta);
+        }
+        if (!queued.empty()) {
             if (filter) {
-                filter->applyDelta(entry.delta, entry.revealBatch);
+                filter->applyDeltas(deltas, drawRevealBatch);
             }
             drawRevealStepDue = true;
         }
@@ -4331,6 +4340,14 @@ SceneViewport::SceneViewport(QWidget* parent)
     // framebuffer's content between paints; not checked against Qt's source.
     setUpdateBehavior(QOpenGLWidget::PartialUpdate);
 
+    if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
+        // A trace is read after its frame has been shown, so its record changes once more.
+        const auto republish = [this]() {
+            setProperty("natronSceneDrawTimings", _imp->renderer.drawTiming()->records());
+        };
+        timing->setTraceReadCallback([this, republish]() { QMetaObject::invokeMethod(this, republish, Qt::QueuedConnection); });
+    }
+
     _imp->wheelMoveTimer = new QTimer(this);
     _imp->wheelMoveTimer->setSingleShot(true);
     _imp->wheelMoveTimer->setInterval(300);
@@ -4807,6 +4824,8 @@ SceneViewport::publishDrawStats()
     published[QString::fromUtf8("inputDirtied")] = QVariant::fromValue<qulonglong>(stats.inputDirtied);
     published[QString::fromUtf8("hiddenSent")] = QVariant::fromValue<qulonglong>(stats.hiddenSent);
     published[QString::fromUtf8("shownSent")] = QVariant::fromValue<qulonglong>(stats.shownSent);
+    published[QString::fromUtf8("visibilitySent")] = QVariant::fromValue<qulonglong>(stats.visibilitySent);
+    published[QString::fromUtf8("heldInvisible")] = QVariant::fromValue<qulonglong>(stats.heldInvisible);
     published[QString::fromUtf8("lastInputAddedEpochMs")] = QVariant::fromValue<qlonglong>(stats.lastInputAddedEpochMs);
     published[QString::fromUtf8("stageEdits")] = QVariant::fromValue<qulonglong>(stats.stageEdits);
     published[QString::fromUtf8("stageLoadEdits")] = QVariant::fromValue<qulonglong>(stats.stageLoadEdits);

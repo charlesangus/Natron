@@ -608,6 +608,7 @@ try:
             "traced": bool(record.get("traced")),
         }
         if record.get("traced"):
+            parts["trace_pending"] = bool(record.get("tracePending"))
             parts["trace_thread_found"] = bool(record.get("traceThreadFound"))
             parts["trace_collect_ms"] = ms(record.get("traceCollectMs"))
             parts["stages_ms"] = {k: ms(v) for k, v in dict(record.get("stagesMs") or {}).items()}
@@ -811,6 +812,20 @@ try:
         m.values["sibling_resynced_paths"] = after.get("resyncedPaths", 0) - before.get("resyncedPaths", 0)
         m.values["sibling_info_only_paths"] = after.get("infoOnlyPaths", 0) - before.get("infoOnlyPaths", 0)
 
+    def trace_read(v, timings):
+        """Waits for the viewer to read the trace of the change timings came from, which it does after
+        the picture and outside every measured span, and returns the timings with the trace in them."""
+        record = current["record"]
+        if not record or not record.get("traced"):
+            return timings
+        posted = int(record["lastPosted"])
+        ok = yield ("until", lambda: not (timing_record(v, posted) or {}).get("tracePending", True), TIMEOUT_S)
+        check(ok, "the trace of change %d was read" % posted)
+        record = timing_record(v, posted)
+        if record is None:
+            return timings
+        return dict(timings, **critical_path(record))
+
     def action_draw_budget(m):
         """Where a draw state change's time goes, on one sibling and on the widest row."""
         v = view()
@@ -840,6 +855,7 @@ try:
                     else:
                         timings = yield from clear_draw_state(row, row_tag=tag)
                     draw_call(v, "setDrawTimingTrace", Q_ARG(bool, False))
+                    timings = yield from trace_read(v, timings)
                     changes.append(dict(timings, row=tag, path=row, change=kind, repeat="traced"))
             m.values["traced_stall_ms"] = round(heartbeat.stop(), 1)
         heartbeat.start()

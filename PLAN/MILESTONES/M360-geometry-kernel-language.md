@@ -55,13 +55,13 @@ Requires M54 - Native Geometry Data Model. Nodes register through their own `.re
 
 ## Phase 360.3: Runner and geometry builtins
 
-- [ ] M360.P3.T1 — Batched, multithreaded kernel runner over pages
+- [x] M360.P3.T1 — Batched, multithreaded kernel runner over pages
   - files: `Engine/Kernel/KernelRunner.h`/`.cpp`, `Engine/Geo/GeoKernelBinding.h`/`.cpp`, `Tests/GeoKernelRunner_Test.cpp`
   - approach: written for the interpreter; rewrite it before it runs if M360.P1.T1's choice is the JIT. How VEX hides pages. Run the compiled IR over one element class (points, primitives, vertices or detail), through `GeoKernelBinding`, the geometry implementation of `KernelBinding`, in batches of a page. The runner gathers bound attributes into batch registers, runs the program across the batch, and scatters writes back, so only written pages detach. Batches run on the host thread pool, skip tombstones, and present `@ptnum` as the dense number. Writes to an attribute that doesn't exist create it, typed by the binding. Abort is checked between batches.
   - verify: unit tests — `@P.y += 1` over 10M points matches a scalar reference; pages not written stay shared; results are identical across thread counts; holes are skipped and `@ptnum` stays dense; an abort stops within one batch per thread.
   - size: L
 
-- [ ] M360.P3.T2 — Topology, group and multi-input builtins
+- [x] M360.P3.T2 — Topology, group and multi-input builtins
   - files: `Engine/Geo/GeoKernelBinding.cpp`, `Engine/Geo/GeoKernelTopology.h`/`.cpp`, `Engine/Geo/GeoPointTree.h`/`.cpp`, `Tests/GeoKernelTopology_Test.cpp`
   - approach: geometry builtins on top of M360.P3.T1. Second-input reads: `point(1, "P", i)`, `prim`, `vertex`, `detail`, `@opinput1_<name>`, `npoints(1)`. `nearpoint`/`nearpoints` use a point tree built once per input detail and cached on it. Group functions: `inpointgroup`, `setpointgroup`, `setprimgroup`, `inprimgroup`. Topology functions: `addpoint`, `addprim`, `addvertex`, `removepoint`, `removeprim`, `setprimvertex`. Their edits are queued per batch and applied after the run in element order, with new elements numbered as Houdini numbers them, so results don't depend on thread count. Removal tombstones (M54.P1.T5).
   - verify: unit tests — `addpoint` per point doubles the count identically at 1 and 16 threads; `removepoint` of odd points leaves the even ones in order; `nearpoint` on a second input matches brute force; group writes show up in the output groups.

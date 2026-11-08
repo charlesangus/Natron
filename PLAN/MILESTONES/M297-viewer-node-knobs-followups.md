@@ -30,3 +30,7 @@ Stub: to be broken down into tasks when claimed.
   - files: `Tests/ViewerKnobs_Test.cpp`, `Tests/gui/m164_viewer_knobs.py`
   - verify: remote gate with the m164 GUI script.
   - size: S
+
+## Decisions
+
+- The viewer toolbar's Display and View menus get the same "Project default (X)" first entry as the panel dropdowns, so both list the same choices; picking it makes the viewer follow the project's setting again, the same stored value the panel's entry sets (user, 2026-11-08).

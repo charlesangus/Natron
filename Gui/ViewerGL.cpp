@@ -25,7 +25,6 @@
 
 #include "ViewerGL.h"
 #include "ViewerGLPrivate.h"
-#include "ViewerPixelGrid.h"
 
 #include <algorithm> // min, max
 #include <cassert>
@@ -217,6 +216,8 @@ ViewerGL::resizeGL(int w,
         oldWidth = _imp->zoomCtx.screenWidth();
         oldHeight = _imp->zoomCtx.screenHeight();
         _imp->zoomCtx.setScreenSize(zoomWidth, zoomHeight, /*alignTop=*/ true, /*alignRight=*/ false);
+        // An estimate for events before the next paint; paintGL replaces it with the viewport Qt set.
+        _imp->zoomCtx.setDevicePixelGrid(static_cast<int>(w * devicePixelRatio()), static_cast<int>(h * devicePixelRatio()));
         zoomSinceLastFit = _imp->zoomOrPannedSinceLastFit;
     }
     glCheckError();
@@ -300,10 +301,13 @@ ViewerGL::paintGL()
     }
     assert(_imp->_textFont);
 
+    GLint viewport[4] = { 0, 0, 0, 0 };
+    glGetIntegerv(GL_VIEWPORT, viewport);
     double zoomLeft, zoomRight, zoomBottom, zoomTop;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
         assert(0 < _imp->zoomCtx.factor() && _imp->zoomCtx.factor() <= 1024);
+        _imp->zoomCtx.setDevicePixelGrid(viewport[2], viewport[3]);
         zoomLeft = _imp->zoomCtx.left();
         zoomRight = _imp->zoomCtx.right();
         zoomBottom = _imp->zoomCtx.bottom();
@@ -324,10 +328,6 @@ ViewerGL::paintGL()
         // However,
         // - Nuke uses a different matrix (RoD.width is the width of the RoD of the displayed image)
         // - Nuke transforms the interacts using the modelview if there are Transform nodes between the viewer and the interact.
-
-        GLint viewport[4] = { 0, 0, 0, 0 };
-        glGetIntegerv(GL_VIEWPORT, viewport);
-        snapProjectionToPixelGrid(&zoomLeft, &zoomRight, &zoomBottom, &zoomTop, viewport[2], viewport[3]);
 
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
@@ -1542,8 +1542,8 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
 {
     if (recenterViewer) {
         QMutexLocker k(&_imp->zoomCtxMutex);
-        double curCenterX = ( _imp->zoomCtx.left() + _imp->zoomCtx.right() ) / 2.;
-        double curCenterY = ( _imp->zoomCtx.bottom() + _imp->zoomCtx.top() ) / 2.;
+        double curCenterX = _imp->zoomCtx.unsnappedLeft() + (_imp->zoomCtx.right() - _imp->zoomCtx.left()) / 2.;
+        double curCenterY = _imp->zoomCtx.unsnappedBottom() + (_imp->zoomCtx.top() - _imp->zoomCtx.bottom()) / 2.;
         _imp->zoomCtx.translate(viewportCenter.x - curCenterX, viewportCenter.y - curCenterY);
     }
 
@@ -2605,20 +2605,22 @@ ViewerGL::penMotionInternal(int x,
     //    _imp->pickerState = ePickerStateInactive;
     //}
 
+    QPointF texelPos;
     double zoomScreenPixelWidth, zoomScreenPixelHeight; // screen pixel size in zoom coordinates
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
         zoomPos = _imp->zoomCtx.toZoomCoordinates(x, y);
+        texelPos = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(x, y);
         zoomScreenPixelWidth = _imp->zoomCtx.screenPixelWidth();
         zoomScreenPixelHeight = _imp->zoomCtx.screenPixelHeight();
     }
 
-    updateInfoWidgetColorPicker( zoomPos, QPoint(x, y) );
+    updateInfoWidgetColorPicker(texelPos, QPoint(x, y));
     if ( _imp->viewerTab->isViewersSynchroEnabled() ) {
         const std::list<ViewerTab*>& allViewers = gui->getViewersList();
         for (std::list<ViewerTab*>::const_iterator it = allViewers.begin(); it != allViewers.end(); ++it) {
             if ( (*it)->getViewer() != this ) {
-                (*it)->getViewer()->updateInfoWidgetColorPicker( zoomPos, QPoint(x, y) );
+                (*it)->getViewer()->updateInfoWidgetColorPicker(texelPos, QPoint(x, y));
             }
         }
     }
@@ -2978,6 +2980,14 @@ ViewerGL::toZoomCoordinates(const QPointF& position) const
 }
 
 QPointF
+ViewerGL::toZoomCoordinatesAtPixelCentre(const QPointF& position) const
+{
+    QMutexLocker l(&_imp->zoomCtxMutex);
+
+    return _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(position.x(), position.y());
+}
+
+QPointF
 ViewerGL::toWidgetCoordinates(const QPointF& position) const
 {
     QMutexLocker l(&_imp->zoomCtxMutex);
@@ -3043,21 +3053,21 @@ ViewerGL::updateColorPicker(int textureIndex,
         if ( !_imp->viewerTab->isViewersSynchroEnabled() ) {
             pos = mapFromGlobal( QCursor::pos() );
             QMutexLocker l(&_imp->zoomCtxMutex);
-            imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+            imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
         } else {
             ViewerTab* masterViewer = getViewerTab()->getGui()->getMasterSyncViewer();
             if (masterViewer) {
                 pos = masterViewer->getViewer()->mapFromGlobal( QCursor::pos() );
-                imgPosCanonical = masterViewer->getViewer()->toZoomCoordinates(pos);
+                imgPosCanonical = masterViewer->getViewer()->toZoomCoordinatesAtPixelCentre(pos);
             } else {
                 pos = mapFromGlobal( QCursor::pos() );
                 QMutexLocker l(&_imp->zoomCtxMutex);
-                imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+                imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
             }
         }
     } else {
         QMutexLocker l(&_imp->zoomCtxMutex);
-        imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+        imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
     }
 
     float r, g, b, a;
@@ -3836,8 +3846,8 @@ ViewerGL::getProjection(double *zoomLeft,
     // MT-SAFE
     QMutexLocker l(&_imp->zoomCtxMutex);
 
-    *zoomLeft = _imp->zoomCtx.left();
-    *zoomBottom = _imp->zoomCtx.bottom();
+    *zoomLeft = _imp->zoomCtx.unsnappedLeft();
+    *zoomBottom = _imp->zoomCtx.unsnappedBottom();
     *zoomFactor = _imp->zoomCtx.factor();
     *zoomAspectRatio = _imp->zoomCtx.aspectRatio();
 }
@@ -4195,7 +4205,7 @@ ViewerGL::pickColorInternal(double x,
     QPointF imgPos;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
-        imgPos = _imp->zoomCtx.toZoomCoordinates(x, y);
+        imgPos = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(x, y);
     }
 
     _imp->lastPickerPos = imgPos;

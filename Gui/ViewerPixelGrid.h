@@ -33,34 +33,43 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Moves a viewer's orthographic projection by less than half a device pixel so that
- * canonical coordinate 0 falls on a device pixel edge, keeping its size.
+ * @brief Moves a projection edge by at most half a device pixel so that coordinate 0 falls on a
+ * device pixel edge. @p extent is the size of the projection spanning @p devicePixels.
  *
  * Without it a viewer with an odd width or height centres the image on half pixels. At a whole
  * zoom every sample then lands exactly between two texels, and which texel, or a 50/50 blend of
  * both, comes down to float rounding in the texture coordinates and in the minify/magnify choice:
  * the image is crisp or half a pixel soft depending on how its texture happened to be allocated.
  **/
-inline void
-snapProjectionToPixelGrid(double* left,
-                          double* right,
-                          double* bottom,
-                          double* top,
-                          int viewportWidth,
-                          int viewportHeight)
+inline double
+snapEdgeToPixelGrid(double edge,
+                    double devicePixels,
+                    double extent)
 {
-    if ((viewportWidth > 0) && (*right != *left)) {
-        const double pixelsPerUnit = viewportWidth / (*right - *left);
-        const double snapped = std::floor(*left * pixelsPerUnit + 0.5) / pixelsPerUnit;
-        *right += snapped - *left;
-        *left = snapped;
+    if ((devicePixels <= 0) || (extent <= 0)) {
+        return edge;
     }
-    if ((viewportHeight > 0) && (*top != *bottom)) {
-        const double pixelsPerUnit = viewportHeight / (*top - *bottom);
-        const double snapped = std::floor(*bottom * pixelsPerUnit + 0.5) / pixelsPerUnit;
-        *top += snapped - *bottom;
-        *bottom = snapped;
+    const double pixelsPerUnit = devicePixels / extent;
+
+    return std::floor(edge * pixelsPerUnit + 0.5) / pixelsPerUnit;
+}
+
+/**
+ * @brief The centre of the device pixel containing @p widgetCoordinate, in widget coordinates.
+ * @p devicePixelsPerWidgetPixel is the device pixel ratio.
+ *
+ * A pointer position names a pixel, but read as a coordinate it is that pixel's edge, shared with
+ * its neighbour, so flooring it after unprojection picks either texel depending on rounding.
+ **/
+inline double
+devicePixelCentre(double widgetCoordinate,
+                  double devicePixelsPerWidgetPixel)
+{
+    if (devicePixelsPerWidgetPixel <= 0) {
+        devicePixelsPerWidgetPixel = 1.;
     }
+
+    return (std::floor(widgetCoordinate * devicePixelsPerWidgetPixel) + 0.5) / devicePixelsPerWidgetPixel;
 }
 
 NATRON_NAMESPACE_EXIT

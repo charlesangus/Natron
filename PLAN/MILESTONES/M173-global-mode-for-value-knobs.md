@@ -121,7 +121,7 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
   - approach: Drive real key and mouse events on the AppImage. Ctrl+E over Blur `size`, stroke, check the value moved and one Ctrl+Z undoes it. Ctrl+E on Transform `rotate`, then Q/W/E/R/T switching and 1/2 locks. Ctrl+Down from a Grade colour knob onto a numeric knob. Right-click exit. Capture screenshots of every kind.
   - verify: the script reports zero FAIL; screenshots are sent to the user.
   - size: M
-- [ ] M173.P4.T2 — UAT AppImage
+- [x] M173.P4.T2 — UAT AppImage
   - files: `build/appimages/`
   - approach: Package the fast preset with `package.sh` and hand it to the user with the rates listed for tuning; record their feedback as decisions.
   - verify: the AppImage launches with `--version`; the user signs off.
@@ -130,6 +130,8 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
 **Verification gate:** release build plus both ctest legs green (including `GlobalModeKind_Test`, `GlobalModeStroke_Test`, `ValueKnobEditSession_Test`, the new GuiTests and the unchanged colour global-mode tests); `build/m173-gui/` script zero FAIL under Xvfb; the user approves per-kind screenshots and signs off the UAT AppImage.
 
 ## Decisions
+
+- 2026-11-08 — UAT approved (user). Follow-up in this milestone: a preference for "crosshair only" — global mode never shows the reveal disc / widget, even on click; verified by tests, no further UAT (user).
 
 - 2026-11-07 — Stepping (user): Ctrl+Up/Down stays on the engaged knob's settings page; other pages are reached by hovering and Ctrl+E.
 

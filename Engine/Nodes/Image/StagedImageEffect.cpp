@@ -528,6 +528,22 @@ StagedImageEffect::dropMaskMixIfOff(StagePlan* plan) const
     plan->mix = 1.;
 }
 
+void
+StagedImageEffect::eraseUnreadMaskRoI(RoIMap* rois) const
+{
+    const int maskInput = getMaskInput();
+    EffectInstancePtr mask = (maskInput >= 0) ? getInput(maskInput) : EffectInstancePtr();
+    if (!mask) {
+        return;
+    }
+    for (int i = 0; i < getNInputs(); ++i) {
+        if ((i != maskInput) && (getInput(i) == mask)) {
+            return;
+        }
+    }
+    rois->erase(mask);
+}
+
 bool
 StagedImageEffect::stageMaskApplied(double time,
                                     ViewIdx view) const
@@ -639,6 +655,9 @@ StagedImageEffect::getRegionsOfInterest(double time,
                                         RoIMap* ret)
 {
     NativeEffectBase::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+    if (imagePipelineSpec().stages.has(Stage::MaskMix) && !appliesMaskMix(time, view)) {
+        eraseUnreadMaskRoI(ret);
+    }
 
     const int source = getSourceInput();
     EffectInstancePtr input = (source >= 0) ? getInput(source) : EffectInstancePtr();

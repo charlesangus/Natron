@@ -541,6 +541,12 @@ private:
     void dropMaskMixIfOff(StagePlan* plan) const;
 
     /**
+     * @brief Removes from rois the entry every connected input gets, for the mask input, unless
+     * its effect is also connected to another input, which may read it.
+     **/
+    void eraseUnreadMaskRoI(RoIMap* rois) const;
+
+    /**
      * @brief isMaskApplied() and getMixValue() as the MaskMix stage applies them at time and view:
      * no mask and a mix of 1 when appliesMaskMix() is false there.
      **/

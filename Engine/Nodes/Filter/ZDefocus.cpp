@@ -129,6 +129,10 @@ const std::size_t kMaxKernelImagePixels = (std::size_t)1 << 24;
 const uint16_t kClassFront = 0;
 const uint16_t kClassInFocus = 1;
 const uint16_t kClassBehind = 2;
+// The bits of +infinity: those of the positive finite floats are below, and of every negative value above.
+const uint32_t kDepthInfinityBits = 0x7f800000u;
+// A defensive bound on a ZDefocusDepthClasses' steps, past the slices of the most Layers.
+const std::size_t kMaxDepthClassSteps = 4 * kMaxLayers;
 
 // Millimetres per scene unit, in the order of the Scene Unit options.
 const double kSceneUnitMillimetres[] = { 1., 10., 1000., 25.4, 304.8 };
@@ -740,7 +744,8 @@ const std::size_t kGpuMetaCellRows = 15;
 const std::size_t kGpuMetaColumnMap = 16;
 const std::size_t kGpuMetaRowMap = 17;
 const std::size_t kGpuMetaSharp = 18;
-const std::size_t kGpuMetaCentres = 19;
+const std::size_t kGpuMetaClasses = 19;
+const std::size_t kGpuMetaCentres = 20;
 // The most bytes of metadata, kernel runs and cell tables, the GPU uploads for a render with lens
 // aberrations; more stays on the CPU, which holds a band of cells' kernels at a time.
 const uint64_t kGpuMaxLensBytes = (uint64_t)256 << 20;
@@ -1346,13 +1351,88 @@ ZDefocus::pixelCoc(const ZDefocusParams& params,
     return BokehKernel::isIdentityRadius(rx, ry) ? 0.f : (float)coc;
 }
 
+uint32_t
+ZDefocusDepthClasses::classOf(float depth) const
+{
+    const uint32_t bits = std::bit_cast<uint32_t>(depth);
+    if ((bits == 0u) || (bits >= kDepthInfinityBits)) {
+        return invalid;
+    }
+    const std::size_t i = (std::size_t)(std::upper_bound(starts.begin(), starts.end(), bits) - starts.begin());
+
+    return (i == 0) ? first : values[i - 1];
+}
+
+ZDefocusDepthClasses
+ZDefocus::depthClasses(const std::function<uint32_t(float)>& classify)
+{
+    ZDefocusDepthClasses table;
+    const uint32_t lastBits = kDepthInfinityBits - 1u;
+    const uint32_t lastValue = classify(std::bit_cast<float>(lastBits));
+    uint32_t lo = 1u;
+    uint32_t value = classify(std::bit_cast<float>(lo));
+
+    table.invalid = classify(0.f);
+    table.first = value;
+    while ((value != lastValue) && (table.starts.size() < kMaxDepthClassSteps)) {
+        uint32_t hi = lastBits;
+        while (hi - lo > 1u) {
+            const uint32_t mid = lo + (hi - lo) / 2u;
+            if (classify(std::bit_cast<float>(mid)) == value) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        value = (hi == lastBits) ? lastValue : classify(std::bit_cast<float>(hi));
+        table.starts.push_back(hi);
+        table.values.push_back(value);
+        lo = hi;
+    }
+
+    return table;
+}
+
+ZDefocusDepthClasses
+ZDefocus::blurRadiusClasses(const DepthOfField& dof)
+{
+    return depthClasses([&dof](float depth) -> uint32_t {
+        const double coc = dof.uncappedCoc(depth);
+        if (!std::isinf(coc)) {
+            return (uint32_t)ZDefocusCocClass::Finite;
+        }
+
+        return (uint32_t)((coc < 0.) ? ZDefocusCocClass::InfiniteFront : ZDefocusCocClass::InfiniteBehind);
+    });
+}
+
+ZDefocusDepthClasses
+ZDefocus::sliceClasses(const ZDefocusParams& params,
+                       const PassContext& context,
+                       const DepthOfField& dof,
+                       const std::vector<ZDefocusSlice>& slices)
+{
+    return depthClasses([&](float depth) -> uint32_t {
+        return (uint32_t)sliceOf(slices, pixelCoc(params, context, dof, depth));
+    });
+}
+
 ZDefocusBlurRadius
 ZDefocus::blurRadius(const DepthOfField& dof,
+                     const ZDefocusDepthClasses& classes,
                      float depth)
 {
     ZDefocusBlurRadius result;
-    const double uncapped = std::clamp(dof.uncappedCoc(depth), -(double)FLT_MAX, (double)FLT_MAX);
+    const ZDefocusCocClass cocClass = (ZDefocusCocClass)classes.classOf(depth);
 
+    if (cocClass != ZDefocusCocClass::Finite) {
+        result.signedCoc = (cocClass == ZDefocusCocClass::InfiniteFront) ? -FLT_MAX : FLT_MAX;
+        result.size = FLT_MAX;
+        result.cappedSize = (float)dof.maxSize();
+
+        return result;
+    }
+    const double uncapped = std::clamp(dof.uncappedCoc(depth), -(double)FLT_MAX, (double)FLT_MAX);
     result.signedCoc = (float)uncapped;
     result.size = std::abs(result.signedCoc);
     result.cappedSize = (float)std::abs(dof.coc(depth));
@@ -1381,6 +1461,17 @@ ZDefocus::sliceOf(const std::vector<ZDefocusSlice>& slices,
     return (t > 0.5) ? k + 1 : k;
 }
 
+int
+ZDefocus::focusSlice(const std::vector<ZDefocusSlice>& slices)
+{
+    int focus = 0;
+    while ((focus < (int)slices.size()) && (slices[focus].coc < 0.)) {
+        ++focus;
+    }
+
+    return focus;
+}
+
 void
 ZDefocus::sliceColour(const std::vector<ZDefocusSlice>& slices,
                       int k,
@@ -1396,11 +1487,7 @@ ZDefocus::sliceColour(const std::vector<ZDefocusSlice>& slices,
         { 0.5f, 0.f, 1.f },
         { 1.f, 0.f, 1.f },
     };
-    int focus = 0;
-    while ((focus < (int)slices.size()) && (slices[focus].coc < 0.)) {
-        ++focus;
-    }
-    const int d = k - focus;
+    const int d = k - focusSlice(slices);
     if (d == 0) {
         rgb[0] = rgb[1] = rgb[2] = 1.f;
 
@@ -1567,6 +1654,17 @@ ZDefocus::recordPassesGpu(const PassGpuIO& io,
     meta[kGpuMetaCellRows] = 1;
     for (const ZDefocusSlice& slice : sliceList) {
         meta.push_back(floatBits(slice.coc));
+    }
+    if ((params.output == ZDefocusOutput::BlurRadius) || (params.output == ZDefocusOutput::Slices)) {
+        // The CPU's own classes, which the kernel looks up rather than re-deriving them in float.
+        const ZDefocusDepthClasses classes = (params.output == ZDefocusOutput::Slices) ? sliceClasses(params, context, dof, sliceList) : blurRadiusClasses(dof);
+        meta[kGpuMetaClasses] = (uint32_t)meta.size();
+        meta.push_back(classes.invalid);
+        meta.push_back(classes.first);
+        meta.push_back((uint32_t)focusSlice(sliceList));
+        meta.push_back((uint32_t)classes.starts.size());
+        meta.insert(meta.end(), classes.starts.begin(), classes.starts.end());
+        meta.insert(meta.end(), classes.values.begin(), classes.values.end());
     }
     // Per slice, its runs' first uint and count, or with the lens aberrations its cell table.
     std::vector<uint32_t> runOffsets;
@@ -1971,7 +2069,7 @@ ZDefocus::getInputLayersRead(int inputNb,
                              ViewIdx view,
                              std::list<ImageLayerDesc>* layers)
 {
-    if ((inputNb != kZDefocusInputKernel) || !isImageKernel(time, view)) {
+    if ((inputNb != kZDefocusInputKernel) || !gathersAt(time, view) || !isImageKernel(time, view)) {
         return false;
     }
     ImageLayerDesc layer;
@@ -2212,12 +2310,19 @@ setUpLens(const ZDefocusParams& params,
 } // anon namespace
 
 bool
-ZDefocus::appliesMaskMix(double time,
-                         ViewIdx view) const
+ZDefocus::gathersAt(double time,
+                    ViewIdx view) const
 {
     const KnobReader reader(time, view);
 
     return outputOf((int)reader.value(_output)) == ZDefocusOutput::Result;
+}
+
+bool
+ZDefocus::appliesMaskMix(double time,
+                         ViewIdx view) const
+{
+    return gathersAt(time, view);
 }
 
 StatusEnum
@@ -2318,6 +2423,12 @@ ZDefocus::renderOp(const RenderActionArgs& args,
     }
 
     const DepthOfField dof(params.dof);
+    ZDefocusDepthClasses classes;
+    if (params.output == ZDefocusOutput::BlurRadius) {
+        classes = blurRadiusClasses(dof);
+    } else if (params.output == ZDefocusOutput::Slices) {
+        classes = sliceClasses(params, context, dof, sliceList);
+    }
     const RectI depthBounds = depth ? depth->getBounds() : RectI();
     const int depthComps = depth ? (int)depth->getComponentsCount() : 0;
     std::unique_ptr<Image::ReadAccess> access;
@@ -2344,7 +2455,7 @@ ZDefocus::renderOp(const RenderActionArgs& args,
                     continue;
                 }
                 if (params.output == ZDefocusOutput::BlurRadius) {
-                    const ZDefocusBlurRadius radius = blurRadius(dof, row[x]);
+                    const ZDefocusBlurRadius radius = blurRadius(dof, classes, row[x]);
                     float* const rgb = &s->rgb[3 * (base + x)];
                     rgb[0] = radius.signedCoc;
                     rgb[1] = radius.size;
@@ -2352,7 +2463,7 @@ ZDefocus::renderOp(const RenderActionArgs& args,
                     continue;
                 }
                 if (params.output == ZDefocusOutput::Slices) {
-                    sliceColour(sliceList, sliceOf(sliceList, pixelCoc(params, context, dof, row[x])), &s->rgb[3 * (base + x)]);
+                    sliceColour(sliceList, (int)classes.classOf(row[x]), &s->rgb[3 * (base + x)]);
                     continue;
                 }
                 const double coc = pixelCoc(params, context, dof, row[x]);
@@ -2405,7 +2516,18 @@ ZDefocus::getRegionsOfInterest(double time,
     StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
 
     EffectInstancePtr input = getInput(kZDefocusInputKernel);
-    if (!input || !isImageKernel(time, view)) {
+    if (!input) {
+        return;
+    }
+    if (!gathersAt(time, view)) {
+        // The other outputs never read the Kernel, nor the Mask, but the Source may be the same effect.
+        if (input != getInput(kZDefocusInputSource)) {
+            ret->erase(input);
+        }
+
+        return;
+    }
+    if (!isImageKernel(time, view)) {
         return;
     }
     // The whole Kernel image, whatever the window.

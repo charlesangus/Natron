@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
+#include <functional>
 #include <list>
 #include <memory>
 #include <optional>
@@ -126,6 +128,29 @@ struct ZDefocusBlurRadius {
 };
 
 /**
+ * @brief A per-pixel output's class of each raw depth, as a step function of the depth's bits, so
+ * that the CPU and the GPU classify a depth with integer comparisons alone and agree at every
+ * boundary however each rounds the depth model: invalid for a depth 0 or below, infinite or not a
+ * number; otherwise first below starts.front(), and values[i] from starts[i] up to the next start.
+ * starts holds positive finite floats' bit patterns, ascending.
+ **/
+struct ZDefocusDepthClasses {
+    uint32_t invalid = 0;
+    uint32_t first = 0;
+    std::vector<uint32_t> starts;
+    std::vector<uint32_t> values;
+
+    uint32_t classOf(float depth) const WARN_UNUSED_RETURN;
+};
+
+/// The Blur Radius output's classes of a depth: the circle of confusion before Max Size.
+enum class ZDefocusCocClass : uint32_t {
+    InfiniteFront,
+    Finite,
+    InfiniteBehind
+};
+
+/**
  * @brief One depth slice at a render's scale: its signed circle of confusion in canonical pixels,
  * as DepthOfField::coc() gives it, and its kernel's radii in pixels.
  **/
@@ -192,8 +217,28 @@ public:
                           const DepthOfField& dof,
                           float depth) WARN_UNUSED_RETURN;
 
-    /// The Blur Radius output of a depth, at full size whatever the render scale.
+    /**
+     * @brief The step function of classify over raw depths: classify's value at every positive
+     * finite float, found by bisecting the floats' bit patterns between its changes, which must be
+     * monotonic in the depth; invalid is its value at depth 0.
+     **/
+    static ZDefocusDepthClasses depthClasses(const std::function<uint32_t(float)>& classify) WARN_UNUSED_RETURN;
+
+    /// Each depth's ZDefocusCocClass under dof.
+    static ZDefocusDepthClasses blurRadiusClasses(const DepthOfField& dof) WARN_UNUSED_RETURN;
+
+    /// Each depth's sliceOf() its pixelCoc() among slices at context's scale.
+    static ZDefocusDepthClasses sliceClasses(const ZDefocusParams& params,
+                                             const PassContext& context,
+                                             const DepthOfField& dof,
+                                             const std::vector<ZDefocusSlice>& slices) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The Blur Radius output of a depth, at full size whatever the render scale, infinite
+     * where classes, from blurRadiusClasses(), puts the depth.
+     **/
     static ZDefocusBlurRadius blurRadius(const DepthOfField& dof,
+                                         const ZDefocusDepthClasses& classes,
                                          float depth) WARN_UNUSED_RETURN;
 
     /**
@@ -202,6 +247,9 @@ public:
      **/
     static int sliceOf(const std::vector<ZDefocusSlice>& slices,
                        float coc) WARN_UNUSED_RETURN;
+
+    /// The slice of slices, nearest first, in focus: the first whose circle of confusion is not negative.
+    static int focusSlice(const std::vector<ZDefocusSlice>& slices) WARN_UNUSED_RETURN;
 
     /**
      * @brief The Slices output's colour of slice k of slices: white for the slice in focus, else
@@ -296,6 +344,8 @@ private:
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     bool isImageKernel(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    /// Whether the Output is Result, the one output that gathers and so the one that reads the Kernel.
+    bool gathersAt(double time, ViewIdx view) const WARN_UNUSED_RETURN;
     bool resolveKernelChannel(double time,
                               ViewIdx view,
                               ImageLayerDesc* layer,

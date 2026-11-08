@@ -26,9 +26,13 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <bit>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <string>
@@ -55,6 +59,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -692,6 +697,146 @@ TEST_F(NativeZDefocusTest, OnlyTheResultOutputHonoursMaskAndMix)
     }
     EXPECT_GT(defocused, 0u);
     EXPECT_EQ(0u, wrong);
+}
+
+// A debug output's depth classes, which the GPU looks up rather than re-deriving them in float,
+// are the double model's at the first depth of every step and the depth just below it, and at
+// depths where that model and a float one split: below the focal length in Lens mode, and
+// between two slices.
+TEST_F(NativeZDefocusTest, DebugDepthClassesAreTheModelsAtEveryStep)
+{
+    const auto expectSteps = [](const ZDefocusDepthClasses& classes,
+                                const std::function<uint32_t(float)>& model,
+                                const std::string& name) {
+        const float invalid[] = { 0.f, -0.f, -1.f, std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() };
+        for (float depth : invalid) {
+            EXPECT_EQ(model(0.f), classes.classOf(depth)) << name << ", depth " << depth;
+        }
+        EXPECT_EQ(model(std::numeric_limits<float>::denorm_min()), classes.classOf(std::numeric_limits<float>::denorm_min())) << name;
+        EXPECT_EQ(model(FLT_MAX), classes.classOf(FLT_MAX)) << name;
+        ASSERT_EQ(classes.starts.size(), classes.values.size()) << name;
+        for (std::size_t i = 0; i < classes.starts.size(); ++i) {
+            const float at = std::bit_cast<float>(classes.starts[i]);
+            const float below = std::bit_cast<float>(classes.starts[i] - 1u);
+            EXPECT_EQ(model(at), classes.classOf(at)) << name << ", step " << i << " at " << at;
+            EXPECT_EQ(model(below), classes.classOf(below)) << name << ", step " << i << " below " << at;
+            EXPECT_EQ(classes.values[i], classes.classOf(at)) << name << ", step " << i;
+            EXPECT_NE(classes.classOf(below), classes.classOf(at)) << name << ", step " << i;
+        }
+    };
+
+    NodePtr source = makeConstant(kWindow, { 0.5, 0., 0., 1. });
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".R", 0.5, 9.);
+    ASSERT_TRUE(bool(zdefocus));
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamMaxSize, { 16. }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamLayers, { 16. }));
+    ZDefocus* effect = dynamic_cast<ZDefocus*>(zdefocus->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+
+    // The slices at full and half size, square and anamorphic pixels.
+    const ZDefocusParams params = effect->getParams(kTime, ViewIdx(0));
+    const DepthOfField dof(params.dof);
+    for (unsigned level : { 0u, 1u }) {
+        for (double par : { 1., 2. }) {
+            PassContext context;
+            context.scale = RenderScale::fromMipmapLevel(level);
+            context.pixelAspectRatio = par;
+            const std::vector<ZDefocusSlice> sliceList = ZDefocus::slices(params, context);
+            ASSERT_GT(sliceList.size(), 2u);
+            const auto model = [&](float depth) -> uint32_t {
+                return (uint32_t)ZDefocus::sliceOf(sliceList, ZDefocus::pixelCoc(params, context, dof, depth));
+            };
+            const ZDefocusDepthClasses classes = ZDefocus::sliceClasses(params, context, dof, sliceList);
+            const std::string name = "slices, level " + std::to_string(level) + ", aspect " + std::to_string(par);
+            EXPECT_FALSE(classes.starts.empty()) << name;
+            expectSteps(classes, model, name);
+            EXPECT_EQ(model(0.98888886f), classes.classOf(0.98888886f)) << name;
+        }
+    }
+
+    // Lens mode at 5 mm in metres: 0.005f is just below the focal length in double, so infinitely in
+    // front, and the next float is finite.
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamDepthUnits, std::string(kZDefocusParamDepthUnitsDistance)));
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamMode, std::string(kZDefocusParamModeLens)));
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamSceneUnit, std::string(kZDefocusParamSceneUnitMetres)));
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamFocalLength, { 5. }));
+    const DepthOfField lens(effect->getParams(kTime, ViewIdx(0)).dof);
+    const float minDepth = 0.005f;
+    const float aboveMin = std::nextafter(minDepth, 1.f);
+    ASSERT_TRUE(std::isinf(lens.uncappedCoc(minDepth)));
+    ASSERT_FALSE(std::isinf(lens.uncappedCoc(aboveMin)));
+    const auto lensModel = [&lens](float depth) -> uint32_t {
+        const double coc = lens.uncappedCoc(depth);
+        if (!std::isinf(coc)) {
+            return (uint32_t)ZDefocusCocClass::Finite;
+        }
+
+        return (uint32_t)((coc < 0.) ? ZDefocusCocClass::InfiniteFront : ZDefocusCocClass::InfiniteBehind);
+    };
+    const ZDefocusDepthClasses classes = ZDefocus::blurRadiusClasses(lens);
+    expectSteps(classes, lensModel, "blur radius, lens");
+    EXPECT_EQ((uint32_t)ZDefocusCocClass::InfiniteFront, classes.classOf(minDepth));
+    EXPECT_EQ((uint32_t)ZDefocusCocClass::Finite, classes.classOf(aboveMin));
+
+    // The render agrees: the left half at the focal length, the right half just beyond it.
+    NodePtr stripes = makeBoxOver(makeConstant(kWindow, { aboveMin, 0., 0., 1. }), RectI(0, 0, kWindow.width() / 2, kWindow.height()), { minDepth, 0., 0., 1. });
+    ASSERT_TRUE(bool(stripes));
+    connectNodes(stripes, zdefocus, kZDefocusInputSource, true);
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputBlurRadius)));
+    RenderedPlane actual;
+    ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &actual));
+    EXPECT_EQ(-FLT_MAX, pixelAt(actual, 4, 24, 0));
+    EXPECT_EQ(FLT_MAX, pixelAt(actual, 4, 24, 1));
+    EXPECT_EQ((float)lens.maxSize(), pixelAt(actual, 4, 24, 2));
+    EXPECT_FLOAT_EQ((float)lens.uncappedCoc(aboveMin), pixelAt(actual, kWindow.width() - 4, 24, 0));
+}
+
+// Only the Result output reads the Mask and the Kernel, so only it requests their regions; an
+// input that is also the Source stays requested.
+TEST_F(NativeZDefocusTest, DebugOutputsRequestNeitherMaskNorKernel)
+{
+    NodePtr source = makeConstant(kWindow, { 0.5, 0., 0., 1. });
+    NodePtr mask = makeConstant(RectI(0, 0, kWindow.width() / 2, kWindow.height()), { 1., 1., 1., 1. });
+    NodePtr kernel = makeConstant(RectI(0, 0, 9, 9), { 1., 1., 1., 1. });
+    ASSERT_TRUE(bool(source) && bool(mask) && bool(kernel));
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".R", 0.5, 9.);
+    ASSERT_TRUE(bool(zdefocus));
+    ASSERT_TRUE(setMaskMix(zdefocus, mask, true, 0.5));
+    connectNodes(kernel, zdefocus, kZDefocusInputKernel, true);
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamKernelType, std::string(kZDefocusParamKernelTypeImage)));
+
+    const RectD window(8., 8., 24., 24.);
+    const auto regions = [&](const NodePtr& node) {
+        RoIMap rois;
+        node->getEffectInstance()->getRegionsOfInterest_public(kTime, RenderScale::identity, RectD(kWindow.x1, kWindow.y1, kWindow.x2, kWindow.y2), window, ViewIdx(0), &rois);
+
+        return rois;
+    };
+
+    RoIMap rois = regions(zdefocus);
+    EXPECT_TRUE(rois.count(source->getEffectInstance()) == 1) << "result";
+    EXPECT_TRUE(rois.count(mask->getEffectInstance()) == 1) << "result";
+    ASSERT_TRUE(rois.count(kernel->getEffectInstance()) == 1) << "result";
+    EXPECT_LE(rois[kernel->getEffectInstance()].x1, 0.) << "result reads the whole Kernel";
+
+    for (const char* output : { kZDefocusParamOutputFocalPlane, kZDefocusParamOutputBlurRadius, kZDefocusParamOutputSlices }) {
+        ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(output)));
+        rois = regions(zdefocus);
+        EXPECT_TRUE(rois.count(source->getEffectInstance()) == 1) << output;
+        EXPECT_TRUE(rois.count(mask->getEffectInstance()) == 0) << output;
+        EXPECT_TRUE(rois.count(kernel->getEffectInstance()) == 0) << output;
+    }
+
+    // The Source as the Mask and the Kernel too.
+    NodePtr shared = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".R", 0.5, 9.);
+    ASSERT_TRUE(bool(shared));
+    ASSERT_TRUE(setMaskMix(shared, source, true, 0.5));
+    connectNodes(source, shared, kZDefocusInputKernel, true);
+    ASSERT_TRUE(setKnobValue(shared, kZDefocusParamKernelType, std::string(kZDefocusParamKernelTypeImage)));
+    ASSERT_TRUE(setKnobValue(shared, kZDefocusParamOutput, std::string(kZDefocusParamOutputBlurRadius)));
+    rois = regions(shared);
+    ASSERT_TRUE(rois.count(source->getEffectInstance()) == 1) << "shared";
+    EXPECT_TRUE(rois[source->getEffectInstance()].contains(window)) << "shared";
 }
 
 // In Lens mode stopping down from f/2 to f/16 shrinks the bokeh of a point in front of the focus.

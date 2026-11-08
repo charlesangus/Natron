@@ -62,7 +62,7 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
   - verify: under Xvfb each scenario prints one JSON line, frame rates as not valid; `gate` lists the new scenarios.
   - size: M
 
-- [ ] M329.P2.T3 — Find where the frame goes at 1M loaded.
+- [x] M329.P2.T3 — Find where the frame goes at 1M loaded.
   - files: `Gui/SceneViewport.cpp`, `tools/bench/heavy_scene_bench.py`, this milestone's `## Decisions`.
   - approach: time apply, Hydra sync, draw-item regather, batch rebuild and GL draw with `TraceCollector` and `HdPerfLog`, on city, flat and Lobby, for one sibling and a wide row. Test the inference that any add or remove costs O(all draw items) (`hd/changeTracker.h:479`, `hdSt/commandBuffer.h:68-80`); Storm's source isn't in the image.
   - verify: GPU host table in Decisions, accounting for the 1.1 s within 10%, with what is measured marked apart from inferred.
@@ -155,6 +155,8 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 **Verification gate:** release gate green; `heavy_scene_gpu_host.sh gate` passes on the GPU host (Xvfb can't prove timing); all M329 GUI scripts pass; the user has seen screenshots and accepted the UAT.
 
 ## Decisions
+
+- 2026-11-08 — P2.T3 numbers (GPU host, RX 7900 XTX, `heavy-scene-budget-m329.jsonl` traced `stages_ms`): main-thread stall passes on every draw_budget row (city 30 ms). Time to picture misses 100 ms: one sibling on loaded city/flat 1.35–1.7 s (apply ~2 ms; hdExecute 1.7–1.8 s, renderPassExecute ~1.3 s, commandBuffer ~0.7 s, batchRebuild ~0.6 s, prepareDraw ~0.6 s, sync ~0.2 s, regather 50–77 ms — regather and batch rebuild cost O(all draw items) for one prim); wide row (~1M prims) 7–15 s (apply 4–9 s, adapterAdded 0.7–2.5 s). Lobby/island stages a few ms. Island first render still blocks the main thread ~1.8 s (M328). Bench quirks: traced picture times include trace collection, and the gate jsonl repeats the budget rows.
 
 - 2026-11-07 — Gate green at c192c49da with opt-in draw timing (`NATRON_DRAW_STATE_TIMING`) and a `budget` mode judging time to picture and stall; bench AppImage refreshed. Island stays in, behind its RAM check.
 

@@ -33,6 +33,7 @@
 #include <utility>
 
 #include "Engine/AppInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
@@ -269,6 +270,9 @@ Node::setLabel(const std::string& label)
         }
         _imp->label = label;
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeRenamed(this);
+    }
     NodeCollectionPtr collection = getGroup();
     if (collection) {
         collection->notifyNodeNameChanged( shared_from_this() );
@@ -460,6 +464,9 @@ Node::setNameInternal(const std::string& name,
         if ( _imp->label.empty() ) {
             _imp->label = newName;
         }
+    }
+    if (!oldName.empty() && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeRenamed(this);
     }
     // A loop lists its LoopBegins by script name.
     LoopEnd::onGraphChanged();

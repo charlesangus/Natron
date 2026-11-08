@@ -40,6 +40,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/AppInstance.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -271,6 +272,9 @@ TrackerContext::createMarker()
     track->setScriptName(name);
     track->setLabel(name);
     track->resetCenter();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onTrackerChanged(getNode());
+    }
 
     Q_EMIT trackInserted(track, index);
 
@@ -338,6 +342,9 @@ TrackerContext::appendMarker(const TrackMarkerPtr& marker)
     }
 
     declareItemAsPythonField(marker);
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onTrackerChanged(getNode());
+    }
     Q_EMIT trackInserted(marker, index);
 }
 
@@ -357,6 +364,9 @@ TrackerContext::insertMarker(const TrackMarkerPtr& marker,
         }
     }
     declareItemAsPythonField(marker);
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onTrackerChanged(getNode());
+    }
     Q_EMIT trackInserted(marker, index);
 }
 
@@ -371,6 +381,9 @@ TrackerContext::removeMarker(const TrackMarkerPtr& marker)
                 break;
             }
         }
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onTrackerChanged(getNode());
     }
     Q_EMIT trackRemoved(marker);
 

@@ -1222,6 +1222,12 @@ Project::findNodeHoldingId(const std::string& id) const
     return node;
 }
 
+GraphEditRecorder*
+Project::getGraphEditRecorder() const
+{
+    return _imp->graphEditRecorder.get();
+}
+
 NodePtr
 Project::findNodeById(const std::string& id) const
 {
@@ -2567,6 +2573,9 @@ Project::tryAddProjectFormat(const Format & f, bool* existed)
     _imp->additionalFormats.push_back(f);
     ++_imp->formatsGeneration;
     Node::invalidateAllHashes("project formats changed");
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onProjectDataChanged(this);
+    }
     if ( !f.getName().empty() ) {
         _imp->formatKnob->appendChoice( ChoiceOption(f.getName(), formatStr.toStdString(), "") );
     } else {
@@ -2668,6 +2677,9 @@ Project::addLayer(const ImageLayerDesc& desc, LayerRegistryEntry::OriginEnum ori
         if (!isLoadingProject()) {
             notifyLayersChanged();
         }
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onProjectDataChanged(this);
+        }
     }
     return ret;
 }
@@ -2700,6 +2712,9 @@ Project::removeLayer(const std::string& id, std::string* error)
         Node::invalidateAllHashes("a layer was removed");
         if (!isLoadingProject()) {
             notifyLayersChanged();
+        }
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onProjectDataChanged(this);
         }
     }
     return ok;

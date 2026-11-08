@@ -77,6 +77,7 @@
 #include "Engine/FileSystemModel.h"
 #include "Engine/Format.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Hash64.h"
@@ -4963,6 +4964,9 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if ( !_imp->effect || !isActivated() ) {
         return;
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeDeactivating(this);
+    }
     _imp->effect->quitBackgroundWork(true);
     //first tell the gui to clear any persistent message linked to this node
     clearPersistentMessage(false);
@@ -5220,7 +5224,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     if ( !_imp->effect || isActivated() ) {
         return;
     }
-
+    GraphEditRecorder::CreationScope creationScope(this);
 
     ///No need to lock, guiInputs is only written to by the main-thread
     NodePtr thisShared = shared_from_this();
@@ -9648,21 +9652,31 @@ void
 Node::setLayoutFromGuiPosition(double x,
                                double y)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->posX = x;
-    _imp->posY = y;
+        _imp->posX = x;
+        _imp->posY = y;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void
 Node::setLayoutFromGuiSize(double w,
                            double h)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->sizeW = w;
-    _imp->sizeH = h;
-    _imp->hasSizeSet = true;
+        _imp->sizeW = w;
+        _imp->sizeH = h;
+        _imp->hasSizeSet = true;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void
@@ -9671,12 +9685,17 @@ Node::setLayoutFromGuiUserColor(bool hasColor,
                                 double g,
                                 double b)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->userColorSet = hasColor;
-    _imp->userColor[0] = hasColor ? r : 0.;
-    _imp->userColor[1] = hasColor ? g : 0.;
-    _imp->userColor[2] = hasColor ? b : 0.;
+        _imp->userColorSet = hasColor;
+        _imp->userColor[0] = hasColor ? r : 0.;
+        _imp->userColor[1] = hasColor ? g : 0.;
+        _imp->userColor[2] = hasColor ? b : 0.;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void

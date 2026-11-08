@@ -161,6 +161,12 @@ public:
     NodePtr findNodeHoldingId(const std::string& id) const;
 
     /**
+     * @brief Turns the edits made to this project into graph operations. Lives as long as the
+     * project.
+     **/
+    GraphEditRecorder* getGraphEditRecorder() const;
+
+    /**
      * @brief Index upkeep for findNodeById(): NodeCollection::addNode() and removeNode() add and
      * drop nodes, and onNodeIdChanged() re-keys a node whose ID was replaced while it was indexed.
      **/

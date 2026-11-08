@@ -56,6 +56,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Hash64.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
@@ -1026,6 +1027,9 @@ KnobHelper::setAsUserKnob(bool b)
 {
     _imp->userKnob = b;
     _imp->dynamicallyCreated = b;
+    if (b && _imp->holder && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(_imp->holder);
+    }
 }
 
 bool
@@ -7439,6 +7443,9 @@ KnobHelper::invalidateContentHash()
     KnobHolder* holder = _imp->holder;
     if (holder) {
         holder->bumpKnobsContentGeneration(this);
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onKnobContentChanged(this);
+        }
     }
 
     // A knob reading this one through an expression or a master link hashes it live, so its
@@ -8518,6 +8525,9 @@ KnobHolder::addKnob(const KnobIPtr& k)
     _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
+    if (k->isUserKnob() && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
+    }
 }
 
 void
@@ -8543,6 +8553,9 @@ KnobHolder::insertKnob(int index,
     _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
+    if (k->isUserKnob() && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
+    }
 }
 
 void
@@ -8556,6 +8569,9 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
             _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
             bumpKnobsContentGeneration(knob);
             KnobHelper::moveHashedMetadataSourcesGeneration();
+            if (knob->isUserKnob() && GraphEditRecorder::isActive()) {
+                GraphEditRecorder::onKnobListChanged(this);
+            }
 
             return;
         }
@@ -8677,6 +8693,9 @@ KnobHolder::deleteKnob(KnobI* knob,
     }
     bumpKnobsContentGeneration(knob);
     KnobHelper::moveHashedMetadataSourcesGeneration();
+    if (sharedKnob && sharedKnob->isUserKnob() && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
+    }
 
     if (alsoDeleteGui && _imp->settingsPanel) {
         _imp->settingsPanel->deleteKnobGui(sharedKnob);
@@ -8752,6 +8771,10 @@ KnobHolder::moveKnobOneStepUp(KnobI* knob)
         }
     }
 
+    if (moveOk && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
+    }
+
     return moveOk;
 } // KnobHolder::moveKnobOneStepUp
 
@@ -8822,6 +8845,10 @@ KnobHolder::moveKnobOneStepDown(KnobI* knob)
                 moveOk = false;
             }
         }
+    }
+
+    if (moveOk && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
     }
 
     return moveOk;

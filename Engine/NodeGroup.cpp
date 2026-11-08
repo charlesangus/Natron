@@ -42,6 +42,7 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
@@ -166,6 +167,9 @@ NodeCollection::addNode(const NodePtr& node)
     AppInstancePtr app = getApplication();
     if (ProjectPtr project = app ? app->getProject() : ProjectPtr()) {
         project->registerNodeId(node);
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeAdded(node);
     }
 }
 

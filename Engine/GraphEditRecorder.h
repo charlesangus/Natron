@@ -22,12 +22,58 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <vector>
+
 #include "Engine/EngineFwd.h"
+
+#include "Serialization/Ops/GraphOp.h"
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief Turns the edits made to a project into graph operations for its subscribers.
+ *
+ * Edits made during one turn of the event loop are delivered together at the end of the turn,
+ * or when flush() is called. Repeated edits of one knob, one node's layout, user knobs, roto
+ * shapes or tracks, or the project's formats and layers, make one operation carrying the state
+ * at delivery, in the place of the first edit. Creating or reactivating a node makes a
+ * CreateNode carrying its whole state, followed by a SetInput for each of its connections.
+ *
+ * Nothing is recorded while the project loads or closes, or under Suppress. The hooks are
+ * called by the edited classes only when isActive() is true.
+ **/
 class GraphEditRecorder {
 public:
+    typedef std::function<void(const std::vector<Serialization::GraphOp>&)> Subscriber;
+
+    explicit GraphEditRecorder(Project* project);
+    ~GraphEditRecorder();
+
+    GraphEditRecorder(const GraphEditRecorder&) = delete;
+    GraphEditRecorder& operator=(const GraphEditRecorder&) = delete;
+
+    /**
+     * @brief Returns the ID unsubscribe() takes. subscriber is called on the main thread.
+     **/
+    int subscribe(const Subscriber& subscriber);
+    void unsubscribe(int subscription);
+
+    /**
+     * @brief Delivers the operations recorded so far now. Main thread only.
+     **/
+    void flush();
+
+    /**
+     * @brief Whether any recorder has a subscriber.
+     **/
+    static bool isActive()
+    {
+        return _subscriptions.load(std::memory_order_relaxed) > 0;
+    }
+
     /**
      * @brief While one exists on a thread, the graph edits made on that thread are not recorded:
      * they replay operations that are already known.
@@ -42,6 +88,46 @@ public:
     };
 
     static bool isSuppressed();
+
+    /**
+     * @brief The nodes added or activated while the outermost scope of a thread exists are
+     * recorded when it ends, as CreateNode operations for those not inside another one, in
+     * place of the edits made to them meanwhile.
+     **/
+    class CreationScope {
+    public:
+        explicit CreationScope(const AppInstance* app);
+        explicit CreationScope(Node* activatedNode);
+        ~CreationScope();
+
+        CreationScope(const CreationScope&) = delete;
+        CreationScope& operator=(const CreationScope&) = delete;
+
+    private:
+        void begin(const AppInstance* app);
+
+        bool _owner = false;
+    };
+
+    static void onNodeAdded(const NodePtr& node);
+    static void onNodeDeactivating(Node* node);
+    static void onNodeRenamed(Node* node);
+    static void onNodeLayoutChanged(Node* node);
+    static void onInputChanged(Node* node, int inputNb);
+    static void onKnobContentChanged(KnobI* knob);
+    static void onKnobListChanged(KnobHolder* holder);
+    static void onRotoChanged(const NodePtr& node);
+    static void onTrackerChanged(const NodePtr& node);
+    static void onProjectDataChanged(Project* project);
+
+private:
+    struct Implementation;
+
+    static GraphEditRecorder* recorderFor(const AppInstance* app);
+
+    static std::atomic<int> _subscriptions;
+
+    std::unique_ptr<Implementation> _imp;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -51,6 +51,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/EngineFwd.h"
 #include "Engine/Format.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -86,6 +87,8 @@ public:
     // because it is swapped wholesale on Project::reset(), and LayerRegistry holds a
     // QMutex and is therefore non-copyable/non-assignable.
     std::unique_ptr<LayerRegistry> layers;
+
+    std::unique_ptr<GraphEditRecorder> graphEditRecorder;
 
     ///Project parameters (settings)
     KnobPathPtr envVars;

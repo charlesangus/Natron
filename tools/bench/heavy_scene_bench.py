@@ -189,7 +189,7 @@ try:
         return node
 
     usd = create("USDRead", 0, 0)
-    viewer = app.getNode("Viewer1") or create("fr.inria.built-in.Viewer", 0, 150)
+    viewer = app.getNode("Viewer1") or create("Viewer", 0, 150)
 
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]

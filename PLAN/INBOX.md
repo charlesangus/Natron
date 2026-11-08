@@ -2,10 +2,6 @@
 
 ### 2026-11-07T14:00:00-05:00 — change-request
 - refs: none
-- User asked for a new milestone under F9 - Delegate Projection: cancel and stop responsiveness for Cycles and MoonRay. Viewers: an old render can run on until the next sync; changing renderer or settings joins the session under the stage lock and can freeze the UI, and the engine may only be destroyed under that lock. Offline: cancel is only checked between renders, and with no abort callback a stop can take up to 600 s. Goal: every renderer cancels quickly, and the UI never waits on a stop.
-
-### 2026-11-07T14:00:00-05:00 — change-request
-- refs: none
 - User asked for a new standalone milestone: Cycles, MoonRay and Natron Utility viewers use the viewer's display transform (OCIO view, gain, gamma, lighting mode) as Storm does. Progressive frames are 8-bit sRGB from `srgbTable()` today, so frames must carry float, and it needs a design pass. This also answers the display transform question logged under M254 - Progressive Viewer Render on the board.
 
 ### 2026-11-07T14:20:00-05:00 — change-request
@@ -19,8 +15,3 @@
 ### 2026-11-07T15:30:00-05:00 — change-request
 - refs: none
 - User asked for a new milestone: apply USD camera exposure (`exposure`, and the related fStop, shutter and ISO terms as USD specifies) in every renderer delegate, USDRender and the viewer. Lobby's cameras author `exposure = -10`, nothing reads it, and Cycles frames average about 8,000. Answers the M251 - Cycles Rendering camera exposure question on the board.
-
-### 2026-11-07T16:30:00-05:00 — info
-- refs: none
-- Adds to the delegate cancel responsiveness milestone requested earlier today under F9 - Delegate Projection (user): it also covers Natron Utility. The progressive viewer worker holds the shared stage lock across `engine->Render()` (`HydraRenderImpl.cpp` ~3137), so a large first or dirty-geometry sync freezes the UI. The chosen fix is a worker-owned stage composed from the same node layers, used by every delegate. F7 - Natron Utility Core must not ship before it lands.
-

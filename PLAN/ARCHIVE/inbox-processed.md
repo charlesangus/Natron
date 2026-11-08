@@ -635,3 +635,10 @@ Before M53.P5.T4, merge the current tips of M233 - Live Node Textures, M52 - USD
   **Delegates on this scene:**
   - Cycles hits finding 1 of the Lobby entry: no material has a universal surface output, only `outputs:glslfx:surface`, `outputs:ri:surface` and `outputs:ri:displacement`. Once that crash is fixed, all 13,471 materials will fall back unless Cycles is pointed at a usable network, and Ptex would still need support. Treat proper island looks in Cycles or MoonRay as new scope for the user to decide.
   - MoonRay produced no frame in 270 s; not investigated.
+
+### 2026-11-07T14:00:00-05:00 — change-request
+- refs: none
+- User asked for a new milestone under F9 - Delegate Projection: cancel and stop responsiveness for Cycles and MoonRay. Viewers: an old render can run on until the next sync; changing renderer or settings joins the session under the stage lock and can freeze the UI, and the engine may only be destroyed under that lock. Offline: cancel is only checked between renders, and with no abort callback a stop can take up to 600 s. Goal: every renderer cancels quickly, and the UI never waits on a stop.
+### 2026-11-07T16:30:00-05:00 — info
+- refs: none
+- Adds to the delegate cancel responsiveness milestone requested earlier today under F9 - Delegate Projection (user): it also covers Natron Utility. The progressive viewer worker holds the shared stage lock across `engine->Render()` (`HydraRenderImpl.cpp` ~3137), so a large first or dirty-geometry sync freezes the UI. The chosen fix is a worker-owned stage composed from the same node layers, used by every delegate. F7 - Natron Utility Core must not ship before it lands.

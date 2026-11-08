@@ -433,6 +433,7 @@ future core work has solid ground to build on.
 | M355 | Shader Tweak Node | todo | M343, M353, M354 |  | E9 | F2 | | [M355-shader-tweak-node.md](PLAN/MILESTONES/M355-shader-tweak-node.md) |
 | M356 | Automatic Preview Shader | todo | M352 |  | E9 | F2 | | [M356-automatic-preview-shader.md](PLAN/MILESTONES/M356-automatic-preview-shader.md) |
 | M357 | Repo Cleanup | todo | - |  | E14 |  | | [M357-repo-cleanup.md](PLAN/MILESTONES/M357-repo-cleanup.md) |
+| M364 | Delegate Cancel Responsiveness | todo | M254 |  | E9 | F9 | | [M364-delegate-cancel-responsiveness.md](PLAN/MILESTONES/M364-delegate-cancel-responsiveness.md) |
 
 # Epics
 
@@ -468,7 +469,7 @@ future core work has solid ground to build on.
 | F4 | Heavy Scene Viewer | open |  |  | feature/f4-heavy-scene-viewer | Open and inspect production-sized USD scenes without blocking, with deferred loading, draw states and full prim inspection. |
 | F5 | Live Sessions V1 | open |  |  | feature/f5-live-sessions-v1 | Let several artists edit one graph live, with presence, per-user undo and viewer following. |
 | F6 | Unified Tiered Cache | open |  |  | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |
-| F7 | Natron Utility Core | open |  |  | feature/f7-natron-utility-core | A usable Natron Utility renderer on CPU and GPU, with materials, lights, sampling, reflection, subdivision and projection modes. |
+| F7 | Natron Utility Core | open |  |  | feature/f7-natron-utility-core | A usable Natron Utility renderer on CPU and GPU, with materials, lights, sampling, reflection, subdivision and projection modes. Ships only after F9 - Delegate Projection lands, for M364 - Delegate Cancel Responsiveness. |
 | F8 | Motion Vectors | open |  |  | feature/f8-motion-vectors | Generate dense motion vectors classically, on the GPU and with a neural model, and move Roto and SplineWarp curves along them. |
 | F9 | Delegate Projection | open |  |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |
 | F10 | Viewer Polish | open |  |  | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |

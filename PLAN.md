@@ -436,6 +436,7 @@ future core work has solid ground to build on.
 | M364 | Delegate Cancel Responsiveness | todo | M254 |  | E9 | F9 | | [M364-delegate-cancel-responsiveness.md](PLAN/MILESTONES/M364-delegate-cancel-responsiveness.md) |
 | M365 | Delegate Display Transform | todo | M254, M340 |  | E9 |  | | [M365-delegate-display-transform.md](PLAN/MILESTONES/M365-delegate-display-transform.md) |
 | M368 | Native Instance Material Binding | todo | M341, M342 |  | E9 | F9 | | [M368-native-instance-material-binding.md](PLAN/MILESTONES/M368-native-instance-material-binding.md) |
+| M366 | Mixed Pixel Aspect Tiles | todo | M300 |  | E14 |  | | [M366-mixed-pixel-aspect-tiles.md](PLAN/MILESTONES/M366-mixed-pixel-aspect-tiles.md) |
 
 # Epics
 

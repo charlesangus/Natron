@@ -36,10 +36,8 @@
 #include <QMetaType>
 #include <QDebug>
 
-#ifdef DEBUG
-#include "Global/FloatingPointExceptions.h"
-#endif
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Global/FloatingPointExceptions.h"
 
 #ifdef DEBUG
 //#define TRACE_GENERIC_SCHEDULER_THREAD

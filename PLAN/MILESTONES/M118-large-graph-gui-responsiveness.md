@@ -52,7 +52,9 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 ## Phase 118.1: Reconcile and navigator/paint
 
 - [x] M118.P1.T1 — Reconcile the target list with M117's baseline
-  - files: this milestone file (`## Decisions`), no code
+  - files: this milestone file (`## Decisions`
+- 2026-11-08 — Budgets (user): keep M118 open for more work. GPU-host bench (RX 7900 XTX), after build at 3000 nodes mixed/comp: pan 42–46, zoom 22–24, hover 16–17, drag 38–46 ms/event (budget 16; flat scaling, so a fixed per-paint cost); select_all and knob_change_fanout pass on mixed, miss on comp (~100–112 ms); delete_1000 204–233, undo 870–914 (stalls to 919), redo 184–210 ms (budget 100); click-select, rubber-band, set-expression, label edit pass; load/paste/delete slopes pass. The M117 'before' build can't create the bench's CheckerBoard, so the before side is re-run against M118's merge base with main (0553d5c3a, branch bench/m118-base).
+), no code
   - approach: read `tools/bench/gui/BASELINE.md` and the host baseline. For each superlinear or over-budget op, name the cause from the list above, or profile it (`tools/bench/profile_run.sh` style eu-stack on the Xvfb run) where none fits. Record the mapping. A hotspot the list doesn't cover gets a new trailing task in the matching phase.
   - verify: every over-budget op on the host baseline maps to at least one task.
   - size: M

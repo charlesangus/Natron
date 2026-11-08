@@ -35,6 +35,8 @@ What exists on main (cd383143f): four `Cache<T>` instances (`Engine/AppManager.c
 
 ## Decisions
 
+- 2026-11-08 — Admission default (user): ship `all`. GPU-host bench (CPU, 3 reps x 30 edits): chain identical under both policies (~1 ms/edit, no upstream re-runs); off-branch, priorityFloor re-ran the off-branch work on every edit (not admitted), +0.4–0.9 ms/edit; peak RAM and disk writes equal; the 1% RAM case never evicted, so priorityFloor's tight-budget case went untested.
+
 - 2026-11-07 — Tests and fixes at 3085d6170, gate running. Open: a Crop-style tile with source par 1 and output par 2 reads black outside `bounds ∩ RoI` unless a larger entry is cached, so its result can vary with cache contents; this predates M300, and fixing it changes the documented GPU contract.
 - 2026-11-07 — M300.P3.T1 at a6559a8e8, unbuilt. A failed publish keeps the RAM copy and backs off 30 s; only a failed demotion drops. Salted-hash entries still publish until M300.P3.T2.
 - 2026-11-07 — M300.P2.T5 at cffa62ab7, phase gate running. No pin between plan and use: a plan-wide hold would bypass the frame store's budget on modest machines, so an entry evicted in that window misses and pulls by recursion, costing time and never a wrong pixel. Worst plan is N x 144 short lock pairs; the edit-latency benchmark measures it in M300.P4.T1.

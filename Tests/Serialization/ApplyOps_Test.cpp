@@ -147,6 +147,7 @@ plainNode(int id,
     node->label = scriptName;
     node->pluginID = pluginID;
     node->pluginMajorVersion = 1;
+    node->pluginMinorVersion = 0;
 
     return node;
 }
@@ -467,7 +468,7 @@ TEST(ApplyOps, AFailedOperationDoesNotStopTheOthers)
     EXPECT_TRUE(results[3].applied());
 
     std::string expected = kBaseGraph;
-    expected.replace(expected.find("  Read1:\n"), std::string("  Read1:\n").size(), "  Plate:\n");
+    expected.replace(expected.find("  Read1:\n"), std::string("  Read1:\n").size(), "  Plate:\n    label: \"Read1\"\n");
     expected.replace(expected.find("{Source: \"Read1\"}"), std::string("{Source: \"Read1\"}").size(), "{Source: \"Plate\"}");
     expected.erase(expected.find("  Viewer1:\n"));
     EXPECT_SAME_PROJECT(projectFromYaml(expected), project);
@@ -478,7 +479,7 @@ TEST(ApplyOps, InputsNamingUnknownNodesAreKept)
     ProjectSerialization project = baseWith("{\"1\": \"Group1\"}", "{\"1\": \"Group1\", \"2\": \"Elsewhere\"}");
     expectAllApplied(apply(&project, { RenameOp { nid(3), "Comp", std::nullopt } }));
     std::string expected = kBaseGraph;
-    expected.replace(expected.find("  Group1:\n"), std::string("  Group1:\n").size(), "  Comp:\n");
+    expected.replace(expected.find("  Group1:\n"), std::string("  Group1:\n").size(), "  Comp:\n    label: \"Group1\"\n");
     expected.replace(expected.find("{\"1\": \"Group1\"}"), std::string("{\"1\": \"Group1\"}").size(), "{\"1\": \"Comp\", \"2\": \"Elsewhere\"}");
     EXPECT_SAME_PROJECT(projectFromYaml(expected), project);
 }

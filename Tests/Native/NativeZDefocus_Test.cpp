@@ -225,6 +225,26 @@ protected:
         return merge;
     }
 
+    // With `on`, connects `mask` as zdefocus's mask, read from its alpha, and turns the mask on
+    // with a mix of `mix`; otherwise turns the mask off with a mix of 1.
+    bool setMaskMix(const NodePtr& zdefocus,
+                    const NodePtr& mask,
+                    bool on,
+                    double mix)
+    {
+        if (on && !zdefocus->getInput(kZDefocusInputMask)) {
+            connectNodes(mask, zdefocus, kZDefocusInputMask, true);
+            KnobChannelSelectPtr channel = std::dynamic_pointer_cast<KnobChannelSelect>(zdefocus->getKnobByName(std::string(kMaskChannelKnobName) + "_Mask"));
+            EXPECT_TRUE(bool(channel));
+            if (!channel) {
+                return false;
+            }
+            channel->set(std::string(kNatronColorViewRGBA) + ".A");
+        }
+
+        return setKnobValues(zdefocus, std::string(kEnableMaskKnobName) + "_Mask", { on ? 1. : 0. }) && setKnobValues(zdefocus, kOfxMixParamName, { on ? mix : 1. });
+    }
+
     // A ZDefocus of `source` reading its depth from `depthChannel`, in Manual mode at `size`.
     NodePtr makeZDefocus(const NodePtr& source,
                          const std::string& depthChannel,
@@ -612,6 +632,66 @@ TEST_F(NativeZDefocusTest, SlicesOutputFollowsTheGatherLayers)
         }
     }
     EXPECT_EQ(1u, focusSlices);
+}
+
+// The debug outputs show their full value whatever the Mask and Mix; Result is blended with the
+// source by the mask times the mix.
+TEST_F(NativeZDefocusTest, OnlyTheResultOutputHonoursMaskAndMix)
+{
+    // Red is the inverse distance: 1 on the left, 0.5 in the middle, 0.25 on the right.
+    NodePtr background = makeConstant(kWindow, { 0.25, 0., 0., 1. });
+    NodePtr middle = makeBoxOver(background, RectI(21, 0, 42, 48), { 0.5, 0., 0., 1. });
+    NodePtr source = makeBoxOver(middle, RectI(0, 0, 21, 48), { 1., 0., 0., 1. });
+    ASSERT_TRUE(bool(source));
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".R", 0.5, 20.);
+    ASSERT_TRUE(bool(zdefocus));
+    const int maskWidth = kWindow.width() / 2;
+    NodePtr mask = makeConstant(RectI(0, 0, maskWidth, kWindow.height()), { 1., 1., 1., 1. });
+    ASSERT_TRUE(bool(mask));
+
+    for (const char* output : { kZDefocusParamOutputFocalPlane, kZDefocusParamOutputBlurRadius, kZDefocusParamOutputSlices }) {
+        ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(output)));
+        ASSERT_TRUE(setMaskMix(zdefocus, mask, false, 1.));
+        RenderedPlane plain;
+        ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &plain));
+        ASSERT_TRUE(setMaskMix(zdefocus, mask, true, 0.5));
+        RenderedPlane masked;
+        ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &masked));
+        EXPECT_EQ(0u, countDiffering(plain.pixels, masked.pixels)) << output;
+        // A mix of 0 would otherwise pass the source through.
+        ASSERT_TRUE(setMaskMix(zdefocus, mask, true, 0.));
+        ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &masked));
+        EXPECT_EQ(0u, countDiffering(plain.pixels, masked.pixels)) << output << ", mix 0";
+    }
+
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputResult)));
+    ASSERT_TRUE(setMaskMix(zdefocus, mask, false, 1.));
+    RenderedPlane plain;
+    ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &plain));
+    RenderedPlane original;
+    ASSERT_TRUE(renderRGBA(source, kWindow, &original));
+    ASSERT_TRUE(setMaskMix(zdefocus, mask, true, 0.5));
+    RenderedPlane masked;
+    ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &masked));
+    std::size_t defocused = 0;
+    std::size_t wrong = 0;
+    for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+        for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                const float src = pixelAt(original, x, y, c);
+                const float full = pixelAt(plain, x, y, c);
+                const float expected = (x < maskWidth) ? (full * 0.5f + 0.5f * src) : src;
+                if ((x < maskWidth) && (full != src)) {
+                    ++defocused;
+                }
+                if (std::abs(pixelAt(masked, x, y, c) - expected) > 1e-6f) {
+                    ++wrong;
+                }
+            }
+        }
+    }
+    EXPECT_GT(defocused, 0u);
+    EXPECT_EQ(0u, wrong);
 }
 
 // In Lens mode stopping down from f/2 to f/16 shrinks the bokeh of a point in front of the focus.

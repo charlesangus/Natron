@@ -55,8 +55,9 @@ Defocus's (see `Defocus.md`); the kernel library is `BokehKernel`.
 
 Blur Radius and Slices write the colour channels and set the alpha, or a lone channel, to 1; every
 layer the node processes gets the same values. Focal Plane, Blur Radius and Slices read no
-neighbours, so they render at any `maxSize` on the GPU. The Mask and Mix limit every output as the
-standard knobs do.
+neighbours, so they render at any `maxSize` on the GPU. The Mask and Mix apply to Result only:
+Focal Plane, Blur Radius and Slices ignore them and always show the full, unmixed value, even at a
+Mix of 0. The unprocessed channels still pass the source through.
 
 The `focalPoint` overlay (a point in the image) sets `focalPlane` to the depth under it when the
 user moves it; restoring a project or undoing a Focal Plane edit does not refocus.

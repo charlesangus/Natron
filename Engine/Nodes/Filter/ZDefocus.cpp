@@ -99,6 +99,21 @@ constexpr ImagePipelineSpec kZDefocusPipeline = {
     .op = OpKind::Passes,
 };
 
+ZDefocusOutput
+outputOf(int option)
+{
+    switch (option) {
+    case 1:
+        return ZDefocusOutput::FocalPlane;
+    case 2:
+        return ZDefocusOutput::BlurRadius;
+    case 3:
+        return ZDefocusOutput::Slices;
+    default:
+        return ZDefocusOutput::Result;
+    }
+}
+
 const double kMaxSize = 500.;
 // A defensive bound on either radius, in pixels, past what the knobs reach at any aspect ratio.
 const double kMaxRadius = 2048.;
@@ -1220,20 +1235,7 @@ ZDefocus::getParams(double time,
     if (!std::isfinite(params.highlight.threshold) || !std::isfinite(params.highlight.gain)) {
         params.highlight = BokehHighlight();
     }
-    switch ((int)reader.value(_output)) {
-    case 1:
-        params.output = ZDefocusOutput::FocalPlane;
-        break;
-    case 2:
-        params.output = ZDefocusOutput::BlurRadius;
-        break;
-    case 3:
-        params.output = ZDefocusOutput::Slices;
-        break;
-    default:
-        params.output = ZDefocusOutput::Result;
-        break;
-    }
+    params.output = outputOf((int)reader.value(_output));
 
     return params;
 } // ZDefocus::getParams
@@ -2208,6 +2210,15 @@ setUpLens(const ZDefocusParams& params,
 } // setUpLens
 
 } // anon namespace
+
+bool
+ZDefocus::appliesMaskMix(double time,
+                         ViewIdx view) const
+{
+    const KnobReader reader(time, view);
+
+    return outputOf((int)reader.value(_output)) == ZDefocusOutput::Result;
+}
 
 StatusEnum
 ZDefocus::renderOp(const RenderActionArgs& args,

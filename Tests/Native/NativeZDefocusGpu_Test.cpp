@@ -170,9 +170,11 @@ protected:
     }
 
     // Renders zdefocus on the GPU and on the CPU over the window and expects the two within the
-    // tolerance with ZDefocus run on the device.
+    // tolerance with ZDefocus run on the device. gpu, when given, receives the GPU render, and
+    // stays empty when no GPU is available.
     void expectParity(const NodePtr& zdefocus,
-                      const std::string& name)
+                      const std::string& name,
+                      std::vector<float>* gpu = NULL)
     {
         const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ zdefocus }), zdefocus, kWindow, kTime);
         if (result.skipped) {
@@ -186,6 +188,29 @@ protected:
         const ImageDiff diff = compareImages(result.cpu, result.gpu, kZDefocusTolerance);
         EXPECT_GT(diff.compared, 0u) << name;
         EXPECT_EQ(0u, diff.mismatches) << name << ": first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+        if (gpu) {
+            *gpu = result.gpu;
+        }
+    }
+
+    // With `on`, connects `mask` as zdefocus's mask, read from its alpha, and turns the mask on
+    // with a mix of `mix`; otherwise turns the mask off with a mix of 1.
+    bool setMaskMix(const NodePtr& zdefocus,
+                    const NodePtr& mask,
+                    bool on,
+                    double mix)
+    {
+        if (on && !zdefocus->getInput(kZDefocusInputMask)) {
+            connectNodes(mask, zdefocus, kZDefocusInputMask, true);
+            KnobChannelSelectPtr channel = std::dynamic_pointer_cast<KnobChannelSelect>(zdefocus->getKnobByName(std::string(kMaskChannelKnobName) + "_Mask"));
+            EXPECT_TRUE(bool(channel));
+            if (!channel) {
+                return false;
+            }
+            channel->set(std::string(kNatronColorViewRGBA) + ".A");
+        }
+
+        return setKnobValues(zdefocus, std::string(kEnableMaskKnobName) + "_Mask", { on ? 1. : 0. }) && setKnobValues(zdefocus, kOfxMixParamName, { on ? mix : 1. });
     }
 };
 
@@ -340,6 +365,38 @@ TEST_F(NativeZDefocusGpuTest, SlicesOutputMatchesTheCpu)
     // The slices follow the most scaled channel's circle of confusion.
     ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamChromaticAberration, { 0.5 }));
     expectParity(zdefocus, "slices, chromatic aberration");
+}
+
+// On the GPU as on the CPU, a debug output with a mask and a mix of 0.5 is the output without
+// them, and Result with them differs from Result without.
+TEST_F(NativeZDefocusGpuTest, OnlyTheResultOutputHonoursMaskAndMix)
+{
+    NodePtr source = makeParitySource();
+    NodePtr zdefocus = makeZDefocus(source);
+    NodePtr mask = makeConstant(RectI(0, 0, kWindow.width() / 2, kWindow.height()), { 1., 1., 1., 1. });
+    ASSERT_TRUE(bool(source) && bool(zdefocus) && bool(mask));
+
+    for (const char* output : { kZDefocusParamOutputFocalPlane, kZDefocusParamOutputBlurRadius, kZDefocusParamOutputSlices, kZDefocusParamOutputResult }) {
+        const std::string name(output);
+        const bool debug = (name != kZDefocusParamOutputResult);
+        ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, name));
+        ASSERT_TRUE(setMaskMix(zdefocus, mask, false, 1.));
+        std::vector<float> plain;
+        expectParity(zdefocus, name, &plain);
+        ASSERT_TRUE(setMaskMix(zdefocus, mask, true, 0.5));
+        std::vector<float> masked;
+        expectParity(zdefocus, name + ", mask and mix 0.5", &masked);
+        if (plain.empty() || masked.empty()) {
+            continue;
+        }
+        ASSERT_EQ(plain.size(), masked.size()) << name;
+        const ImageDiff diff = compareImages(plain, masked, kZDefocusTolerance);
+        if (debug) {
+            EXPECT_EQ(0u, diff.mismatches) << name << ": first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+        } else {
+            EXPECT_GT(diff.mismatches, 0u) << name;
+        }
+    }
 }
 
 // Depth on a channel of the processed layer itself.

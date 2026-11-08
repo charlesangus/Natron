@@ -351,6 +351,18 @@ protected:
                                 const StagePlan& plan)
         = 0;
 
+    /**
+     * @brief Whether the MaskMix stage blends the op's result with the source at time and view.
+     * When false, every plan the CPU and GPU executors run, and the stage's identity and region
+     * logic, see no mask and a mix of 1, whatever the Mask input and the Mix knob; the processed
+     * channels and the unprocessed pass-through are unchanged. The default is true.
+     **/
+    virtual bool appliesMaskMix(double /*time*/,
+                                ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual GpuOpRef gpuOp(double /*time*/,
                            ViewIdx /*view*/,
                            const RenderScale& /*scale*/) const WARN_UNUSED_RETURN
@@ -522,6 +534,19 @@ protected:
     }
 
 private:
+    /**
+     * @brief Clears plan's mask and sets its mix to 1 when appliesMaskMix() is false at the plan's
+     * time and view.
+     **/
+    void dropMaskMixIfOff(StagePlan* plan) const;
+
+    /**
+     * @brief isMaskApplied() and getMixValue() as the MaskMix stage applies them at time and view:
+     * no mask and a mix of 1 when appliesMaskMix() is false there.
+     **/
+    bool stageMaskApplied(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    double stageMixValue(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
     /**
      * @brief The persistent error for a source at the wrong raw stage at time and view, or
      * nullopt when the pipeline needs none or the source is at the one it needs.

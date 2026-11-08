@@ -155,10 +155,14 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     StagedImageEffect* self = const_cast<StagedImageEffect*>(this);
 
     if (imagePipelineSpec().op != OpKind::Composite) {
-        return resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
+        StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), query);
+        dropMaskMixIfOff(&plan);
+
+        return plan;
     }
     const CompositeInputs inputs = opInputsForPlane(query.time, query.view, query.plane);
     StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), query);
+    dropMaskMixIfOff(&plan);
     resolveStageSources(nodeSpec(), inputs, &plan);
     plan.plane = query.plane;
     resolveStageSourcesLayers(*self, &plan);
@@ -171,7 +175,10 @@ StagedImageEffect::resolveRenderPlan(double time,
                                      ViewIdx view,
                                      const std::bitset<4>& processChannels)
 {
-    return resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), time, view, processChannels);
+    StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), time, view, processChannels);
+    dropMaskMixIfOff(&plan);
+
+    return plan;
 }
 
 bool
@@ -378,7 +385,8 @@ GpuStageSummary
 StagedImageEffect::getGpuStageSummary(double time,
                                       ViewIdx view)
 {
-    const StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getBlendInput(time, view), time, view, std::bitset<4>());
+    StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, getBlendInput(time, view), time, view, std::bitset<4>());
+    dropMaskMixIfOff(&plan);
     GpuStageSummary summary;
 
     summary.applyMask = plan.applyMask;
@@ -506,6 +514,34 @@ StagedImageEffect::isMaskApplied() const
     return isStageMaskApplied(*this);
 }
 
+void
+StagedImageEffect::dropMaskMixIfOff(StagePlan* plan) const
+{
+    if (!plan->stages.has(Stage::MaskMix) || appliesMaskMix(plan->time, plan->view)) {
+        return;
+    }
+    plan->applyMask = false;
+    plan->maskInput = -1;
+    plan->maskChannel = -1;
+    plan->maskLayer = ImageLayerDesc();
+    plan->maskInvert = false;
+    plan->mix = 1.;
+}
+
+bool
+StagedImageEffect::stageMaskApplied(double time,
+                                    ViewIdx view) const
+{
+    return appliesMaskMix(time, view) && isMaskApplied();
+}
+
+double
+StagedImageEffect::stageMixValue(double time,
+                                 ViewIdx view) const
+{
+    return appliesMaskMix(time, view) ? getMixValue(time, view) : 1.;
+}
+
 PassContext
 StagedImageEffect::getPassContext(double time,
                                   ViewIdx view,
@@ -614,10 +650,10 @@ StagedImageEffect::getRegionsOfInterest(double time,
     if ((imagePipelineSpec().op != OpKind::Passes) || !input) {
         return;
     }
-    const bool doMasking = isMaskApplied();
+    const bool doMasking = stageMaskApplied(time, view);
     double mix = 1.;
     if (doMasking) {
-        mix = getMixValue(time, view);
+        mix = stageMixValue(time, view);
         if (mix == 0.) {
             return;
         }
@@ -656,8 +692,8 @@ StagedImageEffect::getResampleRegionStages(double time,
     stages.maskMix = imagePipelineSpec().stages.has(Stage::MaskMix);
     stages.passThrough = imagePipelineSpec().stages.has(Stage::PassThroughUnprocessed);
     if (stages.maskMix) {
-        stages.doMasking = isMaskApplied();
-        stages.mix = getMixValue(time, view);
+        stages.doMasking = stageMaskApplied(time, view);
+        stages.mix = stageMixValue(time, view);
     }
     stages.maskInput = getMaskInput();
     if (stages.passThrough) {
@@ -805,7 +841,7 @@ StagedImageEffect::isIdentity(double time,
     *inputNb = getBlendInput(time, view);
 
     const bool maskMix = imagePipelineSpec().stages.has(Stage::MaskMix);
-    if (maskMix && (getMixValue(time, view) == 0.)) {
+    if (maskMix && (stageMixValue(time, view) == 0.)) {
         return true;
     }
     // A Divisor stage's op multiplies or divides by its divisor, which is 1 when none is picked.
@@ -822,7 +858,7 @@ StagedImageEffect::isIdentity(double time,
 
     // A mask that does not reach the window leaves the source unchanged there; an inverted
     // one applies the effect in full instead.
-    if (maskMix && isMaskApplied() && !getMaskInvertValue(time, view) && stageMaskMissesWindow(*this, getMaskInput(), time, scale, roi, view)) {
+    if (maskMix && stageMaskApplied(time, view) && !getMaskInvertValue(time, view) && stageMaskMissesWindow(*this, getMaskInput(), time, scale, roi, view)) {
         return true;
     }
 
@@ -876,6 +912,7 @@ StagedImageEffect::render(const RenderActionArgs& args)
     const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
     const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);
     StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
+    dropMaskMixIfOff(&plan);
     resolveStageSources(nodeSpec(), inputs, &plan);
     plan.plane = plane;
     std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;

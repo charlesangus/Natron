@@ -288,6 +288,9 @@ private:
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /// Only the Result output is masked and mixed; the debug outputs always show their full value.
+    virtual bool appliesMaskMix(double time,
+                                ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual PassList opPasses(double time,
                               ViewIdx view,
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;

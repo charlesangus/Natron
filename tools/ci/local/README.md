@@ -272,10 +272,21 @@ Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 This is also what re-execs you into the dev container (see "Getting a
 shell" below) -- you don't need to start one yourself first.
 
-`ninja` parallelism defaults to the smaller of the host's `nproc - 1` and its
-`MemAvailable` divided by 2 GiB, at least 1, and the build banner names the
+`ninja` parallelism defaults to the smaller of `nproc - 1` and the memory
+available where the compiler runs divided by 2 GiB, at least 1. That memory is
+the smaller of `MemAvailable` and the container's cgroup limit (the cap
+`memcap.sh` applies, including `NATRON_DEV_MEMORY`). The build banner names the
 source. It is overridable via `NATRON_BUILD_JOBS`, e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
 core count shouldn't dictate memory pressure.
+
+Concurrent links are limited by a ninja pool, since the large test executables
+(Tests, GuiTests) link at about 1 GB each in debug and several at once get
+OOM-killed. Its default is total memory (the smaller of `MemTotal` and the cgroup
+limit, so it does not drift with `MemAvailable`) divided by 6 GiB, at least 1
+and at most the compile job count; the banner prints it next to the compile
+jobs. Override it with `NATRON_LINK_JOBS=<n>`. The depth is baked into the
+generated build files, so a changed value (including a changed derived one)
+reconfigures the tree.
 
 Edits to `Global/Enums.h` or `Global/GlobalDefines.h` recompile essentially
 every translation unit (~380 objects); batch such changes rather than

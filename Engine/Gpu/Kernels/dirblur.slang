@@ -8,18 +8,31 @@ import resamplecore;
 // block in wrapAux holds the filter, the flags (the clamp and black outside flags as the filter
 // knobs), the sample count, the filter's lobes, B and C, then per sample the matrix's rows
 // (h00 h01 h02) and (h10 h11 h12) as (hi, lo) float pairs, the four factors in channel-bit order;
-// DirBlur::renderOpGpu() writes it.
+// DirBlur::renderOpGpu() writes it. With the identity-nearest flag, a sample whose matrix is
+// exactly the identity reads its nearest pixel whatever the filter, as GodRays::renderOp() does.
 
 static const uint kDirBlurSourceValid = 1;
 static const uint kDirBlurMax = 2;
 static const uint kDirBlurClamp = 16;
 static const uint kDirBlurBlackOutside = 32;
+static const uint kDirBlurIdentityNearest = 64;
 static const uint kDirBlurHeaderWords = 6;
 static const uint kDirBlurSampleWords = 16;
 
 FF dirblurFF(uint index)
 {
     return ffMake(asfloat(wrapAux[index]), asfloat(wrapAux[index + 1]));
+}
+
+bool dirblurIsIdentity(uint base)
+{
+    for (uint e = 0; e < 6; ++e)
+    {
+        const float expected = (e == 0 || e == 4) ? 1.0 : 0.0;
+        if (asfloat(wrapAux[base + 2 * e]) != expected || asfloat(wrapAux[base + 2 * e + 1]) != 0.0)
+            return false;
+    }
+    return true;
 }
 
 ResampleSource dirblurSource(uint flags)
@@ -95,10 +108,14 @@ struct DirBlurOp : IPixelOp
             return sum;
         const bool takeMax = (flags & kDirBlurMax) != 0;
         const bool clampOn = (flags & kDirBlurClamp) != 0;
+        const bool identityNearest = (flags & kDirBlurIdentityNearest) != 0;
         for (uint i = 0; i < count; ++i)
         {
             const uint base = kDirBlurHeaderWords + i * kDirBlurSampleWords;
-            float4 s = dirblurSample(src, spec, clampOn, base, xy);
+            FilterSpec sampleSpec = spec;
+            if (identityNearest && dirblurIsIdentity(base))
+                sampleSpec.filter = kFilterImpulse;
+            float4 s = dirblurSample(src, sampleSpec, clampOn, base, xy);
             // The sample in channel-bit order, a one-channel pixel being alpha.
             if (wrap.nComps == 1)
                 s = float4(0.0, 0.0, 0.0, s.x);

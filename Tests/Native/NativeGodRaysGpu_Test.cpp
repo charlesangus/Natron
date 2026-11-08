@@ -303,6 +303,36 @@ TEST_F(NativeGodRaysGpuTest, MatchesTheCpuRender)
     }
 }
 
+// With no transform but a tint, or Max, every copy reads its own pixel whatever the filter: the
+// source is asked for the output rectangle only, and the device matches the CPU.
+TEST_F(NativeGodRaysGpuTest, UntransformedCopiesReadOnlyTheirOwnPixel)
+{
+    NodePtr source = makeParitySource(3, 5);
+    ASSERT_TRUE(bool(source));
+    for (const char* filter : { "mitchell", "gaussian", "notch", "bicubic" }) {
+        for (const bool takeMax : { false, true }) {
+            NodePtr node = makeGodRays(source);
+            GodRays* effect = effectOf(node);
+            ASSERT_TRUE(effect != NULL);
+            ASSERT_TRUE(setKnobValues(node, kGodRaysParamScale, { 1., 1. }));
+            ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { takeMax ? 0. : 1. }));
+            ASSERT_TRUE(setKnobValues(node, kGodRaysParamSamples, { 6. }));
+            ASSERT_TRUE(setKnobValues(node, kGodRaysParamFromColor, { 1., 0.8, 0.5, 1. }));
+            ASSERT_TRUE(setKnobValues(node, kGodRaysParamToColor, { 0.1, 0.4, 1.2, 0.5 }));
+            ASSERT_TRUE(setKnobValues(node, kGodRaysParamMax, { takeMax ? 1. : 0. }));
+            const std::string name = std::string("untransformed ") + filter + (takeMax ? " max" : "");
+            ASSERT_FALSE(GodRays::isIdentity(effect->getParams(kTime, ViewIdx(0)))) << name;
+
+            const RectI rect(20, 10, 41, 37);
+            for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+                EXPECT_EQ(rect, effect->getGpuInputRoI(kGodRaysInputSource, kTime, ViewIdx(0), rect, RenderScale::fromMipmapLevel(mipmapLevel))) << name << ", mipmap " << mipmapLevel;
+            }
+            ASSERT_NO_FATAL_FAILURE(expectParity(std::vector<NodePtr>({ node }), node, name));
+        }
+    }
+}
+
 // The settings the render wraps around the rays: the mask (plain and inverted), mix and the
 // processed channels.
 TEST_F(NativeGodRaysGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)

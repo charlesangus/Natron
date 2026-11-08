@@ -1108,8 +1108,10 @@ Bilateral::readGuide(const RenderActionArgs& args,
         return eStatusOK;
     }
     RectI roiPixel;
-    // Read in the layout of the plane being rendered, as the source is.
-    const ImagePtr image = getImage(kBilateralInputGuide, args.time, args.mappedScale, args.view, NULL, &layer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roiPixel);
+    // In the layer the Guide carries for the plane being rendered, which is what the GPU recorder is
+    // handed; the clip's preferred components may name another layout, and with it other channels
+    // to key on.
+    const ImagePtr image = getImage(kBilateralInputGuide, args.time, args.mappedScale, args.view, NULL, &layer, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &roiPixel);
     if (!image) {
         return eStatusOK;
     }
@@ -1176,8 +1178,10 @@ Bilateral::getRegionsOfInterest(double time,
     if (!guide) {
         return;
     }
-    // The Guide is read over the render window grown by the full halo, in the source's pixels.
-    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(kBilateralInputSource);
+    // The halo is counted on the output's pixel grid, the one the render window and the keys are
+    // computed on; every input is conformed to the output's aspect ratio, so the Guide reads that
+    // grid too, whatever its format.
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(-1);
     const RectI rectPixel = PassExec::toPixelEnclosing(renderWindow, scale, par);
     const RectD guideRoI = PassExec::toCanonical(passListSourceRoI(rectPixel, opPasses(time, view, scale)), scale, par);
     // The Guide may be the same effect as the source or the mask, which then needs both regions.

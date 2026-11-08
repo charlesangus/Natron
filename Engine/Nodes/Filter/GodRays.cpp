@@ -68,6 +68,7 @@ constexpr uint32_t kGodRaysGpuSourceValid = 1;
 constexpr uint32_t kGodRaysGpuMax = 2;
 constexpr uint32_t kGodRaysGpuClamp = 16;
 constexpr uint32_t kGodRaysGpuBlackOutside = 32;
+constexpr uint32_t kGodRaysGpuIdentityNearest = 64;
 #endif
 
 constexpr InputSpec kGodRaysInputs[] = {
@@ -226,7 +227,7 @@ GodRays::initializeKnobs()
 
     KnobDoublePtr skewYKnob = AppManager::createKnob<KnobDouble>(this, tr("Skew Y"));
     skewYKnob->setName(kGodRaysParamSkewY);
-    skewYKnob->setHintToolTip(tr("The skew along the y axis of the last copy, applied after Skew X."));
+    skewYKnob->setHintToolTip(tr("The skew along the y axis of the last copy. Can also be adjusted by dragging the skew bar in the Viewer."));
     skewYKnob->setMinimum(-DBL_MAX);
     skewYKnob->setMaximum(DBL_MAX);
     skewYKnob->setDisplayMinimum(-1.);
@@ -236,7 +237,8 @@ GodRays::initializeKnobs()
     page->addKnob(skewYKnob);
     _skewY = skewYKnob;
 
-    // Only for the Viewer's transform handle, which needs it: the skews always apply X then Y.
+    // Hidden, there for the Viewer's transform handle; the render honours it too, so the rays
+    // follow the skew the handle draws.
     KnobChoicePtr skewOrderKnob = AppManager::createKnob<KnobChoice>(this, tr("Skew Order"));
     skewOrderKnob->setName(kGodRaysParamSkewOrder);
     skewOrderKnob->setHintToolTip(tr("The order in which the skews apply: X then Y, or Y then X."));
@@ -438,12 +440,13 @@ GodRays::canonicalSamples(const GodRaysParams& params)
 {
     const std::vector<double> positions = samplePositions(params);
     const double weight = 1. / positions.size();
+    const bool untransformed = TransformMath::isIdentity(params.transform);
     std::vector<DirBlurSample> samples(positions.size());
     for (std::size_t i = 0; i < positions.size(); ++i) {
         const double a = positions[i];
         DirBlurSample& s = samples[i];
         // Destination to source: the output pixel reads the source where the copy came from.
-        s.inverse = (a == 0.) ? Mat3::identity() : TransformMath::inverseTransformCanonical(params.transform, a, false);
+        s.inverse = ((a == 0.) || untransformed) ? Mat3::identity() : TransformMath::inverseTransformCanonical(params.transform, a, false);
         s.weight = (float)weight;
         // Averaging, each copy counts its share; with Max, its whole tint.
         const double factor = params.max ? 1. : weight;
@@ -453,6 +456,25 @@ GodRays::canonicalSamples(const GodRaysParams& params)
     }
 
     return samples;
+}
+
+std::vector<DirBlurSample>
+GodRays::pixelSamples(const GodRaysParams& params,
+                      double time,
+                      const RenderScale& scale,
+                      double par)
+{
+    const std::vector<DirBlurSample> canonical = canonicalSamples(params);
+    std::vector<DirBlurSample> pixel = DirBlur::pixelSamples(canonical, time, scale, par);
+    // The change of coordinates can leave an ulp off the identity at a non-square PAR, which
+    // would send the copy back through the filter.
+    for (std::size_t i = 0; i < canonical.size(); ++i) {
+        if (canonical[i].inverse.isIdentity()) {
+            pixel[i].inverse = Mat3::identity();
+        }
+    }
+
+    return pixel;
 }
 
 bool
@@ -584,7 +606,7 @@ GodRays::renderOp(const RenderActionArgs& args,
                   const StagePlan& plan)
 {
     const GodRaysParams params = getParams(args.time, args.view);
-    const std::vector<DirBlurSample> samples = DirBlur::pixelSamples(canonicalSamples(params), args.time, args.mappedScale, outputPar(args.time, args.view));
+    const std::vector<DirBlurSample> samples = pixelSamples(params, args.time, args.mappedScale, outputPar(args.time, args.view));
     const Resampler::FilterSpec filter = args.draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : params.filter;
     const bool clamp = params.clamp && Resampler::filterHonoursClamp(filter.filter);
     const bool takeMax = params.max;
@@ -645,7 +667,7 @@ GodRays::renderOp(const RenderActionArgs& args,
                     rp.invTransforms = &s.inverse;
                     rp.alphas = 0;
                     rp.count = 1;
-                    rp.filter = filter;
+                    rp.filter = s.inverse.isIdentity() ? Resampler::FilterSpec(Resampler::eFilterImpulse) : filter;
                     rp.clamp = clamp;
                     rp.blackOutside = params.blackOutside;
                     rp.motionBlur = 0.;
@@ -743,7 +765,7 @@ GodRays::renderOpGpu(const GpuRenderArgs& args)
     }
     const StagePlan plan = resolveGpuPlan(query);
     const GodRaysParams params = getParams(query.time, query.view);
-    const std::vector<DirBlurSample> samples = DirBlur::pixelSamples(canonicalSamples(params), query.time, query.mappedScale, outputPar(query.time, query.view));
+    const std::vector<DirBlurSample> samples = pixelSamples(params, query.time, query.mappedScale, outputPar(query.time, query.view));
     const Resampler::FilterSpec filter = query.draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : params.filter;
 
     // The source cropped to its region of definition, as the CPU fetches it, is both sampled and
@@ -759,7 +781,7 @@ GodRays::renderOpGpu(const GpuRenderArgs& args)
     // dirblur.slang's parameter block: filter, flags, count, lobes, B, C, then per
     // copy the matrix's two rows as (hi, lo) float pairs and the four factors.
     std::vector<uint32_t> words(kGodRaysGpuHeaderWords + samples.size() * kGodRaysGpuSampleWords, 0u);
-    uint32_t flags = (hasSource ? kGodRaysGpuSourceValid : 0u) | (params.max ? kGodRaysGpuMax : 0u);
+    uint32_t flags = (hasSource ? kGodRaysGpuSourceValid : 0u) | (params.max ? kGodRaysGpuMax : 0u) | kGodRaysGpuIdentityNearest;
     if (params.clamp && Resampler::filterHonoursClamp(filter.filter)) {
         flags |= kGodRaysGpuClamp;
     }

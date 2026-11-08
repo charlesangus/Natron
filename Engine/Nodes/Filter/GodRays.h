@@ -123,8 +123,16 @@ public:
     /// The copies' fractions of the transform: Samples even steps from 0 to 1, both included.
     static std::vector<double> samplePositions(const GodRaysParams& params) WARN_UNUSED_RETURN;
 
-    /// The canonical copies of params, in DirBlur's layout.
+    /// The canonical copies of params, in DirBlur's layout. An untransformed copy's matrix is
+    /// exactly the identity.
     static std::vector<DirBlurSample> canonicalSamples(const GodRaysParams& params) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The copies of params in pixel coordinates at scale, an untransformed copy's matrix
+     * still exactly the identity: such a copy is sampled with the nearest pixel, so it reads
+     * only the pixel it writes and is not softened by the filter.
+     **/
+    static std::vector<DirBlurSample> pixelSamples(const GodRaysParams& params, double time, const RenderScale& scale, double par) WARN_UNUSED_RETURN;
 
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

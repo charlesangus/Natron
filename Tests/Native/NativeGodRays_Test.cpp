@@ -586,6 +586,69 @@ TEST_F(NativeGodRaysTest, TileMatchesFullFrame)
     }
 }
 
+// With no transform but a tint, or Max, the node still renders: every copy reads its own pixel
+// unchanged even through a filter that is not interpolating, so a tile asks no more of the source
+// than its own window and the result is the source times the copies' summed tints.
+TEST_F(NativeGodRaysTest, UntransformedCopiesAreExactAndTileLikeTheFullFrame)
+{
+    resetProject();
+    NodePtr source = makeParitySource(0, 0);
+    ASSERT_TRUE(bool(source));
+    const RectI frame(0, 0, kWidth, kHeight);
+    RenderedPlane in;
+    ASSERT_TRUE(renderRGBA(source, frame, &in));
+    for (const char* filter : { "mitchell", "gaussian", "notch" }) {
+        for (const bool takeMax : { false, true }) {
+            for (const bool blackOutside : { true, false }) {
+                NodePtr node = makeGodRays(source);
+                ASSERT_TRUE(bool(node));
+                ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValues(node, kGodRaysParamSamples, { 5. }));
+                ASSERT_TRUE(setKnobValues(node, kGodRaysParamFromColor, { 1., 0.9, 0.7, 1. }));
+                ASSERT_TRUE(setKnobValues(node, kGodRaysParamToColor, { 0.3, 0.6, 1., 0.5 }));
+                ASSERT_TRUE(setKnobValues(node, kGodRaysParamMax, { takeMax ? 1. : 0. }));
+                GodRays* effect = dynamic_cast<GodRays*>(node->getEffectInstance().get());
+                ASSERT_TRUE(effect != NULL);
+                const GodRaysParams p = effect->getParams(kTime, ViewIdx(0));
+                ASSERT_TRUE(TransformMath::isIdentity(p.transform));
+                ASSERT_FALSE(GodRays::isIdentity(p));
+                const std::string label = std::string(filter) + (takeMax ? " max" : "") + (blackOutside ? "" : " edge repeat");
+
+                const RectI rod = pixelRoD(node);
+                ASSERT_TRUE(rod == frame) << label;
+                RenderedPlane whole;
+                ASSERT_TRUE(renderRGBA(node, rod, &whole));
+                for (int y = frame.y1; y < frame.y2; ++y) {
+                    for (int x = frame.x1; x < frame.x2; ++x) {
+                        for (int c = 0; c < 4; ++c) {
+                            double expected = 0.;
+                            for (const DirBlurSample& s : GodRays::canonicalSamples(p)) {
+                                const double v = (double)s.factor[c] * at(in, x, y, c);
+                                expected = takeMax ? std::max(expected, v) : (expected + v);
+                            }
+                            ASSERT_NEAR(expected, at(whole, x, y, c), 1e-5) << label << " at (" << x << "," << y << ") channel " << c;
+                        }
+                    }
+                }
+
+                const RectI tiles[] = { RectI(17, 9, 29, 21), RectI(rod.x1, rod.y1, rod.x1 + 7, rod.y1 + 5), RectI(rod.x2 - 6, rod.y2 - 9, rod.x2, rod.y2), RectI(40, 30, 41, 31) };
+                for (const RectI& tile : tiles) {
+                    RenderedPlane part;
+                    ASSERT_TRUE(renderRGBA(node, tile, &part));
+                    for (int y = tile.y1; y < tile.y2; ++y) {
+                        for (int x = tile.x1; x < tile.x2; ++x) {
+                            for (int c = 0; c < 4; ++c) {
+                                ASSERT_EQ(at(whole, x, y, c), at(part, x, y, c)) << label << " at (" << x << "," << y << ") channel " << c;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST_F(NativeGodRaysTest, SameBothWays)
 {
     resetProject();

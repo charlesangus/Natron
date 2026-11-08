@@ -56,6 +56,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -509,6 +510,47 @@ TEST_F(NativeBilateralTest, TileMatchesFullFrame)
                     }
                 }
             }
+        }
+    }
+}
+
+// The Guide is asked for the render window grown by the filter's halo, the region the source is
+// asked for, whatever the Guide's own format: one inside the source, one offset past its corner.
+TEST_F(NativeBilateralTest, GuideRegionOfInterestIgnoresTheGuideFormat)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 0, 0);
+    const RectI box(10, 6, 30, 20);
+    NodePtr smallGuide = makeConstant(0.5, &box);
+    ASSERT_TRUE(bool(smallGuide));
+    NodePtr offsetGuide = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    ASSERT_TRUE(bool(offsetGuide));
+    setParitySourceOrigin(offsetGuide, -23, 37);
+    const RectD window(12., 9., 40., 31.);
+    for (BilateralModeEnum mode : { eBilateralModeBilateral, eBilateralModeGuided }) {
+        for (const unsigned s : { 0u, 1u }) {
+            const RenderScale scale = RenderScale::fromMipmapLevel(s);
+            std::vector<RectD> guideRoIs;
+            for (const NodePtr& guide : { smallGuide, offsetGuide }) {
+                NodePtr node = makeBilateral(source, mode);
+                ASSERT_TRUE(bool(node));
+                ASSERT_TRUE(setKnobValues(node, kBilateralParamSize, { 3. }));
+                connectNodes(guide, node, kBilateralInputGuide, true);
+                EffectInstancePtr effect = node->getEffectInstance();
+                RoIMap rois;
+                effect->getRegionsOfInterest_public(kTime, scale, window, window, ViewIdx(0), &rois);
+                const RoIMap::const_iterator sourceRoI = rois.find(source->getEffectInstance());
+                const RoIMap::const_iterator guideRoI = rois.find(guide->getEffectInstance());
+                ASSERT_TRUE(sourceRoI != rois.end()) << modeName(mode) << " at mipmap level " << s;
+                ASSERT_TRUE(guideRoI != rois.end()) << modeName(mode) << " at mipmap level " << s;
+                EXPECT_TRUE(guideRoI->second == sourceRoI->second) << modeName(mode) << " at mipmap level " << s;
+                EXPECT_LT(guideRoI->second.x1, window.x1) << modeName(mode) << " at mipmap level " << s;
+                EXPECT_GT(guideRoI->second.y2, window.y2) << modeName(mode) << " at mipmap level " << s;
+                guideRoIs.push_back(guideRoI->second);
+            }
+            EXPECT_TRUE(guideRoIs[0] == guideRoIs[1]) << modeName(mode) << " at mipmap level " << s;
         }
     }
 }

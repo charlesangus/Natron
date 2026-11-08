@@ -285,6 +285,44 @@ TEST_F(NativeBilateralGpuTest, MatchesTheCpuRender)
     }
 }
 
+// A Guide with fewer channels than the rendered plane: both renders read it in the layout its input
+// carries for the plane, so they key on the same channels. The device takes the node only when the
+// Guide carries the plane; otherwise both frames run on the CPU and must still agree.
+TEST_F(NativeBilateralGpuTest, MatchesTheCpuRenderWithANarrowGuide)
+{
+    NodePtr source = makeParitySource(3, 5);
+    ASSERT_TRUE(bool(source));
+    for (const char* components : { "alpha", "rgb" }) {
+        NodePtr guide = makeParitySource(8, 4);
+        ASSERT_TRUE(bool(guide));
+        setParitySourceComponents(guide, components);
+        for (BilateralModeEnum mode : { eBilateralModeBilateral, eBilateralModeGuided }) {
+            for (const bool allChannels : { false, true }) {
+                NodePtr node = makeBilateral(source, guide, mode);
+                ASSERT_TRUE(bool(node));
+                if (allChannels) {
+                    KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet));
+                    ASSERT_TRUE(bool(channelSet));
+                    channelSet->setChannels(0, std::vector<std::string> { "R", "G", "B", "A" });
+                }
+                ASSERT_TRUE(setKnobValues(node, kBilateralParamSize, { 2. }));
+                ASSERT_TRUE(setKnobValues(node, kBilateralParamRangeSigma, { 0.5 }));
+                const std::string name = std::string(modeName(mode)) + ", " + components + " guide" + (allChannels ? ", RGBA" : "");
+                const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, kWindow, kTime);
+                if (result.skipped) {
+                    return;
+                }
+                ASSERT_TRUE(result.ok) << name << ": " << result.error;
+                ASSERT_EQ(result.cpu.size(), result.gpu.size()) << name;
+                const ImageDiff diff = compareImages(result.cpu, result.gpu, kBilateralTolerance);
+                EXPECT_GT(diff.compared, 0u) << name;
+                EXPECT_EQ(0u, diff.mismatches) << name << (result.gpuTasksPerNode.count(node->getScriptName_mt_safe()) ? " on the device" : " on the CPU") << ": first at float " << diff.firstMismatchIndex << ", worst "
+                                               << diff.worstAbsolute;
+            }
+        }
+    }
+}
+
 // The settings the render wraps around the filter: the mask (plain and inverted), mix and alpha
 // processed too, which changes the luminance weights.
 TEST_F(NativeBilateralGpuTest, MatchesTheCpuRenderWithMaskMixAndChannels)

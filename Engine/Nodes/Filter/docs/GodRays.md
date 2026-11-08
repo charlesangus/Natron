@@ -21,7 +21,8 @@ With one sample, the only copy is the untouched Source.
 - **Transform.** Translate, Rotate, Scale and Skew X/Y act about Center, as the Transform node's
   controls do. The copy at `a` takes `a` of the transform: Translate, Rotate and the skews scale
   linearly, Scale is interpolated geometrically from 1. Each copy is the Source resampled through
-  its matrix, as the Transform node resamples it.
+  its matrix, as the Transform node resamples it. An untransformed copy (the first one, or every
+  copy when the transform is left at its defaults) reads each pixel unchanged, whatever the filter.
 - **Tint.** Each copy is tinted per channel from From Color (at `a = 0`) to To Color (at `a = 1`):
   `from + (to - from) * a^(1 / Gamma)`. Gamma 1 is a linear ramp. Above 1 the tint reaches To
   Color sooner, so the rays fade faster; below 1 it stays near From Color for longer.
@@ -85,7 +86,8 @@ mask and mix knobs follow. There is no "(Un)premult by": GodRays is a filter.
 | `bicubicB` | Bicubic B | 1/3 | Bicubic's B; higher blurs more |
 | `bicubicC` | Bicubic C | 1/3 | Bicubic's C; higher sharpens more |
 
-`uniform` and `skewOrder` are hidden: only the Viewer's transform handle uses them. The Viewer shows
+`uniform` and `skewOrder` are hidden, there for the Viewer's transform handle. The render honours
+them too, so the rays follow the transform the handle draws. The Viewer shows
 the Transform node's handle (centre, translate, rotate, scale, skew).
 
 ## Decisions

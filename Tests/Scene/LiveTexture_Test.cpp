@@ -926,6 +926,64 @@ TEST_F(LiveTextureTest, ExportingTwiceGivesOneFile)
     EXPECT_EQ(std::string(), store.getSourceOfFile("/somewhere/else.natron"));
 }
 
+namespace {
+struct SharedMemoryLimit {
+    explicit SharedMemoryLimit(long long bytes)
+    {
+        LiveTextureSharedMemory::limitAvailableBytes(bytes);
+    }
+
+    ~SharedMemoryLimit()
+    {
+        LiveTextureSharedMemory::limitAvailableBytes(-1);
+    }
+};
+} // anonymous namespace
+
+TEST_F(LiveTextureTest, ARenderIsStoppedNotMagentaWhenSharedMemoryHasNoRoom)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const std::string held = uriOf("HeldBeforeFull");
+    const std::string next = uriOf("NoRoomFor");
+    const std::size_t needed = NatronLiveTexture::fileSize(16, 16);
+
+    store.insert(held, makeGradient(16, 16));
+    const LiveTextureBufferConstPtr previous = store.exportToSharedMemory(held);
+    ASSERT_TRUE(bool(previous)) << store.getFailure(held);
+    const std::string previousPath = previous->getFilePath();
+
+    store.insert(next, makeGradient(16, 16));
+    {
+        const SharedMemoryLimit full(static_cast<long long>(needed) - 1);
+        EXPECT_FALSE(bool(store.exportToSharedMemory(next)));
+        EXPECT_EQ(std::size_t(needed - 1), LiveTextureSharedMemory::availableBytes());
+        const std::string noRoom = store.getNoRoom(next);
+        EXPECT_NE(std::string::npos, noRoom.find("NoRoomFor")) << noRoom;
+        EXPECT_NE(std::string::npos, noRoom.find("MB")) << noRoom;
+        EXPECT_EQ(noRoom, store.getFailure(next));
+        EXPECT_TRUE(store.getNoRoom(held).empty());
+        // The image a render under way reads stays where it is.
+        EXPECT_TRUE(fileExists(previousPath));
+        EXPECT_EQ(previous, store.exportToSharedMemory(held));
+    }
+
+    // Space freed: the next render's export tries again.
+    const LiveTextureBufferConstPtr retried = store.exportToSharedMemory(next);
+    ASSERT_TRUE(bool(retried)) << store.getFailure(next);
+    EXPECT_TRUE(store.getNoRoom(next).empty());
+
+    // An edit gives the texture a new image, which clears the note without a retry.
+    const std::string edited = uriOf("EditedNoRoom");
+    store.insert(edited, makeGradient(16, 16));
+    {
+        const SharedMemoryLimit full(0);
+        EXPECT_FALSE(bool(store.exportToSharedMemory(edited)));
+        EXPECT_FALSE(store.getNoRoom(edited).empty());
+    }
+    store.insert(edited, makeGradient(16, 16));
+    EXPECT_TRUE(store.getNoRoom(edited).empty());
+}
+
 TEST_F(LiveTextureTest, ATextureStaysInMemoryUntilARendererAsksForIt)
 {
     LiveTextureStore& store = LiveTextureStore::instance();

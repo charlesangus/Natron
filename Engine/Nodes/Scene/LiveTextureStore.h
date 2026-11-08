@@ -242,11 +242,23 @@ public:
      * mid-render. Blocks only callers asking for the same uri while the file is written. Null when
      * there is no such file, with the reason in getFailure() and the consumers warned; a texture that
      * did not fit is not tried again until it is rendered again.
+     *
+     * A file that does not fit because shared memory is full is a failure of its own, getNoRoom(),
+     * not a missing texture: the files already held stay, so a render under way keeps the image it
+     * reads, and the caller fails its render. prepare() and insert() of the uri clear it, which is
+     * what lets a later render try again.
      **/
     LiveTextureBufferConstPtr exportToSharedMemory(const std::string& uri);
 
     // The name of the node whose image a file from exportToSharedMemory() holds, empty for any other.
     std::string getSourceOfFile(const std::string& path) const;
+
+    // Why uri's image could not be exported for lack of room in shared memory, naming the texture
+    // and the space needed and free; empty if it could.
+    std::string getNoRoom(const std::string& uri) const;
+
+    // The same for any texture the latest prepare() calls asked for.
+    std::string getAnyNoRoom() const;
 
     // The reason uri could not be rendered or exported, empty if it was not tried or succeeded.
     std::string getFailure(const std::string& uri) const;
@@ -280,6 +292,7 @@ private:
     // rendered again must not write a second file under the same URI.
     std::map<std::string, std::weak_ptr<const LiveTextureBuffer>> _exported;
     std::map<std::string, std::string> _failures;
+    std::map<std::string, std::string> _noRoom;
     // The URIs of the prepare() calls under way, with how many hold each.
     std::map<std::string, int> _pinned;
     std::set<std::string> _lastPrepared;

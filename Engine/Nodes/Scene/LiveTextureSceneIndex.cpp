@@ -100,7 +100,16 @@ public:
             }
         }
         // Outside the lock: the first export of a large plate must not stall other prims' filtering.
-        const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().exportToSharedMemory(uri);
+        LiveTextureStore& store = LiveTextureStore::instance();
+        const LiveTextureBufferConstPtr buffer = store.exportToSharedMemory(uri);
+        if (!buffer && !store.getNoRoom(uri).empty()) {
+            // The render stops for want of room: the image it is reading stays, not the missing colour.
+            std::lock_guard<std::mutex> lock(_mutex);
+            const std::map<Key, Generations>::const_iterator held = _holds.find(key);
+            if (held != _holds.end()) {
+                return held->second.current.buffer;
+            }
+        }
         if (buffer) {
             LiveTextureBufferConstPtr dropped;
             std::lock_guard<std::mutex> lock(_mutex);

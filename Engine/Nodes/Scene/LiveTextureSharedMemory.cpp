@@ -30,9 +30,11 @@
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cmath>
@@ -346,6 +348,8 @@ namespace {
         });
     }
 
+    std::atomic<long long> limitedBytes(-1);
+
     int
     allocate(int fd,
              std::size_t size)
@@ -415,6 +419,11 @@ exportImage(const std::string& uri,
         return fail(fd, "cannot create");
     }
     const std::size_t size = NatronLiveTexture::fileSize(width, height);
+    if ((limitedBytes.load() >= 0) && (size > std::size_t(limitedBytes.load()))) {
+        errno = ENOSPC;
+
+        return fail(fd, "cannot allocate");
+    }
     // ftruncate would give a file that raises SIGBUS at the first page a full tmpfs cannot back.
     const int allocated = allocate(fd, size);
     if (allocated != 0) {
@@ -516,6 +525,27 @@ std::string
 sessionName()
 {
     return session().name();
+}
+
+std::size_t
+availableBytes()
+{
+    const long long limit = limitedBytes.load();
+    if (limit >= 0) {
+        return std::size_t(limit);
+    }
+    struct statvfs info;
+    if (::statvfs(kDirectory, &info) != 0) {
+        return 0;
+    }
+
+    return std::size_t(info.f_bavail) * std::size_t(info.f_frsize);
+}
+
+void
+limitAvailableBytes(long long bytes)
+{
+    limitedBytes.store(bytes);
 }
 } // namespace LiveTextureSharedMemory
 

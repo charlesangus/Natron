@@ -87,6 +87,7 @@
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
 #include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -3043,6 +3044,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         if (!sessionFailure.empty()) {
             fail(lock, workingRenderer, sessionFailure, workingEdits);
             continue;
+        }
+        {
+            // Failing keeps it from asking again: the next edit's sync clears the store's note and tries.
+            const std::string noRoom = LiveTextureStore::instance().getAnyNoRoom();
+            if (!noRoom.empty()) {
+                fail(lock, workingRenderer, noRoom, workingEdits);
+                continue;
+            }
         }
         if (generation != passGeneration) {
             // Edited during the pass: what it rendered is stale.

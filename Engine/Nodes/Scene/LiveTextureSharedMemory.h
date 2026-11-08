@@ -83,6 +83,19 @@ void endSession();
  **/
 std::string directory();
 std::string sessionName();
+
+/**
+ * @brief The bytes the directory can still take, which an export larger than this cannot be
+ * written into.
+ **/
+std::size_t availableBytes();
+
+/**
+ * @brief Makes availableBytes() report bytes, and every export larger than that fail with ENOSPC,
+ * in place of what the directory has; limitAvailableBytes(-1) goes back to the directory's. For
+ * tests, which cannot fill a real mount.
+ **/
+void limitAvailableBytes(long long bytes);
 } // namespace LiveTextureSharedMemory
 
 NATRON_NAMESPACE_EXIT

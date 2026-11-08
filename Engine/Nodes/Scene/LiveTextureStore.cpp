@@ -231,6 +231,25 @@ nodeNameOfUri(const std::string& uri)
     return ((end == std::string::npos) || (end <= start)) ? uri : uri.substr(start, end - start);
 }
 
+std::string
+megabytes(std::size_t bytes)
+{
+    char text[64];
+
+    std::snprintf(text, sizeof(text), "%.1f MB", double(bytes) / (1024. * 1024.));
+
+    return text;
+}
+
+std::string
+noRoomMessage(const std::string& uri,
+              std::size_t needed,
+              std::size_t available)
+{
+    return "The live texture " + nodeNameOfUri(uri) + " needs " + megabytes(needed) + " of shared memory (" + LiveTextureSharedMemory::directory()
+        + ") to reach the renderer and only " + megabytes(available) + " is free: the render stops. Free space or make the image smaller to render it";
+}
+
 LiveTextureBufferConstPtr
 renderSource(const LiveTextureSource& source,
              double frame,
@@ -482,6 +501,7 @@ LiveTextureStore::insert(const std::string& uri,
         _entries.erase(found);
     }
     _uses.push_front(uri);
+    _noRoom.erase(uri);
     Entry& entry = _entries[uri];
     entry.buffer = buffer;
     entry.use = _uses.begin();
@@ -518,6 +538,7 @@ LiveTextureStore::clear()
     _entries.clear();
     _uses.clear();
     _failures.clear();
+    _noRoom.clear();
     _lastPrepared.clear();
     _byteSize = 0;
 }
@@ -686,6 +707,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
 
     LiveTextureBufferConstPtr result;
     std::string failure;
+    bool noRoom = false;
     std::vector<NodeWPtr> consumers;
     {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -698,6 +720,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
             }
             _exported[uri] = result;
             _failures.erase(uri);
+            _noRoom.erase(uri);
             if (found != _entries.end()) {
                 replaced = found->second.buffer;
                 _byteSize += result->getByteSize() - replaced->getByteSize();
@@ -705,7 +728,13 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
                 evictLocked();
             }
         } else {
-            failure = "the image of " + nodeNameOfUri(uri) + " does not fit in shared memory (" + what + ": " + std::strerror(errorNumber) + ")";
+            if (errorNumber == ENOSPC) {
+                failure = noRoomMessage(uri, NatronLiveTexture::fileSize(source->getWidth(), source->getHeight()), LiveTextureSharedMemory::availableBytes());
+                _noRoom[uri] = failure;
+                noRoom = true;
+            } else {
+                failure = "the image of " + nodeNameOfUri(uri) + " does not fit in shared memory (" + what + ": " + std::strerror(errorNumber) + ")";
+            }
             recordFailureLocked(uri, failure);
             if ((found != _entries.end()) && !warned) {
                 consumers = found->second.consumers;
@@ -716,7 +745,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
 
     for (const NodeWPtr& weak : consumers) {
         if (const NodePtr consumer = weak.lock()) {
-            consumer->setPersistentMessage(eMessageTypeWarning, fallbackWarning(uri, failure));
+            consumer->setPersistentMessage(eMessageTypeWarning, noRoom ? failure : fallbackWarning(uri, failure));
         }
     }
 
@@ -732,6 +761,30 @@ LiveTextureStore::getSourceOfFile(const std::string& path) const
         const LiveTextureBufferConstPtr buffer = exported.second.lock();
         if (buffer && (buffer->getFilePath() == path)) {
             return nodeNameOfUri(exported.first);
+        }
+    }
+
+    return std::string();
+}
+
+std::string
+LiveTextureStore::getNoRoom(const std::string& uri) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const std::map<std::string, std::string>::const_iterator found = _noRoom.find(uri);
+
+    return (found == _noRoom.end()) ? std::string() : found->second;
+}
+
+std::string
+LiveTextureStore::getAnyNoRoom() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    // A note about a texture no recent render asked for belongs to a scene that has moved on.
+    for (const std::pair<const std::string, std::string>& note : _noRoom) {
+        if ((_lastPrepared.find(note.first) != _lastPrepared.end()) || (_pinned.find(note.first) != _pinned.end())) {
+            return note.second;
         }
     }
 
@@ -789,6 +842,7 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         std::lock_guard<std::mutex> lock(_mutex);
         for (const std::string& uri : uris) {
             ++_pinned[uri];
+            _noRoom.erase(uri);
         }
     }
 

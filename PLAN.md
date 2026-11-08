@@ -444,6 +444,7 @@ future core work has solid ground to build on.
 | M372 | User Knob Engine Edits | todo | - |  | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
 | M373 | In-Panel Knob Editor | todo | M372 |  | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
 | M374 | Remove Node Magnify On Ctrl-Scroll | todo | - |  | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
+| M375 | No CPU Vulkan Auto-Select | todo | - |  | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
 
 # Epics
 

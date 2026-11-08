@@ -156,6 +156,8 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Decisions
 
+- 2026-11-07 — Release gate green at 3242c5853 with Load All, Hidden-only light removal, Clear Below logic and the headlight fallback (only while Hidden rows hide every stage light; an earlier version oscillated because the headlight counted as a scene light). P2.T3 onwards waits on the GPU host bench session; AppImage staged as `build/appimages/Natron-m329-viewer-draw-states.AppImage`.
+
 - 2026-11-07 — Lights, superseding the earlier answer (user): lights always light unless their row is Hidden. BBox and Children box geometry only, so drilling down never darkens the scene. The headlight fallback still applies when every light is hidden.
 
 - 2026-11-07 — User: the viewer falls back to the headlight, in Auto and Scene modes, while no scene light is drawn. Load All skips Hidden rows as well as BBox. The recursive clear keeps the row's own state and is called **Clear Below**; Reset to Graph clears the row and everything below. Materials and cameras under a Hidden row stay in Hydra. Pending: whether lights directly under a Children row keep lighting (the user asked for more detail).

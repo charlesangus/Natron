@@ -47,6 +47,10 @@ WATCHDOG_S = 1150
 SETTLE_MS = 400
 PANEL_MS = 900
 STROKE_MS = 150
+# The X server delivers the move from QCursor.setPos() asynchronously. Arriving after a
+# synthetic press, that buttonless real move reads as a release global mode never saw, which
+# ends the stroke before it starts.
+POINTER_SETTLE_MS = 300
 REVEAL_DIAMETER = 240
 GLYPH_DIFF_MIN = 0.003
 SHARED_GLYPH_DIFF_MAX = 0.003
@@ -420,7 +424,7 @@ try:
         point only when it moved, and a warp would be a second, spurious move."""
         start = graph_point()
         QCursor.setPos(start)
-        QApplication.processEvents()
+        yield ("sleep", POINTER_SETTLE_MS)
         gmouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton, mods)
         yield ("sleep", 60)
         for k in range(1, steps + 1):
@@ -432,8 +436,13 @@ try:
         gmouse(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton, mods)
         yield ("sleep", STROKE_MS)
 
-    def engage_on(node, knob_name, expect):
+    def title_of(node, knob_name):
+        """The HUD title for a numeric knob: the node instance's name, then the knob's."""
+        return "%s: %s" % (node.getScriptName(), knob_name)
+
+    def engage_on(node, knob_name):
         """Hovers the knob in the node's panel, engages with Ctrl+E and checks the HUD title."""
+        expect = title_of(node, knob_name)
         raise_panel(node)
         panel = panel_of(node)
         if panel is None:
@@ -474,15 +483,15 @@ try:
         gt.section("hover")
         setv(blur, "size", 10.0, 10.0)
         park_pointer()
-        if engage_on(blur, "size", "Blur: size"):
+        if engage_on(blur, "size"):
             check(cursor_name() == "cross", "Crosshair feedback: override cursor is the cross (%s)" % cursor_name())
             yield ("sleep", SETTLE_MS)
-            shoot(hud_block(), "hover-blur-size", "HUD for Blur size engaged by hover: title Blur: size, lock chips Q W (E R dimmed) and A, rate line")
+            shoot(hud_block(), "hover-blur-size", "HUD for Blur size engaged by hover: title Blur1: size, lock chips Q W (E R dimmed) and A, rate line")
         leave()
         yield ("sleep", SETTLE_MS)
         check(not engaged(), "Esc leaves global mode and restores the cursor (%s)" % cursor_name())
 
-        if engage_on(transform, "rotate", "Transform: rotate"):
+        if engage_on(transform, "rotate"):
             yield ("sleep", SETTLE_MS)
             shoot(hud_block(), "hover-transform-rotate", "HUD for the Transform group engaged on rotate: member chips Q..T and lock chips 1 2 A")
         leave()
@@ -498,7 +507,7 @@ try:
             QApplication.processEvents()
         if hover_knob(bp, "filter"):
             engage_with_ctrl_e()
-            check(engaged() and hud_knob() == "Blur: size",
+            check(engaged() and hud_knob() == title_of(blur, "size"),
                   "Ctrl+E over a knob that is not eligible falls back to the last-touched Blur size (HUD %r)" % hud_knob())
         else:
             report("NOTE could not hover Blur.filter")
@@ -518,7 +527,7 @@ try:
             at = QApplication.widgetAt(QCursor.pos())
             check(at is not None and not is_inside(at, tp), "the pointer is off the settings panel")
             engage_with_ctrl_e()
-            check(engaged() and hud_knob() == "Transform: scale",
+            check(engaged() and hud_knob() == title_of(transform, "scale"),
                   "pointer off the panel: Ctrl+E picks the topmost panel's last-touched knob (HUD %r)" % hud_knob())
             yield ("sleep", SETTLE_MS)
             shoot(hud_block(), "last-touched-transform-scale", "Ctrl+E with the pointer on the node graph: target is the last-touched Transform scale")
@@ -527,7 +536,7 @@ try:
         raise_panel(blur)
         park_pointer()
         engage_with_ctrl_e()
-        check(engaged() and hud_knob() == "Blur: size",
+        check(engaged() and hud_knob() == title_of(blur, "size"),
               "with Blur on top, the same Ctrl+E picks Blur's last-touched size, not Transform's (HUD %r)" % hud_knob())
         leave()
         yield ("sleep", SETTLE_MS)
@@ -535,7 +544,7 @@ try:
         # ---- rates ----------------------------------------------------------------------------
         gt.section("rates")
         setv(blur, "size", 10.0, 10.0)
-        if engage_on(blur, "size", "Blur: size"):
+        if engage_on(blur, "size"):
             start = val(blur, "size")
             yield from stroke(50, 0)
             now = val(blur, "size")
@@ -568,7 +577,7 @@ try:
         # ---- locks ----------------------------------------------------------------------------
         gt.section("locks")
         setv(blur, "size", 10.0, 10.0)
-        if engage_on(blur, "size", "Blur: size"):
+        if engage_on(blur, "size"):
             chip_images = {}
             plan = (
                 ("A", Qt.Key_A, (1.0, 1.0)),
@@ -616,7 +625,7 @@ try:
         setv(transform, "skewX", 0.0)
         setv(transform, "skewY", 0.0)
         setv(transform, "center", 0.0, 0.0)
-        if engage_on(transform, "rotate", "Transform: rotate"):
+        if engage_on(transform, "rotate"):
             r0 = val(transform, "rotate")
             yield from stroke(60, 0)
             got = delta(val(transform, "rotate"), r0)
@@ -624,7 +633,7 @@ try:
             yield from stroke(-60, 0)
 
             send_key(Qt.Key_Q)
-            check(hud_knob() == "Transform: translate", "Q switches to translate (HUD %r)" % hud_knob())
+            check(hud_knob() == title_of(transform, "translate"), "Q switches to translate (HUD %r)" % hud_knob())
             for label, key, expected in (("A", Qt.Key_A, (30.0, 20.0)), ("2", Qt.Key_2, (0.0, 20.0)),
                                          ("1", Qt.Key_1, (30.0, 0.0)), ("A", Qt.Key_A, (30.0, 20.0))):
                 send_key(key)
@@ -634,7 +643,7 @@ try:
                 check(close_to(got, expected), "translate, lock %s, stroke (+30, -20): %s, expected %s" % (label, fmt(got), fmt(expected)))
 
             send_key(Qt.Key_W)
-            check(hud_knob() == "Transform: rotate", "W switches to rotate (HUD %r)" % hud_knob())
+            check(hud_knob() == title_of(transform, "rotate"), "W switches to rotate (HUD %r)" % hud_knob())
             send_key(Qt.Key_2)
             r0 = val(transform, "rotate")
             yield from stroke(60, 0)
@@ -642,7 +651,7 @@ try:
             check(close_to(got, (15.0,)), "rotate with a y lock still turns, as it has one axis (%s)" % fmt(got))
 
             send_key(Qt.Key_E)
-            check(hud_knob() == "Transform: scale", "E switches to scale (HUD %r)" % hud_knob())
+            check(hud_knob() == title_of(transform, "scale"), "E switches to scale (HUD %r)" % hud_knob())
             factor = round(1.005 ** 40, 4)
             send_key(Qt.Key_A)
             s0 = val(transform, "scale")
@@ -656,7 +665,7 @@ try:
             check(close_to(s2, (s1[0], s1[1] * factor), 0.005), "scale with lock 2 multiplies y only (%s -> %s)" % (fmt(s1), fmt(s2)))
 
             send_key(Qt.Key_R)
-            check(hud_knob() in ("Transform: skewX", "Transform: skewY"), "R switches to skew (HUD %r)" % hud_knob())
+            check(hud_knob() in (title_of(transform, "skewX"), title_of(transform, "skewY")), "R switches to skew (HUD %r)" % hud_knob())
             send_key(Qt.Key_A)
             kx0, ky0 = val(transform, "skewX"), val(transform, "skewY")
             yield from stroke(30, -20)
@@ -665,7 +674,7 @@ try:
                   "skew: (+30, -20) is skewX %s and skewY %s" % (fmt(delta(kx1, kx0)), fmt(delta(ky1, ky0))))
 
             send_key(Qt.Key_T)
-            check(hud_knob() == "Transform: center", "T switches to center (HUD %r)" % hud_knob())
+            check(hud_knob() == title_of(transform, "center"), "T switches to center (HUD %r)" % hud_knob())
             send_key(Qt.Key_A)
             c0 = val(transform, "center")
             yield from stroke(30, -20)
@@ -705,7 +714,7 @@ try:
         yield ("sleep", SETTLE_MS)
 
         setv(blur, "size", 10.0, 10.0)
-        if engage_on(blur, "size", "Blur: size"):
+        if engage_on(blur, "size"):
             before = val(blur, "size")
             yield from stroke(80, -40, steps=40)
             check(val(blur, "size") != before, "the long drag changed Blur size")
@@ -720,10 +729,10 @@ try:
         # ---- reveal ---------------------------------------------------------------------------
         gt.section("reveal")
         set_pref("colorTrackballFeedback", FEEDBACK_CROSSHAIR)
-        if engage_on(transform, "rotate", "Transform: rotate"):
+        if engage_on(transform, "rotate"):
             start = graph_point()
             QCursor.setPos(start)
-            QApplication.processEvents()
+            yield ("sleep", POINTER_SETTLE_MS)
             check(not reveal_shown(), "Crosshair feedback: no disc before the press")
             gmouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
             yield ("sleep", SETTLE_MS)
@@ -759,7 +768,7 @@ try:
                 glyphs[label] = img
             shoot(reveal_window(), "reveal-" + label, "Widget-cursor disc, %s" % label)
 
-        if engage_on(transform, "rotate", "Transform: rotate"):
+        if engage_on(transform, "rotate"):
             yield ("sleep", SETTLE_MS)
             check(reveal_shown(), "Widget cursor feedback: the disc is up from engage")
             for label, key, title in (("group-translate", Qt.Key_Q, "translate"), ("group-rotate", Qt.Key_W, "rotate"),
@@ -768,14 +777,14 @@ try:
                 send_key(key)
                 yield ("sleep", 250)
                 if title is not None:
-                    check(hud_knob() == "Transform: " + title, "%s: HUD names %s (%r)" % (label, title, hud_knob()))
+                    check(hud_knob() == title_of(transform, title), "%s: HUD names %s (%r)" % (label, title, hud_knob()))
                 capture(label)
         leave()
         yield ("sleep", SETTLE_MS)
-        for label, node, knob, title in (("lone-size", blur, "size", "Blur: size"),
-                                         ("lone-translate", position, "translate", "Position: translate"),
-                                         ("generic", transform, "transformAmount", "Transform: transformAmount")):
-            if engage_on(node, knob, title):
+        for label, node, knob in (("lone-size", blur, "size"),
+                                  ("lone-translate", position, "translate"),
+                                  ("generic", transform, "transformAmount")):
+            if engage_on(node, knob):
                 yield ("sleep", SETTLE_MS)
                 capture(label)
             leave()
@@ -800,7 +809,7 @@ try:
             set_pref("colorTrackballFeedback", feedback)
             tag = "Crosshair" if feedback == FEEDBACK_CROSSHAIR else "Widget cursor"
             setv(blur, "size", 10.0, 10.0)
-            if engage_on(blur, "size", "Blur: size"):
+            if engage_on(blur, "size"):
                 yield ("sleep", SETTLE_MS)
                 check(cursor_name() == before_name, "%s: cursor before the stroke is %s (%s)" % (tag, before_name, cursor_name()))
                 if feedback == FEEDBACK_WIDGET:
@@ -843,7 +852,7 @@ try:
         # ---- hud ------------------------------------------------------------------------------
         gt.section("hud")
         set_pref("colorTrackballFeedback", FEEDBACK_CROSSHAIR)
-        if engage_on(blur, "size", "Blur: size"):
+        if engage_on(blur, "size"):
             yield ("sleep", SETTLE_MS)
             block = hud_block()
             if check(block is not None, "the hint block is up while engaged"):
@@ -860,7 +869,7 @@ try:
                 shoot(hud_block(), "hud-blur-size", "HUD for Blur size: chips Q W lit-or-dimmed and A, rate line with the size increment per pixel and the Ctrl/Shift gears")
         leave()
         yield ("sleep", SETTLE_MS)
-        if engage_on(transform, "transformAmount", "Transform: transformAmount"):
+        if engage_on(transform, "transformAmount"):
             yield ("sleep", SETTLE_MS)
             ta = val(transform, "transformAmount")
             yield from stroke(50, 0)
@@ -870,7 +879,7 @@ try:
         leave()
         yield ("sleep", SETTLE_MS)
         setv(position, "translate", 0.0, 0.0)
-        if engage_on(position, "translate", "Position: translate"):
+        if engage_on(position, "translate"):
             p0 = val(position, "translate")
             yield from stroke(30, -20)
             got = delta(val(position, "translate"), p0)
@@ -880,9 +889,9 @@ try:
 
         # ---- step -----------------------------------------------------------------------------
         gt.section("step")
-        expected_order = ["Transform: translate", "Transform: rotate", "Transform: scale", "Transform: skewX",
-                          "Transform: skewY", "Transform: transformAmount", "Transform: center"]
-        if engage_on(transform, "translate", "Transform: translate"):
+        expected_order = [title_of(transform, k) for k in ("translate", "rotate", "scale", "skewX",
+                                                           "skewY", "transformAmount", "center")]
+        if engage_on(transform, "translate"):
             seen = [hud_knob()]
             for _ in range(14):
                 send_key(Qt.Key_Down, Qt.ControlModifier)
@@ -895,7 +904,7 @@ try:
             positions = [seen.index(t) if t in seen else -1 for t in expected_order]
             check(all(p >= 0 for p in positions) and positions == sorted(positions),
                   "Ctrl+Down visits the numeric knobs in declaration order (missing or misordered: %s)" % positions)
-            check(all(s.startswith("Transform: ") for s in seen), "stepping never leaves the node's own knobs")
+            check(all(s.startswith(title_of(transform, "")) for s in seen), "stepping never leaves the node's own knobs")
             shoot(hud_block(), "step-transform-last", "HUD after stepping to the Transform's last eligible knob")
             for _ in range(len(seen) + 2):
                 send_key(Qt.Key_Up, Qt.ControlModifier)
@@ -923,10 +932,12 @@ try:
             check(len(numeric) > 0, "Ctrl+Down from the Grade's colour knobs reaches a numeric knob (%s)" % (numeric[:1],))
             if numeric:
                 shoot(hud_block(), "step-grade-numeric", "HUD after stepping from the Grade's colour knobs onto a numeric knob")
-                for _ in range(len(seen) + 2):
+                # Gain is not the Grade's first eligible knob, so stepping further up would carry on
+                # past it to Lift, White Point and Black Point.
+                for _ in range(len(seen) - 1):
                     send_key(Qt.Key_Up, Qt.ControlModifier)
                     yield ("sleep", 120)
-                check(hud_knob() == first, "Ctrl+Up returns to the first colour knob (%r)" % hud_knob())
+                check(hud_knob() == first, "as many Ctrl+Ups as Ctrl+Downs return to %r (HUD %r)" % (first, hud_knob()))
         else:
             report("NOTE could not hover the Grade gain")
         leave()

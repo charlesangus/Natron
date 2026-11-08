@@ -90,17 +90,16 @@ The standard channel, mask, mix and unprocessed-channel knobs follow. The inputs
 the depth), an optional Mask and an optional Kernel. An Image kernel is read as Defocus reads it
 and posts the same warnings.
 
-Departures from Nuke's ZDefocus:
+Notes:
 
-- The Mask input is kept. `size` is the diameter of the bokeh infinitely far behind the depth of
-  field in Manual mode; `maxSize` defaults to 50 and is at most 500.
+- `size` is the diameter of the bokeh infinitely far behind the depth of field in Manual mode;
+  `maxSize` defaults to 50 and is at most 500.
 - Lens mode has a `sceneUnit` knob, so that the depth channel's unit compares with the focal
   length.
 - `layers` is 2 to 64 slices, each normalised by its coverage, always laid back to front.
-- Highlight boost is new, and the Focal Plane output marks the regions in front of, in and behind
-  the focus.
-- No deep input, and no cat-eye, chromatic aberration or anamorphic bokeh (M133 - ZDefocus Lens
-  Aberrations).
+- Highlight boost lifts the values above `highlightThreshold` before the defocus, and the Focal
+  Plane output marks the regions in front of, in and behind the focus.
+- There is no deep input.
 
 GPU: the Focal Plane, Blur Radius and Slices outputs, and Disc and Blades kernels whose largest slice reaches at most 256
 pixels, run on the GPU in float, reading the depth as an extra layer input of the pass (the

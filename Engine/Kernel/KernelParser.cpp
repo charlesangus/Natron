@@ -3151,8 +3151,22 @@ private:
             const std::vector<Value> args = lowerArgs(e);
             const KernelFunctionSignature& sig = *resolve(overloads, args, expected, e);
             for (std::size_t i = 0; i < sig.params.size(); ++i) {
-                if (sig.params[i].constant && !isLiteral(*e.args[i])) {
-                    fail(e.args[i]->loc, "argument " + std::to_string(i + 1) + " of '" + e.text + "' must be a literal");
+                if (!sig.params[i].constant) {
+                    continue;
+                }
+                const Expr& arg = *e.args[i];
+                if (!isLiteral(arg)) {
+                    fail(arg.loc, "argument " + std::to_string(i + 1) + " of '" + e.text + "' must be a literal");
+                }
+                KernelLiteral literal;
+                literal.type = arg.kind == ExprKind::eInt ? B::eInt : arg.kind == ExprKind::eFloat ? B::eFloat
+                                                                                                   : B::eString;
+                literal.intValue = arg.intValue;
+                literal.floatValue = arg.floatValue;
+                literal.text = arg.text;
+                const std::string error = _binding.checkLiteralArgument(sig, i, literal);
+                if (!error.empty()) {
+                    fail(arg.loc, error);
                 }
             }
             return emitCall(KernelFunctionProvider::eBinding, sig, args, argLocs(e));

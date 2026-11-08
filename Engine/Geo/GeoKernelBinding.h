@@ -28,8 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -59,10 +62,36 @@ NATRON_NAMESPACE_ENTER
  * nearpoint nearpoints, inpointgroup inprimgroup setpointgroup setprimgroup, addpoint addprim
  * addvertex removepoint removeprim setprimvertex. Their input and geometry handle arguments and
  * their attribute and group names must be literals; the only writable geometry handle is 0.
+ *
+ * Parameter readers: ch chf (float), chi (int), chv (vector), chs (string), chramp(name, x)
+ * (float). The name must be a literal naming one of the parameters the binding was given, of a
+ * kind the reader accepts; that is checked when the kernel compiles.
  **/
+enum class GeoKernelParameterKind : std::uint8_t {
+    eNumber,
+    eString,
+    eRamp,
+};
+
+/**
+ * @brief A parameter of the kernel's owner, read through the ch functions. A number has up to
+ * three components; a reader asking for more gets zeros. ramp must be callable from any thread.
+ **/
+struct GeoKernelParameter {
+    GeoKernelParameterKind kind = GeoKernelParameterKind::eNumber;
+    int components = 1;
+    std::array<double, 3> values { 0., 0., 0. };
+    std::string string;
+    std::function<double(double)> ramp;
+};
+
+typedef std::map<std::string, GeoKernelParameter, std::less<>> GeoKernelParameters;
+
 class GeoKernelBinding : public KernelBinding {
 public:
-    explicit GeoKernelBinding(GeoAttribClassEnum runOver);
+    /** @brief parameters, when given, must outlive the binding; only names and kinds are read. */
+    explicit GeoKernelBinding(GeoAttribClassEnum runOver,
+                              const GeoKernelParameters* parameters = nullptr);
 
     GeoAttribClassEnum runOver() const
     {
@@ -72,9 +101,13 @@ public:
     std::optional<KernelVariable> builtinVariable(std::string_view name) const override;
     KernelBindResult bindAttribute(const KernelAttributeRequest& request) const override;
     void functions(std::string_view name, std::vector<KernelFunctionSignature>& overloads) const override;
+    std::string checkLiteralArgument(const KernelFunctionSignature& function,
+                                     std::size_t argument,
+                                     const KernelLiteral& value) const override;
 
 private:
     GeoAttribClassEnum _runOver;
+    const GeoKernelParameters* _parameters;
 };
 
 struct GeoKernelRunOptions {
@@ -83,6 +116,11 @@ struct GeoKernelRunOptions {
     // 0 uses the current thread budget.
     int threads = 0;
     std::function<bool()> aborted;
+    // When not empty, only the members of this group of the run class run; ignored for a detail
+    // run. A group input 0 lacks fails the run.
+    std::string group;
+    // What the ch functions read; must outlive the run.
+    const GeoKernelParameters* parameters = nullptr;
 };
 
 struct GeoKernelRunResult {
@@ -95,15 +133,22 @@ struct GeoKernelRunResult {
 
 /**
  * @brief Runs a program compiled against GeoKernelBinding(runOver) over every live element of
- * that class in inputs[0], or once for the detail class. inputs[0] must not be null; other inputs
- * may be, and then read as empty geometry.
+ * that class in inputs[0] (only the members of options.group when set), or once for the detail
+ * class. A program reading parameters needs options.parameters to hold every one it names.
+ * inputs[0] must not be null; other inputs may be, and then read as empty geometry.
  **/
 GeoKernelRunResult geoKernelRun(const KernelProgram& program,
                                 GeoAttribClassEnum runOver,
                                 std::span<const GeoDetail* const> inputs,
                                 const GeoKernelRunOptions& options = GeoKernelRunOptions());
 
-/** @brief Compiles source against GeoKernelBinding(runOver) and runs it; a compile error fails the run. */
+/** @brief Whether a program compiled against GeoKernelBinding reads @Frame or @Time. */
+bool geoKernelReadsTime(const KernelProgram& program);
+
+/**
+ * @brief Compiles source against GeoKernelBinding(runOver, options.parameters) and runs it; a
+ * compile error fails the run.
+ **/
 GeoKernelRunResult geoKernelRun(std::string_view source,
                                 GeoAttribClassEnum runOver,
                                 std::span<const GeoDetail* const> inputs,

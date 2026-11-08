@@ -71,6 +71,8 @@ set(Tests_SOURCES
     GeoPacked_Test.cpp
     GeoPrimitive_Test.cpp
     GeoRender_Test.cpp
+    GeoWrangle_Test.cpp
+    GeoWrangleParams_Test.cpp
     GLScheduler_Test.cpp
     GpuContext_Test.cpp
     GpuMemberTiming_Test.cpp

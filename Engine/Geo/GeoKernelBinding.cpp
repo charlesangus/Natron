@@ -26,6 +26,7 @@
 #include "GeoKernelBinding.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -79,6 +80,11 @@ enum class Fn : std::uint8_t {
     eRemovePoint,
     eRemovePrim,
     eSetPrimVertex,
+    eChFloat,
+    eChInt,
+    eChVector,
+    eChString,
+    eChRamp,
 };
 
 struct FnEntry {
@@ -152,6 +158,12 @@ buildFunctionTable()
     add("removepoint", Fn::eRemovePoint, i, { constantParam(i), param(i) }, true);
     add("removeprim", Fn::eRemovePrim, i, { constantParam(i), param(i), param(i) }, true);
     add("setprimvertex", Fn::eSetPrimVertex, i, { constantParam(i), param(i), param(i), param(i) }, true);
+    add("ch", Fn::eChFloat, f, { constantParam(s) }, false);
+    add("chf", Fn::eChFloat, f, { constantParam(s) }, false);
+    add("chi", Fn::eChInt, i, { constantParam(s) }, false);
+    add("chv", Fn::eChVector, v, { constantParam(s) }, false);
+    add("chs", Fn::eChString, s, { constantParam(s) }, false);
+    add("chramp", Fn::eChRamp, f, { constantParam(s), param(f) }, false);
     return table;
 }
 
@@ -160,6 +172,56 @@ functionTable()
 {
     static const std::vector<FnEntry> table = buildFunctionTable();
     return table;
+}
+
+bool
+isParameterReader(Fn fn)
+{
+    return fn == Fn::eChFloat || fn == Fn::eChInt || fn == Fn::eChVector || fn == Fn::eChString || fn == Fn::eChRamp;
+}
+
+bool
+parameterReadable(Fn fn, GeoKernelParameterKind kind)
+{
+    switch (fn) {
+    case Fn::eChString:
+        return kind == GeoKernelParameterKind::eString;
+    case Fn::eChRamp:
+        return kind == GeoKernelParameterKind::eRamp;
+    default:
+        return kind == GeoKernelParameterKind::eNumber;
+    }
+}
+
+const char*
+parameterKindName(GeoKernelParameterKind kind)
+{
+    switch (kind) {
+    case GeoKernelParameterKind::eNumber:
+        return "a number";
+    case GeoKernelParameterKind::eString:
+        return "a string";
+    case GeoKernelParameterKind::eRamp:
+        return "a ramp";
+    }
+    return "unknown";
+}
+
+// Empty when the parameter exists and fn can read it.
+std::string
+parameterError(const GeoKernelParameters* parameters, Fn fn, const char* function, const std::string& name)
+{
+    if (!parameters) {
+        return "unknown parameter '" + name + "'";
+    }
+    const auto it = parameters->find(name);
+    if (it == parameters->end()) {
+        return "unknown parameter '" + name + "'";
+    }
+    if (!parameterReadable(fn, it->second.kind)) {
+        return std::string("'") + function + "' cannot read the parameter '" + name + "': it is " + parameterKindName(it->second.kind);
+    }
+    return std::string();
 }
 
 const char*
@@ -413,6 +475,7 @@ struct CallSite {
     std::int32_t groupMode = 0;
     std::shared_ptr<const GeoPointTree> tree;
     GeoPrimitiveTypeEnum primitiveType = eGeoPrimitivePolygon;
+    const GeoKernelParameter* parameter = nullptr;
 };
 
 struct Stage {
@@ -479,6 +542,7 @@ private:
     void gatherSlot(std::size_t slot, std::size_t first, int laneCount, KernelRegisters& registers);
     void scatterSlot(std::size_t slot, std::size_t first, int laneCount, const KernelRegisters& registers);
     void readElement(const KernelCall& call, const CallSite& site);
+    void readParameter(const KernelCall& call, const GeoKernelParameter& parameter);
     GeoKernelEdit& queueEdit(GeoKernelEditKind kind, int lane);
 
     GeoKernelRun& _run;
@@ -538,6 +602,7 @@ private:
     std::deque<std::mutex> _locks;
     std::vector<GeoKernelEditQueue> _queues;
     std::unique_ptr<GeoKernelTopology> _topology;
+    const GeoElementGroup* _group = nullptr;
 };
 
 GeoKernelRun::GeoKernelRun(const KernelProgram& program, GeoAttribClassEnum runOver,
@@ -550,6 +615,12 @@ GeoKernelRun::GeoKernelRun(const KernelProgram& program, GeoAttribClassEnum runO
     , _builder(*inputs[0])
 {
     _itemCount = runOver == eGeoAttribClassDetail ? 1 : std::size_t(_input.indexMap(runOver).pageCount());
+    if (!options.group.empty() && runOver != eGeoAttribClassDetail) {
+        _group = _input.findGroup(runOver, options.group);
+        if (!_group) {
+            throw KernelRunError(std::string("the geometry has no ") + className(runOver) + " group named '" + options.group + "'");
+        }
+    }
     _queues.resize(_itemCount);
     _topology = std::make_unique<GeoKernelTopology>(_input, _itemCount);
     for (const KernelProgramBinding& b : program.bindings) {
@@ -678,6 +749,16 @@ GeoKernelRun::prepareCall(std::uint32_t instruction, const KernelInstruction& in
     site.fn = table[std::size_t(function.signature.id)].fn;
     const char* name = function.signature.name.c_str();
     const KernelOperand* args = _program.operands.data() + in.operandBegin + in.b;
+    if (isParameterReader(site.fn)) {
+        const std::string parameter = constantString(args[0], name);
+        const std::string error = parameterError(_options.parameters, site.fn, name, parameter);
+        if (!error.empty()) {
+            throw KernelRunError(error);
+        }
+        site.parameter = &_options.parameters->find(parameter)->second;
+        _calls[instruction] = std::move(site);
+        return;
+    }
     const std::int32_t handle = constantInt(args[0], name);
 
     switch (site.fn) {
@@ -757,6 +838,12 @@ GeoKernelRun::prepareCall(std::uint32_t instruction, const KernelInstruction& in
             throw KernelRunError(std::string("'") + name + "' writes geometry 0 only");
         }
         break;
+    case Fn::eChFloat:
+    case Fn::eChInt:
+    case Fn::eChVector:
+    case Fn::eChString:
+    case Fn::eChRamp:
+        break;
     }
     _calls[instruction] = std::move(site);
 }
@@ -777,8 +864,12 @@ GeoKernelWorker::beginItem(std::size_t item)
         _indices.push_back(0);
         _offsets.push_back(0);
     } else {
+        const GeoElementGroup* group = _run._group;
         _run._input.indexMap(_run._runOver).forEachLiveRunInPage(GeoOffset(item), [&](GeoIndex index, GeoOffset offset, GeoOffset count) {
             for (GeoOffset k = 0; k < count; ++k) {
+                if (group && !group->contains(offset + k)) {
+                    continue;
+                }
                 _indices.push_back(index + k);
                 _offsets.push_back(offset + k);
             }
@@ -1318,6 +1409,58 @@ GeoKernelWorker::call(const KernelCall& call)
             resultI[l] = e.a;
         }
         return;
+    case Fn::eChFloat:
+    case Fn::eChInt:
+    case Fn::eChVector:
+    case Fn::eChString:
+    case Fn::eChRamp:
+        readParameter(call, *site.parameter);
+        return;
+    }
+}
+
+void
+GeoKernelWorker::readParameter(const KernelCall& call, const GeoKernelParameter& parameter)
+{
+    KernelRegisters& r = call.registers;
+    const Fn fn = functionTable()[std::size_t(call.function.signature.id)].fn;
+    if (fn == Fn::eChString) {
+        std::string* out = r.s(call.results[0].reg);
+        for (int l = 0; l < call.laneCount; ++l) {
+            if (call.mask[l]) {
+                out[l] = parameter.string;
+            }
+        }
+        return;
+    }
+    if (fn == Fn::eChInt) {
+        std::int32_t* out = r.i(call.results[0].reg);
+        const std::int32_t v = toInt32(std::round(parameter.values[0]));
+        for (int l = 0; l < call.laneCount; ++l) {
+            if (call.mask[l]) {
+                out[l] = v;
+            }
+        }
+        return;
+    }
+    if (fn == Fn::eChRamp) {
+        float* out = r.f(call.results[0].reg);
+        const float* x = r.f(call.arguments[1].reg);
+        for (int l = 0; l < call.laneCount; ++l) {
+            if (call.mask[l]) {
+                out[l] = parameter.ramp ? float(parameter.ramp(double(x[l]))) : 0.f;
+            }
+        }
+        return;
+    }
+    for (std::size_t c = 0; c < call.results.size(); ++c) {
+        float* out = r.f(call.results[c].reg);
+        const float v = int(c) < parameter.components ? float(parameter.values[c]) : 0.f;
+        for (int l = 0; l < call.laneCount; ++l) {
+            if (call.mask[l]) {
+                out[l] = v;
+            }
+        }
     }
 }
 
@@ -1341,8 +1484,10 @@ builtinTable()
 
 } // namespace
 
-GeoKernelBinding::GeoKernelBinding(GeoAttribClassEnum runOver)
+GeoKernelBinding::GeoKernelBinding(GeoAttribClassEnum runOver,
+                                   const GeoKernelParameters* parameters)
     : _runOver(runOver)
+    , _parameters(parameters)
 {
 }
 
@@ -1390,6 +1535,22 @@ GeoKernelBinding::functions(std::string_view name, std::vector<KernelFunctionSig
     }
 }
 
+std::string
+GeoKernelBinding::checkLiteralArgument(const KernelFunctionSignature& function,
+                                       std::size_t argument,
+                                       const KernelLiteral& value) const
+{
+    const std::vector<FnEntry>& table = functionTable();
+    if (argument != 0 || function.id < 0 || std::size_t(function.id) >= table.size()) {
+        return std::string();
+    }
+    const Fn fn = table[std::size_t(function.id)].fn;
+    if (!isParameterReader(fn)) {
+        return std::string();
+    }
+    return parameterError(_parameters, fn, function.name.c_str(), value.text);
+}
+
 GeoKernelRunResult
 geoKernelRun(const KernelProgram& program, GeoAttribClassEnum runOver, std::span<const GeoDetail* const> inputs,
              const GeoKernelRunOptions& options)
@@ -1421,11 +1582,23 @@ geoKernelRun(const KernelProgram& program, GeoAttribClassEnum runOver, std::span
     return result;
 }
 
+bool
+geoKernelReadsTime(const KernelProgram& program)
+{
+    for (const KernelProgramBinding& b : program.bindings) {
+        if (b.variable.kind == KernelVariableKind::eBuiltin
+            && (Builtin(b.variable.id) == Builtin::eFrame || Builtin(b.variable.id) == Builtin::eTime)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 GeoKernelRunResult
 geoKernelRun(std::string_view source, GeoAttribClassEnum runOver, std::span<const GeoDetail* const> inputs,
              const GeoKernelRunOptions& options)
 {
-    const GeoKernelBinding binding(runOver);
+    const GeoKernelBinding binding(runOver, options.parameters);
     KernelProgram program;
     KernelCompileError error;
     if (!kernelCompile(source, binding, program, error)) {

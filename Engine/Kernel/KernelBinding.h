@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -50,6 +52,14 @@ struct KernelAttributeRequest {
     KernelType type;
     bool typeExplicit = false;
     bool write = false;
+};
+
+/** @brief A literal argument as the source writes it: type is eInt, eFloat or eString. */
+struct KernelLiteral {
+    KernelBaseType type = KernelBaseType::eVoid;
+    std::int64_t intValue = 0;
+    double floatValue = 0.;
+    std::string text;
 };
 
 struct KernelBindResult {
@@ -82,6 +92,19 @@ public:
      * may differ only in their result type, in which case the type the caller expects picks one.
      **/
     virtual void functions(std::string_view name, std::vector<KernelFunctionSignature>& overloads) const = 0;
+
+    /**
+     * @brief Called for each argument of a context function call whose parameter is constant, once
+     * the overload is chosen, so a context can resolve names its functions take (a parameter of
+     * the node, say) when the kernel compiles rather than when it runs. A non-empty result is a
+     * compile error reported at the argument.
+     **/
+    virtual std::string checkLiteralArgument(const KernelFunctionSignature& /*function*/,
+                                             std::size_t /*argument*/,
+                                             const KernelLiteral& /*value*/) const
+    {
+        return std::string();
+    }
 };
 
 NATRON_NAMESPACE_EXIT

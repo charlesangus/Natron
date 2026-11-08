@@ -39,7 +39,7 @@ Requires M54 - Native Geometry Data Model. Nodes register through their own `.re
 
 ## Phase 360.1: Execution spike
 
-- [ ] M360.P1.T1 — Spike: batched bytecode interpreter vs LLVM JIT
+- [x] M360.P1.T1 — Spike: batched bytecode interpreter vs LLVM JIT
   - files: `tools/spikes/geo-kernel/` (throwaway prototypes, not built by default), `PLAN/DESIGN/<date>-geo-kernel-execution-spike.md` (report, on the plan branch)
   - approach: prototype both backends on one tiny shared front end (expressions, `@P`/`@ptnum`, `sin`, `noise`, one `if`). The interpreter runs a typed register bytecode over a whole page per instruction. The JIT emits LLVM IR per snippet through the system LLVM 21 in the dev image. Run 3–4 representative snippets (point-wise maths, a noise displace, a `nearpoint` lookup stand-in, a branchy snippet) over 10M points on the GPU host, one command for both. Report runtime per snippet, compile latency per keystroke-sized edit, the link and AppImage size cost of LLVM, and the packaging risk. Recommend one, then park the milestone with `Needs: response` for the user's choice (user, 2026-11-08). Elaborate or rewrite M360.P3.T1 after the choice.
   - verify: the report exists with numbers for both backends on every snippet, and the user's choice is recorded in `## Decisions`.
@@ -84,6 +84,8 @@ Requires M54 - Native Geometry Data Model. Nodes register through their own `.re
 **Verification gate:** M360.P1.T1's report exists and the user's backend choice is recorded; CI green with every Phase 360.2–360.4 test; a 10M-point `@P.y += 1` run is recorded on the GPU host in the PR body; the pre-existing ctest suite is green.
 
 ## Decisions
+
+- 2026-11-08 — Execution engine (user): the batched bytecode interpreter. Spike (PLAN/DESIGN/2026-11-08-geo-kernel-execution-spike.md, 10M points, 4 threads): level with the LLVM JIT on add/maths, faster on nearpoint, JIT 1.4x faster only on noise; edits recompile in ~0.1 ms vs 11–80 ms; no LLVM to ship and no clash with Mesa's LLVM. Follow-ups for P3.T1: batch-form builtins (noise first), a runtime-selected x86-64-v3 path, compacting active lanes for expensive branches.
 
 - 2026-11-08 — Split out of M54 - SOPs-Style Geometry (user, /cat-plan); tasks renumbered from M54.P6.*. Both a Python wrangle and this native kernel ship in F15 - Native Geometry (user, M54 grill).
 - 2026-11-08 — **VEX-compatible syntax (user, /cat-plan grill)** after checking the IP question: syntax and function names are functional, as an API is; avoid the VEX trademark and copying SideFX docs.

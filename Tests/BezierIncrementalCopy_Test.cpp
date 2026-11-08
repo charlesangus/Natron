@@ -323,6 +323,63 @@ TEST_F(BezierIncrementalCopyTest, EditsDuringARenderAreWrittenBack)
     getApp()->getProject()->reset(false, true);
 }
 
+// A point added while the node renders exists in the GUI copy only until the write-back. An edit
+// made after the render ends, before the queued write-back runs, must not copy the point's empty
+// internal curves over it, nor may a clone taken during the render miss it.
+TEST_F(BezierIncrementalCopyTest, PointAddedDuringARenderSurvivesTheNextEdit)
+{
+    getApp()->getProject()->reset(false, true);
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    context->setRippleEditEnabled(false);
+
+    for (int autoKey = 0; autoKey < 2; ++autoKey) {
+        context->setAutoKeyingEnabled(autoKey != 0);
+        BezierPtr shape = context->makeBezier(10., 10., "Bezier", 1., false);
+        ASSERT_TRUE(bool(shape));
+        shape->addControlPoint(30., 12., 1.);
+
+        BezierPtr snapshot = std::make_shared<Bezier>(context, "snapshot", RotoLayerPtr(), false);
+        {
+            RenderingFlagSetter rendering(roto);
+            ASSERT_TRUE(roto->isNodeRendering());
+            shape->addControlPoint(50., 40., 1.);
+            snapshot->clone(shape.get());
+        }
+        ASSERT_FALSE(roto->isNodeRendering());
+
+        BezierCPPtr cp = shape->getControlPointAtIndex(2);
+        BezierCPPtr fp = shape->getFeatherPointAtIndex(2);
+        ASSERT_TRUE(cp && fp);
+        shape->movePointLeftAndRightIndex(*cp, *fp, 1., -3., 0., 3., 0., -3., 0., 3., 0., false, false);
+        shape->movePointByIndex(0, 1., 1., 1.);
+
+        double x = 0., y = 0.;
+        cp->getPositionAtTime(true, 1., ViewIdx(0), &x, &y);
+        EXPECT_EQ(50., x) << "auto-key " << autoKey;
+        EXPECT_EQ(40., y) << "auto-key " << autoKey;
+        cp->getPositionAtTime(false, 1., ViewIdx(0), &x, &y);
+        EXPECT_EQ(50., x) << "auto-key " << autoKey;
+        EXPECT_EQ(40., y) << "auto-key " << autoKey;
+
+        BezierCPPtr snapCp = snapshot->getControlPointAtIndex(2);
+        ASSERT_TRUE(bool(snapCp));
+        snapCp->getPositionAtTime(true, 1., ViewIdx(0), &x, &y);
+        EXPECT_EQ(50., x) << "auto-key " << autoKey;
+        EXPECT_EQ(40., y) << "auto-key " << autoKey;
+
+        shape->dequeueGuiActions();
+        EXPECT_EQ(0, countGuiMismatches(shape->getControlPoints_mt_safe())) << "auto-key " << autoKey;
+        EXPECT_EQ(0, countGuiMismatches(shape->getFeatherPoints_mt_safe())) << "auto-key " << autoKey;
+        context->removeItem(shape);
+    }
+
+    context->setAutoKeyingEnabled(true);
+    getApp()->getProject()->reset(false, true);
+}
+
 // Mirrors every point and feather point of the shape at time, which reverses its orientation there.
 static void
 mirrorShapeAt(const BezierPtr& shape,

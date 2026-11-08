@@ -54,6 +54,7 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Raw/RawColorMath.h"
 #include "Engine/Nodes/Raw/RawInputColor.h"
+#include "Engine/OverlayDrawList.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
@@ -271,6 +272,21 @@ RawColorCalibrationOp::createCheckerKnobs(KnobHolder* knobHolder,
     group->addKnob(overlay);
     checkerOverlayPoints = overlay;
 
+    KnobBoolPtr showPatches = AppManager::createKnob<KnobBool>(knobHolder, EffectInstance::tr("Show Patches").toStdString());
+    showPatches->setName(kRawColorCalibrationParamCheckerShowPatches);
+    showPatches->setHintToolTip(EffectInstance::tr("While the node's panel is open, draws the chart on the viewer: its axes, the area read from "
+                                                   "each patch and a disc of the patch's reference colour. After Calibrate or Validate, a patch "
+                                                   "with a delta E above 2.3 is crossed once and above 4.6 twice. Nothing enters the render. The "
+                                                   "setting is not saved.")
+                                    .toStdString());
+    showPatches->setDefaultValue(false);
+    showPatches->setAnimationEnabled(false);
+    showPatches->setHashExempt(true);
+    showPatches->setEvaluateOnChange(false);
+    showPatches->setIsPersistent(false);
+    group->addKnob(showPatches);
+    checkerShowPatches = showPatches;
+
     KnobButtonPtr calibrateKnob = AppManager::createKnob<KnobButton>(knobHolder, EffectInstance::tr("Calibrate").toStdString());
     calibrateKnob->setName(kRawColorCalibrationParamCalibrate);
     calibrateKnob->setHintToolTip(EffectInstance::tr("Compute the illuminant and the channel mix that map the chart onto its reference "
@@ -337,7 +353,7 @@ RawColorCalibration::checkerPlacement(double time) const
     }
     for (int i = 0; i < 4; ++i) {
         if (const KnobDoublePtr corner = o.checkerCorners[i].lock()) {
-            placement.box[i] = { (float)corner->getValueAtTime(time, 0), (float)corner->getValueAtTime(time, 1) };
+            placement.box[i] = { knobValueAsFloat(corner->getValueAtTime(time, 0)), knobValueAsFloat(corner->getValueAtTime(time, 1)) };
         }
     }
 
@@ -470,8 +486,10 @@ RawColorCalibration::calibrateChecker(double time,
     if (oneUndoStep) {
         setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
     }
+    _checkerDeltaE = profile->outputPerPatch;
     showCheckerReport(profileReport(*profile));
     refreshAfterWrite();
+    redrawOverlayInteract();
 
     return true;
 } // RawColorCalibration::calibrateChecker
@@ -498,9 +516,30 @@ RawColorCalibration::validateChecker(double time,
 
         return false;
     }
+    _checkerDeltaE = validation->perPatch;
     showCheckerReport(validationReport(*validation));
+    redrawOverlayInteract();
 
     return true;
+}
+
+bool
+RawColorCalibration::hasOverlayDrawList() const
+{
+    return true;
+}
+
+void
+RawColorCalibration::buildOverlay(double time,
+                                  const RenderScale& /*renderScale*/,
+                                  ViewIdx /*view*/,
+                                  OverlayDrawList* list)
+{
+    const KnobBoolPtr show = op().checkerShowPatches.lock();
+
+    if (show && show->getValue()) {
+        buildPatchOverlay(checkerPlacement(time), &_checkerDeltaE, list);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

@@ -44,7 +44,8 @@ Tolerance:
 GPU: held to the node's own CPU render (`Tests/Native/NativeNoiseGpu_Test.cpp`), at mipmap 0 and 1.
 The core and the kernel use no fused multiply-add (`-fp-mode precise`), and the pixel-to-noise
 mapping uses only additions, multiplications and floors, so white noise is bit-exact
-(`ParityTolerance::exact()`). Perlin, Simplex, Value, the fractals and the warp are within 1e-5
+(`ParityTolerance::exact()`), through a fractal too: the kernel corrects the device's quotient in the
+fractal's normalising division so it rounds once, as the CPU's does. Perlin, Simplex, Value, the fractals and the warp are within 1e-5
 absolute plus 1e-6 relative (`kNoiseGpuTolerance`): Vulkan rounds division and square root to a few
 ulps. Cellular outputs that depend on which feature point is nearest (Cell Value, Distance to Edge)
 may differ where two points tie; the test allows such pixels up to 0.5% of the image.

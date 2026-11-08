@@ -1,5 +1,7 @@
 module gradeops;
 
+import exactdivide;
+
 public float grade(float v, float a, float b, float gamma, float invGamma)
 {
     // One rounding of a*v+b, so cancellation near zero costs no extra error.
@@ -18,7 +20,7 @@ public float invGrade(float v, float a, float b, float gamma)
         v = pow(v, gamma);
     v = v - b;
     if (a != 0.0)
-        v /= a;
+        v = divideRounded(v, a);
     return v;
 }
 

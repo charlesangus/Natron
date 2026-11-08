@@ -50,7 +50,7 @@ struct WarpMap
 
 struct Warp
 {
-    uint filter;
+    FilterSpec spec;
     uint flags;
     uint wrapU;
     uint wrapV;
@@ -75,7 +75,7 @@ FF warpFF(StructuredBuffer<uint> params, uint index)
 Warp warpLoad(StructuredBuffer<uint> params)
 {
     Warp w;
-    w.filter = params[0];
+    w.spec = loadFilterSpec(params, 0, 43);
     w.flags = params[1];
     w.wrapU = params[2];
     w.wrapV = params[3];
@@ -276,7 +276,7 @@ float4 warpSample(Warp w, int2 p, bool idistort)
     const uint wrapU = idistort ? kWrapNone : w.wrapU;
     const uint wrapV = idistort ? kWrapNone : w.wrapV;
     const int4 domain = idistort ? int4(0, 0, 0, 0) : w.domain;
-    const float4 v = sampleAt(warpSource(w), s.x, s.y, J, jacobian, w.filter, (w.flags & kWarpClamp) != 0, wrapU, wrapV, domain);
+    const float4 v = sampleAt(warpSource(w), s.x, s.y, J, jacobian, w.spec, (w.flags & kWarpClamp) != 0, wrapU, wrapV, domain);
     if (wrap.nComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);
     return v;

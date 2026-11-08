@@ -50,6 +50,8 @@ struct AiTileSpec {
     int scale = 1;
     int inChannels = 3;
     int outChannels = 3;
+    // Linear ramps across what neighbours share instead of raised-cosine ones.
+    bool linearBlend = false;
 };
 
 /**
@@ -65,6 +67,13 @@ typedef std::function<void(const RectI& rect, Tensor& tile)> AiTilePack;
  * once, after every tile has run, and never when the run fails or is aborted.
  **/
 typedef std::function<void(const RectI& outRoI, const Tensor& result)> AiTileUnpack;
+
+/**
+ * @brief Called with each tile's model input, padding included, and the model's output for it,
+ * shaped as the spec says, before the output is blended. For a correction that needs the
+ * whole tile, such as matching the output's level to the input's.
+ **/
+typedef std::function<void(const Tensor& input, Tensor& output)> AiTileFinish;
 
 struct AiTiledRunInfo {
     // The tile edge the successful pass used, and how many tiles it ran.
@@ -86,7 +95,8 @@ AiTiledRunInfo runTiled(const std::shared_ptr<InferenceSession>& session,
                         const AiTileSpec& spec,
                         const AiTilePack& pack,
                         const AiTileUnpack& unpack,
-                        const AiAbortPredicate& abort = AiAbortPredicate());
+                        const AiAbortPredicate& abort = AiAbortPredicate(),
+                        const AiTileFinish& finish = AiTileFinish());
 
 /**
  * @brief The starts of tiles of at most `tile` pixels covering [0, length), each sharing at least

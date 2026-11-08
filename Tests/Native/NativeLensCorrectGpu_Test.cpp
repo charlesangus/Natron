@@ -26,9 +26,12 @@
 
 #include <algorithm>
 #include <bitset>
+#include <climits>
 #include <cmath>
+#include <fstream>
 #include <list>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -71,6 +74,17 @@ lensCorrectTolerance()
 {
     return ParityTolerance::make(2e-4, 1e-4);
 }
+
+// A floor a float position lands on the far side of, where the CPU's double does not. The 1e-5 pixel
+// position difference decides impulse wherever a position lies that close to a pixel edge, as
+// fisheye to rectilinear's red does at (1, 0). The pixel it then reads is one source step away in
+// the parity source's ramps, 2 / 48 plus their sine terms.
+struct FloorFlipAllowance {
+    std::size_t values = 0;
+    double worst = 0.;
+};
+
+const FloorFlipAllowance kImpulseFloorFlips = { 8, 1. / 16. };
 
 StagedImageEffect*
 effectOf(const NodePtr& node)
@@ -142,9 +156,10 @@ protected:
     void expectParity(const NodePtr& source,
                       const NodePtr& node,
                       const std::string& what,
-                      unsigned mipmapLevel = 0)
+                      unsigned mipmapLevel = 0,
+                      const FloorFlipAllowance& flips = FloorFlipAllowance())
     {
-        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel);
+        expectParityOver(node, paritySourceWindow(source, kTime, mipmapLevel), what, mipmapLevel, flips);
     }
 
     void expectParityOverRegion(const NodePtr& node,
@@ -158,10 +173,62 @@ protected:
         expectParityOver(node, rod.toPixelEnclosing(mipmapLevel, 1.), what, mipmapLevel);
     }
 
+    // Mismatches only seen on some CI runners: the runner's CPU, since llvmpipe JITs for it, and
+    // whether whole samples come back as zero (every channel of a pixel) rather than drift.
+    static std::string describeMismatches(const std::vector<float>& cpu,
+                                          const std::vector<float>& gpu,
+                                          const RectI& window)
+    {
+        const ParityTolerance tolerance = lensCorrectTolerance();
+        std::size_t perChannel[4] = { 0, 0, 0, 0 };
+        std::size_t pixels = 0;
+        std::size_t allZero = 0;
+        std::size_t greenAlphaZero = 0;
+        RectI box(INT_MAX, INT_MAX, INT_MIN, INT_MIN);
+        const int width = window.width();
+        for (std::size_t p = 0; p * 4 < cpu.size(); ++p) {
+            bool any = false;
+            for (int c = 0; c < 4; ++c) {
+                if (!tolerance.accepts(cpu[p * 4 + c], gpu[p * 4 + c])) {
+                    ++perChannel[c];
+                    any = true;
+                }
+            }
+            if (!any) {
+                continue;
+            }
+            ++pixels;
+            const float* g = &gpu[p * 4];
+            allZero += (g[0] == 0.f && g[1] == 0.f && g[2] == 0.f && g[3] == 0.f);
+            greenAlphaZero += (g[1] == 0.f && g[3] == 0.f);
+            const int x = window.x1 + (int)(p % width);
+            const int y = window.y1 + (int)(p / width);
+            box.x1 = std::min(box.x1, x);
+            box.y1 = std::min(box.y1, y);
+            box.x2 = std::max(box.x2, x + 1);
+            box.y2 = std::max(box.y2, y + 1);
+        }
+        std::string cpuModel = "unknown";
+        std::ifstream cpuinfo("/proc/cpuinfo");
+        for (std::string line; std::getline(cpuinfo, line);) {
+            if (line.compare(0, 10, "model name") == 0) {
+                const std::size_t colon = line.find(':');
+                cpuModel = colon == std::string::npos ? line : line.substr(colon + 1);
+                break;
+            }
+        }
+        std::ostringstream text;
+        text << "; mismatches per channel " << perChannel[0] << "/" << perChannel[1] << "/" << perChannel[2] << "/" << perChannel[3] << " over " << pixels
+             << " pixels in [" << box.x1 << "," << box.y1 << "," << box.x2 << "," << box.y2 << "), gpu all zero at " << allZero << ", gpu green and alpha zero at "
+             << greenAlphaZero << "; cpu" << cpuModel;
+        return text.str();
+    }
+
     void expectParityOver(const NodePtr& node,
                           const RectI& window,
                           const std::string& what,
-                          unsigned mipmapLevel)
+                          unsigned mipmapLevel,
+                          const FloorFlipAllowance& flips = FloorFlipAllowance())
     {
         const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ node }), node, window, kTime, GpuContextReady(), GpuFrameDone(), mipmapLevel);
 
@@ -172,7 +239,20 @@ protected:
         EXPECT_TRUE(result.ranInRegion(node)) << what;
         ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
         const ImageDiff diff = compareImages(result.cpu, result.gpu, lensCorrectTolerance());
-        EXPECT_EQ(0u, diff.mismatches) << what << ": worst " << diff.worstAbsolute << ", first at float " << diff.firstMismatchIndex;
+        const auto valueAt = [&](std::size_t index) {
+            const std::size_t pixel = index / 4;
+            const int width = window.width();
+            std::ostringstream text;
+            text << "(" << window.x1 + (int)(pixel % width) << "," << window.y1 + (int)(pixel / width) << ") channel " << index % 4
+                 << " gpu " << result.gpu[index] << " cpu " << result.cpu[index];
+            return text.str();
+        };
+        const std::string where = diff.mismatches == 0 ? std::string() : ", first at " + valueAt(diff.firstMismatchIndex) + ", worst at " + valueAt(diff.worstIndex);
+        EXPECT_LE(diff.mismatches, flips.values) << what << ": worst " << diff.worstAbsolute << where
+                                                 << (diff.mismatches > flips.values ? describeMismatches(result.cpu, result.gpu, window) : std::string());
+        if (flips.values != 0) {
+            EXPECT_LE(diff.worstAbsolute, flips.worst) << what << where;
+        }
         const auto notFinite = [](float v) {
             return !std::isfinite(v);
         };
@@ -248,6 +328,39 @@ TEST_F(NativeLensCorrectGpuTest, SettingsMatchTheCpu)
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamMethod, std::string(kLensCorrectMethodVignette)));
     expectParity(source, node, "manual vignette only");
 }
+
+// One test per filter, as the wider kernels make the whole sweep slow on a loaded runner. The first
+// setup splits the channels and the second changes the projection.
+class NativeLensCorrectGpuFilterTest
+    : public NativeLensCorrectGpuTest,
+      public ::testing::WithParamInterface<int> {
+};
+
+TEST_P(NativeLensCorrectGpuFilterTest, MatchesTheCpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
+    ASSERT_EQ((std::size_t)Resampler::eFilterBicubic + 1, filters.size());
+    const std::size_t f = (std::size_t)GetParam();
+    for (const LensSetup* setup : { &kSetups[0], &kSetups[4] }) {
+        NodePtr node = makeLensCorrect(source, *setup);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
+        for (bool clamp : { false, true }) {
+            if (clamp && !Resampler::filterHonoursClamp((Resampler::FilterEnum)f)) {
+                continue;
+            }
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
+            const bool floorDecides = setup == &kSetups[4] && (Resampler::FilterEnum)f == Resampler::eFilterImpulse;
+            expectParity(source, node, std::string(setup->what) + " " + filters[f].id + (clamp ? " clamp" : ""), 0u,
+                         floorDecides ? kImpulseFloorFlips : FloorFlipAllowance());
+        }
+    }
+}
+
+INSTANTIATE_TEST_CASE_P(Filters, NativeLensCorrectGpuFilterTest, ::testing::Range(0, (int)Resampler::eFilterBicubic + 1));
 
 TEST_F(NativeLensCorrectGpuTest, ScaledRendersMatchTheCpu)
 {

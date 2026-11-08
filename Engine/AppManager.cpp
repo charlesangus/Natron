@@ -117,6 +117,9 @@
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/GPUContextPool.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDevice.h"
+#endif
 #include "Engine/GpuDeviceList.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
@@ -149,7 +152,10 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NativeRegistry.h"
 #include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
+#include "Engine/Nodes/Test/OverlayTestNode.h"
 
 #include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
@@ -420,6 +426,9 @@ AppManager::loadFromArgs(const CLArgs& cl)
 #endif
         }
     }
+
+    // Before Python or a scene lists Hydra renderers: registers the bundled MoonRay delegate.
+    MoonRayRuntime::setUp(QCoreApplication::applicationDirPath().toStdString());
 
     // Before Python or a scene asks OpenUSD for its resolver, which reads the registered ones once.
     {
@@ -845,6 +854,10 @@ AppManager::loadInternal(const CLArgs& cl)
                 ",Max GPU Memory:" << printAsRAM(it->maxMemBytes);;
         }
     }
+    // setenv races with getenv on other threads, and the GPU context starts one, so the token must be set first.
+#ifdef NATRON_HAVE_GPU
+    gpu::requestTransferOnlyFamily();
+#endif
     const std::vector<GpuDeviceSummary> gpuDevices = enumerateGpuDevices();
     _imp->_settings->populateGpuDevices(gpuDevices);
 
@@ -1208,13 +1221,16 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
                     wasKilled = false;
                 }
             }
-            if (!wasKilled) {
+            // The interpreter reset its projects before Python finalised; resetting again would run
+            // the close callback without Python.
+            if (!wasKilled && (_imp->_appType != eAppTypeInterpreter)) {
                 try {
                     mainInstance->getProject()->reset(true/*aboutToQuit*/, true /*blocking*/);
                 } catch (std::logic_error&) {
                     // ignore
                 }
-
+            }
+            if (!wasKilled) {
                 try {
                     mainInstance->quitNow();
                 } catch (std::logic_error&) {
@@ -1806,6 +1822,11 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
 
 #include "NativeRegistryAll.inc"
+
+    if (qgetenv(kNatronGuiTestNodesEnvVar) == "1") {
+        registerNativePlugin<OverlayTestNode>();
+        registerNativePlugin<OverlayImageGuiTestNode>();
+    }
 
     // Registered in the background too, so that a script that loads and saves a project keeps its
     // viewers. Without a viewer widget a viewer never renders.
@@ -3389,6 +3410,52 @@ AppManager::initBuiltinPythonModules()
     }
 }
 
+namespace {
+// Py_Main finalises Python before it returns, and resetting a project runs Python: its close
+// callback and the removal of each node's variable. The projects are reset from Python's exit
+// handlers instead, which run before it finalises.
+PyObject*
+resetProjectsBeforePythonExit(PyObject* /*self*/,
+                              PyObject* /*args*/)
+{
+    if (appPTR) {
+        // A node's processing may need the Python lock to finish.
+        PythonGILUnlocker unlocker;
+        const AppInstanceVec instances = appPTR->getAppInstances();
+        for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+            // No exception may cross Python's frames.
+            try {
+                (*it)->getProject()->reset(true /*aboutToQuit*/, true /*blocking*/);
+            } catch (const std::exception& e) {
+                std::cerr << "Resetting a project before Python exits failed: " << e.what() << std::endl;
+            }
+        }
+    }
+    Py_RETURN_NONE;
+}
+
+PyMethodDef resetProjectsBeforePythonExitDef = { "resetProjectsBeforePythonExit", resetProjectsBeforePythonExit, METH_NOARGS, nullptr };
+
+bool
+registerProjectsResetAtPythonExit()
+{
+    PyObject* atexitModule = PyImport_ImportModule("atexit");
+    PyObject* function = atexitModule ? PyCFunction_New(&resetProjectsBeforePythonExitDef, nullptr) : nullptr;
+    PyObject* result = function ? PyObject_CallMethod(atexitModule, "register", "O", function) : nullptr;
+
+    Py_XDECREF(result);
+    Py_XDECREF(function);
+    Py_XDECREF(atexitModule);
+    if (!result) {
+        PyErr_Print();
+
+        return false;
+    }
+
+    return true;
+}
+} // anon namespace
+
 void
 AppManager::launchPythonInterpreter()
 {
@@ -3407,6 +3474,10 @@ AppManager::launchPythonInterpreter()
 #if PY_VERSION_HEX >= 0x030400F0
     assert(PyGILState_Check()); // Not available prior to Python 3.4
 #endif
+
+    if (!registerProjectsResetAtPythonExit()) {
+        throw std::runtime_error("AppManager::launchPythonInterpreter(): could not register the projects' reset with Python's atexit.");
+    }
 
     Py_Main(1, &_imp->commandLineArgsWide[0]);
 }

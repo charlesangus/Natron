@@ -41,6 +41,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
@@ -306,7 +307,7 @@ DeepFromImage::renderDeep(const DeepRenderActionArgs& args)
     }
 
     KnobDoublePtr depthKnob = _depth.lock();
-    float fallbackDepth = depthKnob ? (float)depthKnob->getValueAtTime(args.time) : 0.f;
+    float fallbackDepth = depthKnob ? knobValueAsFloat(depthKnob->getValueAtTime(args.time)) : 0.f;
     ImagePtr zImage;
     int zIndex = -1;
     if (getInput(1)) {

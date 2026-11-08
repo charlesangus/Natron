@@ -235,32 +235,28 @@ public:
 
     DrawModeEnum getDrawMode() const;
 
-    // How what Storm draws reaches the screen: the display and view of config, from colorSpace,
-    // as the 2D viewer shows images, with its gain multiplied in before them and its gamma
-    // applied after.
+    // How what Storm draws reaches the screen: the display, view and look of config, from
+    // colorSpace, as the 2D viewer shows images, with its gain multiplied in before them and its
+    // gamma applied after. Gain and gamma act on what was rendered, not on the background.
     struct DisplayTransform {
         OCIO_NAMESPACE::ConstConfigRcPtr config;
         std::string colorSpace;
         std::string display;
         std::string view;
+        // Empty for the view's own looks.
+        std::string look;
         double gain = 1.;
         double gamma = 1.;
     };
 
     /**
-     * @brief Applies transform from the next render() on. Hydra's colour correction only uses
-     * OpenColorIO when $OCIO is set, so without it, without a config, or when the config cannot
-     * build the transform, the sRGB transform is applied instead. A transform that needs 1D or 2D
-     * LUT textures on the GPU (e.g. ACES 2.0 output transforms), which Hydra's colour correction
-     * cannot bind, is approximated by a log2 shaper and a 65-point 3D LUT baked from it. That
-     * bake, or a transform with a gain or gamma other than 1, reaches Hydra as one view, gain,
-     * display transform and gamma in turn, made current as part of a copy of the config. Without
-     * a usable config, a gain or gamma other than 1 goes with the sRGB transform the same way,
-     * as long as $OCIO is set.
+     * @brief Applies transform from the next render() on. Without a config, or when the config
+     * cannot build the transform, the sRGB encoding is applied instead, still with the gain and
+     * gamma. A change of gain or gamma alone only redraws.
      **/
     void setDisplayTransform(const DisplayTransform& transform);
 
-    // Whether render() goes through OpenColorIO rather than Hydra's own sRGB transform.
+    // Whether render() goes through OpenColorIO rather than the sRGB encoding.
     bool isUsingOpenColorIO() const;
 
     // The ground grid, drawn over the scene by default.

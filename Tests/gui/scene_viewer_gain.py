@@ -12,10 +12,19 @@ cube. The script checks:
   - at gamma 2 the cube's screen value v becomes 255 (v / 255)^(1/2), and the corners keep their
     colour;
   - with the grid shown, gain 2 changes no more pixels than it does without the grid, and the grid
-    does show.
+    does show;
+  - a half-transparent 0.15 cube (displayOpacity 0.5, so seen through both its faces) at gain 2
+    shows as a half-transparent 0.3 cube does at gain 1, over the background by an alpha read off
+    the 0.3 cube; at gamma 2 its colour is graded unpremultiplied and laid over the ungraded
+    background by that alpha, which grading the premultiplied colour would not give.
+
+Progressive delegates (Cycles) are not checked: their frames reach the view already encoded, and
+their grading belongs to the delegate display transform work. Looks and views that lift black are
+checked in SceneViewport_Test, which builds its own OpenColorIO config.
 
 Screenshots for sign-off, each with a CAPTION line in results.txt: scene-gain-reference,
-scene-gain-plain, scene-gain-2, scene-gain-gamma-2, scene-gain-grid-plain, scene-gain-grid-2.
+scene-gain-plain, scene-gain-2, scene-gain-gamma-2, scene-gain-grid-plain, scene-gain-grid-2,
+scene-gain-translucent-reference, scene-gain-translucent-2, scene-gain-translucent-gamma-2.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -31,7 +40,7 @@ POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 700
 STARTUP_TIMEOUT_S = 60.0
 HUD_MARGIN = 28
-# Screen pixels are 8-bit; a view Hydra is given baked stays within 3/255 of the exact one.
+# Screen pixels are 8-bit.
 COLOUR_SLACK = 5
 BACKGROUND_SLACK = 2
 # A pixel differing from the background by more than this belongs to the cube.
@@ -54,7 +63,7 @@ def Xform "World"
     {
         double size = 2
         color3f[] primvars:displayColor = [(%(grey)s, %(grey)s, %(grey)s)]
-    }
+%(opacity)s    }
 }
 """
 
@@ -69,14 +78,17 @@ try:
     if not os.path.isdir(OUT):
         os.makedirs(OUT)
 
-    def write_stage(name, grey):
+    def write_stage(name, grey, opacity=None):
         path = os.path.join(OUT, name)
+        authored = "        float[] primvars:displayOpacity = [%s]\n" % opacity if opacity else ""
         with open(path, "w") as f:
-            f.write(STAGE % {"grey": grey})
+            f.write(STAGE % {"grey": grey, "opacity": authored})
         return path
 
     reference_path = write_stage("scene-gain-reference.usda", "0.3")
     card_path = write_stage("scene-gain-card.usda", "0.15")
+    translucent_reference_path = write_stage("scene-gain-translucent-reference.usda", "0.3", "0.5")
+    translucent_card_path = write_stage("scene-gain-translucent-card.usda", "0.15", "0.5")
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
@@ -293,6 +305,45 @@ try:
         report("NOTE pixels gain 2 changes: %d without the grid, %d with it" % (without, with_grid))
         check(with_grid <= without + MIN_PIXELS, "gain 2 leaves the grid as it was (%d pixels change with it, %d without)"
               % (with_grid, without))
+        set_grading(0.0, 1.0)
+        key(v, Qt.Key_G, CTRL)
+        yield from repaint()
+        require(prop("natronSceneShowGrid") is False, "Ctrl+G hides the grid again")
+
+        section("translucent")
+        t0 = time.time() * 1000.0
+        usd.getParam("filename").setValue(translucent_reference_path)
+        ok = yield ("until", lambda: (prop("natronSceneSyncedAtMs", 0) or 0) >= t0 and scene_drawn(), POLL_TIMEOUT_S)
+        require(ok, "the view syncs the half-transparent 0.3 cube")
+        yield from repaint()
+        seen = capture("scene-gain-translucent-reference", "the half-transparent 0.3 cube at gain 1: the background shows through")
+        through = mean_around(seen, centre)
+        # The cube's grey over the background, by the alpha its faces add up to.
+        alpha = (through[0] - background[0]) / float(twice[0] - background[0])
+        report("NOTE half-transparent 0.3 cube %r, alpha %.3f" % (through, alpha))
+        check(0.2 < alpha < 0.95, "the half-transparent cube lets the background through (alpha %.3f)" % alpha)
+
+        t0 = time.time() * 1000.0
+        usd.getParam("filename").setValue(translucent_card_path)
+        ok = yield ("until", lambda: (prop("natronSceneSyncedAtMs", 0) or 0) >= t0 and scene_drawn(), POLL_TIMEOUT_S)
+        require(ok, "the view syncs the half-transparent 0.15 cube")
+        set_grading(1.0, 1.0)
+        yield from repaint()
+        gained = capture("scene-gain-translucent-2", "the half-transparent 0.15 cube at gain 2: as the 0.3 one at gain 1")
+        doubled = mean_around(gained, centre)
+        check(not differs(doubled, through, COLOUR_SLACK), "gain 2 shows the half-transparent 0.15 cube as the 0.3 one at "
+              "gain 1 (%r vs %r)" % (doubled, through))
+        check_corners(seen, gained, "gain 2 on the half-transparent cube")
+
+        set_grading(1.0, 2.0)
+        yield from repaint()
+        lifted_image = capture("scene-gain-translucent-gamma-2",
+                               "gain 2, gamma 2 on the half-transparent 0.15 cube: the grey graded, then laid over the background")
+        lifted = mean_around(lifted_image, centre)
+        expected = tuple(alpha * 255.0 * (value / 255.0) ** 0.5 + (1.0 - alpha) * b for value, b in zip(twice, background))
+        check(not differs(lifted, expected, COLOUR_SLACK), "gamma 2 grades the half-transparent cube's colour, not its "
+              "colour times alpha (%r, expected about %r)" % (lifted, expected))
+        check_corners(seen, lifted_image, "gamma 2 on the half-transparent cube")
         set_grading(0.0, 1.0)
 
     run(steps())

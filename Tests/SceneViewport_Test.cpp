@@ -203,9 +203,10 @@ defineQuad(const PXR_NS::UsdStageRefPtr& stage,
 // Outside transparent leave the right half undrawn. /World/Backdrop, an opaque 6-unit square at
 // z = -1 with an emissive blue preview surface, so it shows without lights, lies behind the whole
 // card. From the fixture's free camera the card spans pixels 66..190 and the backdrop 44..212 on
-// both axes.
+// both axes. Without the backdrop, the card's left half is all that is drawn, half-transparent.
 ScenePayload
-projectedCardScene(std::string* error)
+projectedCardScene(std::string* error,
+                   bool withBackdrop = true)
 {
     const std::string shaderPath = USDProject3D::getShaderPath();
 
@@ -222,15 +223,17 @@ projectedCardScene(std::string* error)
         return ScenePayload();
     }
 
-    PXR_NS::UsdGeomMesh backdrop = defineQuad(stage, "/World/Backdrop", 3.f, -1.f);
-    const PXR_NS::SdfPath backdropMaterialPath("/World/BackdropMaterial");
-    PXR_NS::UsdShadeMaterial backdropMaterial = PXR_NS::UsdShadeMaterial::Define(stage, backdropMaterialPath);
-    PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(stage, backdropMaterialPath.AppendChild(PXR_NS::TfToken("Surface")));
-    surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
-    surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 1.f));
-    surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
-    backdropMaterial.CreateSurfaceOutput().ConnectToSource(surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
-    PXR_NS::UsdShadeMaterialBindingAPI::Apply(backdrop.GetPrim()).Bind(backdropMaterial);
+    if (withBackdrop) {
+        PXR_NS::UsdGeomMesh backdrop = defineQuad(stage, "/World/Backdrop", 3.f, -1.f);
+        const PXR_NS::SdfPath backdropMaterialPath("/World/BackdropMaterial");
+        PXR_NS::UsdShadeMaterial backdropMaterial = PXR_NS::UsdShadeMaterial::Define(stage, backdropMaterialPath);
+        PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(stage, backdropMaterialPath.AppendChild(PXR_NS::TfToken("Surface")));
+        surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
+        surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 1.f));
+        surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
+        backdropMaterial.CreateSurfaceOutput().ConnectToSource(surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
+        PXR_NS::UsdShadeMaterialBindingAPI::Apply(backdrop.GetPrim()).Bind(backdropMaterial);
+    }
     PXR_NS::UsdGeomMesh card = defineQuad(stage, "/World/Card", 2.f, 0.f);
 
     const PXR_NS::SdfPath materialPath("/World/Projection");
@@ -315,34 +318,6 @@ const char* const kStudioURI = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
 const char* const kWorkingSpace = "ACEScg";
 const char* const kDisplay = "sRGB - Display";
 const char* const kSDRView = "ACES 2.0 - SDR 100 nits (Rec.709)";
-
-// Sets $OCIO, without which Hydra's colour correction ignores OpenColorIO, and puts it and OCIO's
-// current config back when it goes.
-class ScopedOcioEnv {
-public:
-    explicit ScopedOcioEnv(const char* value)
-        : _had(std::getenv("OCIO") != nullptr)
-        , _previous(_had ? std::getenv("OCIO") : "")
-        , _config(OCIO_NAMESPACE::GetCurrentConfig())
-    {
-        setenv("OCIO", value, 1);
-    }
-
-    ~ScopedOcioEnv()
-    {
-        if (_had) {
-            setenv("OCIO", _previous.c_str(), 1);
-        } else {
-            unsetenv("OCIO");
-        }
-        OCIO_NAMESPACE::SetCurrentConfig(_config);
-    }
-
-private:
-    bool _had;
-    std::string _previous;
-    OCIO_NAMESPACE::ConstConfigRcPtr _config;
-};
 
 class SceneViewportStorm
     : public ::testing::Test {
@@ -597,10 +572,8 @@ TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
 
 // Through the studio config, the card and the background show as the 2D viewer shows images: from
 // the working space through the display and view, each pixel as OpenColorIO's CPU processor
-// computes it. A view whose GPU shader needs 1D or 2D LUT textures (the ACES 2.0 output
-// transforms), which Hydra's colour correction cannot bind, reaches Hydra baked into a shaper and
-// a 3D LUT, which needs neither and stays within 2/255 of the exact transform on these colours.
-// Without a config the sRGB transform comes back.
+// computes it, through a view whose GPU shader is analytic and one that needs LUT textures (the
+// ACES 2.0 output transforms). Without a config the sRGB encoding comes back.
 TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
 {
     if (_skip) {
@@ -609,14 +582,12 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
     ProjectColorManagement cm;
     std::string error;
     ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
-    const ScopedOcioEnv env(kStudioURI);
     const ScenePayload scene = projectedCardScene(&error);
     ASSERT_TRUE(error.empty()) << error;
     ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
 
     const Rgb srgb { codeValue(srgbEncode(0.6f)), 0, codeValue(srgbEncode(0.5f)) };
-    const float bakeTolerance = 2.f / 255.f;
 
     for (const char* view : { "Un-tone-mapped", kSDRView }) {
         SceneViewportRenderer::DisplayTransform transform;
@@ -633,9 +604,8 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
         OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
         shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
         processor->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
-        const bool needsTextures = shader->getNumTextures() > 0;
-        // The SDR view must exercise the bake, the un-tone-mapped one the direct path.
-        ASSERT_EQ(std::string(view) == kSDRView, needsTextures) << view;
+        // The SDR view must exercise the LUT textures, the un-tone-mapped one the analytic shader.
+        ASSERT_EQ(std::string(view) == kSDRView, shader->getNumTextures() > 0) << view;
 
         _renderer.setDisplayTransform(transform);
         ASSERT_TRUE(_renderer.isUsingOpenColorIO()) << view;
@@ -651,7 +621,7 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
 
         float reported[3];
         _renderer.getBackgroundColor(reported);
-        EXPECT_NEAR(background[0], reported[0], bakeTolerance) << view;
+        EXPECT_NEAR(background[0], reported[0], 1e-4f) << view;
 
         const QImage image = render();
         const Rgb projected = pixel(image, 97, 128);
@@ -659,34 +629,8 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
         EXPECT_NEAR(expected.g, projected.g, 8) << view << ": " << projected << " expected " << expected;
         EXPECT_NEAR(expected.b, projected.b, 8) << view << ": " << projected << " expected " << expected;
         const Rgb outside = pixel(image, 20, 128);
-        EXPECT_NEAR(codeValue(background[0]), outside.r, 4) << view << ": " << outside;
-        EXPECT_NEAR(codeValue(background[2]), outside.b, 4) << view << ": " << outside;
-
-        if (!needsTextures) {
-            continue;
-        }
-        // Hydra built its pass from OpenColorIO's current config, which now holds the bake.
-        OCIO_NAMESPACE::DisplayViewTransformRcPtr bakedView = OCIO_NAMESPACE::DisplayViewTransform::Create();
-        bakedView->setSrc("Natron 3D Viewport Input");
-        bakedView->setDisplay("Natron 3D Viewport");
-        bakedView->setView("Baked");
-        OCIO_NAMESPACE::ConstProcessorRcPtr baked = OCIO_NAMESPACE::GetCurrentConfig()->getProcessor(bakedView);
-        OCIO_NAMESPACE::GpuShaderDescRcPtr bakedShader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
-        bakedShader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
-        baked->getDefaultGPUProcessor()->extractGpuShaderInfo(bakedShader);
-        EXPECT_EQ(0u, bakedShader->getNumTextures());
-        EXPECT_EQ(1u, bakedShader->getNum3DTextures());
-        const OCIO_NAMESPACE::ConstCPUProcessorRcPtr bakedCpu = baked->getDefaultCPUProcessor();
-        float bakedPlate[3] = { 0.6f, 0.f, 0.5f };
-        bakedCpu->applyRGB(bakedPlate);
-        float bakedBackground[3] = { 0.05f, 0.05f, 0.05f };
-        bakedCpu->applyRGB(bakedBackground);
-        for (int c = 0; c < 3; ++c) {
-            EXPECT_NEAR(plate[c], bakedPlate[c], bakeTolerance) << c;
-            EXPECT_NEAR(background[c], bakedBackground[c], bakeTolerance) << c;
-        }
-        // The configured views stay listed as they were; the bake adds none.
-        EXPECT_EQ(cm.getConfig()->getNumDisplays(), OCIO_NAMESPACE::GetCurrentConfig()->getNumDisplays());
+        EXPECT_NEAR(codeValue(background[0]), outside.r, 2) << view << ": " << outside;
+        EXPECT_NEAR(codeValue(background[2]), outside.b, 2) << view << ": " << outside;
     }
 
     _renderer.setDisplayTransform(SceneViewportRenderer::DisplayTransform());
@@ -698,9 +642,8 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
 
 // The viewer's gain and gamma reach the card as applyViewerDisplayTransform(), the 2D viewer's own
 // maths, computes them: gain before the display transform, gamma after, a gamma of 0 a threshold
-// at 1. The background keeps the plain transform. Through a view Hydra draws analytically and one
-// it is given baked, and, without a config, around the sRGB transform. Back at 1 they leave the
-// plain transform.
+// at 1. The background keeps the plain transform. Through an analytic view, one with LUT textures,
+// and, without a config, around the sRGB encoding. Back at 1 they leave the plain transform.
 TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
 {
     if (_skip) {
@@ -709,7 +652,6 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
     ProjectColorManagement cm;
     std::string error;
     ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
-    const ScopedOcioEnv env(kStudioURI);
     const ScenePayload scene = projectedCardScene(&error);
     ASSERT_TRUE(error.empty()) << error;
     ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
@@ -726,8 +668,6 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
         { kSDRView, 0.25, 1.8 },
         { kSDRView, 2., 0.6 },
     };
-    // The bake's error, up to 2/255 before gamma, grows a little through it.
-    const float bakeTolerance = 3.f / 255.f;
 
     for (const Case& c : cases) {
         const std::string label = std::string(c.view) + " gain " + std::to_string(c.gain) + " gamma " + std::to_string(c.gamma);
@@ -754,7 +694,7 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
 
         float reported[3];
         _renderer.getBackgroundColor(reported);
-        EXPECT_NEAR(std::min(std::max(plain[4], 0.f), 1.f), reported[0], bakeTolerance) << label;
+        EXPECT_NEAR(std::min(std::max(plain[4], 0.f), 1.f), reported[0], 1e-4f) << label;
 
         const QImage image = render();
         const Rgb projected = pixel(image, 97, 128);
@@ -762,26 +702,8 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
         EXPECT_NEAR(expected.g, projected.g, 8) << label << ": " << projected << " expected " << expected;
         EXPECT_NEAR(expected.b, projected.b, 8) << label << ": " << projected << " expected " << expected;
         const Rgb outside = pixel(image, 20, 128);
-        EXPECT_NEAR(codeValue(plain[4]), outside.r, 4) << label << ": " << outside;
-        EXPECT_NEAR(codeValue(plain[6]), outside.b, 4) << label << ": " << outside;
-
-        // Rendering made what Hydra was given OpenColorIO's current config.
-        OCIO_NAMESPACE::DisplayViewTransformRcPtr viewportView = OCIO_NAMESPACE::DisplayViewTransform::Create();
-        viewportView->setSrc("Natron 3D Viewport Input");
-        viewportView->setDisplay("Natron 3D Viewport");
-        viewportView->setView("Baked");
-        OCIO_NAMESPACE::ConstProcessorRcPtr given = OCIO_NAMESPACE::GetCurrentConfig()->getProcessor(viewportView);
-        OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
-        shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
-        given->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
-        EXPECT_EQ(0u, shader->getNumTextures()) << label;
-        float givenPixels[6] = { 0.6f, 0.f, 0.5f, 0.05f, 0.05f, 0.05f };
-        OCIO_NAMESPACE::PackedImageDesc givenImage(givenPixels, 2, 1, 3);
-        given->getDefaultCPUProcessor()->apply(givenImage);
-        for (int i = 0; i < 3; ++i) {
-            EXPECT_NEAR(graded[i], givenPixels[i], bakeTolerance) << label << " plate " << i;
-            EXPECT_NEAR(graded[4 + i], givenPixels[3 + i], bakeTolerance) << label << " grey " << i;
-        }
+        EXPECT_NEAR(codeValue(plain[4]), outside.r, 2) << label << ": " << outside;
+        EXPECT_NEAR(codeValue(plain[6]), outside.b, 2) << label << ": " << outside;
 
         transform.gain = 1.;
         transform.gamma = 1.;
@@ -790,28 +712,167 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
         const Rgb restored = pixel(render(), 97, 128);
         EXPECT_NEAR(plainPlate.r, restored.r, 8) << label << ": " << restored << " expected " << plainPlate;
         EXPECT_NEAR(plainPlate.b, restored.b, 8) << label << ": " << restored << " expected " << plainPlate;
-        if (std::string(c.view) != kSDRView) {
-            EXPECT_FALSE(OCIO_NAMESPACE::GetCurrentConfig()->getColorSpace("Natron 3D Viewport Input")) << label << ": the plain view needs no copy of the config";
-        }
     }
 
     SceneViewportRenderer::DisplayTransform srgbGraded;
     srgbGraded.gain = 0.5;
     srgbGraded.gamma = 1.8;
     _renderer.setDisplayTransform(srgbGraded);
-    EXPECT_TRUE(_renderer.isUsingOpenColorIO());
+    EXPECT_FALSE(_renderer.isUsingOpenColorIO());
     const QImage srgbImage = render();
     const Rgb graded = pixel(srgbImage, 97, 128);
     EXPECT_NEAR(codeValue(std::pow(srgbEncode(0.3f), 1.f / 1.8f)), graded.r, 8) << graded;
     EXPECT_NEAR(codeValue(std::pow(srgbEncode(0.25f), 1.f / 1.8f)), graded.b, 8) << graded;
     const Rgb srgbOutside = pixel(srgbImage, 20, 128);
-    EXPECT_NEAR(codeValue(srgbEncode(0.05f)), srgbOutside.r, 4) << srgbOutside;
+    EXPECT_NEAR(codeValue(srgbEncode(0.05f)), srgbOutside.r, 2) << srgbOutside;
 
     _renderer.setDisplayTransform(SceneViewportRenderer::DisplayTransform());
     EXPECT_FALSE(_renderer.isUsingOpenColorIO());
     const Rgb plain = pixel(render(), 97, 128);
     EXPECT_NEAR(codeValue(srgbEncode(0.6f)), plain.r, 8) << plain;
     EXPECT_NEAR(codeValue(srgbEncode(0.5f)), plain.b, 8) << plain;
+}
+
+namespace {
+
+// A config with a view that adds 0.25 to everything, and a look that halves, in a linear space
+// that is the reference.
+OCIO_NAMESPACE::ConstConfigRcPtr
+offsetConfig()
+{
+    OCIO_NAMESPACE::ConfigRcPtr config = OCIO_NAMESPACE::Config::CreateRaw()->createEditableCopy();
+    OCIO_NAMESPACE::ColorSpaceRcPtr linear = OCIO_NAMESPACE::ColorSpace::Create();
+    linear->setName("linear");
+    config->addColorSpace(linear);
+
+    OCIO_NAMESPACE::ColorSpaceRcPtr offset = OCIO_NAMESPACE::ColorSpace::Create();
+    offset->setName("offset");
+    OCIO_NAMESPACE::MatrixTransformRcPtr add = OCIO_NAMESPACE::MatrixTransform::Create();
+    const double offsets[4] = { 0.25, 0.25, 0.25, 0. };
+    add->setOffset(offsets);
+    offset->setTransform(add, OCIO_NAMESPACE::COLORSPACE_DIR_FROM_REFERENCE);
+    config->addColorSpace(offset);
+    config->addDisplayView("Test", "Offset", "offset", "");
+
+    OCIO_NAMESPACE::LookRcPtr half = OCIO_NAMESPACE::Look::Create();
+    half->setName("half");
+    half->setProcessSpace("linear");
+    OCIO_NAMESPACE::MatrixTransformRcPtr scale = OCIO_NAMESPACE::MatrixTransform::Create();
+    const double matrix[16] = { 0.5, 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 0.5, 0., 0., 0., 0., 1. };
+    scale->setMatrix(matrix);
+    half->setTransform(scale);
+    config->addLook(half);
+    config->validate();
+
+    return config;
+}
+
+SceneViewportRenderer::DisplayTransform
+offsetTransform(const OCIO_NAMESPACE::ConstConfigRcPtr& config)
+{
+    SceneViewportRenderer::DisplayTransform transform;
+    transform.config = config;
+    transform.colorSpace = "linear";
+    transform.display = "Test";
+    transform.view = "Offset";
+
+    return transform;
+}
+
+} // namespace
+
+// A view that lifts black, and the gamma after it, change what was rendered and leave the
+// background where nothing was as the plain view shows it, with nothing taken off it. A look goes
+// through to both.
+TEST_F(SceneViewportStorm, KeepsTheBackgroundUngradedThroughAnOffsetViewAndALook)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = offsetConfig();
+
+    SceneViewportRenderer::DisplayTransform transform = offsetTransform(config);
+    transform.gamma = 4.;
+    _renderer.setDisplayTransform(transform);
+    ASSERT_TRUE(_renderer.isUsingOpenColorIO());
+    float reported[3];
+    _renderer.getBackgroundColor(reported);
+    EXPECT_NEAR(0.3f, reported[0], 1e-4f);
+    QImage image = render();
+    Rgb projected = pixel(image, 97, 128);
+    EXPECT_NEAR(codeValue(std::pow(0.85f, 0.25f)), projected.r, 8) << projected;
+    EXPECT_NEAR(codeValue(std::pow(0.25f, 0.25f)), projected.g, 8) << projected;
+    EXPECT_NEAR(codeValue(std::pow(0.75f, 0.25f)), projected.b, 8) << projected;
+    Rgb outside = pixel(image, 20, 128);
+    EXPECT_NEAR(codeValue(0.3f), outside.r, 2) << outside;
+    EXPECT_NEAR(codeValue(0.3f), outside.g, 2) << outside;
+
+    transform.gamma = 1.;
+    transform.look = "half";
+    _renderer.setDisplayTransform(transform);
+    ASSERT_TRUE(_renderer.isUsingOpenColorIO());
+    _renderer.getBackgroundColor(reported);
+    EXPECT_NEAR(0.275f, reported[0], 1e-4f);
+    image = render();
+    projected = pixel(image, 97, 128);
+    EXPECT_NEAR(codeValue(0.55f), projected.r, 8) << projected;
+    EXPECT_NEAR(codeValue(0.25f), projected.g, 8) << projected;
+    EXPECT_NEAR(codeValue(0.5f), projected.b, 8) << projected;
+    outside = pixel(image, 20, 128);
+    EXPECT_NEAR(codeValue(0.275f), outside.r, 2) << outside;
+}
+
+// A half-transparent card over nothing but the background: its colour is graded unpremultiplied,
+// as the 2D viewer grades an image, and lies over the ungraded background by its alpha, through
+// the sRGB encoding and through a view that lifts black.
+TEST_F(SceneViewportStorm, GradesHalfTransparentPixelsUnpremultipliedOverTheBackground)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error, false);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    // The plate's straight colour and alpha.
+    const float red = 1.2f;
+    const float alpha = 0.5f;
+    const double gain = 0.5;
+    const double gamma = 1.8;
+
+    SceneViewportRenderer::DisplayTransform srgb;
+    srgb.gain = gain;
+    srgb.gamma = gamma;
+    _renderer.setDisplayTransform(srgb);
+    float background[3];
+    _renderer.getBackgroundColor(background);
+    QImage image = render();
+    Rgb projected = pixel(image, 97, 128);
+    const float srgbRed = std::pow(srgbEncode(red * (float)gain), 1.f / (float)gamma);
+    EXPECT_NEAR(codeValue(alpha * srgbRed + (1.f - alpha) * background[0]), projected.r, 6) << projected;
+    EXPECT_NEAR(codeValue((1.f - alpha) * background[1]), projected.g, 6) << projected;
+    EXPECT_NEAR(codeValue((1.f - alpha) * background[2]), projected.b, 6) << projected;
+
+    SceneViewportRenderer::DisplayTransform offset = offsetTransform(offsetConfig());
+    offset.gain = gain;
+    offset.gamma = gamma;
+    _renderer.setDisplayTransform(offset);
+    ASSERT_TRUE(_renderer.isUsingOpenColorIO());
+    _renderer.getBackgroundColor(background);
+    image = render();
+    projected = pixel(image, 97, 128);
+    const float offsetRed = std::pow(red * (float)gain + 0.25f, 1.f / (float)gamma);
+    const float offsetBlack = std::pow(0.25f, 1.f / (float)gamma);
+    EXPECT_NEAR(codeValue(alpha * offsetRed + (1.f - alpha) * background[0]), projected.r, 6) << projected;
+    EXPECT_NEAR(codeValue(alpha * offsetBlack + (1.f - alpha) * background[1]), projected.g, 6) << projected;
+    const Rgb outside = pixel(image, 20, 128);
+    EXPECT_NEAR(codeValue(background[0]), outside.r, 2) << outside;
 }
 
 TEST_F(SceneViewportStorm, PicksThePrimsInARectangleAndHighlightsThemAll)

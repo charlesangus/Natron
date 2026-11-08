@@ -320,6 +320,7 @@ set(GuiTests_SOURCES
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
     NodeGraphDeleteLinks_Test.cpp
+    NodeGraphItemGrid_Test.cpp
     NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp

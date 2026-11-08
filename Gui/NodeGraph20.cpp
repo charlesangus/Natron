@@ -259,92 +259,119 @@ NodeGraph::checkForSpliceHint()
     }
     const QPointF selectionCentre = selectionBody.center();
 
-    std::set<NodeGui*> nodesWithinRect;
-    getNodesWithinViewportRect(visibleWidgetRect(), &nodesWithinRect);
+    // Only a pipe whose bounds meet a selected node's rectangle can touch it, so the grid hands
+    // over those few pipes. Ordering them by destination address and input number visits them as
+    // a walk over the destinations' inputs in that order would, which decides between pipes at
+    // the same distance.
+    std::set<std::pair<NodeGui*, int>> candidatePipes;
+    {
+        std::vector<QGraphicsItem*> candidates;
+        for (std::size_t r = 0; r < selectedRects.size(); ++r) {
+            _imp->getGridCandidates(_imp->_nodeRoot->mapRectFromScene(selectedRects[r]), &candidates);
+        }
+        for (std::vector<QGraphicsItem*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+            Edge* pipe = dynamic_cast<Edge*>(*it);
+            if (!pipe || pipe->isOutputEdge()) {
+                continue;
+            }
+            NodeGuiPtr destGui = pipe->getDest();
+            if (destGui && (destGui->getInputArrow(pipe->getInputNumber()) == pipe)) {
+                candidatePipes.insert(std::make_pair(destGui.get(), pipe->getInputNumber()));
+            }
+        }
+    }
 
+    const QRect visibleWidget = visibleWidgetRect();
+    // Whether each destination has a part on screen, as a hit test of the whole view would find.
+    std::map<NodeGui*, bool> destIsCandidate;
     Edge* bestPipe = 0;
     int bestEntryInput = -1;
     double bestDistSq = 0.;
-    for (std::set<NodeGui*>::const_iterator it = nodesWithinRect.begin(); it != nodesWithinRect.end(); ++it) {
-        NodeGui* destGui = *it;
-        if ((selectedNodes.find(destGui) != selectedNodes.end()) || !destGui->isVisible()) {
+    for (std::set<std::pair<NodeGui*, int>>::const_iterator it = candidatePipes.begin(); it != candidatePipes.end(); ++it) {
+        NodeGui* destGui = it->first;
+        std::map<NodeGui*, bool>::iterator known = destIsCandidate.find(destGui);
+        if (known == destIsCandidate.end()) {
+            bool ok = (selectedNodes.find(destGui) == selectedNodes.end()) && destGui->isVisible();
+            if (ok) {
+                NodePtr destNode = destGui->getNode();
+                // A Viewer pipe only shows a node, so it is never a place to insert one.
+                ok = destNode && !destNode->isEffectViewer();
+            }
+            if (ok) {
+                std::vector<QGraphicsItem*> hits;
+                _imp->collectGraphItemsMeetingViewportRect(visibleWidget, false, std::vector<QGraphicsItem*>(1, destGui), &hits);
+                ok = !hits.empty();
+            }
+            known = destIsCandidate.insert(std::make_pair(destGui, ok)).first;
+        }
+        if (!known->second) {
             continue;
         }
         NodePtr destNode = destGui->getNode();
-        if (!destNode) {
-            continue;
-        }
-        // A Viewer pipe only shows a node, so it is never a place to insert one.
-        if (destNode->isEffectViewer()) {
-            continue;
-        }
         EffectInstancePtr destEffect = destNode->getEffectInstance();
 
-        const std::vector<Edge*>& pipes = destGui->getInputsArrows();
-        for (std::size_t i = 0; i < pipes.size(); ++i) {
-            Edge* pipe = pipes[i];
-            if (!pipe || !pipe->isVisible() || !pipe->hasSource()) {
-                continue;
-            }
-            NodeGuiPtr srcGui = pipe->getSource();
-            if (!srcGui || (selectedNodes.find(srcGui.get()) != selectedNodes.end())) {
-                continue;
-            }
-            if (destEffect && destEffect->isInputRotoBrush(pipe->getInputNumber())) {
-                continue;
-            }
-
-            QLineF segment = pipe->line();
-            segment.setP1(pipe->mapToScene(segment.p1()));
-            segment.setP2(pipe->mapToScene(segment.p2()));
-
-            bool touches = false;
-            for (std::size_t r = 0; r < selectedRects.size(); ++r) {
-                if (segmentTouchesRect(segment, selectedRects[r])) {
-                    touches = true;
-                    break;
-                }
-            }
-            if (!touches) {
-                continue;
-            }
-
-            const double distSq = squaredDistanceToSegment(selectionCentre, segment);
-            if (bestPipe && (distSq >= bestDistSq)) {
-                continue;
-            }
-
-            NodePtr srcNode = srcGui->getNode();
-            if (!srcNode) {
-                continue;
-            }
-            // The insert leaves an entry node alone when the pipe's source already feeds it.
-            bool alreadyFeedsEntry = false;
-            const std::vector<NodeWPtr>& entryFeeders = entryNode->getGuiInputs();
-            for (std::size_t f = 0; f < entryFeeders.size(); ++f) {
-                if (entryFeeders[f].lock() == srcNode) {
-                    alreadyFeedsEntry = true;
-                    break;
-                }
-            }
-            if (alreadyFeedsEntry) {
-                continue;
-            }
-            int entryInput = -1;
-            for (std::size_t e = 0; e < _imp->_spliceEntryInputs.size(); ++e) {
-                if (canSpliceIntoPipe(destNode, pipe->getInputNumber(), srcNode, entryNode, _imp->_spliceEntryInputs[e], exitNode)) {
-                    entryInput = _imp->_spliceEntryInputs[e];
-                    break;
-                }
-            }
-            if (entryInput == -1) {
-                continue;
-            }
-
-            bestPipe = pipe;
-            bestEntryInput = entryInput;
-            bestDistSq = distSq;
+        Edge* pipe = destGui->getInputArrow(it->second);
+        if (!pipe || !pipe->isVisible() || !pipe->hasSource()) {
+            continue;
         }
+        NodeGuiPtr srcGui = pipe->getSource();
+        if (!srcGui || (selectedNodes.find(srcGui.get()) != selectedNodes.end())) {
+            continue;
+        }
+        if (destEffect && destEffect->isInputRotoBrush(pipe->getInputNumber())) {
+            continue;
+        }
+
+        QLineF segment = pipe->line();
+        segment.setP1(pipe->mapToScene(segment.p1()));
+        segment.setP2(pipe->mapToScene(segment.p2()));
+
+        bool touches = false;
+        for (std::size_t r = 0; r < selectedRects.size(); ++r) {
+            if (segmentTouchesRect(segment, selectedRects[r])) {
+                touches = true;
+                break;
+            }
+        }
+        if (!touches) {
+            continue;
+        }
+
+        const double distSq = squaredDistanceToSegment(selectionCentre, segment);
+        if (bestPipe && (distSq >= bestDistSq)) {
+            continue;
+        }
+
+        NodePtr srcNode = srcGui->getNode();
+        if (!srcNode) {
+            continue;
+        }
+        // The insert leaves an entry node alone when the pipe's source already feeds it.
+        bool alreadyFeedsEntry = false;
+        const std::vector<NodeWPtr>& entryFeeders = entryNode->getGuiInputs();
+        for (std::size_t f = 0; f < entryFeeders.size(); ++f) {
+            if (entryFeeders[f].lock() == srcNode) {
+                alreadyFeedsEntry = true;
+                break;
+            }
+        }
+        if (alreadyFeedsEntry) {
+            continue;
+        }
+        int entryInput = -1;
+        for (std::size_t e = 0; e < _imp->_spliceEntryInputs.size(); ++e) {
+            if (canSpliceIntoPipe(destNode, pipe->getInputNumber(), srcNode, entryNode, _imp->_spliceEntryInputs[e], exitNode)) {
+                entryInput = _imp->_spliceEntryInputs[e];
+                break;
+            }
+        }
+        if (entryInput == -1) {
+            continue;
+        }
+
+        bestPipe = pipe;
+        bestEntryInput = entryInput;
+        bestDistSq = distSq;
     }
 
     if (!bestPipe) {
@@ -806,6 +833,7 @@ NodeGraph::cancelNodeDrag()
     _imp->_nodesWithinBDAtPenDown.clear();
     // The button is still down, so the release that follows must find no drag to record.
     _imp->_evtState = eEventStateNone;
+    _imp->endNavigatorDragDeferral();
     _imp->autoScrollTimer.stop();
     if (_imp->cursorSet) {
         _imp->cursorSet = false;
@@ -915,6 +943,10 @@ NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
         }
     }
 
+    if (_imp->_evtState == eEventStateDraggingNode) {
+        _imp->growNodesBoundsForDrag(nodesToMove);
+    }
+
     if (!deltaSet) {
         _imp->_deltaSinceMousePress.rx() += dxScene;
         _imp->_deltaSinceMousePress.ry() += dyScene;
@@ -1010,8 +1042,9 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
         break;
     }
     case eEventStateDraggingNode: {
-        mustUpdate = true;
-        mustUpdateNavigator = true;
+        // The moved items repaint their own old and new rectangles, and the navigator is redrawn
+        // only if growNodesBoundsForDrag() widened what it frames.
+        mustUpdate = false;
         bool controlDown = modifierHasControl(e);
         bool shiftdown = modifierHasShift(e);
         moveSelectedNodesBy(shiftdown, controlDown, lastMousePosScene, newPos, sceneR, true);

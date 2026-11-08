@@ -143,26 +143,168 @@ collectItemsMeetingQuery(QGraphicsItem* item,
     }
 }
 
-// Nodes and edges are all children of _nodeRoot. Testing them through their bounds in its
-// coordinates, which panning leaves alone, costs a few rectangle tests per node, where a scene
-// query without an index visits every item of every node.
+// The rectangle the grid files an item under, in its parent's coordinates. The margin absorbs
+// small changes to a node's children, a label growing for instance, that nothing reports.
+static QRectF
+gridRectOf(QGraphicsItem* item)
+{
+    const qreal margin = 8.;
+    QRectF itemRect = item->boundingRect();
+    adjustDegenerateRect(&itemRect);
+    QRectF subtreeRect = item->mapRectToParent(itemRect.united(item->childrenBoundingRect()));
+    adjustDegenerateRect(&subtreeRect);
+
+    return subtreeRect.adjusted(-margin, -margin, margin, margin);
+}
+
+bool
+NodeGraphPrivate::isGridItemValid(const GridItem& gridItem) const
+{
+    if (!gridItem.owner || !gridItem.item || !_nodes.contains(gridItem.owner)) {
+        return false;
+    }
+    QGraphicsItem* expected = (gridItem.slot == kGridNodeSlot) ? static_cast<QGraphicsItem*>(gridItem.owner) : static_cast<QGraphicsItem*>(gridItem.owner->getInputArrow(gridItem.slot));
+
+    return expected && (expected == gridItem.item) && (expected->parentItem() == _nodeRoot);
+}
+
+void
+NodeGraphPrivate::refreshItemGrid()
+{
+    if (navigatorDeferredByDrag && (_evtState != eEventStateDraggingNode)) {
+        endNavigatorDragDeferral();
+    }
+    if (itemGridDirty) {
+        itemGrid.clear();
+        itemGridStale.clear();
+        QMutexLocker l(&_nodesMutex);
+        for (NodesGuiList::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
+            NodeGui* node = it->get();
+            GridItem gridItem;
+            gridItem.owner = node;
+            gridItem.slot = kGridNodeSlot;
+            gridItem.item = node;
+            if (node->parentItem() == _nodeRoot) {
+                itemGrid.insertOrUpdate(gridItem.item, gridItem, gridRectOf(gridItem.item));
+            }
+            const std::vector<Edge*>& inputs = node->getInputsArrows();
+            for (std::size_t i = 0; i < inputs.size(); ++i) {
+                gridItem.slot = (int)i;
+                gridItem.item = inputs[i];
+                if (gridItem.item && (gridItem.item->parentItem() == _nodeRoot)) {
+                    itemGrid.insertOrUpdate(gridItem.item, gridItem, gridRectOf(gridItem.item));
+                }
+            }
+            gridItem.slot = -1;
+            gridItem.item = node->getOutputArrow();
+            if (gridItem.item && (gridItem.item->parentItem() == _nodeRoot)) {
+                itemGrid.insertOrUpdate(gridItem.item, gridItem, gridRectOf(gridItem.item));
+            }
+        }
+        itemGridDirty = false;
+
+        return;
+    }
+    for (std::unordered_map<const QGraphicsItem*, GridItem>::const_iterator it = itemGridStale.begin(); it != itemGridStale.end(); ++it) {
+        if (isGridItemValid(it->second)) {
+            itemGrid.insertOrUpdate(it->first, it->second, gridRectOf(it->second.item));
+        } else {
+            itemGrid.remove(it->first);
+        }
+    }
+    itemGridStale.clear();
+}
+
+void
+NodeGraphPrivate::getGridCandidates(const QRectF& queryRoot,
+                                    std::vector<QGraphicsItem*>* candidates)
+{
+    refreshItemGrid();
+    std::vector<GridItem> found;
+    itemGrid.query(queryRoot, &found);
+    for (std::vector<GridItem>::const_iterator it = found.begin(); it != found.end(); ++it) {
+        if (isGridItemValid(*it)) {
+            candidates->push_back(it->item);
+        } else {
+            itemGrid.remove(it->item);
+        }
+    }
+    // The graph's own preview pipes belong to no node; there are only ever these three.
+    Edge* const graphEdges[] = { _hintInputEdge, _hintOutputEdge, _kissPreviewEdge };
+    for (std::size_t i = 0; i < sizeof(graphEdges) / sizeof(graphEdges[0]); ++i) {
+        if (graphEdges[i] && (graphEdges[i]->parentItem() == _nodeRoot)) {
+            candidates->push_back(graphEdges[i]);
+        }
+    }
+}
+
+void
+NodeGraphPrivate::getGridCandidatesForViewportRect(const QRect& rect,
+                                                   std::vector<QGraphicsItem*>* candidates)
+{
+    if (!_nodeRoot->isVisible()) {
+        return;
+    }
+    getGridCandidates(_nodeRoot->mapRectFromScene(_publicInterface->mapToScene(rect).boundingRect()), candidates);
+}
+
+void
+NodeGraphPrivate::collectGraphItemsMeetingViewportRect(const QRect& rect,
+                                                       bool skipText,
+                                                       const std::vector<QGraphicsItem*>& candidates,
+                                                       std::vector<QGraphicsItem*>* hits) const
+{
+    if (!_nodeRoot->isVisible()) {
+        return;
+    }
+    QPolygonF polygonScene = _publicInterface->mapToScene(rect);
+    QPainterPath pathScene;
+    pathScene.addPolygon(polygonScene);
+    pathScene.closeSubpath();
+    QRectF queryRoot = _nodeRoot->mapRectFromScene(polygonScene.boundingRect());
+    for (std::vector<QGraphicsItem*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+        collectItemsMeetingQuery(*it, queryRoot, pathScene, skipText, hits);
+    }
+}
+
+// Only nodes and edges, all children of _nodeRoot, are looked for. The grid narrows them down to
+// those near the rectangle, whose subtrees are then tested item by item.
 void
 NodeGraph::getGraphItemsMeetingViewportRect(const QRect& rect,
                                             bool skipText,
                                             std::vector<QGraphicsItem*>* hits) const
 {
-    QPolygonF polygonScene = mapToScene(rect);
-    QPainterPath pathScene;
-    pathScene.addPolygon(polygonScene);
-    pathScene.closeSubpath();
-    if (!_imp->_nodeRoot->isVisible()) {
+    std::vector<QGraphicsItem*> candidates;
+    _imp->getGridCandidatesForViewportRect(rect, &candidates);
+    _imp->collectGraphItemsMeetingViewportRect(rect, skipText, candidates, hits);
+}
+
+void
+NodeGraph::noteNodeGeometryChanged(NodeGui* node)
+{
+    if (_imp->itemGridDirty || !node) {
         return;
     }
-    QRectF queryRoot = _imp->_nodeRoot->mapRectFromScene(polygonScene.boundingRect());
-    const QList<QGraphicsItem*> children = _imp->_nodeRoot->childItems();
-    for (QList<QGraphicsItem*>::const_iterator it = children.begin(); it != children.end(); ++it) {
-        collectItemsMeetingQuery(*it, queryRoot, pathScene, skipText, hits);
+    NodeGraphPrivate::GridItem gridItem;
+    gridItem.item = node;
+    gridItem.owner = node;
+    gridItem.slot = NodeGraphPrivate::kGridNodeSlot;
+    _imp->itemGridStale[gridItem.item] = gridItem;
+}
+
+void
+NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
+                                   int slot,
+                                   Edge* edge)
+{
+    if (_imp->itemGridDirty || !owner || !edge) {
+        return;
     }
+    NodeGraphPrivate::GridItem gridItem;
+    gridItem.item = edge;
+    gridItem.owner = owner;
+    gridItem.slot = slot;
+    _imp->itemGridStale[gridItem.item] = gridItem;
 }
 
 void
@@ -190,15 +332,6 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
     // if mouse is exactly on node, select it
     // do not select text that may go beyond the Node box
     // see https://github.com/MrKepzie/Natron/issues/1604
-    std::vector<QGraphicsItem*> hits;
-    getGraphItemsMeetingViewportRect(QRect(mousePosViewport, QSize(1, 1)), true, &hits);
-    std::set<NodeGui*> nodes;
-    for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
-        NodeGui* n = isNodeGuiChild(*it);
-        if (n) {
-            nodes.insert(n);
-        }
-    }
     // The broad-phase square reaches as far as the largest grab radius below (an unconnected
     // input stub's) on every side of the cursor. It still runs against each edge's drawn shape;
     // the radii that decide which one actually wins are applied afterwards, against the nearest
@@ -208,9 +341,22 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
                         mousePosViewport.y() - tolerance,
                         2. * tolerance,
                         2. * tolerance);
+    // One grid query serves both the point and the square around it.
+    std::vector<QGraphicsItem*> candidates;
+    _imp->getGridCandidatesForViewportRect(toleranceRect.united(QRect(mousePosViewport, QSize(1, 1))), &candidates);
+
+    std::vector<QGraphicsItem*> hits;
+    _imp->collectGraphItemsMeetingViewportRect(QRect(mousePosViewport, QSize(1, 1)), true, candidates, &hits);
+    std::set<NodeGui*> nodes;
+    for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
+        NodeGui* n = isNodeGuiChild(*it);
+        if (n) {
+            nodes.insert(n);
+        }
+    }
     hits.clear();
     // text is decorative only, see https://github.com/MrKepzie/Natron/issues/1604
-    getGraphItemsMeetingViewportRect(toleranceRect, true, &hits);
+    _imp->collectGraphItemsMeetingViewportRect(toleranceRect, true, candidates, &hits);
     std::set<Edge*> edges;
     for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
         Edge* isEdge = isEdgeChild(*it);

@@ -4893,6 +4893,33 @@ walkDownstreamUntil(const Node* start,
 thread_local int removalBatchDepth = 0;
 thread_local std::unordered_set<const Node*> removalBatchOutputWalkVisited;
 
+int pythonDeclarationBatchDepth = 0;
+// Each deactivated node with the name its variable was deleted under, and the script deleting all.
+std::vector<std::pair<NodePtr, std::string>> pythonDeclarationBatchDeleted;
+std::string pythonDeclarationBatchDeletionScript;
+std::vector<NodePtr> pythonDeclarationBatchActivated;
+std::vector<NodePtr> pythonDeclarationBatchCreated;
+std::set<std::string> pythonDeclarationBatchRechecked;
+
+// Errors abort a script at the failing line, leaving the lines after it unrun.
+bool
+runBatchedDeclarationScript(const AppInstancePtr& app,
+                            const std::string& script)
+{
+    if (!appPTR->isBackground()) {
+        app->printAutoDeclaredVariable(script);
+    }
+    std::string err;
+    std::string output;
+    if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output)) {
+        qDebug() << err.c_str();
+
+        return false;
+    }
+
+    return true;
+}
+
 bool
 collectViewer(std::list<ViewerInstance*>* viewers,
               const Node* node)
@@ -4919,6 +4946,123 @@ Node::RemovalBatch::~RemovalBatch()
         removalBatchOutputWalkVisited.clear();
     }
 }
+
+Node::PythonDeclarationBatch::PythonDeclarationBatch()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    ++pythonDeclarationBatchDepth;
+}
+
+Node::PythonDeclarationBatch::~PythonDeclarationBatch()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (--pythonDeclarationBatchDepth == 0) {
+        runPendingPythonDeclarations();
+    }
+}
+
+void
+Node::runPendingPythonDeclarations()
+{
+    std::vector<std::pair<NodePtr, std::string>> deleted;
+    deleted.swap(pythonDeclarationBatchDeleted);
+    std::string deletionScript;
+    deletionScript.swap(pythonDeclarationBatchDeletionScript);
+    std::vector<NodePtr> activated;
+    activated.swap(pythonDeclarationBatchActivated);
+    std::vector<NodePtr> created;
+    created.swap(pythonDeclarationBatchCreated);
+    std::set<std::string> rechecked;
+    rechecked.swap(pythonDeclarationBatchRechecked);
+
+#ifndef NATRON_RUN_WITHOUT_PYTHON
+    // Deleting first: a node deactivated and then activated again in the batch ends up declared.
+    if (!deletionScript.empty()) {
+        if (!runBatchedDeclarationScript(deleted.front().first->getApp(), deletionScript)) {
+            // Each skips a variable the script deleted before failing.
+            for (const std::pair<NodePtr, std::string>& node : deleted) {
+                node.first->deleteNodeVariableToPython(node.second);
+            }
+        }
+        KnobHelper::moveExpressionFunctionsGeneration();
+    }
+
+    if (!activated.empty()) {
+        const AppInstancePtr app = activated.front()->getApp();
+
+        // A group's variable is declared before the variables of the nodes inside it, which hang
+        // under it, because activate() reaches the group first.
+        std::vector<NodePtr> declared;
+        std::string variablesScript;
+        for (const NodePtr& node : activated) {
+            if (node->getScriptName_mt_safe().empty()) {
+                continue;
+            }
+            try {
+                variablesScript += node->makeNodeVariableDeclarationScript(node->getFullyQualifiedName());
+                declared.push_back(node);
+            } catch (const std::exception& e) {
+                qDebug() << e.what();
+            }
+        }
+        if (!variablesScript.empty() && !runBatchedDeclarationScript(app, variablesScript)) {
+            for (const NodePtr& node : declared) {
+                try {
+                    node->declareNodeVariableToPython(node->getFullyQualifiedName());
+                } catch (const std::exception& e) {
+                    qDebug() << e.what();
+                }
+            }
+        }
+
+        // The parameters already on a node's object are read from it, so this follows the script
+        // declaring the objects.
+        std::vector<NodePtr> withFields;
+        std::string fieldsScript;
+        for (const NodePtr& node : declared) {
+            try {
+                fieldsScript += node->makePythonFieldsScript();
+                withFields.push_back(node);
+            } catch (const std::exception& e) {
+                qDebug() << e.what();
+            }
+        }
+        if (!fieldsScript.empty() && !runBatchedDeclarationScript(app, fieldsScript)) {
+            for (const NodePtr& node : withFields) {
+                try {
+                    node->declarePythonFields();
+                } catch (const std::exception& e) {
+                    qDebug() << e.what();
+                }
+            }
+        }
+
+        for (const NodePtr& node : withFields) {
+            try {
+                if (node->_imp->curveContext) {
+                    node->declareRotoPythonField();
+                }
+                if (node->_imp->trackContext) {
+                    node->declareTrackerPythonField();
+                }
+            } catch (const std::exception& e) {
+                qDebug() << e.what();
+            }
+        }
+        KnobHelper::moveExpressionFunctionsGeneration();
+    }
+#endif // ifndef NATRON_RUN_WITHOUT_PYTHON
+
+    for (const NodePtr& node : activated) {
+        node->restoreKnobsExpressionFunctions();
+    }
+    if (!rechecked.empty()) {
+        activated.front()->getApp()->recheckInvalidExpressionsReferencing(rechecked);
+    }
+    for (const NodePtr& node : created) {
+        node->_imp->runOnNodeCreatedCB(true);
+    }
+} // Node::runPendingPythonDeclarations
 
 void
 Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
@@ -5267,9 +5411,46 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         _imp->runOnNodeDeleteCB();
     }
 
-    deleteNodeVariableToPython( getFullyQualifiedName() );
+    if ((pythonDeclarationBatchDepth > 0) && (QThread::currentThread() == qApp->thread())) {
+        // The pending declarations are run first, as their scripts are made when they run and would
+        // otherwise declare this node again.
+        if (!pythonDeclarationBatchActivated.empty()) {
+            runPendingPythonDeclarations();
+        }
+        queueNodeVariableDeletion();
+    } else {
+        deleteNodeVariableToPython(getFullyQualifiedName());
+    }
     _imp->notifyLayerReferencesChanged();
 } // deactivate
+
+void
+Node::queueNodeVariableDeletion()
+{
+#ifdef NATRON_RUN_WITHOUT_PYTHON
+
+    return;
+#endif
+    if (getScriptName_mt_safe().empty()) {
+        return;
+    }
+    const std::string nodeName = getFullyQualifiedName();
+    const std::string script = makeNodeVariableDeletionScript(nodeName);
+    if (script.empty()) {
+        return;
+    }
+    pythonDeclarationBatchDeleted.push_back(std::make_pair(shared_from_this(), nodeName));
+    pythonDeclarationBatchDeletionScript += script;
+}
+
+void
+Node::restoreKnobsExpressionFunctions()
+{
+    const KnobsVec& knobs = getKnobs();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        (*it)->restoreExpressionFunctions();
+    }
+}
 
 void
 Node::activate(const std::list<NodePtr> & outputsToRestore,
@@ -5347,14 +5528,13 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     Q_EMIT activated(triggerRender);
     emitLinksChanged(NodesList());
 
-    declareAllPythonAttributes();
-    {
-        const KnobsVec& knobs = getKnobs();
-        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-            (*it)->restoreExpressionFunctions();
-        }
-    }
-    {
+    const bool batchingPython = pythonDeclarationBatchDepth > 0;
+    if (batchingPython) {
+        pythonDeclarationBatchActivated.push_back(thisShared);
+        pythonDeclarationBatchRechecked.insert(getScriptName_mt_safe());
+    } else {
+        declareAllPythonAttributes();
+        restoreKnobsExpressionFunctions();
         std::set<std::string> names;
         names.insert(getScriptName_mt_safe());
         getApp()->recheckInvalidExpressionsReferencing(names);
@@ -5376,7 +5556,11 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
         it->lock()->activate(std::list<NodePtr>(), false, false);
     }
 
-    _imp->runOnNodeCreatedCB(true);
+    if (batchingPython) {
+        pythonDeclarationBatchCreated.push_back(thisShared);
+    } else {
+        _imp->runOnNodeCreatedCB(true);
+    }
     _imp->notifyLayerReferencesChanged();
 } // activate
 
@@ -9914,6 +10098,23 @@ Node::declareNodeVariableToPython(const std::string& nodeName)
         return;
     }
     KnobHelper::moveExpressionFunctionsGeneration();
+    const std::string script = makeNodeVariableDeclarationScript(nodeName);
+    if (script.empty()) {
+        return;
+    }
+    std::string output;
+    std::string err;
+    if (!appPTR->isBackground()) {
+        getApp()->printAutoDeclaredVariable(script);
+    }
+    if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output)) {
+        qDebug() << err.c_str();
+    }
+}
+
+std::string
+Node::makeNodeVariableDeclarationScript(const std::string& nodeName)
+{
     if ( NATRON_PYTHON_NAMESPACE::isKeyword(nodeName) ) {
         throw std::runtime_error(nodeName + " is a Python keyword");
     }
@@ -9929,23 +10130,17 @@ Node::declareNodeVariableToPython(const std::string& nodeName)
     assert(nodeObj);
     Q_UNUSED(nodeObj);
 
-    if (!alreadyDefined) {
-        std::stringstream ss;
-        ss << nodeFullName << " = " << appID << ".getNode(\"" << nodeName << "\")\n";
-#ifdef DEBUG
-        ss << "if not " << nodeFullName << ":\n";
-        ss << "    print(\"[BUG]: " << nodeFullName << " does not exist!\")";
-#endif
-        std::string script = ss.str();
-        std::string output;
-        std::string err;
-        if ( !appPTR->isBackground() ) {
-            getApp()->printAutoDeclaredVariable(script);
-        }
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output) ) {
-            qDebug() << err.c_str();
-        }
+    if (alreadyDefined) {
+        return std::string();
     }
+    std::stringstream ss;
+    ss << nodeFullName << " = " << appID << ".getNode(\"" << nodeName << "\")\n";
+#ifdef DEBUG
+    ss << "if not " << nodeFullName << ":\n";
+    ss << "    print(\"[BUG]: " << nodeFullName << " does not exist!\")\n";
+#endif
+
+    return ss.str();
 }
 
 void
@@ -9983,30 +10178,40 @@ Node::deleteNodeVariableToPython(const std::string& nodeName)
         return;
     }
     KnobHelper::moveExpressionFunctionsGeneration();
-    if ( getParentMultiInstance() ) {
+    const std::string script = makeNodeVariableDeletionScript(nodeName);
+    if (script.empty()) {
         return;
+    }
+    std::string err;
+    if (!appPTR->isBackground()) {
+        getApp()->printAutoDeclaredVariable(script);
+    }
+    if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, 0)) {
+        qDebug() << err.c_str();
+    }
+}
+
+std::string
+Node::makeNodeVariableDeletionScript(const std::string& nodeName)
+{
+    if (getParentMultiInstance()) {
+        return std::string();
     }
 
     AppInstancePtr app = getApp();
     if (!app) {
-        return;
+        return std::string();
     }
-    QString appID = QString::fromUtf8( getApp()->getAppIDString().c_str() );
-    std::string nodeFullName = appID.toStdString() + "." + nodeName;
+    std::string nodeFullName = app->getAppIDString() + "." + nodeName;
     bool alreadyDefined = false;
     PyObject* nodeObj = NATRON_PYTHON_NAMESPACE::getAttrRecursive(nodeFullName, appPTR->getMainModule(), &alreadyDefined);
     assert(nodeObj);
     Q_UNUSED(nodeObj);
-    if (alreadyDefined) {
-        std::string script = "del " + nodeFullName;
-        std::string err;
-        if ( !appPTR->isBackground() ) {
-            getApp()->printAutoDeclaredVariable(script);
-        }
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, 0) ) {
-            qDebug() << err.c_str();
-        }
+    if (!alreadyDefined) {
+        return std::string();
     }
+
+    return "del " + nodeFullName + "\n";
 }
 
 void
@@ -10020,10 +10225,26 @@ Node::declarePythonFields()
         return;
     }
     KnobHelper::moveExpressionFunctionsGeneration();
+    std::string script = makePythonFieldsScript();
+    if (!script.empty()) {
+        if (!appPTR->isBackground()) {
+            getApp()->printAutoDeclaredVariable(script);
+        }
+        std::string err;
+        std::string output;
+        if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output)) {
+            qDebug() << err.c_str();
+        }
+    }
+} // Node::declarePythonFields
+
+std::string
+Node::makePythonFieldsScript()
+{
     PythonGILLocker pgl;
 
     if ( !getGroup() ) {
-        return;
+        return std::string();
     }
 
     std::locale locale;
@@ -10057,18 +10278,8 @@ Node::declarePythonFields()
         }
     }
 
-    std::string script = ss.str();
-    if ( !script.empty() ) {
-        if ( !appPTR->isBackground() ) {
-            getApp()->printAutoDeclaredVariable(script);
-        }
-        std::string err;
-        std::string output;
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output) ) {
-            qDebug() << err.c_str();
-        }
-    }
-} // Node::declarePythonFields
+    return ss.str();
+} // Node::makePythonFieldsScript
 
 void
 Node::removeParameterFromPython(const std::string& parameterName)

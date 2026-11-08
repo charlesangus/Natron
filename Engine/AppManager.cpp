@@ -47,6 +47,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <clocale>
 #include <csignal>
@@ -3912,6 +3913,16 @@ NATRON_PYTHON_NAMESPACE::ensureScriptHasModuleImport(const std::string& moduleNa
 
 #endif
 
+namespace {
+std::atomic<U64> gInterpretedScripts { 0 };
+}
+
+U64
+NATRON_PYTHON_NAMESPACE::getInterpretedScriptsCount()
+{
+    return gInterpretedScripts.load();
+}
+
 bool
 NATRON_PYTHON_NAMESPACE::interpretPythonScript(const std::string& script,
                                                std::string* error,
@@ -3921,6 +3932,7 @@ NATRON_PYTHON_NAMESPACE::interpretPythonScript(const std::string& script,
 
     return true;
 #endif
+    gInterpretedScripts.fetch_add(1);
     PythonGILLocker pgl;
     PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
     int status = -1;

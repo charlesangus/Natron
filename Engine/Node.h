@@ -2060,6 +2060,23 @@ public:
         RemovalBatch& operator=(const RemovalBatch&) = delete;
     };
 
+    /**
+     * @brief While one lives on the main thread, activate() and deactivate() leave declaring or
+     * deleting the nodes' Python variables, restoring their expression functions and running their
+     * creation callbacks to the end of the outermost one. It runs one script declaring every
+     * activated node, one declaring all their parameters and one deleting every deactivated node,
+     * without echoing them per node in the Script Editor. Open it inside the InputEditBatch of the
+     * edit, whose rechecks and refreshes read the declarations.
+     **/
+    class PythonDeclarationBatch {
+    public:
+        PythonDeclarationBatch();
+        ~PythonDeclarationBatch();
+
+        PythonDeclarationBatch(const PythonDeclarationBatch&) = delete;
+        PythonDeclarationBatch& operator=(const PythonDeclarationBatch&) = delete;
+    };
+
     void markAllInputRelatedDataDirty();
 
     /**
@@ -2571,6 +2588,22 @@ private:
     void declareNodeVariableToPython(const std::string& nodeName);
     void setNodeVariableToPython(const std::string& oldName, const std::string& newName);
     void deleteNodeVariableToPython(const std::string& nodeName);
+
+    /**
+     * @brief The scripts the functions above run, empty when there is nothing to run.
+     **/
+    std::string makeNodeVariableDeclarationScript(const std::string& nodeName);
+    std::string makePythonFieldsScript();
+    std::string makeNodeVariableDeletionScript(const std::string& nodeName);
+
+    void restoreKnobsExpressionFunctions();
+
+    /**
+     * @brief Leaves deleting this node's Python variable to the end of the PythonDeclarationBatch.
+     **/
+    void queueNodeVariableDeletion();
+
+    static void runPendingPythonDeclarations();
 
     std::unique_ptr<Implementation> _imp;
 };

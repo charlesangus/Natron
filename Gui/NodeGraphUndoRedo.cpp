@@ -28,6 +28,7 @@
 #include <algorithm> // min, max
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -46,6 +47,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Gui/CurveEditor.h"
 #include "Gui/Edge.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -209,6 +211,12 @@ AddMultipleNodesCommand::undo()
 
     {
         Node::InputEditBatch batch(_graph->getGui()->getApp());
+        std::optional<Node::PythonDeclarationBatch> pythonBatch;
+        std::optional<CurveEditor::RemovalBatch> curveEditorBatch;
+        if (_nodes.size() > 1) {
+            pythonBatch.emplace();
+            curveEditorBatch.emplace(_graph->getGui()->getCurveEditor());
+        }
         for (std::list<NodeGuiWPtr>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
             NodeGuiPtr node = it->lock();
             if (!node) {
@@ -259,6 +267,10 @@ AddMultipleNodesCommand::redo()
     }
     if (_firstRedoCalled) {
         Node::InputEditBatch batch(_graph->getGui()->getApp());
+        std::optional<Node::PythonDeclarationBatch> pythonBatch;
+        if (nodes.size() > 1) {
+            pythonBatch.emplace();
+        }
         for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
             (*it)->getNode()->activate(NodesList(), //inputs to restore
                                        true, //restore all inputs ?
@@ -362,6 +374,10 @@ RemoveMultipleNodesCommand::undo()
         // The rechecks at the end of the edit batch compile expressions, naming siblings by name.
         const NodeCollection::NamingBatch namingBatch(_graph->getGroup());
         Node::InputEditBatch batch(_graph->getGui()->getApp());
+        std::optional<Node::PythonDeclarationBatch> pythonBatch;
+        if (_nodes.size() > 1) {
+            pythonBatch.emplace();
+        }
         for (std::list<NodeToRemove>::iterator it = _nodes.begin();
              it != _nodes.end();
              ++it) {
@@ -427,6 +443,12 @@ RemoveMultipleNodesCommand::redo()
 
         Node::RemovalBatch removalBatch;
         Node::InputEditBatch batch(_graph->getGui()->getApp());
+        std::optional<Node::PythonDeclarationBatch> pythonBatch;
+        std::optional<CurveEditor::RemovalBatch> curveEditorBatch;
+        if (_nodes.size() > 1) {
+            pythonBatch.emplace();
+            curveEditorBatch.emplace(_graph->getGui()->getCurveEditor());
+        }
         for (std::list<NodeToRemove>::iterator it = _nodes.begin();
              it != _nodes.end();
              ++it) {

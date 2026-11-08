@@ -618,6 +618,9 @@ NodeGui::itemChange(GraphicsItemChange change,
         }
     }
     if ((change == QGraphicsItem::ItemPositionHasChanged) || (change == QGraphicsItem::ItemVisibleHasChanged) || (change == QGraphicsItem::ItemScaleHasChanged)) {
+        if (_graph) {
+            _graph->noteNodeGeometryChanged(this);
+        }
         invalidateGraphNavigator();
     }
 
@@ -2326,13 +2329,16 @@ NodeGui::isSelectedInParentMultiInstance(const Node* node) const
 void
 NodeGui::setUserSelected(bool b)
 {
+    bool changed;
     {
         QMutexLocker l(&_selectedMutex);
+        changed = (_selected != b);
         _selected = b;
     }
-    if (_graph) {
+    if (changed && _graph) {
         _graph->scheduleLoopBlockRefresh(false);
     }
+    // Selecting a node again still brings its open panel's viewer interface forward.
     if (_settingsPanel) {
         _settingsPanel->setSelected(b);
         _settingsPanel->update();
@@ -2342,8 +2348,10 @@ NodeGui::setUserSelected(bool b)
         }
     }
 
-    refreshEdgesVisility();
-    refreshStateIndicator();
+    if (changed) {
+        refreshEdgesVisility();
+        refreshStateIndicator();
+    }
 }
 
 bool

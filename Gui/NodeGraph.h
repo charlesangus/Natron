@@ -105,6 +105,14 @@ public:
      **/
     void invalidateNavigatorContent();
 
+    /**
+     * @brief Call when a node of this graph, or one of its edges, may have moved or changed shape,
+     * so that hit tests find it where it now is. owner is the destination of an input edge (slot
+     * is its input number) or the source of an output edge (slot is -1).
+     **/
+    void noteNodeGeometryChanged(NodeGui* node);
+    void noteEdgeGeometryChanged(NodeGui* owner, int slot, Edge* edge);
+
     const NodesGuiList & getAllActiveNodes() const;
     NodesGuiList getAllActiveNodes_mt_safe() const;
 

@@ -33,6 +33,8 @@
 #include <QOpenGLFunctions>
 #include <QtGlobal>
 
+#include "Global/FloatingPointExceptions.h"
+
 NATRON_NAMESPACE_ENTER
 
 namespace GuiGLRequirements {
@@ -175,6 +177,9 @@ ContextInfo
 probe()
 {
     ContextInfo info;
+    // Mesa's llvmpipe compiles its built-in blitter shaders as the context is created, which raises
+    // FE_INVALID: a debug Natron traps that on the main thread.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     QOpenGLContext context;
     context.setFormat(QSurfaceFormat::defaultFormat());
     if (!context.create()) {

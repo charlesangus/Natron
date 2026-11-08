@@ -139,6 +139,7 @@ set(Tests_SOURCES
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
     PoolSharing_Test.cpp
+    FpTrapGuard_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
     QueuedInputEdit_Test.cpp
@@ -324,6 +325,7 @@ set(GuiTests_SOURCES
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     OverlayImageRenderer_Test.cpp
+    PythonUndoStep_Test.cpp
     RenderDialogRange_Test.cpp
     RotoLatencyProbe_Test.cpp
     RotoItemKnobKeyframes_Test.cpp

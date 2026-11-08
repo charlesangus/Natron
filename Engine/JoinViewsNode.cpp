@@ -52,7 +52,16 @@ JoinViewsNode::JoinViewsNode(NodePtr node)
     setSupportsRenderScaleMaybe(eSupportsYes);
     if (node) {
         ProjectPtr project = node->getApp()->getProject();
-        QObject::connect( project.get(), SIGNAL(projectViewsChanged()), this, SLOT(onProjectViewsChanged()) );
+        // A render can keep this effect alive after its node is destroyed, and the slot rewires the
+        // node's inputs, so the node scopes the connection and the slot runs only while it holds this effect.
+        NodeWPtr weakNode = node;
+        QObject::connect(project.get(), &Project::projectViewsChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                onProjectViewsChanged();
+            }
+        });
     }
 }
 

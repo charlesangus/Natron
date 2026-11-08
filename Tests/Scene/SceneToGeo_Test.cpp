@@ -198,7 +198,7 @@ protected:
         GeoDetailConstPtr detail;
         std::string error;
 
-        EXPECT_EQ(eRenderRoIRetCodeOk, node->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, ViewIdx(0)), &detail, &error)) << error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, node->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, ViewIdx(0)), &detail, &error)) << error;
 
         return detail;
     }

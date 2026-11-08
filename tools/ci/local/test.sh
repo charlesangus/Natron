@@ -240,8 +240,9 @@ case "${SUBCOMMAND}" in
         # The capture feeds ctest-summary.sh; rc must stay ctest's own status, not tee's.
         set +e
         xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --timeout "${CTEST_TIMEOUT_SECONDS}" --output-on-failure 2>&1 | tee "${CTEST_STDOUT}"
-        rc=${PIPESTATUS[0]}
-        tee_rc=${PIPESTATUS[1]}
+        pipe_status=("${PIPESTATUS[@]}")
+        rc=${pipe_status[0]}
+        tee_rc=${pipe_status[1]:-0}
         set -e
         if [[ "${tee_rc}" -ne 0 ]]; then
             echo "test.sh: warning: could not write ${CTEST_STDOUT}" >&2

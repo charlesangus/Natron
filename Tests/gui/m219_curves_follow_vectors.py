@@ -488,11 +488,22 @@ try:
              % (START, MAIN_LAST, worst, PAN_U, PAN_V))
 
     def right_click_item(tree, item):
-        rect = tree.visualItemRect(item)
-        point = QPointF(rect.center())
+        """Right-clicks the item's label. The panel's tree only opens its menu for the label column; a click on
+        any other column of a selected row toggles that column instead, and visualItemRect() spans every column."""
+        header = tree.header()
+        x = header.sectionViewportPosition(0) + header.sectionSize(0) - 4
+        y = tree.visualItemRect(item).center().y()
+        point = QPointF(x, y)
+        hit = tree.itemAt(point.toPoint())
+        column = tree.indexAt(point.toPoint()).column()
+        on_label = hit is not None and hit.text(0) == item.text(0) and column == 0
+        check(on_label, "the right-click lands on the label of %s (item %r, column %d)" % (item.text(0), hit.text(0) if hit else None, column))
+        if not on_label:
+            return False
         for etype, buttons in ((QEvent.MouseButtonPress, Qt.RightButton), (QEvent.MouseButtonRelease, Qt.NoButton)):
             QApplication.sendEvent(tree.viewport(), QMouseEvent(etype, point, tree.viewport().mapToGlobal(point), Qt.RightButton, buttons, Qt.NoModifier))
             QApplication.processEvents()
+        return True
 
     def section_panel_entry(scene):
         gt.section("panel-entry")
@@ -504,7 +515,7 @@ try:
         tree = select_shapes([bez])
         item = tree_item(tree, bez.getLabel())
         yield from go_to(START)
-        seen = {"labels": [], "enabled": False, "triggered": False}
+        seen = {"labels": [], "enabled": False, "triggered": False, "fresh": False}
 
         def pick():
             menu = QApplication.activePopupWidget()
@@ -518,12 +529,19 @@ try:
                     if a.isEnabled():
                         a.trigger()
                         seen["triggered"] = True
+                        seen["fresh"] = scene.ctx.isFollowingVectors() or scene.ctx.getLastFollowReport() is None
             menu.close()
 
+        previous = scene.ctx.getLastFollowReport()
         QTimer.singleShot(PANEL_MENU_DELAY_MS, pick)
-        right_click_item(tree, item)
+        if not right_click_item(tree, item):
+            return
         check(any(s.startswith("Follow Vectors") for s in seen["labels"]), "the panel menu has a Follow Vectors entry (entries %r)" % (seen["labels"],))
         check(seen["enabled"] and seen["triggered"], "the Follow Vectors entry is enabled for a shape and was triggered")
+        check(seen["fresh"], "the entry started a follow, which drops the previous report (previous %r)"
+              % (previous["message"] if previous else None,))
+        if not seen["fresh"]:
+            return
         outcome, stats = yield from wait_follow(scene, "panel entry", FOLLOW_TIMEOUT_S)
         report("NOTE panel entry: %d ticks, worst GUI tick gap %.0f ms; report %r" % (stats["ticks"], stats["max_gap"], outcome["message"]))
         check(outcome["status"] == "done", "panel entry: the follow is done (status %r, %r)" % (outcome["status"], outcome["message"]))

@@ -52,57 +52,7 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 ## Phase 118.1: Reconcile and navigator/paint
 
 - [x] M118.P1.T1 — Reconcile the target list with M117's baseline
-  - files: this milestone file (`## Phase 118.6: Budget closure
-
-Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work). Causes below are read from code, not yet profiled; T1 confirms or corrects them. Note: interaction cost is not flat in N (comp pan 15.8→45.8 ms/event from 300 to 3000); the N≤1000 figures sit on a ~16.7 ms frame floor, and the harness's per-event time includes a forced full repaint plus the event-loop pass after each event.
-
-- [ ] M118.P6.T1 — Split the bench timing and profile the misses on the dev host
-  - files: `tools/bench/gui/gui_bench.py`, `tools/bench/gui/compare.py`, `tools/bench/gui/README.md`
-  - approach: per event, record the step's wall and main-thread CPU (`time.thread_time`) and the loop pass after it separately; add `--no-forced-repaint` (process posted events in the step instead). Under Xvfb, release build, comp, N=3000, reps 1, one op per run (pan, hover, zoom_step, drag_move_1, select_all, knob_change_fanout, undo, redo) with eu-stack sampling (`tools/bench/sample_stacks.sh`, `-u root --privileged`), each run under 10 min. Record the top frames per op in Decisions and correct T2–T8 where they disagree.
-  - verify: every failing op has a profile-backed cause in Decisions; the frame-floor finding goes to the user as a budget question (one frame vs main-thread CPU per event).
-  - size: M
-- [ ] M118.P6.T2 — Batch Python (de)declaration for bulk activate/deactivate
-  - files: `Engine/Node.cpp`, `Engine/Node.h`, `Gui/NodeGraphUndoRedo.cpp`, `Gui/CurveEditor.cpp`, `Gui/DopeSheet.cpp`, `Tests/GraphScalingGuiEdits_Test.cpp`
-  - approach: undo of a 1000-node delete runs two Python scripts per node (`declareAllPythonAttributes`, Node.cpp ~9933–10068) plus expression restore and recheck per node; delete/redo run a `del` script per node and O(k·N) CurveEditor/DopeSheet removals. Batch: one script for all nodes declared/deleted in an undo/redo/delete (no per-node Script Editor echo, one expression-generation bump); expression restore and recheck once per batch; indexed CurveEditor/DopeSheet removal, `centerOn` once.
-  - verify: gtest — undoing a 1000-node delete runs ≤ 2 scripts (counter), expressions and `.expression0` survive; Xvfb `undo`/`redo`/`delete_1000` at 3000 drop sharply; `m55_node_graph.py` 0 failures.
-  - size: M
-- [ ] M118.P6.T3 — Drag: no O(N) work per move
-  - files: `Gui/NodeGraph20.cpp`, `Gui/NodeGui.cpp`, `Gui/NodeGraph30.cpp`, `Gui/NodeGraphPrivate.cpp`
-  - approach: splice-hint candidates from the selection rect plus tolerance only, rect-tested before any shape test; during a drag gesture grow the node bounds incrementally and render the navigator thumbnail once on release; invalidate the moved rects, not the whole viewport.
-  - verify: Xvfb `drag_move_1`/`_50` at 3000 drop, no stalls; splice hint and navigator checks in `m55_node_graph.py` pass.
-  - size: M
-- [ ] M118.P6.T4 — Pan by scrolling the view, not moving the root item
-  - files: `Gui/NodeGraph.cpp`, `Gui/NodeGraph15.cpp`, `Gui/NodeGraph20.cpp`, `Gui/NodeGraph40.cpp`, `tools/bench/gui/gui_bench.py`
-  - approach: a large fixed sceneRect with hidden scrollbars so pan, autoscroll and centre go through `scrollContentsBy` (viewport blit, only the exposed strip painted); overlays positioned on view change, never in `paintEvent`; update the harness's `root_offset` and `to_view`.
-  - verify: Xvfb `pan` at 3000 is near the N=300 figure; Xvfb shots before/after pan and fit match.
-  - size: L
-- [ ] M118.P6.T5 — Cheap low-detail paint
-  - files: `Gui/NodeGui.cpp`, `Gui/Edge.cpp`, `Gui/NodeGraph.cpp`
-  - approach: measure NoCache vs DeviceCoordinateCache in low detail; in low detail draw node bodies and edges as batched non-AA primitives from one layer item instead of per-item paint.
-  - verify: Xvfb `zoom_step` and `pan` at 3000 drop; three-zoom shots signed off by the user again.
-  - size: M
-- [ ] M118.P6.T6 — Grid index for hit tests
-  - files: `Gui/NodeGraph10.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraphPrivate.cpp`, `Gui/NodeGui.cpp`, `Gui/Edge.cpp`
-  - approach: a uniform grid of node and edge bounds in `_nodeRoot` coordinates, updated on move and edge geometry change; hover does one tolerance query; splice hint, rubber band and tooltips use it too.
-  - verify: Xvfb `hover` flat from 300 to 3000; `m55_node_graph.py` hover and tooltip checks pass.
-  - size: M
-- [ ] M118.P6.T7 — One downstream walk per value-change cascade
-  - files: `Engine/EffectInstance.cpp`, `Engine/Knob.cpp`, `Engine/Node.cpp`, `Tests/Knob_Test.cpp`
-  - approach: collect the nodes reached by an outermost set/endChanges; at its end, one multi-source `refreshShownDownstreamInputRelatedData`, one `getViewersDownstreamOf`, previews refreshed once.
-  - verify: gtest — 50 dependents on a 3000-chain each visit a node once (counter); Xvfb `knob_change_fanout` on comp near wide.
-  - size: M
-- [ ] M118.P6.T8 — Bulk selection without per-node redraw storms
-  - files: `Gui/NodeGraphPrivate.cpp`, `Gui/NodeGui.cpp`, `Gui/Edge.cpp`
-  - approach: `setUserSelected` only acts on change; `replaceSelection` invalidates the navigator once and skips per-node edge/indicator updates whose state didn't change.
-  - verify: Xvfb `select_all` at 3000 improves and stays linear 1000→3000; selection shots match.
-  - size: S
-- [ ] M118.P6.T9 — GPU-host bench rerun against the merge base
-  - files: `tools/bench/gui/BASELINE.md`, this milestone file
-  - approach: one release AppImage of this branch and one of `bench/m118-base` (0553d5c3a); one sitting on the GPU host, before and after back to back, all topologies 300–3000; report per-event CPU and the loop pass separately.
-  - verify: every budget holds, or the user waives the op by name; the table goes in BASELINE.md.
-  - size: S
-
-## Decisions`
+  - files: this milestone file (`## Decisions`
 - 2026-11-08 — Budgets (user): keep M118 open for more work. GPU-host bench (RX 7900 XTX), after build at 3000 nodes mixed/comp: pan 42–46, zoom 22–24, hover 16–17, drag 38–46 ms/event (budget 16; flat scaling, so a fixed per-paint cost); select_all and knob_change_fanout pass on mixed, miss on comp (~100–112 ms); delete_1000 204–233, undo 870–914 (stalls to 919), redo 184–210 ms (budget 100); click-select, rubber-band, set-expression, label edit pass; load/paste/delete slopes pass. The M117 'before' build can't create the bench's CheckerBoard, so the before side is re-run against M118's merge base with main (0553d5c3a, branch bench/m118-base).
 ), no code
   - approach: read `tools/bench/gui/BASELINE.md` and the host baseline. For each superlinear or over-budget op, name the cause from the list above, or profile it (`tools/bench/profile_run.sh` style eu-stack on the Xvfb run) where none fits. Record the mapping. A hotspot the list doesn't cover gets a new trailing task in the matching phase.
@@ -226,6 +176,56 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
 - The Xvfb bench shows no op regressing against M117's baseline, and the new baseline is committed.
 - The real-host run meets every budget, unless the user waived an op.
 - The user signs off the shots and the AppImage UAT.
+
+## Phase 118.6: Budget closure
+
+Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work). Causes below are read from code, not yet profiled; T1 confirms or corrects them. Note: interaction cost is not flat in N (comp pan 15.8→45.8 ms/event from 300 to 3000); the N≤1000 figures sit on a ~16.7 ms frame floor, and the harness's per-event time includes a forced full repaint plus the event-loop pass after each event.
+
+- [ ] M118.P6.T1 — Split the bench timing and profile the misses on the dev host
+  - files: `tools/bench/gui/gui_bench.py`, `tools/bench/gui/compare.py`, `tools/bench/gui/README.md`
+  - approach: per event, record the step's wall and main-thread CPU (`time.thread_time`) and the loop pass after it separately; add `--no-forced-repaint` (process posted events in the step instead). Under Xvfb, release build, comp, N=3000, reps 1, one op per run (pan, hover, zoom_step, drag_move_1, select_all, knob_change_fanout, undo, redo) with eu-stack sampling (`tools/bench/sample_stacks.sh`, `-u root --privileged`), each run under 10 min. Record the top frames per op in Decisions and correct T2–T8 where they disagree.
+  - verify: every failing op has a profile-backed cause in Decisions; the frame-floor finding goes to the user as a budget question (one frame vs main-thread CPU per event).
+  - size: M
+- [ ] M118.P6.T2 — Batch Python (de)declaration for bulk activate/deactivate
+  - files: `Engine/Node.cpp`, `Engine/Node.h`, `Gui/NodeGraphUndoRedo.cpp`, `Gui/CurveEditor.cpp`, `Gui/DopeSheet.cpp`, `Tests/GraphScalingGuiEdits_Test.cpp`
+  - approach: undo of a 1000-node delete runs two Python scripts per node (`declareAllPythonAttributes`, Node.cpp ~9933–10068) plus expression restore and recheck per node; delete/redo run a `del` script per node and O(k·N) CurveEditor/DopeSheet removals. Batch: one script for all nodes declared/deleted in an undo/redo/delete (no per-node Script Editor echo, one expression-generation bump); expression restore and recheck once per batch; indexed CurveEditor/DopeSheet removal, `centerOn` once.
+  - verify: gtest — undoing a 1000-node delete runs ≤ 2 scripts (counter), expressions and `.expression0` survive; Xvfb `undo`/`redo`/`delete_1000` at 3000 drop sharply; `m55_node_graph.py` 0 failures.
+  - size: M
+- [ ] M118.P6.T3 — Drag: no O(N) work per move
+  - files: `Gui/NodeGraph20.cpp`, `Gui/NodeGui.cpp`, `Gui/NodeGraph30.cpp`, `Gui/NodeGraphPrivate.cpp`
+  - approach: splice-hint candidates from the selection rect plus tolerance only, rect-tested before any shape test; during a drag gesture grow the node bounds incrementally and render the navigator thumbnail once on release; invalidate the moved rects, not the whole viewport.
+  - verify: Xvfb `drag_move_1`/`_50` at 3000 drop, no stalls; splice hint and navigator checks in `m55_node_graph.py` pass.
+  - size: M
+- [ ] M118.P6.T4 — Pan by scrolling the view, not moving the root item
+  - files: `Gui/NodeGraph.cpp`, `Gui/NodeGraph15.cpp`, `Gui/NodeGraph20.cpp`, `Gui/NodeGraph40.cpp`, `tools/bench/gui/gui_bench.py`
+  - approach: a large fixed sceneRect with hidden scrollbars so pan, autoscroll and centre go through `scrollContentsBy` (viewport blit, only the exposed strip painted); overlays positioned on view change, never in `paintEvent`; update the harness's `root_offset` and `to_view`.
+  - verify: Xvfb `pan` at 3000 is near the N=300 figure; Xvfb shots before/after pan and fit match.
+  - size: L
+- [ ] M118.P6.T5 — Cheap low-detail paint
+  - files: `Gui/NodeGui.cpp`, `Gui/Edge.cpp`, `Gui/NodeGraph.cpp`
+  - approach: measure NoCache vs DeviceCoordinateCache in low detail; in low detail draw node bodies and edges as batched non-AA primitives from one layer item instead of per-item paint.
+  - verify: Xvfb `zoom_step` and `pan` at 3000 drop; three-zoom shots signed off by the user again.
+  - size: M
+- [ ] M118.P6.T6 — Grid index for hit tests
+  - files: `Gui/NodeGraph10.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraphPrivate.cpp`, `Gui/NodeGui.cpp`, `Gui/Edge.cpp`
+  - approach: a uniform grid of node and edge bounds in `_nodeRoot` coordinates, updated on move and edge geometry change; hover does one tolerance query; splice hint, rubber band and tooltips use it too.
+  - verify: Xvfb `hover` flat from 300 to 3000; `m55_node_graph.py` hover and tooltip checks pass.
+  - size: M
+- [ ] M118.P6.T7 — One downstream walk per value-change cascade
+  - files: `Engine/EffectInstance.cpp`, `Engine/Knob.cpp`, `Engine/Node.cpp`, `Tests/Knob_Test.cpp`
+  - approach: collect the nodes reached by an outermost set/endChanges; at its end, one multi-source `refreshShownDownstreamInputRelatedData`, one `getViewersDownstreamOf`, previews refreshed once.
+  - verify: gtest — 50 dependents on a 3000-chain each visit a node once (counter); Xvfb `knob_change_fanout` on comp near wide.
+  - size: M
+- [ ] M118.P6.T8 — Bulk selection without per-node redraw storms
+  - files: `Gui/NodeGraphPrivate.cpp`, `Gui/NodeGui.cpp`, `Gui/Edge.cpp`
+  - approach: `setUserSelected` only acts on change; `replaceSelection` invalidates the navigator once and skips per-node edge/indicator updates whose state didn't change.
+  - verify: Xvfb `select_all` at 3000 improves and stays linear 1000→3000; selection shots match.
+  - size: S
+- [ ] M118.P6.T9 — GPU-host bench rerun against the merge base
+  - files: `tools/bench/gui/BASELINE.md`, this milestone file
+  - approach: one release AppImage of this branch and one of `bench/m118-base` (0553d5c3a); one sitting on the GPU host, before and after back to back, all topologies 300–3000; report per-event CPU and the loop pass separately.
+  - verify: every budget holds, or the user waives the op by name; the table goes in BASELINE.md.
+  - size: S
 
 ## Decisions
 

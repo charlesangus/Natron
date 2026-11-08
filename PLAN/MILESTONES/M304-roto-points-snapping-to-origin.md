@@ -17,17 +17,17 @@ Follow-up from the user's 2026-11-01 UAT approval of M261 - Roto Keyframes In Do
 
 ## Phase 304.1: Failing regression tests
 
-- [ ] M304.P1.T1 — Engine gtests for keying during a render
+- [x] M304.P1.T1 — Engine gtests for keying during a render
   - files: `Tests/RotoKeyDuringRender_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: use `RenderingFlagSetter` (`Engine/Node.h`) and the keyed-shape helper as `Tests/BezierIncrementalCopy_Test.cpp` does. With auto-key on at an unkeyed frame: insert a point after index 0, move point 3, `setPointAtIndex` on point 5, then `setKeyframe`, `removeKeyframe`, `moveKeyframe`, `removeAnimation` and a track-unlink bake. After the write-back, check both sides against the expected positions, never (0,0).
   - verify: the tests fail on main a16ff2464 for the auto-key, whole-shape key and track-unlink cases.
   - size: M
-- [ ] M304.P1.T2 — Engine gtests for undo snapshots and save/load during a render
+- [x] M304.P1.T2 — Engine gtests for undo snapshots and save/load during a render
   - files: `Tests/RotoKeyDuringRender_Test.cpp`
   - approach: add a point during a render, then smooth/cusp, remove-feather or track-link, and undo; check positions. Save during a render, load, and compare positions. Add an explicit check for the half-written read.
   - verify: the tests fail on main a16ff2464 for the undo and save cases.
   - size: M
-- [ ] M304.P1.T3 — Python API test and GUI script
+- [x] M304.P1.T3 — Python API test and GUI script
   - files: the Python roto test (`Tests/PyRoto*_Test.cpp` or the file the repo uses), `Tests/gui/m304_points_keep_position.py` (new)
   - approach: from Python, `setPointAtIndex` then the keyframe API on an animated shape. In the GUI, while the viewer renders, insert a point, press Add Key, and move a key in the dope sheet; check the points stay put. Use real APIs and a captioned screenshot per step.
   - verify: the gtest fails on main; the GUI script runs under `build.sh --gui` (render timing may make the GUI failure flaky; the engine tests are the proof).

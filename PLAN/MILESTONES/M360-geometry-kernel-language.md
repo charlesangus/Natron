@@ -47,7 +47,7 @@ Requires M54 - Native Geometry Data Model. Nodes register through their own `.re
 
 ## Phase 360.2: Front end
 
-- [ ] M360.P2.T1 — VEX-like front end with a context-neutral binding interface
+- [x] M360.P2.T1 — VEX-like front end with a context-neutral binding interface
   - files: `Engine/Kernel/KernelLexer.h`/`.cpp`, `Engine/Kernel/KernelParser.h`/`.cpp`, `Engine/Kernel/KernelTypes.h`, `Engine/Kernel/KernelBinding.h`, `Tests/KernelParser_Test.cpp`
   - approach: a lexer and parser for the VEX-compatible subset in Scope, growing from `Engine/Nodes/Deep/DeepExpressionEvaluator`'s precedence table but typed. Types are int, float, vector2/vector/vector4, matrix3/matrix and string, with VEX's implicit conversions. Statements: declarations, assignment and compound assignment, `if`/`else`, `for`, `foreach`, `while`, `return`, user functions. `@name` bindings with type prefixes or inferred for known names (`@P`, `@N`, `@Cd`, `@uv`, `@pscale`, `@orient`, `@id`). Name and type resolution goes through `KernelBinding`, an interface a context implements (attribute lookup by class, builtin variables, functions it provides), so nothing here sees `GeoDetail`. It produces a typed IR the chosen backend consumes, and errors carry line and column. Builtin names and signatures follow VEX's public documentation; the docs are written fresh.
   - verify: unit tests — a corpus of valid snippets type-checks to the expected IR shape; type errors, unknown names and unsupported VEX functions report the right line and column; `@P.y += 1` binds `P` as a vector write; `Engine/Kernel/` includes no `GeoDetail` header (grep-enforced).

@@ -439,6 +439,7 @@ future core work has solid ground to build on.
 | M366 | Mixed Pixel Aspect Tiles | todo | M300 |  | E14 |  | | [M366-mixed-pixel-aspect-tiles.md](PLAN/MILESTONES/M366-mixed-pixel-aspect-tiles.md) |
 | M367 | USD Camera Exposure | todo | M251, M252, M254 |  | E9 |  | | [M367-usd-camera-exposure.md](PLAN/MILESTONES/M367-usd-camera-exposure.md) |
 | M369 | Curve Slopes Independent Of Edit Order | todo | M304 |  | E14 |  | | [M369-curve-slopes-independent-of-edit-order.md](PLAN/MILESTONES/M369-curve-slopes-independent-of-edit-order.md) |
+| M370 | Roto Point List Render Isolation | todo | M304 |  | E6 |  | | [M370-roto-point-list-render-isolation.md](PLAN/MILESTONES/M370-roto-point-list-render-isolation.md) |
 
 # Epics
 

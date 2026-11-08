@@ -189,7 +189,8 @@ public:
                      bool background = false,
                      const char* build = kBuildId,
                      int heartbeatStaleMs = 60000,
-                     std::function<void()> demotionWriteStarts = std::function<void()>())
+                     std::function<void()> demotionWriteStarts = std::function<void()>(),
+                     std::function<void()> publishWriteStarts = std::function<void()>())
         : cache(name, 1, 64ULL * 1024 * 1024, 1.)
     {
         CacheDiskTier::Config config;
@@ -197,10 +198,12 @@ public:
         config.buildId = build;
         config.heartbeatStaleMs = heartbeatStaleMs;
         config.sizeBytes = 256ULL * 1024 * 1024;
-        config.idlePublisher = background;
+        // A test holding a publish runs the publisher, and offers it entries itself with maintainNow().
+        config.idlePublisher = background || bool(publishWriteStarts);
         config.backgroundMaintenance = background;
         config.publishIntervalMs = 10;
         config.demotionWriteStarts = demotionWriteStarts;
+        config.publishWriteStarts = publishWriteStarts;
         tier = CacheDiskTier::open(config);
         cache.useEvictionScore();
         cache.setDiskTier(tier);
@@ -282,7 +285,7 @@ offerDetached(Session& session,
     ASSERT_TRUE(session.tier->waitIdle(30000));
 }
 
-// Holds the writer thread at the start of a demotion until released.
+// Holds a writer thread at the start of a write until released.
 class WriteGate {
 public:
     void enter()
@@ -706,6 +709,63 @@ TEST(CacheDiskTierTest, ClearDuringADemotionLeavesNothingToReclaim)
     CacheDiskFileInfo info;
     EXPECT_FALSE(session.fileOf(hash, &info));
     EXPECT_FALSE(session.lookup(hash) != nullptr);
+}
+
+namespace {
+
+enum ClearKindEnum {
+    eClearKindEverything,
+    eClearKindRam
+};
+
+// The idle publisher holds the entry it writes, and a clear only abandons that write, which goes on
+// after RAM was emptied. Were that reference counted as a use, the clear would keep the entry, and
+// the eviction order it empties RAM in would keep the entries behind it as well: a complete result
+// the user cleared would still be served.
+void
+clearDuringAPublish(ClearKindEnum kind)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    WriteGate gate;
+    Session session(dir.path(), kind == eClearKindEverything ? "CacheDiskTierTest_ClearMidPublish" : "CacheDiskTierTest_ClearRamMidPublish",
+                    false, kBuildId, 60000, std::function<void()>(), [&gate] { gate.enter(); });
+    const OpenOnExit opener(gate);
+    ASSERT_TRUE(session.tier != nullptr);
+
+    ASSERT_TRUE(session.createEntry(1, kExpensiveNs, 15.f) != nullptr);
+    ASSERT_TRUE(session.createEntry(2, kExpensiveNs, 16.f) != nullptr);
+    session.tier->maintainNow(false);
+    ASSERT_TRUE(gate.waitEntered());
+
+    if (kind == eClearKindEverything) {
+        session.cache.clear();
+    } else {
+        session.cache.clearInRam();
+    }
+    EXPECT_FALSE(session.lookup(1) != nullptr);
+    EXPECT_FALSE(session.lookup(2) != nullptr);
+
+    gate.release();
+    ASSERT_TRUE(session.tier->waitIdle(30000));
+    CacheDiskFileInfo info;
+    EXPECT_FALSE(session.fileOf(1, &info));
+    EXPECT_FALSE(session.fileOf(2, &info));
+    EXPECT_EQ(0U, session.tier->publishedFiles());
+    EXPECT_FALSE(session.lookup(1) != nullptr);
+    EXPECT_FALSE(session.lookup(2) != nullptr);
+}
+
+} // anon namespace
+
+TEST(CacheDiskTierTest, ClearDuringAPublishLeavesNothingInRam)
+{
+    clearDuringAPublish(eClearKindEverything);
+}
+
+TEST(CacheDiskTierTest, ClearInRamDuringAPublishLeavesNothingInRam)
+{
+    clearDuringAPublish(eClearKindRam);
 }
 
 TEST(CacheDiskTierTest, PeekReportsAFileAsAnUnallocatedStub)

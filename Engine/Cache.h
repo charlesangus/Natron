@@ -506,6 +506,7 @@ private:
     // read a file the clear removed, and must not land in RAM the clear emptied.
     std::atomic<std::uint64_t> _clearGeneration { 0 };
     std::atomic<int> _clearsUnderWay { 0 };
+    std::atomic<int> _publishPauses { 0 };
     std::size_t _maximumCacheSize;     // maximum size allowed for the cache
 
     /*mutable because we need to change modify it in the sealEntryInternal function which
@@ -1288,14 +1289,16 @@ public:
     void clear()
     {
         const ClearUnderWay clearing(*this);
+        const PublishPaused paused(*this);
         // Freed off the lock, after everything else.
         std::vector<CacheEntryPtr> droppedDemotions;
+        std::vector<const AbstractCacheEntryBase*> abandonedPublishes;
 
         // Demotions are dropped under the same lock that empties RAM, so that no lookup reclaims
         // one in between, and the tier's files go after, so that the idle publisher has no cleared
         // entry left to write there.
         if (_diskTier) {
-            _diskTier->cancelWrites();
+            _diskTier->cancelWrites(&abandonedPublishes);
         }
         {
             QMutexLocker k(&_tileCacheMutex);
@@ -1313,12 +1316,16 @@ public:
             if (_diskTier) {
                 _diskTier->cancelDemotions(&droppedDemotions);
             }
-            std::pair<hash_type, StoredEntryPtr> evictedFromMemory = _memoryCache.evict();
-            while (evictedFromMemory.second) {
-                if (!_isTiled && evictedFromMemory.second->isStoredOnDisk()) {
-                    evictedFromMemory.second->removeAnyBackingFile();
+            {
+                // Destroyed while _clearingCache is set, which is what lets a tiled cache remove a
+                // tile file the last of them frees.
+                std::list<StoredEntryPtr> cleared;
+                takeUnheldFromMemoryLocked(abandonedPublishes, &cleared);
+                for (const StoredEntryPtr& entry : cleared) {
+                    if (!_isTiled && entry->isStoredOnDisk()) {
+                        entry->removeAnyBackingFile();
+                    }
                 }
-                evictedFromMemory = _memoryCache.evict();
             }
 
             if (_signalEmitter) {
@@ -1343,10 +1350,13 @@ public:
      **/
     void clearInRam()
     {
+        const PublishPaused paused(*this);
+        std::vector<const AbstractCacheEntryBase*> abandonedPublishes;
+
         if (_diskTier) {
-            _diskTier->cancelWrites();
+            _diskTier->cancelWrites(&abandonedPublishes);
         }
-        clearInMemoryPortion();
+        clearInMemoryPortion(true, abandonedPublishes);
     }
 
     /**
@@ -1382,10 +1392,12 @@ public:
     /**
      * @brief Clears the memory portion and moves it to the disk portion if possible
      **/
-    void clearInMemoryPortion(bool emitSignals = true)
+    void clearInMemoryPortion(bool emitSignals = true,
+                              const std::vector<const AbstractCacheEntryBase*>& abandonedPublishes = std::vector<const AbstractCacheEntryBase*>())
     {
         // Freed off the lock.
         std::vector<CacheEntryPtr> droppedDemotions;
+        std::list<StoredEntryPtr> cleared;
 
         if (_signalEmitter) {
             ///block signals otherwise the we would be spammed of notifications
@@ -1396,13 +1408,13 @@ public:
         if (_diskTier) {
             _diskTier->cancelDemotions(&droppedDemotions);
         }
-        std::pair<hash_type, StoredEntryPtr> evictedFromMemory = _memoryCache.evict();
-        while (evictedFromMemory.second) {
+        takeUnheldFromMemoryLocked(abandonedPublishes, &cleared);
+        for (const StoredEntryPtr& evicted : cleared) {
             // Move back the entry on disk if it can be store on disk
             // For tiled caches, the tile is sharing the same file with other entries
             // so we cannot close it, just remove the entry
-            if ( evictedFromMemory.second->isStoredOnDisk() && !_isTiled) {
-                evictedFromMemory.second->deallocate();
+            if (evicted->isStoredOnDisk() && !_isTiled) {
+                evicted->deallocate();
                 /*insert it back into the disk portion */
 
                 U64 diskCacheSize, maximumCacheSize;
@@ -1413,7 +1425,7 @@ public:
                 }
 
                 /*before that we need to clear the disk cache if it exceeds the maximum size allowed*/
-                while (diskCacheSize + evictedFromMemory.second->size() >= maximumCacheSize) {
+                while (diskCacheSize + evicted->size() >= maximumCacheSize) {
                     {
                         std::pair<hash_type, StoredEntryPtr> evictedFromDisk = _diskCache.evict();
                         //if the cache couldn't evict that means all entries are used somewhere and we shall not remove them!
@@ -1432,14 +1444,12 @@ public:
                 }
 
                 /*update the disk cache size*/
-                CacheIterator existingDiskCacheEntry = _diskCache( evictedFromMemory.second->getHashKey() );
+                CacheIterator existingDiskCacheEntry = _diskCache(evicted->getHashKey());
                 /*if the entry doesn't exist on the disk cache,make a new list and insert it*/
                 if ( existingDiskCacheEntry == _diskCache.end() ) {
-                    _diskCache.insert(evictedFromMemory.second->getHashKey(), evictedFromMemory.second);
+                    _diskCache.insert(evicted->getHashKey(), evicted);
                 }
             }
-
-            evictedFromMemory = _memoryCache.evict();
         }
 
         _signalEmitter->blockSignals(false);
@@ -1778,7 +1788,9 @@ public:
     {
         QMutexLocker locker(&_lock);
 
-        if (!_scoredEviction) {
+        // A write queued after a clear cancelled the tier's writes would hold its entry while the
+        // clear empties RAM.
+        if (!_scoredEviction || (_publishPauses.load() > 0)) {
             return;
         }
         _memoryCache.scan(maxVisits, [out](hash_type /*hash*/, const StoredEntryPtr& entry) {
@@ -2263,6 +2275,52 @@ private:
 
         Cache& _cache;
     };
+
+    // Taken before the clear cancels the tier's writes, so that every publish holding an entry
+    // while RAM is emptied is one the cancellation reported.
+    class PublishPaused {
+    public:
+        explicit PublishPaused(Cache& cache)
+            : _cache(cache)
+        {
+            _cache._publishPauses.fetch_add(1);
+        }
+
+        ~PublishPaused()
+        {
+            _cache._publishPauses.fetch_sub(1);
+        }
+
+    private:
+        PublishPaused(const PublishPaused&) = delete;
+        PublishPaused& operator=(const PublishPaused&) = delete;
+
+        Cache& _cache;
+    };
+
+    // Under _lock. An abandoned publish holds its entry until its write returns, which can be after
+    // the clear: it is no use of the entry, and only another holder keeps the entry in RAM. A
+    // file-backed entry's file may still be read, so any holder keeps it.
+    void takeUnheldFromMemoryLocked(const std::vector<const AbstractCacheEntryBase*>& abandonedPublishes,
+                                    std::list<StoredEntryPtr>* taken)
+    {
+        std::vector<StoredEntryPtr> unheld;
+
+        for (CacheIterator it = _memoryCache.begin(); it != _memoryCache.end(); ++it) {
+            for (const StoredEntryPtr& entry : getValueFromIterator(it)) {
+                long holders = entry.use_count();
+                if (!entry->isStoredOnDisk()) {
+                    holders -= (long)std::count(abandonedPublishes.begin(), abandonedPublishes.end(), entry.get());
+                }
+                if (holders <= 1) {
+                    unheld.push_back(entry);
+                }
+            }
+        }
+        for (const StoredEntryPtr& entry : unheld) {
+            removeEntryFromContainer(_memoryCache, entry, taken);
+        }
+    }
 
     // Under _lock, which is also where a clear empties RAM.
     bool clearedSince(std::uint64_t generation) const

@@ -219,6 +219,8 @@ public:
         // Runs on the writer thread once a demotion is in flight and before any of it is written,
         // so that a test can hold a write there.
         std::function<void()> demotionWriteStarts;
+        // The same for a publish, called while the publisher holds the entry it writes.
+        std::function<void()> publishWriteStarts;
     };
 
     // Null if the location cannot be created or fails the rename self-test.
@@ -303,7 +305,9 @@ public:
     void retractPinFiles(const std::string& holderID, const CacheDiskIdentity& identity);
     std::uint64_t pinBudgetWarnings() const;
     // Drops what is queued and abandons what is being written, and leaves every file in place.
-    void cancelWrites();
+    // `publishing` receives, once per abandoned publish, the entry it may still hold until its write
+    // returns: the entry stays in RAM and keeps its own reference while it is published.
+    void cancelWrites(std::vector<const AbstractCacheEntryBase*>* publishing = NULL);
 
     // Lists the shard, then reads and verifies the candidate headers, largest result first. The
     // key and, if given, the params must match exactly. Returns false on a miss.

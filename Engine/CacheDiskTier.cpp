@@ -1152,7 +1152,7 @@ struct CacheDiskTier::Imp {
         }
     }
 
-    void cancelEverything()
+    void cancelEverything(std::vector<const AbstractCacheEntryBase*>* abandonedPublishes = NULL)
     {
         std::vector<CacheEntryPtr> dropped;
 
@@ -1163,6 +1163,9 @@ struct CacheDiskTier::Imp {
         publishQueue.clear();
         for (const WriteItemPtr& item : publishesInFlight) {
             item->cancelled.store(true);
+            if (abandonedPublishes) {
+                abandonedPublishes->push_back(item->raw);
+            }
         }
     }
 
@@ -1546,6 +1549,9 @@ CacheDiskTier::Imp::publisherLoop()
         // Demotions hold RAM until they finish, so an idle write yields the disk to them.
         if (demoting.load() == 0) {
             const CacheEntryPtr entry = item->published.lock();
+            if (entry && config.publishWriteStarts) {
+                config.publishWriteStarts();
+            }
             if (entry && (guardedWrite(*entry, *item) == eWriteOutcomeFailed)) {
                 std::lock_guard<std::mutex> lock(publishMutex);
                 publishBackoffUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(kPublishBackoffMs);
@@ -2115,8 +2121,18 @@ CacheDiskTier::Imp::offerPublishCandidates()
 
     std::vector<std::weak_ptr<AbstractCacheEntryBase>> candidates;
     storage->publishCandidates(kPublishScan, &candidates);
+    if (candidates.empty()) {
+        return;
+    }
 
-    std::vector<WriteItemPtr> items;
+    // The candidates are only locked under publishMutex, after the epoch check: a cache clear
+    // cancels under that mutex and then empties RAM, where a reference taken here would make it keep
+    // the entry.
+    std::lock_guard<std::mutex> lock(publishMutex);
+    if (cancelEpoch != sampledEpoch) {
+        return;
+    }
+    std::size_t queued = 0;
     for (const std::weak_ptr<AbstractCacheEntryBase>& candidate : candidates) {
         const CacheEntryPtr entry = candidate.lock();
         if (!entry || !worthWriting(*entry)) {
@@ -2126,24 +2142,15 @@ CacheDiskTier::Imp::offerPublishCandidates()
         item->published = entry;
         item->raw = entry.get();
         item->hash = entry->getHashKey();
-        items.push_back(std::move(item));
-        if (items.size() >= kPublishBatch) {
+        publishQueue.push_back(std::move(item));
+        publishing.fetch_add(1);
+        if (++queued >= kPublishBatch) {
             break;
         }
     }
-    if (items.empty()) {
-        return;
+    if (queued > 0) {
+        publishCond.notify_all();
     }
-
-    std::lock_guard<std::mutex> lock(publishMutex);
-    if (cancelEpoch != sampledEpoch) {
-        return;
-    }
-    for (WriteItemPtr& item : items) {
-        publishQueue.push_back(std::move(item));
-        publishing.fetch_add(1);
-    }
-    publishCond.notify_all();
 }
 
 void
@@ -2541,9 +2548,9 @@ CacheDiskTier::retractPinFiles(const std::string& holderID,
 }
 
 void
-CacheDiskTier::cancelWrites()
+CacheDiskTier::cancelWrites(std::vector<const AbstractCacheEntryBase*>* publishing)
 {
-    _imp->cancelEverything();
+    _imp->cancelEverything(publishing);
 }
 
 void

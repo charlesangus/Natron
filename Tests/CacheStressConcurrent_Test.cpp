@@ -31,16 +31,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
-#include <list>
 #include <mutex>
 #include <random>
-#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <sys/stat.h>
 
 #include <gtest/gtest.h>
 
@@ -59,11 +55,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CacheDiskTier.h"
-#include "Engine/CacheEntry.h"
-#include "Engine/CacheTier.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/Image.h"
-#include "Engine/ImageKey.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -1165,138 +1157,6 @@ demotionUnderAWaitingRender(const AppInstancePtr& app,
     return checkCached(g, mode, ref, "after the demotion");
 } // demotionUnderAWaitingRender
 
-std::uint64_t
-pixelsOf(const RectI& r)
-{
-    return r.isNull() ? 0 : (std::uint64_t)r.width() * (std::uint64_t)r.height();
-}
-
-// What the node cache and the disk tier hold of the gate's output after each step, printed with a
-// failure so that it names where an entry came from. Only peeks and probes: no lookup counts as a
-// use, and the probe results it caches are forgotten again.
-class GateEntryTrace {
-public:
-    GateEntryTrace(const GateGraph& g,
-                   CacheDiskTier& tier)
-        : _g(g)
-        , _tier(tier)
-        , _originNs(CacheEviction::nowNs())
-    {
-    }
-
-    void note(const std::string& step)
-    {
-        std::ostringstream os;
-
-        os << "  [" << msSince(CacheEviction::nowNs()) << " ms] " << step << ": gate renders " << CountingTestRegistry::renders(_g.gate)
-           << ", files published " << _tier.publishedFiles() << ", write failures " << _tier.writeFailures() << '\n';
-        describeEntries(os);
-        _text += os.str();
-    }
-
-    std::string dump() const
-    {
-        return "\nwhat the caches held of the gate's output (times since the trace began, entries at mip 0):\n" + _text;
-    }
-
-private:
-    double msSince(std::uint64_t ns) const
-    {
-        return ((double)ns - (double)_originNs) / 1e6;
-    }
-
-    void describeEntries(std::ostringstream& os)
-    {
-        const EffectInstancePtr effect = _g.gate->getEffectInstance();
-        const U64 nodeHash = effect->getHash();
-        std::set<U64> seen;
-        bool any = false;
-
-        for (const bool frameVarying : { false, true }) {
-            const ImageKey key = effect->outputCacheKey(nodeHash, frameVarying, kTime, ViewIdx(0), false, 0);
-            key.forEachServingKey(0, 0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, [&](const ImageKey& candidate) {
-                if (!seen.insert(candidate.getHash()).second) {
-                    return false;
-                }
-                std::list<ImagePtr> images;
-                appPTR->peekImage(candidate, &images);
-                for (const ImagePtr& image : images) {
-                    any = true;
-                    describeImage(os, candidate, image, images.size());
-                }
-                std::vector<CacheDiskFileInfo> files;
-                if (_tier.probe(Image::diskIdentityOfKey(candidate), NULL, &files)) {
-                    for (const CacheDiskFileInfo& info : files) {
-                        any = true;
-                        describeFile(os, candidate, info);
-                    }
-                }
-
-                return false;
-            });
-        }
-        // A negative result of these probes would otherwise hide a file the next render looks for.
-        _tier.forgetProbes();
-        if (!any) {
-            os << "    nothing of the gate (node hash " << std::hex << nodeHash << std::dec << ")\n";
-        }
-    }
-
-    void describeImage(std::ostringstream& os,
-                       const ImageKey& key,
-                       const ImagePtr& image,
-                       std::size_t peeked) const
-    {
-        const RectI bounds = image->getBounds();
-        std::list<RectI> rest;
-        image->getRestToRender(bounds, rest);
-        std::uint64_t missing = 0;
-        for (const RectI& r : rest) {
-            missing += pixelsOf(r);
-        }
-        const CacheEntryHeader* const header = image->evictionHeader();
-
-        // An unallocated entry with no holder but this list is the stub peek makes from a file header.
-        os << "    " << (image->isAllocated() ? "RAM entry" : (image.use_count() == 1 ? "disk stub" : "unallocated entry")) << " key "
-           << std::hex << key.getHash() << std::dec << ", bounds (" << bounds.x1 << ',' << bounds.y1 << ")-(" << bounds.x2 << ',' << bounds.y2
-           << "), " << (pixelsOf(bounds) - std::min(missing, pixelsOf(bounds))) << " of " << pixelsOf(bounds) << " pixels rendered, "
-           << "shared_ptr holders other than this trace " << (image.use_count() - 1) << " (of " << peeked << " peeked)";
-        if (header) {
-            const unsigned residency = header->residency.load();
-            os << ", residency" << ((residency & CacheEntryHeader::eResidencyHost) ? " host" : "") << ((residency & CacheEntryHeader::eResidencyDisk) ? " disk" : "")
-               << ", reuse count " << header->reuseCount.load() << ", last use at " << msSince(header->lastUse.load()) << " ms, recompute cost "
-               << header->recomputeCostNs.load() / 1e6 << " ms";
-        }
-        os << '\n';
-    }
-
-    void describeFile(std::ostringstream& os,
-                      const ImageKey& key,
-                      const CacheDiskFileInfo& info) const
-    {
-        struct stat st;
-        double writtenMs = 0.;
-        const bool stated = ::stat(info.path.c_str(), &st) == 0;
-        if (stated) {
-            writtenMs = msSince((std::uint64_t)st.st_mtim.tv_sec * 1000000000ull + (std::uint64_t)st.st_mtim.tv_nsec);
-        }
-
-        os << "    file " << info.path << " key " << std::hex << key.getHash() << std::dec << ", " << info.fileBytes << " bytes, bounds ("
-           << info.bounds.x1 << ',' << info.bounds.y1 << ")-(" << info.bounds.x2 << ',' << info.bounds.y2 << "), header claims " << info.renderedPixels
-           << " of " << info.totalPixels << " pixels" << (info.allRendered ? " (all rendered)" : "") << ", stats reuse count " << info.stats.reuseCount;
-        // Rewriting the stats of a file that is already there moves its mtime too.
-        if (stated) {
-            os << ", last modified at " << writtenMs << " ms";
-        }
-        os << '\n';
-    }
-
-    const GateGraph& _g;
-    CacheDiskTier& _tier;
-    const std::uint64_t _originNs;
-    std::string _text;
-};
-
 std::string
 promotionOfAPartialEntry(const AppInstancePtr& app,
                          const GateGraph& g,
@@ -1307,56 +1167,47 @@ promotionOfAPartialEntry(const AppInstancePtr& app,
     RenderedPlane halfReference;
     RenderedPlane wholeReference;
     std::string error;
-    GateEntryTrace trace(g, tier);
 
     clearEverything(app);
-    trace.note("cleared before the references");
     // The task graph never bypasses the cache, so in that mode these leave entries behind until the
     // clear below.
     if (!renderProbe(g.blur, kTime, 0, half, mode, true, &halfReference, &error) || !renderProbe(g.blur, kTime, 0, kWindow, mode, true, &wholeReference, &error)) {
-        return "the references failed: " + error + trace.dump();
+        return "the references failed: " + error;
     }
-    trace.note("references rendered");
 
     clearEverything(app);
-    trace.note("cleared after the references, expecting nothing");
     RenderedPlane plane;
     const std::uint64_t publishedBefore = tier.publishedFiles();
     if (!renderProbe(g.blur, kTime, 0, half, mode, false, &plane, &error)) {
-        return "the partial render failed: " + error + trace.dump();
+        return "the partial render failed: " + error;
     }
-    trace.note("half rendered, expecting one more gate render and a half covered RAM entry");
     if (!publishWhatIsInRam(tier, publishedBefore)) {
-        return "the partial entry never reached the disk" + trace.dump();
+        return "the partial entry never reached the disk";
     }
-    trace.note("published, expecting a file whose header claims half the pixels");
     appPTR->clearAllCachesInRam();
     tier.forgetProbes();
-    trace.note("RAM cleared, expecting the file only");
 
     const int rendersBefore = CountingTestRegistry::renders(g.gate);
     if (!renderProbe(g.blur, kTime, 0, half, mode, false, &plane, &error)) {
-        return "the promoted render failed: " + error + trace.dump();
+        return "the promoted render failed: " + error;
     }
-    trace.note("half rendered again, expecting no gate render and the promoted half covered entry");
     std::string diff = compareExact(halfReference, plane);
     if (!diff.empty()) {
-        return "the promoted region differs: " + diff + trace.dump();
+        return "the promoted region differs: " + diff;
     }
     if (CountingTestRegistry::renders(g.gate) != rendersBefore) {
-        return "the region on disk was rendered again" + trace.dump();
+        return "the region on disk was rendered again";
     }
 
     if (!renderProbe(g.blur, kTime, 0, kWindow, mode, false, &plane, &error)) {
-        return "the render of the rest failed: " + error + trace.dump();
+        return "the render of the rest failed: " + error;
     }
-    trace.note("whole rendered, expecting one more gate render");
     diff = compareExact(wholeReference, plane);
     if (!diff.empty()) {
-        return "the rest differs from a render from empty caches: " + diff + trace.dump();
+        return "the rest differs from a render from empty caches: " + diff;
     }
     if (CountingTestRegistry::renders(g.gate) == rendersBefore) {
-        return "the rest was not rendered" + trace.dump();
+        return "the rest was not rendered";
     }
 
     return std::string();

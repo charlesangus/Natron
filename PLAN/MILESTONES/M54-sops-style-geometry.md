@@ -102,7 +102,7 @@ wherever a choice arises.
   - verify: unit test — `GeoConstant` → passthrough → consumer pulls the detail through the cache (second pull is a cache hit); abort mid-pull returns cleanly.
   - size: L
 
-- [ ] M54.P3.T1 — `GeoPrimitive`
+- [x] M54.P3.T1 — `GeoPrimitive`
   - files: `Engine/Nodes/Geometry/GeoPrimitive.h`/`.cpp`/`.reg.inc`, `Engine/Nodes/Scene/PrimitiveMeshes.h`/`.cpp`, `Tests/GeoPrimitive_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: generator; type knob `card | grid | cube | sphere | cylinder`, size/segment knobs per type, emits `uv` (vertex class) and `N`. Shares M227's `PrimitiveMeshes` builders (2026-10-26 decision): factor a pxr-free output form out of them if they return pxr types. Card is a single quad in XY with optional subdivisions.
   - verify: unit test — each type yields the expected point/primitive/vertex counts and a closed topology; `uv` covers 0–1; the M227 USD primitives still pass their tests.

@@ -75,6 +75,7 @@ set(Tests_SOURCES
     GeoNormals_Test.cpp
     GeoPacked_Test.cpp
     GeoPrimitive_Test.cpp
+    GeoPython_Test.cpp
     GeoRender_Test.cpp
     GeoScatter_Test.cpp
     GeoSubdivide_Test.cpp

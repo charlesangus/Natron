@@ -93,17 +93,17 @@ The overlay shows every region exit with a red X and reason, entry pipes with a 
 
 Waits for M118 - Large Graph GUI Responsiveness: it rewrites the same `Gui/NodeGraph*` and `NodeGui` code, with new hit-testing and low-zoom detail. Re-scout these tasks against it first.
 
-- [ ] M116.P3.T1 — Preference, shortcut and View-menu action on one state
+- [x] M116.P3.T1 — Preference, shortcut and View-menu action on one state
   - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/NodeGraph35.cpp`, `Gui/NodeGraph25.cpp`, `Gui/GuiApplicationManager10.cpp`, `Gui/ActionShortcuts.h`, `Gui/ActionShortcuts.cpp`
   - approach: Copy the ShowLinkLines wiring above. The preference sits on the Node Graph page, default off. The action writes it through a `Settings::setXxx`.
   - verify: the View action, the shortcut and the preference stay in sync, checked by the UAT script.
   - size: M
-- [ ] M116.P3.T2 — Overlay item in the node graph
+- [x] M116.P3.T2 — Overlay item in the node graph
   - files: `Gui/GpuOverlay.{h,cpp}` (new), `Gui/NodeGraph.h`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGui.cpp`, `Gui/Edge.h`, `Gui/CMakeLists.txt`
   - approach: Draw a region outline and a distinct outline for a runtime fallback. Draw a red X plus label on exit pipes only and a neutral tick with no text on entry pipes. Fade cached members. Identify a pipe by (dest `NodeGui`, `Edge::getInputNumber()`). Map group interiors to the enclosing group's `NodeGui` through `Node::getGroup()`.
   - verify: a unit test of the pipe mapping, then the UAT script.
   - size: L
-- [ ] M116.P3.T3 — Xvfb UAT script
+- [x] M116.P3.T3 — Xvfb UAT script
   - files: `Tests/gui/m116_gpu_overlay.py`, `Tests/gui/guitest.py`
   - approach: Cover a mixed graph, a forced fallback, a cached member, toggling the overlay, and a no-GPU host, launched with `--gui`.
   - verify: the script passes and produces its screenshots, one file each.
@@ -112,6 +112,8 @@ Waits for M118 - Large Graph GUI Responsiveness: it rewrites the same `Gui/NodeG
 **Verification gate:** one remote build per phase. Phases 1 and 2 run the new gtests plus `GpuPlacement_Test`, `FrameGraphBuild_Test`, `GpuRegionFallback_Test`, `ViewerRootOnDevice_Test` and `CacheStressGpu_Test` (the GPU ones on RADV). Phase 3 runs a `--gui` Xvfb UAT, one screenshot file per shot, shared with the user before sign-off. `tools/bench/gui/run.sh --xvfb` plus `compare.py` applies if M117 - GUI Perf Harness And Baseline has landed.
 
 ## Decisions
+
+- 2026-11-07 — Phase 116.3 written: overlay drawn by `Gui/GpuOverlay.*` with no per-frame cost when off; Shift+G; `NodeGui.cpp`/`Edge.h` untouched. Remote GUI jobs have no GPU, so the mixed, cached and fallback cases need a local GPU run (joins the GPU host session).
 
 - 2026-11-07 — User: start Phase 116.3 now, stacked on M118 - Large Graph GUI Responsiveness's branch (merged main, then milestone/m118 into milestone/m116 at 992731541). M116 merges after M118.
 

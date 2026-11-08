@@ -756,11 +756,12 @@ private:
     void flushGuiEdits();
 
     /**
-     * @brief setKeyframe() on the internal curves. copyToGui also copies the new key and its
-     * neighbours' re-derived tangents to the GUI copy; edit paths pass false and sync the GUI
-     * copy themselves, so pending GUI edits made during a render are not overwritten.
+     * @brief Keys every point not yet keyed at time with its value there, reading and writing
+     * one side only. A GUI-side key waits for dequeueGuiActions(). An internal-side key is
+     * mirrored onto the GUI copy, so the internal side may only be passed once
+     * useGuiCurveForEdit() has written back pending GUI edits.
      **/
-    void setKeyframeInternal(double time, bool copyToGui);
+    void setKeyframeInternal(double time, bool useGuiCurve);
 
     /**
      * @brief True, after warning the user, when ripple edit is limited to some keys and point

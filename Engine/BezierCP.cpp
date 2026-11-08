@@ -647,7 +647,8 @@ BezierCP::removeKeyframe(bool useGuiCurves,
     assert( QThread::currentThread() == qApp->thread() );
 
     ///if the keyframe count reaches 0 update the "static" values which may be fetched
-    if (_imp->curveX->getKeyFramesCount() == 1) {
+    const CurvePtr& keyedCurve = useGuiCurves ? _imp->guiCurveX : _imp->curveX;
+    if (keyedCurve->getKeyFramesCount() == 1) {
         QMutexLocker l(&_imp->staticPositionMutex);
         if (!useGuiCurves) {
             _imp->x = _imp->curveX->getValueAt(time);

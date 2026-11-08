@@ -184,7 +184,7 @@ protected:
         std::size_t pixels = 0;
         std::size_t allZero = 0;
         std::size_t greenAlphaZero = 0;
-        RectI box(INT_MAX, INT_MAX, INT_MIN, INT_MIN);
+        RectI box;
         const int width = window.width();
         for (std::size_t p = 0; p * 4 < cpu.size(); ++p) {
             bool any = false;
@@ -203,10 +203,7 @@ protected:
             greenAlphaZero += (g[1] == 0.f && g[3] == 0.f);
             const int x = window.x1 + (int)(p % width);
             const int y = window.y1 + (int)(p / width);
-            box.x1 = std::min(box.x1, x);
-            box.y1 = std::min(box.y1, y);
-            box.x2 = std::max(box.x2, x + 1);
-            box.y2 = std::max(box.y2, y + 1);
+            box.merge(x, y, x + 1, y + 1);
         }
         std::string cpuModel = "unknown";
         std::ifstream cpuinfo("/proc/cpuinfo");

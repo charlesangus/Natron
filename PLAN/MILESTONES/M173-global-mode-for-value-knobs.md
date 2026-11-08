@@ -83,32 +83,32 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
 
 ## Phase 173.3: Generic global mode (Gui)
 
-- [ ] M173.P3.T1 — Extract a target interface from the colour global mode
+- [x] M173.P3.T1 — Extract a target interface from the colour global mode
   - files: `Gui/ColorTrackballGlobalMode.{h,cpp}`, `Gui/ColorTrackballTarget.{h,cpp}`, new `Gui/GlobalModeTarget.h`
   - approach: Introduce an abstract `GlobalModeTarget` (knob label, panel, HUD attach/detach and highlight hooks, begin/move/end/abandon stroke, undo/redo between strokes, key handling, glyph widget factory). Make `KnobGuiColor`'s current behaviour one implementation, so the controller holds a `GlobalModeTarget` rather than `KnobGuiColor*`. Keep event filter, edge warp, wheel notches, right-click exit and gearing in the controller. Behaviour-preserving refactor only.
   - verify: the existing colour global-mode tests (`Tests/ColorTrackballHud_Test.cpp` and M119's GuiTests) pass unchanged on the batched build.
   - size: L
-- [ ] M173.P3.T2 — Multi-knob value edit session
+- [x] M173.P3.T2 — Multi-knob value edit session
   - files: new `Gui/ValueKnobEditSession.{h,cpp}`, `Gui/CMakeLists.txt`, `Tests/ValueKnobEditSession_Test.cpp`
   - approach: Like `ColorKnobEditSession` but for N (knob, dimension) slots across up to two knobs: `begin` snapshots start values, `move` writes through the knobs with begin-time values as old values, `end` pushes one undo command spanning every touched knob, `abandon` restores. Skip expression- and link-driven dimensions with the same predicate as `ColorKnobEditSession.cpp:53-59`. Animated knobs key at the current frame via `KnobUndoCommand`.
   - verify: the gtest drives a two-knob (skewX/skewY) stroke and asserts one undo step restores both, a driven dimension is untouched, and an animated knob gets a key at the current time.
   - size: M
-- [ ] M173.P3.T3 — Value-knob target for single knobs
+- [x] M173.P3.T3 — Value-knob target for single knobs
   - files: new `Gui/ValueKnobGlobalModeTarget.{h,cpp}`, `Gui/KnobGuiValue.{h,cpp}`, `Gui/CMakeLists.txt`
   - approach: Implement `GlobalModeTarget` for a `KnobGuiValue` using P2.T3's kind, P2.T4's stroke maths and key map, and P3.T2's session. Attach the HUD into the knob's column the way `KnobGuiColor::attachGlobalModeHud` does, and highlight the row. No engage button.
   - verify: a GuiTest that engages a Blur `size` target programmatically, applies a stroke, and checks both dimensions moved uniformly and Q locks to x.
   - size: L
-- [ ] M173.P3.T4 — Transform-group target
+- [x] M173.P3.T4 — Transform-group target
   - files: new `Gui/TransformGroupGlobalModeTarget.{h,cpp}`, `Gui/CMakeLists.txt`
   - approach: A `GlobalModeTarget` over a node's `getTransformInteractKnobs()`. Q/W/E/R/T switch the active kind (translate/rotate/scale/skew/center); 1/2/A lock axes; skew drives skewX/skewY through one session. Engaging any interact knob creates this target with that knob's kind active. The HUD names the active knob and shows the group legend.
   - verify: a GuiTest on a native Transform: engage `rotate`, press Q and stroke (translate changes), press R and stroke (both skews change in one undo step), press 2 (only y moves).
   - size: M
-- [ ] M173.P3.T5 — Ctrl+E targeting and stepping across all eligible knobs
+- [x] M173.P3.T5 — Ctrl+E targeting and stepping across all eligible knobs
   - files: `Gui/Gui50.cpp`, `Gui/ColorTrackballTarget.{h,cpp}`, `Gui/ColorTrackballGlobalMode.cpp`, `Gui/GuiApplicationManager10.cpp`
   - approach: Ctrl+E: hovered numeric knob → its target (group target if it's an interact knob); else last-touched eligible knob of any kind on the top node (track last-touched for value knobs as colour does); else today's colour fallback; else the node's first classified knob. Replace `orderedColorKnobs` stepping with `orderedGlobalModeKnobs` over every eligible knob in panel order, keeping the end-of-list HUD messages ("First knob." / "Last knob."). Update the shortcut description `kShortcutDescActionColorTrackball`.
   - verify: a GuiTest builds a Transform + Grade bin and checks hover targeting, last-touched fallback and Ctrl+Down stepping from a colour knob to the next numeric knob.
   - size: M
-- [ ] M173.P3.T6 — Per-kind reveal glyphs, widget cursor and HUD legend
+- [x] M173.P3.T6 — Per-kind reveal glyphs, widget cursor and HUD legend
   - files: new `Gui/ValueModeDiscWidget.{h,cpp}`, M119's disc/ring source (re-scout the name), `Gui/ColorTrackballHud.{h,cpp}`, `Gui/CMakeLists.txt`
   - approach: Draw the P1.T2-approved glyphs for each kind on the shared ring function, plug them into both feedback modes M119 kept (crosshair + reveal, widget cursor), and give the HUD per-kind direction labels and key legends.
   - verify: an Xvfb screenshot per kind matches the approved mockup, checked by eye and sent to the user.

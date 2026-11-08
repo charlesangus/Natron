@@ -26,12 +26,22 @@
 #   --no-forced-repaint  passed through to run.sh
 #   --dry-run            print what would run and exit
 #
+# Host-display mode (for a machine with a real display and GPU, no container):
+#   --host --appimage PATH   runs each op via `run.sh --host --appimage PATH` (real $DISPLAY, throwaway
+#                            HOME), finds the Natron pid on the host and samples with eu-stack when it is
+#                            installed, else with gdb (sample_stacks_gdb.sh, same output format). Needs
+#                            ptrace rights on the Natron process (same user is enough unless
+#                            kernel.yama.ptrace_scope is 2 or more). Default is the container mode above.
+#
 # Environment: NATRON_DEV_CONTAINER (default natron-dev), PROFILE_RUN_SH (default run.sh beside this
 # file), PROFILE_POLL_S (poll period, default 1). Must run from the host, not inside the container.
 set -u
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
+host_mode=0
+appimage=""
+sampler="$repo/tools/bench/sample_stacks.sh"
 container=${NATRON_DEV_CONTAINER:-natron-dev}
 run_sh=${PROFILE_RUN_SH:-$here/run.sh}
 poll=${PROFILE_POLL_S:-1}
@@ -39,7 +49,9 @@ poll=${PROFILE_POLL_S:-1}
 # Runs a command in the container as root with ptrace rights. PROFILE_EXEC overrides the prefix
 # (empty string = run locally), which is how the PID logic is tested without Docker.
 cexec() {
-    if [ "${PROFILE_EXEC+set}" = set ]; then
+    if [ "$host_mode" = 1 ]; then
+        "$@"
+    elif [ "${PROFILE_EXEC+set}" = set ]; then
         # shellcheck disable=SC2086
         $PROFILE_EXEC "$@"
     else
@@ -48,7 +60,7 @@ cexec() {
 }
 
 usage() {
-    sed -n '2,30p' "${BASH_SOURCE[0]}" >&2
+    sed -n '2,38p' "${BASH_SOURCE[0]}" >&2
     exit 2
 }
 
@@ -120,9 +132,24 @@ profile_op() {
     echo "== $op: starting"
     local extra=()
     [ "$forced_repaint" = 0 ] && extra+=(--no-forced-repaint)
-    GUI_BENCH_TIMEOUT=$load_cap "$run_sh" --xvfb --topologies "$topology" --sizes "$size" --reps "$reps" \
-        --ops "$op" --out "$opdir" "${extra[@]}" > "$start_log" 2>&1
-    rc=$?
+    local mode_args=(--xvfb) run_pid="" w
+    [ "$host_mode" = 1 ] && mode_args=(--host --appimage "$appimage")
+    if [ "$host_mode" = 1 ]; then
+        # --host runs in the foreground: start it in the background and wait for its result line.
+        GUI_BENCH_TIMEOUT=$load_cap setsid "$run_sh" "${mode_args[@]}" --topologies "$topology" --sizes "$size" \
+            --reps "$reps" --ops "$op" --out "$opdir" "${extra[@]}" > "$start_log" 2>&1 < /dev/null &
+        run_pid=$!
+        rc=0
+        for ((w = 0; w < 300; w++)); do
+            grep -q '^result ' "$start_log" 2> /dev/null && break
+            kill -0 "$run_pid" 2> /dev/null || { wait "$run_pid"; rc=$?; [ "$rc" -eq 0 ] && rc=1; break; }
+            sleep 1
+        done
+    else
+        GUI_BENCH_TIMEOUT=$load_cap "$run_sh" "${mode_args[@]}" --topologies "$topology" --sizes "$size" --reps "$reps" \
+            --ops "$op" --out "$opdir" "${extra[@]}" > "$start_log" 2>&1
+        rc=$?
+    fi
     result=$(sed -n 's/^result \([^ ]*\.jsonl\).*/\1/p' "$start_log" | head -n 1)
     if [ "$rc" -ne 0 ] || [ -z "$result" ]; then
         status="error: run.sh did not start (exit $rc, see $start_log)"
@@ -147,7 +174,7 @@ profile_op() {
             pid=$(find_pid "$opdir")
             if [ -n "$pid" ]; then
                 sampler_started=$now
-                cexec timeout -s TERM "$max_sample_s" "$repo/tools/bench/sample_stacks.sh" "$pid" "$count" "$interval" "$stacks" \
+                cexec timeout -s TERM "$max_sample_s" "$sampler" "$pid" "$count" "$interval" "$stacks" \
                     > /dev/null 2>&1 &
                 sampler_pid=$!
                 echo "   sampling pid $pid every ${interval}s"
@@ -158,7 +185,7 @@ profile_op() {
         fi
         if [ -n "$sampler_pid" ] && [ -n "$res_file" ] && grep -q '^RESULT ' "$res_file" 2> /dev/null; then
             sampled_for=$((now - sampler_started))
-            cexec pkill -f "[s]ample_stacks.sh $pid " > /dev/null 2>&1
+            cexec pkill -f "[s]ample_stacks(_gdb)?\.sh $pid " > /dev/null 2>&1
             wait "$sampler_pid" 2> /dev/null
             sampler_pid=""
         fi
@@ -178,7 +205,7 @@ profile_op() {
     done
     if [ -n "$sampler_pid" ]; then
         sampled_for=$(($(date +%s) - sampler_started))
-        cexec pkill -f "[s]ample_stacks.sh $pid " > /dev/null 2>&1
+        cexec pkill -f "[s]ample_stacks(_gdb)?\.sh $pid " > /dev/null 2>&1
         wait "$sampler_pid" 2> /dev/null
     fi
     # After a kill, give run.sh a moment to write .done; otherwise carry on.
@@ -186,6 +213,7 @@ profile_op() {
         [ -f "$donefile" ] && break
         sleep 1
     done
+    [ -n "$run_pid" ] && wait "$run_pid" 2> /dev/null
     if [ "$status" = ok ] && [ -f "$donefile" ]; then
         rc=$(cat "$donefile")
         case $rc in
@@ -224,6 +252,8 @@ main() {
             --op-cap) op_cap=${2:?--op-cap needs seconds}; shift ;;
             --load-cap) load_cap=${2:?--load-cap needs seconds}; shift ;;
             --out) out=${2:?--out needs a directory}; shift ;;
+            --host) host_mode=1 ;;
+            --appimage) appimage=${2:?--appimage needs a path}; shift ;;
             --no-forced-repaint) forced_repaint=0 ;;
             --dry-run) dry=1 ;;
             -h|--help) usage ;;
@@ -237,6 +267,18 @@ main() {
     case $interval in ''|*[!0-9.]*) echo "--interval needs a number" >&2; exit 2 ;; esac
     [ "$op_cap" -gt 0 ] || { echo "--op-cap must be positive" >&2; exit 2; }
     max_sample_s=$op_cap
+    if [ "$host_mode" = 1 ]; then
+        [ -n "$appimage" ] || { echo "--host needs --appimage" >&2; exit 2; }
+        case $appimage in /*) ;; *) appimage=$(pwd)/$appimage ;; esac
+        if command -v eu-stack > /dev/null 2>&1; then
+            sampler="$repo/tools/bench/sample_stacks.sh"
+        elif command -v gdb > /dev/null 2>&1; then
+            sampler="$repo/tools/bench/sample_stacks_gdb.sh"
+        else
+            echo "--host needs eu-stack (elfutils) or gdb to sample stacks" >&2
+            [ "$dry" = 1 ] || exit 2
+        fi
+    fi
     [ -n "$out" ] || out=build/bench/profile-$(date -u +%Y%m%dT%H%M%SZ)
     case $out in /*) ;; *) out=$repo/$out ;; esac
     IFS=, read -r -a list <<< "$ops"
@@ -244,17 +286,20 @@ main() {
     if [ "$dry" = 1 ]; then
         echo "out $out"
         for op in "${list[@]}"; do
-            echo "run.sh --xvfb --topologies $topology --sizes $size --reps $reps --ops $op --out $out/$op" \
+            echo "run.sh $([ "$host_mode" = 1 ] && echo "--host --appimage $appimage" || echo --xvfb) --topologies $topology --sizes $size --reps $reps --ops $op --out $out/$op" \
                 "$([ "$forced_repaint" = 0 ] && echo --no-forced-repaint)" \
                 "| sample every ${interval}s from ${lead}s after graph load, op cap ${op_cap}s, run cap ${load_cap}s"
         done
         exit 0
     fi
-    if [ ! -x "$repo/build/release/App/Natron" ]; then
+    if [ "$host_mode" = 1 ]; then
+        [ -f "$appimage" ] || { echo "no AppImage at $appimage" >&2; exit 2; }
+        echo "sampler $sampler"
+    elif [ ! -x "$repo/build/release/App/Natron" ]; then
         echo "no release build at $repo/build/release/App/Natron" >&2
         exit 2
     fi
-    if [ "${PROFILE_EXEC+set}" != set ] && ! docker ps --format '{{.Names}}' 2> /dev/null | grep -qx "$container"; then
+    if [ "$host_mode" != 1 ] && [ "${PROFILE_EXEC+set}" != set ] && ! docker ps --format '{{.Names}}' 2> /dev/null | grep -qx "$container"; then
         echo "container $container is not running; start it with tools/ci/local/devshell.sh true" >&2
         exit 2
     fi

@@ -44,7 +44,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 // A camera at the origin looking down -Z with a square 36 mm aperture behind a 50 mm lens: at
-// distance d its frame is d * 0.36 wide.
+// distance d its frame is d * 36 / 50 wide.
 ScenePayload
 cameraScene()
 {
@@ -91,7 +91,7 @@ TEST(GeoUVProjectCamera, ACameraFacingQuadFillingTheFrameMapsToTheUnitSquare)
     EXPECT_EQ("/Cam", usedPath);
 
     const double z = -10.;
-    GeoDetailBuilder b { quad(-z * 0.36 / 2., z) };
+    GeoDetailBuilder b { quad(-z * 0.36, z) };
     ASSERT_TRUE(projectGeoUVs(b, params, &error)) << error;
     const GeoDetail out = b.finish();
     const GeoAttribute* uv = out.findAttribute(eGeoAttribClassVertex, "uv");

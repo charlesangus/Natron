@@ -42,6 +42,7 @@
 #include "Engine/PyParameter.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/Settings.h"
+#include "Engine/UndoRecorder.h"
 
 #include "Engine/EngineFwd.h"
 
@@ -630,6 +631,76 @@ App::removeProjectLayer(const QString& id)
     std::string error;
 
     return getInternalApp()->getProject()->removeLayer(id.toStdString(), &error);
+}
+
+UndoStepContext*
+App::newUndoStep(const QString& label)
+{
+    return new UndoStepContext(getInternalApp(), label.toStdString());
+}
+
+NoUndoStepContext*
+App::noUndoStep()
+{
+    return new NoUndoStepContext(getInternalApp());
+}
+
+UndoStepContext::UndoStepContext(const AppInstancePtr& app,
+                                 const std::string& label)
+    : _app(app)
+    , _label(label)
+    , _steps()
+{
+}
+
+UndoStepContext::~UndoStepContext()
+{
+    // Innermost first: the history closes whichever step is innermost, and std::vector does not
+    // specify the order it destroys its elements in.
+    while (!_steps.empty()) {
+        _steps.pop_back();
+    }
+}
+
+void
+UndoStepContext::enter()
+{
+    _steps.push_back(std::make_shared<UndoStepGuard>(_app.lock(), _label, true));
+}
+
+void
+UndoStepContext::exit()
+{
+    if (!_steps.empty()) {
+        _steps.pop_back();
+    }
+}
+
+NoUndoStepContext::NoUndoStepContext(const AppInstancePtr& app)
+    : _app(app)
+    , _suppressions()
+{
+}
+
+NoUndoStepContext::~NoUndoStepContext()
+{
+    while (!_suppressions.empty()) {
+        _suppressions.pop_back();
+    }
+}
+
+void
+NoUndoStepContext::enter()
+{
+    _suppressions.push_back(std::make_shared<UndoSuppressGuard>(_app.lock()));
+}
+
+void
+NoUndoStepContext::exit()
+{
+    if (!_suppressions.empty()) {
+        _suppressions.pop_back();
+    }
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

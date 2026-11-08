@@ -49,4 +49,6 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations.
 
 ## Decisions
 
+- 2026-11-08 — Mask and Mix (user): the debug outputs ignore Mask and Mix, through an engine switch that turns the mask/mix stage off per render on CPU and GPU. Slices follows the most-scaled channel under chromatic aberration, matching the gather.
+
 - 2026-11-01 — **Debug outputs requested (user, /cat-plan):** out of Niik-l's LensDefocus feature list, the user picked the debug outputs. Only the modes meaningful for today's layered gather land here; the rest wait on M294 - ZDefocus Engine Revisit.

@@ -29,7 +29,7 @@ Sections, each with numbers and captioned screenshots (a NOTE "caption" line pre
 - hud: the hint block follows the pointer, its title is "<node>: <knob>", and a screenshot of
   the chips and rate line (their text is drawn, not exposed to Python).
 - step: Ctrl+Down/Up across a Transform's knobs in declaration order, and from a Grade's colour
-  knobs on to numeric ones.
+  knobs on to numeric ones, never onto another settings page's knobs.
 - colour: Grade gain still engages as before (plain-label title, C/S/T/V, a stroke edits gain,
   one undo, Esc leaves).
 
@@ -928,6 +928,8 @@ try:
                 seen.append(t)
             report("NOTE Grade Ctrl+Down titles: %s" % " > ".join(str(s) for s in seen))
             check(first is not None and ": " not in first, "the Grade starts on a colour knob, titled by its plain label (%r)" % first)
+            check(not any(s and "nodeLifeTime" in s for s in seen),
+                  "stepping stays on the Controls page and never reaches the Node tab's nodeLifeTime")
             numeric = [s for s in seen if s and ": " in s]
             check(len(numeric) > 0, "Ctrl+Down from the Grade's colour knobs reaches a numeric knob (%s)" % (numeric[:1],))
             if numeric:

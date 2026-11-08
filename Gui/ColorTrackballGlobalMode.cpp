@@ -757,8 +757,8 @@ ColorTrackballGlobalMode::getTargetPosition(int* n,
         return;
     }
 
-    std::vector<KnobGui*> knobs = orderedGlobalModeKnobs(panel);
     KnobGui* current = target->getKnobGui();
+    std::vector<KnobGui*> knobs = orderedGlobalModeKnobs(panel, current);
     int legal = 0;
     int position = 0;
 
@@ -984,9 +984,9 @@ ColorTrackballGlobalMode::stepKnob(int direction)
     }
     endStroke();
 
-    std::vector<KnobGui*> knobs = orderedGlobalModeKnobs(panel);
-    std::vector<ColorKnobInfo> infos;
     KnobGui* currentKnob = target->getKnobGui();
+    std::vector<KnobGui*> knobs = orderedGlobalModeKnobs(panel, currentKnob);
+    std::vector<ColorKnobInfo> infos;
     int current = -1;
 
     infos.reserve(knobs.size());

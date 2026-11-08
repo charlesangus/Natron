@@ -438,7 +438,28 @@ isGlobalModeKnob(KnobGui* knobGui)
 }
 
 std::vector<KnobGui*>
-orderedGlobalModeKnobs(DockablePanel* panel)
+restrictToPageOf(const std::vector<KnobGui*>& knobs,
+                 KnobGui* reference)
+{
+    KnobIPtr referenceKnob = reference ? reference->getKnob() : KnobIPtr();
+    KnobPagePtr referencePage = referenceKnob ? referenceKnob->getTopLevelPage() : KnobPagePtr();
+    std::vector<KnobGui*> result;
+
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        KnobIPtr knob = knobs[i]->getKnob();
+        KnobPagePtr page = knob ? knob->getTopLevelPage() : KnobPagePtr();
+
+        if (page == referencePage) {
+            result.push_back(knobs[i]);
+        }
+    }
+
+    return result;
+}
+
+std::vector<KnobGui*>
+orderedGlobalModeKnobs(DockablePanel* panel,
+                       KnobGui* samePageAs)
 {
     std::vector<KnobGui*> result;
 
@@ -456,7 +477,7 @@ orderedGlobalModeKnobs(DockablePanel* panel)
         }
     }
 
-    return result;
+    return samePageAs ? restrictToPageOf(result, samePageAs) : result;
 }
 
 std::shared_ptr<GlobalModeTarget>

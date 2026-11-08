@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -216,6 +217,48 @@ TEST_F(GlobalModeTargetingTest, CtrlDownStepsFromTheLastColourKnobOntoANumericKn
     ASSERT_TRUE(bool(value));
     EXPECT_EQ(ordered[next], value->getKnobGui());
     EXPECT_EQ(lastColour, stepColorKnobIndex(infos, next, -1));
+}
+
+TEST_F(GlobalModeTargetingTest, SteppingStaysOnTheEngagedKnobsPage)
+{
+    const std::vector<KnobIPtr>& knobs = _grade->getEffectInstance()->getKnobs();
+    std::vector<KnobGui*> ordered;
+    KnobGui* multiply = 0;
+    KnobGui* lifeTime = 0;
+
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        KnobGuiPtr gui = buildRow(knobs[i]);
+
+        if (!gui || !isGlobalModeKnob(gui.get())) {
+            continue;
+        }
+        ordered.push_back(gui.get());
+        if (knobs[i]->getName() == kGradeParamMultiply) {
+            multiply = gui.get();
+        } else if (knobs[i]->getName() == "nodeLifeTime") {
+            lifeTime = gui.get();
+        }
+    }
+    ASSERT_TRUE(multiply != 0);
+    ASSERT_TRUE(lifeTime != 0);
+
+    KnobPagePtr controls = multiply->getKnob()->getTopLevelPage();
+
+    ASSERT_TRUE(bool(controls));
+    ASSERT_NE(controls, lifeTime->getKnob()->getTopLevelPage());
+
+    const std::vector<KnobGui*> onControls = restrictToPageOf(ordered, multiply);
+
+    EXPECT_NE(onControls.end(), std::find(onControls.begin(), onControls.end(), multiply));
+    EXPECT_EQ(onControls.end(), std::find(onControls.begin(), onControls.end(), lifeTime));
+    for (std::size_t i = 0; i < onControls.size(); ++i) {
+        EXPECT_EQ(controls, onControls[i]->getKnob()->getTopLevelPage());
+    }
+
+    const std::vector<KnobGui*> onNodePage = restrictToPageOf(ordered, lifeTime);
+
+    EXPECT_NE(onNodePage.end(), std::find(onNodePage.begin(), onNodePage.end(), lifeTime));
+    EXPECT_EQ(onNodePage.end(), std::find(onNodePage.begin(), onNodePage.end(), multiply));
 }
 
 } // namespace

@@ -168,9 +168,16 @@ bool isGlobalModeKnob(KnobGui* knobGui);
 
 /**
  * @brief Every knob in the panel that can take global mode, colour or numeric, in declaration
- * order, which is the order Ctrl+Up and Ctrl+Down step through.
+ * order, which is the order Ctrl+Up and Ctrl+Down step through. When samePageAs is given, only the
+ * knobs on its settings page are returned, so stepping stays on the page of the engaged knob.
  **/
-std::vector<KnobGui*> orderedGlobalModeKnobs(DockablePanel* panel);
+std::vector<KnobGui*> orderedGlobalModeKnobs(DockablePanel* panel, KnobGui* samePageAs = 0);
+
+/**
+ * @brief The entries of knobs that sit on the same top-level settings page as reference, in
+ * order. Knobs with no page match only a reference with no page.
+ **/
+std::vector<KnobGui*> restrictToPageOf(const std::vector<KnobGui*>& knobs, KnobGui* reference);
 
 /**
  * @brief The target that drives knobGui: the colour target for a colour knob, the transform

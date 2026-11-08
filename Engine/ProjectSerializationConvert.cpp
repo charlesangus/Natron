@@ -191,6 +191,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         serialization->scriptName = getScriptName_mt_safe();
         serialization->knobsAge = 0;
         serialization->cacheID = getCacheID();
+        serialization->id = getNodeId();
         serialization->inputs.clear();
         if (serializeInputs) {
             getInputNames(serialization->inputs);
@@ -248,6 +249,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     serialization->label = getLabel_mt_safe();
     serialization->scriptName = getScriptName_mt_safe();
     serialization->cacheID = getCacheID();
+    serialization->id = getNodeId();
     serialization->pluginID = getPluginID();
 
     if (!hasPyPlugBeenEdited()) {

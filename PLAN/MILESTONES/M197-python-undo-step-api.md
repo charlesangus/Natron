@@ -31,13 +31,13 @@ Source: user request via the plan inbox (2026-10-24).
 
 ## Phase 197.1: Bindings
 
-- [ ] M197.P1.T1 — Context-manager types and `App` methods
+- [x] M197.P1.T1 — Context-manager types and `App` methods
   - files: `Engine/PyAppInstance.h`, `Engine/PyAppInstance.cpp`, `Engine/typesystem_engine.xml`
   - approach: Add two small wrapper classes (`UndoStepScope`, `NoUndoScope`) holding the label and an enter/exit flag, with `__enter__`/`__exit__` registered in the typesystem (inject-code or `add-function`, whichever the file already uses for Python protocol methods). `__enter__` opens a step on the app's recorder via `getUndoRecorder()` (null, off the main thread, or background means a no-op); `__exit__` closes it exactly once and returns false so exceptions propagate. `noUndoStep` takes an `UndoSuppressGuard` equivalent the same way. `App.newUndoStep(label)` and `App.noUndoStep()` return the scopes.
   - verify: Builds; shiboken regenerates without warnings; T2 covers behaviour.
   - size: M
 
-- [ ] M197.P1.T2 — Engine and GUI tests for the managers
+- [x] M197.P1.T2 — Engine and GUI tests for the managers
   - files: `Tests/UndoHistory_Test.cpp` or a new `Tests/PythonUndoStep_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: Drive the Python API from a GUI-app fixture with a recorder installed: a `with` over three knob sets is one history entry; nesting yields one entry; `noUndoStep` records nothing and `newUndoStep` inside it records nothing; an exception inside the block still leaves one entry with the edits and re-raises; an empty block leaves no entry; with no recorder installed the same script runs and records nothing. Use existing Phase 114.5 test fixtures; read them before writing.
   - verify: New cases pass in ctest.

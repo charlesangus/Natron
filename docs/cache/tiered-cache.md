@@ -379,9 +379,8 @@ is a retention question.
   with its last consumer. The noted static output is not a signal here: `renderRoI` notes it before asking and the
   scheduler does not, so a node with no output would get two answers. With an output it is already a reason.
 
-No default is set by this note. Until M300.P4.T1 the default is `priorityFloor`
-(`CacheRetention::kDefaultAdmissionPolicy`): the user's recorded lean, and the nearer to the behaviour before these
-policies. It is a placeholder for the user's choice.
+The default is `all` (`CacheRetention::kDefaultAdmissionPolicy`). The edit-latency benchmark showed the chain identical
+under both policies, while off the active branch `priorityFloor` re-ran unadmitted work on every edit.
 
 Deep images do not ask: `renderDeepRoI` stores every output under both policies. Interior members of a GPU region are not
 stored under either, until M301 - GPU Cache Tier.

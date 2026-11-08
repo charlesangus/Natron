@@ -1513,7 +1513,7 @@ Settings::initializeKnobsCaching()
                                            .toStdString()));
         _cacheAdmissionPolicy->populateChoices(entries);
     }
-    _cacheAdmissionPolicy->setHintToolTip(tr("Advanced. Which node outputs may enter the cache. An output stored earlier serves a render under either policy. "
+    _cacheAdmissionPolicy->setHintToolTip(tr("Advanced. Which node outputs may enter the cache; the default is All. An output stored earlier serves a render under either policy. "
                                              "The NATRON_CACHE_ADMISSION environment variable (all or priorityFloor) takes precedence over this setting."));
     _cachingTab->addKnob(_cacheAdmissionPolicy);
 

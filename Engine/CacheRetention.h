@@ -91,7 +91,7 @@ enum AdmissionPolicyEnum {
     eAdmissionPolicyPriorityFloor
 };
 
-const AdmissionPolicyEnum kDefaultAdmissionPolicy = eAdmissionPolicyPriorityFloor;
+const AdmissionPolicyEnum kDefaultAdmissionPolicy = eAdmissionPolicyAll;
 
 // Empty for a null or unknown name.
 std::optional<AdmissionPolicyEnum> parseAdmissionPolicy(const char* name);

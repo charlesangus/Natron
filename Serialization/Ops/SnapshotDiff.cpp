@@ -438,9 +438,10 @@ namespace {
                 NodeInputRefs::const_iterator x = before.find(label);
                 NodeInputRefs::const_iterator y = after.find(label);
                 const bool connectedBefore = (x != before.end()) && !x->second.sourceId.empty();
-                if (connectedBefore && ((y == after.end()) || y->second.sourceId.empty())) {
+                const bool connectedAfter = (y != after.end()) && !y->second.sourceId.empty();
+                if (connectedBefore && !connectedAfter) {
                     _ops.push_back(SetInputOp { id, label, std::string() });
-                } else if (!y->second.sourceId.empty() && ((x == before.end()) || !(x->second == y->second))) {
+                } else if (connectedAfter && ((x == before.end()) || !(x->second == y->second))) {
                     _ops.push_back(SetInputOp { id, label, y->second.sourceId });
                 }
             }

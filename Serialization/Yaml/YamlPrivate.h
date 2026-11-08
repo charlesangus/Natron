@@ -273,9 +273,10 @@ namespace YamlDetail {
     /**
      * @brief Writes nodes as a map keyed by script name, sorted, each with its children nested.
      * parentFullName is the fully qualified name of the group holding them, empty at the top level.
-     * Only a project writes cache IDs: a clipboard or a preset makes new nodes.
+     * Only a project writes node and cache IDs (withIdentity): a clipboard or a preset makes new
+     * nodes. A node's id is the first key of its map.
      **/
-    void emitNodeMap(YAML::Emitter& em, const std::list<NodeSerializationPtr>& nodes, const std::string& parentFullName, BlobSink& sink, std::set<std::string>* usedPaths, bool withCacheIDs);
+    void emitNodeMap(YAML::Emitter& em, const std::list<NodeSerializationPtr>& nodes, const std::string& parentFullName, BlobSink& sink, std::set<std::string>* usedPaths, bool withIdentity);
     std::list<NodeSerializationPtr> readNodeMap(const YAML::Node& node, const BlobSource& source, const std::string& context, YamlWarnings* warnings);
 
 } // namespace YamlDetail

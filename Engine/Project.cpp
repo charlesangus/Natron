@@ -1202,6 +1202,83 @@ Project::getLoadWarnings() const
     return _imp->loadWarnings;
 }
 
+NodePtr
+Project::findNodeHoldingId(const std::string& id) const
+{
+    NodePtr node;
+    {
+        QMutexLocker k(&_imp->nodesByIdMutex);
+        std::unordered_map<std::string, NodeWPtr>::const_iterator found = _imp->nodesById.find(id);
+        if (found == _imp->nodesById.end()) {
+            return NodePtr();
+        }
+        node = found->second.lock();
+    }
+    // Read outside the index lock: Node::getNodeId() takes the node's name mutex.
+    if (!node || (node->getNodeId() != id)) {
+        return NodePtr();
+    }
+
+    return node;
+}
+
+NodePtr
+Project::findNodeById(const std::string& id) const
+{
+    NodePtr node = findNodeHoldingId(id);
+    if (!node || !node->isActivated()) {
+        return NodePtr();
+    }
+
+    return node;
+}
+
+void
+Project::registerNodeId(const NodePtr& node)
+{
+    if (!node) {
+        return;
+    }
+    const std::string id = node->getNodeId();
+    QMutexLocker k(&_imp->nodesByIdMutex);
+    _imp->nodesById[id] = node;
+}
+
+void
+Project::unregisterNodeId(const Node* node)
+{
+    if (!node) {
+        return;
+    }
+    const std::string id = node->getNodeId();
+    QMutexLocker k(&_imp->nodesByIdMutex);
+    std::unordered_map<std::string, NodeWPtr>::iterator found = _imp->nodesById.find(id);
+    if (found == _imp->nodesById.end()) {
+        return;
+    }
+    NodePtr indexed = found->second.lock();
+    if (!indexed || (indexed.get() == node)) {
+        _imp->nodesById.erase(found);
+    }
+}
+
+void
+Project::onNodeIdChanged(const NodePtr& node,
+                         const std::string& previousId)
+{
+    if (!node) {
+        return;
+    }
+    const std::string id = node->getNodeId();
+    QMutexLocker k(&_imp->nodesByIdMutex);
+    std::unordered_map<std::string, NodeWPtr>::iterator found = _imp->nodesById.find(previousId);
+    if ((found == _imp->nodesById.end()) || (found->second.lock() != node)) {
+        return;
+    }
+    _imp->nodesById.erase(found);
+    _imp->nodesById[id] = node;
+}
+
 void
 Project::reportLoadWarnings()
 {

@@ -33,6 +33,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -150,6 +151,9 @@ public:
 
     mutable QMutex loadWarningsMutex;
     QStringList loadWarnings; //< problems the last load worked around, see Project::addLoadWarning()
+
+    mutable QMutex nodesByIdMutex;
+    std::unordered_map<std::string, NodeWPtr> nodesById; //< see Project::findNodeById()
 
     // Project::getContentDigest() without the OCIO file stamp, and the state it was computed from.
     mutable QMutex contentDigestMutex; //< protects the contentDigest* fields

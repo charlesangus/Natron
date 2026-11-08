@@ -36,6 +36,7 @@
 #include "Engine/GroupOutput.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Project.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -139,10 +140,46 @@ Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, 
         setNameInternal(name.c_str(), false);
     }
 
-
-
+    if (serialization) {
+        restoreSerializedNodeId(serialization->id);
+    }
 }
 
+void
+Node::restoreSerializedNodeId(const std::string& id)
+{
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project || !project->isLoadingProject() || id.empty()) {
+        return;
+    }
+    const std::string current = getNodeId();
+    if (id == current) {
+        return;
+    }
+    const QString nodeName = QString::fromUtf8(getFullyQualifiedName().c_str());
+    if (!isValidNodeId(id)) {
+        project->addLoadWarning(tr("%1: the saved node ID \"%2\" is not 32 lowercase hex digits; the node was given a new ID")
+                                    .arg(nodeName)
+                                    .arg(QString::fromUtf8(id.c_str())));
+
+        return;
+    }
+    NodePtr holder = project->findNodeHoldingId(id);
+    if (holder && (holder.get() != this)) {
+        project->addLoadWarning(tr("%1: its node ID %2 is already used by %3; the node was given a new ID")
+                                    .arg(nodeName)
+                                    .arg(QString::fromUtf8(id.c_str()))
+                                    .arg(QString::fromUtf8(holder->getFullyQualifiedName().c_str())));
+
+        return;
+    }
+    {
+        QMutexLocker k(&_imp->nameMutex);
+        _imp->nodeId = id;
+    }
+    project->onNodeIdChanged(shared_from_this(), current);
+}
 
 const std::string &
 Node::getScriptName() const

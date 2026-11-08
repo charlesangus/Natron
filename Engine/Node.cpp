@@ -261,6 +261,7 @@ Node::Node(const AppInstancePtr& app,
         _imp->cacheID = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     } while (!claimCacheID(_imp->cacheID));
     _imp->cacheIDClaimed = true;
+    _imp->nodeId = QUuid::createUuid().toString(QUuid::Id128).toStdString();
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
     QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);
@@ -922,6 +923,29 @@ Node::getCacheID() const
     QMutexLocker k(&_imp->nameMutex);
 
     return _imp->cacheID;
+}
+
+std::string
+Node::getNodeId() const
+{
+    QMutexLocker k(&_imp->nameMutex);
+
+    return _imp->nodeId;
+}
+
+bool
+Node::isValidNodeId(const std::string& id)
+{
+    if (id.size() != 32) {
+        return false;
+    }
+    for (char c : id) {
+        if (!(((c >= '0') && (c <= '9')) || ((c >= 'a') && (c <= 'f')))) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool

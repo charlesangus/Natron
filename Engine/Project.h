@@ -150,6 +150,25 @@ public:
     QStringList getLoadWarnings() const;
 
     /**
+     * @brief The active node of the project, at any depth, whose persistent ID is id, or null.
+     * A deleted node is not found until an undo reactivates it. MT-safe.
+     **/
+    NodePtr findNodeById(const std::string& id) const;
+
+    /**
+     * @brief The node of the project, active or deactivated, that holds id, or null. MT-safe.
+     **/
+    NodePtr findNodeHoldingId(const std::string& id) const;
+
+    /**
+     * @brief Index upkeep for findNodeById(): NodeCollection::addNode() and removeNode() add and
+     * drop nodes, and onNodeIdChanged() re-keys a node whose ID was replaced while it was indexed.
+     **/
+    void registerNodeId(const NodePtr& node);
+    void unregisterNodeId(const Node* node);
+    void onNodeIdChanged(const NodePtr& node, const std::string& previousId);
+
+    /**
      * @brief Writes a project file at filePath without ever leaving a partial one there:
      * writeArchive writes the whole archive to a new file in the same directory, beforeReplace
      * runs once it is complete and synced, then that file replaces filePath. When writeArchive

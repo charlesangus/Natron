@@ -494,6 +494,23 @@ public:
      **/
     void adoptSerializedCacheID(const std::string& cacheID);
 
+    /**
+     * @brief The node's persistent ID: 32 lowercase hex characters, made when the node is created
+     * and kept by saving and loading its project. A paste, a duplicate or an import makes a new
+     * node, with a new ID. Unlike the cache ID it is unique within one project only, and
+     * opening a project twice gives both copies the same IDs.
+     **/
+    std::string getNodeId() const;
+
+    static bool isValidNodeId(const std::string& id);
+
+    /**
+     * @brief While its project loads, gives the node the ID saved with it. An ID that another
+     * node of the project holds, or a malformed one, is not taken: the node keeps the ID it was
+     * created with and the project gets a load warning. Does nothing outside a project load.
+     **/
+    void restoreSerializedNodeId(const std::string& id);
+
 private:
     static bool claimCacheID(const std::string& cacheID);
     static void releaseCacheID(const std::string& cacheID);

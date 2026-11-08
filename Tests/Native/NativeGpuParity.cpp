@@ -33,10 +33,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <list>
 #include <set>
+#include <string>
+#include <thread>
 
 #include <gtest/gtest.h>
+
+#include <sys/prctl.h>
+#include <unistd.h>
 
 #include <QElapsedTimer>
 #include <QThread>
@@ -586,6 +592,60 @@ EndToEndResult::ranInRegion(const NodePtr& node) const
     return false;
 }
 
+namespace {
+
+// The hung thread cannot be joined, so the process is aborted: ctest then records a crash with the stacks in
+// its log instead of killing the test silently at its own timeout.
+[[noreturn]] void
+reportHangAndAbort(const char* half,
+                   const NodePtr& root,
+                   const RectI& window,
+                   double time,
+                   unsigned mipmapLevel)
+{
+    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    std::fprintf(stderr,
+                 "\nHANG: %s did not finish within %lld ms in %s.%s (root '%s', time %g, mipmap level %u, window %d,%d-%d,%d)\n",
+                 half,
+                 (long long)kFrameTimeoutMs,
+                 info ? info->test_case_name() : "?",
+                 info ? info->name() : "?",
+                 root ? root->getScriptName_mt_safe().c_str() : "?",
+                 time,
+                 mipmapLevel,
+                 window.x1,
+                 window.y1,
+                 window.x2,
+                 window.y2);
+    std::fflush(stderr);
+
+    // gdb is a child of this process, which Yama's default ptrace scope refuses to let attach to its parent.
+    prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+    const long pid = (long)getpid();
+    char command[512];
+    if (std::system("command -v gdb >/dev/null 2>&1") == 0) {
+        std::snprintf(command, sizeof(command), "timeout 60 gdb -p %ld -batch -ex 'thread apply all bt' 1>&2", pid);
+    } else if (std::system("command -v eu-stack >/dev/null 2>&1") == 0) {
+        std::snprintf(command, sizeof(command), "timeout 60 eu-stack -p %ld 1>&2", pid);
+    } else {
+        command[0] = '\0';
+        std::fprintf(stderr, "Neither gdb nor eu-stack is on PATH: no thread stacks to dump.\n");
+    }
+    if (command[0] != '\0') {
+        std::fprintf(stderr, "Dumping all thread stacks of pid %ld\n", pid);
+        std::fflush(stderr);
+        const int status = std::system(command);
+        if (status != 0) {
+            std::fprintf(stderr, "The stack dump exited with status %d (ptrace may be refused in this container)\n", status);
+        }
+    }
+    std::fprintf(stderr, "FAIL: %s hung; aborting because the hung thread cannot be joined\n", half);
+    std::fflush(stderr);
+    std::abort();
+}
+
+} // namespace
+
 EndToEndResult
 renderEndToEnd(const std::vector<NodePtr>& graph,
                const NodePtr& root,
@@ -632,11 +692,9 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         timer.start();
         while (!run.future->isFinished()) {
             if (timer.elapsed() > kFrameTimeoutMs) {
-                scheduler->abort(run.context);
-                run.future->wait();
-                result.error = "the GPU frame timed out";
-
-                return result;
+                // Dumped before the abort request, which cannot pre-empt a running dispatch and would
+                // only change what the stacks show.
+                reportHangAndAbort("the GPU dispatch", root, window, time, mipmapLevel);
             }
             QThread::msleep(1);
         }
@@ -677,7 +735,17 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
     {
         GpuPlacementOffGuard off;
         std::vector<RenderedPlane> planes;
-        if (!renderNodePlanesDirect(root, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error)) {
+        std::promise<bool> done;
+        std::future<bool> doneFuture = done.get_future();
+        std::thread cpuThread([&]() {
+            done.set_value(renderNodePlanesDirect(root, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error));
+        });
+        if (doneFuture.wait_for(std::chrono::milliseconds(kFrameTimeoutMs)) != std::future_status::ready) {
+            cpuThread.detach();
+            reportHangAndAbort("the CPU reference render", root, window, time, mipmapLevel);
+        }
+        cpuThread.join();
+        if (!doneFuture.get()) {
             return result;
         }
         if (planes.size() != 1) {

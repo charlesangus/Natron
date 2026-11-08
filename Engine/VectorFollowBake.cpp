@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include "Engine/Bezier.h"
@@ -454,17 +455,18 @@ struct VectorFollowRun::Imp {
     }
 
     std::unique_ptr<FollowShape> makeShape(const RotoDrawableItemPtr& item) const;
-    std::set<int> anchorFramesOf(const FollowShape& shape) const;
+    std::set<int> keyFramesOf(const FollowShape& shape, int first, int last) const;
     void writeFrame(FollowShape& shape, const VectorFollowFrame& frame) const;
     void removeKeys(FollowShape& shape) const;
 };
 
+// The keys of what the shape's model drives: its points for per-point, its transform knobs for a fit.
 std::set<int>
-VectorFollowRun::Imp::anchorFramesOf(const FollowShape& shape) const
+VectorFollowRun::Imp::keyFramesOf(const FollowShape& shape,
+                                  int first,
+                                  int last) const
 {
     std::set<int> frames;
-    const int first = params.first;
-    const int last = params.last;
     if (shape.setup.model == VectorFollowModel::ePerPoint) {
         std::set<double> keys;
         shape.bezier->getKeyframeTimes(&keys);
@@ -531,12 +533,18 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item) const
         }
     }
 
-    shape->anchorFrames = anchorFramesOf(*shape);
+    shape->anchorFrames = keyFramesOf(*shape, params.first, params.last);
     const bool forward = params.direction == VectorFollowDirection::eForward;
-    // A forward follow starts from what the frame it starts on shows, also when a later key is what
-    // it must land on. That state then is an anchor like any key, and it bridges to that key.
-    if (shape->anchorFrames.empty() || (forward && !shape->anchorFrames.count(params.first))) {
-        shape->anchorFrames.insert(forward ? params.first : params.last);
+    const int start = forward ? params.first : params.last;
+    /*
+     * What the start frame shows is only worth keeping when a key behind it shaped it. Then it is
+     * an anchor like any key, and bridges to the next key ahead. Without one, a key ahead is the
+     * only state the artist set, so the follow tracks back from it to the start frame instead.
+     */
+    const bool keyBehind = forward ? !keyFramesOf(*shape, std::numeric_limits<int>::min(), params.first - 1).empty()
+                                   : !keyFramesOf(*shape, params.last + 1, std::numeric_limits<int>::max()).empty();
+    if (shape->anchorFrames.empty() || (keyBehind && !shape->anchorFrames.count(start))) {
+        shape->anchorFrames.insert(start);
         shape->setup.seedIsNew = true;
     }
 

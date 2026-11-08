@@ -146,7 +146,8 @@ struct VectorFollowShapeSetup {
     double confidenceThreshold = kVectorFollowDefaultConfidenceThreshold;
     int first = 0;
     int last = 0;
-    // By frame, up. With seedIsNew the first one is a start state that is not a key yet.
+    // By frame, up. With seedIsNew the one the follow starts from, the first going forward and the
+    // last going backward, is a start state that is not a key yet.
     std::vector<VectorFollowAnchor> anchors;
     bool seedIsNew = false;
     // The source has no backward layer, so a bridge between two anchors has only its forward pass.
@@ -176,7 +177,8 @@ enum class VectorFollowPassEnd {
     eNoLayer
 };
 
-// One of the two passes between two anchors ended before it reached the far anchor.
+// A pass between two anchors that ended before it reached the far one, or a pass the source has no
+// layer for, between two anchors or out from one.
 struct VectorFollowPassStop {
     VectorFollowDirection direction = VectorFollowDirection::eForward;
     VectorFollowPassEnd reason = VectorFollowPassEnd::eLowConfidence;
@@ -218,7 +220,9 @@ struct VectorFollowShapeOutcome {
  * @brief Follows one shape over setup's range. Each frame is given to emit once it is final, so
  * whatever was emitted before an abort stands on its own. Anchors are not emitted, a new seed is.
  * Between two anchors, a pass that ends early leaves the frames past that point to the other pass
- * alone, which is reported and is no failure. Calls emit and aborted on the calling thread.
+ * alone, which is reported and is no failure. Out from an anchor, a direction the source has no
+ * layer for is reported and those frames are left alone. Calls emit and aborted on the calling
+ * thread.
  **/
 VectorFollowShapeOutcome followVectorShape(VectorField& field,
                                            const VectorFollowShapeSetup& setup,

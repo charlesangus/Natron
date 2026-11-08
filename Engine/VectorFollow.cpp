@@ -369,15 +369,16 @@ public:
         if (anchors.empty()) {
             return _outcome;
         }
+        const bool forward = _setup.direction == VectorFollowDirection::eForward;
         if (_setup.seedIsNew) {
+            const VectorFollowAnchor& start = forward ? anchors.front() : anchors.back();
             VectorFollowFrame seed;
-            seed.frame = anchors.front().frame;
-            seed.points = anchors.front().points;
-            seed.transform = anchors.front().transform;
+            seed.frame = start.frame;
+            seed.points = start.points;
+            seed.transform = start.transform;
             emitFrame(seed);
         }
 
-        const bool forward = _setup.direction == VectorFollowDirection::eForward;
         const int count = (int)anchors.size();
         if (forward) {
             if (!oneWay(anchors.front(), false, _setup.first)) {
@@ -532,6 +533,11 @@ private:
                 bool forward,
                 int end)
     {
+        if ((anchor.frame != end) && !hasLayerFor(forward)) {
+            _outcome.passStops.push_back(passStop(forward, VectorFollowPassEnd::eNoLayer, anchor.frame));
+
+            return true;
+        }
         ShapeWalker walker(_setup, anchor, forward);
         while (walker.frame() != end) {
             if (forward ? (walker.frame() > end) : (walker.frame() < end)) {

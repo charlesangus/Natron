@@ -18,6 +18,9 @@ above the screen grab carries the measured numbers):
                their keys alone, and the transform reaches the known translation;
   bridge       a Forward press with a later key tracks forward from the current frame and backward
                from that key, blends the two, meets both keys exactly and follows one way after it;
+               a Backward press on an unkeyed frame with an earlier key and a key after it bridges
+               the same way down to the earlier key and keeps the current frame as it showed; a
+               Forward press with only a later key tracks back from that key to the current frame;
   forward-only a source with only the forward layer is listed, follows forward, and a backward
                follow is refused with the source and the missing layer named and nothing keyed;
   abort        a second press mid-follow stops it, the baked frames stay and are right, the later
@@ -67,6 +70,9 @@ SQ_X, SQ_Y, SQ_SIZE = 130.0, 130.0, 60.0
 SQ2_X, SQ2_Y = 60.0, 170.0
 BRIDGE_KEY = 9
 BRIDGE_OFFSET = (8.0, 0.0)
+BACK_CURRENT = 9
+BACK_LATER_KEY = MAIN_LAST
+LATER_ONLY_KEY = 9
 POINTS = 4
 
 STALL_LOG = os.environ.get("NATRON_STALL_LOG", "")
@@ -585,6 +591,93 @@ try:
         yield from go_to(BRIDGE_KEY)
         yield from settle()
         shot("m219-bridge-key.png", "Bridge at the later key, frame %d: off the key by %.2e px, and the earlier key by %.2e px" % (BRIDGE_KEY, at_key, at_start))
+
+        yield from check_backward_bridge(scene)
+        yield from check_later_key_only(scene)
+
+    def check_backward_bridge(scene):
+        reset_shapes(scene.ctx)
+        bez = new_shape(scene.ctx)
+        p0 = [pos(bez, i, START) for i in range(POINTS)]
+        current, after = BACK_CURRENT, BACK_LATER_KEY
+        key_after = [shifted(shifted(p, *known_shift(after)), BRIDGE_OFFSET[0], BRIDGE_OFFSET[1]) for p in p0]
+        set_key(bez, after, key_after)
+        keys = keys_of(bez)
+        require(keys == [float(START), float(after)], "backward bridge: the shape has keys at %d and %d (keys %r)" % (START, after, keys))
+        shown = [pos(bez, i, current) for i in range(POINTS)]
+        shown_off = max_deviation(bez, [current], lambda t, i: shifted(p0[i], *known_shift(t)))
+        check(shown_off >= 2.0 * BRIDGE_TOL, "backward bridge: frame %d shows the shape %.2f px off the plate, so the two passes disagree" % (current, shown_off))
+
+        select_shapes([bez])
+        yield from go_to(current)
+        yield from run_follow(scene.roto, "followBackwardToStart", "backward bridge, Backward at frame %d with keys at %d and %d" % (current, START, after))
+        check("is done" in message(scene.roto), "backward bridge: the follow is done (%r)" % message(scene.roto))
+
+        at_start = max_deviation(bez, [START], lambda t, i: p0[i])
+        at_current = max_deviation(bez, [current], lambda t, i: shown[i])
+        at_after = max_deviation(bez, [after], lambda t, i: key_after[i])
+        check(at_start <= KEY_TOL, "backward bridge: the earlier key is met exactly (off by %.2e)" % at_start)
+        check(at_current <= KEY_TOL, "backward bridge: frame %d keeps what it showed (off by %.2e)" % (current, at_current))
+        check(at_after <= KEY_TOL, "backward bridge: the key after the current frame is untouched (off by %.2e)" % at_after)
+        keys = keys_of(bez)
+        want_keys = [float(t) for t in range(START, current + 1)] + [float(after)]
+        check(keys == want_keys, "backward bridge: frames %d..%d are keyed and the key at %d stays (keys %r)" % (START, current, after, keys))
+
+        gap = float(current - START)
+
+        def blended(t, i):
+            w = smoothstep((t - START) / gap)
+            forward = shifted(p0[i], *known_shift(t))
+            backward = shifted(shown[i], -PAN_U * (current - t), -PAN_V * (current - t))
+            return tuple(forward[k] * (1.0 - w) + backward[k] * w for k in range(6))
+
+        worst = max_deviation(bez, list(range(START, current + 1)), blended)
+        check(worst <= BRIDGE_TOL, "backward bridge: frames %d..%d follow the forward pass from %d blended into the backward pass from %d by a smoothstep, within %.1f px (largest error %.3f)"
+              % (START, current, START, current, BRIDGE_TOL, worst))
+
+        mid = START + (current - START) // 2
+        pull = smoothstep((mid - START) / gap) * shown_off
+        one_way = max_deviation(bez, [mid], lambda t, i: shifted(p0[i], *known_shift(t)))
+        check(one_way >= pull - BRIDGE_TOL, "backward bridge: frame %d is pulled %.2f px off the forward-only track towards frame %d, so the backward pass counts (expected %.2f)"
+              % (mid, one_way, current, pull))
+
+        yield from go_to(mid)
+        yield from settle()
+        shot("m219-bridge-backward.png", "Backward bridge at frame %d, between the key at %d and the current frame %d: %.2f px off the forward-only track, blend error %.3f px; frame %d off by %.2e px"
+             % (mid, START, current, one_way, worst, current, at_current))
+
+    def check_later_key_only(scene):
+        reset_shapes(scene.ctx)
+        late = LATER_ONLY_KEY
+        dx, dy = known_shift(late)
+        bez = scene.ctx.createRectangle(SQ_X + dx, SQ_Y + dy, SQ_SIZE, late)
+        require(bez is not None, "create a Roto rectangle keyed at frame %d" % late)
+        keep(bez)
+        keys = keys_of(bez)
+        require(keys == [float(late)], "later key only: the shape's one key is at frame %d (keys %r)" % (late, keys))
+        held = [pos(bez, i, late) for i in range(POINTS)]
+
+        select_shapes([bez])
+        yield from go_to(START)
+        yield from run_follow(scene.roto, "followForwardToEnd", "later key only, Forward at frame %d with the only key at frame %d" % (START, late))
+        check("is done" in message(scene.roto), "later key only: the follow is done (%r)" % message(scene.roto))
+
+        at_key = max_deviation(bez, [late], lambda t, i: held[i])
+        check(at_key <= KEY_TOL, "later key only: the key is met exactly (off by %.2e)" % at_key)
+        frames = list(range(START, MAIN_LAST + 1))
+        worst = max_deviation(bez, frames, lambda t, i: shifted(held[i], PAN_U * (t - late), PAN_V * (t - late)))
+        check(worst <= POS_TOL, "later key only: frames %d..%d track back and forward from the key at %d within %.2f px (largest error %.3f)"
+              % (START, MAIN_LAST, late, POS_TOL, worst))
+        off_held = max_deviation(bez, [START], lambda t, i: held[i])
+        check(off_held >= PAN_U * (late - START) - POS_TOL, "later key only: frame %d is not given the key's held pose but where the vectors bring it (%.2f px from it)"
+              % (START, off_held))
+        keys = keys_of(bez)
+        check(keys == [float(t) for t in frames], "later key only: frames %d..%d are keyed (keys %r)" % (START, MAIN_LAST, keys))
+
+        yield from go_to(START)
+        yield from settle()
+        shot("m219-bridge-later-key-only.png", "Forward at frame %d with the only key at frame %d: frame %d is %.2f px from the key's pose, tracked back within %.3f px"
+             % (START, late, START, off_held, worst))
 
     def section_forward_only(scene):
         gt.section("forward-only")

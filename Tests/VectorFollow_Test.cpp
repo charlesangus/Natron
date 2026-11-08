@@ -621,6 +621,79 @@ TEST(VectorFollow, AForwardOnlySourceBridgesOnItsForwardPassAlone)
     EXPECT_EQ(outcome.passStops[0].otherOnly.last, 9);
 }
 
+TEST(VectorFollow, ABackwardSeedIsTheLastAnchorAndBridgesDownToAnEarlierKey)
+{
+    PassField field;
+    VectorFollowShapeSetup setup = stillBridgeSetup();
+    setup.direction = VectorFollowDirection::eBackward;
+    setup.seedIsNew = true;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, setup, &outcome);
+
+    ASSERT_EQ(frames.size(), 10u);
+    EXPECT_EQ(frames.front().frame, 10);
+    EXPECT_DOUBLE_EQ(offsetAt(frames, 10), 0.);
+    EXPECT_EQ(frameOf(frames, 0), nullptr);
+    for (int i = 1; i < 10; ++i) {
+        EXPECT_EQ(frames[i].frame, 10 - i);
+    }
+    for (int frame = 1; frame < 10; ++frame) {
+        EXPECT_NEAR(offsetAt(frames, frame), frame * (1. - followBridgeWeight(frame, 0, 10)), 1e-9) << frame;
+    }
+    EXPECT_TRUE(outcome.passStops.empty());
+    EXPECT_TRUE(outcome.unfollowed.empty());
+    EXPECT_FALSE(outcome.stopped);
+}
+
+TEST(VectorFollow, ABackwardBridgeOfAForwardOnlySourceRunsOnItsForwardPassAlone)
+{
+    PassField field;
+    field.backwardX = 100.;
+    VectorFollowShapeSetup setup = stillBridgeSetup();
+    setup.direction = VectorFollowDirection::eBackward;
+    setup.seedIsNew = true;
+    setup.forwardOnly = true;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, setup, &outcome);
+
+    ASSERT_EQ(frames.size(), 10u);
+    EXPECT_EQ(frames.front().frame, 10);
+    for (int frame = 1; frame <= 9; ++frame) {
+        EXPECT_DOUBLE_EQ(offsetAt(frames, frame), (double)frame) << frame;
+    }
+    EXPECT_FALSE(outcome.aborted);
+    EXPECT_FALSE(outcome.stopped);
+    ASSERT_EQ(outcome.passStops.size(), 1u);
+    EXPECT_EQ(outcome.passStops[0].direction, VectorFollowDirection::eBackward);
+    EXPECT_EQ(outcome.passStops[0].reason, VectorFollowPassEnd::eNoLayer);
+    EXPECT_EQ(outcome.passStops[0].frame, 10);
+    EXPECT_EQ(outcome.passStops[0].otherOnly.first, 1);
+    EXPECT_EQ(outcome.passStops[0].otherOnly.last, 9);
+}
+
+TEST(VectorFollow, AOneWayPassWithNoLayerIsReportedAndLeavesItsFramesAlone)
+{
+    PassField field;
+    VectorFollowShapeSetup setup = perPointSetup(0, 10, std::vector<int>(1, 5), 0., 0.);
+    setup.forwardOnly = true;
+    VectorFollowShapeOutcome outcome;
+    const std::vector<VectorFollowFrame> frames = runFollow(field, setup, &outcome);
+
+    ASSERT_EQ(frames.size(), 5u);
+    for (int frame = 0; frame <= 5; ++frame) {
+        EXPECT_EQ(frameOf(frames, frame), nullptr) << frame;
+    }
+    EXPECT_DOUBLE_EQ(offsetAt(frames, 10), 5.);
+    EXPECT_FALSE(outcome.aborted);
+    EXPECT_FALSE(outcome.stopped);
+    EXPECT_TRUE(outcome.unfollowed.empty());
+    ASSERT_EQ(outcome.passStops.size(), 1u);
+    EXPECT_EQ(outcome.passStops[0].direction, VectorFollowDirection::eBackward);
+    EXPECT_EQ(outcome.passStops[0].reason, VectorFollowPassEnd::eNoLayer);
+    EXPECT_EQ(outcome.passStops[0].frame, 5);
+    EXPECT_TRUE(outcome.passStops[0].otherOnly.empty());
+}
+
 TEST(VectorFollow, ReportTellsOfPassStopsWithoutCallingThemAFailure)
 {
     VectorFollowReport report;

@@ -40,6 +40,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/VectorFollow.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -93,9 +94,27 @@ public:
 
     std::string followCall(const NodePtr& source,
                            const char* direction,
-                           const char* model) const
+                           const char* model,
+                           int first = 5,
+                           int last = 25) const
     {
-        return "roto.followVectors([shape], \"" + source->getFullyQualifiedName() + "\", 5, 25, \"" + direction + "\", \"" + model + "\")";
+        return "roto.followVectors([shape], \"" + source->getFullyQualifiedName() + "\", " + std::to_string(first) + ", " + std::to_string(last) + ", \"" + direction + "\", \"" + model + "\")";
+    }
+
+    FollowPoint positionAt(double time) const
+    {
+        FollowPoint p;
+        _bezier->getControlPointAtIndex(0)->getPositionAtTime(false, time, ViewIdx(0), &p.x, &p.y);
+
+        return p;
+    }
+
+    std::set<double> keyTimes() const
+    {
+        std::set<double> keys;
+        _bezier->getKeyframeTimes(&keys);
+
+        return keys;
     }
 
     NodePtr _texture;
@@ -157,6 +176,63 @@ TEST_F(PyVectorFollowTest, ATwoWayFollowOfAForwardOnlySourceReportsTheMissingPas
                                                                                      "assert stops[0]['direction'] == 'backward', str(stops)\n"
                                                                                      "assert stops[0]['reason'] == 'noLayer', str(stops)\n"
                                                                                      "assert stops[0]['otherOnly'] == (6, 14), str(stops)\n");
+}
+
+TEST_F(PyVectorFollowTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
+{
+    expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint", 2, 12) + "\n"
+                                                                                            "entry = report[shape.getScriptName()]\n"
+                                                                                            "assert entry['passStops'] == [], str(entry)\n"
+                                                                                            "assert entry['unfollowed'] == [], str(entry)\n"
+                                                                                            "assert entry['stopFrame'] is None, str(entry)\n");
+
+    EXPECT_EQ(keyTimes().size(), 11u);
+    EXPECT_DOUBLE_EQ(positionAt(5.).x, 90.);
+    EXPECT_NEAR(positionAt(2.).x, 90. - kShiftX * 3., 2. * kFollowTolerance);
+    EXPECT_NEAR(positionAt(2.).y, 70. - kShiftY * 3., 2. * kFollowTolerance);
+}
+
+TEST_F(PyVectorFollowTest, AForwardOnlySourceWithOnlyALaterKeyReportsTheMissingPass)
+{
+    setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+    expectScriptPasses("report = " + followCall(_generator, "forward", "perPoint", 2, 12) + "\n"
+                                                                                            "entry = report[shape.getScriptName()]\n"
+                                                                                            "stops = entry['passStops']\n"
+                                                                                            "assert stops == [{'direction': 'backward', 'reason': 'noLayer', 'frame': 5, 'otherOnly': None}], str(stops)\n"
+                                                                                            "assert entry['unfollowed'] == [], str(entry)\n"
+                                                                                            "assert entry['stopFrame'] is None, str(entry)\n");
+
+    EXPECT_EQ(*keyTimes().begin(), 5.);
+    EXPECT_DOUBLE_EQ(positionAt(2.).x, 90.);
+}
+
+TEST_F(PyVectorFollowTest, ABackwardBlendReportsNoPassStops)
+{
+    _bezier->setKeyframe(15.);
+    const FollowPoint shown = positionAt(12.);
+    expectScriptPasses("report = " + followCall(_generator, "backward", "perPoint", 5, 12) + "\n"
+                                                                                             "entry = report[shape.getScriptName()]\n"
+                                                                                             "assert entry['passStops'] == [], str(entry)\n"
+                                                                                             "assert entry['unfollowed'] == [], str(entry)\n"
+                                                                                             "assert entry['stopFrame'] is None, str(entry)\n");
+
+    EXPECT_EQ(keyTimes(), (std::set<double> { 5., 6., 7., 8., 9., 10., 11., 12., 15. }));
+    EXPECT_DOUBLE_EQ(positionAt(12.).x, shown.x);
+    EXPECT_DOUBLE_EQ(positionAt(12.).y, shown.y);
+    EXPECT_DOUBLE_EQ(positionAt(5.).x, 90.);
+}
+
+TEST_F(PyVectorFollowTest, ABackwardFollowWithOnlyAnEarlierKeyTracksForwardFromIt)
+{
+    expectScriptPasses("report = " + followCall(_generator, "backward", "perPoint", 5, 12) + "\n"
+                                                                                             "entry = report[shape.getScriptName()]\n"
+                                                                                             "assert entry['passStops'] == [], str(entry)\n"
+                                                                                             "assert entry['unfollowed'] == [], str(entry)\n");
+
+    EXPECT_EQ(keyTimes().size(), 8u);
+    EXPECT_DOUBLE_EQ(positionAt(5.).x, 90.);
+    EXPECT_NEAR(positionAt(12.).x, 90. + kShiftX * 7., 2. * kFollowTolerance);
+    EXPECT_NEAR(positionAt(12.).y, 70. + kShiftY * 7., 2. * kFollowTolerance);
 }
 
 TEST_F(PyVectorFollowTest, SourceWithoutLayersRaises)

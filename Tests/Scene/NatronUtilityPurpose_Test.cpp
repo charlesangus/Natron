@@ -109,9 +109,7 @@ public:
         params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
         params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
         params.highlight = false;
-        params.showRender = purposes.render;
-        params.showProxy = purposes.proxy;
-        params.showGuides = purposes.guide;
+        HydraRender::setPurposes(_engine.get(), kRenderDelegateUtilityId, purposes.render, purposes.proxy, purposes.guide, &params);
         // A frame draws on the delegate's thread, and Render() only starts it.
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 
@@ -194,32 +192,33 @@ TEST(NatronUtilityPurpose, TheHostDrawsDefaultAndRenderUntilAskedOtherwise)
     HydraRender::releaseAll();
 }
 
-// Hydra first syncs a prim when its tag is first asked for, so showing a purpose for the first time
-// builds that purpose's prims once. What this holds to nothing is every toggle after.
-TEST(NatronUtilityPurpose, TogglingBuildsOnlyWhatWasNeverShown)
+// Every purpose's prims are built on the first render, hidden ones included, so no toggle builds
+// anything, even showing a purpose for the first time.
+TEST(NatronUtilityPurpose, TogglingBuildsNothing)
 {
     PurposeEngine engine;
 
     engine.render({ true, false, false });
-    EXPECT_EQ(2u, engine.stat(kUtilityStatTopologyBuilds));
+    EXPECT_EQ(4u, engine.stat(kUtilityStatGeometryCount));
+    EXPECT_EQ(4u, engine.stat(kUtilityStatTopologyBuilds));
     EXPECT_EQ(2u, engine.stat(kUtilityStatInstanceCount));
-
-    engine.render({ true, true, false });
-    EXPECT_EQ(3u, engine.stat(kUtilityStatTopologyBuilds));
-    EXPECT_EQ(3u, engine.stat(kUtilityStatInstanceCount));
 
     const std::size_t points = engine.stat(kUtilityStatPointUpdates);
     const std::size_t colors = engine.stat(kUtilityStatColorUpdates);
 
+    engine.render({ true, true, false });
+    EXPECT_EQ(3u, engine.stat(kUtilityStatInstanceCount));
+    engine.render({ true, true, true });
+    EXPECT_EQ(4u, engine.stat(kUtilityStatInstanceCount));
     engine.render({ true, false, false });
     EXPECT_EQ(2u, engine.stat(kUtilityStatInstanceCount));
     engine.render({ false, true, false });
     EXPECT_EQ(2u, engine.stat(kUtilityStatInstanceCount));
-    engine.render({ true, true, false });
-    EXPECT_EQ(3u, engine.stat(kUtilityStatInstanceCount));
+    engine.render({ false, false, false });
+    EXPECT_EQ(1u, engine.stat(kUtilityStatInstanceCount));
 
-    EXPECT_EQ(3u, engine.stat(kUtilityStatTopologyBuilds));
-    EXPECT_EQ(3u, engine.stat(kUtilityStatGeometryCount));
+    EXPECT_EQ(4u, engine.stat(kUtilityStatTopologyBuilds));
+    EXPECT_EQ(4u, engine.stat(kUtilityStatGeometryCount));
     EXPECT_EQ(points, engine.stat(kUtilityStatPointUpdates));
     EXPECT_EQ(colors, engine.stat(kUtilityStatColorUpdates));
 }

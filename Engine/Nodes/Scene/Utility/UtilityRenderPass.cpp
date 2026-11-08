@@ -37,11 +37,16 @@
 
 #include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/vt/types.h>
+#include <pxr/base/vt/value.h>
 #include <pxr/imaging/cameraUtil/framing.h>
+#include <pxr/imaging/hd/renderDelegate.h>
+#include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/renderPassState.h>
 #include <pxr/imaging/hd/tokens.h>
 
 #include "Engine/AppManager.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
@@ -219,7 +224,15 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
     UtilityScene* const scene = _renderParam->scene();
 
-    scene->setRenderTags(renderTags);
+    const VtValue shown = GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kRenderDelegateUtilityShownTagsSetting));
+
+    if (shown.IsHolding<VtTokenArray>()) {
+        const VtTokenArray& tags = shown.UncheckedGet<VtTokenArray>();
+
+        scene->setRenderTags(TfTokenVector(tags.begin(), tags.end()));
+    } else {
+        scene->setRenderTags(renderTags);
+    }
 
     WavefrontFrame frame;
 

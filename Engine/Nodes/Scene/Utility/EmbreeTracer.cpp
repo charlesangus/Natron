@@ -231,12 +231,27 @@ private:
 struct Placement {
     UtilityScene::GeometryId geometry;
     GfMatrix4d transform;
-
-    bool operator==(const Placement& other) const
-    {
-        return geometry == other.geometry && transform == other.transform;
-    }
 };
+
+bool
+sameGeometries(const std::vector<Placement>& a,
+               const std::vector<Placement>& b)
+{
+    return a.size() == b.size()
+        && std::equal(a.begin(), a.end(), b.begin(), [](const Placement& x, const Placement& y) { return x.geometry == y.geometry; });
+}
+
+void
+setInstanceTransform(RTCGeometry instance,
+                     const GfMatrix4d& transform)
+{
+    float matrix[16];
+    const double* source = transform.data();
+
+    // GfMatrix4d's row vectors lie in memory exactly as Embree's columns do.
+    std::copy(source, source + 16, matrix);
+    rtcSetGeometryTransform(instance, 0, RTC_FORMAT_FLOAT4X4_COLUMN_MAJOR, matrix);
+}
 
 void
 fillRays(const Tracer::RayBatch& rays,
@@ -287,7 +302,9 @@ struct EmbreeTracer::Implementation {
     void releaseInstanceScene()
     {
         for (RTCGeometry instance : instances) {
-            rtcReleaseGeometry(instance);
+            if (instance) {
+                rtcReleaseGeometry(instance);
+            }
         }
         instances.clear();
         if (instanceScene) {
@@ -302,6 +319,7 @@ struct EmbreeTracer::Implementation {
     {
         releaseInstanceScene();
         instanceScene = newRefittableScene(device);
+        instances.assign(newPlacements.size(), nullptr);
         for (std::size_t i = 0; i < newPlacements.size(); ++i) {
             if (wasStopped(stop)) {
                 return false;
@@ -313,18 +331,14 @@ struct EmbreeTracer::Implementation {
                 continue;
             }
             RTCGeometry instance = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_INSTANCE);
-            float matrix[16];
-            const double* source = newPlacements[i].transform.data();
 
-            // GfMatrix4d's row vectors lie in memory exactly as Embree's columns do.
-            std::copy(source, source + 16, matrix);
             rtcSetGeometryInstancedScene(instance, found->second->scene());
-            rtcSetGeometryTransform(instance, 0, RTC_FORMAT_FLOAT4X4_COLUMN_MAJOR, matrix);
+            setInstanceTransform(instance, newPlacements[i].transform);
             rtcSetGeometryBuildQuality(instance, RTC_BUILD_QUALITY_REFIT);
             rtcCommitGeometry(instance);
             // The id Embree reports a hit under is the index into the snapshot's instances.
             rtcAttachGeometryByID(instanceScene, instance, static_cast<unsigned int>(i));
-            instances.push_back(instance);
+            instances[i] = instance;
         }
 
         return true;
@@ -343,6 +357,7 @@ struct EmbreeTracer::Implementation {
 
     RTCDevice device;
     RTCScene instanceScene = nullptr;
+    // Indexed like placements; null where the geometry has nothing to trace.
     std::vector<RTCGeometry> instances;
     std::map<UtilityScene::GeometryId, std::unique_ptr<GeometryScene>> geometries;
     std::vector<Placement> placements;
@@ -424,7 +439,7 @@ EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
         imp.instanceGeometry[i] = dense == denseIndices.end() ? kNoHit : dense->second;
     }
 
-    const bool rebuildInstances = !imp.instanceScene || geometryReplaced || placements != imp.placements;
+    const bool rebuildInstances = !imp.instanceScene || geometryReplaced || !sameGeometries(placements, imp.placements);
 
     // Embree's TBB builds spawn into whichever arena commits them, which holds them to the budget.
     tbb::task_arena arena(std::max(1, threads));
@@ -453,18 +468,34 @@ EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
             commitCancellable(imp.instanceScene, stop);
         });
         ++imp.counters.instanceSceneBuilds;
-    } else if (geometryRefitted) {
-        // An instance caches the bounds of what it places, and those just moved.
-        for (RTCGeometry instance : imp.instances) {
+    } else {
+        bool instancesChanged = false;
+
+        for (std::size_t i = 0; i < placements.size(); ++i) {
             if (wasStopped(stop)) {
                 return imp.abandonUpdate();
             }
+
+            RTCGeometry instance = imp.instances[i];
+            const bool moved = placements[i].transform != imp.placements[i].transform;
+
+            if (!instance || !(moved || geometryRefitted)) {
+                continue;
+            }
+            if (moved) {
+                setInstanceTransform(instance, placements[i].transform);
+            }
+            // Without moving, an instance still caches the bounds of what it places, which a refit moved.
             rtcCommitGeometry(instance);
+            instancesChanged = true;
         }
-        arena.execute([&]() {
-            commitCancellable(imp.instanceScene, stop);
-        });
-        ++imp.counters.instanceSceneUpdates;
+        imp.placements.swap(placements);
+        if (instancesChanged) {
+            arena.execute([&]() {
+                commitCancellable(imp.instanceScene, stop);
+            });
+            ++imp.counters.instanceSceneUpdates;
+        }
     }
     if (wasStopped(stop)) {
         return imp.abandonUpdate();

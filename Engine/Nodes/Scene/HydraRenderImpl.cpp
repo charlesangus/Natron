@@ -60,6 +60,7 @@
 #include <pxr/base/gf/vec4d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/errorMark.h>
+#include <pxr/base/vt/types.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/garch/glApi.h>
@@ -1304,9 +1305,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     // The colour AOV is read as Storm shades it, in the scene's linear space.
     params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
     params.highlight = false;
-    params.showRender = request.showRender;
-    params.showProxy = request.showProxy;
-    params.showGuides = request.showGuides;
+    HydraRender::setPurposes(engine, renderer, request.showRender, request.showProxy, request.showGuides, &params);
     std::string renderFailure;
     if (_gl) {
         for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
@@ -2339,6 +2338,38 @@ setRendererSettings(const std::string& renderer,
     }
 }
 
+void
+setPurposes(UsdImagingGLEngine* engine,
+            const std::string& renderer,
+            bool showRender,
+            bool showProxy,
+            bool showGuides,
+            UsdImagingGLRenderParams* params)
+{
+    params->showRender = showRender;
+    params->showProxy = showProxy;
+    params->showGuides = showGuides;
+    if (renderer != kRenderDelegateUtilityId) {
+        return;
+    }
+
+    VtTokenArray shown(1, HdRenderTagTokens->geometry);
+
+    if (showGuides) {
+        shown.push_back(HdRenderTagTokens->guide);
+    }
+    if (showProxy) {
+        shown.push_back(HdRenderTagTokens->proxy);
+    }
+    if (showRender) {
+        shown.push_back(HdRenderTagTokens->render);
+    }
+    engine->SetRendererSetting(TfToken(kRenderDelegateUtilityShownTagsSetting), VtValue(shown));
+    params->showRender = true;
+    params->showProxy = true;
+    params->showGuides = true;
+}
+
 bool
 engineSetting(const void* owner,
               const std::string& key,
@@ -3159,9 +3190,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
                 params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
                 params.highlight = false;
-                params.showRender = v.showRender;
-                params.showProxy = v.showProxy;
-                params.showGuides = v.showGuides;
+                HydraRender::setPurposes(engine.get(), engineRenderer, v.showRender, v.showProxy, v.showGuides, &params);
                 if (readsRestart) {
                     before = engine->GetRenderStats();
                 }

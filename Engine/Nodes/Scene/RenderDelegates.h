@@ -38,6 +38,10 @@
 #define kRenderDelegateStormId "HdStormRendererPlugin"
 // The built-in utility renderer's HdRendererPlugin type name, which plugInfo.json declares.
 #define kRenderDelegateUtilityId "HdNatronUtilityRendererPlugin"
+// The utility renderer's setting naming the render tags it draws, a VtTokenArray. When the host sets
+// it, Hydra is asked to sync every purpose, so the utility renderer holds every purpose's geometry and
+// showing or hiding one only changes what it draws.
+#define kRenderDelegateUtilityShownTagsSetting "natron:shownRenderTags"
 
 // The id of a Renderer menu entry that renders with the renderer the active render settings prim
 // names (natron:renderer), Storm when it names none. No Hydra plug-in has it.

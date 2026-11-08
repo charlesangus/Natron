@@ -42,6 +42,11 @@
 #include "Engine/ScenePayload.h"
 #include <pxr/base/vt/value.h>
 
+PXR_NAMESPACE_OPEN_SCOPE
+class UsdImagingGLEngine;
+class UsdImagingGLRenderParams;
+PXR_NAMESPACE_CLOSE_SCOPE
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -265,6 +270,17 @@ bool packsOnGpu();
  **/
 void setRendererSettings(const std::string& renderer,
                          const std::map<std::string, PXR_NS::VtValue>& settings);
+
+/**
+ * @brief Has engine, a renderer engine, draw the purposes asked for in params. Natron Utility is made
+ * to sync every purpose and told which to draw, so a purpose toggle builds no geometry there.
+ **/
+void setPurposes(PXR_NS::UsdImagingGLEngine* engine,
+                 const std::string& renderer,
+                 bool showRender,
+                 bool showProxy,
+                 bool showGuides,
+                 PXR_NS::UsdImagingGLRenderParams* params);
 
 /**
  * @brief The setting key of owner's engine as its delegate reports it

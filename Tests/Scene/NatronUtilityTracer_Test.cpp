@@ -356,7 +356,7 @@ TEST(NatronUtilityTracer, TheSameVersionDoesNoWork)
     EXPECT_EQ(before.instanceSceneUpdates, after.instanceSceneUpdates);
 }
 
-TEST(NatronUtilityTracer, MovingAnInstanceRebuildsOnlyTheInstanceScene)
+TEST(NatronUtilityTracer, MovingAnInstanceRefitsTheInstanceScene)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addQuad(scene, "/quad");
@@ -371,9 +371,57 @@ TEST(NatronUtilityTracer, MovingAnInstanceRebuildsOnlyTheInstanceScene)
 
     EXPECT_EQ(1u, tracer.stats().geometryBuilds);
     EXPECT_EQ(0u, tracer.stats().geometryRefits);
-    EXPECT_EQ(2u, tracer.stats().instanceSceneBuilds);
+    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
+    EXPECT_EQ(1u, tracer.stats().instanceSceneUpdates);
     EXPECT_EQ(0u, shootAt(tracer, 10.75f, 0.25f).primitive[0]);
     EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 0.75f, 0.25f).primitive[0]);
+}
+
+// Moves only refit; adding, removing or swapping what an instance places rebuilds.
+TEST(NatronUtilityTracer, OnlyMembershipChangesRebuildTheInstanceScene)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId a = addQuad(scene, "/a");
+    const UtilityScene::GeometryId b = addQuad(scene, "/b");
+
+    scene.setInstances(a, { translation(10., 0., 0.), translation(20., 0., 0.) });
+    scene.setInstances(b, { translation(30., 0., 0.) });
+
+    EmbreeTracer tracer;
+
+    tracer.update(scene.snapshot(), 2);
+    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
+    EXPECT_EQ(0u, tracer.stats().instanceSceneUpdates);
+
+    for (int step = 1; step <= 3; ++step) {
+        const double offset = 100. * step;
+
+        scene.setInstances(a, { translation(10. + offset, 0., 0.), translation(20., 0., 0.) });
+        scene.setInstances(b, { translation(30. + offset, 0., 0.) });
+        tracer.update(scene.snapshot(), 2);
+
+        const float x = static_cast<float>(offset);
+
+        EXPECT_EQ(0u, shootAt(tracer, x + 10.75f, 0.25f).instance[0]) << step;
+        EXPECT_EQ(1u, shootAt(tracer, 20.75f, 0.25f).instance[0]) << step;
+        EXPECT_EQ(2u, shootAt(tracer, x + 30.75f, 0.25f).instance[0]) << step;
+        EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, x - 89.25f, 0.25f).primitive[0]) << step;
+    }
+    EXPECT_EQ(2u, tracer.stats().geometryBuilds);
+    EXPECT_EQ(0u, tracer.stats().geometryRefits);
+    EXPECT_EQ(1u, tracer.stats().instanceSceneBuilds);
+    EXPECT_EQ(3u, tracer.stats().instanceSceneUpdates);
+
+    scene.setInstances(b, { translation(330., 0., 0.), translation(40., 0., 0.) });
+    tracer.update(scene.snapshot(), 2);
+    EXPECT_EQ(2u, tracer.stats().instanceSceneBuilds);
+    EXPECT_EQ(3u, tracer.stats().instanceSceneUpdates);
+    EXPECT_EQ(3u, shootAt(tracer, 40.75f, 0.25f).instance[0]);
+
+    scene.setInstances(b, {});
+    tracer.update(scene.snapshot(), 2);
+    EXPECT_EQ(3u, tracer.stats().instanceSceneBuilds);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(tracer, 40.75f, 0.25f).primitive[0]);
 }
 
 TEST(NatronUtilityTracer, NewTopologyRebuildsTheGeometryAndItsInstances)

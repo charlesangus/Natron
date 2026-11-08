@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 30.0
 SETTLE_MS = 700
 STARTUP_TIMEOUT_S = 60.0
-NUKE_PRESET = 0
+CTRL_TUMBLE_NAVIGATION = 0
 HEADLIGHT = 2
 HUD_MARGIN = 28
 UTILITY_ID = "HdNatronUtilityRendererPlugin"
@@ -104,7 +104,7 @@ try:
     navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
     require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
     original_navigation = navigation.getValue()
-    navigation.setValue(NUKE_PRESET)
+    navigation.setValue(CTRL_TUMBLE_NAVIGATION)
     lighting = NatronEngine.natron.getSettings().getParam("viewer3DLighting")
     require(lighting is not None, "Preferences have a viewer3DLighting parameter")
     original_lighting = lighting.getValue()

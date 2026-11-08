@@ -144,29 +144,40 @@ try:
                 return True
         return False
 
-    def shape_row_y(shape_label):
-        """Centre y of the "Shape" row under the shape's item row, scrolled into view."""
+    def root_graph():
+        graphs = [w for w in gt.widgets_of("NodeGraph") if w.isVisible()]
+        return graphs[0] if graphs else None
+
+    def tree_rows(tree):
+        """The tree as plain data read through its model: [(text, hidden, kids)]."""
+        model = tree.model()
+
+        def walk(parent):
+            return [(str(model.index(r, 0, parent).data()), tree.isRowHidden(r, parent),
+                     walk(model.index(r, 0, parent))) for r in range(model.rowCount(parent))]
+        return walk(tree.rootIndex())
+
+    def shape_row_y(node_label, shape_label):
+        """Centre y of the "Shape" row under the node's row and the shape's item row, scrolled
+        into view; None until the dope sheet has built it."""
         tree = hierarchy()
         if tree is None:
             return None
         _keep["tree"] = tree
         model = tree.model()
-
-        def find(parent):
-            for r in range(model.rowCount(parent)):
-                idx = model.index(r, 0, parent)
-                if idx.data() == shape_label:
-                    for c in range(model.rowCount(idx)):
-                        kid = model.index(c, 0, idx)
-                        if kid.data() == "Shape":
-                            return kid
-                found = find(idx)
-                if found is not None:
-                    return found
-            return None
-        idx = find(tree.rootIndex())
-        if idx is None:
-            return None
+        idx = tree.rootIndex()
+        for text in (node_label, shape_label, "Shape"):
+            nxt = None
+            for r in range(model.rowCount(idx)):
+                kid = model.index(r, 0, idx)
+                if str(kid.data()) == text and not tree.isRowHidden(r, idx):
+                    nxt = kid
+                    break
+            if nxt is None:
+                return None
+            if text != "Shape":
+                tree.expand(nxt)
+            idx = nxt
         tree.scrollTo(idx)
         QApplication.processEvents()
         rect = tree.visualRect(idx)
@@ -262,11 +273,19 @@ try:
 
     def dope_sheet_step(node, bez):
         gt.section("move a key in the dope sheet while rendering")
+        node_label, shape_label = node.getLabel(), bez.getLabel()
+        app.selectNode(node, True)
+        if not gt.any_panel_open() and root_graph() is not None:
+            QMetaObject.invokeMethod(root_graph(), "showSelectedNodeSettingsPanel")
+        yield ("sleep", SETTLE_MS)
         require(show_dope_sheet(), "the dope sheet tab is current")
         yield ("sleep", SETTLE_MS)
-        ok = yield ("until", lambda: shape_row_y(bez.getLabel()) is not None, 10.0)
+        ok = yield ("until", lambda: shape_row_y(node_label, shape_label) is not None, 10.0)
+        if not ok:
+            tree = hierarchy()
+            report("NOTE dope sheet rows: %r" % (tree_rows(tree) if tree is not None else None,))
         require(ok, "the dope sheet shows the shape's Shape row")
-        y = shape_row_y(bez.getLabel())
+        y = shape_row_y(node_label, shape_label)
         keys = sorted(bez.getKeyframes())
         xs = key_xs(y)
         report("NOTE shape keys %r drawn at x %r" % (keys, xs))

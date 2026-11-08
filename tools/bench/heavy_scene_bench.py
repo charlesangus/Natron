@@ -21,8 +21,11 @@
                          the fixture's or scene's root)
         BENCH_BRANCH     prim path prune_restore, noedit and reveal_cancel act on (default city
                          /World/Block0, flat /World)
-        BENCH_SIBLING_ROW  prim path sibling_state and sibling_shot act on (default city
+        BENCH_SIBLING_ROW  prim path sibling_state, sibling_shot and draw_budget act on (default city
                          /World/Block0/B1, flat /World/c5)
+        BENCH_WIDE_ROW   the wide row draw_budget acts on (default the picked widest_row, or /World on
+                         flat and city)
+        BENCH_BUDGET_REPEATS  untraced set and clear pairs draw_budget makes per row (default 2)
         BENCH_REVEAL_BRANCH  prim path reveal acts on (default /World)
         BENCH_REVEAL_BATCH   prims per frame in reveal (default 2000)
         BENCH_REVEAL_MAX_S   seconds reveal runs before it is cancelled (default 120)
@@ -43,6 +46,9 @@
         BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see heavy_scene_watchdog.sh
         BENCH_RESULT     JSON-lines file the results are appended to
                          (default $NATRON_GUI_TEST_OUT/heavy_scene_bench.jsonl)
+        NATRON_DRAW_STATE_TIMING  1 makes the viewer publish a timing record per presented draw state
+                         change (natronSceneDrawTimings), which time_to_picture_ms is judged on and
+                         draw_budget breaks down; without it time_to_picture_ms is not_valid
 
 Each scenario runs one action under a 10 ms heartbeat on the main thread and prints one JSON line:
 the longest gap between heartbeats, the layers loaded by the action, and the action's own numbers,
@@ -62,13 +68,30 @@ wait for natronSceneDrawPresented, which a paint sets only once its image has ta
 far. populate_full and populate_pruned open the file themselves, once per process, in place of open;
 load_all then loads everything, with draw states on or off. A record's apply_ms is the render thread's
 time sending the notices, total_ms runs from the call to the image that shows it, and frame_ms is the
-one less the other. sibling_shot compares screen grabs around one state change on sibling_row, branch
-and root; the root, which the viewer frames, is the control: if it changes no pixels the state does
+one less the other; total_ms is polled every 50 ms, so it only bounds the time.
+
+With NATRON_DRAW_STATE_TIMING=1 the viewer times each change itself, from the slot call to the paint
+that presents it, and its record adds to the change's timings: picture_ms (call to presented image),
+and the parts that sum to it: queue_ms (call to the render thread's apply), apply_ms (the filter's
+notices, which reach the render index directly), wait_frame_ms (apply to the frame's render calls),
+render_ms (the engine's render calls: Hydra sync, draw item regather, batch rebuild, draw submission),
+gpu_tail_ms (the GPU finishing after the last call; the render thread waits for it only in this mode),
+handoff_ms (to the main thread taking the frame) and present_ms (to the paint that shows it).
+draw_budget sets BBox on sibling_row and on the wide row and clears it, BENCH_BUDGET_REPEATS times
+untraced, then once traced: a traced change runs TraceCollector and HdPerfLog from its apply to its
+frame's end and adds stages_ms (wall time on the render thread per Hydra and Storm scope), stage_counts
+and counter_deltas (HdPerfLog). Each change is one entry of draw_changes; traced ones are never judged
+and their stall is not counted, as tracing slows them. Without the variable time_to_picture_ms comes
+from total_ms and is not_valid.
+
+sibling_shot compares screen grabs around one state change on sibling_row, branch and root; the root, which the viewer frames, is the control: if it changes no pixels the state does
 nothing, and if it does, a row that did not is out of frame or ineffective (shot_reading says which,
 from its coverage). It needs geometry on screen, so it skips with payloads unloaded. orbit10k and
 boxes_shot need a viewer that publishes natronSceneDrawBoxes, and skip without one.
 
-Budgets: main-thread stall under 100 ms; first frame under 2 s on a scene with payloads; no payload
+Budgets: main-thread stall under 100 ms; time from a draw state change to the image that shows it under
+100 ms (time_to_picture_ms, worst untraced change of prune_restore, sibling_state and draw_budget, with
+draw_budget's rows also judged apart); first frame under 2 s on a scene with payloads; no payload
 file opened that the action did not request; orbit at or above 30 fps; no stage edit or notice from a
 draw state; the draw filter on this viewer's engine; pixels changed on the control row.
 """
@@ -85,6 +108,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "tools", "bench"))
 
 STALL_BUDGET_MS = 100.0
+PICTURE_BUDGET_MS = 100.0
 FIRST_FRAME_BUDGET_MS = 2000.0
 ORBIT_BUDGET_FPS = 30.0
 HEARTBEAT_MS = 10
@@ -94,13 +118,17 @@ OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
 PICK_LIMIT_S = int(os.environ.get("BENCH_PICK_LIMIT_S", "900"))
 OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "load_all")
 DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal", "reveal_cancel", "orbit10k", "boxes_shot",
-                  "sibling_state", "sibling_shot", "noedit")
+                  "sibling_state", "sibling_shot", "noedit", "draw_budget")
+# A wide row's restore puts the whole scene back into Hydra, several times over.
+LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget",)
+PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
+DRAW_TIMING = os.environ.get("NATRON_DRAW_STATE_TIMING") == "1"
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
 ROW_RECORD_KEYS = ("root", "branch", "branch_gprims", "widest_row", "widest_children", "sibling_row", "sibling_kind",
                    "reveal_branch", "box_depth", "box_depth_rows", "prims", "gprims", "instances", "prototypes",
                    "payload_rows", "load_building", "load_block", "twirl_row", "pick_s")
 ROW_ENV = {"root": "BENCH_ROOT", "branch": "BENCH_BRANCH", "sibling_row": "BENCH_SIBLING_ROW",
-           "reveal_branch": "BENCH_REVEAL_BRANCH", "twirl_row": "BENCH_TWIRL_PATH"}
+           "reveal_branch": "BENCH_REVEAL_BRANCH", "twirl_row": "BENCH_TWIRL_PATH", "widest_row": "BENCH_WIDE_ROW"}
 
 try:
     from PySide6.QtCore import QEvent, QMetaObject, QModelIndex, QPersistentModelIndex, QPoint, QPointF, QRect, Q_ARG, QTimer, Qt
@@ -149,6 +177,7 @@ try:
     box_count = int(os.environ.get("BENCH_BOXES", "10000"))
     reveal_batch = int(os.environ.get("BENCH_REVEAL_BATCH", "2000"))
     reveal_max_s = float(os.environ.get("BENCH_REVEAL_MAX_S", "120"))
+    budget_repeats = max(1, int(os.environ.get("BENCH_BUDGET_REPEATS", "2")))
     file_stem = os.path.splitext(os.path.basename(path))[0]
 
     def picker_command():
@@ -171,9 +200,10 @@ try:
 
     def fixture_rows():
         if fixture == "flat":
-            return {"root": "/World", "branch": "/World", "sibling_row": "/World/c5", "reveal_branch": "/World", "box_depth": 2}
+            return {"root": "/World", "branch": "/World", "sibling_row": "/World/c5", "widest_row": "/World", "reveal_branch": "/World",
+                    "box_depth": 2}
         return {"root": "/World", "load_building": "/World/Block0/B0", "load_block": "/World/Block1", "twirl_row": "/World/Block0/B1",
-                "branch": "/World/Block0", "sibling_row": "/World/Block0/B1", "reveal_branch": "/World",
+                "branch": "/World/Block0", "sibling_row": "/World/Block0/B1", "widest_row": "/World", "reveal_branch": "/World",
                 "box_depth": 4 if load_state == "all" else 3}
 
     rows = picked_rows() if fixture == "scene" else fixture_rows()
@@ -256,6 +286,13 @@ try:
             self.requested_files = []
             self.requested_layers = set()
             self.all_payloads_requested = False
+            # Times to picture of the changes judged: {"ms", "source", "row"}.
+            self.pictures = []
+            # The stall of a part of the action whose heartbeat was restarted after it.
+            self.stall_floor_ms = 0.0
+
+    # The scenario running, for the timings of the changes it makes.
+    current = {"name": None, "m": None, "record": None}
 
     def open_file(m, connected=False):
         t0 = time.time()
@@ -533,31 +570,93 @@ try:
     def draw_call(v, method, *args):
         require(QMetaObject.invokeMethod(v, method, *args), "the scene view has %s" % method)
 
-    def presented_after_call(v, label, method, *args):
+    def timing_record(v, posted):
+        """The viewer's timing record of the frame that took in change number posted, or None."""
+        for record in reversed(list(v.property("natronSceneDrawTimings") or [])):
+            record = dict(record)
+            if int(record.get("firstPosted", 0)) <= posted <= int(record.get("lastPosted", 0)):
+                return record
+        return None
+
+    def ms(value):
+        return None if value is None else round(float(value), 2)
+
+    def critical_path(record):
+        """The parts of a record's time to picture, each from where the one before ends; they sum to picture_ms."""
+        queue = float(record["queueMs"])
+        applied = float(record["applyMs"])
+        render_start = float(record["renderStartMs"])
+        render = float(record["renderMs"])
+        gpu_tail = float(record["gpuTailMs"]) if record.get("gpuTailMs") is not None else 0.0
+        frame_end = render_start + render + gpu_tail
+        presented = float(record["presentedMs"])
+        frame_done = record.get("frameDoneMs")
+        parts = {
+            "picture_ms": ms(presented),
+            "queue_ms": ms(queue),
+            "apply_ms": ms(applied),
+            "wait_frame_ms": ms(render_start - queue - applied),
+            "render_ms": ms(render),
+            "gpu_tail_ms": ms(record.get("gpuTailMs")),
+            "handoff_ms": ms(float(frame_done) - frame_end) if frame_done is not None else None,
+            "present_ms": ms(presented - (float(frame_done) if frame_done is not None else frame_end)),
+            "render_passes": record.get("renderPasses"),
+            "rendered_on_paint": bool(record.get("onPaint")),
+            "coalesced_changes": int(record["lastPosted"]) - int(record["firstPosted"]) + 1,
+            "hidden_sent": record.get("hiddenSent"),
+            "shown_sent": record.get("shownSent"),
+            "traced": bool(record.get("traced")),
+        }
+        if record.get("traced"):
+            parts["trace_thread_found"] = bool(record.get("traceThreadFound"))
+            parts["trace_collect_ms"] = ms(record.get("traceCollectMs"))
+            parts["stages_ms"] = {k: ms(v) for k, v in dict(record.get("stagesMs") or {}).items()}
+            parts["stage_counts"] = {k: int(v) for k, v in dict(record.get("stageCounts") or {}).items()}
+            parts["counter_deltas"] = {k: float(v) for k, v in dict(record.get("counterDeltas") or {}).items()}
+            parts["counter_values"] = {k: float(v) for k, v in dict(record.get("counterValues") or {}).items()}
+        elif record.get("traceSkipped"):
+            parts["trace_skipped"] = True
+        return parts
+
+    def presented_after_call(v, label, method, *args, judged=True, row_tag=None):
         """Calls method and waits for the image that shows it; returns its timings, empty if nothing changed."""
         posted_before = int(draw_stats().get("posted", 0))
         started = time.perf_counter()
         draw_call(v, method, *args)
         stats = dict(v.property("natronSceneDrawStats") or {})
         posted = int(stats.get("posted", 0))
+        current["record"] = None
         if posted == posted_before:
             return {}
         ok = yield ("until", lambda: int(v.property("natronSceneDrawPresented") or 0) >= posted, TIMEOUT_S)
         check(ok, "%s: reached the screen" % label)
         total = (time.perf_counter() - started) * 1000.0
         apply_ms = float(draw_stats().get("lastApplyMs", 0.0))
-        return {"apply_ms": round(apply_ms, 2), "frame_ms": round(max(total - apply_ms, 0.0), 2), "total_ms": round(total, 2)}
+        timings = {"apply_ms": round(apply_ms, 2), "frame_ms": round(max(total - apply_ms, 0.0), 2), "total_ms": round(total, 2)}
+        record = timing_record(v, posted) if DRAW_TIMING else None
+        current["record"] = record
+        if record is not None:
+            timings.update(critical_path(record))
+            timings["picture_source"] = "viewer"
+        else:
+            timings["picture_ms"] = timings["total_ms"]
+            timings["picture_source"] = "polled" if not DRAW_TIMING else "polled: no viewer record"
+        m = current["m"]
+        if judged and m is not None and current["name"] in PICTURE_SCENARIOS and not (record or {}).get("traced"):
+            m.pictures.append({"ms": timings["picture_ms"], "source": timings["picture_source"], "row": row_tag})
+        return timings
 
-    def set_draw_state(row, state):
+    def set_draw_state(row, state, row_tag=None):
         v = view()
         require(v is not None, "%s %s: a scene view is visible" % (state, row))
-        timings = yield from presented_after_call(v, "%s %s" % (state, row), "setDrawState", Q_ARG("QString", row), Q_ARG("QString", state))
+        timings = yield from presented_after_call(v, "%s %s" % (state, row), "setDrawState", Q_ARG("QString", row), Q_ARG("QString", state),
+                                                  row_tag=row_tag)
         require(bool(timings), "%s %s: the draw state changed something" % (state, row))
         return timings
 
-    def clear_draw_state(row):
+    def clear_draw_state(row, row_tag=None):
         v = view()
-        timings = yield from presented_after_call(v, "clear " + row, "clearDrawState", Q_ARG("QString", row))
+        timings = yield from presented_after_call(v, "clear " + row, "clearDrawState", Q_ARG("QString", row), row_tag=row_tag)
         require(bool(timings), "clear %s: the draw state changed something" % row)
         return timings
 
@@ -566,7 +665,7 @@ try:
         v = view()
         require(v is not None, "a scene view is visible")
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
-        yield from presented_after_call(v, "clear all", "clearDrawStates")
+        yield from presented_after_call(v, "clear all", "clearDrawStates", judged=False)
 
     def populate(m, hidden_root):
         require(viewer.connectInput(0, usd), "connect the Viewer to USDRead")
@@ -712,6 +811,45 @@ try:
         m.values["sibling_resynced_paths"] = after.get("resyncedPaths", 0) - before.get("resyncedPaths", 0)
         m.values["sibling_info_only_paths"] = after.get("infoOnlyPaths", 0) - before.get("infoOnlyPaths", 0)
 
+    def action_draw_budget(m):
+        """Where a draw state change's time goes, on one sibling and on the widest row."""
+        v = view()
+        require(v is not None, "draw_budget: a scene view is visible")
+        targets = [("sibling", rows["sibling_row"])]
+        if rows.get("widest_row"):
+            targets.append(("wide", rows["widest_row"]))
+        m.values["budget_rows"] = {tag: row for tag, row in targets}
+        m.values["draw_timing"] = DRAW_TIMING
+        changes = []
+        yield from clear_draw_states()
+        heartbeat.start()
+        for tag, row in targets:
+            for repeat in range(budget_repeats):
+                for kind, timings in (("set", (yield from set_draw_state(row, "bbox", row_tag=tag))),
+                                      ("clear", (yield from clear_draw_state(row, row_tag=tag)))):
+                    changes.append(dict(timings, row=tag, path=row, change=kind, repeat=repeat))
+        m.stall_floor_ms = heartbeat.stop()
+        if DRAW_TIMING:
+            # Tracing slows the main thread's Python too, so its stall is kept apart from the judged one.
+            heartbeat.start()
+            for tag, row in targets:
+                for kind in ("set", "clear"):
+                    draw_call(v, "setDrawTimingTrace", Q_ARG(bool, True))
+                    if kind == "set":
+                        timings = yield from set_draw_state(row, "bbox", row_tag=tag)
+                    else:
+                        timings = yield from clear_draw_state(row, row_tag=tag)
+                    draw_call(v, "setDrawTimingTrace", Q_ARG(bool, False))
+                    changes.append(dict(timings, row=tag, path=row, change=kind, repeat="traced"))
+            m.values["traced_stall_ms"] = round(heartbeat.stop(), 1)
+        heartbeat.start()
+        m.values["draw_changes"] = changes
+        for tag, _ in targets:
+            untraced = [c["picture_ms"] for c in changes if c["row"] == tag and c["repeat"] != "traced"]
+            m.values["%s_picture_ms_max" % tag] = max(untraced) if untraced else None
+            m.values["%s_picture_ms_min" % tag] = min(untraced) if untraced else None
+        m.values["picture_source"] = "viewer" if all(c.get("picture_source") == "viewer" for c in changes) else "polled"
+
     def viewport_image(file_name, area):
         return QImage(file_name).copy(area).convertToFormat(QImage.Format_RGBX8888)
 
@@ -856,7 +994,7 @@ try:
                "load_all": action_load_all, "populate_pruned": action_populate_pruned, "populate_full": action_populate_full,
                "prune_restore": action_prune_restore, "reveal": action_reveal, "reveal_cancel": action_reveal_cancel,
                "orbit10k": action_orbit10k, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
-               "sibling_shot": action_sibling_shot, "noedit": action_noedit}
+               "sibling_shot": action_sibling_shot, "noedit": action_noedit, "draw_budget": action_draw_budget}
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:
@@ -878,7 +1016,7 @@ try:
         if name == "load_all" and not has_payloads:
             return "the scene has no payloads to load"
         needs_row = {"populate_pruned": "root", "prune_restore": "branch", "noedit": "branch", "reveal_cancel": "branch",
-                     "reveal": "reveal_branch", "sibling_state": "sibling_row", "sibling_shot": "sibling_row",
+                     "reveal": "reveal_branch", "sibling_state": "sibling_row", "sibling_shot": "sibling_row", "draw_budget": "sibling_row",
                      "orbit10k": "box_depth", "boxes_shot": "box_depth"}
         if name in needs_row and rows.get(needs_row[name]) is None:
             return "the scene has no such row: no prim here holds the geometry %s needs" % name
@@ -896,7 +1034,16 @@ try:
         return payload_mark in identifier
 
     def judge(m, stall_ms, new_layers):
-        budgets = {"stall_ms": verdict(round(stall_ms, 1), STALL_BUDGET_MS, True)}
+        budgets = {"stall_ms": verdict(round(max(stall_ms, m.stall_floor_ms), 1), STALL_BUDGET_MS, True)}
+        if m.pictures:
+            # Polled times are rounded up to the poll interval and so judge nothing.
+            viewer_timed = all(p["source"] == "viewer" for p in m.pictures)
+            budgets["time_to_picture_ms"] = verdict(max(p["ms"] for p in m.pictures), PICTURE_BUDGET_MS, True,
+                                                    valid=gpu and viewer_timed)
+            budgets["time_to_picture_ms"]["source"] = "viewer" if viewer_timed else "polled"
+            for tag in sorted(set(p["row"] for p in m.pictures if p["row"])):
+                worst = max(p["ms"] for p in m.pictures if p["row"] == tag)
+                budgets["time_to_picture_%s_ms" % tag] = verdict(worst, PICTURE_BUDGET_MS, True, valid=gpu and viewer_timed)
         if "first_frame_ms" in m.values:
             budgets["first_frame_ms"] = verdict(m.values["first_frame_ms"], FIRST_FRAME_BUDGET_MS, True, valid=gpu,
                                                 applicable=(fixture == "city" or bool(rows.get("payload_rows"))))
@@ -1005,11 +1152,13 @@ try:
                 write_record(record)
                 continue
             started = time.time()
-            mark_running(name, names[index + 1:], started, OPEN_LIMIT_S if name in OPEN_SCENARIOS else SCENARIO_LIMIT_S)
+            mark_running(name, names[index + 1:], started, OPEN_LIMIT_S if name in LONG_SCENARIOS else SCENARIO_LIMIT_S)
             m = Measure()
+            current["name"], current["m"] = name, m
             before = loaded_layers()
             heartbeat.start()
             yield from ACTIONS[name](m)
+            current["name"], current["m"] = None, None
             if name in DRAW_SCENARIOS:
                 m.values["filter_bound"] = bool(draw_stats().get("filterBound"))
             yield ("sleep", 200)

@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -58,6 +59,7 @@ NATRON_NAMESPACE_ENTER
 
 class SceneStage;
 struct SceneDrawDelta;
+class SceneDrawTiming;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -226,10 +228,12 @@ public:
 
     /**
      * @brief Queues a draw state change for this renderer's engine; needsBackgroundFrame() holds
-     * until a frame has taken it in. revealBatch 0 shows everything in one go. Main thread; takes no
-     * lock a frame or a sync holds.
+     * until a frame has taken it in. revealBatch 0 shows everything in one go. startedAt is when the
+     * change was asked for, for drawTiming(). Main thread; takes no lock a frame or a sync holds.
      **/
-    void postDrawDelta(const SceneDrawDelta& delta, std::size_t revealBatch);
+    void postDrawDelta(const SceneDrawDelta& delta,
+                       std::size_t revealBatch,
+                       std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::time_point());
 
     /** @brief Render thread. Sends what postDrawDelta() queued to the engine's filter. */
     void applyPendingDrawDeltas();
@@ -259,6 +263,9 @@ public:
         unsigned long long infoOnlyPaths = 0;
     };
     DrawFilterStats getDrawFilterStats() const;
+
+    // Null unless NATRON_DRAW_STATE_TIMING is 1.
+    SceneDrawTiming* drawTiming() const;
 
     /**
      * @brief Copies what renderBackgroundFrame() needs for a width x height frame. False when no
@@ -838,6 +845,11 @@ public Q_SLOTS:
     QString resolvedDrawState(const QString& path) const;
     // What a change shows goes out this many prims per frame; 0 shows it at once.
     void setDrawRevealBatch(int prims);
+    /**
+     * @brief With NATRON_DRAW_STATE_TIMING=1, traces the frames of the changes that follow, until
+     * called with false. Every presented change publishes its record to natronSceneDrawTimings.
+     **/
+    void setDrawTimingTrace(bool trace);
 
 Q_SIGNALS:
 
@@ -934,7 +946,7 @@ private:
 
     // Main thread: starts the frame that takes in a stage change, if one is due and can start.
     void startBackgroundFrame();
-    void sendDrawDelta(const SceneDrawDelta& delta);
+    void sendDrawDelta(const SceneDrawDelta& delta, std::chrono::steady_clock::time_point startedAt);
     void publishDrawStats();
 
     void onBackgroundFrameDone();

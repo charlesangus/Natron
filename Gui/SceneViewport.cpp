@@ -131,6 +131,7 @@
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
 #include "Gui/SceneDrawFilter.h"
+#include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGuides.h"
 #include "Gui/SceneTransformTarget.h"
@@ -653,6 +654,7 @@ struct SceneViewportRenderer::Implementation {
     struct QueuedDrawDelta {
         SceneDrawDelta delta;
         std::size_t revealBatch;
+        std::chrono::steady_clock::time_point startedAt;
     };
     mutable std::mutex drawMutex;
     std::vector<QueuedDrawDelta> drawQueue;
@@ -668,6 +670,7 @@ struct SceneViewportRenderer::Implementation {
     SceneDrawFilter::WeakPtr drawFilter;
     StageNoticeCounter stageNotices;
     bool stageNoticesRegistered = false;
+    const std::unique_ptr<SceneDrawTiming> drawTiming { SceneDrawTiming::enabledByEnvironment() ? new SceneDrawTiming : nullptr };
 
     std::atomic<bool> zUp;
     std::atomic<double> metersPerUnit;
@@ -1320,6 +1323,17 @@ struct SceneViewportRenderer::Implementation {
             posted = drawPosted;
         }
         SceneDrawFilter* filter = get_pointer(drawFilter);
+        SceneDrawTiming* timing = drawTiming.get();
+        const U64 appliedBefore = drawApplied;
+        unsigned long long hiddenBefore = 0;
+        unsigned long long shownBefore = 0;
+        if (timing && (!queued.empty() || (filter && filter->isRevealing() && drawRevealStepDue))) {
+            timing->applyStarting();
+            if (filter) {
+                hiddenBefore = filter->getHiddenSentCount();
+                shownBefore = filter->getShownSentCount();
+            }
+        }
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
         for (const QueuedDrawDelta& entry : queued) {
             SceneDrawFilter::applyToRules(entry.delta, &drawRules);
@@ -1333,12 +1347,22 @@ struct SceneViewportRenderer::Implementation {
         if (filter && filter->isRevealing() && drawRevealStepDue.exchange(false)) {
             stepped = filter->stepReveal(drawRevealBatch);
         }
-        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(end - start).count();
         drawRevealing = filter && filter->isRevealing();
         drawApplied = posted;
         if (!queued.empty() || (stepped != 0)) {
             std::lock_guard<std::mutex> lock(drawMutex);
             drawStats.lastApplyMs = ms;
+        }
+        if (timing && (!queued.empty() || (stepped != 0))) {
+            std::chrono::steady_clock::time_point startedAt = start;
+            for (const QueuedDrawDelta& entry : queued) {
+                startedAt = (std::min)(startedAt, entry.startedAt);
+            }
+            timing->applied(appliedBefore + 1, posted, startedAt, start, end,
+                            filter ? (filter->getHiddenSentCount() - hiddenBefore) : 0,
+                            filter ? (filter->getShownSentCount() - shownBefore) : 0, stepped != 0);
         }
         refreshDrawStats();
     }
@@ -2031,10 +2055,14 @@ SceneViewportRenderer::needsBackgroundFrame() const
 
 void
 SceneViewportRenderer::postDrawDelta(const SceneDrawDelta& delta,
-                                     std::size_t revealBatch)
+                                     std::size_t revealBatch,
+                                     std::chrono::steady_clock::time_point startedAt)
 {
+    if (_imp->drawTiming && (startedAt == std::chrono::steady_clock::time_point())) {
+        startedAt = std::chrono::steady_clock::now();
+    }
     std::lock_guard<std::mutex> lock(_imp->drawMutex);
-    _imp->drawQueue.push_back(Implementation::QueuedDrawDelta { delta, revealBatch });
+    _imp->drawQueue.push_back(Implementation::QueuedDrawDelta { delta, revealBatch, startedAt });
     ++_imp->drawPosted;
 }
 
@@ -2084,6 +2112,12 @@ SceneViewportRenderer::getDrawFilterStats() const
     stats.infoOnlyPaths = _imp->stageNotices.infoOnlyPaths;
 
     return stats;
+}
+
+SceneDrawTiming*
+SceneViewportRenderer::drawTiming() const
+{
+    return _imp->drawTiming.get();
 }
 
 bool
@@ -2141,9 +2175,13 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         // Set while this frame ran, whose copy is the older one: the next render has to apply it.
         _imp->colorCorrectionDirty = true;
     }
+    SceneDrawTiming* timing = _imp->drawTiming.get();
+    const bool timed = timing && timing->frameStarting(std::chrono::steady_clock::now());
     bool converged = false;
+    int passes = 0;
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
         _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
+        ++passes;
         converged = _imp->engine->IsConverged();
         // The first render is what puts the stage's lights into Hydra, and so into the filter.
         const bool lit = _imp->usesSceneLights(frame.lightingMode);
@@ -2152,6 +2190,14 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
             _imp->setLights(lit);
             converged = false;
         }
+    }
+    if (timed) {
+        // Only the render thread waits here, and the image could not be shown before the GPU is
+        // done with it anyway; the wait separates GPU time left after submission from the CPU's.
+        const std::chrono::steady_clock::time_point renderEnd = std::chrono::steady_clock::now();
+        glFinish();
+        const double gpuTailMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - renderEnd).count();
+        timing->frameEnded(renderEnd, passes, gpuTailMs, false);
     }
     _imp->noteStageAbsorbed();
     frame.fbo = fbo;
@@ -3220,8 +3266,12 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         Implementation::clearFrameTarget(_imp->backgroundDisplay);
         _imp->setCamera(frustum, width, height, fbo, _imp->sceneLit);
         _imp->prepareColorCorrection(_imp->useOpenColorIO, _imp->hydraTransform);
+        SceneDrawTiming* timing = _imp->drawTiming.get();
+        const bool timed = timing && timing->frameStarting(std::chrono::steady_clock::now());
+        int passes = 0;
         for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
             _imp->engine->Render(stage->GetPseudoRoot(), params);
+            ++passes;
             converged = _imp->engine->IsConverged();
             const bool lit = _imp->usesSceneLights();
             if (lit != _imp->sceneLit) {
@@ -3230,6 +3280,10 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
                 _imp->setLights(lit);
                 converged = false;
             }
+        }
+        if (timed) {
+            // The main thread waits for this render, so the GPU is left to finish on its own.
+            timing->frameEnded(std::chrono::steady_clock::now(), passes, -1., true);
         }
     }
     _imp->noteStageAbsorbed();
@@ -4545,6 +4599,9 @@ SceneViewport::startBackgroundFrame()
 void
 SceneViewport::onBackgroundFrameDone()
 {
+    if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
+        timing->frameDone(std::chrono::steady_clock::now());
+    }
     _imp->backgroundFrameRunning = false;
     _imp->composingTimer->stop();
     // The stage may have changed again while the frame ran.
@@ -4712,6 +4769,13 @@ toStdPaths(const QStringList& paths)
 
     return result;
 }
+
+// Read only while draw timing is on, so the change costs the main thread nothing otherwise.
+std::chrono::steady_clock::time_point
+drawChangeStart(const SceneViewportRenderer& renderer)
+{
+    return renderer.drawTiming() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+}
 } // anonymous namespace
 
 void
@@ -4753,10 +4817,11 @@ SceneViewport::publishDrawStats()
 }
 
 void
-SceneViewport::sendDrawDelta(const SceneDrawDelta& delta)
+SceneViewport::sendDrawDelta(const SceneDrawDelta& delta,
+                             std::chrono::steady_clock::time_point startedAt)
 {
     if (!delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()) {
-        _imp->renderer.postDrawDelta(delta, _imp->drawRevealBatch);
+        _imp->renderer.postDrawDelta(delta, _imp->drawRevealBatch, startedAt);
         if (_imp->usesRenderThread) {
             Implementation* imp = _imp.get();
             _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
@@ -4773,12 +4838,13 @@ bool
 SceneViewport::setDrawState(const QString& path,
                             const QString& state)
 {
+    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
     const std::string pathString = path.toStdString();
     SceneDrawStateEnum parsed = eSceneDrawStateFull;
     if (!sceneDrawStateFromName(state.toStdString(), &parsed) || !SdfPath::IsValidPathString(pathString) || !SdfPath(pathString).IsAbsoluteRootOrPrimPath()) {
         return false;
     }
-    sendDrawDelta(_imp->drawStates.setState(pathString, parsed));
+    sendDrawDelta(_imp->drawStates.setState(pathString, parsed), startedAt);
 
     return true;
 }
@@ -4786,13 +4852,15 @@ SceneViewport::setDrawState(const QString& path,
 void
 SceneViewport::clearDrawState(const QString& path)
 {
-    sendDrawDelta(_imp->drawStates.clearState(path.toStdString()));
+    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
+    sendDrawDelta(_imp->drawStates.clearState(path.toStdString()), startedAt);
 }
 
 void
 SceneViewport::clearDrawStates()
 {
-    sendDrawDelta(_imp->drawStates.clearAllStates());
+    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
+    sendDrawDelta(_imp->drawStates.clearAllStates(), startedAt);
 }
 
 QString
@@ -4805,6 +4873,14 @@ void
 SceneViewport::setDrawRevealBatch(int prims)
 {
     _imp->drawRevealBatch = std::size_t((std::max)(prims, 0));
+}
+
+void
+SceneViewport::setDrawTimingTrace(bool trace)
+{
+    if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
+        timing->setTraceNext(trace);
+    }
 }
 
 void
@@ -5834,6 +5910,11 @@ SceneViewport::paintGL()
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
     publishTransformState();
     publishDrawStats();
+    if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
+        if (timing->presented(_imp->renderer.getDrawFilterStats().absorbed, std::chrono::steady_clock::now())) {
+            setProperty("natronSceneDrawTimings", timing->records());
+        }
+    }
     // A paint gets here only once the frame has taken in every delta posted so far, unlike the stats,
     // which also change on the way to the screen.
     setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(_imp->renderer.getDrawFilterStats().absorbed));

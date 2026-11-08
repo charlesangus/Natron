@@ -335,9 +335,8 @@ public:
         return false;
     }
 
-protected:
-    SDF_FILE_FORMAT_FACTORY_ACCESS;
-
+    // Public: SDF_FILE_FORMAT_FACTORY_ACCESS would befriend a Sdf_FileFormatFactory in the
+    // Natron namespace, not pxr's, because this class is not declared inside PXR_NS.
     GeoSdfFileFormat()
         : SdfFileFormat(TfToken(kScheme), TfToken("1.0"), TfToken("usd"), std::string(kScheme))
     {

@@ -45,7 +45,7 @@ Source: user request via the plan inbox (2026-10-24).
 
 ## Phase 197.2: Panels and docs
 
-- [ ] M197.P2.T1 — Verify and document PySide-handler recording
+- [x] M197.P2.T1 — Verify and document PySide-handler recording
   - files: `Gui/PythonPanels.cpp` (only if a gap shows), `Tests/python/` (new script test), `Documentation/source/PythonReference/NatronEngine/App.rst`
   - approach: Add a Python-panel script test whose widget handler wraps knob edits in `app.newUndoStep(...)`, invoked as a signal handler, and assert one entry. Fix any gap in how handler-invoked Python reaches the recorder. Document both methods with an example, the no-op behaviour without a recorder, and the exception rule.
   - verify: The script test passes under the Xvfb GUI runner (see the Xvfb recipe in project memory) with the entry appearing in the Undo History panel and undoing in one step; the docs build.
@@ -59,3 +59,5 @@ Source: user request via the plan inbox (2026-10-24).
 - 2026-10-25 — **Exceptions close the step, keep the partial edits, and re-raise** (user). No rollback machinery; the user can undo the step.
 - 2026-10-25 — **No recorder, background or off-main-thread: silent no-ops** (user), so one script runs everywhere.
 - 2026-10-25 — **Widget handlers use the same mechanism** (user): a step opened by the manager captures Python API edits made in the handler; no new C++ entry point.
+
+- 2026-11-08 (PM): P2.T1 needed no `PythonPanels.cpp` change; the panel GUI script passes remotely (16 checks) and the same script under the gate AppImage's NatronRenderer passes its background checks (edits applied, exception propagates). The `App.rst` docs step is dropped: the `Documentation/` tree was removed from main (5e7a9d13b), and no Python API reference exists in the tree.

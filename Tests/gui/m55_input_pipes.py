@@ -364,10 +364,12 @@ try:
         return ok
 
     def pipe_hue(graph, source, dest):
-        """Hue (degrees) and saturation of the most strongly coloured pixel along the line between
+        """Hue (degrees), saturation and value of the most saturated pixel along the line between
         two nodes' centres, or None when no pixel stands out from the background. The pipe is
-        sampled at its drawn colour, so only the strongest pixel is trusted: anti-aliased edges
-        blend towards the background and keep the hue but lose saturation."""
+        sampled at its drawn colour, so only the most saturated pixel is trusted: anti-aliased
+        edges blend towards the background and keep the hue but lose saturation, and the grey
+        pipe label drawn over the middle of the pipe is the strongest pixel by contrast but has
+        none."""
         frame(graph, [source, dest])
         _pix, img = viewport_image(graph)
         bg = img.pixelColor(2, 2)
@@ -390,9 +392,11 @@ try:
                         continue
                     c = img.pixelColor(x, y)
                     diff = abs(c.red() - bg.red()) + abs(c.green() - bg.green()) + abs(c.blue() - bg.blue())
-                    if best is None or diff > best[0]:
-                        best = (diff, c)
-        if best is None or best[0] <= DIFF_TOLERANCE:
+                    if diff <= DIFF_TOLERANCE:
+                        continue
+                    if best is None or c.saturationF() > best[0]:
+                        best = (c.saturationF(), c)
+        if best is None:
             return None
         c = best[1]
         return c.hueF() * 360.0, c.saturationF(), c.valueF()

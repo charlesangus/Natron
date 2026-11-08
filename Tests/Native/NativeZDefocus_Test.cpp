@@ -490,6 +490,130 @@ TEST_F(NativeZDefocusTest, FocalPlaneOutputMarksRegions)
     EXPECT_EQ(0u, wrong);
 }
 
+// The Blur Radius output is DepthOfField's circle of confusion: red signed, negative nearer than
+// the focus, and green its size, both before Max Size, blue the size after it, alpha 1; at half
+// size the values stay in full-size pixels.
+TEST_F(NativeZDefocusTest, BlurRadiusOutputIsTheCircleOfConfusion)
+{
+    // Red is the inverse distance: 1 on the left, 0.5 in the middle, 0.25 on the right.
+    NodePtr background = makeConstant(kWindow, { 0.25, 0., 0., 1. });
+    NodePtr middle = makeBoxOver(background, RectI(21, 0, 42, 48), { 0.5, 0., 0., 1. });
+    NodePtr source = makeBoxOver(middle, RectI(0, 0, 21, 48), { 1., 0., 0., 1. });
+    ASSERT_TRUE(bool(source));
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".R", 0.5, 20.);
+    ASSERT_TRUE(bool(zdefocus));
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputBlurRadius)));
+    ZDefocus* effect = dynamic_cast<ZDefocus*>(zdefocus->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+
+    const float depths[3] = { 1.f, 0.5f, 0.25f };
+    const int columns[3] = { 10, 31, 52 };
+    {
+        const DepthOfField dof(effect->getParams(kTime, ViewIdx(0)).dof);
+        RenderedPlane actual;
+        ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &actual));
+        // Focused at distance 2 with Size 20: distance 1 is 20 pixels in front, distance 4 10 behind.
+        EXPECT_FLOAT_EQ(-20.f, pixelAt(actual, columns[0], 24, 0));
+        EXPECT_FLOAT_EQ(0.f, pixelAt(actual, columns[1], 24, 0));
+        EXPECT_FLOAT_EQ(10.f, pixelAt(actual, columns[2], 24, 0));
+        for (int i = 0; i < 3; ++i) {
+            const float coc = (float)dof.coc(depths[i]);
+            EXPECT_FLOAT_EQ(coc, pixelAt(actual, columns[i], 24, 0)) << "depth " << depths[i];
+            EXPECT_FLOAT_EQ(std::abs(coc), pixelAt(actual, columns[i], 24, 1)) << "depth " << depths[i];
+            EXPECT_FLOAT_EQ(std::abs(coc), pixelAt(actual, columns[i], 24, 2)) << "depth " << depths[i];
+            EXPECT_EQ(1.f, pixelAt(actual, columns[i], 24, 3)) << "depth " << depths[i];
+        }
+    }
+
+    // Max Size 15 caps the front's 20 in blue only.
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamMaxSize, { 15. }));
+    {
+        const DepthOfField dof(effect->getParams(kTime, ViewIdx(0)).dof);
+        RenderedPlane actual;
+        ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &actual));
+        EXPECT_FLOAT_EQ(-20.f, pixelAt(actual, columns[0], 24, 0));
+        EXPECT_FLOAT_EQ(20.f, pixelAt(actual, columns[0], 24, 1));
+        EXPECT_FLOAT_EQ(15.f, pixelAt(actual, columns[0], 24, 2));
+        EXPECT_FLOAT_EQ((float)-dof.coc(depths[0]), pixelAt(actual, columns[0], 24, 2));
+        EXPECT_FLOAT_EQ(10.f, pixelAt(actual, columns[2], 24, 2));
+    }
+
+    // At half size the same pixels of the image read the same values.
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    const RectI half(0, 0, kWindow.width() / 2, kWindow.height() / 2);
+    ASSERT_TRUE(renderNodePlanesDirect(zdefocus, kTime, ViewIdx(0), 1, half, layers, &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_EQ(4u, planes[0].channels.size());
+    EXPECT_FLOAT_EQ(-20.f, pixelAt(planes[0], columns[0] / 2, 12, 0));
+    EXPECT_FLOAT_EQ(15.f, pixelAt(planes[0], columns[0] / 2, 12, 2));
+    EXPECT_FLOAT_EQ(10.f, pixelAt(planes[0], columns[2] / 2, 12, 0));
+}
+
+// The Slices output colours each pixel by the slice the gather weighs it most in: depths at every
+// slice's centre, left to right from the nearest, each read as its own slice, white in focus and
+// every slice unlike its neighbours.
+TEST_F(NativeZDefocusTest, SlicesOutputFollowsTheGatherLayers)
+{
+    const double focalPlane = 0.5;
+    const double size = 20.;
+    NodePtr placeholder = makeZDefocus(NodePtr(), std::string(kNatronColorViewRGBA) + ".R", focalPlane, size);
+    ASSERT_TRUE(bool(placeholder));
+    ZDefocus* placeholderEffect = dynamic_cast<ZDefocus*>(placeholder->getEffectInstance().get());
+    ASSERT_TRUE(placeholderEffect != NULL);
+    PassContext context;
+    context.scale = RenderScale::fromMipmapLevel(0);
+    context.pixelAspectRatio = 1.;
+    const ZDefocusParams params = placeholderEffect->getParams(kTime, ViewIdx(0));
+    const std::vector<ZDefocusSlice> sliceList = ZDefocus::slices(params, context);
+    ASSERT_EQ((std::size_t)params.layers, sliceList.size());
+    const int stripe = kWindow.width() / (int)sliceList.size();
+    ASSERT_GT(stripe, 0);
+
+    // In inverse distance with no depth of field, coc = Size (focalPlane - depth) / focalPlane.
+    NodePtr source = makeConstant(kWindow, { 0., 0., 0., 1. });
+    const DepthOfField dof(params.dof);
+    std::vector<float> depths;
+    for (std::size_t k = 0; k < sliceList.size(); ++k) {
+        const float depth = (float)(focalPlane - sliceList[k].coc * focalPlane / size);
+        EXPECT_NEAR(sliceList[k].coc, dof.coc(depth), 1e-3) << "slice " << k;
+        depths.push_back(depth);
+        source = makeBoxOver(source, RectI((int)k * stripe, 0, ((int)k + 1) * stripe, kWindow.height()), { depth, 0., 0., 1. });
+        ASSERT_TRUE(bool(source));
+    }
+    NodePtr zdefocus = makeZDefocus(source, std::string(kNatronColorViewRGBA) + ".R", focalPlane, size);
+    ASSERT_TRUE(bool(zdefocus));
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputSlices)));
+
+    RenderedPlane actual;
+    ASSERT_TRUE(renderRGBA(zdefocus, kWindow, &actual));
+    std::size_t focusSlices = 0;
+    for (std::size_t k = 0; k < sliceList.size(); ++k) {
+        const int x = (int)k * stripe + stripe / 2;
+        EXPECT_EQ((int)k, ZDefocus::sliceOf(sliceList, ZDefocus::pixelCoc(params, context, dof, depths[k]))) << "slice " << k;
+        float expected[3];
+        ZDefocus::sliceColour(sliceList, (int)k, expected);
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_EQ(expected[c], pixelAt(actual, x, 24, c)) << "slice " << k << " channel " << c;
+        }
+        EXPECT_EQ(1.f, pixelAt(actual, x, 24, 3)) << "slice " << k;
+        if ((expected[0] == 1.f) && (expected[1] == 1.f) && (expected[2] == 1.f)) {
+            ++focusSlices;
+            EXPECT_EQ(0., sliceList[k].coc) << "slice " << k;
+        }
+        if (k > 0) {
+            const int previous = x - stripe;
+            bool differs = false;
+            for (int c = 0; c < 3; ++c) {
+                differs = differs || (pixelAt(actual, previous, 24, c) != pixelAt(actual, x, 24, c));
+            }
+            EXPECT_TRUE(differs) << "slices " << k - 1 << " and " << k;
+        }
+    }
+    EXPECT_EQ(1u, focusSlices);
+}
+
 // In Lens mode stopping down from f/2 to f/16 shrinks the bokeh of a point in front of the focus.
 TEST_F(NativeZDefocusTest, LensStoppedDownIsSharper)
 {

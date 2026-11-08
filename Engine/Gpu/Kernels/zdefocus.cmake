@@ -3,3 +3,4 @@ slang_add_kernel(zdefocus_blocks Kernels/zdefocus.slang ENTRY zdefocus_blocks RE
 slang_add_kernel(zdefocus_composite Kernels/zdefocus.slang ENTRY zdefocus_composite REGISTRY NatronGpu)
 slang_add_kernel(zdefocus_finish Kernels/zdefocus.slang ENTRY zdefocus_finish REGISTRY NatronGpu)
 slang_add_kernel(zdefocus_focal Kernels/zdefocus.slang ENTRY zdefocus_focal REGISTRY NatronGpu)
+slang_add_kernel(zdefocus_debug Kernels/zdefocus.slang ENTRY zdefocus_debug REGISTRY NatronGpu)

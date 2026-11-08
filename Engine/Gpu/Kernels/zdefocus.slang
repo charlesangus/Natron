@@ -73,6 +73,7 @@ static const uint kFirst = 4;
 static const uint kInverseDistance = 8;
 static const uint kHasDepth = 16;
 static const uint kLens = 32;
+static const uint kSlicesOutput = 64;
 static const uint kMetaDepthX1 = 0;
 static const uint kMetaDepthY1 = 1;
 static const uint kMetaDepthX2 = 2;
@@ -133,32 +134,52 @@ float rawDepth(int x, int y)
     return asfloat(depthBuf[params.depthOffset + uint(y - y1) * params.depthStride + uint(x - x1) * params.depthComps + params.depthComponent]);
 }
 
-// DepthOfField::coc(): the signed circle of confusion, in canonical pixels, of a raw depth.
-float circleOfConfusion(float raw)
+// DepthOfField::uncappedCoc(): the signed circle of confusion, in canonical pixels, of a raw
+// depth before Max Size.
+float uncappedCircleOfConfusion(float raw)
 {
-    float distance = asfloat(0x7f800000u);
+    const float infinity = asfloat(0x7f800000u);
+    float distance = infinity;
     if (isFiniteValue(raw) && raw > 0.0) {
         distance = ((params.flags & kInverseDistance) != 0u) ? 1.0 / raw : raw;
         if (!isFiniteValue(distance))
-            distance = asfloat(0x7f800000u);
+            distance = infinity;
     }
     const float nearEdge = metaFloat(kMetaNear);
     const float farEdge = metaFloat(kMetaFar);
     const float scale = metaFloat(kMetaScale);
-    const float maxSize = metaFloat(kMetaMaxSize);
     if (scale <= 0.0)
         return 0.0;
     if (distance < nearEdge) {
         if (distance < metaFloat(kMetaMinDistance) || isinf(scale))
-            return -maxSize;
-        return -min(maxSize, scale * (1.0 / distance - inverseOf(nearEdge)));
+            return -infinity;
+        return -(scale * (1.0 / distance - inverseOf(nearEdge)));
     }
     if (distance > farEdge) {
         if (isinf(scale))
-            return maxSize;
-        return min(maxSize, scale * (1.0 / farEdge - inverseOf(distance)));
+            return infinity;
+        return scale * (1.0 / farEdge - inverseOf(distance));
     }
     return 0.0;
+}
+
+// DepthOfField::coc(): the signed circle of confusion, in canonical pixels, of a raw depth.
+float circleOfConfusion(float raw)
+{
+    const float maxSize = metaFloat(kMetaMaxSize);
+    return clamp(uncappedCircleOfConfusion(raw), -maxSize, maxSize);
+}
+
+// ZDefocus::pixelCoc(): a kernel of the largest channel's scale that leaves the pixel unchanged is
+// no blur.
+float pixelCircleOfConfusion(float raw)
+{
+    const float coc = circleOfConfusion(raw);
+    const float cocScale = metaFloat(kMetaCocScale);
+    const float size = (cocScale == 1.0) ? abs(coc) : min(abs(coc) * cocScale, max(0.0, metaFloat(kMetaMaxSize)));
+    if (!(size * metaFloat(kMetaSnapX) >= 0.5) && !(size * metaFloat(kMetaSnapY) >= 0.5))
+        return 0.0;
+    return coc;
 }
 
 float sourceValue(int x, int y, uint c)
@@ -193,12 +214,7 @@ void zdefocus_load(uint3 tid : SV_DispatchThreadID)
     for (uint c = 0; c < n && c < 4; ++c)
         workBuf[pixel * n + c] = boost(sourceValue(x, y, c));
 
-    float coc = circleOfConfusion(rawDepth(x, y));
-    // pixelCoc(): a kernel of the largest channel's scale that leaves the pixel unchanged is no blur.
-    const float cocScale = metaFloat(kMetaCocScale);
-    const float size = (cocScale == 1.0) ? abs(coc) : min(abs(coc) * cocScale, max(0.0, metaFloat(kMetaMaxSize)));
-    if (!(size * metaFloat(kMetaSnapX) >= 0.5) && !(size * metaFloat(kMetaSnapY) >= 0.5))
-        coc = 0.0;
+    const float coc = pixelCircleOfConfusion(rawDepth(x, y));
     const uint count = metaBuf[kMetaSliceCount];
     uint k = 0;
     while (k < count && metaFloat(kMetaCentres + k) <= coc)
@@ -421,5 +437,65 @@ void zdefocus_focal(uint3 tid : SV_DispatchThreadID)
         const uint bit = (n == 1u) ? 3u : c;
         const float v = sourceValue(x, y, c);
         outBuf[dst + c] = (bit > 2u) ? v : 0.5 * v + 0.5 * ((bit == lit) ? 1.0 : 0.0);
+    }
+}
+
+// debugWorker(): the Blur Radius output, or with kSlicesOutput the Slices output, in the colour
+// channels; 1 in the alpha or a lone channel.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void zdefocus_debug(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= params.outWidth || tid.y >= params.outHeight)
+        return;
+    const uint n = params.channels;
+    const uint dst = params.dstOffset + tid.y * params.dstStride + tid.x * n;
+    const float raw = rawDepth(params.outX1 + int(tid.x), params.outY1 + int(tid.y));
+    float rgb[3] = { 1.0, 1.0, 1.0 };
+    if ((params.flags & kSlicesOutput) != 0u) {
+        // ZDefocus::sliceOf() and sliceColour().
+        const float coc = pixelCircleOfConfusion(raw);
+        const uint count = metaBuf[kMetaSliceCount];
+        uint k = 0;
+        while (k < count && metaFloat(kMetaCentres + k) <= coc)
+            ++k;
+        if (k >= count) {
+            k = (count > 0u) ? count - 1u : 0u;
+        } else if (k > 0u) {
+            --k;
+            const float lo = metaFloat(kMetaCentres + k);
+            if ((coc - lo) / (metaFloat(kMetaCentres + k + 1) - lo) > 0.5)
+                ++k;
+        }
+        uint focus = 0;
+        while (focus < count && metaFloat(kMetaCentres + focus) < 0.0)
+            ++focus;
+        const int d = int(k) - int(focus);
+        if (d != 0) {
+            const float3 hues[8] = {
+                float3(1.0, 0.0, 0.0),
+                float3(1.0, 0.5, 0.0),
+                float3(1.0, 1.0, 0.0),
+                float3(0.0, 1.0, 0.0),
+                float3(0.0, 1.0, 1.0),
+                float3(0.0, 0.0, 1.0),
+                float3(0.5, 0.0, 1.0),
+                float3(1.0, 0.0, 1.0),
+            };
+            const float3 hue = hues[((d % 8) + 8) % 8];
+            rgb[0] = hue.x;
+            rgb[1] = hue.y;
+            rgb[2] = hue.z;
+        }
+    } else {
+        const float maxValue = asfloat(0x7f7fffffu);
+        const float coc = clamp(uncappedCircleOfConfusion(raw), -maxValue, maxValue);
+        rgb[0] = coc;
+        rgb[1] = abs(coc);
+        rgb[2] = abs(circleOfConfusion(raw));
+    }
+    for (uint c = 0; c < n && c < 4; ++c) {
+        const uint bit = (n == 1u) ? 3u : c;
+        outBuf[dst + c] = (bit > 2u) ? 1.0 : rgb[bit];
     }
 }

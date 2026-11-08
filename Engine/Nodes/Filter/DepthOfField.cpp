@@ -121,24 +121,24 @@ DepthOfField::DepthOfField(const DepthOfFieldParams& params)
 }
 
 double
-DepthOfField::cocOfDistance(double distance) const
+DepthOfField::uncappedCocOfDistance(double distance) const
 {
     if (_scale <= 0.) {
         return 0.;
     }
     if (distance < _near) {
         if ((distance < _minDistance) || std::isinf(_scale)) {
-            return -_maxSize;
+            return -kInfinity;
         }
 
-        return -std::min(_maxSize, _scale * (1. / distance - inverse(_near)));
+        return -(_scale * (1. / distance - inverse(_near)));
     }
     if (distance > _far) {
         if (std::isinf(_scale)) {
-            return _maxSize;
+            return kInfinity;
         }
 
-        return std::min(_maxSize, _scale * (1. / _far - inverse(distance)));
+        return _scale * (1. / _far - inverse(distance));
     }
 
     return 0.;
@@ -147,7 +147,13 @@ DepthOfField::cocOfDistance(double distance) const
 double
 DepthOfField::coc(double raw) const
 {
-    return cocOfDistance(depthDistance(raw, _units));
+    return std::clamp(uncappedCocOfDistance(depthDistance(raw, _units)), -_maxSize, _maxSize);
+}
+
+double
+DepthOfField::uncappedCoc(double raw) const
+{
+    return uncappedCocOfDistance(depthDistance(raw, _units));
 }
 
 NATRON_NAMESPACE_EXIT

@@ -189,8 +189,8 @@ protected:
     }
 };
 
-// The analytic kernels and the focal plane output run on the GPU up to the halo cap; the Image
-// kernel and a halo beyond the cap stay on the CPU.
+// The analytic kernels run on the GPU up to the halo cap, and the outputs other than Result at any
+// size; the Image kernel and a halo beyond the cap stay on the CPU.
 TEST_F(NativeZDefocusGpuTest, Eligibility)
 {
 #ifdef NATRON_HAVE_GPU
@@ -231,6 +231,10 @@ TEST_F(NativeZDefocusGpuTest, Eligibility)
     EXPECT_FALSE(effect->canRenderOnGpu(eligibleQuery())) << "beyond the halo cap";
     ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputFocalPlane)));
     EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "the focal plane output";
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputBlurRadius)));
+    EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "the blur radius output";
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputSlices)));
+    EXPECT_EQ(supported, effect->canRenderOnGpu(eligibleQuery())) << "the slices output";
 
     ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputResult)));
     ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamAspectRatio, { 1. }));
@@ -297,6 +301,45 @@ TEST_F(NativeZDefocusGpuTest, FocalPlaneOutputMatchesTheCpu)
     ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputFocalPlane)));
 
     expectParity(zdefocus, "focal plane");
+}
+
+TEST_F(NativeZDefocusGpuTest, BlurRadiusOutputMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr zdefocus = makeZDefocus(source);
+    ASSERT_TRUE(bool(source) && bool(zdefocus));
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputBlurRadius)));
+
+    expectParity(zdefocus, "blur radius");
+
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamDepthOfField, { 0.2 }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamMaxSize, { 4. }));
+    expectParity(zdefocus, "blur radius, depth of field 0.2, max size 4");
+
+    // Nearer than the focal length the lens has no finite circle of confusion.
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamDepthUnits, std::string(kZDefocusParamDepthUnitsDistance)));
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamMode, std::string(kZDefocusParamModeLens)));
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamFocalLength, { 85. }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamFStop, { 1.4 }));
+    expectParity(zdefocus, "blur radius, lens");
+}
+
+TEST_F(NativeZDefocusGpuTest, SlicesOutputMatchesTheCpu)
+{
+    NodePtr source = makeParitySource();
+    NodePtr zdefocus = makeZDefocus(source);
+    ASSERT_TRUE(bool(source) && bool(zdefocus));
+    ASSERT_TRUE(setKnobValue(zdefocus, kZDefocusParamOutput, std::string(kZDefocusParamOutputSlices)));
+
+    expectParity(zdefocus, "slices");
+
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamDepthOfField, { 0.2 }));
+    ASSERT_TRUE(setKnobValues(zdefocus, kZDefocusParamLayers, { 5. }));
+    expectParity(zdefocus, "slices, depth of field 0.2, 5 layers");
+
+    // The slices follow the most scaled channel's circle of confusion.
+    ASSERT_TRUE(setKnobValues(zdefocus, kBokehParamChromaticAberration, { 0.5 }));
+    expectParity(zdefocus, "slices, chromatic aberration");
 }
 
 // Depth on a channel of the processed layer itself.

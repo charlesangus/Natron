@@ -82,6 +82,8 @@
 #define kZDefocusParamOutput "output"
 #define kZDefocusParamOutputResult "result"
 #define kZDefocusParamOutputFocalPlane "focalPlane"
+#define kZDefocusParamOutputBlurRadius "blurRadius"
+#define kZDefocusParamOutputSlices "slices"
 
 #define kZDefocusInputSource 0
 #define kZDefocusInputMask 1
@@ -91,6 +93,14 @@ NATRON_NAMESPACE_ENTER
 
 struct DefocusKernelImage;
 
+/// The Output knob's options, in its order.
+enum class ZDefocusOutput {
+    Result,
+    FocalPlane,
+    BlurRadius,
+    Slices
+};
+
 struct ZDefocusParams {
     DepthOfFieldParams dof;
     int layers = 16;
@@ -98,7 +108,21 @@ struct ZDefocusParams {
     BokehShapeParams shape;
     LensAberrationParams lens;
     BokehHighlight highlight;
-    bool focalPlaneOutput = false;
+    ZDefocusOutput output = ZDefocusOutput::Result;
+
+    /// Whether the output is the defocus; every other output is computed per pixel.
+    bool gathers() const
+    {
+        return output == ZDefocusOutput::Result;
+    }
+};
+
+/// The Blur Radius output of one depth: the signed diameter before Max Size, its size, and the
+/// size after Max Size, all in canonical pixels and finite.
+struct ZDefocusBlurRadius {
+    float signedCoc = 0.f;
+    float size = 0.f;
+    float cappedSize = 0.f;
 };
 
 /**
@@ -168,9 +192,28 @@ public:
                           const DepthOfField& dof,
                           float depth) WARN_UNUSED_RETURN;
 
+    /// The Blur Radius output of a depth, at full size whatever the render scale.
+    static ZDefocusBlurRadius blurRadius(const DepthOfField& dof,
+                                         float depth) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The slice of slices, nearest first, a pixel's gather weighs most, from its
+     * pixelCoc(); 0 when there are no slices.
+     **/
+    static int sliceOf(const std::vector<ZDefocusSlice>& slices,
+                       float coc) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The Slices output's colour of slice k of slices: white for the slice in focus, else
+     * one of eight hues by its distance from that slice, so that neighbours always differ.
+     **/
+    static void sliceColour(const std::vector<ZDefocusSlice>& slices,
+                            int k,
+                            float rgb[3]);
+
     /**
      * @brief The passes' halo in pixels at context's scale: the extent of the largest slice
-     * kernel, none for the focal plane output.
+     * kernel, none for an output other than Result.
      **/
     static void halo(const ZDefocusParams& params,
                      const PassContext& context,
@@ -179,8 +222,8 @@ public:
                      int* haloY);
 
     /**
-     * @brief Whether the GPU records the passes: the focal plane output, or an analytic kernel
-     * whose halo is within the GPU kernels' cap.
+     * @brief Whether the GPU records the passes: an output other than Result, or an analytic
+     * kernel whose halo is within the GPU kernels' cap.
      **/
     static bool fitsGpu(const ZDefocusParams& params,
                         const PassContext& context) WARN_UNUSED_RETURN;

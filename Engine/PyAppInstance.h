@@ -34,6 +34,9 @@
  **/
 
 #include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -46,6 +49,10 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER;
+
+class UndoStepGuard;
+class UndoSuppressGuard;
+
 NATRON_PYTHON_NAMESPACE_ENTER;
 
 class AppSettings
@@ -254,6 +261,60 @@ public:
     }
 };
 
+/**
+ * @brief The context manager App.newUndoStep() returns. Python API edits made inside its with
+ * block are one undo entry, labelled by the outermost step when steps nest. Leaving the block
+ * through an exception keeps the edits already made and lets the exception propagate. Without
+ * an undo history (background, command line) or off the main thread it does nothing.
+ **/
+class UndoStepContext {
+public:
+    ~UndoStepContext();
+
+    void enter();
+
+    void exit();
+
+private:
+    friend class App;
+
+    UndoStepContext(const AppInstancePtr& app,
+                    const std::string& label);
+
+    UndoStepContext(const UndoStepContext&) = delete;
+    UndoStepContext& operator=(const UndoStepContext&) = delete;
+
+    AppInstanceWPtr _app;
+    std::string _label;
+    // One guard per enter() still open, so that a context re-entered while open closes in order.
+    std::vector<std::shared_ptr<UndoStepGuard>> _steps;
+};
+
+/**
+ * @brief The context manager App.noUndoStep() returns. Python API edits made inside its with
+ * block are not recorded, even inside a step; steps opened inside it record nothing. Without an
+ * undo history or off the main thread it does nothing.
+ **/
+class NoUndoStepContext {
+public:
+    ~NoUndoStepContext();
+
+    void enter();
+
+    void exit();
+
+private:
+    friend class App;
+
+    explicit NoUndoStepContext(const AppInstancePtr& app);
+
+    NoUndoStepContext(const NoUndoStepContext&) = delete;
+    NoUndoStepContext& operator=(const NoUndoStepContext&) = delete;
+
+    AppInstanceWPtr _app;
+    std::vector<std::shared_ptr<UndoSuppressGuard>> _suppressions;
+};
+
 class App
     : public Group,
       public UserParamHolder {
@@ -354,6 +415,18 @@ public:
     ImageLayer* addProjectLayer(const QString& id, const QStringList& channels);
 
     bool removeProjectLayer(const QString& id);
+
+    /**
+     * @brief Returns a context manager whose with block is one undo entry named label, see
+     * UndoStepContext.
+     **/
+    UndoStepContext* newUndoStep(const QString& label);
+
+    /**
+     * @brief Returns a context manager whose with block is not recorded for undo, see
+     * NoUndoStepContext.
+     **/
+    NoUndoStepContext* noUndoStep();
 
 protected:
 

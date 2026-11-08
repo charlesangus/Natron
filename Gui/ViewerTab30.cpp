@@ -42,6 +42,7 @@
 #include <QToolBar>
 
 #include "Engine/Format.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -141,6 +142,18 @@ fillMenu(ComboBox* menu,
     fitMenuToItems(menu);
 }
 
+std::string
+firstEntryLabel(ViewerInstance* viewer,
+                const char* knobName)
+{
+    KnobChoicePtr knob = viewer ? std::dynamic_pointer_cast<KnobChoice>(viewer->getKnobByName(knobName)) : KnobChoicePtr();
+    if (!knob || (knob->getNumEntries() == 0)) {
+        return std::string();
+    }
+
+    return knob->getEntries_mt_safe()[0].label;
+}
+
 } // anon namespace
 
 void
@@ -171,10 +184,10 @@ ViewerTab::refreshDisplayTransformMenus()
     std::string display, view, look;
     getDisplayTransform(&display, &view, &look);
 
-    std::string resolvedDisplay, resolvedView, resolvedLook;
+    std::string resolvedDisplay;
     if (_imp->viewerNode) {
         _imp->viewerNode->refreshDisplayTransformChoices();
-        _imp->viewerNode->getResolvedDisplayTransform(&resolvedDisplay, &resolvedView, &resolvedLook);
+        _imp->viewerNode->getResolvedDisplayTransform(&resolvedDisplay, NULL, NULL);
     }
     // The View menu lists the views of the display the viewer renders with.
     std::vector<std::string> displays, views, looks;
@@ -183,12 +196,17 @@ ViewerTab::refreshDisplayTransformMenus()
         views = colorManagement->getViews(resolvedDisplay);
         looks = colorManagement->getLooks();
     }
+    // The first entry of the Display and View menus is the panel's own, which names what it resolves to.
+    const std::string displayFollowLabel = firstEntryLabel(_imp->viewerNode, kViewerParamDisplay);
+    const std::string viewFollowLabel = firstEntryLabel(_imp->viewerNode, kViewerParamView);
+    displays.insert(displays.begin(), displayFollowLabel);
+    views.insert(views.begin(), viewFollowLabel);
     std::vector<std::string> lookItems(1, std::string(kViewerLookNone));
     lookItems.insert(lookItems.end(), looks.begin(), looks.end());
 
     _imp->populatingDisplayTransform = true;
-    fillMenu(_imp->viewerDisplay, displays, display.empty() ? resolvedDisplay : display);
-    fillMenu(_imp->viewerView, views, view.empty() ? resolvedView : view);
+    fillMenu(_imp->viewerDisplay, displays, display.empty() ? displayFollowLabel : display);
+    fillMenu(_imp->viewerView, views, view.empty() ? viewFollowLabel : view);
     fillMenu(_imp->viewerLook, lookItems, look.empty() ? std::string(kViewerLookNone) : look);
     _imp->populatingDisplayTransform = false;
 

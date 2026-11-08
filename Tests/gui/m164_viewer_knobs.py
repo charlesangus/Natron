@@ -743,22 +743,41 @@ try:
         panel_display = None
         for c in children_of(panel, ("ComboBox",)):
             items = combo_items(c)
-            if items and items[0].startswith("Project default") and items[1:] == toolbar_displays:
+            if items and items[0].startswith("Project default") and items == toolbar_displays:
                 panel_display = c
-        check(panel_display is not None, "the panel's Display is a menu of the toolbar's displays after Project default "
+        check(toolbar_displays and toolbar_displays[0].startswith("Project default"),
+              "the toolbar's Display menu starts with the Project default entry (%r)" % (toolbar_displays,))
+        check(panel_display is not None, "the panel's Display lists the same choices as the toolbar's, Project default first "
               "(toolbar %r, panel menus %r)" % (toolbar_displays, [combo_items(c) for c in children_of(panel, ("ComboBox",))]))
-        others = [d for d in toolbar_displays if d != combo_current(display1)]
+        others = [d for d in toolbar_displays[1:] if d != combo_current(display1)]
         if panel_display is not None and others:
-            set_combo_index(panel_display, toolbar_displays.index(others[0]) + 1)
+            set_combo_index(panel_display, toolbar_displays.index(others[0]))
             ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == others[0])
             check(ok, "choosing %r in the panel's Display sets the knob (got %r)" % (others[0], knob_value(viewer1, "display")))
             ok = yield ("until", lambda: combo_current(display1) == others[0], POLL_TIMEOUT_S)
             check(ok, "Viewer1's toolbar Display follows the panel (shows %r)" % (combo_current(display1),))
             view_items = combo_items(widget_of(V1, ("ComboBox",), "How the image is rendered"))
-            panel_views = [combo_items(c)[1:] for c in children_of(panel, ("ComboBox",))
+            panel_views = [combo_items(c) for c in children_of(panel, ("ComboBox",))
                            if combo_items(c) and combo_items(c)[0].startswith("Project default") and c is not panel_display]
             check(view_items in panel_views, "the panel's View lists the toolbar's views of the new display (toolbar %r, panel %r)"
                   % (view_items, panel_views))
+
+            check(view_items and view_items[0].startswith("Project default"),
+                  "the toolbar's View menu starts with the Project default entry (%r)" % (view_items,))
+            set_combo_index(display1, 0)
+            ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == "")
+            check(ok, "choosing Project default in the toolbar's Display makes the knob follow the project (got %r)"
+                  % (knob_value(viewer1, "display"),))
+            check(str(viewer1.getParam("display").getOption(viewer1.getParam("display").get())) == "projectDefault",
+                  "the toolbar's Project default is the panel's Project default entry")
+            ok = yield ("until", lambda: combo_current(display1).startswith("Project default"), POLL_TIMEOUT_S)
+            check(ok, "Viewer1's toolbar Display shows Project default (shows %r)" % (combo_current(display1),))
+            require(trigger("undo"), "undo the toolbar's Project default choice")
+            ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == others[0])
+            check(ok, "undo restores the display %r (got %r)" % (others[0], knob_value(viewer1, "display")))
+            require(trigger("redo"), "redo the toolbar's Project default choice")
+            ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == "")
+            check(ok, "redo makes the display follow the project again (got %r)" % (knob_value(viewer1, "display"),))
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 

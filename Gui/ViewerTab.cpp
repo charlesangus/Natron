@@ -1404,6 +1404,20 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                 }
             });
         }
+        // The Project default entries name the project's viewer display and view.
+        const char* const projectKnobNames[] = { "viewerDisplay", "viewerView" };
+        for (const char* knobName : projectKnobNames) {
+            KnobIPtr knob = project ? project->getKnobByName(knobName) : KnobIPtr();
+            KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+            if (handler) {
+                QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
+                    ProjectPtr p = getGui()->getApp()->getProject();
+                    if (p && !p->isLoadingProject()) {
+                        refreshDisplayTransformMenus();
+                    }
+                });
+            }
+        }
     }
 
     // The toolbar shows the viewer node's knobs, and follows them whoever sets them.

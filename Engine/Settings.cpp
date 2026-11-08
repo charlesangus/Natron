@@ -2081,9 +2081,11 @@ Settings::setDefaultValues()
     _edgeDeepColor->setDefaultValue(0. / 255., 0); // Okabe-Ito blue
     _edgeDeepColor->setDefaultValue(114. / 255., 1);
     _edgeDeepColor->setDefaultValue(178. / 255., 2);
-    _edgeSceneColor->setDefaultValue(230. / 255., 0); // Okabe-Ito orange
-    _edgeSceneColor->setDefaultValue(159. / 255., 1);
-    _edgeSceneColor->setDefaultValue(0. / 255., 2);
+    // The USD 3D node colour (hue 180) made lighter and more saturated, with the hue pulled
+    // slightly towards green so it stays apart from the deep pipes' blue.
+    _edgeSceneColor->setDefaultValue(32. / 255., 0);
+    _edgeSceneColor->setDefaultValue(190. / 255., 1);
+    _edgeSceneColor->setDefaultValue(172. / 255., 2);
     _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
     _edgeRawColor->setDefaultValue(121. / 255., 1);
     _edgeRawColor->setDefaultValue(167. / 255., 2);

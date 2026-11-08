@@ -825,8 +825,8 @@ Edge::isNearbyBendPoint(const QPointF & scenePoint)
 // Colour is the only data-kind channel on edges, so it does not need a second (e.g. width)
 // channel to stay legible. The dash pattern below is unrelated: it signals edge activity (mask /
 // hidden input), an orthogonal, simultaneously-possible state. The actual colours are user-facing
-// Preferences knobs (Settings::getEdgeKindColor), defaulting to an Okabe-Ito palette that stays
-// distinguishable under the common forms of colour-vision deficiency.
+// Preferences knobs (Settings::getEdgeKindColor), defaulting to colours that stay
+// distinguishable from each other under the common forms of colour-vision deficiency.
 static bool
 kindTintColor(DataKindEnum kind,
               QColor* color)

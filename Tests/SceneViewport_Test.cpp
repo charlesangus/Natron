@@ -1268,6 +1268,41 @@ TEST_F(SceneViewportStorm, PaintSkipsWhileTheViewerLockIsHeld)
     EXPECT_NE(SceneViewportRenderer::eRenderStatusBusy, _renderer.renderIfIdle(_fbo->handle(), kSize, kSize));
 }
 
+// A setting that changes Storm's shaders costs a render like a stage change, so the viewer takes it
+// in with a background frame, which leaves nothing for the paint after it to compile.
+TEST_F(SceneViewportStorm, AShaderSettingIsTakenInByABackgroundFrame)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame());
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    EXPECT_FALSE(_renderer.needsBackgroundFrame()) << "the frame took the draw mode in";
+
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeHeadlight);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame());
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    EXPECT_FALSE(_renderer.needsBackgroundFrame()) << "the frame took the lighting in";
+
+    // A camera move only draws.
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth += 30.;
+    _renderer.setFreeCamera(camera);
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+
+    // A render, as a paint does without the render thread, takes a setting in too.
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeWireframe);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame());
+    (void)render();
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+}
+
 // Switching the viewer to a delegate that cannot load drops the Storm engine and shows the
 // loader's error instead of a frame; switching back makes one Storm engine again.
 TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)

@@ -204,6 +204,9 @@ public:
     // The shown stage's edit count, without the lock: 0 before the first sync.
     U64 getStageEditCount() const;
 
+    // The serial of the last sync the stage took, counts and summary included: 0 before the first.
+    U64 getStageSyncSerial() const;
+
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
 
@@ -217,9 +220,10 @@ public:
     bool hasEngine() const;
 
     /**
-     * @brief Whether the shown stage changed since the engine last took its changes in, or there is
-     * no engine: the render that follows does the Hydra work, however long that takes, rather than
-     * only drawing.
+     * @brief Whether the shown stage, or a setting that decides Storm's shaders (draw mode, lighting,
+     * purposes, display transform), changed since the engine last rendered, or there is no engine:
+     * the render that follows does the Hydra work, however long that takes, rather than only
+     * drawing. Main thread.
      **/
     bool needsBackgroundFrame() const;
 
@@ -888,9 +892,8 @@ private:
 
     void onBackgroundFrameDone();
 
-    // Main thread: a batch of payload loads was committed.
-    void onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds);
-
+    // Main thread: a batch of payload loads was committed, leaving the stage at loadEditCount.
+    void onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds, U64 loadEditCount);
     // Whether a pick has to wait for a background frame, which this starts if it is due.
     bool pickMustWait();
 

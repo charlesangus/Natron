@@ -625,9 +625,11 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> shown;
     std::atomic<U64> stageEditCount { 0 };
     std::atomic<U64> stageLoadEditCount { 0 };
+    std::atomic<U64> stageSyncSerial { 0 };
     // The counts the engine last took in, by whichever render.
     std::atomic<U64> absorbedEditCount { 0 };
     std::atomic<U64> absorbedLoadEditCount { 0 };
+    std::atomic<std::size_t> absorbedParamsKey { 0 };
     std::atomic<bool> zUp;
     std::atomic<double> metersPerUnit;
     std::atomic<double> timeCodesPerSecond;
@@ -672,7 +674,6 @@ struct SceneViewportRenderer::Implementation {
         int height = 0;
         GfFrustum frustum;
         UsdImagingGLRenderParams params;
-        LightingModeEnum lightingMode = eLightingModeScene;
         bool useOpenColorIO = false;
         DisplayTransform transform;
         float background[3] = { 0.f, 0.f, 0.f };
@@ -1200,12 +1201,45 @@ struct SceneViewportRenderer::Implementation {
     }
 
     // Needs stageMutex.
-    void noteStageAbsorbed()
+    void noteStageAbsorbed(const UsdImagingGLRenderParams& params)
     {
         if (sceneStage) {
             absorbedEditCount = sceneStage->getEditCount();
             absorbedLoadEditCount = sceneStage->getLoadEditCount();
         }
+        absorbedParamsKey = paramsKey(params);
+    }
+
+    // The render params a paint draws with, lit as the stage's summary says.
+    UsdImagingGLRenderParams currentRenderParams()
+    {
+        UsdImagingGLRenderParams params = renderParams();
+
+        params.enableSceneLights = usesSceneLights();
+
+        return params;
+    }
+
+    // What of the params changes Storm's shaders or what it draws. Changing it costs a render
+    // like a stage change does, the compiles taking seconds on a scene of many materials.
+    static std::size_t paramsKey(const UsdImagingGLRenderParams& params)
+    {
+        std::size_t key = 0;
+        const auto add = [&key](std::size_t value) { key ^= value + 0x9e3779b97f4a7c15ULL + (key << 6) + (key >> 2); };
+
+        add(std::size_t(params.drawMode));
+        add(params.enableLighting);
+        add(params.enableSceneLights);
+        add(params.showProxy);
+        add(params.showRender);
+        add(params.showGuides);
+        add(params.highlight);
+        add(params.colorCorrectionMode.Hash());
+        add(params.ocioDisplay.Hash());
+        add(params.ocioView.Hash());
+        add(params.ocioColorSpace.Hash());
+
+        return key;
     }
 
     // The GL state both kinds of frame start from.
@@ -1776,6 +1810,9 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     }
     std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
     _imp->refreshStageSummary();
+    if (serial > _imp->stageSyncSerial) {
+        _imp->stageSyncSerial = serial;
+    }
 
     return true;
 }
@@ -1859,6 +1896,12 @@ SceneViewportRenderer::getStageEditCount() const
     return _imp->stageEditCount;
 }
 
+U64
+SceneViewportRenderer::getStageSyncSerial() const
+{
+    return _imp->stageSyncSerial;
+}
+
 double
 SceneViewportRenderer::getTimeCode() const
 {
@@ -1890,7 +1933,8 @@ SceneViewportRenderer::needsBackgroundFrame() const
         return false;
     }
 
-    return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount);
+    return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
+        || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()));
 }
 
 bool
@@ -1905,12 +1949,18 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     if (!lock.owns_lock()) {
         return false;
     }
+    // A sync or a load refreshes the summary after its locked edit. Lit by a summary that is not
+    // yet the stage's, the frame would not be the one the next paint draws, and that paint would
+    // render the stage again, compiling the lit shaders.
+    const std::shared_ptr<const Implementation::StageSummary> summary = _imp->getStageSummary();
+    if (_imp->currentStage() && (!summary || (summary->editCount != _imp->sceneStage->getEditCount() + _imp->sceneStage->getLoadEditCount()))) {
+        return false;
+    }
     Implementation::BackgroundFrame& frame = _imp->backgroundFrame;
     frame.width = width;
     frame.height = height;
     frame.frustum = _imp->computeFrustum(width, height);
-    frame.params = _imp->renderParams();
-    frame.lightingMode = _imp->lightingMode;
+    frame.params = _imp->currentRenderParams();
     frame.useOpenColorIO = _imp->useOpenColorIO;
     frame.transform = _imp->hydraTransform;
     frame.displayTransformGeneration = _imp->displayTransformGeneration;
@@ -1927,7 +1977,6 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
 
-    frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
     StormGLStateGuard guard;
     StormGLSection section;
@@ -1952,7 +2001,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
         converged = _imp->engine->IsConverged();
     }
-    _imp->noteStageAbsorbed();
+    _imp->noteStageAbsorbed(frame.params);
     frame.fbo = fbo;
     frame.editCount = _imp->sceneStage->getEditCount();
     frame.loadEditCount = _imp->sceneStage->getLoadEditCount();
@@ -3023,7 +3072,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
             converged = _imp->engine->IsConverged();
         }
     }
-    _imp->noteStageAbsorbed();
+    _imp->noteStageAbsorbed(params);
 
     _imp->drawnGuides.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
@@ -3855,6 +3904,17 @@ struct SceneViewport::Implementation {
 
     // Main thread.
     bool backgroundFrameRunning = false;
+    // The load edit count the main thread has had onStageLoadsServiced() for.
+    U64 takenLoadEditCount = 0;
+
+    // Whether the worker or the load thread changed the stage and the main thread has not had its
+    // onSynced() or onStageLoadsServiced() yet. These apply the first framing: a background frame
+    // started before would draw from the unframed camera, and the paint after would render again.
+    bool stageAwaitsTakeIn() const
+    {
+        return (renderer.getStageSyncSerial() > syncedSerial) || (renderer.getStageLoadEditCount() > takenLoadEditCount);
+    }
+
     // Whether the framebuffer holds a frame of a scene, which a composing status can stay out of.
     bool presentedScene = false;
     QElapsedTimer composingClock;
@@ -4129,9 +4189,10 @@ SceneViewport::SceneViewport(QWidget* parent)
             }
             imp->renderer.serviceStageLoads();
             // Payloads without extent hints leave nothing to frame until one of them loads.
+            const U64 loadEditCount = imp->renderer.getStageLoadEditCount();
             const SceneViewportRenderer::FrameBounds bounds = imp->renderer.isFramed() ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
             // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this, bounds]() { onStageLoadsServiced(bounds); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(this, [this, bounds, loadEditCount]() { onStageLoadsServiced(bounds, loadEditCount); }, Qt::QueuedConnection);
         }
     });
     _imp->worker = std::thread([this, imp]() {
@@ -4307,7 +4368,7 @@ SceneViewport::isSceneSynced() const
 void
 SceneViewport::startBackgroundFrame()
 {
-    if (!_imp->usesRenderThread || _imp->backgroundFrameRunning || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial)) {
+    if (!_imp->usesRenderThread || _imp->backgroundFrameRunning || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn()) {
         return;
     }
     const qreal dpr = devicePixelRatio();
@@ -4344,8 +4405,10 @@ SceneViewport::onBackgroundFrameDone()
 }
 
 void
-SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds)
+SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds,
+                                    U64 loadEditCount)
 {
+    _imp->takenLoadEditCount = std::max(_imp->takenLoadEditCount, loadEditCount);
     if (!bounds.empty && !_imp->renderer.isFramed()) {
         _imp->renderer.applyFrameBounds(bounds);
         endLockOutsideLookThrough();
@@ -4356,7 +4419,6 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
     update();
     Q_EMIT stageLoadsChanged();
 }
-
 void
 SceneViewport::serviceDeferredInput()
 {
@@ -5483,7 +5545,7 @@ SceneViewport::paintGL()
     if (_imp->usesRenderThread && (w > 0) && (h > 0)) {
         startBackgroundFrame();
         if (_imp->backgroundFrameRunning || _imp->renderer.needsBackgroundFrame()) {
-            if (!_imp->backgroundFrameRunning) {
+            if (!_imp->backgroundFrameRunning && !_imp->stageAwaitsTakeIn()) {
                 // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
                 update();
             }

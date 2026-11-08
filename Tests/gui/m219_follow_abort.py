@@ -71,7 +71,10 @@ try:
                 state["keys_at_abort"] = keys
                 state["aborted_at"] = mono_ms()
                 report("NOTE abort: second press at %d keys, %.0f ms after the first" % (keys, state["aborted_at"] - state["started"]))
-                press(scene.roto, "followForwardToEnd")
+                # No processEvents here, unlike press(): the abort can end the follow within it, and the
+                # aborted follow's modal report dialog would then run its event loop inside this tick,
+                # where nothing can close it.
+                param(scene.roto, "followForwardToEnd").trigger()
                 return (ABORT_END_S, "abort: the follow ends within %.0f s of the second press" % ABORT_END_S)
             return None
 

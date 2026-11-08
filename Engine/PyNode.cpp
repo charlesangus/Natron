@@ -792,7 +792,11 @@ Effect::getPersistentMessage() const
 {
     QString message;
     int type = 0;
-    getInternalNode()->getPersistentMessage(&message, &type, false);
+    const NodePtr node = getInternalNode();
+    if (!node) {
+        return message;
+    }
+    node->getPersistentMessage(&message, &type, false);
 
     return message;
 }

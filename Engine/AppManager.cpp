@@ -57,6 +57,7 @@
 #include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <vector>
 
 #include <QtGlobal> // for Q_OS_*
 #if defined(Q_OS_LINUX)
@@ -284,10 +285,19 @@ backTraceSigSegvHandler(int sig,
 static void
 setSigSegvSignal()
 {
+    // A stack overflow leaves no stack for the handler, so the crash would end without a backtrace.
+    // The alternate stack only covers the thread that installs it, the main thread.
+    static std::vector<char> altStack(256 * 1024);
+    stack_t ss;
+    ss.ss_sp = altStack.data();
+    ss.ss_size = altStack.size();
+    ss.ss_flags = 0;
+    const bool hasAltStack = sigaltstack(&ss, NULL) == 0;
+
     struct sigaction sa;
 
     sigemptyset (&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_SIGINFO;
+    sa.sa_flags = SA_RESTART | SA_SIGINFO | (hasAltStack ? SA_ONSTACK : 0);
     /* if SA_SIGINFO is set, sa_sigaction is to be used instead of sa_handler. */
     sa.sa_sigaction = backTraceSigSegvHandler;
 

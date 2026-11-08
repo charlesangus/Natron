@@ -26,14 +26,18 @@
 #include "NodeGroup.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
+#include <cstdlib>
 #include <limits>
 #include <locale>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QTextStream>
@@ -72,6 +76,93 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+std::atomic<U64> gNodeNameScans { 0 };
+
+enum NodeNameKindEnum {
+    eNodeNameKindScriptName = 0,
+    eNodeNameKindLabel,
+    eNodeNameKindCount
+};
+
+// How the numbered names a search tries are made: base, base_2, base_3, ... or base1, base2, ...
+enum NodeNamePatternEnum {
+    eNodeNamePatternUnderscore = 0,
+    eNodeNamePatternAppended,
+    eNodeNamePatternCount
+};
+
+std::string
+getNodeName(const Node* node,
+            NodeNameKindEnum kind)
+{
+    switch (kind) {
+    case eNodeNameKindScriptName:
+        return node->getScriptName_mt_safe();
+    default:
+        return node->getLabel_mt_safe();
+    }
+}
+
+// Trim underscore followed by digits at the end of baseName (see #732).
+void
+trimNumber(std::string& baseName)
+{
+    std::size_t found_underscore = baseName.rfind('_');
+    if (found_underscore != std::string::npos && found_underscore != (baseName.size() - 1)) {
+        std::size_t found_nondigit = baseName.find_last_not_of("0123456789");
+        if (found_nondigit == found_underscore) {
+            baseName.erase(found_underscore);
+        }
+    }
+}
+
+std::string
+makeNumberedName(const std::string& base,
+                 NodeNamePatternEnum pattern,
+                 int no)
+{
+    std::stringstream ss;
+    ss << base;
+    if (pattern == eNodeNamePatternAppended) {
+        ss << no;
+    } else if (no > 1) {
+        ss << '_' << no;
+    }
+
+    return ss.str();
+}
+
+// Every (base, number) the pattern makes name from.
+void
+getNumberedNameSources(const std::string& name,
+                       NodeNamePatternEnum pattern,
+                       std::vector<std::pair<std::string, int>>* sources)
+{
+    std::size_t digits = name.size();
+    while ((digits > 0) && (name[digits - 1] >= '0') && (name[digits - 1] <= '9')) {
+        --digits;
+    }
+    if (pattern == eNodeNamePatternUnderscore) {
+        sources->push_back(std::make_pair(name, 1));
+        if ((digits < name.size()) && (digits > 0) && (name[digits - 1] == '_') && (name[digits] != '0') && (name.size() - digits < 9)) {
+            const int no = std::atoi(name.c_str() + digits);
+            if (no > 1) {
+                sources->push_back(std::make_pair(name.substr(0, digits - 1), no));
+            }
+        }
+    } else {
+        for (std::size_t split = digits; split < name.size(); ++split) {
+            if ((name[split] != '0') && (name.size() - split < 9)) {
+                sources->push_back(std::make_pair(name.substr(0, split), std::atoi(name.c_str() + split)));
+            }
+        }
+    }
+}
+
+} // anon namespace
+
 struct NodeCollectionPrivate
 {
     AppInstanceWPtr app;
@@ -79,15 +170,188 @@ struct NodeCollectionPrivate
     mutable QMutex nodesMutex;
     NodesList nodes;
 
+    // The open NamingBatch state, guarded by nodesMutex. The index may keep names a node no
+    // longer has: a hit is checked against the node.
+    int namingBatches;
+    bool namingIndexBuilt;
+    std::unordered_set<const Node*> namingMembers;
+    std::unordered_map<std::string, std::vector<NodeWPtr>> namingIndex[eNodeNameKindCount];
+    // For a base, a number below which every numbered name was found taken by some node.
+    std::unordered_map<std::string, int> namingHints[eNodeNameKindCount][eNodeNamePatternCount];
+
     NodeCollectionPrivate(const AppInstancePtr& app)
         : app(app)
         , graph(0)
         , nodesMutex()
         , nodes()
+        , namingBatches(0)
+        , namingIndexBuilt(false)
+        , namingMembers()
     {
     }
 
-    NodePtr findNodeInternal(const std::string& name, const std::string& recurseName) const;
+    void indexNodeNames(const NodePtr& node)
+    {
+        for (int k = 0; k < eNodeNameKindCount; ++k) {
+            const std::string name = getNodeName(node.get(), (NodeNameKindEnum)k);
+            if (name.empty()) {
+                continue;
+            }
+            std::vector<NodeWPtr>& candidates = namingIndex[k][name];
+            bool indexed = false;
+            for (std::size_t i = 0; i < candidates.size() && !indexed; ++i) {
+                indexed = candidates[i].lock() == node;
+            }
+            if (!indexed) {
+                candidates.push_back(node);
+            }
+        }
+    }
+
+    void buildNamingIndexIfNeeded()
+    {
+        if (namingIndexBuilt) {
+            return;
+        }
+        ++gNodeNameScans;
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            namingMembers.insert(it->get());
+            indexNodeNames(*it);
+        }
+        namingIndexBuilt = true;
+    }
+
+    void clearNaming()
+    {
+        namingIndexBuilt = false;
+        namingMembers.clear();
+        for (int k = 0; k < eNodeNameKindCount; ++k) {
+            namingIndex[k].clear();
+            for (int p = 0; p < eNodeNamePatternCount; ++p) {
+                namingHints[k][p].clear();
+            }
+        }
+    }
+
+    // Lowers the hints a name given up may be below.
+    void freeName(NodeNameKindEnum kind,
+                  const std::string& name)
+    {
+        if ( name.empty() ) {
+            return;
+        }
+        for (int p = 0; p < eNodeNamePatternCount; ++p) {
+            std::unordered_map<std::string, int>& hints = namingHints[kind][p];
+            if (hints.empty()) {
+                continue;
+            }
+            std::vector<std::pair<std::string, int>> sources;
+            getNumberedNameSources(name, (NodeNamePatternEnum)p, &sources);
+            for (std::size_t i = 0; i < sources.size(); ++i) {
+                std::unordered_map<std::string, int>::iterator found = hints.find(sources[i].first);
+                if ((found != hints.end()) && (sources[i].second < found->second)) {
+                    found->second = sources[i].second;
+                }
+            }
+        }
+    }
+
+    // As the scans below: whether an activated node other than caller has the name.
+    bool isNameTaken(NodeNameKindEnum kind,
+                     const std::string& name,
+                     const Node* caller)
+    {
+        if (namingBatches > 0) {
+            buildNamingIndexIfNeeded();
+            std::unordered_map<std::string, std::vector<NodeWPtr>>::iterator found = namingIndex[kind].find(name);
+            if (found == namingIndex[kind].end()) {
+                return false;
+            }
+            std::vector<NodeWPtr>& candidates = found->second;
+            bool taken = false;
+            for (std::size_t i = 0; i < candidates.size();) {
+                NodePtr node = candidates[i].lock();
+                if (!node || !namingMembers.count(node.get()) || (getNodeName(node.get(), kind) != name)) {
+                    candidates[i] = candidates.back();
+                    candidates.pop_back();
+                    continue;
+                }
+                if ( (node.get() != caller) && node->isActivated() ) {
+                    taken = true;
+                }
+                ++i;
+            }
+            if (candidates.empty()) {
+                namingIndex[kind].erase(found);
+            }
+
+            return taken;
+        }
+
+        ++gNodeNameScans;
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            if ( (it->get() != caller) && (*it)->isActivated() && (getNodeName(it->get(), kind) == name) ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // The first free numbered name from base, starting past the numbers found taken before.
+    std::string findNumberedName(NodeNameKindEnum kind,
+                                 NodeNamePatternEnum pattern,
+                                 const std::string& base,
+                                 const Node* caller)
+    {
+        int no = 1;
+        if (namingBatches > 0) {
+            std::unordered_map<std::string, int>::const_iterator found = namingHints[kind][pattern].find(base);
+            if (found != namingHints[kind][pattern].end()) {
+                no = found->second;
+            }
+            // The caller's own name is free to it, though it was found taken for another node.
+            if (caller && (no > 1)) {
+                std::vector<std::pair<std::string, int>> sources;
+                getNumberedNameSources(getNodeName(caller, kind), pattern, &sources);
+                for (std::size_t i = 0; i < sources.size(); ++i) {
+                    if ((sources[i].first == base) && (sources[i].second < no)) {
+                        no = sources[i].second;
+                    }
+                }
+            }
+        }
+        std::string name = makeNumberedName(base, pattern, no);
+        while (isNameTaken(kind, name, caller)) {
+            ++no;
+            name = makeNumberedName(base, pattern, no);
+        }
+        if (namingBatches > 0) {
+            namingHints[kind][pattern][base] = no;
+        }
+
+        return name;
+    }
+
+    // The activated node of that script-name in the index of the open batch.
+    NodePtr findIndexedNode(const std::string& name)
+    {
+        buildNamingIndexIfNeeded();
+        std::unordered_map<std::string, std::vector<NodeWPtr>>::const_iterator found = namingIndex[eNodeNameKindScriptName].find(name);
+        if (found == namingIndex[eNodeNameKindScriptName].end()) {
+            return NodePtr();
+        }
+        for (const NodeWPtr& candidate : found->second) {
+            NodePtr node = candidate.lock();
+            if (node && namingMembers.count(node.get()) && node->isActivated() && (node->getScriptName_mt_safe() == name)) {
+                return node;
+            }
+        }
+
+        return NodePtr();
+    }
+
+    NodePtr findNodeInternal(const std::string& name, const std::string& recurseName);
 };
 
 NodeCollection::NodeCollection(const AppInstancePtr& app)
@@ -162,6 +426,10 @@ NodeCollection::addNode(const NodePtr& node)
     {
         QMutexLocker k(&_imp->nodesMutex);
         _imp->nodes.push_back(node);
+        if (_imp->namingIndexBuilt) {
+            _imp->namingMembers.insert(node.get());
+            _imp->indexNodeNames(node);
+        }
     }
 }
 
@@ -172,6 +440,11 @@ NodeCollection::removeNode(const Node* node)
     for (NodesList::iterator it =_imp->nodes.begin(); it != _imp->nodes.end();++it) {
         if ( it->get() == node ) {
             _imp->nodes.erase(it);
+            if (_imp->namingBatches > 0) {
+                _imp->namingMembers.erase(node);
+                _imp->freeName(eNodeNameKindScriptName, node->getScriptName_mt_safe());
+                _imp->freeName(eNodeNameKindLabel, node->getLabel_mt_safe());
+            }
             break;
         }
     }
@@ -442,6 +715,9 @@ NodeCollection::clearNodesInternal(bool blocking)
     {
         QMutexLocker l(&_imp->nodesMutex);
         _imp->nodes.clear();
+        if (_imp->namingIndexBuilt) {
+            _imp->clearNaming();
+        }
     }
 
     nodesToDelete.clear();
@@ -493,36 +769,17 @@ NodeCollection::checkNodeName(const Node* node,
             }
         }
     }
-    std::unordered_set<std::string> usedNames;
-    {
-        QMutexLocker l(&_imp->nodesMutex);
-        for (NodesList::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
-            if ((it->get() != node) && (*it)->isActivated()) {
-                usedNames.insert((*it)->getScriptName_mt_safe());
-            }
-        }
+    QMutexLocker l(&_imp->nodesMutex);
+    *nodeName = appendDigit ? makeNumberedName(cpy, eNodeNamePatternAppended, 1) : cpy;
+    if (!_imp->isNameTaken(eNodeNameKindScriptName, *nodeName, node)) {
+        return;
     }
+    if (errorIfExists || !appendDigit) {
+        throw std::runtime_error(tr("A node with the script-name %1 already exists.").arg(QString::fromUtf8(nodeName->c_str())).toStdString());
 
-    int no = 1;
-    {
-        std::stringstream ss;
-        ss << cpy;
-        if (appendDigit) {
-            ss << no;
-        }
-        *nodeName = ss.str();
+        return;
     }
-    while (usedNames.find(*nodeName) != usedNames.end()) {
-        if (errorIfExists || !appendDigit) {
-            throw std::runtime_error(tr("A node with the script-name %1 already exists.").arg(QString::fromUtf8(nodeName->c_str())).toStdString());
-
-            return;
-        }
-        ++no;
-        std::stringstream ss;
-        ss << cpy << no;
-        *nodeName = ss.str();
-    }
+    *nodeName = _imp->findNumberedName(eNodeNameKindScriptName, eNodeNamePatternAppended, cpy, node);
 } // NodeCollection::checkNodeName
 
 void
@@ -748,9 +1005,13 @@ NodeCollection::autoConnectNodes(const NodePtr& selected,
 
 NodePtr
 NodeCollectionPrivate::findNodeInternal(const std::string& name,
-                                        const std::string& recurseName) const
+                                        const std::string& recurseName)
 {
     QMutexLocker k(&nodesMutex);
+
+    if ((namingBatches > 0) && recurseName.empty()) {
+        return findIndexedNode(name);
+    }
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         if ( (*it)->isActivated() && (*it)->getScriptName_mt_safe() == name ) {
@@ -774,6 +1035,29 @@ NodeCollectionPrivate::findNodeInternal(const std::string& name,
     }
 
     return NodePtr();
+}
+
+void
+NodeCollection::getActivatedNodesNamed(const std::unordered_set<std::string>& names,
+                                       NodesList* nodes) const
+{
+    QMutexLocker k(&_imp->nodesMutex);
+
+    if (_imp->namingBatches > 0) {
+        for (const std::string& name : names) {
+            NodePtr node = _imp->findIndexedNode(name);
+            if (node) {
+                nodes->push_back(node);
+            }
+        }
+
+        return;
+    }
+    for (const NodePtr& node : _imp->nodes) {
+        if (node->isActivated() && (names.find(node->getScriptName_mt_safe()) != names.end())) {
+            nodes->push_back(node);
+        }
+    }
 }
 
 NodePtr
@@ -876,13 +1160,7 @@ NodeCollection::checkIfNodeLabelExists(const std::string & n,
 {
     QMutexLocker k(&_imp->nodesMutex);
 
-    for (NodesList::const_iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
-        if ( (it->get() != caller) && (*it)->isActivated() && ( (*it)->getLabel_mt_safe() == n ) ) {
-            return true;
-        }
-    }
-
-    return false;
+    return _imp->isNameTaken(eNodeNameKindLabel, n, caller);
 }
 
 bool
@@ -891,13 +1169,82 @@ NodeCollection::checkIfNodeNameExists(const std::string & n,
 {
     QMutexLocker k(&_imp->nodesMutex);
 
-    for (NodesList::const_iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
-        if ( (it->get() != caller) && (*it)->isActivated() && ( (*it)->getScriptName_mt_safe() == n ) ) {
-            return true;
+    return _imp->isNameTaken(eNodeNameKindScriptName, n, caller);
+}
+
+std::string
+NodeCollection::findAvailableNodeName(const std::string& n,
+                                      bool label,
+                                      const Node* caller) const
+{
+    const NodeNameKindEnum kind = label ? eNodeNameKindLabel : eNodeNameKindScriptName;
+    QMutexLocker k(&_imp->nodesMutex);
+
+    if (!_imp->isNameTaken(kind, n, caller)) {
+        return n;
+    }
+    std::string baseName = n;
+    trimNumber(baseName);
+
+    return _imp->findNumberedName(kind, eNodeNamePatternUnderscore, baseName, caller);
+}
+
+NodeCollection::NamingBatch::NamingBatch(const NodeCollectionPtr& collection)
+    : _collection(collection)
+{
+    if (_collection) {
+        QMutexLocker k(&_collection->_imp->nodesMutex);
+        ++_collection->_imp->namingBatches;
+    }
+}
+
+NodeCollection::NamingBatch::~NamingBatch()
+{
+    if (_collection) {
+        QMutexLocker k(&_collection->_imp->nodesMutex);
+        if (--_collection->_imp->namingBatches == 0) {
+            _collection->_imp->clearNaming();
         }
     }
+}
 
-    return false;
+void
+NodeCollection::notifyNodeNamesChanged(const NodePtr& node,
+                                       const std::string& oldScriptName,
+                                       const std::string& oldLabel)
+{
+    QMutexLocker k(&_imp->nodesMutex);
+
+    if (_imp->namingBatches == 0) {
+        return;
+    }
+    if (oldScriptName != node->getScriptName_mt_safe()) {
+        _imp->freeName(eNodeNameKindScriptName, oldScriptName);
+    }
+    if (oldLabel != node->getLabel_mt_safe()) {
+        _imp->freeName(eNodeNameKindLabel, oldLabel);
+    }
+    if (_imp->namingIndexBuilt && _imp->namingMembers.count(node.get())) {
+        _imp->indexNodeNames(node);
+    }
+}
+
+void
+NodeCollection::notifyNodeNamesFreed(const Node* node)
+{
+    QMutexLocker k(&_imp->nodesMutex);
+
+    if (_imp->namingBatches == 0) {
+        return;
+    }
+    _imp->freeName(eNodeNameKindScriptName, node->getScriptName_mt_safe());
+    _imp->freeName(eNodeNameKindLabel, node->getLabel_mt_safe());
+}
+
+U64
+NodeCollection::getNodeNameScanCount()
+{
+    return gNodeNameScans.load();
 }
 
 static void

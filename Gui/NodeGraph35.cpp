@@ -26,8 +26,14 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <limits>
+#include <map>
 #include <stdexcept>
+#include <unordered_map>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
@@ -43,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/Gui.h"
@@ -55,106 +62,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Global/QtCompat.h"
 
 NATRON_NAMESPACE_ENTER
-QImage
-NodeGraph::getFullSceneScreenShot()
-{
-    _imp->isDoingPreviewRender = true;
-
-    // The bbox of all nodes in the nodegraph
-    QRectF sceneR = _imp->calcNodesBoundingRect();
-
-    // The visible portion of the nodegraph
-    QRectF viewRect = visibleSceneRect();
-
-    // Make sure the visible rect is included in the scene rect
-    sceneR = sceneR.united(viewRect);
-
-    int navWidth = std::ceil(width() * NATRON_NAVIGATOR_BASE_WIDTH);
-    int navHeight = std::ceil(height() * NATRON_NAVIGATOR_BASE_HEIGHT);
-
-    // Make sceneR and viewRect keep the same aspect ratio as the navigator
-    double xScale = navWidth / sceneR.width();
-    double yScale =  navHeight / sceneR.height();
-    double scaleFactor = std::max( 0.001, std::min(xScale, yScale) );
-    int sceneW_navPixelCoord = std::floor(sceneR.width() * scaleFactor);
-    int sceneH_navPixelCoord = std::floor(sceneR.height() * scaleFactor);
-
-    // Render the scene in an image with the same aspect ratio  as the scene rect
-    QImage renderImage(sceneW_navPixelCoord, sceneH_navPixelCoord, QImage::Format_ARGB32_Premultiplied);
-
-    // Fill the background
-    renderImage.fill( QColor(71, 71, 71, 255) );
-
-    // Offset the visible rect corner as an offset relative to the scene rect corner
-    viewRect.setX( viewRect.x() - sceneR.x() );
-    viewRect.setY( viewRect.y() - sceneR.y() );
-    viewRect.setWidth( viewRect.width() - sceneR.x() );
-    viewRect.setHeight( viewRect.height() - sceneR.y() );
-
-    QRectF viewRect_navCoordinates = viewRect;
-    viewRect_navCoordinates.setLeft(viewRect.left() * scaleFactor);
-    viewRect_navCoordinates.setBottom(viewRect.bottom() * scaleFactor);
-    viewRect_navCoordinates.setRight(viewRect.right() * scaleFactor);
-    viewRect_navCoordinates.setTop(viewRect.top() * scaleFactor);
-
-    // Paint the visible portion with a highlight
-    QPainter painter(&renderImage);
-
-    // Remove the overlays from the scene before rendering it
-    scene()->removeItem(_imp->_cacheSizeText);
-    scene()->removeItem(_imp->_navigator);
-
-    // Render into the QImage with downscaling
-    scene()->render(&painter, renderImage.rect(), sceneR, Qt::KeepAspectRatio);
-
-    // Add the overlays back
-    scene()->addItem(_imp->_navigator);
-    scene()->addItem(_imp->_cacheSizeText);
-
-    // Fill the highlight with a semi transparent whitish grey
-    painter.fillRect( viewRect_navCoordinates, QColor(200, 200, 200, 100) );
-
-    // Draw a border surrounding the
-    QPen p;
-    p.setWidth(2);
-    p.setBrush(Qt::yellow);
-    painter.setPen(p);
-    // Make sure the border is visible
-    viewRect_navCoordinates.adjust(2, 2, -2, -2);
-    painter.drawRect(viewRect_navCoordinates);
-
-    // Now make an image of the requested size of the navigator and center the render image into it
-    QImage img(navWidth, navHeight, QImage::Format_ARGB32_Premultiplied);
-    img.fill( QColor(71, 71, 71, 255) );
-
-    int xOffset = ( img.width() - renderImage.width() ) / 2;
-    int yOffset = ( img.height() - renderImage.height() ) / 2;
-    int dstY = yOffset;
-    for (int srcY = 0; srcY < renderImage.height(); ++srcY, ++dstY) {
-        if ( dstY < 0 || dstY >= img.height() ) {
-            break;
-        }
-        QRgb* dst_pixels = (QRgb*)img.scanLine(dstY);
-        assert(dst_pixels);
-
-        const QRgb* src_pixels = (const QRgb*)renderImage.scanLine(srcY);
-        assert(src_pixels);
-
-        int dstX = xOffset;
-        for (int srcX = 0; srcX < renderImage.width(); ++srcX, ++dstX) {
-            if ( dstX < 0 || dstX >= img.width() ) {
-                dst_pixels[dstX] = qRgba(0, 0, 0, 0);
-            } else {
-                dst_pixels[dstX] = src_pixels[srcX];
-            }
-        }
-    }
-
-    _imp->isDoingPreviewRender = false;
-
-    return img;
-} // getFullSceneScreenShot
-
 const NodesGuiList &
 NodeGraph::getAllActiveNodes() const
 {
@@ -173,23 +80,19 @@ void
 NodeGraph::moveToTrash(NodeGui* node)
 {
     assert(node);
-    for (NodesGuiList::iterator it = _imp->_selection.begin();
-         it != _imp->_selection.end(); ++it) {
-        if (it->get() == node) {
-            (*it)->setUserSelected(false);
-            _imp->_selection.erase(it);
-            break;
-        }
+    NodeGuiPtr deselected = _imp->_selection.remove(node);
+    if (deselected) {
+        deselected->setUserSelected(false);
     }
 
-    QMutexLocker l(&_imp->_nodesMutex);
-    for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        if ( (*it).get() == node ) {
-            _imp->_nodesTrash.push_back(*it);
-            _imp->_nodes.erase(it);
-            break;
+    {
+        QMutexLocker l(&_imp->_nodesMutex);
+        NodeGuiPtr removed = _imp->_nodes.remove(node);
+        if (removed) {
+            _imp->_nodesTrash.push_back(removed);
         }
     }
+    invalidateNavigatorContent();
     scheduleLoopBlockRefresh(true);
 }
 
@@ -197,14 +100,14 @@ void
 NodeGraph::restoreFromTrash(NodeGui* node)
 {
     assert(node);
-    QMutexLocker l(&_imp->_nodesMutex);
-    for (NodesGuiList::iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
-        if ( (*it).get() == node ) {
-            _imp->_nodes.push_back(*it);
-            _imp->_nodesTrash.erase(it);
-            break;
+    {
+        QMutexLocker l(&_imp->_nodesMutex);
+        NodeGuiPtr restored = _imp->_nodesTrash.remove(node);
+        if (restored) {
+            _imp->_nodes.push_back(restored);
         }
     }
+    invalidateNavigatorContent();
     scheduleLoopBlockRefresh(true);
 }
 
@@ -270,12 +173,266 @@ NodeGraph::updateCacheSizeText()
 }
 
 void
-NodeGraph::onRefreshNodesRenderStateTimerTimeout()
+NodeGraph::scheduleNodeRenderStateRefresh(NodeGui* node)
 {
-    for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        (*it)->refreshRenderingIndicator();
+    if (!node) {
+        return;
+    }
+    _imp->renderStateDirty[node] = node->weak_from_this();
+    if (!_imp->refreshRenderStateTimer.isActive()) {
+        _imp->refreshRenderStateTimer.start(NATRON_NODES_RENDER_STATE_REFRESH_INTERVAL_MS);
     }
 }
+
+void
+NodeGraph::onRefreshNodesRenderStateTimerTimeout()
+{
+    std::map<NodeGui*, NodeGuiWPtr> dirty;
+    dirty.swap(_imp->renderStateDirty);
+    for (std::map<NodeGui*, NodeGuiWPtr>::const_iterator it = dirty.begin(); it != dirty.end(); ++it) {
+        NodeGuiPtr node = it->second.lock();
+        if (node) {
+            node->refreshRenderingIndicator();
+        }
+    }
+}
+
+void
+NodeGraph::beginNodeStackingBatch()
+{
+    ++_imp->stackingBatchDepth;
+}
+
+void
+NodeGraph::endNodeStackingBatch()
+{
+    assert(_imp->stackingBatchDepth > 0);
+    if (--_imp->stackingBatchDepth > 0) {
+        return;
+    }
+    std::vector<NodeGuiWPtr> pending;
+    pending.swap(_imp->stackingPending);
+    _imp->stackingPendingSet.clear();
+
+    std::vector<NodeGuiPtr> alive;
+    std::vector<NodeGui*> nodes;
+    alive.reserve(pending.size());
+    nodes.reserve(pending.size());
+    for (std::vector<NodeGuiWPtr>::const_iterator it = pending.begin(); it != pending.end(); ++it) {
+        NodeGuiPtr node = it->lock();
+        if (node) {
+            alive.push_back(node);
+            nodes.push_back(node.get());
+        }
+    }
+    stackNodesAboveOverlapping(nodes);
+}
+
+bool
+NodeGraph::isLoadingProjectNodes() const
+{
+    Gui* gui = getGui();
+    GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    return project && project->isLoadingProjectInternal();
+}
+
+void
+NodeGraph::onProjectNodesRestored()
+{
+    if (_imp->loadStackingBatchOpen) {
+        _imp->loadStackingBatchOpen = false;
+        endNodeStackingBatch();
+    }
+    // Expressions and links are restored after the node GUIs are created.
+    for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
+        (*it)->refreshFrameDependency();
+    }
+    invalidateNavigatorContent();
+}
+
+void
+NodeGraph::registerFrameDependentNode(NodeGui* node)
+{
+    NodeGuiWPtr weak = node->weak_from_this();
+    if (weak.expired()) {
+        return;
+    }
+    NodeGuiWPtr& entry = _imp->frameDependentNodes[node];
+    // A destroyed node's address can be reused by a new one.
+    if (entry.lock().get() != node) {
+        entry = weak;
+    }
+    if (!_imp->timelineConnected) {
+        NodePtr internalNode = node->getNode();
+        if (internalNode && internalNode->getApp()) {
+            _imp->timelineConnected = true;
+            QObject::connect(internalNode->getApp()->getTimeLine().get(), SIGNAL(frameChanged(SequenceTime, int)),
+                             this, SLOT(onTimelineFrameChanged(SequenceTime, int)));
+        }
+    }
+}
+
+void
+NodeGraph::onTimelineFrameChanged(SequenceTime time,
+                                  int reason)
+{
+    std::vector<NodeGuiPtr> nodes;
+    nodes.reserve(_imp->frameDependentNodes.size());
+    for (std::unordered_map<NodeGui*, NodeGuiWPtr>::iterator it = _imp->frameDependentNodes.begin(); it != _imp->frameDependentNodes.end();) {
+        NodeGuiPtr node = it->second.lock();
+        if (node) {
+            nodes.push_back(node);
+            ++it;
+        } else {
+            it = _imp->frameDependentNodes.erase(it);
+        }
+    }
+    for (std::vector<NodeGuiPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->onTimelineTimeChanged(time, reason);
+    }
+}
+
+bool
+NodeGraph::deferNodeStacking(NodeGui* node)
+{
+    // Nodes restored by a project load are stacked once, when the load ends.
+    if (!_imp->loadStackingBatchOpen && isLoadingProjectNodes()) {
+        _imp->loadStackingBatchOpen = true;
+        beginNodeStackingBatch();
+    }
+    if (_imp->stackingBatchDepth <= 0) {
+        return false;
+    }
+    NodeGuiWPtr weak = node->weak_from_this();
+    if (weak.expired()) {
+        return false;
+    }
+    if (_imp->stackingPendingSet.insert(node).second) {
+        _imp->stackingPending.push_back(weak);
+    }
+
+    return true;
+}
+
+void
+NodeGraph::stackNodesAboveOverlapping(const std::vector<NodeGui*>& nodes)
+{
+    if (nodes.empty()) {
+        return;
+    }
+    std::vector<QRectF> bboxes;
+    bboxes.reserve(nodes.size());
+    QRectF all;
+    for (std::vector<NodeGui*>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        QRectF bbox = (*it)->mapRectToScene((*it)->boundingRect());
+        bboxes.push_back(bbox);
+        all = all.united(bbox);
+    }
+    // One walk over the graph finds the few nodes near any of them; the margin keeps a node whose
+    // edge only grazes the union, as rounded in another item's coordinates, a candidate.
+    all.adjust(-1, -1, 1, 1);
+    std::vector<NodeGui*> candidates;
+    for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
+        if ((*it)->isVisible() && all.intersects((*it)->mapRectToScene((*it)->boundingRect()))) {
+            candidates.push_back(it->get());
+        }
+    }
+    if (nodes.size() * candidates.size() <= 4096) {
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            for (std::vector<NodeGui*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+                if ((*it != nodes[i]) && (*it)->intersects(bboxes[i])) {
+                    nodes[i]->setAboveItem(*it);
+                }
+            }
+        }
+
+        return;
+    }
+
+    // Large batches (a project load, a big paste) bin the candidates in a uniform grid so each node
+    // only tests its neighbours. The grid is a conservative prefilter: matches are visited in graph
+    // order and still go through intersects(), so the stacking is the same as the full scan.
+    std::vector<QRectF> candRects;
+    candRects.reserve(candidates.size());
+    std::vector<double> sizes;
+    sizes.reserve(candidates.size());
+    for (std::vector<NodeGui*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
+        QRectF r = (*it)->mapRectToScene((*it)->boundingRect()).adjusted(-1, -1, 1, 1);
+        candRects.push_back(r);
+        sizes.push_back(std::max(r.width(), r.height()));
+    }
+    std::nth_element(sizes.begin(), sizes.begin() + sizes.size() / 2, sizes.end());
+    const double cell = std::max(1., sizes[sizes.size() / 2]);
+    const double maxCell = (double)std::numeric_limits<int>::max() / 2;
+    struct CellRange {
+        int x0, y0, x1, y1;
+    };
+    const auto cellRange = [cell, maxCell](const QRectF& r) {
+        CellRange c;
+        c.x0 = (int)qBound(-maxCell, std::floor(r.left() / cell), maxCell);
+        c.y0 = (int)qBound(-maxCell, std::floor(r.top() / cell), maxCell);
+        c.x1 = (int)qBound(-maxCell, std::floor(r.right() / cell), maxCell);
+        c.y1 = (int)qBound(-maxCell, std::floor(r.bottom() / cell), maxCell);
+
+        return c;
+    };
+    const auto cellKey = [](int x, int y) {
+        return ((quint64)(quint32)x << 32) | (quint64)(quint32)y;
+    };
+    const qint64 kMaxCellsPerRect = 64;
+
+    std::unordered_map<quint64, std::vector<int>> grid;
+    std::vector<int> oversize;
+    for (int c = 0; c < (int)candidates.size(); ++c) {
+        const CellRange cr = cellRange(candRects[c]);
+        if ((qint64)(cr.x1 - cr.x0 + 1) * (cr.y1 - cr.y0 + 1) > kMaxCellsPerRect) {
+            oversize.push_back(c);
+            continue;
+        }
+        for (int x = cr.x0; x <= cr.x1; ++x) {
+            for (int y = cr.y0; y <= cr.y1; ++y) {
+                grid[cellKey(x, y)].push_back(c);
+            }
+        }
+    }
+
+    std::vector<std::size_t> stamp(candidates.size(), 0);
+    std::vector<int> matches;
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        matches.clear();
+        const CellRange cr = cellRange(bboxes[i]);
+        if ((qint64)(cr.x1 - cr.x0 + 1) * (cr.y1 - cr.y0 + 1) > kMaxCellsPerRect) {
+            for (int c = 0; c < (int)candidates.size(); ++c) {
+                matches.push_back(c);
+            }
+        } else {
+            for (int x = cr.x0; x <= cr.x1; ++x) {
+                for (int y = cr.y0; y <= cr.y1; ++y) {
+                    std::unordered_map<quint64, std::vector<int>>::const_iterator found = grid.find(cellKey(x, y));
+                    if (found == grid.end()) {
+                        continue;
+                    }
+                    for (std::vector<int>::const_iterator c = found->second.begin(); c != found->second.end(); ++c) {
+                        if (stamp[*c] != i + 1) {
+                            stamp[*c] = i + 1;
+                            matches.push_back(*c);
+                        }
+                    }
+                }
+            }
+            matches.insert(matches.end(), oversize.begin(), oversize.end());
+            std::sort(matches.begin(), matches.end());
+        }
+        for (std::vector<int>::const_iterator c = matches.begin(); c != matches.end(); ++c) {
+            NodeGui* cand = candidates[*c];
+            if ((cand != nodes[i]) && candRects[*c].intersects(bboxes[i]) && cand->intersects(bboxes[i])) {
+                nodes[i]->setAboveItem(cand);
+            }
+        }
+    }
+} // stackNodesAboveOverlapping
 
 void
 NodeGraph::toggleCacheInfo()

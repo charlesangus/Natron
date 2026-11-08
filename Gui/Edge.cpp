@@ -153,6 +153,7 @@ EdgePrivate::initLabel()
 
     if ( (inputNb != -1) && dst ) {
         label = new NodeGraphSimpleTextItem(dst->getDagGui(), _publicInterface, false);
+        label->setHiddenAtLowDetail(true);
         label->setText( QString::fromUtf8( dst->getNode()->getInputLabel(inputNb).c_str() ) );
         QColor txt;
         double r, g, b;
@@ -198,6 +199,18 @@ Edge::setSource(const NodeGuiPtr & src)
     _imp->source = src;
     initLine();
     refreshState();
+    invalidateGraphNavigator();
+}
+
+void
+Edge::invalidateGraphNavigator()
+{
+    // An input without a source widens the nodes' bounds the navigator frames.
+    NodeGuiPtr dst = _imp->dest.lock();
+    NodeGraph* graph = dst ? dst->getDagGui() : NULL;
+    if (graph) {
+        graph->invalidateNavigatorContent();
+    }
 }
 
 int
@@ -311,6 +324,7 @@ Edge::setSourceAndDestination(const NodeGuiPtr & src,
     }
     refreshState();
     initLine();
+    invalidateGraphNavigator();
 }
 
 bool
@@ -324,6 +338,11 @@ Edge::computeVisibility() const
     }
 
     if (!effect) {
+        return false;
+    }
+
+    // A deactivated node keeps its edges in the scene, hidden until the node is shown again.
+    if (!dst->isVisibleTo(dst->parentItem())) {
         return false;
     }
 
@@ -620,13 +639,22 @@ Edge::initLine()
     _imp->arrowHead << arrowIntersect << arrowP1 << arrowP2;
 } // initLine
 
+// The line's rect grown by the pen width, which holds the line stroked with any cap or join. Item
+// lookups and painting ask for this on every edge, so it cannot afford the path stroking that
+// QGraphicsLineItem::boundingRect() does on each call.
+static QRectF
+strokedLineBounds(const QLineF& line,
+                  qreal penWidth)
+{
+    return QRectF(line.p1(), line.p2()).normalized().adjusted(-penWidth, -penWidth, penWidth, penWidth);
+}
+
 QRectF
 Edge::boundingRect() const
 {
-    // QGraphicsLineItem::boundingRect() covers the line stroked with the item's pen, but the
-    // arrow head is painted (and stroked with that same pen) outside the line's own rect,
-    // exactly as shape() below already accounts for.
-    QRectF rect = QGraphicsLineItem::boundingRect();
+    // The arrow head is painted, stroked with the same pen, outside the line's own rect, exactly
+    // as shape() below already accounts for.
+    QRectF rect = strokedLineBounds(line(), pen().widthF());
     QRectF headRect = _imp->arrowHead.boundingRect();
 
     if (!headRect.isNull()) {
@@ -849,18 +877,20 @@ Edge::paint(QPainter *painter,
             const QStyleOptionGraphicsItem * /*options*/,
             QWidget * /*parent*/)
 {
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
-
-    if (!antialias) {
-        painter->setRenderHint(QPainter::Antialiasing, false);
-    }
-
     QPen myPen = pen();
     NodeGuiPtr dst = _imp->dest.lock();
-    if (dst) {
-        if ( dst->getDagGui()->isDoingNavigatorRender() ) {
-            return;
-        }
+    NodeGraph* graph = dst ? dst->getDagGui() : NULL;
+    if (graph && graph->isDoingNavigatorRender()) {
+        return;
+    }
+    if (!graph) {
+        NodeGuiPtr src = _imp->source.lock();
+        graph = src ? src->getDagGui() : NULL;
+    }
+
+    bool antialias = graph ? graph->isAntiAliasingEnabled() : appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
+    if (!antialias) {
+        painter->setRenderHint(QPainter::Antialiasing, false);
     }
 
     if (_imp->paintWithDash) {
@@ -891,6 +921,10 @@ Edge::paint(QPainter *painter,
 
 
     painter->drawLine( line() );
+
+    if (graph && graph->isLowDetail()) {
+        return;
+    }
 
     myPen.setStyle(Qt::SolidLine);
     painter->setPen(myPen);
@@ -1055,12 +1089,23 @@ LinkArrow::refreshPosition()
     _arrowHead << middle << arrowP1 << arrowP2;
 } // refreshPosition
 
+QRectF
+LinkArrow::boundingRect() const
+{
+    return strokedLineBounds(line(), std::max<qreal>(pen().widthF(), _lineWidth));
+}
+
 void
 LinkArrow::paint(QPainter *painter,
                  const QStyleOptionGraphicsItem* /*options*/,
                  QWidget* /*parent*/)
 {
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
+    NodeGuiPtr node = _master.lock();
+    if (!node) {
+        node = _slave.lock();
+    }
+    NodeGraph* graph = node ? node->getDagGui() : NULL;
+    bool antialias = graph ? graph->isAntiAliasingEnabled() : appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
 
     if (!antialias) {
         painter->setRenderHint(QPainter::Antialiasing, false);

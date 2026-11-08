@@ -215,6 +215,14 @@ Node::load(const CreateNodeArgs& args)
     getApp()->getProject()->pushOCIOConfigToNode(thisShared);
 
     _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
+
+    // Expressions written before this node existed may name it. A loading project rechecks
+    // them all once it is loaded.
+    if (!getApp()->getProject()->isLoadingProject()) {
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        getApp()->recheckInvalidExpressionsReferencing(names);
+    }
 } // load
 
 
@@ -720,7 +728,9 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
 
     AppInstancePtr app = getApp();
     if (app) {
-        app->recheckInvalidExpressions();
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        app->recheckInvalidExpressionsReferencing(names);
     }
 
     ///Remove the Python node

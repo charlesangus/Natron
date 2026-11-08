@@ -71,6 +71,7 @@ set(Tests_SOURCES
     GpuWeight_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
+    GraphScalingGuiEdits_Test.cpp
     GraphScalingNaming_Test.cpp
     GraphScalingTLS_Test.cpp
     Hash64_Test.cpp
@@ -318,6 +319,7 @@ set(GuiTests_SOURCES
     LayerChannelRow_Test.cpp
     NearestMemberLines_Test.cpp
     NodeGraphConnect_Test.cpp
+    NodeGraphDeleteLinks_Test.cpp
     NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp

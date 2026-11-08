@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
-#include <string>
 #include <list>
 #include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -91,14 +92,18 @@ public:
 
     void deselect();
 
-    QImage getFullSceneScreenShot();
-
     bool areAllNodesVisible();
 
     /**
-     * @brief Repaint the navigator
+     * @brief Recompose the navigator from its cached thumbnail and the visible rectangle
      **/
     void updateNavigator();
+
+    /**
+     * @brief Call when the nodes' bounds or appearance change: the navigator thumbnail is
+     * rendered again shortly after, once for any number of calls in between.
+     **/
+    void invalidateNavigatorContent();
 
     const NodesGuiList & getAllActiveNodes() const;
     NodesGuiList getAllActiveNodes_mt_safe() const;
@@ -190,6 +195,46 @@ public:
 
     bool isDoingNavigatorRender() const;
 
+    // The saved anti-aliasing preference, cached because the graph's items read it on every paint.
+    bool isAntiAliasingEnabled() const;
+
+    // True when the view is zoomed out past the point where node names become too small to read:
+    // nodes then draw their body only, and edges their line only.
+    bool isLowDetail() const;
+
+    /**
+     * @brief While a batch is open, a node that moves or resizes does not restack itself above
+     * the nodes it overlaps at once: the outermost endNodeStackingBatch() does it in one pass for
+     * every node that moved meanwhile.
+     **/
+    void beginNodeStackingBatch();
+    void endNodeStackingBatch();
+
+    // Returns false when no batch is open, in which case the caller restacks the node itself.
+    bool deferNodeStacking(NodeGui* node);
+
+    // Stacks each node above the visible nodes it overlaps, in order.
+    void stackNodesAboveOverlapping(const std::vector<NodeGui*>& nodes);
+
+    // True while a project load restores nodes: stacking, edges and the navigator wait for
+    // onProjectNodesRestored().
+    bool isLoadingProjectNodes() const;
+
+    // Called once the project's nodes are restored, including after a failed load.
+    void onProjectNodesRestored();
+
+    /**
+     * @brief Queues a refresh of the node's state indicator and rendering edges. The refresh
+     * timer only runs while nodes are queued.
+     **/
+    void scheduleNodeRenderStateRefresh(NodeGui* node);
+
+    /**
+     * @brief Frame changes reach only the nodes registered here, through one timeline
+     * connection per graph. A node stays registered until it is destroyed.
+     **/
+    void registerFrameDependentNode(NodeGui* node);
+
 Q_SIGNALS:
 
     /**
@@ -201,6 +246,8 @@ Q_SIGNALS:
 public Q_SLOTS:
 
     void deleteSelection();
+
+    void onTimelineFrameChanged(SequenceTime time, int reason);
 
     void connectCurrentViewerToSelection(int inputNB, bool isASide);
 
@@ -293,6 +340,8 @@ private:
 
     void checkForSpliceHint();
 
+    void onNavigatorRenderTimerTimeout();
+
     void buildSplicePlan();
 
     void clearSpliceHint();
@@ -360,6 +409,7 @@ private:
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual bool event(QEvent* e) OVERRIDE FINAL;
+    virtual bool viewportEvent(QEvent* e) OVERRIDE FINAL;
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseReleaseEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseMoveEvent(QMouseEvent* e) OVERRIDE FINAL;
@@ -383,6 +433,9 @@ private:
     };
 
     void getNodesWithinViewportRect(const QRect& rect, std::set<NodeGui*>* nodes) const;
+
+    // The graph items, text included unless skipText, whose shape meets a viewport rectangle.
+    void getGraphItemsMeetingViewportRect(const QRect& rect, bool skipText, std::vector<QGraphicsItem*>* hits) const;
 
     NearbyItemEnum hasItemNearbyMouse(const QPoint& mousePosViewport,
                                       NodeGui** node,
@@ -454,6 +507,31 @@ private:
     virtual void changeEvent(QEvent* e) OVERRIDE FINAL;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     std::unique_ptr<EditNodeNameDialogPrivate> _imp;
+};
+
+// Opens a node stacking batch on graph, if any, for the scope.
+class NodeStackingBatch {
+public:
+    explicit NodeStackingBatch(NodeGraph* graph)
+        : _graph(graph)
+    {
+        if (_graph) {
+            _graph->beginNodeStackingBatch();
+        }
+    }
+
+    ~NodeStackingBatch()
+    {
+        if (_graph) {
+            _graph->endNodeStackingBatch();
+        }
+    }
+
+    NodeStackingBatch(const NodeStackingBatch&) = delete;
+    NodeStackingBatch& operator=(const NodeStackingBatch&) = delete;
+
+private:
+    NodeGraph* _graph;
 };
 
 NATRON_NAMESPACE_EXIT

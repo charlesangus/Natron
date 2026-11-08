@@ -661,11 +661,15 @@ Project::loadProjectInternal(const QString& path,
     projectSerialization.creationDate = manifest.creationDate;
 
     bool ret = false;
-    {
+    try {
         FlagSetter __raii_loadingProjectInternal__(true, &_imp->isLoadingProjectInternal, &_imp->isLoadingProjectMutex);
 
         ret = fromSerialization(projectSerialization, name, path, mustSave);
-    } // __raii_loadingProjectInternal__
+    } catch (...) {
+        // The GUI defers layout work until the nodes are restored: let it catch up with what loaded.
+        getApp()->onProjectNodesRestored();
+        throw;
+    }
 
     // The manifest holds what changes on every save, so that project.yaml does not.
     _imp->lastAuthorName->setValue(manifest.author);
@@ -2686,6 +2690,28 @@ void
 Project::refreshLayersKnob()
 {
     _imp->defaultLayersList->setValue(encodeLayersKnobTable());
+}
+
+void
+Project::queueLayersKnobRefresh()
+{
+    // Encoding the table visits every node and its widget is rebuilt, which a script creating or
+    // destroying nodes one call at a time would otherwise pay for each of them.
+    if (appPTR->isBackground()) {
+        refreshLayersKnob();
+
+        return;
+    }
+    if (_imp->layersKnobRefreshQueued) {
+        return;
+    }
+    _imp->layersKnobRefreshQueued = true;
+    QTimer::singleShot(0, this, [this]() {
+        _imp->layersKnobRefreshQueued = false;
+        if (!isLoadingProject() && !isProjectClosing()) {
+            refreshLayersKnob();
+        }
+    });
 }
 
 void

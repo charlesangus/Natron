@@ -33,6 +33,8 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -43,6 +45,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
 #include <QGraphicsPixmapItem>
+#include <QImage>
 #include <QMutex>
 #include <QPainter>
 #include <QPen>
@@ -65,6 +68,9 @@ CLANG_DIAG_ON(uninitialized)
 ///These are percentages of the size of the NodeGraph in widget coordinates.
 #define NATRON_NAVIGATOR_BASE_HEIGHT 0.2
 #define NATRON_NAVIGATOR_BASE_WIDTH 0.2
+#define NATRON_NAVIGATOR_RENDER_DELAY_MS 250
+// Matches the height below which a node's name text stops being drawn.
+#define NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX 4
 
 #define NATRON_SCENE_MAX 1e6
 #define NATRON_SCENE_MIN 0
@@ -83,75 +89,147 @@ enum EventStateEnum {
     eEventStateCutting,
 };
 
+// A list of nodes in insertion order that finds and removes a node in constant time. A node is
+// in it at most once.
+class IndexedNodeGuiList {
+public:
+    typedef NodesGuiList::iterator iterator;
+    typedef NodesGuiList::const_iterator const_iterator;
+    typedef NodesGuiList::const_reverse_iterator const_reverse_iterator;
+
+    operator const NodesGuiList&() const { return _list; }
+    const NodesGuiList& list() const { return _list; }
+
+    iterator begin() { return _list.begin(); }
+    iterator end() { return _list.end(); }
+    const_iterator begin() const { return _list.begin(); }
+    const_iterator end() const { return _list.end(); }
+    const_reverse_iterator rbegin() const { return _list.rbegin(); }
+    const_reverse_iterator rend() const { return _list.rend(); }
+
+    bool empty() const { return _list.empty(); }
+    std::size_t size() const { return _list.size(); }
+    const NodeGuiPtr& front() const { return _list.front(); }
+    const NodeGuiPtr& back() const { return _list.back(); }
+
+    bool contains(const NodeGui* node) const
+    {
+        return _index.find(const_cast<NodeGui*>(node)) != _index.end();
+    }
+
+    bool contains(const NodeGuiPtr& node) const { return contains(node.get()); }
+
+    // Returns false, leaving the order alone, if the node is already in the list.
+    bool push_back(const NodeGuiPtr& node)
+    {
+        if (!node || contains(node)) {
+            return false;
+        }
+        _list.push_back(node);
+        _index[node.get()] = --_list.end();
+
+        return true;
+    }
+
+    iterator erase(iterator it)
+    {
+        _index.erase(it->get());
+
+        return _list.erase(it);
+    }
+
+    // Returns the removed node, or a null pointer if the node was not in the list.
+    NodeGuiPtr remove(const NodeGui* node)
+    {
+        std::unordered_map<NodeGui*, iterator>::iterator found = _index.find(const_cast<NodeGui*>(node));
+        if (found == _index.end()) {
+            return NodeGuiPtr();
+        }
+        NodeGuiPtr ret = *found->second;
+        _list.erase(found->second);
+        _index.erase(found);
+
+        return ret;
+    }
+
+    void clear()
+    {
+        _list.clear();
+        _index.clear();
+    }
+
+private:
+    NodesGuiList _list;
+    std::unordered_map<NodeGui*, iterator> _index;
+};
+
+// The navigator overlay. It paints its own border and nothing at all while the graph renders its
+// thumbnail, so the scene can be rendered without taking the overlay out of it.
 class Navigator
     : public QGraphicsPixmapItem
 {
-    QGraphicsLineItem* _navLeftEdge;
-    QGraphicsLineItem* _navBottomEdge;
-    QGraphicsLineItem* _navRightEdge;
-    QGraphicsLineItem* _navTopEdge;
+    const bool* _hiddenDuringRender;
+    QPen _borderPen;
+    double _width;
+    double _height;
 
 public:
-
-    Navigator(QGraphicsItem* parent = 0)
-        : QGraphicsPixmapItem(parent)
-        , _navLeftEdge(NULL)
-        , _navBottomEdge(NULL)
-        , _navRightEdge(NULL)
-        , _navTopEdge(NULL)
+    explicit Navigator(const bool* hiddenDuringRender)
+        : QGraphicsPixmapItem(0)
+        , _hiddenDuringRender(hiddenDuringRender)
+        , _borderPen()
+        , _width(0.)
+        , _height(0.)
     {
-        QPen p;
-
-        p.setBrush( QColor(200, 200, 200) );
-        p.setWidth(2);
-
-        _navLeftEdge = new QGraphicsLineItem(this);
-        _navLeftEdge->setPen(p);
-
-        _navBottomEdge = new QGraphicsLineItem(this);
-        _navBottomEdge->setPen(p);
-
-        _navRightEdge = new QGraphicsLineItem(this);
-        _navRightEdge->setPen(p);
-
-        _navTopEdge = new QGraphicsLineItem(this);
-        _navTopEdge->setPen(p);
+        _borderPen.setBrush(QColor(200, 200, 200));
+        _borderPen.setWidth(2);
     }
 
     virtual ~Navigator()
     {
     }
 
-    int getLineWidth() const
-    {
-        return _navLeftEdge->pen().width();
-    }
-
     void refreshPosition(const QPointF & navTopLeftScene,
                          double width,
                          double height)
     {
+        if ((width != _width) || (height != _height)) {
+            prepareGeometryChange();
+            _width = width;
+            _height = height;
+        }
         setPos(navTopLeftScene);
+    }
 
-        _navLeftEdge->setLine(0,
-                              height,
-                              0,
-                              0);
+    virtual QRectF boundingRect() const OVERRIDE FINAL
+    {
+        const double m = _borderPen.widthF() / 2.;
 
-        _navTopEdge->setLine(0,
-                             0,
-                             width,
-                             0);
+        return QGraphicsPixmapItem::boundingRect().united(QRectF(0, 0, _width, _height)).adjusted(-m, -m, m, m);
+    }
 
-        _navRightEdge->setLine(width,
-                               0,
-                               width,
-                               height);
+    virtual QPainterPath shape() const OVERRIDE FINAL
+    {
+        QPainterPath path;
+        path.addRect(boundingRect());
 
-        _navBottomEdge->setLine(width,
-                                height,
-                                0,
-                                height);
+        return path;
+    }
+
+    virtual void paint(QPainter* painter,
+                       const QStyleOptionGraphicsItem* option,
+                       QWidget* widget) OVERRIDE FINAL
+    {
+        if (*_hiddenDuringRender) {
+            return;
+        }
+        QGraphicsPixmapItem::paint(painter, option, widget);
+        painter->setPen(_borderPen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawLine(QPointF(0, _height), QPointF(0, 0));
+        painter->drawLine(QPointF(0, 0), QPointF(_width, 0));
+        painter->drawLine(QPointF(_width, 0), QPointF(_width, _height));
+        painter->drawLine(QPointF(_width, _height), QPointF(0, _height));
     }
 };
 
@@ -173,8 +251,8 @@ public:
     bool _magnifOn;
     Edge* _arrowSelected;
     mutable QMutex _nodesMutex;
-    NodesGuiList _nodes;
-    NodesGuiList _nodesTrash;
+    IndexedNodeGuiList _nodes;
+    IndexedNodeGuiList _nodesTrash;
 
     /// Enables the create-node shortcut that opens the tab menu.
     /// This is set to true on enterEvent and set back to false on leaveEvent
@@ -237,7 +315,7 @@ public:
 
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step
-    NodesGuiList _selection;
+    IndexedNodeGuiList _selection; //< in the order the nodes were selected
 
     //To avoid calling unsetCursor too much
     bool cursorSet;
@@ -262,11 +340,35 @@ public:
     ViewerTab* lastSelectedViewer;
     QPixmap unlockIcon;
 
-    ///True when the graph is rendered from the getFullSceneScreenShot() function
+    /// True while the scene is rendered into the navigator thumbnail
     bool isDoingPreviewRender;
     QTimer autoScrollTimer;
     QTimer refreshRenderStateTimer;
 
+    // The navigator shows a thumbnail of the nodes rendered once per graph change, at the latest
+    // after navigatorRenderTimer fires; panning and zooming only recompose it with the view
+    // rectangle. Both rectangles are in _root coordinates, so that panning, which moves _root,
+    // leaves them valid.
+    QImage navigatorContent;
+    QRectF navigatorContentRect;
+    bool navigatorContentDirty;
+    QTimer navigatorRenderTimer;
+    QRectF nodesBoundsInRoot;
+    bool nodesBoundsDirty;
+    bool antiAliasing;
+    bool lowDetail;
+    int lowDetailFontHeight;
+
+    int stackingBatchDepth;
+    bool loadStackingBatchOpen;
+    std::unordered_map<NodeGui*, NodeGuiWPtr> frameDependentNodes;
+    bool timelineConnected;
+    std::vector<NodeGuiWPtr> stackingPending;
+    std::unordered_set<NodeGui*> stackingPendingSet;
+
+    // Nodes whose rendering counters or persistent message changed since refreshRenderStateTimer
+    // last fired, keyed by address so that a node queued twice is refreshed once.
+    std::map<NodeGui*, NodeGuiWPtr> renderStateDirty;
 
     NodeGraphPrivate(NodeGraph* p,
                      const NodeCollectionPtr& group);
@@ -275,7 +377,12 @@ public:
 
     void resetAllClipboards();
 
+    // In scene coordinates. Cached until a node moves, resizes, shows, hides, or an edge changes.
     QRectF calcNodesBoundingRect();
+
+    // The scene rectangle the navigator maps onto its widget-sized image, and the scale it uses.
+    void getNavigatorMapping(QRectF* sceneRect, double* scale, QPointF* offset) const;
+    void renderNavigatorContent();
 
     void copyNodesInternal(const NodesGuiList& selection, NodeClipBoard & clipboard);
     void pasteNodesInternal(const NodeClipBoard & clipboard, const QPointF& scenPos,
@@ -311,6 +418,9 @@ public:
     void editSelectionFromSelectionRectangle(bool addToSelection);
 
     void resetSelection();
+
+    // Makes nodes, in their order, the selection.
+    void replaceSelection(const NodesGuiList& nodes);
 
     void setNodesBendPointsVisible(bool visible);
 

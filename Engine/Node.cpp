@@ -215,6 +215,37 @@ public:
 
 thread_local int inputRelatedDataRefreshDeferralDepth = 0;
 
+int inputEditBatchDepth = 0;
+std::vector<NodeWPtr> inputEditBatchEdited;
+
+int layerTableRefreshHoldDepth = 0;
+ProjectWPtr layerTableRefreshPending;
+
+// Encoding the project's layer table visits every node, and the table's widget is rebuilt when it
+// changes, so a refresh reaching many nodes does this once, after the last of them.
+void
+releaseLayerTableRefreshHold()
+{
+    if (--layerTableRefreshHoldDepth > 0) {
+        return;
+    }
+    ProjectPtr project = layerTableRefreshPending.lock();
+    layerTableRefreshPending.reset();
+    if (project && !project->isLoadingProject() && !project->isProjectClosing()) {
+        project->queueLayersKnobRefresh();
+    }
+}
+
+class LayerTableRefreshHold {
+public:
+    LayerTableRefreshHold() { ++layerTableRefreshHoldDepth; }
+
+    ~LayerTableRefreshHold() { releaseLayerTableRefreshHold(); }
+
+    LayerTableRefreshHold(const LayerTableRefreshHold&) = delete;
+    LayerTableRefreshHold& operator=(const LayerTableRefreshHold&) = delete;
+};
+
 bool
 isSkippedByHashInputs(const Node& node)
 {
@@ -4835,14 +4866,13 @@ namespace {
 template <typename Stop>
 void
 walkDownstreamUntil(const Node* start,
+                    std::unordered_set<const Node*>* visited,
                     Stop stop)
 {
-    std::unordered_set<const Node*> visited;
     std::vector<NodePtr> outputs;
     std::vector<NodePtr> stack;
 
-    visited.insert(start);
-    if (stop(start)) {
+    if (!visited->insert(start).second || stop(start)) {
         return;
     }
     start->appendOutputsWithGroupRedirection(&outputs);
@@ -4851,7 +4881,7 @@ walkDownstreamUntil(const Node* start,
         NodePtr node = std::move(stack.back());
         stack.pop_back();
         assert(node);
-        if (!visited.insert(node.get()).second || stop(node.get())) {
+        if (!visited->insert(node.get()).second || stop(node.get())) {
             continue;
         }
         outputs.clear();
@@ -4859,12 +4889,45 @@ walkDownstreamUntil(const Node* start,
         stack.insert(stack.end(), outputs.rbegin(), outputs.rend());
     }
 }
+
+thread_local int removalBatchDepth = 0;
+thread_local std::unordered_set<const Node*> removalBatchOutputWalkVisited;
+
+bool
+collectViewer(std::list<ViewerInstance*>* viewers,
+              const Node* node)
+{
+    ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(node->getEffectInstance().get());
+    if (viewer) {
+        viewers->push_back(viewer);
+
+        return true;
+    }
+
+    return false;
+}
 } // anonymous namespace
+
+Node::RemovalBatch::RemovalBatch()
+{
+    ++removalBatchDepth;
+}
+
+Node::RemovalBatch::~RemovalBatch()
+{
+    if (--removalBatchDepth == 0) {
+        removalBatchOutputWalkVisited.clear();
+    }
+}
 
 void
 Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
 {
-    walkDownstreamUntil(this, [writers](const Node* node) {
+    std::unordered_set<const Node*> visited;
+
+    // Removing nodes only takes edges away, so what an earlier walk of the batch reached was all
+    // reachable before this walk, and the renders of its outputs have been aborted.
+    walkDownstreamUntil(this, (removalBatchDepth > 0) ? &removalBatchOutputWalkVisited : &visited, [writers](const Node* node) {
         OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
         if (writer && writer->isOutput() && !dynamic_cast<GroupOutput*>(writer)) {
             writers->push_back(writer);
@@ -4879,16 +4942,24 @@ Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
 void
 Node::hasViewersConnected(std::list<ViewerInstance* >* viewers) const
 {
-    walkDownstreamUntil(this, [viewers](const Node* node) {
-        ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(node->getEffectInstance().get());
-        if (viewer) {
-            viewers->push_back(viewer);
+    std::unordered_set<const Node*> visited;
 
-            return true;
-        }
-
-        return false;
+    walkDownstreamUntil(this, &visited, [viewers](const Node* node) {
+        return collectViewer(viewers, node);
     });
+}
+
+void
+Node::getViewersDownstreamOf(const std::list<NodePtr>& nodes,
+                             std::list<ViewerInstance*>* viewers)
+{
+    std::unordered_set<const Node*> visited;
+
+    for (const NodePtr& start : nodes) {
+        walkDownstreamUntil(start.get(), &visited, [viewers](const Node* node) {
+            return collectViewer(viewers, node);
+        });
+    }
 }
 
 int
@@ -5165,6 +5236,12 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = false;
     }
+    {
+        NodeCollectionPtr collection = getGroup();
+        if (collection) {
+            collection->notifyNodeNamesFreed(this);
+        }
+    }
     LoopEnd::onGraphChanged();
     emitLinksChanged(NodesList());
 
@@ -5205,6 +5282,9 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
         return;
     }
 
+    // A refresh from reconnecting an output below would read this node's expressions before they
+    // can run: its Python attributes are only declared further down.
+    InputEditBatch batch(getApp());
 
     ///No need to lock, guiInputs is only written to by the main-thread
     NodePtr thisShared = shared_from_this();
@@ -5268,8 +5348,17 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     emitLinksChanged(NodesList());
 
     declareAllPythonAttributes();
-    getApp()->recheckInvalidExpressions();
-
+    {
+        const KnobsVec& knobs = getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            (*it)->restoreExpressionFunctions();
+        }
+    }
+    {
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        getApp()->recheckInvalidExpressionsReferencing(names);
+    }
 
     ///If the node is a group, activate all nodes within the group first
     NodeGroup* isGrp = dynamic_cast<NodeGroup*>( _imp->effect.get() );
@@ -8276,7 +8365,12 @@ Node::Implementation::notifyLayerReferencesChanged()
     if (!project || project->isLoadingProject() || project->isProjectClosing()) {
         return;
     }
-    project->refreshLayersKnob();
+    if (layerTableRefreshHoldDepth > 0) {
+        layerTableRefreshPending = project;
+
+        return;
+    }
+    project->queueLayersKnobRefresh();
 }
 
 bool
@@ -9346,35 +9440,90 @@ void
 Node::refreshInputRelatedDataAfterInputChange()
 {
     assert(QThread::currentThread() == qApp->thread());
-    markAllInputRelatedDataDirty();
-    refreshShownDownstreamInputRelatedData();
-
-    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(_imp->effect.get());
-    if (isGroup) {
-        // A container's inputs feed the nodes inside it, which are refreshed as nodes downstream
-        // of the edit. A container with a host layer knob (Write) lists its own inputs' layers on
-        // it, so its selectors are refreshed here like those of the node the edit is on.
-        if (_imp->layerKnob.lock()) {
-            refreshChannelSelectors();
-        }
+    if (inputEditBatchDepth > 0) {
+        inputEditBatchEdited.push_back(shared_from_this());
 
         return;
     }
+    refreshInputRelatedDataAfterInputChanges(std::vector<NodePtr>(1, shared_from_this()));
+}
+
+void
+Node::refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited)
+{
+    LayerTableRefreshHold holdLayerTable;
+
+    for (const NodePtr& node : edited) {
+        node->markAllInputRelatedDataDirty();
+    }
+    refreshShownDownstreamInputRelatedData(edited);
 
     std::set<Node*> visited;
-    refreshShownInputRelatedData(visited);
+    for (const NodePtr& node : edited) {
+        NodeGroup* isGroup = dynamic_cast<NodeGroup*>(node->_imp->effect.get());
+        if (isGroup) {
+            // A container's inputs feed the nodes inside it, which are refreshed as nodes downstream
+            // of the edit. A container with a host layer knob (Write) lists its own inputs' layers on
+            // it, so its selectors are refreshed here like those of the node the edit is on.
+            if (node->_imp->layerKnob.lock()) {
+                node->refreshChannelSelectors();
+            }
+            continue;
+        }
+        node->refreshShownInputRelatedData(visited);
+    }
+}
+
+Node::InputEditBatch::InputEditBatch(const AppInstancePtr& app)
+    : _app(app)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    ++inputEditBatchDepth;
+    ++layerTableRefreshHoldDepth;
+    if (_app) {
+        _app->beginInvalidExpressionRecheckBatch();
+    }
+}
+
+Node::InputEditBatch::~InputEditBatch()
+{
+    // Rechecks first, so that the refresh below reads the expressions they restore. A recheck that
+    // edits a node still lands in the batch.
+    if (_app) {
+        _app->endInvalidExpressionRecheckBatch();
+    }
+    if (--inputEditBatchDepth == 0) {
+        std::vector<NodePtr> edited;
+        std::unordered_set<const Node*> seen;
+        for (const NodeWPtr& weak : inputEditBatchEdited) {
+            NodePtr node = weak.lock();
+            if (node && node->isActivated() && seen.insert(node.get()).second) {
+                edited.push_back(node);
+            }
+        }
+        inputEditBatchEdited.clear();
+        refreshInputRelatedDataAfterInputChanges(edited);
+    }
+    releaseLayerTableRefreshHold();
 }
 
 void
 Node::refreshShownDownstreamInputRelatedData()
 {
+    refreshShownDownstreamInputRelatedData(std::vector<NodePtr>(1, shared_from_this()));
+}
+
+void
+Node::refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited)
+{
     assert(QThread::currentThread() == qApp->thread());
 
     std::unordered_set<const Node*> visited;
-    visited.insert(this);
     // Breadth first: the vector is the queue, read from the front without erasing.
     std::vector<NodePtr> toVisit;
-    appendOutputsWithGroupRedirection(&toVisit);
+    for (const NodePtr& node : edited) {
+        node->appendOutputsWithGroupRedirection(&toVisit);
+    }
     std::vector<NodePtr> reached;
     for (std::size_t next = 0; next < toVisit.size(); ++next) {
         NodePtr node = toVisit[next];
@@ -9415,7 +9564,7 @@ Node::refreshShownDownstreamInputRelatedData()
             // metadata comparison on the viewer's own answer would not run for a format change
             // upstream, so it is forced. One call per viewer reached, not per node.
             isViewer->onChannelsSelectorRefreshed();
-            isViewer->refreshCurrentFrameMetadata(getApp()->getTimeLine()->currentFrame(), true);
+            isViewer->refreshCurrentFrameMetadata(reached[i]->getApp()->getTimeLine()->currentFrame(), true);
         }
     }
 }
@@ -9764,6 +9913,7 @@ Node::declareNodeVariableToPython(const std::string& nodeName)
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     if ( NATRON_PYTHON_NAMESPACE::isKeyword(nodeName) ) {
         throw std::runtime_error(nodeName + " is a Python keyword");
     }
@@ -9809,6 +9959,7 @@ Node::setNodeVariableToPython(const std::string& oldName,
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     QString appID = QString::fromUtf8( getApp()->getAppIDString().c_str() );
     QString str = QString( appID + QString::fromUtf8(".%1 = ") + appID + QString::fromUtf8(".%2\ndel ") + appID + QString::fromUtf8(".%2\n") ).arg( QString::fromUtf8( newName.c_str() ) ).arg( QString::fromUtf8( oldName.c_str() ) );
     std::string script = str.toStdString();
@@ -9831,6 +9982,7 @@ Node::deleteNodeVariableToPython(const std::string& nodeName)
    if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     if ( getParentMultiInstance() ) {
         return;
     }
@@ -9867,6 +10019,7 @@ Node::declarePythonFields()
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     PythonGILLocker pgl;
 
     if ( !getGroup() ) {
@@ -9927,6 +10080,7 @@ Node::removeParameterFromPython(const std::string& parameterName)
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    KnobHelper::moveExpressionFunctionsGeneration();
     PythonGILLocker pgl;
     std::string appID = getApp()->getAppIDString();
     std::string nodeName = getFullyQualifiedName();

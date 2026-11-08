@@ -12,6 +12,7 @@ interaction: pen-to-pixel latency of brush strokes and the cost of shape edits (
 | `roto_bench.py` | The roto driver (`run.sh --driver roto`). Same record format, roto and paint ops. |
 | `run.sh` | Launches a driver under Xvfb in the container, or from an AppImage on your own display. |
 | `compare.py` | Compares two runs, or fits how each op scales with N. |
+| `merge.py` | Merges repeated runs into a median-of-runs baseline and prints each op's run-to-run spread. |
 | `baselines/` | Committed reference runs. |
 
 ## The two modes
@@ -49,8 +50,12 @@ Both modes run Natron under a throwaway HOME seeded with `checkForUpdates=false`
 settings are neither read nor changed. Each run writes:
 
 - `build/bench/gui/<UTC>-<host>-<mode>.jsonl`, the results;
-- `build/bench/gui/<UTC>-<host>-<mode>/`, holding `natron.log`, `results.txt` and
+- `build/bench/gui/<UTC>-<host>-<mode>/<topology>/`, holding `natron.log`, `results.txt` and
   `stalls.jsonl`.
+
+The node graph driver runs each topology in its own Natron process. An op that hangs ends its
+process, so it loses the remaining ops of that topology but not the other topologies. Results already written stay in the
+one `.jsonl`, and the exit code is the last non-zero one.
 
 The other options are `--ops` (a subset of ops), `--reps`, `--out` and `--self-check`.
 `--self-check` adds an op that blocks the main thread for 300 ms. It fails unless exactly one
@@ -77,8 +82,9 @@ A stall is any stretch where the main thread doesn't service a 10 ms heartbeat t
 50 ms (`NATRON_STALL_THRESHOLD_MS`). The stall monitor runs only when `NATRON_STALL_LOG` names a
 file, and `run.sh` sets it.
 
-The per-op timeout is checked between events. A single event that hangs is caught only by the
-whole-run timeout.
+The per-op timeout is checked between events. A single event that doesn't return within twice that
+plus 60 s (300 s by default) ends the run with exit 3 and a `timeout` record. With no stalls logged
+over that time, the event is waiting in a nested event loop, usually a modal dialog, not computing.
 
 Ops whose count is larger than the graph are capped at N/2: at N=300, `paste_1000` and
 `delete_1000` move 150 nodes. The record's `count` field gives the real figure.
@@ -168,6 +174,8 @@ machine changes. Don't re-baseline to make a regression go away.
 2. Run the full matrix three times with `--xvfb --wait`.
 3. Check that each run against the others passes `compare.py` at the chosen tolerance. The spread
    between them sets the tolerance: use at least twice the worst spread for that kind of op.
+   `merge.py --out baselines/xvfb.jsonl --spread run1.jsonl run2.jsonl run3.jsonl` writes the
+   median-of-runs file and the spread table.
 4. Commit the median-of-runs file as `baselines/xvfb.jsonl`. Record the spread, the tolerance and
    the `--scaling` table in `BASELINE.md`.
 

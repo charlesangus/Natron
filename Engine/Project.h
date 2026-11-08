@@ -334,6 +334,12 @@ public:
     // since that alters "Used by" without touching the registry.
     void refreshLayersKnob();
 
+    /**
+     * @brief Refreshes the layers knob when control is back in the event loop, once however many
+     * times this is called until then. Without a GUI, refreshes it at once.
+     **/
+    void queueLayersKnobRefresh();
+
     void setOrAddProjectFormat(const Format & frmt, bool skipAdd = false);
 
     bool isAutoSetProjectFormatEnabled() const;

@@ -20,6 +20,9 @@
 # --xvfb runs detached (setsid, immune to the caller exiting): it prints the result path and
 # writes the exit code to <result>.done when it finishes. --host runs in the foreground.
 #
+# The gui driver runs each topology in its own Natron process, appending to the one result file, so
+# an op that hangs ends only its topology's remaining ops. The exit code is the last non-zero one.
+#
 # --xvfb runs Tests/gui/run-gui-test.sh inside the natron-dev container (re-entering it through
 # tools/ci/local/devshell.sh from the host) with build/release/App/Natron, or the AppImage given.
 # Only one --xvfb run at a time: a second one waits on a lock rather than share the container.
@@ -37,7 +40,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 self="$repo/tools/bench/gui/run.sh"
 
 usage() {
-    sed -n '2,22p' "$self" >&2
+    sed -n '2,24p' "$self" >&2
     exit 2
 }
 
@@ -118,7 +121,7 @@ if [ "$mode" = xvfb ] && [ "${NATRON_IN_CONTAINER:-}" != 1 ]; then
     # The host name belongs to the machine, not the container.
     exec "$repo/tools/ci/local/devshell.sh" env GUI_BENCH_STAMP="$stamp" GUI_BENCH_HOSTNAME="$(hostname -s)" \
         GUI_BENCH_OP_TIMEOUT_S="${GUI_BENCH_OP_TIMEOUT_S:-120}" GUI_BENCH_IDLE_S="${GUI_BENCH_IDLE_S:-5}" \
-        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" "${roto_env[@]}" "$self" "${args[@]}" --wait
+        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" GUI_BENCH_WATCHDOG_S="${GUI_BENCH_WATCHDOG_S:-21600}" "${roto_env[@]}" "$self" "${args[@]}" --wait
 fi
 
 host=${GUI_BENCH_HOSTNAME:-$(hostname -s)}
@@ -143,8 +146,6 @@ export GUI_BENCH_SIZES=$sizes GUI_BENCH_TOPOLOGIES=$topologies GUI_BENCH_REPS=$r
 export GUI_BENCH_SELF_CHECK=$self_check GUI_BENCH_OUT=$result GUI_BENCH_MODE=$mode
 export GUI_BENCH_GIT_SHA
 GUI_BENCH_GIT_SHA=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)
-export NATRON_STALL_LOG="$work/stalls.jsonl" NATRON_GUI_TEST_OUT="$work"
-rm -f "$NATRON_STALL_LOG"
 timeout_s=${GUI_BENCH_TIMEOUT:-21600}
 script="$repo/tools/bench/gui/${driver}_bench.py"
 if [ "$driver" = roto ]; then
@@ -153,6 +154,44 @@ if [ "$driver" = roto ]; then
 else
     unset NATRON_ROTO_LATENCY_LOG
 fi
+
+# Calls run_one with the seconds left of the whole run's cap, once per topology.
+run_topologies() {
+    local deadline=$(( $(date +%s) + timeout_s )) overall=0 topology rc left
+    local -a list
+    IFS=, read -r -a list <<< "$topologies"
+    for topology in "${list[@]}"; do
+        left=$(( deadline - $(date +%s) ))
+        if [ "$left" -le 0 ]; then
+            echo "the ${timeout_s}s cap ended the run before $topology"
+            overall=124
+            break
+        fi
+        export GUI_BENCH_TOPOLOGIES=$topology
+        export NATRON_GUI_TEST_OUT="$work/$topology"
+        export NATRON_STALL_LOG="$NATRON_GUI_TEST_OUT/stalls.jsonl"
+        mkdir -p "$NATRON_GUI_TEST_OUT"
+        rm -f "$NATRON_STALL_LOG"
+        run_one "$left"
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "$topology ended with exit code $rc"
+            overall=$rc
+        fi
+    done
+    finish "$overall"
+}
+
+# The roto driver has no topologies, so it is one process writing directly into $work.
+run_driver() {
+    if [ "$driver" != roto ]; then
+        run_topologies
+    fi
+    export NATRON_GUI_TEST_OUT="$work" NATRON_STALL_LOG="$work/stalls.jsonl"
+    rm -f "$NATRON_STALL_LOG"
+    run_one "$timeout_s"
+    finish $?
+}
 
 if [ "$mode" = xvfb ]; then
     if [ -n "$appimage" ]; then
@@ -171,8 +210,10 @@ if [ "$mode" = xvfb ]; then
         echo "another --xvfb run holds $lock; waiting"
         flock 9
     fi
-    GUI_TEST_TIMEOUT=$timeout_s "$repo/Tests/gui/run-gui-test.sh" "$script" "$natron"
-    finish $?
+    run_one() {
+        GUI_TEST_TIMEOUT=$1 "$repo/Tests/gui/run-gui-test.sh" "$script" "$natron"
+    }
+    run_driver
 fi
 
 # --host
@@ -188,19 +229,24 @@ unset LD_LIBRARY_PATH WAYLAND_DISPLAY
 cd "$repo" || finish 2
 echo "running on $display; leave the mouse and keyboard alone"
 echo "result $result"
-echo "Natron log $work/natron.log; progress follows"
-# --foreground keeps Natron in the terminal's process group: in a background group, anything in
-# the bundle that touches the terminal stops the process, leaving an open window that does nothing.
-timeout --foreground "$timeout_s" "$scratch/squashfs-root/AppRun" "$script" > "$work/natron.log" 2>&1 < /dev/null &
-natron_pid=$!
-tail --pid="$natron_pid" -n +1 -F "$work/results.txt" 2> /dev/null &
-tail_pid=$!
-wait "$natron_pid"
-rc=$?
-wait "$tail_pid" 2> /dev/null
-if [ ! -s "$result" ]; then
-    echo "the driver wrote no results; last lines of $work/natron.log:"
-    tail -n 30 "$work/natron.log"
-fi
-[ "$rc" -eq 124 ] && echo "timed out after ${timeout_s}s"
-finish "$rc"
+run_one() {
+    local log="$NATRON_GUI_TEST_OUT/natron.log" size natron_pid tail_pid rc
+    size=$(stat -c %s "$result" 2> /dev/null || echo 0)
+    echo "Natron log $log; progress follows"
+    # --foreground keeps Natron in the terminal's process group: in a background group, anything in
+    # the bundle that touches the terminal stops the process, leaving an open window that does nothing.
+    timeout --foreground "$1" "$scratch/squashfs-root/AppRun" "$script" > "$log" 2>&1 < /dev/null &
+    natron_pid=$!
+    tail --pid="$natron_pid" -n +1 -F "$NATRON_GUI_TEST_OUT/results.txt" 2> /dev/null &
+    tail_pid=$!
+    wait "$natron_pid"
+    rc=$?
+    wait "$tail_pid" 2> /dev/null
+    if [ "$(stat -c %s "$result" 2> /dev/null || echo 0)" = "$size" ]; then
+        echo "the driver wrote no results; last lines of $log:"
+        tail -n 30 "$log"
+    fi
+    [ "$rc" -eq 124 ] && echo "timed out after $1 s"
+    return "$rc"
+}
+run_driver

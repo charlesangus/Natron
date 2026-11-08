@@ -143,6 +143,8 @@ private:
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *options, QWidget *parent = 0) OVERRIDE FINAL;
 
+    void invalidateGraphNavigator();
+
     std::unique_ptr<EdgePrivate> _imp;
 };
 
@@ -193,6 +195,8 @@ public:
     void setUndirected(bool undirected);
 
     void setDashed(bool dashed);
+
+    QRectF boundingRect() const OVERRIDE WARN_UNUSED_RETURN;
 
 public Q_SLOTS:
 

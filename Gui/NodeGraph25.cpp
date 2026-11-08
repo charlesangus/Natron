@@ -27,14 +27,18 @@
 #include "NodeGraphPrivate.h"
 
 #include <stdexcept>
+#include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QAction>
 #include <QApplication>
+#include <QHelpEvent>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPainterPath>
+#include <QPolygonF>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -197,6 +201,32 @@ NodeGraph::event(QEvent* e)
     return QGraphicsView::event(e);
 }
 
+bool
+NodeGraph::viewportEvent(QEvent* e)
+{
+    if (e->type() == QEvent::ToolTip) {
+        // A node's badges share one item: give it the tooltip of the badge under the cursor
+        // before the scene looks for the topmost item with a tooltip there.
+        QHelpEvent* he = static_cast<QHelpEvent*>(e);
+        QRect pointRect(he->pos(), QSize(1, 1));
+        std::vector<QGraphicsItem*> hits;
+        getGraphItemsMeetingViewportRect(pointRect, false, &hits);
+        if (!hits.empty()) {
+            QPolygonF polygonScene = mapToScene(pointRect);
+            QPainterPath pathScene;
+            pathScene.addPolygon(polygonScene);
+            pathScene.closeSubpath();
+            for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
+                if ((*it)->type() == NodeGuiDecorations::Type) {
+                    static_cast<NodeGuiDecorations*>(*it)->refreshToolTipAt((*it)->mapFromScene(pathScene));
+                }
+            }
+        }
+    }
+
+    return QGraphicsView::viewportEvent(e);
+}
+
 void
 NodeGraph::popCreateNodeDialog()
 {
@@ -354,11 +384,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                 if ( inputs[i]->hasSource() ) {
                     NodeGuiPtr input = inputs[i]->getSource();
                     if ( input->getIsSelected() && modCASIsShift(e) ) {
-                        NodesGuiList::iterator found = std::find(_imp->_selection.begin(),
-                                                                 _imp->_selection.end(), lastSelected);
-                        if ( found != _imp->_selection.end() ) {
+                        if (_imp->_selection.remove(lastSelected.get())) {
                             lastSelected->setUserSelected(false);
-                            _imp->_selection.erase(found);
                         }
                     } else {
                         selectNode( inputs[i]->getSource(), modCASIsShift(e) );
@@ -380,11 +407,8 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                     NodeGuiPtr output = std::dynamic_pointer_cast<NodeGui>(output_i);
                     if (output) {
                         if ( output->getIsSelected() && modCASIsShift(e) ) {
-                            NodesGuiList::iterator found = std::find(_imp->_selection.begin(),
-                                                                     _imp->_selection.end(), lastSelected);
-                            if ( found != _imp->_selection.end() ) {
+                            if (_imp->_selection.remove(lastSelected.get())) {
                                 lastSelected->setUserSelected(false);
-                                _imp->_selection.erase(found);
                             }
                         } else {
                             selectNode( output, modCASIsShift(e) );
@@ -514,24 +538,23 @@ NodeGraph::toggleAutoTurbo()
 void
 NodeGraph::selectAllNodes(bool onlyInVisiblePortion)
 {
-    _imp->resetSelection();
+    NodesGuiList nodes;
     if (onlyInVisiblePortion) {
         QRectF r = visibleSceneRect();
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
             QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
-            if ( r.intersects(bbox) && (*it)->isActive() && (*it)->isVisible() ) {
-                (*it)->setUserSelected(true);
-                _imp->_selection.push_back(*it);
+            if (r.intersects(bbox) && (*it)->isVisible()) {
+                nodes.push_back(*it);
             }
         }
     } else {
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-            if ( (*it)->isActive() && (*it)->isVisible() ) {
-                (*it)->setUserSelected(true);
-                _imp->_selection.push_back(*it);
+            if ((*it)->isVisible()) {
+                nodes.push_back(*it);
             }
         }
     }
+    _imp->replaceSelection(nodes);
 }
 
 NATRON_NAMESPACE_EXIT

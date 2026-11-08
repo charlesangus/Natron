@@ -521,6 +521,12 @@ public:
     /*Returns in viewers the list of all the viewers connected to this node*/
     void hasViewersConnected(std::list<ViewerInstance* >* viewers) const;
 
+    /**
+     * @brief The viewers hasViewersConnected() finds from any of the nodes, each once, in one walk
+     * of what is downstream of them all.
+     **/
+    static void getViewersDownstreamOf(const std::list<NodePtr>& nodes, std::list<ViewerInstance*>* viewers);
+
     void hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const;
 
     /**
@@ -2021,6 +2027,39 @@ public:
         InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
     };
 
+    /**
+     * @brief While one lives on the main thread, activating, deactivating and reconnecting nodes
+     * leaves invalid-expression rechecks, input-related refreshes and the project's layer table to
+     * the end of the outermost one, which does each once. An edit of many nodes would otherwise
+     * walk everything downstream of each, reading expressions that name nodes it has not restored
+     * yet.
+     **/
+    class InputEditBatch {
+    public:
+        explicit InputEditBatch(const AppInstancePtr& app);
+        ~InputEditBatch();
+
+        InputEditBatch(const InputEditBatch&) = delete;
+        InputEditBatch& operator=(const InputEditBatch&) = delete;
+
+    private:
+        AppInstancePtr _app;
+    };
+
+    /**
+     * @brief While one lives on this thread, the walks finding the outputs whose renders to abort
+     * share what they visited, so deactivating many nodes walks what is downstream of them once.
+     * Open one only around removing nodes: connecting a node inside it would hide the new output.
+     **/
+    class RemovalBatch {
+    public:
+        RemovalBatch();
+        ~RemovalBatch();
+
+        RemovalBatch(const RemovalBatch&) = delete;
+        RemovalBatch& operator=(const RemovalBatch&) = delete;
+    };
+
     void markAllInputRelatedDataDirty();
 
     /**
@@ -2349,6 +2388,8 @@ private:
     // Like refreshInputRelatedDataInternal(), except that a viewer only refreshes the inputs it
     // shows: its hash folds in only those, so the others are not read through it.
     bool refreshShownInputRelatedData(std::set<Node*>& visited);
+    static void refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited);
+    static void refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited);
 
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
 

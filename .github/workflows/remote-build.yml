@@ -104,6 +104,8 @@ jobs:
       CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'fast' && '2G' || '3G' }}
       # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
       NATRON_BUILD_JOBS: 4
+      # Debug links are large enough that several at once, beside the compiles, exhaust the runner's memory.
+      NATRON_LINK_JOBS: ${{ inputs.preset == 'debug' && '1' || '' }}
     outputs:
       tree: ${{ steps.upload_tree.outcome }}
       appimage: ${{ steps.upload_appimage.outcome }}
@@ -152,7 +154,6 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
             build/assets/lensfun
@@ -193,14 +194,15 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           NATRON_RENDER_SCHEDULER: legacy
           NATRON_GOLDEN_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-golden
-          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins:${{ github.workspace }}/build/assets/TestPlugins
+          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins
         working-directory: build/${{ env.PRESET }}
         run: |
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^NativeGoldenTest$' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest)$' --timeout 300 --output-on-failure || rc=$?
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
+          xvfb-run --auto-servernum ctest -R '^NatronUtilityGoldenTest$' --timeout 300 --output-on-failure || rc=$?
           exit "$rc"
 
       # Straight after recording, so that a later leg that fails, times out or is cancelled cannot
@@ -213,6 +215,39 @@ jobs:
         with:
           name: native-goldens-${{ env.PRESET }}-${{ github.sha }}
           path: Tests/fixtures/native-golden
+          if-no-files-found: error
+          retention-days: 7
+
+      # The binary directly, because ctest registers whole suites and every other case passing true
+      # to expectParity, motion-blur-centered among them, would record over its reference too.
+      - name: Record native parity references
+        id: record_parity
+        if: >-
+          !cancelled() && inputs.tests && inputs.record_goldens && steps.build.outcome == 'success'
+        timeout-minutes: 15
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_PARITY_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-parity
+          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins:${{ github.workspace }}/build/assets/TestPlugins
+        working-directory: build/${{ env.PRESET }}/Tests
+        run: >-
+          xvfb-run --auto-servernum ./Tests
+          --gtest_filter='NativeTransformTest.CubicMinifyingAndRotated:NativeTransformTest.SkewYX:NativeTransformTest.MaskedMixHalf:NativeReformatTest.ToProjectFormatFromTheSourceRoD:NativeReformatTest.ToFormatWithAPixelAspectRatio:NativeReformatTest.FitIntoAFixedBox'
+
+      - name: Upload native parity references
+        if: >-
+          !cancelled() && steps.record_parity.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: native-parity-${{ env.PRESET }}-${{ github.sha }}
+          path: |
+            Tests/fixtures/native-parity/Transform/rotate30-scale05-cubic*.f32
+            Tests/fixtures/native-parity/Transform/skew-yx*.f32
+            Tests/fixtures/native-parity/Transform/mask-mix05*.f32
+            Tests/fixtures/native-parity/Reformat/project*.f32
+            Tests/fixtures/native-parity/Reformat/format-par*.f32
+            Tests/fixtures/native-parity/Reformat/box-fit*.f32
           if-no-files-found: error
           retention-days: 7
 
@@ -325,7 +360,6 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
             build/assets/lensfun
@@ -344,6 +378,14 @@ jobs:
         with:
           name: native-goldens-${{ env.PRESET }}-${{ github.sha }}
           path: Tests/fixtures/native-golden
+
+      - name: Download native parity references
+        if: inputs.record_goldens
+        continue-on-error: true
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: native-parity-${{ env.PRESET }}-${{ github.sha }}
+          path: Tests/fixtures/native-parity
 
       - name: Download build tree
         uses: actions/download-artifact@v7.0.0

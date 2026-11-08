@@ -221,6 +221,8 @@ TransformOp::createKnobs(KnobHolder* holder,
     page->addKnob(blackOutsideKnob);
     blackOutside = blackOutsideKnob;
 
+    filterKnobs.create(holder, page, filterKnob, clampKnob);
+
     KnobDoublePtr motionBlurKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Motion Blur"));
     motionBlurKnob->setName(kTransformNodeParamMotionBlur);
     motionBlurKnob->setHintToolTip(EffectInstance::tr("Quality of motion blur rendering. 0 disables motion blur, 1 is a good value. Increasing this slows down rendering."));
@@ -299,7 +301,7 @@ TransformOp::bake(const KnobReader& reader) const
     p.amount = reader.value(amount);
 
     params.invert = reader.value(invert);
-    params.filter = (Resampler::FilterEnum)reader.value(filter);
+    params.filter = filterKnobs.read(reader);
     params.clamp = reader.value(clamp);
     params.blackOutside = reader.value(blackOutside);
 
@@ -465,7 +467,7 @@ TransformNode::initializeKnobs()
     this->addStageKnobs(page);
 
     updateShutterEnabled();
-    updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = this->getNode();
     if (node) {
@@ -499,23 +501,17 @@ TransformNode::updateShutterEnabled()
 }
 
 void
-TransformNode::updateClampEnabled(double time,
-                                  ViewSpec view)
+TransformNode::updateFilterVisibility(double time,
+                                      ViewSpec view)
 {
-    KnobChoicePtr filter = this->op().filter.lock();
-    KnobBoolPtr clamp = this->op().clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    this->op().filterKnobs.updateVisibility(time, view);
 }
 
 void
 TransformNode::onKnobsLoaded()
 {
     updateShutterEnabled();
-    updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -559,7 +555,7 @@ TransformNode::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = op.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

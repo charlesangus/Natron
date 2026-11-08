@@ -106,6 +106,23 @@ mapPoint(const TransformMath::Mat3& m,
     *oy = (m.m[3] * x + m.m[4] * y + m.m[5]) / w;
 }
 
+// Whether the resampler reads (x, y) with its plain kernel. The render mirrors y, which leaves the
+// Jacobian's row norms alone. The margin absorbs a rotation's norm landing an ulp above 1.
+bool
+readsWithPlainKernel(const TransformMath::Mat3& m,
+                     double x,
+                     double y)
+{
+    const double limit = 1. + 1e-9;
+    const double w = m.m[6] * x + m.m[7] * y + m.m[8];
+    double ox = 0., oy = 0.;
+
+    mapPoint(m, x, y, &ox, &oy);
+
+    return (Resampler::kernelScale((m.m[0] - ox * m.m[6]) / w, (m.m[1] - ox * m.m[7]) / w) < limit)
+        && (Resampler::kernelScale((m.m[3] - oy * m.m[6]) / w, (m.m[4] - oy * m.m[7]) / w) < limit);
+}
+
 std::string
 persistentMessage(const NodePtr& node)
 {
@@ -376,6 +393,10 @@ TEST_F(NativeAutoStraightenTest, MatchesDarktableReferences)
                 if ((ix < kEdgeMargin) || (ix > sourceWidth - 1 - kEdgeMargin) || (iy < kEdgeMargin) || (iy > sourceHeight - 1 - kEdgeMargin)) {
                     continue;
                 }
+                // darktable's bilinear never widens, so a minified pixel cannot match it.
+                if (!readsWithPlainKernel(inverse, i + cx, j + cy)) {
+                    continue;
+                }
                 const int x = g.output.x1 + i;
                 const int y = g.output.y2 - 1 - j;
                 for (int c = 0; c < 3; ++c) {
@@ -390,7 +411,7 @@ TEST_F(NativeAutoStraightenTest, MatchesDarktableReferences)
                 }
             }
         }
-        ASSERT_GT(count, refWidth * refHeight) << rc.name << ": too few pixels compared";
+        ASSERT_GT(count, refWidth * refHeight / 2) << rc.name << ": too few pixels compared";
         EXPECT_LE(worst, kReferenceMaxError) << rc.name << " at " << worstX << "," << worstY << " (top row 0)";
         EXPECT_LE(sum / count, kReferenceMeanError) << rc.name;
     }

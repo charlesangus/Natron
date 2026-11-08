@@ -80,6 +80,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
@@ -716,6 +717,19 @@ ViewerInstance::initializeKnobs()
         downscaleLevel->populateChoices(entries);
     }
     k.downscaleLevel = downscaleLevel;
+
+    KnobIntPtr maxSamples = createViewerKnob<KnobInt>(this, page, tr("Max Samples"), kViewerParamMaxSamples,
+                                                      tr("The samples per pixel a progressive renderer refines the 3D view to; "
+                                                         "0 uses the renderer's default. A change restarts the render."));
+    maxSamples->setMinimum(0);
+    maxSamples->setDisplayMinimum(0);
+    maxSamples->setDisplayMaximum(4096);
+    k.maxSamples = maxSamples;
+
+    KnobBoolPtr refinementPaused = createViewerKnob<KnobBool>(this, page, tr("Refinement Paused"), kViewerParamRefinementPaused,
+                                                              tr("Holds a progressive renderer's refinement of the 3D view at its "
+                                                                 "current samples; off continues from them. Edits wait until it is off."));
+    k.refinementPaused = refinementPaused;
 
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
@@ -1391,6 +1405,14 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
             break;
         }
 
+        // A paused viewer keeps its last frame and resolves no input to render from. The stroke's points stay
+        // unconsumed, so the first render after un-pausing picks them all up.
+        if (isViewerPaused(i)) {
+            status[i] = eViewerRenderRetCodeRedraw;
+            args[i].reset();
+            continue;
+        }
+
         AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(i, canAbort, false);
 
         /*FrameRequestMap request;
@@ -1455,9 +1477,12 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 int currentlyPaintedStrokeMultiIndex;
                 getApp()->getStrokeAndMultiStrokeIndex(&currentlyPaintedStroke, &currentlyPaintedStrokeMultiIndex);
 
+                // A render queued for a stroke the user has since replaced has nothing left to draw.
+                if (currentlyPaintedStroke != activeStroke) {
+                    args[i].reset();
 
-                //If this crashes here that means the user could start a new stroke while this one is not done rendering.
-                assert(currentlyPaintedStroke == activeStroke);
+                    return eViewerRenderRetCodeRedraw;
+                }
 
                 //the multi-stroke index in case of a stroke containing multiple strokes from the user
                 int strokeIndex;
@@ -1514,7 +1539,8 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 args[i].reset();
             }
 
-            if (args[i]) {
+            // Redraw arguments resolve no input: there is nothing to render.
+            if (args[i] && (status[i] == eViewerRenderRetCodeRender)) {
                 status[i] = renderViewer_internal(view,
                                                   QThread::currentThread() == qApp->thread(), // singleThreaded
                                                   false, // isSequentialRender
@@ -2341,6 +2367,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                       const RenderStatsPtr& stats,
                                       ViewerArgs& inArgs)
 {
+    assert(inArgs.activeInputToRender);
+
+    // The request was queued behind a render and its node may have been destroyed since.
+    const NodePtr activeInputNode = inArgs.activeInputToRender->getNode();
+    if (!activeInputNode) {
+        return eViewerRenderRetCodeRedraw;
+    }
+
     if (inArgs.sceneUpstream) {
         return evaluateSceneInput(inArgs);
     }
@@ -2360,7 +2394,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                      getTimeline().get(),
                                                                      false,
                                                                      rotoPaintNode,
-                                                                     inArgs.activeInputToRender->getNode(),
+                                                                     activeInputNode,
                                                                      inArgs.draftModeEnabled,
                                                                      stats);
     }
@@ -2429,11 +2463,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
     }
 
-    assert(inArgs.activeInputToRender);
-
     ///Check that we were not aborted already
-    if ( !isSequentialRender && ( (inArgs.activeInputToRender->getHash() != inArgs.activeInputHash) ||
-                                  ( inArgs.params->time != getTimeline()->currentFrame() ) ) ) {
+    if (!isSequentialRender && ((activeInputNode->getHashValue() != inArgs.activeInputHash) || (inArgs.params->time != getTimeline()->currentFrame()))) {
         return eViewerRenderRetCodeRedraw;
     }
 
@@ -4371,6 +4402,9 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
         assert(params->roi.contains(texRect));
         uiContext->transferBufferFromRAMtoGPU(it->ramBuffer, it->bytesCount, params->roi, params->roiNotRoundedToTileSize, texRect, params->textureIndex, params->isPartialRect, isFirstTile, &texture);
         isFirstTile = false;
+    }
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteTextureUploaded();
     }
 
     NodePtr rotoPaintNode;

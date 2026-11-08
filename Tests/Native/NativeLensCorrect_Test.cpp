@@ -40,6 +40,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
@@ -53,7 +54,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Image/Resampler.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/LensCorrect.h"
 #include "Engine/Nodes/Transform/LensCorrectProfile.h"
@@ -342,9 +343,9 @@ setMetadata(const NodePtr& modify,
     KnobString* valueKnob = knobOf<KnobString>(modify, "stringValue" + suffix);
 
     ASSERT_TRUE(op && keyKnob && type && valueKnob);
-    op->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+    op->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
     keyKnob->setValue(key, ViewSpec::all(), 0);
-    type->setValue((int)ModifyMetadata::eValueTypeString, ViewSpec::all(), 0);
+    type->setValue((int)MetadataModify::eValueTypeString, ViewSpec::all(), 0);
     valueKnob->setValue(value, ViewSpec::all(), 0);
 }
 
@@ -361,9 +362,9 @@ setMetadata(const NodePtr& modify,
     KnobDouble* valueKnob = knobOf<KnobDouble>(modify, "doubleValue" + suffix);
 
     ASSERT_TRUE(op && keyKnob && type && valueKnob);
-    op->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+    op->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
     keyKnob->setValue(key, ViewSpec::all(), 0);
-    type->setValue((int)ModifyMetadata::eValueTypeDouble, ViewSpec::all(), 0);
+    type->setValue((int)MetadataModify::eValueTypeDouble, ViewSpec::all(), 0);
     valueKnob->setValue(value, ViewSpec::all(), 0);
 }
 } // namespace
@@ -468,6 +469,9 @@ TEST_F(NativeLensCorrectTest, EveryControlHasAKnob)
         kLensCorrectParamShowVignetteMask,
         kLensCorrectParamInfo,
         kResamplerParamFilterType,
+        kResamplerParamLobes,
+        kResamplerParamBicubicB,
+        kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,
     };
@@ -645,7 +649,7 @@ TEST_F(NativeLensCorrectTest, HugePositionsRenderFinite)
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamTargetGeometry, std::string(kLensCorrectGeometryFisheye)));
     setManualScale(node, kLensCorrectModeCorrect, 0.1);
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     for (double blackOutside : { 1., 0. }) {
         ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside }));
         RenderedPlane out;
@@ -889,7 +893,7 @@ TEST_F(NativeLensCorrectTest, ClearedWarningReturnsOnTheNextRender)
     // The manual vignette keeps the node rendering: a pass-through can be answered from the action caches.
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamVignetteStrength, { 0.5 }));
 
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane out;
     ASSERT_TRUE(renderRGBA(node, window, &out));
     const std::string warning = persistentMessage(node);
@@ -920,7 +924,7 @@ TEST_F(NativeLensCorrectTest, NoApplicableCalibrationWarnsAndPassesThrough)
     ASSERT_TRUE(bool(source));
     NodePtr node = makeCanon(source);
     ASSERT_TRUE(bool(node));
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane before, after;
     ASSERT_TRUE(renderRGBA(source, window, &before));
 
@@ -951,7 +955,7 @@ TEST_F(NativeLensCorrectTest, PartlyCalibratedLensNamesTheSkippedInInfo)
     ASSERT_TRUE(bool(source));
     NodePtr node = makeCanon(source);
     ASSERT_TRUE(bool(node));
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane out;
 
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamTCAOverride, { 1. }));
@@ -976,7 +980,7 @@ TEST_F(NativeLensCorrectTest, UnknownLensPassesThroughWithAMessage)
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamCamera, std::string(kCanon5D3)));
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamLens, std::string("No Such Lens 13mm f/9")));
 
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane before, after;
     ASSERT_TRUE(renderRGBA(source, window, &before));
     ASSERT_TRUE(renderRGBA(node, window, &after));
@@ -992,6 +996,20 @@ TEST_F(NativeLensCorrectTest, UnknownLensPassesThroughWithAMessage)
     EXPECT_FALSE(before.pixels == after.pixels);
 }
 
+TEST_F(NativeLensCorrectTest, HonoursTheNewFiltersAndTheirParameters)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeCanon(source);
+    ASSERT_TRUE(bool(node));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    EXPECT_TRUE(filterChoiceChangesTheRender(node, window, kTime, Resampler::eFilterCubic, Resampler::eFilterLanczos3));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
+}
+
 TEST_F(NativeLensCorrectTest, TilesMatchTheWholeFrame)
 {
     resetProject();
@@ -1001,7 +1019,7 @@ TEST_F(NativeLensCorrectTest, TilesMatchTheWholeFrame)
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamVignetteStrength, { 0.5 }));
 
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane whole;
     ASSERT_TRUE(renderRGBA(node, window, &whole));
     const int midX = (window.x1 + window.x2) / 2 + 3;
@@ -1030,7 +1048,7 @@ TEST_F(NativeLensCorrectTest, MetadataFillsTheLookup)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
     ASSERT_NO_FATAL_FAILURE(setMetadata(modify, 1, kExifMetadataMake, std::string("Canon")));
@@ -1091,7 +1109,7 @@ TEST_F(NativeLensCorrectTest, FixedLensFallbackIsForMetadataNames)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
     ASSERT_NO_FATAL_FAILURE(setMetadata(modify, 1, kExifMetadataLensModel, unknown));

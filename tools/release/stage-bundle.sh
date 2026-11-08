@@ -359,6 +359,29 @@ while IFS= read -r staged_usd_plugin; do
     stage_elf "$staged_usd_plugin"
 done < <(find "$STAGE_DIR/plugin/usd" -type f -name "*.so" 2>/dev/null)
 
+# OpenImageDenoise, linked by the Cycles delegate and by MoonRay's denoiser, dlopen()s its device
+# modules from the directory its core library was loaded from, so the ldd walk below never reaches
+# them. The source install is asked, because a staged copy may already resolve the core library
+# inside the stage. The CPU module goes into lib/, where the walk puts the core library, once; the
+# GPU modules stay out, as both delegates are CPU-only.
+stage_oidn_cpu_modules() {
+    local linker="$1" oidn_core oidn_module oidn_modules=0
+    oidn_core="$(ldd "$linker" 2>/dev/null |
+        sed -n 's/.*libOpenImageDenoise_core[^ ]* => \(\/[^ ]*\) .*/\1/p' | head -n 1 || true)"
+    [[ -n "$oidn_core" ]] || return 0
+    for oidn_module in "$(dirname "$oidn_core")"/libOpenImageDenoise_device_cpu.so*; do
+        [[ -f "$oidn_module" && ! -L "$oidn_module" ]] || continue
+        [[ -f "$STAGE_DIR/lib/$(basename "$oidn_module")" ]] ||
+            stage_library "$oidn_module" "$(basename "$oidn_module")"
+        oidn_modules=$((oidn_modules + 1))
+    done
+    if [[ "$oidn_modules" == 0 ]]; then
+        echo "error: no OpenImageDenoise CPU device module next to $oidn_core" >&2
+        exit 1
+    fi
+}
+stage_oidn_cpu_modules "$USD_PREFIX/plugin/usd/hdCycles.so"
+
 # "import pxr" from Natron's Python. usdview is left out: it is an application,
 # and its GUI needs PySide6 modules the bundle does not ship.
 copy_tree "$PY_SITELIB/pxr" "$PY_DEST/site-packages/pxr" --exclude='./Usdviewq'
@@ -456,6 +479,36 @@ mkdir -p "$STAGE_DIR/lib/onnxruntime"
 cp -a "$ORT_ASSETS"/lib/libonnxruntime.so* "$STAGE_DIR/lib/onnxruntime/"
 cp "$ORT_ASSETS/LICENSE" "$ORT_ASSETS/ThirdPartyNotices.txt" "$STAGE_DIR/lib/onnxruntime/"
 
+# MoonRay (tools/ci/local/build-moonray.sh) keeps its own prefix: its libraries are private to it,
+# and it finds its scene DSOs, session definitions and render process by path, which
+# AppManager points at <bin>/../moonray. Its ELFs see the bundle's lib/ first, then its lib64/.
+# The debug delegate, headers, CMake files and the other command-line tools stay out.
+MOONRAY_PREFIX="$(cache_value 'NATRON_MOONRAY_PREFIX:PATH')"
+if [[ -n "$MOONRAY_PREFIX" && -f "$MOONRAY_PREFIX/plugin/pxr/plugInfo.json" ]]; then
+    echo "==> Staging MoonRay from $MOONRAY_PREFIX"
+    MOONRAY_DEST="$STAGE_DIR/moonray"
+    copy_tree "$MOONRAY_PREFIX" "$MOONRAY_DEST" \
+        --exclude='./bin' --exclude='./include' --exclude='./lib64/cmake' --exclude='./lib64/pkgconfig' \
+        --exclude='*.a' --exclude='./plugin/hd_moonray_debug.so' --exclude='./plugin/pxr/hd_moonray_debug' \
+        --exclude='./SConscripts'
+    mkdir -p "$MOONRAY_DEST/bin"
+    cp -L "$MOONRAY_PREFIX/bin/execComp" "$MOONRAY_DEST/bin/execComp"
+    while IFS= read -r staged_moonray_file; do
+        is_elf "$staged_moonray_file" || continue
+        strip_elf "$staged_moonray_file"
+        moonray_up="$(relative_up "$(cd "$(dirname "$staged_moonray_file")" && pwd)" "$STAGE_DIR")"
+        chmod u+w "$staged_moonray_file"
+        patchelf --set-rpath "\$ORIGIN/${moonray_up}lib:\$ORIGIN/${moonray_up}moonray/lib64" "$staged_moonray_file"
+    done < <(find "$MOONRAY_DEST" -type f 2>/dev/null)
+
+    stage_oidn_cpu_modules "$MOONRAY_PREFIX/lib64/libdenoiser.so"
+elif [[ "${NATRON_RELEASE_WITHOUT_MOONRAY:-0}" == "1" ]]; then
+    echo "warning: no MoonRay install in $BUILD_DIR's configuration; the bundle ships no MoonRay" >&2
+else
+    echo "error: no MoonRay install in $BUILD_DIR's configuration (set NATRON_RELEASE_WITHOUT_MOONRAY=1 to ship without it)" >&2
+    exit 1
+fi
+
 resolve_deps() {
     local binary="$1"
     ldd "$binary" 2>/dev/null | while read -r line; do
@@ -474,15 +527,15 @@ echo "==> Walking ldd closure"
 declare -A SEEN
 
 # Seed from everything the bundle ships that the loader can be asked for:
-# the executables, the libraries CMake installed, and the whole Qt and OpenUSD
-# plugin trees -- plugins are dlopen'd, so nothing in bin/ lists them as a
+# the executables, the libraries CMake installed, and the whole Qt, OpenUSD and
+# MoonRay plugin trees -- plugins are dlopen'd, so nothing in bin/ lists them as a
 # dependency and a walk seeded from bin/ alone never reaches what they need.
 collect_binaries() {
     while IFS= read -r f; do
         if is_elf "$f"; then
             echo "$f"
         fi
-    done < <(find "$STAGE_DIR/bin" "$STAGE_DIR/lib" "$STAGE_DIR/plugins" "$STAGE_DIR/plugin" -type f 2>/dev/null
+    done < <(find "$STAGE_DIR/bin" "$STAGE_DIR/lib" "$STAGE_DIR/plugins" "$STAGE_DIR/plugin" "$STAGE_DIR/moonray" -type f 2>/dev/null
              find "$STAGE_DIR/Plugins" -type f \( -name "*.ofx" -o -name "*.so*" \) 2>/dev/null)
 }
 
@@ -540,6 +593,11 @@ walk_closure() {
 }
 
 walk_closure
+
+if [[ ! -f "$STAGE_DIR/lib/libembree4.so.4" ]]; then
+    echo "error: libembree4.so.4 was not staged; the Natron Utility render delegate could not load" >&2
+    exit 1
+fi
 
 # A plugin's private Libraries and the shared lib/ can offer the same soname:
 # the app and Arena's ImageMagick both link lcms2. Shipping both copies means

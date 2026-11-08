@@ -71,10 +71,11 @@ public:
     void setMaximum(double t);
     void setMinimum(double b);
 
-    double value()
-    {
-        return text().toDouble();
-    }
+    /**
+     * @brief The value shown: what text() parses to, or the full value while text() is the rounded
+     * form a huge value is displayed in.
+     **/
+    double value() const;
 
     ///If OLD_SPINBOX_INCREMENT is defined in SpinBox.cpp, this function does nothing
     ///as the increments are relative to the position of the cursor in the spinbox.
@@ -151,6 +152,9 @@ private:
 
 
     void setValue_internal(double d, bool reformat);
+
+    // Whether text() is still the rounded form of a huge value, which must not be parsed as the value.
+    bool showsCompactValue() const;
 
     void emitValueChanged(double d, quint64 gestureKey);
 

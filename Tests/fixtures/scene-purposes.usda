@@ -1,0 +1,45 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Cube "Default"
+    {
+        double size = 1
+        double3 xformOp:translate = (-3, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Render"
+    {
+        double size = 1
+        uniform token purpose = "render"
+        double3 xformOp:translate = (-1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Proxy"
+    {
+        double size = 1
+        uniform token purpose = "proxy"
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Guide"
+    {
+        double size = 1
+        uniform token purpose = "guide"
+        double3 xformOp:translate = (3, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Camera "Cam"
+    {
+        double3 xformOp:translate = (0, 0, 20)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

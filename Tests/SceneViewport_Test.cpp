@@ -26,13 +26,17 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -54,6 +58,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -62,8 +67,15 @@
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/GuiGLRequirements.h"
+#include "Tests/Scene/CyclesTestUtils.h"
 
 #include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/token.h>
+#include <pxr/base/vt/value.h>
+#include <pxr/imaging/hd/driver.h>
+#include <pxr/imaging/hdSt/renderDelegate.h>
+#include <pxr/imaging/hgi/tokens.h>
+#include <pxr/usdImaging/usdImagingGL/engine.h>
 
 NATRON_NAMESPACE_USING
 
@@ -121,6 +133,43 @@ referenceScene()
     layer->InsertSubLayerPath(file->GetIdentifier());
 
     return SceneOps::appendLayer(ScenePayload(), layer, 0x5ce7e5ULL);
+}
+
+// base with a layer on top authoring /Render/rs, a RenderSettings prim the stage's
+// renderSettingsPrimPath names: natron:renderer when renderer is not empty, and Cycles' and
+// MoonRay's samples. hash tells the layers apart.
+ScenePayload
+withSettingsPrim(const ScenePayload& base,
+                 const std::string& renderer,
+                 int cyclesSamples,
+                 int moonRaySamples,
+                 U64 hash)
+{
+    std::string text = "#usda 1.0\n"
+                       "(\n"
+                       "    renderSettingsPrimPath = \"/Render/rs\"\n"
+                       ")\n"
+                       "def Scope \"Render\"\n"
+                       "{\n"
+                       "    def RenderSettings \"rs\"\n"
+                       "    {\n";
+    if (!renderer.empty()) {
+        text += "        uniform token natron:renderer = \"" + renderer + "\"\n";
+    }
+    text += "        int cycles:samples = " + std::to_string(cyclesSamples) + "\n"
+                                                                              "        bool cycles:integrator:use_adaptive_sampling = 0\n"
+                                                                              "        int moonray:sceneVariable:pixel_samples = "
+        + std::to_string(moonRaySamples) + "\n"
+                                           "    }\n"
+                                           "}\n";
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportSettings");
+    if (!layer->ImportFromString(text)) {
+        ADD_FAILURE() << "cannot read the render settings layer";
+
+        return base;
+    }
+
+    return SceneOps::appendLayer(base, layer, hash);
 }
 
 PXR_NS::UsdGeomMesh
@@ -407,6 +456,37 @@ protected:
         }
 
         return n;
+    }
+
+    // Renders until done says the refinement is where it should be and the render drew its
+    // converged frame, the delegate fails, or the time is up. True if both held.
+    bool refineUntil(const std::function<bool(const SceneViewportRenderer::RefineStatus&)>& done)
+    {
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+
+        while (std::chrono::steady_clock::now() < end) {
+            const bool drawn = _renderer.render(_fbo->handle(), kSize, kSize);
+            if (!_renderer.getRendererError().empty()) {
+                ADD_FAILURE() << _renderer.getRendererError();
+
+                return false;
+            }
+            if (drawn && done(_renderer.getRefineStatus())) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ADD_FAILURE() << "the refinement did not get there in 120 s";
+
+        return false;
+    }
+
+    // The refinement converged on cap samples.
+    bool refineTo(int cap)
+    {
+        return refineUntil([cap](const SceneViewportRenderer::RefineStatus& status) {
+            return status.active && status.converged && (status.maxSamples == cap) && (status.samples == cap);
+        });
     }
 
     bool _skip = false;
@@ -1295,4 +1375,222 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     ASSERT_TRUE(_renderer.hasEngine());
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     EXPECT_EQ(engines + 1, _renderer.getEngineCount());
+}
+
+// Scene Default renders with the renderer the stage's active render settings prim names
+// (natron:renderer), Storm without one, and follows the prim as the scene changes.
+TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
+{
+    if (_skip) {
+        return;
+    }
+    const std::string stub = "NatronTestStubRendererPlugin";
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+
+    _renderer.setRendererId(kRenderDelegateSceneDefaultId);
+    EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+
+    // A prim without natron:renderer: still Storm.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 4, 4, 0x5e771ULL), &error)) << error;
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+
+    // A prim naming a renderer that is not installed: the view says so instead of drawing.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e772ULL), &error)) << error;
+    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    EXPECT_EQ(stub, _renderer.getActiveRendererId());
+    EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
+    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
+
+    // The prim gone, Storm again.
+    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+    EXPECT_TRUE(_renderer.getRendererError().empty()) << _renderer.getRendererError();
+
+    // A renderer chosen beats the prim's.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e773ULL), &error)) << error;
+    _renderer.setRendererId(kRenderDelegateStormId);
+    EXPECT_GT(countNonBackground(render()), 0);
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
+}
+
+// The active prim's settings for the viewer's renderer reach its refinement: Cycles refines to
+// the prim's cycles:samples, Max Samples applies over them, an edit of MoonRay's settings alone
+// does not restart the refinement, and one of Cycles' makes it take the new samples.
+TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e781ULL), &error)) << error;
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(6));
+
+    _renderer.setMaxSamples(3);
+    ASSERT_TRUE(refineTo(3));
+    const U64 restarts = _renderer.getRefineStatus().restarts;
+    const U64 frames = _renderer.getRefineStatus().frames;
+
+    // The MoonRay tab's edit: only /Render changes, in a namespace Cycles does not read.
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 128, 0x5e782ULL), &error)) << error;
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < end) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(restarts, _renderer.getRefineStatus().restarts);
+    EXPECT_EQ(frames, _renderer.getRefineStatus().frames);
+    EXPECT_TRUE(_renderer.getRefineStatus().converged);
+
+    // The Cycles tab's edit, without the cap: the prim's new samples.
+    _renderer.setMaxSamples(0);
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
+    ASSERT_TRUE(refineTo(9));
+    EXPECT_GT(_renderer.getRefineStatus().restarts, restarts);
+}
+
+// The frame count starts over with each delegate, so a frame after a switch can have the serial of
+// the one in the texture: it must be drawn all the same.
+TEST_F(SceneViewportStorm, TheRefinementDrawsItsNewFrameAfterASwitchOfRenderer)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    _renderer.setMaxSamples(1);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    const QImage first = _fbo->toImage();
+
+    _renderer.setRendererId(kRenderDelegateStormId);
+    (void)render();
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth = 60.;
+    _renderer.setFreeCamera(camera);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    EXPECT_NE(first, _fbo->toImage());
+}
+
+// A throw on the refinement's worker shows as the renderer's error only until the next edit.
+TEST_F(SceneViewportStorm, ARefinementFailureClearsAtTheNextSceneEdit)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const ScenePayload base = referenceScene();
+    std::string error;
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e791ULL), &error)) << error;
+    std::atomic<bool> armed(true);
+    RenderDelegates::setRenderFaultHook([&armed]() {
+        if (armed.exchange(false)) {
+            throw std::runtime_error("texture commit failed");
+        }
+    });
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    RenderDelegates::setRenderFaultHook(nullptr);
+    EXPECT_NE(std::string::npos, _renderer.getRendererError().find("texture commit failed")) << _renderer.getRendererError();
+
+    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 64, 0x5e792ULL), &error)) << error;
+    while (!_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
+        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_TRUE(refineTo(9));
+}
+
+// A guide Storm picks at a pixel is picked there on a delegate's frame too.
+TEST_F(SceneViewportStorm, ARefinementPicksAGuide)
+{
+    if (_skip || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    // The fixture's camera sits in the plane of the default view's eye, so its guide would project
+    // behind or outside the frame; pulled back, it is on screen and in front of the box.
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.distance = 30.;
+    _renderer.setFreeCamera(camera);
+    _renderer.setGuideSize(4.);
+    _renderer.setShowGuides(true);
+    _renderer.setRecordDrawnGuides(true);
+    (void)render();
+    SceneViewportRenderer::DrawnGuide aimed;
+    for (const SceneViewportRenderer::DrawnGuide& guide : _renderer.getDrawnGuides()) {
+        if (_renderer.pick((int)guide.x, (int)guide.y, kSize, kSize) == guide.path) {
+            aimed = guide;
+            break;
+        }
+    }
+    ASSERT_FALSE(aimed.path.empty()) << "no guide Storm can pick";
+
+    _renderer.setMaxSamples(1);
+    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(refineTo(1));
+    EXPECT_EQ(aimed.path, _renderer.pick((int)aimed.x, (int)aimed.y, kSize, kSize));
+}
+
+TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRenderMakesAnother)
+{
+    if (_skip) {
+        return;
+    }
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    const U64 engines = _renderer.getEngineCount();
+
+    RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
+    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_FALSE(_renderer.hasEngine());
+    const std::string error = _renderer.takeRenderError();
+    EXPECT_NE(std::string::npos, error.find("texture commit failed")) << error;
+    EXPECT_TRUE(_renderer.takeRenderError().empty());
+
+    EXPECT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+    EXPECT_EQ(engines + 1, _renderer.getEngineCount());
+}
+
+// applyStormPtexBudget reaches the engine's resource registry through a delegate of its own given
+// the engine's Hgi, which only works while Storm shares one registry per Hgi. Neither the engine's
+// delegate nor the registry's per-type memory request can be read back, so the sharing is all that
+// can be checked.
+TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
+{
+    if (_skip) {
+        return;
+    }
+    PXR_NS::UsdImagingGLEngine::Parameters parameters;
+    parameters.rendererPluginId = PXR_NS::TfToken(kRenderDelegateStormId);
+    std::unique_ptr<PXR_NS::UsdImagingGLEngine> engine(new PXR_NS::UsdImagingGLEngine(parameters));
+    PXR_NS::Hgi* hgi = engine->GetHgi();
+    ASSERT_TRUE(hgi != nullptr);
+
+    {
+        // The delegates release their registry in their destructors, which needs the Hgi the
+        // engine owns, so they must be gone before the engine is.
+        PXR_NS::HdDriver driver { PXR_NS::HgiTokens->renderDriver, PXR_NS::VtValue(hgi) };
+        PXR_NS::HdStRenderDelegate first;
+        PXR_NS::HdStRenderDelegate second;
+        first.SetDrivers({ &driver });
+        second.SetDrivers({ &driver });
+
+        ASSERT_TRUE(first.GetResourceRegistry() != nullptr);
+        EXPECT_EQ(first.GetResourceRegistry().get(), second.GetResourceRegistry().get());
+    }
+
+    engine.reset();
 }

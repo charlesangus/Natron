@@ -40,7 +40,6 @@
 #include <QTemporaryDir>
 
 #include <ofxImageEffect.h>
-#include <ofxMetadata.h>
 
 #include "BaseTest.h"
 #include "RenderBothWays.h"
@@ -594,7 +593,7 @@ TEST_F(NativeReadViewsTest, AViewVariableReadsEachViewsOwnFile)
     for (int v = 0; v < 2; ++v) {
         SCOPED_TRACE(views[v]);
         expectLayer(node, v, ImageLayerDesc::getRGBAComponents(), (FileView)v, eColour);
-        const std::optional<std::string> path = effect->getOutputMetadata(1., ViewIdx(v)).getString(kOfxMetadataKeyFilePath);
+        const std::optional<std::string> path = effect->getOutputMetadata(1., ViewIdx(v)).getString(kNatronMetadataKeyFilePath);
         ASSERT_TRUE(path.has_value());
         EXPECT_EQ(paths[v], *path);
         EXPECT_EQ(std::vector<std::string>(v == 1 ? 1 : 0, "diffuse"), layerIDs(producedLayers(node, v)));

@@ -63,9 +63,10 @@ void releaseCpuRenderEngines();
 void releaseLiveTextures();
 
 /**
- * @brief Registers the natron:// asset resolver and image reader with OpenUSD, from the plugInfo.json
- * in Resources/usd/natronLiveTexture beside the executable. OpenUSD reads which resolvers and image
- * readers exist once, so this must run before anything asks it for one. Runs once; returns false,
+ * @brief Registers the natron:// asset resolver and image reader and the Natron Utility renderer with
+ * OpenUSD, from the plugInfo.json in Resources/usd/natronLiveTexture beside the executable. OpenUSD
+ * reads which resolvers, image readers and renderers exist once, so this must run before anything
+ * asks it for one. Runs once; returns false,
  * with errorMessage set if not null, when the registration failed. MT-safe.
  **/
 bool registerLiveTextures(std::string* errorMessage);

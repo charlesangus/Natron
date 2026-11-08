@@ -120,6 +120,12 @@ private:
 
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
+    // The file may author render settings prims and the stage's active one.
+    virtual bool mayAuthorUntrackedRenderSettings() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
     // Use File's Metrics For Project is enabled while the File knob names a single file.

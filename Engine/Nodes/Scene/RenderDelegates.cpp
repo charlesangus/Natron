@@ -25,6 +25,7 @@
 
 #include "RenderDelegates.h"
 
+#include <functional>
 #include <mutex>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -38,6 +39,8 @@
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hf/pluginDesc.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
+
+#include "Engine/Nodes/Scene/SceneCaches.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -120,6 +123,9 @@ list()
 
     if (!gListed) {
         gListed = true;
+        // Hydra discovers its renderers once, and the first to ask may precede the application's own
+        // registration of the utility renderer. The failure, if any, is reported by that registration.
+        SceneCaches::registerLiveTextures(nullptr);
         HfPluginDescVector descs;
         HdRendererPluginRegistry::GetInstance().GetPluginDescs(&descs);
         bool haveStorm = false;
@@ -178,6 +184,32 @@ void
 registerPluginDirectory(const std::string& path)
 {
     (void)PlugRegistry::GetInstance().RegisterPlugins(path);
+}
+
+namespace {
+    std::mutex gRenderFaultHookMutex;
+    std::function<void()> gRenderFaultHook;
+} // namespace
+
+void
+setRenderFaultHook(std::function<void()> hook)
+{
+    std::lock_guard<std::mutex> lock(gRenderFaultHookMutex);
+
+    gRenderFaultHook = std::move(hook);
+}
+
+void
+runRenderFaultHook()
+{
+    std::function<void()> hook;
+    {
+        std::lock_guard<std::mutex> lock(gRenderFaultHookMutex);
+        hook = gRenderFaultHook;
+    }
+    if (hook) {
+        hook();
+    }
 }
 } // namespace RenderDelegates
 

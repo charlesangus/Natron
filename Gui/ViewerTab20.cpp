@@ -181,57 +181,69 @@ ViewerTab::drawOverlays(double time,
 } // ViewerTab::drawOverlays
 
 bool
-ViewerTab::notifyOverlaysPenDown_internal(const NodePtr& node,
-                                          const RenderScale & renderScale,
-                                          PenType pen,
-                                          const QPointF & viewportPos,
-                                          const QPointF & pos,
-                                          double pressure,
-                                          double timestamp)
+ViewerTab::overlayTimeAndPosition(const NodePtr& node,
+                                  const QPointF& pos,
+                                  double* time,
+                                  QPointF* transformPos)
 {
-    QPointF transformPos;
-    double time = getGui()->getApp()->getTimeLine()->currentFrame();
-    ViewIdx view = getCurrentView();
-
-
+    *time = getGui()->getApp()->getTimeLine()->currentFrame();
 #ifndef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-    transformPos = pos;
+    Q_UNUSED(node);
+    *transformPos = pos;
 #else
+    ViewIdx view = getCurrentView();
     double transformedTime;
-    bool ok = _imp->getTimeTransform(time, view, node, getInternalNode(), &transformedTime);
+    bool ok = _imp->getTimeTransform(*time, view, node, getInternalNode(), &transformedTime);
     if (ok) {
         /*
          * Do not allow interaction with retimed interacts otherwise the user may end up modifying keyframes at unexpected
          * (or invalid for floating point) frames, which may be confusing. Rather we indicate with the overlay color hint
          * that interact is not editable when it is retimed.
          */
-        if (time != transformedTime) {
+        if (*time != transformedTime) {
             return false;
         }
-        time = transformedTime;
+        *time = transformedTime;
     }
 
     Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
-    ok = _imp->getOverlayTransform(time, view, node, getInternalNode(), &mat);
+    ok = _imp->getOverlayTransform(*time, view, node, getInternalNode(), &mat);
     if (!ok) {
-        transformPos = pos;
+        *transformPos = pos;
     } else {
         mat = Transform::matInverse(mat);
-        {
-            Transform::Point3D p;
-            p.x = pos.x();
-            p.y = pos.y();
-            p.z = 1;
-            p = Transform::matApply(mat, p);
-            if (p.z < 0) {
-                // the transformed position has a negative z, don't send it
-                return false;
-            }
-            transformPos.rx() = p.x / p.z;
-            transformPos.ry() = p.y / p.z;
+        Transform::Point3D p;
+        p.x = pos.x();
+        p.y = pos.y();
+        p.z = 1;
+        p = Transform::matApply(mat, p);
+        if (p.z < 0) {
+            // the transformed position has a negative z, don't send it
+            return false;
         }
+        transformPos->rx() = p.x / p.z;
+        transformPos->ry() = p.y / p.z;
     }
 #endif
+
+    return true;
+}
+
+bool
+ViewerTab::notifyOverlaysPenDown_internal(const NodePtr& node,
+                                          const RenderScale& renderScale,
+                                          PenType pen,
+                                          const QPointF& viewportPos,
+                                          const QPointF& pos,
+                                          double pressure,
+                                          double timestamp)
+{
+    QPointF transformPos;
+    double time;
+    ViewIdx view = getCurrentView();
+    if (!overlayTimeAndPosition(node, pos, &time, &transformPos)) {
+        return false;
+    }
 
     bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(node);
     if (!isInActiveViewerUI) {
@@ -300,6 +312,63 @@ ViewerTab::notifyOverlaysPenDown(const RenderScale & renderScale,
     getGui()->getApp()->clearOverlayRedrawRequests();
 
     return false;
+}
+
+bool
+ViewerTab::overlaysClaimAltPenDown(const QPointF& pos,
+                                   double timestamp)
+{
+    if (!getGui()->getApp() || getGui()->getApp()->isClosing() || getGui()->getApp()->isShowingDialog()) {
+        return false;
+    }
+
+    NodesList nodes;
+    getGui()->getNodesEntitledForOverlays(nodes);
+
+    ViewIdx view = getCurrentView();
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        double transformedTime;
+        bool ok = _imp->getTimeTransform(timestamp, view, *it, getInternalNode(), &transformedTime);
+        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
+            continue;
+        }
+        if (_imp->hasInactiveNodeViewerContext(*it)) {
+            continue;
+        }
+        double time;
+        QPointF transformPos;
+        if (!overlayTimeAndPosition(*it, pos, &time, &transformPos)) {
+            continue;
+        }
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        assert(effect);
+        effect->setCurrentViewportForOverlays_public(_imp->viewer);
+        if (effect->onOverlayClaimsAltPenDown(time, transformPos)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+ViewerTab::notifyOverlaysPenDownModifiers(Qt::KeyboardModifiers modifiers)
+{
+    if (!getGui()->getApp() || getGui()->getApp()->isClosing()) {
+        return;
+    }
+
+    const KeyboardModifiers natronMods = QtEnumConvert::fromQtModifiers(modifiers);
+    NodesList nodes;
+    getGui()->getNodesEntitledForOverlays(nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (_imp->hasInactiveNodeViewerContext(*it)) {
+            continue;
+        }
+        EffectInstancePtr effect = (*it)->getEffectInstance();
+        assert(effect);
+        effect->onOverlayPenDownModifiers(natronMods);
+    }
 }
 
 bool
@@ -687,10 +756,11 @@ ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
     return didSomething;
 } // ViewerTab::notifyOverlaysPenUp
 
-bool
-ViewerTab::checkNodeViewerContextShortcuts(const NodePtr& node,
-                                           Qt::Key qKey,
-                                           const Qt::KeyboardModifiers& mods)
+KnobIPtr
+ViewerTab::findNodeViewerContextShortcut(const NodePtr& node,
+                                         Qt::Key qKey,
+                                         const Qt::KeyboardModifiers& mods,
+                                         NodeViewerContextPtr* contextOut)
 {
     // Intercept plug-in defined shortcuts
     NodeViewerContextPtr context;
@@ -708,7 +778,7 @@ ViewerTab::checkNodeViewerContextShortcuts(const NodePtr& node,
 
     // This is not an active node on the viewer ui, don't trigger any shortcuts
     if (!context) {
-        return false;
+        return KnobIPtr();
     }
 
     EffectInstancePtr effect = node->getEffectInstance();
@@ -722,33 +792,85 @@ ViewerTab::checkNodeViewerContextShortcuts(const NodePtr& node,
             }
             if ( isKeybind(pluginShortcutGroup, (*it)->getName(), mods, qKey) ) {
                 // This only works for groups and buttons, as defined in the spec
-                KnobButton* isButton = dynamic_cast<KnobButton*>( it->get() );
-                KnobGroup* isGrp = dynamic_cast<KnobGroup*>( it->get() );
-                bool ret = false;
-
-                if (isButton) {
-                    if ( isButton->getIsCheckable() ) {
-                        isButton->setValue(!isButton->getValue(), ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
-
-                        //Refresh the button state, because the setValue with reason eValueChangedReasonUserEdited will skip refreshing the UI
-                        isButton->getSignalSlotHandler()->s_valueChanged(ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited);
-                        ret = true;
-                    } else {
-                        ret = isButton->trigger();
-                    }
-                } else if (isGrp) {
-                    // This can only be a toolbutton, notify the NodeViewerContext
-                    context->onToolButtonShortcutPressed( QString::fromUtf8( isGrp->getName().c_str() ) );
-                    ret = true;
+                if (!dynamic_cast<KnobButton*>(it->get()) && !dynamic_cast<KnobGroup*>(it->get())) {
+                    return KnobIPtr();
+                }
+                if (contextOut) {
+                    *contextOut = context;
                 }
 
-                return ret;
+                return *it;
             }
         }
     }
 
-    return false;
+    return KnobIPtr();
+}
+
+bool
+ViewerTab::checkNodeViewerContextShortcuts(const NodePtr& node,
+                                           Qt::Key qKey,
+                                           const Qt::KeyboardModifiers& mods)
+{
+    NodeViewerContextPtr context;
+    KnobIPtr knob = findNodeViewerContextShortcut(node, qKey, mods, &context);
+
+    if (!knob) {
+        return false;
+    }
+    KnobButton* isButton = dynamic_cast<KnobButton*>(knob.get());
+    KnobGroup* isGrp = dynamic_cast<KnobGroup*>(knob.get());
+    bool ret = false;
+
+    if (isButton) {
+        if (isButton->getIsCheckable()) {
+            isButton->setValue(!isButton->getValue(), ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
+
+            // Refresh the button state, because the setValue with reason eValueChangedReasonUserEdited will skip refreshing the UI
+            isButton->getSignalSlotHandler()->s_valueChanged(ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited);
+            ret = true;
+        } else {
+            ret = isButton->trigger();
+        }
+    } else if (isGrp) {
+        // This can only be a toolbutton, notify the NodeViewerContext
+        context->onToolButtonShortcutPressed(QString::fromUtf8(isGrp->getName().c_str()));
+        ret = true;
+    }
+
+    return ret;
 } // ViewerTab::checkNodeViewerContextShortcuts
+
+bool
+ViewerTab::claimShortcutOverride(QKeyEvent* e)
+{
+    Gui* gui = getGui();
+    if (!gui) {
+        return false;
+    }
+    GuiAppInstancePtr app = gui->getApp();
+    if (!app || app->isClosing()) {
+        return false;
+    }
+    // A key bound to an active interact (Roto's V picks its drawing tools) goes to the viewer's
+    // keyPressEvent rather than to a global action on the same key.
+    Qt::Key qKey = (Qt::Key)e->key();
+    Qt::KeyboardModifiers qMods = e->modifiers();
+    NodesList nodes;
+    gui->getNodesEntitledForOverlays(nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        if (_imp->hasInactiveNodeViewerContext(*it)) {
+            continue;
+        }
+        if (findNodeViewerContextShortcut(*it, qKey, qMods, 0)) {
+            e->accept();
+
+            return true;
+        }
+    }
+
+    return false;
+}
 
 bool
 ViewerTab::notifyOverlaysKeyDown_internal(const NodePtr& node,

@@ -1,4 +1,5 @@
 import pixelwrap;
+import exactdivide;
 
 // The HSVTool, HueCorrect and HSVKeyer nodes, with HSVTool.cpp, HueCorrect.cpp, HSVKeyer.cpp and
 // HueCurves.h written the same way, one rounding per statement, so the CPU and the GPU agree to
@@ -13,18 +14,18 @@ float hueHexHue(float3 v, float maxv, float delta)
     if (v.r == maxv)
     {
         precise float d = v.g - v.b;
-        h = d / delta;
+        h = divideRounded(d, delta);
     }
     else if (v.g == maxv)
     {
         precise float d = v.b - v.r;
-        precise float q = d / delta;
+        precise float q = divideRounded(d, delta);
         h = 2.0 + q;
     }
     else
     {
         precise float d = v.r - v.g;
-        precise float q = d / delta;
+        precise float q = divideRounded(d, delta);
         h = 4.0 + q;
     }
     if (h < 0.0)
@@ -109,7 +110,7 @@ float hueArcRise(float hIn, float h0, float h1In)
     }
     precise float n = h - h0;
     precise float d = h1 - h0;
-    precise float o = n / d;
+    precise float o = divideRounded(n, d);
     return o;
 }
 
@@ -129,7 +130,7 @@ float hueArcFall(float hIn, float h0, float h1In)
     }
     precise float n = h1 - h;
     precise float d = h1 - h0;
-    precise float o = n / d;
+    precise float o = divideRounded(n, d);
     return o;
 }
 
@@ -141,7 +142,7 @@ float hueTrapezoid4(float x, float a, float b, float c, float d)
     {
         precise float n = x - a;
         precise float w = b - a;
-        precise float o = n / w;
+        precise float o = divideRounded(n, w);
         return o;
     }
     if (x <= c)
@@ -150,7 +151,7 @@ float hueTrapezoid4(float x, float a, float b, float c, float d)
     {
         precise float n = d - x;
         precise float w = d - c;
-        precise float o = n / w;
+        precise float o = divideRounded(n, w);
         return o;
     }
     return 0.0;
@@ -188,13 +189,13 @@ float hsvRangeCoeff(float x, float lo, float hi, float loR, float hiR, float r)
     if ((loR <= x) && (x <= lo))
     {
         precise float n = x - loR;
-        precise float o = n / r;
+        precise float o = divideRounded(n, r);
         return o;
     }
     if ((hi <= x) && (x <= hiR))
     {
         precise float n = hiR - x;
-        precise float o = n / r;
+        precise float o = divideRounded(n, r);
         return o;
     }
     return 0.0;
@@ -231,7 +232,7 @@ struct HsvToolOp : IPixelOp
             h = h - 1.0;
         precise float s = 0.0;
         if (maxv > 0.0)
-            s = delta / maxv;
+            s = divideRounded(delta, maxv);
         const float val = maxv;
 
         float hc = 1.0;
@@ -393,7 +394,7 @@ struct HueCorrectOp : IPixelOp
         {
             precise float s1 = c.r + c.g;
             precise float s = s1 + c.b;
-            precise float o = s / 3.0;
+            precise float o = divideRounded(s, 3.0);
             return o;
         }
         if (lumaKind == 2)
@@ -417,7 +418,7 @@ struct HueCorrectOp : IPixelOp
         const float h0 = hueHexHue(v.rgb, maxv, delta);
         precise float s = 0.0;
         if (maxv > 0.0)
-            s = delta / maxv;
+            s = divideRounded(delta, maxv);
         const float x = hcCurvePosition(h0);
         float k[10];
         for (uint curve = 0; curve < 10; ++curve)
@@ -456,9 +457,9 @@ struct HueCorrectOp : IPixelOp
             precise float nr = thr + tr;
             precise float ng = thr + tg;
             precise float nb = thr + tb;
-            precise float qr = nr / s;
-            precise float qg = ng / s;
-            precise float qb = nb / s;
+            precise float qr = divideRounded(nr, s);
+            precise float qg = divideRounded(ng, s);
+            precise float qb = divideRounded(nb, s);
             r = r * qr;
             g = g * qg;
             b = b * qb;
@@ -493,7 +494,7 @@ struct HueCorrectOp : IPixelOp
             }
             else
             {
-                precise float q = lIn / lOut;
+                precise float q = divideRounded(lIn, lOut);
                 precise float q1 = q - 1.0;
                 precise float mq = mixLuminance * q1;
                 precise float f = 1.0 + mq;
@@ -580,7 +581,7 @@ float hueAtanUnit(float tIn)
     {
         precise float num = t - 1.0;
         precise float den = t + 1.0;
-        t = num / den;
+        t = divideRounded(num, den);
         base = 0.7853981852531433;
     }
     precise float z = t * t;
@@ -607,12 +608,12 @@ float hueAtan2Turns(float y, float x)
     precise float a;
     if (ay <= ax)
     {
-        precise float q = ay / ax;
+        precise float q = divideRounded(ay, ax);
         a = hueAtanUnit(q);
     }
     else
     {
-        precise float q = ax / ay;
+        precise float q = divideRounded(ax, ay);
         precise float t = hueAtanUnit(q);
         a = 1.5707963705062866 - t;
     }
@@ -633,7 +634,7 @@ float hueKeyFade(float c, float edge)
         return 0.0;
     if (c >= edge)
         return 1.0;
-    precise float t = c / edge;
+    precise float t = divideRounded(c, edge);
     precise float t2 = t * t;
     precise float tt = t + t;
     precise float u = 3.0 - tt;
@@ -715,7 +716,7 @@ struct HSVKeyerOp : IPixelOp
             const float h = hueHexHue(v.rgb, maxv, delta);
             precise float relative = 0.0;
             if (maxv > 0.0)
-                relative = delta / maxv;
+                relative = divideRounded(delta, maxv);
             if (model == kHkModelHsl)
             {
                 precise float sum = maxv + minv;
@@ -723,7 +724,7 @@ struct HSVKeyerOp : IPixelOp
                 precise float den = (l <= 0.5) ? sum : (2.0 - sum);
                 precise float s = 0.0;
                 if (den != 0.0)
-                    s = delta / den;
+                    s = divideRounded(delta, den);
                 comps = float3(h, s, l);
             }
             else

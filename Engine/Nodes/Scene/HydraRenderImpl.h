@@ -32,12 +32,20 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
+#include <pxr/base/vt/value.h>
+
+PXR_NAMESPACE_OPEN_SCOPE
+class UsdImagingGLEngine;
+class UsdImagingGLRenderParams;
+PXR_NAMESPACE_CLOSE_SCOPE
 
 NATRON_NAMESPACE_ENTER
 
@@ -78,7 +86,9 @@ enum FitModeEnum {
     // The aperture's width is kept and its height follows the format (CameraUtilMatchHorizontally).
     eFitModeHorizontal,
     // The aperture's height is kept and its width follows the format (CameraUtilMatchVertically).
-    eFitModeVertical
+    eFitModeVertical,
+    // The aperture grows to the format's aspect, so all of it is seen (CameraUtilFit).
+    eFitModeExpand
 };
 
 /**
@@ -109,7 +119,7 @@ float hashToFloat(std::uint32_t hash) WARN_UNUSED_RETURN;
 
 struct Request {
     // Whose stage and engine render it. A request of the owner's last render with the same stack,
-    // time, camera, size and headlight, and no barrier write since, reuses that render, so the
+    // time, camera, size, headlight and purposes, and no barrier write since, reuses that render, so the
     // planes of a frame asked for one by one cost one Storm render.
     const void* owner = nullptr;
     ScenePayload scene;
@@ -120,11 +130,26 @@ struct Request {
     // Whether a light at the camera lights the scene too. Without it, only the scene's own lights
     // do, and a scene with none renders its lit surfaces black.
     bool headlight = false;
+    // Which prims of a purpose other than default are drawn. Default-purpose prims always are.
+    bool showRender = true;
+    bool showProxy = false;
+    bool showGuides = false;
     // The render delegate's plug-in id. One that is not installed or cannot render here fails the
     // render with an error naming it, before any engine is made: there is no fallback.
     std::string renderer = kRenderDelegateStormId;
-    // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
+    // Polled on the calling thread while a render that is not Storm's runs; true stops the delegate
+    // and cancels the render. A delegate's stop waits for what cannot be interrupted to finish.
     std::function<bool()> aborted;
+    // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
+    // calling task; any count when 0. Cycles and MoonRay take it when an engine is made. Every
+    // Cycles session of the process shares one count, the one asked for last (getCyclesThreads()):
+    // a change of this asks for it, and the Cycles engines made under another, the viewers'
+    // included, are made again.
+    int threads = 0;
+    // The delegate's settings (UsdImagingGLEngine::SetRendererSetting) that differ from its
+    // defaults. The owner's engine is made again when they change: Cycles restarts a converged
+    // render only for some of its settings.
+    std::map<std::string, PXR_NS::VtValue> settings;
 };
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
@@ -133,6 +158,14 @@ struct Result {
     std::vector<float> depth; // the distance along the camera's view axis, +inf where nothing was hit
     std::vector<float> primId; // hashToFloat(primPathHash(path)), 0 where nothing was hit
     std::map<std::uint32_t, std::string> primPaths; // the paths of the hashes primId holds
+    // 3 per pixel: the shading normal in camera space, 0 where nothing was hit. Empty when the
+    // delegate renders no normal AOV, as Storm.
+    std::vector<float> normal;
+    // What the delegate cannot render of the scene, one line per kind of prim, material or light,
+    // for the node's warning; empty if it renders everything or is not checked, as Storm.
+    std::string warning;
+    // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
+    std::string errors;
 };
 
 /**
@@ -147,7 +180,8 @@ bool render(const Request& request,
 enum PlaneEnum {
     ePlaneColor = 0,
     ePlaneDepth,
-    ePlanePrimId
+    ePlanePrimId,
+    ePlaneNormal
 };
 
 /**
@@ -230,6 +264,33 @@ bool renderWindow(const Request& request,
 // Whether the render thread's context packs windows on the GPU, making it if need be.
 bool packsOnGpu();
 
+/**
+ * @brief Render settings every engine of renderer gets on top of its request's; for tests, to fix
+ * a path tracer's sample count and seed whatever the node's knobs say.
+ **/
+void setRendererSettings(const std::string& renderer,
+                         const std::map<std::string, PXR_NS::VtValue>& settings);
+
+/**
+ * @brief Has engine, a renderer engine, draw the purposes asked for in params. Natron Utility is made
+ * to sync every purpose and told which to draw, so a purpose toggle builds no geometry there.
+ **/
+void setPurposes(PXR_NS::UsdImagingGLEngine* engine,
+                 const std::string& renderer,
+                 bool showRender,
+                 bool showProxy,
+                 bool showGuides,
+                 PXR_NS::UsdImagingGLRenderParams* params);
+
+/**
+ * @brief The setting key of owner's engine as its delegate reports it
+ * (UsdImagingGLEngine::GetRendererSetting), waiting for the engine's thread. False if owner has
+ * no engine.
+ **/
+bool engineSetting(const void* owner,
+                   const std::string& key,
+                   PXR_NS::VtValue* value) WARN_UNUSED_RETURN;
+
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);
 
@@ -255,8 +316,175 @@ std::size_t getCpuEngineCount();
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
 
+/**
+ * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is
+ * process-wide, and the first live session fixes it for all. It is the count asked for last, by a
+ * USDRender render whose Request::threads changed or by a ProgressiveRender whose setThreads()
+ * budget changed; on a change every Cycles engine made under another is dropped at its holder's
+ * next render or pass and made again, and none is made while one of another count lives.
+ **/
+int getCyclesThreads();
+
 // The description of the render thread's context, making it if need be; empty if it cannot be.
 std::string contextDescription(std::string* error);
+
+/**
+ * @brief A render of a delegate other than Storm refined in the background, as a viewport shows a
+ * path tracer: each edit of the stage, view or sample cap restarts it, and it refines until the
+ * delegate converges or reaches the cap, or until stop().
+ *
+ * A worker thread owns the engine (made without the GPU, as the CPU delegates' render thread
+ * makes its own) and polls it: a path tracer renders on threads of its own between Render() calls,
+ * each of which syncs the stage's changes into it. After each poll whose sample count moved it
+ * publishes the colour, over a background and encoded to sRGB, and the depth, as the window depth
+ * of the frame's projection, and calls the listener on the worker. Natron Utility, which has no
+ * samples to refine, publishes only its finished frames.
+ *
+ * Edits coalesce: a restart waits until no edit has come for a short quiet time, or until the first
+ * waiting one is a bounded time old, so that a burst of edits restarts once and a camera dragged
+ * without pause still restarts several times a second. A pass that was under way when an edit came
+ * is never published, and neither are the delegate's pixels from before a restart. A delegate that
+ * can stop is stopped as soon as an edit or stop() comes, ahead of the quiet time and holding no lock.
+ *
+ * The worker, and the threads the delegate starts from it, run at a lowered priority, which is what
+ * keeps the interface responsive: a Cycles engine renders on the process' one Cycles thread count
+ * (getCyclesThreads()), which the setThreads() budget asks for but another render may have
+ * asked for since.
+ *
+ * A delegate that cannot start, that throws, whose AOVs cannot be read or whose render session broke
+ * fails: Status::error says why, the engine goes, and the listener is called. It stays failed until
+ * the next invalidate(), setSettings() or setMaxSamples() that changes something, which try it
+ * again with a new engine, or until another renderer is set; setView() does not.
+ *
+ * The stage is read, and the engine renders, under the lock given at construction, the one that
+ * guards the stage's edits; nothing else of the class takes that lock while holding its own.
+ **/
+class ProgressiveRender {
+public:
+    struct View {
+        PXR_NS::GfFrustum frustum;
+        int width = 0;
+        int height = 0;
+        PXR_NS::UsdTimeCode time;
+        bool showRender = false;
+        bool showProxy = true;
+        bool showGuides = false;
+
+        bool operator==(const View& other) const;
+        bool operator!=(const View& other) const
+        {
+            return !(*this == other);
+        }
+    };
+
+    struct Frame {
+        int width = 0;
+        int height = 0;
+        // 4 bytes per pixel, the bottom row first: the colour over the background, sRGB encoded.
+        std::vector<unsigned char> rgba;
+        // 1 per pixel: the window depth in the view's projection, 1 where nothing was hit.
+        std::vector<float> depth;
+        // The delegate's sample count when the frame was read, -1 if it reports none.
+        int samples = -1;
+        int maxSamples = 0;
+        bool converged = false;
+        // Which restart the frame belongs to (getRestartCount() then), and its rank among the
+        // frames published.
+        std::uint64_t restart = 0;
+        std::uint64_t serial = 0;
+        // The edits made before its pass, for pick().
+        std::uint64_t generation = 0;
+    };
+
+    struct Status {
+        // A delegate other than Storm is set and has a stage to render.
+        bool active = false;
+        bool stopped = false;
+        bool converged = false;
+        // The engine's sample count at the last poll, -1 if unknown.
+        int samples = -1;
+        int maxSamples = 0;
+        std::uint64_t restarts = 0;
+        std::uint64_t frames = 0;
+        // Why the delegate cannot render, empty if it can.
+        std::string error;
+    };
+
+    /**
+     * @brief stage, called on the worker with *stageLock held, gives the stage to render, null for
+     * none. listener is called on the worker after each frame is published and when the delegate
+     * fails. background is the
+     * linear grey the colour is composited over.
+     **/
+    ProgressiveRender(std::mutex* stageLock,
+                      const std::function<PXR_NS::UsdStageRefPtr()>& stage,
+                      const std::function<void()>& listener,
+                      float background);
+
+    // Stops the delegate's threads and drops the engine, on the worker, then joins it.
+    ~ProgressiveRender();
+
+    /**
+     * @brief Renders with the delegate id from now on; the engine of another is dropped first.
+     * Storm's id, or an empty one, makes it idle and frees the engine and its threads.
+     **/
+    void setRenderer(const std::string& id);
+
+    /**
+     * @brief The threads a Cycles engine of this should render on, any count for 0: called on the
+     * worker before its passes, which ask getCyclesThreads() for it when it changes.
+     **/
+    void setThreads(const std::function<int()>& threads);
+
+    // Restarts when view differs from the last one set.
+    void setView(const View& view);
+
+    // Restarts: the stage was edited in a way its change notices do not show.
+    void invalidate();
+
+    /**
+     * @brief The renderer settings of the stage's active render settings prim for the renderer
+     * (RenderSettingsPrim::settings()), set on its engine before it renders. A change makes
+     * the engine again, keeping the frame shown until the next one; the same settings change
+     * nothing. The sample cap of setMaxSamples() applies over the prim's samples.
+     **/
+    void setSettings(const std::map<std::string, PXR_NS::VtValue>& settings);
+
+    // The sample cap; <= 0 for the delegate's default, the prim's samples if it sets them. A change restarts.
+    void setMaxSamples(int samples);
+
+    // The cap in force: the one set, or the delegate's default once its engine is made, else 0.
+    int getMaxSamples() const;
+
+    // Pauses the delegate where it is, keeping its samples; resume() continues from them.
+    void stop();
+    void resume();
+
+    Status getStatus() const;
+
+    // The last frame published, null before the first.
+    std::shared_ptr<const Frame> getFrame() const;
+
+    // How many renders have been started, the first included.
+    std::uint64_t getRestartCount() const;
+
+    /**
+     * @brief The path of the prim drawn at the pixel (x, y) of frame, one getFrame() gave, counted
+     * from its bottom-left pixel, or empty. Empty too once the render was edited since frame's pass:
+     * the engine's IDs are then of another render than the pixels frame shows. Takes the stage lock.
+     **/
+    std::string pick(const Frame& frame,
+                     int x,
+                     int y);
+
+    // How many workers are alive in the process, for leak checks.
+    static int getLiveCount();
+
+    struct Implementation;
+
+private:
+    std::unique_ptr<Implementation> _imp;
+};
 } // namespace HydraRender
 
 NATRON_NAMESPACE_EXIT

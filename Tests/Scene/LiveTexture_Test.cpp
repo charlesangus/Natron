@@ -40,6 +40,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -1320,20 +1321,42 @@ TEST_F(LiveTextureTest, TheOtherDelegatesFilterKeepsATransform)
     EXPECT_EQ(PXR_NS::TfToken("UsdTransform2d"), network.nodes.at(PXR_NS::SdfPath("/Material/Transform")).nodeTypeId);
 }
 
-// Delegates must see magenta rather than a file that faults on first touch.
-TEST_F(LiveTextureTest, AFullSharedMemoryReachesMagentaWithTheReason)
+// The render stops on the no-room note, so the delegate keeps the image it already has: magenta
+// would flash for a frame that is never shown.
+TEST_F(LiveTextureTest, AFullSharedMemoryKeepsTheHeldFileInTheNetwork)
 {
     LiveTextureStore& store = LiveTextureStore::instance();
-    const std::string uri = uriOf("TooBig");
+    const std::string fits = LiveTextureSource::makeUri("Plate", "rgba", 0x5000ULL);
+    const std::string tooBig = LiveTextureSource::makeUri("Plate", "rgba", 0x5001ULL);
+    const auto filter = LiveTextureSceneIndex::makeMaterialFilter();
 
-    store.insert(uri, makeOversizedBuffer());
-    PXR_NS::HdMaterialNetwork2 network = makeTexturedNetwork(uri, "diffuseColor", "rgb");
-    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &network);
+    store.insert(fits, makeGradient(8, 8));
+    PXR_NS::HdMaterialNetwork2 first = makeTexturedNetwork(fits, "diffuseColor", "rgb");
+    applyFilter(filter, &first);
+    ASSERT_TRUE(hasTextureNode(first));
+    const std::string heldPath = first.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[PXR_NS::TfToken("file")].Get<PXR_NS::SdfAssetPath>().GetResolvedPath();
+    ASSERT_FALSE(heldPath.empty());
 
-    EXPECT_FALSE(hasTextureNode(network));
-    const PXR_NS::VtValue diffuse = surfaceParameter(network, "diffuseColor");
-    ASSERT_TRUE(diffuse.IsHolding<PXR_NS::GfVec3f>());
-    EXPECT_EQ(PXR_NS::GfVec3f(kLiveTextureMissingColour[0], kLiveTextureMissingColour[1], kLiveTextureMissingColour[2]), diffuse.UncheckedGet<PXR_NS::GfVec3f>());
-    EXPECT_NE(std::string::npos, store.getFailure(uri).find("does not fit in shared memory")) << store.getFailure(uri);
-    EXPECT_TRUE(store.exportToSharedMemory(uri) == nullptr);
+    store.insert(tooBig, makeOversizedBuffer());
+    const SharedMemoryLimit full(1024 * 1024);
+    PXR_NS::HdMaterialNetwork2 next = makeTexturedNetwork(tooBig, "diffuseColor", "rgb");
+    applyFilter(filter, &next);
+
+    ASSERT_TRUE(hasTextureNode(next));
+    EXPECT_EQ(heldPath, next.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[PXR_NS::TfToken("file")].Get<PXR_NS::SdfAssetPath>().GetResolvedPath());
+    EXPECT_EQ(1u, surfaceConnections(next, "diffuseColor"));
+    EXPECT_TRUE(fileExists(heldPath));
+
+    char needed[64];
+    std::snprintf(needed, sizeof(needed), "needs %.1f MB", double(NatronLiveTexture::fileSize(1 << 20, 1 << 20)) / (1024. * 1024.));
+    const std::string noRoom = store.getNoRoom(tooBig);
+    EXPECT_NE(std::string::npos, noRoom.find("Plate")) << noRoom;
+    EXPECT_NE(std::string::npos, noRoom.find(needed)) << noRoom;
+    EXPECT_NE(std::string::npos, noRoom.find("only 1.0 MB is free")) << noRoom;
+    EXPECT_NE(std::string::npos, noRoom.find("the render stops")) << noRoom;
+
+    // A prim that never had a file has nothing to keep.
+    PXR_NS::HdMaterialNetwork2 unheld = makeTexturedNetwork(tooBig, "diffuseColor", "rgb");
+    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &unheld);
+    EXPECT_FALSE(hasTextureNode(unheld));
 }

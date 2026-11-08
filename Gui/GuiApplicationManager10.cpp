@@ -336,13 +336,13 @@ bool
 GuiApplicationManager::checkGLContextRequirements()
 {
     const GuiGLRequirements::ContextInfo info = GuiGLRequirements::probe();
-#ifdef DEBUG
     // Qt makes the GUI's contexts lazily inside window events, and a software rasterizer compiles shaders
-    // in each, so on one the GUI thread cannot scope its guards to the driver calls.
-    if (OSGLContext::disarmFpTrapsForSoftwareRenderer(info.renderer.toStdString())) {
-        qDebug().noquote() << "Float traps are off on the GUI thread: the GL renderer" << info.renderer << "is software.";
-    }
+    // in each, so on one no guard can be scoped to the driver calls.
+    if (OSGLContext::noteSoftwareRenderer(info.renderer.toStdString())) {
+#ifdef DEBUG
+        qDebug().noquote() << "Float traps are off: the GL renderer" << info.renderer << "is software.";
 #endif
+    }
     const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(info);
     if (verdict.accepted) {
         HydraGLContextQt::install();

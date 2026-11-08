@@ -144,6 +144,7 @@ struct GpuDeviceSummary;
 
 struct GLRendererPick {
     bool enabled = false;
+    bool software = false;
     GLRendererID rendererID;
     std::string reason;
 };
@@ -224,10 +225,10 @@ public:
     static bool isSoftwareRendererName(const std::string& rendererName);
 
     /**
-     * @brief When @p rendererName is a software rasterizer, turns float trapping off for the calling thread for
-     * the rest of its life in a debug build; returns whether it is one.
+     * @brief When @p rendererName is a software rasterizer, calls boost_adaptbx::floating_point::note_software_renderer();
+     * returns whether it is one.
      **/
-    static bool disarmFpTrapsForSoftwareRenderer(const std::string& rendererName);
+    static bool noteSoftwareRenderer(const std::string& rendererName);
 
     /**
      * @brief Returns true if a context is currently set on the current thread.

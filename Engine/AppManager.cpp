@@ -897,6 +897,10 @@ AppManager::loadInternal(const CLArgs& cl)
         // Under Auto the GL suite never uses a software renderer; only NATRON_GPU=force allows one.
         const GLRendererPick glPick = OSGLContext::pickRenderer(_imp->openGLRenderers, chosenDevice, gpuMode == GpuResolvedMode::Force);
         const bool glEnabled = gpuMode != GpuResolvedMode::Off && glPick.enabled && isOpenGLLoaded();
+        // Before the render threads exist: the GL suite's worker contexts are made current and compile on them.
+        if (glEnabled && glPick.software) {
+            boost_adaptbx::floating_point::note_software_renderer();
+        }
         const std::string glStatus = glEnabled ? glPick.reason : "GL suite disabled (" + glPick.reason + ")";
         _imp->renderingContextPool->setRenderingState(glEnabled, glPick.rendererID, glStatus);
         _imp->_settings->setGpuStatus(_imp->renderingContextPool->getRendererStatus());

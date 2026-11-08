@@ -458,7 +458,8 @@ GpuRuntime::build()
     }
     if (device_->info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
         // lavapipe compiles shaders on whichever thread drives it, with Mesa's compilers raising float
-        // exceptions. Disarmed before the transfer threads start, as they inherit this thread's float environment.
+        // exceptions. Disarmed before the transfer threads start, as they inherit this thread's float environment;
+        // the caller decides whether the device is kept and so whether the whole process follows.
         boost_adaptbx::floating_point::disarm_trapping_for_thread();
     }
     if (GpuStatus s = GpuTransfer::create(*device_, options_.transfer, transfer_); !s) {

@@ -23,6 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <cfenv>
 #include <thread>
 
 #include "Global/FloatingPointExceptions.h"
@@ -35,25 +36,92 @@ NATRON_NAMESPACE_USING
 
 namespace fp = boost_adaptbx::floating_point;
 
+namespace {
+
+const int kAllTraps = fp::exception_trapping::division_by_zero | fp::exception_trapping::invalid | fp::exception_trapping::overflow;
+
+struct TrapState {
+    bool divisionByZero = false;
+    bool invalid = false;
+    bool overflow = false;
+};
+
+TrapState
+trapState()
+{
+    return TrapState { fp::is_division_by_zero_trapped(), fp::is_invalid_trapped(), fp::is_overflow_trapped() };
+}
+
+#ifdef DEBUG
+bool
+anyTrapped(const TrapState& s)
+{
+    return s.divisionByZero || s.invalid || s.overflow;
+}
+#endif
+
+bool
+allTrapped(const TrapState& s)
+{
+    return s.divisionByZero && s.invalid && s.overflow;
+}
+
+// The switch is process-wide and the GPU tests in this binary may have set it.
+class SoftwareRendererSwitch {
+public:
+    explicit SoftwareRendererSwitch(bool present)
+        : _previous(fp::software_renderer_present().exchange(present))
+    {
+    }
+
+    ~SoftwareRendererSwitch()
+    {
+        fp::software_renderer_present().store(_previous);
+    }
+
+    SoftwareRendererSwitch(const SoftwareRendererSwitch&) = delete;
+    SoftwareRendererSwitch& operator=(const SoftwareRendererSwitch&) = delete;
+
+private:
+    bool _previous;
+};
+
+// Arms a thread of its own and returns its traps after it notes rendererName.
+bool
+noteOnArmedThread(const std::string& rendererName,
+                  TrapState* after)
+{
+    bool software = false;
+    std::thread t([&] {
+        fp::exception_trapping armed(kAllTraps);
+        software = OSGLContext::noteSoftwareRenderer(rendererName);
+        *after = trapState();
+    });
+    t.join();
+
+    return software;
+}
+}
+
 // A debug Natron arms these traps for the whole process and, on a hardware renderer, disarms them only
 // around driver calls, so a guard that outlived its scope would silence the traps for Natron's own code.
 #ifdef DEBUG
 TEST(FpTrapGuard, DisarmsInScopeAndRearmsAfter)
 {
-    const int all = fp::exception_trapping::division_by_zero | fp::exception_trapping::invalid | fp::exception_trapping::overflow;
-    fp::exception_trapping armed(all);
-    ASSERT_TRUE(fp::is_division_by_zero_trapped());
-    ASSERT_TRUE(fp::is_invalid_trapped());
-    ASSERT_TRUE(fp::is_overflow_trapped());
-    {
-        const fp::FpTrapGuard noTraps;
-        EXPECT_FALSE(fp::is_division_by_zero_trapped());
-        EXPECT_FALSE(fp::is_invalid_trapped());
-        EXPECT_FALSE(fp::is_overflow_trapped());
-    }
-    EXPECT_TRUE(fp::is_division_by_zero_trapped());
-    EXPECT_TRUE(fp::is_invalid_trapped());
-    EXPECT_TRUE(fp::is_overflow_trapped());
+    const SoftwareRendererSwitch hardware(false);
+    TrapState inside;
+    TrapState after;
+    std::thread t([&] {
+        fp::exception_trapping armed(kAllTraps);
+        {
+            const fp::FpTrapGuard noTraps;
+            inside = trapState();
+        }
+        after = trapState();
+    });
+    t.join();
+    EXPECT_FALSE(anyTrapped(inside));
+    EXPECT_TRUE(allTrapped(after));
 }
 #else
 TEST(FpTrapGuard, ReleaseGuardLeavesTrapsAlone)
@@ -68,57 +136,91 @@ TEST(FpTrapGuard, ReleaseGuardLeavesTrapsAlone)
 
 #endif
 
-namespace {
-
-struct TrapState {
-    bool divisionByZero = false;
-    bool invalid = false;
-    bool overflow = false;
-};
-
-TrapState
-trapState()
+// A flag a driver raised while the traps were off must not survive their re-arming, where the next
+// float instruction would deliver it as SIGFPE.
+TEST(FpTrapGuard, RearmingDropsFlagsRaisedWhileDisarmed)
 {
-    return TrapState { fp::is_division_by_zero_trapped(), fp::is_invalid_trapped(), fp::is_overflow_trapped() };
-}
-
-// Runs on a thread of its own, as the disarm lasts for the rest of the calling thread's life.
-bool
-disarmOnArmedThread(const std::string& rendererName, TrapState* after)
-{
-    bool software = false;
+    const SoftwareRendererSwitch hardware(false);
+    TrapState armedAfter;
+    int pendingAfter = -1;
     std::thread t([&] {
-        fp::exception_trapping armed(fp::exception_trapping::division_by_zero | fp::exception_trapping::invalid | fp::exception_trapping::overflow);
-        software = OSGLContext::disarmFpTrapsForSoftwareRenderer(rendererName);
-        *after = trapState();
+        fp::exception_trapping armed(kAllTraps);
+        {
+            fp::exception_trapping off(fp::exception_trapping::dont_trap);
+            std::feraiseexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW);
+        }
+        pendingAfter = std::fetestexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW);
+        armedAfter = trapState();
     });
     t.join();
-
-    return software;
-}
-}
-
-TEST(FpTrapGuard, SoftwareRendererDisarmsTheCallingThreadOnly)
-{
-    const TrapState before = trapState();
-    TrapState after;
-    EXPECT_TRUE(disarmOnArmedThread("llvmpipe (LLVM 21.1.0, 256 bits)", &after));
-#ifdef DEBUG
-    EXPECT_FALSE(after.divisionByZero);
-    EXPECT_FALSE(after.invalid);
-    EXPECT_FALSE(after.overflow);
-#endif
-    const TrapState here = trapState();
-    EXPECT_EQ(here.divisionByZero, before.divisionByZero);
-    EXPECT_EQ(here.invalid, before.invalid);
-    EXPECT_EQ(here.overflow, before.overflow);
+    EXPECT_EQ(pendingAfter, 0);
+    EXPECT_TRUE(allTrapped(armedAfter));
 }
 
 TEST(FpTrapGuard, HardwareRendererLeavesTrapsArmed)
 {
+    const SoftwareRendererSwitch hardware(false);
     TrapState after;
-    EXPECT_FALSE(disarmOnArmedThread("AMD Radeon RX 6900 XT (radeonsi, navi21, LLVM 17.0.6, DRM 3.54)", &after));
-    EXPECT_TRUE(after.divisionByZero);
-    EXPECT_TRUE(after.invalid);
-    EXPECT_TRUE(after.overflow);
+    EXPECT_FALSE(noteOnArmedThread("AMD Radeon RX 6900 XT (radeonsi, navi21, LLVM 17.0.6, DRM 3.54)", &after));
+    EXPECT_TRUE(allTrapped(after));
+    EXPECT_FALSE(fp::software_renderer_present().load());
 }
+
+#ifdef DEBUG
+TEST(FpTrapGuard, SoftwareRendererKeepsEveryThreadDisarmed)
+{
+    const SoftwareRendererSwitch hardware(false);
+    TrapState noted;
+    TrapState inheritedByChild;
+    TrapState armedByChild;
+    TrapState afterGuard;
+    TrapState armedByOtherThread;
+    bool software = false;
+    std::thread t([&] {
+        fp::exception_trapping armed(kAllTraps);
+        software = OSGLContext::noteSoftwareRenderer("llvmpipe (LLVM 21.1.0, 256 bits)");
+        noted = trapState();
+        std::thread child([&] {
+            inheritedByChild = trapState();
+            fp::exception_trapping childArmed(kAllTraps);
+            armedByChild = trapState();
+        });
+        child.join();
+        {
+            const fp::FpTrapGuard noTraps;
+        }
+        afterGuard = trapState();
+    });
+    t.join();
+    std::thread other([&] {
+        fp::exception_trapping armed(kAllTraps);
+        armedByOtherThread = trapState();
+    });
+    other.join();
+
+    EXPECT_TRUE(software);
+    EXPECT_TRUE(fp::software_renderer_present().load());
+    EXPECT_FALSE(anyTrapped(noted));
+    EXPECT_FALSE(anyTrapped(inheritedByChild));
+    EXPECT_FALSE(anyTrapped(armedByChild));
+    EXPECT_FALSE(anyTrapped(afterGuard));
+    EXPECT_FALSE(anyTrapped(armedByOtherThread));
+}
+
+TEST(FpTrapGuard, ThreadArmedBeforeTheSwitchFollowsIt)
+{
+    const SoftwareRendererSwitch hardware(false);
+    TrapState before;
+    TrapState after;
+    std::thread t([&] {
+        fp::exception_trapping armed(kAllTraps);
+        before = trapState();
+        fp::software_renderer_present().store(true);
+        fp::follow_software_renderer();
+        after = trapState();
+    });
+    t.join();
+    EXPECT_TRUE(allTrapped(before));
+    EXPECT_FALSE(anyTrapped(after));
+}
+#endif

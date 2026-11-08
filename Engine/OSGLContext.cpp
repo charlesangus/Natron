@@ -43,6 +43,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/GpuDeviceList.h"
+#include "Engine/Nodes/Scene/HydraGLContext.h"
 #include "Engine/StartupGLDiag.h"
 #include "Global/FloatingPointExceptions.h"
 
@@ -547,14 +548,20 @@ OSGLContext::isSoftwareRendererName(const std::string& rendererName)
 }
 
 bool
-OSGLContext::disarmFpTrapsForSoftwareRenderer(const std::string& rendererName)
+OSGLContext::noteSoftwareRenderer(const std::string& rendererName)
 {
     if (!isSoftwareRendererName(rendererName)) {
         return false;
     }
-    boost_adaptbx::floating_point::disarm_trapping_for_thread();
+    boost_adaptbx::floating_point::note_software_renderer();
 
     return true;
+}
+
+bool
+noteSoftwareGLRenderer(const std::string& renderer)
+{
+    return OSGLContext::noteSoftwareRenderer(renderer);
 }
 
 GLRendererPick
@@ -601,6 +608,7 @@ OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
     const OpenGLRendererInfo* picked = matched ? matched : firstAllowed;
     pick.enabled = true;
     pick.rendererID = picked->rendererID;
+    pick.software = !picked->accelerated;
     pick.reason = picked->rendererName;
     if (!picked->accelerated) {
         pick.reason += ", software";

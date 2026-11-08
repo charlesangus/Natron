@@ -1826,9 +1826,14 @@ ViewerTab::refreshSceneRenderRow()
         QMutexLocker l(&_imp->visibleToolbarsMutex);
         topVisible = _imp->topToolbarVisible;
     }
-    const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
+    const bool scene = isShowingScene();
+    const bool progressive = scene && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
 
-    _imp->sceneRenderRow->setVisible(topVisible && progressive);
+    // The row stays for every renderer so switching renderers never resizes the 3D view, which would
+    // rescale its fitted framing.
+    _imp->sceneRenderRow->setVisible(topVisible && scene);
+    _imp->maxSamplesBox->setEnabled(progressive);
+    _imp->refinementPausedButton->setEnabled(progressive);
     refreshRefineSamplesLabel();
 }
 
@@ -1836,6 +1841,11 @@ void
 ViewerTab::refreshRefineSamplesLabel()
 {
     if (!_imp->sceneViewport || !_imp->sceneRenderRow->isVisible()) {
+        return;
+    }
+    if (_imp->sceneViewport->getRenderer().getActiveRendererId() == kRenderDelegateStormId) {
+        _imp->refineSamplesLabel->clear();
+
         return;
     }
     const SceneViewportRenderer::RefineStatus refine = _imp->sceneViewport->getRenderer().getRefineStatus();

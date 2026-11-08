@@ -190,7 +190,9 @@ try:
         """Pixels of the view that differ clearly from the background at the left edge of their row, or that
         pass is_member when given. Returns a set of (x, y)."""
         pixels = set()
-        for y in range(HUD_MARGIN, image.height() - HUD_MARGIN):
+        # Only the HUD's top rows are skipped: the fitted cube reaches near the bottom edge, and a
+        # bottom margin would clip both renderers' boxes to the same row.
+        for y in range(HUD_MARGIN, image.height()):
             ref = image.pixelColor(2, y)
             for x in range(image.width()):
                 c = image.pixelColor(x, y)

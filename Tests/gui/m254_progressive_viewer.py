@@ -6,8 +6,9 @@ Samples knob caps it. Both knobs show in the viewer's progressive render toolbar
 Graph: USDCube into Viewer1. Once Storm has drawn the cube the script picks Cycles through the
 view's context menu (posted, as the menu is modal). If the submenu has no available Cycles entry
 the run is skipped (exit 0). Then it:
-  - checks the toolbar row "sceneRenderRow" is hidden on Storm and shown on Cycles, and the
-    Renderer submenu no longer has Max Samples or Stop/Resume;
+  - checks the toolbar row "sceneRenderRow" is shown on both renderers, so the view keeps its
+    size, with its controls disabled on Storm and enabled on Cycles, and the Renderer submenu no
+    longer has Max Samples or Stop/Resume;
   - types a Max Samples into the toolbar's "maxSamples" box: the Viewer's maxSamples knob takes it;
   - waits for natronSceneSamples to rise, and checks natronSceneDrawnSamples, the count of the
     frame on screen, follows the engine's natronSceneSamples, and the toolbar's "refineSamples"
@@ -170,6 +171,10 @@ try:
         row = toolbar(QWidget, "sceneRenderRow")
         return row is not None and row.isVisible()
 
+    def row_active():
+        box = toolbar(QLineEdit, "maxSamples")
+        return row_shown() and box is not None and box.isEnabled()
+
     def box_text():
         box = toolbar(QLineEdit, "maxSamples")
         return box.text() if box is not None else None
@@ -232,14 +237,14 @@ try:
             yield from finish_menu(state)
             report("SKIP Cycles is not available in this build (%r)" % (labels,))
             return
-        check(not row_shown(), "Storm hides the progressive render toolbar row")
+        check(row_shown() and not row_active(), "Storm shows the progressive render toolbar row with its controls disabled")
         cycles[0].trigger()
         yield from finish_menu(state)
         ok = yield ("until", lambda: prop("natronSceneRenderer") == CYCLES_ID, POLL_TIMEOUT_S)
         require(ok, "picking Cycles switches the view (%r)" % (prop("natronSceneRenderer"),))
         check(not prop("natronSceneRendererError"), "no renderer error on Cycles (%r)" % (prop("natronSceneRendererError"),))
-        ok = yield ("until", row_shown, POLL_TIMEOUT_S)
-        require(ok, "Cycles shows the progressive render toolbar row")
+        ok = yield ("until", row_active, POLL_TIMEOUT_S)
+        require(ok, "Cycles enables the progressive render toolbar row")
         check(viewer.getParam("maxSamples").get() == 0 and box_text() == "0",
               "Max Samples starts at 0, the delegate's count (knob %r, box %r)" % (viewer.getParam("maxSamples").get(), box_text()))
         state = {}
@@ -342,7 +347,7 @@ try:
         ok = yield ("until", lambda: prop("natronSceneRenderer") == STORM_ID and scene_drawn(), POLL_TIMEOUT_S)
         check(ok, "switching back to Storm draws the scene (%r)" % (prop("natronSceneRenderer"),))
         check(num("natronSceneSamples") == -1, "Storm shows no samples counter (%r)" % (num("natronSceneSamples"),))
-        check(not row_shown(), "Storm hides the progressive render toolbar row again")
+        check(row_shown() and not row_active(), "Storm disables the progressive render toolbar row's controls again")
 
     run(steps())
 except Exception:

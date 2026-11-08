@@ -116,7 +116,7 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
 
 ## Phase 173.4: Verification and UAT
 
-- [ ] M173.P4.T1 — Xvfb GUI script for value-knob global mode
+- [x] M173.P4.T1 — Xvfb GUI script for value-knob global mode
   - files: `build/m173-gui/` (script and fixtures, under `build/` per the Xvfb recipe)
   - approach: Drive real key and mouse events on the AppImage. Ctrl+E over Blur `size`, stroke, check the value moved and one Ctrl+Z undoes it. Ctrl+E on Transform `rotate`, then Q/W/E/R/T switching and 1/2 locks. Ctrl+Down from a Grade colour knob onto a numeric knob. Right-click exit. Capture screenshots of every kind.
   - verify: the script reports zero FAIL; screenshots are sent to the user.

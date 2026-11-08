@@ -294,10 +294,10 @@ TEST(ApplyOps, SetInputConnectsAndDisconnects)
     EXPECT_EQ(results[4].status, OpStatus::eInvalid) << "a node cannot feed itself";
     EXPECT_EQ(results[5].status, OpStatus::eTargetMissing);
     EXPECT_EQ(results[6].status, OpStatus::eTargetMissing);
-    EXPECT_EQ(results[7].status, OpStatus::eInvalid);
+    EXPECT_TRUE(results[7].applied()) << "a Dot's one input is labelled \"\"";
 
     std::string expected = kBaseGraph;
-    expected.replace(expected.find("{Source: \"Read1\"}"), std::string("{Source: \"Read1\"}").size(), "{Mask: \"Read1\", Source: \"Read1\"}");
+    expected.replace(expected.find("{Source: \"Read1\"}"), std::string("{Source: \"Read1\"}").size(), "{\"\": \"Read1\", Mask: \"Read1\", Source: \"Read1\"}");
     expected.replace(expected.find("{\"1\": \"Group1\"}"), std::string("{\"1\": \"Group1\"}").size(), "{\"2\": \"Blur1\"}");
     EXPECT_SAME_PROJECT(projectFromYaml(expected), project);
 }

@@ -33,7 +33,8 @@ namespace Serialization {
 /**
  * @brief Applies ops in order to project, each one to the result of those before it, and returns
  * one result per operation. An operation that cannot be applied changes nothing and the next ones
- * are still applied.
+ * are still applied. The nodes of project are replaced by copies first, so another
+ * ProjectSerialization copied from project, which shares its nodes, is left as it was.
  *
  * Without the plug-ins, some checks the live graph makes are not made here: any knob name and
  * input label is accepted, and a connection is not checked for cycles. A knob reset to its default

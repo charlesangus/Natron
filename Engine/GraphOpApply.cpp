@@ -277,7 +277,7 @@ private:
         if (!node) {
             return missing(op.nodeId);
         }
-        const int inputNb = op.inputLabel.empty() ? -1 : node->getInputNumberFromLabel(op.inputLabel);
+        const int inputNb = node->getInputNumberFromLabel(op.inputLabel);
         if (inputNb < 0) {
             return OpResult::invalid(node->getScriptName() + " has no input \"" + op.inputLabel + "\"");
         }

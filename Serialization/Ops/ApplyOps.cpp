@@ -127,6 +127,10 @@ namespace {
         explicit PlainGraph(ProjectSerialization* project)
             : _project(project)
         {
+            // A copied ProjectSerialization shares its nodes with the original.
+            for (NodeSerializationPtr& node : project->nodes.nodes) {
+                node = deepCopyNode(*node);
+            }
             indexNodes(project->nodes.nodes, NodeSerializationPtr(), &_byId);
             resolveInputs(project->nodes.nodes, &_inputs);
         }
@@ -287,9 +291,6 @@ namespace {
 
         OpResult applyOne(const SetInputOp& op)
         {
-            if (op.inputLabel.empty()) {
-                return OpResult::invalid("no input label");
-            }
             const IndexedNode* found = find(op.nodeId);
             if (!found) {
                 return missing(op.nodeId);

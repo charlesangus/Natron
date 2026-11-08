@@ -346,7 +346,9 @@ struct GraphEditRecorder::Implementation {
         switch (entry.kind) {
         case eEntryKindNodeKnob: {
             KnobIPtr knob = entry.knob.lock();
-            if (!knob) {
+            // A knob made by createXKnob() changes before setAsUserKnob() flags it, and a user
+            // knob's state travels in the SetUserKnobs that the flagging records.
+            if (!knob || knob->isUserKnob()) {
                 return std::nullopt;
             }
             Serialization::SetKnobOp op;

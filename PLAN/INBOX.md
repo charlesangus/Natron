@@ -20,3 +20,7 @@
 - refs: none
 - User asked for a new milestone: apply USD camera exposure (`exposure`, and the related fStop, shutter and ISO terms as USD specifies) in every renderer delegate, USDRender and the viewer. Lobby's cameras author `exposure = -10`, nothing reads it, and Cycles frames average about 8,000. Answers the M251 - Cycles Rendering camera exposure question on the board.
 
+### 2026-11-07T16:30:00-05:00 — info
+- refs: none
+- Adds to the delegate cancel responsiveness milestone requested earlier today under F9 - Delegate Projection (user): it also covers Natron Utility. The progressive viewer worker holds the shared stage lock across `engine->Render()` (`HydraRenderImpl.cpp` ~3137), so a large first or dirty-geometry sync freezes the UI. The chosen fix is a worker-owned stage composed from the same node layers, used by every delegate. F7 - Natron Utility Core must not ship before it lands.
+

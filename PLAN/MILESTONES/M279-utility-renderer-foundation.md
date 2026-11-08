@@ -106,6 +106,8 @@ and the shared Slang shading kernels compiled to C++. Project-wide design:
 
 ## Decisions
 
+- 2026-11-07 — Review round 1 (PR #216): transform refit, purpose sync and the Nuke name fixed at b73c1af46; the instancer dirty-state finding was declined because pinned USD 26.08 clears it in `_SyncInstancerAndParents`. The stage lock held across the first sync (UI stall on large scenes) moves to the F9 - Delegate Projection responsiveness milestone (user): a worker-owned stage for every delegate. M279 merges into F7 with that known gap, and F7 can't ship before that milestone lands.
+
 - 2026-11-07 — Golden (user): NatronUtility depth compares within about one window-depth ulp, since runner CPUs differ; colour and primId stay strict. No re-record.
 
 - 2026-11-07 — Viewer rendering (user): stalls are not acceptable. The UI stays responsive, and a render cancels quickly on abort or on a change that invalidates it, so Natron Utility can't hold the viewer for a whole frame. Viewers honour Display > Purposes on every delegate. Every renderer gets a settings tab, including one with no settings.

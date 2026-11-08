@@ -40,6 +40,8 @@ SETTLE_MS = 500
 RENDER_MS = 4000
 POLL_TIMEOUT_S = 30.0
 RENDER_TIMEOUT_S = 1200.0
+RESTORE_TIMEOUT_S = 120.0
+RESTORE_SETTLE_S = 10.0
 PLUGIN_VECTORGENERATOR = "VectorGenerator"
 PLUGIN_SHUFFLE = "Shuffle"
 VIEW_NAME = "Un-tone-mapped"
@@ -483,8 +485,31 @@ try:
         yield from section_overlay(read, points)
 
     def wait_restored(before, label):
-        ok = yield ("until", lambda: 0 <= changed_pixels(before, viewer_crop()) <= RESTORED_PIXELS_MAX, RENDER_TIMEOUT_S)
-        check(ok, "%s restores the picture (%d sampled pixels differ)" % (label, changed_pixels(before, viewer_crop())))
+        """Waits for the viewer to match `before` again. Restoring only redraws over images already
+        rendered, so a picture that has stopped changing without matching fails at once rather than
+        holding the run for the render timeout."""
+        deadline = time.time() + RESTORE_TIMEOUT_S
+        previous = None
+        still_since = time.time()
+        while True:
+            current = viewer_crop()
+            differ = changed_pixels(before, current)
+            if 0 <= differ <= RESTORED_PIXELS_MAX:
+                check(True, "%s restores the picture (%d sampled pixels differ)" % (label, differ))
+                return
+            now = time.time()
+            if previous is None or changed_pixels(previous, current, 4) != 0:
+                still_since = now
+            if now - still_since >= RESTORE_SETTLE_S:
+                check(False, "%s restores the picture: the viewer settled for %.0f s with %d sampled pixels still differing (%d allowed)"
+                      % (label, RESTORE_SETTLE_S, differ, RESTORED_PIXELS_MAX))
+                return
+            if now >= deadline:
+                check(False, "%s restores the picture: %d sampled pixels still differ after %.0f s (%d allowed)"
+                      % (label, differ, RESTORE_TIMEOUT_S, RESTORED_PIXELS_MAX))
+                return
+            previous = current
+            yield ("sleep", 1000)
 
     def check_tint(before, after, points, label):
         """Forward's red tint in the strip ahead of the square, Backward's blue one behind it, nothing on the background."""

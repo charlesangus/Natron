@@ -25,6 +25,7 @@
 
 #include "ViewerGL.h"
 #include "ViewerGLPrivate.h"
+#include "ViewerPixelGrid.h"
 
 #include <algorithm> // min, max
 #include <cassert>
@@ -324,6 +325,9 @@ ViewerGL::paintGL()
         // - Nuke uses a different matrix (RoD.width is the width of the RoD of the displayed image)
         // - Nuke transforms the interacts using the modelview if there are Transform nodes between the viewer and the interact.
 
+        GLint viewport[4] = { 0, 0, 0, 0 };
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        snapProjectionToPixelGrid(&zoomLeft, &zoomRight, &zoomBottom, &zoomTop, viewport[2], viewport[3]);
 
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();

@@ -333,6 +333,7 @@ set(GuiTests_SOURCES
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
     UndoHistory_Test.cpp
+    ViewerPixelGrid_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )

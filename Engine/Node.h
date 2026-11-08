@@ -1277,6 +1277,13 @@ public:
     void setPersistentMessage(MessageTypeEnum type, const std::string & content);
 
     /**
+     * @brief Keeps content as an information message the user can read on the node, with no dialog
+     * and no warning or error marking in the node graph or on a viewer. A later message of any
+     * kind, or a clear, replaces it.
+     **/
+    void setQuietInfoMessage(const std::string& content);
+
+    /**
      * @brief Clears any message posted previously by setPersistentMessage.
      * This function will also be called on all inputs
      **/

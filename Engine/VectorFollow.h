@@ -207,6 +207,9 @@ struct VectorFollowReport {
 
 std::string formatVectorFollowReport(const VectorFollowReport& report);
 
+// A follow that ran to its end on every shape with no pass stop and no unfollowed frame.
+bool isCleanVectorFollowReport(const VectorFollowReport& report);
+
 struct VectorFollowShapeOutcome {
     std::vector<VectorFollowFrameRange> inferred;
     std::vector<VectorFollowPassStop> passStops;

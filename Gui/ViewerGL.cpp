@@ -3816,7 +3816,7 @@ ViewerGL::updatePersistentMessageToWidth(int w)
         QString mess;
         int nType = 0;
         (*it)->getPersistentMessage(&mess, &nType);
-        if (mess.isEmpty() || allMessages.contains(mess)) {
+        if (mess.isEmpty() || (nType == 0) || allMessages.contains(mess)) {
             continue;
         }
         allMessages.append(mess);

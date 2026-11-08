@@ -239,6 +239,9 @@ public:
      * {"status": "done", "aborted", "sourceLost" or "error", "error": the error or "", "message":
      * the text shown to the user, "shapes": the items' names to entries as followVectors() returns
      * them}. On "sourceLost" the follow was reverted. followVectors() does not change it.
+     * The node also keeps the report's text as its message (getPersistentMessage()), without a
+     * warning or error mark; a follow that stopped early, was aborted or lost its source opens a
+     * dialog with it as well, a clean one does not.
      **/
     PyObject* getLastFollowReport() const;
 

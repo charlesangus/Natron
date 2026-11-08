@@ -6162,6 +6162,17 @@ Node::setPersistentMessage(MessageTypeEnum type,
 }
 
 void
+Node::setQuietInfoMessage(const std::string& content)
+{
+    if (appPTR->isBackground()) {
+        std::cout << "Persistent message: " << content << std::endl;
+    }
+    if (storePersistentMessage(eMessageTypeInfo, content, false, 0, NULL) && !appPTR->isBackground()) {
+        Q_EMIT persistentMessageChanged();
+    }
+}
+
+void
 Node::setChannelSelectorMessage(const std::string& content,
                                 U64 renderSequence)
 {

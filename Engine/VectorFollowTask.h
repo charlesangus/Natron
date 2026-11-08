@@ -41,8 +41,9 @@ struct VectorFollowReport;
 /**
  * @brief Runs a follow off the main thread: it reads vectors and reduces there, and applies each
  * frame back on the main thread as it arrives, so the viewer stays live and shows the shapes moving.
- * The report is posted as an information message of the node, which the GUI shows as a dialog and
- * does not keep, and is kept here until the next follow starts. Everything public is main thread.
+ * The report is kept here until the next follow starts and stored on the node as an information
+ * message that carries no warning or error mark. A follow that stopped early, was aborted or lost
+ * its source also opens a dialog; a clean one opens none. Everything public is main thread.
  **/
 class VectorFollowTask
     : public GenericSchedulerThread {

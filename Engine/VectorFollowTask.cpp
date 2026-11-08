@@ -336,8 +336,8 @@ VectorFollowTask::onPhaseDone(int phase,
     // One that went on past an unreadable frame has none either: its report tells of that frame.
     const std::string error = (_imp->aborted || !_imp->run->wasAborted()) ? std::string() : _imp->sampler->lastError();
     const VectorFollowReport report = _imp->run->finish(sourceLost, error);
-    // Kept before the message is posted: in the GUI that opens a modal dialog, whose event loop
-    // may already ask for the report.
+    // Kept before the report is stored and any dialog opens: that dialog's event loop may already
+    // ask for the report.
     _imp->lastReport.reset(new VectorFollowReport(report));
     _imp->run.reset();
     _imp->sampler.reset();
@@ -346,7 +346,11 @@ VectorFollowTask::onPhaseDone(int phase,
     _imp->params = VectorFollowParams();
     if (host) {
         host->getApp()->progressEnd(host);
-        host->setPersistentMessage(eMessageTypeInfo, formatVectorFollowReport(report));
+        const std::string text = formatVectorFollowReport(report);
+        host->setQuietInfoMessage(text);
+        if (!isCleanVectorFollowReport(report)) {
+            host->message(eMessageTypeInfo, text);
+        }
     }
 }
 

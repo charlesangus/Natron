@@ -302,8 +302,9 @@ try:
         return str(node.getPersistentMessage() or "")
 
     def report_dialog():
-        """The modal dialog showing a follow's report, as (dialog, its plain text), or None. The GUI shows an
-        information message of a node as a modal dialog and does not keep it as the node's message."""
+        """The modal dialog showing a follow's report, as (dialog, its plain text), or None. Only a follow that
+        stopped early, was aborted or lost its source opens one; a clean follow keeps the report as the node's
+        message."""
         w = QApplication.activeModalWidget()
         if w is None or not w.isVisible():
             return None
@@ -353,7 +354,23 @@ try:
         yield from close_report_dialog(scene, label, outcome)
         return outcome, stats
 
+    def is_clean(outcome):
+        if outcome["status"] != "done":
+            return False
+        return all(not e["passStops"] and not e["unfollowed"] and not e.get("stopped") for e in outcome["shapes"].values())
+
     def close_report_dialog(scene, label, outcome):
+        headline = outcome["message"].split("\n")[0]
+        stored = message(scene.roto)
+        check(stored == outcome["message"], "%s: the node keeps the report as its message (message %r, report %r)" % (label, stored, outcome["message"]))
+        if is_clean(outcome):
+            yield ("sleep", SETTLE_MS)
+            shown = report_dialog()
+            if shown is not None:
+                shown[0].done(0)
+                yield ("sleep", SETTLE_MS)
+            check(shown is None, "%s: a clean follow opens no dialog (dialog %r)" % (label, shown[1] if shown else None))
+            return
         shown = yield ("until", lambda: report_dialog() is not None, DIALOG_TIMEOUT_S)
         text = ""
         if shown:
@@ -361,9 +378,7 @@ try:
             dialog.done(0)
             # The dialog's event loop only returns once this tick does.
             yield ("sleep", SETTLE_MS)
-        headline = outcome["message"].split("\n")[0]
-        check(headline in text or headline in message(scene.roto),
-              "%s: the user is shown the report %r (dialog %r, node message %r)" % (label, headline, text, message(scene.roto)))
+        check(headline in text, "%s: the user is shown the report %r in a dialog (dialog %r)" % (label, headline, text))
 
     def run_follow(scene, button, label, timeout=FOLLOW_TIMEOUT_S):
         press(scene.roto, button)

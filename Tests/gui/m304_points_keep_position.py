@@ -157,31 +157,42 @@ try:
                      walk(model.index(r, 0, parent))) for r in range(model.rowCount(parent))]
         return walk(tree.rootIndex())
 
-    def shape_row_y(node_label, shape_label):
-        """Centre y of the "Shape" row under the node's row and the shape's item row, scrolled
-        into view; None until the dope sheet has built it."""
+    def shape_row_probe(names):
+        """(centre y of the "Shape" row under the node's row and the shape's item row, scrolled
+        into view, or None; why it is None). names is [(node names), (shape names)], each the
+        texts a row may show."""
         tree = hierarchy()
         if tree is None:
-            return None
+            return None, "no hierarchy view"
         _keep["tree"] = tree
         model = tree.model()
         idx = tree.rootIndex()
-        for text in (node_label, shape_label, "Shape"):
+        for wanted in (names[0], names[1], ("Shape",)):
             nxt = None
             for r in range(model.rowCount(idx)):
                 kid = model.index(r, 0, idx)
-                if str(kid.data()) == text and not tree.isRowHidden(r, idx):
+                if str(kid.data()).strip() in wanted:
                     nxt = kid
                     break
             if nxt is None:
-                return None
-            if text != "Shape":
+                return None, "no row among %r" % (wanted,)
+            if wanted != ("Shape",):
+                if tree.isRowHidden(nxt.row(), nxt.parent()):
+                    tree.setRowHidden(nxt.row(), nxt.parent(), False)
                 tree.expand(nxt)
+                QApplication.processEvents()
             idx = nxt
         tree.scrollTo(idx)
         QApplication.processEvents()
         rect = tree.visualRect(idx)
-        return rect.center().y() if rect.isValid() and rect.height() > 0 else None
+        if rect.isValid() and rect.height() > 0:
+            return rect.center().y(), ""
+        return None, "Shape row rect %r hidden=%r viewport visible=%r size=%rx%r" % (
+            rect, tree.isRowHidden(idx.row(), idx.parent()), tree.viewport().isVisible(),
+            tree.viewport().width(), tree.viewport().height())
+
+    def shape_row_y(names):
+        return shape_row_probe(names)[0]
 
     def mouse(view, kind, x, y, button, buttons):
         QApplication.sendEvent(view, QMouseEvent(kind, QPointF(x, y), button, buttons, Qt.NoModifier))
@@ -274,18 +285,22 @@ try:
     def dope_sheet_step(node, bez):
         gt.section("move a key in the dope sheet while rendering")
         node_label, shape_label = node.getLabel(), bez.getLabel()
+        names = (tuple(dict.fromkeys(str(n) for n in (node_label, node.getScriptName()) if n)),
+                 tuple(dict.fromkeys(str(n) for n in (shape_label, bez.getScriptName()) if n)))
         app.selectNode(node, True)
         if not gt.any_panel_open() and root_graph() is not None:
             QMetaObject.invokeMethod(root_graph(), "showSelectedNodeSettingsPanel")
         yield ("sleep", SETTLE_MS)
         require(show_dope_sheet(), "the dope sheet tab is current")
         yield ("sleep", SETTLE_MS)
-        ok = yield ("until", lambda: shape_row_y(node_label, shape_label) is not None, 10.0)
+        ok = yield ("until", lambda: shape_row_y(names) is not None, 10.0)
         if not ok:
             tree = hierarchy()
             report("NOTE dope sheet rows: %r" % (tree_rows(tree) if tree is not None else None,))
+            report("NOTE looked for node %r (label %r) shape %r (label %r): %s" % (
+                names[0], node_label, names[1], shape_label, shape_row_probe(names)[1]))
         require(ok, "the dope sheet shows the shape's Shape row")
-        y = shape_row_y(node_label, shape_label)
+        y = shape_row_y(names)
         keys = sorted(bez.getKeyframes())
         xs = key_xs(y)
         report("NOTE shape keys %r drawn at x %r" % (keys, xs))

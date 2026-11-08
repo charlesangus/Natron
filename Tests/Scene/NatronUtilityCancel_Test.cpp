@@ -76,29 +76,32 @@ typedef HydraRender::ProgressiveRender ProgressiveRender;
 const std::chrono::milliseconds kCancelBound(500);
 const std::chrono::seconds kTimeout(300);
 const int kHugeGrid = 1500;
-const int kManyGrids = 256;
+const int kManyGridsAcross = 16;
 const int kManyGridSize = 100;
 const int kLatencyWindow = 4096;
 const int kViewWindow = 1024;
 const double kCameraZ = 30.;
 
-// An n by n grid of quads, 20 units wide and facing the camera, n * n * 2 triangles.
+// An n by n grid of quads, width units wide and facing the camera, n * n * 2 triangles.
 void
 defineGrid(const UsdStageRefPtr& stage,
            const std::string& path,
            int n,
            const GfVec3f& color,
-           float z = 0.f)
+           const GfVec3f& centre = GfVec3f(0.f),
+           float width = 20.f)
 {
     VtVec3fArray points;
     VtIntArray counts(n * n, 4);
     VtIntArray indices;
+    const float left = centre[0] - width / 2.f;
+    const float bottom = centre[1] - width / 2.f;
 
     points.reserve((n + 1) * (n + 1));
     indices.reserve(n * n * 4);
     for (int y = 0; y <= n; ++y) {
         for (int x = 0; x <= n; ++x) {
-            points.push_back(GfVec3f(-10.f + 20.f * x / n, -10.f + 20.f * y / n, z));
+            points.push_back(GfVec3f(left + width * x / n, bottom + width * y / n, centre[2]));
         }
     }
     for (int y = 0; y < n; ++y) {
@@ -130,13 +133,21 @@ hugeMeshStage(const GfVec3f& color)
     return stage;
 }
 
+// The grids tile the view side by side rather than stack: stacked, every ray walks every grid's
+// hierarchy, and the frame's tracing outgrows the test's time limit on slower runners. A grid is
+// centred on the axis so the centre pixel never falls on a seam.
 UsdStageRefPtr
 manyMeshesStage(const GfVec3f& color)
 {
     UsdStageRefPtr stage = UsdStage::CreateInMemory();
+    const float width = 20.f / kManyGridsAcross;
 
-    for (int i = 0; i < kManyGrids; ++i) {
-        defineGrid(stage, "/Grid" + std::to_string(i), kManyGridSize, color);
+    for (int row = 0; row < kManyGridsAcross; ++row) {
+        for (int column = 0; column < kManyGridsAcross; ++column) {
+            const GfVec3f centre(width * (column - kManyGridsAcross / 2 + 1), width * (row - kManyGridsAcross / 2 + 1), 0.f);
+
+            defineGrid(stage, "/Grid" + std::to_string(row * kManyGridsAcross + column), kManyGridSize, color, centre, width);
+        }
     }
 
     return stage;
@@ -450,7 +461,7 @@ TEST_F(NatronUtilityCancelTest, TheViewsPurposesDecideWhatIsDrawn)
     const UsdStageRefPtr stage = UsdStage::CreateInMemory();
 
     defineGrid(stage, "/Default", 1, GfVec3f(1.f, 0.f, 0.f));
-    defineGrid(stage, "/RenderOnly", 1, GfVec3f(0.f, 1.f, 0.f), 1.f);
+    defineGrid(stage, "/RenderOnly", 1, GfVec3f(0.f, 1.f, 0.f), GfVec3f(0.f, 0.f, 1.f));
     UsdGeomMesh(stage->GetPrimAtPath(SdfPath("/RenderOnly"))).CreatePurposeAttr(VtValue(UsdGeomTokens->render));
 
     start(stage);

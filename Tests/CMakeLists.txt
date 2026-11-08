@@ -67,6 +67,7 @@ set(Tests_SOURCES
     GeoDetailCache_Test.cpp
     GeoIndexMap_Test.cpp
     GeoPacked_Test.cpp
+    GeoPrimitive_Test.cpp
     GeoRender_Test.cpp
     GLScheduler_Test.cpp
     GpuContext_Test.cpp

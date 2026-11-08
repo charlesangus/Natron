@@ -1056,6 +1056,12 @@ public:
     bool hasSize() const;
 
     /**
+     * @brief Forgets the size set on the node, so that it has none to save again. A GUI keeps the
+     * size it shows.
+     **/
+    void clearSize();
+
+    /**
      * @brief Get the colour of the node as it appears on the nodegraph: the user colour
      * if one was set, otherwise the plug-in category colour. Ignored in background mode,
      * since there is then no nodegraph to display it on.

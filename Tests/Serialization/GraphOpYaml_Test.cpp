@@ -163,13 +163,26 @@ TEST(GraphOpYaml, SetNodeUiTellsUnchangedFromCleared)
     ui.color.emplace(NodeUiColor { 0.25f, 0.5f, 1.f });
     ui.overlayColor.emplace(std::nullopt);
     const SetNodeUiOp decoded = std::get<SetNodeUiOp>(roundTrip(ui));
-    ASSERT_TRUE(decoded.position.has_value());
-    EXPECT_EQ(decoded.position->first, 1.5);
+    ASSERT_TRUE(decoded.position.has_value() && decoded.position->has_value());
+    EXPECT_EQ((*decoded.position)->first, 1.5);
     EXPECT_FALSE(decoded.size.has_value());
     ASSERT_TRUE(decoded.color.has_value() && decoded.color->has_value());
     EXPECT_EQ(**decoded.color, (NodeUiColor { 0.25f, 0.5f, 1.f }));
     ASSERT_TRUE(decoded.overlayColor.has_value());
     EXPECT_FALSE(decoded.overlayColor->has_value());
+}
+
+TEST(GraphOpYaml, SetNodeUiClearsPositionAndSize)
+{
+    SetNodeUiOp ui;
+    ui.nodeId = "id000001";
+    ui.position.emplace(std::nullopt);
+    ui.size.emplace(std::nullopt);
+    const SetNodeUiOp decoded = std::get<SetNodeUiOp>(roundTrip(ui));
+    ASSERT_TRUE(decoded.position.has_value());
+    EXPECT_FALSE(decoded.position->has_value());
+    ASSERT_TRUE(decoded.size.has_value());
+    EXPECT_FALSE(decoded.size->has_value());
 }
 
 TEST(GraphOpYaml, SetUserKnobs)
@@ -249,6 +262,29 @@ TEST(GraphOpYaml, SetProjectData)
     EXPECT_TRUE(decodedLayers.formats->empty());
     ASSERT_TRUE(decodedLayers.layers.has_value());
     EXPECT_EQ(decodedLayers.layers->front().layer.channels, entry.layer.channels);
+    EXPECT_FALSE(decodedLayers.variables.has_value());
+
+    SetProjectDataOp variables;
+    KnobSerialization gain;
+    gain.name = "gain";
+    gain.typeName = "Double";
+    gain.dimension = 1;
+    gain.isUserKnob = true;
+    gain.isPersistent = true;
+    gain.label = "Gain";
+    KnobSerialization offset = gain;
+    offset.name = "offset";
+    offset.label = "Offset";
+    variables.variables = std::list<KnobSerialization> { offset, gain };
+    const SetProjectDataOp decodedVariables = std::get<SetProjectDataOp>(roundTrip(variables));
+    ASSERT_TRUE(decodedVariables.variables.has_value());
+    ASSERT_EQ(decodedVariables.variables->size(), 2u);
+    EXPECT_EQ(decodedVariables.variables->front().name, "offset");
+    EXPECT_EQ(decodedVariables.variables->back().name, "gain");
+    EXPECT_EQ(decodedVariables.variables->back().typeName, "Double");
+    EXPECT_TRUE(decodedVariables.variables->back().isUserKnob);
+    EXPECT_EQ(decodedVariables.variables->back().label, "Gain");
+    EXPECT_FALSE(decodedVariables.formats.has_value());
 }
 
 TEST(GraphOpYaml, BatchKeepsOrder)

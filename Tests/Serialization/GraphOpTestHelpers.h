@@ -37,6 +37,7 @@
 
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/Ops/SnapshotDiff.h"
 #include "Serialization/ProjectSerialization.h"
 #include "Serialization/Yaml/BlobSink.h"
 #include "Serialization/Yaml/ProjectYaml.h"
@@ -83,40 +84,48 @@ projectFromYaml(const std::string& body)
     return NATRON_NAMESPACE::Serialization::decodeProjectYaml("format: natron-project\nformatVersion: 1\n" + withIds(body), source);
 }
 
+// Knobs in name order, the project's variables last and in their own order, which is meaningful.
 inline void
 sortKnobs(std::list<NATRON_NAMESPACE::Serialization::KnobSerialization>* knobs)
 {
     knobs->sort([](const NATRON_NAMESPACE::Serialization::KnobSerialization& a, const NATRON_NAMESPACE::Serialization::KnobSerialization& b) {
+        if (a.isUserKnob || b.isUserKnob) {
+            return !a.isUserKnob && b.isUserKnob;
+        }
+
         return a.name < b.name;
     });
 }
 
 inline void
-canonicalizeNodes(std::list<NATRON_NAMESPACE::Serialization::NodeSerializationPtr>* nodes)
+sortNodeKnobs(std::list<NATRON_NAMESPACE::Serialization::NodeSerializationPtr>* nodes)
 {
     for (NATRON_NAMESPACE::Serialization::NodeSerializationPtr& node : *nodes) {
-        node = std::make_shared<NATRON_NAMESPACE::Serialization::NodeSerialization>(*node);
         sortKnobs(&node->knobs);
-        node->cacheID.clear();
-        node->knobsAge = 0;
-        canonicalizeNodes(&node->children);
+        sortNodeKnobs(&node->children);
     }
 }
 
-// The project as project.yaml text, without what graph operations do not carry (the saving
-// version, project ID, timeline, cache IDs) and with knobs in name order.
+// The project.yaml text of what graph operations carry (see editableState()).
 inline std::string
-canonicalText(NATRON_NAMESPACE::Serialization::ProjectSerialization project)
+editableText(const NATRON_NAMESPACE::Serialization::ProjectSerialization& project)
 {
-    project.savedByVersion = NATRON_NAMESPACE::Serialization::ProjectSavedByVersionSerialization();
-    project.projectId.clear();
-    project.timelineCurrentTime = 0;
-    project.creationDate = 0;
-    sortKnobs(&project.projectKnobs);
-    canonicalizeNodes(&project.nodes.nodes);
     NATRON_NAMESPACE::Serialization::InlineBlobSink sink;
 
-    return NATRON_NAMESPACE::Serialization::encodeProjectYaml(project, sink);
+    return NATRON_NAMESPACE::Serialization::encodeProjectYaml(NATRON_NAMESPACE::Serialization::editableState(project), sink);
+}
+
+// editableText() with knobs in name order: applyOps() adds a knob set for the first time after
+// the others, where a live node keeps its plug-in's order.
+inline std::string
+canonicalText(const NATRON_NAMESPACE::Serialization::ProjectSerialization& project)
+{
+    NATRON_NAMESPACE::Serialization::ProjectSerialization state = NATRON_NAMESPACE::Serialization::editableState(project);
+    sortKnobs(&state.projectKnobs);
+    sortNodeKnobs(&state.nodes.nodes);
+    NATRON_NAMESPACE::Serialization::InlineBlobSink sink;
+
+    return NATRON_NAMESPACE::Serialization::encodeProjectYaml(state, sink);
 }
 
 #define EXPECT_SAME_PROJECT(expected, actual) EXPECT_EQ(GraphOpTest::canonicalText(expected), GraphOpTest::canonicalText(actual))

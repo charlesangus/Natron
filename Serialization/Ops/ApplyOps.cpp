@@ -160,6 +160,7 @@ namespace {
                     }
                 }
             }
+            copyMainInstanceInputs(_project->nodes.nodes);
         }
 
     private:
@@ -186,6 +187,19 @@ namespace {
             }
 
             return false;
+        }
+
+        // A multi-instance child has no inputs of its own: it is saved with its main instance's.
+        static void copyMainInstanceInputs(const std::list<NodeSerializationPtr>& nodes)
+        {
+            for (const NodeSerializationPtr& node : nodes) {
+                for (const NodeSerializationPtr& child : node->children) {
+                    if (!child->multiInstanceParentName.empty()) {
+                        child->inputs = node->inputs;
+                    }
+                }
+                copyMainInstanceInputs(node->children);
+            }
         }
 
         static void collectSubtree(const NodeSerializationPtr& node,
@@ -271,7 +285,14 @@ namespace {
                 return OpResult::invalid("no knob name");
             }
             if (!op.nodeId) {
-                setKnobIn(&_project->projectKnobs, op);
+                std::list<KnobSerialization>::iterator variable = std::find_if(_project->projectKnobs.begin(), _project->projectKnobs.end(), [&](const KnobSerialization& knob) {
+                    return knob.isUserKnob && (knob.name == op.knobName);
+                });
+                if (variable != _project->projectKnobs.end()) {
+                    setUserKnobState(&*variable, op.value);
+                } else {
+                    setKnobIn(&_project->projectKnobs, op);
+                }
 
                 return OpResult();
             }
@@ -294,6 +315,9 @@ namespace {
             const IndexedNode* found = find(op.nodeId);
             if (!found) {
                 return missing(op.nodeId);
+            }
+            if (!found->node->multiInstanceParentName.empty()) {
+                return OpResult::invalid("a multi-instance child takes the inputs of its main instance");
             }
             NodeInputRefs& inputs = _inputs[found->node.get()];
             if (op.sourceId.empty()) {
@@ -339,14 +363,16 @@ namespace {
             }
             NodeLayoutSerialization& layout = found->node->layout;
             if (op.position) {
-                layout.hasPosition = true;
-                layout.x = op.position->first;
-                layout.y = op.position->second;
+                layout.hasPosition = op.position->has_value();
+                const std::pair<double, double> position = op.position->value_or(std::make_pair(0., 0.));
+                layout.x = position.first;
+                layout.y = position.second;
             }
             if (op.size) {
-                layout.hasSize = true;
-                layout.width = op.size->first;
-                layout.height = op.size->second;
+                layout.hasSize = op.size->has_value();
+                const std::pair<double, double> size = op.size->value_or(std::make_pair(0., 0.));
+                layout.width = size.first;
+                layout.height = size.second;
             }
             if (op.color) {
                 layout.hasColor = op.color->has_value();
@@ -404,6 +430,24 @@ namespace {
 
         OpResult applyOne(const SetProjectDataOp& op)
         {
+            if (op.variables) {
+                std::set<std::string> names;
+                for (const KnobSerialization& variable : *op.variables) {
+                    if (variable.name.empty() || !variable.isUserKnob || !names.insert(variable.name).second) {
+                        return OpResult::invalid("a project variable is unnamed, not a user knob or named twice");
+                    }
+                }
+                for (const KnobSerialization& knob : _project->projectKnobs) {
+                    if (!knob.isUserKnob && names.count(knob.name)) {
+                        return OpResult::invalid("the project parameter " + knob.name + " has the name of a variable");
+                    }
+                }
+                // The project saves its variables after its other knobs, in their group's order.
+                _project->projectKnobs.remove_if([](const KnobSerialization& knob) {
+                    return knob.isUserKnob;
+                });
+                _project->projectKnobs.insert(_project->projectKnobs.end(), op.variables->begin(), op.variables->end());
+            }
             if (op.formats) {
                 _project->additionalFormats = *op.formats;
             }

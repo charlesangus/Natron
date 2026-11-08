@@ -442,9 +442,9 @@ TEST_F(GraphEditRecorderTest, DragGivesOneSetNodeUi)
     const SetNodeUiOp* ui = std::get_if<SetNodeUiOp>(&ops.front());
     ASSERT_NE(ui, nullptr);
     EXPECT_EQ(ui->nodeId, blur->getNodeId());
-    ASSERT_TRUE(ui->position.has_value());
-    EXPECT_DOUBLE_EQ(ui->position->first, 98.);
-    EXPECT_DOUBLE_EQ(ui->position->second, 147.);
+    ASSERT_TRUE(ui->position.has_value() && ui->position->has_value());
+    EXPECT_DOUBLE_EQ((*ui->position)->first, 98.);
+    EXPECT_DOUBLE_EQ((*ui->position)->second, 147.);
 }
 
 TEST_F(GraphEditRecorderTest, StrokeGivesOneSetRotoData)
@@ -526,4 +526,48 @@ TEST_F(GraphEditRecorderTest, AddingALayerGivesOneSetProjectData)
     const SetProjectDataOp* data = std::get_if<SetProjectDataOp>(&ops.front());
     ASSERT_NE(data, nullptr);
     EXPECT_TRUE(data->layers.has_value());
+}
+
+TEST_F(GraphEditRecorderTest, ProjectVariablesGiveSetProjectDataInTheirOrder)
+{
+    KnobGroupPtr variables = project()->getRFVGroup();
+    ASSERT_NE(variables, nullptr);
+    startRecording();
+    KnobDoublePtr gain = project()->createDoubleKnob("rfvGain", "Gain", 1);
+    ASSERT_TRUE(variables->addKnob(gain));
+    KnobDoublePtr offset = project()->createDoubleKnob("rfvOffset", "Offset", 1);
+    ASSERT_TRUE(variables->addKnob(offset));
+    std::vector<GraphOp> ops = take();
+    std::vector<const SetProjectDataOp*> data = opsOf<SetProjectDataOp>(ops);
+    ASSERT_FALSE(data.empty());
+    ASSERT_TRUE(data.back()->variables.has_value());
+    ASSERT_EQ(data.back()->variables->size(), 2u);
+    EXPECT_EQ(data.back()->variables->front().name, "rfvGain");
+
+    ASSERT_TRUE(variables->moveOneStepUp(offset.get()));
+    ops = take();
+    data = opsOf<SetProjectDataOp>(ops);
+    ASSERT_FALSE(data.empty());
+    ASSERT_TRUE(data.back()->variables.has_value());
+    ASSERT_EQ(data.back()->variables->size(), 2u);
+    EXPECT_EQ(data.back()->variables->front().name, "rfvOffset");
+}
+
+TEST_F(GraphEditRecorderTest, UnlinkingGivesSetKnob)
+{
+    NodePtr first = createIn(PLUGINID_NATRON_BLUR, project());
+    NodePtr second = createIn(PLUGINID_NATRON_BLUR, project());
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    ASSERT_TRUE(blurSize(first)->linkTo(0, blurSize(second), 0));
+    startRecording();
+    ASSERT_TRUE(blurSize(first)->unlinkFromGroups());
+    const std::vector<GraphOp> ops = take();
+    bool recordedFirst = false;
+    for (const SetKnobOp* op : opsOf<SetKnobOp>(ops)) {
+        if (op->nodeId && (*op->nodeId == first->getNodeId()) && (op->knobName == kBlurParamSize)) {
+            recordedFirst = true;
+        }
+    }
+    EXPECT_TRUE(recordedFirst);
 }

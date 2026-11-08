@@ -1381,6 +1381,16 @@ public:
         return ret;
     }
 
+    /**
+     * @brief Forgets the links and link groups stored and not restored yet, so that storing a
+     * newer serialization replaces them rather than adding to them.
+     **/
+    void clearStoredLinks()
+    {
+        _links.clear();
+        _storedLinkGroups.clear();
+    }
+
 private:
     struct Link {
         int slaveDimension;

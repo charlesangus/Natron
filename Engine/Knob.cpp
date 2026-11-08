@@ -6340,6 +6340,11 @@ KnobHelper::notifyLinkMembers(const std::vector<KnobLinkGroup::Member>& members)
         if (handler) {
             handler->s_linkChanged();
         }
+        // A saved knob holds its link group, so a change of group or of being linked in it is an
+        // edit of the knob even when no value changes.
+        if (knob && GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onKnobContentChanged(knob.get());
+        }
     }
 }
 
@@ -6757,6 +6762,9 @@ KnobHelper::leaveLinkGroups(int dimension)
         _signalSlotHandler->s_linkChanged();
     }
     if (left) {
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onKnobContentChanged(this);
+        }
         emitNodesLinksChanged(affectedNodes);
     }
 }

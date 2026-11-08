@@ -94,13 +94,14 @@ struct NodeUiColor {
 };
 
 /**
- * @brief Changes the node graph appearance of a node. Each field left unset is kept; a colour set
- * to an empty optional is cleared.
+ * @brief Changes the node graph appearance of a node. Each field left unset is kept; a field set
+ * to an empty optional is cleared. A live node always has a position, so clearing it there
+ * changes nothing.
  **/
 struct SetNodeUiOp {
     std::string nodeId;
-    std::optional<std::pair<double, double>> position;
-    std::optional<std::pair<double, double>> size;
+    std::optional<std::optional<std::pair<double, double>>> position;
+    std::optional<std::optional<std::pair<double, double>>> size;
     std::optional<std::optional<NodeUiColor>> color;
     std::optional<std::optional<NodeUiColor>> overlayColor;
 };
@@ -132,12 +133,14 @@ struct SetTrackerDataOp {
 };
 
 /**
- * @brief Replaces the project's additional formats and/or its layer registry; an unset field is
- * kept.
+ * @brief Replaces the project's additional formats, its layer registry and/or its variables (the
+ * user knobs of its variables group, in order, with their definitions and state); an unset field
+ * is kept. Either every field is applied or none is.
  **/
 struct SetProjectDataOp {
     std::optional<std::list<FormatSerialization>> formats;
     std::optional<std::list<LayerRegistryEntrySerialization>> layers;
+    std::optional<std::list<KnobSerialization>> variables;
 };
 
 /**

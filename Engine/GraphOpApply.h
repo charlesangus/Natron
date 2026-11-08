@@ -34,12 +34,14 @@ NATRON_NAMESPACE_ENTER
  * loading make, and returns one result per operation. An operation that fails changes nothing
  * and does not stop the ones after it. Nodes are found by their persistent ID, and a created node
  * and its children take the IDs the operation gives them. The edits are not recorded as graph
- * edits. Main thread only.
+ * edits. Main thread only. Knob links are made after the last operation, so that a link may
+ * name a node or project variable that a later operation in ops makes.
  *
  * Differences from Serialization::applyOps(): the plug-ins are known here, so an unknown plug-in,
  * knob or input label and a connection the node refuses (a cycle) are invalid. Clearing an
  * overlay colour is not shown by a node graph already displaying it. The project's additional
- * formats can only be appended to, and a layer that a node uses cannot be removed.
+ * formats can only be appended to, and a layer that a node uses cannot be removed. A node always
+ * has a position, so clearing it keeps the one it has.
  **/
 std::vector<Serialization::OpResult> applyGraphOps(const ProjectPtr& project,
                                                    const std::vector<Serialization::GraphOp>& ops);

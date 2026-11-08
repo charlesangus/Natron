@@ -64,6 +64,21 @@ namespace {
     }
 
     void
+    emitPairEntry(YAML::Emitter& em,
+                  std::string_view key,
+                  const std::optional<std::optional<std::pair<double, double>>>& pair)
+    {
+        if (!pair) {
+            return;
+        }
+        if (*pair) {
+            emitDoublePair(em, key, (*pair)->first, (*pair)->second);
+        } else {
+            emitNullEntry(em, key);
+        }
+    }
+
+    void
     emitOp(YAML::Emitter& em,
            const GraphOp& graphOp,
            BlobSink& sink,
@@ -119,12 +134,8 @@ namespace {
                 }
             } else if constexpr (std::is_same_v<T, SetNodeUiOp>) {
                 emitStringEntry(em, "node", op.nodeId);
-                if (op.position) {
-                    emitDoublePair(em, "pos", op.position->first, op.position->second);
-                }
-                if (op.size) {
-                    emitDoublePair(em, "size", op.size->first, op.size->second);
-                }
+                emitPairEntry(em, "pos", op.position);
+                emitPairEntry(em, "size", op.size);
                 emitColorEntry(em, "color", op.color);
                 emitColorEntry(em, "overlay", op.overlayColor);
             } else if constexpr (std::is_same_v<T, SetUserKnobsOp>) {
@@ -164,6 +175,11 @@ namespace {
                     emitKey(em, "layers");
                     em << YAML::Value;
                     emitLayers(em, *op.layers);
+                }
+                if (op.variables) {
+                    emitKey(em, "variables");
+                    em << YAML::Value;
+                    emitKnobMap(em, *op.variables);
                 }
             }
         },
@@ -222,6 +238,25 @@ namespace {
         }
 
         return color;
+    }
+
+    std::optional<std::optional<std::pair<double, double>>>
+    readPairEntry(MapReader& reader,
+                  std::string_view key)
+    {
+        std::optional<std::optional<std::pair<double, double>>> pair;
+        YAML::Node value = reader.get(key);
+        if (!value) {
+            return pair;
+        }
+        if (value.IsNull()) {
+            pair.emplace(std::nullopt);
+        } else {
+            const std::vector<double> values = readDoubleVector(value, reader.context() + "." + std::string(key), 2);
+            pair.emplace(std::make_pair(values[0], values[1]));
+        }
+
+        return pair;
     }
 
     GraphOp
@@ -302,14 +337,8 @@ namespace {
         } else if (name == "setNodeUi") {
             SetNodeUiOp op;
             op.nodeId = requiredId(reader, map, "node");
-            if (YAML::Node pos = reader.get("pos")) {
-                const std::vector<double> values = readDoubleVector(pos, context + ".pos", 2);
-                op.position = std::make_pair(values[0], values[1]);
-            }
-            if (YAML::Node size = reader.get("size")) {
-                const std::vector<double> values = readDoubleVector(size, context + ".size", 2);
-                op.size = std::make_pair(values[0], values[1]);
-            }
+            op.position = readPairEntry(reader, "pos");
+            op.size = readPairEntry(reader, "size");
             op.color = readColorEntry(reader, "color");
             op.overlayColor = readColorEntry(reader, "overlay");
             result = std::move(op);
@@ -342,6 +371,9 @@ namespace {
             }
             if (YAML::Node layers = reader.get("layers")) {
                 op.layers = readLayers(layers, warnings);
+            }
+            if (YAML::Node variables = reader.get("variables")) {
+                op.variables = readKnobMap(variables, context + ".variables", warnings);
             }
             result = std::move(op);
         } else {

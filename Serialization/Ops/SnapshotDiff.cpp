@@ -277,6 +277,17 @@ namespace {
             return NodeUiColor { r, g, b };
         }
 
+        static std::optional<std::pair<double, double>> pairOf(bool has,
+                                                               double a,
+                                                               double b)
+        {
+            if (!has) {
+                return std::nullopt;
+            }
+
+            return std::make_pair(a, b);
+        }
+
         static std::string rotoText(const NodeSerialization& node)
         {
             InlineBlobSink sink;
@@ -305,11 +316,15 @@ namespace {
             ui.nodeId = b.id;
             const NodeLayoutSerialization& x = a.layout;
             const NodeLayoutSerialization& y = b.layout;
-            if (y.hasPosition && (!x.hasPosition || (x.x != y.x) || (x.y != y.y))) {
-                ui.position = std::make_pair(y.x, y.y);
+            const std::optional<std::pair<double, double>> positionBefore = pairOf(x.hasPosition, x.x, x.y);
+            const std::optional<std::pair<double, double>> positionAfter = pairOf(y.hasPosition, y.x, y.y);
+            if (positionBefore != positionAfter) {
+                ui.position = positionAfter;
             }
-            if (y.hasSize && (!x.hasSize || (x.width != y.width) || (x.height != y.height))) {
-                ui.size = std::make_pair(y.width, y.height);
+            const std::optional<std::pair<double, double>> sizeBefore = pairOf(x.hasSize, x.width, x.height);
+            const std::optional<std::pair<double, double>> sizeAfter = pairOf(y.hasSize, y.width, y.height);
+            if (sizeBefore != sizeAfter) {
+                ui.size = sizeAfter;
             }
             const std::optional<NodeUiColor> colorBefore = colorOf(x.hasColor, x.colorR, x.colorG, x.colorB);
             const std::optional<NodeUiColor> colorAfter = colorOf(y.hasColor, y.colorR, y.colorG, y.colorB);
@@ -349,17 +364,32 @@ namespace {
             });
         }
 
+        static void splitVariables(const std::list<KnobSerialization>& all,
+                                   std::list<KnobSerialization>* knobs,
+                                   std::list<KnobSerialization>* variables)
+        {
+            for (const KnobSerialization& knob : all) {
+                (knob.isUserKnob ? variables : knobs)->push_back(knob);
+            }
+        }
+
         void emitProjectChanges()
         {
-            emitKnobChanges(std::nullopt, _a.project.projectKnobs, _b.project.projectKnobs);
+            std::list<KnobSerialization> knobsBefore, knobsAfter, variablesBefore, variablesAfter;
+            splitVariables(_a.project.projectKnobs, &knobsBefore, &variablesBefore);
+            splitVariables(_b.project.projectKnobs, &knobsAfter, &variablesAfter);
+            emitKnobChanges(std::nullopt, knobsBefore, knobsAfter);
             SetProjectDataOp data;
+            if (!(variablesBefore == variablesAfter)) {
+                data.variables = variablesAfter;
+            }
             if (!sameFormats(_a.project.additionalFormats, _b.project.additionalFormats)) {
                 data.formats = _b.project.additionalFormats;
             }
             if (!sameLayers(_a.project.layers, _b.project.layers)) {
                 data.layers = _b.project.layers;
             }
-            if (data.formats || data.layers) {
+            if (data.formats || data.layers || data.variables) {
                 _ops.push_back(data);
             }
         }
@@ -384,9 +414,13 @@ namespace {
             return refs;
         }
 
+        // An input whose source is not a node with an ID is not a connection an operation can make.
         void emitInputs(const std::string& id,
                         const IndexedNode& node)
         {
+            if (!node.node->multiInstanceParentName.empty()) {
+                return;
+            }
             const NodeInputRefs before = inputsBefore(id);
             NodeInputRefs after;
             InputRefs::const_iterator found = _b.inputs.find(node.node.get());
@@ -403,7 +437,8 @@ namespace {
             for (const std::string& label : labels) {
                 NodeInputRefs::const_iterator x = before.find(label);
                 NodeInputRefs::const_iterator y = after.find(label);
-                if (y == after.end()) {
+                const bool connectedBefore = (x != before.end()) && !x->second.sourceId.empty();
+                if (connectedBefore && ((y == after.end()) || y->second.sourceId.empty())) {
                     _ops.push_back(SetInputOp { id, label, std::string() });
                 } else if (!y->second.sourceId.empty() && ((x == before.end()) || !(x->second == y->second))) {
                     _ops.push_back(SetInputOp { id, label, y->second.sourceId });
@@ -418,6 +453,45 @@ namespace {
     };
 
 } // namespace
+
+namespace {
+
+    void
+    clearNodeSessionState(std::list<NodeSerializationPtr>* nodes)
+    {
+        for (NodeSerializationPtr& node : *nodes) {
+            node->cacheID.clear();
+            node->knobsAge = 0;
+            clearNodeSessionState(&node->children);
+        }
+    }
+
+} // namespace
+
+ProjectSerialization
+editableState(const ProjectSerialization& project)
+{
+    ProjectSerialization result = project;
+    result.savedByVersion = ProjectSavedByVersionSerialization();
+    result.projectId.clear();
+    result.creationDate = 0;
+    result.timelineCurrentTime = 0;
+    for (NodeSerializationPtr& node : result.nodes.nodes) {
+        node = deepCopyNode(*node);
+    }
+    clearNodeSessionState(&result.nodes.nodes);
+    InputRefs inputs;
+    resolveInputs(result.nodes.nodes, &inputs);
+    for (const std::pair<NodeSerialization* const, NodeInputRefs>& node : inputs) {
+        for (const std::pair<const std::string, InputRef>& input : node.second) {
+            if (input.second.sourceId.empty()) {
+                node.first->inputs.erase(input.first);
+            }
+        }
+    }
+
+    return result;
+}
 
 std::vector<GraphOp>
 diffSnapshots(const ProjectSerialization& before,

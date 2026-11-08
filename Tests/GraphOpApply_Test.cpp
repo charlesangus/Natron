@@ -41,6 +41,7 @@
 #include "Engine/GraphOpApply.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -317,4 +318,144 @@ TEST_F(GraphOpApplyTest, ApplyingTheDiffBackRestoresTheSnapshot)
     expectAllApplied(apply(ops));
     EXPECT_SAME_PROJECT(before, snapshot());
     EXPECT_TRUE(diffSnapshots(before, snapshot()).empty());
+}
+
+TEST_F(GraphOpApplyTest, LinksAreMadeAfterTheLastOperation)
+{
+    NodePtr first = createIn(PLUGINID_NATRON_BLUR, project());
+    NodePtr second = createIn(PLUGINID_NATRON_BLUR, project());
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    ASSERT_TRUE(blurSize(first)->linkTo(0, blurSize(second), 0));
+    NodeSerializationPtr firstSaved = std::make_shared<NodeSerialization>();
+    first->toSerialization(firstSaved.get());
+    firstSaved->id = nid(1);
+    NodeSerializationPtr secondSaved = std::make_shared<NodeSerialization>();
+    second->toSerialization(secondSaved.get());
+    secondSaved->id = nid(2);
+    first->destroyNode(true, false);
+    second->destroyNode(true, false);
+
+    expectAllApplied(apply({ CreateNodeOp { std::string(), firstSaved }, CreateNodeOp { std::string(), secondSaved } }));
+    NodePtr firstMade = project()->findNodeById(nid(1));
+    NodePtr secondMade = project()->findNodeById(nid(2));
+    ASSERT_NE(firstMade, nullptr);
+    ASSERT_NE(secondMade, nullptr);
+    EXPECT_TRUE(blurSize(firstMade)->isLinked(0));
+    EXPECT_TRUE(blurSize(secondMade)->isLinked(0));
+    blurSize(secondMade)->setValue(11., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(blurSize(firstMade)->getValue(0), 11.);
+}
+
+TEST_F(GraphOpApplyTest, RefusedSetKnobKeepsLinksAndExpressions)
+{
+    NodePtr blur = createIn(PLUGINID_NATRON_BLUR, project());
+    NodePtr other = createIn(PLUGINID_NATRON_BLUR, project());
+    ASSERT_NE(blur, nullptr);
+    ASSERT_NE(other, nullptr);
+    KnobDoublePtr size = blurSize(blur);
+    ASSERT_TRUE(size->linkTo(0, blurSize(other), 0));
+    size->setExpression(1, "2 + 3", false, true);
+    ASSERT_FALSE(size->getExpression(1).empty());
+    NodeSerialization saved;
+    blur->toSerialization(&saved);
+    const KnobSerialization* savedSize = savedKnob(saved, kBlurParamSize);
+    ASSERT_NE(savedSize, nullptr);
+    KnobSerialization wrongType = *savedSize;
+    wrongType.typeName = "String";
+
+    const std::vector<OpResult> refused = apply({ SetKnobOp { blur->getNodeId(), kBlurParamSize, wrongType } });
+    ASSERT_EQ(refused.size(), 1u);
+    EXPECT_EQ(refused[0].status, OpStatus::eInvalid);
+    EXPECT_TRUE(size->isLinked(0));
+    EXPECT_FALSE(size->getExpression(1).empty());
+}
+
+TEST_F(GraphOpApplyTest, RefusedProjectDataChangesNothing)
+{
+    std::list<Format> formatsBefore;
+    project()->getAdditionalFormats(&formatsBefore);
+    const std::size_t layersBefore = project()->getLayerRegistrySnapshot()->size();
+
+    SetProjectDataOp op;
+    op.formats.emplace();
+    for (const Format& format : formatsBefore) {
+        FormatSerialization kept;
+        kept.x1 = format.x1;
+        kept.y1 = format.y1;
+        kept.x2 = format.x2;
+        kept.y2 = format.y2;
+        kept.pixelAspectRatio = format.getPixelAspectRatio();
+        kept.name = format.getName();
+        op.formats->push_back(kept);
+    }
+    FormatSerialization added;
+    added.x2 = 640;
+    added.y2 = 480;
+    added.name = "Probe";
+    op.formats->push_back(added);
+    LayerRegistryEntrySerialization tooWide;
+    tooWide.layer.layerID = "wide";
+    tooWide.layer.layerLabel = "wide";
+    tooWide.layer.channels = { "A", "B", "C", "D", "E" };
+    tooWide.origin = LayerRegistryEntry::eOriginUser;
+    op.layers.emplace(1, tooWide);
+
+    const std::vector<OpResult> refused = apply({ op });
+    ASSERT_EQ(refused.size(), 1u);
+    EXPECT_EQ(refused[0].status, OpStatus::eInvalid);
+    std::list<Format> formatsAfter;
+    project()->getAdditionalFormats(&formatsAfter);
+    EXPECT_EQ(formatsAfter.size(), formatsBefore.size());
+    EXPECT_EQ(project()->getLayerRegistrySnapshot()->size(), layersBefore);
+}
+
+TEST_F(GraphOpApplyTest, ProjectDataSetsTheVariablesInOrder)
+{
+    KnobGroupPtr variables = project()->getRFVGroup();
+    ASSERT_NE(variables, nullptr);
+    KnobDoublePtr gain = project()->createDoubleKnob("rfvGain", "Gain", 1);
+    ASSERT_TRUE(variables->addKnob(gain));
+    KnobDoublePtr offset = project()->createDoubleKnob("rfvOffset", "Offset", 1);
+    ASSERT_TRUE(variables->addKnob(offset));
+    gain->setValue(2., ViewSpec::all(), 0);
+    std::list<KnobSerialization> saved;
+    for (const KnobSerialization& knob : snapshot().projectKnobs) {
+        if (knob.isUserKnob) {
+            saved.push_back(knob);
+        }
+    }
+    ASSERT_EQ(saved.size(), 2u);
+    saved.reverse();
+
+    SetProjectDataOp reorder;
+    reorder.variables = saved;
+    expectAllApplied(apply({ reorder }));
+    std::vector<KnobIPtr> children = variables->getChildren();
+    ASSERT_EQ(children.size(), 2u);
+    EXPECT_EQ(children[0]->getName(), "rfvOffset");
+    EXPECT_EQ(children[1]->getName(), "rfvGain");
+    KnobDoublePtr gainAfter = std::dynamic_pointer_cast<KnobDouble>(project()->getKnobByName("rfvGain"));
+    ASSERT_NE(gainAfter, nullptr);
+    EXPECT_DOUBLE_EQ(gainAfter->getValue(0), 2.);
+
+    SetProjectDataOp clear;
+    clear.variables.emplace();
+    expectAllApplied(apply({ clear }));
+    EXPECT_TRUE(variables->getChildren().empty());
+    EXPECT_EQ(project()->getKnobByName("rfvGain"), nullptr);
+}
+
+TEST_F(GraphOpApplyTest, NodeUiClearsTheSize)
+{
+    NodePtr blur = createIn(PLUGINID_NATRON_BLUR, project());
+    ASSERT_NE(blur, nullptr);
+    blur->setSize(120., 40.);
+    ASSERT_TRUE(blur->hasSize());
+
+    SetNodeUiOp ui;
+    ui.nodeId = blur->getNodeId();
+    ui.size.emplace();
+    expectAllApplied(apply({ ui }));
+    EXPECT_FALSE(blur->hasSize());
 }

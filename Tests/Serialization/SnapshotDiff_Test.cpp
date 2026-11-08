@@ -392,3 +392,130 @@ TEST(SnapshotDiff, UserKnobsRotoTrackerAndProjectData)
     const std::vector<GraphOp> back = checkedDiff(after, projectFromYaml(kGraph));
     EXPECT_EQ(names(back), (std::vector<std::string> { "setTrackerData", "setRotoData", "setUserKnobs", "setProjectData" }));
 }
+
+TEST(SnapshotDiff, ClearedPositionAndSize)
+{
+    const std::string sized = edited({ { "    pos: [0, 100]\n", "    pos: [0, 100]\n    size: [120, 40]\n" } });
+    const std::string bare = edited({ { "    pos: [0, 100]\n", "" } });
+    const std::vector<GraphOp> ops = checkedDiff(sized, bare);
+    ASSERT_EQ(names(ops), (std::vector<std::string> { "setNodeUi" }));
+    const SetNodeUiOp& cleared = std::get<SetNodeUiOp>(ops[0]);
+    ASSERT_TRUE(cleared.position.has_value());
+    EXPECT_FALSE(cleared.position->has_value());
+    ASSERT_TRUE(cleared.size.has_value());
+    EXPECT_FALSE(cleared.size->has_value());
+
+    const std::vector<GraphOp> back = checkedDiff(bare, sized);
+    ASSERT_EQ(names(back), (std::vector<std::string> { "setNodeUi" }));
+    const SetNodeUiOp& set = std::get<SetNodeUiOp>(back[0]);
+    ASSERT_TRUE(set.size.has_value() && set.size->has_value());
+    EXPECT_EQ((*set.size)->first, 120.);
+}
+
+TEST(SnapshotDiff, InputToMissingNodeIsDisconnected)
+{
+    const std::string dangling = edited({ { "    inputs: {Source: \"Read1\"}\n", "    inputs: {Source: \"Missing1\"}\n" } });
+    const std::vector<GraphOp> ops = checkedDiff(kGraph, dangling);
+    ASSERT_EQ(names(ops), (std::vector<std::string> { "setInput" }));
+    EXPECT_EQ(std::get<SetInputOp>(ops[0]).nodeId, nid(2));
+    EXPECT_TRUE(std::get<SetInputOp>(ops[0]).sourceId.empty());
+    EXPECT_TRUE(diffSnapshots(projectFromYaml(dangling), projectFromYaml(edited({ { "    inputs: {Source: \"Read1\"}\n", "" } }))).empty());
+}
+
+namespace {
+
+// kGraph with an instance of Blur1 saved under it, holding Blur1's inputs as a saved one does.
+ProjectSerialization
+withInstance(const std::string& text)
+{
+    ProjectSerialization project = projectFromYaml(text);
+    NodeSerializationPtr blur = findNode(project.nodes.nodes, "Blur1");
+    NodeSerializationPtr instance = std::make_shared<NodeSerialization>();
+    instance->id = nid(10);
+    instance->scriptName = "Blur1_1";
+    instance->pluginID = "Blur";
+    instance->pluginMajorVersion = 1;
+    instance->multiInstanceParentName = "Blur1";
+    instance->inputs = blur->inputs;
+    blur->children.push_back(instance);
+
+    return project;
+}
+
+KnobSerialization
+variable(const std::string& name,
+         const std::string& label)
+{
+    KnobSerialization knob;
+    knob.name = name;
+    knob.typeName = "Double";
+    knob.dimension = 1;
+    knob.isUserKnob = true;
+    knob.isPersistent = true;
+    knob.label = label;
+
+    return knob;
+}
+
+} // namespace
+
+TEST(SnapshotDiff, InstanceTakesTheInputsOfItsMain)
+{
+    const std::string rewired = edited({ { "    inputs: {Source: \"Read1\"}\n", "    inputs: {Source: \"Constant1\"}\n" } });
+    const std::vector<GraphOp> ops = checkedDiff(withInstance(kGraph), withInstance(rewired));
+    ASSERT_EQ(names(ops), (std::vector<std::string> { "setInput" }));
+    EXPECT_EQ(std::get<SetInputOp>(ops[0]).nodeId, nid(2));
+
+    ProjectSerialization project = withInstance(kGraph);
+    const std::vector<OpResult> results = applyOps(&project, { SetInputOp { nid(10), "Source", nid(3) } });
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].status, OpStatus::eInvalid);
+    EXPECT_SAME_PROJECT(withInstance(kGraph), project);
+}
+
+TEST(SnapshotDiff, VariablesTravelWithProjectData)
+{
+    ProjectSerialization before = projectFromYaml(kGraph);
+    before.projectKnobs.push_back(variable("gain", "Gain"));
+    before.projectKnobs.push_back(variable("offset", "Offset"));
+    ProjectSerialization after = projectFromYaml(edited({ { "  frameRate: 25\n", "  frameRate: 30\n" } }));
+    after.projectKnobs.push_back(variable("offset", "Offset"));
+    after.projectKnobs.push_back(variable("gain", "Gain amount"));
+
+    const std::vector<GraphOp> ops = checkedDiff(before, after);
+    ASSERT_EQ(names(ops), (std::vector<std::string> { "setKnob", "setProjectData" }));
+    EXPECT_EQ(std::get<SetKnobOp>(ops[0]).knobName, "frameRate");
+    const SetProjectDataOp& data = std::get<SetProjectDataOp>(ops[1]);
+    EXPECT_FALSE(data.formats.has_value());
+    EXPECT_FALSE(data.layers.has_value());
+    ASSERT_TRUE(data.variables.has_value());
+    ASSERT_EQ(data.variables->size(), 2u);
+    EXPECT_EQ(data.variables->front().name, "offset");
+    EXPECT_EQ(data.variables->back().label, "Gain amount");
+
+    const std::vector<GraphOp> removed = checkedDiff(before, projectFromYaml(kGraph));
+    ASSERT_EQ(names(removed), (std::vector<std::string> { "setProjectData" }));
+    EXPECT_TRUE(std::get<SetProjectDataOp>(removed[0]).variables->empty());
+
+    ProjectSerialization clash = projectFromYaml(kGraph);
+    SetProjectDataOp shadowing;
+    shadowing.variables = std::list<KnobSerialization> { variable("frameRate", "Frame rate") };
+    const std::vector<OpResult> refused = applyOps(&clash, { shadowing });
+    ASSERT_EQ(refused.size(), 1u);
+    EXPECT_EQ(refused[0].status, OpStatus::eInvalid);
+}
+
+TEST(SnapshotDiff, SessionStateIsNotAnEdit)
+{
+    ProjectSerialization before = projectFromYaml(kGraph);
+    ProjectSerialization after = projectFromYaml(kGraph);
+    after.timelineCurrentTime = 42;
+    after.projectId = "another";
+    after.creationDate = 1234;
+    findNode(after.nodes.nodes, "Blur1")->cacheID = "Blur1-cache";
+    findNode(after.nodes.nodes, "Blur1")->knobsAge = 7;
+    EXPECT_TRUE(diffSnapshots(before, after).empty());
+    EXPECT_EQ(GraphOpTest::editableText(before), GraphOpTest::editableText(after));
+    InlineBlobSink sink;
+    EXPECT_NE(encodeProjectYaml(before, sink), encodeProjectYaml(after, sink)) << "the excluded fields are saved";
+}

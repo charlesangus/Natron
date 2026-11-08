@@ -212,6 +212,15 @@ TEST_F(GraphEditReplayTest, ReplayingRecordedEditsOnTheSavedProjectGivesTheEdite
     gradeEffect->getOrCreateUserPageKnob()->addKnob(userKnob);
     userKnob->setValue(0.5, ViewSpec::all(), 0);
 
+    KnobGroupPtr variables = project()->getRFVGroup();
+    ASSERT_NE(variables, nullptr);
+    KnobDoublePtr gain = project()->createDoubleKnob("rfvGain", "Gain", 1);
+    ASSERT_TRUE(variables->addKnob(gain));
+    KnobDoublePtr offset = project()->createDoubleKnob("rfvOffset", "Offset", 1);
+    ASSERT_TRUE(variables->addKnob(offset));
+    gain->setValue(2., ViewSpec::all(), 0);
+    ASSERT_TRUE(variables->moveOneStepUp(offset.get()));
+
     std::string error;
     ASSERT_EQ(LayerRegistry::eAddResultAdded,
               project()->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error))
@@ -257,5 +266,5 @@ TEST_F(GraphEditReplayTest, ReplayingRecordedEditsOnTheSavedProjectGivesTheEdite
     for (std::size_t i = 0; i < results.size(); ++i) {
         EXPECT_TRUE(results[i].applied()) << "operation " << i << ": " << results[i].message;
     }
-    EXPECT_EQ(GraphOpTest::canonicalText(s1), GraphOpTest::canonicalText(snapshot()));
+    EXPECT_EQ(GraphOpTest::editableText(s1), GraphOpTest::editableText(snapshot()));
 }

@@ -32,6 +32,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobLinkGroup.h"
@@ -199,6 +200,9 @@ notifyLinkGroupMembers(const KnobLinkGroupPtr& group)
         KnobSignalSlotHandlerPtr handler = member ? member->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
         if (handler) {
             handler->s_linkChanged();
+        }
+        if (member && GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onKnobContentChanged(member.get());
         }
     }
 }

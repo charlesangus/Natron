@@ -9570,6 +9570,22 @@ Node::hasSize() const
     return _imp->hasSizeSet;
 }
 
+void
+Node::clearSize()
+{
+    {
+        QMutexLocker k(&_imp->layoutMutex);
+
+        if (!_imp->hasSizeSet) {
+            return;
+        }
+        _imp->hasSizeSet = false;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
+}
+
 bool
 Node::getColor(double* r,
                double *g,

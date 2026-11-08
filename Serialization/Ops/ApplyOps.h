@@ -38,8 +38,11 @@ namespace Serialization {
  *
  * Without the plug-ins, some checks the live graph makes are not made here: any knob name and
  * input label is accepted, and a connection is not checked for cycles. A knob reset to its default
- * is removed from the node's knobs, which only lists the knobs that differ from their default.
- * Inputs naming a node that does not exist are kept as they are.
+ * is removed from the node's knobs, which only lists the knobs that differ from their default; a
+ * user knob or project variable stays, at its default. A knob set for the first time is added
+ * after the others. Inputs naming a node that does not exist are kept as they are. A
+ * multi-instance child takes the inputs of its main instance, so a SetInputOp naming one is
+ * invalid.
  **/
 std::vector<OpResult> applyOps(ProjectSerialization* project, const std::vector<GraphOp>& ops);
 

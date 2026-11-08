@@ -25,6 +25,7 @@
 
 #include "GraphOpApply.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -41,10 +42,12 @@
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/RFV.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TrackMarker.h"
@@ -86,7 +89,11 @@ adoptIds(const NodePtr& node,
     if (serialization.children.empty()) {
         return true;
     }
-    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());
+    // The instances of a multi-instance node live beside it, in its own group.
+    NodeCollectionPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());
+    if (!group && node->isMultiInstance()) {
+        group = node->getGroup();
+    }
     if (!group) {
         return true;
     }
@@ -145,16 +152,31 @@ private:
             return OpResult::invalid("no node to create");
         }
         NodeCollectionPtr collection = _project;
+        const bool isInstance = !op.node->multiInstanceParentName.empty();
+        NodePtr mainInstance;
         if (!op.parentId.empty()) {
             NodePtr parent = find(op.parentId);
             if (!parent) {
                 return missing(op.parentId);
             }
-            NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(parent->getEffectInstance());
-            if (!group) {
-                return OpResult::invalid(parent->getScriptName() + " is not a group");
+            if (isInstance) {
+                if (!parent->isMultiInstance() || parent->getParentMultiInstance()) {
+                    return OpResult::invalid(parent->getScriptName() + " is not a multi-instance node");
+                }
+                mainInstance = parent;
+                collection = parent->getGroup();
+            } else {
+                NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(parent->getEffectInstance());
+                if (!group) {
+                    return OpResult::invalid(parent->getScriptName() + " is not a group");
+                }
+                collection = group;
             }
-            collection = group;
+        } else if (isInstance) {
+            return OpResult::invalid("an instance of a multi-instance node must name its main instance as parent");
+        }
+        if (!collection) {
+            return OpResult::invalid("the node has no group to be made in");
         }
         if (op.node->scriptName.empty() || collection->checkIfNodeNameExists(op.node->scriptName, nullptr)) {
             return OpResult::invalid("the script name \"" + op.node->scriptName + "\" is empty or taken");
@@ -170,7 +192,13 @@ private:
 
         Serialization::NodeSerializationPtr copy = Serialization::OpsDetail::deepCopyNode(*op.node);
         Serialization::OpsDetail::stripInputsRecursive(copy.get());
+        if (mainInstance) {
+            copy->multiInstanceParentName = mainInstance->getScriptName();
+        }
         CreateNodeArgs args(copy->pluginID, collection);
+        if (mainInstance) {
+            args.setProperty<std::string>(kCreateNodeArgsPropMultiInstanceParentName, copy->multiInstanceParentName);
+        }
         args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, copy);
         args.setProperty<int>(kCreateNodeArgsPropPluginVersion, copy->pluginMajorVersion, 0);
         args.setProperty<int>(kCreateNodeArgsPropPluginVersion, copy->pluginMinorVersion, 1);
@@ -187,23 +215,35 @@ private:
         // A PyPlug's script makes the nodes inside it.
         NodesList made(1, created);
         NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(created->getEffectInstance());
+        std::map<std::string, bool> moduleUpdatesProcessed;
         if (group && created->getPluginPythonModule().empty() && !copy->children.empty()) {
-            std::map<std::string, bool> moduleUpdatesProcessed;
             ignore_result(NodeCollection::restoreFromSerialization(copy->children, group, true, &moduleUpdatesProcessed));
             group->getNodes_recursive(made, false);
+        } else if (!group && created->isMultiInstance() && !copy->children.empty()) {
+            // As a project load does: the instances name their main instance as it was created.
+            for (const Serialization::NodeSerializationPtr& child : copy->children) {
+                child->multiInstanceParentName = created->getScriptName();
+            }
+            ignore_result(NodeCollection::restoreFromSerialization(copy->children, collection, true, &moduleUpdatesProcessed));
+            for (const Serialization::NodeSerializationPtr& child : copy->children) {
+                NodePtr instance = collection->getNodeByName(child->scriptName);
+                if (instance) {
+                    made.push_back(instance);
+                }
+            }
         }
         std::string error;
         if (!adoptIds(created, *copy, &error)) {
-            created->destroyNode(true, false);
+            for (const NodePtr& node : made) {
+                node->destroyNode(true, false);
+            }
 
             return OpResult::invalid(error);
         }
-        created->storeKnobsLinks(*copy, kNoRenames);
-        const NodesList nodes = allNodes();
         for (const NodePtr& node : made) {
-            node->restoreKnobsLinks(nodes, kNoRenames, false);
+            _pendingLinks.push_back(node);
         }
-        KnobHelper::restoreLinkGroups(made);
+        created->storeKnobsLinks(*copy, kNoRenames);
 
         return OpResult();
     }
@@ -220,11 +260,19 @@ private:
     }
 
     // What applyPresetSerialization() does to one knob: its links and expressions go, then the
-    // saved state, expressions and links come back.
+    // saved state, expressions and links come back. The value is checked first, so that a value
+    // the knob refuses leaves it as it was.
     OpResult setKnob(const NodePtr& node,
                      const KnobIPtr& knob,
                      const std::optional<Serialization::KnobSerialization>& value)
     {
+        if (value) {
+            const Serialization::KnobSerialization complete = completeKnobSerializationForKnob(*knob, *value);
+            if ((complete.typeName != knob->typeName()) || !createDetachedKnobFromSerialization(complete)) {
+                return OpResult::invalid("the value is not one of the knob " + knob->getName());
+            }
+        }
+        knob->clearStoredLinks();
         removeKnobLinks(knob);
         for (int i = 0; i < knob->getDimension(); ++i) {
             if (value) {
@@ -241,11 +289,10 @@ private:
         }
         knob->storeLinksFromSerialization(*value);
         knob->restoreExpressionsFromSerialization(*value, kNoRenames);
-        knob->restoreLinks(allNodes(), kNoRenames, false);
         if (node) {
-            KnobHelper::restoreLinkGroups(NodesList(1, node));
+            _pendingLinks.push_back(node);
         } else {
-            KnobHelper::restoreLinkGroups(NodesList(), false, KnobsVec(1, knob));
+            _pendingProjectKnobs.push_back(knob);
         }
 
         return OpResult();
@@ -343,11 +390,16 @@ private:
         if (!node) {
             return missing(op.nodeId);
         }
-        if (op.position) {
-            node->setPosition(op.position->first, op.position->second);
+        // A live node always has a position, so clearing it keeps the one it has.
+        if (op.position && *op.position) {
+            node->setPosition((*op.position)->first, (*op.position)->second);
         }
         if (op.size) {
-            node->setSize(op.size->first, op.size->second);
+            if (*op.size) {
+                node->setSize((*op.size)->first, (*op.size)->second);
+            } else {
+                node->clearSize();
+            }
         }
         if (op.color) {
             if (*op.color) {
@@ -386,8 +438,7 @@ private:
         pages.pagesOrder = op.pagesOrder;
         node->restoreUserKnobs(pages);
         node->storeKnobsLinks(pages, kNoRenames);
-        node->restoreKnobsLinks(allNodes(), kNoRenames, false);
-        KnobHelper::restoreLinkGroups(NodesList(1, node));
+        _pendingLinks.push_back(node);
         node->getEffectInstance()->recreateUserKnobs(true);
         // recreateUserKnobs() only declares the knobs to Python when a settings panel exists.
         node->declarePythonFields();
@@ -502,24 +553,157 @@ private:
             }
         }
 
+        // The registry the layers would make is built aside first, so that a layer it refuses
+        // leaves the project as it was.
+        std::string error;
+        if (op.layers) {
+            LayerRegistry result;
+            const std::shared_ptr<const std::vector<LayerRegistryEntry>> current = _project->getLayerRegistrySnapshot();
+            for (const LayerRegistryEntry& entry : *current) {
+                if ((entry.origin != LayerRegistryEntry::eOriginBuiltin) && (std::find(layersToRemove.begin(), layersToRemove.end(), entry.desc.getLayerID()) == layersToRemove.end())) {
+                    ignore_result(result.add(entry.desc, entry.origin, nullptr));
+                }
+            }
+            for (const Serialization::LayerRegistryEntrySerialization* layer : layersToAdd) {
+                if (result.add(layerDesc(*layer), (LayerRegistryEntry::OriginEnum)layer->origin, &error) == LayerRegistry::eAddResultRefused) {
+                    return OpResult::invalid(error);
+                }
+            }
+        }
+        if (op.variables) {
+            OpResult checked = checkVariables(*op.variables);
+            if (!checked.applied()) {
+                return checked;
+            }
+        }
+
         for (const Format& format : formatsToAdd) {
             _project->addAdditionalFormat(format);
         }
-        std::string error;
         for (const std::string& id : layersToRemove) {
-            if (!_project->removeLayer(id, &error)) {
-                return OpResult::invalid(error);
-            }
+            ignore_result(_project->removeLayer(id, &error));
         }
         for (const Serialization::LayerRegistryEntrySerialization* layer : layersToAdd) {
-            const ImageLayerDesc desc(layer->layer.layerID, layer->layer.layerLabel, layer->layer.channelsLabel, layer->layer.channels);
-            if (_project->addLayer(desc, (LayerRegistryEntry::OriginEnum)layer->origin, &error) == LayerRegistry::eAddResultRefused) {
-                return OpResult::invalid(error);
+            ignore_result(_project->addLayer(layerDesc(*layer), (LayerRegistryEntry::OriginEnum)layer->origin, &error));
+        }
+        if (op.variables) {
+            setVariables(*op.variables);
+        }
+
+        return OpResult();
+    }
+
+    static ImageLayerDesc layerDesc(const Serialization::LayerRegistryEntrySerialization& layer)
+    {
+        return ImageLayerDesc(layer.layer.layerID, layer.layer.layerLabel, layer.layer.channelsLabel, layer.layer.channels);
+    }
+
+    // What restoreRFVVariables() would refuse, checked before anything changes.
+    OpResult checkVariables(const std::list<Serialization::KnobSerialization>& variables) const
+    {
+        const KnobGroupPtr group = _project->getRFVGroup();
+        std::set<std::string> names;
+        for (const Serialization::KnobSerialization& variable : variables) {
+            if (!variable.isUserKnob || variable.name.empty() || !names.insert(variable.name).second) {
+                return OpResult::invalid("the variable \"" + variable.name + "\" is not a user knob, has no name or is listed twice");
+            }
+            const KnobIPtr existing = _project->getKnobByName(variable.name);
+            if (existing && (existing->getParentKnob() != group)) {
+                return OpResult::invalid("a project parameter is already named \"" + variable.name + "\"");
+            }
+            if (!RFV::isVariableKnobType(createDetachedKnobFromSerialization(variable))) {
+                return OpResult::invalid("the variable \"" + variable.name + "\" has the type " + variable.typeName + ", which cannot be a variable");
             }
         }
 
         return OpResult();
     }
+
+    // A variable kept with its type is updated in place, so that what reads it by name keeps it.
+    void setVariables(const std::list<Serialization::KnobSerialization>& variables)
+    {
+        const KnobGroupPtr group = _project->getRFVGroup();
+        std::map<std::string, const Serialization::KnobSerialization*> wanted;
+        for (const Serialization::KnobSerialization& variable : variables) {
+            wanted[variable.name] = &variable;
+        }
+        for (const KnobIPtr& knob : group->getChildren()) {
+            std::map<std::string, const Serialization::KnobSerialization*>::const_iterator found = wanted.find(knob->getName());
+            if ((found == wanted.end()) || (found->second->typeName != knob->typeName()) || (found->second->dimension != knob->getDimension())) {
+                _project->deleteKnob(knob.get(), true);
+            }
+        }
+        int index = 0;
+        for (const Serialization::KnobSerialization& variable : variables) {
+            KnobIPtr existing;
+            for (const KnobIPtr& knob : group->getChildren()) {
+                if (knob->getName() == variable.name) {
+                    existing = knob;
+                }
+            }
+            if (existing) {
+                existing->clearStoredLinks();
+                removeKnobLinks(existing);
+                for (int i = 0; i < existing->getDimension(); ++i) {
+                    existing->clearExpression(i, true);
+                }
+                existing->setLabel(variable.label);
+            }
+            KnobIPtr knob = createUserKnobFromSerialization(_project.get(), variable, existing);
+            if (!knob) {
+                continue;
+            }
+            group->removeKnob(knob.get());
+            if (!group->insertKnob(index, knob)) {
+                _project->deleteKnob(knob.get(), true);
+                continue;
+            }
+            ++index;
+        }
+        _project->recreateUserKnobs(true);
+        for (const Serialization::KnobSerialization& variable : variables) {
+            const KnobIPtr knob = _project->getKnobByName(variable.name);
+            if (!knob) {
+                continue;
+            }
+            knob->storeLinksFromSerialization(variable);
+            knob->restoreExpressionsFromSerialization(variable, kNoRenames);
+            _pendingProjectKnobs.push_back(knob);
+        }
+    }
+
+public:
+    // Links are made once every operation has run, so that one may name a node or variable a
+    // later operation makes.
+    void restorePendingLinks()
+    {
+        const NodesList nodes = allNodes();
+        NodesList restored;
+        for (const NodeWPtr& weak : _pendingLinks) {
+            const NodePtr node = weak.lock();
+            if (node && node->isActivated() && (std::find(restored.begin(), restored.end(), node) == restored.end())) {
+                node->restoreKnobsLinks(nodes, kNoRenames, false);
+                restored.push_back(node);
+            }
+        }
+        KnobsVec knobs;
+        for (const KnobIWPtr& weak : _pendingProjectKnobs) {
+            const KnobIPtr knob = weak.lock();
+            if (knob && (std::find(knobs.begin(), knobs.end(), knob) == knobs.end())) {
+                knob->restoreLinks(nodes, kNoRenames, false);
+                knobs.push_back(knob);
+            }
+        }
+        _pendingLinks.clear();
+        _pendingProjectKnobs.clear();
+        if (!restored.empty() || !knobs.empty()) {
+            KnobHelper::restoreLinkGroups(restored, false, knobs);
+        }
+    }
+
+private:
+    std::vector<NodeWPtr> _pendingLinks;
+    std::vector<KnobIWPtr> _pendingProjectKnobs;
 
     ProjectPtr _project;
 };
@@ -538,6 +722,7 @@ applyGraphOps(const ProjectPtr& project,
     for (const Serialization::GraphOp& op : ops) {
         results.push_back(graph.apply(op));
     }
+    graph.restorePendingLinks();
 
     return results;
 }

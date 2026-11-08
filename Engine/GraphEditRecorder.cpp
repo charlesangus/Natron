@@ -126,8 +126,11 @@ isRecordableProject(const Project& project)
 bool
 isRecordableNode(const Node& node)
 {
-    if (!node.isPartOfProject() || node.getParentMultiInstance() || !node.isActivated() || node.getNodeId().empty()) {
+    if (!node.isPartOfProject() || !node.isActivated() || node.getNodeId().empty()) {
         return false;
+    }
+    if (NodePtr mainInstance = node.getParentMultiInstance()) {
+        return isRecordableNode(*mainInstance);
     }
     for (NodePtr group = enclosingGroupNode(node); group; group = enclosingGroupNode(*group)) {
         if (!group->isActivated()) {
@@ -158,11 +161,13 @@ nodeUiOp(const Node& node)
     op.nodeId = node.getNodeId();
     double x, y;
     node.getPosition(&x, &y);
-    op.position = std::make_pair(x, y);
+    op.position = std::optional<std::pair<double, double>>(std::make_pair(x, y));
     if (node.hasSize()) {
         double w, h;
         node.getSize(&w, &h);
-        op.size = std::make_pair(w, h);
+        op.size = std::optional<std::pair<double, double>>(std::make_pair(w, h));
+    } else {
+        op.size = std::optional<std::pair<double, double>>();
     }
     double r, g, b;
     if (node.hasUserColor()) {
@@ -211,6 +216,12 @@ projectDataOp(const Project& project)
         entry.layer.channels = layer.desc.getChannels();
         entry.origin = (int)layer.origin;
         op.layers->push_back(entry);
+    }
+    op.variables.emplace();
+    const KnobsVec variables = project.getRFVGroup()->getChildren();
+    for (const KnobIPtr& variable : variables) {
+        op.variables->push_back(Serialization::KnobSerialization());
+        variable->toSerialization(&op.variables->back());
     }
 
     return op;
@@ -332,6 +343,10 @@ struct GraphEditRecorder::Implementation {
             if (!knob) {
                 return std::nullopt;
             }
+            // A knob that became a variable since travels with the project data.
+            if (knob->isUserKnob()) {
+                return std::nullopt;
+            }
             Serialization::SetKnobOp op;
             op.knobName = knob->getName();
             op.value = projectKnobValue(*knob);
@@ -409,6 +424,10 @@ struct GraphEditRecorder::Implementation {
     void appendInputs(const Node& node,
                       std::vector<Serialization::GraphOp>* ops)
     {
+        // An instance takes the inputs of its main instance.
+        if (node.getParentMultiInstance()) {
+            return;
+        }
         const int nInputs = node.getNInputs();
         for (int i = 0; i < nInputs; ++i) {
             NodePtr source = node.getRealGuiInput(i);
@@ -442,15 +461,17 @@ struct GraphEditRecorder::Implementation {
                 if (!survivors.count(node.get()) || !done.insert(node.get()).second) {
                     continue;
                 }
-                bool insideSurvivor = false;
-                for (NodePtr group = enclosingGroupNode(*node); group && !insideSurvivor; group = enclosingGroupNode(*group)) {
+                // An instance of a multi-instance node is saved under its main instance.
+                const NodePtr mainInstance = node->getParentMultiInstance();
+                bool insideSurvivor = mainInstance && survivors.count(mainInstance.get()) > 0;
+                for (NodePtr group = enclosingGroupNode(mainInstance ? *mainInstance : *node); group && !insideSurvivor; group = enclosingGroupNode(*group)) {
                     insideSurvivor = survivors.count(group.get()) > 0;
                 }
                 if (insideSurvivor) {
                     continue;
                 }
                 Serialization::CreateNodeOp create;
-                NodePtr parent = enclosingGroupNode(*node);
+                NodePtr parent = mainInstance ? mainInstance : enclosingGroupNode(*node);
                 create.parentId = parent ? parent->getNodeId() : std::string();
                 create.node = std::make_shared<Serialization::NodeSerialization>();
                 node->toSerialization(create.node.get());
@@ -716,7 +737,8 @@ GraphEditRecorder::onNodeLayoutChanged(Node* node)
 {
     AppInstancePtr app = node->getApp();
     GraphEditRecorder* recorder = recorderFor(app.get());
-    if (!recorder || !isRecordableNode(*node)) {
+    // An instance of a multi-instance node has no layout of its own.
+    if (!recorder || !isRecordableNode(*node) || node->getParentMultiInstance()) {
         return;
     }
     Entry entry;
@@ -731,7 +753,7 @@ GraphEditRecorder::onInputChanged(Node* node,
 {
     AppInstancePtr app = node->getApp();
     GraphEditRecorder* recorder = recorderFor(app.get());
-    if (!recorder || !isRecordableNode(*node) || recorder->_imp->isDeleted(node) || (inputNb < 0) || (inputNb >= node->getNInputs())) {
+    if (!recorder || !isRecordableNode(*node) || node->getParentMultiInstance() || recorder->_imp->isDeleted(node) || (inputNb < 0) || (inputNb >= node->getNInputs())) {
         return;
     }
     Serialization::SetInputOp op;
@@ -770,6 +792,11 @@ GraphEditRecorder::onKnobContentChanged(KnobI* knob)
     }
     if (Project* project = dynamic_cast<Project*>(holder)) {
         if (dynamic_cast<KnobGroup*>(knob) || isSavedEachTime(*knob) || (knob->isUserKnob() && !isProjectVariable(*knob))) {
+            return;
+        }
+        if (isProjectVariable(*knob)) {
+            onProjectDataChanged(project);
+
             return;
         }
         GraphEditRecorder* recorder = recorderFor(project->getApp().get());
@@ -812,6 +839,11 @@ GraphEditRecorder::onKnobContentChanged(KnobI* knob)
 void
 GraphEditRecorder::onKnobListChanged(KnobHolder* holder)
 {
+    if (Project* project = dynamic_cast<Project*>(holder)) {
+        onProjectDataChanged(project);
+
+        return;
+    }
     EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
     if (!effect) {
         return;

@@ -124,3 +124,4 @@
 - 2026-11-05 — native-shader-networks: native per-renderer networks in one VOP-like USDMaterialBuilder of real Natron nodes, subject to M349 - Shader Node Spike → DECISIONS/2026-11-05-native-shader-networks.md
 - 2026-11-05 — feature-grouping: group milestones into Features to cut rebase churn, CI and build waits and UAT load; member user sign-offs collect at the Feature's UAT (user) → DECISIONS/2026-11-05-feature-grouping.md
 - 2026-11-05 — start-rule-lifted-for-named-work: user's pick-up list lifts the start hold for M116, M320, M296, F6, F4 and M327; other work stays held → DECISIONS/2026-11-05-start-rule-lifted-for-named-work.md
+- 2026-11-08 — native-geometry-follows-sops: native geometry follows Houdini SOPs (unified paged detail, SOP attribute names, no pxr; `path` is just an attribute read by the bridges); replaces the UsdGeom container sketch (user, M54 grill) → DECISIONS/2026-11-08-native-geometry-follows-sops.md

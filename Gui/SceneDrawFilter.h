@@ -30,6 +30,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -121,12 +122,19 @@ public:
     std::size_t stepReveal(std::size_t maxPrims);
     bool isRevealing() const { return _revealing; }
 
+    using LightPredicate = std::function<bool(const PXR_NS::SdfPath&)>;
+
     /**
-     * @brief Whether any light of the input scene is drawn: one the rules keep, or a reveal has
-     * announced. Hydra gets no light otherwise, so a renderer lit by the scene is dark then. Only
-     * the thread that changes the filter may call it.
+     * @brief Whether any light of the input scene that `counts` accepts (every one, if empty) is
+     * drawn: one the rules keep, or a reveal has announced. The input also carries the renderer's
+     * own lights, such as a headlight, which no row governs; a caller deciding whether to add one
+     * must leave them out, or adding it would reverse the decision. Only the thread that changes
+     * the filter may call it.
      */
-    bool hasDrawnLights() const;
+    bool hasDrawnLights(const LightPredicate& counts = LightPredicate()) const;
+
+    /** @brief Whether a Hidden row, or a reveal from one, keeps lights from Hydra. */
+    bool hidesLights() const;
 
     const Rules& getRules() const { return _rules; }
     unsigned long long getInputAddedCount() const { return _inputAdded; }
@@ -160,8 +168,6 @@ private:
 
     // Every light the input has announced, whether drawn or not.
     std::set<PXR_NS::SdfPath> _lights;
-    mutable bool _drawnLightsValid = false;
-    mutable bool _drawnLights = false;
 
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;

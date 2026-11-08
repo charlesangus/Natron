@@ -696,6 +696,34 @@ TEST_F(SceneDrawFilterTest, NoDrawnLightsUntilOneIsDrawn)
     EXPECT_TRUE(filter->hasDrawnLights());
 }
 
+// A renderer's own light, such as the viewer's headlight, reaches the filter beside the stage's.
+TEST_F(SceneDrawFilterTest, OnlyHiddenRowsHideLightsAndARendererLightCanBeLeftOut)
+{
+    addLights(scene);
+    scene->AddPrims({ { SdfPath("/_Renderer/headlight"), HdPrimTypeTokens->simpleLight, someData() } });
+    const SceneDrawFilter::LightPredicate ofTheStage = [](const SdfPath& light) {
+        return light.HasPrefix(SdfPath("/World"));
+    };
+    EXPECT_FALSE(filter->hidesLights());
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateBBox));
+    EXPECT_FALSE(filter->hidesLights());
+    EXPECT_TRUE(filter->hasDrawnLights(ofTheStage));
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateHidden));
+    EXPECT_TRUE(filter->hidesLights());
+    EXPECT_FALSE(filter->hasDrawnLights(ofTheStage));
+    EXPECT_TRUE(filter->hasDrawnLights()) << "the renderer's light is drawn";
+
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateFull), 1);
+    EXPECT_TRUE(filter->hidesLights()) << "the reveal has not reached the lights yet";
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+    }
+    EXPECT_FALSE(filter->hidesLights());
+    EXPECT_TRUE(filter->hasDrawnLights(ofTheStage));
+}
+
 TEST_F(SceneDrawFilterTest, RemovingTheLightsLeavesNoneDrawn)
 {
     addLights(scene);

@@ -25,6 +25,7 @@
 
 #include "Gui/SceneDrawFilter.h"
 
+#include <algorithm>
 #include <limits>
 #include <mutex>
 #include <set>
@@ -281,20 +282,25 @@ SceneDrawFilter::isHidden(const SdfPath& path,
 }
 
 bool
-SceneDrawFilter::hasDrawnLights() const
+SceneDrawFilter::hasDrawnLights(const LightPredicate& counts) const
 {
-    if (!_drawnLightsValid) {
-        _drawnLights = false;
-        for (const SdfPath& light : _lights) {
-            if (!isHidden(light, HdPrimTypeTokens->rectLight)) {
-                _drawnLights = true;
-                break;
-            }
+    for (const SdfPath& light : _lights) {
+        if ((!counts || counts(light)) && !isHidden(light, HdPrimTypeTokens->rectLight)) {
+            return true;
         }
-        _drawnLightsValid = true;
     }
 
-    return _drawnLights;
+    return false;
+}
+
+bool
+SceneDrawFilter::hidesLights() const
+{
+    const auto hidden = [](const Rules::value_type& rule) {
+        return rule.second == eRuleHidden;
+    };
+
+    return std::any_of(_rules.begin(), _rules.end(), hidden) || (_revealing && std::any_of(_revealFrom.begin(), _revealFrom.end(), hidden));
 }
 
 void
@@ -302,11 +308,9 @@ SceneDrawFilter::trackLights(const HdSceneIndexObserver::AddedPrimEntries& entri
 {
     for (const HdSceneIndexObserver::AddedPrimEntry& entry : entries) {
         if (HdPrimTypeIsLight(entry.primType)) {
-            if (_lights.insert(entry.primPath).second) {
-                _drawnLightsValid = false;
-            }
-        } else if (_lights.erase(entry.primPath) != 0) {
-            _drawnLightsValid = false;
+            _lights.insert(entry.primPath);
+        } else {
+            _lights.erase(entry.primPath);
         }
     }
 }
@@ -348,7 +352,6 @@ void
 SceneDrawFilter::seedRules(const Rules& rules)
 {
     _rules = rules;
-    _drawnLightsValid = false;
 }
 
 void
@@ -357,7 +360,6 @@ SceneDrawFilter::applyDelta(const SceneDrawDelta& delta,
 {
     Rules target = _rules;
     applyToRules(delta, &target);
-    _drawnLightsValid = false;
 
     std::set<SdfPath> hideRoots;
     std::set<SdfPath> showRoots;
@@ -452,7 +454,6 @@ SceneDrawFilter::stepReveal(std::size_t maxPrims)
             _revealStack.insert(_revealStack.end(), children.rbegin(), children.rend());
         }
     }
-    _drawnLightsValid = false;
     finishRevealIfDone();
     const std::size_t sent = entries.size();
     if (sent != 0) {
@@ -496,7 +497,6 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
         if (_revealing && !hiddenFor(_rules, entry.primPath, entry.primType) && hiddenFor(_revealFrom, entry.primPath, entry.primType)) {
             // The reveal's walk may be past this prim's parent, and nothing would announce it then.
             _revealed.insert(entry.primPath);
-            _drawnLightsValid = false;
 
             continue;
         }
@@ -519,7 +519,6 @@ SceneDrawFilter::_PrimsRemoved(const HdSceneIndexBase& /*sender*/,
         std::set<SdfPath>::iterator it = _lights.lower_bound(entry.primPath);
         while ((it != _lights.end()) && it->HasPrefix(entry.primPath)) {
             it = _lights.erase(it);
-            _drawnLightsValid = false;
         }
     }
     _SendPrimsRemoved(entries);

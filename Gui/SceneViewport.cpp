@@ -912,10 +912,10 @@ struct SceneViewportRenderer::Implementation {
         case eLightingModeAuto: {
             const std::shared_ptr<const StageSummary> summary = getStageSummary();
 
-            return summary && summary->hasLights && drawsLights();
+            return summary && summary->hasLights && !hidesEveryLight();
         }
         case eLightingModeScene:
-            return drawsLights();
+            return !hidesEveryLight();
         case eLightingModeHeadlight:
             return false;
         }
@@ -923,13 +923,25 @@ struct SceneViewportRenderer::Implementation {
         return false;
     }
 
-    // Hydra holds no light once every one is under a Hidden row, and nothing lights a scene then.
-    // Reads the filter, so only the thread that holds the engine may call it.
-    bool drawsLights() const
+    // Hydra holds no light of the stage once every one is under a Hidden row, and nothing lights
+    // the scene then. A stage with no light at all stays dark under Scene Lights, as hiding a mesh
+    // must not light it. The headlight is a light in the filter's input too, so only stage prims
+    // count, or adding it would reverse this on the next pass. Needs stageMutex and the engine.
+    bool hidesEveryLight() const
     {
         const SceneDrawFilter* filter = get_pointer(drawFilter);
+        if (!filter || !filter->hidesLights()) {
+            return false;
+        }
+        const std::shared_ptr<const StageSummary> summary = getStageSummary();
+        const UsdStageRefPtr stage = currentStage();
+        if (!summary || !summary->hasLights || !stage) {
+            return false;
+        }
 
-        return !filter || filter->hasDrawnLights();
+        return !filter->hasDrawnLights([&stage](const SdfPath& light) {
+            return bool(stage->GetPrimAtPath(light));
+        });
     }
 
     // The project frame mapped by seconds, as SceneOps::frameToTimeCode.

@@ -909,18 +909,53 @@ TEST_F(NativeVectorGeneratorTest, LowConfidenceOverlayCoversTheSideWithNoNeighbo
 {
     NodePtr node = createGenerator(createMovingTexture());
     ASSERT_TRUE(bool(node));
-    ASSERT_TRUE(runOverlayPass(node, (double)kFirstFrame));
-    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
-    ASSERT_TRUE(bool(frame));
+    const std::size_t wholePicture = (std::size_t)kWidth * (std::size_t)kHeight;
+    const struct {
+        int frame;
+        const char* missingSide;
+        const char* solvedSide;
+    } ends[] = {
+        { kFirstFrame, kVectorGeneratorOverlayPlaneLowBackward, kVectorGeneratorOverlayPlaneLowForward },
+        { kLastFrame, kVectorGeneratorOverlayPlaneLowForward, kVectorGeneratorOverlayPlaneLowBackward },
+    };
+    for (const auto& end : ends) {
+        SCOPED_TRACE(end.frame);
+        ASSERT_TRUE(runOverlayPass(node, (double)end.frame));
+        const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+        ASSERT_TRUE(bool(frame));
 
-    const OverlayImagePlane* backward = findOverlayPlane(*frame, kVectorGeneratorOverlayPlaneLowBackward);
-    ASSERT_TRUE(backward != nullptr);
-    ASSERT_EQ(backward->tiles.size(), 1u);
-    EXPECT_EQ(backward->tiles.front()->coveredPixels, (std::size_t)kWidth * (std::size_t)kHeight);
-    const OverlayImagePlane* forward = findOverlayPlane(*frame, kVectorGeneratorOverlayPlaneLowForward);
-    ASSERT_TRUE(forward != nullptr);
-    ASSERT_EQ(forward->tiles.size(), 1u);
-    EXPECT_LT(forward->tiles.front()->coveredPixels, (std::size_t)kWidth * (std::size_t)kHeight);
+        const OverlayImagePlane* missing = findOverlayPlane(*frame, end.missingSide);
+        ASSERT_TRUE(missing != nullptr);
+        ASSERT_EQ(missing->tiles.size(), 1u);
+        EXPECT_EQ(missing->tiles.front()->coveredPixels, wholePicture);
+        const OverlayImagePlane* solved = findOverlayPlane(*frame, end.solvedSide);
+        ASSERT_TRUE(solved != nullptr);
+        ASSERT_EQ(solved->tiles.size(), 1u);
+        EXPECT_LT(solved->tiles.front()->coveredPixels, wholePicture);
+    }
+}
+
+TEST_F(NativeVectorGeneratorTest, LowConfidenceOverlayRequestsEveryProducedPlane)
+{
+    NodePtr node = createGenerator(createMovingTexture());
+    ASSERT_TRUE(bool(node));
+    const EffectInstancePtr effect = node->getEffectInstance();
+    const auto layerIds = [](const std::list<ImageLayerDesc>& layers) {
+        std::vector<std::string> ids;
+        for (const ImageLayerDesc& layer : layers) {
+            ids.push_back(layer.getLayerID());
+        }
+
+        return ids;
+    };
+    const std::string confidenceId = VectorGenerator::confidenceLayer().getLayerID();
+
+    EXPECT_EQ(layerIds(effect->overlayImageSourcePlanes(3., ViewIdx(0))),
+              (std::vector<std::string> { forwardLayer().getLayerID(), backwardLayer().getLayerID(), confidenceId }));
+
+    ASSERT_TRUE(setKnobValue(node, kVectorGeneratorParamOutputs, kVectorGeneratorOutputsBackward));
+    EXPECT_EQ(layerIds(effect->overlayImageSourcePlanes(3., ViewIdx(0))),
+              (std::vector<std::string> { backwardLayer().getLayerID(), confidenceId }));
 }
 
 TEST_F(NativeVectorGeneratorTest, LowConfidenceOverlaySkipsADirectionLeftOut)

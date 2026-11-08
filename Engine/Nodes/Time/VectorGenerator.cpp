@@ -236,6 +236,22 @@ sameLayer(const ImageLayerDesc& a,
     return a.getLayerID() == b.getLayerID();
 }
 
+std::list<ImageLayerDesc>
+producedLayers(bool forward,
+               bool backward)
+{
+    std::list<ImageLayerDesc> layers;
+    if (forward) {
+        layers.push_back(ImageLayerDesc::getForwardMotionComponents());
+    }
+    if (backward) {
+        layers.push_back(ImageLayerDesc::getBackwardMotionComponents());
+    }
+    layers.push_back(VectorGenerator::confidenceLayer());
+
+    return layers;
+}
+
 // Full coverage where the channel is below threshold, row by row over window. Empty when no pixel is,
 // which spares the viewer a tile that draws nothing.
 std::vector<unsigned char>
@@ -509,10 +525,15 @@ VectorGenerator::isOverlayImageViewOn() const
 }
 
 std::list<ImageLayerDesc>
-VectorGenerator::overlayImageSourcePlanes(double /*time*/,
-                                          ViewIdx /*view*/)
+VectorGenerator::overlayImageSourcePlanes(double time,
+                                          ViewIdx view)
 {
-    return std::list<ImageLayerDesc> { confidenceLayer() };
+    // One solve fills every plane a render requests together, and the pass runs before the viewer's
+    // own render: asking for all of them leaves the vectors cached for a viewer showing Forward or
+    // Backward, which would otherwise solve the frame again.
+    const Settings s = settingsAt(time, view);
+
+    return producedLayers(s.forward, s.backward);
 }
 
 void
@@ -695,15 +716,7 @@ VectorGenerator::getComponentsNeededAndProduced(double time,
     *passThroughInputNb = kVectorGeneratorInputSource;
 
     const Settings s = settingsAt(time, view);
-    std::list<ImageLayerDesc>& produced = (*comps)[-1];
-    produced.clear();
-    if (s.forward) {
-        produced.push_back(ImageLayerDesc::getForwardMotionComponents());
-    }
-    if (s.backward) {
-        produced.push_back(ImageLayerDesc::getBackwardMotionComponents());
-    }
-    produced.push_back(confidenceLayer());
+    (*comps)[-1] = producedLayers(s.forward, s.backward);
 
     std::list<ImageLayerDesc>& neededSource = (*comps)[kVectorGeneratorInputSource];
     neededSource.clear();

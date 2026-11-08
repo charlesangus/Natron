@@ -25,13 +25,16 @@ has confidence 0. The layer is always produced.
 `showLowConfidence` reads this layer on the viewer: while the node's panel is open, pixels below
 `confidenceThreshold` are tinted red where `Forward` is low and blue where `Backward` is low, over
 whichever layer the viewer shows. On the first and last frames the side with no neighbour tints the
-whole picture, since its confidence is 0; a direction left out by `outputs` draws nothing. The tint is
+whole picture, since its confidence is a true 0: the first frame is all blue for `Backward`, the last
+all red for `Forward`. A direction left out by `outputs` draws nothing. The tint is
 drawn only on the viewer and changes no output, and it does not show during playback.
 
 Moving `confidenceThreshold` redraws from the cached confidence without solving again. If a frame's
-confidence is not in the cache, the tint solves it first, on the render thread: the viewer stays
-responsive and the render can be cancelled, but showing RGBA, which otherwise costs no solve, then does.
-Viewing `Forward` or `Backward` on a frame not yet solved solves twice, once for each request.
+confidence is not in the cache, the tint solves it first, on the render thread, and asks for every
+layer the node produces, `Forward`, `Backward` and `vectorConfidence`, in that one solve. The viewer
+showing `Forward` or `Backward` then reads them from the cache, so a frame is never solved twice for
+the tint. Showing RGBA, which otherwise costs no solve, waits for that solve; the viewer stays
+responsive and the render can be cancelled.
 
 ## Methods and quality
 

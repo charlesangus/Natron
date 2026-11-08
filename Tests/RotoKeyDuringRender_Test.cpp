@@ -301,7 +301,22 @@ protected:
         return marker;
     }
 
+    // Built with auto-key on whatever the test's setting: with it off, makeBezier and
+    // setPointAtIndex leave an unkeyed shape at its creation pose.
     BezierPtr makeKeyedShape(const std::string& name)
+    {
+        const bool autoKey = _context->isAutoKeyingEnabled();
+        _context->setAutoKeyingEnabled(true);
+        BezierPtr shape = buildKeyedShape(name);
+        _context->setAutoKeyingEnabled(autoKey);
+        if (shape && (shape->getKeyframesCount() != (int)(sizeof(kKeys) / sizeof(kKeys[0])))) {
+            return BezierPtr();
+        }
+
+        return shape;
+    }
+
+    BezierPtr buildKeyedShape(const std::string& name)
     {
         BezierPtr shape = _context->makeBezier(60., 40., name, kKeys[0], false);
         if (!shape) {
@@ -486,6 +501,33 @@ TEST_F(RotoKeyDuringRenderTest, RemoveAnimationDuringARenderKeepsTheEditedPose)
     EXPECT_EQ(kEdit[1], y);
     const std::string differences = describeDifferences(recordShape(reference, false), shape, kTolerance);
     EXPECT_TRUE(differences.empty()) << differences;
+}
+
+TEST_F(RotoKeyDuringRenderTest, RemoveAnimationOfAnUnkeyedShapeKeepsItsPose)
+{
+    ASSERT_TRUE(makeRoto(false));
+    BezierPtr reference = _context->makeBezier(60., 40., "Reference", kKeys[0], false);
+    BezierPtr shape = _context->makeBezier(60., 40., "Edited", kKeys[0], false);
+    ASSERT_TRUE(reference && shape);
+    for (int i = 1; i < kPoints; ++i) {
+        const double a = kTwoPi * i / kPoints;
+        reference->addControlPoint(40. + 20. * std::cos(a), 40. + 20. * std::sin(a), kKeys[0]);
+        shape->addControlPoint(40. + 20. * std::cos(a), 40. + 20. * std::sin(a), kKeys[0]);
+    }
+    reference->setCurveFinished(true);
+    shape->setCurveFinished(true);
+    ASSERT_EQ(0, shape->getKeyframesCount());
+    const ShapeValues pose = recordShape(shape, false);
+    seek(11);
+
+    editBothWays(reference, shape, [](const BezierPtr& s) { s->removeAnimation(); });
+
+    const std::string referenceDifferences = describeDifferences(pose, reference, kTolerance);
+    EXPECT_TRUE(referenceDifferences.empty()) << "no render\n"
+                                              << referenceDifferences;
+    const std::string differences = describeDifferences(pose, shape, kTolerance);
+    EXPECT_TRUE(differences.empty()) << "during a render\n"
+                                     << differences;
 }
 
 TEST_F(RotoKeyDuringRenderTest, TrackUnlinkBakeDuringARenderKeepsAnEdit)

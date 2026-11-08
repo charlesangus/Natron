@@ -604,7 +604,9 @@ BezierCP::removeAnimation(bool useGuiCurves,
     {
         QMutexLocker k(&_imp->staticPositionMutex);
         try {
-            if (!useGuiCurves) {
+            // An unkeyed curve reads as 0 and would put the point at the origin; its static
+            // values already hold the pose.
+            if (!useGuiCurves && _imp->curveX->isAnimated()) {
                 _imp->x = _imp->curveX->getValueAt(currentTime);
                 _imp->y = _imp->curveY->getValueAt(currentTime);
                 _imp->leftX = _imp->curveLeftBezierX->getValueAt(currentTime);
@@ -612,12 +614,14 @@ BezierCP::removeAnimation(bool useGuiCurves,
                 _imp->rightX = _imp->curveRightBezierX->getValueAt(currentTime);
                 _imp->rightY = _imp->curveRightBezierY->getValueAt(currentTime);
             }
-            _imp->guiX = _imp->guiCurveX->getValueAt(currentTime);
-            _imp->guiY = _imp->guiCurveY->getValueAt(currentTime);
-            _imp->guiLeftX = _imp->guiCurveLeftBezierX->getValueAt(currentTime);
-            _imp->guiLeftY = _imp->guiCurveLeftBezierY->getValueAt(currentTime);
-            _imp->guiRightX = _imp->guiCurveRightBezierX->getValueAt(currentTime);
-            _imp->guiRightY = _imp->guiCurveRightBezierY->getValueAt(currentTime);
+            if (_imp->guiCurveX->isAnimated()) {
+                _imp->guiX = _imp->guiCurveX->getValueAt(currentTime);
+                _imp->guiY = _imp->guiCurveY->getValueAt(currentTime);
+                _imp->guiLeftX = _imp->guiCurveLeftBezierX->getValueAt(currentTime);
+                _imp->guiLeftY = _imp->guiCurveLeftBezierY->getValueAt(currentTime);
+                _imp->guiRightX = _imp->guiCurveRightBezierX->getValueAt(currentTime);
+                _imp->guiRightY = _imp->guiCurveRightBezierY->getValueAt(currentTime);
+            }
         } catch (const std::exception & e) {
             //
         }

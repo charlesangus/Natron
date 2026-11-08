@@ -309,8 +309,8 @@ try:
 
         gt.close_all_panels()
         rg.activate()
-        node, ctx = rg.open_roto(app, "fr.inria.built-in.Roto")
-        require(node is not None, "create Roto", gt.plugin_problem("fr.inria.built-in.Roto"))
+        node, ctx = rg.open_roto(app, "Roto")
+        require(node is not None, "create Roto", gt.plugin_problem("Roto"))
         require(ctx is not None, "Roto has a roto context")
         _keep["node"] = node
         seek(1)

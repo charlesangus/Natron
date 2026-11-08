@@ -160,6 +160,7 @@ public:
     U64 getMaximumDiskCacheNodeSize() const;
 
     U64 getMaximumDeepImageCacheSize() const;
+    U64 getMaximumGeoDetailCacheSize() const;
 
     double getUnreachableRamPercent() const;
 
@@ -688,6 +689,9 @@ private:
     /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
     /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
     KnobIntPtr _maxDeepImageCacheGB;
+
+    /// Geometry likewise gets its own RAM-only budget.
+    KnobIntPtr _maxGeometryCacheGB;
     KnobPathPtr _diskCachePath;
     KnobButtonPtr _wipeDiskCache;
 

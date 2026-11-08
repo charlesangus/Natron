@@ -32,6 +32,7 @@
 #include <stdexcept>
 
 #include "Engine/ContentHasher.h"
+#include "Engine/Geo/GeoPacked.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -400,6 +401,10 @@ GeoDetail::contentHash() const
         hasher.appendString(entry.first);
         hasher.appendU64(entry.second.contentHash());
     }
+    hasher.appendU64(_sharedDetails.size());
+    for (const GeoDetailConstPtr& shared : _sharedDetails) {
+        hasher.appendU64(shared->contentHash());
+    }
 
     U64 h = hasher.finalize();
     if (h == 0) {
@@ -433,6 +438,9 @@ GeoDetail::getSizeInBytes() const
     for (const EdgeGroupMap::value_type& entry : _edgeGroups) {
         bytes += entry.first.size() + entry.second.getSizeInBytes();
     }
+    for (const GeoDetailConstPtr& shared : _sharedDetails) {
+        bytes += sizeof(GeoDetailConstPtr) + shared->getSizeInBytes();
+    }
 
     return bytes;
 }
@@ -465,10 +473,72 @@ GeoDetailBuilder::startBuilding()
     _detail._building = true;
 }
 
+std::int32_t
+GeoDetailBuilder::addSharedDetail(GeoDetailConstPtr shared)
+{
+    if (!shared) {
+        throw std::invalid_argument("GeoDetailBuilder::addSharedDetail: null detail");
+    }
+    std::vector<GeoDetailConstPtr>& table = _detail._sharedDetails;
+    for (std::size_t i = 0; i < table.size(); ++i) {
+        if (table[i] == shared) {
+            return std::int32_t(i);
+        }
+    }
+    table.push_back(std::move(shared));
+
+    return std::int32_t(table.size() - 1);
+}
+
+void
+GeoDetailBuilder::pruneSharedDetails()
+{
+    std::vector<GeoDetailConstPtr>& table = _detail._sharedDetails;
+    if (table.empty()) {
+        return;
+    }
+    const GeoAttribute* refs = _detail.findAttribute(eGeoAttribClassPrimitive, kGeoPackedDetailAttr);
+    if (!refs) {
+        table.clear();
+        return;
+    }
+
+    std::vector<std::int32_t> newIndex(table.size(), -1);
+    std::vector<GeoOffset> live;
+    _detail.primitiveMap().forEachLive([&](GeoIndex, GeoOffset offset) {
+        if (_detail.primitiveType(offset) == eGeoPrimitivePackedGeometry) {
+            const std::int32_t ref = refs->get<std::int32_t>(std::size_t(offset)) - 1;
+            if (ref >= 0 && std::size_t(ref) < table.size()) {
+                newIndex[std::size_t(ref)] = 0;
+                live.push_back(offset);
+            }
+        }
+    });
+
+    std::vector<GeoDetailConstPtr> kept;
+    for (std::size_t i = 0; i < table.size(); ++i) {
+        if (newIndex[i] == 0) {
+            newIndex[i] = std::int32_t(kept.size());
+            kept.push_back(table[i]);
+        }
+    }
+    if (kept.size() == table.size()) {
+        return;
+    }
+
+    GeoAttribute* writable = attributeForWriting(eGeoAttribClassPrimitive, kGeoPackedDetailAttr);
+    for (const GeoOffset offset : live) {
+        const std::int32_t ref = writable->get<std::int32_t>(std::size_t(offset)) - 1;
+        writable->set<std::int32_t>(std::size_t(offset), newIndex[std::size_t(ref)] + 1);
+    }
+    table = std::move(kept);
+}
+
 GeoDetail
 GeoDetailBuilder::finish()
 {
     validate();
+    pruneSharedDetails();
     for (GeoDetail::AttributeList& list : _detail._attributes) {
         for (std::shared_ptr<GeoDetail::AttributeSlot>& slot : list) {
             if (!slot->frozen) {

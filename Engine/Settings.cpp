@@ -1629,6 +1629,16 @@ Settings::initializeKnobsCaching()
                                             "so that large deep renders cannot evict it entirely."));
     _cachingTab->addKnob(_maxDeepImageCacheGB);
 
+    _maxGeometryCacheGB = AppManager::createKnob<KnobInt>(this, tr("Max Geometry Cache (GiB)"));
+    _maxGeometryCacheGB->setName("maxGeometryCache");
+    _maxGeometryCacheGB->disableSlider();
+    _maxGeometryCacheGB->setMinimum(0);
+    _maxGeometryCacheGB->setMaximum(100);
+    _maxGeometryCacheGB->setHintToolTip(tr("The maximum size that may be used in RAM by the geometry cache (in GiB). "
+                                           "This is a separate budget from the image caches above, "
+                                           "so that large geometry cannot evict them."));
+    _cachingTab->addKnob(_maxGeometryCacheGB);
+
     _diskCachePath = AppManager::createKnob<KnobPath>( this, tr("Disk cache path") );
     _diskCachePath->setName("diskCachePath");
     _diskCachePath->setMultiPath(false);
@@ -1854,6 +1864,7 @@ Settings::setDefaultValues()
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
     _maxDiskCacheNodeGB->setDefaultValue(10, 0);
     _maxDeepImageCacheGB->setDefaultValue(2, 0);
+    _maxGeometryCacheGB->setDefaultValue(2, 0);
     //_diskCachePath
     setCachingLabels();
 
@@ -2571,6 +2582,10 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumDeepImageCacheSize(getMaximumDeepImageCacheSize());
         }
+    } else if (k == _maxGeometryCacheGB.get()) {
+        if (!_restoringSettings) {
+            appPTR->setApplicationsCachesMaximumGeoDetailCacheSize(getMaximumGeoDetailCacheSize());
+        }
     } else if (k == _maxRAMPercent.get()) {
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
@@ -2659,6 +2674,12 @@ Settings::onKnobValueChanged(KnobI* k,
 
     return ret;
 } // onKnobValueChanged
+
+U64
+Settings::getMaximumGeoDetailCacheSize() const
+{
+    return (U64)(_maxGeometryCacheGB->getValue()) * 1024 * 1024 * 1024;
+}
 
 ////////////////////////////////////////////////////////
 // "Viewers" pane

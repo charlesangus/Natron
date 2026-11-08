@@ -184,6 +184,16 @@ public:
     const GeoEdgeGroup* findEdgeGroup(std::string_view name) const;
     std::vector<std::string> edgeGroupNames() const;
 
+    /**
+     * @brief The immutable details that packed geometry primitives embed, one entry per distinct
+     * pointer. Primitives refer to an entry by index (see GeoPacked.h); contentHash() and
+     * getSizeInBytes() cover each entry once.
+     **/
+    std::span<const GeoDetailConstPtr> sharedDetails() const
+    {
+        return _sharedDetails;
+    }
+
     /** @brief Built on first use; shared by copies until a builder changes the topology. */
     std::shared_ptr<const GeoReverseTopology> reverseTopology() const;
 
@@ -218,6 +228,7 @@ private:
     std::array<AttributeList, kGeoAttribClassCount> _attributes;
     std::array<GroupMap, 3> _groups;
     EdgeGroupMap _edgeGroups;
+    std::vector<GeoDetailConstPtr> _sharedDetails;
     bool _pointPrecision64 = false;
     // Set while a builder owns this detail: nothing it computes is cached, since attributes
     // handed out for writing may still change.
@@ -286,6 +297,13 @@ public:
      **/
     void defragment();
 
+    /**
+     * @brief Index of @p shared in sharedDetails(), appended when its pointer is not there yet.
+     * finish() drops entries that no live packed geometry primitive refers to. Throws
+     * std::invalid_argument for a null pointer.
+     **/
+    std::int32_t addSharedDetail(GeoDetailConstPtr shared);
+
     /** @brief Converts P between float32 and float64 storage. */
     void setPointPrecision64(bool precision64);
 
@@ -324,6 +342,7 @@ private:
     void topologyChanged();
     void validate() const;
     void startBuilding();
+    void pruneSharedDetails();
 
     GeoDetail _detail;
 };

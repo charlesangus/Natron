@@ -59,3 +59,5 @@ upstream `300ddcbd0` (2018-04-04); not a regression. See
 build starts under Xvfb and maps its main window on a software-GL host; Natron's
 own FP traps still fire; and `tools/release/check-startup.sh`'s SIGFPE diagnostic,
 added in M23, is either still accurate or updated to match what is now true.
+
+- 2026-11-08 — Trap scope (user): Mesa's software drivers (llvmpipe, lavapipe) raise float exceptions inside their own shader compilers, and Qt creates GL contexts lazily inside window events. Instead of guarding every window event, a debug build leaves float traps off on the GUI thread when the GL renderer is software, and on the GPU-init thread when the Vulkan device is a CPU device; on real GPUs traps stay armed everywhere. The probes that detect the renderer keep their scoped guards.

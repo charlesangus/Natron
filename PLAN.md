@@ -158,7 +158,7 @@ future core work has solid ground to build on.
 | M46 | Labelmaker Annotations | blocked | M56, M118 |  | E10 | | | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
 | M56 | Visual And Menu Polish | done | M44, M55 | amber-falcon | E10 | | | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
 | M45 | Native Tab Menu | done | M55 | amber-falcon | E10 | | | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
-| M25 | GL Init FP Guard | doing |  | bosley-native-nodes | E2 | | | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
+| M25 | GL Init FP Guard | done |  | bosley-native-nodes | E2 | | | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M29 | ~~Independent Repository~~ | cancelled |  |  | E2 | | | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M68 | Headless GL EGL | todo |  |  | E2 | | | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M19 | USD/Hydra Foundation | done | M17, M161, M107 |  | E9 | | | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |

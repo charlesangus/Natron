@@ -25,7 +25,7 @@ upstream `300ddcbd0` (2018-04-04); not a regression. See
 
 ## Phase 25.1: Guard the call into the driver
 
-- [ ] M25.P1.T1 — Wrap the GL context-creation path in the existing trap guard
+- [x] M25.P1.T1 — Wrap the GL context-creation path in the existing trap guard
   - files: `Engine/AppManager.cpp`, `Engine/OSGLContext_x11.cpp` if the right scope proves to be there
   - approach: give the GL initialisation the same `#ifdef DEBUG` /
     `boost_adaptbx::floating_point::exception_trapping trap(0)` treatment the four
@@ -43,7 +43,7 @@ upstream `300ddcbd0` (2018-04-04); not a regression. See
     division by zero in Natron's own code must still trap.
   - size: M
 
-- [ ] M25.P1.T2 — Prove it with a headless debug-build run
+- [x] M25.P1.T2 — Prove it with a headless debug-build run
   - files: `tools/ci/local/README.md`, `tools/ci/local/test.sh` or the release check scripts as appropriate
   - approach: the reason this bug survived eight years is that nothing ever started
     a debug build headlessly. Make that a step someone runs. The Xvfb GUI probe in

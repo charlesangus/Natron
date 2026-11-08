@@ -280,6 +280,9 @@ public:
                                std::span<const std::int32_t> vertexCounts,
                                std::span<const GeoOffset> points);
 
+    /** @brief Rewires a live vertex to another point. Throws std::invalid_argument on a dead vertex or point. */
+    void setVertexPoint(GeoOffset vertex, GeoOffset point);
+
     /** @brief Returns how many points were deleted; dead and repeated offsets are ignored. */
     GeoIndex deletePoints(std::span<const GeoOffset> points,
                           GeoPointDeleteModeEnum mode = eGeoPointDeleteDegenerate);

@@ -693,6 +693,23 @@ GeoDetailBuilder::appendPrimitives(GeoPrimitiveTypeEnum type,
     return firstPrimitive;
 }
 
+void
+GeoDetailBuilder::setVertexPoint(GeoOffset vertex,
+                                 GeoOffset point)
+{
+    if (!_detail._maps[eGeoAttribClassVertex].isLive(vertex)) {
+        throw std::invalid_argument("GeoDetailBuilder::setVertexPoint: dead or missing vertex");
+    }
+    if (!_detail._maps[eGeoAttribClassPoint].isLive(point)) {
+        throw std::invalid_argument("GeoDetailBuilder::setVertexPoint: dead or missing point");
+    }
+    if (_detail._topology.vertexPoint(vertex) == point) {
+        return;
+    }
+    _detail._topology.setVertexPoint(vertex, point);
+    topologyChanged();
+}
+
 GeoIndex
 GeoDetailBuilder::deletePrimitives(std::span<const GeoOffset> primitives,
                                    bool deleteUnusedPoints)

@@ -63,13 +63,13 @@ Scouting facts (2026-10-11, `main` at `10e0accd5`; re-check line numbers, since 
 
 ## Phase 102.1: Persistent node identity
 
-- [ ] M102.P1.T1 — Persist a node ID
+- [x] M102.P1.T1 — Persist a node ID
   - files: `Engine/Node.h`, `Engine/NodeName.cpp`, `Serialization/NodeSerialization.h`, `Serialization/Yaml/NodeYaml.cpp`, new `Tests/NodeId_Test.cpp`
   - approach: implement the ID rules in **Design**: mint at creation, keep on load, mint fresh on paste, duplicate and import, and remint a duplicate on load with a warning. Extend `Node::toSerialization` and `fromSerialization` (M93's conversions) to carry it. YAML emits `id:` first in each node map.
   - verify: compiled at P1.T3. gtest: a new node has a 32-hex ID and two nodes differ; save → load keeps IDs; copy/paste and duplicate get fresh IDs; deleting a node and undoing the delete keeps its ID; a hand-edited bundle with a duplicate ID loads with one reminted ID and one warning.
   - size: M
 
-- [ ] M102.P1.T2 — Find nodes by ID, in Engine and Python
+- [x] M102.P1.T2 — Find nodes by ID, in Engine and Python
   - files: `Engine/NodeGroup.h`, `Engine/NodeGroup.cpp`, `Engine/Project.h`, `Engine/PyNode.cpp`, `Engine/PyAppInstance.cpp`
   - approach: a per-project `id → NodeWPtr` index, maintained on create, destroy, activate and deactivate, and when a node moves into or out of a group. Add `Project::findNodeById(id)`, Python `Effect.getNodeId()` and `app.getNodeById(id)`, with the PySide/Shiboken typesystem updated if the bindings are generated.
   - verify: compiled at P1.T3. A gtest covers lookup after create, after a move into a group, and after delete (empty result) followed by undo. A Python test round-trips `app.getNodeById(n.getNodeId())`.
@@ -165,6 +165,8 @@ green. `GraphEditReplay_Test` passes byte-identically, and diff/apply round-trip
 pair. No `Serialization/**` file includes Engine or Gui.
 
 ## Decisions
+
+- 2026-11-07 — Phase 102.1 written at b2d1e36b5: a new `id` field separate from `cacheID` (which is reissued on a second open); IDs applied only during project load, so copies get new IDs; the index lives in Project; clipboard and preset files carry no IDs (YAML flag renamed `withIdentity`). P1.T3 build checkpoint pending.
 
 - 2026-10-11 — **User decision:** persist a node ID (live sessions need one), but treat it as one matching signal among several for merge; M103 - Graph Diff And Merge's spike sets the matching policy.
 - 2026-10-11 — Operations reference nodes by ID, carry whole-knob serializations, and roto and tracker edits are whole-data operations in v1. This trades bandwidth for simplicity; finer roto operations are a later optimisation if live sessions need them.

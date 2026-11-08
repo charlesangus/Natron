@@ -29,3 +29,7 @@ The 3D viewport applies the Viewer's gain and gamma to its background as well as
   - size: M
 
 **Verification gate:** release gate green; the GUI script passes under Xvfb; viewport frame time recorded and not worse than today's by more than the user accepts.
+
+## Decisions
+
+- 2026-11-07 — P1.T1 choice: Storm clears to transparent and the window is cleared to the ungraded background, so Hydra's existing premultiplied over composites graded geometry onto it. No extra pass. The transform of black is subtracted from the clear so empty and fully covered pixels are exact; on a log view with a strong gamma the background can shift slightly. Frame-time comparison is a bench step (heavy_scene_bench with BENCH_VIEWER_GAIN) for the GPU host session. Delegate viewers (Cycles, MoonRay) stay out of scope, for the display-transform milestone the user asked for.

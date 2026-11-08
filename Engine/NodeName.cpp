@@ -153,32 +153,49 @@ Node::restoreSerializedNodeId(const std::string& id)
     if (!project || !project->isLoadingProject() || id.empty()) {
         return;
     }
+    const QString nodeName = QString::fromUtf8(getFullyQualifiedName().c_str());
+    QString refusal;
+    if (!adoptNodeId(id, &refusal)) {
+        project->addLoadWarning(tr("%1: %2; the node was given a new ID").arg(nodeName).arg(refusal));
+    }
+}
+
+bool
+Node::adoptNodeId(const std::string& id,
+                  QString* refusal)
+{
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
     const std::string current = getNodeId();
     if (id == current) {
-        return;
+        return true;
     }
-    const QString nodeName = QString::fromUtf8(getFullyQualifiedName().c_str());
     if (!isValidNodeId(id)) {
-        project->addLoadWarning(tr("%1: the saved node ID \"%2\" is not 32 lowercase hex digits; the node was given a new ID")
-                                    .arg(nodeName)
-                                    .arg(QString::fromUtf8(id.c_str())));
+        if (refusal) {
+            *refusal = tr("the node ID \"%1\" is not 32 lowercase hex digits").arg(QString::fromUtf8(id.c_str()));
+        }
 
-        return;
+        return false;
     }
-    NodePtr holder = project->findNodeHoldingId(id);
+    NodePtr holder = project ? project->findNodeHoldingId(id) : NodePtr();
     if (holder && (holder.get() != this)) {
-        project->addLoadWarning(tr("%1: its node ID %2 is already used by %3; the node was given a new ID")
-                                    .arg(nodeName)
-                                    .arg(QString::fromUtf8(id.c_str()))
-                                    .arg(QString::fromUtf8(holder->getFullyQualifiedName().c_str())));
+        if (refusal) {
+            *refusal = tr("its node ID %1 is already used by %2")
+                           .arg(QString::fromUtf8(id.c_str()))
+                           .arg(QString::fromUtf8(holder->getFullyQualifiedName().c_str()));
+        }
 
-        return;
+        return false;
     }
     {
         QMutexLocker k(&_imp->nameMutex);
         _imp->nodeId = id;
     }
-    project->onNodeIdChanged(shared_from_this(), current);
+    if (project) {
+        project->onNodeIdChanged(shared_from_this(), current);
+    }
+
+    return true;
 }
 
 const std::string &

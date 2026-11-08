@@ -123,6 +123,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/Ops/GraphOp.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -936,16 +937,7 @@ Node::getNodeId() const
 bool
 Node::isValidNodeId(const std::string& id)
 {
-    if (id.size() != 32) {
-        return false;
-    }
-    for (char c : id) {
-        if (!(((c >= '0') && (c <= '9')) || ((c >= 'a') && (c <= 'f')))) {
-            return false;
-        }
-    }
-
-    return true;
+    return Serialization::isWellFormedNodeId(id);
 }
 
 bool

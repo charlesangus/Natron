@@ -45,6 +45,7 @@
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectSerialization.h"
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/TrackerSerialization.h"
 #include "Serialization/Yaml/BlobSink.h"
@@ -278,6 +279,12 @@ namespace YamlDetail {
      **/
     void emitNodeMap(YAML::Emitter& em, const std::list<NodeSerializationPtr>& nodes, const std::string& parentFullName, BlobSink& sink, std::set<std::string>* usedPaths, bool withIdentity);
     std::list<NodeSerializationPtr> readNodeMap(const YAML::Node& node, const BlobSource& source, const std::string& context, YamlWarnings* warnings);
+
+    void emitFormats(YAML::Emitter& em, const std::list<FormatSerialization>& formats);
+    std::list<FormatSerialization> readFormats(const YAML::Node& node, YamlWarnings* warnings);
+
+    void emitLayers(YAML::Emitter& em, const std::list<LayerRegistryEntrySerialization>& layers);
+    std::list<LayerRegistryEntrySerialization> readLayers(const YAML::Node& node, YamlWarnings* warnings);
 
 } // namespace YamlDetail
 } // namespace Serialization

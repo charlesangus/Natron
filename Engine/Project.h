@@ -324,6 +324,11 @@ public:
 
     void getAdditionalFormats(std::list<Format> *formats) const;
 
+    /**
+     * @brief Appends f to the project's formats unless they already hold it.
+     **/
+    void addAdditionalFormat(const Format& f);
+
     void setupProjectForStereo();
 
     void createProjectViews(const std::vector<std::string>& views);

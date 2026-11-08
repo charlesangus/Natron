@@ -10114,6 +10114,24 @@ template class Knob<double>;
 template class Knob<bool>;
 template class Knob<std::string>;
 
+void
+removeKnobLinks(const KnobIPtr& knob)
+{
+    KnobIPtr aliasMaster = knob->getAliasMaster();
+    if (aliasMaster) {
+        knob->setKnobAsAliasOfThis(aliasMaster, false);
+    }
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (knob->isSlave(i)) {
+            knob->unSlave(i, false);
+        }
+        // Two-way links go too; aliases of this knob stay, as its alias master link did above.
+        if (knob->getLinkGroup(i) && !knob->isLinkPermanent(i)) {
+            knob->leaveLinkGroups(i);
+        }
+    }
+}
+
 NATRON_NAMESPACE_EXIT
 
 NATRON_NAMESPACE_USING

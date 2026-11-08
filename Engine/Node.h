@@ -511,6 +511,12 @@ public:
      **/
     void restoreSerializedNodeId(const std::string& id);
 
+    /**
+     * @brief Gives the node the ID id, at any time. Refused, leaving the node's ID as it was and
+     * saying why in refusal, when id is malformed or another node of the project holds it.
+     **/
+    bool adoptNodeId(const std::string& id, QString* refusal);
+
 private:
     static bool claimCacheID(const std::string& cacheID);
     static void releaseCacheID(const std::string& cacheID);

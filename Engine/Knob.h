@@ -3814,6 +3814,12 @@ KnobIPtr createDetachedKnobFromSerialization(const Serialization::KnobSerializat
  **/
 Serialization::KnobSerialization completeKnobSerializationForKnob(const KnobI& liveKnob, const Serialization::KnobSerialization& serialization);
 
+/**
+ * @brief Drops knob's alias master, its one-way links and the two-way links it can leave. The
+ * knobs that are aliases of it stay so.
+ **/
+void removeKnobLinks(const KnobIPtr& knob);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Knob_h

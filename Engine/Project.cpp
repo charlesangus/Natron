@@ -4908,6 +4908,14 @@ Project::addFormat(const std::string& formatSpec)
 }
 
 void
+Project::addAdditionalFormat(const Format& f)
+{
+    QMutexLocker k(&_imp->formatMutex);
+    bool existed;
+    tryAddProjectFormat(f, &existed);
+}
+
+void
 Project::onProjectFormatPopulated()
 {
     int index = _imp->formatKnob->getValue();

@@ -92,6 +92,7 @@ set(Tests_SOURCES
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
     NodeId_Test.cpp
+    GraphOpApply_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
     PyRotoCreate_Test.cpp

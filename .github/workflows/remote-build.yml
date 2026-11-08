@@ -197,6 +197,7 @@ jobs:
         timeout-minutes: 15
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
           NATRON_RENDER_SCHEDULER: legacy
           NATRON_GOLDEN_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-golden
           OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins
@@ -231,6 +232,7 @@ jobs:
         timeout-minutes: 15
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
           NATRON_RENDER_SCHEDULER: legacy
           NATRON_PARITY_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-parity
           OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins:${{ github.workspace }}/build/assets/TestPlugins
@@ -447,6 +449,7 @@ jobs:
         timeout-minutes: ${{ inputs.shuffle_seeds != '' && 120 || inputs.preset == 'debug' && 75 || 30 }}
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
           SHUFFLE_SEEDS: ${{ inputs.shuffle_seeds }}
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           # One suite per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.

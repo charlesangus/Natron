@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <set>
 #include <string>
@@ -89,6 +90,33 @@ double
 readOffset(const KnobDoubleBasePtr& offset)
 {
     return offset->getValueAtTime(1., 0, ViewSpec::current(), false);
+}
+
+// As the node graph's multi-node delete does.
+void
+deactivateInBatch(const AppInstancePtr& app,
+                  const std::vector<NodePtr>& nodes)
+{
+    Node::RemovalBatch removalBatch;
+    Node::InputEditBatch batch(app);
+    const Node::PythonDeclarationBatch pythonBatch;
+
+    for (const NodePtr& node : nodes) {
+        node->deactivate(std::list<NodePtr>(), false, false, true, false);
+    }
+}
+
+// As undoing the node graph's multi-node delete does.
+void
+activateInBatch(const AppInstancePtr& app,
+                const std::vector<NodePtr>& nodes)
+{
+    Node::InputEditBatch batch(app);
+    const Node::PythonDeclarationBatch pythonBatch;
+
+    for (const NodePtr& node : nodes) {
+        node->activate(std::list<NodePtr>(), false, false);
+    }
 }
 
 } // namespace
@@ -517,4 +545,81 @@ TEST_F(GraphScalingGuiEdits, UndefinedSiblingStaysInvalidAmongOthers)
     EXPECT_FALSE(offset->isExpressionValid(0, 0));
     ASSERT_NO_THROW(offset->setExpression(0, "Other.mix.get() + Missing.mix.get()", false, false));
     EXPECT_FALSE(offset->isExpressionValid(0, 0));
+}
+
+TEST_F(GraphScalingGuiEdits, BatchedDeleteAndUndoRunTwoScripts)
+{
+    const int kNumNodes = 1000;
+    std::vector<NodePtr> nodes;
+
+    for (int i = 0; i < kNumNodes; ++i) {
+        NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+        ASSERT_TRUE(bool(grade));
+        nodes.push_back(grade);
+    }
+    KnobDoubleBasePtr offset = doubleKnob(nodes.back(), "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "frame * 2", false, true));
+
+    const U64 beforeDelete = getInterpretedScriptsCount();
+    deactivateInBatch(getApp(), nodes);
+    EXPECT_LE(getInterpretedScriptsCount() - beforeDelete, 1u);
+
+    const std::string appID = getApp()->getAppIDString();
+    std::string names;
+    for (const NodePtr& node : nodes) {
+        names += "'" + node->getScriptName_mt_safe() + "',";
+    }
+    std::string error;
+    EXPECT_TRUE(interpretPythonScript("for name in [" + names + "]:\n    assert not hasattr(" + appID + ", name), name\n", &error, 0)) << error;
+
+    const U64 beforeUndo = getInterpretedScriptsCount();
+    activateInBatch(getApp(), nodes);
+    EXPECT_LE(getInterpretedScriptsCount() - beforeUndo, 2u);
+
+    EXPECT_TRUE(interpretPythonScript("for name in [" + names + "]:\n    assert hasattr(getattr(" + appID + ", name), 'mix'), name\n", &error, 0)) << error;
+    const std::string offsetPath = appID + "." + nodes.back()->getScriptName_mt_safe() + ".offset";
+    EXPECT_TRUE(interpretPythonScript("assert hasattr(" + offsetPath + ", 'expression0')\n", &error, 0)) << error;
+
+    const U64 expressionScriptsBefore = KnobHelper::getExpressionScriptsRunCount();
+    EXPECT_DOUBLE_EQ(14., offset->getValueAtTime(7., 0, ViewSpec::current(), false));
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_EQ(0u, KnobHelper::getExpressionScriptsRunCount() - expressionScriptsBefore);
+}
+
+TEST_F(GraphScalingGuiEdits, ExpressionsSurviveBatchedDeleteAndUndo)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr inner = createWithMix(getApp(), "Inner", 1.);
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(target && inner && reader);
+    KnobDoubleBasePtr innerOffset = doubleKnob(inner, "offset");
+    KnobDoubleBasePtr readerOffset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(innerOffset && readerOffset);
+    ASSERT_NO_THROW(innerOffset->setExpression(0, "Target.mix.get() + frame", false, true));
+    ASSERT_NO_THROW(readerOffset->setExpression(0, "Target.mix.get() + Inner.mix.get()", false, true));
+    EXPECT_DOUBLE_EQ(1.25, readOffset(innerOffset));
+    EXPECT_DOUBLE_EQ(1.25, readOffset(readerOffset));
+
+    const std::vector<NodePtr> removed = { target, inner };
+    deactivateInBatch(getApp(), removed);
+    EXPECT_FALSE(readerOffset->isExpressionValid(0, 0));
+
+    activateInBatch(getApp(), removed);
+    EXPECT_TRUE(readerOffset->isExpressionValid(0, 0));
+    EXPECT_TRUE(innerOffset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(1.25, readOffset(innerOffset));
+    EXPECT_DOUBLE_EQ(1.25, readOffset(readerOffset));
+
+    doubleKnob(target, "mix")->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(1.5, readOffset(innerOffset));
+    EXPECT_DOUBLE_EQ(1.5, readOffset(readerOffset));
+
+    const std::string appID = getApp()->getAppIDString();
+    std::string error;
+    EXPECT_TRUE(interpretPythonScript("assert hasattr(" + appID + ".Target, 'mix')\n"
+                                                                  "assert hasattr("
+                                          + appID + ".Inner.offset, 'expression0')\n",
+                                      &error, 0))
+        << error;
 }

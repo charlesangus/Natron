@@ -414,6 +414,7 @@ NodeGraph::setSelection(const NodesGuiList& nodes)
 void
 NodeGraph::clearSelection()
 {
+    _imp->beginNavigatorBatch();
     {
         QMutexLocker l(&_imp->_nodesMutex);
         for (NodesGuiList::iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
@@ -422,6 +423,7 @@ NodeGraph::clearSelection()
     }
 
     _imp->_selection.clear();
+    _imp->endNavigatorBatch();
 }
 
 void
@@ -433,7 +435,10 @@ NodeGraph::updateNavigator()
         return;
     }
 
-    if (_imp->navigatorContentDirty && !_imp->navigatorRenderTimer.isActive()) {
+    if (_imp->navigatorDeferredByDrag && (_imp->_evtState != eEventStateDraggingNode)) {
+        _imp->endNavigatorDragDeferral();
+    }
+    if (_imp->navigatorContentDirty && !_imp->navigatorDeferredByDrag && !_imp->navigatorRenderTimer.isActive()) {
         // Render at once the first time so the navigator never appears empty; later changes are
         // coalesced so that a drag or a batch edit renders the scene once, not once per event.
         _imp->navigatorRenderTimer.start(_imp->navigatorContent.isNull() ? 0 : NATRON_NAVIGATOR_RENDER_DELAY_MS);
@@ -486,8 +491,22 @@ NodeGraph::updateNavigator()
 void
 NodeGraph::invalidateNavigatorContent()
 {
-    _imp->nodesBoundsDirty = true;
     _imp->navigatorContentDirty = true;
+    if (_imp->_evtState == eEventStateDraggingNode) {
+        // Positions change on every move of the drag; growNodesBoundsForDrag() and the grid's
+        // stale items keep up with them until the release ends the deferral.
+        _imp->navigatorDeferredByDrag = true;
+
+        return;
+    }
+    if (_imp->navigatorBatchDepth > 0) {
+        _imp->navigatorBatchPending = true;
+
+        return;
+    }
+    _imp->navigatorDeferredByDrag = false;
+    _imp->nodesBoundsDirty = true;
+    _imp->itemGridDirty = true;
     _imp->_refreshOverlays = true;
     if (isLoadingProjectNodes()) {
         // paintEvent() skips the load; onProjectNodesRestored() invalidates once more.
@@ -502,7 +521,10 @@ NodeGraph::invalidateNavigatorContent()
 void
 NodeGraph::onNavigatorRenderTimerTimeout()
 {
-    if (!_imp->navigatorContentDirty || areAllNodesVisible()) {
+    if (_imp->navigatorDeferredByDrag && (_imp->_evtState != eEventStateDraggingNode)) {
+        _imp->endNavigatorDragDeferral();
+    }
+    if (!_imp->navigatorContentDirty || _imp->navigatorDeferredByDrag || areAllNodesVisible()) {
         return;
     }
     _imp->renderNavigatorContent();

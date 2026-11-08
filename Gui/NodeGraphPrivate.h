@@ -56,6 +56,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeGraphItemGrid.h"
 #include "Gui/NodeGraphPickUp.h"
 #include "Gui/NodeGraphShake.h"
 #include "Gui/NodeGraphUndoRedo.h" // NodeGuiPtr
@@ -355,6 +356,30 @@ public:
     QTimer navigatorRenderTimer;
     QRectF nodesBoundsInRoot;
     bool nodesBoundsDirty;
+    // While a node drag is under way the navigator keeps the thumbnail it had, and the bounds
+    // only grow, so that no move pays for walking every node; the drag's end renders it once.
+    bool navigatorDeferredByDrag;
+    int navigatorBatchDepth;
+    bool navigatorBatchPending;
+
+    // A node, or an edge held by the node owner, as the hit-test grid stores it. slot is
+    // kGridNodeSlot for the node itself, -1 for its output edge and the input number otherwise.
+    // Neither pointer is followed before owner is found in _nodes, so entries for deleted items
+    // are harmless until they are dropped.
+    struct GridItem {
+        QGraphicsItem* item = nullptr;
+        NodeGui* owner = nullptr;
+        int slot = 0;
+    };
+    static constexpr int kGridNodeSlot = -2;
+
+    // The subtree bounds of every node and edge in _nodeRoot coordinates, which panning leaves
+    // alone. Any navigator invalidation outside a node drag rebuilds it on the next query, since
+    // whatever changes the nodes' look may change their bounds; moves and edge geometry changes
+    // during a drag update just the items in itemGridStale.
+    NodeGraphItemGrid<const QGraphicsItem*, GridItem> itemGrid;
+    bool itemGridDirty;
+    std::unordered_map<const QGraphicsItem*, GridItem> itemGridStale;
     bool antiAliasing;
     bool lowDetail;
     int lowDetailFontHeight;
@@ -383,6 +408,24 @@ public:
     // The scene rectangle the navigator maps onto its widget-sized image, and the scale it uses.
     void getNavigatorMapping(QRectF* sceneRect, double* scale, QPointF* offset) const;
     void renderNavigatorContent();
+
+    // Unites the moved nodes into the cached bounds the navigator frames while it is deferred.
+    void growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved);
+    void endNavigatorDragDeferral();
+
+    bool isGridItemValid(const GridItem& gridItem) const;
+    void refreshItemGrid();
+
+    // The nodes and edges whose subtree bounds may meet queryRoot, given in _nodeRoot coordinates.
+    void getGridCandidates(const QRectF& queryRoot, std::vector<QGraphicsItem*>* candidates);
+    void getGridCandidatesForViewportRect(const QRect& rect, std::vector<QGraphicsItem*>* candidates);
+
+    // What NodeGraph::getGraphItemsMeetingViewportRect() returns, searching only the subtrees of
+    // candidates.
+    void collectGraphItemsMeetingViewportRect(const QRect& rect,
+                                              bool skipText,
+                                              const std::vector<QGraphicsItem*>& candidates,
+                                              std::vector<QGraphicsItem*>* hits) const;
 
     void copyNodesInternal(const NodesGuiList& selection, NodeClipBoard & clipboard);
     void pasteNodesInternal(const NodeClipBoard & clipboard, const QPointF& scenPos,
@@ -421,6 +464,10 @@ public:
 
     // Makes nodes, in their order, the selection.
     void replaceSelection(const NodesGuiList& nodes);
+
+    // Between begin and end, navigator invalidations are coalesced into one at the end.
+    void beginNavigatorBatch();
+    void endNavigatorBatch();
 
     void setNodesBendPointsVisible(bool visible);
 

@@ -202,6 +202,18 @@ Edge::setSource(const NodeGuiPtr & src)
     invalidateGraphNavigator();
 }
 
+// Edges the graph draws for itself have neither end and are not in its hit-test grid.
+static void
+reportGeometryToGraph(Edge* edge)
+{
+    const bool isOutput = edge->isOutputEdge();
+    NodeGuiPtr owner = isOutput ? edge->getSource() : edge->getDest();
+    NodeGraph* graph = owner ? owner->getDagGui() : NULL;
+    if (graph) {
+        graph->noteEdgeGeometryChanged(owner.get(), isOutput ? -1 : edge->getInputNumber(), edge);
+    }
+}
+
 void
 Edge::invalidateGraphNavigator()
 {
@@ -406,6 +418,9 @@ Edge::setUseHighlight(bool highlight)
 void
 Edge::setUseSelected(bool val)
 {
+    if (_imp->useSelected == val) {
+        return;
+    }
     _imp->useSelected = val;
     update();
 }
@@ -637,6 +652,7 @@ Edge::initLine()
     prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->arrowHead << arrowIntersect << arrowP1 << arrowP2;
+    reportGeometryToGraph(this);
 } // initLine
 
 // The line's rect grown by the pen width, which holds the line stroked with any cap or join. Item
@@ -772,6 +788,7 @@ Edge::dragSource(const QPointF & src)
         //qDebug() << pos;
         _imp->label->setPos(pos);
     }
+    reportGeometryToGraph(this);
 }
 
 void
@@ -797,6 +814,7 @@ Edge::dragDest(const QPointF & dst)
         QPointF pos(((dst.x() + line().p2().x()) / 2.) - 5, ((dst.y() + line().p2().y()) / 2.) - 5);
         _imp->label->setPos(pos);
     }
+    reportGeometryToGraph(this);
 }
 
 void

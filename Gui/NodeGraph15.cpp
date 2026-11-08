@@ -389,6 +389,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 
     _imp->_evtState = eEventStateNone;
     _imp->_dragGesture.end();
+    _imp->endNavigatorDragDeferral();
 
     _imp->autoScrollTimer.stop();
 

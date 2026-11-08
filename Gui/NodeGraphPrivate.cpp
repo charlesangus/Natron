@@ -103,6 +103,12 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , navigatorRenderTimer()
     , nodesBoundsInRoot()
     , nodesBoundsDirty(true)
+    , navigatorDeferredByDrag(false)
+    , navigatorBatchDepth(0)
+    , navigatorBatchPending(false)
+    , itemGrid()
+    , itemGridDirty(true)
+    , itemGridStale()
     , antiAliasing(appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled())
     , lowDetail(false)
     , lowDetailFontHeight(QFontMetrics(QApplication::font()).height())
@@ -129,11 +135,32 @@ NodeGraphPrivate::getPyPlugUnlockPos() const
 void
 NodeGraphPrivate::resetSelection()
 {
+    beginNavigatorBatch();
     for (NodesGuiList::iterator it = _selection.begin(); it != _selection.end(); ++it) {
         (*it)->setUserSelected(false);
     }
 
     _selection.clear();
+    endNavigatorBatch();
+}
+
+void
+NodeGraphPrivate::beginNavigatorBatch()
+{
+    ++navigatorBatchDepth;
+}
+
+void
+NodeGraphPrivate::endNavigatorBatch()
+{
+    assert(navigatorBatchDepth > 0);
+    if (--navigatorBatchDepth > 0) {
+        return;
+    }
+    if (navigatorBatchPending) {
+        navigatorBatchPending = false;
+        _publicInterface->invalidateNavigatorContent();
+    }
 }
 
 void
@@ -145,6 +172,7 @@ NodeGraphPrivate::replaceSelection(const NodesGuiList& nodes)
     for (NodesGuiList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         kept.insert(it->get());
     }
+    beginNavigatorBatch();
     for (NodesGuiList::iterator it = _selection.begin(); it != _selection.end(); ++it) {
         if (kept.find(it->get()) == kept.end()) {
             (*it)->setUserSelected(false);
@@ -156,6 +184,7 @@ NodeGraphPrivate::replaceSelection(const NodesGuiList& nodes)
             (*it)->setUserSelected(true);
         }
     }
+    endNavigatorBatch();
 }
 
 void
@@ -176,11 +205,13 @@ NodeGraphPrivate::editSelectionFromSelectionRectangle(bool addToSelection)
 
         return;
     }
+    beginNavigatorBatch();
     for (NodesGuiList::iterator it = inside.begin(); it != inside.end(); ++it) {
         if (_selection.push_back(*it)) {
             (*it)->setUserSelected(true);
         }
     }
+    endNavigatorBatch();
 }
 
 bool
@@ -235,6 +266,35 @@ NodeGraphPrivate::calcNodesBoundingRect()
     }
 
     return nodesBoundsInRoot.isNull() ? QRectF() : _root->mapRectToScene(nodesBoundsInRoot);
+}
+
+void
+NodeGraphPrivate::growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved)
+{
+    if (nodesBoundsDirty) {
+        // The next calcNodesBoundingRect() walks every node anyway.
+        return;
+    }
+    QRectF grown = nodesBoundsInRoot;
+    for (std::set<NodeGuiPtr>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
+        if ((*it)->isVisible()) {
+            grown = grown.united(_root->mapRectFromScene((*it)->boundingRectWithEdges()));
+        }
+    }
+    if (grown != nodesBoundsInRoot) {
+        nodesBoundsInRoot = grown;
+        _refreshOverlays = true;
+    }
+}
+
+void
+NodeGraphPrivate::endNavigatorDragDeferral()
+{
+    if (!navigatorDeferredByDrag) {
+        return;
+    }
+    navigatorDeferredByDrag = false;
+    _publicInterface->invalidateNavigatorContent();
 }
 
 void

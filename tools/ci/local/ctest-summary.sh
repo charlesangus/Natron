@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
 # Usage: ctest-summary.sh <captured ctest stdout>
 #
-# Reads the output of `ctest -j N --output-on-failure` and prints what failed:
-#   [  FAILED  ] Suite.Case           gtest cases that reported a failure
-#   [  CRASHED ] 637 - Suite (STATUS) tests that crashed, aborted or timed out
-#   [  NO CASE ] 680 - Suite (Failed) tests ctest failed with no gtest case failure
 # A crash takes the rest of that binary's cases with it, and those never print
 # anything, so a CRASHED line means the case list above it is incomplete.
-# Prints nothing when ctest reports no failed tests. Always exits 0.
 set -u
 
 if [[ $# -ne 1 || ! -r "$1" ]]; then
@@ -19,12 +14,12 @@ fi
 # Actions log); the ctest text starts after it.
 sed -E 's/^.*[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //; s/\r$//' "$1" | awk '
     # ctest prints a failed test'"'"'s output in one piece right after its result line.
-    /^[0-9]+\/[0-9]+ +Test +#[0-9]+: / || /^ +Start +[0-9]+: / || /tests passed, [0-9]+ tests failed/ {
+    /^ *[0-9]+\/[0-9]+ +Test +#[0-9]+: / || /^ +Start +[0-9]+: / || /tests passed, [0-9]+ tests failed/ {
         block = ""
     }
-    /^[0-9]+\/[0-9]+ +Test +#[0-9]+: / {
+    /^ *[0-9]+\/[0-9]+ +Test +#[0-9]+: / {
         line = $0
-        sub(/^[0-9]+\/[0-9]+ +Test +#[0-9]+: /, "", line)
+        sub(/^ *[0-9]+\/[0-9]+ +Test +#[0-9]+: /, "", line)
         sub(/ \.+.*$/, "", line)
         block = line
         next

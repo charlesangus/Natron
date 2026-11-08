@@ -237,11 +237,14 @@ case "${SUBCOMMAND}" in
         rm -f "${FAILED_LIST}"
         CTEST_STDOUT="${BUILD_DIR}/Testing/Temporary/ctest-stdout.log"
         mkdir -p "$(dirname "${CTEST_STDOUT}")"
-        # pipefail keeps ctest's status; the capture feeds ctest-summary.sh.
-        if xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --timeout "${CTEST_TIMEOUT_SECONDS}" --output-on-failure 2>&1 | tee "${CTEST_STDOUT}"; then
-            rc=0
-        else
-            rc=$?
+        # The capture feeds ctest-summary.sh; rc must stay ctest's own status, not tee's.
+        set +e
+        xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --timeout "${CTEST_TIMEOUT_SECONDS}" --output-on-failure 2>&1 | tee "${CTEST_STDOUT}"
+        rc=${PIPESTATUS[0]}
+        tee_rc=${PIPESTATUS[1]}
+        set -e
+        if [[ "${tee_rc}" -ne 0 ]]; then
+            echo "test.sh: warning: could not write ${CTEST_STDOUT}" >&2
         fi
         FULL_LOG="${BUILD_DIR}/Testing/Temporary/LastTest.log"
         # A failing suite's ctest line names only the suite; the summary adds the gtest

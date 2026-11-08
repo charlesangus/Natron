@@ -144,7 +144,7 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-// Storm clears to this, in scene-linear; it reaches the framebuffer through the display transform.
+// The background grey, in scene-linear; it is shown through the display transform.
 const float kBackgroundLinear = 0.05f;
 // The same grey once encoded to sRGB, for the clears and checks done outside Storm.
 const float kBackgroundSrgb = 0.2478f;
@@ -708,6 +708,12 @@ struct SceneViewportRenderer::Implementation {
     // What Hydra is given: displayTransform, or a baked copy of it when Hydra cannot draw it.
     DisplayTransform hydraTransform;
     bool useOpenColorIO = false;
+    // The background as shown: the display transform of kBackgroundLinear, without the viewer's
+    // gain and gamma, which act on rendered pixels only.
+    float backgroundShown[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
+    // What the framebuffer is cleared to. Hydra's present task adds Storm's colour AOV over it,
+    // and the AOV's transparent clear comes out of the display transform as whatever the transform
+    // makes of black, so that is taken off here for backgroundShown to show.
     float backgroundDisplay[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
     // Set when the engine's colour correction task must be rebuilt from OCIO's current config.
     bool colorCorrectionDirty = false;
@@ -1169,7 +1175,10 @@ struct SceneViewportRenderer::Implementation {
         UsdImagingGLRenderParams params;
 
         params.frame = UsdTimeCode(timeCode());
-        params.clearColor = GfVec4f(kBackgroundLinear, kBackgroundLinear, kBackgroundLinear, 1.f);
+        // Transparent, so that the colour correction, gain and gamma included, reaches only what
+        // was rendered: the present task composites the AOV premultiplied over the framebuffer
+        // (v26.08 hgiInterop/opengl.cpp), where the background is already, at no extra pass.
+        params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
         if (useOpenColorIO) {
             params.colorCorrectionMode = HdxColorCorrectionTokens->openColorIO;
             params.ocioDisplay = TfToken(hydraTransform.display);
@@ -1970,9 +1979,12 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
     bool useOpenColorIO = transform.config && !transform.colorSpace.empty() && !transform.display.empty()
         && !transform.view.empty() && !TfGetenv("OCIO").empty();
     float background[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
+    float black[3] = { 0.f, 0.f, 0.f };
     if (useOpenColorIO) {
         try {
             OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(transform.config, transform.colorSpace, transform.display, transform.view);
+            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
+            processor->getDefaultCPUProcessor()->applyRGB(rgb);
             const bool lutTextures = needsLutTextures(processor);
             if (lutTextures || (transform.gain != 1.) || (transform.gamma != 1.)) {
                 const OCIO_NAMESPACE::ConstTransformRcPtr displayView = lutTextures
@@ -1991,8 +2003,7 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
                 }
                 _imp->hydraTransform = baked;
             }
-            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
-            processor->getDefaultCPUProcessor()->applyRGB(rgb);
+            processor->getDefaultCPUProcessor()->applyRGB(black);
             for (int c = 0; c < 3; ++c) {
                 background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
             }
@@ -2000,6 +2011,7 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
             qWarning() << "SceneViewport: OpenColorIO:" << e.what();
             useOpenColorIO = false;
             background[0] = background[1] = background[2] = kBackgroundSrgb;
+            black[0] = black[1] = black[2] = 0.f;
         }
     }
     if (!useOpenColorIO && ((transform.gain != 1.) || (transform.gamma != 1.)) && !TfGetenv("OCIO").empty()) {
@@ -2010,21 +2022,21 @@ SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
             graded.display = kBakeDisplay;
             graded.view = kBakeView;
             OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(graded.config, graded.colorSpace, graded.display, graded.view);
-            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
-            processor->getDefaultCPUProcessor()->applyRGB(rgb);
-            for (int c = 0; c < 3; ++c) {
-                background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
-            }
+            processor->getDefaultCPUProcessor()->applyRGB(black);
             _imp->hydraTransform = graded;
             useOpenColorIO = true;
         } catch (const std::exception& e) {
             qWarning() << "SceneViewport: OpenColorIO:" << e.what();
-            background[0] = background[1] = background[2] = kBackgroundSrgb;
+            black[0] = black[1] = black[2] = 0.f;
         }
     }
     _imp->useOpenColorIO = useOpenColorIO;
+    // QOpenGLWidget's framebuffer is GL_RGBA8 by default, so blending clamps what the AOV adds to
+    // [0, 1]. Where black shows above the background, under a strong gamma on a log view, the
+    // background lightens by the difference.
     for (int c = 0; c < 3; ++c) {
-        _imp->backgroundDisplay[c] = background[c];
+        _imp->backgroundShown[c] = background[c];
+        _imp->backgroundDisplay[c] = std::max(background[c] - std::min(std::max(black[c], 0.f), 1.f), 0.f);
     }
 }
 
@@ -3296,7 +3308,7 @@ void
 SceneViewportRenderer::getBackgroundColor(float rgb[3]) const
 {
     for (int c = 0; c < 3; ++c) {
-        rgb[c] = _imp->backgroundDisplay[c];
+        rgb[c] = _imp->backgroundShown[c];
     }
 }
 

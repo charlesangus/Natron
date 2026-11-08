@@ -696,10 +696,11 @@ TEST_F(SceneViewportStorm, AppliesTheViewersOpenColorIODisplayTransform)
     EXPECT_NEAR(srgb.b, projected.b, 8) << projected;
 }
 
-// The viewer's gain and gamma reach the card and the background as applyViewerDisplayTransform(),
-// the 2D viewer's own maths, computes them: gain before the display transform, gamma after, a
-// gamma of 0 a threshold at 1. Through a view Hydra draws analytically and one it is given baked,
-// and, without a config, around the sRGB transform. Back at 1 they leave the plain transform.
+// The viewer's gain and gamma reach the card as applyViewerDisplayTransform(), the 2D viewer's own
+// maths, computes them: gain before the display transform, gamma after, a gamma of 0 a threshold
+// at 1. The background keeps the plain transform. Through a view Hydra draws analytically and one
+// it is given baked, and, without a config, around the sRGB transform. Back at 1 they leave the
+// plain transform.
 TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
 {
     if (_skip) {
@@ -753,7 +754,7 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
 
         float reported[3];
         _renderer.getBackgroundColor(reported);
-        EXPECT_NEAR(std::min(std::max(graded[4], 0.f), 1.f), reported[0], bakeTolerance) << label;
+        EXPECT_NEAR(std::min(std::max(plain[4], 0.f), 1.f), reported[0], bakeTolerance) << label;
 
         const QImage image = render();
         const Rgb projected = pixel(image, 97, 128);
@@ -761,7 +762,8 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
         EXPECT_NEAR(expected.g, projected.g, 8) << label << ": " << projected << " expected " << expected;
         EXPECT_NEAR(expected.b, projected.b, 8) << label << ": " << projected << " expected " << expected;
         const Rgb outside = pixel(image, 20, 128);
-        EXPECT_NEAR(codeValue(graded[4]), outside.r, 4) << label << ": " << outside;
+        EXPECT_NEAR(codeValue(plain[4]), outside.r, 4) << label << ": " << outside;
+        EXPECT_NEAR(codeValue(plain[6]), outside.b, 4) << label << ": " << outside;
 
         // Rendering made what Hydra was given OpenColorIO's current config.
         OCIO_NAMESPACE::DisplayViewTransformRcPtr viewportView = OCIO_NAMESPACE::DisplayViewTransform::Create();
@@ -778,7 +780,7 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
         given->getDefaultCPUProcessor()->apply(givenImage);
         for (int i = 0; i < 3; ++i) {
             EXPECT_NEAR(graded[i], givenPixels[i], bakeTolerance) << label << " plate " << i;
-            EXPECT_NEAR(graded[4 + i], givenPixels[3 + i], bakeTolerance) << label << " background " << i;
+            EXPECT_NEAR(graded[4 + i], givenPixels[3 + i], bakeTolerance) << label << " grey " << i;
         }
 
         transform.gain = 1.;
@@ -798,9 +800,12 @@ TEST_F(SceneViewportStorm, AppliesTheViewersGainAndGamma)
     srgbGraded.gamma = 1.8;
     _renderer.setDisplayTransform(srgbGraded);
     EXPECT_TRUE(_renderer.isUsingOpenColorIO());
-    const Rgb graded = pixel(render(), 97, 128);
+    const QImage srgbImage = render();
+    const Rgb graded = pixel(srgbImage, 97, 128);
     EXPECT_NEAR(codeValue(std::pow(srgbEncode(0.3f), 1.f / 1.8f)), graded.r, 8) << graded;
     EXPECT_NEAR(codeValue(std::pow(srgbEncode(0.25f), 1.f / 1.8f)), graded.b, 8) << graded;
+    const Rgb srgbOutside = pixel(srgbImage, 20, 128);
+    EXPECT_NEAR(codeValue(srgbEncode(0.05f)), srgbOutside.r, 4) << srgbOutside;
 
     _renderer.setDisplayTransform(SceneViewportRenderer::DisplayTransform());
     EXPECT_FALSE(_renderer.isUsingOpenColorIO());

@@ -557,7 +557,8 @@ public:
     // The delegate of the engine held, empty if none is.
     std::string getEngineRendererId() const;
 
-    // The background colour render() clears to, as it shows through the display transform.
+    // The background colour as it shows: through the display transform, without the viewer's gain
+    // and gamma, which act on rendered pixels only.
     void getBackgroundColor(float rgb[3]) const;
 
     /**

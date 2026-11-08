@@ -25,12 +25,17 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -747,4 +752,248 @@ TEST_F(RotoKeyDuringRenderTest, SaveDuringARenderKeepsAnInsertedPoint)
 
     const std::string differences = describeDifferences(inserted, loaded, kSaveTolerance);
     EXPECT_TRUE(differences.empty()) << differences;
+}
+
+// A render on another thread reads the internal curves of whatever points the list holds while
+// the main thread edits: inserts, moves, keys, interpolation changes, links and unlinks.
+TEST_F(RotoKeyDuringRenderTest, RenderThreadReadsNoEditMadeDuringItsRender)
+{
+    ASSERT_TRUE(makeRoto(true));
+    TrackMarkerPtr marker = makeTrack();
+    ASSERT_TRUE(bool(marker));
+    BezierPtr shape = makeKeyedShape("Edited");
+    ASSERT_TRUE(bool(shape));
+    seek(6);
+    shape->linkPointToTrack(2, marker, 1.);
+    shape->dequeueGuiActions();
+
+    const std::vector<double> times = sampleTimes();
+    std::map<const BezierCP*, std::vector<double>> before;
+    {
+        const std::list<BezierCPPtr> cps = shape->getControlPoints_mt_safe();
+        const std::list<BezierCPPtr> fps = shape->getFeatherPoints_mt_safe();
+        for (std::list<BezierCPPtr>::const_iterator it = cps.begin(); it != cps.end(); ++it) {
+            before[it->get()] = sampleValues(**it, false, times);
+        }
+        for (std::list<BezierCPPtr>::const_iterator it = fps.begin(); it != fps.end(); ++it) {
+            before[it->get()] = sampleValues(**it, false, times);
+        }
+    }
+
+    std::atomic<bool> stop(false);
+    std::atomic<int> passes(0);
+    std::mutex problemsMutex;
+    std::set<std::string> problems;
+    ShapeValues edited;
+    {
+        RenderingFlagSetter rendering(_roto);
+        ASSERT_TRUE(_roto->isNodeRendering());
+
+        std::thread reader([&]() {
+            while (!stop) {
+                std::list<BezierCPPtr> points = shape->getControlPoints_mt_safe();
+                const std::list<BezierCPPtr> fps = shape->getFeatherPoints_mt_safe();
+                points.insert(points.end(), fps.begin(), fps.end());
+                std::ostringstream out;
+                for (std::list<BezierCPPtr>::const_iterator it = points.begin(); it != points.end(); ++it) {
+                    const std::vector<double> values = sampleValues(**it, false, times);
+                    std::map<const BezierCP*, std::vector<double>>::const_iterator found = before.find(it->get());
+                    if (found == before.end()) {
+                        describePoint("inserted point", values, values, kTolerance, times, out);
+                    } else {
+                        describePoint("existing point", found->second, values, kTolerance, times, out);
+                    }
+                    describeHalfWrittenKeys("point", **it, out);
+                }
+                if (!out.str().empty()) {
+                    std::lock_guard<std::mutex> l(problemsMutex);
+                    problems.insert(out.str());
+                }
+                ++passes;
+            }
+        });
+
+        // Two passes after an edit, so one began after it returned.
+        auto letReaderSee = [&]() {
+            const int start = passes;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while ((passes < start + 2) && (std::chrono::steady_clock::now() < deadline)) {
+                std::this_thread::yield();
+            }
+        };
+
+        letReaderSee();
+        ASSERT_TRUE(bool(shape->addControlPointAfterIndex(0, 0.5)));
+        letReaderSee();
+        shape->movePointByIndex(4, 6., 4., -3.);
+        letReaderSee();
+        editPointFive(shape, 6.);
+        letReaderSee();
+        shape->setKeyframe(16.);
+        letReaderSee();
+        shape->setKeyFrameInterpolation(eKeyframeTypeConstant, 1);
+        letReaderSee();
+        shape->linkPointToTrack(6, marker, 6.);
+        letReaderSee();
+        shape->unlinkPoint(3, true);
+        letReaderSee();
+
+        stop = true;
+        reader.join();
+        EXPECT_GT(passes.load(), 14);
+        edited = recordShape(shape, true);
+    }
+    shape->dequeueGuiActions();
+
+    for (std::set<std::string>::const_iterator it = problems.begin(); it != problems.end(); ++it) {
+        ADD_FAILURE() << *it;
+    }
+    EXPECT_TRUE(shape->getControlPointAtIndex(6)->isLinkedToTrack(false));
+    EXPECT_FALSE(shape->getControlPointAtIndex(3)->isLinkedToTrack(false));
+    const std::string differences = describeDifferences(edited, shape, kTolerance);
+    EXPECT_TRUE(differences.empty()) << differences;
+}
+
+// A link made during a render reaches the render's side only on write-back, and so does an unlink.
+TEST_F(RotoKeyDuringRenderTest, TrackLinkChangesDuringARenderWaitForTheWriteBack)
+{
+    ASSERT_TRUE(makeRoto(false));
+    TrackMarkerPtr marker = makeTrack();
+    ASSERT_TRUE(bool(marker));
+    BezierPtr shape = makeKeyedShape("Edited");
+    ASSERT_TRUE(bool(shape));
+    seek(6);
+    const ShapeValues unlinked = recordShape(shape, false);
+
+    {
+        RenderingFlagSetter rendering(_roto);
+        shape->linkPointToTrack(2, marker, 1.);
+        EXPECT_TRUE(shape->getControlPointAtIndex(2)->isLinkedToTrack(true));
+        EXPECT_FALSE(shape->getControlPointAtIndex(2)->isLinkedToTrack(false));
+        EXPECT_FALSE(shape->getFeatherPointAtIndex(2)->isLinkedToTrack(false));
+        const ShapeValues internal = recordShape(shape, false);
+        EXPECT_TRUE(internal.cps == unlinked.cps);
+        EXPECT_TRUE(internal.fps == unlinked.fps);
+    }
+    shape->dequeueGuiActions();
+    EXPECT_TRUE(shape->getControlPointAtIndex(2)->isLinkedToTrack(false));
+    EXPECT_TRUE(shape->getFeatherPointAtIndex(2)->isLinkedToTrack(false));
+
+    const ShapeValues linked = recordShape(shape, false);
+    {
+        RenderingFlagSetter rendering(_roto);
+        shape->unlinkPoint(2, true);
+        EXPECT_FALSE(shape->getControlPointAtIndex(2)->isLinkedToTrack(true));
+        EXPECT_TRUE(shape->getControlPointAtIndex(2)->isLinkedToTrack(false));
+        const ShapeValues internal = recordShape(shape, false);
+        EXPECT_TRUE(internal.cps == linked.cps);
+        EXPECT_TRUE(internal.fps == linked.fps);
+    }
+    shape->dequeueGuiActions();
+    EXPECT_FALSE(shape->getControlPointAtIndex(2)->isLinkedToTrack(false));
+    EXPECT_FALSE(shape->hasTrackLinks());
+}
+
+// Changing interpolation during a render keys the GUI side at its own keyframe and leaves the
+// render's side alone until write-back.
+TEST_F(RotoKeyDuringRenderTest, KeyFrameInterpolationDuringARenderWaitsForTheWriteBack)
+{
+    ASSERT_TRUE(makeRoto(false));
+    BezierPtr reference = makeKeyedShape("Reference");
+    BezierPtr shape = makeKeyedShape("Edited");
+    ASSERT_TRUE(reference && shape);
+    seek(6);
+    const ShapeValues original = recordShape(shape, false);
+
+    reference->setKeyFrameInterpolation(eKeyframeTypeConstant, 1);
+    {
+        RenderingFlagSetter rendering(_roto);
+        shape->setKeyFrameInterpolation(eKeyframeTypeConstant, 1);
+        const ShapeValues internal = recordShape(shape, false);
+        EXPECT_TRUE(internal.cps == original.cps);
+        EXPECT_TRUE(internal.fps == original.fps);
+    }
+    shape->dequeueGuiActions();
+
+    const std::string differences = describeDifferences(recordShape(reference, false), shape, kTolerance);
+    EXPECT_TRUE(differences.empty()) << differences;
+}
+
+TEST_F(RotoKeyDuringRenderTest, HeldRenderStartsWaitForTheEditOnOtherThreadsOnly)
+{
+    ASSERT_TRUE(makeRoto(false));
+
+    {
+        RenderingFlagSetter rendering(_roto);
+        EXPECT_FALSE(_roto->holdRenderStartsForEdit());
+    }
+
+    ASSERT_TRUE(_roto->holdRenderStartsForEdit());
+    {
+        RenderingFlagSetter rendering(_roto);
+        EXPECT_TRUE(_roto->isNodeRendering());
+    }
+
+    std::atomic<bool> started(false);
+    std::atomic<bool> finish(false);
+    std::thread render([&]() {
+        RenderingFlagSetter rendering(_roto);
+        started = true;
+        while (!finish) {
+            std::this_thread::yield();
+        }
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(started.load());
+    EXPECT_FALSE(_roto->isNodeRendering());
+
+    _roto->releaseRenderStartsForEdit();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!started && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(started.load());
+    EXPECT_TRUE(_roto->isNodeRendering());
+    finish = true;
+    render.join();
+    EXPECT_FALSE(_roto->isNodeRendering());
+}
+
+// A render starting on another thread between an edit's choice of side and its write would see
+// a half-made edit: two reads in one render must agree.
+TEST_F(RotoKeyDuringRenderTest, RenderOnAnotherThreadNeverSeesAnEditInProgress)
+{
+    ASSERT_TRUE(makeRoto(true));
+    BezierPtr shape = makeKeyedShape("Edited");
+    ASSERT_TRUE(bool(shape));
+    seek(6);
+
+    std::atomic<bool> stop(false);
+    std::atomic<int> renders(0);
+    std::atomic<int> torn(0);
+    std::thread render([&]() {
+        const std::vector<double> times(1, 6.);
+        while (!stop) {
+            RenderingFlagSetter rendering(_roto);
+            const ShapeValues first = recordShape(shape, false, times);
+            std::this_thread::yield();
+            const ShapeValues second = recordShape(shape, false, times);
+            if ((first.cps != second.cps) || (first.fps != second.fps)) {
+                ++torn;
+            }
+            ++renders;
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (int i = 0; (renders < 200) && (std::chrono::steady_clock::now() < deadline); ++i) {
+        shape->movePointByIndex(i % kPoints, 6., (i % 2) ? 1. : -1., 0.5);
+        std::this_thread::sleep_for(std::chrono::microseconds(50));
+    }
+    stop = true;
+    render.join();
+    shape->dequeueGuiActions();
+
+    EXPECT_GT(renders.load(), 0);
+    EXPECT_EQ(0, torn.load());
 }

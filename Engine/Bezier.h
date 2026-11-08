@@ -744,11 +744,12 @@ private:
     bool canSetInternalPoints() const;
 
     /**
-     * @brief Returns true when an edit must go to the GUI copy because the node renders.
-     * Otherwise first writes back GUI edits still pending from an earlier render, so the
-     * edit's internal-to-GUI copy cannot overwrite them, and returns false.
+     * @brief Picks the side a main-thread edit writes: the GUI copy while a render holds the
+     * node. Otherwise it first writes back GUI edits still pending from an earlier render, so
+     * the edit's internal-to-GUI copy cannot overwrite them, and holds back render starts on
+     * other threads until destroyed, so no render reads the internal curves mid-edit.
      **/
-    bool useGuiCurveForEdit();
+    class EditSide;
 
     /**
      * @brief Writes pending GUI edits to the internal curves when the node is not rendering.
@@ -758,8 +759,8 @@ private:
     /**
      * @brief Keys every point not yet keyed at time with its value there, reading and writing
      * one side only. A GUI-side key waits for dequeueGuiActions(). An internal-side key is
-     * mirrored onto the GUI copy, so the internal side may only be passed once
-     * useGuiCurveForEdit() has written back pending GUI edits.
+     * mirrored onto the GUI copy, so the internal side may only be passed under an EditSide
+     * that picked it.
      **/
     void setKeyframeInternal(double time, bool useGuiCurve);
 

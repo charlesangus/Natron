@@ -67,8 +67,8 @@ BezierCP::toSerialization(Serialization::BezierCPSerialization* serialization) c
     const std::string trackName = getTrackLinkTrackName();
 
     QMutexLocker k(&_imp->staticPositionMutex);
-    serialization->hasTrackLink = bool(_imp->trackLink);
-    if (_imp->trackLink) {
+    serialization->hasTrackLink = bool(_imp->guiTrackLink);
+    if (_imp->guiTrackLink) {
         serialization->trackLinkTracker = trackerName;
         serialization->trackLinkTrack = trackName;
         serialization->trackOffsetX = _imp->guiTrackOffsets.x;
@@ -77,8 +77,8 @@ BezierCP::toSerialization(Serialization::BezierCPSerialization* serialization) c
         serialization->trackOffsetLeftY = _imp->guiTrackOffsets.leftY;
         serialization->trackOffsetRightX = _imp->guiTrackOffsets.rightX;
         serialization->trackOffsetRightY = _imp->guiTrackOffsets.rightY;
-        serialization->trackFrozenX = _imp->trackLink->frozenX;
-        serialization->trackFrozenY = _imp->trackLink->frozenY;
+        serialization->trackFrozenX = _imp->guiTrackLink->frozenX;
+        serialization->trackFrozenY = _imp->guiTrackLink->frozenY;
     }
     serialization->x = _imp->guiX;
     serialization->y = _imp->guiY;
@@ -141,6 +141,7 @@ BezierCP::fromSerialization(const Serialization::BezierCPSerialization& serializ
         link->frozenX = serialization.trackFrozenX;
         link->frozenY = serialization.trackFrozenY;
         _imp->trackLink = link;
+        _imp->guiTrackLink = link;
         _imp->trackOffsets.x = serialization.trackOffsetX;
         _imp->trackOffsets.y = serialization.trackOffsetY;
         _imp->trackOffsets.leftX = serialization.trackOffsetLeftX;
@@ -150,6 +151,7 @@ BezierCP::fromSerialization(const Serialization::BezierCPSerialization& serializ
         _imp->guiTrackOffsets = _imp->trackOffsets;
     } else {
         _imp->trackLink.reset();
+        _imp->guiTrackLink.reset();
     }
 }
 

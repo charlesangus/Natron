@@ -8595,7 +8595,7 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (QThread::currentThread() != qApp->thread()) {
-            while (_imp->nodeIsDequeuing && !aborted()) {
+            while ((_imp->nodeIsDequeuing || (_imp->renderStartsHeldByEdits > 0)) && !aborted()) {
                 _imp->nodeIsDequeuingCond.wait(k.mutex());
             }
         }
@@ -8671,6 +8671,33 @@ Node::isNodeRendering() const
     QMutexLocker k(&_imp->nodeIsRenderingMutex);
 
     return _imp->nodeIsRendering > 0;
+}
+
+bool
+Node::holdRenderStartsForEdit()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+    {
+        QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
+        if (_imp->nodeIsRendering > 0) {
+            return false;
+        }
+    }
+    ++_imp->renderStartsHeldByEdits;
+
+    return true;
+}
+
+void
+Node::releaseRenderStartsForEdit()
+{
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+
+    assert(_imp->renderStartsHeldByEdits > 0);
+    if (--_imp->renderStartsHeldByEdits == 0) {
+        _imp->nodeIsDequeuingCond.wakeAll();
+    }
 }
 
 void

@@ -77,6 +77,8 @@ Make M233 - Live Node Textures' `natron://` images render in Cycles and MoonRay,
 
 ## Decisions
 
+- 2026-11-07 — The GUI crash on a viewer colour change is a Cycles fork bug: `HdCyclesMaterial::Sync` rebuilds the graph via `set_graph` without tagging the shader modified, so a freed image slot is sampled (fixed upstream in 260185984a). User: fix it in the charlesangus/cycles fork and bump the pin, not a build-time patch.
+
 - 2026-11-07 — /dev/shm (user): CI passes a larger `--shm-size`. When /dev/shm is full, the store keeps its hold on the previous image, and the render warns and aborts rather than showing magenta.
 
 - 2026-11-07 — USDWrite with a deleted texture source (user): warn, naming the material, and export the material's own colour; don't fail the export.

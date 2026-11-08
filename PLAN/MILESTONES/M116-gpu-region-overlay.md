@@ -113,6 +113,8 @@ Waits for M118 - Large Graph GUI Responsiveness: it rewrites the same `Gui/NodeG
 
 ## Decisions
 
+- 2026-11-07 — User: start Phase 116.3 now, stacked on M118 - Large Graph GUI Responsiveness's branch (merged main, then milestone/m118 into milestone/m116 at 992731541). M116 merges after M118.
+
 - 2026-11-05 — Elaborated per the 2026-10-25 decisions; the stub's Acceptance sketch is replaced by them. M116 - GPU Region Overlay's Phase 116.3 follows M118 - Large Graph GUI Responsiveness. Default shortcut Shift+G (PM): free in the nodegraph group.
 - 2026-10-25 — Reasons are a category enum plus an optional effect detail string: this matches the stub's example reasons without giving every refusal branch its own message.
 - 2026-10-25 — A runtime fallback is drawn as a distinct outline with the runtime reason: it shows both what was planned and what ran.

@@ -29,7 +29,9 @@
 #include "Global/Macros.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <functional>
 #include <list>
@@ -500,6 +502,10 @@ private:
     // threads at the end, whose entry destructions charge it until they are joined.
     mutable CacheHostTier _hostTier;
     std::shared_ptr<CacheDiskTier> _diskTier;
+    // A promotion reads its file off every lock. One that began before a clear finished may have
+    // read a file the clear removed, and must not land in RAM the clear emptied.
+    std::atomic<std::uint64_t> _clearGeneration { 0 };
+    std::atomic<int> _clearsUnderWay { 0 };
     std::size_t _maximumCacheSize;     // maximum size allowed for the cache
 
     /*mutable because we need to change modify it in the sealEntryInternal function which
@@ -1281,8 +1287,13 @@ public:
      **/
     void clear()
     {
-        // Queued demotions go before RAM empties, so that no lookup reclaims one into it, and the
-        // tier's files after, so that the idle publisher has no cleared entry left to write there.
+        const ClearUnderWay clearing(*this);
+        // Freed off the lock, after everything else.
+        std::vector<CacheEntryPtr> droppedDemotions;
+
+        // Demotions are dropped under the same lock that empties RAM, so that no lookup reclaims
+        // one in between, and the tier's files go after, so that the idle publisher has no cleared
+        // entry left to write there.
         if (_diskTier) {
             _diskTier->cancelWrites();
         }
@@ -1299,6 +1310,9 @@ public:
         }
         {
             QMutexLocker locker(&_lock);
+            if (_diskTier) {
+                _diskTier->cancelDemotions(&droppedDemotions);
+            }
             std::pair<hash_type, StoredEntryPtr> evictedFromMemory = _memoryCache.evict();
             while (evictedFromMemory.second) {
                 if (!_isTiled && evictedFromMemory.second->isStoredOnDisk()) {
@@ -1370,11 +1384,18 @@ public:
      **/
     void clearInMemoryPortion(bool emitSignals = true)
     {
+        // Freed off the lock.
+        std::vector<CacheEntryPtr> droppedDemotions;
+
         if (_signalEmitter) {
             ///block signals otherwise the we would be spammed of notifications
             _signalEmitter->blockSignals(true);
         }
         QMutexLocker locker(&_lock);
+        // A demotion left queued would come back into the emptied RAM on its key's next lookup.
+        if (_diskTier) {
+            _diskTier->cancelDemotions(&droppedDemotions);
+        }
         std::pair<hash_type, StoredEntryPtr> evictedFromMemory = _memoryCache.evict();
         while (evictedFromMemory.second) {
             // Move back the entry on disk if it can be store on disk
@@ -2220,6 +2241,35 @@ private:
         }
     }
 
+    // The generation moves at both ends, so that a promotion begun at any point of a clear sees it.
+    class ClearUnderWay {
+    public:
+        explicit ClearUnderWay(Cache& cache)
+            : _cache(cache)
+        {
+            _cache._clearsUnderWay.fetch_add(1);
+            _cache._clearGeneration.fetch_add(1);
+        }
+
+        ~ClearUnderWay()
+        {
+            _cache._clearGeneration.fetch_add(1);
+            _cache._clearsUnderWay.fetch_sub(1);
+        }
+
+    private:
+        ClearUnderWay(const ClearUnderWay&) = delete;
+        ClearUnderWay& operator=(const ClearUnderWay&) = delete;
+
+        Cache& _cache;
+    };
+
+    // Under _lock, which is also where a clear empties RAM.
+    bool clearedSince(std::uint64_t generation) const
+    {
+        return (_clearsUnderWay.load() > 0) || (_clearGeneration.load() != generation);
+    }
+
     // Under _lock. A lookup in the middle of a demotion takes the entry back at no I/O cost.
     void reclaimDemotingLocked(hash_type hash) const
     {
@@ -2337,6 +2387,7 @@ private:
             if (!_diskTier) {
                 return std::shared_ptr<PayloadType>();
             }
+            const std::uint64_t generation = _clearGeneration.load();
             std::string wantedBytes;
             if (wanted) {
                 wantedBytes = PayloadType::diskParamsBytes(*wanted);
@@ -2346,7 +2397,7 @@ private:
                 return std::shared_ptr<PayloadType>();
             }
 
-            return restoreCandidate<PayloadType>(key, wanted, candidates, false);
+            return restoreCandidate<PayloadType>(key, wanted, candidates, false, generation);
         } else {
             (void)key;
             (void)wanted;
@@ -2364,6 +2415,7 @@ private:
             if (!_diskTier) {
                 return std::shared_ptr<PayloadType>();
             }
+            const std::uint64_t generation = _clearGeneration.load();
             const std::string& holderID = key.getCacheHolderID();
             _diskTier->holdPins(holderID);
             std::string wantedBytes;
@@ -2375,7 +2427,7 @@ private:
                 return std::shared_ptr<PayloadType>();
             }
 
-            return restoreCandidate<PayloadType>(key, wanted, candidates, true);
+            return restoreCandidate<PayloadType>(key, wanted, candidates, true, generation);
         } else {
             (void)key;
             (void)wanted;
@@ -2388,7 +2440,8 @@ private:
     std::shared_ptr<PayloadType> restoreCandidate(const typename PayloadType::key_type& key,
                                                   const typename PayloadType::param_t* wanted,
                                                   const std::vector<CacheDiskFileInfo>& candidates,
-                                                  bool pinned) const
+                                                  bool pinned,
+                                                  std::uint64_t generation) const
     {
         CacheDiskTier::PromotionGate gate(*_diskTier, key.getHash());
         {
@@ -2403,16 +2456,20 @@ private:
             if (!restored) {
                 continue;
             }
-            // A render can have created the entry while this one was read.
-            QMutexLocker getlocker(&_getLock);
-            QMutexLocker locker(&_lock);
-            const std::shared_ptr<PayloadType> present = findInMemory<PayloadType>(key, wanted);
-            if (present) {
-                return present;
+            // Freed off the locks when a clear refuses it.
+            std::shared_ptr<PayloadType> answer;
+            {
+                QMutexLocker getlocker(&_getLock);
+                QMutexLocker locker(&_lock);
+                // A render can have created the entry while this one was read.
+                answer = findInMemory<PayloadType>(key, wanted);
+                if (!answer && !clearedSince(generation)) {
+                    sealEntry(restored, true);
+                    answer = restored;
+                }
             }
-            sealEntry(restored, true);
 
-            return restored;
+            return answer;
         }
 
         return std::shared_ptr<PayloadType>();

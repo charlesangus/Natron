@@ -546,7 +546,10 @@ variation, whichever session wrote them.
 
 A clear cancels the writes, empties RAM, then empties the tier, in that order: emptying the tier first would let the idle
 publisher sample an entry still in RAM and write it into the emptied tier, where a later lookup would take it for valid. A
-publish batch sampled before any cancellation is dropped rather than queued after it.
+publish batch sampled before any cancellation is dropped rather than queued after it. Queued demotions are dropped under
+the same lock that empties RAM, and a write the clear cancelled is never handed back to a lookup, even while it is still
+running: either would put the cleared entry back in RAM. A promotion that read its file before or during a clear finds
+the clear generation moved and returns a miss instead of adding the entry.
 
 A demotion's write failure drops the entry, as it must leave RAM. A publish-behind failure keeps the RAM copy, which is
 still valid, abandons the file and backs the publisher off for 30 s. Both warn once per session.

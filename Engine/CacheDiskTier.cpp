@@ -1137,21 +1137,26 @@ struct CacheDiskTier::Imp {
         }
     }
 
+    void dropDemotions(std::vector<CacheEntryPtr>* dropped)
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+
+        for (const WriteItemPtr& item : demotionQueue) {
+            queuedBytes -= item->bytes;
+            demoting.fetch_sub(1);
+            dropped->push_back(item->entry);
+        }
+        demotionQueue.clear();
+        for (const WriteItemPtr& item : demotionsInFlight) {
+            item->cancelled.store(true);
+        }
+    }
+
     void cancelEverything()
     {
-        std::vector<WriteItemPtr> dropped;
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            for (const WriteItemPtr& item : demotionQueue) {
-                queuedBytes -= item->bytes;
-                demoting.fetch_sub(1);
-                dropped.push_back(item);
-            }
-            demotionQueue.clear();
-            for (const WriteItemPtr& item : demotionsInFlight) {
-                item->cancelled.store(true);
-            }
-        }
+        std::vector<CacheEntryPtr> dropped;
+
+        dropDemotions(&dropped);
         std::lock_guard<std::mutex> lock(publishMutex);
         ++cancelEpoch;
         publishing.fetch_sub(publishQueue.size());
@@ -1510,6 +1515,9 @@ CacheDiskTier::Imp::demotionLoop()
             item = demotionQueue.front();
             demotionQueue.pop_front();
             demotionsInFlight.push_back(item);
+        }
+        if (config.demotionWriteStarts) {
+            config.demotionWriteStarts();
         }
         (void)guardedWrite(*item->entry, *item);
         finishDemotion(item);
@@ -2444,13 +2452,20 @@ CacheDiskTier::reclaimDemoting(std::uint64_t hash,
         }
     }
     // A write in progress runs to its end and publishes, which does no harm: the caller's
-    // reference keeps the entry alive past it.
+    // reference keeps the entry alive past it. A cancelled one may still be finishing long after
+    // a clear has emptied RAM, and handing its entry back would put the cleared result in again.
     for (const WriteItemPtr& item : imp.demotionsInFlight) {
-        if ((item->hash == hash) && !item->reclaimed) {
+        if ((item->hash == hash) && !item->reclaimed && !item->cancelled.load()) {
             item->reclaimed = true;
             entries->push_back(item->entry);
         }
     }
+}
+
+void
+CacheDiskTier::cancelDemotions(std::vector<CacheEntryPtr>* dropped)
+{
+    _imp->dropDemotions(dropped);
 }
 
 void
@@ -2466,7 +2481,7 @@ CacheDiskTier::peekDemoting(std::uint64_t hash,
         }
     }
     for (const WriteItemPtr& item : imp.demotionsInFlight) {
-        if ((item->hash == hash) && !item->reclaimed) {
+        if ((item->hash == hash) && !item->reclaimed && !item->cancelled.load()) {
             entries->push_back(item->entry);
         }
     }

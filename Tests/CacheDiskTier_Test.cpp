@@ -29,14 +29,17 @@
 #include <sys/resource.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -185,7 +188,8 @@ public:
                      const char* name,
                      bool background = false,
                      const char* build = kBuildId,
-                     int heartbeatStaleMs = 60000)
+                     int heartbeatStaleMs = 60000,
+                     std::function<void()> demotionWriteStarts = std::function<void()>())
         : cache(name, 1, 64ULL * 1024 * 1024, 1.)
     {
         CacheDiskTier::Config config;
@@ -196,6 +200,7 @@ public:
         config.idlePublisher = background;
         config.backgroundMaintenance = background;
         config.publishIntervalMs = 10;
+        config.demotionWriteStarts = demotionWriteStarts;
         tier = CacheDiskTier::open(config);
         cache.useEvictionScore();
         cache.setDiskTier(tier);
@@ -276,6 +281,58 @@ offerDetached(Session& session,
     image.reset();
     ASSERT_TRUE(session.tier->waitIdle(30000));
 }
+
+// Holds the writer thread at the start of a demotion until released.
+class WriteGate {
+public:
+    void enter()
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+
+        _entered = true;
+        _cond.notify_all();
+        _cond.wait(lock, [this] { return !_held; });
+    }
+
+    bool waitEntered()
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+
+        return _cond.wait_for(lock, std::chrono::seconds(30), [this] { return _entered; });
+    }
+
+    void release()
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _held = false;
+        _cond.notify_all();
+    }
+
+private:
+    std::mutex _mutex;
+    std::condition_variable _cond;
+    bool _entered = false;
+    bool _held = true;
+};
+
+// The session joins its writer when destroyed, so the gate has to open before that, whichever
+// assertion ends the test.
+class OpenOnExit {
+public:
+    explicit OpenOnExit(WriteGate& gate)
+        : _gate(gate)
+    {
+    }
+
+    ~OpenOnExit()
+    {
+        _gate.release();
+    }
+
+private:
+    WriteGate& _gate;
+};
 
 // A write hitting RLIMIT_FSIZE raises SIGXFSZ, which ends the process unless it is ignored.
 class FileSizeLimit {
@@ -615,6 +672,40 @@ TEST(CacheDiskTierTest, LookupDuringADemotionReturnsTheEntry)
         EXPECT_TRUE(matchesPattern(found, seed)) << round;
     }
     EXPECT_TRUE(session.tier->waitIdle(30000));
+}
+
+// A write that a clear cancelled can still be running long after RAM was emptied. No lookup may
+// take its entry back, or the cleared result is served again and the idle publisher writes it.
+TEST(CacheDiskTierTest, ClearDuringADemotionLeavesNothingToReclaim)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    WriteGate gate;
+    Session session(dir.path(), "CacheDiskTierTest_ClearMidWrite", false, kBuildId, 60000, [&gate] { gate.enter(); });
+    const OpenOnExit opener(gate);
+    ASSERT_TRUE(session.tier != nullptr);
+
+    const U64 hash = 7;
+    ASSERT_TRUE(session.createEntry(hash, kExpensiveNs, 3.f) != nullptr);
+    session.cache.setMaximumCacheSize(1024);
+    session.cache.setMaximumInMemorySize(1.);
+    session.cache.clearExceedingEntries();
+    session.cache.setMaximumCacheSize(64ULL * 1024 * 1024);
+    session.cache.setMaximumInMemorySize(1.);
+    ASSERT_TRUE(gate.waitEntered());
+
+    session.cache.clear();
+
+    std::vector<CacheEntryPtr> demoting;
+    session.tier->peekDemoting(keyOf(hash).getHash(), &demoting);
+    EXPECT_TRUE(demoting.empty());
+    EXPECT_FALSE(session.lookup(hash) != nullptr);
+
+    gate.release();
+    ASSERT_TRUE(session.tier->waitIdle(30000));
+    CacheDiskFileInfo info;
+    EXPECT_FALSE(session.fileOf(hash, &info));
+    EXPECT_FALSE(session.lookup(hash) != nullptr);
 }
 
 TEST(CacheDiskTierTest, PeekReportsAFileAsAnUnallocatedStub)

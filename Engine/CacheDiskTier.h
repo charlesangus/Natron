@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -191,7 +192,7 @@ public:
  * lock gating access. docs/cache/tiered-cache.md, Persistence, describes the protocol.
  *
  * The methods a cache calls under its own lock do no I/O and wait for none: offerDemotion,
- * hasDemoting, reclaimDemoting and peekDemoting. Every other method is called off that lock, and
+ * hasDemoting, reclaimDemoting, peekDemoting and cancelDemotions. Every other method is called off that lock, and
  * maintainNow and the maintenance thread take it through CacheHostStorage::publishCandidates.
  **/
 class CacheDiskTier final
@@ -215,6 +216,9 @@ public:
         // The rename self-test fails at this root, which is the only way to reach the fallback on a
         // filesystem that renames correctly.
         std::string renameSelfTestFailsAt;
+        // Runs on the writer thread once a demotion is in flight and before any of it is written,
+        // so that a test can hold a write there.
+        std::function<void()> demotionWriteStarts;
     };
 
     // Null if the location cannot be created or fails the rename self-test.
@@ -248,9 +252,14 @@ public:
     // entry's RAM stays charged until the write finishes. False means the caller drops the entry.
     bool offerDemotion(const CacheEntryPtr& entry);
     bool hasDemoting() const;
-    // Hands back the entries of this hash that wait for or are in a write, and cancels the move.
+    // Hands back the entries of this hash that wait for or are in a write, and cancels the move. A
+    // cancelled write's entry is never handed back: it belongs to a clear or a retraction.
     void reclaimDemoting(std::uint64_t hash, std::vector<CacheEntryPtr>* entries);
     void peekDemoting(std::uint64_t hash, std::vector<CacheEntryPtr>* entries) const;
+    // Drops every queued demotion and cancels those being written. Called under the cache's lock
+    // together with emptying RAM, no offer or reclaim can fall between the two; the dropped entries
+    // come back so that the caller frees them off that lock.
+    void cancelDemotions(std::vector<CacheEntryPtr>* dropped);
 
     // Cancels the entry's queued write. With removeFile, also unlinks the file it published.
     void retract(const CacheEntryPtr& entry, bool removeFile);

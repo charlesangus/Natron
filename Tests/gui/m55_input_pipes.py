@@ -626,6 +626,18 @@ try:
                "exercised -- Engine/PyNode.h's Effect class does not expose isInputVisible/"
                "setInputVisible to Python")
 
+        # ---- (f) A Scene pipe is teal, like the USD nodes.
+        gt.section("f-scene-pipe-teal")
+        usd_f = create("USDRead", 4500, 0)
+        prune_f = create("USDPrune", 4500, 200)
+        connect(prune_f, 0, usd_f)
+        app.clearSelection()
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        check_scene_pipe_teal(root_graph(), usd_f, prune_f, "f: USDRead -> USDPrune")
+        report("CAPTION f-scene-pipe-teal: a USD scene pipe between USDRead and USDPrune, drawn teal")
+        graph_shot(root_graph(), "f-scene-pipe-teal")
+
         # ---- (b1) Group holding Constant->Blur->Output, saved, closed and reloaded. Run last:
         # resetProject() wipes every node made above, so nothing after this case can rely on them.
         # Connects into the Group's own built-in Output (see a1's comment above) rather than
@@ -671,18 +683,6 @@ try:
                                                      "b1: Blur -> Output after reload")
                                 graph_shot(sub_b1, "b1-save-close-reload-group")
                                 hide_group_graph(sub_b1)
-
-        # ---- (f) A Scene pipe is teal, like the USD nodes.
-        gt.section("f-scene-pipe-teal")
-        usd_f = create("USDRead", 4500, 0)
-        prune_f = create("USDPrune", 4500, 200)
-        connect(prune_f, 0, usd_f)
-        app.clearSelection()
-        gt.close_all_panels()
-        yield ("sleep", SETTLE_MS)
-        check_scene_pipe_teal(root_graph(), usd_f, prune_f, "f: USDRead -> USDPrune")
-        report("CAPTION f-scene-pipe-teal: a USD scene pipe between USDRead and USDPrune, drawn teal")
-        graph_shot(root_graph(), "f-scene-pipe-teal")
 
         faulthandler.cancel_dump_traceback_later()
 

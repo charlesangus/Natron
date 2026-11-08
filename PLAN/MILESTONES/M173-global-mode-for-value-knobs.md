@@ -60,22 +60,22 @@ Code facts the plan relies on (scouted on `main`, 2026-10-24):
 
 ## Phase 173.2: Knob roles and stroke maths (Engine)
 
-- [ ] M173.P2.T1 — Add a value-role hint to numeric knobs and fill it from OFX
+- [x] M173.P2.T1 — Add a value-role hint to numeric knobs and fill it from OFX
   - files: `Engine/KnobTypes.h`, `Engine/KnobTypes.cpp`, `Engine/OfxParamInstance.cpp`
   - approach: Add `enum ValueRoleEnum { eValueRoleNone, eValueRoleTranslate, eValueRoleRotate, eValueRoleScale, eValueRoleSize, eValueRoleSkew }` with `setValueRole`/`getValueRole` on the shared numeric knob base used by `KnobDouble` and `KnobInt` (pick the class both derive from; do not serialize it). In `OfxParamInstance.cpp`, where the double type is read, map Angle → rotate, Scale → scale, XY/XYAbsolute (and normalised variants) → translate.
   - verify: a gtest in `Tests/` that creates `KnobDouble`s and round-trips each role; the release build compiles.
   - size: M
-- [ ] M173.P2.T2 — Set roles on native nodes and from the transform interact
+- [x] M173.P2.T2 — Set roles on native nodes and from the transform interact
   - files: `Engine/Nodes/Transform/Transform.cpp`, `Engine/Nodes/Filter/Blur.cpp`, `Engine/NodeOverlay.cpp`, `Engine/Node.h`
   - approach: In `Node::addTransformInteract`, set translate/rotate/scale/skew roles on the knobs passed in and record the interact's knob set so the GUI can query it (`Node::getTransformInteractKnobs()` returning translate, rotate, scale, skewX, skewY, center, or an empty struct). Set `size` on Blur's `size`. Grep other native nodes under `Engine/Nodes/` for translate/rotate/scale/size knobs and set their roles too.
   - verify: a gtest that instantiates native Transform and Blur and checks each knob's role and `getTransformInteractKnobs()`.
   - size: M
-- [ ] M173.P2.T3 — Knob kind classifier with name/label fallback
+- [x] M173.P2.T3 — Knob kind classifier with name/label fallback
   - files: new `Engine/GlobalModeKind.{h,cpp}`, `Engine/CMakeLists.txt` (or the sources list it uses), `Tests/GlobalModeKind_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: `classifyGlobalModeKind(const KnobIPtr&)` → colour / translate / rotate / scale / size / skew / genericSpatial2D / generic / ineligible. Order: colour knobs → colour; explicit role wins; else name/label heuristic (case-insensitive word match); else a 2D spatial knob → genericSpatial2D; else a numeric knob → generic; non-numeric knobs, or knobs with every dimension expression/link-driven → ineligible.
   - verify: `GlobalModeKind_Test` covers each branch, including a heuristic hit, a role overriding a misleading name, and an all-driven knob.
   - size: M
-- [ ] M173.P2.T4 — Per-kind stroke maths and key map
+- [x] M173.P2.T4 — Per-kind stroke maths and key map
   - files: new `Engine/GlobalModeStroke.{h,cpp}`, `Tests/GlobalModeStroke_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: Pure functions mirroring `ColorGlobalModeStroke`: given kind, start values per dimension (one or two knobs for skew), increment, dimension count, isInt, lock (all / dimension n), gearing and accumulated dx/dy, return new values. Rates as in `## Scope`; scale multiplicative; int rounding from accumulated travel. Also `classifyGlobalModeValueKey(key, inGroup)` mapping Q/W/E/R/A (lone) and Q/W/E/R/T + 1/2/A (group) to lock or kind-switch actions, ignoring locks beyond the dimension count.
   - verify: `GlobalModeStroke_Test` checks every kind's mapping, gearing, locks, int accumulation and both key maps.

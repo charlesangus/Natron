@@ -30,11 +30,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <future>
 #include <list>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -594,29 +595,50 @@ EndToEndResult::ranInRegion(const NodePtr& node) const
 
 namespace {
 
+// Plain values only, so the watchdog thread never touches gtest or node state.
+struct HangCase {
+    std::string testName;
+    std::string rootName;
+    RectI window;
+    double time;
+    unsigned mipmapLevel;
+};
+
+HangCase
+makeHangCase(const NodePtr& root,
+             const RectI& window,
+             double time,
+             unsigned mipmapLevel)
+{
+    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    HangCase c;
+    c.testName = info ? std::string(info->test_case_name()) + "." + info->name() : "?";
+    c.rootName = root ? root->getScriptName_mt_safe() : "?";
+    c.window = window;
+    c.time = time;
+    c.mipmapLevel = mipmapLevel;
+
+    return c;
+}
+
 // The hung thread cannot be joined, so the process is aborted: ctest then records a crash with the stacks in
 // its log instead of killing the test silently at its own timeout.
 [[noreturn]] void
 reportHangAndAbort(const char* half,
-                   const NodePtr& root,
-                   const RectI& window,
-                   double time,
-                   unsigned mipmapLevel)
+                   const HangCase& c)
 {
-    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
     std::fprintf(stderr,
-                 "\nHANG: %s did not finish within %lld ms in %s.%s (root '%s', time %g, mipmap level %u, window %d,%d-%d,%d)\n",
+                 "\nHANG: %s did not finish within %lld ms in %s (root '%s', time %g, mipmap level %u, window %d,%d-%d,%d)\n",
                  half,
                  (long long)kFrameTimeoutMs,
-                 info ? info->test_case_name() : "?",
-                 info ? info->name() : "?",
-                 root ? root->getScriptName_mt_safe().c_str() : "?",
-                 time,
-                 mipmapLevel,
-                 window.x1,
-                 window.y1,
-                 window.x2,
-                 window.y2);
+                 c.testName.c_str(),
+                 c.rootName.c_str(),
+                 c.time,
+                 c.mipmapLevel,
+                 c.window.x1,
+                 c.window.y1,
+                 c.window.x2,
+                 c.window.y2);
     std::fflush(stderr);
 
     // gdb is a child of this process, which Yama's default ptrace scope refuses to let attach to its parent.
@@ -643,6 +665,37 @@ reportHangAndAbort(const char* half,
     std::fflush(stderr);
     std::abort();
 }
+
+// The CPU reference render must stay on the calling thread (cache purges assert on the main thread), so the
+// deadline is enforced from a second thread that aborts the process if the render never returns.
+class CpuWatchdog {
+public:
+    explicit CpuWatchdog(const HangCase& c)
+        : _thread([this, c]() {
+            std::unique_lock<std::mutex> lock(_mutex);
+            if (!_cv.wait_for(lock, std::chrono::milliseconds(kFrameTimeoutMs), [this]() { return _done; })) {
+                reportHangAndAbort("the CPU reference render", c);
+            }
+        })
+    {
+    }
+
+    ~CpuWatchdog()
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _done = true;
+        }
+        _cv.notify_one();
+        _thread.join();
+    }
+
+private:
+    std::mutex _mutex;
+    std::condition_variable _cv;
+    bool _done = false;
+    std::thread _thread;
+};
 
 } // namespace
 
@@ -694,7 +747,7 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
             if (timer.elapsed() > kFrameTimeoutMs) {
                 // Dumped before the abort request, which cannot pre-empt a running dispatch and would
                 // only change what the stacks show.
-                reportHangAndAbort("the GPU dispatch", root, window, time, mipmapLevel);
+                reportHangAndAbort("the GPU dispatch", makeHangCase(root, window, time, mipmapLevel));
             }
             QThread::msleep(1);
         }
@@ -735,17 +788,12 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
     {
         GpuPlacementOffGuard off;
         std::vector<RenderedPlane> planes;
-        std::promise<bool> done;
-        std::future<bool> doneFuture = done.get_future();
-        std::thread cpuThread([&]() {
-            done.set_value(renderNodePlanesDirect(root, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error));
-        });
-        if (doneFuture.wait_for(std::chrono::milliseconds(kFrameTimeoutMs)) != std::future_status::ready) {
-            cpuThread.detach();
-            reportHangAndAbort("the CPU reference render", root, window, time, mipmapLevel);
-        }
-        cpuThread.join();
-        if (!doneFuture.get()) {
+        const bool rendered = [&]() {
+            CpuWatchdog watchdog(makeHangCase(root, window, time, mipmapLevel));
+
+            return renderNodePlanesDirect(root, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error);
+        }();
+        if (!rendered) {
             return result;
         }
         if (planes.size() != 1) {

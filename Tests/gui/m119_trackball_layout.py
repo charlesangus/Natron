@@ -804,6 +804,13 @@ try:
         globe = child_named(row, "ColorGlobalModeButton")
         require(selector is not None and globe is not None, "the gain row has its ▾ and global-mode buttons")
 
+        # The bin is one scroll area for every open panel; the Grade and the Blur together can be taller
+        # than it, and the scrollbar that appears then takes 15 px from every row's width.
+        bin_scroll = bin_scroll_area(bin_wrapper())
+        if bin_scroll is not None:
+            bin_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            QApplication.processEvents()
+
         default_width = bin_wrapper().width()
         report("NOTE default properties bin width %d px" % default_width)
 

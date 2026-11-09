@@ -1431,9 +1431,23 @@ filterId(Resampler::FilterEnum filter)
 }
 } // namespace
 
+// Each of the three noise tile comparisons is a suite of its own, so it is its own ctest entry and
+// runs under its own timeout; together they outlast one entry's timeout in a debug build.
+class NativeLensCorrectNoiseTilesTest
+    : public NativeLensCorrectTest {
+};
+
+class NativeLensCorrectNoiseProjectionTilesTest
+    : public NativeLensCorrectTest {
+};
+
+class NativeLensCorrectNoiseAspectTilesTest
+    : public NativeLensCorrectTest {
+};
+
 // On a noise Source, where a pixel read from the wrong place or not read at all shows, tiles match
 // the whole window bit for bit at reduced scale, with edges clamped and through a wide filter.
-TEST_F(NativeLensCorrectTest, TilesOfNoiseMatchTheWholeFrame)
+TEST_F(NativeLensCorrectNoiseTilesTest, MatchTheWholeFrame)
 {
     const int width = 480;
     const int height = 320;
@@ -1465,7 +1479,7 @@ TEST_F(NativeLensCorrectTest, TilesOfNoiseMatchTheWholeFrame)
 }
 
 // Each projection lensfun reprojects a fisheye to, both ways, with black outside and with edges clamped.
-TEST_F(NativeLensCorrectTest, TilesOfNoiseMatchTheWholeFrameInEveryProjection)
+TEST_F(NativeLensCorrectNoiseProjectionTilesTest, MatchTheWholeFrame)
 {
     const int width = 480;
     const int height = 320;
@@ -1492,7 +1506,7 @@ TEST_F(NativeLensCorrectTest, TilesOfNoiseMatchTheWholeFrameInEveryProjection)
 
 // Non-square pixels and a Source reaching past its format: the region asked for is in the Source's
 // own pixels, overscan included.
-TEST_F(NativeLensCorrectTest, TilesOfNoiseMatchTheWholeFrameWithAspectAndOverscan)
+TEST_F(NativeLensCorrectNoiseAspectTilesTest, MatchTheWholeFrame)
 {
     struct SourceCase {
         const char* what;

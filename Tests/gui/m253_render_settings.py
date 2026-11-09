@@ -62,7 +62,7 @@ try:
     require(render is not None, "create USDRender", plugin_problem("USDRender"))
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     read.setPosition(0, 0)
     settings.setPosition(0, 100)

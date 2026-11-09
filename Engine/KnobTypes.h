@@ -62,12 +62,50 @@ GCC_ONLY_DIAG_ON(class-memaccess)
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief What a numeric knob's value stands for, which picks how global mode drags it.
+ **/
+enum ValueRoleEnum {
+    eValueRoleNone,
+    eValueRoleTranslate,
+    eValueRoleRotate,
+    eValueRoleScale,
+    eValueRoleSize,
+    eValueRoleSkew
+};
+
+/**
+ * @brief The value role shared by KnobDouble and KnobInt. It is a property of the node's
+ * definition, set when the knob is created, so it is never serialized.
+ **/
+class KnobValueRoleHolder {
+public:
+    KnobValueRoleHolder();
+
+    void setValueRole(ValueRoleEnum role);
+
+    ValueRoleEnum getValueRole() const;
+
+    /**
+     * @brief For eValueRoleRotate, whether a positive angle turns the image clockwise on
+     * screen rather than counter-clockwise. Off by default.
+     **/
+    void setValueRoleClockwise(bool clockwise);
+
+    bool isValueRoleClockwise() const;
+
+private:
+    ValueRoleEnum _valueRole;
+    bool _valueRoleClockwise;
+};
+
 /******************************KnobInt**************************************/
 
 class KnobInt
-    : public QObject, public KnobIntBase
-{
-GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    : public QObject,
+      public KnobIntBase,
+      public KnobValueRoleHolder {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
@@ -196,9 +234,10 @@ private:
 /******************************KnobDouble**************************************/
 
 class KnobDouble
-    :  public QObject, public KnobDoubleBase
-{
-GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    : public QObject,
+      public KnobDoubleBase,
+      public KnobValueRoleHolder {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 

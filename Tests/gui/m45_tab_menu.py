@@ -217,13 +217,16 @@ try:
         if not check(popup is not None, "search: the tab menu opens"):
             return None
 
+        # No node has a weight yet, so the matches are in alphabetical order.
         entries = listed(line_edit, view, "blr")
-        check(bool(entries) and row_name(entries[0]) == "Blur",
-             "search: 'blr' ranks Blur first (got %r)" % entries[:3])
+        blur_row = next((r for r, e in enumerate(entries) if row_name(e) == "Blur"), None)
+        check(blur_row is not None, "search: 'blr' lists Blur (got %r)" % entries)
+        check(entries == sorted(entries),
+             "search: unweighted 'blr' results are in alphabetical order (got %r)" % entries)
         check(all(row_name(e)[:1].lower() == "b" for e in entries),
              "search: every 'blr' result's name starts with 'b' (got %r)" % entries)
 
-        row_colour = view.model().index(0, 0).data(Qt.UserRole) if entries else None
+        row_colour = view.model().index(blur_row, 0).data(Qt.UserRole) if blur_row is not None else None
         blur_item = next(((path, act) for path, act in nodes_menu_items()
                           if act.property("natronPluginID") == BLUR_ID and path.rsplit("/", 1)[-1] == "Blur"), None)
         blur_colour = blur_item[1].property("natronCategoryColor") if blur_item is not None else None

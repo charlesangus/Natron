@@ -46,6 +46,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
+#include <QVariant>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QKeyEvent>
@@ -67,6 +68,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/Button.h"
 #include "Gui/ClickableLabel.h"
+#include "Gui/ColorTrackballTarget.h"
 #include "Gui/ComboBox.h"
 #include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
@@ -318,12 +320,19 @@ KnobGuiValue::removeSpecificGui()
     _imp->matrixColumnHeaders.clear();
 }
 
+QWidget*
+KnobGuiValue::getGlobalModeRowWidget() const
+{
+    return _imp->container;
+}
+
 void
 KnobGuiValue::createWidget(QHBoxLayout* layout)
 {
     connectKnobSignalSlots();
 
     _imp->container = new QWidget( layout->parentWidget() );
+    _imp->container->setProperty(globalModeKnobTouchTagPropertyName(), QVariant::fromValue(QPointer<KnobGui>(this)));
     QHBoxLayout* containerLayout = new QHBoxLayout(_imp->container);
 
     containerLayout->setContentsMargins(0, 0, 0, 0);

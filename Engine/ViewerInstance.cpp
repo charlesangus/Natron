@@ -4927,8 +4927,10 @@ ViewerInstance::selectDisplayTransformEntry(const KnobChoicePtr& knob,
     if ((index >= 0) && (index != previous)) {
         knob->setValue(index);
     } else {
-        // Only the active entry moved, which no value change reports.
+        // Only the active entry moved, which no value change reports. The report resets the active
+        // entry to the one at the index, so a name the menu lacks is set again after it.
         knob->evaluateValueChange(0, knob->getCurrentTime(), ViewSpec::all(), eValueChangedReasonPluginEdited);
+        knob->setActiveEntry(entry);
     }
 }
 

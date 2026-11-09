@@ -1411,8 +1411,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
             KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
             if (handler) {
                 QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
-                    ProjectPtr p = getGui()->getApp()->getProject();
-                    if (p && !p->isLoadingProject()) {
+                    // Closing a project resets these knobs after its nodes are gone, while the tab waits for its deferred deletion.
+                    ProjectPtr p = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
+                    if (p && _imp->viewerNode && !p->isLoadingProject() && !p->isProjectClosing()) {
                         refreshDisplayTransformMenus();
                     }
                 });

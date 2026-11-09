@@ -102,6 +102,7 @@ GeoPage::GeoPage(PrivateTag,
     , _constant(constant)
     , _data(static_cast<unsigned char*>(::operator new(storedBytes(), kGeoPageAlignment)))
     , _hash(0)
+    , _handedOut(false)
 {
 }
 
@@ -156,6 +157,22 @@ GeoPage::mutableData() noexcept
     return _data;
 }
 
+unsigned char*
+GeoPage::mutableDataHandedOut() noexcept
+{
+    _handedOut.store(true, std::memory_order_relaxed);
+
+    return mutableData();
+}
+
+void
+GeoPage::endWriting() const noexcept
+{
+    if (_handedOut.load(std::memory_order_relaxed)) {
+        _handedOut.store(false, std::memory_order_release);
+    }
+}
+
 bool
 GeoPage::isUniform() const noexcept
 {
@@ -170,7 +187,8 @@ GeoPage::isUniform() const noexcept
 U64
 GeoPage::contentHash() const
 {
-    U64 cached = _hash.load(std::memory_order_acquire);
+    const bool handedOut = _handedOut.load(std::memory_order_acquire);
+    U64 cached = handedOut ? 0 : _hash.load(std::memory_order_acquire);
     if (cached != 0) {
         return cached;
     }
@@ -186,7 +204,9 @@ GeoPage::contentHash() const
         hasher.appendBytes(_data, storedBytes());
     }
     cached = hasher.finalize();
-    _hash.store(cached, std::memory_order_release);
+    if (!handedOut) {
+        _hash.store(cached, std::memory_order_release);
+    }
 
     return cached;
 }
@@ -256,7 +276,10 @@ GeoPagedColumn::resize(std::size_t size)
     if (!_defaultPage) {
         throw std::logic_error("GeoPagedColumn: resize of a column with no element type");
     }
-    const std::size_t pages = (size + kGeoPageMask) >> kGeoPageBits;
+    const std::size_t pages = size / kGeoPageSize + ((size & kGeoPageMask) != 0 ? 1 : 0);
+    if (pages > std::size_t(std::numeric_limits<std::ptrdiff_t>::max()) / kGeoPageSize / _elementBytes) {
+        throw std::length_error("GeoPagedColumn: size exceeds the addressable maximum");
+    }
     makePageTableUnique();
     if (size < _size) {
         _pages->resize(pages);
@@ -304,19 +327,22 @@ GeoPagedColumn::makePageTableUnique()
 
 unsigned char*
 GeoPagedColumn::writablePage(std::size_t pageIndex,
-                             bool preserveContent)
+                             bool preserveContent,
+                             bool handOut)
 {
     makePageTableUnique();
     GeoPageConstPtr& slot = (*_pages)[pageIndex];
+    GeoPage* target;
     if (!slot->isConstant() && geoIsSoleOwner(slot)) {
         // Every page is created non-const by GeoPage's factories; the slot only exposes it const.
-        return const_cast<GeoPage*>(slot.get())->mutableData();
+        target = const_cast<GeoPage*>(slot.get());
+    } else {
+        std::shared_ptr<GeoPage> fresh = preserveContent ? slot->denseCopy() : GeoPage::makeDenseUninitialized(_elementBytes);
+        target = fresh.get();
+        slot = std::move(fresh);
     }
-    std::shared_ptr<GeoPage> fresh = preserveContent ? slot->denseCopy() : GeoPage::makeDenseUninitialized(_elementBytes);
-    unsigned char* data = fresh->mutableData();
-    slot = std::move(fresh);
 
-    return data;
+    return handOut ? target->mutableDataHandedOut() : target->mutableData();
 }
 
 unsigned char*
@@ -326,7 +352,18 @@ GeoPagedColumn::pageForWriting(std::size_t pageIndex)
         throw std::out_of_range("GeoPagedColumn: page index outside the column");
     }
 
-    return writablePage(pageIndex, true);
+    return writablePage(pageIndex, true, true);
+}
+
+void
+GeoPagedColumn::endWriting() noexcept
+{
+    if (!_pages) {
+        return;
+    }
+    for (const GeoPageConstPtr& page : *_pages) {
+        page->endWriting();
+    }
 }
 
 void
@@ -345,7 +382,7 @@ GeoPagedColumn::elementForWriting(std::size_t offset)
 {
     checkOffset(offset);
 
-    return writablePage(offset >> kGeoPageBits, true) + (offset & kGeoPageMask) * _elementBytes;
+    return writablePage(offset >> kGeoPageBits, true, true) + (offset & kGeoPageMask) * _elementBytes;
 }
 
 void

@@ -28,7 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstddef>
+#include <mutex>
 
 #include "Engine/CacheEntry.h"
 #include "Engine/EngineFwd.h"
@@ -73,6 +75,9 @@ public:
  * added to the cache's running total and the amount subtracted on deallocate() are the same
  * number. Call setGeoDetail() before allocateMemory(); the detail is const from then on.
  *
+ * The cache hands the entry to other renders before allocateMemory() has run, so every member is
+ * safe to call concurrently with setGeoDetail() and allocateMemory().
+ *
  * The destructor calls deallocate() itself because by the time ~CacheEntryHelper() runs, virtual
  * dispatch no longer reaches this class's size().
  **/
@@ -86,38 +91,50 @@ public:
     virtual ~GeoDetailCacheEntry();
 
     /** @brief Null until setGeoDetail(). */
-    const GeoDetailConstPtr& getGeoDetail() const
+    GeoDetailConstPtr getGeoDetail() const
     {
+        std::lock_guard<std::mutex> lock(_detailMutex);
+
         return _detail;
     }
 
     /** @brief Has no effect once the entry's memory has been allocated. */
     void setGeoDetail(const GeoDetailConstPtr& detail);
 
-    /** @brief False until the detail has been set and allocateMemory() has run. */
+    /**
+     * @brief False until the detail has been set and allocateMemory() has run. Once true,
+     * getGeoDetail() returns the final detail.
+     **/
     bool isFullyRendered() const
     {
-        return _sizeAccounted;
+        return _sizeAccounted.load(std::memory_order_acquire);
     }
 
     virtual void onMemoryAllocated(bool /*diskRestoration*/) OVERRIDE FINAL
     {
+        std::lock_guard<std::mutex> lock(_detailMutex);
         _accountedSize = _detail ? _detail->getSizeInBytes() : 0;
-        _sizeAccounted = true;
+        _sizeAccounted.store(true, std::memory_order_release);
     }
 
     virtual size_t size() const OVERRIDE
     {
-        if (_sizeAccounted) {
+        if (_sizeAccounted.load(std::memory_order_acquire)) {
             return _accountedSize;
         }
+        std::lock_guard<std::mutex> lock(_detailMutex);
+        if (_sizeAccounted.load(std::memory_order_relaxed)) {
+            return _accountedSize;
+        }
+
         return _detail ? _detail->getSizeInBytes() : 0;
     }
 
 private:
+    mutable std::mutex _detailMutex;
     GeoDetailConstPtr _detail;
     std::size_t _accountedSize;
-    bool _sizeAccounted;
+    std::atomic<bool> _sizeAccounted;
 };
 
 NATRON_NAMESPACE_EXIT

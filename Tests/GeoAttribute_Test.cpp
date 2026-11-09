@@ -27,6 +27,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -421,6 +423,54 @@ TEST(GeoAttribute, EqualContentHashesEqual)
 
     written.set<double>(17, 3.0, 1);
     EXPECT_NE(filled.contentHash(), written.contentHash());
+}
+
+TEST(GeoAttribute, HashFollowsWritesThroughAHeldPagePointer)
+{
+    GeoAttribute attr = makeDenseFloat(2 * kGeoPageSize);
+    float* page = attr.pageForWriting<float>(0);
+    page[3] = 100.f;
+    const U64 first = attr.contentHash();
+    page[3] = 200.f;
+    const U64 second = attr.contentHash();
+    EXPECT_NE(first, second);
+
+    GeoAttribute reference = makeDenseFloat(2 * kGeoPageSize);
+    reference.set<float>(3, 200.f);
+    EXPECT_EQ(reference.contentHash(), second);
+
+    attr.endWriting();
+    EXPECT_EQ(second, attr.contentHash());
+    EXPECT_EQ(second, attr.contentHash());
+}
+
+TEST(GeoPagedColumn, HashFollowsWritesThroughAHeldElementPointer)
+{
+    const float zero = 0.f;
+    GeoPagedColumn column(sizeof(float), &zero, kGeoPageSize + 5);
+    unsigned char* element = column.elementForWriting(kGeoPageSize + 2);
+    const float one = 1.f;
+    std::memcpy(element, &one, sizeof(float));
+    const U64 first = column.contentHash();
+    const float two = 2.f;
+    std::memcpy(element, &two, sizeof(float));
+    EXPECT_NE(first, column.contentHash());
+
+    GeoPagedColumn reference(sizeof(float), &zero, kGeoPageSize + 5);
+    reference.setElement(kGeoPageSize + 2, &two);
+    EXPECT_EQ(reference.contentHash(), column.contentHash());
+}
+
+TEST(GeoAttribute, ResizeBeyondTheAddressableSizeThrowsAndKeepsTheAttribute)
+{
+    GeoAttribute attr = makeDenseFloat(10);
+    const std::size_t maxSize = std::numeric_limits<std::size_t>::max();
+    EXPECT_THROW(attr.resize(maxSize), std::length_error);
+    EXPECT_THROW(attr.resize(maxSize - kGeoPageMask), std::length_error);
+    EXPECT_THROW(attr.resize(maxSize / 2), std::length_error);
+    EXPECT_EQ(std::size_t(10), attr.size());
+    EXPECT_EQ(std::size_t(1), attr.pageCount());
+    EXPECT_EQ(9.f, attr.get<float>(9));
 }
 
 TEST(GeoAttribute, RejectsBadDescriptionsAndAccess)

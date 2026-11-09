@@ -25,11 +25,13 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <list>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "Engine/AppManager.h"
@@ -107,6 +109,49 @@ TEST(GeoDetailCacheTest, StoreAndFetchByKey)
     EXPECT_FALSE(cache.get(otherTime, &miss));
 
     found.clear();
+    cache.waitForDeleterThread();
+}
+
+TEST(GeoDetailCacheTest, ReadersOfAnUnfinishedEntrySeeNothingOrTheFinalDetail)
+{
+    Cache<GeoDetailCacheEntry> cache("GeoDetailCacheTest_Publish", 1, 64ULL * 1024 * 1024, 1.);
+    const GeoDetailKey key(nullptr, 5, 0., ViewIdx(0));
+    const GeoDetailConstPtr detail = makeTriangles(4);
+    GeoDetailCacheEntryPtr entry;
+    ASSERT_FALSE(cache.getOrCreate(key, std::make_shared<GeoDetailParams>(), 0, &entry));
+
+    const int readerCount = 4;
+    std::atomic<bool> start { false };
+    std::atomic<int> sawFinished { 0 };
+    std::vector<std::thread> readers;
+    for (int t = 0; t < readerCount; ++t) {
+        readers.emplace_back([&]() {
+            while (!start.load()) {
+            }
+            for (;;) {
+                const bool finished = entry->isFullyRendered();
+                const GeoDetailConstPtr seen = entry->getGeoDetail();
+                EXPECT_TRUE(!seen || seen == detail);
+                static_cast<void>(entry->size());
+                if (finished) {
+                    EXPECT_EQ(detail, seen);
+                    ++sawFinished;
+                    return;
+                }
+            }
+        });
+    }
+    start = true;
+    entry->setGeoDetail(detail);
+    entry->allocateMemory();
+    for (std::thread& t : readers) {
+        t.join();
+    }
+    EXPECT_EQ(readerCount, sawFinished.load());
+    EXPECT_EQ(detail->getSizeInBytes(), entry->size());
+
+    entry.reset();
+    cache.clear();
     cache.waitForDeleterThread();
 }
 

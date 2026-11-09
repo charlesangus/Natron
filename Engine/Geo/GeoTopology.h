@@ -177,6 +177,9 @@ public:
     void remapVertexPrimitives(std::span<const GeoOffset> newFromOld);
     void remapPrimitiveVertexStarts(std::span<const GeoOffset> newFromOld);
 
+    /** @brief Lets every column page cache its hash again; see GeoAttribute::endWriting(). */
+    void endWriting() noexcept;
+
     /** @brief Never 0. */
     U64 contentHash() const;
 

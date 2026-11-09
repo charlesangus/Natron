@@ -542,11 +542,13 @@ GeoDetailBuilder::finish()
     for (GeoDetail::AttributeList& list : _detail._attributes) {
         for (std::shared_ptr<GeoDetail::AttributeSlot>& slot : list) {
             if (!slot->frozen) {
+                slot->attribute.endWriting();
                 slot->hash.store(0, std::memory_order_relaxed);
                 slot->frozen = true;
             }
         }
     }
+    _detail._topology.endWriting();
     _detail._building = false;
     GeoDetail out = std::move(_detail);
     _detail = GeoDetail();
@@ -615,8 +617,12 @@ GeoDetailBuilder::resizeClass(GeoAttribClassEnum cls)
 void
 GeoDetailBuilder::topologyChanged()
 {
-    std::lock_guard<std::mutex> lock(_detail._cache->mutex);
-    _detail._cache->reverse.reset();
+    // A copy of detail() may share the cache while it keeps the old topology.
+    if (geoIsSoleOwner(_detail._cache)) {
+        _detail._cache->reverse.reset();
+    } else {
+        _detail._cache = std::make_shared<GeoDetail::Cache>();
+    }
 }
 
 GeoOffset

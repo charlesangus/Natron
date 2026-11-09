@@ -60,9 +60,7 @@ Scouted facts: none yet. Neither SplineWarp nor its context exists on `origin/ma
 - An AppImage built with `package.sh` for UAT.
 
 ## Decisions
-
-- 2026-10-25 — **SplineWarp follows whatever is selected (user),** with no pairing logic.
-
-## Decisions
 - 2026-11-09 — **A fit does not refuse a linked SplineWarp curve (user).** Only the followed curve's own keys change; the link stays.
 - 2026-11-09 — **A follow is modal and blocks everything except Cancel (user),** "especially if that simplifies things". Applies to M219's Roto/RotoPaint follow as well as SplineWarp.
+
+- 2026-10-25 — **SplineWarp follows whatever is selected (user),** with no pairing logic.

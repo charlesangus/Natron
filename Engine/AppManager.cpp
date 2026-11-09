@@ -98,14 +98,11 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 
-
-#include "Global/ProcInfo.h"
-#include "Global/GLIncludes.h"
-#include "Global/StrUtils.h"
-#ifdef DEBUG
 #include "Global/FloatingPointExceptions.h"
-#endif
+#include "Global/GLIncludes.h"
+#include "Global/ProcInfo.h"
 #include "Global/PythonUtils.h"
+#include "Global/StrUtils.h"
 
 #include "Engine/AbortWatchdog.h"
 #include "Engine/Ai/ModelDownloader.h"
@@ -901,6 +898,10 @@ AppManager::loadInternal(const CLArgs& cl)
         // Under Auto the GL suite never uses a software renderer; only NATRON_GPU=force allows one.
         const GLRendererPick glPick = OSGLContext::pickRenderer(_imp->openGLRenderers, chosenDevice, gpuMode == GpuResolvedMode::Force);
         const bool glEnabled = gpuMode != GpuResolvedMode::Off && glPick.enabled && isOpenGLLoaded();
+        // Before the render threads exist: the GL suite's worker contexts are made current and compile on them.
+        if (glEnabled && glPick.software) {
+            boost_adaptbx::floating_point::note_software_renderer();
+        }
         const std::string glStatus = glEnabled ? glPick.reason : "GL suite disabled (" + glPick.reason + ")";
         _imp->renderingContextPool->setRenderingState(glEnabled, glPick.rendererID, glStatus);
         _imp->_settings->setGpuStatus(_imp->renderingContextPool->getRendererStatus());
@@ -1010,6 +1011,10 @@ AppManager::initializeOpenGLFunctionsOnce(bool createOpenGLContext)
     QMutexLocker k(&_imp->openGLFunctionsMutex);
 
     if (!_imp->hasInitializedOpenGLFunctions) {
+        // Everything below is the GL driver's own code or glue to it. Software rasterisers such as
+        // Mesa's llvmpipe raise FE_INVALID/FE_DIVBYZERO compiling their built-in shaders as the context
+        // is made and first used, and the main thread traps those in a debug build.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
         OSGLContextPtr glContext;
         bool checkRenderingReq = true;
         if (createOpenGLContext) {

@@ -290,6 +290,7 @@ HSVToolOp::createKnobs(KnobHolder* knobHolder,
     {
         KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(knobHolder, EffectInstance::tr("Size").toStdString(), 2);
         knob->setName(kHSVToolParamSize);
+        knob->setValueRole(eValueRoleSize);
         knob->setHintToolTip(EffectInstance::tr("Width and height of the analysis rectangle.").toStdString());
         knob->setSpatial(true);
         knob->disableSlider();

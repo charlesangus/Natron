@@ -525,6 +525,12 @@ Effect::getScriptName() const
     return QString::fromUtf8( getInternalNode()->getScriptName_mt_safe().c_str() );
 }
 
+QString
+Effect::getNodeId() const
+{
+    return QString::fromUtf8(getInternalNode()->getNodeId().c_str());
+}
+
 bool
 Effect::setScriptName(const QString& scriptName)
 {

@@ -1381,6 +1381,16 @@ public:
         return ret;
     }
 
+    /**
+     * @brief Forgets the links and link groups stored and not restored yet, so that storing a
+     * newer serialization replaces them rather than adding to them.
+     **/
+    void clearStoredLinks()
+    {
+        _links.clear();
+        _storedLinkGroups.clear();
+    }
+
 private:
     struct Link {
         int slaveDimension;
@@ -1600,6 +1610,17 @@ public:
      **/
     virtual void setHashExempt(bool exempt) = 0;
     virtual bool isHashExempt() const = 0;
+
+    /**
+     * @brief Puts a render-hashed knob in a hash namespace, such as the attribute namespace of a
+     * render delegate ("cycles"): the node keeps its content out of the node hash and digests it
+     * per namespace instead (Node::getHashNamespaces()). Every node downstream folds every
+     * namespace, but one that reads only some, such as USDRender
+     * (EffectInstance::consumesHashNamespaces()). Empty, the default, is no namespace. Set once
+     * at creation.
+     **/
+    virtual void setHashNamespace(const std::string& hashNamespace) = 0;
+    virtual std::string getHashNamespace() const = 0;
 
     /**
      * @brief True if this knob's content belongs in the node hash: it holds data (not a page,
@@ -2103,6 +2124,8 @@ public:
     virtual void invalidateContentHash() OVERRIDE FINAL;
     virtual void setHashExempt(bool exempt) OVERRIDE FINAL;
     virtual bool isHashExempt() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setHashNamespace(const std::string& hashNamespace) OVERRIDE FINAL;
+    virtual std::string getHashNamespace() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const OVERRIDE FINAL;
     virtual void addContextReadSource(const ContextReadSourcePtr& source) OVERRIDE FINAL;
@@ -3800,6 +3823,12 @@ KnobIPtr createDetachedKnobFromSerialization(const Serialization::KnobSerializat
  * otherwise. Needed before createDetachedKnobFromSerialization() for such a knob.
  **/
 Serialization::KnobSerialization completeKnobSerializationForKnob(const KnobI& liveKnob, const Serialization::KnobSerialization& serialization);
+
+/**
+ * @brief Drops knob's alias master, its one-way links and the two-way links it can leave. The
+ * knobs that are aliases of it stay so.
+ **/
+void removeKnobLinks(const KnobIPtr& knob);
 
 NATRON_NAMESPACE_EXIT
 

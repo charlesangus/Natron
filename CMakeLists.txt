@@ -35,6 +35,12 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(NATRON_SYSTEM_LIBS "use system versions of dependencies instead of bundled ones" OFF)
 option(NATRON_BUILD_TESTS "build the Natron test suite" ON)
 option(NATRON_GPU "Vulkan compute backend" ON)
+set(NATRON_LINK_JOBS "" CACHE STRING "Maximum concurrent link steps (Ninja only); empty leaves links unlimited")
+
+if(NATRON_LINK_JOBS)
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS natron_link=${NATRON_LINK_JOBS})
+    set(CMAKE_JOB_POOL_LINK natron_link)
+endif()
 
 if(NATRON_GPU)
     find_package(Vulkan)

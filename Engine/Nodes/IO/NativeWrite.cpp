@@ -68,6 +68,7 @@
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -1010,13 +1011,25 @@ NativeWrite::initializeKnobs()
     page->addKnob(views);
     _views = views;
 
-    KnobBoolPtr writeMetadata = createKnob<KnobBool>(tr("Write Metadata"));
-    writeMetadata->setName(kNatronWriteParamWriteMetadata);
-    writeMetadata->setHintToolTip(tr("When checked, the metadata of the input image (EXR attributes, EXIF fields, timecode and so on) is written to the file, as far as the file format can hold it."));
-    writeMetadata->setDefaultValue(true);
-    writeMetadata->setAnimationEnabled(false);
-    page->addKnob(writeMetadata);
-    _writeMetadata = writeMetadata;
+    KnobChoicePtr metadata = createKnob<KnobChoice>(tr("Metadata"));
+    metadata->setName(kNatronWriteParamMetadata);
+    metadata->setHintToolTip(tr("Which metadata of the input image is written to the file. Formats without custom attributes (TIFF, JPEG, DPX) only take their standard tags, whatever the choice."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kNatronWriteMetadataNone, tr("No Metadata").toStdString(),
+                                       tr("Write no metadata from the input.").toStdString()));
+        options.push_back(ChoiceOption(kNatronWriteMetadataDefault, tr("Default Metadata").toStdString(),
+                                       tr("Write only the keys that map to the file format's own attributes and standard tags, such as the timecode, EXIF fields, creator and comment.").toStdString()));
+        options.push_back(ChoiceOption(kNatronWriteMetadataAllExceptInput, tr("All Metadata Except Input").toStdString(),
+                                       tr("Write every key, including custom ones, under its full key name. The keys that describe the input file are left out: its path, frame, size and modification time, and its pixel aspect, width, height, bit depth, sample type and view names.").toStdString()));
+        options.push_back(ChoiceOption(kNatronWriteMetadataAll, tr("All Metadata").toStdString(),
+                                       tr("Write every key, including the keys that describe the input file. Its pixel aspect, width, height, bit depth, sample type and view names can contradict the file being written if the image has been changed since it was read.").toStdString()));
+        metadata->populateChoices(options);
+    }
+    metadata->setDefaultValue(2);
+    metadata->setAnimationEnabled(false);
+    page->addKnob(metadata);
+    _metadata = metadata;
 
     KnobBoolPtr readBack = createKnob<KnobBool>(tr(kNatronWriteParamReadBackLabel));
     readBack->setName(kNatronWriteParamReadBack);
@@ -1039,21 +1052,36 @@ NativeWrite::initializeKnobs()
     page->addKnob(reload);
     _reload = reload;
 
+    // A render can keep this effect alive after its node is destroyed, and purging caches or refreshing
+    // a menu then reaches the node, so the node scopes the connections. A render thread may also drop
+    // the last reference while a slot is about to run on the main thread, so the slots hold the node,
+    // and through it this effect, or skip once the node no longer holds this effect.
+    NodePtr node = getNode();
+    NodeWPtr weakNode = node;
     RenderEnginePtr engine = getRenderEngine();
-    if (engine) {
-        QObject::connect(engine.get(), &RenderEngine::renderFinished, this, [this](int) { onSequenceRenderFinished(); });
+    if (engine && node) {
+        QObject::connect(engine.get(), &RenderEngine::renderFinished, node.get(), [this, weakNode](int) {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                onSequenceRenderFinished();
+            }
+        });
     }
     ProjectPtr project = getApp()->getProject();
-    if (project) {
-        QObject::connect(project.get(), &Project::projectViewsChanged, this, [this]() {
-            refreshViewsMenu();
-            _viewToKeep.clear();
+    if (project && node) {
+        QObject::connect(project.get(), &Project::projectViewsChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                refreshViewsMenu();
+                _viewToKeep.clear();
+            }
         });
-        // A render thread can drop the last reference and destroy this effect while the project emits on the
-        // main thread, before ~QObject has disconnected the slot, so the slot holds the effect alive or skips.
-        std::weak_ptr<EffectInstance> self = weak_from_this();
-        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this, self]() {
-            if (EffectInstancePtr alive = self.lock()) {
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
                 _outputSpace.sourceChanged();
             }
         });
@@ -2228,7 +2256,7 @@ NativeWrite::render(const RenderActionArgs& args)
             }
         }
         if (window.par != 1.) {
-            spec.attribute("PixelAspectRatio", (float)window.par);
+            spec.attribute("PixelAspectRatio", knobValueAsFloat(window.par));
         }
         if (caps.displayWindow) {
             spec.x = dataWindow.x1;
@@ -2239,9 +2267,16 @@ NativeWrite::render(const RenderActionArgs& args)
             spec.full_height = window.display.height();
         }
 
-        const KnobBoolPtr writeMetadata = _writeMetadata.lock();
-        if (!writeMetadata || writeMetadata->getValue()) {
-            OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName);
+        const KnobChoicePtr metadataKnob = _metadata.lock();
+        const std::string metadataID = metadataKnob ? activeID(metadataKnob) : std::string(kNatronWriteMetadataAllExceptInput);
+        if (metadataID != kNatronWriteMetadataNone) {
+            OiioWriteSupport::WriteMetadataMode mode = OiioWriteSupport::WriteMetadataMode::AllExceptInput;
+            if (metadataID == kNatronWriteMetadataDefault) {
+                mode = OiioWriteSupport::WriteMetadataMode::Default;
+            } else if (metadataID == kNatronWriteMetadataAll) {
+                mode = OiioWriteSupport::WriteMetadataMode::All;
+            }
+            OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName, mode);
         }
         if (formatName == "openexr") {
             spec.attribute(kNatronWriteOutputHashAttribute, outputHashText(outputHash));

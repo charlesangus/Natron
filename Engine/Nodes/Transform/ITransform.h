@@ -96,7 +96,7 @@ protected:
 private:
     void updateShutterEnabled();
 
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     TransformOp _op;
 };

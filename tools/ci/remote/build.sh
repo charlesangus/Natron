@@ -5,8 +5,8 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]
-#                            [--cmake-arg <arg>]... [--gui "<script> ..."]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
+#                            [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
@@ -16,11 +16,23 @@
 #                        the -DDEBUG traps. It behaves as --no-appimage.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
-#   --record-goldens  -> implies --tests; also records the native golden renders
+#   --scheduler <legacy|taskgraph> -> implies --tests; runs only that scheduler's
+#                        ctest leg and smoke test instead of both, which halves the
+#                        wait of an intermediate fix build. Without it both legs
+#                        run. A milestone's verification gate must run without it.
+#                        The smoke renders of the two schedulers are compared
+#                        only when both legs ran.
+#   --record-goldens  -> implies --tests; also records the native and Cycles golden
+#                        renders (NativeGoldenTest, NativeIDistortAmountTest,
+#                        NativeIWarpTest, USDRenderCyclesTest)
 #                        remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The
 #                        references bind bit for bit only under the preset that
-#                        recorded them (see STAMP).
+#                        recorded them (see STAMP). Also records the resampling
+#                        parity references of NativeTransformTest (CubicMinifyingAndRotated,
+#                        MaskedMixHalf, SkewYX) and NativeReformatTest (FitIntoAFixedBox,
+#                        ToFormatWithAPixelAspectRatio, ToProjectFormatFromTheSourceRoD)
+#                        into Tests/fixtures/native-parity/; no other parity reference changes.
 #   --shuffle-seeds <n,n,...> -> implies --tests; each ctest leg also runs once
 #                        per seed with GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>,
 #                        after its unshuffled run, e.g. --shuffle-seeds 1,2,3.
@@ -67,7 +79,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -104,6 +116,7 @@ RUN_TESTS=false
 RECORD_GOLDENS=false
 WANT_APPIMAGE=true
 SHUFFLE_SEEDS=""
+SCHEDULERS="legacy,taskgraph"
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
 FROM_RUN=""
@@ -138,6 +151,17 @@ while [[ $# -gt 0 ]]; do
             ;;
         --record-goldens)
             RECORD_GOLDENS=true
+            RUN_TESTS=true
+            BUILD_OPTION=true
+            ;;
+        --scheduler)
+            if [[ $# -eq 0 || ( "$1" != "legacy" && "$1" != "taskgraph" ) ]]; then
+                echo "build.sh: --scheduler needs legacy or taskgraph, got '${1:-}'" >&2
+                usage
+                exit 1
+            fi
+            SCHEDULERS="$1"
+            shift
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
@@ -314,6 +338,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "record_goldens=${RECORD_GOLDENS}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
+    -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "token=${TOKEN}" \
     -f "gui_scripts=${GUI_SCRIPTS}" \
@@ -434,6 +459,20 @@ if [[ "${RECORD_GOLDENS}" == "true" ]]; then
     fi
 fi
 
+PARITY_DIR=""
+if [[ "${RECORD_GOLDENS}" == "true" ]]; then
+    PARITY_DIR="${REPO_ROOT}/Tests/fixtures/native-parity"
+    PARITY_TMP="${OUT_DIR}/native-parity"
+    mkdir -p "${PARITY_TMP}"
+    if download_artifact "native-parity-${PRESET}-${HEAD_SHA}" "${PARITY_TMP}"; then
+        mkdir -p "${PARITY_DIR}"
+        cp -R "${PARITY_TMP}/." "${PARITY_DIR}/"
+    else
+        PARITY_DIR=""
+        RUN_STATUS=1
+    fi
+fi
+
 # The artifacts carry the tested commit's sha, which for --from-run is the other run's, so
 # they are looked up by prefix. A script passes only when its job succeeded.
 GUI_FAILED=0
@@ -490,6 +529,9 @@ else
 fi
 if [[ -n "${GOLDEN_DIR}" ]]; then
     echo "native goldens: ${GOLDEN_DIR}"
+fi
+if [[ -n "${PARITY_DIR}" ]]; then
+    echo "native parity references: ${PARITY_DIR}"
 fi
 if [[ -n "${CTEST_LOG_DIR}" ]]; then
     echo "ctest logs: ${CTEST_LOG_DIR}"

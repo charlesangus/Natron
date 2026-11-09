@@ -49,7 +49,6 @@
 #include <QString>
 
 #include <ofxImageEffect.h>
-#include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
@@ -373,12 +372,17 @@ NativeRead::initializeKnobs()
     _inputSpace.create(this, page, inputSpace, [this]() { return automaticInputSpace(); });
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    if (project) {
-        // A render thread can drop the last reference and destroy this effect while the project emits on the
-        // main thread, before ~QObject has disconnected the slot, so the slot holds the effect alive or skips.
-        std::weak_ptr<EffectInstance> self = weak_from_this();
-        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this, self]() {
-            if (EffectInstancePtr alive = self.lock()) {
+    NodePtr node = getNode();
+    if (project && node) {
+        // A render can keep this effect alive after its node is destroyed, and refreshing the menu then
+        // reaches the node, so the node scopes the connection. A render thread may also drop the last
+        // reference while the project emits on the main thread, so the slot holds the node, and through
+        // it this effect, or skips once the node no longer holds this effect.
+        NodeWPtr weakNode = node;
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
                 _inputSpace.sourceChanged();
             }
         });
@@ -1161,7 +1165,7 @@ NativeRead::deriveOutputMetadata(double time,
     ImageMetadata metadata;
 
     NodeMetadataConstPtr own = getMetadata(time, view);
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
+    metadata.setDouble(kNatronMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
 
     // A frame that loads black or an error has no file to describe, and a key whose value is
     // unknown is left out rather than published empty.
@@ -1173,16 +1177,16 @@ NativeRead::deriveOutputMetadata(double time,
     if (!info.isFile()) {
         return metadata;
     }
-    metadata.setString(kOfxMetadataKeyFilePath, target.path);
-    metadata.setInt(kOfxMetadataKeySourceFrame, target.frame);
-    metadata.setDouble(kOfxMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
-    metadata.setDouble(kOfxMetadataKeyFileSize, (double)info.size());
+    metadata.setString(kNatronMetadataKeyFilePath, target.path);
+    metadata.setInt(kNatronMetadataKeySourceFrame, target.frame);
+    metadata.setDouble(kNatronMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
+    metadata.setDouble(kNatronMetadataKeyFileSize, (double)info.size());
 
     std::string error;
     if (RawExtensions::isRawPath(target.path)) {
         const std::shared_ptr<const RawDecodeSupport::Header> raw = RawDecodeSupport::readHeader(target.path, &error);
         if (raw) {
-            metadata.setDouble(kOfxMetadataKeyPixelAspect, raw->pixelAspect);
+            metadata.setDouble(kNatronMetadataKeyPixelAspect, raw->pixelAspect);
             metadata.merge(raw->metadata, ImageMetadata::eMergePreferThis);
         }
 
@@ -1191,7 +1195,7 @@ NativeRead::deriveOutputMetadata(double time,
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(target.path, &error);
     if (header && !header->subimages.empty()) {
         const OIIO::ImageSpec& spec = header->subimages[(std::size_t)colourSubimageOf(*header, projectViewName(view))];
-        metadata.setDouble(kOfxMetadataKeyPixelAspect, pixelAspectOf(spec));
+        metadata.setDouble(kNatronMetadataKeyPixelAspect, pixelAspectOf(spec));
         metadata.merge(OiioReadSupport::attributeMetadata(target.path, spec), ImageMetadata::eMergePreferThis);
     }
 

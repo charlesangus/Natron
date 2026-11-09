@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <list>
 #include <map>
+#include <memory>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -52,6 +53,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/AppManager.h"
+#include "Engine/GlobalModeKind.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -60,6 +62,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ColorKnobEditSession.h"
 #include "Gui/ColorTrackballHud.h"
 #include "Gui/ColorTrackballReveal.h"
+#include "Gui/ColorTrackballTarget.h"
 #include "Gui/ColorWheelWidget.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/FloatingWidget.h"
@@ -69,6 +72,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/PropertiesBinWrapper.h"
+#include "Gui/ValueModeDiscWidget.h"
 #include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
@@ -234,7 +238,7 @@ takeColorGlobalModeWheelNotches(int* accumulator,
 bool
 colorGlobalModeFeedbackShowsCrosshair(Settings::ColorTrackballFeedbackEnum feedback)
 {
-    return feedback == Settings::eColorTrackballFeedbackCrosshairReveal;
+    return (feedback == Settings::eColorTrackballFeedbackCrosshairReveal) || (feedback == Settings::eColorTrackballFeedbackCrosshairOnly);
 }
 
 bool
@@ -265,7 +269,7 @@ colorGlobalModeFeedbackState(Settings::ColorTrackballFeedbackEnum feedback,
     if (colorGlobalModeFeedbackGraphicIsCursor(feedback)) {
         state.graphicShown = true;
         state.graphicFollowsPointer = !strokeActive;
-    } else {
+    } else if (feedback == Settings::eColorTrackballFeedbackCrosshairReveal) {
         state.graphicShown = strokeActive;
     }
     state.blankCursor = state.graphicShown;
@@ -287,7 +291,7 @@ ColorGlobalModeFeedbackSwitch::offer(Settings::ColorTrackballFeedbackEnum latest
 {
     _pending = true;
     _pendingFeedback = latest;
-    if (strokeActive) {
+    if (strokeActive && (latest != Settings::eColorTrackballFeedbackCrosshairOnly)) {
         return false;
     }
 
@@ -511,11 +515,11 @@ ColorTrackballHudState
 ColorTrackballGlobalMode::hudState() const
 {
     ColorTrackballHudState state;
-    KnobGuiColor* target = getTarget();
-    KnobIPtr knob = target ? target->getKnob() : KnobIPtr();
 
-    state.knobLabel = knob ? QString::fromUtf8(knob->getLabel().c_str()) : QString();
-    state.mode = _mode;
+    state.mode = _colorMode;
+    if (_target) {
+        _target->fillHudState(&state);
+    }
     state.gear = _gear;
     state.endOfListMessage = _endOfListMessage;
 
@@ -607,18 +611,12 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     , _gui(gui)
     , _engaged(false)
     , _target()
-    , _targetObject()
+    , _targetObjects()
     , _targetConnections()
-    , _mode(eColorGlobalModeC)
-    , _gear(1.0)
-    , _rates()
+    , _colorMode(eColorGlobalModeC)
     , _rememberedHue(0.0)
+    , _gear(1.0)
     , _strokeActive(false)
-    , _stroke()
-    , _strokeValue(neutralValue())
-    , _strokeRole(eColorKnobRoleGain)
-    , _strokeBasis(ColorKnobEditSession::basisFor(ProjectColorManagementPtr()))
-    , _strokeMode(eColorGlobalModeC)
     , _heldButtons(Qt::NoButton)
     , _lastPos()
     , _warpPending(false)
@@ -637,8 +635,6 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     , _hudBlock()
     , _reveal()
     , _revealFollowing(false)
-    , _revealKnob(0)
-    , _revealRole(eColorKnobRoleGain)
     , _highlightFrames()
     , _endOfListMessage()
 {
@@ -665,7 +661,7 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
         });
     }
     QObject::connect(this, &ColorTrackballGlobalMode::knobListEndReached, this, [this](int direction) {
-        _endOfListMessage = (direction < 0) ? tr("First colour knob.") : tr("Last colour knob.");
+        _endOfListMessage = (direction < 0) ? tr("First knob.") : tr("Last knob.");
         updateHud();
     });
 }
@@ -687,26 +683,50 @@ ColorTrackballGlobalMode::~ColorTrackballGlobalMode()
     delete _reveal.data();
 }
 
+GlobalModeTarget*
+ColorTrackballGlobalMode::getGlobalModeTarget() const
+{
+    if (!_target) {
+        return 0;
+    }
+    for (std::size_t i = 0; i < _targetObjects.size(); ++i) {
+        if (!_targetObjects[i]) {
+            return 0;
+        }
+    }
+
+    return _target.get();
+}
+
+// A knob change made from inside a target call can destroy one of the target's KnobGuis, and
+// onTargetGone() then drops _target; every call into the target holds this copy so the target
+// and its edit session outlive the call that is still running on them.
+std::shared_ptr<GlobalModeTarget>
+ColorTrackballGlobalMode::pinTarget() const
+{
+    return getGlobalModeTarget() ? _target : std::shared_ptr<GlobalModeTarget>();
+}
+
+ColorGlobalModeTarget*
+ColorTrackballGlobalMode::getColorTarget() const
+{
+    return dynamic_cast<ColorGlobalModeTarget*>(getGlobalModeTarget());
+}
+
 KnobGuiColor*
 ColorTrackballGlobalMode::getTarget() const
 {
-    KnobGuiColorPtr target = _target.lock();
+    ColorGlobalModeTarget* target = getColorTarget();
 
-    return (target && _targetObject) ? target.get() : 0;
+    return target ? target->getColorKnobGui() : 0;
 }
 
 DockablePanel*
 ColorTrackballGlobalMode::getTargetPanel() const
 {
-    KnobGuiColor* target = getTarget();
+    GlobalModeTarget* target = getGlobalModeTarget();
 
-    return target ? dynamic_cast<DockablePanel*>(target->getContainer()) : 0;
-}
-
-QString
-ColorTrackballGlobalMode::strokeLabel() const
-{
-    return tr("Global %1").arg(colorGlobalModeKeyName(_strokeActive ? _strokeMode : _mode));
+    return target ? target->getPanel() : 0;
 }
 
 void
@@ -724,13 +744,9 @@ ColorTrackballGlobalMode::setPassThroughShortcuts(const QList<QKeySequence>& sho
 KnobColorValue
 ColorTrackballGlobalMode::getLiveValue() const
 {
-    if (_strokeActive) {
-        return _strokeValue;
-    }
+    ColorGlobalModeTarget* target = getColorTarget();
 
-    KnobGuiColor* target = getTarget();
-
-    return target ? target->getCurrentColorValue() : neutralValue();
+    return target ? target->getLiveValue() : neutralValue();
 }
 
 void
@@ -744,23 +760,24 @@ ColorTrackballGlobalMode::getTargetPosition(int* n,
         *count = 0;
     }
 
-    KnobGuiColor* target = getTarget();
+    GlobalModeTarget* target = getGlobalModeTarget();
     DockablePanel* panel = getTargetPanel();
 
     if (!_engaged || !target || !panel) {
         return;
     }
 
-    std::vector<KnobGuiColor*> knobs = orderedColorKnobs(panel);
+    KnobGui* current = target->getKnobGui();
+    std::vector<KnobGui*> knobs = orderedGlobalModeKnobs(panel, current);
     int legal = 0;
     int position = 0;
 
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         KnobIPtr knob = knobs[i]->getKnob();
 
-        if (knobs[i] == target) {
+        if (knobs[i] == current) {
             position = legal + 1;
-        } else if (!knob || !knob->isEnabled(0) || knobs[i]->isSecretRecursive()) {
+        } else if (!isGlobalModeKnobEditable(knob) || knobs[i]->isSecretRecursive()) {
             continue;
         }
         ++legal;
@@ -786,18 +803,16 @@ ColorTrackballGlobalMode::setGear(double gearFactor)
 void
 ColorTrackballGlobalMode::setMode(ColorGlobalModeEnum mode)
 {
-    if (mode == _mode) {
-        return;
+    ColorGlobalModeTarget* target = getColorTarget();
+    bool changed = (mode != _colorMode);
+
+    _colorMode = mode;
+    if (target && target->setMode(mode)) {
+        changed = true;
     }
-    if (_strokeActive) {
-        // The travel so far is folded into a new start, so the new mode accumulates from
-        // where the old one left the value instead of reinterpreting the old mode's pixels.
-        _rememberedHue = _stroke.rememberedHueAfter(_strokeMode, _strokeRole, _strokeBasis, _strokeValue, _rates);
-        _stroke.begin(_strokeValue, _rememberedHue);
-        _strokeMode = mode;
+    if (changed) {
+        Q_EMIT stateChanged();
     }
-    _mode = mode;
-    Q_EMIT stateChanged();
 }
 
 void
@@ -808,32 +823,37 @@ ColorTrackballGlobalMode::clearTarget()
     }
     _targetConnections.clear();
 
-    KnobGuiColor* target = getTarget();
+    GlobalModeTarget* target = getGlobalModeTarget();
 
     if (target) {
-        target->setGlobalModeHighlighted(false);
+        if (ColorGlobalModeTarget* colour = dynamic_cast<ColorGlobalModeTarget*>(target)) {
+            _colorMode = colour->getMode();
+            _rememberedHue = colour->getRememberedHue();
+        }
+        target->detach();
     }
     _target.reset();
-    _targetObject = 0;
+    _targetObjects.clear();
 }
 
 void
 ColorTrackballGlobalMode::onTargetGone()
 {
-    // The target's KnobGui or panel is being destroyed: its edit session has already ended
-    // the stroke or is about to, so nothing is pushed from here.
+    // One of the target's KnobGuis or its panel is being destroyed: its edit session has
+    // already ended the stroke or is about to, so nothing is pushed from here and nothing is
+    // called on the target.
     for (std::size_t i = 0; i < _targetConnections.size(); ++i) {
         QObject::disconnect(_targetConnections[i]);
     }
     _targetConnections.clear();
     _target.reset();
-    _targetObject = 0;
+    _targetObjects.clear();
     _strokeActive = false;
     exit();
 }
 
 void
-ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
+ColorTrackballGlobalMode::setTarget(const std::shared_ptr<GlobalModeTarget>& target)
 {
     // The outgoing knob is left exactly as the switch leaves it, open and unfolded, with
     // nothing restored.
@@ -842,13 +862,35 @@ ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
     // step may have left standing no longer describes the HUD's new target.
     _endOfListMessage.clear();
     _target = target;
-    _targetObject = target.get();
 
-    _targetConnections.push_back(QObject::connect(target.get(), &QObject::destroyed, this, [this]() {
-        onTargetGone();
-    }));
+    if (ColorGlobalModeTarget* colour = dynamic_cast<ColorGlobalModeTarget*>(target.get())) {
+        colour->setMode(_colorMode);
+        colour->setRememberedHue(_rememberedHue);
+    }
 
-    DockablePanel* panel = dynamic_cast<DockablePanel*>(target->getContainer());
+    const std::vector<KnobGui*> knobGuis = target->getKnobGuis();
+
+    for (std::size_t i = 0; i < knobGuis.size(); ++i) {
+        _targetObjects.push_back(QPointer<KnobGui>(knobGuis[i]));
+        _targetConnections.push_back(QObject::connect(knobGuis[i], &QObject::destroyed, this, [this]() {
+            onTargetGone();
+        }));
+
+        KnobIPtr knob = knobGuis[i]->getKnob();
+        KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+
+        if (handler) {
+            // A stroke's own pushes are reported by moveStroke() already; this covers every
+            // other change to the knob, such as an undo or an edit from elsewhere.
+            _targetConnections.push_back(QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
+                if (!_strokeActive) {
+                    Q_EMIT stateChanged();
+                }
+            }));
+        }
+    }
+
+    DockablePanel* panel = target->getPanel();
 
     if (panel) {
         _targetConnections.push_back(QObject::connect(panel, &QObject::destroyed, this, [this]() {
@@ -861,74 +903,10 @@ ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
         }));
     }
 
-    KnobIPtr knob = target->getKnob();
-    KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
-
-    if (handler) {
-        // A stroke's own pushes are reported by moveStroke() already; this covers every other
-        // change to the knob, such as an undo or an edit from elsewhere.
-        _targetConnections.push_back(QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
-            if (!_strokeActive) {
-                Q_EMIT stateChanged();
-            }
-        }));
-    }
-
-    target->setGlobalModeHighlighted(true);
     // Opens and unfolds the knob; switching to another one, or leaving the mode, never folds
     // or closes it back up, so working across several knobs in one session leaves every one of
     // them open afterwards instead of needing to be reopened.
-    target->setAdjustPanelExpanded(true);
-    target->touchColorKnob();
-    revealTarget();
-}
-
-void
-ColorTrackballGlobalMode::revealTarget()
-{
-    KnobGuiColor* target = getTarget();
-    DockablePanel* panel = getTargetPanel();
-
-    if (!target || !panel) {
-        return;
-    }
-
-    KnobIPtr knob = target->getKnob();
-
-    if (!knob) {
-        return;
-    }
-
-    KnobPagePtr page = knob->getTopLevelPage();
-    KnobPageGuiPtr currentPage = panel->getCurrentPage();
-
-    if (page && (!currentPage || (currentPage->pageKnob.lock() != page))) {
-        panel->setPageActiveIndex(page);
-    }
-    for (KnobIPtr parent = knob->getParentKnob(); parent; parent = parent->getParentKnob()) {
-        KnobGroupPtr group = std::dynamic_pointer_cast<KnobGroup>(parent);
-
-        if (!group || group->isTab() || group->getValue()) {
-            continue;
-        }
-        // Not UserEdited: that reason is the one change KnobGui does not mirror back into the
-        // group's own widget, which is what actually lays the children out.
-        group->setValue(true, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
-    }
-
-    // The whole column, not just the row: with the panel open and the HUD attached, the column
-    // has grown well past the row alone, and every part of it should land in view together.
-    QWidget* column = target->getGlobalModeColumnWidget();
-
-    if (!column) {
-        return;
-    }
-    for (QWidget* w = column->parentWidget(); w; w = w->parentWidget()) {
-        if (QScrollArea* scrollArea = qobject_cast<QScrollArea*>(w)) {
-            scrollArea->ensureWidgetVisible(column);
-            break;
-        }
-    }
+    target->attach();
 }
 
 bool
@@ -941,13 +919,23 @@ ColorTrackballGlobalMode::engage(const KnobGuiColorPtr& target)
         return true;
     }
 
+    return engage(std::make_shared<ColorGlobalModeTarget>(target));
+}
+
+bool
+ColorTrackballGlobalMode::engage(const std::shared_ptr<GlobalModeTarget>& target)
+{
+    if (!target || !target->getKnobGui()) {
+        return false;
+    }
+
     endStroke();
     if (!_engaged) {
         offerFeedbackSetting();
+        _colorMode = eColorGlobalModeC;
     }
     setTarget(target);
     if (!_engaged) {
-        setMode(eColorGlobalModeC);
         _engaged = true;
         _pointerPos = QCursor::pos();
         applyFeedback();
@@ -998,15 +986,24 @@ ColorTrackballGlobalMode::exit()
 bool
 ColorTrackballGlobalMode::stepKnob(int direction)
 {
-    KnobGuiColor* target = getTarget();
-    DockablePanel* panel = getTargetPanel();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
-    if (!_engaged || !target || !panel) {
+    if (!_engaged || !target || !getTargetPanel()) {
         return false;
     }
     endStroke();
+    if (_target != target) {
+        return false;
+    }
 
-    std::vector<KnobGuiColor*> knobs = orderedColorKnobs(panel);
+    DockablePanel* panel = getTargetPanel();
+
+    if (!panel) {
+        return false;
+    }
+
+    KnobGui* currentKnob = target->getKnobGui();
+    std::vector<KnobGui*> knobs = orderedGlobalModeKnobs(panel, currentKnob);
     std::vector<ColorKnobInfo> infos;
     int current = -1;
 
@@ -1016,10 +1013,10 @@ ColorTrackballGlobalMode::stepKnob(int direction)
         ColorKnobInfo info;
 
         info.scriptName = knob ? knob->getName() : std::string();
-        info.enabled = knob && knob->isEnabled(0);
+        info.enabled = isGlobalModeKnobEditable(knob);
         info.visible = !knobs[i]->isSecretRecursive();
         infos.push_back(info);
-        if (knobs[i] == target) {
+        if (knobs[i] == currentKnob) {
             current = (int)i;
         }
     }
@@ -1032,7 +1029,7 @@ ColorTrackballGlobalMode::stepKnob(int direction)
         return false;
     }
 
-    KnobGuiColorPtr nextTarget = std::dynamic_pointer_cast<KnobGuiColor>(knobs[next]->shared_from_this());
+    std::shared_ptr<GlobalModeTarget> nextTarget = makeGlobalModeTarget(knobs[next]);
 
     if (!nextTarget) {
         return false;
@@ -1073,19 +1070,12 @@ ColorTrackballGlobalMode::releaseStrokeGrab()
 void
 ColorTrackballGlobalMode::beginStroke()
 {
-    KnobGuiColor* target = getTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
-    if (!target || !target->isColorEditable()) {
+    if (!target || !target->beginStroke() || (_target != target)) {
         return;
     }
-    target->touchColorKnob();
-    _strokeRole = target->getColorRole();
-    _strokeBasis = target->getEditBasis();
-    _strokeMode = _mode;
-    _strokeValue = target->getCurrentColorValue();
-    _stroke.begin(_strokeValue, _rememberedHue);
     _strokeActive = true;
-    target->getEditSession()->begin(strokeLabel());
     Q_EMIT stateChanged();
 }
 
@@ -1151,19 +1141,12 @@ ColorTrackballGlobalMode::moveStroke(const QPointF& globalPos,
         return;
     }
 
-    KnobGuiColor* target = getTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
     if (!target) {
         return;
     }
-    _stroke.addMove(dx, dy, _gear);
-
-    ChromaEditResult r = _stroke.evaluate(_strokeMode, _strokeRole, _strokeBasis, _rates);
-
-    if (r.valid) {
-        _strokeValue = r.value;
-    }
-    target->getEditSession()->move(_strokeValue, strokeLabel());
+    target->moveStroke(dx, dy, _gear);
     if (spontaneous) {
         warpNearScreenEdge(globalPos);
     }
@@ -1178,12 +1161,11 @@ ColorTrackballGlobalMode::endStroke()
     }
     _strokeActive = false;
     _warpPending = false;
-    _rememberedHue = _stroke.rememberedHueAfter(_strokeMode, _strokeRole, _strokeBasis, _strokeValue, _rates);
 
-    KnobGuiColor* target = getTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
     if (target) {
-        target->getEditSession()->end(_strokeValue, tr("Global %1").arg(colorGlobalModeKeyName(_strokeMode)));
+        target->endStroke();
     }
     if (_feedback.strokeEnded()) {
         applyFeedback();
@@ -1245,7 +1227,7 @@ void
 ColorTrackballGlobalMode::syncReveal()
 {
     const ColorGlobalModeFeedbackState state = colorGlobalModeFeedbackState(_feedback.getFeedback(), _engaged, _strokeActive);
-    KnobGuiColor* target = getTarget();
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
 
     _cursors.sync(state.crosshair, state.blankCursor);
     syncHudBlock(state);
@@ -1254,31 +1236,15 @@ ColorTrackballGlobalMode::syncReveal()
             _reveal->hide();
         }
         _revealFollowing = false;
-        if (!_engaged) {
-            // The next engage re-reads the knob, in case its colour management changed.
-            _revealKnob = 0;
-        }
 
         return;
     }
 
     ColorTrackballReveal* reveal = ensureReveal();
-    const ColorKnobRoleEnum role = target->getColorRole();
 
-    if ((_revealKnob != target) || (_revealRole != role)) {
-        reveal->setKnob(role, target->getEditBasis(), target->getDisplayConverter(), _rates.wheelRim);
-        _revealKnob = target;
-        _revealRole = role;
-    }
-    reveal->setMode(_strokeActive ? _strokeMode : _mode);
+    target->syncReveal(reveal, _strokeActive);
+    reveal->getValueDisc()->setCompact(state.graphicFollowsPointer);
     reveal->setHudState(hudState());
-    if (_strokeActive) {
-        reveal->setStroke(_stroke.getStart(), _strokeValue, _stroke.getTotalDx(), _stroke.getTotalDy(), _rates);
-    } else {
-        const KnobColorValue value = target->getCurrentColorValue();
-
-        reveal->setStroke(value, value, 0.0, 0.0, _rates);
-    }
 
     // Placed on the press point when a stroke brings it up, and on the pointer whenever it
     // starts following; frozen in between.
@@ -1501,12 +1467,9 @@ ColorTrackballGlobalMode::handleShortcutOverride(QKeyEvent* e)
 }
 
 void
-ColorTrackballGlobalMode::undoOnTargetPanel(bool redo)
+undoOnGlobalModePanel(DockablePanel* panel,
+                      bool redo)
 {
-    // Straight to the target's own panel stack: the Edit menu's Undo follows whichever stack
-    // was last made active, which hovering the node graph or a viewer quietly changes.
-    DockablePanel* panel = getTargetPanel();
-
     if (!panel) {
         return;
     }
@@ -1515,6 +1478,19 @@ ColorTrackballGlobalMode::undoOnTargetPanel(bool redo)
     } else {
         panel->onUndoClicked();
     }
+}
+
+void
+ColorTrackballGlobalMode::undoOnTargetPanel(bool redo)
+{
+    // Straight to the target's own panel stack: the Edit menu's Undo follows whichever stack
+    // was last made active, which hovering the node graph or a viewer quietly changes.
+    std::shared_ptr<GlobalModeTarget> target = pinTarget();
+
+    if (!target) {
+        return;
+    }
+    target->undoBetweenStrokes(redo);
     Q_EMIT stateChanged();
 }
 
@@ -1535,9 +1511,17 @@ ColorTrackballGlobalMode::handleKeyPress(QKeyEvent* e)
 
     switch (action.action) {
     case eColorGlobalModeKeySwallow:
-        break;
     case eColorGlobalModeKeySetMode:
-        setMode(action.mode);
+        // The mode keys and the dimension or member keys belong to the target: C, S, T, V on a
+        // colour knob, Q/W/E/R/A on a lone value knob, Q/W/E/R/T and 1/2/A in a transform group.
+        if (std::shared_ptr<GlobalModeTarget> target = pinTarget()) {
+            if (target->handleKey(key, mods, _strokeActive)) {
+                if (ColorGlobalModeTarget* colour = dynamic_cast<ColorGlobalModeTarget*>(target.get())) {
+                    _colorMode = colour->getMode();
+                }
+                Q_EMIT stateChanged();
+            }
+        }
         break;
     case eColorGlobalModeKeyAccept:
         if (!e->isAutoRepeat()) {
@@ -1670,6 +1654,238 @@ ColorTrackballGlobalMode::eventFilter(QObject* watched,
 
     return QObject::eventFilter(watched, event);
 } // ColorTrackballGlobalMode::eventFilter
+
+ColorGlobalModeTarget::ColorGlobalModeTarget(const KnobGuiColorPtr& knob)
+    : _knob(knob)
+    , _knobObject(knob.get())
+    , _mode(eColorGlobalModeC)
+    , _rates()
+    , _rememberedHue(0.0)
+    , _strokeActive(false)
+    , _stroke()
+    , _strokeValue(neutralValue())
+    , _strokeRole(eColorKnobRoleGain)
+    , _strokeBasis(ColorKnobEditSession::basisFor(ProjectColorManagementPtr()))
+    , _strokeMode(eColorGlobalModeC)
+    , _revealConfigured()
+    , _revealRole(eColorKnobRoleGain)
+{
+}
+
+ColorGlobalModeTarget::~ColorGlobalModeTarget()
+{
+}
+
+KnobGuiColor*
+ColorGlobalModeTarget::getColorKnobGui() const
+{
+    KnobGuiColorPtr knob = _knob.lock();
+
+    return (knob && _knobObject) ? knob.get() : 0;
+}
+
+KnobGui*
+ColorGlobalModeTarget::getKnobGui() const
+{
+    return getColorKnobGui();
+}
+
+std::vector<KnobGui*>
+ColorGlobalModeTarget::getKnobGuis() const
+{
+    std::vector<KnobGui*> knobs;
+
+    if (KnobGuiColor* knob = getColorKnobGui()) {
+        knobs.push_back(knob);
+    }
+
+    return knobs;
+}
+
+DockablePanel*
+ColorGlobalModeTarget::getPanel() const
+{
+    KnobGuiColor* knob = getColorKnobGui();
+
+    return knob ? dynamic_cast<DockablePanel*>(knob->getContainer()) : 0;
+}
+
+void
+ColorGlobalModeTarget::attach()
+{
+    KnobGuiColor* knob = getColorKnobGui();
+
+    if (!knob) {
+        return;
+    }
+    knob->setGlobalModeHighlighted(true);
+    knob->setAdjustPanelExpanded(true);
+    knob->touchColorKnob();
+    // The whole column, not just the row: with the panel open and the HUD attached, the column
+    // has grown well past the row alone, and every part of it should land in view together.
+    revealKnobInPanel(getPanel(), knob->getKnob(), knob->getGlobalModeColumnWidget());
+}
+
+void
+ColorGlobalModeTarget::detach()
+{
+    if (KnobGuiColor* knob = getColorKnobGui()) {
+        knob->setGlobalModeHighlighted(false);
+    }
+}
+
+QString
+ColorGlobalModeTarget::strokeLabel() const
+{
+    return ColorTrackballGlobalMode::tr("Global %1").arg(colorGlobalModeKeyName(_strokeActive ? _strokeMode : _mode));
+}
+
+KnobColorValue
+ColorGlobalModeTarget::getLiveValue() const
+{
+    if (_strokeActive) {
+        return _strokeValue;
+    }
+
+    KnobGuiColor* knob = getColorKnobGui();
+
+    return knob ? knob->getCurrentColorValue() : neutralValue();
+}
+
+bool
+ColorGlobalModeTarget::setMode(ColorGlobalModeEnum mode)
+{
+    if (mode == _mode) {
+        return false;
+    }
+    if (_strokeActive) {
+        _rememberedHue = _stroke.rememberedHueAfter(_strokeMode, _strokeRole, _strokeBasis, _strokeValue, _rates);
+        _stroke.begin(_strokeValue, _rememberedHue);
+        _strokeMode = mode;
+    }
+    _mode = mode;
+
+    return true;
+}
+
+bool
+ColorGlobalModeTarget::beginStroke()
+{
+    KnobGuiColor* knob = getColorKnobGui();
+
+    if (!knob || !knob->isColorEditable()) {
+        return false;
+    }
+    knob->touchColorKnob();
+    _strokeRole = knob->getColorRole();
+    _strokeBasis = knob->getEditBasis();
+    _strokeMode = _mode;
+    _strokeValue = knob->getCurrentColorValue();
+    _stroke.begin(_strokeValue, _rememberedHue);
+    _strokeActive = true;
+    knob->getEditSession()->begin(strokeLabel());
+
+    return true;
+}
+
+void
+ColorGlobalModeTarget::moveStroke(double dx,
+                                  double dy,
+                                  double gearFactor)
+{
+    KnobGuiColor* knob = getColorKnobGui();
+
+    if (!_strokeActive || !knob) {
+        return;
+    }
+    _stroke.addMove(dx, dy, gearFactor);
+
+    ChromaEditResult r = _stroke.evaluate(_strokeMode, _strokeRole, _strokeBasis, _rates);
+
+    if (r.valid) {
+        _strokeValue = r.value;
+    }
+    knob->getEditSession()->move(_strokeValue, strokeLabel());
+}
+
+void
+ColorGlobalModeTarget::endStroke()
+{
+    if (!_strokeActive) {
+        return;
+    }
+    _strokeActive = false;
+    _rememberedHue = _stroke.rememberedHueAfter(_strokeMode, _strokeRole, _strokeBasis, _strokeValue, _rates);
+
+    if (KnobGuiColor* knob = getColorKnobGui()) {
+        knob->getEditSession()->end(_strokeValue, ColorTrackballGlobalMode::tr("Global %1").arg(colorGlobalModeKeyName(_strokeMode)));
+    }
+}
+
+void
+ColorGlobalModeTarget::abandonStroke()
+{
+    if (!_strokeActive) {
+        return;
+    }
+    _strokeActive = false;
+    if (KnobGuiColor* knob = getColorKnobGui()) {
+        knob->getEditSession()->abandon();
+    }
+}
+
+bool
+ColorGlobalModeTarget::handleKey(int key,
+                                 Qt::KeyboardModifiers modifiers,
+                                 bool strokeActive)
+{
+    ColorGlobalModeKeyAction action = classifyColorGlobalModeKey(key, modifiers, strokeActive);
+
+    if (action.action != eColorGlobalModeKeySetMode) {
+        return false;
+    }
+
+    return setMode(action.mode);
+}
+
+void
+ColorGlobalModeTarget::fillHudState(ColorTrackballHudState* state) const
+{
+    KnobGuiColor* knob = getColorKnobGui();
+    KnobIPtr k = knob ? knob->getKnob() : KnobIPtr();
+
+    state->knobLabel = k ? QString::fromUtf8(k->getLabel().c_str()) : QString();
+    state->mode = _mode;
+}
+
+void
+ColorGlobalModeTarget::syncReveal(ColorTrackballReveal* reveal,
+                                  bool strokeActive)
+{
+    KnobGuiColor* knob = getColorKnobGui();
+
+    if (!knob || !reveal) {
+        return;
+    }
+
+    const ColorKnobRoleEnum role = knob->getColorRole();
+
+    // Configured once per target and role: setKnob() makes the mode disc forget the hue it
+    // remembered, which a re-read on every refresh would do mid-stroke.
+    if ((_revealConfigured.data() != reveal) || (_revealRole != role) || reveal->isShowingValueKind()) {
+        reveal->setKnob(role, knob->getEditBasis(), knob->getDisplayConverter(), _rates.wheelRim);
+        _revealConfigured = reveal;
+        _revealRole = role;
+    }
+    reveal->setMode((strokeActive && _strokeActive) ? _strokeMode : _mode);
+    if (strokeActive && _strokeActive) {
+        reveal->setStroke(_stroke.getStart(), _strokeValue, _stroke.getTotalDx(), _stroke.getTotalDy(), _rates);
+    } else {
+        const KnobColorValue value = knob->getCurrentColorValue();
+
+        reveal->setStroke(value, value, 0.0, 0.0, _rates);
+    }
+}
 
 NATRON_NAMESPACE_EXIT
 

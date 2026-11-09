@@ -4,7 +4,7 @@ Tolerance:
 
 | Node (ID) | Class | Test constant | Notes |
 |---|---|---|---|
-| HSVTool | arithmetic | `ParityTolerance::arithmetic()` | the hue, the coefficients and the conversion back run statement for statement on both sides; Vulkan division is within 2.5 ulp |
+| HSVTool | arithmetic | `ParityTolerance::arithmetic()` | the hue, the coefficients and the conversion back run statement for statement on both sides, and divisions go through `divideRounded`, correctly rounded while the operands and the quotient lie between 2^-100 and 2^100; outside that the device's quotient (within 2.5 ulp) stands, and a device may flush subnormals |
 
 The node replaces OpenFX's HSVTool (`net.sf.openfx.HSVToolPlugin`) with every control, under
 the same names and defaults, except where listed below

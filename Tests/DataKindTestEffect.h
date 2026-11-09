@@ -46,6 +46,9 @@
 #define kTestPluginIDDataKindRawSource "test.natron.built-in.DataKindRawSource"
 #define kTestPluginIDDataKindRawSink "test.natron.built-in.DataKindRawSink"
 #define kTestPluginIDDataKindRawAdapterSink "test.natron.built-in.DataKindRawAdapterSink"
+#define kTestPluginIDDataKindGeometrySource "test.natron.built-in.DataKindGeometrySource"
+#define kTestPluginIDDataKindGeometrySink "test.natron.built-in.DataKindGeometrySink"
+#define kTestPluginIDDataKindSceneSink "test.natron.built-in.DataKindSceneSink"
 
 NATRON_NAMESPACE_ENTER
 
@@ -692,6 +695,144 @@ public:
                                                 DataKindEnum kind) const OVERRIDE WARN_UNUSED_RETURN
     {
         return kind == eDataKindRaw;
+    }
+};
+
+class DataKindTestGeometrySource
+    : public NoOpBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestGeometrySource(n);
+    }
+
+    DataKindTestGeometrySource(NodePtr n)
+        : NoOpBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kTestPluginIDDataKindGeometrySource;
+    }
+
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "Test Data Kind Geometry Source";
+    }
+
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual std::string getInputLabel(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual int getNInputs() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return 0;
+    }
+
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindGeometry;
+    }
+};
+
+class DataKindTestGeometrySink
+    : public NoOpBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestGeometrySink(n);
+    }
+
+    DataKindTestGeometrySink(NodePtr n)
+        : NoOpBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kTestPluginIDDataKindGeometrySink;
+    }
+
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "Test Data Kind Geometry Sink";
+    }
+
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual std::string getInputLabel(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindGeometry;
+    }
+
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindGeometry;
+    }
+};
+
+class DataKindTestSceneSink
+    : public NoOpBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestSceneSink(n);
+    }
+
+    DataKindTestSceneSink(NodePtr n)
+        : NoOpBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kTestPluginIDDataKindSceneSink;
+    }
+
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "Test Data Kind Scene Sink";
+    }
+
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual std::string getInputLabel(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindScene;
+    }
+
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindScene;
     }
 };
 

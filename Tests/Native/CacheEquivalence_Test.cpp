@@ -1628,8 +1628,8 @@ protected:
     }
 
     // The Viewer draws into its own textures and a Backdrop renders nothing, so neither has an
-    // image of its own in the caches under test. Nor has a node whose output is scene data:
-    // it never writes the pixels the comparison reads.
+    // image of its own in the caches under test. Nor has a node whose output is scene or geometry
+    // data: it never writes the pixels the comparison reads.
     static bool rendersAnImage(const NodePtr& node)
     {
         if (node->isEffectViewer() || (node->getPluginID() == PLUGINID_NATRON_BACKDROP)) {
@@ -1637,7 +1637,7 @@ protected:
         }
         const DataKindEnum kind = node->getEffectiveOutputDataKind();
 
-        return kind != eDataKindScene;
+        return (kind != eDataKindScene) && (kind != eDataKindGeometry);
     }
 
     struct Findings {

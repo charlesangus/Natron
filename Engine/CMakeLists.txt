@@ -49,6 +49,11 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/Geo/ is the native geometry data model (attributes, index maps, topology); no pxr types.
+file(GLOB NatronEngineGeo_HEADERS Geo/*.h)
+file(GLOB NatronEngineGeo_SOURCES Geo/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineGeo_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineGeo_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)

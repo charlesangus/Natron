@@ -39,10 +39,12 @@ NATRON_NAMESPACE_ENTER
 
 SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
                                            QObject* context,
-                                           const SyncedFunc& synced)
+                                           const SyncedFunc& synced,
+                                           bool loadPayloads)
     : _node(node)
     , _context(context)
     , _synced(synced)
+    , _loadPayloads(loadPayloads)
 {
     _worker = std::thread([this]() { run(); });
 }
@@ -127,21 +129,108 @@ SceneNodeStageSource::request(double time)
     _queueChanged.notify_one();
 }
 
+U64
+SceneNodeStageSource::getComposeCount() const
+{
+    return _composeCount;
+}
+
+void
+SceneNodeStageSource::setLoadsChanged(const std::function<void()>& loadsChanged)
+{
+    _loadsChanged = loadsChanged;
+}
+
+void
+SceneNodeStageSource::requestLoad(const QStringList& paths,
+                                  bool withDescendants)
+{
+    LoadRequest request;
+
+    request.paths = paths;
+    request.withDescendants = withDescendants;
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.push_back(request);
+    }
+    _queueChanged.notify_one();
+}
+
+void
+SceneNodeStageSource::requestUnload(const QStringList& paths)
+{
+    LoadRequest request;
+
+    request.paths = paths;
+    request.load = false;
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.push_back(request);
+    }
+    _queueChanged.notify_one();
+}
+
+void
+SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
+{
+    // Only this worker creates the stage, so reading the pointer needs no lock.
+    if (!_stage) {
+        return;
+    }
+    for (const LoadRequest& request : requests) {
+        PXR_NS::SdfPathVector paths;
+        for (const QString& path : request.paths) {
+            const std::string pathString = path.toStdString();
+            if (PXR_NS::SdfPath::IsValidPathString(pathString)) {
+                paths.push_back(PXR_NS::SdfPath(pathString));
+            }
+        }
+        if (request.load) {
+            _stage->requestLoad(paths, request.withDescendants);
+        } else {
+            _stage->requestUnload(paths);
+        }
+    }
+    const SceneStage::LockedSection locked = [this](const std::function<void()>& section) {
+        SceneWriteBarrier::ReadScope readScope;
+        std::lock_guard<std::mutex> lock(_stageMutex);
+        section();
+    };
+    _stage->serviceLoads(locked, locked, [this]() { return _stopRequested.load(); });
+    if (_stopRequested) {
+        return;
+    }
+    std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
+    QMetaObject::invokeMethod(_context, [self]() {
+        std::shared_ptr<SceneNodeStageSource> source = self.lock();
+        if (source && !source->_stopRequested && source->_loadsChanged) {
+            source->_loadsChanged();
+        } }, Qt::QueuedConnection);
+}
+
 void
 SceneNodeStageSource::run()
 {
     for (;;) {
         double time = 0.;
+        bool evaluate = false;
+        std::vector<LoadRequest> loads;
         {
             std::unique_lock<std::mutex> lock(_queueMutex);
-            _queueChanged.wait(lock, [this]() { return _quit || _pending; });
+            _queueChanged.wait(lock, [this]() { return _quit || _pending || !_loadRequests.empty(); });
             if (_quit) {
                 _finished = true;
 
                 return;
             }
+            evaluate = _pending;
             _pending = false;
             time = _pendingTime;
+            loads.swap(_loadRequests);
+        }
+        if (!evaluate) {
+            serviceLoads(loads);
+            continue;
         }
         NodePtr node = _node.lock();
         EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
@@ -156,16 +245,20 @@ SceneNodeStageSource::run()
         node.reset();
         effect.reset();
         appPTR->getAppTLS()->cleanupTLSForThread();
+        if (_stopRequested) {
+            continue;
+        }
         {
             SceneWriteBarrier::ReadScope readScope;
             std::lock_guard<std::mutex> lock(_stageMutex);
             if (!_stage) {
-                _stage.reset(new SceneStage);
+                _stage.reset(new SceneStage(_loadPayloads ? PXR_NS::UsdStage::LoadAll : PXR_NS::UsdStage::LoadNone));
             }
             _stage->sync(ok ? payload : ScenePayload());
             _shown = ok && !payload.isEmpty();
             _editCount = _stage->getEditCount();
         }
+        ++_composeCount;
         std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
         const QString qerror = QString::fromStdString(error);
         QMetaObject::invokeMethod(_context, [self, ok, qerror]() {
@@ -173,6 +266,8 @@ SceneNodeStageSource::run()
             if (source && !source->_stopRequested && source->_synced) {
                 source->_synced(ok, qerror);
             } }, Qt::QueuedConnection);
+        // Asked for against the composition just synced.
+        serviceLoads(loads);
     }
 }
 

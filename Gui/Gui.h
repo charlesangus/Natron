@@ -547,6 +547,12 @@ Q_SIGNALS:
 
     void activeViewerChanged();
 
+    // A node graph's selection changed, emitted once per return to the event loop.
+    void nodeSelectionChanged();
+
+    // A node or a connection of a node graph came or went.
+    void nodeGraphTopologyChanged();
+
     void s_doProgressStartOnMainThread(KnobHolder* effect, const QString &message, const QString &messageid, bool canCancel);
 
     void s_doProgressEndOnMainThread(KnobHolder* effect);

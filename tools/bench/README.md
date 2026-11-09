@@ -365,7 +365,7 @@ loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or
 against the scene-graph budgets. Frame rate and time to first frame need a real GPU: without
 `BENCH_GPU=1`, or on a software renderer, they are measured but marked `not_valid`. Stall and
 unrequested-payload checks are valid under llvmpipe. The scenarios are the harness's `ACTIONS` table
-(`open`, `edit`, `orbit`, `load`, `twirl`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
+(`open`, `edit`, `orbit`, `load`, `twirl`, `node_switch`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
 and orders them.
 
 `open` reports `first_frame_ms`, from setting the file to the first frame finished after the scene
@@ -383,6 +383,13 @@ in its tree (`BENCH_TWIRL_PATH`; `/World/Block0/B1` on the city), tumbling the v
 loaded and the result is on screen. The stall budget covers the time from the twirl on, not the
 docking. It reports `twirl_ms`, `twirl_rows`, `twirl_mouse_moves`, `twirl_move_gap_ms` and the same
 `load_hold_ms`, `load_edits` and `load_failures`.
+
+`node_switch`, after `open` (on the flat file for the design's budget), docks the Scene Graph panel,
+sets it to follow the node selection and selects `BENCH_SWITCH_NODES` (default 4) USDEditTransforms
+off USDRead in turn, each read into a stage of the panel's own, then the first again, whose stage the
+panel keeps. The stall budget covers the switching, not the docking or the node creation. It reports
+`switch_ms` per switch (each includes the selection's 150 ms settle), `switch_max_ms`,
+`cached_switch_ms` and `cached_switch_composes`, which is 0 when the kept stage is reused.
 
 The draw state scenarios drive the viewer's `setDrawState`, `clearDrawState` and `setDrawRevealBatch`
 and act on rows `heavy_scene_rows.py` picks, or the fixture's own (`BENCH_ROOT`, `BENCH_BRANCH`,

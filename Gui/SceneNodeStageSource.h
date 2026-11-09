@@ -34,9 +34,11 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <QtCore/QObject>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 
 #include "Engine/EngineFwd.h"
 #include "Gui/SceneGraphModel.h"
@@ -46,7 +48,9 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief A node's scene, evaluated on a worker into a stage of its own. A stage leased from the
  * query pool would be bound to the thread that leased it, and a view may hold this one for as
- * long as it shows the node.
+ * long as it shows the node. Without loadPayloads the stage opens with no payload loaded, and
+ * requestLoad() loads them on the same worker, which opens their files with no lock held, as the
+ * viewer's stage does.
  **/
 class SceneNodeStageSource
     : public SceneGraphStageSource,
@@ -57,7 +61,8 @@ public:
 
     SceneNodeStageSource(const NodePtr& node,
                          QObject* context,
-                         const SyncedFunc& synced);
+                         const SyncedFunc& synced,
+                         bool loadPayloads = true);
 
     ~SceneNodeStageSource() override;
 
@@ -80,16 +85,40 @@ public:
     // Evaluates the node again at time.
     void request(double time);
 
+    // How many evaluations reached the stage. An evaluation still running when stop is asked for
+    // is dropped.
+    U64 getComposeCount() const;
+
+    // Called on context's thread after each batch of payload loads or unloads.
+    void setLoadsChanged(const std::function<void()>& loadsChanged);
+
+    // Loads the payloads of paths, each prim's own or also those below it, on the worker.
+    void requestLoad(const QStringList& paths,
+                     bool withDescendants);
+
+    void requestUnload(const QStringList& paths);
+
 private:
+    struct LoadRequest {
+        QStringList paths;
+        bool load = true;
+        bool withDescendants = false;
+    };
+
     void run();
+
+    void serviceLoads(const std::vector<LoadRequest>& requests);
 
     NodeWPtr _node;
     QObject* _context;
     SyncedFunc _synced;
+    const bool _loadPayloads;
     mutable std::mutex _stageMutex;
     std::unique_ptr<SceneStage> _stage;
     std::atomic<bool> _shown { false };
     std::atomic<U64> _editCount { 0 };
+    std::atomic<U64> _composeCount { 0 };
+    std::function<void()> _loadsChanged;
     std::atomic<bool> _stopRequested { false };
     std::atomic<bool> _finished { false };
     std::mutex _queueMutex;
@@ -97,6 +126,7 @@ private:
     bool _pending = false;
     bool _quit = false;
     double _pendingTime = 0.;
+    std::vector<LoadRequest> _loadRequests;
     std::thread _worker;
 };
 

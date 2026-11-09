@@ -2550,6 +2550,24 @@
         </modify-function>
     </object-type>
     <object-type name="Roto">
+        <modify-function signature="followVectors(std::list&lt;ItemBase*&gt;,QString,int,int,QString,QString,bool,double,double)">
+            <modify-argument index="return">
+                <replace-type modified-type="PyObject"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                return %PYARG_0;
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getLastFollowReport()const">
+            <modify-argument index="return">
+                <replace-type modified-type="PyObject"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = %CPPSELF.%FUNCTION_NAME();
+                return %PYARG_0;
+            </inject-code>
+        </modify-function>
         <modify-function signature="getBaseLayer()const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>

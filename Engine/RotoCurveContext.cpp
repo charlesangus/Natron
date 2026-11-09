@@ -53,6 +53,8 @@
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/Transform.h"
+#include "Engine/VectorFollowBake.h"
+#include "Engine/VectorSampler.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -950,38 +952,119 @@ RotoCurveContext::composeItemTransform(const RotoDrawableItem& /*item*/,
     *matrix = local;
 }
 
-void
-RotoCurveContext::refreshTransformKnobTies(const RotoDrawableItemPtr& item)
+RotoCurveContext::TransformTieSuspension::TransformTieSuspension(const RotoCurveContextPtr& context)
+    : _context(context)
 {
-    assert(QThread::currentThread() == qApp->thread());
-    bool viaLayer = false;
-    {
-        QMutexLocker l(&_imp->rotoContextMutex);
-        if (std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), item) == _imp->selectedItems.end()) {
-            return;
-        }
-        for (RotoLayerPtr layer = item->getParentLayer(); layer && !viaLayer; layer = layer->getParentLayer()) {
-            viaLayer = std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), layer) != _imp->selectedItems.end();
-        }
+    if (context) {
+        ++context->_imp->transformTiesSuspended;
+        context->refreshTransformKnobTies();
     }
-    const bool tie = tiesTransformKnobs(*item) && !viaLayer;
+}
+
+RotoCurveContext::TransformTieSuspension::~TransformTieSuspension()
+{
+    RotoCurveContextPtr context = _context.lock();
+
+    if (context) {
+        --context->_imp->transformTiesSuspended;
+        context->refreshTransformKnobTies();
+    }
+}
+
+RotoDrawableItemPtr
+RotoCurveContext::getTransformTiedItem() const
+{
+    return _imp->transformTiedItem.lock();
+}
+
+void
+RotoCurveContext::untieItemTransformKnobs(const RotoDrawableItemPtr& item)
+{
     const std::list<KnobIPtr>& itemKnobs = item->getKnobs();
+
     for (std::list<KnobIPtr>::const_iterator it = itemKnobs.begin(); it != itemKnobs.end(); ++it) {
         for (std::list<KnobIWPtr>::const_iterator it2 = _imp->transformKnobs.begin(); it2 != _imp->transformKnobs.end(); ++it2) {
             KnobIPtr contextKnob = it2->lock();
             if (!contextKnob || (contextKnob->getName() != (*it)->getName())) {
                 continue;
             }
-            const bool tied = (*it)->getMaster(0).second == contextKnob;
-            if (tie && !tied) {
-                tieItemKnob(*it, contextKnob, true);
-            } else if (!tie && tied) {
+            if ((*it)->getMaster(0).second == contextKnob) {
+                // The page knob was cloned from this item alone and edited only for it since, so
+                // it holds the item's state, and edits made through the page live only there.
                 untieItemKnob(*it, true);
             }
             break;
         }
     }
 }
+
+void
+RotoCurveContext::refreshTransformKnobTies()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (_imp->transformKnobs.empty()) {
+        return;
+    }
+
+    const bool ownedByLayers = layersOwnTransforms();
+    RotoItemPtr owner;
+    int owners = 0;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        std::set<const RotoItem*> selectedLayers;
+        for (std::list<RotoItemPtr>::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
+            if (dynamic_cast<const RotoLayer*>(it->get())) {
+                selectedLayers.insert(it->get());
+            }
+        }
+        for (std::list<RotoItemPtr>::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end() && owners < 2; ++it) {
+            if (!ownedByLayers && selectedLayers.count(it->get())) {
+                continue;
+            }
+            bool viaLayer = false;
+            for (RotoLayerPtr layer = ownedByLayers ? (*it)->getParentLayer() : RotoLayerPtr(); layer && !viaLayer; layer = layer->getParentLayer()) {
+                viaLayer = selectedLayers.count(layer.get()) != 0;
+            }
+            if (!viaLayer) {
+                owner = *it;
+                ++owners;
+            }
+        }
+    }
+
+    const bool single = (owners == 1) && (_imp->transformTiesSuspended == 0) && pageEditsTransform(*owner);
+    RotoDrawableItemPtr target;
+    if (single) {
+        target = std::dynamic_pointer_cast<RotoDrawableItem>(owner);
+    }
+
+    RotoDrawableItemPtr tied = _imp->transformTiedItem.lock();
+    if (tied && (tied != target)) {
+        untieItemTransformKnobs(tied);
+        _imp->transformTiedItem.reset();
+    }
+    if (target && (tied != target)) {
+        const std::list<KnobIPtr>& itemKnobs = target->getKnobs();
+        for (std::list<KnobIPtr>::const_iterator it = itemKnobs.begin(); it != itemKnobs.end(); ++it) {
+            for (std::list<KnobIWPtr>::const_iterator it2 = _imp->transformKnobs.begin(); it2 != _imp->transformKnobs.end(); ++it2) {
+                KnobIPtr contextKnob = it2->lock();
+                if (contextKnob && (contextKnob->getName() == (*it)->getName())) {
+                    tieItemKnob(*it, contextKnob, true);
+                    break;
+                }
+            }
+        }
+        _imp->transformTiedItem = target;
+    }
+
+    // An owner that is not tied, a layer, is edited through the page by the host.
+    const bool editable = single && !(std::dynamic_pointer_cast<Bezier>(owner) && owner->isLockedRecursive());
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->transformKnobs.begin(); it != _imp->transformKnobs.end(); ++it) {
+        if (KnobIPtr knob = it->lock()) {
+            knob->setAllDimensionsEnabled(editable);
+        }
+    }
+} // refreshTransformKnobTies
 
 void
 RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items,
@@ -1281,13 +1364,14 @@ RotoCurveContext::selectInternal(const RotoItemPtr& item, bool slaveKnobs)
             }
         }
 
-        const bool tieTransform = tiesTransformKnobs(*isDrawable);
         const std::list<KnobIPtr>& drawableKnobs = isDrawable->getKnobs();
         for (std::list<KnobIPtr>::const_iterator it = drawableKnobs.begin(); it != drawableKnobs.end(); ++it) {
             for (std::list<KnobIWPtr>::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
                 KnobIPtr thisKnob = it2->lock();
                 if (thisKnob->getName() == (*it)->getName()) {
-                    if (tieTransform || !isTransformKnob(thisKnob.get())) {
+                    // Transform knobs are tied by refreshTransformKnobTies(), which looks at the
+                    // whole selection.
+                    if (!isTransformKnob(thisKnob.get())) {
                         tieItemKnob(*it, thisKnob, slaveKnobs);
                     }
                     break;
@@ -1361,8 +1445,11 @@ RotoCurveContext::selectInternal(const RotoItemPtr& item, bool slaveKnobs)
         _imp->lifeTimeFrame.lock()->setSecret(lifetime_i == 4 || lifetime_i == 0);
     }
 
-    QMutexLocker l(&_imp->rotoContextMutex);
-    _imp->selectedItems.push_back(item);
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->selectedItems.push_back(item);
+    }
+    refreshTransformKnobTies();
 } // selectInternal
 
 void
@@ -1383,7 +1470,9 @@ RotoCurveContext::onSelectedKnobCurveChanged()
 }
 
 void
-RotoCurveContext::onSelectedKnobValueChanged()
+RotoCurveContext::onSelectedKnobValueChanged(ViewSpec /*view*/,
+                                             int dimension,
+                                             int /*reason*/)
 {
     KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
 
@@ -1391,12 +1480,17 @@ RotoCurveContext::onSelectedKnobValueChanged()
         return;
     }
     KnobIPtr knob = handler->getKnob();
+    if ((dimension < -1) || (dimension >= knob->getDimension())) {
+        return;
+    }
     for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         KnobIPtr k = it->lock();
         if (k && (k->getName() == knob->getName())) {
-            // The context knob pushes itself back into its slaved items, which emit this again;
-            // by then they match and the check stops the echo.
-            ignore_result(k->cloneAndCheckIfChanged(knob.get()));
+            // The context knob pushes itself back into its slaved items one dimension at a time,
+            // and each emits this for that dimension, whose value alone matches the context yet.
+            // Cloning the item's other dimensions as well would pull a second selected item's
+            // differing values into the context and echo between the two items without end.
+            ignore_result(k->cloneAndCheckIfChanged(knob.get(), dimension, dimension));
             break;
         }
     }
@@ -1433,7 +1527,7 @@ RotoCurveContext::tieItemKnob(const KnobIPtr& itemKnob,
     // A value written to the item at a time it already has a key emits no keyFrameSet, and
     // the slaved item reads the context knob, so the write would be lost without this.
     QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
-                     this, SLOT(onSelectedKnobValueChanged()));
+                     this, SLOT(onSelectedKnobValueChanged(ViewSpec, int, int)));
 }
 
 void
@@ -1457,7 +1551,7 @@ RotoCurveContext::untieItemKnob(const KnobIPtr& itemKnob,
     QObject::disconnect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
                         this, SLOT(onSelectedKnobCurveChanged()));
     QObject::disconnect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
-                        this, SLOT(onSelectedKnobValueChanged()));
+                        this, SLOT(onSelectedKnobValueChanged(ViewSpec, int, int)));
 }
 
 void
@@ -1497,16 +1591,21 @@ RotoCurveContext::deselectInternal(RotoItemPtr b)
     if (isDrawable) {
         /// first-off set the context knobs to the value of this bezier
 
-        const bool tieTransform = tiesTransformKnobs(*isDrawable);
+        RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(b);
+        if (drawable == _imp->transformTiedItem.lock()) {
+            untieItemTransformKnobs(drawable);
+            _imp->transformTiedItem.reset();
+        }
         const std::list<KnobIPtr>& drawableKnobs = isDrawable->getKnobs();
         for (std::list<KnobIPtr>::const_iterator it = drawableKnobs.begin(); it != drawableKnobs.end(); ++it) {
             for (std::list<KnobIWPtr>::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
                 KnobIPtr knob = it2->lock();
                 if (knob->getName() == (*it)->getName()) {
-                    if (tieTransform || !isTransformKnob(knob.get())) {
-                        // Clone current state
-                        knob->cloneAndUpdateGui(it->get());
+                    if (isTransformKnob(knob.get())) {
+                        break;
                     }
+                    // Clone current state
+                    knob->cloneAndUpdateGui(it->get());
                     assert((*it)->getDimension() == knob->getDimension());
                     untieItemKnob(*it, isBezier ? !bezierDirty : !strokeDirty);
                     break;
@@ -1534,6 +1633,7 @@ RotoCurveContext::deselectInternal(RotoItemPtr b)
             }
         }
     }
+    refreshTransformKnobTies();
 } // deselectInternal
 
 RotoItemPtr
@@ -1814,6 +1914,33 @@ RotoCurveContext::getCurvesByRenderOrder(bool onlyActivated) const
     }
 
     return ret;
+}
+
+VectorFollowReport
+RotoCurveContext::followVectors(const VectorFollowParams& params,
+                                UndoCommandPtr* undo)
+{
+    VectorFollowRun run(shared_from_this(), params);
+    std::string error;
+    if (!run.prepare(&error)) {
+        VectorFollowReport report;
+        report.error = error;
+
+        return report;
+    }
+
+    VectorSampler sampler(params.source);
+    const std::function<bool()> aborted = [&params]() {
+        return params.shouldAbort && params.shouldAbort();
+    };
+    run.compute(sampler, [&run](int shape, const VectorFollowFrame& frame) { run.applyFrame(shape, frame); }, aborted);
+    if (params.reduce && !run.wasAborted()) {
+        run.prepareReduction();
+        run.reduce(aborted);
+        run.applyReduction();
+    }
+
+    return run.finish(false, run.wasAborted() ? sampler.lastError() : std::string(), undo);
 }
 
 int

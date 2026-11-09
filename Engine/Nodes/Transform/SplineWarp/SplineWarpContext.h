@@ -367,8 +367,8 @@ public:
     void setOwnTransform(const RotoItemPtr& item, const SplineWarpTransform& transform);
 
     /**
-     * @brief Ties the transform knobs of each selected curve that is neither transform-linked nor
-     * inside a selected layer, and unties the others. Main thread only.
+     * @brief Ties the Transform page to the selected curve when the selection holds one transform
+     * and it is an unlinked curve's, and unties every other curve. Does nothing off the main thread.
      **/
     void refreshSelectedTransformTies();
 
@@ -465,6 +465,12 @@ public:
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const OVERRIDE;
 
     /**
+     * @brief Refuses a transform-linked item: its own transform is unused, and its link target's
+     * belongs to that target and every other item linked to it.
+     **/
+    virtual std::string getTransformFitRefusal(const RotoDrawableItem& item) const OVERRIDE;
+
+    /**
      * @brief Saves the links (the same objects, with their values), the boundaries and the layer
      * amounts.
      **/
@@ -490,9 +496,15 @@ protected:
     virtual void appendHostContentHash(ContentHasher& h) const OVERRIDE;
 
     /**
-     * @brief False for a transform-linked item, whose own transform knobs are not used.
+     * @brief False for a transform-linked curve or layer: its own transform is unused, and its link
+     * target's is shared with every item linked to it.
      **/
-    virtual bool tiesTransformKnobs(const RotoDrawableItem& item) const OVERRIDE;
+    virtual bool pageEditsTransform(const RotoItem& owner) const OVERRIDE;
+
+    virtual bool layersOwnTransforms() const OVERRIDE
+    {
+        return true;
+    }
 
 private:
     bool ownsCurve(const BezierPtr& curve) const;

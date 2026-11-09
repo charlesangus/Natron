@@ -810,11 +810,13 @@ transformValueKnobs(const RotoCurveContext::TransformKnobs& knobs)
 }
 
 struct TransformTargets {
-    // The items whose own transform the Transform page edits besides the tied curves: each
-    // selected layer, and each linked curve, resolved through its links.
-    std::list<RotoItemPtr> sources;
+    // The selected layers, whose own transforms the Transform page edits besides the tied curves.
+    std::list<RotoItemPtr> layers;
     // The selected curves whose knobs are tied to the page.
     std::list<RotoItemPtr> tied;
+    // A selected item takes its transform through a link. The page then edits nothing: that
+    // transform is the link target's, and a write would move every item linked to it.
+    bool linked = false;
 };
 
 TransformTargets
@@ -837,18 +839,27 @@ transformTargets(const SplineWarpContext& context)
         if (insideLayer) {
             continue;
         }
-        const bool isLayer = bool(std::dynamic_pointer_cast<RotoLayer>(*it));
-        if (!isLayer && !context.getTransformLink(*it)) {
+        if (context.getTransformLink(*it)) {
+            targets.linked = true;
+        } else if (std::dynamic_pointer_cast<RotoLayer>(*it)) {
+            targets.layers.push_back(*it);
+        } else {
             targets.tied.push_back(*it);
-            continue;
-        }
-        RotoItemPtr source = context.getTransformSource(*it);
-        if (std::find(targets.sources.begin(), targets.sources.end(), source) == targets.sources.end()) {
-            targets.sources.push_back(source);
         }
     }
 
     return targets;
+}
+
+// The one selected layer the Transform page edits, null when the page edits a tied curve or nothing.
+RotoItemPtr
+editedLayer(const TransformTargets& targets)
+{
+    if (targets.linked || !targets.tied.empty() || (targets.layers.size() != 1)) {
+        return RotoItemPtr();
+    }
+
+    return targets.layers.front();
 }
 } // anonymous namespace
 
@@ -861,13 +872,13 @@ SplineWarp::syncTransformKnobs()
         return;
     }
     const std::list<KnobIPtr> knobs = transformValueKnobs(context->getTransformKnobs());
-    const TransformTargets targets = transformTargets(*context);
     // With a tied curve the page already shows it, and a write would reach it.
-    if (knobs.empty() || targets.sources.empty() || !targets.tied.empty()) {
+    const RotoItemPtr layer = editedLayer(transformTargets(*context));
+    if (knobs.empty() || !layer) {
         return;
     }
     _syncingTransform = true;
-    context->getOwnTransform(targets.sources.front()).writeKnobs(knobs);
+    context->getOwnTransform(layer).writeKnobs(knobs);
     for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         (*it)->setAllDimensionsEnabled(true);
     }
@@ -882,18 +893,14 @@ SplineWarp::writeTransformKnobs()
     if (!context) {
         return;
     }
-    const TransformTargets targets = transformTargets(*context);
-    if (targets.sources.empty()) {
+    // The page edits one transform only; a tied curve takes the edit through its slaved knobs.
+    const RotoItemPtr layer = editedLayer(transformTargets(*context));
+    if (!layer) {
         return;
     }
     SplineWarpTransform transform;
     transform.readKnobs(transformValueKnobs(context->getTransformKnobs()));
-    for (std::list<RotoItemPtr>::const_iterator it = targets.sources.begin(); it != targets.sources.end(); ++it) {
-        // A tied source curve already took the edit through its slaved knobs.
-        if (std::find(targets.tied.begin(), targets.tied.end(), *it) == targets.tied.end()) {
-            context->setOwnTransform(*it, transform);
-        }
-    }
+    context->setOwnTransform(layer, transform);
 }
 
 void
@@ -933,6 +940,14 @@ SplineWarp::shouldDrawHostOverlay() const
         } else {
             ++curves;
         }
+    }
+    // The handle of a linked item would edit its link target's transform, shared with every item
+    // linked to it.
+    if ((layers == 0) && (curves == 1) && context->getTransformLink(selected.front())) {
+        return false;
+    }
+    if ((layers == 1) && context->getTransformLink(layer)) {
+        return false;
     }
     if (layers == 0) {
         return curves == 1;

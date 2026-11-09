@@ -2644,10 +2644,15 @@ NodeGui::onPersistentMessageChanged()
     // A placeholder is already marked by its dashed outline and "missing:" caption, which the
     // overlay would be printed over; the message stays in the tooltip.
     const bool isPlaceholder = node && node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN;
-    _persistentMessage->setVisible(!message.isEmpty() && !isPlaceholder);
+    // An information message is only readable: no ERROR or WARNING mark, just the tooltip.
+    const bool isInfo = type == 0;
+    _persistentMessage->setVisible(!message.isEmpty() && !isPlaceholder && !isInfo);
 
     if ( !node || message.isEmpty() ) {
         setToolTip( QString() );
+        refreshStateIndicator();
+    } else if (isInfo) {
+        setToolTip(message);
         refreshStateIndicator();
     } else if ((type == 1) || (type == 2)) {
         if (type == 1) {

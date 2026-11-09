@@ -1519,6 +1519,10 @@ public:
     std::list<KnobIWPtr> shapeKnobs;
     // The knobs createTransformKnobs() made, empty when the host has no Transform page.
     std::list<KnobIWPtr> transformKnobs;
+    // The one selected item whose transform knobs are slaved to transformKnobs, if any.
+    RotoDrawableItemWPtr transformTiedItem;
+    // How many TransformTieSuspension objects are alive.
+    int transformTiesSuspended = 0;
 
     ///This keeps track  of the items linked to the context knobs
     std::list<RotoItemPtr> selectedItems;

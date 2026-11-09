@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cmath>
 #include <deque>
+#include <functional>
 #include <mutex>
 
 #include <QtCore/QTimer>
@@ -63,6 +64,9 @@ struct PendingFrame {
     VectorFollowFrame frame;
 };
 
+std::mutex phaseStartHookMutex;
+std::function<void()> phaseStartHook;
+
 } // anonymous namespace
 
 struct VectorFollowTask::Imp {
@@ -75,6 +79,9 @@ struct VectorFollowTask::Imp {
     // the frames still to come, and its undo would take back the edit with the follow.
     std::unique_ptr<IsolatedJob> hostJob;
     std::atomic<bool> aborted { false };
+    // Held by the follow's thread while it runs a phase, and by the main thread while it sets or
+    // drops what a phase reads, so a waited abort can wait the phase out before dropping it.
+    std::mutex workMutex;
     // A waited abort ends the follow with this phase's signal still queued; the next follow must not take it for its own.
     int generation = 0;
     bool sourceLost = false;
@@ -144,16 +151,19 @@ VectorFollowTask::startFollow(const VectorFollowParams& params,
     }
 
     _imp->lastReport.reset();
-    _imp->params = params;
-    _imp->run = std::move(run);
-    _imp->sampler.reset(new VectorSampler(params.source));
-    _imp->job.reset(new IsolatedJob(params.source, "vector follow"));
-    _imp->hostJob.reset(new IsolatedJob(host, "vector follow"));
-    _imp->aborted = false;
+    {
+        std::lock_guard<std::mutex> locker(_imp->workMutex);
+        _imp->params = params;
+        _imp->run = std::move(run);
+        _imp->sampler.reset(new VectorSampler(params.source));
+        _imp->job.reset(new IsolatedJob(params.source, "vector follow"));
+        _imp->hostJob.reset(new IsolatedJob(host, "vector follow"));
+        _imp->aborted = false;
+        ++_imp->generation;
+    }
     _imp->sourceLost = false;
     _imp->framesDone = 0;
     _imp->framesTotal = std::max(1, (int)params.items.size() * (params.last - params.first + 1));
-    ++_imp->generation;
     QObject::connect(params.source.get(), SIGNAL(deactivated(bool)), this, SLOT(onSourceDeactivated()), Qt::UniqueConnection);
     host->clearPersistentMessage(false);
     host->getApp()->progressStart(host, tr("Following vectors...").toStdString(), "");
@@ -177,9 +187,20 @@ VectorFollowTask::abortFollow(bool wait)
     }
     requestAbort();
     if (wait) {
-        waitForAbortToComplete_enforce_blocking();
+        // Not waitForAbortToComplete_enforce_blocking(): it returns at once whatever the thread
+        // does, and a phase queued but not yet begun is not aborted and would start after it.
+        {
+            std::lock_guard<std::mutex> waited(_imp->workMutex);
+        }
         onPhaseDone(ePhaseCompute, _imp->generation);
     }
+}
+
+void
+VectorFollowTask::setPhaseStartHookForTesting(const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> locker(phaseStartHookMutex);
+    phaseStartHook = hook;
 }
 
 bool
@@ -239,20 +260,33 @@ VectorFollowTask::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
     std::shared_ptr<PhaseArgs> args = std::dynamic_pointer_cast<PhaseArgs>(inArgs);
     assert(args);
     {
-        // Must end before phaseDone: the main thread may destroy the job as soon as it is emitted.
-        IsolatedJob::ThreadScope inJob(_imp->job.get());
-        if (args->phase == ePhaseCompute) {
-            _imp->run->compute(*_imp->sampler, [this](int shape, const VectorFollowFrame& frame) {
-                PendingFrame pending;
-                pending.shape = shape;
-                pending.frame = frame;
-                {
-                    std::lock_guard<std::mutex> locker(_imp->framesMutex);
-                    _imp->frames.push_back(pending);
-                }
-                Q_EMIT framesReady(); }, _imp->abortCheck());
-        } else {
-            _imp->run->reduce(_imp->abortCheck());
+        // Must end before phaseDone: the main thread may drop the job and the run as soon as it is
+        // emitted.
+        std::lock_guard<std::mutex> working(_imp->workMutex);
+        // A phase queued before a waited abort can begin after that abort already ended its follow.
+        if ((args->generation == _imp->generation) && _imp->run) {
+            std::function<void()> hook;
+            {
+                std::lock_guard<std::mutex> locker(phaseStartHookMutex);
+                hook = phaseStartHook;
+            }
+            if (hook) {
+                hook();
+            }
+            IsolatedJob::ThreadScope inJob(_imp->job.get());
+            if (args->phase == ePhaseCompute) {
+                _imp->run->compute(*_imp->sampler, [this](int shape, const VectorFollowFrame& frame) {
+                    PendingFrame pending;
+                    pending.shape = shape;
+                    pending.frame = frame;
+                    {
+                        std::lock_guard<std::mutex> locker(_imp->framesMutex);
+                        _imp->frames.push_back(pending);
+                    }
+                    Q_EMIT framesReady(); }, _imp->abortCheck());
+            } else {
+                _imp->run->reduce(_imp->abortCheck());
+            }
         }
     }
     Q_EMIT phaseDone((int)args->phase, args->generation);
@@ -357,12 +391,15 @@ VectorFollowTask::onPhaseDone(int phase,
     // Kept before the report is stored and any dialog opens: that dialog's event loop may already
     // ask for the report.
     _imp->lastReport.reset(new VectorFollowReport(report));
-    _imp->run.reset();
-    _imp->sampler.reset();
-    _imp->job.reset();
-    _imp->hostJob.reset();
-    // Holding on to the source and the shapes would keep them alive after the user deleted them.
-    _imp->params = VectorFollowParams();
+    {
+        std::lock_guard<std::mutex> locker(_imp->workMutex);
+        _imp->run.reset();
+        _imp->sampler.reset();
+        _imp->job.reset();
+        _imp->hostJob.reset();
+        // Holding on to the source and the shapes would keep them alive after the user deleted them.
+        _imp->params = VectorFollowParams();
+    }
     if (host) {
         host->getApp()->progressEnd(host);
         const std::string text = formatVectorFollowReport(report);

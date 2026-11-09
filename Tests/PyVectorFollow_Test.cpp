@@ -24,7 +24,11 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <list>
+#include <mutex>
 #include <set>
 #include <string>
 
@@ -49,6 +53,7 @@
 #include "Engine/RotoPaint.h"
 #include "Engine/TimeLine.h"
 #include "Engine/VectorFollow.h"
+#include "Engine/VectorFollowTask.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -58,6 +63,62 @@ namespace {
 using namespace VectorFollowTest;
 
 constexpr double kFollowTolerance = 0.5;
+
+// Holds every follow's thread as its phase begins, until released. The destructor releases it and
+// waits out the follow it was given, so the hook never outlives the gate.
+class PhaseGate {
+public:
+    PhaseGate()
+    {
+        VectorFollowTask::setPhaseStartHookForTesting([this]() { hold(); });
+    }
+
+    ~PhaseGate()
+    {
+        release();
+        if (_paint) {
+            _paint->abortVectorFollow(true);
+        }
+        VectorFollowTask::setPhaseStartHookForTesting(std::function<void()>());
+    }
+
+    PhaseGate(const PhaseGate&) = delete;
+    PhaseGate& operator=(const PhaseGate&) = delete;
+
+    void setFollow(RotoPaint* paint)
+    {
+        _paint = paint;
+    }
+
+    bool waitUntilHeld()
+    {
+        std::unique_lock<std::mutex> locker(_mutex);
+
+        return _cond.wait_for(locker, std::chrono::seconds(30), [this]() { return _held; });
+    }
+
+    void release()
+    {
+        std::lock_guard<std::mutex> locker(_mutex);
+        _released = true;
+        _cond.notify_all();
+    }
+
+private:
+    void hold()
+    {
+        std::unique_lock<std::mutex> locker(_mutex);
+        _held = true;
+        _cond.notify_all();
+        _cond.wait(locker, [this]() { return _released; });
+    }
+
+    std::mutex _mutex;
+    std::condition_variable _cond;
+    bool _held = false;
+    bool _released = false;
+    RotoPaint* _paint = NULL;
+};
 
 class PyVectorFollowTest
     : public NativeTimeNodeTest {
@@ -74,6 +135,15 @@ public:
         _bezier->addControlPoint(130., 110., 5.);
         _bezier->addControlPoint(90., 110., 5.);
         _bezier->setCurveFinished(true);
+    }
+
+    void TearDown() override
+    {
+        // A follow still running would write to the shapes, and read the source, as they go away.
+        if (RotoPaint* paint = _roto ? dynamic_cast<RotoPaint*>(_roto->getEffectInstance().get()) : NULL) {
+            paint->abortVectorFollow(true);
+        }
+        NativeTimeNodeTest::TearDown();
     }
 
     // A failing assert in the script makes interpretPythonScript report the AssertionError.
@@ -340,13 +410,17 @@ TEST_F(PyVectorFollowTest, TheHostRefusesEditsWhileAFollowRuns)
     const int points = _bezier->getControlPointsCount();
     const std::string opacityParam = getApp()->getAppIDString() + ".getNode(\"" + _roto->getScriptName() + "\").getParam(\"opacity\")";
 
+    PhaseGate gate;
     RotoPaint* paint = startPanelFollow();
     ASSERT_TRUE(paint);
+    gate.setFollow(paint);
     ASSERT_TRUE(paint->isVectorFollowRunning()) << "the follow was refused or did not start";
+    ASSERT_TRUE(gate.waitUntilHeld()) << "the follow's thread never began its phase";
 
     EXPECT_EQ((int)KnobHelper::eValueChangedReturnCodeNothingChanged,
               (int)opacity->setValue(opacityBefore * 0.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL));
     EXPECT_DOUBLE_EQ(opacityBefore, opacity->getValue(0));
+    // The shape is closed, where only a point on a segment can be added.
     const char* refusedEdits = "try:\n"
                                "    param.setValue(0.25, 0)\n"
                                "    refusal = ''\n"
@@ -354,7 +428,7 @@ TEST_F(PyVectorFollowTest, TheHostRefusesEditsWhileAFollowRuns)
                                "    refusal = str(e)\n"
                                "assert 'while a vector follow reads it' in refusal, refusal\n"
                                "try:\n"
-                               "    shape.addControlPoint(150., 150.)\n"
+                               "    shape.addControlPointOnSegment(0, 0.5)\n"
                                "    refusal = ''\n"
                                "except RuntimeError as e:\n"
                                "    refusal = str(e)\n"
@@ -363,6 +437,10 @@ TEST_F(PyVectorFollowTest, TheHostRefusesEditsWhileAFollowRuns)
     EXPECT_DOUBLE_EQ(opacityBefore, opacity->getValue(0));
     EXPECT_EQ(_bezier->getControlPointsCount(), points);
 
+    // A stop asked while the follow's thread is inside its phase, and a waited one ending the follow
+    // as that thread leaves it: the follow must not be dropped from under that thread.
+    paint->abortVectorFollow(false);
+    gate.release();
     paint->abortVectorFollow(true);
     ASSERT_FALSE(paint->isVectorFollowRunning());
     VectorFollowReport report;
@@ -371,7 +449,7 @@ TEST_F(PyVectorFollowTest, TheHostRefusesEditsWhileAFollowRuns)
 
     opacity->setValue(opacityBefore * 0.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     EXPECT_DOUBLE_EQ(opacityBefore * 0.5, opacity->getValue(0));
-    expectScriptPasses("shape.addControlPoint(150., 150.)\n");
+    expectScriptPasses("shape.addControlPointOnSegment(0, 0.5)\n");
     EXPECT_EQ(_bezier->getControlPointsCount(), points + 1);
 }
 

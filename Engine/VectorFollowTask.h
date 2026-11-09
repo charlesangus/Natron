@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -69,6 +70,10 @@ public:
     // False when no follow has ended since the last forgetLastReport() or startFollow().
     bool getLastReport(VectorFollowReport* report) const;
     void forgetLastReport();
+
+    // Tests only: hook runs on the follow's thread as each phase begins, so a test can hold a
+    // follow mid-run. Empty removes it.
+    static void setPhaseStartHookForTesting(const std::function<void()>& hook);
 
 Q_SIGNALS:
 

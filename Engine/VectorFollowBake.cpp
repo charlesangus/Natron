@@ -296,6 +296,8 @@ struct FollowShape {
     VectorFollowShapeSetup setup;
     // The control points tracked one by one, when the model says so.
     std::vector<int> tracked;
+    // The shape's point count when the follow began, which the indices in tracked refer to.
+    int pointCount = 0;
     bool feather = false;
     std::set<int> anchorFrames;
     std::set<int> written;
@@ -516,6 +518,7 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
         if (shape->bezier->getControlPointsCount() == 0) {
             return nullptr;
         }
+        shape->pointCount = shape->bezier->getControlPointsCount();
         shape->feather = shape->bezier->useFeatherPoints();
         std::map<RotoDrawableItem*, std::set<int>>::const_iterator selected = params.selectedPoints.find(item.get());
         const bool some = (selected != params.selectedPoints.end()) && !selected->second.empty() && ((int)selected->second.size() < shape->bezier->getControlPointsCount());
@@ -608,6 +611,12 @@ VectorFollowRun::Imp::writeFrame(FollowShape& shape,
     const double time = frame.frame;
     switch (shape.setup.model) {
     case VectorFollowModel::ePerPoint: {
+        // The host refuses point edits while the follow runs, but should one get through, the
+        // tracked indices would land on other points than the ones followed.
+        const std::size_t needed = shape.tracked.size() * (shape.feather ? 6 : 3);
+        if ((shape.bezier->getControlPointsCount() != shape.pointCount) || (frame.points.size() < needed)) {
+            return;
+        }
         FollowMatrix inverse;
         if (!totalTransformAt(*shape.item, time).inverted(&inverse)) {
             return;

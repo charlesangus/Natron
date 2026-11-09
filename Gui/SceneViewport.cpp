@@ -915,7 +915,6 @@ struct SceneViewportRenderer::Implementation {
         refineRenderer.clear();
     }
 
-
     std::shared_ptr<const StageSummary> getStageSummary() const
     {
         std::lock_guard<std::mutex> lock(summaryMutex);

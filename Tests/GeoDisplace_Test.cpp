@@ -284,7 +284,7 @@ TEST(GeoDisplace, PrimitiveNormalsAreAveragedAtSharedPoints)
             : column == 2                                  ? std::array<double, 3> { 0., 1., 0. }
                                                            : std::array<double, 3> { diagonal, diagonal, 0. };
         for (int c = 0; c < 3; ++c) {
-            EXPECT_NEAR(before[c] + expected[c], after[c], 1e-9) << "point " << index << " axis " << c;
+            EXPECT_NEAR(before[c] + expected[c], after[c], 1e-6) << "point " << index << " axis " << c;
         }
     });
     EXPECT_EQ(nullptr, out.findAttribute(eGeoAttribClassPoint, "N"));

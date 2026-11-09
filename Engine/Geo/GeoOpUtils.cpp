@@ -542,7 +542,11 @@ geoParseAttribCompare(std::string_view text,
     if (opPos == std::string_view::npos) {
         return fail();
     }
-    if (!geoParseAttribComponent(t.substr(0, opPos), &compare->attribute, &compare->component)) {
+    std::string_view attribute = t.substr(0, opPos);
+    while (!attribute.empty() && std::isspace((unsigned char)attribute.back())) {
+        attribute.remove_suffix(1);
+    }
+    if (!geoParseAttribComponent(attribute, &compare->attribute, &compare->component)) {
         return fail();
     }
     std::string_view rest = t.substr(opPos);

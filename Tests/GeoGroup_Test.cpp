@@ -258,12 +258,12 @@ TEST(GeoGroupTest, ComparisonsMayHaveSpacesAroundTheOperator)
         return out;
     };
 
-    const std::vector<GeoIndex> above = selected(eGeoAttribClassPoint, "@P.y>0");
-    EXPECT_FALSE(above.empty());
-    EXPECT_EQ(above, selected(eGeoAttribClassPoint, "@P.y > 0"));
-    EXPECT_EQ(above, selected(eGeoAttribClassPoint, "@P.y >0"));
-    EXPECT_EQ(above, selected(eGeoAttribClassPoint, "@P.y> 0"));
-    EXPECT_EQ(above, selected(eGeoAttribClassPoint, "!@P.y <= 0"));
+    const std::vector<GeoIndex> positiveX = selected(eGeoAttribClassPoint, "@P.x>0");
+    EXPECT_FALSE(positiveX.empty());
+    EXPECT_EQ(positiveX, selected(eGeoAttribClassPoint, "@P.x > 0"));
+    EXPECT_EQ(positiveX, selected(eGeoAttribClassPoint, "@P.x >0"));
+    EXPECT_EQ(positiveX, selected(eGeoAttribClassPoint, "@P.x> 0"));
+    EXPECT_EQ(positiveX, selected(eGeoAttribClassPoint, "!@P.x <= 0"));
 
     EXPECT_EQ(foo, selected(eGeoAttribClassPrimitive, "@name==foo"));
     EXPECT_EQ(foo, selected(eGeoAttribClassPrimitive, "@name == \"foo\""));

@@ -28,11 +28,16 @@
 #include <cmath>
 #include <exception>
 #include <string>
+#include <vector>
 
+#include <SequenceParsing.h>
+
+#include "Engine/AppInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Geometry/ObjParser.h"
+#include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -118,7 +123,16 @@ GeoImportOBJ::renderGeometry(const GeoRenderActionArgs& args,
 {
     std::string path;
     if (const KnobFilePtr file = _file.lock()) {
-        path = file->getFileName((int)std::floor(args.time + 0.5), args.view);
+        const int frame = (int)std::floor(args.time + 0.5);
+        path = file->getFileName(frame, args.view);
+        // getFileName substitutes frame numbers only for image-reader knobs, which this is not.
+        if (isFrameSequencePattern(path)) {
+            std::vector<std::string> views;
+            if (getApp()) {
+                views = getApp()->getProject()->getProjectViewNames();
+            }
+            path = SequenceParsing::generateFileNameFromPattern(path, views, frame, args.view);
+        }
     }
 
     return renderGeometryGenerator([&path](GeoDetailBuilder& detail, std::string* error) {

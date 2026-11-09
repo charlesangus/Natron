@@ -42,6 +42,7 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
@@ -163,17 +164,30 @@ NodeCollection::addNode(const NodePtr& node)
         QMutexLocker k(&_imp->nodesMutex);
         _imp->nodes.push_back(node);
     }
+    AppInstancePtr app = getApplication();
+    if (ProjectPtr project = app ? app->getProject() : ProjectPtr()) {
+        project->registerNodeId(node);
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeAdded(node);
+    }
 }
 
 void
 NodeCollection::removeNode(const Node* node)
 {
-    QMutexLocker k(&_imp->nodesMutex);
-    for (NodesList::iterator it =_imp->nodes.begin(); it != _imp->nodes.end();++it) {
-        if ( it->get() == node ) {
-            _imp->nodes.erase(it);
-            break;
+    {
+        QMutexLocker k(&_imp->nodesMutex);
+        for (NodesList::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
+            if (it->get() == node) {
+                _imp->nodes.erase(it);
+                break;
+            }
         }
+    }
+    AppInstancePtr app = getApplication();
+    if (ProjectPtr project = app ? app->getProject() : ProjectPtr()) {
+        project->unregisterNodeId(node);
     }
 }
 

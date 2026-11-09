@@ -52,7 +52,7 @@
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
@@ -276,9 +276,9 @@ protected:
         KnobString* stringValue = dynamic_cast<KnobString*>(_modify->getKnobByName("stringValue" + suffix).get());
 
         ASSERT_TRUE(operation && keyKnob && type && stringValue);
-        operation->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+        operation->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
         keyKnob->setValue(key, ViewSpec::all(), 0);
-        type->setValue((int)ModifyMetadata::eValueTypeString, ViewSpec::all(), 0);
+        type->setValue((int)MetadataModify::eValueTypeString, ViewSpec::all(), 0);
         stringValue->setValue(value, ViewSpec::all(), 0);
     }
 
@@ -293,9 +293,9 @@ protected:
         KnobDouble* doubleValue = dynamic_cast<KnobDouble*>(_modify->getKnobByName("doubleValue" + suffix).get());
 
         ASSERT_TRUE(operation && keyKnob && type && doubleValue);
-        operation->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+        operation->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
         keyKnob->setValue(key, ViewSpec::all(), 0);
-        type->setValue((int)ModifyMetadata::eValueTypeDouble, ViewSpec::all(), 0);
+        type->setValue((int)MetadataModify::eValueTypeDouble, ViewSpec::all(), 0);
         doubleValue->setValue(value, ViewSpec::all(), 0);
     }
 
@@ -304,7 +304,7 @@ protected:
     {
         ASSERT_TRUE(writeSizedExr(pathOf("src.0001.exr"), kSize, kSize, 1.f, "src"));
         _read = createRead(pathOf("src.####.exr"));
-        _modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+        _modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
         _dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
         _write = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
         ASSERT_TRUE(_read && _modify && _dot && _write);

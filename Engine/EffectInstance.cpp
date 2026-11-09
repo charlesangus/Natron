@@ -1570,11 +1570,11 @@ EffectInstance::getImage(int inputNb,
             tls->currentRenderArgs.inputImages[inputNb].push_back(inputImg);
         }
 
-        if ( returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex) ) {
+        if (inputImg && returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex)) {
             inputImg = convertRAMImageToOpenGLTexture(inputImg);
         }
 
-        if (mapToClipPrefs) {
+        if (inputImg && mapToClipPrefs) {
             inputImg = convertLayersFormatsIfNeeded(inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
         }
 
@@ -4154,10 +4154,14 @@ EffectInstance::overlayImagesStale(const OverlayImageRequest& request) const
     if (request.visibleCanonical.isNull()) {
         return false;
     }
-    const OverlayImageFrameConstPtr frame = getNode()->getOverlayImageFrame();
+    const NodePtr node = getNode();
+    if (!node) {
+        return false;
+    }
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
     U64 hash = 0;
 
-    return !frame || !getNode()->getHashValueIfUpToDate(&hash) || !frame->satisfies(hash, request);
+    return !frame || !node->getHashValueIfUpToDate(&hash) || !frame->satisfies(hash, request);
 }
 
 bool
@@ -4165,6 +4169,9 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
                                     const AbortableRenderInfoPtr& abortInfo)
 {
     const NodePtr node = getNode();
+    if (!node) {
+        return false;
+    }
     ParallelRenderArgsSetter frameArgs(request.time,
                                        request.view,
                                        true /*isRenderUserInteraction*/,
@@ -6828,7 +6835,10 @@ EffectInstance::onNodeHashChanged(U64 hash)
 bool
 EffectInstance::canSetValue() const
 {
-    return !getNode()->isNodeRendering() || appPTR->isBackground();
+    // A render can keep the effect alive after its node is destroyed; nothing renders the node then.
+    NodePtr node = getNode();
+
+    return !node || !node->isNodeRendering() || appPTR->isBackground();
 }
 
 void

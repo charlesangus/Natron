@@ -597,6 +597,7 @@ IBlur::initializeKnobs()
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"), 2);
     sizeKnob->setName(kIBlurParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(tr("Size (diameter) of the blur where the Map is white, in pixel units (>=0). The standard deviation of the Gaussian the blur approximates is size/2.4."));
     sizeKnob->setSpatial(true);
     sizeKnob->setCanAutoFoldDimensions(true);

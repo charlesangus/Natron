@@ -605,6 +605,13 @@ public:
     RenderStatusEnum renderIfIdle(unsigned int fbo, int width, int height);
 
     /**
+     * @brief renderIfIdle() while the delegate is not Storm, in any context sharing the one
+     * render() runs in: the refinement makes its frames on its own thread, and drawing one needs
+     * no engine. Draws nothing and returns eRenderStatusBusy while the delegate is Storm.
+     **/
+    RenderStatusEnum renderRefinementIfIdle(unsigned int fbo, int width, int height);
+
+    /**
      * @brief Under Scene Default, renders with the renderer the stage's prim names from the next
      * render on; true if that changed the renderer. A change destroys the engine, so it needs the
      * context of render() current.

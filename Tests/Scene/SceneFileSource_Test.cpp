@@ -32,8 +32,8 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
-#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -84,6 +84,25 @@ walkedDigest(const std::string& path)
 }
 } // anonymous namespace
 
+TEST(SceneFileSourceTest, AWalkOfAFileNoLongerNamedLeavesTheNewFilesDigest)
+{
+    const TwoFiles files;
+    const std::string a = files.path("a");
+    const std::string b = files.path("b");
+    const U64 walkedA = walkedDigest(a);
+    const U64 walkedB = walkedDigest(b);
+    ASSERT_NE(walkedA, walkedB);
+
+    SceneFileSource source;
+    source.load(a);
+    source.load(b);
+    const U64 unwalkedB = source.getDigest();
+    EXPECT_FALSE(source.walk(a));
+    EXPECT_EQ(source.getDigest(), unwalkedB);
+    EXPECT_TRUE(source.walk(b));
+    EXPECT_EQ(source.getDigest(), walkedB);
+}
+
 TEST(SceneFileSourceTest, AWalkOvertakenByALoadLeavesTheNewFilesDigest)
 {
     const TwoFiles files;
@@ -93,18 +112,19 @@ TEST(SceneFileSourceTest, AWalkOvertakenByALoadLeavesTheNewFilesDigest)
     const U64 walkedB = walkedDigest(b);
     ASSERT_NE(walkedA, walkedB);
 
-    for (int i = 0; i < 200; ++i) {
-        SceneFileSource source;
-        source.load(a);
-        std::thread walker([&source, &a]() { source.walk(a); });
+    SceneFileSource source;
+    source.load(a);
+    bool overtaken = false;
+    source.setWalkHookForTesting([&]() {
         source.load(b);
-        walker.join();
-
-        // Whichever came first, the digest is not that of the file no longer named.
-        ASSERT_NE(source.getDigest(), walkedA) << "iteration " << i;
-        source.walk(b);
-        ASSERT_EQ(source.getDigest(), walkedB) << "iteration " << i;
-    }
+        overtaken = true;
+    });
+    EXPECT_FALSE(source.walk(a));
+    source.setWalkHookForTesting(std::function<void()>());
+    ASSERT_TRUE(overtaken);
+    EXPECT_NE(source.getDigest(), walkedA);
+    EXPECT_TRUE(source.walk(b));
+    EXPECT_EQ(source.getDigest(), walkedB);
 }
 
 TEST(SceneFileSourceTest, AWalkTakesTheDigestOfItsClosure)

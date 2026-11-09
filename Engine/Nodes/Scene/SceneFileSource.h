@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -69,11 +70,21 @@ public:
      * @brief Walks the file layers the file at path brings in and takes their stamps into the
      * digest, unless the last walk was of path and no reload has run since. Opens files, payload
      * arcs excepted, so it runs on evaluation, before the node's layer key is taken: that key and
-     * the stack hash built on it then never hold the digest of an unwalked file. Returns whether
-     * the digest moved, in which case the caller marks the node's hash dirty. Outside any
-     * SceneWriteBarrier::runExclusive().
+     * the stack hash built on it then never hold the digest of an unwalked file. A walk of a path
+     * load() no longer names, or overtaken by a load() before it publishes, changes nothing.
+     * Returns whether the digest moved, in which case the caller marks the node's hash dirty.
+     * Outside any SceneWriteBarrier::runExclusive().
      **/
     bool walk(const std::string& path);
+
+    /**
+     * @brief Called by walk() once it has walked, with no mutex held, before it publishes. Set
+     * before any walk() runs. For tests.
+     **/
+    void setWalkHookForTesting(const std::function<void()>& hook)
+    {
+        _walkHook = hook;
+    }
 
     /**
      * @brief Holds layer open until the next hold(), so a stage composed meanwhile finds it rather
@@ -190,6 +201,7 @@ private:
     // otherwise, so an evaluation cannot re-key the node while the layers still hold what was read
     // before.
     std::atomic<U64> _digest;
+    std::function<void()> _walkHook;
 };
 
 /**

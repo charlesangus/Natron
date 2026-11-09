@@ -793,10 +793,10 @@ struct SceneViewportRenderer::Implementation {
     // from the main thread, which holds no lock, asks the next render to forget it.
     std::string refineRenderer;
     std::atomic<bool> refineReleased { false };
-    // The texture and framebuffer its frames are drawn from, the buffer holding their depth, and
-    // the frame they hold: GL objects of the context of render().
+    // The texture its frames are drawn from, the buffer holding their depth, and the frame they
+    // hold: shared by every context sharing the one of render(), any of which may draw them. The
+    // framebuffer reading the texture is made for each draw, as framebuffers are not shared.
     GLuint refineTexture = 0;
-    GLuint refineFramebuffer = 0;
     GLuint refineDepthBuffer = 0;
     int refineWidth = 0;
     int refineHeight = 0;
@@ -2191,7 +2191,7 @@ SceneViewportRenderer::~SceneViewportRenderer()
     _imp->progressive.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
-    if (_imp->refineTexture || _imp->refineFramebuffer || _imp->refineDepthBuffer) {
+    if (_imp->refineTexture || _imp->refineDepthBuffer) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its refinement texture";
     }
     if (_imp->gradeProgram || !_imp->gradeLuts.empty()) {
@@ -3528,6 +3528,20 @@ SceneViewportRenderer::renderIfIdle(unsigned int fbo,
 }
 
 SceneViewportRenderer::RenderStatusEnum
+SceneViewportRenderer::renderRefinementIfIdle(unsigned int fbo,
+                                              int width,
+                                              int height)
+{
+    std::unique_lock<std::shared_mutex> lock(_imp->stageMutex, std::try_to_lock);
+
+    if (!lock.owns_lock() || (_imp->rendererId == kRenderDelegateStormId)) {
+        return eRenderStatusBusy;
+    }
+
+    return renderLocked(fbo, width, height, false);
+}
+
+SceneViewportRenderer::RenderStatusEnum
 SceneViewportRenderer::renderLocked(unsigned int fbo,
                                     int width,
                                     int height,
@@ -3694,7 +3708,6 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         const GLsizei frameHeight = frame->height;
         if (!_imp->refineTexture) {
             glGenTextures(1, &_imp->refineTexture);
-            glGenFramebuffers(1, &_imp->refineFramebuffer);
             glGenBuffers(1, &_imp->refineDepthBuffer);
         }
         if (frame != _imp->uploadedFrame) {
@@ -3709,9 +3722,6 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frameWidth, frameHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
-                glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _imp->refineTexture, 0);
-                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
                 _imp->refineWidth = frameWidth;
                 _imp->refineHeight = frameHeight;
             } else {
@@ -3727,10 +3737,14 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
             _imp->uploadedFrame = frame;
         }
         // A frame of another size, while the one of this size renders, is stretched to the view.
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
+        GLuint readFramebuffer = 0;
+        glGenFramebuffers(1, &readFramebuffer);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _imp->refineTexture, 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
         glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glDeleteFramebuffers(1, &readFramebuffer);
         if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles) && (frameWidth == width) && (frameHeight == height)) {
             // The frame's depth, so that the grid and guides hide behind what it shows.
             glUseProgram(0);
@@ -3944,10 +3958,8 @@ SceneViewportRenderer::releaseGL()
     _imp->releaseGrade();
     if (_imp->refineTexture) {
         glDeleteTextures(1, &_imp->refineTexture);
-        glDeleteFramebuffers(1, &_imp->refineFramebuffer);
         glDeleteBuffers(1, &_imp->refineDepthBuffer);
         _imp->refineTexture = 0;
-        _imp->refineFramebuffer = 0;
         _imp->refineDepthBuffer = 0;
     }
     _imp->refineWidth = 0;
@@ -6576,7 +6588,12 @@ SceneViewport::paintGL()
     }
     _imp->renderer.setRecordDrawnGuides(property("natronSceneRecordGuides").toBool());
     SceneViewportRenderer::RenderStatusEnum status = SceneViewportRenderer::eRenderStatusBusy;
-    if (_imp->usesRenderThread) {
+    if (_imp->usesRenderThread && (_imp->renderer.getActiveRendererId() != kRenderDelegateStormId)) {
+        // The delegate's frames are made on the refinement's thread, and drawing one needs no
+        // engine: waiting on the render thread for it would hold the event loop for two thread
+        // wake-ups on processors the delegate keeps busy, at every frame it refines.
+        status = _imp->renderer.renderRefinementIfIdle(defaultFramebufferObject(), w, h);
+    } else if (_imp->usesRenderThread) {
         GLuint target = 0;
         GLsync fence = nullptr;
         Implementation* imp = _imp.get();

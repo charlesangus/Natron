@@ -244,8 +244,12 @@ SceneFileSource::walk(const std::string& path)
 {
     {
         std::lock_guard<std::mutex> lock(_mutex);
+        // A path load() no longer names is stale: the walk of the file now named sets the digest.
+        if (_path != path) {
+            return false;
+        }
         // File layers are never edited, so only a reload changes what they bring in.
-        if (_walked && (_path == path) && !_closure.empty() && (_closureReloadCount == SceneOps::getFileLayerReloadCount())) {
+        if (_walked && !_closure.empty() && (_closureReloadCount == SceneOps::getFileLayerReloadCount())) {
             return false;
         }
     }
@@ -260,7 +264,10 @@ SceneFileSource::walk(const std::string& path)
     {
         std::lock_guard<std::mutex> lock(_mutex);
         loadCount = _loadCount;
-        if (_walked && (_path == path) && !_closure.empty() && (_closureReloadCount == SceneOps::getFileLayerReloadCount())) {
+        if (_path != path) {
+            return false;
+        }
+        if (_walked && !_closure.empty() && (_closureReloadCount == SceneOps::getFileLayerReloadCount())) {
             return false;
         }
     }
@@ -272,6 +279,9 @@ SceneFileSource::walk(const std::string& path)
         mark.Clear();
     }
     const U64 digest = stampPaths(closure.paths);
+    if (_walkHook) {
+        _walkHook();
+    }
     // Declared before the lock, so the layers let go of are destroyed after it is released.
     std::vector<PXR_NS::SdfLayerRefPtr> retired;
     std::lock_guard<std::mutex> lock(_mutex);
@@ -283,7 +293,6 @@ SceneFileSource::walk(const std::string& path)
         return false;
     }
     publishClosure(&closure);
-    _path = path;
     _walked = true;
     retired.swap(_retired);
 

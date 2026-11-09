@@ -387,7 +387,7 @@ future core work has solid ground to build on.
 | M294 | ZDefocus Engine Revisit | todo | M291, M292, M293 |  | E3 | F13 | | [M294-zdefocus-engine-revisit.md](PLAN/MILESTONES/M294-zdefocus-engine-revisit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
 | M296 | Raw Prepare Output Format | done | M80 | misty-marten | E3 | | | [M296-raw-prepare-output-format.md](PLAN/MILESTONES/M296-raw-prepare-output-format.md) |
-| M297 | Viewer Node Knobs Follow-ups | doing | M164 | bosley-native-nodes | E3 | | | [M297-viewer-node-knobs-followups.md](PLAN/MILESTONES/M297-viewer-node-knobs-followups.md) |
+| M297 | Viewer Node Knobs Follow-ups | done | M164 | | E3 | | | [M297-viewer-node-knobs-followups.md](PLAN/MILESTONES/M297-viewer-node-knobs-followups.md) |
 | M298 | RenderIsolation Taskgraph Hang | done | M177 | bosley-native-nodes | E3 | | | [M298-renderisolation-taskgraph-hang.md](PLAN/MILESTONES/M298-renderisolation-taskgraph-hang.md) |
 | M299 | Roto Render Performance | todo | M224, M276, M300 |  | E6 | | | [M299-roto-render-performance.md](PLAN/MILESTONES/M299-roto-render-performance.md) |
 | M304 | Roto Points Snapping To Origin | done | M224, M261 | bosley-native-nodes | E6 | | | [M304-roto-points-snapping-to-origin.md](PLAN/MILESTONES/M304-roto-points-snapping-to-origin.md) |

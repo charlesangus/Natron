@@ -1,19 +1,25 @@
-"""The node graph's GPU region overlay on CheckerBoard -> Saturation -> Grade -> TimeBlur -> Saturation -> Viewer.
+"""The node graph's GPU region overlay on CheckerBoard -> Blur -> Grade -> TimeBlur -> Blur -> Saturation -> Viewer.
 
 TimeBlur has no GPU path, so on a GPU host the chain splits into a region above it and one below it: an exit with
 a red X and "no GPU path" where the upper region feeds TimeBlur, and an entry tick where TimeBlur feeds the lower
-one. The overlay's outline item publishes what it draws as properties (regionCount, exitCount, entryCount,
-fallbackCount, fadedCount, mixedCount, exitLabels), which the checks read.
+one. Placement is weight-based: a region of Point nodes alone (Saturation, Grade) weighs under kGpuRegionMinWeight
+and stays on the CPU, so each side of the TimeBlur has a Blur, a Filter that is enough on its own. The overlay's
+outline item publishes what it draws as properties (regionCount, exitCount, entryCount, fallbackCount, fadedCount,
+mixedCount, exitLabels), which the checks read.
+
+Whether a GPU is usable is read from natron.log: "GPU compute ready on" or "GPU compute is unavailable:".
 
 Cases:
   toggle     the Show GPU Regions preference, Shift+G in the node graph and the node graph's View > Show GPU
              Regions action set one state, and the overlay shows and hides with it
   no GPU     with no usable GPU (the remote --gui jobs: auto mode refuses lavapipe) the overlay draws no region
              and the viewer shows no error
-  mixed      with a GPU, the regions round the TimeBlur draw at least one exit or entry, every exit label is one
-             of the overlay's reasons, and TimeBlur's input reads "no GPU path"
+  mixed      with a usable GPU, the chain places at least one region, the regions round the TimeBlur draw at
+             least one exit or entry, every exit label is one of the overlay's reasons, and TimeBlur's input
+             reads "no GPU path"
   cached     with a GPU, editing the lower Saturation serves the upper region from the cache, which fades it
-  fallback   with NATRON_GPU_FAULT set, a region that failed on the device gets the fallback outline
+  fallback   with NATRON_GPU_FAULT set, a region that failed on the device gets the fallback outline. N must be
+             past the operations GPU start-up uses: oom@1 fails start-up itself, so the session has no GPU
 
 Screenshots in $NATRON_GUI_TEST_OUT, one per state: m116_off.png, m116_on.png, m116_no_gpu.png or
 m116_mixed.png, m116_cached.png, m116_fallback.png. Each has a NOTE caption in results.txt.
@@ -23,7 +29,7 @@ Usage (no GPU, as the remote --gui jobs run it):
 With a GPU (natron-dev-gpu for a hardware device; lavapipe's cost model may keep few regions on the GPU):
     docker exec -e NATRON_GPU=force -w /home/bosley/git/Natron natron-dev-gpu \\
         Tests/gui/run-gui-test.sh Tests/gui/m116_gpu_overlay.py build/fast/App/Natron
-    docker exec -e NATRON_GPU=force -e NATRON_GPU_FAULT=oom@1 -w /home/bosley/git/Natron natron-dev-gpu \\
+    docker exec -e NATRON_GPU=force -e NATRON_GPU_FAULT=oom@40 -w /home/bosley/git/Natron natron-dev-gpu \\
         Tests/gui/run-gui-test.sh Tests/gui/m116_gpu_overlay.py build/fast/App/Natron
 """
 import os
@@ -34,6 +40,11 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
 FALLBACK_ATTEMPTS = 8
+GPU_STATE_TIMEOUT_S = 20.0
+GPU_READY_LINE = "GPU compute ready on"
+GPU_UNAVAILABLE_LINE = "GPU compute is unavailable:"
+BLUR_SIZE = 6.0
+NODE_SPACING = 92
 GPU_ENV = os.environ.get("NATRON_GPU", "")
 FAULT_ENV = os.environ.get("NATRON_GPU_FAULT", "")
 PREF_NAME = "showGpuRegions"
@@ -96,6 +107,19 @@ try:
         return "pref=%r shown=%r regions=%d exits=%d entries=%d fallbacks=%d faded=%d mixed=%d labels=%r" % (
             pref.getValue(), shown(), prop("regionCount"), prop("exitCount"), prop("entryCount"),
             prop("fallbackCount"), prop("fadedCount"), prop("mixedCount"), prop("exitLabels"))
+
+    def gpu_log_state():
+        """("ready", line) or ("unavailable", line) from the first GPU compute start-up line in natron.log, else None."""
+        path = os.path.join(gt.OUT, "natron.log")
+        if not os.path.isfile(path):
+            return None
+        with open(path, errors="replace") as f:
+            for line in f:
+                if GPU_READY_LINE in line:
+                    return ("ready", line.strip())
+                if GPU_UNAVAILABLE_LINE in line:
+                    return ("unavailable", line.strip())
+        return None
 
     def caption(name, text):
         gt.shot(name)
@@ -166,24 +190,26 @@ try:
         gt.report("NOTE NATRON_GPU=%r NATRON_GPU_FAULT=%r" % (GPU_ENV, FAULT_ENV))
 
         checker = create("CheckerBoard")
-        upper = create("Saturation")
+        upper = create("Blur")
         grade = create("Grade")
         timeblur = create("TimeBlur")
+        lower_blur = create("Blur")
         lower = create("Saturation")
         viewer = app.getNode("Viewer1") or create("Viewer")
-        chain = (checker, upper, grade, timeblur, lower)
-        upper.getParam("saturation").setValue(0.5)
+        chain = (checker, upper, grade, timeblur, lower_blur, lower)
+        set_all(upper, "size", BLUR_SIZE)
         set_all(grade, "multiply", 1.5)
+        set_all(lower_blur, "size", BLUR_SIZE)
         lower.getParam("saturation").setValue(0.8)
         for i, node in enumerate(chain):
-            node.setPosition(0, i * 110)
+            node.setPosition(0, i * NODE_SPACING)
             if i > 0:
                 require(node.connectInput(0, chain[i - 1]), "connect %s" % node.getScriptName())
-        viewer.setPosition(0, len(chain) * 110)
+        viewer.setPosition(0, len(chain) * NODE_SPACING)
         require(viewer.connectInput(0, lower), "connect the Viewer to the lower Saturation")
         app.clearSelection()
         py_viewer = hold(app.getViewer(viewer.getScriptName()))
-        node_graph_view().centerOn(0, 280)
+        node_graph_view().centerOn(0, len(chain) * NODE_SPACING // 2)
         yield ("sleep", 1500)
 
         gt.section("toggle")
@@ -219,12 +245,18 @@ try:
         check(ok, "the View action turns the preference back on (%s)" % state())
 
         gt.section("placement")
+        yield ("until", lambda: gpu_log_state() is not None, GPU_STATE_TIMEOUT_S)
+        gpu = gpu_log_state()
+        gpu_ready = gpu is not None and gpu[0] == "ready"
+        gt.report("NOTE GPU compute: %s" % (gpu[1] if gpu else "no start-up line in natron.log"))
+        if FAULT_ENV and gpu is not None and not gpu_ready and "injected fault" in gpu[1]:
+            check(False, "NATRON_GPU_FAULT=%s spares GPU start-up (raise N past the operations start-up uses)"
+                  % FAULT_ENV)
         py_viewer.renderCurrentFrame(False)
         has_regions = yield ("until", lambda: prop("regionCount") >= 1, POLL_TIMEOUT_S)
         caption("m116_on.png", "the preference on after a render of the chain")
-        if not has_regions:
+        if not gpu_ready:
             gt.section("no GPU")
-            check(GPU_ENV != "force", "NATRON_GPU=force places at least one region (%s)" % state())
             yield ("sleep", 1000)
             check(prop("regionCount") == 0 and prop("exitCount") == 0 and prop("entryCount") == 0
                   and prop("fallbackCount") == 0 and prop("fadedCount") == 0,
@@ -232,7 +264,9 @@ try:
             check(shown(), "with no GPU the overlay stays on and empty")
             check(not gt.viewer_messages(), "with no GPU the viewer shows no error (%r)" % gt.viewer_messages())
             caption("m116_no_gpu.png", "no usable GPU: the overlay is on and draws nothing")
-            gt.report("NOTE the mixed, cached and fallback cases need a GPU; run with NATRON_GPU=force")
+            gt.report("NOTE the mixed, cached and fallback cases need a usable GPU")
+        elif not check(has_regions, "with a usable GPU the chain places at least one region (%s)" % state()):
+            gt.report("NOTE mixed, cached and fallback cases skipped: no region was placed")
         else:
             gt.section("mixed")
             labels = prop("exitLabels")

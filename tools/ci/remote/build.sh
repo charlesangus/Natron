@@ -5,8 +5,8 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]
-#                            [--cmake-arg <arg>]... [--gui "<script> ..."]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
+#                            [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
@@ -16,6 +16,12 @@
 #                        the -DDEBUG traps. It behaves as --no-appimage.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
+#   --scheduler <legacy|taskgraph> -> implies --tests; runs only that scheduler's
+#                        ctest leg and smoke test instead of both, which halves the
+#                        wait of an intermediate fix build. Without it both legs
+#                        run. A milestone's verification gate must run without it.
+#                        The smoke renders of the two schedulers are compared
+#                        only when both legs ran.
 #   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest,
@@ -74,7 +80,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -111,6 +117,7 @@ RUN_TESTS=false
 RECORD_GOLDENS=false
 WANT_APPIMAGE=true
 SHUFFLE_SEEDS=""
+SCHEDULERS="legacy,taskgraph"
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
 FROM_RUN=""
@@ -145,6 +152,17 @@ while [[ $# -gt 0 ]]; do
             ;;
         --record-goldens)
             RECORD_GOLDENS=true
+            RUN_TESTS=true
+            BUILD_OPTION=true
+            ;;
+        --scheduler)
+            if [[ $# -eq 0 || ( "$1" != "legacy" && "$1" != "taskgraph" ) ]]; then
+                echo "build.sh: --scheduler needs legacy or taskgraph, got '${1:-}'" >&2
+                usage
+                exit 1
+            fi
+            SCHEDULERS="$1"
+            shift
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
@@ -321,6 +339,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "record_goldens=${RECORD_GOLDENS}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
+    -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "token=${TOKEN}" \
     -f "gui_scripts=${GUI_SCRIPTS}" \

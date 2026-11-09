@@ -32,7 +32,6 @@
 #include <condition_variable>
 #include <map>
 #include <mutex>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -104,7 +103,6 @@
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/errorMark.h>
-#include <pxr/base/tf/getenv.h>
 #include <pxr/base/tf/notice.h>
 #include <pxr/base/tf/weakBase.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
@@ -114,7 +112,7 @@
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hdx/tokens.h>
-#include <pxr/imaging/hgi/tokens.h>
+#include <pxr/imaging/hgi/texture.h>
 #include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
@@ -145,7 +143,7 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-// Storm clears to this, in scene-linear; it reaches the framebuffer through the display transform.
+// The background grey, in scene-linear; it is shown through the display transform.
 const float kBackgroundLinear = 0.05f;
 // The same grey once encoded to sRGB, for the clears and checks done outside Storm.
 const float kBackgroundSrgb = 0.2478f;
@@ -164,278 +162,165 @@ degreesToRadians(double d)
     return d * M_PI / 180.;
 }
 
-// A display transform Hydra cannot draw is baked into a log2 shaper and a 3D LUT, which it can.
-// The shaper spans scene-linear 0 to 2^8, finest near 2^-10, so highlights still tone-map.
-const float kBakeLog2Min = -10.f;
-const float kBakeLog2Max = 8.f;
-const unsigned long kBakeLutSize = 65;
-const char* const kBakeInputSpace = "Natron 3D Viewport Input";
-const char* const kBakeOutputSpace = "Natron 3D Viewport Output";
-const char* const kBakeDisplay = "Natron 3D Viewport";
-const char* const kBakeView = "Baked";
-
+/**
+ * @brief The 2D viewer's display transform, as ProjectColorManagement::getDisplayProcessor() makes
+ * it: colorSpace through display and view, with look in place of the view's own looks when it is
+ * not empty. Throws what OpenColorIO throws.
+ **/
 OCIO_NAMESPACE::ConstProcessorRcPtr
-displayViewProcessor(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                     const std::string& colorSpace,
-                     const std::string& display,
-                     const std::string& view)
+displayProcessor(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+                 const std::string& colorSpace,
+                 const std::string& display,
+                 const std::string& view,
+                 const std::string& look)
 {
     OCIO_NAMESPACE::DisplayViewTransformRcPtr displayView = OCIO_NAMESPACE::DisplayViewTransform::Create();
     displayView->setSrc(colorSpace.c_str());
     displayView->setDisplay(display.c_str());
     displayView->setView(view.c_str());
+    OCIO_NAMESPACE::LegacyViewingPipelineRcPtr pipeline = OCIO_NAMESPACE::LegacyViewingPipeline::Create();
+    pipeline->setDisplayViewTransform(displayView);
+    if (!look.empty()) {
+        pipeline->setLooksOverrideEnabled(true);
+        pipeline->setLooksOverride(look.c_str());
+    }
 
-    return config->getProcessor(displayView);
+    return pipeline->getProcessor(config);
 }
 
-// Hydra's colour correction task (v26.08 hdx/colorCorrectionTask.cpp) loses the sampler name of
-// every 1D and 2D LUT texture OpenColorIO asks for, and the draw then fails with a GL error,
-// leaving only the clear colour on screen. ACES 2.0 output transforms need such textures;
-// analytic transforms and 3D LUTs do not.
-bool
-needsLutTextures(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
-{
-    OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
-    shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
-    processor->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
+// The encoding shown without OpenColorIO, as Hydra's colour correction applies it.
+const char* const kSrgbDisplayFunction = "vec4 toDisplay(vec4 c) {\n"
+                                         "    vec3 v = max(c.rgb, vec3(0.0));\n"
+                                         "    return vec4(mix(v * 12.92, 1.055 * pow(v, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, v)), c.a);\n"
+                                         "}\n";
 
-    return shader->getNumTextures() > 0;
-}
+const char* const kGradeVertexShader = "#version 400 compatibility\n"
+                                       "void main() {\n"
+                                       "    gl_Position = vec4((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0, 0.0, 1.0);\n"
+                                       "}\n";
 
+/**
+ * @brief The pass that draws Storm's colour AOV onto the framebuffer, around displayFunction, which
+ * defines vec4 toDisplay(vec4). The AOV is premultiplied over a transparent clear, and a display
+ * transform is not linear, so each pixel is graded unpremultiplied (gain, toDisplay, then gamma, as
+ * the 2D viewer applies them) and premultiplied again for the blend over the ungraded background.
+ * Pixels nothing was rendered to are left to the background. The AOV's depth goes with it, for
+ * the grid and guides drawn after; without one, what was rendered stays in front of them.
+ **/
 std::string
-appendToList(const char* list,
-             const std::string& item)
+gradeFragmentShader(const std::string& displayFunction)
 {
-    const std::string existing = list ? list : "";
+    std::string source = "#version 400 compatibility\n"
+                         "uniform sampler2D colorAov;\n"
+                         "uniform sampler2D depthAov;\n"
+                         "uniform bool hasDepth;\n"
+                         "uniform float gain;\n"
+                         "uniform float gamma;\n"
+                         "\n";
+    source += displayFunction;
+    source += "\n"
+              "void main() {\n"
+              "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
+              "    vec4 c = texelFetch(colorAov, p, 0);\n"
+              "    float a = clamp(c.a, 0.0, 1.0);\n"
+              "    if (a <= 0.0) {\n"
+              "        discard;\n"
+              "    }\n"
+              "    vec3 shown = toDisplay(vec4(c.rgb / a * gain, 1.0)).rgb;\n"
+              "    if (gamma <= 0.0) {\n"
+              "        shown = vec3(greaterThanEqual(shown, vec3(1.0)));\n"
+              "    } else {\n"
+              "        shown = pow(max(shown, vec3(0.0)), vec3(1.0 / gamma));\n"
+              "    }\n"
+              "    gl_FragColor = vec4(shown * a, a);\n"
+              "    gl_FragDepth = hasDepth ? texelFetch(depthAov, p, 0).r : 0.0;\n"
+              "}\n";
 
-    return existing.empty() ? item : existing + ", " + item;
+    return source;
 }
 
-// Throws what OpenColorIO throws.
-OCIO_NAMESPACE::GroupTransformRcPtr
-bakeToLut(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+// Throws std::runtime_error with the driver's log.
+GLuint
+compileShader(GLenum type,
+              const std::string& source)
 {
-    const unsigned long n = kBakeLutSize;
-    // Offsetting by 2^min puts scene-linear 0 on the first grid point.
-    const float offset = std::exp2(kBakeLog2Min);
-    std::vector<float> grid(n);
-    for (unsigned long i = 0; i < n; ++i) {
-        const float t = float(i) / float(n - 1);
-        grid[i] = std::exp2(kBakeLog2Min + t * (kBakeLog2Max - kBakeLog2Min)) - offset;
-    }
-    std::vector<float> rgb(n * n * n * 3);
-    std::size_t p = 0;
-    for (unsigned long r = 0; r < n; ++r) {
-        for (unsigned long g = 0; g < n; ++g) {
-            for (unsigned long b = 0; b < n; ++b) {
-                rgb[p++] = grid[r];
-                rgb[p++] = grid[g];
-                rgb[p++] = grid[b];
-            }
-        }
-    }
-    OCIO_NAMESPACE::PackedImageDesc image(rgb.data(), long(n * n * n), 1, 3);
-    processor->getDefaultCPUProcessor()->apply(image);
-
-    OCIO_NAMESPACE::Lut3DTransformRcPtr lut = OCIO_NAMESPACE::Lut3DTransform::Create(n);
-    lut->setInterpolation(OCIO_NAMESPACE::INTERP_TETRAHEDRAL);
-    p = 0;
-    for (unsigned long r = 0; r < n; ++r) {
-        for (unsigned long g = 0; g < n; ++g) {
-            for (unsigned long b = 0; b < n; ++b, p += 3) {
-                lut->setValue(r, g, b, rgb[p], rgb[p + 1], rgb[p + 2]);
-            }
-        }
+    const GLuint shader = glCreateShader(type);
+    const char* text = source.c_str();
+    glShaderSource(shader, 1, &text, nullptr);
+    glCompileShader(shader);
+    GLint ok = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    if (ok != GL_TRUE) {
+        GLint length = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+        std::string log(std::max(length, 1), '\0');
+        glGetShaderInfoLog(shader, (GLsizei)log.size(), nullptr, &log[0]);
+        glDeleteShader(shader);
+        throw std::runtime_error("the shader does not compile: " + log);
     }
 
-    OCIO_NAMESPACE::AllocationTransformRcPtr shaper = OCIO_NAMESPACE::AllocationTransform::Create();
-    shaper->setAllocation(OCIO_NAMESPACE::ALLOCATION_LG2);
-    const float vars[3] = { kBakeLog2Min, kBakeLog2Max, offset };
-    shaper->setVars(3, vars);
-    OCIO_NAMESPACE::GroupTransformRcPtr baked = OCIO_NAMESPACE::GroupTransform::Create();
-    baked->appendTransform(shaper);
-    baked->appendTransform(lut);
-
-    return baked;
+    return shader;
 }
 
-/**
- * @brief A copy of config with transform as an extra display and view, kBakeDisplay and kBakeView,
- * reached from kBakeInputSpace. Hydra reads OCIO's process-wide current config, which OpenFX
- * plugins read too, so the copy keeps everything config has and hides what it adds from listings:
- * the display stays out of the active displays and the colour spaces are inactive.
- **/
-OCIO_NAMESPACE::ConstConfigRcPtr
-configWithViewportView(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                       const OCIO_NAMESPACE::ConstTransformRcPtr& transform)
+// Throws std::runtime_error with the driver's log.
+GLuint
+linkProgram(const std::string& vertexSource,
+            const std::string& fragmentSource)
 {
-    OCIO_NAMESPACE::ConfigRcPtr copy = config->createEditableCopy();
-    std::string activeDisplays;
-    for (int i = 0; i < config->getNumDisplays(); ++i) {
-        activeDisplays = appendToList(activeDisplays.c_str(), config->getDisplay(i));
+    const GLuint vertex = compileShader(GL_VERTEX_SHADER, vertexSource);
+    GLuint fragment = 0;
+    try {
+        fragment = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
+    } catch (...) {
+        glDeleteShader(vertex);
+        throw;
     }
-    OCIO_NAMESPACE::ColorSpaceRcPtr input = OCIO_NAMESPACE::ColorSpace::Create(OCIO_NAMESPACE::REFERENCE_SPACE_SCENE);
-    input->setName(kBakeInputSpace);
-    copy->addColorSpace(input);
-    OCIO_NAMESPACE::ColorSpaceRcPtr output = OCIO_NAMESPACE::ColorSpace::Create(OCIO_NAMESPACE::REFERENCE_SPACE_SCENE);
-    output->setName(kBakeOutputSpace);
-    output->setTransform(transform, OCIO_NAMESPACE::COLORSPACE_DIR_FROM_REFERENCE);
-    copy->addColorSpace(output);
-    const std::string inactive = appendToList(config->getInactiveColorSpaces(),
-                                              std::string(kBakeInputSpace) + ", " + kBakeOutputSpace);
-    copy->setInactiveColorSpaces(inactive.c_str());
-    copy->addDisplayView(kBakeDisplay, kBakeView, kBakeOutputSpace, "");
-    copy->setActiveDisplays(activeDisplays.c_str());
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    GLint ok = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (ok != GL_TRUE) {
+        GLint length = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
+        std::string log(std::max(length, 1), '\0');
+        glGetProgramInfoLog(program, (GLsizei)log.size(), nullptr, &log[0]);
+        glDeleteProgram(program);
+        throw std::runtime_error("the shader does not link: " + log);
+    }
 
-    return copy;
+    return program;
 }
 
-std::string
-displayTransformKey(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                    const std::string& colorSpace,
-                    const std::string& display,
-                    const std::string& view)
+void
+setLutParameters(GLenum target,
+                 OCIO_NAMESPACE::Interpolation interpolation)
 {
-    return std::string(config->getCacheID()) + '\n' + colorSpace + '\n' + display + '\n' + view;
+    const GLint filter = (interpolation == OCIO_NAMESPACE::INTERP_NEAREST) ? GL_NEAREST : GL_LINEAR;
+
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    if (target != GL_TEXTURE_1D) {
+        glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    if (target == GL_TEXTURE_3D) {
+        glTexParameteri(target, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    }
 }
 
-// Main thread only. Baking evaluates the transform at every LUT grid point, so each one is kept.
-// The viewer's gain and gamma stay out of the bake, so dragging them reuses it.
-OCIO_NAMESPACE::ConstTransformRcPtr
-cachedLut(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-          const std::string& colorSpace,
-          const std::string& display,
-          const std::string& view,
-          const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
-{
-    static std::map<std::string, OCIO_NAMESPACE::ConstTransformRcPtr> cache;
-    const std::string key = displayTransformKey(config, colorSpace, display, view);
-    std::map<std::string, OCIO_NAMESPACE::ConstTransformRcPtr>::const_iterator found = cache.find(key);
-    if (found != cache.end()) {
-        return found->second;
-    }
-    const std::size_t kMaxBakes = 8;
-    if (cache.size() >= kMaxBakes) {
-        cache.clear();
-    }
-    OCIO_NAMESPACE::ConstTransformRcPtr baked = bakeToLut(processor);
-    cache[key] = baked;
+// The colour AOV and its depth take the first two texture units, the LUTs the ones after.
+const GLint kFirstLutUnit = 2;
 
-    return baked;
-}
-
-// The 2D viewer multiplies the working-space image by gain before its display transform.
-OCIO_NAMESPACE::TransformRcPtr
-viewerGainTransform(double gain)
-{
-    const double m[16] = {
-        gain, 0., 0., 0.,
-        0., gain, 0., 0.,
-        0., 0., gain, 0.,
-        0., 0., 0., 1.
-    };
-    OCIO_NAMESPACE::MatrixTransformRcPtr matrix = OCIO_NAMESPACE::MatrixTransform::Create();
-    matrix->setMatrix(m);
-
-    return matrix;
-}
-
-/**
- * @brief After its display transform the 2D viewer takes each channel, negatives as 0, to the power
- * 1 / gamma, which ExponentTransform's default negative style does. A gamma of 0 or less shows
- * which values reach 1; OpenColorIO has no step, so the steepest ramp its RangeTransform accepts,
- * 2^-16 wide just below 1, stands in for it.
- **/
-OCIO_NAMESPACE::TransformRcPtr
-viewerGammaTransform(double gamma)
-{
-    if (gamma <= 0.) {
-        OCIO_NAMESPACE::RangeTransformRcPtr range = OCIO_NAMESPACE::RangeTransform::Create();
-        range->setMinInValue(1. - std::exp2(-16.));
-        range->setMaxInValue(1.);
-        range->setMinOutValue(0.);
-        range->setMaxOutValue(1.);
-
-        return range;
-    }
-    const double exponent = 1. / gamma;
-    const double values[4] = { exponent, exponent, exponent, 1. };
-    OCIO_NAMESPACE::ExponentTransformRcPtr power = OCIO_NAMESPACE::ExponentTransform::Create();
-    power->setValue(values);
-
-    return power;
-}
-
-std::string
-exactText(double value)
-{
-    std::ostringstream os;
-    os << std::hexfloat << value;
-
-    return os.str();
-}
-
-/**
- * @brief configWithViewportView() of gain, then displayView, then gamma, as the 2D viewer applies
- * them. displayKey names displayView within config. Main thread only. Each gain and gamma is a
- * config of its own; a few are kept for toggling.
- **/
-OCIO_NAMESPACE::ConstConfigRcPtr
-cachedViewportConfig(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                     const std::string& displayKey,
-                     double gain,
-                     double gamma,
-                     const OCIO_NAMESPACE::ConstTransformRcPtr& displayView)
-{
-    static std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr> cache;
-    const std::string key = displayKey + '\n' + exactText(gain) + '\n' + exactText(gamma);
-    std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr>::const_iterator found = cache.find(key);
-    if (found != cache.end()) {
-        return found->second;
-    }
-    const std::size_t kMaxConfigs = 8;
-    if (cache.size() >= kMaxConfigs) {
-        cache.clear();
-    }
-    OCIO_NAMESPACE::GroupTransformRcPtr chain = OCIO_NAMESPACE::GroupTransform::Create();
-    if (gain != 1.) {
-        chain->appendTransform(viewerGainTransform(gain));
-    }
-    chain->appendTransform(displayView->createEditableCopy());
-    if (gamma != 1.) {
-        chain->appendTransform(viewerGammaTransform(gamma));
-    }
-    OCIO_NAMESPACE::ConstConfigRcPtr result = configWithViewportView(config, chain);
-    cache[key] = result;
-
-    return result;
-}
-
-/**
- * @brief The sRGB encoding Hydra's colour correction applies without OpenColorIO, for when the
- * viewer's gain or gamma have to go with it, added to the config $OCIO names, the one OpenFX
- * plugins read unless told otherwise. Main thread only. Throws what OpenColorIO throws.
- **/
-OCIO_NAMESPACE::ConstConfigRcPtr
-srgbViewportConfig(double gain,
-                   double gamma)
-{
-    static std::string loadedFrom;
-    static OCIO_NAMESPACE::ConstConfigRcPtr base;
-    const std::string env = TfGetenv("OCIO");
-    if (!base || (env != loadedFrom)) {
-        base = OCIO_NAMESPACE::Config::CreateFromEnv();
-        loadedFrom = env;
-    }
-    OCIO_NAMESPACE::ExponentWithLinearTransformRcPtr encode = OCIO_NAMESPACE::ExponentWithLinearTransform::Create();
-    const double exponent[4] = { 2.4, 2.4, 2.4, 1. };
-    const double offset[4] = { 0.055, 0.055, 0.055, 0. };
-    encode->setGamma(exponent);
-    encode->setOffset(offset);
-    encode->setDirection(OCIO_NAMESPACE::TRANSFORM_DIR_INVERSE);
-
-    return cachedViewportConfig(base, std::string(base->getCacheID()) + "\nsRGB", gain, gamma, encode);
-}
+struct GradeLut {
+    GLuint id;
+    GLenum target;
+    std::string sampler;
+};
 
 double
 radiansToDegrees(double r)
@@ -444,8 +329,8 @@ radiansToDegrees(double r)
 }
 
 /**
- * @brief Saves on construction, and restores on destruction, the GL state Storm (HgiGL and its
- * presentation into the target framebuffer) changes and the drawing around it relies on: the
+ * @brief Saves on construction, and restores on destruction, the GL state Storm (HgiGL, and the
+ * pass grading its AOV into the target framebuffer) changes and the drawing around it relies on: the
  * attribute stacks, the bindings Storm leaves behind, and the capabilities the attribute stacks of
  * a compatibility context do not cover.
  **/
@@ -706,12 +591,17 @@ struct SceneViewportRenderer::Implementation {
     bool guideBatchesValid = false;
 
     DisplayTransform displayTransform;
-    // What Hydra is given: displayTransform, or a baked copy of it when Hydra cannot draw it.
-    DisplayTransform hydraTransform;
-    bool useOpenColorIO = false;
-    float backgroundDisplay[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
-    // Set when the engine's colour correction task must be rebuilt from OCIO's current config.
-    bool colorCorrectionDirty = false;
+    // displayTransform's display, view and look, null for the sRGB encoding.
+    OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
+    // The background as shown: the display transform of kBackgroundLinear, without the viewer's
+    // gain and gamma, which act on rendered pixels only.
+    float backgroundShown[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
+    // The pass grading Storm's colour AOV onto the framebuffer (gradeFragmentShader()), GL objects
+    // of the context of render(), and whether it must be made again from displayProcessor.
+    GLuint gradeProgram = 0;
+    std::vector<GradeLut> gradeLuts;
+    OCIO_NAMESPACE::GpuShaderDescRcPtr gradeShader;
+    bool gradeDirty = true;
 
     // The transform handles, if any, and the drag of one under way.
     bool hasHandles = false;
@@ -1170,15 +1060,11 @@ struct SceneViewportRenderer::Implementation {
         UsdImagingGLRenderParams params;
 
         params.frame = UsdTimeCode(timeCode());
-        params.clearColor = GfVec4f(kBackgroundLinear, kBackgroundLinear, kBackgroundLinear, 1.f);
-        if (useOpenColorIO) {
-            params.colorCorrectionMode = HdxColorCorrectionTokens->openColorIO;
-            params.ocioDisplay = TfToken(hydraTransform.display);
-            params.ocioView = TfToken(hydraTransform.view);
-            params.ocioColorSpace = TfToken(hydraTransform.colorSpace);
-        } else {
-            params.colorCorrectionMode = HdxColorCorrectionTokens->sRGB;
-        }
+        // Transparent and scene-linear: drawGrade() grades what was rendered and puts it over the
+        // background. Hydra's colour correction would grade premultiplied values, which a
+        // transform that is not linear gets wrong wherever alpha is between 0 and 1.
+        params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
+        params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
         params.highlight = true;
         params.showProxy = showProxy;
         params.showRender = showRender;
@@ -1281,10 +1167,10 @@ struct SceneViewportRenderer::Implementation {
             if (RenderDelegates::isStorm(rendererId)) {
                 applyStormPtexBudget(engine->GetHgi());
             }
-            // Without a render output Storm draws straight into the bound framebuffer and the colour
-            // correction task, which only acts on the color AOV, leaves scene-linear values on screen.
+            // drawGrade() reads the colour AOV, and the depth AOV Storm keeps with it, in place of
+            // Hydra's presentation.
             engine->SetRendererAov(HdAovTokens->color);
-            colorCorrectionDirty = true;
+            engine->SetEnablePresentation(false);
             engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
             applySelection();
         } catch (const std::exception& e) {
@@ -1300,24 +1186,218 @@ struct SceneViewportRenderer::Implementation {
         return true;
     }
 
-    // Needs the GL context current and an engine. Hydra's colour correction task reads OCIO's
-    // process-wide current config when its parameters change (v26.08
-    // hdx/colorCorrectionTask.cpp), so the config is made current here, and a config that changed
-    // under unchanged names forces new parameters by passing through disabled.
-    void prepareColorCorrection()
+    // Needs the GL context current.
+    void releaseGrade()
     {
-        if (!colorCorrectionDirty) {
-            return;
+        if (gradeProgram) {
+            glDeleteProgram(gradeProgram);
+            gradeProgram = 0;
         }
-        colorCorrectionDirty = false;
-        if (useOpenColorIO) {
-            try {
-                OCIO_NAMESPACE::SetCurrentConfig(hydraTransform.config);
-            } catch (const std::exception& e) {
-                qWarning() << "SceneViewport: OpenColorIO:" << e.what();
+        for (const GradeLut& lut : gradeLuts) {
+            glDeleteTextures(1, &lut.id);
+        }
+        gradeLuts.clear();
+        gradeShader.reset();
+        gradeDirty = true;
+    }
+
+    // Needs the GL context current. Throws what OpenColorIO throws.
+    void uploadLuts(const OCIO_NAMESPACE::GpuShaderDescRcPtr& desc)
+    {
+        // A bound unpack buffer would be read as the LUT's source.
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        for (unsigned idx = 0; idx < desc->getNum3DTextures(); ++idx) {
+            const char* textureName = nullptr;
+            const char* samplerName = nullptr;
+            unsigned edgelen = 0;
+            OCIO_NAMESPACE::Interpolation interpolation = OCIO_NAMESPACE::INTERP_LINEAR;
+            desc->get3DTexture(idx, textureName, samplerName, edgelen, interpolation);
+            const float* values = nullptr;
+            desc->get3DTextureValues(idx, values);
+            if (!samplerName || !values || (edgelen == 0)) {
+                throw std::runtime_error("an OpenColorIO 3D LUT has no data");
+            }
+            GradeLut lut { 0, GL_TEXTURE_3D, samplerName };
+            glGenTextures(1, &lut.id);
+            gradeLuts.push_back(lut);
+            glActiveTexture((GLenum)(GL_TEXTURE0 + kFirstLutUnit + gradeLuts.size() - 1));
+            glBindTexture(GL_TEXTURE_3D, lut.id);
+            setLutParameters(GL_TEXTURE_3D, interpolation);
+            glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB32F, edgelen, edgelen, edgelen, 0, GL_RGB, GL_FLOAT, values);
+        }
+        for (unsigned idx = 0; idx < desc->getNumTextures(); ++idx) {
+            const char* textureName = nullptr;
+            const char* samplerName = nullptr;
+            unsigned width = 0;
+            unsigned height = 0;
+            OCIO_NAMESPACE::GpuShaderDesc::TextureType channel = OCIO_NAMESPACE::GpuShaderDesc::TEXTURE_RGB_CHANNEL;
+            OCIO_NAMESPACE::Interpolation interpolation = OCIO_NAMESPACE::INTERP_LINEAR;
+#if OCIO_VERSION_HEX >= 0x02030000
+            OCIO_NAMESPACE::GpuShaderCreator::TextureDimensions dimensions = OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_2D;
+            desc->getTexture(idx, textureName, samplerName, width, height, channel, dimensions, interpolation);
+            const bool is1D = (dimensions == OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_1D);
+#else
+            desc->getTexture(idx, textureName, samplerName, width, height, channel, interpolation);
+            const bool is1D = (height <= 1);
+#endif
+            const float* values = nullptr;
+            desc->getTextureValues(idx, values);
+            if (!samplerName || !values || (width == 0)) {
+                throw std::runtime_error("an OpenColorIO LUT has no data");
+            }
+            const bool red = (channel == OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_RED_CHANNEL);
+            const GLint internalFormat = red ? GL_R32F : GL_RGB32F;
+            const GLenum format = red ? GL_RED : GL_RGB;
+            GradeLut lut { 0, (GLenum)(is1D ? GL_TEXTURE_1D : GL_TEXTURE_2D), samplerName };
+            glGenTextures(1, &lut.id);
+            gradeLuts.push_back(lut);
+            glActiveTexture((GLenum)(GL_TEXTURE0 + kFirstLutUnit + gradeLuts.size() - 1));
+            glBindTexture(lut.target, lut.id);
+            setLutParameters(lut.target, interpolation);
+            if (is1D) {
+                glTexImage1D(GL_TEXTURE_1D, 0, internalFormat, width, 0, format, GL_FLOAT, values);
+            } else {
+                glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, std::max(height, 1u), 0, format, GL_FLOAT, values);
             }
         }
-        engine->SetColorCorrectionSettings(HdxColorCorrectionTokens->disabled);
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+    // Needs the GL context current. False, with why in *error, when OpenColorIO or the driver
+    // cannot make the pass of processor (null for the sRGB encoding); nothing is kept then.
+    bool buildGrade(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor,
+                    std::string* error)
+    {
+        releaseGrade();
+        try {
+            std::string displayFunction = kSrgbDisplayFunction;
+            OCIO_NAMESPACE::GpuShaderDescRcPtr desc;
+            if (processor) {
+                desc = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+                desc->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+                desc->setFunctionName("toDisplay");
+                desc->setResourcePrefix("ocio_");
+                processor->getDefaultGPUProcessor()->extractGpuShaderInfo(desc);
+                displayFunction = desc->getShaderText();
+                uploadLuts(desc);
+            }
+            gradeProgram = linkProgram(kGradeVertexShader, gradeFragmentShader(displayFunction));
+            gradeShader = desc;
+        } catch (const std::exception& e) {
+            *error = e.what();
+            releaseGrade();
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // Needs the GL context current. A transform the pass cannot draw falls back to the sRGB
+    // encoding, once per change of the transform.
+    void ensureGrade()
+    {
+        if (!gradeDirty) {
+            return;
+        }
+        std::string error;
+        if (!buildGrade(displayProcessor, &error)) {
+            qWarning() << "SceneViewport: the display transform cannot be drawn, showing sRGB instead:" << error.c_str();
+            if (displayProcessor && !buildGrade(OCIO_NAMESPACE::ConstProcessorRcPtr(), &error)) {
+                qWarning() << "SceneViewport: the sRGB pass cannot be drawn either:" << error.c_str();
+            }
+        }
+        gradeDirty = false;
+    }
+
+    // Needs the GL context current and an engine that has rendered, whose program, vertex array
+    // and texture bindings it changes.
+    void drawGrade(unsigned int fbo,
+                   int width,
+                   int height)
+    {
+        ensureGrade();
+        const HgiTextureHandle color = engine->GetAovTexture(HdAovTokens->color);
+        if (!gradeProgram || !color) {
+            return;
+        }
+        const HgiTextureHandle depth = engine->GetAovTexture(HdAovTokens->depth);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_ALPHA_TEST);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+
+        glUseProgram(gradeProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindSampler(0, 0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)color->GetRawResource());
+        glUniform1i(glGetUniformLocation(gradeProgram, "colorAov"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindSampler(1, 0);
+        glBindTexture(GL_TEXTURE_2D, depth ? (GLuint)depth->GetRawResource() : 0);
+        glUniform1i(glGetUniformLocation(gradeProgram, "depthAov"), 1);
+        glUniform1i(glGetUniformLocation(gradeProgram, "hasDepth"), depth ? 1 : 0);
+        glUniform1f(glGetUniformLocation(gradeProgram, "gain"), (GLfloat)displayTransform.gain);
+        glUniform1f(glGetUniformLocation(gradeProgram, "gamma"), (GLfloat)displayTransform.gamma);
+        for (std::size_t i = 0; i < gradeLuts.size(); ++i) {
+            const GLint unit = kFirstLutUnit + (GLint)i;
+            glActiveTexture((GLenum)(GL_TEXTURE0 + unit));
+            glBindSampler((GLuint)unit, 0);
+            glBindTexture(gradeLuts[i].target, gradeLuts[i].id);
+            glUniform1i(glGetUniformLocation(gradeProgram, gradeLuts[i].sampler.c_str()), unit);
+        }
+        if (gradeShader) {
+            for (unsigned i = 0; i < gradeShader->getNumUniforms(); ++i) {
+                OCIO_NAMESPACE::GpuShaderDesc::UniformData data;
+                const char* name = gradeShader->getUniform(i, data);
+                const GLint location = name ? glGetUniformLocation(gradeProgram, name) : -1;
+                if (location < 0) {
+                    continue;
+                }
+                if (data.m_getDouble) {
+                    glUniform1f(location, (GLfloat)data.m_getDouble());
+                } else if (data.m_getBool) {
+                    glUniform1i(location, data.m_getBool() ? 1 : 0);
+                } else if (data.m_getFloat3) {
+                    glUniform3f(location, data.m_getFloat3()[0], data.m_getFloat3()[1], data.m_getFloat3()[2]);
+                } else if (data.m_vectorFloat.m_getSize && data.m_vectorFloat.m_getVector) {
+                    glUniform1fv(location, (GLsizei)data.m_vectorFloat.m_getSize(), (const GLfloat*)data.m_vectorFloat.m_getVector());
+                } else if (data.m_vectorInt.m_getSize && data.m_vectorInt.m_getVector) {
+                    glUniform1iv(location, (GLsizei)data.m_vectorInt.m_getSize(), (const GLint*)data.m_vectorInt.m_getVector());
+                }
+            }
+        }
+
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        for (std::size_t i = 0; i < gradeLuts.size(); ++i) {
+            glActiveTexture((GLenum)(GL_TEXTURE0 + kFirstLutUnit + i));
+            glBindTexture(gradeLuts[i].target, 0);
+        }
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glDisable(GL_BLEND);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_DEPTH_TEST);
     }
 
     // A light at the camera, as usdview's default camera light, or none when the stage's own
@@ -1342,13 +1422,11 @@ struct SceneViewportRenderer::Implementation {
 
     void setCamera(const GfFrustum& frustum,
                    int width,
-                   int height,
-                   unsigned int fbo)
+                   int height)
     {
         engine->SetRenderBufferSize(GfVec2i(width, height));
         engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
         engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
-        engine->SetPresentationOutput(HgiTokens->OpenGL, VtValue(uint32_t(fbo)));
         setLights();
     }
 
@@ -1775,6 +1853,9 @@ SceneViewportRenderer::~SceneViewportRenderer()
     if (_imp->refineTexture || _imp->refineFramebuffer || _imp->refineDepthBuffer) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its refinement texture";
     }
+    if (_imp->gradeProgram || !_imp->gradeLuts.empty()) {
+        qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its display transform pass";
+    }
     if (_imp->engine) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its Storm engine";
         (void)_imp->engine.release();
@@ -1960,80 +2041,39 @@ void
 SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
 {
     const DisplayTransform& current = _imp->displayTransform;
-    if ((transform.config == current.config) && (transform.colorSpace == current.colorSpace)
-        && (transform.display == current.display) && (transform.view == current.view)
-        && (transform.gain == current.gain) && (transform.gamma == current.gamma)) {
+    const bool sameDisplay = (transform.config == current.config) && (transform.colorSpace == current.colorSpace)
+        && (transform.display == current.display) && (transform.view == current.view) && (transform.look == current.look);
+    _imp->displayTransform = transform;
+    // Gain and gamma are uniforms of the pass: dragging them makes nothing again.
+    if (sameDisplay) {
         return;
     }
-    _imp->displayTransform = transform;
-    _imp->hydraTransform = transform;
-    _imp->colorCorrectionDirty = true;
-
-    bool useOpenColorIO = transform.config && !transform.colorSpace.empty() && !transform.display.empty()
-        && !transform.view.empty() && !TfGetenv("OCIO").empty();
+    _imp->gradeDirty = true;
+    _imp->displayProcessor.reset();
     float background[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
-    if (useOpenColorIO) {
+    if (transform.config && !transform.colorSpace.empty() && !transform.display.empty() && !transform.view.empty()) {
         try {
-            OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(transform.config, transform.colorSpace, transform.display, transform.view);
-            const bool lutTextures = needsLutTextures(processor);
-            if (lutTextures || (transform.gain != 1.) || (transform.gamma != 1.)) {
-                const OCIO_NAMESPACE::ConstTransformRcPtr displayView = lutTextures
-                    ? cachedLut(transform.config, transform.colorSpace, transform.display, transform.view, processor)
-                    : OCIO_NAMESPACE::ConstTransformRcPtr(processor->createGroupTransform());
-                DisplayTransform baked = transform;
-                baked.config = cachedViewportConfig(transform.config,
-                                                    displayTransformKey(transform.config, transform.colorSpace, transform.display, transform.view),
-                                                    transform.gain, transform.gamma, displayView);
-                baked.colorSpace = kBakeInputSpace;
-                baked.display = kBakeDisplay;
-                baked.view = kBakeView;
-                processor = displayViewProcessor(baked.config, baked.colorSpace, baked.display, baked.view);
-                if (needsLutTextures(processor)) {
-                    throw std::runtime_error("the baked display transform still needs 1D or 2D LUT textures");
-                }
-                _imp->hydraTransform = baked;
-            }
+            OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayProcessor(transform.config, transform.colorSpace, transform.display, transform.view, transform.look);
             float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
             processor->getDefaultCPUProcessor()->applyRGB(rgb);
             for (int c = 0; c < 3; ++c) {
                 background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
             }
-        } catch (const std::exception& e) {
-            qWarning() << "SceneViewport: OpenColorIO:" << e.what();
-            useOpenColorIO = false;
-            background[0] = background[1] = background[2] = kBackgroundSrgb;
-        }
-    }
-    if (!useOpenColorIO && ((transform.gain != 1.) || (transform.gamma != 1.)) && !TfGetenv("OCIO").empty()) {
-        try {
-            DisplayTransform graded = transform;
-            graded.config = srgbViewportConfig(transform.gain, transform.gamma);
-            graded.colorSpace = kBakeInputSpace;
-            graded.display = kBakeDisplay;
-            graded.view = kBakeView;
-            OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(graded.config, graded.colorSpace, graded.display, graded.view);
-            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
-            processor->getDefaultCPUProcessor()->applyRGB(rgb);
-            for (int c = 0; c < 3; ++c) {
-                background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
-            }
-            _imp->hydraTransform = graded;
-            useOpenColorIO = true;
+            _imp->displayProcessor = processor;
         } catch (const std::exception& e) {
             qWarning() << "SceneViewport: OpenColorIO:" << e.what();
             background[0] = background[1] = background[2] = kBackgroundSrgb;
         }
     }
-    _imp->useOpenColorIO = useOpenColorIO;
     for (int c = 0; c < 3; ++c) {
-        _imp->backgroundDisplay[c] = background[c];
+        _imp->backgroundShown[c] = background[c];
     }
 }
 
 bool
 SceneViewportRenderer::isUsingOpenColorIO() const
 {
-    return _imp->useOpenColorIO;
+    return (bool)_imp->displayProcessor;
 }
 
 void
@@ -2848,7 +2888,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     glDisable(GL_FRAMEBUFFER_SRGB);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_TRUE);
-    glClearColor(_imp->backgroundDisplay[0], _imp->backgroundDisplay[1], _imp->backgroundDisplay[2], 1.f);
+    glClearColor(_imp->backgroundShown[0], _imp->backgroundShown[1], _imp->backgroundShown[2], 1.f);
     glClearDepth(1.);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (!_imp->ensureEngine()) {
@@ -2878,8 +2918,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     _imp->sceneLit = _imp->usesSceneLights();
-    _imp->setCamera(frustum, width, height, fbo);
-    _imp->prepareColorCorrection();
+    _imp->setCamera(frustum, width, height);
     const UsdImagingGLRenderParams params = _imp->renderParams();
     bool converged = false;
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
@@ -2903,10 +2942,10 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         }
         converged = _imp->engine->IsConverged();
     }
+    _imp->drawGrade(fbo, width, height);
 
     _imp->drawnGuides.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
-        // Storm leaves its own program, vertex array and framebuffer bound.
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
         glUseProgram(0);
@@ -2939,7 +2978,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     glDisable(GL_FRAMEBUFFER_SRGB);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_TRUE);
-    glClearColor(_imp->backgroundDisplay[0], _imp->backgroundDisplay[1], _imp->backgroundDisplay[2], 1.f);
+    glClearColor(_imp->backgroundShown[0], _imp->backgroundShown[1], _imp->backgroundShown[2], 1.f);
     glClearDepth(1.);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -3214,6 +3253,7 @@ SceneViewportRenderer::releaseGL()
     StormGLSection section;
 
     _imp->engine.reset();
+    _imp->releaseGrade();
     if (_imp->refineTexture) {
         glDeleteTextures(1, &_imp->refineTexture);
         glDeleteFramebuffers(1, &_imp->refineFramebuffer);
@@ -3298,7 +3338,7 @@ void
 SceneViewportRenderer::getBackgroundColor(float rgb[3]) const
 {
     for (int c = 0; c < 3; ++c) {
-        rgb[c] = _imp->backgroundDisplay[c];
+        rgb[c] = _imp->backgroundShown[c];
     }
 }
 

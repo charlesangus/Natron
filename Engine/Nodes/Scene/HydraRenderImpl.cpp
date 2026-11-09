@@ -567,6 +567,9 @@ public:
                 _contextError = "USDRender could not load the OpenGL entry points of its context (" + _context->description() + ").";
                 _context.reset();
             } else {
+                // Before HgiGL and Storm compile anything on this thread: the factory's own guard has ended.
+                const GLubyte* renderer = glGetString(GL_RENDERER);
+                noteSoftwareGLRenderer(renderer ? reinterpret_cast<const char*>(renderer) : "");
                 // An HgiGL that goes collects every thread's garbage.
                 StormGLSection section;
                 _hgi = Hgi::CreateNamedHgi(HgiTokens->OpenGL);

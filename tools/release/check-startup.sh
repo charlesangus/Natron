@@ -28,8 +28,8 @@
 #
 # The server does have to serve GLX, though: Qt 6.8 builds its backing store
 # through QRhiGles2, and on an Xvfb started with -extension GLX the GUI hangs
-# constructing its main window. That in turn means a build compiled with
-# -DDEBUG cannot be checked on a software-GL host at all -- see run_probe.
+# constructing its main window. A build compiled with -DDEBUG also arms the
+# floating-point traps, and run_probe says what a SIGFPE then means.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -190,13 +190,15 @@ run_probe() {
         signal="SIG$(kill -l "$((status - 128))")"
         note=""
         # main() arms FE_DIVBYZERO/FE_INVALID/FE_OVERFLOW for the whole process
-        # under -DDEBUG, and the host's software GL driver raises one while
-        # compiling its own shaders during context creation, killing the
-        # process inside the driver. Nothing in the staged tree is involved,
-        # and neither the excludelist nor the closure can change it.
+        # under -DDEBUG. Natron disarms them around the GL driver's context
+        # creation and first calls, since a software rasteriser raises one
+        # compiling its own shaders, so reaching here means the trap fired
+        # somewhere else: in Natron's own code, or in a driver call that is
+        # not guarded yet. Nothing in the staged tree is involved, and neither
+        # the excludelist nor the closure can change it.
         if [[ "$signal" == "SIGFPE" ]]; then
-            note=" -- a build compiled with -DDEBUG traps floating-point exceptions"
-            note+=" that the host's software GL driver raises; stage a non-debug build"
+            note=" -- a build compiled with -DDEBUG traps floating-point exceptions;"
+            note+=" find the faulting frame, which is either a bug in Natron or a driver call needing a guard"
         fi
         report_failure "$label" "$logfile" "died of $signal$note"
     fi

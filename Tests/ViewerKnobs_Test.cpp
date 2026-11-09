@@ -25,10 +25,13 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <exception>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -47,6 +50,7 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Project.h"
 #include "Engine/ViewerInstance.h"
 
@@ -81,6 +85,17 @@ knobOf(const NodePtr& node,
        const char* name)
 {
     return std::dynamic_pointer_cast<K>(node->getKnobByName(name));
+}
+
+std::string
+swappedCase(std::string s)
+{
+    for (char& c : s) {
+        const unsigned char u = (unsigned char)c;
+        c = std::isupper(u) ? (char)std::tolower(u) : (char)std::toupper(u);
+    }
+
+    return s;
 }
 
 } // namespace
@@ -151,7 +166,7 @@ TEST_F(ViewerKnobsTest, SettersWriteTheKnobs)
     KnobChoicePtr channelsB = knobOf<KnobChoice>(node, kViewerParamDisplayChannelsB);
     KnobBoolPtr enableDownscale = knobOf<KnobBool>(node, kViewerParamEnableDownscale);
     KnobChoicePtr downscaleLevel = knobOf<KnobChoice>(node, kViewerParamDownscaleLevel);
-    KnobStringPtr display = knobOf<KnobString>(node, kViewerParamDisplay);
+    KnobChoicePtr display = knobOf<KnobChoice>(node, kViewerParamDisplay);
     ASSERT_TRUE(bool(enableGain) && bool(gain) && bool(channels) && bool(channelsB));
     ASSERT_TRUE(bool(enableDownscale) && bool(downscaleLevel) && bool(display));
 
@@ -176,7 +191,233 @@ TEST_F(ViewerKnobsTest, SettersWriteTheKnobs)
     EXPECT_EQ(1, downscaleLevel->getValue());
 
     viewer->setDisplayTransform("Some Display", "Some View", "");
-    EXPECT_EQ(std::string("Some Display"), display->getValue());
+    EXPECT_EQ(std::string("Some Display"), display->getActiveEntry().id);
+    std::string gotDisplay, gotView, gotLook;
+    viewer->getDisplayTransform(&gotDisplay, &gotView, &gotLook);
+    EXPECT_EQ(std::string("Some Display"), gotDisplay);
+    EXPECT_EQ(std::string("Some View"), gotView);
+    EXPECT_EQ(std::string(), gotLook);
+    viewer->setDisplayTransform("", "", "");
+    viewer->getDisplayTransform(&gotDisplay, &gotView, &gotLook);
+    EXPECT_EQ(std::string(), gotDisplay);
+    EXPECT_EQ(std::string(), gotView);
+    EXPECT_EQ(0, display->getValue());
+}
+
+// The panel's display, view and look are the toolbar's menus: the config's displays, the chosen
+// display's views and the config's looks, after Project default or None.
+TEST_F(ViewerKnobsTest, DisplayTransformKnobsListTheConfig)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    ViewerInstance* viewer = viewerOf(node);
+    ASSERT_TRUE(viewer != 0);
+    ProjectColorManagementPtr colorManagement = getApp()->getProject()->getColorManagement();
+    ASSERT_TRUE(bool(colorManagement));
+    KnobChoicePtr display = knobOf<KnobChoice>(node, kViewerParamDisplay);
+    KnobChoicePtr view = knobOf<KnobChoice>(node, kViewerParamView);
+    KnobChoicePtr look = knobOf<KnobChoice>(node, kViewerParamLook);
+    ASSERT_TRUE(bool(display) && bool(view) && bool(look));
+
+    const std::vector<std::string> displays = colorManagement->getDisplays();
+    ASSERT_FALSE(displays.empty());
+    const std::vector<ChoiceOption> displayEntries = display->getEntries_mt_safe();
+    ASSERT_EQ(displays.size() + 1, displayEntries.size());
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), displayEntries[0].id);
+    for (std::size_t i = 0; i < displays.size(); ++i) {
+        EXPECT_EQ(displays[i], displayEntries[i + 1].id);
+    }
+    EXPECT_EQ(colorManagement->getLooks().size() + 1, look->getEntries_mt_safe().size());
+    EXPECT_EQ(std::string("none"), look->getEntry(0).id);
+
+    // Choosing a display in the menu lists its views.
+    const std::string chosen = displays.back();
+    display->setValue((int)displays.size());
+    std::string resolvedDisplay;
+    viewer->getResolvedDisplayTransform(&resolvedDisplay, NULL, NULL);
+    EXPECT_EQ(chosen, resolvedDisplay);
+    const std::vector<std::string> views = colorManagement->getViews(chosen);
+    const std::vector<ChoiceOption> viewEntries = view->getEntries_mt_safe();
+    ASSERT_EQ(views.size() + 1, viewEntries.size());
+    for (std::size_t i = 0; i < views.size(); ++i) {
+        EXPECT_EQ(views[i], viewEntries[i + 1].id);
+    }
+
+    // A view the new display lacks falls back to Project default.
+    viewer->setDisplayTransform(chosen, "NoSuchView", "");
+    EXPECT_TRUE(view->isActiveEntryUnmatchedByEntries());
+    display->setValue(0);
+    std::string gotView;
+    viewer->getDisplayTransform(NULL, &gotView, NULL);
+    EXPECT_EQ(std::string(), gotView);
+    EXPECT_EQ(0, view->getValue());
+}
+
+// Turning the RoI on gives knobs that hold no RoI the centre half of the project format, in the
+// one render the toggle asks for.
+TEST_F(ViewerKnobsTest, EnablingTheRoIFillsUnsetRoIKnobs)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    ViewerInstance* viewer = viewerOf(node);
+    ASSERT_TRUE(viewer != 0);
+    KnobDoublePtr bottomLeft = knobOf<KnobDouble>(node, kViewerParamUserRoIBottomLeft);
+    KnobDoublePtr size = knobOf<KnobDouble>(node, kViewerParamUserRoISize);
+    ASSERT_TRUE(bool(bottomLeft) && bool(size));
+    ASSERT_DOUBLE_EQ(0., size->getValue(0));
+
+    Format format;
+    getApp()->getProject()->getProjectDefaultFormat(&format);
+    const RectD canonical = format.toCanonicalFormat();
+    ASSERT_GT(canonical.width(), 0.);
+
+    const unsigned int start = viewer->getKnobRenderRequestCount();
+    knobOf<KnobBool>(node, kViewerParamEnableUserRoI)->setValue(true);
+    EXPECT_EQ(start + 1, viewer->getKnobRenderRequestCount());
+    EXPECT_DOUBLE_EQ(canonical.x1 + canonical.width() / 4., bottomLeft->getValue(0));
+    EXPECT_DOUBLE_EQ(canonical.y1 + canonical.height() / 4., bottomLeft->getValue(1));
+    EXPECT_DOUBLE_EQ(canonical.width() / 2., size->getValue(0));
+    EXPECT_DOUBLE_EQ(canonical.height() / 2., size->getValue(1));
+
+    // An RoI already set is kept.
+    knobOf<KnobBool>(node, kViewerParamEnableUserRoI)->setValue(false);
+    bottomLeft->setValue(5., ViewSpec::all(), 0);
+    size->setValue(7., ViewSpec::all(), 0);
+    knobOf<KnobBool>(node, kViewerParamEnableUserRoI)->setValue(true);
+    EXPECT_DOUBLE_EQ(5., bottomLeft->getValue(0));
+    EXPECT_DOUBLE_EQ(7., size->getValue(0));
+}
+
+// A size of zero is an RoI that shows nothing, not one never set, so turning the RoI on keeps it.
+TEST_F(ViewerKnobsTest, EnablingTheRoIKeepsAZeroSizedRoI)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    KnobBoolPtr enable = knobOf<KnobBool>(node, kViewerParamEnableUserRoI);
+    KnobDoublePtr bottomLeft = knobOf<KnobDouble>(node, kViewerParamUserRoIBottomLeft);
+    KnobDoublePtr size = knobOf<KnobDouble>(node, kViewerParamUserRoISize);
+    ASSERT_TRUE(bool(enable) && bool(bottomLeft) && bool(size));
+
+    size->setValue(5., ViewSpec::all(), 1);
+    enable->setValue(true);
+    EXPECT_DOUBLE_EQ(0., bottomLeft->getValue(0));
+    EXPECT_DOUBLE_EQ(0., bottomLeft->getValue(1));
+    EXPECT_DOUBLE_EQ(0., size->getValue(0));
+    EXPECT_DOUBLE_EQ(5., size->getValue(1));
+
+    enable->setValue(false);
+    size->setValue(0., ViewSpec::all(), 1);
+    bottomLeft->setValue(10., ViewSpec::all(), 0);
+    enable->setValue(true);
+    EXPECT_DOUBLE_EQ(10., bottomLeft->getValue(0));
+    EXPECT_DOUBLE_EQ(0., size->getValue(0));
+    EXPECT_DOUBLE_EQ(0., size->getValue(1));
+}
+
+// Selecting a display the menu lacks, as an undo restores one, reports the change with that
+// display already active, and the view menu follows it.
+TEST_F(ViewerKnobsTest, AnUnlistedDisplayIsActiveWhenItsChangeIsReported)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    ViewerInstance* viewer = viewerOf(node);
+    ASSERT_TRUE(viewer != 0);
+    ProjectColorManagementPtr colorManagement = getApp()->getProject()->getColorManagement();
+    ASSERT_TRUE(bool(colorManagement));
+    KnobChoicePtr display = knobOf<KnobChoice>(node, kViewerParamDisplay);
+    KnobChoicePtr view = knobOf<KnobChoice>(node, kViewerParamView);
+    ASSERT_TRUE(bool(display) && bool(view) && bool(display->getSignalSlotHandler()));
+    ASSERT_GT(display->getNumEntries(), 1);
+
+    const int listedIndex = display->getNumEntries() - 1;
+    const std::string listed = display->getEntry(listedIndex).id;
+    display->setValue(listedIndex);
+
+    std::vector<std::string> reported;
+    QMetaObject::Connection observer = QObject::connect(display->getSignalSlotHandler().get(), &KnobSignalSlotHandler::valueChanged,
+                                                        [&reported, display](ViewSpec, int, int) {
+                                                            reported.push_back(display->getActiveEntry().id);
+                                                        });
+    ViewerInstance::selectDisplayTransformEntry(display, "NoSuchDisplay");
+    const std::vector<std::string> reportedUnlisted = reported;
+    reported.clear();
+    std::string resolvedDisplay;
+    viewer->getResolvedDisplayTransform(&resolvedDisplay, NULL, NULL);
+    const std::vector<ChoiceOption> viewEntries = view->getEntries_mt_safe();
+    ViewerInstance::selectDisplayTransformEntry(display, listed);
+    QObject::disconnect(observer);
+
+    ASSERT_FALSE(reportedUnlisted.empty());
+    for (const std::string& id : reportedUnlisted) {
+        EXPECT_EQ(std::string("NoSuchDisplay"), id);
+    }
+    ASSERT_FALSE(reported.empty());
+    for (const std::string& id : reported) {
+        EXPECT_EQ(listed, id);
+    }
+    EXPECT_EQ(listedIndex, display->getValue());
+    EXPECT_EQ(listed, display->getActiveEntry().id);
+
+    const std::vector<std::string> views = colorManagement->getViews(resolvedDisplay);
+    ASSERT_EQ(views.size() + 1, viewEntries.size());
+    for (std::size_t i = 0; i < views.size(); ++i) {
+        EXPECT_EQ(views[i], viewEntries[i + 1].id);
+    }
+}
+
+// OpenColorIO names that differ only in case are different names: a name the config lacks stays
+// as it is when chosen, when the menus are listed again and when the project is loaded.
+TEST_F(ViewerKnobsTest, DisplayTransformNamesMatchOnlyExactly)
+{
+    ProjectPtr project = getApp()->getProject();
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    const std::string nodeName = node->getScriptName();
+    ViewerInstance* viewer = viewerOf(node);
+    ASSERT_TRUE(viewer != 0);
+    ProjectColorManagementPtr colorManagement = project->getColorManagement();
+    ASSERT_TRUE(bool(colorManagement));
+    KnobChoicePtr display = knobOf<KnobChoice>(node, kViewerParamDisplay);
+    ASSERT_TRUE(bool(display));
+
+    const std::vector<std::string> displays = colorManagement->getDisplays();
+    ASSERT_FALSE(displays.empty());
+    const std::string nearDisplay = swappedCase(displays.front());
+    ASSERT_TRUE(std::find(displays.begin(), displays.end(), nearDisplay) == displays.end());
+
+    std::string got;
+    viewer->setDisplayTransform(nearDisplay, "", "");
+    viewer->getDisplayTransform(&got, NULL, NULL);
+    EXPECT_EQ(nearDisplay, got);
+    EXPECT_TRUE(display->isActiveEntryUnmatchedByEntries());
+
+    viewer->refreshDisplayTransformChoices();
+    viewer->getDisplayTransform(&got, NULL, NULL);
+    EXPECT_EQ(nearDisplay, got);
+
+    ViewerInstance::selectDisplayTransformEntry(display, nearDisplay);
+    viewer->getDisplayTransform(&got, NULL, NULL);
+    EXPECT_EQ(nearDisplay, got);
+    ViewerInstance::selectDisplayTransformEntry(display, displays.front());
+    EXPECT_EQ(displays.front(), display->getActiveEntry().id);
+    EXPECT_EQ(1, display->getValue());
+    viewer->setDisplayTransform(nearDisplay, "", "");
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("viewer-near-display.ntp");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    project->reset(false, true);
+    node.reset();
+    display.reset();
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    NodePtr loaded = project->getNodeByName(nodeName);
+    ASSERT_TRUE(bool(loaded));
+    viewerOf(loaded)->getDisplayTransform(&got, NULL, NULL);
+    EXPECT_EQ(nearDisplay, got);
 }
 
 // The viewer's hash is the tree version of every frame it caches, and its knobs only change how
@@ -197,9 +438,7 @@ TEST_F(ViewerKnobsTest, KnobEditsLeaveHashesUnchanged)
     knobOf<KnobDouble>(node, kViewerParamGamma)->setValue(0.5);
     knobOf<KnobBool>(node, kViewerParamAutoContrast)->setValue(true);
     knobOf<KnobBool>(node, kViewerParamCheckerboard)->setValue(true);
-    knobOf<KnobString>(node, kViewerParamDisplay)->setValue("Some Display");
-    knobOf<KnobString>(node, kViewerParamView)->setValue("Some View");
-    knobOf<KnobString>(node, kViewerParamLook)->setValue("Some Look");
+    viewerOf(node)->setDisplayTransform("Some Display", "Some View", "Some Look");
     knobOf<KnobChoice>(node, kViewerParamDisplayChannels)->setValue(2);
     knobOf<KnobChoice>(node, kViewerParamOperation)->setValue(1);
     knobOf<KnobDouble>(node, kViewerParamWipeAmount)->setValue(0.25);
@@ -321,9 +560,7 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     knobOf<KnobDouble>(node, kViewerParamGamma)->setValue(0.5);
     knobOf<KnobBool>(node, kViewerParamAutoContrast)->setValue(true);
     knobOf<KnobBool>(node, kViewerParamCheckerboard)->setValue(true);
-    knobOf<KnobString>(node, kViewerParamDisplay)->setValue("NoSuchDisplay");
-    knobOf<KnobString>(node, kViewerParamView)->setValue("NoSuchView");
-    knobOf<KnobString>(node, kViewerParamLook)->setValue("NoSuchLook");
+    viewerOf(node)->setDisplayTransform("NoSuchDisplay", "NoSuchView", "NoSuchLook");
     knobOf<KnobChoice>(node, kViewerParamDisplayChannels)->setValue(3);
     knobOf<KnobChoice>(node, kViewerParamDisplayChannelsB)->setValue(4);
     layer->setLayer("NoSuchLayer");
@@ -375,9 +612,11 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     EXPECT_DOUBLE_EQ(0.5, viewer->getGamma());
     EXPECT_TRUE(viewer->isAutoContrastEnabled());
     EXPECT_TRUE(knobOf<KnobBool>(loaded, kViewerParamCheckerboard)->getValue());
-    EXPECT_EQ(std::string("NoSuchDisplay"), knobOf<KnobString>(loaded, kViewerParamDisplay)->getValue());
-    EXPECT_EQ(std::string("NoSuchView"), knobOf<KnobString>(loaded, kViewerParamView)->getValue());
-    EXPECT_EQ(std::string("NoSuchLook"), knobOf<KnobString>(loaded, kViewerParamLook)->getValue());
+    std::string loadedDisplay, loadedView, loadedLook;
+    viewerOf(loaded)->getDisplayTransform(&loadedDisplay, &loadedView, &loadedLook);
+    EXPECT_EQ(std::string("NoSuchDisplay"), loadedDisplay);
+    EXPECT_EQ(std::string("NoSuchView"), loadedView);
+    EXPECT_EQ(std::string("NoSuchLook"), loadedLook);
     EXPECT_EQ(eDisplayChannelsG, viewer->getChannels(0));
     EXPECT_EQ(eDisplayChannelsB, viewer->getChannels(1));
 

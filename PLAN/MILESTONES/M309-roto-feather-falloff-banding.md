@@ -17,5 +17,5 @@ Blocked on: nothing; elaborate when claimed.
   - size: M
 - [x] M309.P1.T4 — Banding regression test (`Tests/RotoFeatherBanding_Test.cpp`): HD circle with a 150 px feather within 1.5e-3 of the exact ramp, monotonic with no plateaus or ripple along five lines, fall-off 2.5, half-res proxy, a concave shape
   - size: S
-- [ ] M309.P1.T5 — Remote gate (ctest incl. `NativeRetouch_Test`, m224 GUI scripts) and before/after screenshots for the user
+- [x] M309.P1.T5 — Remote gate (ctest incl. `NativeRetouch_Test`, m224 GUI scripts) and before/after screenshots for the user — gate6 green; merged as #237 (29be9a6ac)
   - size: S

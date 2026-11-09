@@ -54,6 +54,11 @@ file(GLOB NatronEngineGeo_HEADERS Geo/*.h)
 file(GLOB NatronEngineGeo_SOURCES Geo/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineGeo_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineGeo_SOURCES})
+# Engine/Kernel/ is the context-neutral kernel language front end and bytecode; no Geo types.
+file(GLOB NatronEngineKernel_HEADERS Kernel/*.h)
+file(GLOB NatronEngineKernel_SOURCES Kernel/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineKernel_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineKernel_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)

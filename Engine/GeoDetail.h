@@ -66,6 +66,7 @@ enum GeoPointDeleteModeEnum {
 };
 
 class GeoDetail;
+class GeoPointTree;
 typedef std::shared_ptr<GeoDetail> GeoDetailPtr;
 typedef std::shared_ptr<const GeoDetail> GeoDetailConstPtr;
 
@@ -198,6 +199,13 @@ public:
     std::shared_ptr<const GeoReverseTopology> reverseTopology() const;
 
     /**
+     * @brief The k-d tree over the live point positions, built on first use and held by this
+     * detail's cache, so it is freed with the detail. Shared by copies and handed on to details
+     * built from this one, which rebuild it only once P or the point numbering differ.
+     **/
+    std::shared_ptr<const GeoPointTree> pointTree() const;
+
+    /**
      * @brief Combined from per-page hashes of every attribute, topology column and group, the
      * index maps' tombstones and P's precision. Equal content hashes equal whatever the
      * attributes' creation order. Cached per detail and per attribute. Never 0.
@@ -279,6 +287,9 @@ public:
     GeoOffset appendPrimitives(GeoPrimitiveTypeEnum type,
                                std::span<const std::int32_t> vertexCounts,
                                std::span<const GeoOffset> points);
+
+    /** @brief Rewires a live vertex to another point. Throws std::invalid_argument on a dead vertex or point. */
+    void setVertexPoint(GeoOffset vertex, GeoOffset point);
 
     /** @brief Returns how many points were deleted; dead and repeated offsets are ignored. */
     GeoIndex deletePoints(std::span<const GeoOffset> points,

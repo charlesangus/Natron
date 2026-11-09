@@ -496,9 +496,10 @@ protected:
     virtual void appendHostContentHash(ContentHasher& h) const OVERRIDE;
 
     /**
-     * @brief False for a transform-linked item, whose own transform knobs are not used.
+     * @brief False for a transform-linked curve or layer: its own transform is unused, and its link
+     * target's is shared with every item linked to it.
      **/
-    virtual bool tiesTransformKnobs(const RotoDrawableItem& item) const OVERRIDE;
+    virtual bool pageEditsTransform(const RotoItem& owner) const OVERRIDE;
 
     virtual bool layersOwnTransforms() const OVERRIDE
     {

@@ -1189,11 +1189,11 @@ SplineWarpContext::refreshSelectedTransformTies()
 }
 
 bool
-SplineWarpContext::tiesTransformKnobs(const RotoDrawableItem& item) const
+SplineWarpContext::pageEditsTransform(const RotoItem& owner) const
 {
     std::lock_guard<std::mutex> l(_warpMutex);
 
-    return !resolveTransformLinkLocked(&item);
+    return !resolveTransformLinkLocked(&owner);
 }
 
 std::string

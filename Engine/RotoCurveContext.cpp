@@ -1032,13 +1032,10 @@ RotoCurveContext::refreshTransformKnobTies()
         }
     }
 
-    const bool single = (owners == 1) && (_imp->transformTiesSuspended == 0);
+    const bool single = (owners == 1) && (_imp->transformTiesSuspended == 0) && pageEditsTransform(*owner);
     RotoDrawableItemPtr target;
     if (single) {
         target = std::dynamic_pointer_cast<RotoDrawableItem>(owner);
-        if (target && !tiesTransformKnobs(*target)) {
-            target.reset();
-        }
     }
 
     RotoDrawableItemPtr tied = _imp->transformTiedItem.lock();
@@ -1060,7 +1057,7 @@ RotoCurveContext::refreshTransformKnobTies()
         _imp->transformTiedItem = target;
     }
 
-    // An owner that is not tied, a layer or a linked curve, is edited through the page by the host.
+    // An owner that is not tied, a layer, is edited through the page by the host.
     const bool editable = single && !(std::dynamic_pointer_cast<Bezier>(owner) && owner->isLockedRecursive());
     for (std::list<KnobIWPtr>::const_iterator it = _imp->transformKnobs.begin(); it != _imp->transformKnobs.end(); ++it) {
         if (KnobIPtr knob = it->lock()) {

@@ -390,10 +390,10 @@ public:
 
 protected:
     /**
-     * @brief False when the Transform page must not edit item's own transform knobs, so selecting
-     * the item leaves them untied. See refreshTransformKnobTies().
+     * @brief False when the Transform page must not edit owner's transform, so selecting owner
+     * leaves the page untied and disabled. See refreshTransformKnobTies().
      **/
-    virtual bool tiesTransformKnobs(const RotoDrawableItem& /*item*/) const
+    virtual bool pageEditsTransform(const RotoItem& /*owner*/) const
     {
         return true;
     }
@@ -409,10 +409,10 @@ protected:
 
     /**
      * @brief Ties the Transform page to the selection's one transform: the item's knobs when the
-     * selection holds exactly one transform and it is an item's whose knobs tiesTransformKnobs()
-     * allows. Where layersOwnTransforms(), an item inside a selected layer does not count. With
-     * more than one transform selected, or none, nothing is tied and the page is disabled, which
-     * hides the transform handle too. Main thread only.
+     * selection holds exactly one transform and it is an item's that pageEditsTransform() allows.
+     * Where layersOwnTransforms(), an item inside a selected layer does not count. With more than
+     * one transform selected, none, or one the page must not edit, nothing is tied and the page is
+     * disabled, which hides the transform handle too. Main thread only.
      **/
     void refreshTransformKnobTies();
 

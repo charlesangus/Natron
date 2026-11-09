@@ -29,7 +29,6 @@
 #include <string>
 
 #include <QtCore/QCoreApplication>
-#include <QtCore/QPointF>
 #include <QtCore/QThread>
 
 #include <gtest/gtest.h>
@@ -45,7 +44,6 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
-#include "Engine/RenderScale.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoPaint.h"
@@ -138,16 +136,6 @@ public:
         hook->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>(1, _bezier));
 
         return paint;
-    }
-
-    bool penDownOnTheFirstPoint() const
-    {
-        const QPointF pos(90., 70.);
-        const EffectInstancePtr effect = _roto->getEffectInstance();
-        const bool taken = effect->onOverlayPenDown_public(5., RenderScale::identity, ViewIdx(0), pos, pos, 1., 0., ePenTypeLMB);
-        ignore_result(effect->onOverlayPenUp_public(5., RenderScale::identity, ViewIdx(0), pos, pos, 1., 0.));
-
-        return taken;
     }
 
     std::set<double> keyTimes() const
@@ -342,22 +330,37 @@ TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
                        "assert not roto.isFollowingVectors()\n");
 }
 
-TEST_F(PyVectorFollowTest, TheShapesRefuseEditsWhileAFollowRuns)
+// A headless test has no node GUI, so the viewer never hands RotoPaint a press: the host lock is
+// checked through its parameters and the Python shape edits instead.
+TEST_F(PyVectorFollowTest, TheHostRefusesEditsWhileAFollowRuns)
 {
-    ASSERT_TRUE(penDownOnTheFirstPoint()) << "the viewer does not take a press on a point";
+    KnobDoublePtr opacity = std::dynamic_pointer_cast<KnobDouble>(_roto->getKnobByName("opacity"));
+    ASSERT_TRUE(bool(opacity));
+    const double opacityBefore = opacity->getValue(0);
     const int points = _bezier->getControlPointsCount();
+    const std::string opacityParam = getApp()->getAppIDString() + ".getNode(\"" + _roto->getScriptName() + "\").getParam(\"opacity\")";
 
     RotoPaint* paint = startPanelFollow();
     ASSERT_TRUE(paint);
     ASSERT_TRUE(paint->isVectorFollowRunning()) << "the follow was refused or did not start";
 
-    EXPECT_FALSE(penDownOnTheFirstPoint());
-    expectScriptPasses("try:\n"
-                       "    shape.addControlPoint(150., 150.)\n"
-                       "    refusal = ''\n"
-                       "except RuntimeError as e:\n"
-                       "    refusal = str(e)\n"
-                       "assert 'vector follow' in refusal, refusal\n");
+    EXPECT_EQ((int)KnobHelper::eValueChangedReturnCodeNothingChanged,
+              (int)opacity->setValue(opacityBefore * 0.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL));
+    EXPECT_DOUBLE_EQ(opacityBefore, opacity->getValue(0));
+    const char* refusedEdits = "try:\n"
+                               "    param.setValue(0.25, 0)\n"
+                               "    refusal = ''\n"
+                               "except RuntimeError as e:\n"
+                               "    refusal = str(e)\n"
+                               "assert 'while a vector follow reads it' in refusal, refusal\n"
+                               "try:\n"
+                               "    shape.addControlPoint(150., 150.)\n"
+                               "    refusal = ''\n"
+                               "except RuntimeError as e:\n"
+                               "    refusal = str(e)\n"
+                               "assert 'vector follow' in refusal, refusal\n";
+    expectScriptPasses("param = " + opacityParam + "\n" + refusedEdits);
+    EXPECT_DOUBLE_EQ(opacityBefore, opacity->getValue(0));
     EXPECT_EQ(_bezier->getControlPointsCount(), points);
 
     paint->abortVectorFollow(true);
@@ -366,7 +369,8 @@ TEST_F(PyVectorFollowTest, TheShapesRefuseEditsWhileAFollowRuns)
     ASSERT_TRUE(paint->getLastVectorFollowReport(&report));
     EXPECT_TRUE(isUserStopVectorFollowReport(report)) << formatVectorFollowReport(report);
 
-    EXPECT_TRUE(penDownOnTheFirstPoint());
+    opacity->setValue(opacityBefore * 0.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    EXPECT_DOUBLE_EQ(opacityBefore * 0.5, opacity->getValue(0));
     expectScriptPasses("shape.addControlPoint(150., 150.)\n");
     EXPECT_EQ(_bezier->getControlPointsCount(), points + 1);
 }

@@ -38,6 +38,7 @@
 #define kMovingTextureParamBlackFrame "blackFrame"
 #define kMovingTextureParamAwayFrame "awayFrame"
 #define kMovingTextureParamFailFrame "failFrame"
+#define kMovingTextureParamScale "scale"
 
 NATRON_NAMESPACE_ENTER
 
@@ -61,7 +62,8 @@ constexpr double kConfident = 0.9;
 // Alpha splits the moving picture in two. From formatChangeFrame on, the format's height differs
 // while the region of definition stays; from originChangeFrame on, the format moves without changing
 // size. At blackFrame the picture is black, and at awayFrame the region of definition is far from
-// that of every other frame. At failFrame the render fails.
+// that of every other frame. At failFrame the render fails. Scale multiplies the frame's size, not
+// the texture's.
 class MovingTextureEffect
     : public NativeEffectBase {
 public:
@@ -126,11 +128,12 @@ public:
                                              ViewIdx /*view*/,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        const double offset = (frameKnobValue(_awayFrame) == time) ? 4. * kWidth : 0.;
+        const int scale = scaleValue();
+        const double offset = (frameKnobValue(_awayFrame) == time) ? 4. * kWidth * scale : 0.;
         rod->x1 = offset;
         rod->y1 = 0.;
-        rod->x2 = offset + kWidth;
-        rod->y2 = kHeight;
+        rod->x2 = offset + kWidth * scale;
+        rod->y2 = kHeight * scale;
 
         return eStatusOK;
     }
@@ -146,7 +149,8 @@ public:
         const bool changed = (change != 0) && (time >= change);
         const int originChange = frameKnobValue(_originChangeFrame);
         const int x1 = ((originChange != 0) && (time >= originChange)) ? 16 : 0;
-        metadata.setOutputFormat(RectI(x1, 0, x1 + kWidth, changed ? kHeight / 2 : kHeight));
+        const int scale = scaleValue();
+        metadata.setOutputFormat(RectI(x1, 0, x1 + kWidth * scale, changed ? kHeight * scale / 2 : kHeight * scale));
 
         return eStatusOK;
     }
@@ -158,6 +162,7 @@ public:
         KnobBoolPtr movingKnob = _moving.lock();
         const double travel = (!movingKnob || movingKnob->getValue()) ? args.time : 0.;
         const bool black = frameKnobValue(_blackFrame) == args.time;
+        const double split = kWidth * scaleValue() / 2;
         if (frameKnobValue(_failFrame) == args.time) {
             return eStatusFailed;
         }
@@ -178,7 +183,7 @@ public:
                     const double cx = x * step + step / 2 - travel * kShiftX;
                     const float value = black ? 0.f : (float)texture(cx, cy);
                     for (int c = 0; c < nComps; ++c) {
-                        dst[c] = ((c == 3) && !black) ? ((cx < kWidth / 2) ? 1.f : 0.f) : value;
+                        dst[c] = ((c == 3) && !black) ? ((cx < split) ? 1.f : 0.f) : value;
                     }
                     dst += nComps;
                 }
@@ -194,6 +199,13 @@ private:
         const KnobIntPtr locked = knob.lock();
 
         return locked ? locked->getValue() : 0;
+    }
+
+    int scaleValue() const
+    {
+        const KnobIntPtr locked = _scale.lock();
+
+        return locked ? std::max(locked->getValue(), 1) : 1;
     }
 
     KnobIntPtr createFrameKnob(const KnobPagePtr& page,
@@ -224,6 +236,13 @@ private:
         _blackFrame = createFrameKnob(page, "Black Frame", kMovingTextureParamBlackFrame);
         _awayFrame = createFrameKnob(page, "Away Frame", kMovingTextureParamAwayFrame);
         _failFrame = createFrameKnob(page, "Fail Frame", kMovingTextureParamFailFrame);
+
+        KnobIntPtr scale = createKnob<KnobInt>(std::string("Scale"));
+        scale->setName(kMovingTextureParamScale);
+        scale->setDefaultValue(1);
+        scale->setIsMetadataSlave(true);
+        page->addKnob(scale);
+        _scale = scale;
     }
 
     KnobBoolWPtr _moving;
@@ -232,6 +251,7 @@ private:
     KnobIntWPtr _blackFrame;
     KnobIntWPtr _awayFrame;
     KnobIntWPtr _failFrame;
+    KnobIntWPtr _scale;
 };
 
 inline void

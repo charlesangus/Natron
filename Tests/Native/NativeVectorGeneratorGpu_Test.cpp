@@ -68,8 +68,14 @@ constexpr double kTime = 3.;
 constexpr int kBatchesBeforeAbort = 3;
 constexpr double kAbortBoundMs = 2000.;
 
-// The output pass of a plane and the segment boundary it brings, with room for a pass the solve would add.
-constexpr int kBatchesOfOutputPlane = 8;
+// A frame whose every full-size pass holds several command buffers of kLargeBatchWork, while a workgroup's rows of any
+// pass hold less than one.
+constexpr int kLargeScale = 8;
+constexpr std::uint64_t kLargeBatchWork = 1ull << 23;
+
+// The output pass of a plane, a command buffer per workgroup's eight rows when split at every charge, and the segment
+// boundary it brings, with room for a pass the solve would add.
+constexpr int kBatchesOfOutputPlane = kHeight / 8 + 8;
 
 // One layer's two channels from the RGBA a Shuffle wrote them to.
 RenderedPlane
@@ -351,12 +357,7 @@ protected:
         }
         ASSERT_TRUE(result.error.empty()) << result.error;
 
-        EXPECT_TRUE(result.abortFired);
-        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, result.abortedCode);
-        EXPECT_FALSE(result.abortedHasPlanes);
-        EXPECT_TRUE(result.abortedFallbacks.empty()) << "the abort moved work to the CPU";
-        EXPECT_EQ(0, result.batchesAfterAbort) << "work ran after the abort";
-        EXPECT_LT(result.abortToEndMs, kAbortBoundMs);
+        expectStoppedAtTheAbort(result.aborted);
         EXPECT_LE(result.liveAfterAbort, result.liveAfterClean) << "the aborted solve still holds pool buffers";
 
         EXPECT_GT(result.splitBatches, kBatchesBeforeAbort * 4);
@@ -364,6 +365,40 @@ protected:
         EXPECT_TRUE((ran != result.splitGpuTasksPerNode.end()) && (ran->second > 0)) << "the aborted solve's image was cached";
         const ImageDiff diff = compareImages(result.unsplit, result.split, ParityTolerance::exact());
         EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+    }
+
+    // No pass of a large frame runs as one command buffer, so the device stops within one bounded buffer of the abort.
+    void expectLargeAbortIsBounded(const std::string& method)
+    {
+        NodePtr source = createMovingTexture();
+        ASSERT_TRUE(bool(source));
+        ASSERT_TRUE(setKnobValues(source, kMovingTextureParamScale, { (double)kLargeScale }));
+        NodePtr generator = createGenerator(source);
+        ASSERT_TRUE(bool(generator));
+        ASSERT_TRUE(setKnobValue(generator, kVectorGeneratorParamMethod, method));
+        NodePtr reader = createReader(generator, kNatronForwardMotionVectorsLayerID, kNatronBackwardMotionVectorsLayerID);
+        ASSERT_TRUE(bool(reader));
+        const RectI window(0, 0, kWidth * kLargeScale, kHeight * kLargeScale);
+        const AbortedFrameResult result = renderAbortedFrame(std::vector<NodePtr>({ generator }), reader, window, kTime, kLargeBatchWork, kBatchesBeforeAbort);
+        if (result.skipped) {
+            return;
+        }
+        ASSERT_TRUE(result.error.empty()) << result.error;
+
+        expectStoppedAtTheAbort(result);
+        EXPECT_GT(result.largestBatchWork, 0u) << "the solve charged no work";
+        EXPECT_LT(result.largestBatchWork, 2 * kLargeBatchWork) << "a command buffer held a whole pass";
+        EXPECT_LE(result.liveAfter, result.liveBefore) << "the aborted solve still holds pool buffers";
+    }
+
+    void expectStoppedAtTheAbort(const AbortedFrameResult& aborted)
+    {
+        EXPECT_TRUE(aborted.fired);
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, aborted.code);
+        EXPECT_FALSE(aborted.hasPlanes);
+        EXPECT_TRUE(aborted.fallbacks.empty()) << "the abort moved work to the CPU";
+        EXPECT_EQ(0, aborted.batchesAfterAbort) << "work ran after the abort";
+        EXPECT_LT(aborted.abortToEndMs, kAbortBoundMs);
     }
 #endif // NATRON_HAVE_GPU
 
@@ -660,6 +695,16 @@ TEST_F(NativeVectorGeneratorGpuTest, AbortingADisSolveStopsItAndLeavesNothingBeh
 TEST_F(NativeVectorGeneratorGpuTest, AbortingATvL1SolveStopsItAndLeavesNothingBehind)
 {
     expectAbortLeavesNothingBehind(kVectorGeneratorMethodTVL1);
+}
+
+TEST_F(NativeVectorGeneratorGpuTest, AbortingALargeDisSolveStopsWithinOneBoundedCommandBuffer)
+{
+    expectLargeAbortIsBounded(kVectorGeneratorMethodDIS);
+}
+
+TEST_F(NativeVectorGeneratorGpuTest, AbortingALargeTvL1SolveStopsWithinOneBoundedCommandBuffer)
+{
+    expectLargeAbortIsBounded(kVectorGeneratorMethodTVL1);
 }
 
 TEST_F(NativeVectorGeneratorGpuTest, TwoPlanesOfARegionShareOneSolve)

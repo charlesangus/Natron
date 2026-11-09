@@ -17,6 +17,7 @@ namespace gpu {
 namespace {
     std::atomic<uint64_t> gMaxStorageBufferBytesForTests { 0 };
     std::atomic<uint64_t> gBatchWorkForTests { 0 };
+    std::atomic<uint64_t> gLargestBatchWorkForTests { 0 };
     std::mutex gBatchFinishedHookMutex;
     std::function<void()> gBatchFinishedHook;
     std::atomic<bool> gHasBatchFinishedHook { false };
@@ -112,6 +113,11 @@ GpuRecordContext::chargeWork(uint64_t work)
         return status;
     }
     finished_.push_back({ cmd_, work_ });
+    if (gBatchWorkForTests.load(std::memory_order_relaxed) != 0) {
+        uint64_t largest = gLargestBatchWorkForTests.load(std::memory_order_relaxed);
+        while ((work_ > largest) && !gLargestBatchWorkForTests.compare_exchange_weak(largest, work_, std::memory_order_relaxed)) {
+        }
+    }
     cmd_ = next;
     work_ = 0;
     return {};
@@ -132,6 +138,13 @@ void
 GpuRecordContext::setBatchWorkForTests(uint64_t work)
 {
     gBatchWorkForTests.store(work, std::memory_order_relaxed);
+    gLargestBatchWorkForTests.store(0, std::memory_order_relaxed);
+}
+
+uint64_t
+GpuRecordContext::largestBatchWorkForTests()
+{
+    return gLargestBatchWorkForTests.load(std::memory_order_relaxed);
 }
 
 void

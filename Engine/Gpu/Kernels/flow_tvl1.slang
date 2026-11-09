@@ -24,6 +24,7 @@ struct FlowTvL1Params
     float lambdaTheta;
     float theta;
     float dualStep;
+    uint firstRow;
 };
 
 [[vk::push_constant]] ConstantBuffer<FlowTvL1Params> params;
@@ -65,8 +66,9 @@ float sampleTo(float x, float y, uint c, uint component)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_tvl1_linearise(uint3 tid : SV_DispatchThreadID)
+void flow_tvl1_linearise(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -92,8 +94,9 @@ void flow_tvl1_linearise(uint3 tid : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_tvl1_threshold(uint3 tid : SV_DispatchThreadID)
+void flow_tvl1_threshold(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -146,8 +149,9 @@ float divergence(uint x, uint y, uint component)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_tvl1_primal(uint3 tid : SV_DispatchThreadID)
+void flow_tvl1_primal(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -163,8 +167,9 @@ void flow_tvl1_primal(uint3 tid : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_tvl1_dual(uint3 tid : SV_DispatchThreadID)
+void flow_tvl1_dual(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -210,8 +215,9 @@ float medianOf(uint x, uint y, uint component)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_tvl1_median(uint3 tid : SV_DispatchThreadID)
+void flow_tvl1_median(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }

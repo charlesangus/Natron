@@ -660,6 +660,18 @@ runGpuFrame(const std::vector<NodePtr>& graph,
     return true;
 }
 
+// Waits for the tasks of a finished frame, which hand what they hold back after its future reports it finished, to end.
+void
+waitForOutstandingRunnables()
+{
+    RenderScheduler* scheduler = appPTR->getRenderScheduler();
+    QElapsedTimer timer;
+    timer.start();
+    while ((scheduler->getOutstandingRunnables() > 0) && (timer.elapsed() < 5000)) {
+        QThread::msleep(1);
+    }
+}
+
 // Clears the caches and waits for what a finished frame's tasks hold to go back to the pool, which happens after its
 // future reports it finished, for as long as a frame that leaked nothing can take.
 unsigned long long
@@ -675,6 +687,46 @@ settledLiveBytes(unsigned long long ceiling)
     }
 
     return pool.stats().liveBytes;
+}
+
+// Renders a frame split into command buffers of batchWork and aborts it once abortAfterBatches have finished. False with
+// *error set when the frame could not be run.
+bool
+runAbortedFrame(const std::vector<NodePtr>& graph,
+                const NodePtr& root,
+                const RectI& window,
+                double time,
+                std::uint64_t batchWork,
+                int abortAfterBatches,
+                AbortedFrameResult* result,
+                std::string* error)
+{
+    std::atomic<int> batches { 0 };
+    std::atomic<bool> fired { false };
+    std::chrono::steady_clock::time_point firedAt;
+    FrameRenderContextPtr context;
+    const BatchOverride split(batchWork, [&]() {
+        if (++batches == abortAfterBatches) {
+            firedAt = std::chrono::steady_clock::now();
+            context->getAbortInfo()->setAborted();
+            fired = true;
+        }
+    });
+    GpuFrame frame;
+    if (!runGpuFrame(graph, root, window, time, [&context](const FrameRenderContextPtr& c) { context = c; }, &frame, error)) {
+        return false;
+    }
+    result->fired = fired;
+    result->code = frame.code;
+    result->hasPlanes = frame.hasPlanes;
+    result->fallbacks = frame.fallbacks;
+    result->batchesAfterAbort = batches - abortAfterBatches;
+    result->largestBatchWork = gpu::GpuRecordContext::largestBatchWorkForTests();
+    if (fired) {
+        result->abortToEndMs = std::chrono::duration<double, std::milli>(frame.finishedAt - firedAt).count();
+    }
+
+    return true;
 }
 #endif // NATRON_HAVE_GPU
 } // namespace
@@ -712,33 +764,11 @@ renderWithAbortMidSolve(const std::vector<NodePtr>& graph,
     }
     result.liveAfterClean = settledLiveBytes(0);
 
-    {
-        std::atomic<int> batches { 0 };
-        std::atomic<bool> fired { false };
-        std::chrono::steady_clock::time_point firedAt;
-        FrameRenderContextPtr context;
-        const BatchOverride split(1, [&]() {
-            if (++batches == abortAfterBatches) {
-                firedAt = std::chrono::steady_clock::now();
-                context->getAbortInfo()->setAborted();
-                fired = true;
-            }
-        });
-        GpuFrame frame;
-        const bool ran = runGpuFrame(graph, root, window, time, [&context](const FrameRenderContextPtr& c) { context = c; }, &frame, &result.error);
-        if (!ran) {
-            return result;
-        }
-        result.abortFired = fired;
-        result.abortedCode = frame.code;
-        result.abortedHasPlanes = frame.hasPlanes;
-        result.abortedFallbacks = frame.fallbacks;
-        result.batchesAfterAbort = batches - abortAfterBatches;
-        if (fired) {
-            result.abortToEndMs = std::chrono::duration<double, std::milli>(frame.finishedAt - firedAt).count();
-        }
+    if (!runAbortedFrame(graph, root, window, time, 1, abortAfterBatches, &result.aborted, &result.error)) {
+        return result;
     }
-    result.liveAfterAbort = settledLiveBytes(result.liveAfterClean);
+    // The caches stay as the aborted frame left them, so the next frame reads anything it stored.
+    waitForOutstandingRunnables();
 
     {
         std::atomic<int> batches { 0 };
@@ -756,9 +786,35 @@ renderWithAbortMidSolve(const std::vector<NodePtr>& graph,
         result.splitBatches = batches;
         result.splitGpuTasksPerNode = frame.gpuTasksPerNode;
     }
+    result.liveAfterAbort = settledLiveBytes(result.liveAfterClean);
 
     return result;
 } // renderWithAbortMidSolve
+
+AbortedFrameResult
+renderAbortedFrame(const std::vector<NodePtr>& graph,
+                   const NodePtr& root,
+                   const RectI& window,
+                   double time,
+                   std::uint64_t batchWork,
+                   int abortAfterBatches)
+{
+    AbortedFrameResult result;
+    ForcedGpuContext forced;
+    if (!forced.installed()) {
+        reportNoGpu(forced.reason());
+        result.skipped = true;
+
+        return result;
+    }
+    RegionBodyScope body(appPTR->getRenderScheduler());
+    result.liveBefore = settledLiveBytes(0);
+    if (runAbortedFrame(graph, root, window, time, batchWork, abortAfterBatches, &result, &result.error)) {
+        result.liveAfter = settledLiveBytes(result.liveBefore);
+    }
+
+    return result;
+}
 
 int
 countBatchesOfFrame(const std::vector<NodePtr>& graph,

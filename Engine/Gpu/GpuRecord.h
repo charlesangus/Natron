@@ -160,6 +160,10 @@ public:
     // override.
     static void setBatchWorkForTests(uint64_t work);
 
+    // The most work any command buffer chargeWork() ended held, over every context, since setBatchWorkForTests() was
+    // last called; only buffers ended under an override count.
+    static uint64_t largestBatchWorkForTests();
+
     // Calls `hook` on the submitting thread after each command buffer but the last has finished, before `stop` is
     // asked; an empty hook removes it.
     static void setBatchFinishedHookForTests(const std::function<void()>& hook);

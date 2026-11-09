@@ -32,6 +32,7 @@ struct FlowConfidenceParams
     int outY0;
     uint hasA;
     uint hasB;
+    uint firstRow;
 };
 
 [[vk::push_constant]] ConstantBuffer<FlowConfidenceParams> params;
@@ -103,8 +104,9 @@ bool staysInside(float tx, float ty)
 // fieldA is the flow back, dstBuf the flow there whose confidence this writes.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_confidence(uint3 tid : SV_DispatchThreadID)
+void flow_confidence(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -127,8 +129,9 @@ void flow_confidence(uint3 tid : SV_DispatchThreadID)
 // through fieldD the second.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_temporal(uint3 tid : SV_DispatchThreadID)
+void flow_temporal(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -164,8 +167,9 @@ void flow_temporal(uint3 tid : SV_DispatchThreadID)
 // fieldA is the source and srcOffset points at the matte's channel of its first pixel.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_matte_extract(uint3 tid : SV_DispatchThreadID)
+void flow_matte_extract(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -187,8 +191,9 @@ void flow_matte_extract(uint3 tid : SV_DispatchThreadID)
 // A matte that separates nothing weighs every pixel 1, which is what the solvers do without one.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_matte_weight(uint3 tid : SV_DispatchThreadID)
+void flow_matte_weight(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -205,8 +210,9 @@ void flow_matte_weight(uint3 tid : SV_DispatchThreadID)
 // outside field, whose weights were all 1.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_composite(uint3 tid : SV_DispatchThreadID)
+void flow_composite(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -226,8 +232,9 @@ void flow_composite(uint3 tid : SV_DispatchThreadID)
 // solved window. What lies outside the window or has no field is 0.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_output(uint3 tid : SV_DispatchThreadID)
+void flow_output(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= uint(params.srcWidth)) || (tid.y >= uint(params.srcHeight))) {
         return;
     }

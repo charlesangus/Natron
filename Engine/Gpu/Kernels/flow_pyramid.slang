@@ -27,6 +27,7 @@ struct FlowPyramidParams
     float w2;
     float w3;
     float value;
+    uint firstRow;
 };
 
 [[vk::push_constant]] ConstantBuffer<FlowPyramidParams> params;
@@ -84,8 +85,9 @@ float dotWeights(float centre, float near1, float near2, float near3)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_extract(uint3 tid : SV_DispatchThreadID)
+void flow_extract(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -114,8 +116,9 @@ float rowTap(uint y, int x, uint c)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_blur_rows(uint3 tid : SV_DispatchThreadID)
+void flow_blur_rows(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -139,8 +142,9 @@ float columnTap(uint x, int y, uint c)
 // every row and then decimating would.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_blur_columns(uint3 tid : SV_DispatchThreadID)
+void flow_blur_columns(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -157,8 +161,9 @@ void flow_blur_columns(uint3 tid : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_gradients(uint3 tid : SV_DispatchThreadID)
+void flow_gradients(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -185,8 +190,9 @@ void flow_gradients(uint3 tid : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_fill(uint3 tid : SV_DispatchThreadID)
+void flow_fill(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }

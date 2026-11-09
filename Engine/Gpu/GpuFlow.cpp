@@ -34,8 +34,9 @@ namespace {
         float w2;
         float w3;
         float value;
+        uint32_t firstRow;
     };
-    static_assert(sizeof(FlowPyramidPush) == 80);
+    static_assert(sizeof(FlowPyramidPush) == 84);
     static_assert(sizeof(FlowPyramidPush) <= GpuKernel::kMaxPushConstantBytes);
 
     struct FlowDisPush {
@@ -76,8 +77,9 @@ namespace {
         float halfGamma;
         float halfAlpha;
         float omega;
+        uint32_t firstRow;
     };
-    static_assert(sizeof(FlowRefinePush) == 48);
+    static_assert(sizeof(FlowRefinePush) == 52);
     static_assert(sizeof(FlowRefinePush) <= GpuKernel::kMaxPushConstantBytes);
 
     struct FlowTvL1Push {
@@ -91,8 +93,9 @@ namespace {
         float lambdaTheta;
         float theta;
         float dualStep;
+        uint32_t firstRow;
     };
-    static_assert(sizeof(FlowTvL1Push) == 40);
+    static_assert(sizeof(FlowTvL1Push) == 44);
     static_assert(sizeof(FlowTvL1Push) <= GpuKernel::kMaxPushConstantBytes);
 
     struct FlowConfidencePush {
@@ -116,8 +119,9 @@ namespace {
         int32_t outY0;
         uint32_t hasA;
         uint32_t hasB;
+        uint32_t firstRow;
     };
-    static_assert(sizeof(FlowConfidencePush) == 80);
+    static_assert(sizeof(FlowConfidencePush) == 84);
     static_assert(sizeof(FlowConfidencePush) <= GpuKernel::kMaxPushConstantBytes);
 
     constexpr uint32_t kPyramidValuesPerChannel = 3;
@@ -133,7 +137,7 @@ namespace {
     constexpr uint64_t kPassWorkPerThread = 8;
     constexpr uint64_t kMedianWorkPerThread = 32;
     constexpr uint64_t kDensifyWorkPerSample = 4;
-    constexpr uint32_t kDisRowsPerWorkgroup = 8;
+    constexpr uint32_t kRowsPerWorkgroup = 8;
     constexpr uint32_t kWeightInside = 0;
     constexpr uint32_t kWeightOutside = 1;
     constexpr uint32_t kOutputVectors = 0;
@@ -173,31 +177,24 @@ namespace {
         return levels;
     }
 
+    // A pass over a whole large level is more work than a slow device does in a submit, and no row of a pass depends
+    // on another's results, so every pass runs as row bands a batch can end between. Whole workgroups of rows keep a
+    // band's rounding up from running the next band's first rows too.
     template <typename Params>
-    GpuStatus run(GpuRecordContext& ctx, GpuKernelId kernel, std::initializer_list<const GpuBuffer*> buffers, const Params& params, uint32_t x, uint32_t y,
+    GpuStatus run(GpuRecordContext& ctx, GpuKernelId kernel, std::initializer_list<const GpuBuffer*> buffers, Params params, uint32_t x, uint32_t rows,
                   uint64_t workPerThread = kPassWorkPerThread)
     {
-        GpuStatus status = ctx.dispatch(kernel, buffers, params, { x, y, 1u });
-        if (status) {
-            ctx.computeBarrier();
-            status = ctx.chargeWork(uint64_t(x) * y * workPerThread);
-        }
-        return status;
-    }
-
-    // A DIS search or densify over a whole large level is more work than a slow device does in a submit, and no row
-    // depends on another's results, so it runs as dispatches a batch can end between. Whole workgroups of rows keep
-    // a dispatch's rounding up from running the next dispatch's first rows too.
-    template <typename Params>
-    GpuStatus runRows(GpuRecordContext& ctx, GpuKernelId kernel, std::initializer_list<const GpuBuffer*> buffers, Params params, uint32_t x, uint32_t rows,
-                      uint64_t workPerThread)
-    {
         const uint64_t fitting = std::min<uint64_t>(ctx.batchWork() / std::max<uint64_t>(uint64_t(x) * workPerThread, 1), rows);
-        const uint32_t step = std::max(static_cast<uint32_t>(fitting) / kDisRowsPerWorkgroup, 1u) * kDisRowsPerWorkgroup;
+        const uint32_t step = std::max(static_cast<uint32_t>(fitting) / kRowsPerWorkgroup, 1u) * kRowsPerWorkgroup;
         GpuStatus status;
         for (uint32_t first = 0; status && (first < rows); first += step) {
             params.firstRow = first;
-            status = run(ctx, kernel, buffers, params, x, std::min(step, rows - first), workPerThread);
+            const uint32_t band = std::min(step, rows - first);
+            status = ctx.dispatch(kernel, buffers, params, { x, band, 1u });
+            if (status) {
+                ctx.computeBarrier();
+                status = ctx.chargeWork(uint64_t(x) * band * workPerThread);
+            }
         }
         return status;
     }
@@ -636,14 +633,14 @@ GpuFlow::solveDis(GpuRecordContext& ctx, const GpuFlowPyramid& from, const GpuFl
         }
         const std::initializer_list<const GpuBuffer*> buffers = { from.buffer, to.buffer, weights ? weights->buffer : unused, field.buffer, patches, unused };
         const uint64_t searchWork = uint64_t(push.iterations) * patchSize * patchSize * from.channels;
-        status = runRows(ctx, GpuKernelId::flow_dis_search, buffers, push, push.patchesX, push.patchesY, searchWork);
+        status = run(ctx, GpuKernelId::flow_dis_search, buffers, push, push.patchesX, push.patchesY, searchWork);
         if (status) {
             status = checkAborted();
         }
         if (status) {
             const uint64_t overlap = patchSize / stride + 1;
             const uint64_t densifyWork = overlap * overlap * from.channels * kDensifyWorkPerSample;
-            status = runRows(ctx, GpuKernelId::flow_dis_densify, buffers, push, source.width, source.height, densifyWork);
+            status = run(ctx, GpuKernelId::flow_dis_densify, buffers, push, source.width, source.height, densifyWork);
         }
         release(patches);
         if (status && (params.refineFixedPointIterations > 0)) {

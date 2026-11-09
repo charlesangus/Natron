@@ -320,8 +320,9 @@ float sampleCoarse(float x, float y, uint component)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_upsample(uint3 tid : SV_DispatchThreadID)
+void flow_upsample(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }

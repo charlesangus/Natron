@@ -25,6 +25,7 @@ struct FlowRefineParams
     float halfGamma;
     float halfAlpha;
     float omega;
+    uint firstRow;
 };
 
 [[vk::push_constant]] ConstantBuffer<FlowRefineParams> params;
@@ -86,8 +87,9 @@ float sampleTo(float x, float y, uint c, uint component)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_refine_linearise(uint3 tid : SV_DispatchThreadID)
+void flow_refine_linearise(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -119,8 +121,9 @@ void flow_refine_linearise(uint3 tid : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_refine_derivatives(uint3 tid : SV_DispatchThreadID)
+void flow_refine_derivatives(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -145,8 +148,9 @@ void flow_refine_derivatives(uint3 tid : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_refine_assemble(uint3 tid : SV_DispatchThreadID)
+void flow_refine_assemble(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }
@@ -223,8 +227,9 @@ float smoothnessAt(uint x, uint y)
 // the pixels of a dispatch share nothing and the CPU's sweep is reproduced exactly.
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_refine_sor(uint3 tid : SV_DispatchThreadID)
+void flow_refine_sor(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     uint y = tid.y;
     if (y >= params.height) {
         return;
@@ -282,8 +287,9 @@ void flow_refine_sor(uint3 tid : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void flow_refine_apply(uint3 tid : SV_DispatchThreadID)
+void flow_refine_apply(uint3 dispatchId : SV_DispatchThreadID)
 {
+    const uint3 tid = uint3(dispatchId.x, dispatchId.y + params.firstRow, dispatchId.z);
     if ((tid.x >= params.width) || (tid.y >= params.height)) {
         return;
     }

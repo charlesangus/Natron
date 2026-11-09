@@ -206,7 +206,7 @@ jobs:
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest)$' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest)$' --timeout 300 --output-on-failure || rc=$?
           # The node suites' own Golden cases go through the same recorder. ctest entries are whole
           # suites, so the cases are picked by filter, with a process per suite as under ctest.
           suites=$(cd Tests && ./Tests --gtest_list_tests --gtest_filter='*.Golden*' | sed -n 's/^\([A-Za-z0-9_]*\)\.\( .*\)\{0,1\}$/\1/p') || rc=1

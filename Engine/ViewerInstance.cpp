@@ -823,7 +823,11 @@ ViewerInstance::redrawOrRenderForColorChange()
     if (!_imp->uiContext) {
         return;
     }
-    if ((_imp->uiContext->getBitDepth() == eImageBitDepthByte) && !getApp()->getProject()->isLoadingProject()) {
+    // A scene has no 8-bit texture to bake into: Storm's view grades its pixels as it draws them,
+    // and a render would only re-evaluate the scene and resync it. A progressive delegate's frames
+    // come sRGB-encoded without the display transform, which a render would not change either.
+    const bool bakesDisplay = (_imp->uiContext->getBitDepth() == eImageBitDepthByte) && (getActiveInputDataKind() != eDataKindScene);
+    if (bakesDisplay && !getApp()->getProject()->isLoadingProject()) {
         renderCurrentFrame(true);
     } else {
         _imp->uiContext->redraw();

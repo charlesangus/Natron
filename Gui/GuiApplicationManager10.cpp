@@ -59,6 +59,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
@@ -245,7 +246,6 @@ public:
     }
 
 protected:
-
     bool event(QEvent* e);
 };
 
@@ -335,7 +335,15 @@ GuiApplicationManager::initializeQApp(int &argc,
 bool
 GuiApplicationManager::checkGLContextRequirements()
 {
-    const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(GuiGLRequirements::probe());
+    const GuiGLRequirements::ContextInfo info = GuiGLRequirements::probe();
+    // Qt makes the GUI's contexts lazily inside window events, and a software rasterizer compiles shaders
+    // in each, so on one no guard can be scoped to the driver calls.
+    if (OSGLContext::noteSoftwareRenderer(info.renderer.toStdString())) {
+#ifdef DEBUG
+        qDebug().noquote() << "Float traps are off: the GL renderer" << info.renderer << "is software.";
+#endif
+    }
+    const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(info);
     if (verdict.accepted) {
         HydraGLContextQt::install();
 

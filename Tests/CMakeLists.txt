@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h Flow/FlowTestPlate.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h TwoPlaneTestEffect.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h Flow/FlowTestPlate.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h TwoPlaneTestEffect.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -63,6 +63,8 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
+    GlobalModeKind_Test.cpp
+    GlobalModeStroke_Test.cpp
     GpuContext_Test.cpp
     GpuMemberTiming_Test.cpp
     GpuPlacement_Test.cpp
@@ -80,6 +82,7 @@ set(Tests_SOURCES
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
+    KnobValueRole_Test.cpp
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
@@ -91,6 +94,10 @@ set(Tests_SOURCES
     LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
+    NodeId_Test.cpp
+    GraphOpApply_Test.cpp
+    GraphEditRecorder_Test.cpp
+    GraphEditReplay_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
     PyRotoCreate_Test.cpp
@@ -104,6 +111,7 @@ set(Tests_SOURCES
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
     RotoDragRenderThrottle_Test.cpp
+    RotoKeyDuringRender_Test.cpp
     StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
@@ -138,6 +146,7 @@ set(Tests_SOURCES
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
     PoolSharing_Test.cpp
+    FpTrapGuard_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
     QueuedInputEdit_Test.cpp
@@ -177,6 +186,7 @@ set(Tests_SOURCES
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
     RenderSchedulerMode_Test.cpp
+    RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
     SchedulerEquivalence_Test.cpp
@@ -313,6 +323,7 @@ set(GuiTests_SOURCES
     DisplayLegendColour_Test.cpp
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GlobalModeTargeting_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp
@@ -327,6 +338,7 @@ set(GuiTests_SOURCES
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     OverlayImageRenderer_Test.cpp
+    PythonUndoStep_Test.cpp
     RenderDialogRange_Test.cpp
     RotoLatencyProbe_Test.cpp
     RotoItemKnobKeyframes_Test.cpp
@@ -341,7 +353,10 @@ set(GuiTests_SOURCES
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
+    TransformGroupGlobalModeTarget_Test.cpp
     UndoHistory_Test.cpp
+    ValueKnobEditSession_Test.cpp
+    ValueKnobGlobalModeTarget_Test.cpp
     ViewerPixelGrid_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp

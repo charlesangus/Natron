@@ -50,7 +50,16 @@ OneViewNode::OneViewNode(NodePtr n)
     setSupportsRenderScaleMaybe(eSupportsYes);
     if (n) {
         ProjectPtr project = n->getApp()->getProject();
-        QObject::connect( project.get(), SIGNAL(projectViewsChanged()), this, SLOT(onProjectViewsChanged()) );
+        // A render can keep this effect alive after its node is destroyed, and refreshing the menu then
+        // reaches the node, so the node scopes the connection and the slot runs only while it holds this effect.
+        NodeWPtr weakNode = n;
+        QObject::connect(project.get(), &Project::projectViewsChanged, n.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                onProjectViewsChanged();
+            }
+        });
     }
 }
 

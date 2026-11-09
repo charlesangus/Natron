@@ -10,7 +10,7 @@
 # test" steps).
 #
 # Usage:
-#   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+#   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
 #   [NATRON_CTEST_JOBS=<n>] tools/ci/local/test.sh ctest ...
 #   [GTEST_SHUFFLE=1] [GTEST_RANDOM_SEED=<n>] [GTEST_REPEAT=<n>] tools/ci/local/test.sh ctest ...
 #   [NATRON_SMOKE_OUTPUT_DIR=<dir>|NATRON_SMOKE_REFERENCE_DIR=<dir>] tools/ci/local/test.sh smoke ...
@@ -56,6 +56,13 @@
 #                              NatronRenderer, located the same way ci.yml
 #                              locates it (`find . -maxdepth 4 -type f -name
 #                              NatronRenderer | head -n1` from the build dir).
+#   startup                -> starts the built GUI binary under a GLX-capable
+#                              Xvfb on software GL and requires its main window
+#                              to be exposed (Tests/gui/debug_startup.py, through
+#                              Tests/gui/run-gui-test.sh). Meant for `debug`,
+#                              which arms the floating-point traps that Mesa's
+#                              llvmpipe trips over unless the GL init path
+#                              disarms them; no ctest case ever starts a GUI.
 #   debug (default)|release|fast -> selects build/debug, build/release or build/fast, same
 #                              argument style as build.sh.
 #   --gdb                   -> run the target (ctest's failing invocation
@@ -102,7 +109,7 @@ USE_GDB=0
 
 for arg in "$@"; do
     case "${arg}" in
-        ctest|smoke)
+        ctest|smoke|startup)
             SUBCOMMAND="${arg}"
             ;;
         debug|release|fast)
@@ -113,7 +120,7 @@ for arg in "$@"; do
             ;;
         *)
             echo "test.sh: unknown argument '${arg}'" >&2
-            echo "usage: test.sh <ctest|smoke> [debug|release|fast] [--gdb]" >&2
+            echo "usage: test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]" >&2
             exit 1
             ;;
     esac
@@ -121,7 +128,7 @@ done
 
 if [[ -z "${SUBCOMMAND}" ]]; then
     echo "test.sh: missing subcommand" >&2
-    echo "usage: test.sh <ctest|smoke> [debug|release|fast] [--gdb]" >&2
+    echo "usage: test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]" >&2
     exit 1
 fi
 
@@ -336,5 +343,20 @@ case "${SUBCOMMAND}" in
             echo "test.sh: ERROR: smoke test exceeded ${SMOKE_TIMEOUT_SECONDS}s and was killed by timeout(1) (exit ${rc})" >&2
         fi
         exit "${rc}"
+        ;;
+
+    startup)
+        if [[ "${USE_GDB}" -eq 1 ]]; then
+            echo "test.sh: --gdb has no effect on 'startup' -- ignoring." >&2
+        fi
+        NATRON_GUI="${BUILD_DIR}/App/Natron"
+        if [[ ! -x "${NATRON_GUI}" ]]; then
+            echo "test.sh: ERROR: ${NATRON_GUI} is missing or not executable." >&2
+            echo "Run tools/ci/local/build.sh ${BUILD_TYPE} first." >&2
+            exit 1
+        fi
+        echo "== test.sh: GUI startup under Xvfb (${BUILD_TYPE}) =="
+        echo "+ Tests/gui/run-gui-test.sh Tests/gui/debug_startup.py ${NATRON_GUI}"
+        exec "${REPO_ROOT}/Tests/gui/run-gui-test.sh" "${REPO_ROOT}/Tests/gui/debug_startup.py" "${NATRON_GUI}"
         ;;
 esac

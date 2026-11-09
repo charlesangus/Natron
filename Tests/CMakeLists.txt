@@ -71,6 +71,8 @@ set(Tests_SOURCES
     GeoGroup_Test.cpp
     GeoImportOBJ_Test.cpp
     GeoIndexMap_Test.cpp
+    GeoKernelRunner_Test.cpp
+    GeoKernelTopology_Test.cpp
     GeoMerge_Test.cpp
     GeoNormals_Test.cpp
     GeoPacked_Test.cpp
@@ -81,6 +83,8 @@ set(Tests_SOURCES
     GeoSubdivide_Test.cpp
     GeoTransform_Test.cpp
     GeoUVProject_Test.cpp
+    GeoWrangleParams_Test.cpp
+    GeoWrangle_Test.cpp
     GLScheduler_Test.cpp
     GlobalModeKind_Test.cpp
     GlobalModeStroke_Test.cpp
@@ -99,6 +103,7 @@ set(Tests_SOURCES
     HashPluginSweep_Test.cpp
     IdentityHop_Test.cpp
     Image_Test.cpp
+    KernelParser_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
     KnobValueRole_Test.cpp

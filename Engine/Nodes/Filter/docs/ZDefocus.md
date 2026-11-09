@@ -33,9 +33,31 @@ Defocus's (see `Defocus.md`); the kernel library is `BokehKernel`.
    bleed into a blurred background, and a blurred foreground still spreads over the background
    behind it. The image is black outside its region of definition.
 
-`output` Focal Plane shows the source with its colour half red in front of the focus, green in it
-and blue behind it, at full size whatever the render scale, whose in-focus limit is a diameter of
-under one pixel; Result is the defocus. The Mask and Mix limit the result as the standard knobs do.
+`output` picks what the node writes:
+
+- **Result** is the defocus.
+- **Focal Plane** shows the source with its colour half red in front of the focus, green in it and
+  blue behind it, at full size whatever the render scale, whose in-focus limit is a diameter of
+  under one pixel.
+- **Blur Radius** writes each pixel's circle of confusion, a diameter in full-size pixels whatever
+  the render scale. Red is the signed diameter before `maxSize`, negative in front of the focus;
+  green is its size, `|red|`; blue is the size after `maxSize`. Where `maxSize` limits the blur,
+  blue is below green, so `green - blue` is the blur the cap removes and a Grade or an Expression
+  on it shows the clamped areas. A depth the model has no finite diameter for, nearer than the
+  focal length in Lens mode, reads the largest float.
+- **Slices** colours each pixel by the slice its gather weighs most: white for the slice in focus,
+  and the others in red, orange, yellow, green, cyan, blue, purple and magenta by their distance
+  from it, the hues cycling every eight slices so that neighbours always differ. The bands show how
+  the depth is cut: with too few `layers`, a surface that should defocus smoothly crosses few
+  bands over a wide range of blur and steps between them; raise `layers` until each such surface
+  spans several narrow bands, and lower it while large areas stay in one band. With a lens
+  aberration the slices follow the most scaled channel.
+
+Blur Radius and Slices write the colour channels and set the alpha, or a lone channel, to 1; every
+layer the node processes gets the same values. Focal Plane, Blur Radius and Slices read no
+neighbours, so they render at any `maxSize` on the GPU. The Mask and Mix apply to Result only:
+Focal Plane, Blur Radius and Slices ignore them and always show the full, unmixed value, even at a
+Mix of 0. The unprocessed channels still pass the source through.
 
 The `focalPoint` overlay (a point in the image) sets `focalPlane` to the depth under it when the
 user moves it; restoring a project or undoing a Focal Plane edit does not refocus.
@@ -63,25 +85,24 @@ user moves it; restoring a project or undoing a Focal Plane edit does not refocu
 | `kernelChannel` | Kernel Channel | `rgba.A` | Image kernel: the Kernel input's channel that holds the bokeh |
 | `highlightThreshold` | Highlight Threshold | 1 | Values above it are highlights |
 | `highlightGain` | Highlight Gain | 1 | Factor on the highlights' excess over the threshold, 1 to 1000 |
-| `output` | Output | Result | Result or Focal Plane |
+| `output` | Output | Result | Result, Focal Plane, Blur Radius or Slices |
 
 The standard channel, mask, mix and unprocessed-channel knobs follow. The inputs are Source (with
 the depth), an optional Mask and an optional Kernel. An Image kernel is read as Defocus reads it
 and posts the same warnings.
 
-Departures from Nuke's ZDefocus:
+Notes:
 
-- The Mask input is kept. `size` is the diameter of the bokeh infinitely far behind the depth of
-  field in Manual mode; `maxSize` defaults to 50 and is at most 500.
+- `size` is the diameter of the bokeh infinitely far behind the depth of field in Manual mode;
+  `maxSize` defaults to 50 and is at most 500.
 - Lens mode has a `sceneUnit` knob, so that the depth channel's unit compares with the focal
   length.
 - `layers` is 2 to 64 slices, each normalised by its coverage, always laid back to front.
-- Highlight boost is new, and the Focal Plane output marks the regions in front of, in and behind
-  the focus.
-- No deep input, and no cat-eye, chromatic aberration or anamorphic bokeh (M133 - ZDefocus Lens
-  Aberrations).
+- Highlight boost lifts the values above `highlightThreshold` before the defocus, and the Focal
+  Plane output marks the regions in front of, in and behind the focus.
+- There is no deep input.
 
-GPU: the Focal Plane output, and Disc and Blades kernels whose largest slice reaches at most 256
+GPU: the Focal Plane, Blur Radius and Slices outputs, and Disc and Blades kernels whose largest slice reaches at most 256
 pixels, run on the GPU in float, reading the depth as an extra layer input of the pass (the
 PassExecutor's GPU pass inputs carry extra layer inputs). A larger bokeh, an Image kernel and a
 buffer beyond the kernels' 32-bit indices render on the CPU. The GPU holds the node's own CPU render

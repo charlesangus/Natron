@@ -1062,7 +1062,11 @@ them:
   Unpremult use it.
 - **`MaskMix`** blends each processed channel of the op's result with the
   *undivided* source by mask x `mix`, with the `ofxsMaskMixPix()` arithmetic. It
-  needs a Mask input.
+  needs a Mask input. A node turns it off for a render by overriding
+  `appliesMaskMix(time, view)` to return false: the CPU and GPU plans, the
+  identity and the regions of interest then see no mask and a `mix` of 1, while
+  the processed channels and `PassThroughUnprocessed` are unchanged. ZDefocus
+  does so for its debug outputs.
 - **`PassThroughUnprocessed`** writes the channels the op does not process from
   the source. Without it they are left for the host to copy, so a node that
   renders them itself must ask for it to stay bit-exact (Grade, Blur, Position

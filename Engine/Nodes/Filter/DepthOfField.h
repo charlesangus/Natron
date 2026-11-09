@@ -88,6 +88,12 @@ public:
     /// The signed diameter, in canonical pixels, of a raw depth value.
     double coc(double raw) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief coc() before the maxSize cap: infinite where the model has no finite diameter, such
+     * as a distance nearer than the focal length in Lens mode.
+     **/
+    double uncappedCoc(double raw) const WARN_UNUSED_RETURN;
+
     /// The largest diameters in front of and behind the in-focus slice over every depth.
     double frontMax() const WARN_UNUSED_RETURN
     {
@@ -131,7 +137,7 @@ public:
     }
 
 private:
-    double cocOfDistance(double distance) const WARN_UNUSED_RETURN;
+    double uncappedCocOfDistance(double distance) const WARN_UNUSED_RETURN;
 
     DepthUnits _units = DepthUnits::InverseDistance;
     double _maxSize = 0.;

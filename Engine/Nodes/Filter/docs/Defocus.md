@@ -45,13 +45,14 @@ with ZDefocus.
 The standard channel, mask, mix and unprocessed-channel knobs follow. The inputs are Source, an
 optional Mask and an optional Kernel. Every layer of the source is defocused.
 
-Departures from Nuke's Defocus:
+Notes:
 
-- `size` is the bokeh's diameter, and its default is 10 where Nuke's is 1 (open to the user).
-- `aspectRatio` replaces Nuke's "ratio".
-- There are no "scale", "quality" or "method" knobs: the gather is exact, so there is no
-  quality to trade.
-- Highlight boost (`highlightThreshold`, `highlightGain`) and the blade `roundness` are new.
+- `size` is the bokeh's diameter, and its default is 10.
+- `aspectRatio` stretches the bokeh across against its height.
+- There are no scale, quality or method knobs: the gather is exact, so there is no quality to
+  trade.
+- Highlight boost (`highlightThreshold`, `highlightGain`) brightens the bokeh of highlights, and
+  `roundness` curves the blades.
 
 GPU: Disc and Blades kernels whose reach is at most 256 pixels from the centre on either axis run
 on the GPU as a gather over the same runs, in float. A larger size, an Image kernel (the Kernel

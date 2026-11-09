@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
+#include <functional>
 #include <list>
 #include <memory>
 #include <optional>
@@ -82,6 +84,8 @@
 #define kZDefocusParamOutput "output"
 #define kZDefocusParamOutputResult "result"
 #define kZDefocusParamOutputFocalPlane "focalPlane"
+#define kZDefocusParamOutputBlurRadius "blurRadius"
+#define kZDefocusParamOutputSlices "slices"
 
 #define kZDefocusInputSource 0
 #define kZDefocusInputMask 1
@@ -91,6 +95,14 @@ NATRON_NAMESPACE_ENTER
 
 struct DefocusKernelImage;
 
+/// The Output knob's options, in its order.
+enum class ZDefocusOutput {
+    Result,
+    FocalPlane,
+    BlurRadius,
+    Slices
+};
+
 struct ZDefocusParams {
     DepthOfFieldParams dof;
     int layers = 16;
@@ -98,7 +110,44 @@ struct ZDefocusParams {
     BokehShapeParams shape;
     LensAberrationParams lens;
     BokehHighlight highlight;
-    bool focalPlaneOutput = false;
+    ZDefocusOutput output = ZDefocusOutput::Result;
+
+    /// Whether the output is the defocus; every other output is computed per pixel.
+    bool gathers() const
+    {
+        return output == ZDefocusOutput::Result;
+    }
+};
+
+/// The Blur Radius output of one depth: the signed diameter before Max Size, its size, and the
+/// size after Max Size, all in canonical pixels and finite.
+struct ZDefocusBlurRadius {
+    float signedCoc = 0.f;
+    float size = 0.f;
+    float cappedSize = 0.f;
+};
+
+/**
+ * @brief A per-pixel output's class of each raw depth, as a step function of the depth's bits, so
+ * that the CPU and the GPU classify a depth with integer comparisons alone and agree at every
+ * boundary however each rounds the depth model: invalid for a depth 0 or below, infinite or not a
+ * number; otherwise first below starts.front(), and values[i] from starts[i] up to the next start.
+ * starts holds positive finite floats' bit patterns, ascending.
+ **/
+struct ZDefocusDepthClasses {
+    uint32_t invalid = 0;
+    uint32_t first = 0;
+    std::vector<uint32_t> starts;
+    std::vector<uint32_t> values;
+
+    uint32_t classOf(float depth) const WARN_UNUSED_RETURN;
+};
+
+/// The Blur Radius output's classes of a depth: the circle of confusion before Max Size.
+enum class ZDefocusCocClass : uint32_t {
+    InfiniteFront,
+    Finite,
+    InfiniteBehind
 };
 
 /**
@@ -169,8 +218,50 @@ public:
                           float depth) WARN_UNUSED_RETURN;
 
     /**
+     * @brief The step function of classify over raw depths: classify's value at every positive
+     * finite float, found by bisecting the floats' bit patterns between its changes, which must be
+     * monotonic in the depth; invalid is its value at depth 0.
+     **/
+    static ZDefocusDepthClasses depthClasses(const std::function<uint32_t(float)>& classify) WARN_UNUSED_RETURN;
+
+    /// Each depth's ZDefocusCocClass under dof.
+    static ZDefocusDepthClasses blurRadiusClasses(const DepthOfField& dof) WARN_UNUSED_RETURN;
+
+    /// Each depth's sliceOf() its pixelCoc() among slices at context's scale.
+    static ZDefocusDepthClasses sliceClasses(const ZDefocusParams& params,
+                                             const PassContext& context,
+                                             const DepthOfField& dof,
+                                             const std::vector<ZDefocusSlice>& slices) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The Blur Radius output of a depth, at full size whatever the render scale, infinite
+     * where classes, from blurRadiusClasses(), puts the depth.
+     **/
+    static ZDefocusBlurRadius blurRadius(const DepthOfField& dof,
+                                         const ZDefocusDepthClasses& classes,
+                                         float depth) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The slice of slices, nearest first, a pixel's gather weighs most, from its
+     * pixelCoc(); 0 when there are no slices.
+     **/
+    static int sliceOf(const std::vector<ZDefocusSlice>& slices,
+                       float coc) WARN_UNUSED_RETURN;
+
+    /// The slice of slices, nearest first, in focus: the first whose circle of confusion is not negative.
+    static int focusSlice(const std::vector<ZDefocusSlice>& slices) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The Slices output's colour of slice k of slices: white for the slice in focus, else
+     * one of eight hues by its distance from that slice, so that neighbours always differ.
+     **/
+    static void sliceColour(const std::vector<ZDefocusSlice>& slices,
+                            int k,
+                            float rgb[3]);
+
+    /**
      * @brief The passes' halo in pixels at context's scale: the extent of the largest slice
-     * kernel, none for the focal plane output.
+     * kernel, none for an output other than Result.
      **/
     static void halo(const ZDefocusParams& params,
                      const PassContext& context,
@@ -179,8 +270,8 @@ public:
                      int* haloY);
 
     /**
-     * @brief Whether the GPU records the passes: the focal plane output, or an analytic kernel
-     * whose halo is within the GPU kernels' cap.
+     * @brief Whether the GPU records the passes: an output other than Result, or an analytic
+     * kernel whose halo is within the GPU kernels' cap.
      **/
     static bool fitsGpu(const ZDefocusParams& params,
                         const PassContext& context) WARN_UNUSED_RETURN;
@@ -245,11 +336,16 @@ private:
                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    /// Only the Result output is masked and mixed; the debug outputs always show their full value.
+    virtual bool appliesMaskMix(double time,
+                                ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual PassList opPasses(double time,
                               ViewIdx view,
                               const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     bool isImageKernel(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    /// Whether the Output is Result, the one output that gathers and so the one that reads the Kernel.
+    bool gathersAt(double time, ViewIdx view) const WARN_UNUSED_RETURN;
     bool resolveKernelChannel(double time,
                               ViewIdx view,
                               ImageLayerDesc* layer,

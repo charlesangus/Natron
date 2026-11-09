@@ -53,6 +53,8 @@
 #define kParitySourceParamOrigin "origin"
 #define kParitySourceParamNoise "noise"
 #define kParitySourceParamNonFinite "nonFinite"
+#define kParitySourceParamCells "cells"
+#define kParitySourceCellSize 2
 #define kParitySourceWidth 64
 #define kParitySourceHeight 48
 #define kParitySourceExtraLayerID "spec"
@@ -87,6 +89,9 @@ float paritySourceNoise(int channel, int cx, int cy);
  * `nonFinite` is a canonical rectangle (x1, y1, x2, y2), counted from the origin, where the colour
  * plane's R, G and B are NaN, +Inf and -Inf. No node can compute those on a render thread of a
  * debug build, which traps the invalid and overflow exceptions.
+ * `cells` lists 32-bit float bit patterns in hexadecimal, separated by spaces, that set the colour
+ * plane's R exactly: the i-th fills the i-th square of kParitySourceCellSize canonical pixels,
+ * counted left to right then bottom to top from the origin. A cell is a whole pixel at half size.
  **/
 class ParitySourceTestEffect
     : public NativeEffectBase {
@@ -152,12 +157,14 @@ private:
     bool hasNoise() const;
     void getOrigin(int* x, int* y) const;
     RectI getNonFinite() const;
+    std::vector<float> getCells() const;
 
     KnobChoiceWPtr _components;
     KnobBoolWPtr _extraLayer;
     KnobIntWPtr _origin;
     KnobBoolWPtr _noise;
     KnobIntWPtr _nonFinite;
+    KnobStringWPtr _cells;
 };
 
 ImageLayerDesc paritySourceExtraLayer();
@@ -261,6 +268,7 @@ void setParitySourceExtraLayer(const NodePtr& source, bool extraLayer);
 void setParitySourceOrigin(const NodePtr& source, int x, int y);
 void setParitySourceNoise(const NodePtr& source, bool noise);
 void setParitySourceNonFinite(const NodePtr& source, const RectI& rect);
+void setParitySourceCells(const NodePtr& source, const std::vector<float>& values);
 
 /**
  * @brief The source's region of definition in pixel coordinates at `mipmapLevel`.

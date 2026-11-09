@@ -561,6 +561,7 @@ SharpenOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Size"), 2);
     sizeKnob->setName(kSharpenParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(EffectInstance::tr("Size (diameter) of the blur that separates the detail, in pixel units (>=0). The standard deviation of the corresponding Gaussian is size/2.4."));
     sizeKnob->setSpatial(true);
     sizeKnob->setCanAutoFoldDimensions(true);

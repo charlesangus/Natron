@@ -33,6 +33,7 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -74,6 +75,18 @@ public:
         qRegisterMetaType<TrackMarkerPtr>("TrackMarkerPtr");
     }
 };
+
+void
+recordTrackerChange(const TrackMarker& marker)
+{
+    if (!GraphEditRecorder::isActive()) {
+        return;
+    }
+    TrackerContextPtr context = marker.getContext();
+    if (context) {
+        GraphEditRecorder::onTrackerChanged(context->getNode());
+    }
+}
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -431,6 +444,7 @@ TrackMarker::setScriptName(const std::string& name)
     }
 
     getContext()->declareItemAsPythonField(thisShared);
+    recordTrackerChange(*this);
 
     return true;
 }
@@ -487,9 +501,12 @@ TrackMarker::getFullyQualifiedName() const
 void
 TrackMarker::setLabel(const std::string& label)
 {
-    QMutexLocker l(&_imp->trackMutex);
+    {
+        QMutexLocker l(&_imp->trackMutex);
 
-    _imp->trackLabel = label;
+        _imp->trackLabel = label;
+    }
+    recordTrackerChange(*this);
 }
 
 std::string
@@ -936,6 +953,7 @@ TrackMarker::removeAllUserKeyframes()
         QMutexLocker k(&_imp->trackMutex);
         _imp->userKeyframes.clear();
     }
+    recordTrackerChange(*this);
     getContext()->s_allKeyframesRemovedOnTrack( shared_from_this() );
 }
 
@@ -966,6 +984,7 @@ TrackMarker::setUserKeyframe(int time)
         QMutexLocker k(&_imp->trackMutex);
         _imp->userKeyframes.insert(time);
     }
+    recordTrackerChange(*this);
     getContext()->s_keyframeSetOnTrack(shared_from_this(), time);
 }
 
@@ -983,6 +1002,7 @@ TrackMarker::removeUserKeyframe(int time)
     }
 
     if (emitSignal) {
+        recordTrackerChange(*this);
         getContext()->s_keyframeRemovedOnTrack(shared_from_this(), time);
     }
 }

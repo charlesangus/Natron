@@ -109,6 +109,14 @@ PythonUndoRecorder::openStep(const std::string& text)
 }
 
 void
+PythonUndoRecorder::openLabelledStep(const std::string& text)
+{
+    if (_history) {
+        _history->openStep(QString::fromUtf8(text.c_str()), true);
+    }
+}
+
+void
 PythonUndoRecorder::closeStep()
 {
     if (_history) {

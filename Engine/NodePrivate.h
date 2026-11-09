@@ -179,6 +179,7 @@ public:
         , label()
         , cacheID()
         , cacheIDClaimed(false)
+        , nodeId()
         , deactivatedState()
         , activatedMutex()
         , activated(true)
@@ -237,6 +238,7 @@ public:
         , lastInputNRenderStartedSlotCallTime()
         , nodeIsDequeuing(false)
         , actionsQueued(false)
+        , renderStartsHeldByEdits(0)
         , nodeIsDequeuingMutex()
         , nodeIsDequeuingCond()
         , nodeIsRendering(0)
@@ -382,6 +384,7 @@ public:
     // A UUID, not the script name: the caches are shared by every project in the process.
     std::string cacheID;
     bool cacheIDClaimed; // protected by nameMutex
+    std::string nodeId; // protected by nameMutex
     DeactivatedState deactivatedState;
     mutable QMutex activatedMutex;
     bool activated;
@@ -512,6 +515,8 @@ public:
     bool nodeIsDequeuing;
     // An edit waits in a queue for the renders holding the node to end; protected by nodeIsDequeuingMutex
     bool actionsQueued;
+    // Main-thread edits holding back render starts on other threads; protected by nodeIsDequeuingMutex
+    int renderStartsHeldByEdits;
     QMutex nodeIsDequeuingMutex;
     QWaitCondition nodeIsDequeuingCond;
 

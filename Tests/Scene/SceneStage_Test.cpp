@@ -336,13 +336,18 @@ public:
         std::filesystem::remove(buildingPath(name));
     }
 
+    PXR_NS::SdfLayerRefPtr root() const
+    {
+        const PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen((_dir / "root.usda").string());
+
+        EXPECT_TRUE(bool(layer));
+
+        return layer;
+    }
+
     ScenePayload payload() const
     {
-        const PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::FindOrOpen((_dir / "root.usda").string());
-
-        EXPECT_TRUE(bool(root));
-
-        return stack({ root });
+        return stack({ root() });
     }
 
     // The buildings' files open anywhere in the process, by file name.
@@ -585,4 +590,109 @@ TEST(SceneStageLoads, CancelDropsWhatHasNotStarted)
     EXPECT_FALSE(stage.hasPendingLoads());
     EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
     EXPECT_TRUE(city.loadedBuildings().empty());
+}
+
+TEST(SceneStageLoads, ASyncToAnotherSceneDuringABatchLoadsNoneOfIt)
+{
+    PayloadCity first(1, 1);
+    PayloadCity second(1, 1);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(first.payload()));
+
+    stage.requestLoad({ building(0, 0) }, false);
+    stage.requestLoad({ PXR_NS::SdfPath("/World/Block_0") }, true);
+    const SceneStage::LockedSection writeLocked = [&](const std::function<void()>& section) {
+        EXPECT_TRUE(stage.sync(second.payload()));
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked));
+
+    // The same path, composing another file than the one opened for it.
+    const PXR_NS::UsdPrim prim = stage.getStage()->GetPrimAtPath(building(0, 0));
+    ASSERT_TRUE(bool(prim));
+    EXPECT_FALSE(prim.IsLoaded());
+    EXPECT_TRUE(second.loadedBuildings().empty());
+    EXPECT_EQ(stage.getLoadEditCount(), U64(0));
+}
+
+TEST(SceneStageLoads, AnEditLeavingThePayloadsAloneDuringABatchStillLoads)
+{
+    PayloadCity city(1, 2);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ building(0, 0) }, false);
+    stage.requestLoad({ building(0, 1) }, true);
+    const SceneStage::LockedSection writeLocked = [&](const std::function<void()>& section) {
+        EXPECT_TRUE(stage.sync(stack({ city.root(), makeLayer("def Xform \"Other\"\n{\n}\n") })));
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked));
+
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 1)).IsLoaded());
+    EXPECT_TRUE(bool(stage.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/Other"))));
+}
+
+TEST(SceneStageLoads, WithDescendantsOpensNestedPayloadsBeforeTheLock)
+{
+    PayloadCity city(1, 1);
+    city.writeBuilding("nested.usda", std::string());
+    city.writeBuilding("b0_0.usda", "    def Xform \"Wing\" (\n        prepend payload = @./nested.usda@\n    )\n    {\n    }\n");
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World/Block_0") }, true);
+    std::vector<std::string> openBeforeTheLock;
+    const SceneStage::LockedSection writeLocked = [&](const std::function<void()>& section) {
+        openBeforeTheLock = city.loadedBuildings();
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked));
+
+    EXPECT_EQ(openBeforeTheLock, std::vector<std::string>({ "b0_0.usda", "nested.usda" }));
+    const PXR_NS::UsdPrim wing = stage.getStage()->GetPrimAtPath(building(0, 0).AppendChild(PXR_NS::TfToken("Wing")));
+    ASSERT_TRUE(bool(wing));
+    EXPECT_TRUE(wing.IsLoaded());
+}
+
+TEST(SceneStageLoads, WithACancelCheckTheFilesOpenAndCommit)
+{
+    PayloadCity city(1, 2);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ building(0, 0), building(0, 1) }, false);
+    int checks = 0;
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock, [&checks]() {
+        ++checks;
+
+        return false;
+    }));
+
+    EXPECT_GT(checks, 0);
+    EXPECT_EQ(stage.getLoadEditCount(), U64(1));
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 1)).IsLoaded());
+}
+
+TEST(SceneStageLoads, ACancelledBatchOpensAndCommitsNothing)
+{
+    PayloadCity city(1, 2);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ building(0, 0), building(0, 1) }, false);
+    int writes = 0;
+    const SceneStage::LockedSection writeLocked = [&](const std::function<void()>& section) {
+        ++writes;
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked, []() { return true; }));
+
+    EXPECT_EQ(writes, 0);
+    EXPECT_EQ(stage.getLoadEditCount(), U64(0));
+    EXPECT_FALSE(stage.hasOutstandingLoads());
+    EXPECT_TRUE(city.loadedBuildings().empty());
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
 }

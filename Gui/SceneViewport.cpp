@@ -579,8 +579,36 @@ struct SceneViewportRenderer::Implementation {
 
             return true;
         }
+        ++backgroundStops;
 
         return false;
+    }
+
+    // Threads blocked taking stageMutex to edit. A background frame, which holds it shared for up
+    // to kMaxRenderPasses passes, ends at its next pass for them. Not exclusiveOwed, which may
+    // stay set after the try it answers has gone.
+    std::atomic<int> exclusiveWaiting { 0 };
+    // Counters a background frame compares with their values when it was prepared: a stop ends it
+    // at its next pass after the first, keeping what it drew; a cancel before its next pass, the
+    // first included, taking nothing in.
+    std::atomic<U64> backgroundStops { 0 };
+    std::atomic<U64> backgroundCancels { 0 };
+
+    // Takes stageMutex to edit, waiting for it.
+    std::unique_lock<std::shared_mutex> lockExclusive()
+    {
+        struct Waiting {
+            std::atomic<int>& count;
+
+            explicit Waiting(std::atomic<int>& c)
+                : count(c)
+            {
+                ++count;
+            }
+            ~Waiting() { --count; }
+        } waiting(exclusiveWaiting);
+
+        return std::unique_lock<std::shared_mutex>(stageMutex);
     }
     // Created by the first sync and kept for the renderer's life: the engine binds the first
     // stage it renders for good (v26.08 usdImagingGL/engine.cpp, PrepareBatch populates once).
@@ -636,6 +664,9 @@ struct SceneViewportRenderer::Implementation {
     // and why it could not be, if it could not.
     std::string rendererChoice = kRenderDelegateStormId;
     std::string rendererId = kRenderDelegateStormId;
+    // Written under stageMutex and this, so that the main thread reads them with neither while the
+    // render thread switches renderers.
+    mutable std::mutex rendererIdMutex;
     mutable std::mutex rendererErrorMutex;
     std::string rendererError;
     // Why the refinement's delegate is not rendering now, from its status: unlike rendererError it
@@ -678,6 +709,9 @@ struct SceneViewportRenderer::Implementation {
         U64 editCount = 0;
         U64 loadEditCount = 0;
         U64 previewGeneration = 0;
+        // backgroundStops and backgroundCancels when the frame was prepared.
+        U64 stops = 0;
+        U64 cancels = 0;
     };
     BackgroundFrame backgroundFrame;
 
@@ -904,7 +938,10 @@ struct SceneViewportRenderer::Implementation {
         if (renderer == rendererId) {
             return;
         }
-        rendererId = renderer;
+        {
+            std::lock_guard<std::mutex> idLock(rendererIdMutex);
+            rendererId = renderer;
+        }
         setRendererErrorCopy(std::string());
         setRefineErrorCopy(std::string());
         uploadedFrame.reset();
@@ -2196,7 +2233,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     SceneWriteBarrier::ReadScope read;
     bool restart = false;
     {
-        std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+        const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
         if (!_imp->sceneStage) {
             // The viewer shows what was asked for: nothing loads until a load is requested.
             _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
@@ -2366,7 +2403,7 @@ bool
 SceneViewportRenderer::needsBackgroundFrame() const
 {
     // Another delegate than Storm renders on the refinement's own thread.
-    if (!_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (_imp->rendererId != kRenderDelegateStormId)) {
+    if (!_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (getActiveRendererId() != kRenderDelegateStormId)) {
         return false;
     }
 
@@ -2403,6 +2440,8 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     frame.gamma = _imp->displayTransform.gamma;
     std::copy(_imp->backgroundShown, _imp->backgroundShown + 3, frame.background);
     frame.imageKept = false;
+    frame.stops = _imp->backgroundStops;
+    frame.cancels = _imp->backgroundCancels;
 
     return true;
 }
@@ -2430,7 +2469,17 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 
         return;
     }
-    if (!_imp->ensureEngine()) {
+    // Storm, the only delegate rendering here, cannot be stopped inside a pass
+    // (HdStRenderDelegate leaves IsStopSupported at false), so the frame ends between passes.
+    Implementation* imp = _imp.get();
+    const auto ended = [imp, &frame](int pass) {
+        if (imp->backgroundCancels != frame.cancels) {
+            return true;
+        }
+
+        return (pass > 0) && ((imp->backgroundStops != frame.stops) || (imp->exclusiveWaiting > 0));
+    };
+    if (ended(0) || !_imp->ensureEngine()) {
         return;
     }
     section.collectWith(_imp->engine->GetHgi());
@@ -2438,12 +2487,13 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 
     const UsdStageRefPtr stage = _imp->currentStage();
     bool converged = false;
+    int passes = 0;
     std::string what;
     bool failed = false;
     try {
         _imp->applyStormSettings();
         _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
-        for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
+        for (; (passes < kMaxRenderPasses) && !converged && !ended(passes); ++passes) {
             RenderDelegates::runRenderFaultHook();
             _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
             converged = _imp->engine->IsConverged();
@@ -2459,6 +2509,9 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         section.collectWith(nullptr);
         _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
 
+        return;
+    }
+    if (passes == 0) {
         return;
     }
     _imp->drawGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
@@ -2509,8 +2562,20 @@ SceneViewportRenderer::hasPendingStageLoads() const
     return stage && stage->hasPendingLoads();
 }
 
+void
+SceneViewportRenderer::stopBackgroundFrame()
+{
+    ++_imp->backgroundStops;
+}
+
+void
+SceneViewportRenderer::cancelBackgroundFrame()
+{
+    ++_imp->backgroundCancels;
+}
+
 bool
-SceneViewportRenderer::serviceStageLoads()
+SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
 {
     SceneStage* stage = _imp->loadStage;
 
@@ -2524,9 +2589,12 @@ SceneViewportRenderer::serviceStageLoads()
         std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
         section(); }, [imp, stage](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
-        std::lock_guard<std::shared_mutex> lock(imp->stageMutex);
+        const std::unique_lock<std::shared_mutex> lock = imp->lockExclusive();
         section();
-        imp->stageLoadEditCount = stage->getLoadEditCount(); });
+        imp->stageLoadEditCount = stage->getLoadEditCount(); }, cancelled);
+    if (cancelled && cancelled()) {
+        return serviced;
+    }
     SceneWriteBarrier::ReadScope read;
     std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
     imp->refreshStageSummary();
@@ -3440,7 +3508,7 @@ SceneViewportRenderer::render(unsigned int fbo,
                               int width,
                               int height)
 {
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
 
     return renderLocked(fbo, width, height, true) == eRenderStatusDone;
 }
@@ -3870,7 +3938,7 @@ SceneViewportRenderer::pickRect(int x0,
 void
 SceneViewportRenderer::releaseGL()
 {
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
 
     _imp->dropEngine();
     _imp->releaseGrade();
@@ -3890,9 +3958,12 @@ SceneViewportRenderer::releaseGL()
 void
 SceneViewportRenderer::setRendererId(const std::string& id)
 {
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
 
-    _imp->rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
+    {
+        std::lock_guard<std::mutex> idLock(_imp->rendererIdMutex);
+        _imp->rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
+    }
     // The error is cleared even for the same id, so that choosing it again retries it.
     _imp->setRendererErrorCopy(std::string());
     _imp->setRefineErrorCopy(std::string());
@@ -3902,7 +3973,7 @@ SceneViewportRenderer::setRendererId(const std::string& id)
 bool
 SceneViewportRenderer::followSceneRenderer()
 {
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
     const std::string before = _imp->rendererId;
 
     _imp->switchRenderer(_imp->effectiveRenderer());
@@ -3917,15 +3988,19 @@ SceneViewportRenderer::hasPendingRendererSwitch() const
     return _imp->rendererSwitchPending;
 }
 
-const std::string&
+std::string
 SceneViewportRenderer::getRendererId() const
 {
+    std::lock_guard<std::mutex> lock(_imp->rendererIdMutex);
+
     return _imp->rendererChoice;
 }
 
-const std::string&
+std::string
 SceneViewportRenderer::getActiveRendererId() const
 {
+    std::lock_guard<std::mutex> lock(_imp->rendererIdMutex);
+
     return _imp->rendererId;
 }
 
@@ -3951,7 +4026,7 @@ SceneViewportRenderer::getRendererError() const
 std::string
 SceneViewportRenderer::getEngineRendererId() const
 {
-    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
 
     return _imp->engine ? _imp->engine->GetCurrentRendererId().GetString() : std::string();
 }
@@ -3993,7 +4068,7 @@ SceneViewportRenderer::getRefineStatus() const
     const HydraRender::ProgressiveRender::Status status = _imp->progressive->getStatus();
     RefineStatus result;
 
-    result.active = status.active && (_imp->rendererId != kRenderDelegateStormId);
+    result.active = status.active && (getActiveRendererId() != kRenderDelegateStormId);
     result.stopped = status.stopped;
     result.converged = status.converged;
     result.samples = status.samples;
@@ -4650,7 +4725,8 @@ struct SceneViewport::Implementation {
     std::thread loadThread;
     std::mutex loadWakeMutex;
     std::condition_variable loadWake;
-    bool loadQuit = false;
+    // Also read by the load batch, which gives up on its files when it turns true.
+    std::atomic<bool> loadQuit { false };
 
     // The thread the engine lives on, running jobs in order.
     std::thread renderThread;
@@ -4673,6 +4749,18 @@ struct SceneViewport::Implementation {
 
     // Main thread.
     bool backgroundFrameRunning = false;
+    // A renderer switch posted to the render thread, whose engine it drops, has not come back. The
+    // switch numbered rendererSwitchLatest is the one asked for last: the render thread skips the
+    // others, and the main thread waits for that one.
+    bool rendererSwitchRunning = false;
+    std::atomic<U64> rendererSwitchLatest { 0 };
+
+    // Whether the render thread is on work the main thread does not wait for, and must not queue
+    // behind.
+    bool renderThreadBusy() const
+    {
+        return backgroundFrameRunning || rendererSwitchRunning;
+    }
     // The load edit count the main thread has had onStageLoadsServiced() for.
     U64 takenLoadEditCount = 0;
 
@@ -4956,7 +5044,10 @@ SceneViewport::SceneViewport(QWidget* parent)
                     return;
                 }
             }
-            imp->renderer.serviceStageLoads();
+            imp->renderer.serviceStageLoads([imp]() { return imp->loadQuit.load(); });
+            if (imp->loadQuit) {
+                return;
+            }
             // Payloads without extent hints leave nothing to frame until one of them loads.
             const U64 loadEditCount = imp->renderer.getStageLoadEditCount();
             const SceneViewportRenderer::FrameBounds bounds = imp->renderer.isFramed() ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
@@ -5033,19 +5124,23 @@ SceneViewport::~SceneViewport()
 {
     Q_EMIT closing();
     _imp->renderer.setRefineListener(std::function<void()>());
+    // Every thread is told before any is waited for: the worker's sync may wait for a frame, and
+    // the load batch gives up on the files it is opening.
     {
         std::lock_guard<std::mutex> lock(_imp->queueMutex);
         _imp->quit = true;
-    }
-    _imp->queueChanged.notify_all();
-    if (_imp->worker.joinable()) {
-        _imp->worker.join();
     }
     {
         std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
         _imp->loadQuit = true;
     }
+    ++_imp->rendererSwitchLatest;
+    _imp->renderer.cancelBackgroundFrame();
+    _imp->queueChanged.notify_all();
     _imp->loadWake.notify_all();
+    if (_imp->worker.joinable()) {
+        _imp->worker.join();
+    }
     if (_imp->loadThread.joinable()) {
         _imp->loadThread.join();
     }
@@ -5073,6 +5168,8 @@ SceneViewport::requestSync(const ScenePayload& payload,
         _imp->pendingFramesPerSecond = _imp->framesPerSecond;
         _imp->pendingSerial = ++_imp->requestedSerial;
     }
+    // A frame of the stage this sync replaces is not worth the rest of its passes.
+    _imp->renderer.stopBackgroundFrame();
     _imp->queueChanged.notify_one();
     publishState();
     if (!_imp->renderer.hasScene()) {
@@ -5134,7 +5231,7 @@ SceneViewport::followSceneRenderer()
 {
     // Dropping the old engine needs its context, which a view not yet shown has not made: it has
     // no engine then either.
-    if (_imp->backgroundFrameRunning) {
+    if (_imp->renderThreadBusy()) {
         _imp->followSceneOwed = true;
 
         return;
@@ -5162,13 +5259,13 @@ SceneViewport::isSceneSynced() const
     // A view nobody sees takes nothing in until it is shown.
     const bool awaitsEngine = _imp->usesRenderThread && isVisible() && (width() > 0) && (height() > 0);
 
-    return !awaitsEngine || (!_imp->backgroundFrameRunning && !_imp->renderer.needsBackgroundFrame());
+    return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame());
 }
 
 void
 SceneViewport::startBackgroundFrame()
 {
-    if (!_imp->usesRenderThread || _imp->backgroundFrameRunning || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn()) {
+    if (!_imp->usesRenderThread || _imp->renderThreadBusy() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn()) {
         return;
     }
     const qreal dpr = devicePixelRatio();
@@ -5196,7 +5293,9 @@ void
 SceneViewport::onBackgroundFrameDone()
 {
     _imp->backgroundFrameRunning = false;
-    _imp->composingTimer->stop();
+    if (!_imp->rendererSwitchRunning) {
+        _imp->composingTimer->stop();
+    }
     if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
         followSceneRenderer();
     }
@@ -5329,7 +5428,7 @@ SceneViewport::runWithEngineContext(const std::function<void()>& fn)
 bool
 SceneViewport::isComposing() const
 {
-    return _imp->backgroundFrameRunning || ((_imp->syncedSerial < _imp->requestedSerial) && !_imp->requestedPayload.isEmpty() && !_imp->renderer.hasScene());
+    return _imp->renderThreadBusy() || ((_imp->syncedSerial < _imp->requestedSerial) && !_imp->requestedPayload.isEmpty() && !_imp->renderer.hasScene());
 }
 
 void
@@ -5617,11 +5716,58 @@ SceneViewport::setRendererId(const QString& id)
 {
     // Dropping the old engine needs its context.
     const std::string renderer = id.toStdString();
-    runWithEngineContext([this, &renderer]() { _imp->renderer.setRendererId(renderer); });
+    if (!_imp->usesRenderThread) {
+        ++_imp->rendererSwitchLatest;
+        _imp->rendererSwitchRunning = false;
+        runWithEngineContext([this, &renderer]() { _imp->renderer.setRendererId(renderer); });
+        publishState();
+        update();
+        _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
+        Q_EMIT rendererChanged(id);
+
+        return;
+    }
+    // The render thread may be seconds into a frame of the renderer being left: the frame ends
+    // before its next pass, and the switch goes on the render thread with nobody waiting for it.
+    _imp->renderer.cancelBackgroundFrame();
+    const U64 serial = ++_imp->rendererSwitchLatest;
+    _imp->rendererSwitchRunning = true;
+    if (!_imp->composingTimer->isActive()) {
+        _imp->composingClock.start();
+        _imp->composingTimer->start();
+    }
+    Implementation* imp = _imp.get();
+    _imp->postToRenderThread([this, imp, renderer, id, serial]() {
+        if (imp->rendererSwitchLatest != serial) {
+            return;
+        }
+        imp->renderer.setRendererId(renderer);
+        // Dropped by Qt if the widget is gone by then.
+        QMetaObject::invokeMethod(this, [this, id, serial]() { onRendererSwitched(id, serial); }, Qt::QueuedConnection);
+    });
     publishState();
-    update();
+}
+
+void
+SceneViewport::onRendererSwitched(const QString& id,
+                                  U64 serial)
+{
+    if (serial != _imp->rendererSwitchLatest) {
+        return;
+    }
+    _imp->rendererSwitchRunning = false;
+    if (!_imp->backgroundFrameRunning) {
+        _imp->composingTimer->stop();
+    }
     _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
     Q_EMIT rendererChanged(id);
+    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
+        followSceneRenderer();
+    }
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    update();
 }
 
 void
@@ -5729,7 +5875,7 @@ SceneViewport::pickMustWait()
     // waiting for it. Asking for the frame here brings the retry that follows it.
     startBackgroundFrame();
 
-    return _imp->backgroundFrameRunning || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame());
+    return _imp->renderThreadBusy() || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame());
 }
 
 QString
@@ -6357,6 +6503,8 @@ SceneViewport::releaseEngine()
     // The engine's GL objects belong to its context, and releaseGL() takes the viewer lock, so the
     // worker is not syncing into the stage the engine listens to while it goes.
     if (_imp->glInitialized && context()) {
+        // A background frame would keep the main thread waiting for the rest of its passes.
+        _imp->renderer.cancelBackgroundFrame();
         runWithEngineContext([this]() { _imp->renderer.releaseGL(); });
     }
     _imp->renderer.releaseRefinement();
@@ -6403,8 +6551,8 @@ SceneViewport::paintGL()
     const int h = int(height() * dpr);
     if (_imp->usesRenderThread && (w > 0) && (h > 0)) {
         startBackgroundFrame();
-        if (_imp->backgroundFrameRunning || _imp->renderer.needsBackgroundFrame()) {
-            if (!_imp->backgroundFrameRunning && !_imp->stageAwaitsTakeIn()) {
+        if (_imp->renderThreadBusy() || _imp->renderer.needsBackgroundFrame()) {
+            if (!_imp->renderThreadBusy() && !_imp->stageAwaitsTakeIn()) {
                 // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
                 update();
             }

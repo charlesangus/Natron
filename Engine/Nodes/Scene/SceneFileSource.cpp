@@ -136,27 +136,44 @@ SceneFileSource::getTimeCodesPerSecond(const PXR_NS::SdfLayerRefPtr& layer)
     return layer->GetTimeCodesPerSecond();
 }
 
+SceneFileSource::Closure
+SceneFileSource::computeClosure(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    Closure closure;
+    // Read before the walk, so a reload during it leaves the result marked stale.
+    closure.reloadCount = SceneOps::getFileLayerReloadCount();
+    std::vector<std::string> missing;
+    std::vector<std::string> payloads;
+    if (layer) {
+        closure.layers = SceneOps::getFileLayerClosure(layer, &missing, &payloads);
+    }
+    closure.paths.reserve(closure.layers.size() + missing.size() + payloads.size());
+    for (const PXR_NS::SdfLayerRefPtr& l : closure.layers) {
+        closure.paths.push_back(l->GetRealPath());
+    }
+    closure.paths.insert(closure.paths.end(), missing.begin(), missing.end());
+    closure.paths.insert(closure.paths.end(), payloads.begin(), payloads.end());
+    closure.links = SceneOps::findLayerStackLinks(layer);
+
+    return closure;
+}
+
+void
+SceneFileSource::publishClosure(Closure* closure)
+{
+    _closure.swap(closure->layers);
+    _closurePaths.swap(closure->paths);
+    _links.swap(closure->links);
+    _closureReloadCount = closure->reloadCount;
+}
+
 void
 SceneFileSource::setClosure(const PXR_NS::SdfLayerRefPtr& layer)
 {
-    // Read before the walk, so a reload during it leaves the result marked stale.
-    const std::uint64_t reloadCount = SceneOps::getFileLayerReloadCount();
-    std::vector<std::string> missing;
-    std::vector<std::string> payloads;
-    std::vector<PXR_NS::SdfLayerRefPtr> layers = layer ? SceneOps::getFileLayerClosure(layer, &missing, &payloads) : std::vector<PXR_NS::SdfLayerRefPtr>();
-    std::vector<std::string> paths;
-    paths.reserve(layers.size() + missing.size() + payloads.size());
-    for (const PXR_NS::SdfLayerRefPtr& l : layers) {
-        paths.push_back(l->GetRealPath());
-    }
-    paths.insert(paths.end(), missing.begin(), missing.end());
-    paths.insert(paths.end(), payloads.begin(), payloads.end());
-    SceneLinkIndex links = SceneOps::findLayerStackLinks(layer);
+    Closure closure = computeClosure(layer);
     std::lock_guard<std::mutex> lock(_mutex);
-    _closure.swap(layers);
-    _closurePaths.swap(paths);
-    _links.swap(links);
-    _closureReloadCount = reloadCount;
+
+    publishClosure(&closure);
 }
 
 void
@@ -247,26 +264,28 @@ SceneFileSource::walk(const std::string& path)
             return false;
         }
     }
-    PXR_NS::SdfLayerRefPtr layer;
+    Closure closure;
     {
         // Authoring reports a file USD cannot read.
         PXR_NS::TfErrorMark mark;
-        layer = PXR_NS::SdfLayer::FindOrOpen(path);
-        setClosure(layer);
+        closure = computeClosure(PXR_NS::SdfLayer::FindOrOpen(path));
         mark.Clear();
     }
+    const U64 digest = stampPaths(closure.paths);
+    // Declared before the lock, so the layers let go of are destroyed after it is released.
     std::vector<PXR_NS::SdfLayerRefPtr> retired;
-    {
-        std::lock_guard<std::mutex> lock(_mutex);
-        // The file changed during the walk: its result stays unwalked, for the next walk to redo.
-        if (_loadCount != loadCount) {
-            return false;
-        }
-        _path = path;
-        _walked = true;
-        retired.swap(_retired);
+    std::lock_guard<std::mutex> lock(_mutex);
+    // The file changed during the walk: its result is dropped, for the next walk to redo, and
+    // load() has already set the digest of the file now named.
+    if (_loadCount != loadCount) {
+        retired.swap(closure.layers);
+
+        return false;
     }
-    const U64 digest = stampClosurePaths();
+    publishClosure(&closure);
+    _path = path;
+    _walked = true;
+    retired.swap(_retired);
 
     return _digest.exchange(digest) != digest;
 }
@@ -388,6 +407,13 @@ SceneFileSource::stampClosurePaths() const
         std::lock_guard<std::mutex> lock(_mutex);
         paths = _closurePaths;
     }
+
+    return stampPaths(paths);
+}
+
+U64
+SceneFileSource::stampPaths(const std::vector<std::string>& paths)
+{
     FileStampRegistry& stamps = FileStampRegistry::instance();
     ContentHasher h;
     h.appendU64(paths.size());

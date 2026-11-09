@@ -138,6 +138,19 @@ public:
     U64 getDigest() const;
 
 private:
+    struct Closure {
+        std::vector<PXR_NS::SdfLayerRefPtr> layers;
+        std::vector<std::string> paths;
+        SceneLinkIndex links;
+        std::uint64_t reloadCount = 0;
+    };
+
+    // Walks the file layers layer brings in. Opens files, so it runs with no mutex held.
+    static Closure computeClosure(const PXR_NS::SdfLayerRefPtr& layer);
+
+    // Takes closure's contents as the walked closure. Under _mutex.
+    void publishClosure(Closure* closure);
+
     void setClosure(const PXR_NS::SdfLayerRefPtr& layer);
 
     // Stamps of the walked closure when there is one, else a new digest for an unwalked file.
@@ -146,6 +159,8 @@ private:
     // Hashes the registry's stamps of _closurePaths: those recorded when each file was first
     // looked at, until a Reload drops them.
     U64 stampClosurePaths() const;
+
+    static U64 stampPaths(const std::vector<std::string>& paths);
 
     // Held across a walk, so two evaluations walk once. Taken before _mutex.
     std::mutex _walkMutex;

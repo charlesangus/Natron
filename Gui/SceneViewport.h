@@ -259,9 +259,23 @@ public:
     /**
      * @brief Makes the engine if needed and renders the prepared frame into fbo, without overlays.
      * If the next render() is of the same view into the same fbo with nothing changed, it keeps this
-     * image and only draws the overlays. Needs the context of render() current.
+     * image and only draws the overlays. Needs the context of render() current. Renders up to a
+     * few passes, and after the first ends early for stopBackgroundFrame() or a thread waiting to
+     * edit the stage; then it keeps nothing for render() to reuse.
      **/
     void renderBackgroundFrame(unsigned int fbo);
+
+    /**
+     * @brief Ends the background frame running, or the one prepared, after its current pass, and
+     * never before its first: what it drew is taken in as for a full frame. Any thread.
+     **/
+    void stopBackgroundFrame();
+
+    /**
+     * @brief Ends the background frame running, or the one prepared, before its next pass, the
+     * first included, and then it takes nothing in. Any thread.
+     **/
+    void cancelBackgroundFrame();
 
     /**
      * @brief Passes load requests on to the stage, which takes them when serviceStageLoads() next
@@ -275,8 +289,11 @@ public:
 
     bool hasPendingStageLoads() const;
 
-    // Services the pending requests, opening their files with the viewer lock released.
-    bool serviceStageLoads();
+    /**
+     * @brief Services the pending requests, opening their files with the viewer lock released.
+     * Returns, committing nothing, once cancelled() turns true. See SceneStage::serviceLoads().
+     **/
+    bool serviceStageLoads(const std::function<bool()>& cancelled = std::function<bool()>());
 
     // How many load commits edited the stage, and how long the last batch held the viewer lock.
     U64 getStageLoadEditCount() const;
@@ -623,11 +640,11 @@ public:
     void setRendererId(const std::string& id);
 
     // The renderer chosen: a delegate's id, or kRenderDelegateSceneDefaultId.
-    const std::string& getRendererId() const;
+    std::string getRendererId() const;
 
     // The delegate rendering: the one chosen, or for Scene Default the one the prim names as of
     // the last render.
-    const std::string& getActiveRendererId() const;
+    std::string getActiveRendererId() const;
 
     // Why the chosen delegate could not render, empty if it can or has not been tried yet.
     std::string getRendererError() const;
@@ -979,6 +996,9 @@ private:
     void startBackgroundFrame();
 
     void onBackgroundFrameDone();
+
+    // Main thread: the render thread has switched to the renderer id for the switch numbered serial.
+    void onRendererSwitched(const QString& id, U64 serial);
 
     // Main thread: a batch of payload loads was committed, leaving the stage at loadEditCount.
     void onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds, U64 loadEditCount);

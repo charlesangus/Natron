@@ -134,18 +134,25 @@ public:
     using LockedSection = std::function<void(const std::function<void()>&)>;
 
     /**
-     * @brief Services every request pending, on the caller's thread: finds the payload layers under
-     * readLocked, opens them with no lock held, then commits the batch under writeLocked with the
-     * layers already in the registry, so that the lock is not held across file reads. Requests made
-     * meanwhile wait for the next call. Returns whether there was anything to service.
+     * @brief Services every request pending: finds the payload layers under readLocked, opens them
+     * with no lock held, then commits the batch under writeLocked with the layers already in the
+     * registry, so that the lock is not held across file reads. A descendant load opens the nested
+     * payloads its files author too, every variant's, so that its commit reads no file either.
+     * Requests made meanwhile wait for the next call. Returns whether there was anything to service.
      *
-     * USD takes one load policy per LoadAndUnload, so a batch mixing own and descendant loads
-     * commits in two calls. A prim whose payload file does not open stays unloaded and is reported
-     * by getLoadFailures(). A nested payload under a prim being loaded can only be read once its
-     * parent has composed, so USD opens that one under the lock.
+     * Without cancelled the files open on the caller's thread. With it they open on a thread of
+     * their own, and the call returns, committing nothing, as soon as cancelled() turns true, even
+     * in the middle of a file: that thread finishes the file against state of its own.
+     *
+     * A sync while the files open may compose other payloads at the paths requested: a path is
+     * committed only if its prim still names the payload files that were opened for it. USD takes
+     * one load policy per LoadAndUnload, so a batch mixing own and descendant loads commits in two
+     * calls. A prim whose payload file does not open stays unloaded and is reported by
+     * getLoadFailures().
      **/
     bool serviceLoads(const LockedSection& readLocked,
-                      const LockedSection& writeLocked);
+                      const LockedSection& writeLocked,
+                      const std::function<bool()>& cancelled = std::function<bool()>());
 
     struct LoadFailure {
         PXR_NS::SdfPath prim;

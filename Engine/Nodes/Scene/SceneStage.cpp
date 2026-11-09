@@ -26,7 +26,11 @@
 #include "SceneStage.h"
 
 #include <chrono>
+#include <condition_variable>
+#include <list>
+#include <memory>
 #include <set>
+#include <thread>
 
 #include <pxr/base/tf/errorMark.h>
 #include <pxr/usd/sdf/layerUtils.h>
@@ -50,17 +54,22 @@ getAuthoredPayloads(const PXR_NS::SdfPrimSpecHandle& spec)
 }
 
 // Opens asset and the sublayers and references it needs to compose, holding each in held. A nested
-// payload stays closed: its prim comes up unloaded unless it is asked for. Returns the error
-// opening asset itself gave; one of its dependencies failing is the stage's to report when it
-// composes. outcomes keeps each asset's result, so that assets are read once a batch.
+// payload stays closed unless nested is set: its prim comes up unloaded unless it is asked for.
+// Returns the error opening asset itself gave; one of its dependencies failing is the stage's to
+// report when it composes. outcomes keeps each asset's result, so that assets are read once a batch.
 std::string
 openPayloadClosure(const std::string& asset,
+                   bool nested,
                    std::map<std::string, std::string>* outcomes,
-                   std::vector<PXR_NS::SdfLayerRefPtr>* held)
+                   std::vector<PXR_NS::SdfLayerRefPtr>* held,
+                   const std::function<bool()>& abandoned)
 {
     const std::map<std::string, std::string>::const_iterator known = outcomes->find(asset);
     if (known != outcomes->end()) {
         return known->second;
+    }
+    if (abandoned && abandoned()) {
+        return std::string();
     }
     PXR_NS::TfErrorMark mark;
     const PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(asset);
@@ -80,16 +89,123 @@ openPayloadClosure(const std::string& asset,
     (*outcomes)[asset] = std::string();
     held->push_back(layer);
 
-    const std::set<std::string> nested = SceneOps::getAuthoredPayloadAssets(layer);
+    const std::set<std::string> closedPayloads = nested ? std::set<std::string>() : SceneOps::getAuthoredPayloadAssets(layer);
     for (const std::string& dependency : layer->GetCompositionAssetDependencies()) {
-        if (!dependency.empty() && !nested.count(dependency)) {
-            openPayloadClosure(PXR_NS::SdfComputeAssetPathRelativeToLayer(layer, dependency), outcomes, held);
+        if (!dependency.empty() && !closedPayloads.count(dependency)) {
+            openPayloadClosure(PXR_NS::SdfComputeAssetPathRelativeToLayer(layer, dependency), nested, outcomes, held, abandoned);
         }
     }
     mark.Clear();
 
     return std::string();
 }
+
+using PathAssets = std::map<PXR_NS::SdfPath, std::vector<std::string>>;
+
+// The files of a load batch and what opening them gave. Touches no stage, so that a thread the
+// stage's owner stopped waiting for can finish with it.
+struct OpenedBatch {
+    PathAssets ownLoads;
+    PathAssets descendantLoads;
+    std::map<std::string, std::string> outcomes;
+    std::vector<PXR_NS::SdfLayerRefPtr> held;
+    std::map<PXR_NS::SdfPath, std::string> failures;
+    PXR_NS::SdfPathSet ownPaths;
+    PXR_NS::SdfPathSet descendantPaths;
+
+    void open(const std::function<bool()>& abandoned)
+    {
+        // Descendant loads first: an asset is read once a batch, and they open its nested payloads.
+        openAll(descendantLoads, true, &descendantPaths, abandoned);
+        openAll(ownLoads, false, &ownPaths, abandoned);
+    }
+
+private:
+    void openAll(const PathAssets& loads,
+                 bool nested,
+                 PXR_NS::SdfPathSet* paths,
+                 const std::function<bool()>& abandoned)
+    {
+        for (const std::pair<const PXR_NS::SdfPath, std::vector<std::string>>& load : loads) {
+            if (abandoned && abandoned()) {
+                return;
+            }
+            std::string error;
+            for (const std::string& asset : load.second) {
+                const std::string assetError = openPayloadClosure(asset, nested, &outcomes, &held, abandoned);
+                if (!assetError.empty()) {
+                    error += (error.empty() ? "" : "; ") + assetError;
+                }
+            }
+            if (error.empty()) {
+                paths->insert(load.first);
+            } else {
+                failures[load.first] = error;
+            }
+        }
+    }
+};
+
+struct OpeningBatch {
+    OpenedBatch batch;
+    std::mutex mutex;
+    std::condition_variable doneChanged;
+    bool done = false;
+    std::atomic<bool> abandoned { false };
+};
+
+// The threads opening load batches. Joined at exit, so that one whose caller stopped waiting does
+// not read a file into a registry that static destruction is taking down.
+class OpenThreads {
+public:
+    static OpenThreads& instance()
+    {
+        static OpenThreads threads;
+
+        return threads;
+    }
+
+    void start(const std::function<void()>& job)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        for (std::list<Entry>::iterator it = _threads.begin(); it != _threads.end();) {
+            if (it->done->load()) {
+                it->thread.join();
+                it = _threads.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        const std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
+        Entry entry;
+        entry.done = done;
+        entry.thread = std::thread([job, done]() {
+            job();
+            *done = true;
+        });
+        _threads.push_back(std::move(entry));
+    }
+
+    ~OpenThreads()
+    {
+        for (Entry& entry : _threads) {
+            entry.thread.join();
+        }
+    }
+
+private:
+    struct Entry {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+
+    std::mutex _mutex;
+    std::list<Entry> _threads;
+};
+
+const std::chrono::milliseconds kCancelPollInterval(10);
+const std::size_t kCancelPollPrims = 1024;
 
 bool
 isUnloadedPayload(const PXR_NS::UsdPrim& prim)
@@ -420,7 +536,8 @@ SceneStage::hasOutstandingLoads() const
 
 bool
 SceneStage::serviceLoads(const LockedSection& readLocked,
-                         const LockedSection& writeLocked)
+                         const LockedSection& writeLocked,
+                         const std::function<bool()>& cancelled)
 {
     std::map<PXR_NS::SdfPath, PendingLoadEnum> batch;
     {
@@ -443,12 +560,19 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     if (!_stage) {
         return true;
     }
+    const auto isCancelled = [&cancelled]() { return cancelled && cancelled(); };
 
+    // Shared with the thread that opens the files, which may outlive this call.
+    const std::shared_ptr<OpeningBatch> opening = std::make_shared<OpeningBatch>();
+    OpenedBatch& opened = opening->batch;
     // The payloads a descendant load names are the unloaded ones found below its path, not the path
     // itself: it is how one whose file does not open stays out of the batch.
-    std::map<PXR_NS::SdfPath, std::vector<std::string>> ownLoads, descendantLoads;
     PXR_NS::SdfPathSet unloads;
+    U64 composition = 0;
+    bool walkCancelled = false;
     readLocked([&]() {
+        composition = _editCount;
+        std::size_t visited = 0;
         for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
             const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(request.first);
             if (!prim) {
@@ -460,15 +584,20 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                 break;
             case ePendingLoadOwn:
                 if (isUnloadedPayload(prim)) {
-                    ownLoads[request.first] = getPayloadAssets(prim);
+                    opened.ownLoads[request.first] = getPayloadAssets(prim);
                 }
                 break;
             case ePendingLoadWithDescendants: {
                 // The predicate leaves IsLoaded out, or the walk would not see what it looks for.
                 const PXR_NS::UsdPrimRange range(prim, PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
                 for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
+                    if (((++visited % kCancelPollPrims) == 0) && isCancelled()) {
+                        walkCancelled = true;
+
+                        return;
+                    }
                     if (isUnloadedPayload(*it)) {
-                        descendantLoads[it->GetPath()] = getPayloadAssets(*it);
+                        opened.descendantLoads[it->GetPath()] = getPayloadAssets(*it);
                         // Its children do not compose until it is loaded.
                         it.PruneChildren();
                     }
@@ -478,51 +607,65 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
             }
         }
     });
+    if (walkCancelled) {
+        return true;
+    }
 
-    std::map<std::string, std::string> outcomes;
-    std::vector<PXR_NS::SdfLayerRefPtr> held;
-    std::map<PXR_NS::SdfPath, std::string> failures;
-    const auto openAll = [&](std::map<PXR_NS::SdfPath, std::vector<std::string>>* loads, PXR_NS::SdfPathSet* paths) {
-        for (const std::pair<const PXR_NS::SdfPath, std::vector<std::string>>& load : *loads) {
-            std::string error;
-            for (const std::string& asset : load.second) {
-                const std::string assetError = openPayloadClosure(asset, &outcomes, &held);
-                if (!assetError.empty()) {
-                    error += (error.empty() ? "" : "; ") + assetError;
-                }
-            }
-            if (error.empty()) {
-                paths->insert(load.first);
-            } else {
-                failures[load.first] = error;
+    if (!cancelled) {
+        opened.open(std::function<bool()>());
+    } else {
+        if (cancelled()) {
+            return true;
+        }
+        OpenThreads::instance().start([opening]() {
+            OpeningBatch* state = opening.get();
+            state->batch.open([state]() { return state->abandoned.load(); });
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->done = true;
+            state->doneChanged.notify_all();
+        });
+        std::unique_lock<std::mutex> lock(opening->mutex);
+        while (!opening->doneChanged.wait_for(lock, kCancelPollInterval, [&opening]() { return opening->done; })) {
+            if (cancelled()) {
+                // The file being read finishes on the opening thread, which then lets go of the batch.
+                opening->abandoned = true;
+
+                return true;
             }
         }
-    };
-    PXR_NS::SdfPathSet ownPaths, descendantPaths;
-    openAll(&ownLoads, &ownPaths);
-    openAll(&descendantLoads, &descendantPaths);
+    }
     {
         std::lock_guard<std::mutex> lock(_loadMutex);
-        for (const std::pair<const PXR_NS::SdfPath, std::vector<std::string>>& load : descendantLoads) {
+        for (const std::pair<const PXR_NS::SdfPath, std::vector<std::string>>& load : opened.descendantLoads) {
             _loadFailures.erase(load.first);
         }
-        _loadFailures.insert(failures.begin(), failures.end());
+        _loadFailures.insert(opened.failures.begin(), opened.failures.end());
     }
-    if (ownPaths.empty() && descendantPaths.empty() && unloads.empty()) {
+    PXR_NS::SdfPathSet& ownPaths = opened.ownPaths;
+    PXR_NS::SdfPathSet& descendantPaths = opened.descendantPaths;
+    if ((ownPaths.empty() && descendantPaths.empty() && unloads.empty()) || isCancelled()) {
         return true;
     }
 
     writeLocked([&]() {
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-        // A sync may have taken any of these away while the files were opening.
-        const auto keepComposed = [this](PXR_NS::SdfPathSet* paths) {
+        // A sync while the files were opening may have taken a prim away, or composed another
+        // payload at its path, which was not asked for there and whose files are not open.
+        const bool recomposed = (_editCount != composition);
+        const auto keepComposed = [this, recomposed](PXR_NS::SdfPathSet* paths, const PathAssets* assets) {
             for (PXR_NS::SdfPathSet::iterator it = paths->begin(); it != paths->end();) {
-                it = _stage->GetPrimAtPath(*it) ? std::next(it) : paths->erase(it);
+                const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(*it);
+                bool keep = bool(prim);
+                if (keep && recomposed && assets) {
+                    const PathAssets::const_iterator found = assets->find(*it);
+                    keep = (found != assets->end()) && (getPayloadAssets(prim) == found->second);
+                }
+                it = keep ? std::next(it) : paths->erase(it);
             }
         };
-        keepComposed(&ownPaths);
-        keepComposed(&descendantPaths);
-        keepComposed(&unloads);
+        keepComposed(&ownPaths, &opened.ownLoads);
+        keepComposed(&descendantPaths, &opened.descendantLoads);
+        keepComposed(&unloads, nullptr);
         if (!descendantPaths.empty() || !unloads.empty()) {
             _stage->LoadAndUnload(descendantPaths, unloads, PXR_NS::UsdLoadWithDescendants);
             ++_loadEditCount;

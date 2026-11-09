@@ -1695,3 +1695,84 @@ TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
 
     engine.reset();
 }
+
+TEST_F(SceneViewportStorm, ACancelledBackgroundFrameRendersNoPassAndStaysDue)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    _renderer.cancelBackgroundFrame();
+
+    int passes = 0;
+    RenderDelegates::setRenderFaultHook([&passes]() { ++passes; });
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_EQ(0, passes);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame()) << "the cancelled frame took nothing in";
+
+    // A cancel ends only the frame it found.
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+}
+
+TEST_F(SceneViewportStorm, AStoppedBackgroundFrameRendersOnePassAndTakesItIn)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+
+    int passes = 0;
+    RenderDelegates::setRenderFaultHook([this, &passes]() {
+        ++passes;
+        _renderer.stopBackgroundFrame();
+    });
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_EQ(1, passes);
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+    EXPECT_GT(countNonBackground(render()), 0);
+}
+
+// A sync blocked on the viewer lock ends the background frame holding it at its next pass, rather
+// than waiting out every pass of it.
+TEST_F(SceneViewportStorm, ASyncDuringABackgroundFrameEndsTheFrameAtItsNextPass)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    const U64 edits = _renderer.getStageEditCount();
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+
+    int passes = 0;
+    bool synced = false;
+    std::string error;
+    std::thread writer;
+    RenderDelegates::setRenderFaultHook([&]() {
+        if (passes++ > 0) {
+            return;
+        }
+        writer = std::thread([&]() { synced = _renderer.syncScene(sceneWithOp(), &error); });
+        // Long enough for the writer to be waiting on the lock this frame holds.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    });
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    RenderDelegates::setRenderFaultHook(nullptr);
+    ASSERT_TRUE(writer.joinable());
+    writer.join();
+
+    EXPECT_EQ(1, passes);
+    EXPECT_TRUE(synced) << error;
+    EXPECT_GT(_renderer.getStageEditCount(), edits);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame()) << "the edit came after what the frame took in";
+}

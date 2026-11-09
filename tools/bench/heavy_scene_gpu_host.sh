@@ -192,7 +192,7 @@ export GUI_TEST_TIMEOUT=7200
 # What the display reports, for a record no Natron process lived to write.
 host_gpu_name() {
     command -v glxinfo > /dev/null 2>&1 || return 0
-    timeout 5 glxinfo -B 2> /dev/null | sed -n 's/^ *OpenGL renderer string: *//p' | head -n 1 | tr -d '"\\'
+    timeout 5 glxinfo -B 2> /dev/null | sed -n 's/^ *OpenGL renderer string: *//p' | head -n 1 | tr -d "\"\\\\"
 }
 HOST_GPU="$(host_gpu_name)"
 

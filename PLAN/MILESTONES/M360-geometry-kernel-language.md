@@ -95,3 +95,5 @@ Requires M54 - Native Geometry Data Model. Nodes register through their own `.re
 - 2026-11-08 — **Topology functions, second-input reads and `nearpoint` are in (user);** without them many common wrangles don't work.
 - 2026-11-08 — **`ch()` functions plus a create-parameters button (user).**
 - 2026-11-08 — **Geometry only, with a reusable core (user):** the front end and runner sit behind a binding interface with no `GeoDetail` types, so image, deep or volume contexts can plug in later.
+
+- 2026-11-09 — Merged into F15 as #239 (295b5686). Post-merge: the 10M-point `@P.y += 1` timing on the GPU host is still to run; it is a report for the Feature PR, not a gate.

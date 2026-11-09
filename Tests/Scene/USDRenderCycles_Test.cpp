@@ -526,7 +526,9 @@ TEST_F(USDRenderCyclesTest, WarnsOfAMaterialWithNoSurfaceForCycles)
 
 // A render that would take minutes is aborted: render() returns within a second, and once the
 // engine is gone the process has no more threads than after an earlier render was aborted the
-// same way (the TBB workers Cycles renders on outlive it, as they serve every TBB user).
+// same way (the TBB workers Cycles renders on outlive it, as they serve every TBB user). TBB
+// and Cycles add workers lazily and a few runs in, so the first two runs only warm the pools up
+// and the thread count is compared across the later ones, after exiting threads have settled.
 TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
 {
     if (!cyclesOrSkip()) {
@@ -542,7 +544,7 @@ TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
 
     typedef std::chrono::steady_clock Clock;
     int baseline = -1;
-    for (int run = 0; run < 2; ++run) {
+    for (int run = 0; run < 3; ++run) {
         const Clock::time_point start = Clock::now();
         Clock::time_point abortedAt;
         bool abortSeen = false;
@@ -564,10 +566,15 @@ TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
 
         HydraRender::release(&owner);
         EXPECT_EQ(0u, HydraRender::getCpuEngineCount());
-        const int threads = threadCount();
-        if (run == 0) {
-            baseline = threads;
+        int threads = threadCount();
+        if (run < 2) {
+            baseline = std::max(baseline, threads);
         } else {
+            const Clock::time_point deadline = Clock::now() + std::chrono::seconds(2);
+            while (threads > baseline && Clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                threads = threadCount();
+            }
             EXPECT_LE(threads, baseline);
         }
     }

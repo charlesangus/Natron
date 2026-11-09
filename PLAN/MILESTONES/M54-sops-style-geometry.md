@@ -113,10 +113,10 @@ Moved to other F15 - Native Geometry members on 2026-11-08 (IDs not reused here)
 - M54.P2.T1 → M358.P1.T1
 - M54.P2.T2 → M358.P1.T3
 - M54.P2.T3 → M358.P1.T4
-- M54.P2.T4 → M358.P2.T1
+- M54.P2.T4 → M376.P1.T1
 - M54.P2.T5 → M358.P1.T2
 - M54.P2.T6 → M358.P1.T5
-- M54.P2.T7 → M358.P2.T2
+- M54.P2.T7 → M376.P1.T2
 - M54.P3.T2 → M359.P1.T1
 - M54.P3.T3 → M359.P1.T2
 - M54.P3.T4 → M359.P1.T3

@@ -67,6 +67,21 @@ typedef std::list<SelectedCp> SelectedCpList;
 typedef BezierPtr BezierPtr;
 typedef std::list<BezierPtr> BezierList;
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// The GUI copy is never behind the internal one, so it is the state the user sees even while
+// a render holds the internal one.
+BezierCPPtr
+guiStateCopy(const BezierCPPtr& point)
+{
+    BezierCPPtr copy = std::make_shared<BezierCP>(point->getBezier());
+    copy->cloneGuiState(*point, true);
+
+    return copy;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 RefusedEditWatch::RefusedEditWatch(const RotoCurveContextPtr& context)
     : _context(context)
     , _refusedBefore(0)
@@ -140,12 +155,8 @@ RotoDragUndoCommand::copyPoint(const BezierCPPtr& point)
     if (std::find(_points.begin(), _points.end(), point) != _points.end()) {
         return;
     }
-    // The GUI copy is never behind the internal one, so it is the state the user sees even while
-    // a render holds the internal one.
-    BezierCPPtr copy = std::make_shared<BezierCP>(point->getBezier());
-    copy->cloneGuiState(*point, true);
     _points.push_back(point);
-    _before.push_back(copy);
+    _before.push_back(guiStateCopy(point));
 }
 
 void
@@ -1392,7 +1403,7 @@ RemoveFeatherUndoCommand::RemoveFeatherUndoCommand(const RotoCurveInteractPtr& r
 {
     for (std::list<RemoveFeatherData>::iterator it = _datas.begin(); it != _datas.end(); ++it) {
         for (std::list<BezierCPPtr>::const_iterator it2 = it->newPoints.begin(); it2 != it->newPoints.end(); ++it2) {
-            it->oldPoints.push_back(BezierCPPtr(new BezierCP(**it2)));
+            it->oldPoints.push_back(guiStateCopy(*it2));
         }
     }
     setText(tr("Remove feather").toStdString());
@@ -1409,9 +1420,8 @@ RemoveFeatherUndoCommand::undo()
         std::list<BezierCPPtr>::const_iterator itOld = it->oldPoints.begin();
         for (std::list<BezierCPPtr>::const_iterator itNew = it->newPoints.begin();
              itNew != it->newPoints.end(); ++itNew, ++itOld) {
-            (*itNew)->clone(**itOld);
+            it->curve->restorePointState(*itNew, **itOld);
         }
-        it->curve->invalidateContentHash();
     }
     RotoCurveInteractPtr roto = _roto.lock();
     if (!roto) {
@@ -1427,7 +1437,7 @@ RemoveFeatherUndoCommand::redo()
         std::list<BezierCPPtr>::const_iterator itOld = it->oldPoints.begin();
         for (std::list<BezierCPPtr>::const_iterator itNew = it->newPoints.begin();
              itNew != it->newPoints.end(); ++itNew, ++itOld) {
-            (*itOld)->clone(**itNew);
+            (*itOld)->cloneGuiState(**itNew, true);
             try {
                 it->curve->removeFeatherAtIndex(it->curve->getFeatherPointIndex(*itNew));
             } catch (...) {
@@ -1551,9 +1561,7 @@ SmoothCuspUndoCommand::SmoothCuspUndoCommand(const RotoCurveInteractPtr& roto,
     setGestureKey(roto->undoGesture.key());
     for (std::list<SmoothCuspCurveData>::iterator it = curves.begin(); it != curves.end(); ++it) {
         for (SelectedPointList::const_iterator it2 = it->newPoints.begin(); it2 != it->newPoints.end(); ++it2) {
-            BezierCPPtr firstCpy( new BezierCP(*(*it2).first) );
-            BezierCPPtr secondCpy( new BezierCP(*(*it2).second) );
-            it->oldPoints.push_back( std::make_pair(firstCpy, secondCpy) );
+            it->oldPoints.push_back(std::make_pair(guiStateCopy(it2->first), guiStateCopy(it2->second)));
         }
     }
     if (_cusp) {
@@ -1579,9 +1587,8 @@ SmoothCuspUndoCommand::undo()
         SelectedPointList::const_iterator itOld = it->oldPoints.begin();
         for (SelectedPointList::const_iterator itNew = it->newPoints.begin();
              itNew != it->newPoints.end(); ++itNew, ++itOld) {
-            itNew->first->clone(*itOld->first);
-            itNew->second->clone(*itOld->second);
-            it->curve->invalidateContentHash();
+            it->curve->restorePointState(itNew->first, *itOld->first);
+            it->curve->restorePointState(itNew->second, *itOld->second);
         }
     }
 
@@ -1600,8 +1607,8 @@ SmoothCuspUndoCommand::redo()
         SelectedPointList::const_iterator itOld = it->oldPoints.begin();
         for (SelectedPointList::const_iterator itNew = it->newPoints.begin();
              itNew != it->newPoints.end(); ++itNew, ++itOld) {
-            itOld->first->clone(*itNew->first);
-            itOld->second->clone(*itNew->second);
+            itOld->first->cloneGuiState(*itNew->first, true);
+            itOld->second->cloneGuiState(*itNew->second, true);
 
             for (int i = 0; i < _count; ++i) {
                 int index = it->curve->getControlPointIndex( (*itNew).first->isFeatherPoint() ? (*itNew).second : (*itNew).first );
@@ -2401,7 +2408,7 @@ TrackLinkUndoCommand::TrackLinkUndoCommand(const RotoCurveInteractPtr& roto,
         const BezierCPs& feathers = it->first->getFeatherPoints();
         state.points.insert(state.points.end(), feathers.begin(), feathers.end());
         for (std::list<BezierCPPtr>::const_iterator itP = state.points.begin(); itP != state.points.end(); ++itP) {
-            state.before.push_back(std::make_shared<BezierCP>(**itP));
+            state.before.push_back(guiStateCopy(*itP));
         }
         _curves.push_back(state);
     }
@@ -2430,9 +2437,8 @@ TrackLinkUndoCommand::restore(bool after)
         const std::list<BezierCPPtr>& saved = after ? it->after : it->before;
         std::list<BezierCPPtr>::const_iterator itSaved = saved.begin();
         for (std::list<BezierCPPtr>::const_iterator itP = it->points.begin(); itP != it->points.end() && itSaved != saved.end(); ++itP, ++itSaved) {
-            (*itP)->clone(**itSaved);
+            it->curve->restorePointState(*itP, **itSaved);
         }
-        it->curve->invalidateContentHash();
         it->curve->invalidatePolygonOrientation();
         RotoCurveContextPtr context = it->curve->getContext();
         if (context && contexts.insert(context.get()).second) {
@@ -2473,7 +2479,7 @@ TrackLinkUndoCommand::redo()
         }
         for (std::list<CurveState>::iterator it = _curves.begin(); it != _curves.end(); ++it) {
             for (std::list<BezierCPPtr>::const_iterator itP = it->points.begin(); itP != it->points.end(); ++itP) {
-                it->after.push_back(std::make_shared<BezierCP>(**itP));
+                it->after.push_back(guiStateCopy(*itP));
             }
         }
         _done = true;

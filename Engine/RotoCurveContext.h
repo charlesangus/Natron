@@ -654,7 +654,7 @@ public Q_SLOTS:
 
     void onSelectedKnobCurveChanged();
 
-    void onSelectedKnobValueChanged();
+    void onSelectedKnobValueChanged(ViewSpec view, int dimension, int reason);
 
     void onLifeTimeKnobValueChanged(ViewSpec, int, int);
 

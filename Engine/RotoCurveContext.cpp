@@ -42,6 +42,7 @@
 #include "Engine/BezierCP.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/RotoDrawableItem.h"
@@ -619,6 +620,9 @@ RotoCurveContext::removeItem(const RotoItemPtr& item,
     if (!_imp->trackLinkConnections.empty() || _imp->trackLinkWarningPosted) {
         refreshTrackLinkListeners();
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
 
     Q_EMIT selectionChanged((int)reason);
 }
@@ -648,6 +652,9 @@ RotoCurveContext::addItem(const RotoLayerPtr& layer,
     }
     if (itemHasTrackLinks(item)) {
         refreshTrackLinkListeners();
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
     }
     Q_EMIT itemInserted(indexInLayer, reason);
 }
@@ -1378,7 +1385,9 @@ RotoCurveContext::onSelectedKnobCurveChanged()
 }
 
 void
-RotoCurveContext::onSelectedKnobValueChanged()
+RotoCurveContext::onSelectedKnobValueChanged(ViewSpec /*view*/,
+                                             int dimension,
+                                             int /*reason*/)
 {
     KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
 
@@ -1386,12 +1395,17 @@ RotoCurveContext::onSelectedKnobValueChanged()
         return;
     }
     KnobIPtr knob = handler->getKnob();
+    if ((dimension < -1) || (dimension >= knob->getDimension())) {
+        return;
+    }
     for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         KnobIPtr k = it->lock();
         if (k && (k->getName() == knob->getName())) {
-            // The context knob pushes itself back into its slaved items, which emit this again;
-            // by then they match and the check stops the echo.
-            ignore_result(k->cloneAndCheckIfChanged(knob.get()));
+            // The context knob pushes itself back into its slaved items one dimension at a time,
+            // and each emits this for that dimension, whose value alone matches the context yet.
+            // Cloning the item's other dimensions as well would pull a second selected item's
+            // differing values into the context and echo between the two items without end.
+            ignore_result(k->cloneAndCheckIfChanged(knob.get(), dimension, dimension));
             break;
         }
     }
@@ -1428,7 +1442,7 @@ RotoCurveContext::tieItemKnob(const KnobIPtr& itemKnob,
     // A value written to the item at a time it already has a key emits no keyFrameSet, and
     // the slaved item reads the context knob, so the write would be lost without this.
     QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
-                     this, SLOT(onSelectedKnobValueChanged()));
+                     this, SLOT(onSelectedKnobValueChanged(ViewSpec, int, int)));
 }
 
 void
@@ -1452,7 +1466,7 @@ RotoCurveContext::untieItemKnob(const KnobIPtr& itemKnob,
     QObject::disconnect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
                         this, SLOT(onSelectedKnobCurveChanged()));
     QObject::disconnect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
-                        this, SLOT(onSelectedKnobValueChanged()));
+                        this, SLOT(onSelectedKnobValueChanged(ViewSpec, int, int)));
 }
 
 void
@@ -1934,12 +1948,18 @@ void
 RotoCurveContext::incrementAge()
 {
     _imp->incrementRotoAge();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
 }
 
 void
 RotoCurveContext::evaluateChange()
 {
     _imp->incrementRotoAge();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     getNode()->getEffectInstance()->incrHashAndEvaluate(true, false);
 }
 
@@ -2018,24 +2038,36 @@ RotoCurveContext::onItemLockedChanged(const RotoItemPtr& item,
         knob->setAllDimensionsEnabled(enabled);
     }
     _imp->lastLockedItem = item;
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemLockedChanged((int)reason);
 }
 
 void
 RotoCurveContext::onItemGloballyActivatedChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemGloballyActivatedChanged(item);
 }
 
 void
 RotoCurveContext::onItemScriptNameChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemScriptNameChanged(item);
 }
 
 void
 RotoCurveContext::onItemLabelChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemLabelChanged(item);
 }
 

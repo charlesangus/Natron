@@ -494,6 +494,29 @@ public:
      **/
     void adoptSerializedCacheID(const std::string& cacheID);
 
+    /**
+     * @brief The node's persistent ID: 32 lowercase hex characters, made when the node is created
+     * and kept by saving and loading its project. A paste, a duplicate or an import makes a new
+     * node, with a new ID. Unlike the cache ID it is unique within one project only, and
+     * opening a project twice gives both copies the same IDs.
+     **/
+    std::string getNodeId() const;
+
+    static bool isValidNodeId(const std::string& id);
+
+    /**
+     * @brief While its project loads, gives the node the ID saved with it. An ID that another
+     * node of the project holds, or a malformed one, is not taken: the node keeps the ID it was
+     * created with and the project gets a load warning. Does nothing outside a project load.
+     **/
+    void restoreSerializedNodeId(const std::string& id);
+
+    /**
+     * @brief Gives the node the ID id, at any time. Refused, leaving the node's ID as it was and
+     * saying why in refusal, when id is malformed or another node of the project holds it.
+     **/
+    bool adoptNodeId(const std::string& id, QString* refusal);
+
 private:
     static bool claimCacheID(const std::string& cacheID);
     static void releaseCacheID(const std::string& cacheID);
@@ -1031,6 +1054,12 @@ public:
      * layout size to save.
      **/
     bool hasSize() const;
+
+    /**
+     * @brief Forgets the size set on the node, so that it has none to save again. A GUI keeps the
+     * size it shows.
+     **/
+    void clearSize();
 
     /**
      * @brief Get the colour of the node as it appears on the nodegraph: the user colour
@@ -1676,6 +1705,15 @@ public:
      * @brief Returns true if the parallel render args thread-storage is set
      **/
     bool isNodeRendering() const;
+
+    /**
+     * @brief For a main-thread edit of the state renders read, made only while no render holds
+     * the node. Returns false when one does. Otherwise renders starting on other threads wait
+     * until releaseRenderStartsForEdit(), so none can start between the edit's check and its
+     * writes. Render starts on the main thread do not wait.
+     **/
+    bool holdRenderStartsForEdit();
+    void releaseRenderStartsForEdit();
 
     /**
      * @brief Records that an edit was queued because the node was rendering, so a dequeue

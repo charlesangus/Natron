@@ -24,6 +24,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <map>
 #include <set>
 #include <vector>
@@ -36,6 +37,7 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
 #include "Engine/RotoCurveContext.h"
@@ -84,12 +86,14 @@ public:
         return _roto->getCurveContext();
     }
 
-    BezierPtr makeSquare(double time) const
+    BezierPtr makeSquare(double time,
+                         double left = 90.,
+                         double bottom = 70.) const
     {
-        BezierPtr bezier = context()->makeBezier(90., 70., kRotoBezierBaseName, time, false);
-        bezier->addControlPoint(130., 70., time);
-        bezier->addControlPoint(130., 110., time);
-        bezier->addControlPoint(90., 110., time);
+        BezierPtr bezier = context()->makeBezier(left, bottom, kRotoBezierBaseName, time, false);
+        bezier->addControlPoint(left + 40., bottom, time);
+        bezier->addControlPoint(left + 40., bottom + 40., time);
+        bezier->addControlPoint(left, bottom + 40., time);
         bezier->setCurveFinished(true);
 
         return bezier;
@@ -140,6 +144,10 @@ class VectorFollowBakeTest
 };
 
 class VectorFollowBlendTest
+    : public VectorFollowBakeBase {
+};
+
+class VectorFollowSelectionTest
     : public VectorFollowBakeBase {
 };
 
@@ -827,6 +835,81 @@ TEST_F(VectorFollowBlendTest, ARefusedSourceWritesNothing)
     std::set<double> keys;
     bezier->getKeyframeTimes(&keys);
     EXPECT_EQ(keys.size(), 1u);
+}
+
+// Selected items have their knobs slaved to the context's. A write to one item's matrix that
+// changes several dimensions at once used to echo between two selected items without end.
+TEST_F(VectorFollowSelectionTest, TwoSelectedShapesTakeAMatrixWriteWithoutEchoing)
+{
+    BezierPtr first = makeSquare(kStart);
+    BezierPtr second = makeSquare(kStart, 150.);
+    const Transform::Matrix3x3 identity(1., 0., 0., 0., 1., 0., 0., 0., 1.);
+    first->setExtraMatrix(true, kStart, identity);
+    second->setExtraMatrix(true, kStart, identity);
+    context()->select(std::list<RotoDrawableItemPtr> { first, second }, RotoItem::eSelectionReasonOther);
+
+    const Transform::Matrix3x3 moved(1.1, 0.2, 7., -0.1, 0.9, -3., 0., 0., 1.);
+    first->setExtraMatrix(true, kStart, moved);
+
+    KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(first->getKnobByName("extraMatrix"));
+    ASSERT_TRUE(bool(knob));
+    EXPECT_DOUBLE_EQ(knob->getValueAtTime(kStart, 0), moved.a);
+    EXPECT_DOUBLE_EQ(knob->getValueAtTime(kStart, 2), moved.c);
+    EXPECT_DOUBLE_EQ(knob->getValueAtTime(kStart, 5), moved.f);
+}
+
+// The GUI sequence that overflowed the stack: a per-point follow of two selected shapes, undone and
+// redone, then a fit follow of two new selected shapes, undone and run again.
+TEST_F(VectorFollowSelectionTest, AFitFollowOfTwoSelectedShapesAfterAnUndo)
+{
+    const std::list<RotoDrawableItemPtr> perPoint { makeSquare(kStart), makeSquare(kStart, 150.) };
+    context()->select(perPoint, RotoItem::eSelectionReasonOther);
+    VectorFollowParams params = paramsFor(perPoint.front(), VectorFollowModel::ePerPoint);
+    params.items = perPoint;
+    UndoCommandPtr undo;
+    VectorFollowReport report = context()->followVectors(params, &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    ASSERT_TRUE(bool(undo));
+    undo->undo();
+    undo->redo();
+    context()->clearSelection(RotoItem::eSelectionReasonOther);
+    for (const RotoDrawableItemPtr& item : perPoint) {
+        context()->removeItem(item);
+    }
+
+    BezierPtr first = makeSquare(kStart);
+    BezierPtr second = makeSquare(kStart, 150.);
+    const FollowPoint firstStart = positionAt(first, 0, kStart);
+    const FollowPoint secondStart = positionAt(second, 0, kStart);
+    const std::list<RotoDrawableItemPtr> fitted { first, second };
+    context()->select(fitted, RotoItem::eSelectionReasonOther);
+    params = paramsFor(first, VectorFollowModel::eAffine);
+    params.items = fitted;
+    for (int run = 0; run < 2; ++run) {
+        UndoCommandPtr fitUndo;
+        report = context()->followVectors(params, &fitUndo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        ASSERT_EQ(report.shapes.size(), 2u);
+        ASSERT_TRUE(bool(fitUndo));
+
+        // Medium undershoots this motion by about 0.6 px over the span; the case is about the
+        // selection, not the solve.
+        const double tolerance = 2.;
+        const FollowPoint firstEnd = shownAt(first, firstStart, kStart + kSpan);
+        const FollowPoint secondEnd = shownAt(second, secondStart, kStart + kSpan);
+        EXPECT_NEAR(firstEnd.x, firstStart.x + kShiftX * kSpan, tolerance);
+        EXPECT_NEAR(firstEnd.y, firstStart.y + kShiftY * kSpan, tolerance);
+        EXPECT_NEAR(secondEnd.x, secondStart.x + kShiftX * kSpan, tolerance);
+        EXPECT_NEAR(secondEnd.y, secondStart.y + kShiftY * kSpan, tolerance);
+
+        fitUndo->undo();
+        const FollowPoint firstBack = shownAt(first, firstStart, kStart + kSpan);
+        const FollowPoint secondBack = shownAt(second, secondStart, kStart + kSpan);
+        EXPECT_NEAR(firstBack.x, firstStart.x, 1e-9);
+        EXPECT_NEAR(firstBack.y, firstStart.y, 1e-9);
+        EXPECT_NEAR(secondBack.x, secondStart.x, 1e-9);
+        EXPECT_NEAR(secondBack.y, secondStart.y, 1e-9);
+    }
 }
 
 } // anonymous namespace

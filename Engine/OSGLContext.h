@@ -144,6 +144,7 @@ struct GpuDeviceSummary;
 
 struct GLRendererPick {
     bool enabled = false;
+    bool software = false;
     GLRendererID rendererID;
     std::string reason;
 };
@@ -222,6 +223,12 @@ public:
      * software rasterizer.
      **/
     static bool isSoftwareRendererName(const std::string& rendererName);
+
+    /**
+     * @brief When @p rendererName is a software rasterizer, calls boost_adaptbx::floating_point::note_software_renderer();
+     * returns whether it is one.
+     **/
+    static bool noteSoftwareRenderer(const std::string& rendererName);
 
     /**
      * @brief Returns true if a context is currently set on the current thread.

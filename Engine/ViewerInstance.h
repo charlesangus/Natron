@@ -402,6 +402,12 @@ public:
     void refreshDisplayTransformChoices();
 
     /**
+     * @brief Follows a change of the project's viewer display or view: refreshes the menus and
+     * redraws, or renders the current frame when the display transform is baked into its texture.
+     **/
+    void onProjectDisplayTransformChanged();
+
+    /**
      * @brief The display, view and look the knobs hold, empty for Project default or None. A name
      * the project's config lacks is returned as it is.
      **/
@@ -673,7 +679,7 @@ private:
 
     void requestRenderFromKnob();
     void redrawOrRenderForColorChange();
-    // Gives RoI knobs without a size the viewer's drawn RoI, or the centre half of the project format.
+    // Gives RoI knobs never set the centre half of the project format.
     void fillUnsetUserRoI();
     // Makes inputNb the inspector's active input on side 0 (A) or 1 (B), without touching the knob.
     void applyActiveInput(int side, int inputNb);

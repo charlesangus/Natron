@@ -1404,7 +1404,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                 }
             });
         }
-        // The Project default entries name the project's viewer display and view.
+        // The Project default entries name the project's viewer display and view, which a viewer following them shows.
         const char* const projectKnobNames[] = { "viewerDisplay", "viewerView" };
         for (const char* knobName : projectKnobNames) {
             KnobIPtr knob = project ? project->getKnobByName(knobName) : KnobIPtr();
@@ -1414,6 +1414,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                     // Closing a project resets these knobs after its nodes are gone, while the tab waits for its deferred deletion.
                     ProjectPtr p = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
                     if (p && _imp->viewerNode && !p->isLoadingProject() && !p->isProjectClosing()) {
+                        _imp->viewerNode->onProjectDisplayTransformChanged();
                         refreshDisplayTransformMenus();
                     }
                 });
@@ -1781,13 +1782,7 @@ ViewerTab::refreshWipeAndRoIFromKnobs()
     _imp->viewer->setWipeControls(center, _imp->viewerValue<double>(kViewerParamWipeAmount, 1.),
                                   _imp->viewerValue<double>(kViewerParamWipeAngle, 0.));
 
-    const double width = _imp->viewerValue<double>(kViewerParamUserRoISize, 0., 0);
-    const double height = _imp->viewerValue<double>(kViewerParamUserRoISize, 0., 1);
-    if ((width > 0.) && (height > 0.)) {
-        const double x1 = _imp->viewerValue<double>(kViewerParamUserRoIBottomLeft, 0., 0);
-        const double y1 = _imp->viewerValue<double>(kViewerParamUserRoIBottomLeft, 0., 1);
-        _imp->viewer->setUserRoI(RectD(x1, y1, x1 + width, y1 + height));
-    }
+    _imp->viewer->setUserRoI(_imp->viewer->getUserRegionOfInterest());
 
     const bool roiEnabled = _imp->viewerValue<bool>(kViewerParamEnableUserRoI, false);
     {

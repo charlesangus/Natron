@@ -121,7 +121,7 @@ ViewerTab::onEnableViewerRoIButtonToggle(bool b)
 void
 ViewerTab::writeUserRoIEnabled(bool b)
 {
-    // The viewer node gives an RoI never set the one drawn by default.
+    // The viewer node gives an RoI never set the centre half of the project format.
     _imp->setViewerValue<bool>(kViewerParamEnableUserRoI, b);
 }
 

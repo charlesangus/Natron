@@ -86,7 +86,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QScrollArea, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -749,6 +749,16 @@ try:
               "the toolbar's Display menu starts with the Project default entry (%r)" % (toolbar_displays,))
         check(panel_display is not None, "the panel's Display lists the same choices as the toolbar's, Project default first "
               "(toolbar %r, panel menus %r)" % (toolbar_displays, [combo_items(c) for c in children_of(panel, ("ComboBox",))]))
+        if panel_display is not None:
+            area = panel_display.parentWidget()
+            while area is not None and not area.inherits("QScrollArea"):
+                area = area.parentWidget()
+            if isinstance(area, QScrollArea):
+                area.ensureWidgetVisible(panel_display, 50, 200)
+            else:
+                report("NOTE the panel's Display menu has no scroll area to bring it into view")
+            yield ("sleep", SETTLE_MS)
+        gt.shot("m164-viewer-panel-dropdowns.png")
         others = [d for d in toolbar_displays[1:] if d != combo_current(display1)]
         if panel_display is not None and others:
             set_combo_index(panel_display, toolbar_displays.index(others[0]))
@@ -788,15 +798,29 @@ try:
         viewer2.getParam("enableRegionOfInterest").set(True)
         ok = yield from knobs_until(lambda: all(v > 0 for v in (knob_value(viewer2, "userRoISize") or (0.0, 0.0))))
         check(ok, "turning the RoI on from Python fills its size straight away (got %r)" % (roi_of(viewer2),))
+        filled = roi_of(viewer2)
+        roi_on = yield from settle_px(V2)
+        require(roi_on is not None, "Viewer2 settles with the RoI the toggle filled in")
+        report("NOTE the filled RoI %r shows %r, the whole image %r" % (filled, roi_on, roi_off))
         viewer2.getParam("userRoIBottomLeft").set(-FAR, -FAR)
         viewer2.getParam("userRoISize").set(2 * FAR, 2 * FAR)
         ok = yield from px_until(V2, lambda p: same_px(p, roi_off))
         check(ok, "an RoI set from Python to cover everything shows the whole image (screen %r, want %r)"
               % (viewer_px(V2), roi_off))
-        viewer2.getParam("userRoISize").set(1.0, 1.0)
+        viewer2.getParam("userRoISize").set(0.0, 2 * FAR)
         ok = yield from px_until(V2, lambda p: p is not None and not same_px(p, roi_off))
-        check(ok, "shrinking the RoI from Python to a far corner re-renders without the image (screen %r)"
-              % (viewer_px(V2),))
+        empty = viewer_px(V2)
+        check(ok, "a zero-width RoI set from Python shows none of the image, not the RoI drawn before it (screen %r)"
+              % (empty,))
+        viewer2.getParam("userRoISize").set(1.0, 1.0)
+        ok = yield from px_until(V2, lambda p: same_px(p, empty))
+        check(ok, "shrinking the RoI from Python to a far corner re-renders without the image (screen %r, want %r)"
+              % (viewer_px(V2), empty))
+        viewer2.getParam("userRoIBottomLeft").set(*filled["userRoIBottomLeft"])
+        viewer2.getParam("userRoISize").set(*filled["userRoISize"])
+        ok = yield from px_until(V2, lambda p: same_px(p, roi_on))
+        check(ok, "the RoI the toggle rendered with is the one it filled in: setting those values again shows the same "
+              "screen (screen %r, want %r)" % (viewer_px(V2), roi_on))
         viewer2.getParam("enableRegionOfInterest").set(False)
         ok = yield from px_until(V2, lambda p: same_px(p, roi_off))
         check(ok, "turning the RoI off from Python shows the whole image again")

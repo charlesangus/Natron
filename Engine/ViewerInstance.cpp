@@ -564,6 +564,9 @@ ViewerInstance::initializeKnobs()
                                                       tr("The OpenColorIO look applied before the view. A saved look the config lacks is kept "
                                                          "and applies none."));
     k.look = look;
+    for (const KnobChoicePtr& menu : { display, view, look }) {
+        menu->setMatchesExactID(true);
+    }
     refreshDisplayTransformChoices();
 
     std::vector<ChoiceOption> channelEntries;
@@ -4889,6 +4892,13 @@ ViewerInstance::refreshDisplayTransformChoices()
 }
 
 void
+ViewerInstance::onProjectDisplayTransformChanged()
+{
+    refreshDisplayTransformChoices();
+    redrawOrRenderForColorChange();
+}
+
+void
 ViewerInstance::getDisplayTransform(std::string* display,
                                     std::string* view,
                                     std::string* look) const
@@ -4911,26 +4921,21 @@ ViewerInstance::selectDisplayTransformEntry(const KnobChoicePtr& knob,
     if (!knob || (knob->getNumEntries() == 0)) {
         return;
     }
-    const std::vector<ChoiceOption> entries = knob->getEntries_mt_safe();
     ChoiceOption entry(name, name, std::string());
     int index = 0;
     if (name.empty()) {
-        entry = entries[0];
+        entry = knob->getEntries_mt_safe().front();
     } else {
-        index = KnobChoice::choiceMatch(name, entries, &entry);
+        index = knob->findEntry(name, &entry);
     }
     const int previous = knob->getValue();
     if ((knob->getActiveEntry().id == entry.id) && ((index < 0) || (index == previous))) {
         return;
     }
-    knob->setActiveEntry(entry);
     if ((index >= 0) && (index != previous)) {
         knob->setValue(index);
     } else {
-        // Only the active entry moved, which no value change reports. The report resets the active
-        // entry to the one at the index, so a name the menu lacks is set again after it.
-        knob->evaluateValueChange(0, knob->getCurrentTime(), ViewSpec::all(), eValueChangedReasonPluginEdited);
-        knob->setActiveEntry(entry);
+        knob->setActiveEntryAndNotify(entry, eValueChangedReasonPluginEdited);
     }
 }
 
@@ -4939,26 +4944,26 @@ ViewerInstance::fillUnsetUserRoI()
 {
     KnobDoublePtr bottomLeft = _imp->knobs.userRoIBottomLeft.lock();
     KnobDoublePtr size = _imp->knobs.userRoISize.lock();
-    if (!bottomLeft || !size || ((size->getValue(0) > 0) && (size->getValue(1) > 0))) {
+    if (!bottomLeft || !size) {
         return;
     }
-    RectD roi;
-    if (_imp->uiContext) {
-        roi = _imp->uiContext->getUserRegionOfInterest();
-    }
-    if (roi.isNull()) {
-        // The centre half of the project format, as the viewer first draws it.
-        Format format;
-        AppInstancePtr app = getApp();
-        ProjectPtr project = app ? app->getProject() : ProjectPtr();
-        if (project) {
-            project->getProjectDefaultFormat(&format);
+    // A zero size is an RoI that shows nothing: only knobs still at their all-zero defaults hold
+    // none. The values, not hasModifications(), which a bracket of edits updates only at its end.
+    for (int i = 0; i < 2; ++i) {
+        if ((bottomLeft->getValue(i) != 0.) || (size->getValue(i) != 0.)) {
+            return;
         }
-        const RectD canonical = format.toCanonicalFormat();
-        const double w = canonical.width();
-        const double h = canonical.height();
-        roi = RectD(canonical.x1 + w / 4., canonical.y1 + h / 4., canonical.x2 - w / 4., canonical.y2 - h / 4.);
     }
+    Format format;
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (project) {
+        project->getProjectDefaultFormat(&format);
+    }
+    const RectD canonical = format.toCanonicalFormat();
+    const double w = canonical.width();
+    const double h = canonical.height();
+    const RectD roi(canonical.x1 + w / 4., canonical.y1 + h / 4., canonical.x2 - w / 4., canonical.y2 - h / 4.);
     if (roi.isNull()) {
         return;
     }

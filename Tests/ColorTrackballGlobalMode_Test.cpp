@@ -415,6 +415,7 @@ overrideCursorDepth()
 
 const Settings::ColorTrackballFeedbackEnum kCrosshairReveal = Settings::eColorTrackballFeedbackCrosshairReveal;
 const Settings::ColorTrackballFeedbackEnum kWidgetCursor = Settings::eColorTrackballFeedbackWidgetCursor;
+const Settings::ColorTrackballFeedbackEnum kCrosshairOnly = Settings::eColorTrackballFeedbackCrosshairOnly;
 
 Qt::CursorShape
 topCursor()
@@ -436,10 +437,26 @@ syncCursors(ColorGlobalModeCursors& cursors,
 
 } // namespace
 
-TEST(ColorTrackballGlobalModeFeedback, OnlyCrosshairRevealShowsTheCrosshair)
+TEST(ColorTrackballGlobalModeFeedback, OnlyTheCrosshairFeedbacksShowTheCrosshair)
 {
     EXPECT_TRUE(colorGlobalModeFeedbackShowsCrosshair(kCrosshairReveal));
+    EXPECT_TRUE(colorGlobalModeFeedbackShowsCrosshair(kCrosshairOnly));
     EXPECT_FALSE(colorGlobalModeFeedbackShowsCrosshair(kWidgetCursor));
+}
+
+TEST(ColorTrackballGlobalModeFeedback, ASwitchToCrosshairOnlyMidStrokeAppliesAtOnce)
+{
+    for (Settings::ColorTrackballFeedbackEnum from : { kCrosshairReveal, kWidgetCursor }) {
+        ColorGlobalModeFeedbackSwitch sw;
+
+        sw.offer(from, false);
+        ASSERT_TRUE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).graphicShown);
+        EXPECT_TRUE(sw.offer(kCrosshairOnly, true));
+        EXPECT_EQ(kCrosshairOnly, sw.getFeedback());
+        EXPECT_FALSE(colorGlobalModeFeedbackState(sw.getFeedback(), true, true).graphicShown);
+        EXPECT_FALSE(sw.strokeEnded());
+        EXPECT_EQ(kCrosshairOnly, sw.getFeedback());
+    }
 }
 
 TEST(ColorTrackballGlobalModeFeedback, DefaultIsThePreferencesDefault)
@@ -517,7 +534,7 @@ TEST(ColorTrackballGlobalModeFeedback, AFlipMidStrokeShowsAfterReleaseAndExitLea
         EXPECT_EQ(baseline, overrideCursorDepth());
 
         // Exit mid-stroke with each value.
-        for (Settings::ColorTrackballFeedbackEnum f : { kCrosshairReveal, kWidgetCursor }) {
+        for (Settings::ColorTrackballFeedbackEnum f : { kCrosshairReveal, kWidgetCursor, kCrosshairOnly }) {
             sw.offer(f, false);
             syncCursors(cursors, sw, true, false);
             syncCursors(cursors, sw, true, true);

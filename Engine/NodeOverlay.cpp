@@ -435,6 +435,30 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
                            const KnobBoolPtr& invert)
 {
     assert( QThread::currentThread() == qApp->thread() );
+
+    // Recorded before the background check: the roles and the knob set describe the node, and
+    // a background run classifies the knobs the same way the GUI does.
+    const std::pair<KnobDoublePtr, ValueRoleEnum> roles[] = {
+        std::make_pair(translate, eValueRoleTranslate),
+        std::make_pair(rotate, eValueRoleRotate),
+        std::make_pair(scale, eValueRoleScale),
+        std::make_pair(skewX, eValueRoleSkew),
+        std::make_pair(skewY, eValueRoleSkew),
+    };
+    for (const std::pair<KnobDoublePtr, ValueRoleEnum>& role : roles) {
+        if (role.first) {
+            role.first->setValueRole(role.second);
+        }
+    }
+    TransformInteractWeakKnobs interactKnobs;
+    interactKnobs.translate = translate;
+    interactKnobs.rotate = rotate;
+    interactKnobs.scale = scale;
+    interactKnobs.skewX = skewX;
+    interactKnobs.skewY = skewY;
+    interactKnobs.center = center;
+    _imp->transformInteracts.push_back(interactKnobs);
+
     if ( appPTR->isBackground() ) {
         return;
     }
@@ -459,6 +483,37 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
     } else {
         nodeGui->addDefaultInteract(knobs);
     }
+}
+
+bool
+TransformInteractKnobs::isEmpty() const
+{
+    return !translate && !rotate && !scale && !skewX && !skewY && !center;
+}
+
+bool
+TransformInteractKnobs::contains(const KnobI* knob) const
+{
+    return knob && ((translate.get() == knob) || (rotate.get() == knob) || (scale.get() == knob) || (skewX.get() == knob) || (skewY.get() == knob) || (center.get() == knob));
+}
+
+TransformInteractKnobs
+Node::getTransformInteractKnobs(const KnobI* member) const
+{
+    for (const TransformInteractWeakKnobs& weak : _imp->transformInteracts) {
+        TransformInteractKnobs knobs;
+        knobs.translate = weak.translate.lock();
+        knobs.rotate = weak.rotate.lock();
+        knobs.scale = weak.scale.lock();
+        knobs.skewX = weak.skewX.lock();
+        knobs.skewY = weak.skewY.lock();
+        knobs.center = weak.center.lock();
+        if (!member || knobs.contains(member)) {
+            return knobs;
+        }
+    }
+
+    return TransformInteractKnobs();
 }
 
 void

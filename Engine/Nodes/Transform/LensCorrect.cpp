@@ -365,6 +365,7 @@ LensCorrect::initializeKnobs()
 
     KnobDoublePtr scale = createKnob<KnobDouble>(tr("Scale"));
     scale->setName(kLensCorrectParamScale);
+    scale->setValueRole(eValueRoleScale);
     scale->setHintToolTip(tr("The scale of the corrected image, when Auto Scale is off."));
     scale->setDefaultValue(1.);
     scale->setMinimum(0.1);

@@ -122,6 +122,21 @@ struct HashNamespaces {
 
 typedef std::shared_ptr<const HashNamespaces> HashNamespacesConstPtr;
 
+/**
+ * @brief The knobs one transform interact drives, each null where the node passed none.
+ **/
+struct TransformInteractKnobs {
+    KnobDoublePtr translate;
+    KnobDoublePtr rotate;
+    KnobDoublePtr scale;
+    KnobDoublePtr skewX;
+    KnobDoublePtr skewY;
+    KnobDoublePtr center;
+
+    bool isEmpty() const;
+    bool contains(const KnobI* knob) const;
+};
+
 class Node
     : public QObject
     , public std::enable_shared_from_this<Node>
@@ -1890,6 +1905,13 @@ public:
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
                               const KnobBoolPtr& invert);
+
+    /**
+     * @brief The knobs of the transform interact that drives member, or of the first one the
+     * node registered when member is null; empty when there is no such interact. A node may
+     * register more than one (Roto has its own and its clone transform's).
+     **/
+    TransformInteractKnobs getTransformInteractKnobs(const KnobI* member = NULL) const;
 
     void addCornerPinInteract(const KnobDoublePtr& from1,
                               const KnobDoublePtr& from2,

@@ -68,6 +68,11 @@ public:
 
     virtual ~KnobGuiValue() OVERRIDE;
 
+    /**
+     * @brief The knob's own row of fields, which global mode outlines while it edits the knob.
+     **/
+    QWidget* getGlobalModeRowWidget() const;
+
     virtual void removeSpecificGui() OVERRIDE FINAL;
     virtual KnobIPtr getKnob() const OVERRIDE FINAL;
     virtual bool getAllDimensionsVisible() const OVERRIDE FINAL;

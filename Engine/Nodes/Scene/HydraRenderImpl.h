@@ -361,6 +361,7 @@ public:
         // The delegate's sample count when the frame was read, -1 if it reports none.
         int samples = -1;
         int maxSamples = 0;
+        // The frame is the restart's last: the refinement is done.
         bool converged = false;
         // Which restart the frame belongs to (getRestartCount() then), and its rank among the
         // frames published.
@@ -373,7 +374,11 @@ public:
     struct Status {
         // A delegate other than Storm is set and has a stage to render.
         bool active = false;
+        // stop() was asked for, and the delegate is paused where it is since.
         bool stopped = false;
+        bool paused = false;
+        // The refinement of the last restart is done, and its last frame published: the delegate
+        // converged at the cap, or held still converged short of it.
         bool converged = false;
         // The engine's sample count at the last poll, -1 if unknown.
         int samples = -1;

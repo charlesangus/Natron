@@ -396,6 +396,31 @@ public:
     void getResolvedDisplayTransform(std::string* display, std::string* view, std::string* look) const;
 
     /**
+     * @brief Lists the project config's displays, the chosen display's views and the config's
+     * looks in the display, view and look menus, after Project default or None. Main thread.
+     **/
+    void refreshDisplayTransformChoices();
+
+    /**
+     * @brief Follows a change of the project's viewer display or view: refreshes the menus and
+     * redraws, or renders the current frame when the display transform is baked into its texture.
+     **/
+    void onProjectDisplayTransformChanged();
+
+    /**
+     * @brief The display, view and look the knobs hold, empty for Project default or None. A name
+     * the project's config lacks is returned as it is.
+     **/
+    void getDisplayTransform(std::string* display, std::string* view, std::string* look) const;
+
+    /**
+     * @brief Selects the entry of a display, view or look knob whose ID or label is \p name, the
+     * first entry when \p name is empty. A name the menu lacks becomes the knob's unlisted active
+     * entry, as a project load keeps it.
+     **/
+    static void selectDisplayTransformEntry(const KnobChoicePtr& knob, const std::string& name);
+
+    /**
      * @brief The processor for getResolvedDisplayTransform(), from the project's working space.
      * Null when the config cannot build it. MT-safe.
      **/
@@ -654,6 +679,8 @@ private:
 
     void requestRenderFromKnob();
     void redrawOrRenderForColorChange();
+    // Gives RoI knobs never set the centre half of the project format.
+    void fillUnsetUserRoI();
     // Makes inputNb the inspector's active input on side 0 (A) or 1 (B), without touching the knob.
     void applyActiveInput(int side, int inputNb);
 

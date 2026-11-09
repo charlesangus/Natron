@@ -8,6 +8,7 @@ on:
   pull_request:
     branches:
     - main
+    - 'feature/**'
 
 concurrency:
   # Only PR runs share a group, so a newer push supersedes an older one.

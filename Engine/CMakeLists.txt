@@ -207,6 +207,12 @@ qt_add_resources(NatronEngine AiModelManifest
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data"
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data/ai_models.json"
 )
+# GeoSubdivide refines through OpenSubdiv's Far library, the one USD's own subdivision uses;
+# pxr's package config usually brings the target in already.
+if(NOT TARGET OpenSubdiv::osdCPU)
+    find_package(OpenSubdiv CONFIG REQUIRED)
+endif()
+
 target_link_libraries(NatronEngine
     PUBLIC
         HostSupport
@@ -238,6 +244,7 @@ target_link_libraries(NatronEngine
         lensfun::lensfun
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
+        OpenSubdiv::osdCPU
 )
 
 # rawspeed's camera database, read at run time from <bin>/../Resources/rawspeed beside every

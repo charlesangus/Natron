@@ -63,6 +63,7 @@ build/
 *.ilk
 *.meta
 *.obj
+!Tests/fixtures/**/*.obj
 *.pch
 *.pdb
 *.pgc

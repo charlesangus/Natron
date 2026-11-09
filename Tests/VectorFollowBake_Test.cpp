@@ -68,9 +68,14 @@ public:
     {
         NativeTimeNodeTest::SetUp();
         registerFollowTextureOnce();
-        _generator = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, createNode(QString::fromUtf8(kTestPluginIDFollowTexture), 1));
+        _generator = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, createNode(QString::fromUtf8(texturePluginID()), 1));
         setKnob<KnobChoice>(_generator, kVectorGeneratorParamQuality, (int)eFlowQualityMedium);
         _roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    }
+
+    virtual const char* texturePluginID() const
+    {
+        return kTestPluginIDFollowTexture;
     }
 
     // Medium solves at half resolution and undershoots this half-pixel motion by 0.03 px a
@@ -134,6 +139,51 @@ public:
         return FollowPoint(out.x / out.z, out.y / out.z);
     }
 
+    // Per dimension of each transform knob an item reads, its keys then its value at a few times.
+    using TransformState = std::vector<std::vector<std::pair<double, double>>>;
+
+    static TransformState transformOf(const RotoDrawableItemPtr& item)
+    {
+        TransformState state;
+        for (const char* name : { "translate", "rotate", "scale", "center", "extraMatrix" }) {
+            KnobDoublePtr knob = std::dynamic_pointer_cast<KnobDouble>(item->getKnobByName(name));
+            if (!knob) {
+                ADD_FAILURE() << "no " << name << " knob";
+                continue;
+            }
+            for (int d = 0; d < knob->getDimension(); ++d) {
+                std::vector<std::pair<double, double>> dim;
+                CurvePtr curve = knob->getCurve(ViewIdx(0), d);
+                if (curve) {
+                    for (const KeyFrame& key : curve->getKeyFrames_mt_safe()) {
+                        dim.push_back(std::make_pair(key.getTime(), key.getValue()));
+                    }
+                }
+                for (double time : { (double)kEarlier, (double)kStart, (double)kStart + kSpan / 2, (double)kStart + kSpan }) {
+                    dim.push_back(std::make_pair(-time, knob->getValueAtTime(time, d)));
+                }
+                state.push_back(dim);
+            }
+        }
+
+        return state;
+    }
+
+    static void expectSameTransform(const TransformState& got,
+                                    const TransformState& expected,
+                                    double tolerance,
+                                    const char* what)
+    {
+        ASSERT_EQ(got.size(), expected.size()) << what;
+        for (std::size_t d = 0; d < got.size(); ++d) {
+            ASSERT_EQ(got[d].size(), expected[d].size()) << what << ", dimension " << d;
+            for (std::size_t k = 0; k < got[d].size(); ++k) {
+                EXPECT_EQ(got[d][k].first, expected[d][k].first) << what << ", dimension " << d << ", entry " << k;
+                EXPECT_NEAR(got[d][k].second, expected[d][k].second, tolerance) << what << ", dimension " << d << ", entry " << k;
+            }
+        }
+    }
+
     NodePtr _generator;
     NodePtr _roto;
 };
@@ -149,6 +199,15 @@ class VectorFollowBlendTest
 
 class VectorFollowSelectionTest
     : public VectorFollowBakeBase {
+};
+
+class VectorFollowZoomTest
+    : public VectorFollowBakeBase {
+public:
+    const char* texturePluginID() const override
+    {
+        return kTestPluginIDFollowZoomTexture;
+    }
 };
 
 TEST_F(VectorFollowBakeTest, PerPointFollowsAndLandsOnTheVectors)
@@ -837,8 +896,8 @@ TEST_F(VectorFollowBlendTest, ARefusedSourceWritesNothing)
     EXPECT_EQ(keys.size(), 1u);
 }
 
-// Selected items have their knobs slaved to the context's. A write to one item's matrix that
-// changes several dimensions at once used to echo between two selected items without end.
+// A write that changes several dimensions of one selected shape's matrix at once reaches that shape
+// alone, and returns.
 TEST_F(VectorFollowSelectionTest, TwoSelectedShapesTakeAMatrixWriteWithoutEchoing)
 {
     BezierPtr first = makeSquare(kStart);
@@ -856,6 +915,127 @@ TEST_F(VectorFollowSelectionTest, TwoSelectedShapesTakeAMatrixWriteWithoutEchoin
     EXPECT_DOUBLE_EQ(knob->getValueAtTime(kStart, 0), moved.a);
     EXPECT_DOUBLE_EQ(knob->getValueAtTime(kStart, 2), moved.c);
     EXPECT_DOUBLE_EQ(knob->getValueAtTime(kStart, 5), moved.f);
+
+    KnobDoublePtr other = std::dynamic_pointer_cast<KnobDouble>(second->getKnobByName("extraMatrix"));
+    ASSERT_TRUE(bool(other));
+    EXPECT_DOUBLE_EQ(other->getValueAtTime(kStart, 0), 1.);
+    EXPECT_DOUBLE_EQ(other->getValueAtTime(kStart, 2), 0.);
+    EXPECT_DOUBLE_EQ(other->getValueAtTime(kStart, 5), 0.);
+}
+
+TEST_F(VectorFollowSelectionTest, ChangingTheSelectionLeavesEveryShapesTransformAlone)
+{
+    BezierPtr a = makeSquare(kStart);
+    BezierPtr b = makeSquare(kStart, 150.);
+    a->setTranslateKeyframe(kStart, 5., 3.);
+    a->setTranslateKeyframe(kStart + kSpan, 9., -2.);
+    a->setExtraMatrix(true, kStart, Transform::Matrix3x3(1.1, 0.2, 7., -0.1, 0.9, -3., 0., 0., 1.));
+    b->setTranslateKeyframe(kStart + 4, -4., 8.);
+    b->setExtraMatrix(true, kStart + kSpan, Transform::Matrix3x3(0.8, -0.3, -2., 0.1, 1.2, 6., 0., 0., 1.));
+    std::dynamic_pointer_cast<KnobDouble>(b->getKnobByName("rotate"))->setValue(12.);
+    const TransformState aBefore = transformOf(a);
+    const TransformState bBefore = transformOf(b);
+    const RotoCurveContext::TransformKnobs page = context()->getTransformKnobs();
+    ASSERT_TRUE(bool(page.translate));
+
+    context()->select(a, RotoItem::eSelectionReasonOther);
+    EXPECT_EQ(context()->getTransformTiedItem(), RotoDrawableItemPtr(a));
+    EXPECT_TRUE(page.translate->isEnabled(0));
+    EXPECT_DOUBLE_EQ(page.translate->getValueAtTime(kStart, 0), 5.);
+    expectSameTransform(transformOf(a), aBefore, 0., "a, selected alone");
+
+    context()->select(b, RotoItem::eSelectionReasonOther);
+    EXPECT_FALSE(bool(context()->getTransformTiedItem()));
+    EXPECT_FALSE(page.translate->isEnabled(0));
+    EXPECT_FALSE(page.extraMatrix->isEnabled(0));
+    expectSameTransform(transformOf(a), aBefore, 0., "a, after selecting b");
+    expectSameTransform(transformOf(b), bBefore, 0., "b, after selecting it");
+
+    context()->deselect(a, RotoItem::eSelectionReasonOther);
+    EXPECT_EQ(context()->getTransformTiedItem(), RotoDrawableItemPtr(b));
+    EXPECT_TRUE(page.translate->isEnabled(0));
+    EXPECT_DOUBLE_EQ(page.rotate->getValue(), 12.);
+    expectSameTransform(transformOf(a), aBefore, 0., "a, after deselecting it");
+    expectSameTransform(transformOf(b), bBefore, 0., "b, after deselecting a");
+
+    context()->clearSelection(RotoItem::eSelectionReasonOther);
+    EXPECT_FALSE(bool(context()->getTransformTiedItem()));
+    EXPECT_FALSE(page.translate->isEnabled(0));
+    expectSameTransform(transformOf(a), aBefore, 0., "a, after clearing the selection");
+    expectSameTransform(transformOf(b), bBefore, 0., "b, after clearing the selection");
+
+    // A page edit of the one selected shape reaches it and not the other.
+    context()->select(a, RotoItem::eSelectionReasonOther);
+    page.rotate->setValue(30.);
+    EXPECT_DOUBLE_EQ(std::dynamic_pointer_cast<KnobDouble>(a->getKnobByName("rotate"))->getValue(), 30.);
+    context()->select(b, RotoItem::eSelectionReasonOther);
+    context()->deselect(a, RotoItem::eSelectionReasonOther);
+    EXPECT_DOUBLE_EQ(std::dynamic_pointer_cast<KnobDouble>(a->getKnobByName("rotate"))->getValue(), 30.);
+    expectSameTransform(transformOf(b), bBefore, 0., "b, after a page edit of a");
+}
+
+// The zoom moves the left and right shapes opposite ways, so a fit shared between them would show.
+TEST_F(VectorFollowZoomTest, TwoSelectedShapesEachGetTheirOwnFit)
+{
+    const double left = 50.;
+    const double right = 166.;
+    BezierPtr leftShape = makeSquare(kStart, left);
+    BezierPtr rightShape = makeSquare(kStart, right);
+    BezierPtr leftAlone = makeSquare(kStart, left);
+    BezierPtr rightAlone = makeSquare(kStart, right);
+    const TransformState leftUntouched = transformOf(leftShape);
+    const TransformState rightUntouched = transformOf(rightShape);
+    const FollowPoint leftCentre(left + 20., 90.);
+    const FollowPoint rightCentre(right + 20., 90.);
+
+    for (VectorFollowModel model : { VectorFollowModel::eAffine, VectorFollowModel::eTranslate }) {
+        SCOPED_TRACE((int)model);
+        std::vector<UndoCommandPtr> aloneUndos;
+        for (const BezierPtr& alone : { leftAlone, rightAlone }) {
+            context()->clearSelection(RotoItem::eSelectionReasonOther);
+            context()->select(alone, RotoItem::eSelectionReasonOther);
+            UndoCommandPtr undo;
+            const VectorFollowReport report = context()->followVectors(paramsFor(alone, model), &undo);
+            ASSERT_TRUE(report.error.empty()) << report.error;
+            ASSERT_TRUE(bool(undo));
+            aloneUndos.push_back(undo);
+        }
+
+        const std::list<RotoDrawableItemPtr> both { leftShape, rightShape };
+        context()->clearSelection(RotoItem::eSelectionReasonOther);
+        context()->select(both, RotoItem::eSelectionReasonOther);
+        VectorFollowParams params = paramsFor(leftShape, model);
+        params.items = both;
+        UndoCommandPtr undo;
+        const VectorFollowReport report = context()->followVectors(params, &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        ASSERT_EQ(report.shapes.size(), 2u);
+        ASSERT_TRUE(bool(undo));
+
+        const TransformState leftFollowed = transformOf(leftShape);
+        const TransformState rightFollowed = transformOf(rightShape);
+        expectSameTransform(leftFollowed, transformOf(leftAlone), 1e-6, "left");
+        expectSameTransform(rightFollowed, transformOf(rightAlone), 1e-6, "right");
+
+        const double leftMove = shownAt(leftShape, leftCentre, kStart + kSpan).x - leftCentre.x;
+        const double rightMove = shownAt(rightShape, rightCentre, kStart + kSpan).x - rightCentre.x;
+        EXPECT_LT(leftMove, -5.);
+        EXPECT_GT(rightMove, 5.);
+
+        undo->undo();
+        expectSameTransform(transformOf(leftShape), leftUntouched, 0., "left, undone");
+        expectSameTransform(transformOf(rightShape), rightUntouched, 0., "right, undone");
+        undo->redo();
+        expectSameTransform(transformOf(leftShape), leftFollowed, 0., "left, redone");
+        expectSameTransform(transformOf(rightShape), rightFollowed, 0., "right, redone");
+        undo->undo();
+        expectSameTransform(transformOf(leftShape), leftUntouched, 0., "left, undone again");
+        expectSameTransform(transformOf(rightShape), rightUntouched, 0., "right, undone again");
+
+        for (const UndoCommandPtr& aloneUndo : aloneUndos) {
+            aloneUndo->undo();
+        }
+    }
 }
 
 // The GUI sequence that overflowed the stack: a per-point follow of two selected shapes, undone and

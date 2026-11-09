@@ -1171,8 +1171,10 @@ void
 SplineWarpContext::transformLinksChanged()
 {
     warpDataChanged(true);
-    rolesChanged();
+    // Before rolesChanged(), whose listeners fill the Transform page from a link's source once
+    // no curve is tied to it.
     refreshSelectedTransformTies();
+    rolesChanged();
 }
 
 void
@@ -1183,12 +1185,7 @@ SplineWarpContext::refreshSelectedTransformTies()
     if (!app || (QThread::currentThread() != app->thread())) {
         return;
     }
-    const std::list<RotoItemPtr> selected = getSelectedItems();
-    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
-        if (RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it)) {
-            refreshTransformKnobTies(drawable);
-        }
-    }
+    refreshTransformKnobTies();
 }
 
 bool

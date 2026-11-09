@@ -2705,6 +2705,8 @@ FollowVectorsUndoCommand::captureResult()
 void
 FollowVectorsUndoCommand::restore(bool after)
 {
+    RotoCurveContext::TransformTieSuspension untied(_context.lock());
+
     for (ItemState& state : _items) {
         const std::list<BezierCPPtr>& saved = after ? state.after : state.before;
         std::list<BezierCPPtr>::const_iterator itSaved = saved.begin();

@@ -863,7 +863,7 @@ SplineWarp::syncTransformKnobs()
     const std::list<KnobIPtr> knobs = transformValueKnobs(context->getTransformKnobs());
     const TransformTargets targets = transformTargets(*context);
     // With a tied curve the page already shows it, and a write would reach it.
-    if (knobs.empty() || targets.sources.empty() || !targets.tied.empty()) {
+    if (knobs.empty() || (targets.sources.size() != 1) || !targets.tied.empty()) {
         return;
     }
     _syncingTransform = true;
@@ -883,17 +883,13 @@ SplineWarp::writeTransformKnobs()
         return;
     }
     const TransformTargets targets = transformTargets(*context);
-    if (targets.sources.empty()) {
+    // The page edits one transform only; a tied curve takes the edit through its slaved knobs.
+    if ((targets.sources.size() != 1) || !targets.tied.empty()) {
         return;
     }
     SplineWarpTransform transform;
     transform.readKnobs(transformValueKnobs(context->getTransformKnobs()));
-    for (std::list<RotoItemPtr>::const_iterator it = targets.sources.begin(); it != targets.sources.end(); ++it) {
-        // A tied source curve already took the edit through its slaved knobs.
-        if (std::find(targets.tied.begin(), targets.tied.end(), *it) == targets.tied.end()) {
-            context->setOwnTransform(*it, transform);
-        }
-    }
+    context->setOwnTransform(targets.sources.front(), transform);
 }
 
 void

@@ -328,6 +328,27 @@ public:
     bool isTransformKnob(const KnobI* knob) const;
 
     /**
+     * @brief While one is alive no item's transform knobs are tied to the Transform page, so every
+     * read and write of them reaches the item's own knobs. Main thread only.
+     **/
+    class TransformTieSuspension {
+    public:
+        explicit TransformTieSuspension(const RotoCurveContextPtr& context);
+        ~TransformTieSuspension();
+
+        TransformTieSuspension(const TransformTieSuspension&) = delete;
+        TransformTieSuspension& operator=(const TransformTieSuspension&) = delete;
+
+    private:
+        RotoCurveContextWPtr _context;
+    };
+
+    /**
+     * @brief The item whose transform knobs the Transform page edits, or null.
+     **/
+    RotoDrawableItemPtr getTransformTiedItem() const;
+
+    /**
      * @brief Sets center to getDefaultTransformCenter(), or else to the centre of the selected
      * items' bounding box, at the current time.
      **/
@@ -369,10 +390,22 @@ protected:
     }
 
     /**
-     * @brief Ties or unties a selected item's transform knobs after tiesTransformKnobs() changed
-     * for it. An item inside a selected layer ends up untied, so edits reach only the layer.
+     * @brief True when a layer has a transform of its own, so a selected layer counts as one more
+     * transform in the selection.
      **/
-    void refreshTransformKnobTies(const RotoDrawableItemPtr& item);
+    virtual bool layersOwnTransforms() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Ties the Transform page to the selection's one transform: the item's knobs when the
+     * selection holds exactly one transform and it is an item's whose knobs tiesTransformKnobs()
+     * allows. Where layersOwnTransforms(), an item inside a selected layer does not count. With
+     * more than one transform selected, or none, nothing is tied and the page is disabled, which
+     * hides the transform handle too. Main thread only.
+     **/
+    void refreshTransformKnobTies();
 
     void resetTransformInternal(const KnobDoublePtr& translate,
                                 const KnobDoublePtr& scale,
@@ -669,6 +702,7 @@ private:
     void deselectInternal(RotoItemPtr b);
     void tieItemKnob(const KnobIPtr& itemKnob, const KnobIPtr& contextKnob, bool slave);
     void untieItemKnob(const KnobIPtr& itemKnob, bool copyState);
+    void untieItemTransformKnobs(const RotoDrawableItemPtr& item);
 
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 

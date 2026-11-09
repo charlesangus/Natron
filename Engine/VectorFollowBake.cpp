@@ -444,6 +444,9 @@ struct VectorFollowRun::Imp {
     VectorFollowParams params;
     std::vector<std::unique_ptr<FollowShape>> shapes;
     std::shared_ptr<FollowVectorsUndoCommand> undo;
+    // Held from prepare() to finish(), so the undo snapshot, every write and the undo itself reach
+    // each shape's own transform knobs, whatever the selection does in between.
+    std::unique_ptr<RotoCurveContext::TransformTieSuspension> tieSuspension;
     bool aborted = false;
     bool forwardOnly = false;
 
@@ -709,6 +712,7 @@ VectorFollowRun::prepare(std::string* error)
     }
     _imp->forwardOnly = !VectorSampler::hasMotionLayers(params.source, params.first);
 
+    _imp->tieSuspension.reset(new RotoCurveContext::TransformTieSuspension(_imp->context));
     std::list<RotoDrawableItemPtr> items;
     for (const RotoDrawableItemPtr& item : params.items) {
         std::unique_ptr<FollowShape> shape = _imp->makeShape(item);
@@ -718,6 +722,7 @@ VectorFollowRun::prepare(std::string* error)
         }
     }
     if (_imp->shapes.empty()) {
+        _imp->tieSuspension.reset();
         *error = "None of the given shapes can follow vectors.";
 
         return false;
@@ -870,6 +875,7 @@ VectorFollowRun::finish(bool sourceLost,
         }
     }
     _imp->undo.reset();
+    _imp->tieSuspension.reset();
     _imp->context->refreshTrackLinkListeners();
     _imp->context->emitRefreshViewerOverlays();
     _imp->context->evaluateChange();

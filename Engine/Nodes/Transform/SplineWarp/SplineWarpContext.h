@@ -367,8 +367,8 @@ public:
     void setOwnTransform(const RotoItemPtr& item, const SplineWarpTransform& transform);
 
     /**
-     * @brief Ties the transform knobs of each selected curve that is neither transform-linked nor
-     * inside a selected layer, and unties the others. Main thread only.
+     * @brief Ties the Transform page to the selected curve when the selection holds one transform
+     * and it is an unlinked curve's, and unties every other curve. Does nothing off the main thread.
      **/
     void refreshSelectedTransformTies();
 
@@ -493,6 +493,11 @@ protected:
      * @brief False for a transform-linked item, whose own transform knobs are not used.
      **/
     virtual bool tiesTransformKnobs(const RotoDrawableItem& item) const OVERRIDE;
+
+    virtual bool layersOwnTransforms() const OVERRIDE
+    {
+        return true;
+    }
 
 private:
     bool ownsCurve(const BezierPtr& curve) const;

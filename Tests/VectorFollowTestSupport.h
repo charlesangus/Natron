@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <list>
 #include <mutex>
 
@@ -43,6 +44,7 @@
 #include "Engine/ViewIdx.h"
 
 #define kTestPluginIDFollowTexture "test.natron.built-in.VectorFollowTexture"
+#define kTestPluginIDFollowZoomTexture "test.natron.built-in.VectorFollowZoomTexture"
 
 NATRON_NAMESPACE_ENTER
 
@@ -55,31 +57,16 @@ constexpr double kShiftY = -1.;
 constexpr int kFirstFrame = 1;
 constexpr int kLastFrame = 40;
 
-// A texture moving by (kShiftX, kShiftY) pixels a frame. Slow enough that a shape stays well
-// inside the picture across the whole range.
-class FollowTextureEffect
+constexpr double kZoomPerFrame = 1.01;
+
+// The texture's picture, rendered through texturePoint(), which maps a pixel centre at a time to
+// where the texture is sampled.
+class FollowTextureBase
     : public NativeEffectBase {
 public:
-    static constexpr NodeSpec kNodeSpec = {
-        .id = kTestPluginIDFollowTexture,
-        .label = "Test Follow Texture",
-        .grouping = "Other/Test",
-        .outputKind = eDataKindImage,
-    };
-
-    static EffectInstance* BuildEffect(NodePtr n)
-    {
-        return new FollowTextureEffect(n);
-    }
-
-    explicit FollowTextureEffect(NodePtr n)
+    explicit FollowTextureBase(NodePtr n)
         : NativeEffectBase(n)
     {
-    }
-
-    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL
-    {
-        return staticNodeSpec<kNodeSpec>();
     }
 
     virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
@@ -157,9 +144,10 @@ public:
                 if (!dst) {
                     continue;
                 }
-                const double cy = y * step + step / 2 - args.time * kShiftY;
                 for (int x = args.roi.x1; x < args.roi.x2; ++x) {
-                    const double cx = x * step + step / 2 - args.time * kShiftX;
+                    double cx = 0.;
+                    double cy = 0.;
+                    texturePoint(args.time, x * step + step / 2, y * step + step / 2, &cx, &cy);
                     const float value = (float)texture(cx, cy);
                     for (int c = 0; c < nComps; ++c) {
                         dst[c] = (c == 3) ? 1.f : value;
@@ -172,9 +160,91 @@ public:
         return eStatusOK;
     }
 
+protected:
+    virtual void texturePoint(double time, double x, double y, double* tx, double* ty) const = 0;
+
 private:
     virtual void initializeKnobs() OVERRIDE FINAL
     {
+    }
+};
+
+// A texture moving by (kShiftX, kShiftY) pixels a frame. Slow enough that a shape stays well
+// inside the picture across the whole range.
+class FollowTextureEffect
+    : public FollowTextureBase {
+public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDFollowTexture,
+        .label = "Test Follow Texture",
+        .grouping = "Other/Test",
+        .outputKind = eDataKindImage,
+    };
+
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new FollowTextureEffect(n);
+    }
+
+    explicit FollowTextureEffect(NodePtr n)
+        : FollowTextureBase(n)
+    {
+    }
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+private:
+    virtual void texturePoint(double time, double x, double y, double* tx, double* ty) const OVERRIDE FINAL
+    {
+        *tx = x - time * kShiftX;
+        *ty = y - time * kShiftY;
+    }
+};
+
+// A texture growing by kZoomPerFrame a frame about the picture's centre, so each region of the
+// picture moves its own way.
+class FollowZoomTextureEffect
+    : public FollowTextureBase {
+public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDFollowZoomTexture,
+        .label = "Test Follow Zoom Texture",
+        .grouping = "Other/Test",
+        .outputKind = eDataKindImage,
+    };
+
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new FollowZoomTextureEffect(n);
+    }
+
+    explicit FollowZoomTextureEffect(NodePtr n)
+        : FollowTextureBase(n)
+    {
+    }
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    // Where the texture point shown at (x, y) at time 0 is shown at time.
+    static void zoomed(double time, double x, double y, double* zx, double* zy)
+    {
+        const double s = std::pow(kZoomPerFrame, time);
+        *zx = kWidth / 2. + (x - kWidth / 2.) * s;
+        *zy = kHeight / 2. + (y - kHeight / 2.) * s;
+    }
+
+private:
+    virtual void texturePoint(double time, double x, double y, double* tx, double* ty) const OVERRIDE FINAL
+    {
+        const double s = std::pow(kZoomPerFrame, time);
+        *tx = kWidth / 2. + (x - kWidth / 2.) / s;
+        *ty = kHeight / 2. + (y - kHeight / 2.) / s;
     }
 };
 
@@ -183,7 +253,10 @@ registerFollowTextureOnce()
 {
     static std::once_flag once;
 
-    std::call_once(once, []() { MultiTimeTest::registerPlugin<FollowTextureEffect>(); });
+    std::call_once(once, []() {
+        MultiTimeTest::registerPlugin<FollowTextureEffect>();
+        MultiTimeTest::registerPlugin<FollowZoomTextureEffect>();
+    });
 }
 
 } // namespace VectorFollowTest

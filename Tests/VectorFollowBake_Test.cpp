@@ -927,6 +927,8 @@ TEST_F(VectorFollowSelectionTest, ChangingTheSelectionLeavesEveryShapesTransform
 {
     BezierPtr a = makeSquare(kStart);
     BezierPtr b = makeSquare(kStart, 150.);
+    // makeBezier() leaves the new shape selected.
+    context()->clearSelection(RotoItem::eSelectionReasonOther);
     a->setTranslateKeyframe(kStart, 5., 3.);
     a->setTranslateKeyframe(kStart + kSpan, 9., -2.);
     a->setExtraMatrix(true, kStart, Transform::Matrix3x3(1.1, 0.2, 7., -0.1, 0.9, -3., 0., 0., 1.));

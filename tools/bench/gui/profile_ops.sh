@@ -167,7 +167,7 @@ profile_op() {
     mkdir -p "$opdir"
     rm -f "$hold" "$sampler_err"
     start_log="$opdir/start.log"
-    echo "== $op: starting"
+    echo "== profile $op start $(date -u +%H:%M:%S)"
     local extra=()
     [ "$forced_repaint" = 0 ] && extra+=(--no-forced-repaint)
     local mode_args=(--xvfb) run_pid="" w
@@ -183,6 +183,11 @@ profile_op() {
             kill -0 "$run_pid" 2> /dev/null || { wait "$run_pid"; rc=$?; [ "$rc" -eq 0 ] && rc=1; break; }
             sleep 1
         done
+        if [ "$w" -ge 300 ]; then
+            echo "   wait expired: run.sh printed no result line within 300 s" >&2
+            kill -TERM -- "-$run_pid" 2> /dev/null
+            rc=1
+        fi
     else
         GUI_BENCH_TIMEOUT=$load_cap GUI_BENCH_HOLD_FILE=$hold "$run_sh" "${mode_args[@]}" --topologies "$topology" --sizes "$size" --reps "$reps" \
             --ops "$op" --out "$opdir" "${extra[@]}" > "$start_log" 2>&1
@@ -296,6 +301,7 @@ profile_op() {
         echo "sampled_s=${sampled_for:-?} samples=$(grep -c '^=== SAMPLE' "$stacks" 2> /dev/null || echo 0) ${note}"
     } > "$out/$op.status"
     summarize "$op" "$opdir" "$status" "$out/$op.top.txt" | tee -a "$out/summary.txt"
+    echo "== profile $op end $(date -u +%H:%M:%S) ($status)"
 }
 
 main() {

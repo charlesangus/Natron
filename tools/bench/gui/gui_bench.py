@@ -952,7 +952,7 @@ try:
                 if os.path.exists(HOLD_FILE):
                     os.remove(HOLD_FILE)
                 else:
-                    report("NOTE %s: not released within %.0f s; running without a sampler" % (name, HOLD_S))
+                    report("NOTE wait expired: %s was not released by GUI_BENCH_HOLD_FILE within %.0f s; running without a sampler" % (name, HOLD_S))
                 _guard["until"] = time.monotonic() + GUARD_S
             deadline = time.monotonic() + OP_TIMEOUT_S
             for rep in range(reps):
@@ -1116,7 +1116,7 @@ try:
 
     def steps():
         ok = yield ("until", lambda: root_graph() is not None and root_graph().isVisible(), STARTUP_TIMEOUT_S)
-        gt.require(ok, "the node graph is up")
+        gt.require(ok, "wait expired: the node graph was not visible within %.0f s of Natron starting" % STARTUP_TIMEOUT_S)
         gt.close_all_panels()
         if not STALL_LOG:
             report("NOTE NATRON_STALL_LOG is not set; no stalls will be attributed")

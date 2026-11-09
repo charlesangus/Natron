@@ -41,7 +41,8 @@
 # Both modes run Natron under a throwaway HOME seeded with checkForUpdates=false, set
 # NATRON_STALL_LOG so the stall monitor records main-thread stalls beside the result, and pass
 # GUI_BENCH_OP_TIMEOUT_S (default 120) and GUI_BENCH_IDLE_S through. GUI_BENCH_TIMEOUT caps the
-# whole run in seconds (default 21600).
+# whole run in seconds (default 21600), and GUI_BENCH_EXTRACT_S the AppImage extraction (--host, default
+# 300). Natron's start-up and the hold-file wait are bounded in gui_bench.py and report which wait expired.
 set -u
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -264,8 +265,8 @@ fi
 
 # --host
 display=${DISPLAY:-:0}
-if ! (cd "$scratch" && "$appimage" --appimage-extract > /dev/null 2>&1) || [ ! -x "$scratch/squashfs-root/AppRun" ]; then
-    echo "could not extract $appimage" >&2
+if ! (cd "$scratch" && timeout --kill-after=10 "${GUI_BENCH_EXTRACT_S:-300}" "$appimage" --appimage-extract > /dev/null 2>&1) || [ ! -x "$scratch/squashfs-root/AppRun" ]; then
+    echo "wait expired or failed: could not extract $appimage within ${GUI_BENCH_EXTRACT_S:-300} s" >&2
     finish 2
 fi
 export GUI_BENCH_BUILD_TYPE=appimage GUI_BENCH_APPIMAGE=$appimage
@@ -281,7 +282,7 @@ run_one() {
     echo "Natron log $log; progress follows"
     # --foreground keeps Natron in the terminal's process group: in a background group, anything in
     # the bundle that touches the terminal stops the process, leaving an open window that does nothing.
-    timeout --foreground "$1" "$scratch/squashfs-root/AppRun" "$script" > "$log" 2>&1 < /dev/null &
+    timeout --foreground --kill-after=20 "$1" "$scratch/squashfs-root/AppRun" "$script" > "$log" 2>&1 < /dev/null &
     natron_pid=$!
     tail --pid="$natron_pid" -n +1 -F "$NATRON_GUI_TEST_OUT/results.txt" 2> /dev/null &
     tail_pid=$!
@@ -292,7 +293,7 @@ run_one() {
         echo "the driver wrote no results; last lines of $log:"
         tail -n 30 "$log"
     fi
-    [ "$rc" -eq 124 ] && echo "timed out after $1 s"
+    [ "$rc" -eq 124 ] && echo "wait expired: Natron still running after the ${1} s cap"
     return "$rc"
 }
 run_driver

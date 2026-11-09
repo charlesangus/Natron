@@ -100,6 +100,30 @@ each interaction event for `QApplication.processEvents()` inside the step. Paint
 Qt schedules them (coalesced), which is closer to what a user sees; the host record carries
 `forced_repaint`. Do not compare a run made with it against one made without.
 
+## The GPU-host sitting
+
+`run-bench.sh` (beside the AppImages on the GPU host) drives the `--host` runs for the interaction
+budgets. By default it makes two runs, `before` then `after` the AppImage, on `comp` at N=300 and
+3000 with 3 reps, then merges, compares and archives them: about 15 to 30 minutes, 45 at most.
+Environment overrides:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ROUNDS` | `1` | `"1 2"` adds a round with the sides in reverse order |
+| `M118_TOPOLOGIES` | `comp` | space-separated, e.g. `"comp mixed wide chain"` |
+| `M118_SIZES` | `300,3000` | node counts; the scaling slope is fitted over them |
+| `M118_REPS` | `3` | repetitions per op |
+| `M118_RUN_CAP_S` | `900` | hard cap per `run.sh` call; the whole process session (Natron, Xvfb, helpers) is killed, `<side> <topology> timeout` goes to `bench-status.txt`, and the next run starts |
+| `M118_TOTAL_CAP_S` | `2700` | after this the remaining runs are skipped; what finished is still compared and archived |
+| `BENCHES` | `m118 m328 m329 m300` | `m118prof` is not in the set; run it with `BENCHES=m118prof` |
+| `M118PROF_OPS` | `click_select,undo,drag_move_1` | the ops still over budget, profiled at N=3000 |
+| `M118PROF_CAP_S` | `1200` | hard cap on the whole profile, same session kill |
+
+Each run prints `== m118 <side> <topology> start|end <elapsed>s`, and `profile_ops.sh` prints
+`== profile <op> start|end`, so a stall shows in `session-console.txt`. The waits inside a run are
+bounded (Natron start-up 120 s, hold file `GUI_BENCH_HOLD_S`, AppImage extraction
+`GUI_BENCH_EXTRACT_S`, the run itself `GUI_BENCH_TIMEOUT`) and each says which wait expired.
+
 ## Profiling one op
 
 `profile_ops.sh` does all of this for a list of ops, in the container or with `--host` on an

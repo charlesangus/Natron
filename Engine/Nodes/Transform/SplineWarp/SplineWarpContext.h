@@ -465,6 +465,12 @@ public:
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const OVERRIDE;
 
     /**
+     * @brief Refuses a transform-linked item: its own transform is unused, and its link target's
+     * belongs to that target and every other item linked to it.
+     **/
+    virtual std::string getTransformFitRefusal(const RotoDrawableItem& item) const OVERRIDE;
+
+    /**
      * @brief Saves the links (the same objects, with their values), the boundaries and the layer
      * amounts.
      **/

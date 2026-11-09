@@ -40,6 +40,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoStrokeItem.h"
@@ -68,22 +70,18 @@ public:
     {
         NativeTimeNodeTest::SetUp();
         registerFollowTextureOnce();
-        _generator = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, createNode(QString::fromUtf8(texturePluginID()), 1));
-        setKnob<KnobChoice>(_generator, kVectorGeneratorParamQuality, (int)eFlowQualityMedium);
+        _source = createNode(QString::fromUtf8(vectorsPluginID()), 1);
         _roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
     }
 
-    virtual const char* texturePluginID() const
+    virtual const char* vectorsPluginID() const
     {
-        return kTestPluginIDFollowTexture;
+        return kTestPluginIDFollowVectors;
     }
 
-    // Medium solves at half resolution and undershoots this half-pixel motion by 0.03 px a
-    // frame, more than kFollowTolerance by frame +20. Only the cases that assert a position pay
-    // for Fine; the rest check keys, undo and aborts, which do not depend on the solve quality.
-    void useFine()
+    void forwardOnly()
     {
-        setKnob<KnobChoice>(_generator, kVectorGeneratorParamQuality, (int)eFlowQualityFine);
+        setKnob<KnobBool>(_source, kFollowVectorsParamBackward, false);
     }
 
     RotoCurveContextPtr context() const
@@ -95,7 +93,15 @@ public:
                          double left = 90.,
                          double bottom = 70.) const
     {
-        BezierPtr bezier = context()->makeBezier(left, bottom, kRotoBezierBaseName, time, false);
+        return makeSquareIn(context(), time, left, bottom);
+    }
+
+    static BezierPtr makeSquareIn(const RotoCurveContextPtr& context,
+                                  double time,
+                                  double left = 90.,
+                                  double bottom = 70.)
+    {
+        BezierPtr bezier = context->makeBezier(left, bottom, kRotoBezierBaseName, time, false);
         bezier->addControlPoint(left + 40., bottom, time);
         bezier->addControlPoint(left + 40., bottom + 40., time);
         bezier->addControlPoint(left, bottom + 40., time);
@@ -109,7 +115,7 @@ public:
     {
         VectorFollowParams params;
         params.items.push_back(item);
-        params.source = _generator;
+        params.source = _source;
         params.first = kStart;
         params.last = kStart + kSpan;
         params.model = model;
@@ -184,11 +190,31 @@ public:
         }
     }
 
-    NodePtr _generator;
+    // A per-point follow of a square over the whole span lands on the source's motion.
+    void expectAPerPointFollowLandsOnTheVectors()
+    {
+        BezierPtr bezier = makeSquare(kStart);
+        const FollowPoint start = positionAt(bezier, 0, kStart);
+
+        UndoCommandPtr undo;
+        const VectorFollowReport report = context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        ASSERT_EQ(report.shapes.size(), 1u);
+        EXPECT_FALSE(report.shapes[0].stopped);
+
+        const FollowPoint end = positionAt(bezier, 0, kStart + kSpan);
+        EXPECT_NEAR(end.x, start.x + kShiftX * kSpan, kFollowTolerance);
+        EXPECT_NEAR(end.y, start.y + kShiftY * kSpan, kFollowTolerance);
+
+        std::set<double> keys;
+        bezier->getKeyframeTimes(&keys);
+        EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
+    }
+
+    NodePtr _source;
     NodePtr _roto;
 };
 
-// Two suites so each stays well inside the ctest timeout on the slower task-graph leg.
 class VectorFollowBakeTest
     : public VectorFollowBakeBase {
 };
@@ -204,31 +230,51 @@ class VectorFollowSelectionTest
 class VectorFollowZoomTest
     : public VectorFollowBakeBase {
 public:
-    const char* texturePluginID() const override
+    const char* vectorsPluginID() const override
     {
-        return kTestPluginIDFollowZoomTexture;
+        return kTestPluginIDFollowZoomVectors;
     }
 };
 
+class VectorFollowSplineWarpTest
+    : public VectorFollowBakeBase {
+public:
+    void SetUp() override
+    {
+        VectorFollowBakeBase::SetUp();
+        _warp = createNode(QString::fromUtf8(PLUGINID_NATRON_SPLINEWARP), PLUGIN_MAJOR_NATRON_SPLINEWARP);
+    }
+
+    SplineWarpContextPtr warpContext() const
+    {
+        return std::dynamic_pointer_cast<SplineWarpContext>(_warp->getCurveContext());
+    }
+
+    NodePtr _warp;
+};
+
+// The follow over vectors solved from the moving texture, rather than its exact ones.
+class VectorFollowGeneratorTest
+    : public VectorFollowBakeBase {
+public:
+    void SetUp() override
+    {
+        VectorFollowBakeBase::SetUp();
+        _source = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, createNode(QString::fromUtf8(kTestPluginIDFollowTexture), 1));
+        // Medium solves at half resolution and undershoots this half-pixel motion by 0.03 px a
+        // frame, more than kFollowTolerance by frame +20.
+        setKnob<KnobChoice>(_source, kVectorGeneratorParamQuality, (int)eFlowQualityFine);
+    }
+};
+
+TEST_F(VectorFollowGeneratorTest, PerPointFollowsAndLandsOnTheSolvedVectors)
+{
+    expectAPerPointFollowLandsOnTheVectors();
+}
+
 TEST_F(VectorFollowBakeTest, PerPointFollowsAndLandsOnTheVectors)
 {
-    useFine();
-    BezierPtr bezier = makeSquare(kStart);
-    const FollowPoint start = positionAt(bezier, 0, kStart);
-
-    UndoCommandPtr undo;
-    const VectorFollowReport report = context()->followVectors(paramsFor(bezier, VectorFollowModel::ePerPoint), &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_FALSE(report.shapes[0].stopped);
-
-    const FollowPoint end = positionAt(bezier, 0, kStart + kSpan);
-    EXPECT_NEAR(end.x, start.x + kShiftX * kSpan, kFollowTolerance);
-    EXPECT_NEAR(end.y, start.y + kShiftY * kSpan, kFollowTolerance);
-
-    std::set<double> keys;
-    bezier->getKeyframeTimes(&keys);
-    EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
+    expectAPerPointFollowLandsOnTheVectors();
 }
 
 TEST_F(VectorFollowBakeTest, UndoPutsBackThePointsAndRedoTheFollow)
@@ -272,7 +318,6 @@ TEST_F(VectorFollowBakeTest, AnExistingKeyIsAnAnchorAndStaysExact)
 
 TEST_F(VectorFollowBakeTest, SelectedPointsMoveAndTheRestStaysPut)
 {
-    useFine();
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint moved = positionAt(bezier, 0, kStart);
     const FollowPoint still = positionAt(bezier, 2, kStart);
@@ -289,7 +334,6 @@ TEST_F(VectorFollowBakeTest, SelectedPointsMoveAndTheRestStaysPut)
 
 TEST_F(VectorFollowBakeTest, FitsKeyTheTransformAndLeaveThePointKeysAlone)
 {
-    useFine();
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
 
@@ -315,7 +359,6 @@ TEST_F(VectorFollowBakeTest, FitsKeyTheTransformAndLeaveThePointKeysAlone)
 
 TEST_F(VectorFollowBakeTest, AStrokeFollowsByItsTransform)
 {
-    useFine();
     // Detached and without internal nodes: only its points and transform take part.
     RotoStrokeItemPtr stroke = std::make_shared<RotoStrokeItem>(eRotoStrokeTypeSolid, context(), std::string("stroke"), RotoLayerPtr());
     CurvePtr xCurve = std::make_shared<Curve>();
@@ -366,6 +409,68 @@ TEST_F(VectorFollowBakeTest, AnAbortKeepsTheFramesAlreadyDone)
     EXPECT_EQ(keys.size(), 1u);
 }
 
+// The first shape's backward pass has no layer to run on; the user stops the follow during the second.
+TEST_F(VectorFollowBakeTest, AUserStopAfterAPassStopIsStillAUserStop)
+{
+    forwardOnly();
+    const int later = kStart + 10;
+    BezierPtr bridged = makeSquare(later);
+    bridged->setKeyframe(kEarlier);
+    BezierPtr second = makeSquare(kStart, 150.);
+
+    VectorFollowParams params = paramsFor(bridged, VectorFollowModel::ePerPoint);
+    params.last = later;
+    int firstShapeChecks = 0;
+    params.shouldAbort = [&firstShapeChecks]() {
+        ++firstShapeChecks;
+
+        return false;
+    };
+    UndoCommandPtr undo;
+    VectorFollowReport report = context()->followVectors(params, &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    ASSERT_EQ(report.shapes.size(), 1u);
+    ASSERT_EQ(report.shapes[0].passStops.size(), 1u);
+    EXPECT_FALSE(report.userStopped);
+    EXPECT_FALSE(isUserStopVectorFollowReport(report));
+    ASSERT_TRUE(bool(undo));
+    undo->undo();
+
+    params.items = std::list<RotoDrawableItemPtr> { bridged, second };
+    int calls = 0;
+    const int allowed = firstShapeChecks + 6;
+    params.shouldAbort = [&calls, allowed]() { return ++calls > allowed; };
+    report = context()->followVectors(params, &undo);
+    EXPECT_TRUE(report.aborted);
+    EXPECT_TRUE(report.userStopped);
+    ASSERT_EQ(report.shapes.size(), 2u);
+    EXPECT_EQ(report.shapes[0].passStops.size(), 1u);
+    EXPECT_TRUE(isUserStopVectorFollowReport(report));
+    EXPECT_FALSE(isCleanVectorFollowReport(report));
+
+    std::set<double> keys;
+    second->getKeyframeTimes(&keys);
+    EXPECT_GT(keys.size(), 1u);
+    EXPECT_LT(keys.size(), (std::size_t)(later - kStart + 1));
+}
+
+TEST_F(VectorFollowBakeTest, OnlyAStopTheUserAskedForThatKeptItsSourceIsAUserStop)
+{
+    VectorFollowReport report;
+    report.aborted = true;
+    report.shapes.resize(1);
+    report.shapes[0].passStops.resize(1);
+    report.shapes[0].stopped = true;
+    EXPECT_FALSE(isUserStopVectorFollowReport(report));
+
+    report.userStopped = true;
+    report.error = "Aborted.";
+    EXPECT_TRUE(isUserStopVectorFollowReport(report));
+
+    report.sourceLost = true;
+    EXPECT_FALSE(isUserStopVectorFollowReport(report));
+}
+
 TEST_F(VectorFollowBakeTest, ReducesInsideTheSameUndoStep)
 {
     BezierPtr bezier = makeSquare(kStart);
@@ -389,7 +494,6 @@ TEST_F(VectorFollowBakeTest, ReducesInsideTheSameUndoStep)
 
 TEST_F(VectorFollowBlendTest, AForwardFollowWithALaterKeyMeetsBothAndBlendsBetween)
 {
-    useFine();
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
     bezier->setKeyframe(kEarlier);
@@ -508,7 +612,6 @@ TEST_F(VectorFollowBlendTest, AnAbortMidBlendKeepsFinishedFramesAndTheLaterKey)
 
 TEST_F(VectorFollowBlendTest, AFitLandsOnALaterKeyOfItsOwn)
 {
-    useFine();
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
@@ -538,8 +641,7 @@ TEST_F(VectorFollowBlendTest, AFitLandsOnALaterKeyOfItsOwn)
 
 TEST_F(VectorFollowBlendTest, AForwardOnlySourceFollowsForward)
 {
-    useFine();
-    setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+    forwardOnly();
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
 
@@ -557,7 +659,7 @@ TEST_F(VectorFollowBlendTest, AForwardOnlySourceFollowsForward)
 
 TEST_F(VectorFollowBlendTest, ABackwardFollowOfAForwardOnlySourceReportsTheMissingLayer)
 {
-    setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+    forwardOnly();
     BezierPtr bezier = makeSquare(kStart + kSpan);
 
     VectorFollowParams params = paramsFor(bezier, VectorFollowModel::ePerPoint);
@@ -574,8 +676,7 @@ TEST_F(VectorFollowBlendTest, ABackwardFollowOfAForwardOnlySourceReportsTheMissi
 
 TEST_F(VectorFollowBlendTest, ATwoWayFollowOfAForwardOnlySourceFallsBackToForwardAndReportsIt)
 {
-    useFine();
-    setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+    forwardOnly();
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
     bezier->setKeyframe(kEarlier);
@@ -602,7 +703,6 @@ TEST_F(VectorFollowBlendTest, ATwoWayFollowOfAForwardOnlySourceFallsBackToForwar
 
 TEST_F(VectorFollowBlendTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
 {
-    useFine();
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
     const FollowPoint held = positionAt(bezier, 0, later);
@@ -635,7 +735,6 @@ TEST_F(VectorFollowBlendTest, AForwardFollowWithOnlyALaterKeyTracksBackFromIt)
 
 TEST_F(VectorFollowBlendTest, AFitWithOnlyALaterKeyOfItsOwnTracksBackFromIt)
 {
-    useFine();
     const int later = kStart + 10;
     // The point key on the start frame is no key to a fit, which keys the transform.
     BezierPtr bezier = makeSquare(kStart);
@@ -665,8 +764,7 @@ TEST_F(VectorFollowBlendTest, AFitWithOnlyALaterKeyOfItsOwnTracksBackFromIt)
 
 TEST_F(VectorFollowBlendTest, AForwardFollowOfAForwardOnlySourceWithOnlyALaterKeyReportsTheMissingLayer)
 {
-    useFine();
-    setKnob<KnobChoice>(_generator, kVectorGeneratorParamOutputs, (int)eVectorGeneratorOutputsForward);
+    forwardOnly();
     const int later = kStart + 10;
     BezierPtr bezier = makeSquare(later);
     const FollowPoint held = positionAt(bezier, 0, later);
@@ -692,7 +790,6 @@ TEST_F(VectorFollowBlendTest, AForwardFollowOfAForwardOnlySourceWithOnlyALaterKe
 
 TEST_F(VectorFollowBlendTest, ABackwardFollowWithAnEarlierKeyMeetsBothAndBlendsBetween)
 {
-    useFine();
     const int current = kStart + 10;
     BezierPtr bezier = makeSquare(kStart);
     bezier->setKeyframe(current + 2);
@@ -816,7 +913,6 @@ TEST_F(VectorFollowBlendTest, AnAbortMidBackwardBlendKeepsFinishedFramesNextToTh
 
 TEST_F(VectorFollowBlendTest, ABackwardFitLandsOnAnEarlierKeyOfItsOwn)
 {
-    useFine();
     const int current = kStart + 10;
     BezierPtr bezier = makeSquare(kStart);
     const FollowPoint start = positionAt(bezier, 0, kStart);
@@ -847,7 +943,6 @@ TEST_F(VectorFollowBlendTest, ABackwardFitLandsOnAnEarlierKeyOfItsOwn)
 
 TEST_F(VectorFollowBlendTest, ABackwardFollowWithOnlyAnEarlierKeyTracksForwardFromIt)
 {
-    useFine();
     const int earlier = kStart + 10;
     BezierPtr bezier = makeSquare(earlier);
     const FollowPoint held = positionAt(bezier, 0, earlier);
@@ -1040,8 +1135,8 @@ TEST_F(VectorFollowZoomTest, TwoSelectedShapesEachGetTheirOwnFit)
     }
 }
 
-// The GUI sequence that overflowed the stack: a per-point follow of two selected shapes, undone and
-// redone, then a fit follow of two new selected shapes, undone and run again.
+// A per-point follow of two selected shapes, undone and redone, then a fit follow of two new
+// selected shapes, undone and run again.
 TEST_F(VectorFollowSelectionTest, AFitFollowOfTwoSelectedShapesAfterAnUndo)
 {
     const std::list<RotoDrawableItemPtr> perPoint { makeSquare(kStart), makeSquare(kStart, 150.) };
@@ -1074,9 +1169,7 @@ TEST_F(VectorFollowSelectionTest, AFitFollowOfTwoSelectedShapesAfterAnUndo)
         ASSERT_EQ(report.shapes.size(), 2u);
         ASSERT_TRUE(bool(fitUndo));
 
-        // Medium undershoots this motion by about 0.6 px over the span; the case is about the
-        // selection, not the solve.
-        const double tolerance = 2.;
+        const double tolerance = kFollowTolerance;
         const FollowPoint firstEnd = shownAt(first, firstStart, kStart + kSpan);
         const FollowPoint secondEnd = shownAt(second, secondStart, kStart + kSpan);
         EXPECT_NEAR(firstEnd.x, firstStart.x + kShiftX * kSpan, tolerance);
@@ -1092,6 +1185,82 @@ TEST_F(VectorFollowSelectionTest, AFitFollowOfTwoSelectedShapesAfterAnUndo)
         EXPECT_NEAR(secondBack.x, secondStart.x, 1e-9);
         EXPECT_NEAR(secondBack.y, secondStart.y, 1e-9);
     }
+}
+
+// A curve linked to another takes that one's transform, which a fit on its behalf would move for
+// every curve linked to it, and its own transform is unused.
+TEST_F(VectorFollowSplineWarpTest, AFitRefusesATransformLinkedCurveAndWritesNoOtherTransform)
+{
+    SplineWarpContextPtr warp = warpContext();
+    ASSERT_TRUE(bool(warp));
+    BezierPtr linked = makeSquareIn(warp, kStart);
+    BezierPtr target = makeSquareIn(warp, kStart, 150.);
+    BezierPtr unlinked = makeSquareIn(warp, kStart, 90., 40.);
+    warp->linkTransform(linked, target);
+    warp->clearSelection(RotoItem::eSelectionReasonOther);
+    const TransformState linkedBefore = transformOf(linked);
+    const TransformState targetBefore = transformOf(target);
+    const TransformState unlinkedBefore = transformOf(unlinked);
+    const FollowPoint unlinkedStart(110., 60.);
+
+    for (VectorFollowModel model : { VectorFollowModel::eTranslate, VectorFollowModel::eAffine, VectorFollowModel::ePerspective }) {
+        SCOPED_TRACE((int)model);
+        UndoCommandPtr undo;
+        VectorFollowReport report = warp->followVectors(paramsFor(linked, model), &undo);
+        EXPECT_NE(report.error.find(linked->getScriptName() + ": its transform is linked to " + target->getScriptName()), std::string::npos) << report.error;
+        EXPECT_FALSE(bool(undo));
+        expectSameTransform(transformOf(linked), linkedBefore, 0., "linked, alone");
+        expectSameTransform(transformOf(target), targetBefore, 0., "target, linked alone");
+        if (model == VectorFollowModel::ePerspective) {
+            continue;
+        }
+
+        VectorFollowParams params = paramsFor(linked, model);
+        params.items = std::list<RotoDrawableItemPtr> { linked, unlinked };
+        report = warp->followVectors(params, &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        ASSERT_EQ(report.shapes.size(), 1u);
+        EXPECT_EQ(report.shapes[0].name, unlinked->getScriptName());
+        ASSERT_EQ(report.refused.size(), 1u);
+        EXPECT_EQ(report.refused[0].name, linked->getScriptName());
+        EXPECT_FALSE(isCleanVectorFollowReport(report));
+        EXPECT_NE(formatVectorFollowReport(report).find(linked->getScriptName() + ": not followed"), std::string::npos);
+        expectSameTransform(transformOf(linked), linkedBefore, 0., "linked, with another");
+        expectSameTransform(transformOf(target), targetBefore, 0., "target, with another");
+        const FollowPoint unlinkedEnd = shownAt(unlinked, unlinkedStart, kStart + kSpan);
+        EXPECT_NEAR(unlinkedEnd.x, unlinkedStart.x + kShiftX * kSpan, kFollowTolerance);
+        EXPECT_NEAR(unlinkedEnd.y, unlinkedStart.y + kShiftY * kSpan, kFollowTolerance);
+
+        ASSERT_TRUE(bool(undo));
+        undo->undo();
+        expectSameTransform(transformOf(unlinked), unlinkedBefore, 0., "unlinked, undone");
+    }
+}
+
+// A per-point follow writes the linked curve's own points only.
+TEST_F(VectorFollowSplineWarpTest, APerPointFollowMovesALinkedCurvesPointsOnly)
+{
+    SplineWarpContextPtr warp = warpContext();
+    ASSERT_TRUE(bool(warp));
+    BezierPtr linked = makeSquareIn(warp, kStart);
+    BezierPtr target = makeSquareIn(warp, kStart, 150.);
+    warp->linkTransform(linked, target);
+    const TransformState linkedBefore = transformOf(linked);
+    const TransformState targetBefore = transformOf(target);
+    const FollowPoint start = positionAt(linked, 0, kStart);
+    const FollowPoint targetStart = positionAt(target, 0, kStart + kSpan);
+
+    UndoCommandPtr undo;
+    const VectorFollowReport report = warp->followVectors(paramsFor(linked, VectorFollowModel::ePerPoint), &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    EXPECT_TRUE(report.refused.empty());
+    const FollowPoint end = positionAt(linked, 0, kStart + kSpan);
+    EXPECT_NEAR(end.x, start.x + kShiftX * kSpan, kFollowTolerance);
+    EXPECT_NEAR(end.y, start.y + kShiftY * kSpan, kFollowTolerance);
+    expectSameTransform(transformOf(linked), linkedBefore, 0., "linked");
+    expectSameTransform(transformOf(target), targetBefore, 0., "target");
+    EXPECT_DOUBLE_EQ(positionAt(target, 0, kStart + kSpan).x, targetStart.x);
+    EXPECT_DOUBLE_EQ(positionAt(target, 0, kStart + kSpan).y, targetStart.y);
 }
 
 } // anonymous namespace

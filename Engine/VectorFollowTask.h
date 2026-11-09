@@ -44,7 +44,8 @@ struct VectorFollowReport;
  * The report is kept here until the next follow starts and stored on the node as an information
  * message that carries no warning or error mark. A follow that stopped on a point it could not
  * track, failed to read or lost its source also opens a dialog; a clean one, or one the user
- * stopped, opens none. Everything public is main thread.
+ * stopped, opens none. While it runs, the host refuses edits to its parameters, inputs and, from
+ * Python, its shapes, as during a render or a track that reads it. Everything public is main thread.
  **/
 class VectorFollowTask
     : public GenericSchedulerThread {

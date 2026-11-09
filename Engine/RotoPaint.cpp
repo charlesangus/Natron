@@ -1028,6 +1028,10 @@ RotoPaint::onOverlayPenDoubleClicked(double /*time*/,
                                      const QPointF& /*viewportPos*/,
                                      const QPointF& pos)
 {
+    if (isVectorFollowRunning()) {
+        return false;
+    }
+
     return _imp->ui->onOverlayPenDoubleClicked(pos);
 }
 
@@ -1041,6 +1045,12 @@ RotoPaint::onOverlayPenDown(double time,
                             double timestamp,
                             PenType pen)
 {
+    // The follow writes the shapes as it goes, and an edit made meanwhile would be overwritten by
+    // the frames still to come.
+    if (isVectorFollowRunning()) {
+        return false;
+    }
+
     return _imp->ui->onOverlayPenDown(time, pos, pressure, timestamp, pen);
 }
 
@@ -1088,6 +1098,10 @@ RotoPaint::onOverlayKeyDown(double /*time*/,
                             Key key,
                             KeyboardModifiers /*modifiers*/)
 {
+    if (isVectorFollowRunning()) {
+        return false;
+    }
+
     return _imp->ui->onOverlayKeyDown(key);
 }
 

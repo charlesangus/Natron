@@ -30,6 +30,7 @@
 #include <cmath>
 #include <list>
 #include <mutex>
+#include <string>
 
 #include "Tests/Flow/FlowTestPlate.h"
 #include "Tests/MultiTimeTestEffect.h"
@@ -37,14 +38,19 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
 #define kTestPluginIDFollowTexture "test.natron.built-in.VectorFollowTexture"
 #define kTestPluginIDFollowZoomTexture "test.natron.built-in.VectorFollowZoomTexture"
+#define kTestPluginIDFollowVectors "test.natron.built-in.VectorFollowVectors"
+#define kTestPluginIDFollowZoomVectors "test.natron.built-in.VectorFollowZoomVectors"
+#define kFollowVectorsParamBackward "backward"
 
 NATRON_NAMESPACE_ENTER
 
@@ -248,6 +254,225 @@ private:
     }
 };
 
+/**
+ * @brief The exact motion vectors of one of the textures above, as a vector source: the Forward
+ * layer, and the Backward layer unless backward is off. Each pixel holds the vector of its centre,
+ * and the motion is affine, so the bilinear read of a follow is exact everywhere inside. Solving
+ * the texture's flow takes far longer and only adds solver error to what a follow test checks.
+ **/
+class FollowVectorsBase
+    : public NativeEffectBase {
+public:
+    explicit FollowVectorsBase(NodePtr n)
+        : NativeEffectBase(n)
+    {
+        setSupportsRenderScaleMaybe(eSupportsNo);
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool isMultiPlanar() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual RenderSafetyEnum renderThreadSafety() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return eRenderSafetyFullySafe;
+    }
+
+    virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL
+    {
+        depths->push_back(eImageBitDepthFloat);
+    }
+
+    virtual void getFrameRange(double* first,
+                               double* last) OVERRIDE FINAL
+    {
+        *first = kFirstFrame;
+        *last = kLastFrame;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double /*time*/,
+                                             const RenderScale& /*scale*/,
+                                             ViewIdx /*view*/,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        *rod = RectD(0., 0., kWidth, kHeight);
+
+        return eStatusOK;
+    }
+
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL
+    {
+        metadata.setNComps(-1, 4);
+        metadata.setBitDepth(-1, eImageBitDepthFloat);
+        metadata.setOutputFormat(RectI(0, 0, kWidth, kHeight));
+
+        return eStatusOK;
+    }
+
+    virtual void getComponentsNeededAndProduced(double time,
+                                                ViewIdx view,
+                                                EffectInstance::ComponentsNeededMap* comps,
+                                                double* passThroughTime,
+                                                int* passThroughView,
+                                                int* passThroughInputNb) OVERRIDE FINAL
+    {
+        std::list<ImageLayerDesc>& produced = (*comps)[-1];
+        KnobBoolPtr backward = _backward.lock();
+
+        produced.clear();
+        produced.push_back(ImageLayerDesc::getRGBAComponents());
+        produced.push_back(ImageLayerDesc::getForwardMotionComponents());
+        if (!backward || backward->getValue()) {
+            produced.push_back(ImageLayerDesc::getBackwardMotionComponents());
+        }
+        *passThroughTime = time;
+        *passThroughView = view;
+        *passThroughInputNb = -1;
+    }
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        const std::string forwardID = ImageLayerDesc::getForwardMotionComponents().getLayerID();
+        const std::string backwardID = ImageLayerDesc::getBackwardMotionComponents().getLayerID();
+
+        for (const std::pair<ImageLayerDesc, ImagePtr>& output : args.outputLayers) {
+            if (!output.second) {
+                continue;
+            }
+            const std::string& layerID = output.first.getLayerID();
+            const bool isForward = layerID == forwardID;
+            const bool isMotion = isForward || (layerID == backwardID);
+            const int nComps = (int)output.second->getComponentsCount();
+            Image::WriteAccess access(output.second.get());
+            for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+                float* dst = reinterpret_cast<float*>(access.pixelAt(args.roi.x1, y));
+                if (!dst) {
+                    return eStatusFailed;
+                }
+                for (int x = args.roi.x1; x < args.roi.x2; ++x) {
+                    double dx = 0.;
+                    double dy = 0.;
+                    if (isMotion) {
+                        motion(x + 0.5, y + 0.5, isForward, &dx, &dy);
+                    }
+                    for (int c = 0; c < nComps; ++c) {
+                        if (isMotion) {
+                            dst[c] = (c == 0) ? (float)dx : (c == 1) ? (float)dy
+                                                                     : 0.f;
+                        } else {
+                            dst[c] = (c == 3) ? 1.f : 0.f;
+                        }
+                    }
+                    dst += nComps;
+                }
+            }
+        }
+
+        return eStatusOK;
+    }
+
+protected:
+    // Where the texture shown at (x, y) moves by over the next frame, or over the previous one.
+    virtual void motion(double x, double y, bool forward, double* dx, double* dy) const = 0;
+
+private:
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+        KnobBoolPtr backward = createKnob<KnobBool>(std::string("Backward"));
+        backward->setName(kFollowVectorsParamBackward);
+        backward->setAnimationEnabled(false);
+        backward->setDefaultValue(true);
+        page->addKnob(backward);
+        _backward = backward;
+    }
+
+    KnobBoolWPtr _backward;
+};
+
+// The vectors of FollowTextureEffect.
+class FollowVectorsEffect
+    : public FollowVectorsBase {
+public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDFollowVectors,
+        .label = "Test Follow Vectors",
+        .grouping = "Other/Test",
+        .outputKind = eDataKindImage,
+    };
+
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new FollowVectorsEffect(n);
+    }
+
+    explicit FollowVectorsEffect(NodePtr n)
+        : FollowVectorsBase(n)
+    {
+    }
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+private:
+    virtual void motion(double /*x*/, double /*y*/, bool forward, double* dx, double* dy) const OVERRIDE FINAL
+    {
+        *dx = forward ? kShiftX : -kShiftX;
+        *dy = forward ? kShiftY : -kShiftY;
+    }
+};
+
+// The vectors of FollowZoomTextureEffect.
+class FollowZoomVectorsEffect
+    : public FollowVectorsBase {
+public:
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDFollowZoomVectors,
+        .label = "Test Follow Zoom Vectors",
+        .grouping = "Other/Test",
+        .outputKind = eDataKindImage,
+    };
+
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new FollowZoomVectorsEffect(n);
+    }
+
+    explicit FollowZoomVectorsEffect(NodePtr n)
+        : FollowVectorsBase(n)
+    {
+    }
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+private:
+    virtual void motion(double x, double y, bool forward, double* dx, double* dy) const OVERRIDE FINAL
+    {
+        const double growth = (forward ? kZoomPerFrame : 1. / kZoomPerFrame) - 1.;
+        *dx = (x - kWidth / 2.) * growth;
+        *dy = (y - kHeight / 2.) * growth;
+    }
+};
+
 inline void
 registerFollowTextureOnce()
 {
@@ -256,6 +481,8 @@ registerFollowTextureOnce()
     std::call_once(once, []() {
         MultiTimeTest::registerPlugin<FollowTextureEffect>();
         MultiTimeTest::registerPlugin<FollowZoomTextureEffect>();
+        MultiTimeTest::registerPlugin<FollowVectorsEffect>();
+        MultiTimeTest::registerPlugin<FollowZoomVectorsEffect>();
     });
 }
 

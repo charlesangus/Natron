@@ -29,6 +29,7 @@
 #include <string>
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QPointF>
 #include <QtCore/QThread>
 
 #include <gtest/gtest.h>
@@ -44,6 +45,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
+#include "Engine/RenderScale.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoPaint.h"
@@ -115,6 +117,37 @@ public:
         _bezier->getControlPointAtIndex(0)->getPositionAtTime(false, time, ViewIdx(0), &p.x, &p.y);
 
         return p;
+    }
+
+    // Starts a follow of the shape from frame 5 to 12 as the panel does, leaving it running.
+    RotoPaint* startPanelFollow()
+    {
+        RotoPaint* paint = dynamic_cast<RotoPaint*>(_roto->getEffectInstance().get());
+        RotoCurvePanelHook* hook = paint ? paint->getCurvePanelHook() : NULL;
+        KnobChoicePtr source = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followSource"));
+        KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
+        KnobIntPtr out = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
+        if (!hook || !source || !range || !out) {
+            return NULL;
+        }
+        const std::string sourceName = _generator->getFullyQualifiedName();
+        source->setActiveEntry(ChoiceOption(sourceName, sourceName, ""));
+        range->setValue(1, ViewSpec::all(), 0);
+        out->setValue(12, ViewSpec::all(), 0);
+        getApp()->getTimeLine()->seekFrame(5, false, NULL, eTimelineChangeReasonOtherSeek);
+        hook->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>(1, _bezier));
+
+        return paint;
+    }
+
+    bool penDownOnTheFirstPoint() const
+    {
+        const QPointF pos(90., 70.);
+        const EffectInstancePtr effect = _roto->getEffectInstance();
+        const bool taken = effect->onOverlayPenDown_public(5., RenderScale::identity, ViewIdx(0), pos, pos, 1., 0., ePenTypeLMB);
+        ignore_result(effect->onOverlayPenUp_public(5., RenderScale::identity, ViewIdx(0), pos, pos, 1., 0.));
+
+        return taken;
     }
 
     std::set<double> keyTimes() const
@@ -307,6 +340,35 @@ TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
     EXPECT_FALSE(paint->isVectorFollowRunning());
     expectScriptPasses("assert roto.getLastFollowReport() is None\n"
                        "assert not roto.isFollowingVectors()\n");
+}
+
+TEST_F(PyVectorFollowTest, TheShapesRefuseEditsWhileAFollowRuns)
+{
+    ASSERT_TRUE(penDownOnTheFirstPoint()) << "the viewer does not take a press on a point";
+    const int points = _bezier->getControlPointsCount();
+
+    RotoPaint* paint = startPanelFollow();
+    ASSERT_TRUE(paint);
+    ASSERT_TRUE(paint->isVectorFollowRunning()) << "the follow was refused or did not start";
+
+    EXPECT_FALSE(penDownOnTheFirstPoint());
+    expectScriptPasses("try:\n"
+                       "    shape.addControlPoint(150., 150.)\n"
+                       "    refusal = ''\n"
+                       "except RuntimeError as e:\n"
+                       "    refusal = str(e)\n"
+                       "assert 'vector follow' in refusal, refusal\n");
+    EXPECT_EQ(_bezier->getControlPointsCount(), points);
+
+    paint->abortVectorFollow(true);
+    ASSERT_FALSE(paint->isVectorFollowRunning());
+    VectorFollowReport report;
+    ASSERT_TRUE(paint->getLastVectorFollowReport(&report));
+    EXPECT_TRUE(isUserStopVectorFollowReport(report)) << formatVectorFollowReport(report);
+
+    EXPECT_TRUE(penDownOnTheFirstPoint());
+    expectScriptPasses("shape.addControlPoint(150., 150.)\n");
+    EXPECT_EQ(_bezier->getControlPointsCount(), points + 1);
 }
 
 } // anonymous namespace

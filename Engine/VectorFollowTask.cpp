@@ -71,6 +71,9 @@ struct VectorFollowTask::Imp {
     std::unique_ptr<VectorFollowRun> run;
     std::unique_ptr<VectorSampler> sampler;
     std::unique_ptr<IsolatedJob> job;
+    // Holds the shapes still for the follow: a shape edited while it runs would be overwritten by
+    // the frames still to come, and its undo would take back the edit with the follow.
+    std::unique_ptr<IsolatedJob> hostJob;
     std::atomic<bool> aborted { false };
     // A waited abort ends the follow with this phase's signal still queued; the next follow must not take it for its own.
     int generation = 0;
@@ -145,6 +148,7 @@ VectorFollowTask::startFollow(const VectorFollowParams& params,
     _imp->run = std::move(run);
     _imp->sampler.reset(new VectorSampler(params.source));
     _imp->job.reset(new IsolatedJob(params.source, "vector follow"));
+    _imp->hostJob.reset(new IsolatedJob(host, "vector follow"));
     _imp->aborted = false;
     _imp->sourceLost = false;
     _imp->framesDone = 0;
@@ -272,10 +276,14 @@ VectorFollowTask::onFramesReady()
     RotoCurveContextPtr context = host->getCurveContext();
     const int current = (int)std::lround(context->getTimelineCurrentTime());
     bool showsCurrent = false;
-    for (const PendingFrame& pending : frames) {
-        _imp->run->applyFrame(pending.shape, pending.frame);
-        showsCurrent = showsCurrent || (pending.frame.frame == current);
-        ++_imp->framesDone;
+    {
+        // Kept off the render the change below starts, which would otherwise run in the job.
+        IsolatedJob::ThreadScope inJob(_imp->hostJob.get());
+        for (const PendingFrame& pending : frames) {
+            _imp->run->applyFrame(pending.shape, pending.frame);
+            showsCurrent = showsCurrent || (pending.frame.frame == current);
+            ++_imp->framesDone;
+        }
     }
     context->emitRefreshViewerOverlays();
     if (showsCurrent) {
@@ -319,13 +327,11 @@ VectorFollowTask::onPhaseDone(int phase,
     NodePtr host = _imp->host.lock();
     const bool canReduce = (phase == ePhaseCompute) && _imp->params.reduce && !_imp->run->wasAborted() && !_imp->aborted && !_imp->sourceLost && host;
     if (canReduce) {
+        IsolatedJob::ThreadScope inJob(_imp->hostJob.get());
         _imp->run->prepareReduction();
         startTask(std::make_shared<PhaseArgs>(ePhaseReduce, _imp->generation));
 
         return;
-    }
-    if ((phase == ePhaseReduce) && !_imp->aborted) {
-        _imp->run->applyReduction();
     }
 
     _imp->progressPoll.stop();
@@ -335,13 +341,26 @@ VectorFollowTask::onPhaseDone(int phase,
     // A follow the user stopped has no read error to tell: its sampler stopped because of that stop.
     // One that went on past an unreadable frame has none either: its report tells of that frame.
     const std::string error = (_imp->aborted || !_imp->run->wasAborted()) ? std::string() : _imp->sampler->lastError();
-    const VectorFollowReport report = _imp->run->finish(sourceLost, error);
+    VectorFollowReport report;
+    {
+        // Must end before the dialog below, whose event loop would let the user's edits through as
+        // the follow's own.
+        IsolatedJob::ThreadScope inJob(_imp->hostJob.get());
+        if ((phase == ePhaseReduce) && !_imp->aborted) {
+            _imp->run->applyReduction();
+        }
+        report = _imp->run->finish(sourceLost, error);
+    }
+    // The stop can reach the sampler before the run asks whether to go on, and then the run only
+    // sees a frame it could not read.
+    report.userStopped = report.userStopped || _imp->aborted;
     // Kept before the report is stored and any dialog opens: that dialog's event loop may already
     // ask for the report.
     _imp->lastReport.reset(new VectorFollowReport(report));
     _imp->run.reset();
     _imp->sampler.reset();
     _imp->job.reset();
+    _imp->hostJob.reset();
     // Holding on to the source and the shapes would keep them alive after the user deleted them.
     _imp->params = VectorFollowParams();
     if (host) {

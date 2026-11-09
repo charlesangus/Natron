@@ -448,7 +448,9 @@ struct VectorFollowRun::Imp {
     // each shape's own transform knobs, whatever the selection does in between.
     std::unique_ptr<RotoCurveContext::TransformTieSuspension> tieSuspension;
     bool aborted = false;
+    bool userStopped = false;
     bool forwardOnly = false;
+    std::vector<VectorFollowRefusal> refused;
 
     Imp(const RotoCurveContextPtr& context_,
         const VectorFollowParams& params_)
@@ -457,7 +459,7 @@ struct VectorFollowRun::Imp {
     {
     }
 
-    std::unique_ptr<FollowShape> makeShape(const RotoDrawableItemPtr& item) const;
+    std::unique_ptr<FollowShape> makeShape(const RotoDrawableItemPtr& item, std::string* refusal) const;
     std::set<int> keyFramesOf(const FollowShape& shape, int first, int last) const;
     void writeFrame(FollowShape& shape, const VectorFollowFrame& frame) const;
     void removeKeys(FollowShape& shape) const;
@@ -497,7 +499,8 @@ VectorFollowRun::Imp::keyFramesOf(const FollowShape& shape,
 }
 
 std::unique_ptr<FollowShape>
-VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item) const
+VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
+                                std::string* refusal) const
 {
     std::unique_ptr<FollowShape> shape(new FollowShape);
     shape->item = item;
@@ -533,6 +536,12 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item) const
         // A stroke's samples are not keyed, so it can only follow by its transform.
         if (shape->setup.model == VectorFollowModel::ePerPoint) {
             shape->setup.model = VectorFollowModel::eAffine;
+        }
+    }
+    if (shape->setup.model != VectorFollowModel::ePerPoint) {
+        *refusal = context->getTransformFitRefusal(*item);
+        if (!refusal->empty()) {
+            return nullptr;
         }
     }
 
@@ -715,15 +724,21 @@ VectorFollowRun::prepare(std::string* error)
     _imp->tieSuspension.reset(new RotoCurveContext::TransformTieSuspension(_imp->context));
     std::list<RotoDrawableItemPtr> items;
     for (const RotoDrawableItemPtr& item : params.items) {
-        std::unique_ptr<FollowShape> shape = _imp->makeShape(item);
+        std::string refusal;
+        std::unique_ptr<FollowShape> shape = _imp->makeShape(item, &refusal);
         if (shape) {
             items.push_back(item);
             _imp->shapes.push_back(std::move(shape));
+        } else if (!refusal.empty()) {
+            _imp->refused.push_back(VectorFollowRefusal { item->getScriptName(), refusal });
         }
     }
     if (_imp->shapes.empty()) {
         _imp->tieSuspension.reset();
         *error = "None of the given shapes can follow vectors.";
+        for (const VectorFollowRefusal& refused : _imp->refused) {
+            *error += " " + refused.name + ": " + refused.reason + ".";
+        }
 
         return false;
     }
@@ -749,9 +764,15 @@ VectorFollowRun::compute(VectorField& field,
                          const std::function<void(int, const VectorFollowFrame&)>& consumer,
                          const std::function<bool()>& aborted)
 {
+    const std::function<bool()> stop = [this, &aborted]() {
+        const bool stops = aborted();
+        _imp->userStopped = _imp->userStopped || stops;
+
+        return stops;
+    };
     for (std::size_t i = 0; i < _imp->shapes.size(); ++i) {
         FollowShape& shape = *_imp->shapes[i];
-        shape.outcome = followVectorShape(field, shape.setup, [&](const VectorFollowFrame& frame) { consumer((int)i, frame); }, aborted);
+        shape.outcome = followVectorShape(field, shape.setup, [&](const VectorFollowFrame& frame) { consumer((int)i, frame); }, stop);
         if (shape.outcome.aborted) {
             _imp->aborted = true;
 
@@ -823,6 +844,7 @@ VectorFollowRun::reduce(const std::function<bool()>& aborted)
         shape->removed = reduceVectorFollowKeys(*shape->motion, shape->removable, _imp->params.tolerance, aborted);
         if (aborted()) {
             _imp->aborted = true;
+            _imp->userStopped = true;
 
             return;
         }
@@ -845,6 +867,8 @@ VectorFollowRun::finish(bool sourceLost,
 {
     VectorFollowReport report;
     report.aborted = _imp->aborted;
+    report.userStopped = _imp->userStopped;
+    report.refused = _imp->refused;
     report.sourceLost = sourceLost;
     report.error = error;
 

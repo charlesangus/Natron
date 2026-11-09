@@ -119,7 +119,9 @@ in the Source's pixels outside the format, and the whole region of definition is
 transformed destination curve moves the warp with it. The page shows and edits the selected item's
 transform. A layer's transform applies to everything inside it, on top of their own. A transform
 link makes an item take another item's transform in place of its own (its layers still apply);
-links that would form a cycle, or join an item to a layer it is in, are refused. A new curve's
+links that would form a cycle, or join an item to a layer it is in, are refused. While a linked
+item is selected the page is disabled and the viewer shows no handle, since an edit would change
+the target's transform and every item linked to it; select the target to edit it. A new curve's
 `center` is the centre of the Source's format. When one curve, or one layer with the curves inside
 it, is selected with a select tool, the viewer shows the transform handle; dragging it edits the
 item's transform, setting keys when auto-keying is on. Editing the curve's points wins over the

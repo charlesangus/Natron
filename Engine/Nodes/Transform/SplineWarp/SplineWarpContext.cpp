@@ -1196,6 +1196,21 @@ SplineWarpContext::tiesTransformKnobs(const RotoDrawableItem& item) const
     return !resolveTransformLinkLocked(&item);
 }
 
+std::string
+SplineWarpContext::getTransformFitRefusal(const RotoDrawableItem& item) const
+{
+    RotoItemPtr link;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        link = resolveTransformLinkLocked(&item);
+    }
+    if (!link) {
+        return std::string();
+    }
+
+    return "its transform is linked to " + link->getScriptName() + ", so only a per-point follow can move it";
+}
+
 bool
 SplineWarpContext::getDefaultTransformCenter(double time,
                                              double* x,

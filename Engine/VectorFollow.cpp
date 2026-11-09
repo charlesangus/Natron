@@ -791,7 +791,7 @@ writeFrameRanges(std::ostringstream& text,
 bool
 isCleanVectorFollowReport(const VectorFollowReport& report)
 {
-    if (report.aborted || report.sourceLost || !report.error.empty()) {
+    if (report.aborted || report.sourceLost || !report.error.empty() || !report.refused.empty()) {
         return false;
     }
     for (const VectorFollowShapeReport& shape : report.shapes) {
@@ -806,16 +806,7 @@ isCleanVectorFollowReport(const VectorFollowReport& report)
 bool
 isUserStopVectorFollowReport(const VectorFollowReport& report)
 {
-    if (!report.aborted || report.sourceLost || !report.error.empty()) {
-        return false;
-    }
-    for (const VectorFollowShapeReport& shape : report.shapes) {
-        if (!shape.passStops.empty() || shape.stopped) {
-            return false;
-        }
-    }
-
-    return true;
+    return report.userStopped && !report.sourceLost;
 }
 
 std::string
@@ -878,6 +869,9 @@ formatVectorFollowReport(const VectorFollowReport& report)
             text << " followed the vectors on every frame";
         }
         text << "\n";
+    }
+    for (const VectorFollowRefusal& refused : report.refused) {
+        text << refused.name << ": not followed, as " << refused.reason << "\n";
     }
 
     return text.str();

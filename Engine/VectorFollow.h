@@ -198,19 +198,29 @@ struct VectorFollowShapeReport {
     int stopFrame = 0;
 };
 
+// A shape the follow left alone, as its host keeps the model from writing it.
+struct VectorFollowRefusal {
+    std::string name;
+    std::string reason;
+};
+
 struct VectorFollowReport {
     std::vector<VectorFollowShapeReport> shapes;
+    std::vector<VectorFollowRefusal> refused;
     bool aborted = false;
+    // Whether the user asked the follow to stop, apart from the other reasons it can stop early.
+    bool userStopped = false;
     bool sourceLost = false;
     std::string error;
 };
 
 std::string formatVectorFollowReport(const VectorFollowReport& report);
 
-// A follow the user stopped, with no read error, no lost source and no shape that stopped on a point it could not track.
+// A follow the user stopped that kept its source. What it met before the stop does not change that:
+// the user already chose to end it.
 bool isUserStopVectorFollowReport(const VectorFollowReport& report);
 
-// A follow that ran to its end on every shape with no pass stop and no unfollowed frame.
+// A follow that ran to its end on every shape with no pass stop, no unfollowed frame and no refused shape.
 bool isCleanVectorFollowReport(const VectorFollowReport& report);
 
 struct VectorFollowShapeOutcome {

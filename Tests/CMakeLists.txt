@@ -63,12 +63,24 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GeoAttribute_Test.cpp
+    GeoCopyToPoints_Test.cpp
     GeoDetail_Test.cpp
     GeoDetailCache_Test.cpp
+    GeoDelete_Test.cpp
+    GeoDisplace_Test.cpp
+    GeoGroup_Test.cpp
+    GeoImportOBJ_Test.cpp
     GeoIndexMap_Test.cpp
+    GeoMerge_Test.cpp
+    GeoNormals_Test.cpp
     GeoPacked_Test.cpp
     GeoPrimitive_Test.cpp
+    GeoPython_Test.cpp
     GeoRender_Test.cpp
+    GeoScatter_Test.cpp
+    GeoSubdivide_Test.cpp
+    GeoTransform_Test.cpp
+    GeoUVProject_Test.cpp
     GLScheduler_Test.cpp
     GlobalModeKind_Test.cpp
     GlobalModeStroke_Test.cpp

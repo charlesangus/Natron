@@ -696,3 +696,106 @@ TEST(SceneStageLoads, ACancelledBatchOpensAndCommitsNothing)
     EXPECT_TRUE(city.loadedBuildings().empty());
     EXPECT_FALSE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
 }
+
+namespace {
+// Records whether one prim was ever composed active while the stage sent a notice.
+class ActiveWatch
+    : public PXR_NS::TfWeakBase {
+public:
+    ActiveWatch(const PXR_NS::UsdStageRefPtr& stage,
+                const PXR_NS::SdfPath& path)
+        : _stage(stage)
+        , _path(path)
+    {
+        _key = PXR_NS::TfNotice::Register(PXR_NS::TfCreateWeakPtr(this), &ActiveWatch::onObjectsChanged,
+                                          PXR_NS::UsdStagePtr(stage));
+    }
+
+    ~ActiveWatch()
+    {
+        PXR_NS::TfNotice::Revoke(_key);
+    }
+
+    void onObjectsChanged(const PXR_NS::UsdNotice::ObjectsChanged&)
+    {
+        ++notices;
+        const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(_path);
+        if (prim && prim.IsActive()) {
+            everActive = true;
+        }
+    }
+
+    int notices = 0;
+    bool everActive = false;
+
+private:
+    PXR_NS::UsdStageRefPtr _stage;
+    PXR_NS::SdfPath _path;
+    PXR_NS::TfNotice::Key _key;
+};
+} // anonymous namespace
+
+TEST(SceneStageLoads, APreparedSceneIsSyncedInTheSameCommitAsTheLoads)
+{
+    PayloadCity city(1, 2);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    const ScenePayload base = city.payload();
+    ASSERT_TRUE(stage.sync(base));
+    const PXR_NS::SdfPath geo = building(0, 0).AppendChild(PXR_NS::TfToken("Geo"));
+    ActiveWatch watch(stage.getStage(), geo);
+
+    // What a node deactivating by pattern authors once the pattern can see inside the payload.
+    const ScenePayload pruned = SceneOps::appendLayer(base, makeLayer("over \"World\"\n{\n    over \"Block_0\"\n    {\n        over \"B_0\"\n        {\n"
+                                                                      "            over \"Geo\" (\n                active = false\n            )\n            {\n            }\n"
+                                                                      "        }\n    }\n}\n"),
+                                                      99);
+    SceneLoadSetPtr prepared;
+    bool openWhenPrepared = false;
+    const SceneStage::LoadPreparer prepare = [&](const SceneLoadSetPtr& loadSet) -> std::function<void()> {
+        prepared = loadSet;
+        openWhenPrepared = !city.loadedBuildings().empty();
+
+        return [&]() { EXPECT_TRUE(stage.sync(pruned)); };
+    };
+    stage.requestLoad({ building(0, 0) }, false);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock, std::function<bool()>(), prepare));
+
+    ASSERT_TRUE(bool(prepared));
+    EXPECT_TRUE(openWhenPrepared);
+    const PXR_NS::UsdStageLoadRules rules = SceneOps::getLoadRules(prepared.get());
+    EXPECT_TRUE(rules.IsLoaded(building(0, 0)));
+    EXPECT_FALSE(rules.IsLoaded(building(0, 1)));
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+    const PXR_NS::UsdPrim prim = stage.getStage()->GetPrimAtPath(geo);
+    ASSERT_TRUE(bool(prim));
+    EXPECT_FALSE(prim.IsActive());
+    EXPECT_GT(watch.notices, 0);
+    EXPECT_FALSE(watch.everActive);
+    ASSERT_TRUE(bool(stage.getLoadSet()));
+    EXPECT_EQ(*stage.getLoadSet(), *prepared);
+}
+
+TEST(SceneStageLoads, AnEditWhilePreparingPutsTheBatchBack)
+{
+    PayloadCity city(1, 1);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    const ScenePayload edited = SceneOps::appendLayer(city.payload(), makeLayer("def Xform \"Other\"\n{\n}\n"), 7);
+
+    int commits = 0;
+    const SceneStage::LoadPreparer prepare = [&](const SceneLoadSetPtr&) -> std::function<void()> {
+        // The scene changes after it was evaluated for the batch: what was prepared is stale.
+        EXPECT_TRUE(stage.sync(edited));
+
+        return [&]() { ++commits; };
+    };
+    stage.requestLoad({ building(0, 0) }, false);
+    stage.serviceLoads(kNoLock, kNoLock, std::function<bool()>(), prepare);
+
+    EXPECT_EQ(commits, 0);
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+    EXPECT_TRUE(stage.hasPendingLoads());
+
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+}

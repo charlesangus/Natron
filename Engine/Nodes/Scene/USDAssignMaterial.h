@@ -33,6 +33,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -126,6 +127,7 @@ private:
     KnobChoiceWPtr _purpose;
     KnobChoiceWPtr _strength;
     SceneGraftMemo _graftMemo;
+    PrimPatternCache _patternMatches;
 
     // The last placement read for a projection in Geometry space, which costs frames x gprims.
     struct PlacementMemo;

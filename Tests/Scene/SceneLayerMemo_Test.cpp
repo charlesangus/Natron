@@ -44,6 +44,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_USING
@@ -224,6 +225,89 @@ TEST(SceneLayerMemoTest, InvalidateForcesAuthoring)
 
     EXPECT_EQ((U64)2, memo.getAuthorCount());
     EXPECT_NE(topLayer(first), topLayer(second));
+}
+
+namespace {
+// Produces key's layer as the evaluation context id does.
+bool
+produceIn(SceneLayerMemo* memo,
+          U64 context,
+          U64 key,
+          ScenePayload* output)
+{
+    const SceneEvaluationContext::Scope scope(SceneEvaluationContext(context, context ? std::make_shared<const SceneLoadSet>(SceneLoadSet::none()) : SceneLoadSetPtr()));
+    std::string error;
+    const bool ok = memo->produce(makeKey(key), ScenePayload(), "SceneLayerMemoTest", makeAuthor((int)key), output, &error);
+
+    EXPECT_TRUE(ok) << error;
+
+    return ok;
+}
+} // anonymous namespace
+
+TEST(SceneLayerMemoTest, AlternatingContextsKeepALayerEach)
+{
+    SceneLayerMemo memo;
+    const U64 viewer = SceneEvaluationContext::makeId();
+    ScenePayload viewerFirst, renderFirst, viewerSecond, renderSecond;
+
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &viewerFirst));
+    ASSERT_TRUE(produceIn(&memo, 0, 2, &renderFirst));
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &viewerSecond));
+    ASSERT_TRUE(produceIn(&memo, 0, 2, &renderSecond));
+
+    EXPECT_EQ((U64)2, memo.getAuthorCount());
+    EXPECT_EQ(topLayer(viewerFirst), topLayer(viewerSecond));
+    EXPECT_EQ(topLayer(renderFirst), topLayer(renderSecond));
+    EXPECT_NE(topLayer(viewerFirst), topLayer(renderFirst));
+}
+
+TEST(SceneLayerMemoTest, AContextTakesTheLayerAnotherHasForTheSameKey)
+{
+    SceneLayerMemo memo;
+    const U64 viewer = SceneEvaluationContext::makeId();
+    ScenePayload inViewer, inRender;
+
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &inViewer));
+    ASSERT_TRUE(produceIn(&memo, 0, 1, &inRender));
+
+    EXPECT_EQ((U64)1, memo.getAuthorCount());
+    EXPECT_EQ(topLayer(inViewer), topLayer(inRender));
+}
+
+TEST(SceneLayerMemoTest, TheLeastRecentlyUsedContextIsForgotten)
+{
+    SceneLayerMemo memo;
+    std::vector<U64> contexts;
+    ScenePayload payload;
+
+    for (int i = 0; i < 5; ++i) {
+        contexts.push_back(SceneEvaluationContext::makeId());
+        ASSERT_TRUE(produceIn(&memo, contexts.back(), 10 + i, &payload));
+    }
+    EXPECT_EQ((U64)5, memo.getAuthorCount());
+    // The last four are still kept; the first one is not.
+    for (int i = 1; i < 5; ++i) {
+        ASSERT_TRUE(produceIn(&memo, contexts[i], 10 + i, &payload));
+    }
+    EXPECT_EQ((U64)5, memo.getAuthorCount());
+    ASSERT_TRUE(produceIn(&memo, contexts[0], 10, &payload));
+    EXPECT_EQ((U64)6, memo.getAuthorCount());
+}
+
+TEST(SceneLayerMemoTest, InvalidateForgetsEveryContextsLayer)
+{
+    SceneLayerMemo memo;
+    const U64 viewer = SceneEvaluationContext::makeId();
+    ScenePayload payload;
+
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &payload));
+    ASSERT_TRUE(produceIn(&memo, 0, 2, &payload));
+    memo.invalidate();
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &payload));
+    ASSERT_TRUE(produceIn(&memo, 0, 2, &payload));
+
+    EXPECT_EQ((U64)4, memo.getAuthorCount());
 }
 
 namespace {

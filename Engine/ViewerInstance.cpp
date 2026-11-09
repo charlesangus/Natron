@@ -2367,8 +2367,9 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     ScenePayload scene;
     std::string error;
     EffectInstance::RenderRoIRetCode code;
+    const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet());
     try {
-        code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view), &scene, &error);
+        code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view, context), &scene, &error);
     } catch (const std::exception& e) {
         code = EffectInstance::eRenderRoIRetCodeFailed;
         error = e.what();
@@ -2390,6 +2391,7 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
             _imp->lastScene[textureIndex] = ok ? scene : ScenePayload();
             _imp->lastSceneError[textureIndex] = ok ? std::string() : error;
             _imp->lastSceneOk[textureIndex] = ok;
+            _imp->lastSceneLoadSet[textureIndex] = context.loadSet;
         }
         Q_EMIT sceneEvaluated(textureIndex);
     }
@@ -5163,7 +5165,8 @@ ViewerInstance::isWipeDisabledByDataKind() const
 bool
 ViewerInstance::getLastEvaluatedScene(int textureIndex,
                                       ScenePayload* scene,
-                                      std::string* error) const
+                                      std::string* error,
+                                      SceneLoadSetPtr* loadSet) const
 {
     if ((textureIndex != 0) && (textureIndex != 1)) {
         return false;
@@ -5175,8 +5178,63 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
     if (error) {
         *error = _imp->lastSceneError[textureIndex];
     }
+    if (loadSet) {
+        *loadSet = _imp->lastSceneLoadSet[textureIndex];
+    }
 
     return _imp->lastSceneOk[textureIndex];
+}
+
+void
+ViewerInstance::setSceneLoadSet(const SceneLoadSetPtr& loadSet)
+{
+    std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+    _imp->sceneLoadSet = loadSet;
+}
+
+SceneLoadSetPtr
+ViewerInstance::getSceneLoadSet() const
+{
+    std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+
+    return _imp->sceneLoadSet;
+}
+
+bool
+ViewerInstance::evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                        ScenePayload* scene,
+                                        std::string* error)
+{
+    assert(scene);
+    *scene = ScenePayload();
+    int activeA, activeB;
+    getActiveInputs(activeA, activeB);
+    const EffectInstancePtr input = getInput(activeA);
+    if (!input || !input->producesSceneData()) {
+        return false;
+    }
+    const SceneEvaluationContext context(_imp->sceneContextId, loadSet);
+    std::string evaluationError;
+    EffectInstance::RenderRoIRetCode code;
+    try {
+        // The view only decides identities, and the viewer's widget is not read off the main thread.
+        code = input->evaluateScene(EffectInstance::EvaluateSceneArgs(getCurrentTime(), ViewIdx(0), context), scene, &evaluationError);
+    } catch (const std::exception& e) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+        evaluationError = e.what();
+    } catch (...) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    if (code != EffectInstance::eRenderRoIRetCodeOk) {
+        *scene = ScenePayload();
+        if (error) {
+            *error = evaluationError;
+        }
+
+        return false;
+    }
+
+    return true;
 }
 
 void
@@ -5200,6 +5258,7 @@ ViewerInstance::refreshActiveInputDataKind()
                 _imp->lastScene[i] = ScenePayload();
                 _imp->lastSceneError[i].clear();
                 _imp->lastSceneOk[i] = false;
+                _imp->lastSceneLoadSet[i].reset();
             }
         }
     }

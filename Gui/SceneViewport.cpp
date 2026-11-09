@@ -640,6 +640,13 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> shown;
     std::atomic<U64> stageEditCount { 0 };
     std::atomic<U64> stageLoadEditCount { 0 };
+    // What serviceStageLoads() evaluates a batch's scene with, and the load sets committed and
+    // the next sync's payload was evaluated for (SceneLoadSet hashes).
+    std::mutex loadSetMutex;
+    SceneViewportRenderer::LoadSetEvaluator loadSetEvaluator;
+    SceneViewportRenderer::LoadSetCommitted loadSetCommitted;
+    std::atomic<U64> committedLoadSetHash { SceneLoadSet::none().getHash() };
+    std::atomic<U64> syncLoadSetHash { 0 };
     std::atomic<U64> stageSyncSerial { 0 };
     // The counts the engine last took in, by whichever render.
     std::atomic<U64> absorbedEditCount { 0 };
@@ -2426,6 +2433,10 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
 
             return false;
         }
+        const U64 evaluatedFor = _imp->syncLoadSetHash.exchange(0);
+        if ((evaluatedFor != 0) && (evaluatedFor != _imp->committedLoadSetHash) && !payload.isEmpty()) {
+            return true;
+        }
         if ((serial != 0) && (serial > _imp->previewClearAfter.load())) {
             // In the same step as the sync, so no frame shows the scene without the drag.
             _imp->clearPreviewLocked();
@@ -2851,15 +2862,57 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
         return false;
     }
     Implementation* imp = _imp.get();
+    LoadSetEvaluator evaluate;
+    LoadSetCommitted committed;
+    {
+        std::lock_guard<std::mutex> lock(imp->loadSetMutex);
+        evaluate = imp->loadSetEvaluator;
+        committed = imp->loadSetCommitted;
+    }
+    const std::shared_ptr<bool> restart = std::make_shared<bool>(false);
+    SceneStage::LoadPreparer prepare;
+    if (evaluate) {
+        prepare = [imp, evaluate, restart](const SceneLoadSetPtr& loadSet) -> std::function<void()> {
+            ScenePayload payload;
+            if (!evaluate(loadSet, &payload) || !SceneOps::getLiveTextures(payload).empty()) {
+                return std::function<void()>();
+            }
 
+            return [imp, payload, restart]() {
+                SceneMetadata before = imp->sceneStage->getPayload().getMetadata();
+                SceneMetadata after = payload.getMetadata();
+                before.renderSettingsPrimPath.clear();
+                after.renderSettingsPrimPath.clear();
+                StageChangePaths changes(imp->sceneStage->getStage());
+                if (imp->sceneStage->sync(payload)) {
+                    *restart = changes.outsideRender || !changes.any || (before != after);
+                }
+                const SceneMetadata& metadata = payload.getMetadata();
+                imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
+                imp->metersPerUnit = metadata.metersPerUnit;
+                imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
+                imp->shown = !payload.isEmpty();
+                imp->stageEditCount = imp->sceneStage->getEditCount();
+            };
+        };
+    }
+    SceneLoadSetPtr committedLoadSet;
     const bool serviced = stage->serviceLoads([imp](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
-        section(); }, [imp, stage](const std::function<void()>& section) {
+        section(); }, [imp, stage, &committedLoadSet](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         const std::unique_lock<std::shared_mutex> lock = imp->lockExclusive();
         section();
-        imp->stageLoadEditCount = stage->getLoadEditCount(); }, cancelled);
+        imp->stageLoadEditCount = stage->getLoadEditCount();
+        committedLoadSet = stage->getLoadSet();
+        imp->committedLoadSetHash = committedLoadSet->getHash(); }, cancelled, prepare);
+    if (*restart) {
+        imp->progressive->invalidate();
+    }
+    if (committedLoadSet && committed) {
+        committed(committedLoadSet);
+    }
     if (cancelled && cancelled()) {
         return serviced;
     }
@@ -2868,6 +2921,28 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
     imp->refreshStageSummary();
 
     return serviced;
+}
+
+void
+SceneViewportRenderer::setLoadSetEvaluator(const LoadSetEvaluator& evaluate,
+                                           const LoadSetCommitted& committed)
+{
+    std::lock_guard<std::mutex> lock(_imp->loadSetMutex);
+
+    _imp->loadSetEvaluator = evaluate;
+    _imp->loadSetCommitted = committed;
+}
+
+U64
+SceneViewportRenderer::getCommittedLoadSetHash() const
+{
+    return _imp->committedLoadSetHash;
+}
+
+void
+SceneViewportRenderer::setSyncLoadSetHash(U64 hash)
+{
+    _imp->syncLoadSetHash = hash;
 }
 
 U64
@@ -4999,6 +5074,9 @@ struct SceneViewport::Implementation {
     double pendingFrame = 0.;
     double pendingFramesPerSecond = 0.;
     U64 pendingSerial = 0;
+    U64 pendingLoadSetHash = 0;
+    // Main thread: what the next requestSync()'s payload was evaluated for.
+    U64 requestedLoadSetHash = 0;
 
     // Main thread: the last request made, the last one synced, and the error the last request
     // shows once synced. A request whose payload shows live textures leaves the renderer at the
@@ -5373,6 +5451,7 @@ SceneViewport::SceneViewport(QWidget* parent)
             U64 framingId = 0;
             std::vector<std::string> framingSelection;
             bool pivot = false;
+            U64 loadSetHash = 0;
             {
                 std::unique_lock<std::mutex> lock(imp->queueMutex);
                 imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending || (imp->pendingFramingId != 0) || imp->pendingPivot; });
@@ -5385,6 +5464,7 @@ SceneViewport::SceneViewport(QWidget* parent)
                     imp->pending = ScenePayload();
                     imp->hasPending = false;
                     serial = imp->pendingSerial;
+                    loadSetHash = imp->pendingLoadSetHash;
                     liveTextures.swap(imp->pendingLiveTextures);
                     frame = imp->pendingFrame;
                     framesPerSecond = imp->pendingFramesPerSecond;
@@ -5398,6 +5478,7 @@ SceneViewport::SceneViewport(QWidget* parent)
             if (sync) {
                 std::string error;
                 bool ok;
+                imp->renderer.setSyncLoadSetHash(loadSetHash);
                 if (liveTextures.empty()) {
                     ok = imp->renderer.syncScene(payload, &error, serial);
                 } else {
@@ -5474,7 +5555,9 @@ SceneViewport::requestSync(const ScenePayload& payload,
         _imp->pendingFrame = _imp->frame;
         _imp->pendingFramesPerSecond = _imp->framesPerSecond;
         _imp->pendingSerial = ++_imp->requestedSerial;
+        _imp->pendingLoadSetHash = payload.isEmpty() ? 0 : _imp->requestedLoadSetHash;
     }
+    _imp->requestedLoadSetHash = 0;
     // A frame of the stage this sync replaces is not worth the rest of its passes.
     _imp->renderer.stopBackgroundFrame();
     _imp->queueChanged.notify_one();
@@ -5944,6 +6027,19 @@ SceneViewport::setFrame(double frame,
     }
     _imp->renderer.setFrame(frame, framesPerSecond);
     update();
+}
+
+void
+SceneViewport::setSceneLoadSetHash(U64 hash)
+{
+    _imp->requestedLoadSetHash = hash;
+}
+
+void
+SceneViewport::setLoadSetEvaluator(const SceneViewportRenderer::LoadSetEvaluator& evaluate,
+                                   const SceneViewportRenderer::LoadSetCommitted& committed)
+{
+    _imp->renderer.setLoadSetEvaluator(evaluate, committed);
 }
 
 void

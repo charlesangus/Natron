@@ -83,6 +83,12 @@ SceneQueryPool::Lease::getUnresolvedProjections() const
     return _stage ? _stage->getUnresolvedProjections() : std::vector<SceneProjectionCameras::Unresolved>();
 }
 
+U64
+SceneQueryPool::Lease::getLoadEditCount() const
+{
+    return _stage ? _stage->getLoadEditCount() : 0;
+}
+
 void
 SceneQueryPool::Lease::release()
 {
@@ -113,8 +119,36 @@ SceneQueryPool::~SceneQueryPool()
 {
 }
 
+namespace {
+// What a stage includes, with every-payload sets made null so that they compare equal.
+SceneLoadSetPtr
+getIncluded(const SceneLoadSetPtr& loadSet)
+{
+    return (loadSet && !loadSet->getEntries().empty()) ? loadSet : SceneLoadSetPtr();
+}
+
+bool
+isSameLoadSet(const SceneLoadSetPtr& a,
+              const SceneLoadSetPtr& b)
+{
+    if (!a || !b) {
+        return !a && !b;
+    }
+
+    return *a == *b;
+}
+} // anonymous namespace
+
 SceneQueryPool::Lease
 SceneQueryPool::borrow(const ScenePayload& payload,
+                       std::string* errorMessage)
+{
+    return borrow(payload, SceneLoadSetPtr(), errorMessage);
+}
+
+SceneQueryPool::Lease
+SceneQueryPool::borrow(const ScenePayload& payload,
+                       const SceneLoadSetPtr& requested,
                        std::string* errorMessage)
 {
     Lease lease;
@@ -123,6 +157,7 @@ SceneQueryPool::borrow(const ScenePayload& payload,
         return lease;
     }
 
+    const SceneLoadSetPtr loadSet = getIncluded(requested);
     // Before the pool's mutex: a writer waiting for readers to drain blocks this, and must not
     // be waiting on a reader that waits on this mutex.
     lease._read.reset(new SceneWriteBarrier::ReadScope);
@@ -130,16 +165,21 @@ SceneQueryPool::borrow(const ScenePayload& payload,
     {
         std::lock_guard<std::mutex> lock(_mutex);
         std::list<std::unique_ptr<SceneStage>>::iterator best = _idle.end();
+        std::size_t bestChanges = 0;
         std::size_t bestLength = 0;
         for (std::list<std::unique_ptr<SceneStage>>::iterator it = _idle.begin(); it != _idle.end(); ++it) {
-            if ((*it)->getPayload().isSameStack(payload)) {
+            // A payload a set adds reads its files, so the load set counts before the stack.
+            const SceneLoadSetPtr included = getIncluded((*it)->getAppliedLoadSet());
+            const std::size_t changes = isSameLoadSet(included, loadSet) ? 0 : (1 + SceneLoadSet::getChangedPaths(included.get(), loadSet.get()).size());
+            if ((changes == 0) && (*it)->getPayload().isSameStack(payload)) {
                 best = it;
                 break;
             }
             // Ties go to the most recently returned, which comes first.
             const std::size_t length = (*it)->getCommonBaseLength(payload);
-            if ((best == _idle.end()) || (length > bestLength)) {
+            if ((best == _idle.end()) || (changes < bestChanges) || ((changes == bestChanges) && (length > bestLength))) {
                 best = it;
+                bestChanges = changes;
                 bestLength = length;
             }
         }
@@ -149,7 +189,11 @@ SceneQueryPool::borrow(const ScenePayload& payload,
         }
     }
     if (!lease._stage) {
-        lease._stage.reset(new SceneStage);
+        // A stage for a set composes no payload until the set is applied to it.
+        lease._stage.reset(new SceneStage(loadSet ? PXR_NS::UsdStage::LoadNone : PXR_NS::UsdStage::LoadAll));
+        if (lease._stage->isValid() && loadSet) {
+            lease._stage->applyLoadSet(SceneLoadSetPtr(std::make_shared<const SceneLoadSet>(SceneLoadSet::none())));
+        }
     }
     if (!lease._stage->isValid()) {
         if (errorMessage) {
@@ -162,6 +206,10 @@ SceneQueryPool::borrow(const ScenePayload& payload,
     }
     // Outside the pool's mutex: a large resync must not hold up other borrowers.
     lease._stage->sync(payload);
+    if (!isSameLoadSet(getIncluded(lease._stage->getAppliedLoadSet()), loadSet)) {
+        // After the sync: the rules apply to the prims it composes.
+        lease._stage->applyLoadSet(loadSet);
+    }
 
     return lease;
 }

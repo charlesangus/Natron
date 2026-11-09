@@ -114,6 +114,11 @@ public:
      * The author reads the node's knobs as they are while it runs, so an edit landing meanwhile
      * may be in the layer while key predates it. When keyStillValid is set and says key no longer
      * holds after authoring, the layer is returned but not memoized, and the previous one stays.
+     *
+     * A layer is memoized per evaluation context (SceneEvaluationContext::current()), a few
+     * contexts at once, the least recently used one forgotten first, so that a viewer's and a
+     * render's evaluations do not evict each other. A context finding the layer another one has
+     * for the same key and upstream takes it rather than authoring it again.
      **/
     bool produce(const Key& key,
                  const ScenePayload& upstream,
@@ -124,8 +129,8 @@ public:
                  const KeyCheckFunc& keyStillValid = KeyCheckFunc());
 
     /**
-     * @brief Forgets the memoized layer, so the next produce() authors a new one. For a change the
-     * key does not see.
+     * @brief Forgets every context's memoized layer, so the next produce() authors a new one. For
+     * a change the key does not see.
      **/
     void invalidate();
 

@@ -45,6 +45,7 @@
 #include <OpenColorIO/OpenColorIO.h>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
@@ -341,6 +342,33 @@ public:
      * Returns, committing nothing, once cancelled() turns true. See SceneStage::serviceLoads().
      **/
     bool serviceStageLoads(const std::function<bool()>& cancelled = std::function<bool()>());
+
+    /**
+     * @brief The scene as evaluated with a load set: evaluate sets *payload to the viewed node's
+     * output with nodes' patterns matched on that set, returning false when it cannot.
+     * committed is told each load set the stage commits, after the commit.
+     **/
+    typedef std::function<bool(const SceneLoadSetPtr& loadSet, ScenePayload* payload)> LoadSetEvaluator;
+    typedef std::function<void(const SceneLoadSetPtr& loadSet)> LoadSetCommitted;
+
+    /**
+     * @brief Has serviceStageLoads() evaluate the scene for the load set a batch makes, once its
+     * files are open, and sync that scene in the same commit as the loads, so that a prim a node
+     * deactivates by pattern never shows while its payload comes in. A scene with live textures
+     * is not synced there, as the worker renders them first. Any thread.
+     **/
+    void setLoadSetEvaluator(const LoadSetEvaluator& evaluate,
+                             const LoadSetCommitted& committed);
+
+    // The hash of the load set the stage last committed (SceneLoadSet::getHash()).
+    U64 getCommittedLoadSetHash() const;
+
+    /**
+     * @brief The hash of the load set the payload of the next syncScene() was evaluated for, 0
+     * for none in particular. A payload evaluated for another load set than the stage's is
+     * stale, the evaluation for the stage's being on its way, and that sync changes nothing.
+     **/
+    void setSyncLoadSetHash(U64 hash);
 
     // How many load commits edited the stage, and how long the last batch held the viewer lock.
     U64 getStageLoadEditCount() const;
@@ -791,6 +819,16 @@ public:
     bool isSceneSynced() const;
 
     void setFrame(double frame, double framesPerSecond);
+
+    /**
+     * @brief The hash of the load set the payload of the next setScene() was evaluated for. See
+     * SceneViewportRenderer::setSyncLoadSetHash().
+     **/
+    void setSceneLoadSetHash(U64 hash);
+
+    // See SceneViewportRenderer::setLoadSetEvaluator().
+    void setLoadSetEvaluator(const SceneViewportRenderer::LoadSetEvaluator& evaluate,
+                             const SceneViewportRenderer::LoadSetCommitted& committed);
 
     // Shows message instead of a scene.
     void setError(const QString& message);

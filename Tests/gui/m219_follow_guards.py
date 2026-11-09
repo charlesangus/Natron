@@ -99,27 +99,30 @@ try:
     def in_window(widget, p):
         """The top-level window of widget and p, a point in widget, in that window's coordinates."""
         top = widget.window()
-        return top.windowHandle(), widget.mapTo(top, QPoint(int(round(p.x())), int(round(p.y()))))
+        return top, widget.mapTo(top, QPoint(int(round(p.x())), int(round(p.y()))))
 
+    # A QWindow wrapper is a child of its widget's wrapper: it must be fetched from a top-level wrapper
+    # that is still referenced, at the moment of use, or Shiboken deletes it with the temporary parent.
     def os_drag(widget, start, end):
-        window, a = in_window(widget, start)
+        top, a = in_window(widget, start)
         _, b = in_window(widget, end)
-        QTest.mouseMove(window, a)
-        QTest.mousePress(window, Qt.LeftButton, Qt.NoModifier, a)
+        QTest.mouseMove(top.windowHandle(), a)
+        QTest.mousePress(top.windowHandle(), Qt.LeftButton, Qt.NoModifier, a)
         for i in range(1, DRAG_STEPS + 1):
             f = i / float(DRAG_STEPS)
-            QTest.mouseMove(window, QPoint(int(round(a.x() + (b.x() - a.x()) * f)), int(round(a.y() + (b.y() - a.y()) * f))))
-        QTest.mouseRelease(window, Qt.LeftButton, Qt.NoModifier, b)
+            QTest.mouseMove(top.windowHandle(), QPoint(int(round(a.x() + (b.x() - a.x()) * f)), int(round(a.y() + (b.y() - a.y()) * f))))
+        QTest.mouseRelease(top.windowHandle(), Qt.LeftButton, Qt.NoModifier, b)
         QApplication.processEvents()
 
     def os_click(widget, p):
-        window, at = in_window(widget, p)
-        QTest.mouseClick(window, Qt.LeftButton, Qt.NoModifier, at)
+        top, at = in_window(widget, p)
+        QTest.mouseClick(top.windowHandle(), Qt.LeftButton, Qt.NoModifier, at)
         QApplication.processEvents()
 
     def os_key(widget, key):
         widget.setFocus()
-        QTest.keyClick(widget.window().windowHandle(), key)
+        top = widget.window()
+        QTest.keyClick(top.windowHandle(), key)
         QApplication.processEvents()
 
     def roto_panel(scene):

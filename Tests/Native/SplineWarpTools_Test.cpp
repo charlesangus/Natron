@@ -1287,11 +1287,11 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
     };
 
     // Two unlinked curves: Link; the open one cannot be a boundary.
-    check(std::list<RotoItemPtr> { b, open }, { { "duplicateAndLink", false }, { "link", true }, { "unlink", false }, { "swap", false }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", true }, { "unlinkTransform", false } });
+    check(std::list<RotoItemPtr> { b, open }, { { "duplicateAndLink", false }, { "link", true }, { "unlink", false }, { "swap", false }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", true }, { "unlinkTransform", false }, { "followVectors", true } });
     // One closed unlinked curve: Duplicate and Link, Toggle Boundary.
-    check(std::list<RotoItemPtr> { a }, { { "duplicateAndLink", true }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleBoundary", true }, { "toggleCookieCutter", true }, { "linkTransform", false }, { "unlinkTransform", false } });
+    check(std::list<RotoItemPtr> { a }, { { "duplicateAndLink", true }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleBoundary", true }, { "toggleCookieCutter", true }, { "linkTransform", false }, { "unlinkTransform", false }, { "followVectors", true } });
     // A layer in the selection is not a curve.
-    check(std::list<RotoItemPtr> { a, ctx->getOrCreateBaseLayer() }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", false }, { "unlinkTransform", false } });
+    check(std::list<RotoItemPtr> { a, ctx->getOrCreateBaseLayer() }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", false }, { "swap", false }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", false }, { "unlinkTransform", false }, { "followVectors", true } });
 
     // The items' order picks the source.
     hook->onItemMenuActionTriggered("link", std::list<RotoItemPtr> { b, open });
@@ -1299,7 +1299,7 @@ TEST_F(SplineWarpToolsTest, ThePanelMenuRunsTheWarpActions)
     ASSERT_TRUE(bool(link));
     EXPECT_EQ(b, link->getSource());
     EXPECT_EQ(open, link->getDestination());
-    check(std::list<RotoItemPtr> { open }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", true }, { "swap", true }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", false }, { "unlinkTransform", false } });
+    check(std::list<RotoItemPtr> { open }, { { "duplicateAndLink", false }, { "link", false }, { "unlink", true }, { "swap", true }, { "toggleBoundary", false }, { "toggleCookieCutter", false }, { "linkTransform", false }, { "unlinkTransform", false }, { "followVectors", true } });
 
     hook->onItemMenuActionTriggered("swap", std::list<RotoItemPtr> { open });
     link = ctx->getLink(b);

@@ -238,6 +238,7 @@ public:
         , lastInputNRenderStartedSlotCallTime()
         , nodeIsDequeuing(false)
         , actionsQueued(false)
+        , renderStartsHeldByEdits(0)
         , nodeIsDequeuingMutex()
         , nodeIsDequeuingCond()
         , nodeIsRendering(0)
@@ -514,6 +515,8 @@ public:
     bool nodeIsDequeuing;
     // An edit waits in a queue for the renders holding the node to end; protected by nodeIsDequeuingMutex
     bool actionsQueued;
+    // Main-thread edits holding back render starts on other threads; protected by nodeIsDequeuingMutex
+    int renderStartsHeldByEdits;
     QMutex nodeIsDequeuingMutex;
     QWaitCondition nodeIsDequeuingCond;
 

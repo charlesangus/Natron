@@ -1700,6 +1700,15 @@ public:
     bool isNodeRendering() const;
 
     /**
+     * @brief For a main-thread edit of the state renders read, made only while no render holds
+     * the node. Returns false when one does. Otherwise renders starting on other threads wait
+     * until releaseRenderStartsForEdit(), so none can start between the edit's check and its
+     * writes. Render starts on the main thread do not wait.
+     **/
+    bool holdRenderStartsForEdit();
+    void releaseRenderStartsForEdit();
+
+    /**
      * @brief Records that an edit was queued because the node was rendering, so a dequeue
      * deferred by a render that still holds the node aborts the viewer renders instead of waiting
      * for them to end on their own.

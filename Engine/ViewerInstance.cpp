@@ -4933,6 +4933,10 @@ ViewerInstance::selectDisplayTransformEntry(const KnobChoicePtr& knob,
         return;
     }
     if ((index >= 0) && (index != previous)) {
+        // While the viewer renders, setValue() is queued: the index reads the new value at once but
+        // the active entry would follow only at dequeue, and a menu refresh in between would restore
+        // the old entry over the queued one.
+        knob->setActiveEntry(entry);
         knob->setValue(index);
     } else {
         knob->setActiveEntryAndNotify(entry, eValueChangedReasonPluginEdited);

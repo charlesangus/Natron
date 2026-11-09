@@ -198,3 +198,4 @@ Scouted facts (2026-10-25, `origin/main` at `3c8553ec`; re-check at promotion, a
 - 2026-10-25 — **The motion model is chosen per follow (user):** per-point, or a robust Translate, Affine or Perspective fit that keys the shape's transform. Strokes always use a fit.
 - 2026-10-25 — **Occluded points are inferred from their confident neighbours, and the inferred frames are reported (user).**
 - 2026-10-25 — **The UI is a viewer toolbar group plus a panel entry, with a Python call (user).**
+- 2026-11-09 — Merged into F8 as #238 (0e22a1a2). Open questions for the user, not blocking: (1) should a fit refuse a SplineWarp curve that other curves are transform-linked to (today they move with it); (2) should Roto panel deletion and Undo also be blocked during a follow.

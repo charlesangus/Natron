@@ -42,13 +42,7 @@ const double kRowReach = 1.5;
 // Lets a pixel centre on the side two cells share land in both despite rounding.
 const double kParamTolerance = 1e-9;
 
-struct QuadSetup {
-    // Position at (t, v) is a + t * e + v * f + t * v * g.
-    Point a, e, f, g;
-    Point corners[4];
-    double yMin, yMax;
-    bool outward;
-};
+typedef RotoFeatherRasterizer::Cell QuadSetup;
 
 inline double
 cross(double ax,
@@ -61,7 +55,6 @@ cross(double ax,
 
 bool
 setUpQuad(const RotoFeatherQuad& quad,
-          double shapeArea2,
           QuadSetup* s)
 {
     const double r0x = quad.outer0.x - quad.inner0.x;
@@ -88,12 +81,93 @@ setUpQuad(const RotoFeatherQuad& quad,
         s->yMin = std::min(s->yMin, s->corners[i].y);
         s->yMax = std::max(s->yMax, s->corners[i].y);
     }
-    const double outerMidX = 0.5 * (quad.outer0.x + quad.outer1.x) - quad.inner0.x;
-    const double outerMidY = 0.5 * (quad.outer0.y + quad.outer1.y) - quad.inner0.y;
-    // The shape's interior is on the left of its edges when its signed area is positive.
-    s->outward = cross(s->f.x, s->f.y, outerMidX, outerMidY) * shapeArea2 < 0.;
+    s->outward = false;
 
     return true;
+}
+
+// Where a cell's outer edge lies relative to its inner edge: a point just past the inner edge's
+// middle on the outer edge's side, or false when the outer edge's middle is on the inner edge's
+// line.
+bool
+outerSideProbe(const RotoFeatherQuad& quad,
+               Point* probe)
+{
+    const double fx = quad.inner1.x - quad.inner0.x;
+    const double fy = quad.inner1.y - quad.inner0.y;
+    const double outerMidX = 0.5 * (quad.outer0.x + quad.outer1.x) - quad.inner0.x;
+    const double outerMidY = 0.5 * (quad.outer0.y + quad.outer1.y) - quad.inner0.y;
+    const double side = cross(fx, fy, outerMidX, outerMidY);
+    const double len = std::sqrt(fx * fx + fy * fy);
+
+    if ((side == 0.) || !(len > 0.)) {
+        return false;
+    }
+    // Close enough to the edge that no other edge of the polygon passes between, short of a
+    // spike sharper than the step allows for.
+    const double step = std::min(1e-3, 1e-4 * len) / len;
+    const double sign = (side > 0.) ? 1. : -1.;
+    probe->x = quad.inner0.x + 0.5 * fx - sign * fy * step;
+    probe->y = quad.inner0.y + 0.5 * fy + sign * fx * step;
+
+    return true;
+}
+
+struct PolygonEdge {
+    Point a, b;
+    double yLo, yHi;
+};
+
+// The non-zero winding number of the polygon made of edges at each probe, by sweeping the probes
+// upward against the edges their row crosses.
+void
+windingNumbers(const std::vector<PolygonEdge>& edges,
+               const std::vector<Point>& probes,
+               std::vector<int>* windings)
+{
+    windings->assign(probes.size(), 0);
+    std::vector<std::size_t> edgeOrder(edges.size());
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+        edgeOrder[i] = i;
+    }
+    std::sort(edgeOrder.begin(), edgeOrder.end(), [&](std::size_t l, std::size_t r) {
+        return edges[l].yLo < edges[r].yLo;
+    });
+    std::vector<std::size_t> probeOrder(probes.size());
+    for (std::size_t i = 0; i < probes.size(); ++i) {
+        probeOrder[i] = i;
+    }
+    std::sort(probeOrder.begin(), probeOrder.end(), [&](std::size_t l, std::size_t r) {
+        return probes[l].y < probes[r].y;
+    });
+
+    std::vector<std::size_t> active;
+    std::size_t nextEdge = 0;
+    for (std::size_t pi = 0; pi < probeOrder.size(); ++pi) {
+        const Point& p = probes[probeOrder[pi]];
+        while ((nextEdge < edgeOrder.size()) && (edges[edgeOrder[nextEdge]].yLo <= p.y)) {
+            active.push_back(edgeOrder[nextEdge++]);
+        }
+        int winding = 0;
+        for (std::size_t i = 0; i < active.size();) {
+            const PolygonEdge& e = edges[active[i]];
+            if (e.yHi < p.y) {
+                active[i] = active.back();
+                active.pop_back();
+                continue;
+            }
+            const double left = cross(e.b.x - e.a.x, e.b.y - e.a.y, p.x - e.a.x, p.y - e.a.y);
+            if (e.a.y <= p.y) {
+                if ((e.b.y > p.y) && (left > 0.)) {
+                    ++winding;
+                }
+            } else if ((e.b.y <= p.y) && (left < 0.)) {
+                --winding;
+            }
+            ++i;
+        }
+        (*windings)[probeOrder[pi]] = winding;
+    }
 }
 
 void
@@ -189,7 +263,7 @@ quadOpacityAt(const QuadSetup& s,
 }
 
 void
-rasterizeRows(const std::vector<QuadSetup>& quads,
+rasterizeRows(const std::vector<const QuadSetup*>& quads,
               double fallOff,
               const RectI& roi,
               int y1,
@@ -199,7 +273,7 @@ rasterizeRows(const std::vector<QuadSetup>& quads,
     const std::size_t width = (std::size_t)roi.width();
 
     for (std::size_t qi = 0; qi < quads.size(); ++qi) {
-        const QuadSetup& s = quads[qi];
+        const QuadSetup& s = *quads[qi];
         const int rowLo = std::max(y1, (int)std::floor(s.yMin - kRowReach - 0.5));
         const int rowHi = std::min(y2 - 1, (int)std::ceil(s.yMax + kRowReach - 0.5));
         for (int y = rowLo; y <= rowHi; ++y) {
@@ -272,6 +346,64 @@ rotoFeatherFalloff(double t,
     return opacity * opacity;
 }
 
+RotoFeatherRasterizer::RotoFeatherRasterizer(const std::vector<RotoFeatherQuad>& quads,
+                                             double fallOff)
+    : _fallOff(fallOff)
+{
+    std::vector<PolygonEdge> edges;
+    edges.reserve(quads.size());
+    std::vector<Point> probes;
+    std::vector<std::size_t> probedCells;
+    _cells.reserve(quads.size());
+    for (std::size_t i = 0; i < quads.size(); ++i) {
+        PolygonEdge edge;
+        edge.a = quads[i].inner0;
+        edge.b = quads[i].inner1;
+        edge.yLo = std::min(edge.a.y, edge.b.y);
+        edge.yHi = std::max(edge.a.y, edge.b.y);
+        edges.push_back(edge);
+
+        Cell cell;
+        if (!setUpQuad(quads[i], &cell)) {
+            continue;
+        }
+        Point probe;
+        if (outerSideProbe(quads[i], &probe)) {
+            probes.push_back(probe);
+            probedCells.push_back(_cells.size());
+        }
+        _cells.push_back(cell);
+    }
+    std::vector<int> windings;
+    windingNumbers(edges, probes, &windings);
+    for (std::size_t i = 0; i < probes.size(); ++i) {
+        _cells[probedCells[i]].outward = (windings[i] == 0);
+    }
+}
+
+void
+RotoFeatherRasterizer::rasterize(const RectI& roi,
+                                 float* alpha) const
+{
+    if (_cells.empty() || roi.isNull()) {
+        return;
+    }
+    std::vector<const Cell*> cells;
+    for (std::size_t i = 0; i < _cells.size(); ++i) {
+        const Cell& s = _cells[i];
+        if ((s.yMax + kRowReach >= roi.y1) && (s.yMin - kRowReach <= roi.y2)) {
+            cells.push_back(&s);
+        }
+    }
+    if (cells.empty()) {
+        return;
+    }
+    const double fallOff = _fallOff;
+    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
+        rasterizeRows(cells, fallOff, roi, y1, y2, alpha);
+    });
+}
+
 void
 rasterizeRotoFeather(const std::vector<RotoFeatherQuad>& quads,
                      double fallOff,
@@ -281,24 +413,7 @@ rasterizeRotoFeather(const std::vector<RotoFeatherQuad>& quads,
     if (quads.empty() || roi.isNull()) {
         return;
     }
-    double shapeArea2 = 0.;
-    for (std::size_t i = 0; i < quads.size(); ++i) {
-        shapeArea2 += cross(quads[i].inner0.x, quads[i].inner0.y, quads[i].inner1.x, quads[i].inner1.y);
-    }
-    std::vector<QuadSetup> setups;
-    setups.reserve(quads.size());
-    for (std::size_t i = 0; i < quads.size(); ++i) {
-        QuadSetup s;
-        if (setUpQuad(quads[i], shapeArea2, &s) && (s.yMax + kRowReach >= roi.y1) && (s.yMin - kRowReach <= roi.y2)) {
-            setups.push_back(s);
-        }
-    }
-    if (setups.empty()) {
-        return;
-    }
-    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
-        rasterizeRows(setups, fallOff, roi, y1, y2, alpha);
-    });
+    RotoFeatherRasterizer(quads, fallOff).rasterize(roi, alpha);
 }
 
 NATRON_NAMESPACE_EXIT

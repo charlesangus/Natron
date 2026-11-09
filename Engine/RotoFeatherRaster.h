@@ -61,17 +61,47 @@ struct RotoFeatherQuad {
 double rotoFeatherFalloff(double t, double fallOff);
 
 /**
- * @brief Raises each pixel of alpha (roi.width() x roi.height(), row 0 at roi.y1) to the
- * feather's opacity at the pixel's centre where that is higher. Points are in pixels.
+ * @brief The feather of one closed shape, set up once to be rasterised over any number of windows.
  *
- * quads lists the cells of one closed shape in the shape polygon's order, each cell sharing its
- * inner1-outer1 side with the next cell's inner0-outer0 side. A pixel covered by several cells,
- * as where a concave part folds the feather over itself, takes the highest of their opacities,
- * which stays continuous because neighbouring cells agree along the side they share.
+ * quads lists the cells of the shape in the shape polygon's order, each cell sharing its
+ * inner1-outer1 side with the next cell's inner0-outer0 side. Points are in pixels. A pixel covered
+ * by several cells, as where a concave part folds the feather over itself, takes the highest of
+ * their opacities, which stays continuous because neighbouring cells agree along the side they
+ * share.
  *
  * A cell whose outer edge lies outside the shape also covers up to one pixel inward of its inner
  * edge at full opacity, so that the pixels between a chord of the shape's polygon and the curve
- * it stands for, outside the shape's fill on a concave part, are not left out.
+ * it stands for, outside the shape's fill on a concave part, are not left out. Whether the outer
+ * edge lies outside is decided per cell by the non-zero winding of the shape's polygon just past
+ * the middle of the cell's inner edge, as the shape's fill is, so that the lobes of a
+ * self-intersecting shape are each told apart whatever their orientation.
+ **/
+class RotoFeatherRasterizer {
+public:
+    RotoFeatherRasterizer(const std::vector<RotoFeatherQuad>& quads, double fallOff);
+
+    /**
+     * @brief Raises each pixel of alpha (roi.width() x roi.height(), row 0 at roi.y1) to the
+     * feather's opacity at the pixel's centre where that is higher. A pixel's value does not
+     * depend on roi.
+     **/
+    void rasterize(const RectI& roi, float* alpha) const;
+
+    struct Cell {
+        // Position at (t, v) is a + t * e + v * f + t * v * g.
+        Point a, e, f, g;
+        Point corners[4];
+        double yMin, yMax;
+        bool outward;
+    };
+
+private:
+    std::vector<Cell> _cells;
+    double _fallOff;
+};
+
+/**
+ * @brief RotoFeatherRasterizer(quads, fallOff).rasterize(roi, alpha).
  **/
 void rasterizeRotoFeather(const std::vector<RotoFeatherQuad>& quads,
                           double fallOff,

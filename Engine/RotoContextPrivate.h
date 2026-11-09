@@ -2406,12 +2406,19 @@ public:
                                double opacity,
                                double time,
                                unsigned int mipmapLevel);
+    typedef std::function<void(const RectI& tile, const float* alpha)> AlphaTileSink;
+
     /**
-     * @brief Renders the closed shape with its feather into alpha (roi.width() x roi.height(), row 0
-     * at roi.y1), each motion blur sample over the previous ones. The shape is drawn in its
-     * coordinates at mipmapLevel, scaled by scaleX and scaleY into the pixels roi is in.
+     * @brief Renders the closed shape with its feather over roi, each motion blur sample over the
+     * previous ones, and hands the result to sink one tile at a time: alpha is tile.width() x
+     * tile.height(), row 0 at tile.y1, and the tiles cover roi once, in rows of roi's full width.
+     * The shape is drawn in its coordinates at mipmapLevel, scaled by scaleX and scaleY into the
+     * pixels roi is in. A shape that draws nothing still hands over zeros.
+     *
+     * Memory for the render is bounded by a tile, not by roi. Returns false, possibly after
+     * handing over some tiles, when that memory could not be had.
      **/
-    static void renderBezier(const Bezier* bezier, double time, double startTime, double endTime, double mbFrameStep, unsigned int mipmapLevel, double scaleX, double scaleY, const RectI& roi, std::vector<float>* alpha);
+    static bool renderBezier(const Bezier* bezier, double time, double startTime, double endTime, double mbFrameStep, unsigned int mipmapLevel, double scaleX, double scaleY, const RectI& roi, const AlphaTileSink& sink);
     static void computeFeatherQuads(const Bezier* bezier, double time, unsigned int mipmapLevel, double featherDist, std::vector<RotoFeatherQuad>* quads);
     static void renderFeather_cairo(const std::list<RotoFeatherVertex>& vertices, double shapeColor[3],  double fallOff, cairo_pattern_t * mesh);
     static void renderInternalShape_cairo(const std::list<RotoTriangles>& triangles,

@@ -26,13 +26,15 @@
 #include "RotoContext.h"
 
 #include <algorithm> // min, max
-#include <sstream>
-#include <locale>
-#include <limits>
 #include <cassert>
-#include <stdexcept>
 #include <cstring> // for std::memcpy, std::memset
+#include <limits>
+#include <locale>
+#include <memory>
+#include <new>
+#include <sstream>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QDebug>
 #include <QLineF>
@@ -759,7 +761,7 @@ convertCairoImageToNatronImage_noColor(cairo_surface_t* cairoImg,
 
 template <typename PIX, int maxValue, int dstNComps>
 static void
-convertAlphaToNatronImageForDstComponents(const std::vector<float>& alpha,
+convertAlphaToNatronImageForDstComponents(const float* alpha,
                                           Image* image,
                                           const RectI& pixelRod,
                                           double shapeColor[3],
@@ -777,7 +779,7 @@ convertAlphaToNatronImageForDstComponents(const std::vector<float>& alpha,
     for (int y = 0; y < pixelRod.height(); ++y) {
         PIX* dstPix = (PIX*)acc.pixelAt(pixelRod.x1, pixelRod.y1 + y);
         assert(dstPix);
-        const float* src = &alpha[(std::size_t)y * width];
+        const float* src = alpha + (std::size_t)y * width;
         for (int x = 0; x < width; ++x, dstPix += dstNComps) {
             const float coverage = (inverted ? 1.f - src[x] : src[x]) * maxValue;
             switch (dstNComps) {
@@ -808,7 +810,7 @@ convertAlphaToNatronImageForDstComponents(const std::vector<float>& alpha,
 
 template <typename PIX, int maxValue>
 static void
-convertAlphaToNatronImage(const std::vector<float>& alpha,
+convertAlphaToNatronImage(const float* alpha,
                           Image* image,
                           const RectI& pixelRod,
                           double shapeColor[3],
@@ -1381,22 +1383,28 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
         double shapeColor[3];
         getColor(time, shapeColor);
         const double opacity = getOpacity(time);
-        std::vector<float> alpha;
-        RotoContextPrivate::renderBezier(isBezier, time, startTime, endTime, timeStep, mipmapLevel, 1., 1., roi, &alpha);
-        switch (depth) {
-        case eImageBitDepthFloat:
-            convertAlphaToNatronImage<float, 1>(alpha, image.get(), roi, shapeColor, opacity, inverted);
-            break;
-        case eImageBitDepthByte:
-            convertAlphaToNatronImage<unsigned char, 255>(alpha, image.get(), roi, shapeColor, opacity, inverted);
-            break;
-        case eImageBitDepthShort:
-            convertAlphaToNatronImage<unsigned short, 65535>(alpha, image.get(), roi, shapeColor, opacity, inverted);
-            break;
-        case eImageBitDepthHalf:
-        case eImageBitDepthNone:
-            assert(false);
-            break;
+        const bool rendered = RotoContextPrivate::renderBezier(isBezier, time, startTime, endTime, timeStep, mipmapLevel, 1., 1., roi, [&](const RectI& tile, const float* alpha) {
+            switch (depth) {
+            case eImageBitDepthFloat:
+                convertAlphaToNatronImage<float, 1>(alpha, image.get(), tile, shapeColor, opacity, inverted);
+                break;
+            case eImageBitDepthByte:
+                convertAlphaToNatronImage<unsigned char, 255>(alpha, image.get(), tile, shapeColor, opacity, inverted);
+                break;
+            case eImageBitDepthShort:
+                convertAlphaToNatronImage<unsigned short, 65535>(alpha, image.get(), tile, shapeColor, opacity, inverted);
+                break;
+            case eImageBitDepthHalf:
+            case eImageBitDepthNone:
+                assert(false);
+                break;
+            }
+        });
+        if (!rendered) {
+            // The cache already holds the image, which is only partly drawn.
+            appPTR->removeFromNodeCache(image);
+
+            return ImagePtr();
         }
 
         return image;
@@ -1500,16 +1508,30 @@ Bezier::rasterizeCoverage(double time,
                           const RectI& roi,
                           std::vector<float>* coverage) const
 {
-    coverage->assign((std::size_t)std::max(0, roi.width()) * (std::size_t)std::max(0, roi.height()), 0.f);
+    try {
+        coverage->assign((std::size_t)std::max(0, roi.width()) * (std::size_t)std::max(0, roi.height()), 0.f);
+    } catch (const std::bad_alloc&) {
+        coverage->clear();
+
+        return false;
+    }
     if (roi.isNull() || !isCurveFinished() || isOpenBezier() || !isActivated(time) || (getControlPointsCount() <= 1)) {
         return false;
     }
 
-    RotoContextPrivate::renderBezier(this, time, time, time, 1., mipmapLevel, 1., 1., roi, coverage);
-
+    const std::size_t width = (std::size_t)roi.width();
     bool any = false;
-    for (std::size_t i = 0; i < coverage->size() && !any; ++i) {
-        any = (*coverage)[i] > 0.f;
+    const bool rendered = RotoContextPrivate::renderBezier(this, time, time, time, 1., mipmapLevel, 1., 1., roi, [&](const RectI& tile, const float* alpha) {
+        const std::size_t area = width * (std::size_t)tile.height();
+        std::copy(alpha, alpha + area, &(*coverage)[(std::size_t)(tile.y1 - roi.y1) * width]);
+        for (std::size_t i = 0; i < area && !any; ++i) {
+            any = alpha[i] > 0.f;
+        }
+    });
+    if (!rendered) {
+        coverage->clear();
+
+        return false;
     }
 
     return any;
@@ -1792,7 +1814,21 @@ RotoContext::allocateAndRenderSingleDotStroke(int brushSizePixel,
     return true;
 }
 
-void
+namespace {
+
+// Large enough to keep every thread of a big machine busy on a tile's feather, small enough that
+// a shape whose feather spans tens of thousands of pixels needs no more than a few tens of MB.
+const std::size_t kBezierTileArea = 2048 * 2048;
+
+struct BezierRenderSample {
+    double time;
+    Transform::Matrix3x3 transform;
+    std::unique_ptr<RotoFeatherRasterizer> feather;
+};
+
+} // namespace
+
+bool
 RotoContextPrivate::renderBezier(const Bezier* bezier,
                                  double time,
                                  double startTime, double endTime, double mbFrameStep,
@@ -1800,80 +1836,107 @@ RotoContextPrivate::renderBezier(const Bezier* bezier,
                                  double scaleX,
                                  double scaleY,
                                  const RectI& roi,
-                                 std::vector<float>* alpha)
+                                 const AlphaTileSink& sink)
 {
-    const std::size_t width = (std::size_t)std::max(0, roi.width());
-    const std::size_t height = (std::size_t)std::max(0, roi.height());
-
-    alpha->assign(width * height, 0.f);
-    ///render the bezier only if finished (closed) and activated
-    if ((width == 0) || (height == 0) || !bezier->isCurveFinished() || !bezier->isActivated(time) || (bezier->getControlPointsCount() <= 1)) {
-        return;
+    if (roi.isNull()) {
+        return true;
     }
-
-    std::vector<float> layer;
-    std::vector<RotoFeatherQuad> quads;
-    for (double t = startTime; t <= endTime; t+=mbFrameStep) {
-
-        double fallOff = bezier->getFeatherFallOff(t);
-        double featherDist = bezier->getFeatherDistance(t);
-        double shapeColor[3];
-        bezier->getColor(t, shapeColor);
-
-        ///Adjust the feather distance so it takes the mipmap level into account
-        if (mipmapLevel != 0) {
-            featherDist /= (1 << mipmapLevel);
+    try {
+        std::vector<BezierRenderSample> samples;
+        BezierCPs cps;
+        if (bezier->isCurveFinished() && bezier->isActivated(time) && (bezier->getControlPointsCount() > 1)) {
+            cps = bezier->getControlPoints_mt_safe();
+            std::vector<RotoFeatherQuad> quads;
+            for (double t = startTime; t <= endTime; t += mbFrameStep) {
+                const double fallOff = bezier->getFeatherFallOff(t);
+                double featherDist = bezier->getFeatherDistance(t);
+                if (mipmapLevel != 0) {
+                    featherDist /= (1 << mipmapLevel);
+                }
+                BezierRenderSample sample;
+                sample.time = t;
+                bezier->getTransformAtTime(t, &sample.transform);
+                computeFeatherQuads(bezier, t, mipmapLevel, featherDist, &quads);
+                for (std::size_t i = 0; i < quads.size(); ++i) {
+                    Point* corners[4] = { &quads[i].inner0, &quads[i].outer0, &quads[i].outer1, &quads[i].inner1 };
+                    for (int c = 0; c < 4; ++c) {
+                        corners[c]->x *= scaleX;
+                        corners[c]->y *= scaleY;
+                    }
+                }
+                sample.feather.reset(new RotoFeatherRasterizer(quads, fallOff));
+                samples.push_back(std::move(sample));
+            }
         }
 
-        Transform::Matrix3x3 transform;
-        bezier->getTransformAtTime(t, &transform);
-
-        layer.assign(width * height, 0.f);
-        {
-            CairoImageWrapper fill;
-            fill.cairoImg = cairo_image_surface_create(CAIRO_FORMAT_A8, (int)width, (int)height);
+        const std::size_t width = (std::size_t)roi.width();
+        const int tileRows = (int)std::max<std::size_t>(1, std::min<std::size_t>((std::size_t)roi.height(), kBezierTileArea / width));
+        const std::size_t tileCapacity = width * (std::size_t)tileRows;
+        std::vector<float> tileAlpha(tileCapacity);
+        std::vector<float> layer((samples.size() > 1) ? tileCapacity : 0);
+        CairoImageWrapper fill;
+        if (!samples.empty()) {
+            fill.cairoImg = cairo_image_surface_create(CAIRO_FORMAT_A8, (int)width, tileRows);
             if (cairo_surface_status(fill.cairoImg) != CAIRO_STATUS_SUCCESS) {
-                return;
+                return false;
             }
-            cairo_surface_set_device_offset(fill.cairoImg, -roi.x1, -roi.y1);
-            fill.ctx = cairo_create(fill.cairoImg);
-            cairo_set_fill_rule(fill.ctx, CAIRO_FILL_RULE_WINDING);
-            // Without antialiasing the fill is exactly 0 or 1, so it meets the feather, which
-            // starts at full opacity on the same edge, without a seam.
-            cairo_set_antialias(fill.ctx, CAIRO_ANTIALIAS_NONE);
-            cairo_scale(fill.ctx, scaleX, scaleY);
-            cairo_new_path(fill.ctx);
-            BezierCPs cps = bezier->getControlPoints_mt_safe();
-            renderInternalShape(t, mipmapLevel, shapeColor, 1., transform, fill.ctx, NULL, cps);
-            cairo_surface_flush(fill.cairoImg);
+        }
+        double unusedColor[3] = { 1., 1., 1. };
 
-            const unsigned char* data = cairo_image_surface_get_data(fill.cairoImg);
-            const int stride = cairo_image_surface_get_stride(fill.cairoImg);
-            if (data) {
-                for (std::size_t y = 0; y < height; ++y) {
-                    const unsigned char* src = data + y * (std::size_t)stride;
-                    float* dst = &layer[y * width];
+        for (int y1 = roi.y1; y1 < roi.y2; y1 += tileRows) {
+            const RectI tile(roi.x1, y1, roi.x2, std::min(roi.y2, y1 + tileRows));
+            const std::size_t area = width * (std::size_t)tile.height();
+            std::fill(tileAlpha.begin(), tileAlpha.begin() + area, 0.f);
+            for (std::size_t si = 0; si < samples.size(); ++si) {
+                const BezierRenderSample& sample = samples[si];
+                float* dst = layer.empty() ? &tileAlpha.front() : &layer.front();
+
+                cairo_surface_flush(fill.cairoImg);
+                unsigned char* data = cairo_image_surface_get_data(fill.cairoImg);
+                const int stride = cairo_image_surface_get_stride(fill.cairoImg);
+                if (!data) {
+                    return false;
+                }
+                std::memset(data, 0, (std::size_t)stride * (std::size_t)tileRows);
+                cairo_surface_mark_dirty(fill.cairoImg);
+                cairo_surface_set_device_offset(fill.cairoImg, -tile.x1, -tile.y1);
+                cairo_t* ctx = cairo_create(fill.cairoImg);
+                cairo_set_fill_rule(ctx, CAIRO_FILL_RULE_WINDING);
+                // Without antialiasing the fill is exactly 0 or 1, so it meets the feather, which
+                // starts at full opacity on the same edge, without a seam.
+                cairo_set_antialias(ctx, CAIRO_ANTIALIAS_NONE);
+                cairo_scale(ctx, scaleX, scaleY);
+                cairo_new_path(ctx);
+                renderInternalShape(sample.time, mipmapLevel, unusedColor, 1., sample.transform, ctx, NULL, cps);
+                const bool filled = (cairo_status(ctx) == CAIRO_STATUS_SUCCESS);
+                cairo_destroy(ctx);
+                cairo_surface_flush(fill.cairoImg);
+                if (!filled) {
+                    return false;
+                }
+                for (int y = 0; y < tile.height(); ++y) {
+                    const unsigned char* src = data + (std::size_t)y * (std::size_t)stride;
+                    float* row = dst + (std::size_t)y * width;
                     for (std::size_t x = 0; x < width; ++x) {
-                        dst[x] = src[x] * (1.f / 255.f);
+                        row[x] = src[x] * (1.f / 255.f);
+                    }
+                }
+
+                sample.feather->rasterize(tile, dst);
+
+                if (!layer.empty()) {
+                    for (std::size_t i = 0; i < area; ++i) {
+                        tileAlpha[i] = layer[i] + tileAlpha[i] * (1.f - layer[i]);
                     }
                 }
             }
+            sink(tile, &tileAlpha.front());
         }
-
-        computeFeatherQuads(bezier, t, mipmapLevel, featherDist, &quads);
-        for (std::size_t i = 0; i < quads.size(); ++i) {
-            Point* corners[4] = { &quads[i].inner0, &quads[i].outer0, &quads[i].outer1, &quads[i].inner1 };
-            for (int c = 0; c < 4; ++c) {
-                corners[c]->x *= scaleX;
-                corners[c]->y *= scaleY;
-            }
-        }
-        rasterizeRotoFeather(quads, fallOff, roi, &layer.front());
-
-        for (std::size_t i = 0; i < layer.size(); ++i) {
-            (*alpha)[i] = layer[i] + (*alpha)[i] * (1.f - layer[i]);
-        }
+    } catch (const std::bad_alloc&) {
+        return false;
     }
+
+    return true;
 } // RotoContextPrivate::renderBezier
 
 void

@@ -57,6 +57,7 @@ typedef Settings::ColorTrackballFeedbackEnum F;
 
 const F kCrosshairReveal = Settings::eColorTrackballFeedbackCrosshairReveal;
 const F kWidgetCursor = Settings::eColorTrackballFeedbackWidgetCursor;
+const F kCrosshairOnly = Settings::eColorTrackballFeedbackCrosshairOnly;
 
 const double kAP1Weights[3] = { 0.2722287168, 0.6740817658, 0.0536895174 };
 const double kAP1ToXYZ[9] = {
@@ -553,7 +554,7 @@ TEST(ColorTrackballReveal, TheStrokesValueDoesNotDependOnTheReveal)
 
 TEST(ColorTrackballRevealFeedback, WhatEachFeedbackShows)
 {
-    for (F f : { kCrosshairReveal, kWidgetCursor }) {
+    for (F f : { kCrosshairReveal, kWidgetCursor, kCrosshairOnly }) {
         for (bool stroke : { false, true }) {
             ColorGlobalModeFeedbackState off = colorGlobalModeFeedbackState(f, false, stroke);
 
@@ -583,6 +584,44 @@ TEST(ColorTrackballRevealFeedback, WhatEachFeedbackShows)
 
     EXPECT_TRUE(colorGlobalModeFeedbackGraphicIsCursor(kWidgetCursor));
     EXPECT_FALSE(colorGlobalModeFeedbackGraphicIsCursor(kCrosshairReveal));
+    EXPECT_FALSE(colorGlobalModeFeedbackGraphicIsCursor(kCrosshairOnly));
+}
+
+TEST(ColorTrackballRevealFeedback, CrosshairOnlyNeverShowsTheGraphic)
+{
+    for (bool stroke : { false, true }) {
+        ColorGlobalModeFeedbackState state = colorGlobalModeFeedbackState(kCrosshairOnly, true, stroke);
+
+        EXPECT_TRUE(state.crosshair) << "stroke " << stroke;
+        EXPECT_FALSE(state.graphicShown) << "stroke " << stroke;
+        EXPECT_FALSE(state.graphicFollowsPointer) << "stroke " << stroke;
+        EXPECT_FALSE(state.blankCursor) << "stroke " << stroke;
+        EXPECT_TRUE(state.hudBlockFollowsPointer) << "stroke " << stroke;
+    }
+}
+
+TEST(ColorTrackballRevealFeedback, CrosshairOnlyKeepsTheCrosshairThroughAStroke)
+{
+    const int baseline = overrideCursorDepth();
+
+    {
+        ColorGlobalModeCursors cursors;
+
+        syncCursors(cursors, kCrosshairOnly, true, false);
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+        EXPECT_EQ(Qt::CrossCursor, topCursor());
+        syncCursors(cursors, kCrosshairOnly, true, true);
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+        EXPECT_EQ(Qt::CrossCursor, topCursor());
+        syncCursors(cursors, kCrosshairOnly, true, false);
+        EXPECT_EQ(baseline + 1, overrideCursorDepth());
+        EXPECT_EQ(Qt::CrossCursor, topCursor());
+
+        syncCursors(cursors, kCrosshairOnly, true, true);
+        syncCursors(cursors, kCrosshairOnly, false, false);
+        EXPECT_EQ(baseline, overrideCursorDepth());
+    }
+    EXPECT_EQ(baseline, overrideCursorDepth());
 }
 
 TEST(ColorTrackballRevealFeedback, ARevealStrokeHidesTheCursorAndLeavesOnlyTheCrosshair)

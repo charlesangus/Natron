@@ -2667,8 +2667,9 @@ public:
 
     /**
      * @brief True while the render running on this thread is the node's overlay image pass, the
-     * only render in which addOverlayImageTile() does anything. Whatever the answer, the render
-     * must write the same pixels to its output: the pass can fill the cache.
+     * only render in which addOverlayImageTile() does anything; a pass that reads planes is no
+     * render, so this stays false during it until addOverlayImagesFromPlanes(). Whatever the answer,
+     * the render must write the same pixels to its output: the pass can fill the cache.
      **/
     bool isOverlayImageRender() const;
 
@@ -2697,8 +2698,9 @@ public:
 
     /**
      * @brief Runs the node's render action over the part of request.visibleCanonical in its region
-     * of definition and publishes the tiles it adds, all at once, on success. A failed pass publishes
-     * an empty frame, so that the node's last mask does not pass for this state and the failure is not
+     * of definition, or requests the planes overlayImageSourcePlanes() names over it and hands them
+     * to addOverlayImagesFromPlanes(), and publishes the tiles added, all at once, on success. A
+     * failed pass publishes an empty frame, so that the node's last mask does not pass for this state and the failure is not
      * retried until the state changes. An aborted pass publishes nothing, nor does one that
      * refreshOverlayImages() overtook while it ran: it may have rendered the view before. Returns
      * whether the pass published what it rendered. Must not be called under another render's frame
@@ -2769,6 +2771,32 @@ public:
      * computing: check isOverlayImagePassSuperseded() before keeping anything.
      **/
     virtual void releaseOverlayImageResources()
+    {
+    }
+
+    /**
+     * @brief The planes of this node its overlay images are read from. Empty, the default, means
+     * that the render action adds the tiles itself and has to run on every pass, cached or not. For
+     * any other answer the pass requests these planes as any render does, so that the cache answers
+     * it when it can, then calls addOverlayImagesFromPlanes(). This suits an overlay that is a
+     * reading of the node's own output: a view knob that only changes the reading costs no render.
+     **/
+    virtual std::list<ImageLayerDesc> overlayImageSourcePlanes(double /*time*/,
+                                                               ViewIdx /*view*/)
+    {
+        return std::list<ImageLayerDesc>();
+    }
+
+    /**
+     * @brief Adds the pass's tiles with addOverlayImageTile(), from the planes overlayImageSourcePlanes()
+     * named. Runs on the pass's thread once the planes are rendered, outside the render action.
+     * canonicalWindow is the part of the node the pass covers; only that part of each image is
+     * sure to be rendered.
+     **/
+    virtual void addOverlayImagesFromPlanes(const std::map<ImageLayerDesc, ImagePtr>& /*planes*/,
+                                            double /*time*/,
+                                            ViewIdx /*view*/,
+                                            const RectD& /*canonicalWindow*/)
     {
     }
 

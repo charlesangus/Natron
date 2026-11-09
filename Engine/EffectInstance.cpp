@@ -1570,11 +1570,11 @@ EffectInstance::getImage(int inputNb,
             tls->currentRenderArgs.inputImages[inputNb].push_back(inputImg);
         }
 
-        if ( returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex) ) {
+        if (inputImg && returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex)) {
             inputImg = convertRAMImageToOpenGLTexture(inputImg);
         }
 
-        if (mapToClipPrefs) {
+        if (inputImg && mapToClipPrefs) {
             inputImg = convertLayersFormatsIfNeeded(inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
         }
 
@@ -4187,8 +4187,6 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
     const std::uint64_t generation = node->getOverlayImageGeneration();
     const OverlayImagePassPtr pass = std::make_shared<OverlayImagePass>(request.mipmapLevel, generation);
 
-    getParallelRenderArgsTLS()->overlayImagePass = pass;
-
     U64 hash = 0;
     double par = 1.;
     const auto publish = [&](std::vector<OverlayImagePlane>&& planes) {
@@ -4203,6 +4201,15 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
 
     // A failed pass must not stop the viewer's own render, which reports the error if it has it too.
     try {
+        // A render under a pass runs its action beside any cached image, which a pass that only reads
+        // planes must not do: it would cost a render for what the cache already holds.
+        std::list<ImageLayerDesc> components = overlayImageSourcePlanes(request.time, request.view);
+        const bool readsPlanes = !components.empty();
+        if (!readsPlanes) {
+            getParallelRenderArgsTLS()->overlayImagePass = pass;
+            components.push_back(ImageLayerDesc::getRGBAComponents());
+        }
+
         hash = getRenderHash();
         const RenderScale scale = RenderScale::fromMipmapLevel(request.mipmapLevel);
         RectD rod;
@@ -4226,8 +4233,6 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
             }
             frameArgs.updateNodesRequest(*requestPass);
 
-            std::list<ImageLayerDesc> components;
-            components.push_back(ImageLayerDesc::getRGBAComponents());
             RenderRoIArgs args(request.time,
                                scale,
                                request.mipmapLevel,
@@ -4253,6 +4258,10 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
                 publish({});
 
                 return false;
+            }
+            if (readsPlanes) {
+                getParallelRenderArgsTLS()->overlayImagePass = pass;
+                addOverlayImagesFromPlanes(planes, request.time, request.view, canonicalRoI);
             }
         }
 

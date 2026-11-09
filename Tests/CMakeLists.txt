@@ -63,6 +63,8 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
+    GlobalModeKind_Test.cpp
+    GlobalModeStroke_Test.cpp
     GpuContext_Test.cpp
     GpuMemberTiming_Test.cpp
     GpuPlacement_Test.cpp
@@ -80,6 +82,7 @@ set(Tests_SOURCES
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
+    KnobValueRole_Test.cpp
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
@@ -189,6 +192,7 @@ set(Tests_SOURCES
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
     RenderSchedulerMode_Test.cpp
+    RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
     SchedulerEquivalence_Test.cpp
@@ -325,6 +329,7 @@ set(GuiTests_SOURCES
     DisplayLegendColour_Test.cpp
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GlobalModeTargeting_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp
@@ -354,7 +359,11 @@ set(GuiTests_SOURCES
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
+    TransformGroupGlobalModeTarget_Test.cpp
     UndoHistory_Test.cpp
+    ValueKnobEditSession_Test.cpp
+    ValueKnobGlobalModeTarget_Test.cpp
+    ViewerPixelGrid_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )

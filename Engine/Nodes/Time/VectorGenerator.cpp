@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <utility>
 #include <vector>
 
 #include "Engine/AppInstance.h"
@@ -40,6 +41,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/OverlayImage.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 
@@ -233,6 +235,57 @@ sameLayer(const ImageLayerDesc& a,
 {
     return a.getLayerID() == b.getLayerID();
 }
+
+std::list<ImageLayerDesc>
+producedLayers(bool forward,
+               bool backward)
+{
+    std::list<ImageLayerDesc> layers;
+    if (forward) {
+        layers.push_back(ImageLayerDesc::getForwardMotionComponents());
+    }
+    if (backward) {
+        layers.push_back(ImageLayerDesc::getBackwardMotionComponents());
+    }
+    layers.push_back(VectorGenerator::confidenceLayer());
+
+    return layers;
+}
+
+// Full coverage where the channel is below threshold, row by row over window. Empty when no pixel is,
+// which spares the viewer a tile that draws nothing.
+std::vector<unsigned char>
+lowConfidenceMask(const Image& image,
+                  int channel,
+                  const RectI& window,
+                  float threshold)
+{
+    const int width = window.width();
+    const int nComps = (int)image.getComponentsCount();
+    std::vector<unsigned char> mask((std::size_t)width * (std::size_t)window.height(), 0);
+    bool anyLow = false;
+
+    Image::ReadAccess access(&image);
+    for (int y = window.y1; y < window.y2; ++y) {
+        const float* src = reinterpret_cast<const float*>(access.pixelAt(window.x1, y));
+        if (!src) {
+            continue;
+        }
+        unsigned char* dst = mask.data() + (std::size_t)(y - window.y1) * (std::size_t)width;
+        for (int x = 0; x < width; ++x) {
+            if (src[channel] < threshold) {
+                dst[x] = 255;
+                anyLow = true;
+            }
+            src += nComps;
+        }
+    }
+    if (!anyLow) {
+        mask.clear();
+    }
+
+    return mask;
+}
 } // anonymous namespace
 
 VectorGenerator::VectorGenerator(NodePtr node)
@@ -358,10 +411,25 @@ VectorGenerator::initializeKnobs()
     page->addKnob(strengthKnob);
     _smoothingStrength = strengthKnob;
 
+    KnobBoolPtr showLowConfidenceKnob = createKnob<KnobBool>(tr("Show Low Confidence").toStdString());
+    showLowConfidenceKnob->setName(kVectorGeneratorParamShowLowConfidence);
+    showLowConfidenceKnob->setHintToolTip(tr("While this panel is open, tints the viewer where the vectorConfidence layer is below "
+                                             "Confidence Threshold: red for Forward and blue for Backward. It changes no output. If "
+                                             "the frame's confidence is not in the cache, showing it costs a solve, even when the "
+                                             "viewer shows a layer that needs none.")
+                                              .toStdString());
+    showLowConfidenceKnob->setDefaultValue(false);
+    showLowConfidenceKnob->setAnimationEnabled(false);
+    showLowConfidenceKnob->setEvaluateOnChange(false);
+    showLowConfidenceKnob->setHashExempt(true);
+    showLowConfidenceKnob->setIsPersistent(false);
+    page->addKnob(showLowConfidenceKnob);
+    _showLowConfidence = showLowConfidenceKnob;
+
     KnobDoublePtr thresholdKnob = createKnob<KnobDouble>(tr("Confidence Threshold").toStdString());
     thresholdKnob->setName(kVectorGeneratorParamConfidenceThreshold);
-    thresholdKnob->setHintToolTip(tr("A reference level for reading the vectorConfidence layer, kept with the node. Nothing "
-                                     "draws it yet, and it changes no output.")
+    thresholdKnob->setHintToolTip(tr("The confidence below which Show Low Confidence tints a pixel. Changing it redraws from "
+                                     "the cached confidence without solving again, and it changes no output.")
                                       .toStdString());
     thresholdKnob->setMinimum(0.);
     thresholdKnob->setMaximum(1.);
@@ -439,8 +507,73 @@ VectorGenerator::knobChanged(KnobI* k,
 
         return true;
     }
+    if ((k == _showLowConfidence.lock().get()) || (k == _confidenceThreshold.lock().get())) {
+        refreshOverlayImages();
+
+        return true;
+    }
 
     return false;
+}
+
+bool
+VectorGenerator::isOverlayImageViewOn() const
+{
+    const KnobBoolPtr knob = _showLowConfidence.lock();
+
+    return knob && knob->getValue();
+}
+
+std::list<ImageLayerDesc>
+VectorGenerator::overlayImageSourcePlanes(double time,
+                                          ViewIdx view)
+{
+    // One solve fills every plane a render requests together, and the pass runs before the viewer's
+    // own render: asking for all of them leaves the vectors cached for a viewer showing Forward or
+    // Backward, which would otherwise solve the frame again.
+    const Settings s = settingsAt(time, view);
+
+    return producedLayers(s.forward, s.backward);
+}
+
+void
+VectorGenerator::addOverlayImagesFromPlanes(const std::map<ImageLayerDesc, ImagePtr>& planes,
+                                            double time,
+                                            ViewIdx view,
+                                            const RectD& canonicalWindow)
+{
+    const KnobDoublePtr thresholdKnob = _confidenceThreshold.lock();
+    if (!thresholdKnob) {
+        return;
+    }
+    const float threshold = (float)thresholdKnob->getValue();
+    const Settings s = settingsAt(time, view);
+
+    for (const std::pair<const ImageLayerDesc, ImagePtr>& plane : planes) {
+        const ImagePtr& image = plane.second;
+        if (!sameLayer(plane.first, confidenceLayer()) || !image || (image->getBitDepth() != eImageBitDepthFloat) || (image->getComponentsCount() < 2)) {
+            continue;
+        }
+        const unsigned int level = image->getMipmapLevel();
+        RectI window;
+        if (!clippedTo(canonicalWindow.toPixelEnclosing(level, image->getPixelAspectRatio()), image->getBounds(), &window)) {
+            continue;
+        }
+        // A direction left out by Outputs reads as confidence 0 everywhere, which says nothing about
+        // the plate; the missing side of the first and last frames is a real answer and stays.
+        if (s.forward) {
+            std::vector<unsigned char> mask = lowConfidenceMask(*image, 0, window, threshold);
+            if (!mask.empty()) {
+                addOverlayImageTile(kVectorGeneratorOverlayPlaneLowForward, OverlayColor::fromRGBA(1.f, 0.f, 0.f, 0.5f), window, level, std::move(mask));
+            }
+        }
+        if (s.backward) {
+            std::vector<unsigned char> mask = lowConfidenceMask(*image, 1, window, threshold);
+            if (!mask.empty()) {
+                addOverlayImageTile(kVectorGeneratorOverlayPlaneLowBackward, OverlayColor::fromRGBA(0.f, 0.4f, 1.f, 0.5f), window, level, std::move(mask));
+            }
+        }
+    }
 }
 
 VectorGenerator::Settings
@@ -583,15 +716,7 @@ VectorGenerator::getComponentsNeededAndProduced(double time,
     *passThroughInputNb = kVectorGeneratorInputSource;
 
     const Settings s = settingsAt(time, view);
-    std::list<ImageLayerDesc>& produced = (*comps)[-1];
-    produced.clear();
-    if (s.forward) {
-        produced.push_back(ImageLayerDesc::getForwardMotionComponents());
-    }
-    if (s.backward) {
-        produced.push_back(ImageLayerDesc::getBackwardMotionComponents());
-    }
-    produced.push_back(confidenceLayer());
+    (*comps)[-1] = producedLayers(s.forward, s.backward);
 
     std::list<ImageLayerDesc>& neededSource = (*comps)[kVectorGeneratorInputSource];
     neededSource.clear();

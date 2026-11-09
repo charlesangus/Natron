@@ -146,6 +146,16 @@ struct FormatKnob
     KnobChoiceWPtr formatChoice;
 };
 
+// Weak, because the effect owns its knobs: a strong reference here would keep a knob alive past
+// its effect, destroying it with no holder.
+struct TransformInteractWeakKnobs {
+    KnobDoubleWPtr translate;
+    KnobDoubleWPtr rotate;
+    KnobDoubleWPtr scale;
+    KnobDoubleWPtr skewX;
+    KnobDoubleWPtr skewY;
+    KnobDoubleWPtr center;
+};
 
 struct Node::Implementation
 {
@@ -264,6 +274,7 @@ public:
         , overlayColorSet(false)
         , overlayColor { 0., 0., 0. }
         , nativeOverlays()
+        , transformInteracts()
         , nodeCreated(false)
         , wasCreatedSilently(false)
         , paintStroke()
@@ -562,6 +573,7 @@ public:
     bool overlayColorSet;
     double overlayColor[3];
     std::list<HostOverlayKnobsPtr> nativeOverlays;
+    std::list<TransformInteractWeakKnobs> transformInteracts;
     bool nodeCreated;
     bool wasCreatedSilently;
     RotoDrawableItemWPtr paintStroke;

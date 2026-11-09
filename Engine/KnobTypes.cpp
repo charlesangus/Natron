@@ -62,6 +62,36 @@ NATRON_NAMESPACE_ENTER
 //using std::make_pair;
 //using std::pair;
 
+KnobValueRoleHolder::KnobValueRoleHolder()
+    : _valueRole(eValueRoleNone)
+    , _valueRoleClockwise(false)
+{
+}
+
+void
+KnobValueRoleHolder::setValueRole(ValueRoleEnum role)
+{
+    _valueRole = role;
+}
+
+ValueRoleEnum
+KnobValueRoleHolder::getValueRole() const
+{
+    return _valueRole;
+}
+
+void
+KnobValueRoleHolder::setValueRoleClockwise(bool clockwise)
+{
+    _valueRoleClockwise = clockwise;
+}
+
+bool
+KnobValueRoleHolder::isValueRoleClockwise() const
+{
+    return _valueRoleClockwise;
+}
+
 /******************************KnobInt**************************************/
 KnobInt::KnobInt(KnobHolder* holder,
                  const std::string &label,

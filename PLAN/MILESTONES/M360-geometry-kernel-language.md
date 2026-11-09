@@ -97,3 +97,4 @@ Requires M54 - Native Geometry Data Model. Nodes register through their own `.re
 - 2026-11-08 — **Geometry only, with a reusable core (user):** the front end and runner sit behind a binding interface with no `GeoDetail` types, so image, deep or volume contexts can plug in later.
 
 - 2026-11-09 — Merged into F15 as #239 (295b5686). Post-merge: the 10M-point `@P.y += 1` timing on the GPU host is still to run; it is a report for the Feature PR, not a gate.
+- 2026-11-09 — The 10M-point timing is deferred (user): nothing headless can cook a geometry node yet (no viewer, writer or Python evaluate), so an AppImage bench cannot drive it. Revisit when geometry has a consumer (M358 - Geometry Bridges And Display).

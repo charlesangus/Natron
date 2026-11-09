@@ -31,6 +31,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -890,6 +891,49 @@ private:
     std::list<BezierPtr> _shapes;
     // Where each shape sat, by increasing index, so that re-inserting in this order restores it.
     std::vector<Placement> _placements;
+};
+
+/**
+ * @brief A whole follow of vectors, whose keys were written as the follow went: puts back the points
+ * and transform animation of the shapes as they were before, or as they were after.
+ **/
+class FollowVectorsUndoCommand
+    : public UndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(FollowVectorsUndoCommand)
+
+public:
+    // Takes the state to go back to, so the shapes must be untouched yet.
+    FollowVectorsUndoCommand(const RotoCurveContextPtr& context,
+                             const std::list<RotoDrawableItemPtr>& items);
+
+    virtual ~FollowVectorsUndoCommand();
+
+    // Takes the state to redo to.
+    void captureResult();
+
+    virtual void undo() OVERRIDE FINAL;
+    virtual void redo() OVERRIDE FINAL;
+
+private:
+    struct KnobState {
+        KnobDoublePtr knob;
+        std::vector<CurvePtr> before, after;
+        std::vector<double> valuesBefore, valuesAfter;
+    };
+
+    struct ItemState {
+        RotoDrawableItemPtr item;
+        BezierPtr bezier;
+        std::list<BezierCPPtr> points, before, after;
+        std::set<double> keysBefore, keysAfter;
+        std::vector<KnobState> knobs;
+    };
+
+    void restore(bool after);
+
+    RotoCurveContextWPtr _context;
+    std::list<ItemState> _items;
+    bool _done;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -1171,8 +1171,10 @@ void
 SplineWarpContext::transformLinksChanged()
 {
     warpDataChanged(true);
-    rolesChanged();
+    // Before rolesChanged(), whose listeners fill the Transform page from a link's source once
+    // no curve is tied to it.
     refreshSelectedTransformTies();
+    rolesChanged();
 }
 
 void
@@ -1183,20 +1185,30 @@ SplineWarpContext::refreshSelectedTransformTies()
     if (!app || (QThread::currentThread() != app->thread())) {
         return;
     }
-    const std::list<RotoItemPtr> selected = getSelectedItems();
-    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
-        if (RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it)) {
-            refreshTransformKnobTies(drawable);
-        }
-    }
+    refreshTransformKnobTies();
 }
 
 bool
-SplineWarpContext::tiesTransformKnobs(const RotoDrawableItem& item) const
+SplineWarpContext::pageEditsTransform(const RotoItem& owner) const
 {
     std::lock_guard<std::mutex> l(_warpMutex);
 
-    return !resolveTransformLinkLocked(&item);
+    return !resolveTransformLinkLocked(&owner);
+}
+
+std::string
+SplineWarpContext::getTransformFitRefusal(const RotoDrawableItem& item) const
+{
+    RotoItemPtr link;
+    {
+        std::lock_guard<std::mutex> l(_warpMutex);
+        link = resolveTransformLinkLocked(&item);
+    }
+    if (!link) {
+        return std::string();
+    }
+
+    return "its transform is linked to " + link->getScriptName() + ", so only a per-point follow can move it";
 }
 
 bool

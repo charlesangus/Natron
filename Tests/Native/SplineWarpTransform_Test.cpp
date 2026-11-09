@@ -442,6 +442,61 @@ TEST_F(SplineWarpTransformTest, ThePanelLinksTransformsAndUndoRestoresThem)
     EXPECT_EQ(RotoItemPtr(target), ctx->getTransformLink(layer));
 }
 
+TEST_F(SplineWarpTransformTest, ThePageLeavesALinkedItemsTargetAlone)
+{
+    NodePtr node = makeSplineWarp();
+    ASSERT_TRUE(bool(node));
+    SplineWarpContextPtr ctx = contextOf(node);
+    SplineWarp* effect = effectOf(node);
+    ASSERT_TRUE(ctx && effect);
+    BezierPtr target = makeQuad(ctx, 10., 10., 12.);
+    BezierPtr follower = makeQuad(ctx, 30., 5., 8.);
+    BezierPtr inLayer = makeQuad(ctx, 40., 30., 6.);
+    RotoLayerPtr layer = ctx->addLayer();
+    ASSERT_TRUE(target && follower && inLayer && layer);
+    layer->addItem(inLayer);
+    ctx->linkTransform(follower, target);
+    ctx->linkTransform(layer, target);
+    KnobDoublePtr page = doubleKnob(node, "translate");
+    KnobDoublePtr targetOwn = itemKnob(target, "translate");
+    ASSERT_TRUE(page && targetOwn);
+    int dims = 0;
+    const int translateIndex = SplineWarpTransform::indexOf("translate", &dims);
+
+    const BezierPtr curves[] = { target, follower, inLayer };
+    std::vector<Point> before;
+    for (const BezierPtr& curve : curves) {
+        before.push_back(positionAt(curve, 0.));
+    }
+
+    const RotoItemPtr linkedItems[] = { follower, layer };
+    for (const RotoItemPtr& linked : linkedItems) {
+        SCOPED_TRACE(linked->getScriptName());
+        ctx->clearSelection(RotoItem::eSelectionReasonOther);
+        ctx->select(linked, RotoItem::eSelectionReasonOther);
+        EXPECT_FALSE(page->isEnabled(0));
+        EXPECT_FALSE(effect->shouldDrawHostOverlay());
+
+        setTranslate(page, 4., 6.);
+        EXPECT_DOUBLE_EQ(0., targetOwn->getValue(0));
+        EXPECT_DOUBLE_EQ(0., targetOwn->getValue(1));
+        EXPECT_DOUBLE_EQ(0., ctx->getLayerTransform(layer).value(translateIndex).getValueAt(kTime));
+        for (std::size_t i = 0; i < before.size(); ++i) {
+            const Point after = positionAt(curves[i], 0.);
+            EXPECT_DOUBLE_EQ(before[i].x, after.x) << i;
+            EXPECT_DOUBLE_EQ(before[i].y, after.y) << i;
+        }
+    }
+
+    // The target edits its own transform, which its linked items take by choice of the link.
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    ctx->select(target, RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(page->isEnabled(0));
+    setTranslate(page, 4., 6.);
+    EXPECT_DOUBLE_EQ(4., targetOwn->getValue(0));
+    EXPECT_DOUBLE_EQ(6., targetOwn->getValue(1));
+}
+
 TEST_F(SplineWarpTransformTest, UndoRestoresALayerTransform)
 {
     NodePtr node = makeSplineWarp();

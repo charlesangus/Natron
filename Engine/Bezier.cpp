@@ -3002,8 +3002,8 @@ Bezier::setKeyframeInternal(double time,
     Q_EMIT keyframeSet(time);
 }
 
-void
-Bezier::removeKeyframe(double time)
+bool
+Bezier::removeKeyframeInternal(double time)
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
@@ -3013,7 +3013,7 @@ Bezier::removeKeyframe(double time)
         QMutexLocker l(&itemMutex);
 
         if (!_imp->hasKeyframeAtTime(useGuiCurve, time)) {
-            return;
+            return false;
         }
         assert( _imp->featherPoints.size() == _imp->points.size() || !useFeatherPoints() );
 
@@ -3038,8 +3038,95 @@ Bezier::removeKeyframe(double time)
     } else {
         invalidateContentHash();
     }
+
+    return true;
+}
+
+void
+Bezier::removeKeyframe(double time)
+{
+    if (!removeKeyframeInternal(time)) {
+        return;
+    }
     getContext()->evaluateChange();
     Q_EMIT keyframeRemoved(time);
+}
+
+void
+Bezier::removeKeyframes(const std::set<double>& times)
+{
+    for (std::set<double>::const_iterator it = times.begin(); it != times.end(); ++it) {
+        if (removeKeyframeInternal(*it)) {
+            Q_EMIT keyframeRemoved(*it);
+        }
+    }
+}
+
+void
+Bezier::setFollowedPoints(double time,
+                          const std::vector<FollowedPoint>& points)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    const EditSide side(this);
+    const bool useGuiCurve = side.useGuiCurve();
+    std::vector<BezierCPPtr> targets;
+    targets.reserve(points.size());
+    for (std::vector<FollowedPoint>::const_iterator it = points.begin(); it != points.end(); ++it) {
+        targets.push_back(it->feather ? getFeatherPointAtIndex(it->index) : getControlPointAtIndex(it->index));
+    }
+    bool keySet = false;
+    {
+        QMutexLocker l(&itemMutex);
+        keySet = !_imp->hasKeyframeAtTime(useGuiCurve, time);
+        if (keySet) {
+            const BezierCPs* const lists[] = { &_imp->points, useFeatherPoints() ? &_imp->featherPoints : nullptr };
+            for (const BezierCPs* list : lists) {
+                if (!list) {
+                    continue;
+                }
+                for (BezierCPs::const_iterator it = list->begin(); it != list->end(); ++it) {
+                    double x, y, leftX, leftY, rightX, rightY;
+                    (*it)->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &x, &y);
+                    (*it)->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &leftX, &leftY);
+                    (*it)->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &rightX, &rightY);
+                    (*it)->setPositionAtTime(useGuiCurve, time, x, y);
+                    (*it)->setLeftBezierPointAtTime(useGuiCurve, time, leftX, leftY);
+                    (*it)->setRightBezierPointAtTime(useGuiCurve, time, rightX, rightY);
+                }
+            }
+        }
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            if (!targets[i]) {
+                continue;
+            }
+            targets[i]->setPositionAtTime(useGuiCurve, time, points[i].x, points[i].y);
+            targets[i]->setLeftBezierPointAtTime(useGuiCurve, time, points[i].leftX, points[i].leftY);
+            targets[i]->setRightBezierPointAtTime(useGuiCurve, time, points[i].rightX, points[i].rightY);
+        }
+    }
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    syncGuiAfterEdit(useGuiCurve, BezierCPPtr(), BezierCPPtr(), time, false, true);
+    if (keySet) {
+        Q_EMIT keyframeSet(time);
+    }
+}
+
+void
+Bezier::notifyKeyframesRestored(const std::set<double>& before,
+                                const std::set<double>& after)
+{
+    for (std::set<double>::const_iterator it = before.begin(); it != before.end(); ++it) {
+        if (after.find(*it) == after.end()) {
+            Q_EMIT keyframeRemoved(*it);
+        }
+    }
+    for (std::set<double>::const_iterator it = after.begin(); it != after.end(); ++it) {
+        if (before.find(*it) == before.end()) {
+            Q_EMIT keyframeSet(*it);
+        }
+    }
 }
 
 void

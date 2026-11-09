@@ -403,6 +403,35 @@ public:
      **/
     void removeKeyframe(double time);
 
+    struct FollowedPoint {
+        int index = 0;
+        bool feather = false;
+        double x = 0.;
+        double y = 0.;
+        double leftX = 0.;
+        double leftY = 0.;
+        double rightX = 0.;
+        double rightY = 0.;
+    };
+
+    /**
+     * @brief Keys the whole curve at time and writes the given points on that key, in the curve's
+     * own coordinates. Ignores auto-keying and ripple: a follow writes one key per frame and every
+     * other key stands. The caller evaluates, once it has written a batch.
+     **/
+    void setFollowedPoints(double time, const std::vector<FollowedPoint>& points);
+
+    /**
+     * @brief removeKeyframe() for many keys. The caller evaluates, once.
+     **/
+    void removeKeyframes(const std::set<double>& times);
+
+    /**
+     * @brief Tells what shows this curve's keys that its points were put back to another state,
+     * going from the keys before to the keys after.
+     **/
+    void notifyKeyframesRestored(const std::set<double>& before, const std::set<double>& after);
+
     /**
      * @brief Removes all animation
      **/
@@ -764,6 +793,9 @@ private:
      * that picked it.
      **/
     void setKeyframeInternal(double time, bool useGuiCurve);
+
+    // False when there was no key at time.
+    bool removeKeyframeInternal(double time);
 
     /**
      * @brief True, after warning the user, when ripple edit is limited to some keys and point

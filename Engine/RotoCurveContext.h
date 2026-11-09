@@ -59,6 +59,8 @@ CLANG_DIAG_ON(deprecated-declarations)
 NATRON_NAMESPACE_ENTER
 
 struct RotoContextPrivate;
+struct VectorFollowParams;
+struct VectorFollowReport;
 class ContentHasher;
 
 /**
@@ -174,6 +176,13 @@ public:
     BezierPtr makeEllipse(double x, double y, double diameter, bool fromCenter, double time);
     BezierPtr makeSquare(double x, double y, double initialSize, double time);
     std::string generateUniqueName(const std::string& baseName);
+
+    /**
+     * @brief Follows the given shapes along the vectors of a node, here and now: the keys are written
+     * on the main thread between reads of the source. The whole follow is one undo step, pushed on
+     * the node or handed over in undo when given. A refused source only sets the report's error.
+     **/
+    VectorFollowReport followVectors(const VectorFollowParams& params, UndoCommandPtr* undo = 0);
 
     /**
      * @brief Called on every drawable item made for this context, by creation, copy or load,
@@ -319,6 +328,27 @@ public:
     bool isTransformKnob(const KnobI* knob) const;
 
     /**
+     * @brief While one is alive no item's transform knobs are tied to the Transform page, so every
+     * read and write of them reaches the item's own knobs. Main thread only.
+     **/
+    class TransformTieSuspension {
+    public:
+        explicit TransformTieSuspension(const RotoCurveContextPtr& context);
+        ~TransformTieSuspension();
+
+        TransformTieSuspension(const TransformTieSuspension&) = delete;
+        TransformTieSuspension& operator=(const TransformTieSuspension&) = delete;
+
+    private:
+        RotoCurveContextWPtr _context;
+    };
+
+    /**
+     * @brief The item whose transform knobs the Transform page edits, or null.
+     **/
+    RotoDrawableItemPtr getTransformTiedItem() const;
+
+    /**
      * @brief Sets center to getDefaultTransformCenter(), or else to the centre of the selected
      * items' bounding box, at the current time.
      **/
@@ -349,21 +379,42 @@ public:
      **/
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const;
 
+    /**
+     * @brief Why a follow must not fit item's transform, empty when it may. A fit writes item's own
+     * transform knobs, which only move item while no other item's transform takes their place.
+     **/
+    virtual std::string getTransformFitRefusal(const RotoDrawableItem& /*item*/) const
+    {
+        return std::string();
+    }
+
 protected:
     /**
-     * @brief False when the Transform page must not edit item's own transform knobs, so selecting
-     * the item leaves them untied. See refreshTransformKnobTies().
+     * @brief False when the Transform page must not edit owner's transform, so selecting owner
+     * leaves the page untied and disabled. See refreshTransformKnobTies().
      **/
-    virtual bool tiesTransformKnobs(const RotoDrawableItem& /*item*/) const
+    virtual bool pageEditsTransform(const RotoItem& /*owner*/) const
     {
         return true;
     }
 
     /**
-     * @brief Ties or unties a selected item's transform knobs after tiesTransformKnobs() changed
-     * for it. An item inside a selected layer ends up untied, so edits reach only the layer.
+     * @brief True when a layer has a transform of its own, so a selected layer counts as one more
+     * transform in the selection.
      **/
-    void refreshTransformKnobTies(const RotoDrawableItemPtr& item);
+    virtual bool layersOwnTransforms() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Ties the Transform page to the selection's one transform: the item's knobs when the
+     * selection holds exactly one transform and it is an item's that pageEditsTransform() allows.
+     * Where layersOwnTransforms(), an item inside a selected layer does not count. With more than
+     * one transform selected, none, or one the page must not edit, nothing is tied and the page is
+     * disabled, which hides the transform handle too. Main thread only.
+     **/
+    void refreshTransformKnobTies();
 
     void resetTransformInternal(const KnobDoublePtr& translate,
                                 const KnobDoublePtr& scale,
@@ -645,7 +696,7 @@ public Q_SLOTS:
 
     void onSelectedKnobCurveChanged();
 
-    void onSelectedKnobValueChanged();
+    void onSelectedKnobValueChanged(ViewSpec view, int dimension, int reason);
 
     void onLifeTimeKnobValueChanged(ViewSpec, int, int);
 
@@ -660,6 +711,7 @@ private:
     void deselectInternal(RotoItemPtr b);
     void tieItemKnob(const KnobIPtr& itemKnob, const KnobIPtr& contextKnob, bool slave);
     void untieItemKnob(const KnobIPtr& itemKnob, bool copyState);
+    void untieItemTransformKnobs(const RotoDrawableItemPtr& item);
 
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 

@@ -1,6 +1,7 @@
 """Render delegate selection (M248 - Render Delegate Selection): the scene view's Renderer submenu
 lists the registered Hydra delegates with Storm checked, and USDRender has a Renderer knob whose
-default is Storm.
+default is Scene Default (M253 - Delegate Render Settings: the scene's render settings prim names the
+renderer, Storm when it names none).
 
 Graph: USDCube into Viewer1, and a USDRender. Once the scene is drawn the script checks the
 SceneViewport's natronSceneRenderer and natronSceneRendererError properties, posts the view's
@@ -200,8 +201,7 @@ try:
         options = [str(o) for o in knob.getOptions()]
         report("NOTE USDRender renderer options (IDs): %r, current %r" % (options, knob.get()))
         check(STORM_ID in options, "the USDRender Renderer options include Storm's id (%r)" % (options,))
-        if STORM_ID in options:
-            check(knob.getOption(knob.get()) == STORM_ID, "the USDRender Renderer defaults to Storm (index %r)" % (knob.get(),))
+        check(knob.getOption(knob.get()) == "sceneDefault", "the USDRender Renderer defaults to Scene Default (index %r)" % (knob.get(),))
         yield ("sleep", SETTLE_MS)
         opened = yield from open_panel(render)
         yield ("sleep", SETTLE_MS)

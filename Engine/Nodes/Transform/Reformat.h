@@ -31,6 +31,7 @@
 #include <list>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
@@ -79,7 +80,7 @@ struct ReformatParams {
     double time = 0.;
     ViewIdx view;
     bool identity = false;
-    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    Resampler::FilterSpec filter;
     bool clamp = false;
     bool blackOutside = false;
 };
@@ -159,6 +160,7 @@ struct ReformatOp {
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
     KnobBoolWPtr blackOutside;
+    Resampler::FilterKnobs filterKnobs;
 };
 
 static_assert(GpuResampleOp<ReformatOp>);
@@ -320,7 +322,7 @@ private:
      **/
     void refreshVisibility();
 
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     KnobBoolWPtr _useRoD;
     KnobChoiceWPtr _type;

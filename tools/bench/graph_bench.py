@@ -621,8 +621,15 @@ def load_comp(path, render_dir):
     session_app = loaded if loaded is not None else app
     if CUSTOM_SIZE and CUSTOM_SIZE != "3840x2160":
         w, h = (int(v) for v in CUSTOM_SIZE.lower().split("x"))
-        session_app.addFormat("bench%dx%d %d %d 1" % (w, h, w, h))
-        session_app.getProjectParam("outputFormat").set("bench%dx%d" % (w, h))
+        session_app.addFormat("bench%dx%d %dx%d 1" % (w, h, w, h))
+        name = "bench%dx%d" % (w, h)
+        output_format = session_app.getProjectParam("outputFormat")
+        output_format.set(name)
+        # addFormat keeps an existing entry of the same size under its own name, and set() then leaves the menu where it was.
+        chosen = output_format.getOption(output_format.get())
+        if chosen != name:
+            raise RuntimeError("output format is %s after setting %s: a project format of %dx%d already exists under another name"
+                               % (chosen, name, w, h))
     writer = session_app.getNode("Write")
     if writer is None:
         raise RuntimeError("%s has no Write node" % path)

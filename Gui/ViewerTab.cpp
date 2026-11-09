@@ -45,6 +45,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
@@ -115,6 +116,8 @@ const char* const kViewerKnobNames[] = {
     kViewerParamFullFrame,
     kViewerParamEnableDownscale,
     kViewerParamDownscaleLevel,
+    kViewerParamMaxSamples,
+    kViewerParamRefinementPaused,
 };
 
 // One value per dimension: numbers for bool/int/double knobs, strings for string knobs.
@@ -836,6 +839,50 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->pickerButton, SIGNAL(clicked(bool)), this, SLOT(onPickerButtonClicked(bool)) );
 
     _imp->secondRowLayout->addWidget(_imp->pickerButton);
+
+    /*Progressive render row*/
+    _imp->sceneRenderRow = new QWidget(this);
+    _imp->sceneRenderRow->setObjectName(QString::fromUtf8("sceneRenderRow"));
+    _imp->sceneRenderRowLayout = new QHBoxLayout(_imp->sceneRenderRow);
+    _imp->sceneRenderRowLayout->setSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING));
+    _imp->sceneRenderRowLayout->setContentsMargins(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING),
+                                                   TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING));
+    _imp->mainLayout->addWidget(_imp->sceneRenderRow);
+
+    const QString maxSamplesTt = NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel the renderer refines the 3D view to; "
+                                                                           "0 uses the renderer's default. A change restarts the render."),
+                                                                        NATRON_NAMESPACE::WhiteSpaceNormal);
+    Label* maxSamplesLabel = new Label(tr("Max Samples"), _imp->sceneRenderRow);
+    maxSamplesLabel->setToolTip(maxSamplesTt);
+    _imp->sceneRenderRowLayout->addWidget(maxSamplesLabel);
+    _imp->maxSamplesBox = new SpinBox(_imp->sceneRenderRow, SpinBox::eSpinBoxTypeInt);
+    _imp->maxSamplesBox->setObjectName(QString::fromUtf8(kViewerParamMaxSamples));
+    _imp->maxSamplesBox->setMinimum(0);
+    _imp->maxSamplesBox->setValue(0);
+    _imp->maxSamplesBox->setMinimumWidth(_imp->maxSamplesBox->fontMetrics().horizontalAdvance(QString::fromUtf8("1048576")) + TO_DPIX(24));
+    _imp->maxSamplesBox->setToolTip(maxSamplesTt);
+    _imp->sceneRenderRowLayout->addWidget(_imp->maxSamplesBox);
+
+    _imp->refinementPausedButton = new Button(tr("Pause"), _imp->sceneRenderRow);
+    _imp->refinementPausedButton->setObjectName(QString::fromUtf8(kViewerParamRefinementPaused));
+    _imp->refinementPausedButton->setFocusPolicy(Qt::NoFocus);
+    _imp->refinementPausedButton->setCheckable(true);
+    _imp->refinementPausedButton->setChecked(false);
+    _imp->refinementPausedButton->setDown(false);
+    _imp->refinementPausedButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Holds the refinement at its current samples; "
+                                                                                       "releasing it continues from them. Edits wait until it is released."),
+                                                                                    NATRON_NAMESPACE::WhiteSpaceNormal));
+    _imp->sceneRenderRowLayout->addWidget(_imp->refinementPausedButton);
+
+    _imp->refineSamplesLabel = new Label(QString(), _imp->sceneRenderRow);
+    _imp->refineSamplesLabel->setObjectName(QString::fromUtf8("refineSamples"));
+    _imp->refineSamplesLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel of the frame shown, against the cap."),
+                                                                                NATRON_NAMESPACE::WhiteSpaceNormal));
+    _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
+    _imp->sceneRenderRowLayout->addStretch();
+    _imp->sceneRenderRow->hide();
+    QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
+    QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
     /*=============================================*/
 
     /*OpenGL viewer*/
@@ -1451,6 +1498,9 @@ ViewerTab::onActiveInputDataKindChanged()
         if (Gui* gui = getGui()) {
             _imp->sceneViewport->setUndoHistory(gui->getUndoHistory());
         }
+        QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
+        QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
+        refreshSceneRenderFromKnobs();
     }
     if (!_imp->sceneViewport) {
         return;
@@ -1465,6 +1515,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->clearScene();
         _imp->viewer->show();
     }
+    refreshSceneRenderRow();
     Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
 
@@ -1613,6 +1664,8 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
     } else if ((name == kViewerParamInPoint) || (name == kViewerParamOutPoint)) {
         refreshFrameRangeFromKnobs();
         abortViewersAndRefresh();
+    } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused)) {
+        refreshSceneRenderFromKnobs();
     }
 }
 
@@ -1629,6 +1682,7 @@ ViewerTab::refreshAllFromViewerKnobs()
     refreshViewsMenuFromKnob();
     refreshFpsFromKnobs();
     refreshFrameRangeFromKnobs();
+    refreshSceneRenderFromKnobs();
 }
 
 void
@@ -1723,6 +1777,74 @@ ViewerTab::refreshProcessingButtonsFromKnobs()
     _imp->activateRenderScale->setChecked(downscale);
     _imp->activateRenderScale->setDown(downscale);
     _imp->renderScaleCombo->setCurrentIndex_no_emit(level);
+}
+
+void
+ViewerTab::refreshSceneRenderFromKnobs()
+{
+    const int maxSamples = _imp->viewerValue<int>(kViewerParamMaxSamples, 0);
+    const bool paused = _imp->viewerValue<bool>(kViewerParamRefinementPaused, false);
+
+    {
+        QSignalBlocker b0(_imp->maxSamplesBox), b1(_imp->refinementPausedButton);
+        if (_imp->maxSamplesBox->value() != maxSamples) {
+            _imp->maxSamplesBox->setValue(maxSamples);
+        }
+        _imp->refinementPausedButton->setChecked(paused);
+        _imp->refinementPausedButton->setDown(paused);
+    }
+    if (_imp->sceneViewport) {
+        _imp->sceneViewport->setMaxSamples(maxSamples);
+        _imp->sceneViewport->setRefinementPaused(paused);
+    }
+}
+
+void
+ViewerTab::onMaxSamplesBoxChanged(double value)
+{
+    editViewerKnobs(tr("Max Samples"), [this, value]() { _imp->setViewerValue<int>(kViewerParamMaxSamples, (int)value); }, _imp->maxSamplesBox->getGestureKey());
+    refreshSceneRenderFromKnobs();
+}
+
+void
+ViewerTab::onRefinementPausedButtonClicked(bool paused)
+{
+    editViewerKnobs(tr("Refinement Paused"), [this, paused]() {
+        _imp->setViewerValue<bool>(kViewerParamRefinementPaused, paused);
+    });
+    refreshSceneRenderFromKnobs();
+}
+
+void
+ViewerTab::refreshSceneRenderRow()
+{
+    if (!_imp->sceneRenderRow) {
+        return;
+    }
+    bool topVisible;
+    {
+        QMutexLocker l(&_imp->visibleToolbarsMutex);
+        topVisible = _imp->topToolbarVisible;
+    }
+    const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
+
+    _imp->sceneRenderRow->setVisible(topVisible && progressive);
+    refreshRefineSamplesLabel();
+}
+
+void
+ViewerTab::refreshRefineSamplesLabel()
+{
+    if (!_imp->sceneViewport || !_imp->sceneRenderRow->isVisible()) {
+        return;
+    }
+    const SceneViewportRenderer::RefineStatus refine = _imp->sceneViewport->getRenderer().getRefineStatus();
+    const QString drawn = (refine.active && (refine.drawnSamples >= 0)) ? QString::number(refine.drawnSamples) : QString::fromUtf8("-");
+    const QString text = (refine.maxSamples > 0) ? tr("%1 / %2 samples").arg(drawn).arg(refine.maxSamples) : tr("%1 samples").arg(drawn);
+
+    if (_imp->refineSamplesLabel->text() != text) {
+        _imp->refineSamplesLabel->setText(text);
+    }
 }
 
 void

@@ -1163,7 +1163,7 @@ GuiApplicationManager::releaseSceneViewEngines()
         for (ViewerTab* viewer : viewers) {
             SceneViewport* view = viewer->getSceneViewport();
             // Other delegates hold host memory, not the GPU's.
-            if (view && RenderDelegates::isStorm(view->getRenderer().getRendererId())) {
+            if (view && RenderDelegates::isStorm(view->getRenderer().getActiveRendererId())) {
                 view->releaseEngine();
             }
         }

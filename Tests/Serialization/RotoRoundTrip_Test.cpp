@@ -100,8 +100,7 @@ keyframeTimes(const CurvePtr& curve)
     return times;
 }
 
-// Compares the internal, not the GUI, curves of two points, and their tangents as stored: the
-// realigned tangents depend on the broken flag, which saving does not keep.
+// Compares the internal, not the GUI, curves of two points, and their tangents as stored.
 void
 expectSamePoint(const BezierCPPtr& expected,
                 const BezierCPPtr& actual,
@@ -149,8 +148,7 @@ expectSameShape(const BezierPtr& expected,
     std::list<BezierCPPtr>::const_iterator actualIt = actualPoints.begin();
     for (std::list<BezierCPPtr>::const_iterator it = expectedPoints.begin(); it != expectedPoints.end(); ++it, ++actualIt) {
         expectSamePoint(*it, *actualIt, expectedTimes);
-        // Saving never keeps the broken flag of a bezier's points.
-        EXPECT_FALSE((*actualIt)->getBroken());
+        EXPECT_EQ((*it)->getBroken(), (*actualIt)->getBroken());
     }
 
     const std::list<BezierCPPtr> expectedFeatherPoints = expected->getFeatherPoints_mt_safe();
@@ -160,6 +158,7 @@ expectSameShape(const BezierPtr& expected,
     for (std::list<BezierCPPtr>::const_iterator it = expectedFeatherPoints.begin(); it != expectedFeatherPoints.end(); ++it, ++actualIt) {
         EXPECT_TRUE((*actualIt)->isFeatherPoint());
         expectSamePoint(*it, *actualIt, expectedTimes);
+        EXPECT_EQ((*it)->getBroken(), (*actualIt)->getBroken());
     }
 }
 
@@ -327,8 +326,8 @@ TEST_F(RotoRoundTripTest, AnimatedFeatheredBezierWithBrokenTangent)
     EXPECT_FALSE(child.bezier.isOpenBezier);
     EXPECT_EQ(2u, child.bezier.controlPoints.front().xCurve.keyframes.size());
     EXPECT_EQ(2u, child.bezier.controlPoints.front().leftXCurve.keyframes.size());
-    // Saving never keeps the broken flag of a bezier's points.
-    EXPECT_FALSE(child.bezier.controlPoints.front().broken);
+    EXPECT_TRUE(child.bezier.controlPoints.front().broken);
+    EXPECT_FALSE(child.bezier.controlPoints.back().broken);
     ASSERT_EQ(1u, loaded.selectedItems.size());
     EXPECT_EQ(square->getScriptName(), loaded.selectedItems.front());
 

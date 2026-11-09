@@ -39,6 +39,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
@@ -362,6 +364,7 @@ appendUpstreamMetadata(const ScenePayload& upstream,
     h->appendDouble(metadata.metersPerUnit);
     h->appendString(metadata.defaultPrim);
     h->appendDouble(metadata.timeCodesPerSecond);
+    h->appendString(metadata.renderSettingsPrimPath);
 }
 
 void
@@ -492,12 +495,12 @@ authorTransform(const SceneTransformKnobs& knobs,
                               return PXR_NS::GfVec3d(translate->getValueAtTime(frame, 0), translate->getValueAtTime(frame, 1), translate->getValueAtTime(frame, 2));
                           })
         && authorValue(rotateOp.GetAttr(), edit, isAnimated(rotate), [&rotate](double frame) {
-                              return PXR_NS::GfVec3f((float)rotate->getValueAtTime(frame, 0), (float)rotate->getValueAtTime(frame, 1), (float)rotate->getValueAtTime(frame, 2));
+                              return PXR_NS::GfVec3f(knobValueAsFloat(rotate->getValueAtTime(frame, 0)), knobValueAsFloat(rotate->getValueAtTime(frame, 1)), knobValueAsFloat(rotate->getValueAtTime(frame, 2)));
                           })
         && authorValue(scaleOp.GetAttr(), edit, isAnimated(scale) || isAnimated(uniformScale), [&scale, &uniformScale](double frame) {
                               const double uniform = uniformScale->getValueAtTime(frame, 0);
 
-                              return PXR_NS::GfVec3f((float)(scale->getValueAtTime(frame, 0) * uniform), (float)(scale->getValueAtTime(frame, 1) * uniform), (float)(scale->getValueAtTime(frame, 2) * uniform));
+                              return PXR_NS::GfVec3f(knobValueAsFloat(productOrInfinity(scale->getValueAtTime(frame, 0), uniform)), knobValueAsFloat(productOrInfinity(scale->getValueAtTime(frame, 1), uniform)), knobValueAsFloat(productOrInfinity(scale->getValueAtTime(frame, 2), uniform)));
                           });
     if (!authored) {
         *errorMessage = EffectInstance::tr("USD could not author the transform of %1.").arg(QString::fromStdString(xformable.GetPath().GetString())).toStdString();

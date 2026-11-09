@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <cstdint>
 #include <span>
 
@@ -37,6 +38,7 @@
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -78,9 +80,12 @@ struct WarpGpuParams {
     uint32_t mapComps = 1;
     int32_t mapComponent = -1;
     float mapExponent = 1.f;
+    int32_t lobes = 4;
+    float bicubicB = 1.f / 3.f;
+    float bicubicC = 1.f / 3.f;
 };
 
-static_assert(sizeof(WarpGpuParams) == 43 * 4, "stmap.slang reads 43 words");
+static_assert(sizeof(WarpGpuParams) == 46 * 4, "stmap.slang reads 46 words");
 
 inline constexpr uint32_t kWarpGpuClamp = 1;
 inline constexpr uint32_t kWarpGpuBlackOutside = 2;
@@ -104,8 +109,10 @@ inline void
 setWarpGpuDouble(double v,
                  float out[2])
 {
-    out[0] = (float)v;
-    out[1] = (float)(v - (double)out[0]);
+    out[0] = knobValueAsFloat(v);
+    // Past the float range the high word is infinite and there is no remainder; subtracting an
+    // infinite high word would raise the invalid exception for an infinite v.
+    out[1] = std::isinf(out[0]) ? 0.f : (float)(v - (double)out[0]);
 }
 
 // The region of definition of input inputNb of effect at time and view, in pixels at scale; empty

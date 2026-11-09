@@ -142,6 +142,14 @@ setContributedNote(const NodePtr& node,
     knob->setValue(note);
 }
 
+std::string
+ofxKeyOf(const std::string& nativeKey)
+{
+    const std::string prefix = "natron/";
+
+    return nativeKey.compare(0, prefix.size(), prefix) == 0 ? "ofx/" + nativeKey.substr(prefix.size()) : nativeKey;
+}
+
 // Asserts that props holds key with exactly the type, dimension and values of value.
 void
 expectPropertyHolds(const OFX::Host::Property::Set& props,
@@ -212,13 +220,14 @@ TEST(OfxMetadataBridge, ConvertsEverySupportedTypeBothWays)
 
     EXPECT_EQ(std::optional<int>(-7), native.getInt("exr/scalarInt"));
     EXPECT_EQ(std::optional<double>(23.976), native.getDouble("exr/scalarDouble"));
-    EXPECT_EQ(std::optional<std::string>("/shots/a/plate.0003.exr"), native.getString("ofx/filepath"));
+    EXPECT_EQ(std::optional<std::string>("/shots/a/plate.0003.exr"), native.getString("natron/filepath"));
+    EXPECT_FALSE(native.contains("ofx/filepath"));
     EXPECT_EQ(std::optional<std::vector<int>>(std::vector<int>(intTriple, intTriple + 3)), native.getIntVector("exr/intTriple"));
     EXPECT_EQ(std::optional<std::vector<double>>(std::vector<double>(doublePair, doublePair + 2)), native.getDoubleVector("exr/doublePair"));
     EXPECT_EQ(std::optional<std::vector<int>>(std::vector<int>()), native.getIntVector("exr/emptyInts"));
 
     // ImageMetadata has no string vector and no pointer type.
-    EXPECT_FALSE(native.contains("ofx/viewnames"));
+    EXPECT_FALSE(native.contains("natron/viewnames"));
     EXPECT_FALSE(native.contains("exr/pointer"));
     EXPECT_EQ(6u, native.size());
 
@@ -232,10 +241,30 @@ TEST(OfxMetadataBridge, ConvertsEverySupportedTypeBothWays)
     ImageMetadata nonEmpty = native;
     nonEmpty.remove("exr/emptyInts");
     for (ImageMetadata::const_iterator it = nonEmpty.begin(); it != nonEmpty.end(); ++it) {
-        expectPropertyHolds(back, it->first, it->second);
+        expectPropertyHolds(back, ofxKeyOf(it->first), it->second);
     }
 
     EXPECT_EQ(nonEmpty, OfxMetadataBridge::fromOfxPropertySet(back));
+}
+
+TEST(OfxMetadataBridge, OnlyTheStandardPrefixIsRenamedAtTheBoundary)
+{
+    ImageMetadata native;
+
+    native.setInt("natron/frame", 1);
+    native.setInt("natronish/frame", 2);
+    native.setInt("exr/natron/frame", 3);
+    native.setInt("com.example.key", 4);
+
+    OFX::Host::Property::Set ofx;
+    OfxMetadataBridge::toOfxPropertySet(native, &ofx);
+
+    EXPECT_EQ(1, ofx.getIntProperty("ofx/frame"));
+    EXPECT_TRUE(ofx.fetchProperty("natron/frame") == NULL);
+    EXPECT_EQ(2, ofx.getIntProperty("natronish/frame"));
+    EXPECT_EQ(3, ofx.getIntProperty("exr/natron/frame"));
+    EXPECT_EQ(4, ofx.getIntProperty("com.example.key"));
+    EXPECT_EQ(native, OfxMetadataBridge::fromOfxPropertySet(ofx));
 }
 
 TEST(OfxMetadataBridge, WritingReplacesAPropertyOfAnotherType)
@@ -269,7 +298,7 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
     ASSERT_TRUE(shuffleEffect != NULL);
 
     ImageMetadata extra;
-    extra.setString(kOfxMetadataKeyFilePath, "/shots/a/plate.0003.exr");
+    extra.setString(kNatronMetadataKeyFilePath, "/shots/a/plate.0003.exr");
     extra.setIntVector("exr/dataWindow", std::vector<int> { 0, 0, 1919, 1079 });
     extra.setDoubleVector("exr/chromaticities", std::vector<double> { 0.64, 0.33, 0.3, 0.6 });
     sourceEffect->setExtraMetadata(extra);
@@ -280,8 +309,8 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
     const double time = 3.;
     const ImageMetadata expected = shuffleEffect->getOutputMetadata(time, ViewIdx(0));
 
-    ASSERT_EQ(std::optional<int>(static_cast<int>(time)), expected.getInt(kOfxMetadataKeySourceFrame));
-    ASSERT_TRUE(expected.contains(kOfxMetadataKeyFilePath));
+    ASSERT_EQ(std::optional<int>(static_cast<int>(time)), expected.getInt(kNatronMetadataKeySourceFrame));
+    ASSERT_TRUE(expected.contains(kNatronMetadataKeyFilePath));
     ASSERT_TRUE(expected.contains("exr/tag"));
 
     OFX::Host::ImageEffect::ClipInstance* clip = clipOf(downstream, kOfxImageEffectSimpleSourceClipName);
@@ -291,7 +320,7 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
     ASSERT_TRUE(received.get() != NULL);
 
     for (ImageMetadata::const_iterator it = expected.begin(); it != expected.end(); ++it) {
-        expectPropertyHolds(*received.get(), it->first, it->second);
+        expectPropertyHolds(*received.get(), ofxKeyOf(it->first), it->second);
     }
 
     EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyWidth) == NULL);
@@ -351,7 +380,7 @@ TEST_F(BaseTest, OfxMetadataBridgeOfxKeysReachTheNativeNode)
     const ImageMetadata native = shuffleEffect->getOutputMetadata(time, ViewIdx(0));
 
     EXPECT_EQ(std::optional<std::string>("bridged"), native.getString(kContributeNoteKey));
-    EXPECT_EQ(std::optional<double>(kContributedFrameRate), native.getDouble(kOfxMetadataKeyFrameRate));
+    EXPECT_EQ(std::optional<double>(kContributedFrameRate), native.getDouble(kNatronMetadataKeyFrameRate));
 
     OFX::Host::ImageEffect::ClipInstance* output = clipOf(contribute, kOfxImageEffectOutputClipName);
     ASSERT_TRUE(output != NULL);

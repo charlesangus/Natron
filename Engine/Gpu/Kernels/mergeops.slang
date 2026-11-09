@@ -1,5 +1,7 @@
 module mergeops;
 
+import exactdivide;
+
 // Merge operators on premultiplied pixels: A over B, with a and b their alphas. This module is the
 // canonical source; Engine/Nodes/Merge/MergeOps.cpp is its CPU twin, kept in the same operand order,
 // and Tests/Gpu/MergeOpsOracle_Test.cpp holds the two together. Operator indices follow the
@@ -122,7 +124,7 @@ float mergeHardLight(float A, float B)
 
 float mergeSignedSqrt(float x)
 {
-    return (x < 0.0) ? -sqrt(-x) : sqrt(x);
+    return (x < 0.0) ? -sqrtRounded(-x) : sqrtRounded(x);
 }
 
 public float mergeSeparable(uint op, float A, float a, float B, float b)
@@ -137,16 +139,26 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
     case MERGE_AVERAGE:
         return (A + B) * 0.5;
     case MERGE_COLOR_BURN:
-        return (A > 0.0) ? 1.0 - (1.0 - B) / A : A;
+    {
+        if (!(A > 0.0))
+            return A;
+        precise float r = 1.0 - divideRounded(1.0 - B, A);
+        return r;
+    }
     case MERGE_COLOR_DODGE:
-        return (A < 1.0) ? B / (1.0 - A) : A;
+    {
+        if (!(A < 1.0))
+            return A;
+        precise float d = 1.0 - A;
+        return divideRounded(B, d);
+    }
     case MERGE_CONJOINT_OVER:
     {
         if (a >= b)
             return A;
         if (b <= 0.0)
             return A + B;
-        precise float r = A + B * (1.0 - a / b);
+        precise float r = A + B * (1.0 - divideRounded(a, b));
         return r;
     }
     case MERGE_COPY:
@@ -159,24 +171,33 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
             return A;
         if (a + b <= 1.0)
             return A + B;
-        precise float r = A + B * (1.0 - a) / b;
+        precise float n = B * (1.0 - a);
+        precise float r = A + divideRounded(n, b);
         return r;
     }
     case MERGE_DIVIDE:
-        return (B != 0.0) ? A / B : 0.0;
+        return (B != 0.0) ? divideRounded(A, B) : 0.0;
     case MERGE_EXCLUSION:
     {
         precise float r = A + B - 2.0 * A * B;
         return r;
     }
     case MERGE_FREEZE:
-        return (B > 0.0) ? 1.0 - mergeSignedSqrt(1.0 - A) / B : 0.0;
+    {
+        if (!(B > 0.0))
+            return 0.0;
+        precise float r = 1.0 - divideRounded(mergeSignedSqrt(1.0 - A), B);
+        return r;
+    }
     case MERGE_FROM:
         return B - A;
     case MERGE_GEOMETRIC:
     {
-        const float s = A + B;
-        return (s != 0.0) ? 2.0 * A * B / s : 0.0;
+        precise float s = A + B;
+        if (s == 0.0)
+            return 0.0;
+        precise float n = 2.0 * A * B;
+        return divideRounded(n, s);
     }
     case MERGE_GRAIN_EXTRACT:
         return B - A + 0.5;
@@ -187,7 +208,7 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
     case MERGE_HYPOT:
     {
         precise float s = A * A + B * B;
-        return sqrt(s);
+        return sqrtRounded(s);
     }
     case MERGE_IN:
         return A * b;
@@ -220,7 +241,13 @@ public float mergeSeparable(uint op, float A, float a, float B, float b)
     case MERGE_PLUS:
         return A + B;
     case MERGE_REFLECT:
-        return (B < 1.0) ? A * A / (1.0 - B) : B;
+    {
+        if (!(B < 1.0))
+            return B;
+        precise float n = A * A;
+        precise float d = 1.0 - B;
+        return divideRounded(n, d);
+    }
     case MERGE_SCREEN:
         return mergeScreen(A, B);
     case MERGE_SOFT_LIGHT:
@@ -268,7 +295,7 @@ float3 mergeSetSat(float3 c, float s)
     const float t = mergeMax(mergeMax(c.x, c.y), c.z) - mn;
     if (!(t > 0.0))
         return float3(0.0, 0.0, 0.0);
-    const float k = s / t;
+    const float k = divideRounded(s, t);
     return float3((c.x - mn) * k, (c.y - mn) * k, (c.z - mn) * k);
 }
 

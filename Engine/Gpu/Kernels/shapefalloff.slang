@@ -6,6 +6,8 @@
 // A module: the shape kernels and the test entry (shapefalloff_test.slang) import it, and it
 // declares no bindings of its own.
 
+import exactdivide;
+
 static const int kFalloffLinear = 0;
 static const int kFalloffSmooth = 1;
 static const int kFalloffEaseIn = 2;
@@ -75,12 +77,12 @@ float rampT(float px, float py, float p0x, float p0y, float p1x, float p1y)
         return 1.f;
     }
 
-    return shapeClamp01(((px - p0x) * dx + (py - p0y) * dy) / len2);
+    return shapeClamp01(divideRounded((px - p0x) * dx + (py - p0y) * dy, len2));
 }
 
 float curvedEdgeDistance(float r, float g, float shorterRadius)
 {
-    const float d = (1.f - r) * r / g;
+    const float d = divideRounded((1.f - r) * r, g);
 
     return d < shorterRadius ? d : shorterRadius;
 }
@@ -99,11 +101,11 @@ ShapeEdge ellipseEdge(float px, float py, ShapeBox box)
         return e;
     }
     const float shorterRadius = rx < ry ? rx : ry;
-    const float qx = (px - (box.x1 + rx)) / rx;
-    const float qy = (py - (box.y1 + ry)) / ry;
-    const float gx = qx / rx;
-    const float gy = qy / ry;
-    const float g = sqrt(gx * gx + gy * gy);
+    const float qx = divideRounded(px - (box.x1 + rx), rx);
+    const float qy = divideRounded(py - (box.y1 + ry), ry);
+    const float gx = divideRounded(qx, rx);
+    const float gy = divideRounded(qy, ry);
+    const float g = sqrtRounded(gx * gx + gy * gy);
     if (!(g > 0.f))
     {
         e.distance = shorterRadius;
@@ -112,10 +114,10 @@ ShapeEdge ellipseEdge(float px, float py, ShapeBox box)
 
         return e;
     }
-    const float r = sqrt(qx * qx + qy * qy);
+    const float r = sqrtRounded(qx * qx + qy * qy);
     e.distance = curvedEdgeDistance(r, g, shorterRadius);
-    e.nx = gx / g;
-    e.ny = gy / g;
+    e.nx = divideRounded(gx, g);
+    e.ny = divideRounded(gy, g);
 
     return e;
 }
@@ -148,15 +150,15 @@ ShapeEdge roundedBoxEdge(float px, float py, ShapeBox box, float cornerX, float 
     const float oy = ay - (hy - ry);
     if ((rx > 0.f) && (ry > 0.f) && (ox > 0.f) && (oy > 0.f))
     {
-        const float qx = ox / rx;
-        const float qy = oy / ry;
-        const float gx = qx / rx;
-        const float gy = qy / ry;
-        const float g = sqrt(gx * gx + gy * gy);
-        const float r = sqrt(qx * qx + qy * qy);
+        const float qx = divideRounded(ox, rx);
+        const float qy = divideRounded(oy, ry);
+        const float gx = divideRounded(qx, rx);
+        const float gy = divideRounded(qy, ry);
+        const float g = sqrtRounded(gx * gx + gy * gy);
+        const float r = sqrtRounded(qx * qx + qy * qy);
         e.distance = curvedEdgeDistance(r, g, rx < ry ? rx : ry);
-        e.nx = sx * gx / g;
-        e.ny = sy * gy / g;
+        e.nx = divideRounded(sx * gx, g);
+        e.ny = divideRounded(sy * gy, g);
 
         return e;
     }
@@ -202,15 +204,15 @@ float pixelCoverage(ShapeEdge e, float pixelW, float pixelH)
     }
     if (s < b)
     {
-        return s * s / (2.f * a * b);
+        return divideRounded(s * s, 2.f * a * b);
     }
     if (s <= a)
     {
-        return (s - 0.5f * b) / a;
+        return divideRounded(s - 0.5f * b, a);
     }
     const float u = a + b - s;
 
-    return 1.f - u * u / (2.f * a * b);
+    return 1.f - divideRounded(u * u, 2.f * a * b);
 }
 
 float coverageIntegralBelowZero(float z, float a, float b)
@@ -222,11 +224,11 @@ float coverageIntegralBelowZero(float z, float a, float b)
     }
     if (s < b)
     {
-        return s * s * s / (6.f * a * b);
+        return divideRounded(s * s * s, 6.f * a * b);
     }
     const float m = s - 0.5f * b;
 
-    return b * b / (6.f * a) + (m * m - 0.25f * b * b) / (2.f * a);
+    return divideRounded(b * b, 6.f * a) + divideRounded(m * m - 0.25f * b * b, 2.f * a);
 }
 
 float coverageIntegral(float z, float a, float b)
@@ -259,7 +261,7 @@ float bandCoverage(ShapeEdge e, float softness, float pixelW, float pixelH)
         return 1.f;
     }
 
-    return shapeClamp01((coverageIntegral(e.distance, a, b) - coverageIntegral(inner, a, b)) / softness);
+    return shapeClamp01(divideRounded(coverageIntegral(e.distance, a, b) - coverageIntegral(inner, a, b), softness));
 }
 
 float shapeWeight(ShapeEdge e, float softness, int falloff, float pixelW, float pixelH)

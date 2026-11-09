@@ -66,6 +66,11 @@ struct SceneTransformDrag;
  * context current when its methods run, with a ground grid and an op's transform handles over it,
  * and picks prims at pixels.
  *
+ * Another delegate, such as a path tracer, renders progressively in the background
+ * (HydraRender::ProgressiveRender): each edit of the stage, the view or Max Samples restarts it, it
+ * refines until it converges, reaches Max Samples or is paused, and render() draws its latest
+ * frame, uploaded to a texture, under the grid and handles.
+ *
  * Owns one long-lived stage (SceneStage) for its whole life and syncs each new scene into it, so
  * an edit upstream reaches the engine as the stage's change notices, which it applies to the
  * changed prims alone. The engine is made
@@ -151,7 +156,24 @@ public:
     enum RenderStatusEnum {
         eRenderStatusDone = 0, // the image is final
         eRenderStatusRefining, // Storm has not converged; another render would refine the image
-        eRenderStatusBusy // a sync holds the viewer lock: nothing was drawn
+        eRenderStatusBusy, // a sync holds the viewer lock: nothing was drawn
+        eRenderStatusWaiting // a background render refines the image and calls the refine listener when it has more
+    };
+
+    // The progressive render of a delegate other than Storm.
+    struct RefineStatus {
+        // A delegate other than Storm is chosen and its engine is rendering, or has rendered.
+        bool active = false;
+        bool stopped = false;
+        bool converged = false;
+        // The samples per pixel rendered, -1 if the delegate reports none, and the cap.
+        int samples = -1;
+        int maxSamples = 0;
+        // The renders started and the frames published since the delegate was chosen.
+        U64 restarts = 0;
+        U64 frames = 0;
+        // The samples per pixel of the frame drawn last, -1 if unknown or none was.
+        int drawnSamples = -1;
     };
 
     /**
@@ -478,9 +500,21 @@ public:
 
     /**
      * @brief render(), unless a sync holds the viewer lock, in which case nothing is drawn and the
-     * framebuffer keeps what it had. For paints, which must not wait for a sync.
+     * framebuffer keeps what it had. For paints, which must not wait for a sync. It keeps the
+     * renderer it has: when Scene Default's prim names another, it draws with the old one and
+     * hasPendingRendererSwitch() turns true until followSceneRenderer() makes the switch.
      **/
     RenderStatusEnum renderIfIdle(unsigned int fbo, int width, int height);
+
+    /**
+     * @brief Under Scene Default, renders with the renderer the stage's prim names from the next
+     * render on; true if that changed the renderer. A change destroys the engine, so it needs the
+     * context of render() current.
+     **/
+    bool followSceneRenderer();
+
+    // Whether the last renderIfIdle() drew with a renderer Scene Default no longer names.
+    bool hasPendingRendererSwitch() const;
 
     /**
      * @brief The path of the prim drawn nearest to the pixel (x, y), counted from the top left of
@@ -501,14 +535,24 @@ public:
 
     /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
-     * empty id. A change destroys the engine, so it needs the context of render() current.
+     * empty id. kRenderDelegateSceneDefaultId renders with the renderer the stage's active render
+     * settings prim names (natron:renderer), Storm's without one, following it as the stage
+     * changes. A change destroys the engine, so it needs the context of render() current.
      **/
     void setRendererId(const std::string& id);
 
+    // The renderer chosen: a delegate's id, or kRenderDelegateSceneDefaultId.
     const std::string& getRendererId() const;
+
+    // The delegate rendering: the one chosen, or for Scene Default the one the prim names as of
+    // the last render.
+    const std::string& getActiveRendererId() const;
 
     // Why the chosen delegate could not render, empty if it can or has not been tried yet.
     const std::string& getRendererError() const;
+
+    // The error of a render that threw, which discarded the engine; cleared by reading it.
+    std::string takeRenderError();
 
     // The delegate of the engine held, empty if none is.
     std::string getEngineRendererId() const;
@@ -516,8 +560,38 @@ public:
     // The background colour render() clears to, as it shows through the display transform.
     void getBackgroundColor(float rgb[3]) const;
 
+    /**
+     * @brief The cap on the samples per pixel of a progressive render; <= 0 for the delegate's
+     * default. A change restarts the render; it holds across a change of delegate.
+     **/
+    void setMaxSamples(int samples);
+
+    // The cap in force: the one set, or the delegate's default once known, else 0.
+    int getMaxSamples() const;
+
+    // Pausing keeps a progressive render's samples; unpausing continues from them.
+    void setRefinementPaused(bool paused);
+
+    RefineStatus getRefineStatus() const;
+
+    /**
+     * @brief Called on the background render's thread whenever it has a new frame for render() to
+     * draw. Empty for none.
+     **/
+    void setRefineListener(const std::function<void()>& listener);
+
+    // Ends a progressive render and frees its engine and threads; the next render() starts another.
+    void releaseRefinement();
+
+    // How long the last upload of a progressive frame to its texture took, in milliseconds, and how
+    // many pixels it had; -1 and 0 before the first.
+    double getLastUploadMs() const;
+    int getLastUploadPixels() const;
+
 private:
-    bool renderLocked(unsigned int fbo, int width, int height);
+    RenderStatusEnum renderLocked(unsigned int fbo, int width, int height, bool followScene);
+
+    RenderStatusEnum renderProgressive(unsigned int fbo, int width, int height);
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
@@ -578,6 +652,12 @@ public:
 
     // Sets the Viewer 3D Lighting preference, which every 3D view follows.
     void setLightingMode(SceneViewportRenderer::LightingModeEnum mode);
+
+    // The progressive render's cap on samples per pixel, <= 0 for the delegate's default. The
+    // viewer's Max Samples and Refinement Paused knobs drive these.
+    void setMaxSamples(int samples);
+
+    void setRefinementPaused(bool paused);
 
     void setLookThroughCamera(const QString& path);
 
@@ -692,6 +772,12 @@ Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
 
+    // From the context menu's Renderer submenu.
+    void rendererChanged(const QString& id);
+
+    // Whenever the natronSceneSamples family of properties is published.
+    void refineStateChanged();
+
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();
 
@@ -714,9 +800,14 @@ private:
     // engines the renderer made, whether it holds one, its delegate and that delegate's error into
     // the natronSceneError, natronSceneShown, natronSceneSynced, natronSceneEngineCount,
     // natronSceneEngineHeld, natronSceneRenderer and natronSceneRendererError
-    // properties, and the display settings into natronSceneDrawMode, natronSceneShowGrid,
-    // natronSceneShowGuides, natronScenePurposes and natronSceneLighting.
+    // properties, the display settings into natronSceneDrawMode, natronSceneShowGrid,
+    // natronSceneShowGuides, natronScenePurposes and natronSceneLighting, and the progressive
+    // render's state into natronSceneSamples, natronSceneMaxSamples, natronSceneRefining,
+    // natronSceneRefinementStopped, natronSceneRefineConverged, natronSceneRestartCount and
+    // natronSceneUploadMs.
     void publishState();
+
+    void publishRefineState();
 
     // Starts dragging the transform handle at pos (widget coordinates). False if none is there.
     bool beginHandleDrag(const QPoint& pos);
@@ -767,6 +858,15 @@ private:
 
     // Main thread: the worker synced request serial, with error set on failure.
     void onSynced(U64 serial, bool ok, const QString& error);
+
+    // Main thread, outside a paint: Scene Default's switch to the renderer the prim now names.
+    void followSceneRenderer();
+
+    /**
+     * @brief Publishes the delegate rendering and emits rendererChanged() if it changed. Never from
+     * paintGL(): the render row it shows or hides resizes this widget.
+     **/
+    void publishActiveRenderer();
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

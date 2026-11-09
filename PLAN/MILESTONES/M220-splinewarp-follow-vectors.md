@@ -15,6 +15,9 @@ Scouted facts: none yet. Neither SplineWarp nor its context exists on `origin/ma
 - Following selected SplineWarp curves of either role, and selected correspondence points, which move per-point and are keyed at their own animation.
 - `Roto.followVectors` working on a SplineWarp's curve context.
 
+- Fits on a transform-linked SplineWarp curve (user, 2026-11-09): a fit does not refuse a linked curve. M219 shipped a refusal (`RotoCurveContext::refusesFollowFit` / SplineWarpContext override); remove it. The fit writes only the followed curve's own keys (its own transform if it has one apart from the link, otherwise baked point keys), never the link target's transform, so the link is kept and no other curve moves.
+- Modal follow (user, 2026-11-09): a running follow is modal and blocks the whole UI except cancelling it, in Roto, RotoPaint and SplineWarp alike. Replace M219's per-entry-point guards (viewer press/double-click/key guards in RotoPaint, the second host job refusing knob/input edits) with a modal progress dialog whose only control is Cancel, where that simplifies the code; keep refusing Python edits from scripts, which a dialog cannot block. Undo, panel deletion and graph edits are blocked by the modality.
+
 **Out:**
 - Pairing logic: moving the partner curve, or keeping the warp offset → none (user: whatever is selected).
 - A new motion model → none. M219's models apply.
@@ -59,3 +62,7 @@ Scouted facts: none yet. Neither SplineWarp nor its context exists on `origin/ma
 ## Decisions
 
 - 2026-10-25 — **SplineWarp follows whatever is selected (user),** with no pairing logic.
+
+## Decisions
+- 2026-11-09 — **A fit does not refuse a linked SplineWarp curve (user).** Only the followed curve's own keys change; the link stays.
+- 2026-11-09 — **A follow is modal and blocks everything except Cancel (user),** "especially if that simplifies things". Applies to M219's Roto/RotoPaint follow as well as SplineWarp.

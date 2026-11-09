@@ -34,6 +34,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Filter/MapInput.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectD.h"
@@ -138,7 +139,7 @@ public:
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
-        Resampler::FilterEnum filter = Resampler::eFilterCubic;
+        Resampler::FilterSpec filter;
         bool clamp = false;
         bool blackOutside = true;
         double uOffset = 0.;
@@ -151,6 +152,14 @@ private:
     };
 
     virtual void initializeKnobs() OVERRIDE FINAL;
+
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
 
     // Transparent black while UV or Source is disconnected.
     virtual Route route(double time,
@@ -231,6 +240,7 @@ private:
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
+    Resampler::FilterKnobs _filterKnobs;
     KnobChoiceWPtr _formatFrom;
     KnobBoolWPtr _uvAlpha;
     MapInput _map;

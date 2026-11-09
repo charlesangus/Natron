@@ -290,6 +290,7 @@ BlurOp::createKnobs(KnobHolder* holder,
 {
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Size"), 2);
     sizeKnob->setName(kBlurParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(EffectInstance::tr("Size (diameter) of the filter kernel, in pixel units (>=0). The standard deviation of the corresponding Gaussian is size/2.4. No blur is applied if size < 0.24 (the Gaussians and quasi-Gaussian) or <= 1 (box, triangle and quadratic)."));
     sizeKnob->setSpatial(true);
     sizeKnob->setCanAutoFoldDimensions(true);

@@ -55,6 +55,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 {
     KnobDoublePtr translateKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Translate"), 2);
     translateKnob->setName(kTransformNodeParamTranslate);
+    translateKnob->setValueRole(eValueRoleTranslate);
     translateKnob->setHintToolTip(EffectInstance::tr("Translation along the x and y axes in pixels. Can also be adjusted by clicking and dragging the center handle in the Viewer."));
     translateKnob->setSpatial(true);
     translateKnob->setDefaultValuesAreNormalized(true);
@@ -72,6 +73,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr rotateKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Rotate"));
     rotateKnob->setName(kTransformNodeParamRotate);
+    rotateKnob->setValueRole(eValueRoleRotate);
     rotateKnob->setHintToolTip(EffectInstance::tr("Rotation angle in degrees around the Center. Can also be adjusted by clicking and dragging the rotation bar in the Viewer."));
     rotateKnob->setMinimum(-DBL_MAX);
     rotateKnob->setMaximum(DBL_MAX);
@@ -84,6 +86,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr scaleKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Scale"), 2);
     scaleKnob->setName(kTransformNodeParamScale);
+    scaleKnob->setValueRole(eValueRoleScale);
     scaleKnob->setHintToolTip(EffectInstance::tr("Scale factor along the x and y axes. Can also be adjusted by clicking and dragging the outer circle or the diameter handles in the Viewer."));
     scaleKnob->setCanAutoFoldDimensions(true);
     for (int d = 0; d < 2; ++d) {
@@ -99,6 +102,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr skewXKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Skew X"));
     skewXKnob->setName(kTransformNodeParamSkewX);
+    skewXKnob->setValueRole(eValueRoleSkew);
     skewXKnob->setHintToolTip(EffectInstance::tr("Skew along the x axis. Can also be adjusted by clicking and dragging the skew bar in the Viewer."));
     skewXKnob->setMinimum(-DBL_MAX);
     skewXKnob->setMaximum(DBL_MAX);
@@ -111,6 +115,7 @@ TransformOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr skewYKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Skew Y"));
     skewYKnob->setName(kTransformNodeParamSkewY);
+    skewYKnob->setValueRole(eValueRoleSkew);
     skewYKnob->setHintToolTip(EffectInstance::tr("Skew along the y axis."));
     skewYKnob->setMinimum(-DBL_MAX);
     skewYKnob->setMaximum(DBL_MAX);
@@ -221,6 +226,8 @@ TransformOp::createKnobs(KnobHolder* holder,
     page->addKnob(blackOutsideKnob);
     blackOutside = blackOutsideKnob;
 
+    filterKnobs.create(holder, page, filterKnob, clampKnob);
+
     KnobDoublePtr motionBlurKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Motion Blur"));
     motionBlurKnob->setName(kTransformNodeParamMotionBlur);
     motionBlurKnob->setHintToolTip(EffectInstance::tr("Quality of motion blur rendering. 0 disables motion blur, 1 is a good value. Increasing this slows down rendering."));
@@ -299,7 +306,7 @@ TransformOp::bake(const KnobReader& reader) const
     p.amount = reader.value(amount);
 
     params.invert = reader.value(invert);
-    params.filter = (Resampler::FilterEnum)reader.value(filter);
+    params.filter = filterKnobs.read(reader);
     params.clamp = reader.value(clamp);
     params.blackOutside = reader.value(blackOutside);
 
@@ -465,7 +472,7 @@ TransformNode::initializeKnobs()
     this->addStageKnobs(page);
 
     updateShutterEnabled();
-    updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = this->getNode();
     if (node) {
@@ -499,23 +506,17 @@ TransformNode::updateShutterEnabled()
 }
 
 void
-TransformNode::updateClampEnabled(double time,
-                                  ViewSpec view)
+TransformNode::updateFilterVisibility(double time,
+                                      ViewSpec view)
 {
-    KnobChoicePtr filter = this->op().filter.lock();
-    KnobBoolPtr clamp = this->op().clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    this->op().filterKnobs.updateVisibility(time, view);
 }
 
 void
 TransformNode::onKnobsLoaded()
 {
     updateShutterEnabled();
-    updateClampEnabled(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(this->getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -559,7 +560,7 @@ TransformNode::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = op.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

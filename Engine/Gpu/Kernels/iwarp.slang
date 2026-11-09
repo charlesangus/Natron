@@ -22,12 +22,12 @@ static const uint kIWarpMapSmooth = 128;
 
 // The words before the curve, and the floats of one knot: its matrix's high floats, its matrix's
 // low floats, then its derivative in m.
-static const uint kIWarpHeaderWords = 12;
+static const uint kIWarpHeaderWords = 15;
 static const uint kIWarpKnotFloats = 27;
 
 struct IWarp
 {
-    uint filter;
+    FilterSpec spec;
     uint flags;
     uint mapOffset;
     uint mapStride;
@@ -44,7 +44,7 @@ struct IWarp
 IWarp iwarpLoad(StructuredBuffer<uint> params)
 {
     IWarp w;
-    w.filter = params[0];
+    w.spec = loadFilterSpec(params, 0, 12);
     w.flags = params[1];
     w.mapOffset = params[2];
     w.mapStride = params[3];
@@ -222,7 +222,7 @@ float4 iwarpSample(IWarp w, int2 p)
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
     src.blackOutside = (w.flags & kIWarpBlackOutside) != 0;
-    const float4 v = sampleAt(src, sx, sy, J, jacobian, w.filter, (w.flags & kIWarpClamp) != 0, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
+    const float4 v = sampleAt(src, sx, sy, J, jacobian, w.spec, (w.flags & kIWarpClamp) != 0, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
     if (wrap.nComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);
     return v;

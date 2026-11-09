@@ -72,6 +72,9 @@ const double kKeyHeight = 17.;
 const double kKeyGap = 6.;
 const double kKeyAdvance = 22.;
 const double kHintAdvance = 16.;
+const double kChipCaptionGap = 4.;
+const double kChipTrailing = 2.;
+const double kChipSpacing = 12.;
 
 const QColor kTextColour(232, 232, 232);
 const QColor kDimColour(170, 170, 170);
@@ -265,6 +268,12 @@ colorTrackballHudEdge()
     return QColor(58, 58, 58);
 }
 
+QColor
+colorTrackballHudAccent()
+{
+    return selectionColour();
+}
+
 ColorTrackballPill::ColorTrackballPill(QWidget* parent)
     : QWidget(parent)
     , _text()
@@ -359,6 +368,25 @@ ColorTrackballHudBlock::lines() const
 
     QStringList out;
 
+    if (isValueLayout()) {
+        out << _state.knobLabel;
+        for (std::size_t r = 0; r < _state.chipRows.size(); ++r) {
+            QStringList chips;
+
+            for (std::size_t i = 0; i < _state.chipRows[r].size(); ++i) {
+                const ColorTrackballHudChip& chip = _state.chipRows[r][i];
+
+                chips << (chip.caption.isEmpty() ? chip.key : chip.key + QString::fromUtf8(" ") + chip.caption);
+            }
+            out << chips.join(QString::fromUtf8("   "));
+        }
+        out << _state.rateLine << gearHints().join(gearSeparator()) << keyHints();
+        if (!_state.endOfListMessage.isEmpty()) {
+            out << _state.endOfListMessage;
+        }
+
+        return out;
+    }
     out << _state.knobLabel << keys.join(QString::fromUtf8(" ")) << gearHints().join(gearSeparator()) << keyHints();
     if (_state.mode == eColorGlobalModeC) {
         out << chromaHint();
@@ -368,6 +396,41 @@ ColorTrackballHudBlock::lines() const
     }
 
     return out;
+}
+
+bool
+ColorTrackballHudBlock::isValueLayout() const
+{
+    return !_state.chipRows.empty();
+}
+
+double
+ColorTrackballHudBlock::chipWidth(const ColorTrackballHudChip& chip) const
+{
+    const QFontMetricsF metrics(pixelFont(font(), kHintFontPx, chip.lit));
+    double w = dpiY(kKeyWidth + kChipTrailing);
+
+    if (!chip.caption.isEmpty()) {
+        w += dpiY(kChipCaptionGap) + metrics.horizontalAdvance(chip.caption);
+    }
+
+    return w;
+}
+
+double
+ColorTrackballHudBlock::chipRowWidth(const std::vector<ColorTrackballHudChip>& row) const
+{
+    if (row.empty()) {
+        return 0.;
+    }
+
+    double w = dpiY(kChipSpacing) * (row.size() - 1);
+
+    for (std::size_t i = 0; i < row.size(); ++i) {
+        w += chipWidth(row[i]);
+    }
+
+    return w;
 }
 
 int
@@ -393,6 +456,20 @@ ColorTrackballHudBlock::sizeHint() const
     int w = std::max(title.horizontalAdvance(_state.knobLabel), gearWidth);
 
     w = std::max(w, hint.horizontalAdvance(keyHints()));
+    if (isValueLayout()) {
+        double h = kBlockPadTop + kTitleAdvance + _state.chipRows.size() * kKeyAdvance + 3 * kHintAdvance + kBlockPadBottom;
+
+        for (std::size_t r = 0; r < _state.chipRows.size(); ++r) {
+            w = std::max(w, (int)std::ceil(chipRowWidth(_state.chipRows[r])));
+        }
+        w = std::max(w, hint.horizontalAdvance(_state.rateLine));
+        if (!_state.endOfListMessage.isEmpty()) {
+            w = std::max(w, hint.horizontalAdvance(_state.endOfListMessage));
+            h += kHintAdvance;
+        }
+
+        return QSize(w + (int)std::ceil(2.0 * dpiY(kBlockPadX)), (int)std::ceil(dpiY(h)));
+    }
     w = std::max(w, (int)std::ceil(dpiY(4 * kKeyWidth + 3 * kKeyGap)));
 
     double h = kBlockPadTop + kTitleAdvance + kKeyAdvance + 2 * kHintAdvance + kBlockPadBottom;
@@ -430,21 +507,54 @@ ColorTrackballHudBlock::paintEvent(QPaintEvent* /*e*/)
     const double kw = dpiY(kKeyWidth);
     const double kh = dpiY(kKeyHeight);
     const double gap = dpiY(kKeyGap);
-    double kx = cx - 0.5 * (4 * kw + 3 * gap);
 
-    painter.setFont(pixelFont(font(), kHintFontPx, true));
-    for (ColorGlobalModeEnum m : kModes) {
-        const bool isLit = (m == _state.mode);
-        const QRectF key(kx, y, kw, kh);
+    if (isValueLayout()) {
+        for (std::size_t r = 0; r < _state.chipRows.size(); ++r) {
+            const std::vector<ColorTrackballHudChip>& row = _state.chipRows[r];
+            double chipX = cx - 0.5 * chipRowWidth(row);
 
-        painter.setPen(isLit ? QPen(Qt::NoPen) : QPen(kKeyEdge, 1.0));
-        painter.setBrush(isLit ? accent : kKeyFill);
-        painter.drawRoundedRect(key.adjusted(0.5, 0.5, -0.5, -0.5), dpiY(3.0), dpiY(3.0));
-        painter.setPen(isLit ? kLitKeyText : kDimColour);
-        painter.drawText(key, Qt::AlignCenter, colorGlobalModeKeyName(m));
-        kx += kw + gap;
+            for (std::size_t i = 0; i < row.size(); ++i) {
+                const ColorTrackballHudChip& chip = row[i];
+                const QRectF key(chipX, y, kw, kh);
+
+                painter.setOpacity(chip.dimmed ? 0.4 : 1.0);
+                painter.setPen(chip.lit ? QPen(Qt::NoPen) : QPen(kKeyEdge, 1.0));
+                painter.setBrush(chip.lit ? accent : kKeyFill);
+                painter.drawRoundedRect(key.adjusted(0.5, 0.5, -0.5, -0.5), dpiY(3.0), dpiY(3.0));
+                painter.setFont(litFont);
+                painter.setPen(chip.lit ? kLitKeyText : kDimColour);
+                painter.drawText(key, Qt::AlignCenter, chip.key);
+                if (!chip.caption.isEmpty()) {
+                    painter.setFont(chip.lit ? litFont : hintFont);
+                    painter.setPen(chip.lit ? accent : kDimColour);
+                    painter.drawText(QRectF(chipX + kw + dpiY(kChipCaptionGap), y, width(), kh), Qt::AlignLeft | Qt::AlignVCenter, chip.caption);
+                }
+                painter.setOpacity(1.0);
+                chipX += chipWidth(chip) + dpiY(kChipSpacing);
+            }
+            y += dpiY(kKeyAdvance);
+        }
+        painter.setFont(hintFont);
+        painter.setPen(kDimColour);
+        painter.drawText(QRectF(0.0, y, width(), dpiY(kHintAdvance)), Qt::AlignHCenter | Qt::AlignTop, _state.rateLine);
+        y += dpiY(kHintAdvance);
+    } else {
+        double kx = cx - 0.5 * (4 * kw + 3 * gap);
+
+        painter.setFont(pixelFont(font(), kHintFontPx, true));
+        for (ColorGlobalModeEnum m : kModes) {
+            const bool isLit = (m == _state.mode);
+            const QRectF key(kx, y, kw, kh);
+
+            painter.setPen(isLit ? QPen(Qt::NoPen) : QPen(kKeyEdge, 1.0));
+            painter.setBrush(isLit ? accent : kKeyFill);
+            painter.drawRoundedRect(key.adjusted(0.5, 0.5, -0.5, -0.5), dpiY(3.0), dpiY(3.0));
+            painter.setPen(isLit ? kLitKeyText : kDimColour);
+            painter.drawText(key, Qt::AlignCenter, colorGlobalModeKeyName(m));
+            kx += kw + gap;
+        }
+        y += dpiY(kKeyAdvance);
     }
-    y += dpiY(kKeyAdvance);
 
     const QStringList gears = gearHints();
     const int lit = litGear();
@@ -471,7 +581,7 @@ ColorTrackballHudBlock::paintEvent(QPaintEvent* /*e*/)
     QStringList rest;
 
     rest << keyHints();
-    if (_state.mode == eColorGlobalModeC) {
+    if (!isValueLayout() && (_state.mode == eColorGlobalModeC)) {
         rest << chromaHint();
     }
     if (!_state.endOfListMessage.isEmpty()) {

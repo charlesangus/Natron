@@ -27,7 +27,7 @@ static const uint kLineWords = 3;
 
 struct SplineWarpParams
 {
-    uint filter;
+    FilterSpec spec;
     uint flags;
     int x1;
     int y1;
@@ -52,7 +52,7 @@ struct SplineWarpParams
 SplineWarpParams splineWarpLoad(StructuredBuffer<uint> params)
 {
     SplineWarpParams s;
-    s.filter = params[0];
+    s.spec = loadFilterSpec(params, 0, 20);
     s.flags = params[1];
     s.x1 = int(params[2]);
     s.y1 = int(params[3]);
@@ -202,7 +202,7 @@ float4 splineWarpSample(SplineWarpParams s, int2 p)
         return readSample(s, p);
     }
     const bool jacobian = (s.flags & kSplineWarpJacobian) != 0;
-    const float4 v = sampleAt(splineWarpSource(s), coord.x, coord.y, J, jacobian, s.filter, (s.flags & kSplineWarpClamp) != 0, kWrapNone,
+    const float4 v = sampleAt(splineWarpSource(s), coord.x, coord.y, J, jacobian, s.spec, (s.flags & kSplineWarpClamp) != 0, kWrapNone,
                               kWrapNone, int4(0, 0, 0, 0));
     if (s.sampleNComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);

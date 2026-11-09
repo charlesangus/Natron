@@ -56,6 +56,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Hash64.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
@@ -577,6 +578,8 @@ struct KnobHelperPrivate
     std::atomic<U64> contentGeneration;
     std::shared_ptr<std::atomic<U64>> contentGenerationObserver;
     std::atomic<bool> hashExempt;
+    mutable QMutex hashNamespaceMutex; // protects hashNamespace
+    std::string hashNamespace;
     mutable QMutex contentHashMutex; // protects the 3 members below
     mutable std::vector<U64> contentDimensionHashes;
     mutable U64 contentHashesGeneration;
@@ -1024,6 +1027,9 @@ KnobHelper::setAsUserKnob(bool b)
 {
     _imp->userKnob = b;
     _imp->dynamicallyCreated = b;
+    if (b && _imp->holder && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(_imp->holder);
+    }
 }
 
 bool
@@ -4707,6 +4713,26 @@ KnobHelper::isHashExempt() const
     return _imp->hashExempt;
 }
 
+void
+KnobHelper::setHashNamespace(const std::string& hashNamespace)
+{
+    {
+        QMutexLocker k(&_imp->hashNamespaceMutex);
+        _imp->hashNamespace = hashNamespace;
+    }
+    // Moves the knob between the node hash and a namespace digest.
+    moveHashedMetadataSourcesGeneration();
+    invalidateContentHash();
+}
+
+std::string
+KnobHelper::getHashNamespace() const
+{
+    QMutexLocker k(&_imp->hashNamespaceMutex);
+
+    return _imp->hashNamespace;
+}
+
 bool
 KnobHelper::isRenderHashed() const
 {
@@ -6314,6 +6340,11 @@ KnobHelper::notifyLinkMembers(const std::vector<KnobLinkGroup::Member>& members)
         if (handler) {
             handler->s_linkChanged();
         }
+        // A saved knob holds its link group, so a change of group or of being linked in it is an
+        // edit of the knob even when no value changes.
+        if (knob && GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onKnobContentChanged(knob.get());
+        }
     }
 }
 
@@ -6731,6 +6762,9 @@ KnobHelper::leaveLinkGroups(int dimension)
         _signalSlotHandler->s_linkChanged();
     }
     if (left) {
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onKnobContentChanged(this);
+        }
         emitNodesLinksChanged(affectedNodes);
     }
 }
@@ -7417,6 +7451,9 @@ KnobHelper::invalidateContentHash()
     KnobHolder* holder = _imp->holder;
     if (holder) {
         holder->bumpKnobsContentGeneration(this);
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onKnobContentChanged(this);
+        }
     }
 
     // A knob reading this one through an expression or a master link hashes it live, so its
@@ -8496,6 +8533,9 @@ KnobHolder::addKnob(const KnobIPtr& k)
     _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
+    if (k->isUserKnob() && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
+    }
 }
 
 void
@@ -8521,6 +8561,9 @@ KnobHolder::insertKnob(int index,
     _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
     bumpKnobsContentGeneration(k.get());
     KnobHelper::moveHashedMetadataSourcesGeneration();
+    if (k->isUserKnob() && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
+    }
 }
 
 void
@@ -8534,6 +8577,9 @@ KnobHolder::removeKnobFromList(const KnobI* knob)
             _imp->knobListGeneration.fetch_add(1, std::memory_order_acq_rel);
             bumpKnobsContentGeneration(knob);
             KnobHelper::moveHashedMetadataSourcesGeneration();
+            if (knob->isUserKnob() && GraphEditRecorder::isActive()) {
+                GraphEditRecorder::onKnobListChanged(this);
+            }
 
             return;
         }
@@ -8655,6 +8701,9 @@ KnobHolder::deleteKnob(KnobI* knob,
     }
     bumpKnobsContentGeneration(knob);
     KnobHelper::moveHashedMetadataSourcesGeneration();
+    if (sharedKnob && sharedKnob->isUserKnob() && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
+    }
 
     if (alsoDeleteGui && _imp->settingsPanel) {
         _imp->settingsPanel->deleteKnobGui(sharedKnob);
@@ -8730,6 +8779,10 @@ KnobHolder::moveKnobOneStepUp(KnobI* knob)
         }
     }
 
+    if (moveOk && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
+    }
+
     return moveOk;
 } // KnobHolder::moveKnobOneStepUp
 
@@ -8800,6 +8853,10 @@ KnobHolder::moveKnobOneStepDown(KnobI* knob)
                 moveOk = false;
             }
         }
+    }
+
+    if (moveOk && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(this);
     }
 
     return moveOk;
@@ -10091,6 +10148,24 @@ template class Knob<int>;
 template class Knob<double>;
 template class Knob<bool>;
 template class Knob<std::string>;
+
+void
+removeKnobLinks(const KnobIPtr& knob)
+{
+    KnobIPtr aliasMaster = knob->getAliasMaster();
+    if (aliasMaster) {
+        knob->setKnobAsAliasOfThis(aliasMaster, false);
+    }
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (knob->isSlave(i)) {
+            knob->unSlave(i, false);
+        }
+        // Two-way links go too; aliases of this knob stay, as its alias master link did above.
+        if (knob->getLinkGroup(i) && !knob->isLinkPermanent(i)) {
+            knob->leaveLinkGroups(i);
+        }
+    }
+}
 
 NATRON_NAMESPACE_EXIT
 

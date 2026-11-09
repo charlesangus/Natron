@@ -62,12 +62,50 @@ GCC_ONLY_DIAG_ON(class-memaccess)
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief What a numeric knob's value stands for, which picks how global mode drags it.
+ **/
+enum ValueRoleEnum {
+    eValueRoleNone,
+    eValueRoleTranslate,
+    eValueRoleRotate,
+    eValueRoleScale,
+    eValueRoleSize,
+    eValueRoleSkew
+};
+
+/**
+ * @brief The value role shared by KnobDouble and KnobInt. It is a property of the node's
+ * definition, set when the knob is created, so it is never serialized.
+ **/
+class KnobValueRoleHolder {
+public:
+    KnobValueRoleHolder();
+
+    void setValueRole(ValueRoleEnum role);
+
+    ValueRoleEnum getValueRole() const;
+
+    /**
+     * @brief For eValueRoleRotate, whether a positive angle turns the image clockwise on
+     * screen rather than counter-clockwise. Off by default.
+     **/
+    void setValueRoleClockwise(bool clockwise);
+
+    bool isValueRoleClockwise() const;
+
+private:
+    ValueRoleEnum _valueRole;
+    bool _valueRoleClockwise;
+};
+
 /******************************KnobInt**************************************/
 
 class KnobInt
-    : public QObject, public KnobIntBase
-{
-GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    : public QObject,
+      public KnobIntBase,
+      public KnobValueRoleHolder {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
@@ -196,9 +234,10 @@ private:
 /******************************KnobDouble**************************************/
 
 class KnobDouble
-    :  public QObject, public KnobDoubleBase
-{
-GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    : public QObject,
+      public KnobDoubleBase,
+      public KnobValueRoleHolder {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
@@ -704,6 +743,29 @@ public:
     ChoiceOption getActiveEntry();
     void setActiveEntry(const ChoiceOption& opt);
 
+    /**
+     * @brief Makes \p opt the active entry, one of the menu's or one it lacks, and reports a value
+     * change in which knobChanged and listeners already read it. For an entry the index cannot
+     * select, which a value change would otherwise replace with the entry at the index.
+     **/
+    void setActiveEntryAndNotify(const ChoiceOption& opt, ValueChangedReasonEnum reason);
+
+    /**
+     * @brief When set, a name matches an entry only by an identical ID, without the looser
+     * matching restoring a choice otherwise allows, so a name the menu lacks stays the unlisted
+     * active entry. For menus of external names, such as OpenColorIO displays, where a similar
+     * name is another one.
+     **/
+    void setMatchesExactID(bool exact)
+    {
+        _matchesExactID = exact;
+    }
+
+    /**
+     * @brief The index of the entry \p choice names, by the rule of setMatchesExactID(), or -1.
+     **/
+    int findEntry(const std::string& choice, ChoiceOption* matchedEntry) const;
+
     int getNumEntries() const;
 
     /// Can this type be animated?
@@ -795,6 +857,9 @@ private:
 
     void findAndSetOldChoice();
 
+    // choiceMatch(), or an identical ID under setMatchesExactID(). The caller holds _entriesMutex when entries is _entries.
+    int matchEntry(const std::string& choice, const std::vector<ChoiceOption>& entries, ChoiceOption* matchedEntry) const;
+
     virtual bool canAnimate() const OVERRIDE FINAL;
     virtual const std::string & typeName() const OVERRIDE FINAL;
     virtual void handleSignalSlotsForAliasLink(const KnobIPtr& alias, bool connect) OVERRIDE FINAL;
@@ -814,6 +879,8 @@ private:
     bool _isCascading;
     bool _menuOnlySelection;
     bool _notifiesOnReselect;
+    bool _matchesExactID;
+    bool _keepActiveEntryOnValueChange; // protected by _entriesMutex
 };
 
 /******************************KnobSeparator**************************************/

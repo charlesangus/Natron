@@ -1,12 +1,13 @@
-"""Framing and the camera list, both worked out away from the main thread, still reach the view.
+"""Framing and the camera list reach the view.
 
 Graph: USDRead(scene-reference.usda) into Viewer1. The fixture has a red 2-unit cube at the origin,
 a blue ball of radius 0.5 at x 3, and a camera /World/Cam.
 
 - The first sync frames the scene: the free camera's pivot sits inside the scene's bounds, off the
   origin.
-- A dolly with the wheel moves the camera; A puts it back where the first framing left it, and the
-  view reads as unsynced until the answer lands.
+- A dolly with the wheel moves the camera; A puts it back where the first framing left it by the
+  time the view reads as synced. Where the framing is worked out, and whether the view read as
+  unsynced on the way, is not checked.
 - The context menu's Look Through lists /World/Cam, and picking it looks through it. A then frames
   the scene from the free camera again.
 

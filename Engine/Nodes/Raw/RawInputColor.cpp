@@ -178,7 +178,7 @@ toFloats(const RawColorMath::Mat3& m)
 {
     std::array<float, 9> out;
     for (int i = 0; i < 9; ++i) {
-        out[i] = (float)m[i];
+        out[i] = knobValueAsFloat(m[i]);
     }
 
     return out;
@@ -553,7 +553,7 @@ RawInputColorOp::bake(const KnobReader& reader,
             }
         } else {
             for (int c = 0; c < 3; ++c) {
-                params.correction[c] = (float)(*correction)[c];
+                params.correction[c] = knobValueAsFloat((*correction)[c]);
             }
         }
     }

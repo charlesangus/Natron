@@ -41,6 +41,15 @@
 #                            written to $GITHUB_OUTPUT as build_dir.
 #
 # Environment:
+#   NATRON_BUILD_JOBS=<n>  -> ninja job count. Default: min(nproc - 1,
+#                             memory / 2 GiB), at least 1, where memory is the
+#                             smaller of MemAvailable and the cgroup memory
+#                             limit of wherever the compiler runs.
+#   NATRON_LINK_JOBS=<n>   -> concurrent link steps (ninja pool). Default:
+#                             total memory / 6 GiB, at least 1 and
+#                             at most the compile job count. Total is the
+#                             smaller of MemTotal and the cgroup limit, so it
+#                             stays stable between runs.
 #   NATRON_SKIP_SUBMODULE_UPDATE=1
 #                          -> skip the host-side `git submodule update --init
 #                             --recursive`, which resets every submodule to the
@@ -262,6 +271,9 @@ if ! in_container; then
     if [[ -n "${NATRON_BUILD_JOBS:-}" ]]; then
         ENV_FORWARD+=("NATRON_BUILD_JOBS=${NATRON_BUILD_JOBS}")
     fi
+    if [[ -n "${NATRON_LINK_JOBS:-}" ]]; then
+        ENV_FORWARD+=("NATRON_LINK_JOBS=${NATRON_LINK_JOBS}")
+    fi
     exec "${SCRIPT_DIR}/devshell.sh" env "${ENV_FORWARD[@]}" "${REPO_ROOT}/tools/ci/local/build.sh" "${ORIG_ARGS[@]}"
 fi
 
@@ -291,6 +303,86 @@ export CCACHE_NOHASHDIR=1
 
 mkdir -p "${BUILD_DIR}"
 
+# Parallelism: NATRON_BUILD_JOBS wins, e.g. NATRON_BUILD_JOBS=2
+# tools/ci/local/build.sh. Otherwise min(nproc - 1, memory / 2 GiB), at least 1:
+# one core stays free for the editor/agent, and the big Gui/Engine TUs run 1-2 GB
+# each at -O2. Computed here, after the re-exec, because the container's cgroup
+# limit (devshell.sh's memcap.sh cap, NATRON_DEV_MEMORY) is what the OOM killer
+# enforces, not the host's /proc/meminfo; the same path serves the interactive
+# dev shell and CI's own container.
+# The link pool defaults to total memory / 6 GiB (MemTotal, capped by the cgroup
+# limit), at least 1 and at most the compile jobs. MemAvailable would make the
+# value drift between runs, and the pool depth is baked into the configure, so
+# each drift would force a reconfigure. The test executables link at ~1 GB in debug but peak well above that, and
+# three at once were OOM-killed on a 15 GB host. It is computed before configure
+# because the pool depth is baked into the generated build.ninja.
+cgroup_memory_limit_kb() {
+    local f v
+    for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+        [[ -r "${f}" ]] || continue
+        v="$(cat "${f}" 2>/dev/null || true)"
+        # "max" (v2) and the near-2^63 sentinel (v1) both mean unlimited.
+        [[ "${v}" =~ ^[0-9]+$ ]] || continue
+        (( v >= (1 << 52) )) && continue
+        echo $(( v / 1024 ))
+        return
+    done
+}
+
+# Prints "<compile jobs> <link jobs>". Cores and memory can be overridden for
+# testing: default_build_jobs <cores> <available kB> [<total kB>]; the total
+# defaults to the available figure.
+# shellcheck disable=SC2120
+default_build_jobs() {
+    local cores="${1:-$(nproc)}" mem_kb="${2-}" total_kb="${3-}" cg_kb jobs link
+    if [[ $# -lt 2 ]]; then
+        mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || true)"
+        total_kb="$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo 2>/dev/null || true)"
+        cg_kb="$(cgroup_memory_limit_kb)"
+        if [[ "${cg_kb}" =~ ^[0-9]+$ ]]; then
+            if [[ ! "${mem_kb}" =~ ^[0-9]+$ ]] || (( cg_kb < mem_kb )); then
+                mem_kb="${cg_kb}"
+            fi
+            if [[ ! "${total_kb}" =~ ^[0-9]+$ ]] || (( cg_kb < total_kb )); then
+                total_kb="${cg_kb}"
+            fi
+        fi
+    fi
+    [[ -n "${total_kb}" ]] || total_kb="${mem_kb}"
+    jobs=$(( cores - 1 ))
+    link=${jobs}
+    if [[ "${mem_kb}" =~ ^[0-9]+$ ]]; then
+        local mem_jobs=$(( mem_kb / (2 * 1024 * 1024) ))
+        (( mem_jobs < jobs )) && jobs=${mem_jobs}
+    fi
+    if [[ "${total_kb}" =~ ^[0-9]+$ ]]; then
+        local mem_link=$(( total_kb / (6 * 1024 * 1024) ))
+        (( mem_link < link )) && link=${mem_link}
+    fi
+    (( jobs < 1 )) && jobs=1
+    (( link < 1 )) && link=1
+    (( link > jobs )) && link=${jobs}
+    echo "${jobs} ${link}"
+}
+
+# shellcheck disable=SC2119
+read -r DEFAULT_JOBS DEFAULT_LINK_JOBS <<< "$(default_build_jobs)"
+if [[ -n "${NATRON_BUILD_JOBS:-}" ]]; then
+    JOBS="${NATRON_BUILD_JOBS}"
+    JOBS_SOURCE="${NATRON_BUILD_JOBS_SOURCE:-NATRON_BUILD_JOBS}"
+else
+    JOBS="${DEFAULT_JOBS}"
+    JOBS_SOURCE="min of nproc-1 and memory limit/2GiB"
+fi
+if [[ -n "${NATRON_LINK_JOBS:-}" ]]; then
+    LINK_JOBS="${NATRON_LINK_JOBS}"
+    LINK_JOBS_SOURCE="NATRON_LINK_JOBS"
+else
+    LINK_JOBS="${DEFAULT_LINK_JOBS}"
+    (( LINK_JOBS > JOBS )) && LINK_JOBS=${JOBS}
+    LINK_JOBS_SOURCE="total memory limit/6GiB, at most the compile jobs"
+fi
+
 CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"
 
 CMAKE_ARGS=(
@@ -303,6 +395,7 @@ CMAKE_ARGS=(
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     -DNATRON_BUILD_TESTS="${BUILD_TESTS}"
+    -DNATRON_LINK_JOBS="${LINK_JOBS}"
     "${EXTRA_CMAKE_ARGS[@]}"
     "${REPO_ROOT}"
 )
@@ -317,6 +410,15 @@ if [[ -f "${CMAKE_CACHE}" ]]; then
     fi
 fi
 
+# Same for the link-job limit: a tree configured under another value keeps its old ninja pool.
+if [[ -f "${CMAKE_CACHE}" ]]; then
+    CACHED_LINK_JOBS="$(sed -n 's/^NATRON_LINK_JOBS:[A-Z]*=//p' "${CMAKE_CACHE}")"
+    if [[ "${CACHED_LINK_JOBS}" != "${LINK_JOBS}" ]]; then
+        echo "== build.sh: NATRON_LINK_JOBS is '${CACHED_LINK_JOBS}' in the cache, want '${LINK_JOBS}' -- reconfiguring =="
+        RECONFIGURE=1
+    fi
+fi
+
 if [[ -f "${CMAKE_CACHE}" && "${RECONFIGURE}" -eq 0 ]]; then
     echo "== build.sh: ${BUILD_DIR}/CMakeCache.txt already exists -- skipping configure =="
     echo "   (pass --reconfigure to force re-running cmake)"
@@ -327,19 +429,12 @@ else
     ( cd "${BUILD_DIR}" && cmake "${CMAKE_ARGS[@]}" )
 fi
 
-# Parallelism: defaults to 3, overridable via NATRON_BUILD_JOBS, e.g.
-# NATRON_BUILD_JOBS=2 tools/ci/local/build.sh. The dev machine has 4 cores
-# and 15 GB; -j3 leaves one core for the editor/agent and keeps peak memory
-# (the big Gui/Engine TUs run 1-2 GB each at -O2) well under the ceiling.
-# The earlier -j2 habit was a workaround for the agent harness's spurious
-# "low on memory" kill, which the detached-launch recipe avoids -- it cost
-# ~2x on every build for no reason.
-JOBS="${NATRON_BUILD_JOBS:-3}"
-
-echo "== build.sh: building (${BUILD_TYPE}) with ninja -j${JOBS} =="
+echo "== build.sh: building (${BUILD_TYPE}) with ninja -j${JOBS} (${JOBS_SOURCE}), ${LINK_JOBS} link jobs (${LINK_JOBS_SOURCE}) =="
 echo "+ cd ${BUILD_DIR}"
 echo "+ ninja -j${JOBS}"
+if [[ -n "${CI:-}" ]]; then free -m; fi
 ( cd "${BUILD_DIR}" && ninja -j"${JOBS}" )
+if [[ -n "${CI:-}" ]]; then free -m; fi
 
 echo "== build.sh: build complete: ${BUILD_DIR} =="
 

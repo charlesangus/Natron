@@ -27,10 +27,13 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
+#include <limits>
 #include <string>
 
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
 #endif
@@ -136,7 +139,7 @@ SaturationOp::row(const Params& params,
             }
             double v = src[c];
             if (c < 3) {
-                v = (1. - params.saturation) * l + params.saturation * v;
+                v = sumOrInfinity(productOrInfinity(1. - params.saturation, l), productOrInfinity(params.saturation, v));
             }
             if (params.clampBlack) {
                 v = (std::max)(0., v);
@@ -144,7 +147,7 @@ SaturationOp::row(const Params& params,
             if (params.clampWhite) {
                 v = (std::min)(1., v);
             }
-            dst[c] = (float)v;
+            dst[c] = knobValueAsFloat(v);
         }
     }
 }
@@ -156,7 +159,7 @@ SaturationOp::gpu(const Params& params) const
     // The weights are the luminance of the unit colours, taken from the function the CPU row
     // calls; Max is no weighted sum and is flagged instead.
     SaturationGpuParams p = {};
-    p.saturation = (float)params.saturation;
+    p.saturation = knobValueAsFloat(params.saturation);
     p.flags = (params.clampBlack ? kSaturationGpuClampBlack : 0) | (params.clampWhite ? kSaturationGpuClampWhite : 0) | ((params.luminanceMath == ColorMath::eLuminanceMathMax) ? kSaturationGpuLumaMax : 0);
     p.weights[0] = (float)ColorMath::luminance(params.luminanceMath, 1., 0., 0.);
     p.weights[1] = (float)ColorMath::luminance(params.luminanceMath, 0., 1., 0.);

@@ -33,6 +33,7 @@
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/LensCorrectProfile.h"
@@ -184,7 +185,7 @@ private:
         double vignetteRadius = 0.5;
         double vignetteSteepness = 0.5;
         bool showVignetteMask = false;
-        Resampler::FilterEnum filter = Resampler::eFilterCubic;
+        Resampler::FilterSpec filter;
         bool clamp = false;
         bool blackOutside = true;
     };
@@ -306,6 +307,7 @@ private:
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
+    Resampler::FilterKnobs _filterKnobs;
 
     // Database queries by (maker, model, lens), which are slow and run for every tile otherwise.
     struct Found {

@@ -28,7 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstddef>
+#include <functional>
+#include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,12 +57,14 @@ NATRON_NAMESPACE_ENTER
  *
  * Not thread-safe: a stage must not be read while it is being edited (OpenUSD's threading model
  * is many readers or one writer per stage), so the owner serializes sync() with every read of
- * getStage(), including Hydra renders of it.
+ * getStage(), including Hydra renders of it. The exceptions are the requests for payload loads and
+ * what reports on them, which any thread may call at any time.
  **/
 class SceneStage {
 public:
-    // Opens the stage on an empty root. isValid() is false when OpenUSD is unusable.
-    SceneStage();
+    // Opens the stage on an empty root, with the payloads of whatever it later composes loaded as
+    // load says. isValid() is false when OpenUSD is unusable.
+    explicit SceneStage(PXR_NS::UsdStage::InitialLoadSet load = PXR_NS::UsdStage::LoadAll);
 
     ~SceneStage();
 
@@ -106,8 +112,70 @@ public:
     // Moves whenever the preview changes what the stage composes, which getEditCount() does not count.
     U64 getPreviewGeneration() const;
 
+    /**
+     * @brief Asks for the payloads of paths to load, each prim's own or also those below it, on the
+     * next serviceLoads(). Never touches the stage. A later request for a path replaces an earlier
+     * one not yet serviced.
+     **/
+    void requestLoad(const PXR_NS::SdfPathVector& paths,
+                     bool withDescendants);
+
+    void requestUnload(const PXR_NS::SdfPathVector& paths);
+
+    // Drops the requests no serviceLoads() has taken yet.
+    void cancelPendingLoads();
+
+    bool hasPendingLoads() const;
+
+    // Whether a request is still waiting or in a serviceLoads() that has not returned.
+    bool hasOutstandingLoads() const;
+
+    // Runs its argument with the owner's lock held, shared with other readers or exclusively.
+    using LockedSection = std::function<void(const std::function<void()>&)>;
+
+    /**
+     * @brief Services every request pending: finds the payload layers under readLocked, opens them
+     * with no lock held, then commits the batch under writeLocked with the layers already in the
+     * registry, so that the lock is not held across file reads. A descendant load opens the nested
+     * payloads its files author too, every variant's, so that its commit reads no file either.
+     * Requests made meanwhile wait for the next call. Returns whether there was anything to service.
+     *
+     * Without cancelled the files open on the caller's thread. With it they open on a thread of
+     * their own, and the call returns, committing nothing, as soon as cancelled() turns true, even
+     * in the middle of a file: that thread finishes the file against state of its own.
+     *
+     * A sync while the files open may compose other payloads at the paths requested: a path is
+     * committed only if its prim still names the payload files that were opened for it. USD takes
+     * one load policy per LoadAndUnload, so a batch mixing own and descendant loads commits in two
+     * calls. A prim whose payload file does not open stays unloaded and is reported by
+     * getLoadFailures().
+     **/
+    bool serviceLoads(const LockedSection& readLocked,
+                      const LockedSection& writeLocked,
+                      const std::function<bool()>& cancelled = std::function<bool()>());
+
+    struct LoadFailure {
+        PXR_NS::SdfPath prim;
+        std::string error;
+    };
+
+    // The prims whose last load failed. Asking again clears a prim's failure.
+    std::vector<LoadFailure> getLoadFailures() const;
+
+    // How many LoadAndUnload calls edited the stage. getEditCount() does not count them.
+    U64 getLoadEditCount() const;
+
+    // How long the last serviced batch held writeLocked.
+    double getLastLoadHoldMs() const;
+
 private:
     void syncProjections();
+
+    enum PendingLoadEnum {
+        ePendingLoadOwn,
+        ePendingLoadWithDescendants,
+        ePendingUnload
+    };
 
     struct PreviewPrim {
         PXR_NS::SdfPath path;
@@ -129,6 +197,14 @@ private:
     std::vector<PreviewPrim> _preview;
     std::vector<std::string> _previewRequested;
     U64 _previewGeneration = 0;
+
+    // Guards the pending requests and the failures, and is never held across a stage operation.
+    mutable std::mutex _loadMutex;
+    std::map<PXR_NS::SdfPath, PendingLoadEnum> _pendingLoads;
+    std::map<PXR_NS::SdfPath, std::string> _loadFailures;
+    bool _servicingLoads = false;
+    std::atomic<U64> _loadEditCount { 0 };
+    std::atomic<double> _lastLoadHoldMs { 0. };
 };
 
 NATRON_NAMESPACE_EXIT

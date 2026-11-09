@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -295,10 +296,11 @@ void writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
                        const SceneMetadata* applied);
 
 /**
- * @brief Opens a stage on root with no session layer and every payload loaded. Every stage Natron
- * composes is opened here, so getStageOpenCount() counts them all.
+ * @brief Opens a stage on root with no session layer, its payloads loaded as load says. Every stage
+ * Natron composes is opened here, so getStageOpenCount() counts them all.
  **/
-PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root);
+PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root,
+                                 PXR_NS::UsdStage::InitialLoadSet load = PXR_NS::UsdStage::LoadAll);
 
 /**
  * @brief How many stages openStage() has opened in this process.
@@ -314,15 +316,30 @@ U64 getStageOpenCount();
 PXR_NS::UsdStageRefPtr compose(const ScenePayload& payload);
 
 /**
+ * @brief The payload asset paths layer authors anywhere in its prims and variants, as authored.
+ **/
+std::set<std::string> getAuthoredPayloadAssets(const PXR_NS::SdfLayerRefPtr& layer);
+
+/**
  * @brief The file layers layer composes: layer itself when it is backed by a file, then every
- * layer its sublayers, references and payloads name, recursively, each once. Asset paths resolve
- * relative to the layer naming them. Files that cannot be opened are skipped, without posting
- * errors to the caller's TfErrorMark, and their anchored asset paths are appended to
- * *missingPaths when it is given, each once. Opens the layers not yet open, and the returned
- * references keep them open.
+ * layer its sublayers and references name, recursively, each once. Asset paths resolve relative
+ * to the layer naming them. Files that cannot be opened are skipped, without posting errors to
+ * the caller's TfErrorMark, and their anchored asset paths are appended to *missingPaths when it
+ * is given, each once. Opens the layers not yet open, and the returned references keep them open.
+ * Payload arcs are never opened, so a stage's unloaded payloads stay unread: their anchored asset
+ * paths are appended to *payloadPaths when it is given, each once, and what they bring in is not
+ * followed.
  **/
 std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
-                                                        std::vector<std::string>* missingPaths = nullptr);
+                                                        std::vector<std::string>* missingPaths = nullptr,
+                                                        std::vector<std::string>* payloadPaths = nullptr);
+
+/**
+ * @brief The file layers already open that layer brings in through sublayers, references and
+ * payloads, layer's own first, recursively. Opens nothing, so a Reload reaches the payloads a
+ * stage has loaded and leaves the others closed.
+ **/
+std::vector<PXR_NS::SdfLayerRefPtr> getOpenFileLayers(const PXR_NS::SdfLayerRefPtr& layer);
 
 /**
  * @brief Reloads the file layers among layers in place (SdfLayer::ReloadLayers: only those whose

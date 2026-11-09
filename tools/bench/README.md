@@ -340,27 +340,69 @@ scaling linearly with the keyframe count.
 ## Heavy scene fixtures
 
 `heavy_scene_make.py` generates the two scenes the scene-viewer budgets run against, under
-`build/bench`: a payload city (about 300 blocks of buildings, one `.usdc` payload per building,
-about 1M prims once loaded and a few thousand before, `extentsHint` authored on nine in ten
-buildings) and a 1M-prim flat file. It needs the pxr module, so run it in the natron-dev
+`build/bench`: a payload city (about 300 blocks of buildings, `/World/BlockN/BM`, one `.usdc` payload
+per building, about 1M prims once loaded and a few thousand before, `extentsHint` authored on nine
+in ten buildings) and a 1M-prim flat file. It needs the pxr module, so run it in the natron-dev
 container. The fixtures are never committed; only the generator is.
 
 ```
 docker exec natron-dev bash -lc "cd $PWD && python3 tools/bench/heavy_scene_make.py"
 ```
 
+`heavy_scene_gpu_host.sh fixtures` makes them on a host without pxr, through the dev image, under
+`build/bench-gpu`.
+
+Any other scene runs with `BENCH_FIXTURE=scene` and `BENCH_FILE`. `heavy_scene_rows.py` picks the rows
+the actions use from its composed stage, in a process of its own under the AppImage's `natron-python`,
+and the bench caches them under `BENCH_ROWS_DIR`. An action with no row to act on gets a `skipped`
+record.
+
 ## Heavy scene budgets
 
-`heavy_scene_bench.py` runs one action per scenario against a heavy fixture inside Natron under
-Xvfb and prints one JSON line per scenario: the longest main-thread gap (10 ms heartbeat), the
-layers the action loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or
-`not_applicable` against the scene-graph budgets. Frame rate and time to first boxes need a real
-GPU: without `BENCH_GPU=1` they are measured but marked `not_valid`. Stall and unrequested-payload
-checks are valid under llvmpipe. Until the viewer draws boxes, the first finished frame stands in
-for the first boxes. The scenarios are the harness's `ACTIONS` table (`open`, `edit`, `orbit`);
-`BENCH_SCENARIOS` picks and orders them, and a later milestone adds its own action.
+`heavy_scene_bench.py` runs one action per scenario against a heavy scene inside Natron and prints
+one JSON line per scenario: the longest main-thread gap (10 ms heartbeat), the layers the action
+loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or `not_applicable`
+against the scene-graph budgets. Frame rate and time to first frame need a real GPU: without
+`BENCH_GPU=1`, or on a software renderer, they are measured but marked `not_valid`. Stall and
+unrequested-payload checks are valid under llvmpipe. The scenarios are the harness's `ACTIONS` table
+(`open`, `edit`, `orbit`, `load`, `twirl`); `BENCH_SCENARIOS` picks and orders them.
+
+`open` reports `first_frame_ms`, from setting the file to the first frame finished after the scene
+reached the viewer.
+
+`load`, after `open`, asks the viewer to load `BENCH_LOAD_PATHS` (one building by default;
+`/World/BlockN` with `BENCH_LOAD_DESCENDANTS=1` is a larger load, and the paths can name several)
+while moving the mouse in a tumble until the result is on screen. It reports `load_ms`,
+`load_mouse_moves`, `load_move_gap_ms` (the longest wait between two moves), `load_hold_ms` (how long
+the last batch held the viewer lock), `load_edits` and `load_failures`; the stall budget covers the
+whole load, and the requested payload files do not count as unrequested.
+
+`twirl`, after `open`, docks the Scene Graph panel beside the viewer and opens an unloaded payload row
+in its tree (`BENCH_TWIRL_PATH`; `/World/Block0/B1` on the city), tumbling the view until the row is
+loaded and the result is on screen. The stall budget covers the time from the twirl on, not the
+docking. It reports `twirl_ms`, `twirl_rows`, `twirl_mouse_moves`, `twirl_move_gap_ms` and the same
+`load_hold_ms`, `load_edits` and `load_failures`.
+
+Every record carries `gl_renderer`, `gl_vendor`, `peak_rss_mb`, `peak_rss_gb` and
+`mem_available_min_gb`. `heavy_scene_watchdog.sh` watches the run from outside Natron, so a hung run
+still leaves a record: `timed_out` past the wall-clock limit (`BENCH_SCENARIO_LIMIT_S`,
+`BENCH_OPEN_LIMIT_S`), `out_of_memory` when its memory or swap guard ends the process, `aborted` when
+the process ends on its own, and `skipped` for the scenarios left in that process.
 
 ```
 docker exec -e BENCH_FIXTURE=flat -e BENCH_SCENARIOS=open,orbit -e GUI_TEST_TIMEOUT=1800 natron-dev \
     Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py build/release/Natron.AppImage
 ```
+
+On a host with a real GPU, from a checkout of the branch under test:
+
+```
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh gate /path/to/Natron.AppImage
+```
+
+`gate` runs, one fresh process each: flat open; city open with a one-building load, a one-block load
+with descendants, and 30 blocks with descendants at once, the mouse moving throughout; a city twirl;
+then Lobby's building, block and twirl runs, and Island's building and twirl runs last, skipped under
+`ISLAND_MIN_RAM_GB`. The results go to `build/bench-gpu/heavy-scene-gate.jsonl`. The script's header
+lists its environment; `SCENE_DIR`, `LOBBY_DIR` and `ISLAND_DIR` say where the scenes are, and Docker
+is only needed while the fixtures are missing.

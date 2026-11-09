@@ -90,6 +90,20 @@ SceneNodeStageSource::readStage(const std::function<void(const SceneStage* stage
     read((_shown && _stage && _stage->isValid()) ? _stage.get() : nullptr);
 }
 
+bool
+SceneNodeStageSource::tryReadStage(const std::function<void(const SceneStage* stage)>& read) const
+{
+    SceneWriteBarrier::ReadScope readScope;
+    std::unique_lock<std::mutex> lock(_stageMutex, std::try_to_lock);
+
+    if (!lock.owns_lock()) {
+        return false;
+    }
+    read((_shown && _stage && _stage->isValid()) ? _stage.get() : nullptr);
+
+    return true;
+}
+
 U64
 SceneNodeStageSource::getEditCount() const
 {

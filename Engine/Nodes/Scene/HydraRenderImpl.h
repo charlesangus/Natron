@@ -384,6 +384,23 @@ public:
         std::string error;
     };
 
+    // The lock that guards the stage's edits, as a pair of functions, so that its owner may hand
+    // out a shared hold of a reader-writer lock, or learn when the hold ends.
+    struct StageLock {
+        std::function<void()> acquire;
+        std::function<void()> release;
+
+        void lock()
+        {
+            acquire();
+        }
+
+        void unlock()
+        {
+            release();
+        }
+    };
+
     /**
      * @brief stage, called on the worker with *stageLock held, gives the stage to render, null for
      * none. listener is called on the worker after each frame is published and when the delegate
@@ -391,6 +408,11 @@ public:
      * linear grey the colour is composited over.
      **/
     ProgressiveRender(std::mutex* stageLock,
+                      const std::function<PXR_NS::UsdStageRefPtr()>& stage,
+                      const std::function<void()>& listener,
+                      float background);
+
+    ProgressiveRender(const StageLock& stageLock,
                       const std::function<PXR_NS::UsdStageRefPtr()>& stage,
                       const std::function<void()>& listener,
                       float background);

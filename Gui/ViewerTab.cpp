@@ -1619,6 +1619,11 @@ ViewerTab::onSceneEvaluated(int textureIndex)
     if (getGui() && getGui()->getApp()) {
         fps = getGui()->getApp()->getProjectFrameRate();
     }
+    const NodePtr viewedNode = getSceneViewedNode();
+    if (viewedNode != _imp->sceneLoadsNode.lock()) {
+        _imp->sceneLoadsNode = viewedNode;
+        _imp->sceneViewport->cancelPendingLoads();
+    }
     _imp->sceneViewport->setScene(scene, getTimeLine()->currentFrame(), fps);
 }
 

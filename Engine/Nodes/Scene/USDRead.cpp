@@ -241,7 +241,12 @@ USDRead::useFileMetricsForProject()
     PXR_NS::SdfLayerRefPtr fileLayer;
     {
         PXR_NS::TfErrorMark mark;
-        fileLayer = PXR_NS::SdfLayer::FindOrOpen(path);
+        // Runs on the main thread, and this needs only the root's metadata: no layer registered
+        // for the file, no read of its whole content where the format can avoid it.
+        fileLayer = PXR_NS::SdfLayerRefPtr(PXR_NS::SdfLayer::Find(path));
+        if (!fileLayer) {
+            fileLayer = PXR_NS::SdfLayer::OpenAsAnonymous(path, true);
+        }
         const std::string diagnostic = takeUsdErrors(mark);
         if (!fileLayer) {
             setPersistentMessage(eMessageTypeError, diagnostic.empty() ? tr("USD could not read %1.").arg(QString::fromStdString(path)).toStdString() : diagnostic);
@@ -468,6 +473,13 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;
+    }
+
+    if (_imp->source.walk(path)) {
+        NodePtr node = getNode();
+        if (node) {
+            node->markHashDirty();
+        }
     }
 
     KnobDoublePtr frameOffsetKnob = _frameOffset.lock();

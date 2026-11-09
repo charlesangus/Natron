@@ -25,11 +25,16 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <climits>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
+
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -39,6 +44,7 @@
 #include <QElapsedTimer>
 #include <QMimeData>
 #include <QPersistentModelIndex>
+#include <QSignalSpy>
 #include <QStringList>
 
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -53,11 +59,26 @@ namespace {
 class TestStageSource
     : public SceneGraphStageSource {
 public:
+    explicit TestStageSource(PXR_NS::UsdStage::InitialLoadSet load = PXR_NS::UsdStage::LoadAll)
+        : stage(load)
+    {
+    }
+
     void readStage(const std::function<void(const SceneStage* stage)>& read) const override
     {
         std::lock_guard<std::mutex> lock(mutex);
 
         read(stage.isValid() && !stage.getPayload().isEmpty() ? &stage : nullptr);
+    }
+
+    bool tryReadStage(const std::function<void(const SceneStage* stage)>& read) const override
+    {
+        if (busy) {
+            return false;
+        }
+        readStage(read);
+
+        return true;
     }
 
     U64 getEditCount() const override
@@ -72,9 +93,73 @@ public:
         stage.sync(payload);
     }
 
+    void serviceLoads()
+    {
+        const SceneStage::LockedSection locked = [this](const std::function<void()>& section) {
+            std::lock_guard<std::mutex> lock(mutex);
+            section();
+        };
+
+        stage.serviceLoads(locked, locked);
+    }
+
     mutable std::mutex mutex;
     SceneStage stage;
+    // As if a commit held the stage's lock.
+    bool busy = false;
 };
+
+// On disk, /World holding the payload prims B0 and B1, and the group Other holding the payload prim
+// B2. B1 also has a child in the root layer, composed whether or not its payload is loaded.
+class PayloadScene {
+public:
+    PayloadScene()
+    {
+        static std::atomic<int> counter(0);
+
+        _dir = std::filesystem::temp_directory_path() / ("scene_graph_payloads_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+        std::filesystem::create_directories(_dir);
+        std::ofstream root((_dir / "root.usda").string());
+        root << "#usda 1.0\n(\n    defaultPrim = \"World\"\n)\ndef Xform \"World\"\n{\n"
+             << "    def Xform \"B0\" (\n        prepend payload = @./b0.usda@\n    )\n    {\n    }\n"
+             << "    def Xform \"B1\" (\n        prepend payload = @./b1.usda@\n    )\n    {\n        def Xform \"Own\"\n        {\n        }\n    }\n"
+             << "    def Xform \"Other\"\n    {\n        def Xform \"B2\" (\n            prepend payload = @./b2.usda@\n        )\n        {\n        }\n    }\n"
+             << "}\n";
+        for (const char* name : { "b0.usda", "b1.usda", "b2.usda" }) {
+            std::ofstream building((_dir / name).string());
+            building << "#usda 1.0\n(\n    defaultPrim = \"Building\"\n)\ndef Xform \"Building\"\n{\n    def Cube \"Geo\"\n    {\n    }\n}\n";
+        }
+    }
+
+    ~PayloadScene()
+    {
+        std::error_code ignored;
+        std::filesystem::remove_all(_dir, ignored);
+    }
+
+    void removeBuilding(const std::string& name) const
+    {
+        std::filesystem::remove(_dir / name);
+    }
+
+    ScenePayload payload() const
+    {
+        const PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::FindOrOpen((_dir / "root.usda").string());
+
+        EXPECT_TRUE(bool(root));
+        _root = root;
+
+        return SceneOps::appendLayer(ScenePayload(), root, 0xb011d1ULL);
+    }
+
+private:
+    std::filesystem::path _dir;
+    mutable PXR_NS::SdfLayerRefPtr _root;
+};
+
+const QString kB0 = QString::fromUtf8("/World/B0");
+const QString kB1 = QString::fromUtf8("/World/B1");
+const QString kB2 = QString::fromUtf8("/World/Other/B2");
 
 // The fixture as a USDRead node would hand it on.
 ScenePayload
@@ -669,4 +754,278 @@ TEST(SceneChangedHereRows, ComparesByWhatTheyShow)
 
     EXPECT_TRUE(first->hasSameRows(*buildChangedHereRows(*source, paths)));
     EXPECT_FALSE(first->hasSameRows(*buildChangedHereRows(*source, { QString::fromUtf8("/Root"), QString::fromUtf8("/Root/B") })));
+}
+
+namespace {
+
+// The model over a PayloadScene opened unloaded, /World and Other read as a view would have them.
+struct PayloadModel {
+    PayloadModel()
+        : source(std::make_shared<TestStageSource>(PXR_NS::UsdStage::LoadNone))
+        , tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning)
+    {
+        source->sync(scene.payload());
+        model.setSource(source);
+        model.indexOfPath(kB2, true);
+        model.indexOfPath(kB1, true);
+    }
+
+    QModelIndex row(const QString& path)
+    {
+        return model.indexOfPath(path, true);
+    }
+
+    // What the panel does when a row opens: the view fetches, then the load is asked for.
+    void twirl(const QString& path)
+    {
+        const QModelIndex index = row(path);
+
+        while (model.canFetchMore(index)) {
+            model.fetchMore(index);
+        }
+        source->stage.requestLoad({ PXR_NS::SdfPath(path.toStdString()) }, false);
+        model.markLoading(QStringList(path));
+    }
+
+    // What the viewport's load thread and the panel do once a request is in.
+    void service()
+    {
+        source->serviceLoads();
+        model.settleLoads();
+    }
+
+    ModelTestMessageScope messages;
+    PayloadScene scene;
+    std::shared_ptr<TestStageSource> source;
+    SceneGraphModel model;
+    QAbstractItemModelTester tester;
+};
+
+} // anonymous namespace
+
+TEST(SceneGraphModelPayloads, AnUnloadedRowCanHaveChildrenAndReadsNone)
+{
+    PayloadModel fixture;
+    const QModelIndex b0 = fixture.row(kB0);
+
+    ASSERT_TRUE(b0.isValid());
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, b0.data(SceneGraphModel::ePayloadStateRole).toInt());
+    EXPECT_EQ(SceneGraphModel::ePayloadStateNone, fixture.row(QString::fromUtf8("/World/Other")).data(SceneGraphModel::ePayloadStateRole).toInt());
+    EXPECT_TRUE(fixture.model.hasChildren(b0));
+    EXPECT_TRUE(fixture.model.canFetchMore(b0));
+    fixture.model.fetchMore(b0);
+    EXPECT_EQ(0, fixture.model.rowCount(b0));
+    EXPECT_TRUE(fixture.model.hasChildren(b0));
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneGraphModelPayloads, LoadingATwirledRowChangesOnlyItsRows)
+{
+    PayloadModel fixture;
+    const QPersistentModelIndex other(fixture.row(QString::fromUtf8("/World/Other")));
+    const QPersistentModelIndex b2(fixture.row(kB2));
+    const QPersistentModelIndex b0(fixture.row(kB0));
+    const QModelIndex b1 = fixture.row(kB1);
+    // The tester reads every row it can on the first change signal outside a model change; B1 is
+    // read here so that read is not counted among the rows the load changes.
+    while (fixture.model.canFetchMore(b1)) {
+        fixture.model.fetchMore(b1);
+    }
+    const int resets = fixture.model.getResetCount();
+    QStringList changedParents;
+    int layouts = 0;
+    QObject::connect(&fixture.model, &QAbstractItemModel::rowsInserted, [&](const QModelIndex& parent, int, int) { changedParents << fixture.model.pathOf(parent); });
+    QObject::connect(&fixture.model, &QAbstractItemModel::rowsRemoved, [&](const QModelIndex& parent, int, int) { changedParents << fixture.model.pathOf(parent); });
+    QObject::connect(&fixture.model, &QAbstractItemModel::layoutChanged, [&]() { ++layouts; });
+
+    fixture.twirl(kB0);
+
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoading, QModelIndex(b0).data(SceneGraphModel::ePayloadStateRole).toInt());
+    ASSERT_EQ(1, fixture.model.rowCount(b0));
+    const QModelIndex loading = fixture.model.index(0, 0, b0);
+    EXPECT_EQ(QModelIndex(b0), fixture.model.parent(loading));
+    EXPECT_EQ(int(Qt::NoItemFlags), int(fixture.model.flags(loading)));
+    EXPECT_TRUE(fixture.model.pathOf(loading).isEmpty());
+    EXPECT_FALSE(fixture.model.hasChildren(loading));
+    EXPECT_FALSE(fixture.model.canFetchMore(loading));
+
+    fixture.service();
+
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoaded, QModelIndex(b0).data(SceneGraphModel::ePayloadStateRole).toInt());
+    EXPECT_EQ(QStringList(QString::fromUtf8("Geo")), childNames(fixture.model, b0));
+    EXPECT_EQ(resets, fixture.model.getResetCount());
+    EXPECT_EQ(0, layouts);
+    EXPECT_EQ(QStringList({ kB0, kB0, kB0 }), changedParents);
+    EXPECT_TRUE(other.isValid());
+    EXPECT_TRUE(b2.isValid());
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB2));
+    EXPECT_EQ(0, fixture.model.rowCount(b2));
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneGraphModelPayloads, TheLoadingRowFollowsAPrimsOwnChildren)
+{
+    PayloadModel fixture;
+    const QPersistentModelIndex b1(fixture.row(kB1));
+    fixture.source->stage.requestLoad({ PXR_NS::SdfPath(kB1.toStdString()) }, false);
+    fixture.model.markLoading(QStringList(kB1));
+
+    // Marked before the row was read: the tester reads it on markLoading's dataChanged, as a view
+    // would, and the row it fetches goes before the loading one.
+    while (fixture.model.canFetchMore(b1)) {
+        fixture.model.fetchMore(b1);
+    }
+    EXPECT_EQ(QStringList({ QString::fromUtf8("Own"), SceneGraphModel::tr("Loading...") }), childNames(fixture.model, b1));
+    EXPECT_EQ(fixture.model.parent(fixture.model.index(1, 0, b1)), QModelIndex(b1));
+
+    fixture.service();
+
+    QStringList names = childNames(fixture.model, b1);
+    names.sort();
+    EXPECT_EQ(QStringList({ QString::fromUtf8("Geo"), QString::fromUtf8("Own") }), names);
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneGraphModelPayloads, AnOpenFailureBadgesItsRowAlone)
+{
+    PayloadModel fixture;
+    fixture.scene.removeBuilding("b0.usda");
+
+    fixture.twirl(kB0);
+    fixture.twirl(kB2);
+    fixture.service();
+
+    const QModelIndex b0 = fixture.row(kB0);
+    EXPECT_EQ(SceneGraphModel::ePayloadStateFailed, fixture.model.getPayloadState(kB0));
+    EXPECT_EQ(0, fixture.model.rowCount(b0));
+    EXPECT_TRUE(b0.data(Qt::ToolTipRole).toString().contains(QString::fromUtf8("b0.usda")));
+    EXPECT_TRUE(fixture.model.hasChildren(b0));
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoaded, fixture.model.getPayloadState(kB2));
+
+    // Asking again shows it as loading again, and it fails again with the file still gone.
+    fixture.twirl(kB0);
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(kB0));
+    fixture.service();
+    EXPECT_EQ(SceneGraphModel::ePayloadStateFailed, fixture.model.getPayloadState(kB0));
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneGraphModelPayloads, CancellingEndsTheLoadingRow)
+{
+    PayloadModel fixture;
+
+    fixture.twirl(kB0);
+    fixture.source->stage.cancelPendingLoads();
+    fixture.model.settleLoads();
+
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB0));
+    EXPECT_EQ(0, fixture.model.rowCount(fixture.row(kB0)));
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneGraphModelPayloads, TwirlingALoadedRowAsksNothing)
+{
+    PayloadModel fixture;
+
+    fixture.twirl(kB0);
+    fixture.service();
+    const QModelIndex b0 = fixture.row(kB0);
+    const int rows = fixture.model.rowCount(b0);
+
+    fixture.model.markLoading(QStringList(kB0));
+
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoaded, fixture.model.getPayloadState(kB0));
+    EXPECT_EQ(rows, fixture.model.rowCount(b0));
+}
+
+TEST(SceneGraphModelPayloads, ATwirlDuringACommitShowsLoadingAndReadsWhenItEnds)
+{
+    PayloadModel fixture;
+    const QPersistentModelIndex b1(fixture.row(kB1));
+    QSignalSpy done(&fixture.model, &SceneGraphModel::deferredReadsDone);
+
+    fixture.source->busy = true;
+    ASSERT_TRUE(fixture.model.canFetchMore(b1));
+    fixture.model.fetchMore(b1);
+    EXPECT_FALSE(fixture.model.canFetchMore(b1));
+    EXPECT_TRUE(fixture.model.hasOwedReads());
+    ASSERT_EQ(1, fixture.model.rowCount(b1));
+    EXPECT_EQ(QString::fromUtf8("Loading..."), fixture.model.index(0, 0, b1).data().toString());
+
+    // Still busy: nothing moves, and nothing is lost.
+    fixture.model.settleLoads();
+    EXPECT_TRUE(fixture.model.hasOwedReads());
+    EXPECT_EQ(0, done.count());
+
+    fixture.source->busy = false;
+    fixture.model.settleLoads();
+    EXPECT_FALSE(fixture.model.hasOwedReads());
+    EXPECT_EQ(1, done.count());
+    ASSERT_EQ(1, fixture.model.rowCount(b1));
+    EXPECT_EQ(QString::fromUtf8("Own"), fixture.model.index(0, 0, b1).data().toString());
+}
+
+TEST(SceneGraphModelPayloads, ACommitInTheWayKeepsALoadingRowUntilSettled)
+{
+    PayloadModel fixture;
+
+    fixture.twirl(kB0);
+    fixture.source->serviceLoads();
+    fixture.source->busy = true;
+    fixture.model.settleLoads();
+    EXPECT_TRUE(fixture.model.hasOwedReads());
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(kB0));
+
+    // Whichever edit was in the way, the refresh it ends with takes the outcome in.
+    fixture.source->busy = false;
+    fixture.model.refresh();
+    EXPECT_FALSE(fixture.model.hasOwedReads());
+    EXPECT_EQ(SceneGraphModel::ePayloadStateLoaded, fixture.model.getPayloadState(kB0));
+}
+
+TEST(SceneGraphModelPayloads, IndexOfPathReportsABusyStage)
+{
+    PayloadModel fixture;
+    QSignalSpy done(&fixture.model, &SceneGraphModel::deferredReadsDone);
+    const QString own = kB1 + QString::fromUtf8("/Own");
+    bool busy = false;
+
+    fixture.source->busy = true;
+    EXPECT_FALSE(fixture.model.indexOfPath(own, true, &busy).isValid());
+    EXPECT_TRUE(busy);
+
+    fixture.source->busy = false;
+    fixture.model.refresh();
+    EXPECT_EQ(1, done.count());
+    busy = false;
+    EXPECT_TRUE(fixture.model.indexOfPath(own, false, &busy).isValid());
+    EXPECT_FALSE(busy);
+}
+
+TEST(SceneGraphModelPayloads, UnloadRemovesRowsAndKeepsTheBadge)
+{
+    PayloadModel fixture;
+
+    fixture.twirl(kB0);
+    fixture.service();
+    const QPersistentModelIndex b0(fixture.row(kB0));
+    const QPersistentModelIndex geo(fixture.row(kB0 + QString::fromUtf8("/Geo")));
+    ASSERT_TRUE(geo.isValid());
+    const int resets = fixture.model.getResetCount();
+
+    fixture.source->stage.requestUnload({ PXR_NS::SdfPath(kB0.toStdString()) });
+    fixture.service();
+
+    EXPECT_FALSE(geo.isValid());
+    EXPECT_TRUE(b0.isValid());
+    EXPECT_EQ(0, fixture.model.rowCount(b0));
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB0));
+    EXPECT_TRUE(fixture.model.hasChildren(b0));
+    EXPECT_EQ(resets, fixture.model.getResetCount());
+
+    // The row twirls open as it did the first time.
+    fixture.twirl(kB0);
+    fixture.service();
+    EXPECT_EQ(QStringList(QString::fromUtf8("Geo")), childNames(fixture.model, b0));
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
 }

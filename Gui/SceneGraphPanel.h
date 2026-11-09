@@ -49,7 +49,9 @@ class SceneGraphModel;
  * node graph, or the scene of a pinned node. When the rows are the viewer's prims, selecting rows
  * selects the prims in the viewer and the viewer's selection selects the rows. A name filter
  * lists the matching prims instead of the tree. Below the tree, a ScenePrimInspector on the current
- * prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs.
+ * prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs. On the
+ * viewer's stage, twirling open a row of an unloaded payload loads that payload alone, and the row
+ * menu loads and unloads the selection; closing a row never unloads.
  *
  * Scripts find its widgets by object name: sceneGraphTree, sceneGraphChangedHereTree,
  * sceneGraphResults, sceneGraphFilter, sceneGraphPin, sceneGraphFollow, sceneGraphNode,
@@ -108,6 +110,7 @@ private Q_SLOTS:
 
     void onViewerSceneChanged();
     void onSceneSynced();
+    void onStageLoadsChanged();
     void onViewportSelectionChanged(const QStringList& paths);
     void onTreeSelectionChanged();
     void onChangedHereSelectionChanged();

@@ -77,6 +77,8 @@ struct ViewerTabPrivate
     QVBoxLayout* viewerSubContainerLayout;
     // Beside viewer in viewerSubContainerLayout; one of the two is visible.
     SceneViewport* sceneViewport;
+    // The node the scene view last showed: loads asked for on another node's scene are dropped.
+    NodeWPtr sceneLoadsNode;
     QVBoxLayout* mainLayout;
 
     /*Viewer Settings*/

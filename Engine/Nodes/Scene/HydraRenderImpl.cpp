@@ -2447,7 +2447,7 @@ namespace {
 struct ProgressiveRender::Implementation {
     typedef std::chrono::steady_clock Clock;
 
-    std::mutex* const stageLock;
+    StageLock stageLock;
     const std::function<UsdStageRefPtr()> stageOf;
     const std::function<void()> listener;
     const float background;
@@ -2502,7 +2502,7 @@ struct ProgressiveRender::Implementation {
 
     std::thread worker;
 
-    Implementation(std::mutex* stageLock_,
+    Implementation(const StageLock& stageLock_,
                    const std::function<UsdStageRefPtr()>& stage_,
                    const std::function<void()>& listener_,
                    float background_)
@@ -2531,7 +2531,7 @@ struct ProgressiveRender::Implementation {
     // reference to it, so it may only die while no edit of the stage can be under way.
     void dropEngine()
     {
-        std::lock_guard<std::mutex> stageGuard(*stageLock);
+        std::lock_guard<StageLock> stageGuard(stageLock);
         std::lock_guard<std::mutex> l(engineMutex);
         if (engine && paused) {
             try {
@@ -2989,7 +2989,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::string sessionFailure;
         std::shared_ptr<Frame> read;
         {
-            std::unique_lock<std::mutex> stageGuard(*stageLock);
+            std::unique_lock<StageLock> stageGuard(stageLock);
             const UsdStageRefPtr stage = stageOf();
             if (stage) {
                 std::lock_guard<std::mutex> l(engineMutex);
@@ -3126,6 +3126,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 } // ProgressiveRender::Implementation::refine
 
 ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
+                                     const std::function<UsdStageRefPtr()>& stage,
+                                     const std::function<void()>& listener,
+                                     float background)
+    : ProgressiveRender(StageLock { [stageLock]() { stageLock->lock(); }, [stageLock]() { stageLock->unlock(); } }, stage, listener, background)
+{
+}
+
+ProgressiveRender::ProgressiveRender(const StageLock& stageLock,
                                      const std::function<UsdStageRefPtr()>& stage,
                                      const std::function<void()>& listener,
                                      float background)
@@ -3292,7 +3300,7 @@ ProgressiveRender::pick(const Frame& frame,
                         int x,
                         int y)
 {
-    std::lock_guard<std::mutex> stageGuard(*_imp->stageLock);
+    std::lock_guard<StageLock> stageGuard(_imp->stageLock);
     std::lock_guard<std::mutex> l(_imp->engineMutex);
     UsdImagingGLEngine* engine = _imp->engine.get();
 

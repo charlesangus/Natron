@@ -58,6 +58,13 @@ public:
      **/
     virtual void readStage(const std::function<void(const SceneStage* stage)>& read) const = 0;
 
+    /**
+     * @brief readStage() for the main thread, which must not wait for a load to commit: returns
+     * false without calling read while an edit holds the lock. The edit's end is announced by a
+     * signal of whoever owns the stage, on which to try again. MT-safe.
+     **/
+    virtual bool tryReadStage(const std::function<void(const SceneStage* stage)>& read) const = 0;
+
     // Moves whenever the stage is edited; cheap, without the lock.
     virtual U64 getEditCount() const = 0;
 };
@@ -117,6 +124,9 @@ typedef std::shared_ptr<SceneGraphPathRows> SceneGraphPathRowsPtr;
  * again only the expanded items under the paths the edits resynced, and inserts and removes rows
  * for what changed, keeping the other rows and their persistent indexes. A different stage
  * resets the model.
+ *
+ * Prims under an unloaded payload have no rows until it loads, and its row reports that it can have
+ * children. A load changes only the rows under its prim.
  **/
 class SceneGraphModel
     : public QAbstractItemModel {
@@ -137,6 +147,16 @@ public:
         ePrimPathRole = Qt::UserRole + 1,
         // Whether the prim has a spec in the viewed node's own layers or has a descendant that does, a bool.
         eChangedHereRole,
+        // The row's payload, a PayloadStateEnum.
+        ePayloadStateRole,
+    };
+
+    enum PayloadStateEnum {
+        ePayloadStateNone = 0,
+        ePayloadStateUnloaded,
+        ePayloadStateLoading,
+        ePayloadStateLoaded,
+        ePayloadStateFailed,
     };
 
     // How many children one fetchMore() adds.
@@ -156,12 +176,20 @@ public:
 
     /**
      * @brief Brings the read items up to date with the stage. Does nothing when the stage's edit
-     * count has not moved and no notice came in; reads the edited subtrees otherwise.
+     * count has not moved and no notice came in; reads the edited subtrees otherwise. No read on the
+     * main thread waits for the stage: one that finds it held by an edit is owed, the row it was for
+     * shows the loading row meanwhile, and the next refresh() or settleLoads() reads it.
      **/
     void refresh();
 
-    // The index of the prim at path, column 0, reading the children on the way when populate.
-    QModelIndex indexOfPath(const QString& path, bool populate);
+    /**
+     * @brief The index of the prim at path, column 0, reading the children on the way when populate.
+     * Invalid with *busy set when an edit held the stage; deferredReadsDone() says when to ask again.
+     **/
+    QModelIndex indexOfPath(const QString& path, bool populate, bool* busy = nullptr);
+
+    // Whether a read that found the stage busy has yet to happen.
+    bool hasOwedReads() const;
 
     /**
      * @brief Adds rows a SceneGraphPathRowsBuilder read, without touching the stage, so that
@@ -171,6 +199,22 @@ public:
     void addPathRows(const SceneGraphPathRowsPtr& rows);
 
     QString pathOf(const QModelIndex& index) const;
+
+    // None for a prim without a payload, and for a path no row has been read for.
+    PayloadStateEnum getPayloadState(const QString& path);
+
+    /**
+     * @brief Shows the rows at paths whose payloads are unloaded as loading, each with a disabled
+     * row under it, until the stage's notice of their load or settleLoads() says otherwise. Asks
+     * nothing of the stage.
+     **/
+    void markLoading(const QStringList& paths);
+
+    /**
+     * @brief Takes in what the stage has done with its load requests: refresh(), the prims whose
+     * files did not open, and, once no request is left, the end of any row still shown as loading.
+     **/
+    void settleLoads();
 
     /**
      * @brief Marks the rows at paths, which the caller gives with their ancestors. Rows read later
@@ -205,7 +249,18 @@ public:
     QMimeData* mimeData(const QModelIndexList& indexes) const override;
     Qt::DropActions supportedDragActions() const override;
 
+Q_SIGNALS:
+    // Every read owed for rows has now happened: what asked for rows and found the stage busy can ask again.
+    void deferredReadsDone();
+
 private:
+    // Takes in the stage's edits. False if an edit held the stage, leaving them to read later.
+    bool readEdits();
+
+    void settle();
+
+    void retryOwedReads();
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };

@@ -137,7 +137,8 @@ public:
     /**
      * @brief Rasterises the shape with its feather, as the Roto mask does but ignoring opacity, into
      * coverage (0..1, roi.width() x roi.height(), row 0 at roi.y1). roi is in pixels at mipmapLevel.
-     * Returns false when the shape draws nothing (unfinished, inactive or too few points).
+     * Returns false when the shape draws nothing (unfinished, inactive or too few points) or the
+     * memory to draw it could not be had.
      **/
     bool rasterizeCoverage(double time, unsigned int mipmapLevel, const RectI& roi, std::vector<float>* coverage) const;
 

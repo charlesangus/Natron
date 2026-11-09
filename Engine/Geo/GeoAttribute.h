@@ -284,11 +284,10 @@ public:
         checkScalarAccess<T>(false);
         checkComponent(component);
         checkStringIndices(&value, 1);
-        const unsigned char* current = _values.element(checkedOffset(offset)) + component * sizeof(T);
-        if (std::memcmp(current, &value, sizeof(T)) == 0) {
-            return;
-        }
-        std::memcpy(_values.elementForWriting(offset) + component * sizeof(T), &value, sizeof(T));
+        unsigned char element[kMaxTupleSize * sizeof(double)];
+        std::memcpy(element, _values.element(checkedOffset(offset)), _values.elementBytes());
+        std::memcpy(element + component * sizeof(T), &value, sizeof(T));
+        _values.setElement(offset, element);
     }
 
     template <typename T>
@@ -432,13 +431,24 @@ public:
         _values.makePageTableUnique();
     }
 
-    /** @brief kGeoPageSize tuples; elements past size() must keep the default value. */
+    /**
+     * @brief kGeoPageSize tuples; elements past size() must keep the default value. The pointer
+     * stays writable until endWriting(); until then the page's hash is recomputed on every
+     * contentHash().
+     **/
     template <typename T>
     T* pageForWriting(std::size_t pageIndex)
     {
         checkScalarAccess<T>(false);
 
         return reinterpret_cast<T*>(_values.pageForWriting(pageIndex));
+    }
+
+    /** @brief Invalidates every pointer pageForWriting() returned; see GeoPagedColumn::endWriting(). */
+    void endWriting() noexcept
+    {
+        _values.endWriting();
+        _pool.endWriting();
     }
 
     void compactConstantPages()

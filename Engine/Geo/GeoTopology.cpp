@@ -236,6 +236,16 @@ GeoTopology::remapPrimitiveVertexStarts(std::span<const GeoOffset> newFromOld)
     remapReferences(_primitiveVertexStart, newFromOld);
 }
 
+void
+GeoTopology::endWriting() noexcept
+{
+    _vertexPoint.endWriting();
+    _vertexPrimitive.endWriting();
+    _primitiveVertexStart.endWriting();
+    _primitiveVertexCount.endWriting();
+    _primitiveType.endWriting();
+}
+
 U64
 GeoTopology::contentHash() const
 {

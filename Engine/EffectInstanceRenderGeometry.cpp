@@ -180,8 +180,12 @@ fetchGeometryThroughCache(const GeometryCacheRequest& request,
         std::list<GeoDetailCacheEntryPtr> cached;
         if (appPTR->getGeoDetail(key, &cached)) {
             for (std::list<GeoDetailCacheEntryPtr>::const_iterator it = cached.begin(); it != cached.end(); ++it) {
-                if (*it && (*it)->getGeoDetail() && (*it)->isFullyRendered()) {
-                    *outputDetail = (*it)->getGeoDetail();
+                if (!*it || !(*it)->isFullyRendered()) {
+                    continue;
+                }
+                GeoDetailConstPtr detail = (*it)->getGeoDetail();
+                if (detail) {
+                    *outputDetail = std::move(detail);
 
                     return EffectInstance::eRenderRoIRetCodeOk;
                 }
@@ -220,8 +224,13 @@ fetchGeometryThroughCache(const GeometryCacheRequest& request,
             // An edit or a mark came during the render: the geometry may be another state's.
             appPTR->removeFromGeoDetailCache(cacheEntry);
         } else {
-            cacheEntry->setGeoDetail(rendered);
-            cacheEntry->allocateMemory();
+            try {
+                cacheEntry->setGeoDetail(rendered);
+                cacheEntry->allocateMemory();
+            } catch (...) {
+                appPTR->removeFromGeoDetailCache(cacheEntry);
+                throw;
+            }
         }
     }
 

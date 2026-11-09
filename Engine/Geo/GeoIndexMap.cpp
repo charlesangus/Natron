@@ -29,6 +29,8 @@
 #include <mutex>
 #include <utility>
 
+#include "Engine/Geo/GeoPage.h"
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -340,7 +342,7 @@ GeoIndexMap::writable()
 {
     if (!_data) {
         _data = std::make_shared<Data>();
-    } else if (_data.use_count() != 1) {
+    } else if (!geoIsSoleOwner(_data)) {
         _data = std::make_shared<Data>(*_data);
     }
     _data->invalidatePageBase();
@@ -362,7 +364,7 @@ GeoIndexMap::writablePage(Data& data,
             slot->words[std::size_t(w)] = bitsBelow(int(std::min<GeoOffset>(64, count - w * 64)));
         }
         slot->liveCount = count;
-    } else if (slot.use_count() != 1) {
+    } else if (!geoIsSoleOwner(slot)) {
         slot = std::make_shared<LivePage>(*slot);
     }
     return *slot;

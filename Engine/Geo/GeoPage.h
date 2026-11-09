@@ -116,8 +116,20 @@ public:
         return _constant ? _data : _data + indexInPage * _elementBytes;
     }
 
-    /** @brief Invalidates the cached hash; only for the sole owner of a dense page. */
+    /**
+     * @brief Invalidates the cached hash; only for the sole owner of a dense page, and only for
+     * writes that end before the next contentHash().
+     **/
     unsigned char* mutableData() noexcept;
+
+    /**
+     * @brief Like mutableData(), for a pointer the caller may keep writing through: the page
+     * caches no hash until endWriting().
+     **/
+    unsigned char* mutableDataHandedOut() noexcept;
+
+    /** @brief Lets the page cache its hash again; no write may follow through a handed-out pointer. */
+    void endWriting() const noexcept;
 
     /** @brief True when every element equals the first (always true for a constant page). */
     bool isUniform() const noexcept;
@@ -133,6 +145,7 @@ private:
     bool _constant;
     unsigned char* _data;
     mutable std::atomic<U64> _hash;
+    mutable std::atomic<bool> _handedOut;
 };
 
 typedef std::shared_ptr<const GeoPage> GeoPageConstPtr;
@@ -196,12 +209,22 @@ public:
     /** @brief Leaves the page shared when @p value already equals the stored element. */
     void setElement(std::size_t offset, const void* value);
 
+    /** @brief The page caches no hash until endWriting(). */
     unsigned char* elementForWriting(std::size_t offset);
 
     void makePageTableUnique();
 
-    /** @brief Detaches and expands the page if needed; returns its kGeoPageSize elements. */
+    /**
+     * @brief Detaches and expands the page if needed; returns its kGeoPageSize elements. The
+     * page caches no hash until endWriting().
+     **/
     unsigned char* pageForWriting(std::size_t pageIndex);
+
+    /**
+     * @brief Invalidates every pointer elementForWriting() and pageForWriting() returned, so the
+     * pages they reached cache their hash again.
+     **/
+    void endWriting() noexcept;
 
     void fill(std::size_t begin, std::size_t end, const void* value);
 
@@ -231,7 +254,7 @@ private:
     typedef std::vector<GeoPageConstPtr> PageTable;
 
     /** @brief With @p preserveContent false, a fresh page is left uninitialised for the caller. */
-    unsigned char* writablePage(std::size_t pageIndex, bool preserveContent);
+    unsigned char* writablePage(std::size_t pageIndex, bool preserveContent, bool handOut = false);
     GeoPageConstPtr constantPageFor(const void* value) const;
     bool elementIsDefault(const GeoPage& page, std::size_t indexInPage) const;
     void resetTailToDefault();

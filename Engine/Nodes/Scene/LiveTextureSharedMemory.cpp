@@ -37,9 +37,11 @@
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <random>
@@ -287,44 +289,96 @@ namespace {
         return footprints;
     }
 
+    // Shared by the threads of one export: once the caller's predicate says so, every one stops.
+    class Abort {
+    public:
+        explicit Abort(const std::function<bool()>& aborted)
+            : _aborted(aborted)
+        {
+        }
+
+        bool check()
+        {
+            if (_stopped.load(std::memory_order_relaxed)) {
+                return true;
+            }
+            if (_aborted && _aborted()) {
+                _stopped.store(true, std::memory_order_relaxed);
+
+                return true;
+            }
+
+            return false;
+        }
+
+        bool stopped() const
+        {
+            return _stopped.load(std::memory_order_relaxed);
+        }
+
+    private:
+        const std::function<bool()>& _aborted;
+        std::atomic<bool> _stopped { false };
+    };
+
+    /*
+     * The colour is straight, so averaging it as it is would give a half-transparent texel's colour as
+     * much weight as an opaque one's, and an edge would take on the colour of what is barely there.
+     * Where nothing above has an alpha the colour is the straight average, which keeps the colour the
+     * store spread into transparent texels for filtering across edges.
+     */
     void
     downsample(const float* source,
                int sourceWidth,
                int sourceHeight,
                float* destination,
                int width,
-               int height)
+               int height,
+               Abort& abort)
     {
         const std::vector<Footprint> columns = makeFootprints(sourceWidth, width);
         const std::vector<Footprint> rows = makeFootprints(sourceHeight, height);
 
         tbb::parallel_for(tbb::blocked_range<int>(0, height), [&](const tbb::blocked_range<int>& range) {
+            if (abort.check()) {
+                return;
+            }
             for (int y = range.begin(); y != range.end(); ++y) {
                 const Footprint& row = rows[(std::size_t)y];
                 float* out = destination + std::size_t(y) * std::size_t(width) * 4;
                 for (int x = 0; x < width; ++x, out += 4) {
                     const Footprint& column = columns[(std::size_t)x];
-                    float sum[4] = { 0.f, 0.f, 0.f, 0.f };
+                    float weighted[3] = { 0.f, 0.f, 0.f };
+                    float straight[3] = { 0.f, 0.f, 0.f };
+                    float alpha = 0.f;
                     for (int j = 0; j < row.count; ++j) {
                         const float* texel = source + (std::size_t(row.first + j) * std::size_t(sourceWidth) + std::size_t(column.first)) * 4;
                         for (int i = 0; i < column.count; ++i, texel += 4) {
                             const float weight = row.weights[j] * column.weights[i];
-                            for (int c = 0; c < 4; ++c) {
-                                sum[c] += texel[c] * weight;
+                            const float covered = texel[3] * weight;
+                            for (int c = 0; c < 3; ++c) {
+                                weighted[c] += texel[c] * covered;
+                                straight[c] += texel[c] * weight;
                             }
+                            alpha += covered;
                         }
                     }
-                    std::memcpy(out, sum, sizeof(sum));
+                    // Below FLT_MIN the weighted sums can have flushed to zero while the alpha has not.
+                    for (int c = 0; c < 3; ++c) {
+                        out[c] = (alpha > FLT_MIN) ? weighted[c] / alpha : straight[c];
+                    }
+                    out[3] = alpha;
                 }
             }
         });
     }
 
-    void
+    bool
     writeImage(char* bytes,
                int width,
                int height,
-               const float* pixels)
+               const float* pixels,
+               Abort& abort)
     {
         NatronLiveTexture::writeHeader(bytes, width, height);
         const std::size_t rowBytes = std::size_t(width) * NatronLiveTexture::kTexelBytes;
@@ -334,19 +388,95 @@ namespace {
         // would then wait on too, if TBB let this thread steal it while waiting for these tasks.
         tbb::this_task_arena::isolate([&]() {
             tbb::parallel_for(tbb::blocked_range<int>(0, height), [&](const tbb::blocked_range<int>& range) {
+                if (abort.check()) {
+                    return;
+                }
                 std::memcpy(first + std::size_t(range.begin()) * rowBytes,
                             reinterpret_cast<const char*>(pixels) + std::size_t(range.begin()) * rowBytes,
                             std::size_t(range.end() - range.begin()) * rowBytes);
             });
             const int count = NatronLiveTexture::levelCount(width, height);
-            for (int index = 1; index < count; ++index) {
+            for (int index = 1; (index < count) && !abort.check(); ++index) {
                 const NatronLiveTexture::Level above = NatronLiveTexture::levelAt(width, height, index - 1);
                 const NatronLiveTexture::Level level = NatronLiveTexture::levelAt(width, height, index);
                 downsample(reinterpret_cast<const float*>(bytes + above.offset), above.width, above.height,
-                           reinterpret_cast<float*>(bytes + level.offset), level.width, level.height);
+                           reinterpret_cast<float*>(bytes + level.offset), level.width, level.height, abort);
             }
         });
+
+        return !abort.stopped();
     }
+
+    // The file an export writes before it is renamed into place: removed, and unmapped, on every way
+    // out but publish().
+    class TemporaryFile {
+    public:
+        explicit TemporaryFile(const std::string& path)
+            : _path(path)
+            , _fd(::open(path.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600))
+        {
+        }
+
+        ~TemporaryFile()
+        {
+            const int saved = errno;
+
+            if (_bytes) {
+                ::munmap(_bytes, _size);
+            }
+            if (_fd >= 0) {
+                ::close(_fd);
+                if (!_published) {
+                    ::unlink(_path.c_str());
+                }
+            }
+            errno = saved;
+        }
+
+        TemporaryFile(const TemporaryFile&) = delete;
+        TemporaryFile& operator=(const TemporaryFile&) = delete;
+
+        int fd() const
+        {
+            return _fd;
+        }
+
+        char* bytes() const
+        {
+            return _bytes;
+        }
+
+        bool map(std::size_t size)
+        {
+            void* mapped = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, _fd, 0);
+
+            if (mapped == MAP_FAILED) {
+                return false;
+            }
+            _bytes = static_cast<char*>(mapped);
+            _size = size;
+
+            return true;
+        }
+
+        // Once renamed into place: the mapping is the caller's from then on.
+        char* publish()
+        {
+            char* bytes = _bytes;
+
+            _bytes = nullptr;
+            _published = true;
+
+            return bytes;
+        }
+
+    private:
+        const std::string _path;
+        const int _fd;
+        char* _bytes = nullptr;
+        std::size_t _size = 0;
+        bool _published = false;
+    };
 
     std::atomic<long long> limitedBytes(-1);
 
@@ -390,7 +520,8 @@ exportImage(const std::string& uri,
             const float* pixels,
             Export* result,
             int* errorNumber,
-            std::string* what)
+            std::string* what,
+            const std::function<bool()>& aborted)
 {
     std::string name;
 
@@ -403,51 +534,46 @@ exportImage(const std::string& uri,
     hasher.appendString(uri);
     const std::string path = inDirectory(kPrefix + name + "-" + hex64(hasher.finalize()) + "." + NatronLiveTexture::kFileExtension);
     const std::string temporary = path + kTemporarySuffix;
-    const auto fail = [&](int fd, const char* doing) {
+    const auto fail = [&](const char* doing) {
         *errorNumber = errno;
         *what = std::string(doing) + " " + temporary;
-        if (fd >= 0) {
-            ::close(fd);
-            ::unlink(temporary.c_str());
-        }
 
         return false;
     };
 
-    const int fd = ::open(temporary.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (fd < 0) {
-        return fail(fd, "cannot create");
+    TemporaryFile file(temporary);
+    if (file.fd() < 0) {
+        return fail("cannot create");
     }
     const std::size_t size = NatronLiveTexture::fileSize(width, height);
     if ((limitedBytes.load() >= 0) && (size > std::size_t(limitedBytes.load()))) {
         errno = ENOSPC;
 
-        return fail(fd, "cannot allocate");
+        return fail("cannot allocate");
     }
     // ftruncate would give a file that raises SIGBUS at the first page a full tmpfs cannot back.
-    const int allocated = allocate(fd, size);
+    const int allocated = allocate(file.fd(), size);
     if (allocated != 0) {
         errno = allocated;
 
-        return fail(fd, "cannot allocate");
+        return fail("cannot allocate");
     }
-    void* mapped = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (mapped == MAP_FAILED) {
-        return fail(fd, "cannot map");
+    if (!file.map(size)) {
+        return fail("cannot map");
     }
-    char* bytes = static_cast<char*>(mapped);
-    writeImage(bytes, width, height, pixels);
+    Abort abort(aborted);
+    if (!writeImage(file.bytes(), width, height, pixels, abort)) {
+        errno = ECANCELED;
+
+        return fail("stopped writing");
+    }
     struct stat info;
     // Both renderers check that the final name exists before opening it, so it must never name a
     // partly written file.
-    if ((::mprotect(bytes, size, PROT_READ) != 0) || (::fchmod(fd, 0400) != 0) || (::fstat(fd, &info) != 0) || (::rename(temporary.c_str(), path.c_str()) != 0)) {
-        const int saved = errno;
-        ::munmap(bytes, size);
-        errno = saved;
-
-        return fail(fd, "cannot publish");
+    if ((::mprotect(file.bytes(), size, PROT_READ) != 0) || (::fchmod(file.fd(), 0400) != 0) || (::fstat(file.fd(), &info) != 0) || (::rename(temporary.c_str(), path.c_str()) != 0)) {
+        return fail("cannot publish");
     }
-    ::close(fd);
+    const char* const bytes = file.publish();
 
     const ino_t inode = info.st_ino;
     const pid_t owner = ::getpid();

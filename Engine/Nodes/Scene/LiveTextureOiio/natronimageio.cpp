@@ -245,8 +245,8 @@ private:
         m_spec.tile_depth = 1;
         m_spec.channelnames = { "R", "G", "B", "A" };
         m_spec.alpha_channel = 3;
-        m_spec.attribute("oiio:ColorSpace", "lin_rec709_scene");
-        // Unset, Cycles takes the straight colour the file holds for premultiplied.
+        // No oiio:ColorSpace: the pixels are in the project's working space, which the file does not
+        // name, and neither delegate converts a live texture from the space a file claims.
         m_spec.attribute("oiio:UnassociatedAlpha", 1);
         m_spec.attribute("textureformat", "Plain Texture");
         m_spec.attribute("wrapmodes", "black,black");

@@ -31,6 +31,7 @@
 
 #include <condition_variable>
 #include <cstddef>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -249,6 +250,25 @@ public:
      * what lets a later render try again.
      **/
     LiveTextureBufferConstPtr exportToSharedMemory(const std::string& uri);
+
+    /**
+     * @brief While one lives, exportToSharedMemory() on this thread gives up once aborted returns
+     * true, whether it is waiting for another caller's export or writing the file: it returns null,
+     * leaving no file and recording no failure. Delegates filter their materials on the thread that
+     * renders, so a render sets one up for as long as it can be cancelled. aborted is called from
+     * TBB's threads too.
+     **/
+    class ExportAbortScope {
+    public:
+        explicit ExportAbortScope(const std::function<bool()>& aborted);
+        ~ExportAbortScope();
+
+        ExportAbortScope(const ExportAbortScope&) = delete;
+        ExportAbortScope& operator=(const ExportAbortScope&) = delete;
+
+    private:
+        std::function<bool()> _outer;
+    };
 
     // The name of the node whose image a file from exportToSharedMemory() holds, empty for any other.
     std::string getSourceOfFile(const std::string& path) const;

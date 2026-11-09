@@ -30,6 +30,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -54,7 +55,11 @@ struct Export {
 /**
  * @brief Writes a file holding pixels and their mip chain, and maps it. False, leaving no file, with
  * *errorNumber set to the errno and *what to what failed. Does the work on the calling thread and
- * TBB's, taking no lock another export would wait on.
+ * TBB's, taking no lock another export would wait on. The colour is not premultiplied, so each lower
+ * level is the alpha-weighted mean of the texels above it.
+ *
+ * aborted, when set, is called from those threads between blocks of rows and levels: once it returns
+ * true the export stops, failing with ECANCELED.
  **/
 bool exportImage(const std::string& uri,
                  int width,
@@ -62,7 +67,8 @@ bool exportImage(const std::string& uri,
                  const float* pixels,
                  Export* result,
                  int* errorNumber,
-                 std::string* what);
+                 std::string* what,
+                 const std::function<bool()>& aborted = std::function<bool()>());
 
 /**
  * @brief Removes the files of sessions whose lock nobody holds. Returns how many it removed. Files

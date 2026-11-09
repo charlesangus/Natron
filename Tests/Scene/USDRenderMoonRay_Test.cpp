@@ -1514,25 +1514,52 @@ TEST_F(USDRenderMoonRayLiveTextureTest, DeletingTheSourceShowsMagentaUntilUndone
     EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
 }
 
-// The store's entries and the filter's holds are all that keep a file: with both gone, no frame of
-// either range may leave one in a filesystem made of RAM.
-TEST_F(USDRenderMoonRayLiveTextureTest, ASecondFrameRangeLeavesNoFilesBehind)
+/*
+ * The store's entries and the filter's holds are all that keep a file. With the store emptied and the
+ * engine alive, the filter holds the two latest of a texture node's files, lets go of a removed
+ * material's at the next removal, and with the engine gone nothing is left in a filesystem made of RAM.
+ */
+TEST_F(USDRenderMoonRayLiveTextureTest, TheFilterHoldsTwoFilesPerTextureAndLetsGoOfRemovedOnes)
 {
     if (!moonRayOrSkip()) {
         return;
     }
     const Graph graph = createLiveTextureGraph(createAnimatedRamp(), false);
     ASSERT_TRUE(bool(graph.render));
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const auto renderFrame = [&](double frame) {
+        std::vector<RenderedPlane> planes;
+
+        return renderOffMainThread(graph.render, frame, &planes);
+    };
 
     for (double frame : { 1., 2. }) {
-        std::vector<RenderedPlane> planes;
-        ASSERT_TRUE(renderOffMainThread(graph.render, frame, &planes));
+        ASSERT_TRUE(renderFrame(frame));
     }
+    store.clear();
+    const std::vector<std::string> firstRange = sessionFiles();
+    EXPECT_LE(firstRange.size(), 2u);
+
     for (double frame : { 3., 4. }) {
-        std::vector<RenderedPlane> planes;
-        ASSERT_TRUE(renderOffMainThread(graph.render, frame, &planes));
+        ASSERT_TRUE(renderFrame(frame));
     }
-    LiveTextureStore::instance().clear();
+    store.clear();
+    const std::vector<std::string> secondRange = sessionFiles();
+    EXPECT_LE(secondRange.size(), 2u);
+    for (const std::string& name : firstRange) {
+        EXPECT_EQ(secondRange.end(), std::find(secondRange.begin(), secondRange.end(), name)) << name << " outlived its frame range";
+    }
+
+    disconnectNodes(graph.material, graph.card, true);
+    ASSERT_TRUE(renderFrame(4.));
+    const std::vector<std::string> removed = sessionFiles();
+    EXPECT_LE(removed.size(), 2u);
+
+    disconnectNodes(graph.card, graph.merge, true);
+    ASSERT_TRUE(renderFrame(4.));
+    const std::vector<std::string> afterRemoval = sessionFiles();
+    EXPECT_TRUE(afterRemoval.empty()) << afterRemoval.size() << " left with the engine alive, the first " << (afterRemoval.empty() ? std::string() : afterRemoval[0]);
+
     HydraRender::releaseAllCpuEngines();
     SceneQueryPool::instance().releaseIdle();
     const std::vector<std::string> files = sessionFiles();

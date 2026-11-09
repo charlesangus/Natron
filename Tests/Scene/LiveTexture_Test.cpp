@@ -39,9 +39,12 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -207,9 +210,10 @@ makeTexturedNetwork(const std::string& uri,
 
 void
 applyFilter(const std::function<void(PXR_NS::HdMaterialNetworkInterface*)>& filter,
-            PXR_NS::HdMaterialNetwork2* network)
+            PXR_NS::HdMaterialNetwork2* network,
+            const char* material = "/Material")
 {
-    PXR_NS::HdMaterialNetwork2Interface interface(PXR_NS::SdfPath("/Material"), network);
+    PXR_NS::HdMaterialNetwork2Interface interface(PXR_NS::SdfPath(material), network);
 
     filter(&interface);
 }
@@ -1080,6 +1084,108 @@ TEST_F(LiveTextureTest, TheMipChainHandlesOddSizes)
     }
 }
 
+// The colour is straight, so a lower level weighs each texel's colour by its alpha: a barely covered
+// texel must not tint an edge as much as an opaque one.
+TEST_F(LiveTextureTest, TheMipChainWeighsColourByAlpha)
+{
+    const float pixels[] = {
+        1.f,
+        0.f,
+        0.f,
+        1.f,
+        0.f,
+        1.f,
+        0.f,
+        0.5f,
+        0.f,
+        0.f,
+        1.f,
+        0.f,
+        0.f,
+        0.f,
+        1.f,
+        0.f,
+    };
+    const float transparent[] = {
+        0.f,
+        0.f,
+        1.f,
+        0.f,
+        0.f,
+        0.f,
+        1.f,
+        0.f,
+        0.f,
+        0.f,
+        1.f,
+        0.f,
+        0.f,
+        0.f,
+        1.f,
+        0.f,
+    };
+    LiveTextureSharedMemory::Export covered;
+    LiveTextureSharedMemory::Export uncovered;
+    int errorNumber = 0;
+    std::string what;
+    ASSERT_TRUE(LiveTextureSharedMemory::exportImage(uriOf("Weighted"), 2, 2, pixels, &covered, &errorNumber, &what)) << what;
+    ASSERT_TRUE(LiveTextureSharedMemory::exportImage(uriOf("Uncovered"), 2, 2, transparent, &uncovered, &errorNumber, &what)) << what;
+
+    ASSERT_EQ(2, NatronLiveTexture::levelCount(2, 2));
+    const NatronLiveTexture::Level level = NatronLiveTexture::levelAt(2, 2, 1);
+    const float* const texel = reinterpret_cast<const float*>(covered.bytes.get() + level.offset);
+    EXPECT_NEAR(2.f / 3.f, texel[0], 1e-5f);
+    EXPECT_NEAR(1.f / 3.f, texel[1], 1e-5f);
+    EXPECT_NEAR(0.f, texel[2], 1e-5f);
+    EXPECT_NEAR(0.375f, texel[3], 1e-5f);
+
+    // Nothing covered keeps the colour spread into the transparent texels.
+    const float* const clear = reinterpret_cast<const float*>(uncovered.bytes.get() + level.offset);
+    EXPECT_NEAR(0.f, clear[0], 1e-5f);
+    EXPECT_NEAR(0.f, clear[1], 1e-5f);
+    EXPECT_NEAR(1.f, clear[2], 1e-5f);
+    EXPECT_NEAR(0.f, clear[3], 1e-5f);
+}
+
+TEST_F(LiveTextureTest, AnAbortedExportLeavesNoFile)
+{
+    const int width = 64;
+    const int height = 64;
+    const std::vector<float> pixels(std::size_t(width) * height * 4, 0.5f);
+    const std::vector<std::string> before = sessionFiles();
+
+    // Once at the start and once part of the way through, after the first block or level.
+    for (int allowed : { 0, 1 }) {
+        std::atomic<int> calls(0);
+        const std::function<bool()> aborted = [&calls, allowed]() { return calls.fetch_add(1) >= allowed; };
+        LiveTextureSharedMemory::Export result;
+        int errorNumber = 0;
+        std::string what;
+        EXPECT_FALSE(LiveTextureSharedMemory::exportImage(uriOf("Aborted"), width, height, pixels.data(), &result, &errorNumber, &what, aborted));
+        EXPECT_EQ(ECANCELED, errorNumber) << allowed;
+        EXPECT_FALSE(bool(result.bytes));
+        EXPECT_EQ(before, sessionFiles()) << allowed;
+    }
+}
+
+// An abort is the render's, not the texture's: no failure is kept, and the next export writes it.
+TEST_F(LiveTextureTest, AnExportAbortedByItsRenderIsTriedAgain)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const std::string uri = uriOf("AbortedByRender");
+
+    store.insert(uri, makeGradient(64, 64));
+    {
+        const LiveTextureStore::ExportAbortScope scope([]() { return true; });
+        EXPECT_FALSE(bool(store.exportToSharedMemory(uri)));
+    }
+    EXPECT_TRUE(store.getFailure(uri).empty()) << store.getFailure(uri);
+    EXPECT_TRUE(store.getNoRoom(uri).empty());
+    const LiveTextureBufferConstPtr exported = store.exportToSharedMemory(uri);
+    ASSERT_TRUE(bool(exported)) << store.getFailure(uri);
+    EXPECT_TRUE(fileExists(exported->getFilePath()));
+}
+
 TEST_F(LiveTextureTest, AnImageLargerThanSharedMemoryFailsCleanly)
 {
     const std::vector<std::string> before = sessionFiles();
@@ -1214,6 +1320,63 @@ TEST_F(LiveTextureTest, TheFilterHoldsTheFileBeforeTheCurrentOne)
     EXPECT_FALSE(fileExists(paths[0]));
     EXPECT_TRUE(fileExists(paths[1]));
     EXPECT_TRUE(fileExists(paths[2]));
+}
+
+// The delegate can read a removed material's files until it syncs the removal, so they go at the
+// next one; other materials keep theirs.
+TEST_F(LiveTextureTest, TheFilterLetsGoOfARemovedMaterialsFilesAtTheNextRemoval)
+{
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const LiveTextureSceneIndex::MaterialFilter filter = LiveTextureSceneIndex::makeMaterialFilter();
+    const auto filtered = [&](const char* material, const char* node, U64 hash) {
+        const std::string uri = LiveTextureSource::makeUri(node, "rgba", hash);
+        store.insert(uri, makeGradient(8, 8));
+        PXR_NS::HdMaterialNetwork2 network = makeTexturedNetwork(uri, "diffuseColor", "rgb");
+        applyFilter(filter, &network, material);
+
+        return network.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[PXR_NS::TfToken("file")].Get<PXR_NS::SdfAssetPath>().GetResolvedPath();
+    };
+
+    const std::string removed = filtered("/Looks/Removed", "Removed", 0x2000ULL);
+    const std::string child = filtered("/Looks/Removed/Child", "Child", 0x2001ULL);
+    const std::string kept = filtered("/Kept", "Kept", 0x2002ULL);
+    store.clear();
+
+    filter.forget({ PXR_NS::SdfPath("/Looks/Removed") });
+    EXPECT_TRUE(fileExists(removed));
+    EXPECT_TRUE(fileExists(child));
+    filter.forget({ PXR_NS::SdfPath("/Elsewhere") });
+    EXPECT_FALSE(fileExists(removed));
+    EXPECT_FALSE(fileExists(child));
+    EXPECT_TRUE(fileExists(kept));
+}
+
+// Cycles reads a live texture as it is: no conversion from a colour space, and the colour straight
+// whether or not its alpha is connected.
+TEST_F(LiveTextureTest, TheCyclesFilterReadsALiveTextureAsItIs)
+{
+    const std::string uri = LiveTextureSource::makeUri("Raw", "rgba", 0x3000ULL);
+    LiveTextureStore::instance().insert(uri, makeGradient(8, 8));
+    const PXR_NS::TfToken colorSpace("sourceColorSpace");
+    const PXR_NS::TfToken alphaType("alpha_type");
+
+    PXR_NS::HdMaterialNetwork2 cycles = makeTexturedNetwork(uri, "diffuseColor", "rgb");
+    cycles.nodes[PXR_NS::SdfPath(kTextureNode)].parameters[colorSpace] = PXR_NS::VtValue(PXR_NS::TfToken("auto"));
+    applyFilter(LiveTextureSceneIndex::makeCyclesMaterialFilter(), &cycles);
+    ASSERT_TRUE(hasTextureNode(cycles));
+    std::map<PXR_NS::TfToken, PXR_NS::VtValue>& parameters = cycles.nodes[PXR_NS::SdfPath(kTextureNode)].parameters;
+    EXPECT_EQ(PXR_NS::VtValue(PXR_NS::TfToken("raw")), parameters[colorSpace]);
+    EXPECT_EQ(PXR_NS::VtValue(PXR_NS::TfToken("channel_packed")), parameters[alphaType]);
+
+    PXR_NS::HdMaterialNetwork2 plain = makeTexturedNetwork("/plates/plain.exr", "diffuseColor", "rgb");
+    applyFilter(LiveTextureSceneIndex::makeCyclesMaterialFilter(), &plain);
+    EXPECT_EQ(0u, plain.nodes[PXR_NS::SdfPath(kTextureNode)].parameters.count(alphaType));
+    EXPECT_EQ(0u, plain.nodes[PXR_NS::SdfPath(kTextureNode)].parameters.count(colorSpace));
+
+    // MoonRay converts by gamma, which "auto" applies only to 8-bit images.
+    PXR_NS::HdMaterialNetwork2 moonRay = makeTexturedNetwork(uri, "diffuseColor", "rgb");
+    applyFilter(LiveTextureSceneIndex::makeMaterialFilter(), &moonRay);
+    EXPECT_EQ(0u, moonRay.nodes[PXR_NS::SdfPath(kTextureNode)].parameters.count(alphaType));
 }
 
 TEST_F(LiveTextureTest, TheFilterLeavesOtherTexturesAlone)

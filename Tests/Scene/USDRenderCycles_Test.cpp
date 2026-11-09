@@ -1601,6 +1601,30 @@ TEST_F(USDRenderCyclesLiveTextureTest, ALiveTexturesAlphaIsTheOpacity)
     EXPECT_LT(opaque[2], 0.05);
 }
 
+// With the alpha unused the colour is the texture's straight colour, as Storm shows it, not darkened by
+// the alpha.
+TEST_F(USDRenderCyclesLiveTextureTest, AnUnusedAlphaLeavesTheColourStraight)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0.5, 0., 0., 0.5);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+    KnobBool* useAlpha = knob<KnobBool>(graph.material, kUSDEmissiveMaterialParamUseAlpha);
+    ASSERT_TRUE(useAlpha != nullptr);
+    useAlpha->setValue(false);
+
+    const std::array<double, 4> half = centreAtFrame(graph.render, 1.);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(1., ViewSpec::all(), 3);
+    const std::array<double, 4> opaque = centreAtFrame(graph.render, 1.);
+    ASSERT_GT(opaque[0], 0.5);
+    EXPECT_NEAR(opaque[0], half[0], 0.05 * opaque[0]) << "half-covered " << half[0] << ", opaque " << opaque[0];
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
 TEST_F(USDRenderCyclesLiveTextureTest, ALiveNormalMapBendsTheLighting)
 {
     if (!cyclesOrSkip()) {

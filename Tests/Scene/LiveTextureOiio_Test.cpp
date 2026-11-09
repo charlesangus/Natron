@@ -197,6 +197,8 @@ TEST_F(LiveTextureOiioTest, TheSpecSaysTiledStraightAlphaFloat)
     EXPECT_GT(spec.tile_width, 0);
     EXPECT_TRUE(spec.format == OIIO::TypeDesc::FLOAT);
     EXPECT_EQ(1, spec.get_int_attribute("oiio:UnassociatedAlpha"));
+    // The pixels are in the working space, which the file does not name.
+    EXPECT_EQ(nullptr, spec.find_attribute("oiio:ColorSpace"));
 }
 
 TEST_F(LiveTextureOiioTest, AMissingFileFailsWithoutCrashing)

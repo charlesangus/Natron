@@ -27,10 +27,12 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <new>
@@ -648,15 +650,93 @@ LiveTextureStore::releaseUnusedFilesLocked(const std::string& keptUri,
     return released;
 }
 
+namespace {
+std::function<bool()>&
+exportAborted()
+{
+    thread_local std::function<bool()> aborted;
+
+    return aborted;
+}
+
+const std::chrono::milliseconds kAbortPoll(10);
+} // anonymous namespace
+
+LiveTextureStore::ExportAbortScope::ExportAbortScope(const std::function<bool()>& aborted)
+    : _outer(exportAborted())
+{
+    const std::function<bool()> outer = _outer;
+
+    exportAborted() = outer ? std::function<bool()>([outer, aborted]() { return aborted() || outer(); }) : aborted;
+}
+
+LiveTextureStore::ExportAbortScope::~ExportAbortScope()
+{
+    exportAborted() = _outer;
+}
+
 LiveTextureBufferConstPtr
 LiveTextureStore::exportToSharedMemory(const std::string& uri)
 {
+    // Ends the export on every way out, so callers waiting on the uri do not wait forever.
+    class Exporting {
+    public:
+        Exporting(LiveTextureStore& store,
+                  const std::string& uri)
+            : _store(store)
+            , _uri(uri)
+        {
+        }
+
+        ~Exporting()
+        {
+            if (_held) {
+                {
+                    std::lock_guard<std::mutex> lock(_store._mutex);
+                    _store._exporting.erase(_uri);
+                }
+                _store._rendered.notify_all();
+            }
+        }
+
+        Exporting(const Exporting&) = delete;
+        Exporting& operator=(const Exporting&) = delete;
+
+        void beginLocked()
+        {
+            _store._exporting.insert(_uri);
+            _held = true;
+        }
+
+        void endLocked()
+        {
+            _store._exporting.erase(_uri);
+            _held = false;
+        }
+
+    private:
+        LiveTextureStore& _store;
+        const std::string& _uri;
+        bool _held = false;
+    };
+
+    const std::function<bool()> aborted = exportAborted();
+    Exporting exporting(*this, uri);
     LiveTextureBufferConstPtr source;
     LiveTextureBufferConstPtr replaced;
     bool warned = false;
     {
         std::unique_lock<std::mutex> lock(_mutex);
-        _rendered.wait(lock, [&]() { return (_rendering.find(uri) == _rendering.end()) && (_exporting.find(uri) == _exporting.end()); });
+        const auto idle = [&]() { return (_rendering.find(uri) == _rendering.end()) && (_exporting.find(uri) == _exporting.end()); };
+        while (!idle()) {
+            if (!aborted) {
+                _rendered.wait(lock, idle);
+            } else if (aborted()) {
+                return LiveTextureBufferConstPtr();
+            } else {
+                _rendered.wait_for(lock, kAbortPoll);
+            }
+        }
         const std::map<std::string, Entry>::iterator found = _entries.find(uri);
         const std::map<std::string, std::weak_ptr<const LiveTextureBuffer>>::iterator file = _exported.find(uri);
         const LiveTextureBufferConstPtr alive = (file == _exported.end()) ? LiveTextureBufferConstPtr() : file->second.lock();
@@ -682,7 +762,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
         }
         // Tried again every time: another texture letting go of its file can make room for this one.
         warned = _failures.find(uri) != _failures.end();
-        _exporting.insert(uri);
+        exporting.beginLocked();
         source = found->second.buffer;
     }
 
@@ -690,7 +770,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
     int errorNumber = 0;
     std::string what;
     const auto write = [&]() {
-        return LiveTextureSharedMemory::exportImage(uri, source->getWidth(), source->getHeight(), source->getRow(0), &file, &errorNumber, &what);
+        return LiveTextureSharedMemory::exportImage(uri, source->getWidth(), source->getHeight(), source->getRow(0), &file, &errorNumber, &what, aborted);
     };
     bool exported = write();
     if (!exported && (errorNumber == ENOSPC)) {
@@ -704,6 +784,10 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
             exported = write();
         }
     }
+    if (!exported && (errorNumber == ECANCELED)) {
+        // Not a failure of the texture: the next render tries again.
+        return LiveTextureBufferConstPtr();
+    }
 
     LiveTextureBufferConstPtr result;
     std::string failure;
@@ -711,7 +795,7 @@ LiveTextureStore::exportToSharedMemory(const std::string& uri)
     std::vector<NodeWPtr> consumers;
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        _exporting.erase(uri);
+        exporting.endLocked();
         const std::map<std::string, Entry>::iterator found = _entries.find(uri);
         if (exported) {
             result = LiveTextureBuffer::fromFile(file.bytes, file.byteSize, source->getWidth(), source->getHeight(), file.path);

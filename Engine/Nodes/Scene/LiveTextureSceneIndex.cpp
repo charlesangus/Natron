@@ -25,12 +25,14 @@
 
 #include "LiveTextureSceneIndex.h"
 
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #ifdef emit
 #define NATRON_LIVETEXTURESCENEINDEX_RESTORE_EMIT
@@ -43,6 +45,7 @@
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/imaging/hd/materialFilteringSceneIndexBase.h>
+#include <pxr/imaging/hd/sceneIndexObserver.h>
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/sdf/path.h>
@@ -58,23 +61,7 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
 
-namespace {
-const TfToken&
-textureType()
-{
-    static const TfToken token("UsdUVTexture");
-
-    return token;
-}
-
-const TfToken&
-fileParameter()
-{
-    static const TfToken token("file");
-
-    return token;
-}
-
+namespace LiveTextureSceneIndex {
 /*
  * A prim's file stays held after it moves on to another texture, since a frame's render can still be
  * reading the file while the next frame's network is filtered. Two per texture node bound what a plate
@@ -89,14 +76,9 @@ public:
         const Key key(prim, node);
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            const std::map<Key, Generations>::const_iterator found = _holds.find(key);
-            if (found != _holds.end()) {
-                if (found->second.current.uri == uri) {
-                    return found->second.current.buffer;
-                }
-                if (found->second.previous.uri == uri) {
-                    return found->second.previous.buffer;
-                }
+            const LiveTextureBufferConstPtr held = findLocked(key, uri);
+            if (held) {
+                return held;
             }
         }
         // Outside the lock: the first export of a large plate must not stall other prims' filtering.
@@ -110,17 +92,46 @@ public:
                 return held->second.current.buffer;
             }
         }
-        if (buffer) {
-            LiveTextureBufferConstPtr dropped;
-            std::lock_guard<std::mutex> lock(_mutex);
-            Generations& generations = _holds[key];
-            dropped = std::move(generations.previous.buffer);
-            generations.previous = std::move(generations.current);
-            generations.current.uri = uri;
-            generations.current.buffer = buffer;
+        if (!buffer) {
+            return buffer;
         }
+        LiveTextureBufferConstPtr dropped;
+        std::lock_guard<std::mutex> lock(_mutex);
+        // The prim's network is filtered once per render context, possibly at once on other threads:
+        // another can have held the file while this one exported it, and holding it twice would let
+        // the one before it go while a render can still read it.
+        const LiveTextureBufferConstPtr held = findLocked(key, uri);
+        if (held) {
+            return held;
+        }
+        Generations& generations = _holds[key];
+        dropped = std::move(generations.previous.buffer);
+        generations.previous = std::move(generations.current);
+        generations.current.uri = uri;
+        generations.current.buffer = buffer;
 
         return buffer;
+    }
+
+    void forget(const SdfPathVector& paths)
+    {
+        std::vector<LiveTextureBufferConstPtr> released;
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        released.swap(_retired);
+        for (std::map<Key, Generations>::iterator it = _holds.begin(); it != _holds.end();) {
+            const SdfPath& prim = it->first.first;
+            if (std::none_of(paths.begin(), paths.end(), [&prim](const SdfPath& path) { return prim.HasPrefix(path); })) {
+                ++it;
+                continue;
+            }
+            for (Held* held : { &it->second.current, &it->second.previous }) {
+                if (held->buffer) {
+                    _retired.push_back(std::move(held->buffer));
+                }
+            }
+            it = _holds.erase(it);
+        }
     }
 
 private:
@@ -136,9 +147,49 @@ private:
         Held previous;
     };
 
+    LiveTextureBufferConstPtr findLocked(const Key& key,
+                                         const std::string& uri) const
+    {
+        const std::map<Key, Generations>::const_iterator found = _holds.find(key);
+
+        if (found == _holds.end()) {
+            return LiveTextureBufferConstPtr();
+        }
+        if (found->second.current.uri == uri) {
+            return found->second.current.buffer;
+        }
+        if (found->second.previous.uri == uri) {
+            return found->second.previous.buffer;
+        }
+
+        return LiveTextureBufferConstPtr();
+    }
+
     std::mutex _mutex;
     std::map<Key, Generations> _holds;
+    // The files of the materials the last forget() removed.
+    std::vector<LiveTextureBufferConstPtr> _retired;
 };
+} // namespace LiveTextureSceneIndex
+
+namespace {
+using LiveTextureSceneIndex::TextureHolds;
+
+const TfToken&
+textureType()
+{
+    static const TfToken token("UsdUVTexture");
+
+    return token;
+}
+
+const TfToken&
+fileParameter()
+{
+    static const TfToken token("file");
+
+    return token;
+}
 
 VtValue
 missingOutput(const GfVec4f& colour,
@@ -208,8 +259,15 @@ replaceWithMissingColour(HdMaterialNetworkInterface* network,
 
 void
 filterNetwork(HdMaterialNetworkInterface* network,
-              TextureHolds& holds)
+              TextureHolds& holds,
+              bool cycles)
 {
+    static const TfToken sourceColorSpace("sourceColorSpace");
+    static const TfToken raw("raw");
+    // hdCycles hands parameters it does not map to the image node's sockets of the same name.
+    static const TfToken alphaType("alpha_type");
+    static const TfToken channelPacked("channel_packed");
+
     const std::string prefix = kLiveTextureScheme "://";
 
     for (const TfToken& node : network->GetNodeNames()) {
@@ -228,6 +286,14 @@ filterNetwork(HdMaterialNetworkInterface* network,
         const LiveTextureBufferConstPtr buffer = holds.get(network->GetMaterialPrimPath(), node, uri);
         if (buffer) {
             network->SetNodeParameterValue(node, fileParameter(), VtValue(SdfAssetPath(uri, buffer->getFilePath())));
+            if (cycles) {
+                // Any other space converts from the one it names into Cycles' scene linear, which is
+                // the working space only while that is the configuration's scene_linear role.
+                network->SetNodeParameterValue(node, sourceColorSpace, VtValue(raw));
+                // Cycles premultiplies a file of straight colour as it loads it and divides again only
+                // where the alpha output is connected, so with the alpha unused the colour darkens.
+                network->SetNodeParameterValue(node, alphaType, VtValue(channelPacked));
+            }
         } else {
             replaceWithMissingColour(network, node);
         }
@@ -301,7 +367,52 @@ transformsToMappingNodes(HdMaterialNetworkInterface* network)
     }
 } // transformsToMappingNodes
 
-typedef std::function<void(HdMaterialNetworkInterface*)> MaterialFilter;
+// Tells the filter which materials the scene no longer has, by the paths they were last at.
+class Removals final
+    : public HdSceneIndexObserver {
+public:
+    explicit Removals(const LiveTextureSceneIndex::MaterialFilter& filter)
+        : _filter(filter)
+    {
+    }
+
+    void PrimsAdded(const HdSceneIndexBase& /*sender*/,
+                    const AddedPrimEntries& /*entries*/) override
+    {
+    }
+
+    void PrimsRemoved(const HdSceneIndexBase& /*sender*/,
+                      const RemovedPrimEntries& entries) override
+    {
+        SdfPathVector paths;
+
+        paths.reserve(entries.size());
+        for (const RemovedPrimEntry& entry : entries) {
+            paths.push_back(entry.primPath);
+        }
+        _filter.forget(paths);
+    }
+
+    void PrimsDirtied(const HdSceneIndexBase& /*sender*/,
+                      const DirtiedPrimEntries& /*entries*/) override
+    {
+    }
+
+    void PrimsRenamed(const HdSceneIndexBase& /*sender*/,
+                      const RenamedPrimEntries& entries) override
+    {
+        SdfPathVector paths;
+
+        paths.reserve(entries.size());
+        for (const RenamedPrimEntry& entry : entries) {
+            paths.push_back(entry.oldPrimPath);
+        }
+        _filter.forget(paths);
+    }
+
+private:
+    const LiveTextureSceneIndex::MaterialFilter _filter;
+};
 
 class LiveTextureMaterialSceneIndex;
 typedef TfRefPtr<LiveTextureMaterialSceneIndex> LiveTextureMaterialSceneIndexRefPtr;
@@ -310,9 +421,14 @@ class LiveTextureMaterialSceneIndex
     : public HdMaterialFilteringSceneIndexBase {
 public:
     static LiveTextureMaterialSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input,
-                                                   const MaterialFilter& filter)
+                                                   const LiveTextureSceneIndex::MaterialFilter& filter)
     {
         return TfCreateRefPtr(new LiveTextureMaterialSceneIndex(input, filter));
+    }
+
+    ~LiveTextureMaterialSceneIndex() override
+    {
+        _GetInputSceneIndex()->RemoveObserver(HdSceneIndexObserverPtr(&_removals));
     }
 
 protected:
@@ -323,18 +439,22 @@ protected:
 
 private:
     LiveTextureMaterialSceneIndex(const HdSceneIndexBaseRefPtr& input,
-                                  const MaterialFilter& filter)
+                                  const LiveTextureSceneIndex::MaterialFilter& filter)
         : HdMaterialFilteringSceneIndexBase(input)
         , _filter(filter)
+        , _removals(filter)
     {
+        // The base class's observer of the input cannot be overridden, so this one is added beside it.
+        _GetInputSceneIndex()->AddObserver(HdSceneIndexObserverPtr(&_removals));
     }
 
     FilteringFnc _filter;
+    Removals _removals;
 };
 
 void
 registerFor(const std::string& rendererDisplayName,
-            MaterialFilter (*makeFilter)())
+            LiveTextureSceneIndex::MaterialFilter (*makeFilter)())
 {
     HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
         rendererDisplayName,
@@ -359,23 +479,37 @@ registerSceneIndices()
     });
 }
 
-std::function<void(HdMaterialNetworkInterface*)>
-makeMaterialFilter()
+MaterialFilter::MaterialFilter(bool cycles)
+    : _holds(std::make_shared<TextureHolds>())
+    , _cycles(cycles)
 {
-    const std::shared_ptr<TextureHolds> holds = std::make_shared<TextureHolds>();
-
-    return [holds](HdMaterialNetworkInterface* network) { filterNetwork(network, *holds); };
 }
 
-std::function<void(HdMaterialNetworkInterface*)>
+void
+MaterialFilter::operator()(HdMaterialNetworkInterface* network) const
+{
+    filterNetwork(network, *_holds, _cycles);
+    if (_cycles) {
+        transformsToMappingNodes(network);
+    }
+}
+
+void
+MaterialFilter::forget(const SdfPathVector& paths) const
+{
+    _holds->forget(paths);
+}
+
+MaterialFilter
+makeMaterialFilter()
+{
+    return MaterialFilter(false);
+}
+
+MaterialFilter
 makeCyclesMaterialFilter()
 {
-    const std::function<void(HdMaterialNetworkInterface*)> filter = makeMaterialFilter();
-
-    return [filter](HdMaterialNetworkInterface* network) {
-        filter(network);
-        transformsToMappingNodes(network);
-    };
+    return MaterialFilter(true);
 }
 } // namespace LiveTextureSceneIndex
 

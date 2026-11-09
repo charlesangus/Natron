@@ -29,7 +29,7 @@
 #include "Global/GlobalDefines.h"
 #include "Global/Macros.h"
 
-#include <functional>
+#include <memory>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -38,6 +38,7 @@
 #undef emit
 #endif
 #include <pxr/imaging/hd/materialNetworkInterface.h>
+#include <pxr/usd/sdf/path.h>
 #ifdef NATRON_LIVETEXTURESCENEINDEX_RESTORE_EMIT
 #undef NATRON_LIVETEXTURESCENEINDEX_RESTORE_EMIT
 #define emit
@@ -55,19 +56,39 @@ NATRON_NAMESPACE_ENTER
  * the texture node and writes kLiveTextureMissingColour onto the inputs it fed, magenta in both.
  **/
 namespace LiveTextureSceneIndex {
+class TextureHolds;
+
 void registerSceneIndices();
 
 /**
- * @brief The filter one scene index applies. It holds every file it hands out, and the one before it,
- * for as long as it lives, because both renderers can close a file and open it again mid-render.
+ * @brief The filter one scene index applies, whose copies share what it holds: every file it hands
+ * out, and the one before it, because both renderers can close a file and open it again mid-render.
+ *
+ * Cycles' filter also turns every UsdTransform2d into the Cycles node doing the same, since hdCycles
+ * has no mapping of its own for one, and has a live texture read as it is: as raw data, the pixels
+ * being in the working space already, and with its alpha a channel of its own, so the colour is the
+ * straight colour the file holds whether or not the alpha is used.
  **/
-std::function<void(PXR_NS::HdMaterialNetworkInterface*)> makeMaterialFilter();
+class MaterialFilter {
+public:
+    explicit MaterialFilter(bool cycles);
 
-/**
- * @brief makeMaterialFilter's filter, which then turns every UsdTransform2d into the Cycles node doing the
- * same, since hdCycles has no mapping of its own for one.
- **/
-std::function<void(PXR_NS::HdMaterialNetworkInterface*)> makeCyclesMaterialFilter();
+    void operator()(PXR_NS::HdMaterialNetworkInterface* network) const;
+
+    /**
+     * @brief Lets go of the files held for the materials at and under paths, which the scene no
+     * longer has. The delegate can read them until it syncs the removal, so they go at the next call,
+     * or with the filter.
+     **/
+    void forget(const PXR_NS::SdfPathVector& paths) const;
+
+private:
+    std::shared_ptr<TextureHolds> _holds;
+    bool _cycles;
+};
+
+MaterialFilter makeMaterialFilter();
+MaterialFilter makeCyclesMaterialFilter();
 } // namespace LiveTextureSceneIndex
 
 NATRON_NAMESPACE_EXIT

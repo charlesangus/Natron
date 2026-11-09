@@ -247,7 +247,7 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
                 const GeoOffset point = builder.appendPoints(1);
                 builder.setPointPosition(point, pivot[0], pivot[1], pivot[2]);
                 const GeoBounds bounds = geoBoundsFromRange(bboxes.ComputeUntransformedBound(prim).ComputeAlignedRange());
-                const GeoOffset primitive = geoAppendPackedUSD(builder, point, path.GetString(), geoMatrixFromUsd(parentWorld), geoMatrixFromUsd(local), bounds);
+                const GeoOffset primitive = geoAppendPackedUSD(builder, point, path.GetString(), geoMatrixFromUsd(parentWorld), world, bounds);
                 packedPaths.emplace_back(primitive, path.GetString());
             }
             if (!packedPaths.empty()) {

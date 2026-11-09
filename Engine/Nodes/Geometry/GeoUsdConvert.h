@@ -59,11 +59,59 @@ enum GeoUsdPrimKindEnum {
     eGeoUsdPrimOverride,
 };
 
+/** @brief What the stage the converted layer will be composed over holds at one prim. */
+struct GeoUsdInputPrim {
+    PXR_NS::TfToken typeName;
+    // Row-vector USD matrices: the prim's local-to-world and parent-to-world transforms.
+    PXR_NS::GfMatrix4d world { 1. };
+    PXR_NS::GfMatrix4d parentWorld { 1. };
+    bool resetsXformStack = false;
+    // Attribute values at the conversion's time, primvars flattened; "<primvar>:indices" is
+    // present when the primvar is indexed. Only captured for prims the detail itself names.
+    std::unordered_map<PXR_NS::TfToken, PXR_NS::VtValue, PXR_NS::TfToken::HashFunctor> values;
+    U64 hash = 0;
+};
+
+/** @brief The input stage's prims at a detail's paths and their ancestors; absent prims are not listed. */
+struct GeoUsdInputScene {
+    std::unordered_map<PXR_NS::SdfPath, GeoUsdInputPrim, PXR_NS::SdfPath::Hash> prims;
+    U64 hash = 0;
+
+    const GeoUsdInputPrim* find(const PXR_NS::SdfPath& path) const
+    {
+        const auto it = prims.find(path);
+
+        return it == prims.end() ? nullptr : &it->second;
+    }
+};
+
+typedef std::shared_ptr<const GeoUsdInputScene> GeoUsdInputSceneConstPtr;
+
 struct GeoUsdConvertOptions {
     // Unpathed primitives and relative path values go under this prim.
     PXR_NS::SdfPath rootPath { "/geo" };
     GeoUsdPackedModeEnum packedMode = eGeoUsdPackedPointInstancer;
+    // When set, prims the input already holds are authored as overs and transforms are written
+    // relative to the input's parents, so that the composed result lands where the detail puts it.
+    GeoUsdInputSceneConstPtr inputScene;
 };
+
+/** @brief The prim paths a conversion of @p detail would touch, and the packed USD source paths among them. */
+struct GeoUsdDetailPaths {
+    std::vector<PXR_NS::SdfPath> paths;
+    std::vector<PXR_NS::SdfPath> sourcePaths;
+};
+GeoUsdDetailPaths geoUsdDetailPaths(const GeoDetail& detail,
+                                    const GeoUsdConvertOptions& options);
+
+/**
+ * @brief Captures @p stage at @p paths and all their ancestors at @p time. Values are read for
+ * @p paths only, minus @p transformOnly.
+ **/
+GeoUsdInputSceneConstPtr geoUsdCaptureInputScene(const PXR_NS::UsdStageRefPtr& stage,
+                                                 PXR_NS::UsdTimeCode time,
+                                                 const std::vector<PXR_NS::SdfPath>& paths,
+                                                 const std::vector<PXR_NS::SdfPath>& transformOnly);
 
 /**
  * @brief The translation between a GeoDetail and USD scene description.
@@ -76,6 +124,12 @@ struct GeoUsdConvertOptions {
  * per vertex, since curves cannot share points), unconnected points a UsdGeomPoints. Packed
  * USD primitives become an over on their source path carrying xformOp:transform; packed
  * geometry becomes a UsdGeomPointInstancer, native instances or unpacked geometry, by mode.
+ * Packed transforms are in the detail's space, which is world space: each one is written
+ * relative to the world transform of the prim it lands under.
+ *
+ * With an input scene, a partition whose prim the input holds becomes an over of it. Meshes,
+ * curves and points of the input's type then carry points, plus the values that differ from the
+ * input's; topology only when it differs, in full.
  *
  * Attribute classes map detail -> constant, primitive -> uniform, point -> vertex and
  * vertex -> faceVarying, and names map P -> points, N -> normals, uv -> primvars:st,
@@ -186,7 +240,11 @@ private:
     SpecEntry& addProperty(const PXR_NS::SdfPath& primPath,
                            const PropertyPlan& plan);
     void planProperties(Partition& partition);
+    void trimInputOverrides(Partition& partition);
     void addPartitionSpecs(std::size_t index);
+    const GeoUsdInputPrim* inputPrim(const PXR_NS::SdfPath& path) const;
+    PXR_NS::GfMatrix4d frameOf(const PXR_NS::SdfPath& path) const;
+    PXR_NS::GfMatrix4d overrideParent(const Partition& partition) const;
     void finishSpecs();
     const SpecEntry* findEntry(const PXR_NS::SdfPath& path) const;
     const GeoUsdConvert* delegateFor(const SpecEntry& entry) const;

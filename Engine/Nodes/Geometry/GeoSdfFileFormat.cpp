@@ -117,6 +117,7 @@ struct Provider {
 struct Registry {
     std::mutex mutex;
     std::map<std::string, Provider> providers;
+    std::map<std::string, GeoUsdInputSceneConstPtr> inputScenes;
     U64 generation = 0;
 };
 
@@ -277,6 +278,7 @@ public:
 
             return false;
         }
+        options.inputScene = GeoLayers::currentInputScene(key);
         const GeoDetailConstPtr detail = GeoLayers::currentDetail(key);
         if (!detail) {
             TF_RUNTIME_ERROR("No geometry is served as \"%s\"", resolvedPath.c_str());
@@ -286,7 +288,7 @@ public:
         // On a reload the layer still holds its previous data, whose built values carry over.
         const GeoSdfData* previous = dataOf(*layer);
         std::shared_ptr<const GeoUsdConvert> convert;
-        if (previous && previous->source() == detail && !previous->hasEdits()) {
+        if (previous && previous->source() == detail && !previous->hasEdits() && previous->convert()->options().inputScene == options.inputScene) {
             convert = previous->convert();
         } else {
             std::shared_ptr<GeoUsdConvert> fresh = std::make_shared<GeoUsdConvert>(detail, options);
@@ -489,6 +491,30 @@ removeProvider(const std::string& key)
     Registry& r = registry();
     std::lock_guard<std::mutex> lock(r.mutex);
     r.providers.erase(key);
+    r.inputScenes.erase(key);
+}
+
+void
+setInputScene(const std::string& key,
+              std::shared_ptr<const GeoUsdInputScene> scene)
+{
+    Registry& r = registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    if (scene) {
+        r.inputScenes[key] = std::move(scene);
+    } else {
+        r.inputScenes.erase(key);
+    }
+}
+
+std::shared_ptr<const GeoUsdInputScene>
+currentInputScene(const std::string& key)
+{
+    Registry& r = registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    const auto it = r.inputScenes.find(key);
+
+    return it == r.inputScenes.end() ? GeoUsdInputSceneConstPtr() : it->second;
 }
 
 bool
@@ -547,12 +573,16 @@ refresh(const std::string& identifier,
     if (!detail) {
         return fail("No geometry is served as \"" + layerPath + "\"");
     }
-    if (detail == data->source() || (!data->hasEdits() && data->source() && detail->contentHash() == data->source()->contentHash())) {
+    const std::shared_ptr<const GeoUsdConvert> before = data->convert();
+    GeoUsdConvertOptions options = before->options();
+    const GeoUsdInputSceneConstPtr inputScene = currentInputScene(key);
+    const GeoUsdInputSceneConstPtr& previousScene = options.inputScene;
+    const bool sameScene = (inputScene == previousScene) || (inputScene && previousScene && inputScene->hash == previousScene->hash);
+    if (sameScene && (detail == data->source() || (!data->hasEdits() && data->source() && detail->contentHash() == data->source()->contentHash()))) {
         return true;
     }
-
-    const std::shared_ptr<const GeoUsdConvert> before = data->convert();
-    const std::shared_ptr<GeoUsdConvert> after = std::make_shared<GeoUsdConvert>(detail, before->options());
+    options.inputScene = inputScene;
+    const std::shared_ptr<GeoUsdConvert> after = std::make_shared<GeoUsdConvert>(detail, options);
     after->adoptUnchangedPartitions(*before);
 
     // A partition with the same path, kind and signature has identical specs and values, so its

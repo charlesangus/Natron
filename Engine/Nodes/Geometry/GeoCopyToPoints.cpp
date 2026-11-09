@@ -588,16 +588,13 @@ expandCopy(const GeoDetail& source,
         if (geoPrimitiveIsPacked(type)) {
             flush();
             const GeoOffset pivot = firstPoint + localPoint[(std::size_t)source.vertexPoint(range.start)];
-            const GeoMatrix4 local = geoPackedTransform(source, primitive);
+            const GeoMatrix4 transform = geoMatrixMultiply(xform.m, geoPackedTransform(source, primitive));
             GeoOffset packed;
             if (type == eGeoPrimitivePackedGeometry) {
-                packed = geoAppendPackedGeometry(output, pivot, geoPackedDetail(source, primitive), geoMatrixMultiply(xform.m, local));
+                packed = geoAppendPackedGeometry(output, pivot, geoPackedDetail(source, primitive), transform);
             } else {
-                const GeoMatrix4 parent = geoPackedUSDParentTransform(source, primitive);
-                const GeoMatrix4 world = geoMatrixMultiply(xform.m, geoMatrixMultiply(parent, local));
-                const std::optional<GeoMatrix4> moved = geoPackedUSDLocalFromWorld(source, primitive, world);
-                packed = geoAppendPackedUSD(output, pivot, geoPackedUSDPath(source, primitive), parent,
-                                            moved ? *moved : geoMatrixMultiply(xform.m, local), geoPackedLocalBounds(source, primitive));
+                packed = geoAppendPackedUSD(output, pivot, geoPackedUSDPath(source, primitive), geoPackedUSDParentTransform(source, primitive),
+                                            transform, geoPackedLocalBounds(source, primitive));
             }
             finishPrimitive(primitive, packed);
 

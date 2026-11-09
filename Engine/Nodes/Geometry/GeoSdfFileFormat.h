@@ -29,11 +29,14 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "Engine/GeoDetail.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct GeoUsdInputScene;
 
 /**
  * @brief Geometry served to OpenUSD as layers, without writing files.
@@ -67,6 +70,14 @@ std::string identifier(const std::string& key,
 void setProvider(const std::string& key,
                  std::function<GeoDetailConstPtr()> provider);
 void removeProvider(const std::string& key);
+
+/**
+ * @brief The stage @p key's layer is composed over, as GeoUsdConvertOptions::inputScene; null
+ * for none. Taken by the next open or refresh of the layer.
+ **/
+void setInputScene(const std::string& key,
+                   std::shared_ptr<const GeoUsdInputScene> scene);
+std::shared_ptr<const GeoUsdInputScene> currentInputScene(const std::string& key);
 bool hasProvider(const std::string& key);
 
 /** @brief The provider's current detail, null without a provider. */
@@ -76,7 +87,7 @@ GeoDetailConstPtr currentDetail(const std::string& key);
  * @brief Applies the difference between the open layer @p identifier and its provider's current
  * detail as field edits in one change block. Prims whose topology or property set changed are
  * removed and authored again; the others only change values. Does nothing when the detail is
- * unchanged. Must not run concurrently with readers of the layer.
+ * unchanged, along with the input scene. Must not run concurrently with readers of the layer.
  **/
 bool refresh(const std::string& identifier,
              std::string* errorMessage);

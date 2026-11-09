@@ -1863,6 +1863,27 @@ protected:
     }
 
     /**
+     * @brief Called by the outermost evaluateScene() of a thread on every node upstream of it,
+     * inputs first, before that evaluation takes its SceneWriteBarrier::ReadScope: the one point
+     * of a scene evaluation where a node may edit a layer it owns in place, through
+     * SceneWriteBarrier::runExclusive(). Only called while at least one effect has registered
+     * through setPreparesSceneSources(). Must return eRenderRoIRetCodeAborted soon after
+     * aborted() turns true. The default does nothing.
+     **/
+    virtual RenderRoIRetCode prepareSceneSources(const EvaluateSceneArgs& /*args*/,
+                                                 std::string* /*errorMessage*/) WARN_UNUSED_RETURN
+    {
+        return eRenderRoIRetCodeOk;
+    }
+
+    /**
+     * @brief Counts this effect among those overriding prepareSceneSources(), so evaluateScene()
+     * walks the graph only while one exists. Pair every true with a false, at the latest in the
+     * destructor. MT-safe.
+     **/
+    static void setPreparesSceneSources(bool prepares);
+
+    /**
      * @brief The geometry counterpart of render(): must set *outputDetail to this effect's detail
      * at args.time. Pre-condition: evaluateGeometry() has already evaluated every geometry input
      * at every time getFramesNeeded() asked for. An input's detail is shared with the cache and

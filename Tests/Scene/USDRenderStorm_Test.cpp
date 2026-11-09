@@ -1290,8 +1290,9 @@ protected:
         translateA->setValueAtTime(11., -3.5, ViewSpec::all(), 0);
         translateB->setValueAtTime(1., 2.5, ViewSpec::all(), 0);
         translateB->setValueAtTime(11., 4.5, ViewSpec::all(), 0);
+        NodePtr merge = render->getInput(0)->getInput(0);
         connectNodes(*projector, *cardB, 0, true);
-        connectNodes(*cardB, render->getInput(0)->getInput(0), 2, true);
+        connectNodes(*cardB, merge, 2, true);
         renderColour(render, "the direct connection", rgba, 11.);
         if (HasFatalFailure()) {
             return NodePtr();
@@ -1305,7 +1306,6 @@ protected:
 
         (*cardA)->disconnectInput(0);
         (*cardB)->disconnectInput(0);
-        NodePtr merge = render->getInput(0)->getInput(0);
         merge->disconnectInput(0);
         merge->disconnectInput(2);
         connectNodes(*cardA, *cards, 0, true);

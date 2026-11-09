@@ -24,7 +24,7 @@ Member of F15 - Native Geometry: branches off and merges into `feature/f15-nativ
 - The upstream point or primitive count changes under a `GeoEdit`: it skips every edit and sets a warning.
 - Packed primitives pick and edit as whole primitives.
 
-Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360 - Geometry Kernel Language (the integration test uses their nodes), and F4 - Heavy Scene Viewer landed, through M336 - Heavy Scene Acceptance. Gizmo from M20.P2.T1. All nodes are `NativeEffectBase` subclasses in `Engine/Nodes/Geometry/`, each registered through its own `.reg.inc` (the pattern in `Engine/Nodes/Scene/USDCard.reg.inc`), under `PLUGIN_GROUP_3D`. Native geometry uses SOP attribute names (`P`, `N`, `uv`, `Cd`, `pscale`, `orient`, `path`, `name`); only `GeoUsdConvert` maps them to USD names.
+Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360 - Geometry Kernel Language (the integration test uses their nodes), and M376 - Geometry Display (the geometry display and the viewer-private session layer, which in turn builds on F4 - Heavy Scene Viewer's viewer stage). Gizmo from M20.P2.T1. All nodes are `NativeEffectBase` subclasses in `Engine/Nodes/Geometry/`, each registered through its own `.reg.inc` (the pattern in `Engine/Nodes/Scene/USDCard.reg.inc`), under `PLUGIN_GROUP_3D`. Native geometry uses SOP attribute names (`P`, `N`, `uv`, `Cd`, `pscale`, `orient`, `path`, `name`); only `GeoUsdConvert` maps them to USD names.
 
 ## Phase 361.1: Picking and editing
 

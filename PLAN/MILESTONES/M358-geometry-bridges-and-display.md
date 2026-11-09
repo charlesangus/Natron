@@ -1,10 +1,10 @@
 # M358 - Geometry Bridges And Display
 
 Second member of F15 - Native Geometry. The bridges between native geometry and the scene
-stack, and geometry display in the Viewer's 3D view. `GeoToUSD` works like Solaris's SOP
+stack. Display in the Viewer's 3D view is M376 - Geometry Display. `GeoToUSD` works like Solaris's SOP
 Import. It contributes a layer served by the `natrongeo` Sdf file format plugin, backed by the
 node's `GeoDetail`, which partitions the detail into USD prims by the `path` attribute lazily.
-The Viewer and `USDRender` read that same layer. Copying into an anonymous layer is an
+`USDRender` reads that layer. Copying into an anonymous layer is an
 explicit, slower opt-in. `USDToGeo` → Geo operators → `GeoToUSD` works like SOP Modify:
 prims arrive packed, unpack on request, and write back as overrides on their source paths.
 Shared design: M54 - Native Geometry Data Model's intro and Scope, `PLAN/DECISIONS/2026-11-08-native-geometry-follows-sops.md`, `PLAN/DECISIONS/2026-10-27-geometry-bridges-follow-solaris.md`.
@@ -17,9 +17,9 @@ Member of F15 - Native Geometry: branches off and merges into `feature/f15-nativ
 - `GeoUsdConvert` (partitioning, the attribute name and class table, groups, packed primitives).
 - The `natrongeo` plugin with per-partition lazy split caching and in-place reload.
 - `GeoToUSD` (new prims, overrides, "Packed Primitives" knob: Point Instancer default, Native Instances, Unpack; "Copy Into Layer" opt-in) and `USDToGeo` (packed by default, unpack on request, writes `path`).
-- Geometry display in the Viewer's 3D view on F4 - Heavy Scene Viewer's viewer stage, with the core SOP display toggles: point markers, point and primitive numbers, normals, group highlighting.
 
 **Out:**
+- Geometry display in the Viewer's 3D view and the core SOP display toggles (M376 - Geometry Display).
 - Component picking and `GeoEdit` (M361 - Geometry Point Editing).
 - Template/footprint display and attribute visualisers (M363 - Geometry Display Extras).
 - Component-level selection or editing in the scene context (M232 - Scene Selection To Nodes owns scene picking).
@@ -31,7 +31,7 @@ Member of F15 - Native Geometry: branches off and merges into `feature/f15-nativ
 - `SdfLayer::Reload(true)` on a file-format layer with an unchanged identifier diffs into field-level change notices. M358.P1.T2 checks this first and falls back to `SdfChangeBlock` edits.
 - Unconfirmed: primitives of mixed types sharing one `path` become per-type child prims under that path, with a node warning.
 
-Requires M54 - Native Geometry Data Model, M52 (`PrimSelector`), and F4 - Heavy Scene Viewer landed (through M336 - Heavy Scene Acceptance), since display builds on the viewer stage F4 replaces. All nodes are `NativeEffectBase` subclasses in `Engine/Nodes/Geometry/`, each registered through its own `.reg.inc` (the pattern in `Engine/Nodes/Scene/USDCard.reg.inc`), under `PLUGIN_GROUP_3D`. Native geometry uses SOP attribute names (`P`, `N`, `uv`, `Cd`, `pscale`, `orient`, `path`, `name`); only `GeoUsdConvert` maps them to USD names.
+Requires M54 - Native Geometry Data Model and M52 (`PrimSelector`); it no longer waits on F4 - Heavy Scene Viewer (user, 2026-11-09). All nodes are `NativeEffectBase` subclasses in `Engine/Nodes/Geometry/`, each registered through its own `.reg.inc` (the pattern in `Engine/Nodes/Scene/USDCard.reg.inc`), under `PLUGIN_GROUP_3D`. Native geometry uses SOP attribute names (`P`, `N`, `uv`, `Cd`, `pscale`, `orient`, `path`, `name`); only `GeoUsdConvert` maps them to USD names.
 
 ## Phase 358.1: Bridges
 
@@ -59,27 +59,19 @@ Requires M54 - Native Geometry Data Model, M52 (`PrimSelector`), and F4 - Heavy 
   - verify: unit test — `USDRead`(reference `.usda`) → `USDToGeo` gives one packed primitive per matched prim with the right `path` and transforms, and no topology; with Unpack on it yields the expected polygons in one point pool; with flatten also on, a translated prim's points move; `GeoToUSD` → `USDToGeo`(unpacked) is the identity on a detail.
   - size: M
 
+- [ ] M358.P1.T6 — Packed transforms in world space
+  - files: `Engine/Nodes/Geometry/USDToGeo.cpp`, `Engine/Nodes/Geometry/GeoCopyToPoints.cpp`, `Engine/Nodes/Geometry/GeoToUSD.cpp`, `Engine/Nodes/Geometry/GeoUsdConvert.cpp`, `Tests/GeoToSceneOverrides_Test.cpp`
+  - approach: `packedXform` is world space for every packed primitive, as in SOP Import (`.local/docs/solaris/docs/houdini/nodes/lop/sopimport.html:818-822`, `GeoPacked.h:62-69`). `USDToGeo` stores the packed primitive's world transform in `packedXform` (`USDToGeo.cpp:243-249` stores local today). `GeoCopyToPoints` uses plain `xform × packed` for every packed type (`GeoCopyToPoints.cpp:591-600`). The override writer (T5) writes `parent⁻¹ × world`, with the parent taken from `GeoToUSD`'s Scene input when the path exists there, else the stored parent, and handles `resetXformStack`.
+  - verify: a test with a rotated, scaled parent round-trips `USDRead` → `USDToGeo` → `GeoTransform` → `GeoToUSD` to the right composed world position.
+  - size: S
+
 - [ ] M358.P1.T5 — `GeoToUSD` writes back overrides on source paths
   - files: `Engine/Nodes/Geometry/GeoToUSD.cpp`, `Engine/Nodes/Geometry/GeoSdfData.cpp`, `Engine/Nodes/Geometry/GeoUsdConvert.cpp`, `Tests/GeoToSceneOverrides_Test.cpp`, `Tests/CMakeLists.txt`
-  - approach: the SOP Modify writeback. When a Scene input is connected, partitions whose `path` exists on the input stage are served as `over` specs on that path in the `natrongeo` layer (the overrides mode arg) instead of new prims under the scope path. Other partitions still go under the scope. Packed USD → `xformOp:transform` local transform (new world × inverse parent world). Unpacked → `points` and changed primvars, plus full topology when the counts differ from the source. Paths missing upstream become a node warning (Scope edge cases).
+  - approach: the SOP Modify writeback. When a Scene input is connected, partitions whose `path` exists on the input stage are served as `over` specs on that path in the `natrongeo` layer (the overrides mode arg) instead of new prims under the scope path. Other partitions still go under the scope. Packed USD → `xformOp:transform` local transform (new world × inverse parent world; see T6). Unpacked → `points` and changed primvars, plus full topology when the counts differ from the source. Paths missing upstream become a node warning (Scope edge cases).
   - verify: unit test — `USDRead` → `USDToGeo`(packed) → a test-only node that translates each packed primitive through the `GeoDetail` API → `GeoToUSD` moves the source prims on the composed stage at their original paths and adds no new prims; the unpacked chain overrides `points` only; a pruned source path raises the warning.
   - size: M
 
-## Phase 358.2: Display
-
-- [ ] M358.P2.T1 — The Viewer's 3D view displays geometry nodes through the `natrongeo` layer
-  - files: `Gui/SceneViewport.cpp`/`.h`, `Engine/ViewerInstance.h`/`.cpp`, `Gui/ViewerTab.cpp`
-  - approach: built on the viewer stage as F4 - Heavy Scene Viewer leaves it (deferred, worker-composed; re-read `PLAN/DESIGN/2026-11-04-scene-graph-design.md` at claim). Extend the Viewer's input acceptance and kind-driven view switch to the geometry kind. When the Viewer's active input is geometry, the viewer stage opens that node's `natrongeo` layer (M358.P1.T2), the same layer `GeoToUSD` renders from, so viewing and rendering share one conversion. A detail-hash change reloads the layer in place, so scrubbing and value edits dirty points instead of rebuilding the stage (the 2026-10-25 decision). Packed USD primitives draw as their bounds, and packed geometry as instances. Picking returns the prim path, which maps back to the partition and its primitive numbers.
-  - verify: manual — a `GeoPrimitive` node viewed in the Viewer's 3D view shows the mesh; scrubbing a time-varying upstream node updates it without a stage rebuild (no resync notice); clicking a prim reports its primitive numbers; a packed `USDToGeo` output shows bounds boxes.
-  - size: M
-
-- [ ] M358.P2.T2 — Core SOP display toggles in the geometry context
-  - files: `Gui/SceneViewport.cpp`/`.h`, `Gui/ViewerTab.cpp` (toolbar toggles), `Gui/GeoDisplayGuides.h`/`.cpp`
-  - approach: viewer toggles shown only when the active input is geometry: point markers, point numbers, primitive numbers, normals (`N`, as lines scaled by a viewer setting) and highlighting of a chosen group. All are drawn as guide prims (purpose `guide`) authored into a viewer-private session layer, the same layer M361.P1.T1 uses for markers. Nothing is drawn by a second GL pass outside Hydra. Number labels are drawn only for elements in view, capped per frame, so a 10M-point detail stays responsive.
-  - verify: manual (Xvfb screenshots shared before sign-off) — each toggle shows on a `GeoPrimitive` cube and clears when switched off; viewing a `GeoToUSD` downstream offers none of them; a 1M-point grid with point numbers on keeps the viewer interactive.
-  - size: M
-
-**Verification gate:** CI green with every Phase 358.1 test; on the Feature branch build under Xvfb, a `GeoPrimitive` chain displays in the Viewer's 3D view through its `natrongeo` layer, each display toggle works (screenshots shared before sign-off), scrubbing dirties points without a stage rebuild, and `GeoToUSD` → `USDRender` renders an image with no copied layer; the pre-existing ctest suite is green.
+**Verification gate:** CI green with every Phase 358.1 test, and `GeoToUSD` → `USDRender` renders an image with no copied layer; the pre-existing ctest suite is green.
 
 ## Decisions
 
@@ -87,3 +79,5 @@ Requires M54 - Native Geometry Data Model, M52 (`PrimSelector`), and F4 - Heavy 
 
 - 2026-11-08 — Split out of M54 - SOPs-Style Geometry (user, /cat-plan); tasks renumbered from M54.P2.*. Waits on F4 - Heavy Scene Viewer landing (user, M54 grill).
 - 2026-11-09 — **T3/T5 unblock (user: option 2):** the outermost scene evaluation runs a pre-step before taking its ReadScope, in which upstream `GeoToUSD` nodes compute their detail and refresh their `natrongeo` layer inside `SceneWriteBarrier::runExclusive`; the layer key includes time only when something upstream varies with time (M54 rule). Open: how this squares with P2.T1 "no resync while scrubbing", and T5 writing world transforms where `USDToGeo` stores local ones in `packedXform`. User also questions whether display should wait on F4 at all; options under study: depend on M328 only (rebase on the F4 branch now) or a direct GeoDetail Hydra scene index beside the stage.
+- 2026-11-09 — Display split out into M376 - Geometry Display (user); M358 no longer waits on F4.
+- 2026-11-09 — Packed transforms are world space (consultant, per SOP Import docs `.local/docs/solaris/docs/houdini/nodes/lop/sopimport.html:818-822` and `GeoPacked.h:62-69`); T5's parent⁻¹ × world is right and `USDToGeo`/`GeoCopyToPoints` are fixed by T6.

@@ -211,12 +211,13 @@ future core work has solid ground to build on.
 | M52 | USD Layer-Stack Completion | done | M226 | bosley-native-nodes | E9 | | | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
 | M53 | Projected Texture Painting | doing | M52, M233, M311 | bosley-native-nodes | E9 | F11 | | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
 | M54 | Native Geometry Data Model | done | M52, M227 | bosley-native-nodes | E9 | F15 | | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
-| M358 | Geometry Bridges And Display | doing | M54, M52, M336 | bosley-native-nodes | E9 | F15 | | [M358-geometry-bridges-and-display.md](PLAN/MILESTONES/M358-geometry-bridges-and-display.md) |
+| M358 | Geometry Bridges And Display | doing | M54, M52 | bosley-native-nodes | E9 | F15 | | [M358-geometry-bridges-and-display.md](PLAN/MILESTONES/M358-geometry-bridges-and-display.md) |
 | M359 | Geometry Operators | done | M54 | | E9 | F15 | | [M359-geometry-operators.md](PLAN/MILESTONES/M359-geometry-operators.md) |
 | M360 | Geometry Kernel Language | done | M54 | | E9 | F15 | | [M360-geometry-kernel-language.md](PLAN/MILESTONES/M360-geometry-kernel-language.md) |
-| M361 | Geometry Point Editing | todo | M358, M359, M360, M336 |  | E9 | F15 | | [M361-geometry-point-editing.md](PLAN/MILESTONES/M361-geometry-point-editing.md) |
+| M361 | Geometry Point Editing | todo | M358, M359, M360, M376 |  | E9 | F15 | | [M361-geometry-point-editing.md](PLAN/MILESTONES/M361-geometry-point-editing.md) |
 | M362 | Geometry Operators II | todo | M359, M360 |  | E9 |  | | [M362-geometry-operators-ii.md](PLAN/MILESTONES/M362-geometry-operators-ii.md) |
-| M363 | Geometry Display Extras | todo | M358 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
+| M363 | Geometry Display Extras | todo | M358, M376 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
+| M376 | Geometry Display | todo | M328, M358 |  | E9 | F15 | | [M376-geometry-display.md](PLAN/MILESTONES/M376-geometry-display.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | | | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |

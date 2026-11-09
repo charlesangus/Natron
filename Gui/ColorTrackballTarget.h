@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -38,11 +39,16 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/EngineFwd.h"
+
 #include "Gui/GuiFwd.h"
 
 class QEvent;
+class QWidget;
 
 NATRON_NAMESPACE_ENTER
+
+class GlobalModeTarget;
 
 /**
  * @brief One colour knob candidate for global-mode targeting: its script name (to match the
@@ -62,6 +68,12 @@ struct ColorKnobInfo {
  * if any, the touch belongs to.
  **/
 const char* colorKnobTouchTagPropertyName();
+
+/**
+ * @brief The same for every KnobGuiValue's row, with a QPointer<KnobGui> as the value. A
+ * colour knob carries both; its colour tag wins.
+ **/
+const char* globalModeKnobTouchTagPropertyName();
 
 /**
  * @brief The fallback chain from the Design notes: the last-touched knob if it is still a
@@ -106,13 +118,22 @@ public:
         return _gui;
     }
 
-    void touch(KnobGuiColor* knobGui);
+    /**
+     * @brief Records knobGui as the panel's last-touched knob of any kind, and as its
+     * last-touched colour knob when it is one.
+     **/
+    void touch(KnobGui* knobGui);
 
     /**
-     * @brief The last-touched knob recorded for this panel, or null. A recorded knob that no
-     * longer exists is dropped rather than returned.
+     * @brief The last-touched colour knob recorded for this panel, or null. A recorded knob
+     * that no longer exists is dropped rather than returned.
      **/
     KnobGui* lastTouched(KnobGuiContainerI* panel);
+
+    /**
+     * @brief As lastTouched(), for a knob of any kind.
+     **/
+    KnobGui* lastTouchedAnyKind(KnobGuiContainerI* panel);
 
     virtual bool eventFilter(QObject* watched, QEvent* event) OVERRIDE;
 
@@ -123,6 +144,7 @@ private:
 
     Gui* _gui;
     std::map<KnobGuiContainerI*, KnobGuiWPtr> _lastTouched;
+    std::map<KnobGuiContainerI*, KnobGuiWPtr> _lastTouchedAnyKind;
 };
 
 /**
@@ -131,6 +153,55 @@ private:
  * usable colour knob.
  **/
 KnobGuiColor* resolveColorTrackballTarget(Gui* gui);
+
+/**
+ * @brief Pages the panel to knob, opens any closed group holding it, and scrolls widget into
+ * view.
+ **/
+void revealKnobInPanel(DockablePanel* panel, const KnobIPtr& knob, QWidget* widget);
+
+/**
+ * @brief Whether knobGui can take global mode: a colour knob with an adjustment panel, or a
+ * numeric value knob of an eligible kind, in either case visible and enabled.
+ **/
+bool isGlobalModeKnob(KnobGui* knobGui);
+
+/**
+ * @brief Every knob in the panel that can take global mode, colour or numeric, in declaration
+ * order, which is the order Ctrl+Up and Ctrl+Down step through. When samePageAs is given, only the
+ * knobs on its settings page are returned, so stepping stays on the page of the engaged knob.
+ **/
+std::vector<KnobGui*> orderedGlobalModeKnobs(DockablePanel* panel, KnobGui* samePageAs = 0);
+
+/**
+ * @brief The entries of knobs that sit on the same top-level settings page as reference, in
+ * order. Knobs with no page match only a reference with no page.
+ **/
+std::vector<KnobGui*> restrictToPageOf(const std::vector<KnobGui*>& knobs, KnobGui* reference);
+
+/**
+ * @brief The target that drives knobGui: the colour target for a colour knob, the transform
+ * group with knobGui's member active for one of its node's transform interact knobs, or a lone
+ * value target. Null for anything else.
+ **/
+std::shared_ptr<GlobalModeTarget> makeGlobalModeTarget(KnobGui* knobGui);
+
+/**
+ * @brief The global-mode knob whose row holds widget, found through the touch tags, or null.
+ **/
+KnobGui* globalModeKnobAt(QWidget* widget);
+
+/**
+ * @brief Records knobGui as last touched on its Gui's tracker.
+ **/
+void touchGlobalModeKnob(KnobGui* knobGui);
+
+/**
+ * @brief The knob Ctrl+E engages: the eligible knob under the pointer when it sits in a node
+ * panel, else the topmost node panel's last-touched eligible knob of any kind, else the colour
+ * fallback of resolveColorTrackballTarget, else the panel's first eligible knob.
+ **/
+KnobGui* resolveGlobalModeKnob(Gui* gui, QWidget* hovered);
 
 NATRON_NAMESPACE_EXIT
 

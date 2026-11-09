@@ -43,6 +43,8 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
+#include "Global/FloatingPointExceptions.h"
+
 NATRON_NAMESPACE_ENTER
 
 namespace {
@@ -265,6 +267,8 @@ std::unique_ptr<HeadlessGLContext>
 HeadlessGLContext::create(std::string* error,
                           const char* eglLibrary)
 {
+    // llvmpipe's shader compiles while the context is made raise FE_INVALID, which debug builds trap.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     const std::string prefix = "USDRender needs an OpenGL 4.5 compatibility context and could not make one without a window system: ";
     std::unique_ptr<Implementation> imp(new Implementation);
 

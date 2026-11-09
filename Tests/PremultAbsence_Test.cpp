@@ -27,9 +27,7 @@
 
 #include <algorithm>
 #include <iostream>
-#include <iterator>
 #include <list>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -156,11 +154,6 @@ const char* const kBannedKnobNames[] = {
     "inputAlpha",
 };
 
-// OFX plug-ins that still load and declare a banned knob at the pinned openfx-misc.
-const char* const kExemptOfxPluginIDs[] = {
-    "net.sf.openfx.GodRays",
-};
-
 } // anonymous namespace
 
 // Whatever an upstream plug-in reports on its output, the downstream clip and fetched image
@@ -237,7 +230,6 @@ TEST_F(PremultAbsenceTest, NoNodeHasAnAlphaDeclarationKnob)
 
 TEST_F(PremultAbsenceTest, NoRegisteredPluginHasAPremultKnob)
 {
-    const std::set<std::string> exempt(std::begin(kExemptOfxPluginIDs), std::end(kExemptOfxPluginIDs));
     const std::vector<HashSweep::PluginVersion> plugins = HashSweep::sweptPlugins();
     ASSERT_FALSE(plugins.empty());
 
@@ -246,14 +238,9 @@ TEST_F(PremultAbsenceTest, NoRegisteredPluginHasAPremultKnob)
         std::cout << "[premult absence] OFX_PLUGIN_PATH unset: the shipped OpenFX bundles are not covered" << std::endl;
     }
 
-    std::set<std::string> exemptSeen;
     int checked = 0;
     for (std::size_t i = 0; i < plugins.size(); ++i) {
         const HashSweep::PluginVersion& plugin = plugins[i];
-        if (plugin.isOfx && exempt.count(plugin.id)) {
-            exemptSeen.insert(plugin.id);
-            continue;
-        }
         CreateNodeArgs args(plugin.id, getApp()->getProject());
         args.setProperty<int>(kCreateNodeArgsPropPluginVersion, plugin.major, 0);
         args.setProperty<int>(kCreateNodeArgsPropPluginVersion, plugin.minor, 1);
@@ -272,11 +259,5 @@ TEST_F(PremultAbsenceTest, NoRegisteredPluginHasAPremultKnob)
         node->destroyNode(true, false);
         ++checked;
     }
-    std::cout << "[premult absence] " << checked << " plugins checked, " << exemptSeen.size() << " exempt" << std::endl;
-
-    if (bundlesLoaded) {
-        for (const std::string& id : exempt) {
-            EXPECT_TRUE(exemptSeen.count(id)) << id << " is exempt but no longer loaded as an OpenFX plugin; remove the entry";
-        }
-    }
+    std::cout << "[premult absence] " << checked << " plugins checked" << std::endl;
 }

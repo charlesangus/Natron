@@ -1570,11 +1570,11 @@ EffectInstance::getImage(int inputNb,
             tls->currentRenderArgs.inputImages[inputNb].push_back(inputImg);
         }
 
-        if ( returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex) ) {
+        if (inputImg && returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex)) {
             inputImg = convertRAMImageToOpenGLTexture(inputImg);
         }
 
-        if (mapToClipPrefs) {
+        if (inputImg && mapToClipPrefs) {
             inputImg = convertLayersFormatsIfNeeded(inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
         }
 

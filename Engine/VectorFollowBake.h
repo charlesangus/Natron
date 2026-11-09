@@ -33,14 +33,40 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/VectorFollow.h"
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief Points a follow moves one by one, with no curve of their own to key, such as the two ends
+ * of a SplineWarp correspondence. They always follow per point, whatever the model, after every
+ * curve of the same follow, so they are written over the curves' new keys. Main thread only.
+ **/
+class VectorFollowPoints {
+public:
+    virtual ~VectorFollowPoints() { }
+
+    // What the follow's report calls them.
+    virtual std::string getName() const = 0;
+
+    // Where they show at time, in the coordinates the vectors are read in.
+    virtual std::vector<FollowPoint> getPointsAtTime(double time) const = 0;
+
+    // The integer frames from first to last at which they are keyed.
+    virtual std::set<int> getKeyFrames(int first, int last) const = 0;
+
+    // Keys them at time where the follow moved them, as near as they can go.
+    virtual void setPointsAtTime(double time, const std::vector<FollowPoint>& points) = 0;
+};
+
+typedef std::shared_ptr<VectorFollowPoints> VectorFollowPointsPtr;
+
 struct VectorFollowParams {
     std::list<RotoDrawableItemPtr> items;
+    std::list<VectorFollowPointsPtr> points;
     // Control points by index, for a curve of which only some were selected: those follow one by
     // one and the rest stays put, whatever the model. A curve not listed follows as a whole.
     std::map<RotoDrawableItem*, std::set<int>> selectedPoints;

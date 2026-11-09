@@ -60,6 +60,7 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
+#include "Engine/VectorFollowBake.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -591,6 +592,22 @@ SplineWarp::initializeKnobs()
     _ui->connectToCurveContext();
     _ui->createViewerButtonKnobs(page);
     _ui->createDisplayKnobs(page);
+    _vectorFollow.reset(new VectorFollowControls(this, _ui.get()));
+    _vectorFollow->createKnobs(page);
+    _vectorFollow->setSelectedPointsProvider([this]() {
+        std::list<VectorFollowPointsPtr> points;
+        SplineWarpLinkPtr link;
+        int index = -1;
+        SplineWarpContextPtr context = splineWarpContext(*this);
+        if (context && _ui->getSelectedCorrespondence(&link, &index)) {
+            if (VectorFollowPointsPtr correspondence = context->makeCorrespondenceFollowPoints(link, index)) {
+                points.push_back(correspondence);
+            }
+        }
+
+        return points;
+    });
+    _panelHook->setVectorFollowControls(_vectorFollow.get());
     _ui->createToolbar();
     _ui->createRightClickMenuKnobs(page);
     selectDefaultTool();
@@ -1030,6 +1047,10 @@ SplineWarp::knobChanged(KnobI* k,
         return true;
     }
 
+    if (_vectorFollow && k && _vectorFollow->onKnobChanged(k)) {
+        return true;
+    }
+
     bool ret = false;
     if (k && _ui->onKnobChanged(k, time, &ret)) {
         return ret;
@@ -1157,6 +1178,18 @@ SplineWarp::onOverlayFocusLost(double /*time*/,
     }
 
     return _ui->onOverlayFocusLost();
+}
+
+bool
+SplineWarp::onOverlayFocusGained(double /*time*/,
+                                 const RenderScale& /*renderScale*/,
+                                 ViewIdx /*view*/)
+{
+    if (_vectorFollow) {
+        _vectorFollow->refreshSources();
+    }
+
+    return false;
 }
 
 void

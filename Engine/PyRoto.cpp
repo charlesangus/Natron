@@ -38,11 +38,13 @@
 #include "Engine/PyNode.h"
 #include "Engine/PyTracker.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/VectorFollowBake.h"
+#include "Engine/VectorFollowKnobs.h"
 #include "Engine/VectorSampler.h"
 
 NATRON_NAMESPACE_ENTER
@@ -853,6 +855,17 @@ followReportToPython(const VectorFollowReport& report)
     return result;
 }
 
+// The Follow Vectors group of the context's node, whatever node type hosts it.
+const VectorFollowControls*
+followHost(const RotoCurveContextPtr& context)
+{
+    const NodePtr host = context ? context->getNode() : NodePtr();
+    const EffectInstancePtr effect = host ? host->getEffectInstance() : EffectInstancePtr();
+    const RotoCurvePanelHook* hook = effect ? effect->getCurvePanelHook() : nullptr;
+
+    return hook ? hook->getVectorFollowControls() : nullptr;
+}
+
 } // anonymous namespace
 
 PyObject*
@@ -870,8 +883,8 @@ Roto::followVectors(const std::list<ItemBase*>& items,
         return nullptr;
     }
     const NodePtr host = _ctx->getNode();
-    const RotoPaint* paint = dynamic_cast<const RotoPaint*>(host->getEffectInstance().get());
-    if (paint && paint->isVectorFollowRunning()) {
+    const VectorFollowControls* running = followHost(_ctx);
+    if (running && running->isFollowing()) {
         PyErr_SetString(PyExc_RuntimeError, "A follow is already running on this node.");
 
         return nullptr;
@@ -934,15 +947,6 @@ Roto::followVectors(const std::list<ItemBase*>& items,
 
 namespace {
 
-const RotoPaint*
-followHost(const RotoCurveContextPtr& context)
-{
-    const NodePtr host = context ? context->getNode() : NodePtr();
-    const EffectInstancePtr effect = host ? host->getEffectInstance() : EffectInstancePtr();
-
-    return dynamic_cast<const RotoPaint*>(effect.get());
-}
-
 const char*
 followStatusName(const VectorFollowReport& report)
 {
@@ -961,17 +965,17 @@ followStatusName(const VectorFollowReport& report)
 bool
 Roto::isFollowingVectors() const
 {
-    const RotoPaint* paint = followHost(_ctx);
+    const VectorFollowControls* follow = followHost(_ctx);
 
-    return paint && paint->isVectorFollowRunning();
+    return follow && follow->isFollowing();
 }
 
 PyObject*
 Roto::getLastFollowReport() const
 {
-    const RotoPaint* paint = followHost(_ctx);
+    const VectorFollowControls* follow = followHost(_ctx);
     VectorFollowReport report;
-    if (!paint || !paint->getLastVectorFollowReport(&report)) {
+    if (!follow || !follow->getLastReport(&report)) {
         Py_RETURN_NONE;
     }
     PyObject* shapes = followReportToPython(report);

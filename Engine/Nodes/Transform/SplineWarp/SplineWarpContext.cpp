@@ -46,10 +46,12 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpAlign.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpCurve.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Project.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Transform.h"
+#include "Engine/VectorFollowBake.h"
 
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/SplineWarpSerialization.h"
@@ -1196,19 +1198,12 @@ SplineWarpContext::pageEditsTransform(const RotoItem& owner) const
     return !resolveTransformLinkLocked(&owner);
 }
 
-std::string
-SplineWarpContext::getTransformFitRefusal(const RotoDrawableItem& item) const
+bool
+SplineWarpContext::fitKeysOwnTransform(const RotoDrawableItem& item) const
 {
-    RotoItemPtr link;
-    {
-        std::lock_guard<std::mutex> l(_warpMutex);
-        link = resolveTransformLinkLocked(&item);
-    }
-    if (!link) {
-        return std::string();
-    }
+    std::lock_guard<std::mutex> l(_warpMutex);
 
-    return "its transform is linked to " + link->getScriptName() + ", so only a per-point follow can move it";
+    return !resolveTransformLinkLocked(&item);
 }
 
 bool
@@ -1571,7 +1566,8 @@ SplineWarpContext::setCorrespondenceAtTime(const SplineWarpLinkPtr& link,
                                            int index,
                                            double time,
                                            double sourceParam,
-                                           double destinationParam)
+                                           double destinationParam,
+                                           bool evaluate)
 {
     if (!link) {
         throw std::invalid_argument("SplineWarp: the link is null.");
@@ -1593,7 +1589,132 @@ SplineWarpContext::setCorrespondenceAtTime(const SplineWarpLinkPtr& link,
         link->_correspondences[index].source.setValueAtTime(time, sourceParam);
         link->_correspondences[index].destination.setValueAtTime(time, destinationParam);
     }
-    warpDataChanged(true);
+    warpDataChanged(evaluate);
+}
+
+namespace {
+class CorrespondenceFollowPoints
+    : public VectorFollowPoints {
+public:
+    CorrespondenceFollowPoints(const SplineWarpContextPtr& context,
+                               const SplineWarpLinkPtr& link,
+                               int index)
+        : _context(context)
+        , _link(link)
+        , _index(index)
+    {
+    }
+
+    virtual ~CorrespondenceFollowPoints() { }
+
+    virtual std::string getName() const OVERRIDE FINAL
+    {
+        const BezierPtr source = _link->getSource();
+        const BezierPtr destination = _link->getDestination();
+        std::string name = "correspondence " + std::to_string(_index + 1);
+        if (source && destination) {
+            name += " of " + source->getScriptName() + " to " + destination->getScriptName();
+        }
+
+        return name;
+    }
+
+    virtual std::vector<FollowPoint> getPointsAtTime(double time) const OVERRIDE FINAL
+    {
+        std::vector<FollowPoint> points;
+        const BezierPtr source = _link->getSource();
+        const BezierPtr destination = _link->getDestination();
+        double sourceParam = 0.;
+        double destinationParam = 0.;
+        if (!source || !destination || !_link->getCorrespondence(_index, time, &sourceParam, &destinationParam)) {
+            return points;
+        }
+        const SplineWarpCurveShape sourceShape = SplineWarpCurveShape::fromBezier(*source, time);
+        const SplineWarpCurveShape destinationShape = SplineWarpCurveShape::fromBezier(*destination, time);
+        if (sourceShape.isEmpty() || destinationShape.isEmpty()) {
+            return points;
+        }
+        const Point s = sourceShape.pointAt(sourceParam);
+        const Point d = destinationShape.pointAt(destinationParam);
+        points.push_back(FollowPoint(s.x, s.y));
+        points.push_back(FollowPoint(d.x, d.y));
+
+        return points;
+    }
+
+    virtual std::set<int> getKeyFrames(int first,
+                                       int last) const OVERRIDE FINAL
+    {
+        std::set<int> frames;
+        const std::vector<SplineWarpCorrespondence> all = _link->getCorrespondences();
+        if ((_index < 0) || (_index >= (int)all.size())) {
+            return frames;
+        }
+        for (const SplineWarpAnimatedValue* value : { &all[_index].source, &all[_index].destination }) {
+            for (double t : value->getKeyFrameTimes()) {
+                if ((t == std::floor(t)) && (t >= first) && (t <= last)) {
+                    frames.insert((int)t);
+                }
+            }
+        }
+
+        return frames;
+    }
+
+    virtual void setPointsAtTime(double time,
+                                 const std::vector<FollowPoint>& points) OVERRIDE FINAL
+    {
+        const SplineWarpContextPtr context = _context.lock();
+        const BezierPtr source = _link->getSource();
+        const BezierPtr destination = _link->getDestination();
+        if (!context || !source || !destination || (points.size() != 2) || (_index >= _link->getCorrespondenceCount())) {
+            return;
+        }
+        const SplineWarpCurveShape sourceShape = SplineWarpCurveShape::fromBezier(*source, time);
+        const SplineWarpCurveShape destinationShape = SplineWarpCurveShape::fromBezier(*destination, time);
+        if (sourceShape.isEmpty() || destinationShape.isEmpty()) {
+            return;
+        }
+        SplineWarpLinkSamplingInput input;
+        input.source = &sourceShape;
+        input.destination = &destinationShape;
+        input.startOffset = _link->getStartOffset();
+        input.reversed = _link->isReversed();
+        input.amount = _link->getAmount(time);
+        const int count = _link->getCorrespondenceCount();
+        for (int i = 0; i < count; ++i) {
+            double s = 0.;
+            double d = 0.;
+            _link->getCorrespondence(i, time, &s, &d);
+            input.correspondences.push_back(std::make_pair(s, d));
+        }
+        const auto nearest = [&](const SplineWarpCurveShape& shape, bool onSource, const FollowPoint& p) {
+            double distance = 0.;
+            const double u = shape.nearestParam(p.x, p.y, &distance);
+
+            return shape.clampParam(splineWarpClampCorrespondenceParam(input, _index, onSource, u));
+        };
+        const double sourceParam = nearest(sourceShape, true, points[0]);
+        const double destinationParam = nearest(destinationShape, false, points[1]);
+        context->setCorrespondenceAtTime(_link, _index, time, sourceParam, destinationParam, false);
+    }
+
+private:
+    std::weak_ptr<SplineWarpContext> _context;
+    SplineWarpLinkPtr _link;
+    int _index;
+};
+} // anonymous namespace
+
+VectorFollowPointsPtr
+SplineWarpContext::makeCorrespondenceFollowPoints(const SplineWarpLinkPtr& link,
+                                                  int index)
+{
+    if (!link || (index < 0) || (index >= link->getCorrespondenceCount())) {
+        return VectorFollowPointsPtr();
+    }
+
+    return std::make_shared<CorrespondenceFollowPoints>(std::dynamic_pointer_cast<SplineWarpContext>(shared_from_this()), link, index);
 }
 
 void

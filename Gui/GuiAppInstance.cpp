@@ -953,9 +953,9 @@ GuiAppInstance::notifyRenderRestarted( OutputEffectInstance* writer,
 }
 
 namespace {
-// The modal shown while one tracker node tracks. Releasing it on destruction lets the dialog
-// close should the tracker go away mid-run.
-struct TrackingModal {
+// The modal shown while one node's job runs. Releasing it on destruction lets the dialog close
+// should the job go away mid-run.
+struct HeldModal {
     ForegroundTaskDialogPtr dialog;
 
     void release()
@@ -967,7 +967,7 @@ struct TrackingModal {
         }
     }
 
-    ~TrackingModal()
+    ~HeldModal()
     {
         release();
     }
@@ -983,7 +983,7 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
     }
     // Hooked here rather than in the tracker's settings panel so that tracking started from
     // Python, with no panel ever opened, is blocked the same way.
-    std::shared_ptr<TrackingModal> modal = std::make_shared<TrackingModal>();
+    std::shared_ptr<HeldModal> modal = std::make_shared<HeldModal>();
     NodeWPtr weakNode = node;
     TrackerContextWPtr weakContext = context;
     QObject::connect(context.get(), &TrackerContext::trackingStarted, this, [this, modal, weakNode, weakContext](int /*step*/) {
@@ -1027,6 +1027,38 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
         modal->release();
     });
 } // GuiAppInstance::followTrackingInModal
+
+std::shared_ptr<void>
+GuiAppInstance::showProgressModal(const NodePtr& node,
+                                  const std::string& title,
+                                  const std::function<void()>& onCancel)
+{
+    Gui* gui = getGui();
+    ProgressPanel* panel = gui ? gui->getProgressPanel() : 0;
+    ProgressTaskInfoPtr task = (node && panel) ? panel->getTaskForNode(node) : ProgressTaskInfoPtr();
+    if (!task) {
+        return std::shared_ptr<void>();
+    }
+    const QString qtitle = QString::fromUtf8(title.c_str());
+    ForegroundTaskDialog::Texts texts;
+    texts.title = qtitle;
+    texts.taskFormat = qtitle + QString::fromUtf8(": %1");
+    texts.failureFormat = tr("%1 failed.");
+    texts.failureTitle = qtitle;
+    std::vector<ForegroundTaskDialog::TaskDesc> tasks(1);
+    tasks[0].label = QString::fromUtf8(node->getLabel().c_str());
+    tasks[0].task = task;
+    std::shared_ptr<HeldModal> modal = std::make_shared<HeldModal>();
+    modal->dialog = ForegroundTaskDialog::show(gui, texts, tasks, true);
+    if (!modal->dialog) {
+        return std::shared_ptr<void>();
+    }
+    if (onCancel) {
+        modal->dialog->setOnCancel(onCancel);
+    }
+
+    return modal;
+}
 
 void
 GuiAppInstance::renderForeground(const std::list<RenderWork>& writers)

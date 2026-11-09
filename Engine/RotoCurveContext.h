@@ -380,12 +380,12 @@ public:
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const;
 
     /**
-     * @brief Why a follow must not fit item's transform, empty when it may. A fit writes item's own
-     * transform knobs, which only move item while no other item's transform takes their place.
+     * @brief Whether a follow's fit may key item's own transform knobs. They only move item while no
+     * other item's transform takes their place; when one does, the fit is keyed on item's points.
      **/
-    virtual std::string getTransformFitRefusal(const RotoDrawableItem& /*item*/) const
+    virtual bool fitKeysOwnTransform(const RotoDrawableItem& /*item*/) const
     {
-        return std::string();
+        return true;
     }
 
 protected:

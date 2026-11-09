@@ -66,9 +66,14 @@ public:
     virtual std::string getItemText(const RotoItemPtr& item, int column) const OVERRIDE FINAL;
     virtual std::vector<MenuAction> getItemMenuActions(const std::list<RotoItemPtr>& items) const OVERRIDE FINAL;
     virtual void onItemMenuActionTriggered(const std::string& actionId, const std::list<RotoItemPtr>& items) OVERRIDE FINAL;
+    virtual VectorFollowControls* getVectorFollowControls() const OVERRIDE FINAL;
+
+    // The node's Follow Vectors group, whose menu action follows the warp's own.
+    void setVectorFollowControls(VectorFollowControls* follow);
 
 private:
     std::weak_ptr<SplineWarpInteract> _interact;
+    VectorFollowControls* _follow;
 };
 
 NATRON_NAMESPACE_EXIT

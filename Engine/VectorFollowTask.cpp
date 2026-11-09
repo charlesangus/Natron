@@ -25,6 +25,7 @@
 #include <functional>
 #include <mutex>
 
+#include <QtCore/QPointer>
 #include <QtCore/QTimer>
 
 #include "Engine/AppInstance.h"
@@ -92,6 +93,9 @@ struct VectorFollowTask::Imp {
     int framesTotal = 1;
     int framesDone = 0;
     std::unique_ptr<VectorFollowReport> lastReport;
+    // The interface's modal progress dialog, held open until the follow has written its last key:
+    // the progress task ends first, and the reduction or the bake of the last frames may follow.
+    std::shared_ptr<void> modal;
 
     std::function<bool()> abortCheck()
     {
@@ -163,10 +167,16 @@ VectorFollowTask::startFollow(const VectorFollowParams& params,
     }
     _imp->sourceLost = false;
     _imp->framesDone = 0;
-    _imp->framesTotal = std::max(1, (int)params.items.size() * (params.last - params.first + 1));
+    _imp->framesTotal = std::max(1, (int)(params.items.size() + params.points.size()) * (params.last - params.first + 1));
     QObject::connect(params.source.get(), SIGNAL(deactivated(bool)), this, SLOT(onSourceDeactivated()), Qt::UniqueConnection);
     host->clearPersistentMessage(false);
     host->getApp()->progressStart(host, tr("Following vectors...").toStdString(), "");
+    QPointer<VectorFollowTask> self(this);
+    _imp->modal = host->getApp()->showProgressModal(host, tr("Following Vectors").toStdString(), [self]() {
+        if (self) {
+            self->requestAbort();
+        }
+    });
     _imp->progressPoll.start();
     startTask(std::make_shared<PhaseArgs>(ePhaseCompute, _imp->generation));
 
@@ -402,6 +412,9 @@ VectorFollowTask::onPhaseDone(int phase,
     }
     if (host) {
         host->getApp()->progressEnd(host);
+    }
+    _imp->modal.reset();
+    if (host) {
         const std::string text = formatVectorFollowReport(report);
         host->setQuietInfoMessage(text);
         if (!isCleanVectorFollowReport(report) && !isUserStopVectorFollowReport(report)) {

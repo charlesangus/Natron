@@ -28,12 +28,14 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
+#include <cstddef> // for NULL
+#include <functional>
+#include <limits>
 #include <list>
+#include <memory>
 #include <string>
 #include <utility>
-#include <limits>
-#include <cstddef>              // for NULL
+#include <vector>
 
 #include <QtGlobal>      // for Q_UNUSED
 #include <QObject>  // for Q_OBJECT, Q_SIGNALS, Q_SLOTS
@@ -355,6 +357,20 @@ public:
                                 double /*t*/)
     {
         return true;
+    }
+
+    /**
+     * @brief Shows an application-modal dialog over the interface that follows node's progress
+     * task, started by progressStart(), with Cancel as its only button, so that nothing can edit
+     * what the job reads. onCancel is called when the user cancels. The dialog stays open until the
+     * returned holder is dropped, for a job that outlives its progress task. Null without an
+     * interface.
+     **/
+    virtual std::shared_ptr<void> showProgressModal(const NodePtr& /*node*/,
+                                                    const std::string& /*title*/,
+                                                    const std::function<void()>& /*onCancel*/)
+    {
+        return std::shared_ptr<void>();
     }
 
     /**

@@ -1188,52 +1188,63 @@ TEST_F(VectorFollowSelectionTest, AFitFollowOfTwoSelectedShapesAfterAnUndo)
 }
 
 // A curve linked to another takes that one's transform, which a fit on its behalf would move for
-// every curve linked to it, and its own transform is unused.
-TEST_F(VectorFollowSplineWarpTest, AFitRefusesATransformLinkedCurveAndWritesNoOtherTransform)
+// every curve linked to it, and its own transform is unused: the fit is keyed on its points.
+TEST_F(VectorFollowSplineWarpTest, AFitOnATransformLinkedCurveKeysItsOwnPointsOnly)
 {
     SplineWarpContextPtr warp = warpContext();
     ASSERT_TRUE(bool(warp));
     BezierPtr linked = makeSquareIn(warp, kStart);
     BezierPtr target = makeSquareIn(warp, kStart, 150.);
-    BezierPtr unlinked = makeSquareIn(warp, kStart, 90., 40.);
+    BezierPtr otherLinked = makeSquareIn(warp, kStart, 90., 140.);
     warp->linkTransform(linked, target);
+    warp->linkTransform(otherLinked, target);
     warp->clearSelection(RotoItem::eSelectionReasonOther);
     const TransformState linkedBefore = transformOf(linked);
     const TransformState targetBefore = transformOf(target);
-    const TransformState unlinkedBefore = transformOf(unlinked);
-    const FollowPoint unlinkedStart(110., 60.);
+    const TransformState otherBefore = transformOf(otherLinked);
+    const FollowPoint start = shownAt(linked, positionAt(linked, 0, kStart), kStart);
+    const FollowPoint targetEnd = positionAt(target, 0, kStart + kSpan);
+    const FollowPoint otherEnd = positionAt(otherLinked, 0, kStart + kSpan);
 
     for (VectorFollowModel model : { VectorFollowModel::eTranslate, VectorFollowModel::eAffine, VectorFollowModel::ePerspective }) {
         SCOPED_TRACE((int)model);
         UndoCommandPtr undo;
-        VectorFollowReport report = warp->followVectors(paramsFor(linked, model), &undo);
-        EXPECT_NE(report.error.find(linked->getScriptName() + ": its transform is linked to " + target->getScriptName()), std::string::npos) << report.error;
-        EXPECT_FALSE(bool(undo));
-        expectSameTransform(transformOf(linked), linkedBefore, 0., "linked, alone");
-        expectSameTransform(transformOf(target), targetBefore, 0., "target, linked alone");
-        if (model == VectorFollowModel::ePerspective) {
-            continue;
+        const VectorFollowReport report = warp->followVectors(paramsFor(linked, model), &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        EXPECT_TRUE(report.refused.empty());
+        ASSERT_EQ(report.shapes.size(), 1u);
+        EXPECT_FALSE(report.shapes[0].stopped);
+        ASSERT_TRUE(bool(undo));
+
+        const FollowPoint end = shownAt(linked, positionAt(linked, 0, kStart + kSpan), kStart + kSpan);
+        EXPECT_NEAR(end.x, start.x + kShiftX * kSpan, kFollowTolerance);
+        EXPECT_NEAR(end.y, start.y + kShiftY * kSpan, kFollowTolerance);
+        std::set<double> keys;
+        linked->getKeyframeTimes(&keys);
+        EXPECT_EQ(keys.size(), (std::size_t)kSpan + 1);
+
+        EXPECT_EQ(warp->getTransformLink(linked), RotoItemPtr(target));
+        EXPECT_EQ(warp->getTransformLink(otherLinked), RotoItemPtr(target));
+        expectSameTransform(transformOf(linked), linkedBefore, 0., "linked");
+        expectSameTransform(transformOf(target), targetBefore, 0., "target");
+        expectSameTransform(transformOf(otherLinked), otherBefore, 0., "other linked");
+        EXPECT_DOUBLE_EQ(positionAt(target, 0, kStart + kSpan).x, targetEnd.x);
+        EXPECT_DOUBLE_EQ(positionAt(target, 0, kStart + kSpan).y, targetEnd.y);
+        EXPECT_DOUBLE_EQ(positionAt(otherLinked, 0, kStart + kSpan).x, otherEnd.x);
+        EXPECT_DOUBLE_EQ(positionAt(otherLinked, 0, kStart + kSpan).y, otherEnd.y);
+        for (const BezierPtr& untouched : { target, otherLinked }) {
+            std::set<double> untouchedKeys;
+            untouched->getKeyframeTimes(&untouchedKeys);
+            EXPECT_EQ(untouchedKeys.size(), 1u) << untouched->getScriptName();
         }
 
-        VectorFollowParams params = paramsFor(linked, model);
-        params.items = std::list<RotoDrawableItemPtr> { linked, unlinked };
-        report = warp->followVectors(params, &undo);
-        ASSERT_TRUE(report.error.empty()) << report.error;
-        ASSERT_EQ(report.shapes.size(), 1u);
-        EXPECT_EQ(report.shapes[0].name, unlinked->getScriptName());
-        ASSERT_EQ(report.refused.size(), 1u);
-        EXPECT_EQ(report.refused[0].name, linked->getScriptName());
-        EXPECT_FALSE(isCleanVectorFollowReport(report));
-        EXPECT_NE(formatVectorFollowReport(report).find(linked->getScriptName() + ": not followed"), std::string::npos);
-        expectSameTransform(transformOf(linked), linkedBefore, 0., "linked, with another");
-        expectSameTransform(transformOf(target), targetBefore, 0., "target, with another");
-        const FollowPoint unlinkedEnd = shownAt(unlinked, unlinkedStart, kStart + kSpan);
-        EXPECT_NEAR(unlinkedEnd.x, unlinkedStart.x + kShiftX * kSpan, kFollowTolerance);
-        EXPECT_NEAR(unlinkedEnd.y, unlinkedStart.y + kShiftY * kSpan, kFollowTolerance);
-
-        ASSERT_TRUE(bool(undo));
         undo->undo();
-        expectSameTransform(transformOf(unlinked), unlinkedBefore, 0., "unlinked, undone");
+        keys.clear();
+        linked->getKeyframeTimes(&keys);
+        EXPECT_EQ(keys.size(), 1u);
+        const FollowPoint back = shownAt(linked, positionAt(linked, 0, kStart + kSpan), kStart + kSpan);
+        EXPECT_NEAR(back.x, start.x, 1e-9);
+        EXPECT_NEAR(back.y, start.y, 1e-9);
     }
 }
 

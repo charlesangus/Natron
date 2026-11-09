@@ -450,7 +450,7 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
             role.first->setValueRole(role.second);
         }
     }
-    TransformInteractKnobs interactKnobs;
+    TransformInteractWeakKnobs interactKnobs;
     interactKnobs.translate = translate;
     interactKnobs.rotate = rotate;
     interactKnobs.scale = scale;
@@ -500,7 +500,14 @@ TransformInteractKnobs::contains(const KnobI* knob) const
 TransformInteractKnobs
 Node::getTransformInteractKnobs(const KnobI* member) const
 {
-    for (const TransformInteractKnobs& knobs : _imp->transformInteracts) {
+    for (const TransformInteractWeakKnobs& weak : _imp->transformInteracts) {
+        TransformInteractKnobs knobs;
+        knobs.translate = weak.translate.lock();
+        knobs.rotate = weak.rotate.lock();
+        knobs.scale = weak.scale.lock();
+        knobs.skewX = weak.skewX.lock();
+        knobs.skewY = weak.skewY.lock();
+        knobs.center = weak.center.lock();
         if (!member || knobs.contains(member)) {
             return knobs;
         }

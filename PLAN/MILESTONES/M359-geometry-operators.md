@@ -107,4 +107,6 @@ Requires M54 - Native Geometry Data Model. All nodes are `NativeEffectBase` subc
 
 ## Decisions
 
+- 2026-11-09 — Scatter's `sourceprimuv` follows Houdini on triangles (barycentric) and quads (bilinear); polygons with more than 4 sides keep a fan encoding (fan-triangle weights plus the triangle's index), because Houdini's n-gon parametrisation wasn't confirmed (PM, review fix). GeoUVProject is pxr-free; its camera mode reaches USD only through `Engine/Nodes/Scene/GeoCameraProjection.cpp` (open with the user).
+
 - 2026-11-08 — Split out of M54 - SOPs-Style Geometry (user, /cat-plan); tasks renumbered from M54.P3.*. Scatter and CopyToPoints joined the set (user, M54 grill).

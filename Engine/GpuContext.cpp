@@ -26,7 +26,11 @@
 #include <exception>
 #include <shared_mutex>
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDebug>
+#include <QtCore/QMetaObject>
+
+#include "Global/FloatingPointExceptions.h"
 
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
@@ -318,6 +322,21 @@ GpuContext::finish(bool available)
 #ifdef NATRON_HAVE_GPU
 
 namespace {
+void
+noteCpuDevice(const std::string& name)
+{
+    boost_adaptbx::floating_point::note_software_renderer();
+    // The main thread armed its traps at start-up and has no arming point of its own to pick the switch up at.
+    if (QCoreApplication* app = QCoreApplication::instance()) {
+        QMetaObject::invokeMethod(app, [] { boost_adaptbx::floating_point::note_software_renderer(); }, Qt::QueuedConnection);
+    }
+#ifdef DEBUG
+    qDebug().noquote() << "Float traps are off: the Vulkan device" << QString::fromStdString(name) << "is a CPU device.";
+#else
+    (void)name;
+#endif
+}
+
 // A zero-copy import is limited by the bus alone and a few MB reach its rate, while staging is paced by its
 // copy threads and pieces, which only a transfer of several pieces exercises.
 constexpr std::size_t kImportCalibrationBytes = std::size_t(16) << 20;
@@ -490,6 +509,9 @@ GpuContext::initialize()
         } else if (!isDeviceAllowed(_mode, runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU)) {
             failure = "only a CPU-type Vulkan device is present (" + runtime->device().info().name + ")";
         } else {
+            if (runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                noteCpuDevice(runtime->device().info().name);
+            }
             const gpu::GpuTransfer& transfer = runtime->transfer();
             if (transfer.hostImportSupported()) {
                 shared.previousAlignment = HostImageMemory::importAlignment();

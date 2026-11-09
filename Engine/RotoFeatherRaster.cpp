@@ -1,0 +1,419 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "RotoFeatherRaster.h"
+
+#include <algorithm>
+#include <cmath>
+
+#include "Engine/PoolParallelFor.h"
+
+NATRON_NAMESPACE_ENTER
+
+namespace {
+
+// How far inward of a cell's inner edge it still covers, and so how far from a row a cell's
+// edges are looked for when finding the pixels it may cover.
+const double kInnerSlackPixels = 1.;
+const double kRowReach = 1.5;
+
+// Lets a pixel centre on the side two cells share land in both despite rounding.
+const double kParamTolerance = 1e-9;
+
+typedef RotoFeatherRasterizer::Cell QuadSetup;
+
+inline double
+cross(double ax,
+      double ay,
+      double bx,
+      double by)
+{
+    return ax * by - ay * bx;
+}
+
+bool
+setUpQuad(const RotoFeatherQuad& quad,
+          QuadSetup* s)
+{
+    const double r0x = quad.outer0.x - quad.inner0.x;
+    const double r0y = quad.outer0.y - quad.inner0.y;
+    const double r1x = quad.outer1.x - quad.inner1.x;
+    const double r1y = quad.outer1.y - quad.inner1.y;
+
+    if ((std::max(r0x * r0x + r0y * r0y, r1x * r1x + r1y * r1y) <= 1e-18)) {
+        return false;
+    }
+    s->a = quad.inner0;
+    s->e.x = r0x;
+    s->e.y = r0y;
+    s->f.x = quad.inner1.x - quad.inner0.x;
+    s->f.y = quad.inner1.y - quad.inner0.y;
+    s->g.x = r1x - r0x;
+    s->g.y = r1y - r0y;
+    s->corners[0] = quad.inner0;
+    s->corners[1] = quad.outer0;
+    s->corners[2] = quad.outer1;
+    s->corners[3] = quad.inner1;
+    s->yMin = s->yMax = quad.inner0.y;
+    for (int i = 1; i < 4; ++i) {
+        s->yMin = std::min(s->yMin, s->corners[i].y);
+        s->yMax = std::max(s->yMax, s->corners[i].y);
+    }
+    s->outward = false;
+
+    return true;
+}
+
+// Where a cell's outer edge lies relative to its inner edge: a point just past the inner edge's
+// middle on the outer edge's side, or false when the outer edge's middle is on the inner edge's
+// line.
+bool
+outerSideProbe(const RotoFeatherQuad& quad,
+               Point* probe)
+{
+    const double fx = quad.inner1.x - quad.inner0.x;
+    const double fy = quad.inner1.y - quad.inner0.y;
+    const double outerMidX = 0.5 * (quad.outer0.x + quad.outer1.x) - quad.inner0.x;
+    const double outerMidY = 0.5 * (quad.outer0.y + quad.outer1.y) - quad.inner0.y;
+    const double side = cross(fx, fy, outerMidX, outerMidY);
+    const double len = std::sqrt(fx * fx + fy * fy);
+
+    if ((side == 0.) || !(len > 0.)) {
+        return false;
+    }
+    // Close enough to the edge that no other edge of the polygon passes between, short of a
+    // spike sharper than the step allows for.
+    const double step = std::min(1e-3, 1e-4 * len) / len;
+    const double sign = (side > 0.) ? 1. : -1.;
+    probe->x = quad.inner0.x + 0.5 * fx - sign * fy * step;
+    probe->y = quad.inner0.y + 0.5 * fy + sign * fx * step;
+
+    return true;
+}
+
+struct PolygonEdge {
+    Point a, b;
+    double yLo, yHi;
+};
+
+// The non-zero winding number of the polygon made of edges at each probe, by sweeping the probes
+// upward against the edges their row crosses.
+void
+windingNumbers(const std::vector<PolygonEdge>& edges,
+               const std::vector<Point>& probes,
+               std::vector<int>* windings)
+{
+    windings->assign(probes.size(), 0);
+    std::vector<std::size_t> edgeOrder(edges.size());
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+        edgeOrder[i] = i;
+    }
+    std::sort(edgeOrder.begin(), edgeOrder.end(), [&](std::size_t l, std::size_t r) {
+        return edges[l].yLo < edges[r].yLo;
+    });
+    std::vector<std::size_t> probeOrder(probes.size());
+    for (std::size_t i = 0; i < probes.size(); ++i) {
+        probeOrder[i] = i;
+    }
+    std::sort(probeOrder.begin(), probeOrder.end(), [&](std::size_t l, std::size_t r) {
+        return probes[l].y < probes[r].y;
+    });
+
+    std::vector<std::size_t> active;
+    std::size_t nextEdge = 0;
+    for (std::size_t pi = 0; pi < probeOrder.size(); ++pi) {
+        const Point& p = probes[probeOrder[pi]];
+        while ((nextEdge < edgeOrder.size()) && (edges[edgeOrder[nextEdge]].yLo <= p.y)) {
+            active.push_back(edgeOrder[nextEdge++]);
+        }
+        int winding = 0;
+        for (std::size_t i = 0; i < active.size();) {
+            const PolygonEdge& e = edges[active[i]];
+            if (e.yHi < p.y) {
+                active[i] = active.back();
+                active.pop_back();
+                continue;
+            }
+            const double left = cross(e.b.x - e.a.x, e.b.y - e.a.y, p.x - e.a.x, p.y - e.a.y);
+            if (e.a.y <= p.y) {
+                if ((e.b.y > p.y) && (left > 0.)) {
+                    ++winding;
+                }
+            } else if ((e.b.y <= p.y) && (left < 0.)) {
+                --winding;
+            }
+            ++i;
+        }
+        (*windings)[probeOrder[pi]] = winding;
+    }
+}
+
+void
+widenToEdgeInBand(const Point& p,
+                  const Point& q,
+                  double y0,
+                  double y1,
+                  bool* found,
+                  double* xLo,
+                  double* xHi)
+{
+    if ((std::max(p.y, q.y) < y0) || (std::min(p.y, q.y) > y1)) {
+        return;
+    }
+    double xa = p.x, xb = q.x;
+    if (p.y != q.y) {
+        const double dy = q.y - p.y;
+        const double ta = std::min(1., std::max(0., (y0 - p.y) / dy));
+        const double tb = std::min(1., std::max(0., (y1 - p.y) / dy));
+        xa = p.x + ta * (q.x - p.x);
+        xb = p.x + tb * (q.x - p.x);
+    }
+    if (!*found) {
+        *found = true;
+        *xLo = std::min(xa, xb);
+        *xHi = std::max(xa, xb);
+    } else {
+        *xLo = std::min(*xLo, std::min(xa, xb));
+        *xHi = std::max(*xHi, std::max(xa, xb));
+    }
+}
+
+// The highest opacity any (t, v) of the cell mapping to (px, py) gives, or a negative value when
+// none lies in the cell.
+double
+quadOpacityAt(const QuadSetup& s,
+              double px,
+              double py,
+              double fallOff)
+{
+    const double hx = px - s.a.x;
+    const double hy = py - s.a.y;
+    const double k2 = cross(s.g.x, s.g.y, s.f.x, s.f.y);
+    const double k1 = cross(s.e.x, s.e.y, s.f.x, s.f.y) + cross(hx, hy, s.g.x, s.g.y);
+    const double k0 = cross(hx, hy, s.e.x, s.e.y);
+    double roots[2];
+    int nRoots = 0;
+
+    if (k2 == 0.) {
+        if (k1 != 0.) {
+            roots[nRoots++] = -k0 / k1;
+        }
+    } else {
+        double disc = k1 * k1 - 4. * k2 * k0;
+        if (disc < 0.) {
+            if (disc < -1e-12 * k1 * k1) {
+                return -1.;
+            }
+            disc = 0.;
+        }
+        const double sq = std::sqrt(disc);
+        const double q = -0.5 * (k1 + ((k1 >= 0.) ? sq : -sq));
+        if (q != 0.) {
+            roots[nRoots++] = q / k2;
+            roots[nRoots++] = k0 / q;
+        } else {
+            roots[nRoots++] = 0.;
+        }
+    }
+
+    double best = -1.;
+    for (int i = 0; i < nRoots; ++i) {
+        double v = roots[i];
+        if (!(v >= -kParamTolerance) || !(v <= 1. + kParamTolerance)) {
+            continue;
+        }
+        v = std::min(1., std::max(0., v));
+        const double rx = s.e.x + s.g.x * v;
+        const double ry = s.e.y + s.g.y * v;
+        const double len2 = rx * rx + ry * ry;
+        if (len2 <= 1e-18) {
+            continue;
+        }
+        const double t = ((hx - s.f.x * v) * rx + (hy - s.f.y * v) * ry) / len2;
+        const double tMin = s.outward ? -kInnerSlackPixels / std::sqrt(len2) : -kParamTolerance;
+        if ((t < tMin) || (t > 1. + kParamTolerance)) {
+            continue;
+        }
+        best = std::max(best, rotoFeatherFalloff(t, fallOff));
+    }
+
+    return best;
+}
+
+void
+rasterizeRows(const std::vector<const QuadSetup*>& quads,
+              double fallOff,
+              const RectI& roi,
+              int y1,
+              int y2,
+              float* alpha)
+{
+    const std::size_t width = (std::size_t)roi.width();
+
+    for (std::size_t qi = 0; qi < quads.size(); ++qi) {
+        const QuadSetup& s = *quads[qi];
+        const int rowLo = std::max(y1, (int)std::floor(s.yMin - kRowReach - 0.5));
+        const int rowHi = std::min(y2 - 1, (int)std::ceil(s.yMax + kRowReach - 0.5));
+        for (int y = rowLo; y <= rowHi; ++y) {
+            const double yc = y + 0.5;
+            bool found = false;
+            double xLo = 0., xHi = 0.;
+            for (int c = 0; c < 4; ++c) {
+                widenToEdgeInBand(s.corners[c], s.corners[(c + 1) % 4], yc - kRowReach, yc + kRowReach, &found, &xLo, &xHi);
+            }
+            if (!found) {
+                continue;
+            }
+            const int xFirst = std::max(roi.x1, (int)std::floor(xLo - kRowReach - 0.5));
+            const int xLast = std::min(roi.x2 - 1, (int)std::ceil(xHi + kRowReach - 0.5));
+            float* row = alpha + (std::size_t)(y - roi.y1) * width;
+            for (int x = xFirst; x <= xLast; ++x) {
+                const double opacity = quadOpacityAt(s, x + 0.5, yc, fallOff);
+                float& dst = row[x - roi.x1];
+                if (opacity > dst) {
+                    dst = (float)opacity;
+                }
+            }
+        }
+    }
+}
+
+} // namespace
+
+double
+rotoFeatherFalloff(double t,
+                   double fallOff)
+{
+    if (!(t > 0.)) {
+        return 1.;
+    }
+    if (t >= 1.) {
+        return 0.;
+    }
+    if (!(fallOff > 0.)) {
+        fallOff = 1.;
+    }
+    double u = t;
+    if (fallOff != 1.) {
+        const double f2 = fallOff * fallOff;
+        const double c1 = 1. / (2. * f2 + 1.);
+        const double c2 = 2. / (f2 + 2.);
+        // Newton on the increasing cubic, kept inside a shrinking bracket.
+        double lo = 0., hi = 1.;
+        for (int i = 0; i < 60; ++i) {
+            const double w = 1. - u;
+            const double err = 3. * c1 * u * w * w + 3. * c2 * u * u * w + u * u * u - t;
+            if (std::abs(err) <= 1e-13) {
+                break;
+            }
+            if (err < 0.) {
+                lo = u;
+            } else {
+                hi = u;
+            }
+            const double slope = 3. * c1 * w * w + 6. * (c2 - c1) * u * w + 3. * (1. - c2) * u * u;
+            double next = (slope > 0.) ? u - err / slope : lo;
+            if (!(next > lo) || !(next < hi)) {
+                next = 0.5 * (lo + hi);
+            }
+            u = next;
+        }
+    }
+    const double opacity = 1. - u;
+
+    return opacity * opacity;
+}
+
+RotoFeatherRasterizer::RotoFeatherRasterizer(const std::vector<RotoFeatherQuad>& quads,
+                                             double fallOff)
+    : _fallOff(fallOff)
+{
+    std::vector<PolygonEdge> edges;
+    edges.reserve(quads.size());
+    std::vector<Point> probes;
+    std::vector<std::size_t> probedCells;
+    _cells.reserve(quads.size());
+    for (std::size_t i = 0; i < quads.size(); ++i) {
+        PolygonEdge edge;
+        edge.a = quads[i].inner0;
+        edge.b = quads[i].inner1;
+        edge.yLo = std::min(edge.a.y, edge.b.y);
+        edge.yHi = std::max(edge.a.y, edge.b.y);
+        edges.push_back(edge);
+
+        Cell cell;
+        if (!setUpQuad(quads[i], &cell)) {
+            continue;
+        }
+        Point probe;
+        if (outerSideProbe(quads[i], &probe)) {
+            probes.push_back(probe);
+            probedCells.push_back(_cells.size());
+        }
+        _cells.push_back(cell);
+    }
+    std::vector<int> windings;
+    windingNumbers(edges, probes, &windings);
+    for (std::size_t i = 0; i < probes.size(); ++i) {
+        _cells[probedCells[i]].outward = (windings[i] == 0);
+    }
+}
+
+void
+RotoFeatherRasterizer::rasterize(const RectI& roi,
+                                 float* alpha) const
+{
+    if (_cells.empty() || roi.isNull()) {
+        return;
+    }
+    std::vector<const Cell*> cells;
+    for (std::size_t i = 0; i < _cells.size(); ++i) {
+        const Cell& s = _cells[i];
+        if ((s.yMax + kRowReach >= roi.y1) && (s.yMin - kRowReach <= roi.y2)) {
+            cells.push_back(&s);
+        }
+    }
+    if (cells.empty()) {
+        return;
+    }
+    const double fallOff = _fallOff;
+    forEachRowBand(roi, kMinParallelRowBandArea, [&](int y1, int y2) {
+        rasterizeRows(cells, fallOff, roi, y1, y2, alpha);
+    });
+}
+
+void
+rasterizeRotoFeather(const std::vector<RotoFeatherQuad>& quads,
+                     double fallOff,
+                     const RectI& roi,
+                     float* alpha)
+{
+    if (quads.empty() || roi.isNull()) {
+        return;
+    }
+    RotoFeatherRasterizer(quads, fallOff).rasterize(roi, alpha);
+}
+
+NATRON_NAMESPACE_EXIT

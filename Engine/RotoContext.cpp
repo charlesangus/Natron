@@ -26,13 +26,15 @@
 #include "RotoContext.h"
 
 #include <algorithm> // min, max
-#include <sstream>
-#include <locale>
-#include <limits>
 #include <cassert>
-#include <stdexcept>
 #include <cstring> // for std::memcpy, std::memset
+#include <limits>
+#include <locale>
+#include <memory>
+#include <new>
+#include <sstream>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QDebug>
 #include <QLineF>
@@ -757,6 +759,82 @@ convertCairoImageToNatronImage_noColor(cairo_surface_t* cairoImg,
     }
 }
 
+template <typename PIX, int maxValue, int dstNComps>
+static void
+convertAlphaToNatronImageForDstComponents(const float* alpha,
+                                          Image* image,
+                                          const RectI& pixelRod,
+                                          double shapeColor[3],
+                                          double opacity,
+                                          bool inverted)
+{
+    Image::WriteAccess acc = image->getWriteRights();
+    const float rounding = std::numeric_limits<PIX>::is_integer ? 0.5f : 0.f;
+    const float r = (float)(shapeColor[0] * opacity);
+    const float g = (float)(shapeColor[1] * opacity);
+    const float b = (float)(shapeColor[2] * opacity);
+    const float a = (float)opacity;
+    const int width = pixelRod.width();
+
+    for (int y = 0; y < pixelRod.height(); ++y) {
+        PIX* dstPix = (PIX*)acc.pixelAt(pixelRod.x1, pixelRod.y1 + y);
+        assert(dstPix);
+        const float* src = alpha + (std::size_t)y * width;
+        for (int x = 0; x < width; ++x, dstPix += dstNComps) {
+            const float coverage = (inverted ? 1.f - src[x] : src[x]) * maxValue;
+            switch (dstNComps) {
+            case 4:
+                dstPix[0] = PIX(coverage * r + rounding);
+                dstPix[1] = PIX(coverage * g + rounding);
+                dstPix[2] = PIX(coverage * b + rounding);
+                dstPix[3] = PIX(coverage * a + rounding);
+                break;
+            case 1:
+                dstPix[0] = PIX(coverage * a + rounding);
+                break;
+            case 3:
+                dstPix[0] = PIX(coverage * r + rounding);
+                dstPix[1] = PIX(coverage * g + rounding);
+                dstPix[2] = PIX(coverage * b + rounding);
+                break;
+            case 2:
+                dstPix[0] = PIX(coverage * r + rounding);
+                dstPix[1] = PIX(coverage * g + rounding);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+}
+
+template <typename PIX, int maxValue>
+static void
+convertAlphaToNatronImage(const float* alpha,
+                          Image* image,
+                          const RectI& pixelRod,
+                          double shapeColor[3],
+                          double opacity,
+                          bool inverted)
+{
+    switch (image->getComponentsCount()) {
+    case 1:
+        convertAlphaToNatronImageForDstComponents<PIX, maxValue, 1>(alpha, image, pixelRod, shapeColor, opacity, inverted);
+        break;
+    case 2:
+        convertAlphaToNatronImageForDstComponents<PIX, maxValue, 2>(alpha, image, pixelRod, shapeColor, opacity, inverted);
+        break;
+    case 3:
+        convertAlphaToNatronImageForDstComponents<PIX, maxValue, 3>(alpha, image, pixelRod, shapeColor, opacity, inverted);
+        break;
+    case 4:
+        convertAlphaToNatronImageForDstComponents<PIX, maxValue, 4>(alpha, image, pixelRod, shapeColor, opacity, inverted);
+        break;
+    default:
+        break;
+    }
+}
+
 #if 0
 template <typename PIX, int maxValue, int srcNComps, int dstNComps>
 static void
@@ -1296,12 +1374,42 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
                                      const std::list<std::list<std::pair<Point, double>>>& strokes,
                                      const ImagePtr& image)
 {
-    Q_UNUSED(startTime);
-    Q_UNUSED(endTime);
-    Q_UNUSED(timeStep);
     NodePtr node = getContext()->getNode();
     RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(this);
     Bezier* isBezier = dynamic_cast<Bezier*>(this);
+
+    assert(isStroke || isBezier);
+    if (!isStroke && isBezier && !isBezier->isOpenBezier()) {
+        double shapeColor[3];
+        getColor(time, shapeColor);
+        const double opacity = getOpacity(time);
+        const bool rendered = RotoContextPrivate::renderBezier(isBezier, time, startTime, endTime, timeStep, mipmapLevel, 1., 1., roi, [&](const RectI& tile, const float* alpha) {
+            switch (depth) {
+            case eImageBitDepthFloat:
+                convertAlphaToNatronImage<float, 1>(alpha, image.get(), tile, shapeColor, opacity, inverted);
+                break;
+            case eImageBitDepthByte:
+                convertAlphaToNatronImage<unsigned char, 255>(alpha, image.get(), tile, shapeColor, opacity, inverted);
+                break;
+            case eImageBitDepthShort:
+                convertAlphaToNatronImage<unsigned short, 65535>(alpha, image.get(), tile, shapeColor, opacity, inverted);
+                break;
+            case eImageBitDepthHalf:
+            case eImageBitDepthNone:
+                assert(false);
+                break;
+            }
+        });
+        if (!rendered) {
+            // The cache already holds the image, which is only partly drawn.
+            appPTR->removeFromNodeCache(image);
+
+            return ImagePtr();
+        }
+
+        return image;
+    }
+
     cairo_format_t cairoImgFormat;
     int srcNComps;
     bool doBuildUp = true;
@@ -1350,9 +1458,7 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
     // maybe the inner polygon should be made of mesh patterns too?
     cairo_set_antialias(imgWrapper.ctx, CAIRO_ANTIALIAS_NONE);
 
-
-    assert(isStroke || isBezier);
-    if ( isStroke || !isBezier || ( isBezier && isBezier->isOpenBezier() ) ) {
+    {
         std::vector<cairo_pattern_t*> dotPatterns(ROTO_PRESSURE_LEVELS);
         for (std::size_t i = 0; i < dotPatterns.size(); ++i) {
             dotPatterns[i] = (cairo_pattern_t*)0;
@@ -1365,8 +1471,6 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
                 dotPatterns[i] = 0;
             }
         }
-    } else {
-        RotoContextPrivate::renderBezier(imgWrapper.ctx, isBezier, opacity, time, startTime, endTime, timeStep, mipmapLevel);
     }
 
     bool useOpacityToConvert = (isBezier != 0);
@@ -1404,34 +1508,30 @@ Bezier::rasterizeCoverage(double time,
                           const RectI& roi,
                           std::vector<float>* coverage) const
 {
-    coverage->assign((std::size_t)std::max(0, roi.width()) * (std::size_t)std::max(0, roi.height()), 0.f);
+    try {
+        coverage->assign((std::size_t)std::max(0, roi.width()) * (std::size_t)std::max(0, roi.height()), 0.f);
+    } catch (const std::bad_alloc&) {
+        coverage->clear();
+
+        return false;
+    }
     if (roi.isNull() || !isCurveFinished() || isOpenBezier() || !isActivated(time) || (getControlPointsCount() <= 1)) {
         return false;
     }
 
-    CairoImageWrapper imgWrapper;
-    imgWrapper.cairoImg = cairo_image_surface_create(CAIRO_FORMAT_A8, roi.width(), roi.height());
-    if (cairo_surface_status(imgWrapper.cairoImg) != CAIRO_STATUS_SUCCESS) {
-        return false;
-    }
-    cairo_surface_set_device_offset(imgWrapper.cairoImg, -roi.x1, -roi.y1);
-    imgWrapper.ctx = cairo_create(imgWrapper.cairoImg);
-    cairo_set_fill_rule(imgWrapper.ctx, CAIRO_FILL_RULE_WINDING);
-    cairo_set_antialias(imgWrapper.ctx, CAIRO_ANTIALIAS_NONE);
-    RotoContextPrivate::renderBezier(imgWrapper.ctx, this, 1., time, time, time, 1., mipmapLevel);
-    cairo_surface_flush(imgWrapper.cairoImg);
-
-    const unsigned char* data = cairo_image_surface_get_data(imgWrapper.cairoImg);
-    const int stride = cairo_image_surface_get_stride(imgWrapper.cairoImg);
-    const int width = roi.width();
+    const std::size_t width = (std::size_t)roi.width();
     bool any = false;
-    for (int y = 0; y < roi.height(); ++y) {
-        const unsigned char* row = data + (std::size_t)y * stride;
-        float* dst = &(*coverage)[(std::size_t)y * width];
-        for (int x = 0; x < width; ++x) {
-            dst[x] = row[x] / 255.f;
-            any = any || row[x];
+    const bool rendered = RotoContextPrivate::renderBezier(this, time, time, time, 1., mipmapLevel, 1., 1., roi, [&](const RectI& tile, const float* alpha) {
+        const std::size_t area = width * (std::size_t)tile.height();
+        std::copy(alpha, alpha + area, &(*coverage)[(std::size_t)(tile.y1 - roi.y1) * width]);
+        for (std::size_t i = 0; i < area && !any; ++i) {
+            any = alpha[i] > 0.f;
         }
+    });
+    if (!rendered) {
+        coverage->clear();
+
+        return false;
     }
 
     return any;
@@ -1714,88 +1814,139 @@ RotoContext::allocateAndRenderSingleDotStroke(int brushSizePixel,
     return true;
 }
 
-void
-RotoContextPrivate::renderBezier(cairo_t* cr,
-                                 const Bezier* bezier,
-                                 double opacity,
+namespace {
+
+// Large enough to keep every thread of a big machine busy on a tile's feather, small enough that
+// a shape whose feather spans tens of thousands of pixels needs no more than a few tens of MB.
+const std::size_t kBezierTileArea = 2048 * 2048;
+
+struct BezierRenderSample {
+    double time;
+    Transform::Matrix3x3 transform;
+    std::unique_ptr<RotoFeatherRasterizer> feather;
+};
+
+} // namespace
+
+bool
+RotoContextPrivate::renderBezier(const Bezier* bezier,
                                  double time,
                                  double startTime, double endTime, double mbFrameStep,
-                                 unsigned int mipmapLevel)
+                                 unsigned int mipmapLevel,
+                                 double scaleX,
+                                 double scaleY,
+                                 const RectI& roi,
+                                 const AlphaTileSink& sink)
 {
-    ///render the bezier only if finished (closed) and activated
-    if ( !bezier->isCurveFinished() || !bezier->isActivated(time) || ( bezier->getControlPointsCount() <= 1 ) ) {
-        return;
+    if (roi.isNull()) {
+        return true;
     }
-
-
-
-    for (double t = startTime; t <= endTime; t+=mbFrameStep) {
-
-        double fallOff = bezier->getFeatherFallOff(t);
-        double featherDist = bezier->getFeatherDistance(t);
-        double shapeColor[3];
-        bezier->getColor(t, shapeColor);
-
-
-        cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-
-        cairo_new_path(cr);
-
-        ////Define the feather edge pattern
-        cairo_pattern_t* mesh = cairo_pattern_create_mesh();
-        if (cairo_pattern_status(mesh) != CAIRO_STATUS_SUCCESS) {
-            cairo_pattern_destroy(mesh);
-
-            return;
+    try {
+        std::vector<BezierRenderSample> samples;
+        BezierCPs cps;
+        if (bezier->isCurveFinished() && bezier->isActivated(time) && (bezier->getControlPointsCount() > 1)) {
+            cps = bezier->getControlPoints_mt_safe();
+            std::vector<RotoFeatherQuad> quads;
+            for (double t = startTime; t <= endTime; t += mbFrameStep) {
+                const double fallOff = bezier->getFeatherFallOff(t);
+                double featherDist = bezier->getFeatherDistance(t);
+                if (mipmapLevel != 0) {
+                    featherDist /= (1 << mipmapLevel);
+                }
+                BezierRenderSample sample;
+                sample.time = t;
+                bezier->getTransformAtTime(t, &sample.transform);
+                computeFeatherQuads(bezier, t, mipmapLevel, featherDist, &quads);
+                for (std::size_t i = 0; i < quads.size(); ++i) {
+                    Point* corners[4] = { &quads[i].inner0, &quads[i].outer0, &quads[i].outer1, &quads[i].inner1 };
+                    for (int c = 0; c < 4; ++c) {
+                        corners[c]->x *= scaleX;
+                        corners[c]->y *= scaleY;
+                    }
+                }
+                sample.feather.reset(new RotoFeatherRasterizer(quads, fallOff));
+                samples.push_back(std::move(sample));
+            }
         }
 
-        ///Adjust the feather distance so it takes the mipmap level into account
-        if (mipmapLevel != 0) {
-            featherDist /= (1 << mipmapLevel);
+        const std::size_t width = (std::size_t)roi.width();
+        const int tileRows = (int)std::max<std::size_t>(1, std::min<std::size_t>((std::size_t)roi.height(), kBezierTileArea / width));
+        const std::size_t tileCapacity = width * (std::size_t)tileRows;
+        std::vector<float> tileAlpha(tileCapacity);
+        std::vector<float> layer((samples.size() > 1) ? tileCapacity : 0);
+        CairoImageWrapper fill;
+        if (!samples.empty()) {
+            fill.cairoImg = cairo_image_surface_create(CAIRO_FORMAT_A8, (int)width, tileRows);
+            if (cairo_surface_status(fill.cairoImg) != CAIRO_STATUS_SUCCESS) {
+                return false;
+            }
         }
+        double unusedColor[3] = { 1., 1., 1. };
 
-        Transform::Matrix3x3 transform;
-        bezier->getTransformAtTime(t, &transform);
+        for (int y1 = roi.y1; y1 < roi.y2; y1 += tileRows) {
+            const RectI tile(roi.x1, y1, roi.x2, std::min(roi.y2, y1 + tileRows));
+            const std::size_t area = width * (std::size_t)tile.height();
+            std::fill(tileAlpha.begin(), tileAlpha.begin() + area, 0.f);
+            for (std::size_t si = 0; si < samples.size(); ++si) {
+                const BezierRenderSample& sample = samples[si];
+                float* dst = layer.empty() ? &tileAlpha.front() : &layer.front();
 
+                cairo_surface_flush(fill.cairoImg);
+                unsigned char* data = cairo_image_surface_get_data(fill.cairoImg);
+                const int stride = cairo_image_surface_get_stride(fill.cairoImg);
+                if (!data) {
+                    return false;
+                }
+                std::memset(data, 0, (std::size_t)stride * (std::size_t)tileRows);
+                cairo_surface_mark_dirty(fill.cairoImg);
+                cairo_surface_set_device_offset(fill.cairoImg, -tile.x1, -tile.y1);
+                cairo_t* ctx = cairo_create(fill.cairoImg);
+                cairo_set_fill_rule(ctx, CAIRO_FILL_RULE_WINDING);
+                // Without antialiasing the fill is exactly 0 or 1, so it meets the feather, which
+                // starts at full opacity on the same edge, without a seam.
+                cairo_set_antialias(ctx, CAIRO_ANTIALIAS_NONE);
+                cairo_scale(ctx, scaleX, scaleY);
+                cairo_new_path(ctx);
+                renderInternalShape(sample.time, mipmapLevel, unusedColor, 1., sample.transform, ctx, NULL, cps);
+                const bool filled = (cairo_status(ctx) == CAIRO_STATUS_SUCCESS);
+                cairo_destroy(ctx);
+                cairo_surface_flush(fill.cairoImg);
+                if (!filled) {
+                    return false;
+                }
+                for (int y = 0; y < tile.height(); ++y) {
+                    const unsigned char* src = data + (std::size_t)y * (std::size_t)stride;
+                    float* row = dst + (std::size_t)y * width;
+                    for (std::size_t x = 0; x < width; ++x) {
+                        row[x] = src[x] * (1.f / 255.f);
+                    }
+                }
 
-#ifdef ROTO_RENDER_TRIANGLES_ONLY
-        std::list<RotoFeatherVertex> featherMesh;
-        std::list<RotoTriangleFans> internalFans;
-        std::list<RotoTriangles> internalTriangles;
-        std::list<RotoTriangleStrips> internalStrips;
-        computeTriangles(bezier, t, mipmapLevel, featherDist, &featherMesh, &internalFans, &internalTriangles, &internalStrips);
-        renderFeather_cairo(featherMesh, shapeColor, fallOff, mesh);
-        renderInternalShape_cairo(internalTriangles, internalFans, internalStrips, shapeColor, mesh);
-        Q_UNUSED(opacity);
-#else
-        renderFeather(bezier, t, mipmapLevel, shapeColor, opacity, featherDist, fallOff, mesh);
+                sample.feather->rasterize(tile, dst);
 
-
-        // strangely, the above-mentioned cairo bug doesn't affect this function
-        BezierCPs cps = bezier->getControlPoints_mt_safe();
-        renderInternalShape(t, mipmapLevel, shapeColor, opacity, transform, cr, mesh, cps);
-        
-#endif
-        
-        
-        RotoContextPrivate::applyAndDestroyMask(cr, mesh);
+                if (!layer.empty()) {
+                    for (std::size_t i = 0; i < area; ++i) {
+                        tileAlpha[i] = layer[i] + tileAlpha[i] * (1.f - layer[i]);
+                    }
+                }
+            }
+            sink(tile, &tileAlpha.front());
+        }
+    } catch (const std::bad_alloc&) {
+        return false;
     }
+
+    return true;
 } // RotoContextPrivate::renderBezier
 
 void
-RotoContextPrivate::renderFeather(const Bezier* bezier,
-                                  double time,
-                                  unsigned int mipmapLevel,
-                                  double shapeColor[3],
-                                  double /*opacity*/,
-                                  double featherDist,
-                                  double fallOff,
-                                  cairo_pattern_t* mesh)
+RotoContextPrivate::computeFeatherQuads(const Bezier* bezier,
+                                        double time,
+                                        unsigned int mipmapLevel,
+                                        double featherDist,
+                                        std::vector<RotoFeatherQuad>* quads)
 {
-    ///Note that we do not use the opacity when rendering the bezier, it is rendered with correct floating point opacity/color when converting
-    ///to the Natron image.
-
-    double fallOffInverse = 1. / fallOff;
+    quads->clear();
     /*
      * We descretize the feather control points to obtain a polygon so that the feather distance will be of the same thickness around all the shape.
      * If we were to extend only the end points, the resulting bezier interpolation would create a feather with different thickness around the shape,
@@ -1828,9 +1979,9 @@ RotoContextPrivate::renderFeather(const Bezier* bezier,
     bool clockWise = bezier->isFeatherPolygonClockwiseOriented(false, time);
 
     assert( !featherPolygon.empty() && !bezierPolygon.empty() );
-
-
-    std::list<Point> featherContour;
+    if (featherPolygon.empty() || bezierPolygon.empty()) {
+        return;
+    }
 
     // prepare iterators
     std::list<ParametricPoint>::iterator next = featherPolygon.begin();
@@ -1862,13 +2013,7 @@ RotoContextPrivate::renderFeather(const Bezier* bezier,
         p1.y += dy * absFeatherDist;
     }
 
-
-    double innerOpacity = 1.;
-    double outterOpacity = 0.;
-
     Point origin = p1;
-    featherContour.push_back(p1);
-
 
     // increment for first iteration
     std::list<ParametricPoint>::iterator cur = featherPolygon.begin();
@@ -1914,12 +2059,7 @@ RotoContextPrivate::renderFeather(const Bezier* bezier,
             cur = featherPolygon.begin();
         }
 
-        ///skip it
-        /*if ( (cur->x == prev->x) && (cur->y == prev->y) ) {
-            continue;
-        }*/
-
-        Point p0, p0p1, p1p0, p2, p2p3, p3p2, p3;
+        Point p0, p2, p3;
         p0.x = prevBez->x;
         p0.y = prevBez->y;
         p3.x = bezIT->x;
@@ -1948,54 +2088,17 @@ RotoContextPrivate::renderFeather(const Bezier* bezier,
             p2.x = origin.x;
             p2.y = origin.y;
         }
-        featherContour.push_back(p2);
 
-        ///linear interpolation
-        p0p1.x = (p0.x * fallOff * 2. + fallOffInverse * p1.x) / (fallOff * 2. + fallOffInverse);
-        p0p1.y = (p0.y * fallOff * 2. + fallOffInverse * p1.y) / (fallOff * 2. + fallOffInverse);
-        p1p0.x = (p0.x * fallOff + 2. * fallOffInverse * p1.x) / (fallOff + 2. * fallOffInverse);
-        p1p0.y = (p0.y * fallOff + 2. * fallOffInverse * p1.y) / (fallOff + 2. * fallOffInverse);
-
-
-        p2p3.x = (p3.x * fallOff + 2. * fallOffInverse * p2.x) / (fallOff + 2. * fallOffInverse);
-        p2p3.y = (p3.y * fallOff + 2. * fallOffInverse * p2.y) / (fallOff + 2. * fallOffInverse);
-        p3p2.x = (p3.x * fallOff * 2. + fallOffInverse * p2.x) / (fallOff * 2. + fallOffInverse);
-        p3p2.y = (p3.y * fallOff * 2. + fallOffInverse * p2.y) / (fallOff * 2. + fallOffInverse);
-
-
-        ///move to the initial point
-        cairo_mesh_pattern_begin_patch(mesh);
-        cairo_mesh_pattern_move_to(mesh, p0.x, p0.y);
-        cairo_mesh_pattern_curve_to(mesh, p0p1.x, p0p1.y, p1p0.x, p1p0.y, p1.x, p1.y);
-        cairo_mesh_pattern_line_to(mesh, p2.x, p2.y);
-        cairo_mesh_pattern_curve_to(mesh, p2p3.x, p2p3.y, p3p2.x, p3p2.y, p3.x, p3.y);
-        cairo_mesh_pattern_line_to(mesh, p0.x, p0.y);
-        ///Set the 4 corners color
-        ///inner is full color
-
-        // IMPORTANT NOTE:
-        // The two sqrt below are due to a probable cairo bug.
-        // To check whether the bug is present is a given cairo version,
-        // make any shape with a very large feather and set
-        // opacity to 0.5. Then, zoom on the polygon border to check if the intensity is continuous
-        // and approximately equal to 0.5.
-        // If the bug if ixed in cairo, please use #if CAIRO_VERSION>xxx to keep compatibility with
-        // older Cairo versions.
-        cairo_mesh_pattern_set_corner_color_rgba( mesh, 0, shapeColor[0], shapeColor[1], shapeColor[2], innerOpacity);
-        ///outer is faded
-        cairo_mesh_pattern_set_corner_color_rgba(mesh, 1, shapeColor[0], shapeColor[1], shapeColor[2], outterOpacity);
-        cairo_mesh_pattern_set_corner_color_rgba(mesh, 2, shapeColor[0], shapeColor[1], shapeColor[2], outterOpacity);
-        ///inner is full color
-        cairo_mesh_pattern_set_corner_color_rgba(mesh, 3, shapeColor[0], shapeColor[1], shapeColor[2], innerOpacity);
-        assert(cairo_pattern_status(mesh) == CAIRO_STATUS_SUCCESS);
-
-        cairo_mesh_pattern_end_patch(mesh);
+        RotoFeatherQuad quad;
+        quad.inner0 = p0;
+        quad.outer0 = p1;
+        quad.outer1 = p2;
+        quad.inner1 = p3;
+        quads->push_back(quad);
 
         if (mustStop) {
             break;
         }
-
-        //std::swap(innerOpacity, outterOpacity);
 
         p1 = p2;
 
@@ -2014,7 +2117,7 @@ RotoContextPrivate::renderFeather(const Bezier* bezier,
             ++prevBez;
         }
     }  // for each point in polygon
-} // RotoContextPrivate::renderFeather
+} // RotoContextPrivate::computeFeatherQuads
 
 void
 RotoContextPrivate::renderFeather_cairo(const std::list<RotoFeatherVertex>& vertices, double shapeColor[3], double fallOff, cairo_pattern_t * mesh)
@@ -3057,19 +3160,6 @@ RotoContextPrivate::bezulate(double time,
         patches->push_back(simpleClosedCurve);
     }
 } // RotoContextPrivate::bezulate
-
-void
-RotoContextPrivate::applyAndDestroyMask(cairo_t* cr,
-                                        cairo_pattern_t* mesh)
-{
-    assert(cairo_pattern_status(mesh) == CAIRO_STATUS_SUCCESS);
-    cairo_set_source(cr, mesh);
-
-    ///paint with the feather with the pattern as a mask
-    cairo_mask(cr, mesh);
-
-    cairo_pattern_destroy(mesh);
-}
 
 NodePtr
 RotoContext::createGlobalMergeNode()

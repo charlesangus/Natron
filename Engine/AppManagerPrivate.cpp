@@ -55,12 +55,13 @@ GCC_DIAG_ON(unused-parameter)
 #include <QLocalServer>
 #include <QLocalSocket>
 
-#include "Global/QtCompat.h" // for removeRecursively
-#include "Global/GlobalDefines.h"
-#include "Global/GLIncludes.h"
-#include "Global/ProcInfo.h"
-#include "Global/StrUtils.h"
 #include "Global/FStreamsSupport.h"
+#include "Global/FloatingPointExceptions.h"
+#include "Global/GLIncludes.h"
+#include "Global/GlobalDefines.h"
+#include "Global/ProcInfo.h"
+#include "Global/QtCompat.h" // for removeRecursively
+#include "Global/StrUtils.h"
 
 #include "Engine/CacheSerialization.h"
 #include "Engine/CLArgs.h"
@@ -802,6 +803,9 @@ AppManagerPrivate::probeOpenGLRenderersOnce()
         return;
     }
     openGLRenderersProbed = true;
+    // The probe creates contexts of its own, and Mesa's llvmpipe compiles its built-in shaders while
+    // one is created, which raises FE_INVALID: a debug Natron traps that on the main thread.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     OSGLContext::getGPUInfos(openGLRenderers);
 }
 

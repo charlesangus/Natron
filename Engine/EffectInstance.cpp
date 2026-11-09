@@ -1570,11 +1570,11 @@ EffectInstance::getImage(int inputNb,
             tls->currentRenderArgs.inputImages[inputNb].push_back(inputImg);
         }
 
-        if ( returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex) ) {
+        if (inputImg && returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex)) {
             inputImg = convertRAMImageToOpenGLTexture(inputImg);
         }
 
-        if (mapToClipPrefs) {
+        if (inputImg && mapToClipPrefs) {
             inputImg = convertLayersFormatsIfNeeded(inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
         }
 
@@ -6835,7 +6835,10 @@ EffectInstance::onNodeHashChanged(U64 hash)
 bool
 EffectInstance::canSetValue() const
 {
-    return !getNode()->isNodeRendering() || appPTR->isBackground();
+    // A render can keep the effect alive after its node is destroyed; nothing renders the node then.
+    NodePtr node = getNode();
+
+    return !node || !node->isNodeRendering() || appPTR->isBackground();
 }
 
 void

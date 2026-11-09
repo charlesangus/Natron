@@ -784,13 +784,19 @@ Settings::initializeKnobsUserInterface()
         entries.push_back(ChoiceOption("widgetCursor",
                                        tr("Widget cursor").toStdString(),
                                        tr("Replace the cursor with the mode's widget, which follows the pointer and freezes on press.").toStdString()));
+        assert(entries.size() == (int)eColorTrackballFeedbackCrosshairOnly);
+        entries.push_back(ChoiceOption("crosshairOnly",
+                                       tr("Crosshair only").toStdString(),
+                                       tr("Show a crosshair cursor with a following HUD and never show the mode's graphic, not even during a stroke.").toStdString()));
         _colorTrackballFeedback->populateChoices(entries);
     }
-    _colorTrackballFeedback->setHintToolTip(tr("How the color trackball shows what a drag will do. \n"
+    _colorTrackballFeedback->setHintToolTip(tr("How the color trackball and global mode (on color and value knobs) show what a drag will do. \n"
                                                "Crosshair + reveal shows a crosshair cursor with a following HUD and reveals the "
                                                "mode's graphic at the press point. \n"
                                                "Widget cursor replaces the cursor with the mode's widget, which follows the pointer "
-                                               "and freezes on press."));
+                                               "and freezes on press. \n"
+                                               "Crosshair only shows the crosshair cursor and following HUD and never shows the "
+                                               "mode's graphic, on engage, on press or during a stroke."));
     _uiPage->addKnob(_colorTrackballFeedback);
 
     _colorTrackballWheelWidth = AppManager::createKnob<KnobChoice>(this, tr("Color trackball wheel width"));

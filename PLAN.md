@@ -404,7 +404,7 @@ future core work has solid ground to build on.
 | M315 | Direct Texel Painting | todo | M53 |  | E9 | F11 | | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
 | M316 | Delegate UV Baking | todo | M313, M251 |  | E9 | | | [M316-delegate-uv-baking.md](PLAN/MILESTONES/M316-delegate-uv-baking.md) |
 | M317 | Traditional Keyer | todo | M95 |  | E3 | | | [M317-traditional-keyer.md](PLAN/MILESTONES/M317-traditional-keyer.md) |
-| M318 | LensCorrect Bounded Input Region | doing | M160 | bosley-native-nodes | E3 | | | [M318-lenscorrect-bounded-input-region.md](PLAN/MILESTONES/M318-lenscorrect-bounded-input-region.md) |
+| M318 | LensCorrect Bounded Input Region | done | M160 | bosley-native-nodes | E3 | | | [M318-lenscorrect-bounded-input-region.md](PLAN/MILESTONES/M318-lenscorrect-bounded-input-region.md) |
 | M319 | Group Node Direct Render | todo | - |  | E14 | | | [M319-group-node-direct-render.md](PLAN/MILESTONES/M319-group-node-direct-render.md) |
 | M320 | Write All Input Metadata | done | - | misty-marten | E3 | | | [M320-write-all-input-metadata.md](PLAN/MILESTONES/M320-write-all-input-metadata.md) |
 | M321 | Render Thread Count Race | done | - | bosley-native-nodes | E2 | | | [M321-render-thread-count-race.md](PLAN/MILESTONES/M321-render-thread-count-race.md) |

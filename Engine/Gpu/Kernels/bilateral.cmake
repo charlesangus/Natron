@@ -1,0 +1,8 @@
+slang_add_kernel(bilateral_load Kernels/bilateral.slang ENTRY bilateral_load REGISTRY NatronGpu)
+slang_add_kernel(bilateral_key Kernels/bilateral.slang ENTRY bilateral_key REGISTRY NatronGpu)
+slang_add_kernel(bilateral_direct Kernels/bilateral.slang ENTRY bilateral_direct REGISTRY NatronGpu)
+slang_add_kernel(bilateral_tiled Kernels/bilateral.slang ENTRY bilateral_tiled REGISTRY NatronGpu)
+slang_add_kernel(bilateral_guided_rows Kernels/bilateral.slang ENTRY bilateral_guided_rows REGISTRY NatronGpu)
+slang_add_kernel(bilateral_guided_coefficients Kernels/bilateral.slang ENTRY bilateral_guided_coefficients REGISTRY NatronGpu)
+slang_add_kernel(bilateral_guided_box_rows Kernels/bilateral.slang ENTRY bilateral_guided_box_rows REGISTRY NatronGpu)
+slang_add_kernel(bilateral_guided_apply Kernels/bilateral.slang ENTRY bilateral_guided_apply REGISTRY NatronGpu)

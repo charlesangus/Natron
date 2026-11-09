@@ -27,13 +27,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -71,14 +71,18 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormPtexBudget.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -103,7 +107,8 @@
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/errorMark.h>
-#include <pxr/base/tf/getenv.h>
+#include <pxr/base/tf/notice.h>
+#include <pxr/base/tf/weakBase.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/glf/simpleLight.h>
@@ -111,7 +116,8 @@
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hdx/tokens.h>
-#include <pxr/imaging/hgi/tokens.h>
+#include <pxr/imaging/hgi/texture.h>
+#include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
@@ -141,7 +147,7 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-// Storm clears to this, in scene-linear; it reaches the framebuffer through the display transform.
+// The background grey, in scene-linear; it is shown through the display transform.
 const float kBackgroundLinear = 0.05f;
 // The same grey once encoded to sRGB, for the clears and checks done outside Storm.
 const float kBackgroundSrgb = 0.2478f;
@@ -204,278 +210,165 @@ degreesToRadians(double d)
     return d * M_PI / 180.;
 }
 
-// A display transform Hydra cannot draw is baked into a log2 shaper and a 3D LUT, which it can.
-// The shaper spans scene-linear 0 to 2^8, finest near 2^-10, so highlights still tone-map.
-const float kBakeLog2Min = -10.f;
-const float kBakeLog2Max = 8.f;
-const unsigned long kBakeLutSize = 65;
-const char* const kBakeInputSpace = "Natron 3D Viewport Input";
-const char* const kBakeOutputSpace = "Natron 3D Viewport Output";
-const char* const kBakeDisplay = "Natron 3D Viewport";
-const char* const kBakeView = "Baked";
-
+/**
+ * @brief The 2D viewer's display transform, as ProjectColorManagement::getDisplayProcessor() makes
+ * it: colorSpace through display and view, with look in place of the view's own looks when it is
+ * not empty. Throws what OpenColorIO throws.
+ **/
 OCIO_NAMESPACE::ConstProcessorRcPtr
-displayViewProcessor(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                     const std::string& colorSpace,
-                     const std::string& display,
-                     const std::string& view)
+displayProcessor(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
+                 const std::string& colorSpace,
+                 const std::string& display,
+                 const std::string& view,
+                 const std::string& look)
 {
     OCIO_NAMESPACE::DisplayViewTransformRcPtr displayView = OCIO_NAMESPACE::DisplayViewTransform::Create();
     displayView->setSrc(colorSpace.c_str());
     displayView->setDisplay(display.c_str());
     displayView->setView(view.c_str());
+    OCIO_NAMESPACE::LegacyViewingPipelineRcPtr pipeline = OCIO_NAMESPACE::LegacyViewingPipeline::Create();
+    pipeline->setDisplayViewTransform(displayView);
+    if (!look.empty()) {
+        pipeline->setLooksOverrideEnabled(true);
+        pipeline->setLooksOverride(look.c_str());
+    }
 
-    return config->getProcessor(displayView);
+    return pipeline->getProcessor(config);
 }
 
-// Hydra's colour correction task (v26.08 hdx/colorCorrectionTask.cpp) loses the sampler name of
-// every 1D and 2D LUT texture OpenColorIO asks for, and the draw then fails with a GL error,
-// leaving only the clear colour on screen. ACES 2.0 output transforms need such textures;
-// analytic transforms and 3D LUTs do not.
-bool
-needsLutTextures(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
-{
-    OCIO_NAMESPACE::GpuShaderDescRcPtr shader = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
-    shader->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
-    processor->getDefaultGPUProcessor()->extractGpuShaderInfo(shader);
+// The encoding shown without OpenColorIO, as Hydra's colour correction applies it.
+const char* const kSrgbDisplayFunction = "vec4 toDisplay(vec4 c) {\n"
+                                         "    vec3 v = max(c.rgb, vec3(0.0));\n"
+                                         "    return vec4(mix(v * 12.92, 1.055 * pow(v, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, v)), c.a);\n"
+                                         "}\n";
 
-    return shader->getNumTextures() > 0;
-}
+const char* const kGradeVertexShader = "#version 400 compatibility\n"
+                                       "void main() {\n"
+                                       "    gl_Position = vec4((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0, 0.0, 1.0);\n"
+                                       "}\n";
 
+/**
+ * @brief The pass that draws Storm's colour AOV onto the framebuffer, around displayFunction, which
+ * defines vec4 toDisplay(vec4). The AOV is premultiplied over a transparent clear, and a display
+ * transform is not linear, so each pixel is graded unpremultiplied (gain, toDisplay, then gamma, as
+ * the 2D viewer applies them) and premultiplied again for the blend over the ungraded background.
+ * Pixels nothing was rendered to are left to the background. The AOV's depth goes with it, for
+ * the grid and guides drawn after; without one, what was rendered stays in front of them.
+ **/
 std::string
-appendToList(const char* list,
-             const std::string& item)
+gradeFragmentShader(const std::string& displayFunction)
 {
-    const std::string existing = list ? list : "";
+    std::string source = "#version 400 compatibility\n"
+                         "uniform sampler2D colorAov;\n"
+                         "uniform sampler2D depthAov;\n"
+                         "uniform bool hasDepth;\n"
+                         "uniform float gain;\n"
+                         "uniform float gamma;\n"
+                         "\n";
+    source += displayFunction;
+    source += "\n"
+              "void main() {\n"
+              "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
+              "    vec4 c = texelFetch(colorAov, p, 0);\n"
+              "    float a = clamp(c.a, 0.0, 1.0);\n"
+              "    if (a <= 0.0) {\n"
+              "        discard;\n"
+              "    }\n"
+              "    vec3 shown = toDisplay(vec4(c.rgb / a * gain, 1.0)).rgb;\n"
+              "    if (gamma <= 0.0) {\n"
+              "        shown = vec3(greaterThanEqual(shown, vec3(1.0)));\n"
+              "    } else {\n"
+              "        shown = pow(max(shown, vec3(0.0)), vec3(1.0 / gamma));\n"
+              "    }\n"
+              "    gl_FragColor = vec4(shown * a, a);\n"
+              "    gl_FragDepth = hasDepth ? texelFetch(depthAov, p, 0).r : 0.0;\n"
+              "}\n";
 
-    return existing.empty() ? item : existing + ", " + item;
+    return source;
 }
 
-// Throws what OpenColorIO throws.
-OCIO_NAMESPACE::GroupTransformRcPtr
-bakeToLut(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+// Throws std::runtime_error with the driver's log.
+GLuint
+compileShader(GLenum type,
+              const std::string& source)
 {
-    const unsigned long n = kBakeLutSize;
-    // Offsetting by 2^min puts scene-linear 0 on the first grid point.
-    const float offset = std::exp2(kBakeLog2Min);
-    std::vector<float> grid(n);
-    for (unsigned long i = 0; i < n; ++i) {
-        const float t = float(i) / float(n - 1);
-        grid[i] = std::exp2(kBakeLog2Min + t * (kBakeLog2Max - kBakeLog2Min)) - offset;
-    }
-    std::vector<float> rgb(n * n * n * 3);
-    std::size_t p = 0;
-    for (unsigned long r = 0; r < n; ++r) {
-        for (unsigned long g = 0; g < n; ++g) {
-            for (unsigned long b = 0; b < n; ++b) {
-                rgb[p++] = grid[r];
-                rgb[p++] = grid[g];
-                rgb[p++] = grid[b];
-            }
-        }
-    }
-    OCIO_NAMESPACE::PackedImageDesc image(rgb.data(), long(n * n * n), 1, 3);
-    processor->getDefaultCPUProcessor()->apply(image);
-
-    OCIO_NAMESPACE::Lut3DTransformRcPtr lut = OCIO_NAMESPACE::Lut3DTransform::Create(n);
-    lut->setInterpolation(OCIO_NAMESPACE::INTERP_TETRAHEDRAL);
-    p = 0;
-    for (unsigned long r = 0; r < n; ++r) {
-        for (unsigned long g = 0; g < n; ++g) {
-            for (unsigned long b = 0; b < n; ++b, p += 3) {
-                lut->setValue(r, g, b, rgb[p], rgb[p + 1], rgb[p + 2]);
-            }
-        }
+    const GLuint shader = glCreateShader(type);
+    const char* text = source.c_str();
+    glShaderSource(shader, 1, &text, nullptr);
+    glCompileShader(shader);
+    GLint ok = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    if (ok != GL_TRUE) {
+        GLint length = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+        std::string log(std::max(length, 1), '\0');
+        glGetShaderInfoLog(shader, (GLsizei)log.size(), nullptr, &log[0]);
+        glDeleteShader(shader);
+        throw std::runtime_error("the shader does not compile: " + log);
     }
 
-    OCIO_NAMESPACE::AllocationTransformRcPtr shaper = OCIO_NAMESPACE::AllocationTransform::Create();
-    shaper->setAllocation(OCIO_NAMESPACE::ALLOCATION_LG2);
-    const float vars[3] = { kBakeLog2Min, kBakeLog2Max, offset };
-    shaper->setVars(3, vars);
-    OCIO_NAMESPACE::GroupTransformRcPtr baked = OCIO_NAMESPACE::GroupTransform::Create();
-    baked->appendTransform(shaper);
-    baked->appendTransform(lut);
-
-    return baked;
+    return shader;
 }
 
-/**
- * @brief A copy of config with transform as an extra display and view, kBakeDisplay and kBakeView,
- * reached from kBakeInputSpace. Hydra reads OCIO's process-wide current config, which OpenFX
- * plugins read too, so the copy keeps everything config has and hides what it adds from listings:
- * the display stays out of the active displays and the colour spaces are inactive.
- **/
-OCIO_NAMESPACE::ConstConfigRcPtr
-configWithViewportView(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                       const OCIO_NAMESPACE::ConstTransformRcPtr& transform)
+// Throws std::runtime_error with the driver's log.
+GLuint
+linkProgram(const std::string& vertexSource,
+            const std::string& fragmentSource)
 {
-    OCIO_NAMESPACE::ConfigRcPtr copy = config->createEditableCopy();
-    std::string activeDisplays;
-    for (int i = 0; i < config->getNumDisplays(); ++i) {
-        activeDisplays = appendToList(activeDisplays.c_str(), config->getDisplay(i));
+    const GLuint vertex = compileShader(GL_VERTEX_SHADER, vertexSource);
+    GLuint fragment = 0;
+    try {
+        fragment = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
+    } catch (...) {
+        glDeleteShader(vertex);
+        throw;
     }
-    OCIO_NAMESPACE::ColorSpaceRcPtr input = OCIO_NAMESPACE::ColorSpace::Create(OCIO_NAMESPACE::REFERENCE_SPACE_SCENE);
-    input->setName(kBakeInputSpace);
-    copy->addColorSpace(input);
-    OCIO_NAMESPACE::ColorSpaceRcPtr output = OCIO_NAMESPACE::ColorSpace::Create(OCIO_NAMESPACE::REFERENCE_SPACE_SCENE);
-    output->setName(kBakeOutputSpace);
-    output->setTransform(transform, OCIO_NAMESPACE::COLORSPACE_DIR_FROM_REFERENCE);
-    copy->addColorSpace(output);
-    const std::string inactive = appendToList(config->getInactiveColorSpaces(),
-                                              std::string(kBakeInputSpace) + ", " + kBakeOutputSpace);
-    copy->setInactiveColorSpaces(inactive.c_str());
-    copy->addDisplayView(kBakeDisplay, kBakeView, kBakeOutputSpace, "");
-    copy->setActiveDisplays(activeDisplays.c_str());
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    GLint ok = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (ok != GL_TRUE) {
+        GLint length = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
+        std::string log(std::max(length, 1), '\0');
+        glGetProgramInfoLog(program, (GLsizei)log.size(), nullptr, &log[0]);
+        glDeleteProgram(program);
+        throw std::runtime_error("the shader does not link: " + log);
+    }
 
-    return copy;
+    return program;
 }
 
-std::string
-displayTransformKey(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                    const std::string& colorSpace,
-                    const std::string& display,
-                    const std::string& view)
+void
+setLutParameters(GLenum target,
+                 OCIO_NAMESPACE::Interpolation interpolation)
 {
-    return std::string(config->getCacheID()) + '\n' + colorSpace + '\n' + display + '\n' + view;
+    const GLint filter = (interpolation == OCIO_NAMESPACE::INTERP_NEAREST) ? GL_NEAREST : GL_LINEAR;
+
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    if (target != GL_TEXTURE_1D) {
+        glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    if (target == GL_TEXTURE_3D) {
+        glTexParameteri(target, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    }
 }
 
-// Main thread only. Baking evaluates the transform at every LUT grid point, so each one is kept.
-// The viewer's gain and gamma stay out of the bake, so dragging them reuses it.
-OCIO_NAMESPACE::ConstTransformRcPtr
-cachedLut(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-          const std::string& colorSpace,
-          const std::string& display,
-          const std::string& view,
-          const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
-{
-    static std::map<std::string, OCIO_NAMESPACE::ConstTransformRcPtr> cache;
-    const std::string key = displayTransformKey(config, colorSpace, display, view);
-    std::map<std::string, OCIO_NAMESPACE::ConstTransformRcPtr>::const_iterator found = cache.find(key);
-    if (found != cache.end()) {
-        return found->second;
-    }
-    const std::size_t kMaxBakes = 8;
-    if (cache.size() >= kMaxBakes) {
-        cache.clear();
-    }
-    OCIO_NAMESPACE::ConstTransformRcPtr baked = bakeToLut(processor);
-    cache[key] = baked;
+// The colour AOV and its depth take the first two texture units, the LUTs the ones after.
+const GLint kFirstLutUnit = 2;
 
-    return baked;
-}
-
-// The 2D viewer multiplies the working-space image by gain before its display transform.
-OCIO_NAMESPACE::TransformRcPtr
-viewerGainTransform(double gain)
-{
-    const double m[16] = {
-        gain, 0., 0., 0.,
-        0., gain, 0., 0.,
-        0., 0., gain, 0.,
-        0., 0., 0., 1.
-    };
-    OCIO_NAMESPACE::MatrixTransformRcPtr matrix = OCIO_NAMESPACE::MatrixTransform::Create();
-    matrix->setMatrix(m);
-
-    return matrix;
-}
-
-/**
- * @brief After its display transform the 2D viewer takes each channel, negatives as 0, to the power
- * 1 / gamma, which ExponentTransform's default negative style does. A gamma of 0 or less shows
- * which values reach 1; OpenColorIO has no step, so the steepest ramp its RangeTransform accepts,
- * 2^-16 wide just below 1, stands in for it.
- **/
-OCIO_NAMESPACE::TransformRcPtr
-viewerGammaTransform(double gamma)
-{
-    if (gamma <= 0.) {
-        OCIO_NAMESPACE::RangeTransformRcPtr range = OCIO_NAMESPACE::RangeTransform::Create();
-        range->setMinInValue(1. - std::exp2(-16.));
-        range->setMaxInValue(1.);
-        range->setMinOutValue(0.);
-        range->setMaxOutValue(1.);
-
-        return range;
-    }
-    const double exponent = 1. / gamma;
-    const double values[4] = { exponent, exponent, exponent, 1. };
-    OCIO_NAMESPACE::ExponentTransformRcPtr power = OCIO_NAMESPACE::ExponentTransform::Create();
-    power->setValue(values);
-
-    return power;
-}
-
-std::string
-exactText(double value)
-{
-    std::ostringstream os;
-    os << std::hexfloat << value;
-
-    return os.str();
-}
-
-/**
- * @brief configWithViewportView() of gain, then displayView, then gamma, as the 2D viewer applies
- * them. displayKey names displayView within config. Main thread only. Each gain and gamma is a
- * config of its own; a few are kept for toggling.
- **/
-OCIO_NAMESPACE::ConstConfigRcPtr
-cachedViewportConfig(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
-                     const std::string& displayKey,
-                     double gain,
-                     double gamma,
-                     const OCIO_NAMESPACE::ConstTransformRcPtr& displayView)
-{
-    static std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr> cache;
-    const std::string key = displayKey + '\n' + exactText(gain) + '\n' + exactText(gamma);
-    std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr>::const_iterator found = cache.find(key);
-    if (found != cache.end()) {
-        return found->second;
-    }
-    const std::size_t kMaxConfigs = 8;
-    if (cache.size() >= kMaxConfigs) {
-        cache.clear();
-    }
-    OCIO_NAMESPACE::GroupTransformRcPtr chain = OCIO_NAMESPACE::GroupTransform::Create();
-    if (gain != 1.) {
-        chain->appendTransform(viewerGainTransform(gain));
-    }
-    chain->appendTransform(displayView->createEditableCopy());
-    if (gamma != 1.) {
-        chain->appendTransform(viewerGammaTransform(gamma));
-    }
-    OCIO_NAMESPACE::ConstConfigRcPtr result = configWithViewportView(config, chain);
-    cache[key] = result;
-
-    return result;
-}
-
-/**
- * @brief The sRGB encoding Hydra's colour correction applies without OpenColorIO, for when the
- * viewer's gain or gamma have to go with it, added to the config $OCIO names, the one OpenFX
- * plugins read unless told otherwise. Main thread only. Throws what OpenColorIO throws.
- **/
-OCIO_NAMESPACE::ConstConfigRcPtr
-srgbViewportConfig(double gain,
-                   double gamma)
-{
-    static std::string loadedFrom;
-    static OCIO_NAMESPACE::ConstConfigRcPtr base;
-    const std::string env = TfGetenv("OCIO");
-    if (!base || (env != loadedFrom)) {
-        base = OCIO_NAMESPACE::Config::CreateFromEnv();
-        loadedFrom = env;
-    }
-    OCIO_NAMESPACE::ExponentWithLinearTransformRcPtr encode = OCIO_NAMESPACE::ExponentWithLinearTransform::Create();
-    const double exponent[4] = { 2.4, 2.4, 2.4, 1. };
-    const double offset[4] = { 0.055, 0.055, 0.055, 0. };
-    encode->setGamma(exponent);
-    encode->setOffset(offset);
-    encode->setDirection(OCIO_NAMESPACE::TRANSFORM_DIR_INVERSE);
-
-    return cachedViewportConfig(base, std::string(base->getCacheID()) + "\nsRGB", gain, gamma, encode);
-}
+struct GradeLut {
+    GLuint id;
+    GLenum target;
+    std::string sampler;
+};
 
 double
 radiansToDegrees(double r)
@@ -484,8 +377,8 @@ radiansToDegrees(double r)
 }
 
 /**
- * @brief Saves on construction, and restores on destruction, the GL state Storm (HgiGL and its
- * presentation into the target framebuffer) changes and the drawing around it relies on: the
+ * @brief Saves on construction, and restores on destruction, the GL state Storm (HgiGL, and the
+ * pass grading its AOV into the target framebuffer) changes and the drawing around it relies on: the
  * attribute stacks, the bindings Storm leaves behind, and the capabilities the attribute stacks of
  * a compatibility context do not cover.
  **/
@@ -581,6 +474,81 @@ const GLenum StormGLStateGuard::kCaps[StormGLStateGuard::kNumCaps] = {
     GL_FRAMEBUFFER_SRGB, GL_PRIMITIVE_RESTART, GL_PRIMITIVE_RESTART_FIXED_INDEX, GL_PROGRAM_POINT_SIZE,
     GL_DEPTH_CLAMP, GL_TEXTURE_CUBE_MAP_SEAMLESS, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_RASTERIZER_DISCARD
 };
+
+/**
+ * The threads a viewer's Cycles engine asks for, on its worker: the budget the thread preferences
+ * give one effect, less a core for the interface. It is the budget with the pool idle, not
+ * getNCPUsAvailableForEffect()'s, which follows the pool's busy threads from moment to moment:
+ * each change of the count rebuilds every Cycles engine of the process.
+ **/
+int
+refineThreads()
+{
+    AppManager* app = appPTR;
+    if (!app) {
+        return 1;
+    }
+    int toRender = 0;
+    int perEffect = 0;
+    app->getNThreadsSettings(&toRender, &perEffect);
+    if (toRender == -1) {
+        return 1;
+    }
+    const int poolMax = app->getMaxThreadCount();
+    if (perEffect == 0) {
+        perEffect = std::max(1, std::min(poolMax, app->getHardwareIdealThreadCount()));
+    }
+
+    return std::max(1, AppManager::computeNCPUsAvailable(poolMax, 0, 0, perEffect) - 1);
+}
+/**
+ * @brief Collects, while it lives, whether the stage's change notices touched anything outside
+ * /Render, where the render settings prims are. Anything that is not a prim's property or a prim
+ * under /Render counts, but for info-only changes of the pseudo-root: a sublayer swap reports
+ * there every metadata field the swapped layers author, changed or not, though only the root
+ * layer's compose into the stage's, and those are compared by the caller (SceneMetadata).
+ **/
+class StageChangePaths
+    : public TfWeakBase {
+public:
+    explicit StageChangePaths(const UsdStageRefPtr& stage)
+    {
+        if (stage) {
+            _key = TfNotice::Register(TfCreateWeakPtr(this), &StageChangePaths::changed, UsdStageWeakPtr(stage));
+        }
+    }
+
+    ~StageChangePaths()
+    {
+        TfNotice::Revoke(_key);
+    }
+
+    StageChangePaths(const StageChangePaths&) = delete;
+    StageChangePaths& operator=(const StageChangePaths&) = delete;
+
+    bool any = false;
+    bool outsideRender = false;
+
+private:
+    void changed(const UsdNotice::ObjectsChanged& notice)
+    {
+        static const SdfPath render("/Render");
+        const auto collect = [this](const UsdNotice::ObjectsChanged::PathRange& paths,
+                                    bool infoOnly) {
+            for (UsdNotice::ObjectsChanged::PathRange::const_iterator it = paths.begin(); it != paths.end(); ++it) {
+                any = true;
+                if (it->GetPrimPath().HasPrefix(render) || (infoOnly && it->IsAbsoluteRootPath())) {
+                    continue;
+                }
+                outsideRender = true;
+            }
+        };
+        collect(notice.GetResyncedPaths(), false);
+        collect(notice.GetChangedInfoOnlyPaths(), true);
+    }
+
+    TfNotice::Key _key;
+};
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -663,10 +631,35 @@ struct SceneViewportRenderer::Implementation {
     std::mutex engineSelectionMutex;
     std::vector<std::string> engineSelection;
     std::atomic<bool> engineSelectionDirty { false };
-    // The delegate the next engine is made with, and why it could not be, if it could not.
+    // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
+    // next engine is made with, the chosen one or the one the stage's render settings prim names;
+    // and why it could not be, if it could not.
+    std::string rendererChoice = kRenderDelegateStormId;
     std::string rendererId = kRenderDelegateStormId;
     mutable std::mutex rendererErrorMutex;
     std::string rendererError;
+    // Why the refinement's delegate is not rendering now, from its status: unlike rendererError it
+    // does not stop the refinement, which tries the delegate again at the next edit.
+    std::string refineError;
+    // Why the last render threw, until a paint takes it.
+    std::string renderError;
+    // Whether the last render that kept its renderer found Scene Default naming another.
+    std::atomic<bool> rendererSwitchPending { false };
+    // The stage's active render settings prim as of an edit count: its path, empty without one,
+    // and the renderer it names, Storm's without one. Then the prim's settings for a renderer at
+    // a time. All need stageMutex.
+    bool scenePrimValid = false;
+    U64 scenePrimEditCount = 0;
+    SdfPath scenePrimPath;
+    std::string sceneRenderer = kRenderDelegateStormId;
+    bool sceneSettingsValid = false;
+    U64 sceneSettingsEditCount = 0;
+    std::string sceneSettingsRenderer;
+    double sceneSettingsTime = 0.;
+    RenderSettingsPrim::Values sceneSettings;
+    // The prim's settings the Storm engine numbered stormSettingsEngine was last given.
+    RenderSettingsPrim::Values stormSettings;
+    U64 stormSettingsEngine = 0;
 
     // What a background frame draws, copied on the thread that owns these settings, and what it left.
     struct BackgroundFrame {
@@ -674,8 +667,9 @@ struct SceneViewportRenderer::Implementation {
         int height = 0;
         GfFrustum frustum;
         UsdImagingGLRenderParams params;
-        bool useOpenColorIO = false;
-        DisplayTransform transform;
+        OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
+        double gain = 1.;
+        double gamma = 1.;
         float background[3] = { 0.f, 0.f, 0.f };
 
         // True while the fbo holds this frame's image and nothing has drawn over it.
@@ -684,7 +678,6 @@ struct SceneViewportRenderer::Implementation {
         U64 editCount = 0;
         U64 loadEditCount = 0;
         U64 previewGeneration = 0;
-        U64 displayTransformGeneration = 0;
     };
     BackgroundFrame backgroundFrame;
 
@@ -719,13 +712,20 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> guideBatchesValid { false };
 
     DisplayTransform displayTransform;
-    // What Hydra is given: displayTransform, or a baked copy of it when Hydra cannot draw it.
-    DisplayTransform hydraTransform;
-    bool useOpenColorIO = false;
-    float backgroundDisplay[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
-    // Set when the engine's colour correction task must be rebuilt from OCIO's current config.
-    std::atomic<bool> colorCorrectionDirty { false };
-    std::atomic<U64> displayTransformGeneration { 0 };
+    // displayTransform's display, view and look, null for the sRGB encoding.
+    OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
+    // The background as shown: the display transform of kBackgroundLinear, without the viewer's
+    // gain and gamma, which act on rendered pixels only.
+    float backgroundShown[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
+    // The pass grading Storm's colour AOV onto the framebuffer (gradeFragmentShader()), GL objects
+    // of the context of render(), and the processor it was made from. Only the thread holding the
+    // engine touches them: a background frame grades with the processor it copied, not the one
+    // the main thread may have set since.
+    GLuint gradeProgram = 0;
+    std::vector<GradeLut> gradeLuts;
+    OCIO_NAMESPACE::GpuShaderDescRcPtr gradeShader;
+    bool gradeBuilt = false;
+    OCIO_NAMESPACE::ConstProcessorRcPtr gradeProcessor;
 
     // The transform handles, if any, and the drag of one under way.
     bool hasHandles = false;
@@ -751,6 +751,30 @@ struct SceneViewportRenderer::Implementation {
     static const U64 kNoPreviewClear = ~U64(0);
     std::atomic<U64> previewClearAfter;
 
+    // The progressive render of a delegate other than Storm, and what it was last told.
+    mutable std::mutex refineListenerMutex;
+    std::function<void()> refineListener;
+    std::atomic<int> maxSamples { 0 };
+    // The delegate the refinement was last given; needs stageMutex held exclusively. A release
+    // from the main thread, which holds no lock, asks the next render to forget it.
+    std::string refineRenderer;
+    std::atomic<bool> refineReleased { false };
+    // The texture and framebuffer its frames are drawn from, the buffer holding their depth, and
+    // the frame they hold: GL objects of the context of render().
+    GLuint refineTexture = 0;
+    GLuint refineFramebuffer = 0;
+    GLuint refineDepthBuffer = 0;
+    int refineWidth = 0;
+    int refineHeight = 0;
+    // The frame in the texture. Kept alive, so that a later frame cannot have its address, and not
+    // told apart by its serial, which starts over with each delegate.
+    std::shared_ptr<const HydraRender::ProgressiveRender::Frame> uploadedFrame;
+    std::atomic<int> drawnSamples { -1 };
+    std::atomic<double> uploadMs { -1. };
+    std::atomic<int> uploadPixels { 0 };
+    // Last, so that its worker, which reads the stage, is joined before the stage goes.
+    std::unique_ptr<HydraRender::ProgressiveRender> progressive;
+
     Implementation()
         : shown(false)
         , zUp(false)
@@ -769,6 +793,128 @@ struct SceneViewportRenderer::Implementation {
     {
         return (shown && sceneStage) ? sceneStage->getStage() : UsdStageRefPtr();
     }
+
+    // Reads the stage's active render settings prim again after the stage is edited. Needs stageMutex.
+    void refreshScenePrim()
+    {
+        const UsdStageRefPtr stage = currentStage();
+        // A load can bring in a render settings prim as it does any other.
+        const U64 editCount = sceneStage ? sceneStage->getEditCount() + sceneStage->getLoadEditCount() : 0;
+        if (scenePrimValid && (scenePrimEditCount == editCount)) {
+            return;
+        }
+        scenePrimValid = true;
+        scenePrimEditCount = editCount;
+        scenePrimPath = SdfPath();
+        sceneRenderer = kRenderDelegateStormId;
+        const UsdRenderSettings prim = stage ? RenderSettingsPrim::activePrim(stage, std::string(), nullptr) : UsdRenderSettings();
+        if (!prim) {
+            return;
+        }
+        scenePrimPath = prim.GetPath();
+        std::string id;
+        std::string error;
+        if (!RenderSettingsPrim::rendererFor(prim.GetPrim(), &id, &error)) {
+            // A renderer that is not installed is kept, so that the view says why it cannot render.
+            const UsdAttribute attribute = prim.GetPrim().GetAttribute(TfToken(kRenderSettingsPrimRendererAttribute));
+            TfToken token;
+            if (attribute && attribute.Get(&token)) {
+                id = token.GetString();
+            }
+        }
+        if (!id.empty()) {
+            sceneRenderer = id;
+        }
+    }
+
+    // The delegate renders are made with: the one chosen, or for Scene Default the prim's. Needs stageMutex.
+    std::string effectiveRenderer()
+    {
+        if (rendererChoice != kRenderDelegateSceneDefaultId) {
+            return rendererChoice;
+        }
+        refreshScenePrim();
+
+        return sceneRenderer;
+    }
+
+    // The active prim's settings for renderer at the time shown. Needs stageMutex.
+    const RenderSettingsPrim::Values& sceneSettingsFor(const std::string& renderer)
+    {
+        refreshScenePrim();
+        const double time = timeCode();
+        if (sceneSettingsValid && (sceneSettingsEditCount == scenePrimEditCount) && (sceneSettingsRenderer == renderer) && (sceneSettingsTime == time)) {
+            return sceneSettings;
+        }
+        sceneSettingsValid = true;
+        sceneSettingsEditCount = scenePrimEditCount;
+        sceneSettingsRenderer = renderer;
+        sceneSettingsTime = time;
+        sceneSettings.clear();
+        const UsdStageRefPtr stage = currentStage();
+        if (stage && !scenePrimPath.IsEmpty()) {
+            sceneSettings = RenderSettingsPrim::settings(stage->GetPrimAtPath(scenePrimPath), renderer, UsdTimeCode(time));
+        }
+
+        return sceneSettings;
+    }
+
+    // Gives the Storm engine the active prim's settings for it, as a USDRender's engine has them.
+    // Unlike that engine it is kept across a change: remaking it would resync the whole stage on
+    // each edit, so a setting the prim stops authoring goes back to the delegate's default. Needs
+    // stageMutex.
+    void applyStormSettings()
+    {
+        const RenderSettingsPrim::Values& wanted = sceneSettingsFor(rendererId);
+        const bool sameEngine = stormSettingsEngine == engineCount;
+
+        if (sameEngine && (wanted == stormSettings)) {
+            return;
+        }
+        if (sameEngine) {
+            const UsdImagingGLRendererSettingsList declared = engine->GetRendererSettingsList();
+            for (const std::pair<const std::string, VtValue>& setting : stormSettings) {
+                if (wanted.count(setting.first)) {
+                    continue;
+                }
+                const TfToken key(setting.first);
+                VtValue value;
+                for (const UsdImagingGLRendererSetting& d : declared) {
+                    if (d.key == key) {
+                        value = d.defValue;
+                        break;
+                    }
+                }
+                engine->SetRendererSetting(key, value);
+            }
+        }
+        for (const std::pair<const std::string, VtValue>& setting : wanted) {
+            engine->SetRendererSetting(TfToken(setting.first), setting.second);
+        }
+        stormSettings = wanted;
+        stormSettingsEngine = engineCount;
+    }
+
+    /**
+     * @brief Renders with renderer from the next render on: a change destroys the engine, so it
+     * needs the context of render() current. Needs stageMutex.
+     **/
+    void switchRenderer(const std::string& renderer)
+    {
+        if (renderer == rendererId) {
+            return;
+        }
+        rendererId = renderer;
+        setRendererErrorCopy(std::string());
+        setRefineErrorCopy(std::string());
+        uploadedFrame.reset();
+        dropEngine();
+        // The last delegate's refinement engine goes; another has its own default cap, and starts
+        // refining.
+        progressive->setRenderer(std::string());
+        refineRenderer.clear();
+    }
+
 
     std::shared_ptr<const StageSummary> getStageSummary() const
     {
@@ -1067,15 +1213,11 @@ struct SceneViewportRenderer::Implementation {
         UsdImagingGLRenderParams params;
 
         params.frame = UsdTimeCode(timeCode());
-        params.clearColor = GfVec4f(kBackgroundLinear, kBackgroundLinear, kBackgroundLinear, 1.f);
-        if (useOpenColorIO) {
-            params.colorCorrectionMode = HdxColorCorrectionTokens->openColorIO;
-            params.ocioDisplay = TfToken(hydraTransform.display);
-            params.ocioView = TfToken(hydraTransform.view);
-            params.ocioColorSpace = TfToken(hydraTransform.colorSpace);
-        } else {
-            params.colorCorrectionMode = HdxColorCorrectionTokens->sRGB;
-        }
+        // Transparent and scene-linear: drawGrade() grades what was rendered and puts it over the
+        // background. Hydra's colour correction would grade premultiplied values, which a
+        // transform that is not linear gets wrong wherever alpha is between 0 and 1.
+        params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
+        params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
         params.highlight = true;
         params.showProxy = showProxy;
         params.showRender = showRender;
@@ -1121,6 +1263,25 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
+    // Needs the GL context current, stageMutex and a StormGLSection, as the render that threw has
+    // them. Hydra's state after an exception is unknown, so the engine goes and the next render
+    // makes another.
+    void discardFailedEngine(const std::string& what)
+    {
+        engine.reset();
+        engineHeld = false;
+        backgroundFrame.imageKept = false;
+        setRenderErrorCopy("The " + rendererId + " render failed: " + what);
+    }
+
+    // Nothing above a paint catches what a delegate throws.
+    void engineFailedToStart(const std::string& what)
+    {
+        engine.reset();
+        engineHeld = false;
+        setRendererErrorCopy("The renderer " + rendererId + " could not be started: " + what + ".");
+    }
+
     // Needs the GL context current and stageMutex. False if there is nothing to draw. The engine
     // is made once per GL context and kept through every edit of the stage: it hears of them
     // through the stage's notices and updates on its next render.
@@ -1147,29 +1308,43 @@ struct SceneViewportRenderer::Implementation {
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
-        {
-            TfErrorMark mark;
-            engine.reset(new UsdImagingGLEngine(parameters));
-            ++engineCount;
-            ++engineConstructionCount;
-            if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
-                std::string reasons;
-                for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
-                    reasons += (reasons.empty() ? ": " : "; ") + it->GetCommentary();
-                }
-                mark.Clear();
-                engine.reset();
-                setRendererErrorCopy("The renderer " + rendererId + " could not be started" + reasons + ".");
+        try {
+            CyclesAovs::registerSceneIndices();
+            {
+                TfErrorMark mark;
+                engine.reset(new UsdImagingGLEngine(parameters));
+                ++engineCount;
+                ++engineConstructionCount;
+                if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
+                    std::string reasons;
+                    for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
+                        reasons += (reasons.empty() ? ": " : "; ") + it->GetCommentary();
+                    }
+                    mark.Clear();
+                    engine.reset();
+                    setRendererErrorCopy("The renderer " + rendererId + " could not be started" + reasons + ".");
 
-                return false;
+                    return false;
+                }
             }
+            if (RenderDelegates::isStorm(rendererId)) {
+                applyStormPtexBudget(engine->GetHgi());
+            }
+            // drawGrade() reads the colour AOV, and the depth AOV Storm keeps with it, in place of
+            // Hydra's presentation.
+            engine->SetRendererAov(HdAovTokens->color);
+            engine->SetEnablePresentation(false);
+            engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
+            applySelection();
+        } catch (const std::exception& e) {
+            engineFailedToStart(e.what());
+
+            return false;
+        } catch (...) {
+            engineFailedToStart("unknown exception");
+
+            return false;
         }
-        // Without a render output Storm draws straight into the bound framebuffer and the colour
-        // correction task, which only acts on the color AOV, leaves scene-linear values on screen.
-        engine->SetRendererAov(HdAovTokens->color);
-        colorCorrectionDirty = true;
-        engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
-        applySelection();
         engineHeld = true;
 
         return true;
@@ -1187,6 +1362,20 @@ struct SceneViewportRenderer::Implementation {
         std::lock_guard<std::mutex> lock(rendererErrorMutex);
 
         rendererError = error;
+    }
+
+    void setRefineErrorCopy(const std::string& error)
+    {
+        std::lock_guard<std::mutex> lock(rendererErrorMutex);
+
+        refineError = error;
+    }
+
+    void setRenderErrorCopy(const std::string& error)
+    {
+        std::lock_guard<std::mutex> lock(rendererErrorMutex);
+
+        renderError = error;
     }
 
     // Needs stageMutex and a current GL context. Lets the engine's GL objects go; no Hgi to collect
@@ -1275,34 +1464,234 @@ struct SceneViewportRenderer::Implementation {
 
         frame.imageKept = false;
 
-        return kept && !colorCorrectionDirty && sceneStage && (frame.fbo == fbo) && (frame.width == width) && (frame.height == height)
+        return kept && sceneStage && (frame.fbo == fbo) && (frame.width == width) && (frame.height == height)
             && (frame.frustum.ComputeViewMatrix() == frustum.ComputeViewMatrix())
             && (frame.frustum.ComputeProjectionMatrix() == frustum.ComputeProjectionMatrix())
             && (frame.params == params)
-            && std::equal(frame.background, frame.background + 3, backgroundDisplay)
+            && std::equal(frame.background, frame.background + 3, backgroundShown)
+            && (frame.displayProcessor == displayProcessor) && (frame.gain == displayTransform.gain) && (frame.gamma == displayTransform.gamma)
             && (frame.editCount == sceneStage->getEditCount())
             && (frame.loadEditCount == sceneStage->getLoadEditCount())
             && (frame.previewGeneration == sceneStage->getPreviewGeneration());
     }
 
-    // Needs the GL context current and an engine. Hydra's colour correction task reads OCIO's
-    // process-wide current config when its parameters change (v26.08
-    // hdx/colorCorrectionTask.cpp), so the config is made current here, and a config that changed
-    // under unchanged names forces new parameters by passing through disabled.
-    void prepareColorCorrection(bool openColorIO,
-                                const DisplayTransform& transform)
+    // Needs the GL context current.
+    void releaseGrade()
     {
-        if (!colorCorrectionDirty.exchange(false)) {
-            return;
+        if (gradeProgram) {
+            glDeleteProgram(gradeProgram);
+            gradeProgram = 0;
         }
-        if (openColorIO) {
-            try {
-                OCIO_NAMESPACE::SetCurrentConfig(transform.config);
-            } catch (const std::exception& e) {
-                qWarning() << "SceneViewport: OpenColorIO:" << e.what();
+        for (const GradeLut& lut : gradeLuts) {
+            glDeleteTextures(1, &lut.id);
+        }
+        gradeLuts.clear();
+        gradeShader.reset();
+        gradeBuilt = false;
+        gradeProcessor.reset();
+    }
+
+    // Needs the GL context current. Throws what OpenColorIO throws.
+    void uploadLuts(const OCIO_NAMESPACE::GpuShaderDescRcPtr& desc)
+    {
+        // A bound unpack buffer would be read as the LUT's source.
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        for (unsigned idx = 0; idx < desc->getNum3DTextures(); ++idx) {
+            const char* textureName = nullptr;
+            const char* samplerName = nullptr;
+            unsigned edgelen = 0;
+            OCIO_NAMESPACE::Interpolation interpolation = OCIO_NAMESPACE::INTERP_LINEAR;
+            desc->get3DTexture(idx, textureName, samplerName, edgelen, interpolation);
+            const float* values = nullptr;
+            desc->get3DTextureValues(idx, values);
+            if (!samplerName || !values || (edgelen == 0)) {
+                throw std::runtime_error("an OpenColorIO 3D LUT has no data");
+            }
+            GradeLut lut { 0, GL_TEXTURE_3D, samplerName };
+            glGenTextures(1, &lut.id);
+            gradeLuts.push_back(lut);
+            glActiveTexture((GLenum)(GL_TEXTURE0 + kFirstLutUnit + gradeLuts.size() - 1));
+            glBindTexture(GL_TEXTURE_3D, lut.id);
+            setLutParameters(GL_TEXTURE_3D, interpolation);
+            glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB32F, edgelen, edgelen, edgelen, 0, GL_RGB, GL_FLOAT, values);
+        }
+        for (unsigned idx = 0; idx < desc->getNumTextures(); ++idx) {
+            const char* textureName = nullptr;
+            const char* samplerName = nullptr;
+            unsigned width = 0;
+            unsigned height = 0;
+            OCIO_NAMESPACE::GpuShaderDesc::TextureType channel = OCIO_NAMESPACE::GpuShaderDesc::TEXTURE_RGB_CHANNEL;
+            OCIO_NAMESPACE::Interpolation interpolation = OCIO_NAMESPACE::INTERP_LINEAR;
+#if OCIO_VERSION_HEX >= 0x02030000
+            OCIO_NAMESPACE::GpuShaderCreator::TextureDimensions dimensions = OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_2D;
+            desc->getTexture(idx, textureName, samplerName, width, height, channel, dimensions, interpolation);
+            const bool is1D = (dimensions == OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_1D);
+#else
+            desc->getTexture(idx, textureName, samplerName, width, height, channel, interpolation);
+            const bool is1D = (height <= 1);
+#endif
+            const float* values = nullptr;
+            desc->getTextureValues(idx, values);
+            if (!samplerName || !values || (width == 0)) {
+                throw std::runtime_error("an OpenColorIO LUT has no data");
+            }
+            const bool red = (channel == OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_RED_CHANNEL);
+            const GLint internalFormat = red ? GL_R32F : GL_RGB32F;
+            const GLenum format = red ? GL_RED : GL_RGB;
+            GradeLut lut { 0, (GLenum)(is1D ? GL_TEXTURE_1D : GL_TEXTURE_2D), samplerName };
+            glGenTextures(1, &lut.id);
+            gradeLuts.push_back(lut);
+            glActiveTexture((GLenum)(GL_TEXTURE0 + kFirstLutUnit + gradeLuts.size() - 1));
+            glBindTexture(lut.target, lut.id);
+            setLutParameters(lut.target, interpolation);
+            if (is1D) {
+                glTexImage1D(GL_TEXTURE_1D, 0, internalFormat, width, 0, format, GL_FLOAT, values);
+            } else {
+                glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, std::max(height, 1u), 0, format, GL_FLOAT, values);
             }
         }
-        engine->SetColorCorrectionSettings(HdxColorCorrectionTokens->disabled);
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+    // Needs the GL context current. False, with why in *error, when OpenColorIO or the driver
+    // cannot make the pass of processor (null for the sRGB encoding); nothing is kept then.
+    bool buildGrade(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor,
+                    std::string* error)
+    {
+        releaseGrade();
+        try {
+            std::string displayFunction = kSrgbDisplayFunction;
+            OCIO_NAMESPACE::GpuShaderDescRcPtr desc;
+            if (processor) {
+                desc = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+                desc->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_4_0);
+                desc->setFunctionName("toDisplay");
+                desc->setResourcePrefix("ocio_");
+                processor->getDefaultGPUProcessor()->extractGpuShaderInfo(desc);
+                displayFunction = desc->getShaderText();
+                uploadLuts(desc);
+            }
+            gradeProgram = linkProgram(kGradeVertexShader, gradeFragmentShader(displayFunction));
+            gradeShader = desc;
+        } catch (const std::exception& e) {
+            *error = e.what();
+            releaseGrade();
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // Needs the GL context current. A transform the pass cannot draw falls back to the sRGB
+    // encoding, once per change of the transform.
+    void ensureGrade(const OCIO_NAMESPACE::ConstProcessorRcPtr& processor)
+    {
+        if (gradeBuilt && (gradeProcessor == processor)) {
+            return;
+        }
+        std::string error;
+        if (!buildGrade(processor, &error)) {
+            qWarning() << "SceneViewport: the display transform cannot be drawn, showing sRGB instead:" << error.c_str();
+            if (processor && !buildGrade(OCIO_NAMESPACE::ConstProcessorRcPtr(), &error)) {
+                qWarning() << "SceneViewport: the sRGB pass cannot be drawn either:" << error.c_str();
+            }
+        }
+        gradeBuilt = true;
+        gradeProcessor = processor;
+    }
+
+    // Needs the GL context current and an engine that has rendered, whose program, vertex array
+    // and texture bindings it changes.
+    void drawGrade(unsigned int fbo,
+                   int width,
+                   int height,
+                   const OCIO_NAMESPACE::ConstProcessorRcPtr& processor,
+                   double gain,
+                   double gamma)
+    {
+        ensureGrade(processor);
+        const HgiTextureHandle color = engine->GetAovTexture(HdAovTokens->color);
+        if (!gradeProgram || !color) {
+            return;
+        }
+        const HgiTextureHandle depth = engine->GetAovTexture(HdAovTokens->depth);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_ALPHA_TEST);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+
+        glUseProgram(gradeProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindSampler(0, 0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)color->GetRawResource());
+        glUniform1i(glGetUniformLocation(gradeProgram, "colorAov"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindSampler(1, 0);
+        glBindTexture(GL_TEXTURE_2D, depth ? (GLuint)depth->GetRawResource() : 0);
+        glUniform1i(glGetUniformLocation(gradeProgram, "depthAov"), 1);
+        glUniform1i(glGetUniformLocation(gradeProgram, "hasDepth"), depth ? 1 : 0);
+        glUniform1f(glGetUniformLocation(gradeProgram, "gain"), (GLfloat)gain);
+        glUniform1f(glGetUniformLocation(gradeProgram, "gamma"), (GLfloat)gamma);
+        for (std::size_t i = 0; i < gradeLuts.size(); ++i) {
+            const GLint unit = kFirstLutUnit + (GLint)i;
+            glActiveTexture((GLenum)(GL_TEXTURE0 + unit));
+            glBindSampler((GLuint)unit, 0);
+            glBindTexture(gradeLuts[i].target, gradeLuts[i].id);
+            glUniform1i(glGetUniformLocation(gradeProgram, gradeLuts[i].sampler.c_str()), unit);
+        }
+        if (gradeShader) {
+            for (unsigned i = 0; i < gradeShader->getNumUniforms(); ++i) {
+                OCIO_NAMESPACE::GpuShaderDesc::UniformData data;
+                const char* name = gradeShader->getUniform(i, data);
+                const GLint location = name ? glGetUniformLocation(gradeProgram, name) : -1;
+                if (location < 0) {
+                    continue;
+                }
+                if (data.m_getDouble) {
+                    glUniform1f(location, (GLfloat)data.m_getDouble());
+                } else if (data.m_getBool) {
+                    glUniform1i(location, data.m_getBool() ? 1 : 0);
+                } else if (data.m_getFloat3) {
+                    glUniform3f(location, data.m_getFloat3()[0], data.m_getFloat3()[1], data.m_getFloat3()[2]);
+                } else if (data.m_vectorFloat.m_getSize && data.m_vectorFloat.m_getVector) {
+                    glUniform1fv(location, (GLsizei)data.m_vectorFloat.m_getSize(), (const GLfloat*)data.m_vectorFloat.m_getVector());
+                } else if (data.m_vectorInt.m_getSize && data.m_vectorInt.m_getVector) {
+                    glUniform1iv(location, (GLsizei)data.m_vectorInt.m_getSize(), (const GLint*)data.m_vectorInt.m_getVector());
+                }
+            }
+        }
+
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        for (std::size_t i = 0; i < gradeLuts.size(); ++i) {
+            glActiveTexture((GLenum)(GL_TEXTURE0 + kFirstLutUnit + i));
+            glBindTexture(gradeLuts[i].target, 0);
+        }
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glDisable(GL_BLEND);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_DEPTH_TEST);
     }
 
     // A light at the camera, as usdview's default camera light, or none when the stage's own
@@ -1328,13 +1717,11 @@ struct SceneViewportRenderer::Implementation {
     void setCamera(const GfFrustum& frustum,
                    int width,
                    int height,
-                   unsigned int fbo,
                    bool lit)
     {
         engine->SetRenderBufferSize(GfVec2i(width, height));
         engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
         engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
-        engine->SetPresentationOutput(HgiTokens->OpenGL, VtValue(uint32_t(fbo)));
         setLights(lit);
     }
 
@@ -1484,6 +1871,7 @@ struct SceneViewportRenderer::Implementation {
         if (sceneStage && sceneStage->hasPreviewTransforms()) {
             sceneStage->clearPreviewTransforms();
             guidesValid = false;
+            progressive->invalidate();
         }
     }
 
@@ -1737,12 +2125,42 @@ SceneViewportRenderer::SceneViewportRenderer()
     std::shared_mutex* stageMutex = &_imp->stageMutex;
     _imp->participant = SceneWriteBarrier::registerParticipant([stageMutex]() { stageMutex->lock(); },
                                                                [stageMutex]() { stageMutex->unlock(); });
+    Implementation* imp = _imp.get();
+    // The refinement reads the stage alongside paints, and like any other reader lets a failed
+    // try to edit know when it lets go.
+    HydraRender::ProgressiveRender::StageLock refineStageLock;
+    refineStageLock.acquire = [stageMutex]() { stageMutex->lock_shared(); };
+    refineStageLock.release = [imp, stageMutex]() {
+        stageMutex->unlock_shared();
+        if (imp->exclusiveOwed.exchange(false) && imp->readEnded) {
+            imp->readEnded();
+        }
+    };
+    _imp->progressive.reset(new HydraRender::ProgressiveRender(refineStageLock, [imp]() { return imp->currentStage(); }, [imp]() {
+        std::function<void()> listener;
+        {
+            std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
+            listener = imp->refineListener;
+        }
+        if (listener) {
+            listener();
+        } }, kBackgroundLinear));
+    _imp->progressive->setThreads(&refineThreads);
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
+    // Its worker reads the stage's layers under stageMutex: joined while the barrier still holds
+    // writes back for it.
+    _imp->progressive.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
+    if (_imp->refineTexture || _imp->refineFramebuffer || _imp->refineDepthBuffer) {
+        qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its refinement texture";
+    }
+    if (_imp->gradeProgram || !_imp->gradeLuts.empty()) {
+        qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its display transform pass";
+    }
     if (_imp->engine) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its Storm engine";
         (void)_imp->engine.release();
@@ -1777,6 +2195,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
 
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
+    bool restart = false;
     {
         std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
         if (!_imp->sceneStage) {
@@ -1796,7 +2215,19 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
             // In the same step as the sync, so no frame shows the scene without the drag.
             _imp->clearPreviewLocked();
         }
-        _imp->sceneStage->sync(payload);
+        // The active prim's path is left out: what the render takes of it reaches it through its
+        // settings.
+        SceneMetadata before = _imp->sceneStage->getPayload().getMetadata();
+        SceneMetadata after = payload.getMetadata();
+        before.renderSettingsPrimPath.clear();
+        after.renderSettingsPrimPath.clear();
+        StageChangePaths changes(_imp->sceneStage->getStage());
+        if (_imp->sceneStage->sync(payload)) {
+            // An edit of the render settings prims alone restarts nothing here: what of it the
+            // render takes, the active prim's settings for its renderer, reaches it through
+            // ProgressiveRender::setSettings(), which makes the engine again when they differ.
+            restart = changes.outsideRender || !changes.any || (before != after);
+        }
         if (framesPerSecond > 0.) {
             _imp->frame = frame;
             _imp->framesPerSecond = framesPerSecond;
@@ -1807,6 +2238,9 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         _imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
         _imp->shown = !payload.isEmpty();
         _imp->stageEditCount = _imp->sceneStage->getEditCount();
+    }
+    if (restart) {
+        _imp->progressive->invalidate();
     }
     std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
     _imp->refreshStageSummary();
@@ -1845,8 +2279,11 @@ SceneViewportRenderer::setFrame(double frame,
 void
 SceneViewportRenderer::clearScene()
 {
-    // Keeps the stage and the engine: the next scene is synced into them.
+    // Keeps the stage and the engine: the next scene is synced into them. The refinement engine
+    // goes, as a view with no scene is not painted to let it go and its Cycles session would hold
+    // the process' Cycles thread count.
     syncScene(ScenePayload(), nullptr);
+    releaseRefinement();
 }
 
 bool
@@ -1929,7 +2366,8 @@ SceneViewportRenderer::hasEngine() const
 bool
 SceneViewportRenderer::needsBackgroundFrame() const
 {
-    if (!_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty()) {
+    // Another delegate than Storm renders on the refinement's own thread.
+    if (!_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (_imp->rendererId != kRenderDelegateStormId)) {
         return false;
     }
 
@@ -1961,10 +2399,10 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     frame.height = height;
     frame.frustum = _imp->computeFrustum(width, height);
     frame.params = _imp->currentRenderParams();
-    frame.useOpenColorIO = _imp->useOpenColorIO;
-    frame.transform = _imp->hydraTransform;
-    frame.displayTransformGeneration = _imp->displayTransformGeneration;
-    std::copy(_imp->backgroundDisplay, _imp->backgroundDisplay + 3, frame.background);
+    frame.displayProcessor = _imp->displayProcessor;
+    frame.gain = _imp->displayTransform.gain;
+    frame.gamma = _imp->displayTransform.gamma;
+    std::copy(_imp->backgroundShown, _imp->backgroundShown + 3, frame.background);
     frame.imageKept = false;
 
     return true;
@@ -1983,6 +2421,16 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
     Implementation::clearFrameTarget(frame.background);
+    // Another delegate renders on the refinement's own thread, and one the stage's render
+    // settings prim names instead is switched to on the main thread before Storm compiles for it.
+    if (_imp->rendererId != kRenderDelegateStormId) {
+        return;
+    }
+    if (_imp->effectiveRenderer() != _imp->rendererId) {
+        _imp->rendererSwitchPending = true;
+
+        return;
+    }
     if (!_imp->ensureEngine()) {
         return;
     }
@@ -1990,17 +2438,31 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
 
     const UsdStageRefPtr stage = _imp->currentStage();
-    _imp->setCamera(frame.frustum, frame.width, frame.height, fbo, frame.params.enableSceneLights);
-    _imp->prepareColorCorrection(frame.useOpenColorIO, frame.transform);
-    if (frame.displayTransformGeneration != _imp->displayTransformGeneration) {
-        // Set while this frame ran, whose copy is the older one: the next render has to apply it.
-        _imp->colorCorrectionDirty = true;
-    }
     bool converged = false;
-    for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
-        _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
-        converged = _imp->engine->IsConverged();
+    std::string what;
+    bool failed = false;
+    try {
+        _imp->applyStormSettings();
+        _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
+        for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
+            RenderDelegates::runRenderFaultHook();
+            _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
+            converged = _imp->engine->IsConverged();
+        }
+    } catch (const std::exception& e) {
+        failed = true;
+        what = e.what();
+    } catch (...) {
+        failed = true;
     }
+    if (failed) {
+        // The engine's Hgi goes with it, collecting as it does.
+        section.collectWith(nullptr);
+        _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+        return;
+    }
+    _imp->drawGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
     _imp->noteStageAbsorbed(frame.params);
     frame.fbo = fbo;
     frame.editCount = _imp->sceneStage->getEditCount();
@@ -2124,81 +2586,38 @@ void
 SceneViewportRenderer::setDisplayTransform(const DisplayTransform& transform)
 {
     const DisplayTransform& current = _imp->displayTransform;
-    if ((transform.config == current.config) && (transform.colorSpace == current.colorSpace)
-        && (transform.display == current.display) && (transform.view == current.view)
-        && (transform.gain == current.gain) && (transform.gamma == current.gamma)) {
+    const bool sameDisplay = (transform.config == current.config) && (transform.colorSpace == current.colorSpace)
+        && (transform.display == current.display) && (transform.view == current.view) && (transform.look == current.look);
+    _imp->displayTransform = transform;
+    // Gain and gamma are uniforms of the pass: dragging them makes nothing again.
+    if (sameDisplay) {
         return;
     }
-    _imp->displayTransform = transform;
-    _imp->hydraTransform = transform;
-    ++_imp->displayTransformGeneration;
-    _imp->colorCorrectionDirty = true;
-
-    bool useOpenColorIO = transform.config && !transform.colorSpace.empty() && !transform.display.empty()
-        && !transform.view.empty() && !TfGetenv("OCIO").empty();
+    _imp->displayProcessor.reset();
     float background[3] = { kBackgroundSrgb, kBackgroundSrgb, kBackgroundSrgb };
-    if (useOpenColorIO) {
+    if (transform.config && !transform.colorSpace.empty() && !transform.display.empty() && !transform.view.empty()) {
         try {
-            OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(transform.config, transform.colorSpace, transform.display, transform.view);
-            const bool lutTextures = needsLutTextures(processor);
-            if (lutTextures || (transform.gain != 1.) || (transform.gamma != 1.)) {
-                const OCIO_NAMESPACE::ConstTransformRcPtr displayView = lutTextures
-                    ? cachedLut(transform.config, transform.colorSpace, transform.display, transform.view, processor)
-                    : OCIO_NAMESPACE::ConstTransformRcPtr(processor->createGroupTransform());
-                DisplayTransform baked = transform;
-                baked.config = cachedViewportConfig(transform.config,
-                                                    displayTransformKey(transform.config, transform.colorSpace, transform.display, transform.view),
-                                                    transform.gain, transform.gamma, displayView);
-                baked.colorSpace = kBakeInputSpace;
-                baked.display = kBakeDisplay;
-                baked.view = kBakeView;
-                processor = displayViewProcessor(baked.config, baked.colorSpace, baked.display, baked.view);
-                if (needsLutTextures(processor)) {
-                    throw std::runtime_error("the baked display transform still needs 1D or 2D LUT textures");
-                }
-                _imp->hydraTransform = baked;
-            }
+            OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayProcessor(transform.config, transform.colorSpace, transform.display, transform.view, transform.look);
             float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
             processor->getDefaultCPUProcessor()->applyRGB(rgb);
             for (int c = 0; c < 3; ++c) {
                 background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
             }
-        } catch (const std::exception& e) {
-            qWarning() << "SceneViewport: OpenColorIO:" << e.what();
-            useOpenColorIO = false;
-            background[0] = background[1] = background[2] = kBackgroundSrgb;
-        }
-    }
-    if (!useOpenColorIO && ((transform.gain != 1.) || (transform.gamma != 1.)) && !TfGetenv("OCIO").empty()) {
-        try {
-            DisplayTransform graded = transform;
-            graded.config = srgbViewportConfig(transform.gain, transform.gamma);
-            graded.colorSpace = kBakeInputSpace;
-            graded.display = kBakeDisplay;
-            graded.view = kBakeView;
-            OCIO_NAMESPACE::ConstProcessorRcPtr processor = displayViewProcessor(graded.config, graded.colorSpace, graded.display, graded.view);
-            float rgb[3] = { kBackgroundLinear, kBackgroundLinear, kBackgroundLinear };
-            processor->getDefaultCPUProcessor()->applyRGB(rgb);
-            for (int c = 0; c < 3; ++c) {
-                background[c] = std::min(std::max(rgb[c], 0.f), 1.f);
-            }
-            _imp->hydraTransform = graded;
-            useOpenColorIO = true;
+            _imp->displayProcessor = processor;
         } catch (const std::exception& e) {
             qWarning() << "SceneViewport: OpenColorIO:" << e.what();
             background[0] = background[1] = background[2] = kBackgroundSrgb;
         }
     }
-    _imp->useOpenColorIO = useOpenColorIO;
     for (int c = 0; c < 3; ++c) {
-        _imp->backgroundDisplay[c] = background[c];
+        _imp->backgroundShown[c] = background[c];
     }
 }
 
 bool
 SceneViewportRenderer::isUsingOpenColorIO() const
 {
-    return _imp->useOpenColorIO;
+    return (bool)_imp->displayProcessor;
 }
 
 void
@@ -2960,8 +3379,12 @@ SceneViewportRenderer::previewTransformDrag(double change,
         return false;
     }
     _imp->guidesValid = false;
+    if (!_imp->sceneStage->setPreviewTransforms(deltas, _imp->timeCode())) {
+        return false;
+    }
+    _imp->progressive->invalidate();
 
-    return _imp->sceneStage->setPreviewTransforms(deltas, _imp->timeCode());
+    return true;
 } // SceneViewportRenderer::previewTransformDrag
 
 bool
@@ -3020,7 +3443,7 @@ SceneViewportRenderer::render(unsigned int fbo,
 {
     std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
 
-    return renderLocked(fbo, width, height);
+    return renderLocked(fbo, width, height, true) == eRenderStatusDone;
 }
 
 SceneViewportRenderer::RenderStatusEnum
@@ -3034,27 +3457,58 @@ SceneViewportRenderer::renderIfIdle(unsigned int fbo,
         return eRenderStatusBusy;
     }
 
-    return renderLocked(fbo, width, height) ? eRenderStatusDone : eRenderStatusRefining;
+    return renderLocked(fbo, width, height, false);
 }
 
-bool
+SceneViewportRenderer::RenderStatusEnum
 SceneViewportRenderer::renderLocked(unsigned int fbo,
                                     int width,
-                                    int height)
+                                    int height,
+                                    bool followScene)
 {
-    if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
-        return true;
+    if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
+        return eRenderStatusDone;
+    }
+    // Scene Default follows the renderer the stage's render settings prim names. A paint keeps
+    // the renderer it has and leaves the switch to followSceneRenderer(), outside Qt's paint.
+    const std::string effective = _imp->effectiveRenderer();
+    if (followScene) {
+        StormGLStateGuard guard;
+        _imp->switchRenderer(effective);
+    }
+    _imp->rendererSwitchPending = (effective != _imp->rendererId);
+    if (_imp->rendererId != kRenderDelegateStormId) {
+        return renderProgressive(fbo, width, height);
     }
     StormGLStateGuard guard;
     StormGLSection section;
 
     if (!_imp->ensureEngine()) {
         Implementation::bindFrameTarget(fbo, width, height);
-        Implementation::clearFrameTarget(_imp->backgroundDisplay);
+        Implementation::clearFrameTarget(_imp->backgroundShown);
 
-        return true;
+        return eRenderStatusDone;
     }
     section.collectWith(_imp->engine->GetHgi());
+    {
+        std::string what;
+        bool failed = false;
+        try {
+            _imp->applyStormSettings();
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return eRenderStatusDone;
+        }
+    }
 
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
@@ -3064,19 +3518,36 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     Implementation::bindFrameTarget(fbo, width, height);
     bool converged = kept;
     if (!kept) {
-        Implementation::clearFrameTarget(_imp->backgroundDisplay);
-        _imp->setCamera(frustum, width, height, fbo, _imp->sceneLit);
-        _imp->prepareColorCorrection(_imp->useOpenColorIO, _imp->hydraTransform);
+        Implementation::clearFrameTarget(_imp->backgroundShown);
+        _imp->setCamera(frustum, width, height, _imp->sceneLit);
         for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
-            _imp->engine->Render(stage->GetPseudoRoot(), params);
+            std::string what;
+            bool failed = false;
+            try {
+                RenderDelegates::runRenderFaultHook();
+                _imp->engine->Render(stage->GetPseudoRoot(), params);
+            } catch (const std::exception& e) {
+                failed = true;
+                what = e.what();
+            } catch (...) {
+                failed = true;
+            }
+            if (failed) {
+                // The engine's Hgi goes with it, collecting as it does.
+                section.collectWith(nullptr);
+                _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+                return eRenderStatusDone;
+            }
             converged = _imp->engine->IsConverged();
         }
+        // A kept image was graded by the frame that left it.
+        _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
     }
     _imp->noteStageAbsorbed(params);
 
     _imp->drawnGuides.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
-        // Storm leaves its own program, vertex array and framebuffer bound.
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
         glUseProgram(0);
@@ -3092,8 +3563,147 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         _imp->drawTransformHandles(frustum, width, height);
     }
 
-    return converged;
+    return converged ? eRenderStatusDone : eRenderStatusRefining;
 } // renderLocked
+
+SceneViewportRenderer::RenderStatusEnum
+SceneViewportRenderer::renderProgressive(unsigned int fbo,
+                                         int width,
+                                         int height)
+{
+    StormGLStateGuard guard;
+    HydraRender::ProgressiveRender& progressive = *_imp->progressive;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width, height);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_TRUE);
+    glClearColor(_imp->backgroundShown[0], _imp->backgroundShown[1], _imp->backgroundShown[2], 1.f);
+    glClearDepth(1.);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    if (_imp->refineReleased.exchange(false)) {
+        _imp->refineRenderer.clear();
+        _imp->uploadedFrame.reset();
+    }
+    if (_imp->getRendererErrorCopy().empty()) {
+        _imp->setRendererErrorCopy(RenderDelegates::unavailableMessage(_imp->rendererId));
+    }
+    const UsdStageRefPtr stage = _imp->currentStage();
+    if (!_imp->getRendererErrorCopy().empty() || !stage) {
+        progressive.setRenderer(std::string());
+        _imp->refineRenderer.clear();
+        _imp->setRefineErrorCopy(std::string());
+        _imp->uploadedFrame.reset();
+
+        return eRenderStatusDone;
+    }
+    // The prim's settings for the renderer first, so that its engine is made under them; the
+    // view's own sample cap applies over its samples.
+    progressive.setSettings(_imp->sceneSettingsFor(_imp->rendererId));
+    if (_imp->refineRenderer != _imp->rendererId) {
+        progressive.setRenderer(_imp->rendererId);
+        _imp->refineRenderer = _imp->rendererId;
+    }
+    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    HydraRender::ProgressiveRender::View view;
+    view.frustum = frustum;
+    view.width = width;
+    view.height = height;
+    view.time = UsdTimeCode(_imp->timeCode());
+    progressive.setMaxSamples(_imp->maxSamples);
+    progressive.setView(view);
+
+    const HydraRender::ProgressiveRender::Status status = progressive.getStatus();
+    _imp->setRefineErrorCopy(status.error);
+    if (!status.error.empty()) {
+        return eRenderStatusDone;
+    }
+    const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = progressive.getFrame();
+    if (frame && (frame->width > 0) && (frame->height > 0)) {
+        const GLsizei frameWidth = frame->width;
+        const GLsizei frameHeight = frame->height;
+        if (!_imp->refineTexture) {
+            glGenTextures(1, &_imp->refineTexture);
+            glGenFramebuffers(1, &_imp->refineFramebuffer);
+            glGenBuffers(1, &_imp->refineDepthBuffer);
+        }
+        if (frame != _imp->uploadedFrame) {
+            const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            if ((frameWidth != _imp->refineWidth) || (frameHeight != _imp->refineHeight)) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frameWidth, frameHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
+                glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _imp->refineTexture, 0);
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                _imp->refineWidth = frameWidth;
+                _imp->refineHeight = frameHeight;
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
+            }
+            // The depth stays in a buffer of the GPU's, for the paints that draw the grid over the
+            // frame again before the next one.
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
+            glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)(frame->depth.size() * sizeof(float)), frame->depth.data(), GL_STREAM_DRAW);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            _imp->uploadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            _imp->uploadPixels = frameWidth * frameHeight;
+            _imp->uploadedFrame = frame;
+        }
+        // A frame of another size, while the one of this size renders, is stretched to the view.
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+        glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles) && (frameWidth == width) && (frameHeight == height)) {
+            // The frame's depth, so that the grid and guides hide behind what it shows.
+            glUseProgram(0);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_ALWAYS);
+            glWindowPos2i(0, 0);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glDrawPixels(frameWidth, frameHeight, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            glDepthFunc(GL_LESS);
+            glDisable(GL_DEPTH_TEST);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        }
+        _imp->drawnSamples = frame->samples;
+    } else {
+        _imp->drawnSamples = -1;
+    }
+
+    _imp->drawnGuides.clear();
+    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glUseProgram(0);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        if (_imp->showGrid) {
+            _imp->drawGrid(frustum);
+        }
+        if (_imp->showGuides) {
+            _imp->drawGuides(frustum, width, height);
+        }
+        _imp->drawTransformHandles(frustum, width, height);
+    }
+
+    const bool finished = status.converged && frame && frame->converged && (frame->restart == status.restarts);
+
+    return finished ? eRenderStatusDone : eRenderStatusWaiting;
+} // renderProgressive
 
 std::string
 SceneViewportRenderer::pick(int x,
@@ -3104,6 +3714,47 @@ SceneViewportRenderer::pick(int x,
 {
     if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
         return std::string();
+    }
+    if (_imp->rendererId != kRenderDelegateStormId) {
+        std::string guidePath;
+        double guideDepth = 1.;
+        {
+            std::unique_lock<std::shared_mutex> lock;
+            if (!_imp->tryLockExclusive(&lock)) {
+                setBusy(busy);
+
+                return std::string();
+            }
+            if (_imp->showGuides) {
+                const GfFrustum frustum = _imp->computeFrustum(width, height);
+                const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+                const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
+                const SceneGizmo::View view(viewMatrix, projection, width, height);
+                GfVec3d guidePoint;
+                const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
+                if (guide >= 0) {
+                    guidePath = _imp->guides[guide].path;
+                    guideDepth = ((viewMatrix * projection).Transform(guidePoint)[2] + 1.) * 0.5;
+                }
+            }
+        }
+        // From the AOVs of the last pass, of the size of the view when it rendered; it takes the
+        // viewer lock itself.
+        const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
+        if (!frame || (frame->width <= 0) || (frame->height <= 0)) {
+            return guidePath;
+        }
+        const int fx = (int)((x + 0.5) * frame->width / width);
+        const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
+        const std::string prim = _imp->progressive->pick(*frame, fx, fy);
+        if (!guidePath.empty() && !prim.empty()) {
+            const std::size_t pixel = (std::size_t)fy * (std::size_t)frame->width + (std::size_t)fx;
+            if ((pixel < frame->depth.size()) && (frame->depth[pixel] < guideDepth)) {
+                return prim;
+            }
+        }
+
+        return guidePath.empty() ? prim : guidePath;
     }
     std::unique_lock<std::shared_mutex> lock;
     if (!_imp->tryLockExclusive(&lock)) {
@@ -3223,33 +3874,79 @@ SceneViewportRenderer::releaseGL()
     std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
 
     _imp->dropEngine();
+    _imp->releaseGrade();
+    if (_imp->refineTexture) {
+        glDeleteTextures(1, &_imp->refineTexture);
+        glDeleteFramebuffers(1, &_imp->refineFramebuffer);
+        glDeleteBuffers(1, &_imp->refineDepthBuffer);
+        _imp->refineTexture = 0;
+        _imp->refineFramebuffer = 0;
+        _imp->refineDepthBuffer = 0;
+    }
+    _imp->refineWidth = 0;
+    _imp->refineHeight = 0;
+    _imp->uploadedFrame.reset();
 }
 
 void
 SceneViewportRenderer::setRendererId(const std::string& id)
 {
     std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
-    const std::string renderer = id.empty() ? std::string(kRenderDelegateStormId) : id;
 
+    _imp->rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
     // The error is cleared even for the same id, so that choosing it again retries it.
     _imp->setRendererErrorCopy(std::string());
-    if (renderer == _imp->rendererId) {
-        return;
-    }
-    _imp->rendererId = renderer;
-    _imp->dropEngine();
+    _imp->setRefineErrorCopy(std::string());
+    _imp->switchRenderer(_imp->effectiveRenderer());
+}
+
+bool
+SceneViewportRenderer::followSceneRenderer()
+{
+    std::lock_guard<std::shared_mutex> lock(_imp->stageMutex);
+    const std::string before = _imp->rendererId;
+
+    _imp->switchRenderer(_imp->effectiveRenderer());
+    _imp->rendererSwitchPending = false;
+
+    return _imp->rendererId != before;
+}
+
+bool
+SceneViewportRenderer::hasPendingRendererSwitch() const
+{
+    return _imp->rendererSwitchPending;
 }
 
 const std::string&
 SceneViewportRenderer::getRendererId() const
 {
+    return _imp->rendererChoice;
+}
+
+const std::string&
+SceneViewportRenderer::getActiveRendererId() const
+{
     return _imp->rendererId;
+}
+
+std::string
+SceneViewportRenderer::takeRenderError()
+{
+    std::lock_guard<std::mutex> lock(_imp->rendererErrorMutex);
+    std::string error;
+
+    error.swap(_imp->renderError);
+
+    return error;
 }
 
 std::string
 SceneViewportRenderer::getRendererError() const
 {
-    return _imp->getRendererErrorCopy();
+    std::lock_guard<std::mutex> lock(_imp->rendererErrorMutex);
+
+    return _imp->rendererError.empty() ? _imp->refineError : _imp->rendererError;
 }
 
 std::string
@@ -3264,8 +3961,77 @@ void
 SceneViewportRenderer::getBackgroundColor(float rgb[3]) const
 {
     for (int c = 0; c < 3; ++c) {
-        rgb[c] = _imp->backgroundDisplay[c];
+        rgb[c] = _imp->backgroundShown[c];
     }
+}
+
+void
+SceneViewportRenderer::setMaxSamples(int samples)
+{
+    _imp->maxSamples = std::max(0, samples);
+    _imp->progressive->setMaxSamples(_imp->maxSamples);
+}
+
+int
+SceneViewportRenderer::getMaxSamples() const
+{
+    return _imp->progressive->getMaxSamples();
+}
+
+void
+SceneViewportRenderer::setRefinementPaused(bool paused)
+{
+    if (paused) {
+        _imp->progressive->stop();
+    } else {
+        _imp->progressive->resume();
+    }
+}
+
+SceneViewportRenderer::RefineStatus
+SceneViewportRenderer::getRefineStatus() const
+{
+    const HydraRender::ProgressiveRender::Status status = _imp->progressive->getStatus();
+    RefineStatus result;
+
+    result.active = status.active && (_imp->rendererId != kRenderDelegateStormId);
+    result.stopped = status.stopped;
+    result.converged = status.converged;
+    result.samples = status.samples;
+    result.maxSamples = status.maxSamples;
+    result.restarts = status.restarts;
+    result.frames = status.frames;
+    result.drawnSamples = _imp->drawnSamples;
+
+    return result;
+}
+
+void
+SceneViewportRenderer::setRefineListener(const std::function<void()>& listener)
+{
+    std::lock_guard<std::mutex> lock(_imp->refineListenerMutex);
+
+    _imp->refineListener = listener;
+}
+
+void
+SceneViewportRenderer::releaseRefinement()
+{
+    _imp->progressive->setRenderer(std::string());
+    _imp->setRefineErrorCopy(std::string());
+    _imp->refineReleased = true;
+}
+
+double
+SceneViewportRenderer::getLastUploadMs() const
+{
+    return _imp->uploadMs;
+}
+
+int
+SceneViewportRenderer::getLastUploadPixels() const
+{
+    return _imp->uploadPixels;
 }
 
 // ---------------------------------------------------------------------------
@@ -3665,6 +4431,10 @@ struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
     QString error;
     bool glInitialized = false;
+    // The delegate rendering as of the last rendererChanged().
+    std::string announcedRenderer = kRenderDelegateStormId;
+    // A switch of renderer waits for the background frame: making it waits on the render thread.
+    bool followSceneOwed = false;
 
     // What a drag of the pressed button does.
     enum DragRoleEnum {
@@ -4253,12 +5023,17 @@ SceneViewport::SceneViewport(QWidget* parent)
             }
         }
     });
+    // A progressive render's new frame repaints.
+    _imp->renderer.setRefineListener([this]() {
+        QMetaObject::invokeMethod(this, [this]() { update(); }, Qt::QueuedConnection);
+    });
     publishState();
 }
 
 SceneViewport::~SceneViewport()
 {
     Q_EMIT closing();
+    _imp->renderer.setRefineListener(std::function<void()>());
     {
         std::lock_guard<std::mutex> lock(_imp->queueMutex);
         _imp->quit = true;
@@ -4314,6 +5089,8 @@ SceneViewport::onSynced(U64 serial,
                         const SceneViewportRenderer::FrameBounds& bounds)
 {
     _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
+    // The synced stage may name another renderer for Scene Default.
+    followSceneRenderer();
     if (_imp->previewAwaitsSync && (serial > _imp->previewSerial)) {
         // A good sync normally drops the preview with the stage update; this covers a failed one
         // and one synced before the drag's write was known to the renderer.
@@ -4351,6 +5128,30 @@ SceneViewport::onSynced(U64 serial,
     publishState();
     update();
     Q_EMIT sceneSynced();
+}
+
+void
+SceneViewport::followSceneRenderer()
+{
+    // Dropping the old engine needs its context, which a view not yet shown has not made: it has
+    // no engine then either.
+    if (_imp->backgroundFrameRunning) {
+        _imp->followSceneOwed = true;
+
+        return;
+    }
+    _imp->followSceneOwed = false;
+    bool changed = false;
+    if (_imp->glInitialized && context()) {
+        runWithEngineContext([this, &changed]() { changed = _imp->renderer.followSceneRenderer(); });
+    } else {
+        changed = _imp->renderer.followSceneRenderer();
+    }
+    if (changed) {
+        publishState();
+        publishActiveRenderer();
+        update();
+    }
 }
 
 bool
@@ -4397,6 +5198,9 @@ SceneViewport::onBackgroundFrameDone()
 {
     _imp->backgroundFrameRunning = false;
     _imp->composingTimer->stop();
+    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
+        followSceneRenderer();
+    }
     // The stage may have changed again while the frame ran.
     startBackgroundFrame();
     serviceDeferredInput();
@@ -4647,6 +5451,9 @@ void
 SceneViewport::clearScene()
 {
     _imp->error.clear();
+    // A viewer showing images hides this, and a hidden view is not painted to let its refinement
+    // engine go.
+    _imp->renderer.releaseRefinement();
     requestSync(ScenePayload(), QString());
     update();
 }
@@ -4685,6 +5492,8 @@ SceneViewport::publishState()
     setProperty("natronSceneLockView", _imp->lockView);
     setProperty("natronSceneLockMessage", _imp->lockMessage);
     setProperty("natronSceneRenderer", QString::fromStdString(_imp->renderer.getRendererId()));
+    // The delegate rendering: the chosen one, or for Scene Default the one the stage's prim names.
+    setProperty("natronSceneActiveRenderer", QString::fromStdString(_imp->renderer.getActiveRendererId()));
     setProperty("natronSceneRendererError", QString::fromStdString(_imp->renderer.getRendererError()));
     // The display settings: the draw mode's and lighting mode's script names, and the proxy,
     // render and guide purposes shown.
@@ -4698,6 +5507,25 @@ SceneViewport::publishState()
     setProperty("natronSceneTransformTool", QString::fromUtf8(transformToolName(_imp->renderer.getTransformTool())));
     setProperty("natronSceneTransformSpace", QString::fromUtf8((_imp->renderer.getTransformSpace() == SceneTransform::eSpaceLocal) ? "local" : "world"));
     setProperty("natronSceneTransformPivot", QString::fromUtf8((_imp->renderer.getTransformPivot() == SceneTransform::ePivotCurrentPrim) ? "currentPrim" : "selectionCentre"));
+    publishRefineState();
+}
+
+void
+SceneViewport::publishRefineState()
+{
+    const SceneViewportRenderer::RefineStatus status = _imp->renderer.getRefineStatus();
+
+    setProperty("natronSceneRefining", status.active && !status.stopped && !status.converged);
+    setProperty("natronSceneRefinementStopped", status.stopped);
+    setProperty("natronSceneRefineConverged", status.converged);
+    setProperty("natronSceneSamples", status.active ? status.samples : -1);
+    setProperty("natronSceneDrawnSamples", status.active ? status.drawnSamples : -1);
+    setProperty("natronSceneMaxSamples", _imp->renderer.getMaxSamples());
+    setProperty("natronSceneRestartCount", QVariant::fromValue<qulonglong>(status.restarts));
+    setProperty("natronSceneRefineFrames", QVariant::fromValue<qulonglong>(status.frames));
+    setProperty("natronSceneUploadMs", _imp->renderer.getLastUploadMs());
+    setProperty("natronSceneUploadPixels", _imp->renderer.getLastUploadPixels());
+    Q_EMIT refineStateChanged();
 }
 
 // Keeps what it last published if an edit holds the stage; the paint that edit asks for publishes.
@@ -4792,6 +5620,37 @@ SceneViewport::setRendererId(const QString& id)
     const std::string renderer = id.toStdString();
     runWithEngineContext([this, &renderer]() { _imp->renderer.setRendererId(renderer); });
     publishState();
+    update();
+    _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
+    Q_EMIT rendererChanged(id);
+}
+
+void
+SceneViewport::publishActiveRenderer()
+{
+    // Under Scene Default the delegate follows the stage's prim: the render row follows it.
+    const std::string& active = _imp->renderer.getActiveRendererId();
+
+    if (_imp->announcedRenderer != active) {
+        _imp->announcedRenderer = active;
+        setProperty("natronSceneActiveRenderer", QString::fromStdString(active));
+        Q_EMIT rendererChanged(QString::fromStdString(_imp->renderer.getRendererId()));
+    }
+}
+
+void
+SceneViewport::setMaxSamples(int samples)
+{
+    _imp->renderer.setMaxSamples(samples);
+    publishRefineState();
+    update();
+}
+
+void
+SceneViewport::setRefinementPaused(bool paused)
+{
+    _imp->renderer.setRefinementPaused(paused);
+    publishRefineState();
     update();
 }
 
@@ -5501,6 +6360,7 @@ SceneViewport::releaseEngine()
     if (_imp->glInitialized && context()) {
         runWithEngineContext([this]() { _imp->renderer.releaseGL(); });
     }
+    _imp->renderer.releaseRefinement();
     if (_imp->requestedLiveTextures) {
         // Free GPU Memory emptied the store too, and only the worker's sync renders textures.
         requestSync(_imp->requestedPayload, _imp->requestedError);
@@ -5589,21 +6449,42 @@ SceneViewport::paintGL()
         status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
     }
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
-        // The worker is syncing; it asks for a repaint when it is done.
+        // The worker is syncing; it asks for a repaint when it is done. The refinement passing
+        // holds the lock too, and asks for one only once it has a frame: this paint's camera or
+        // size must still reach it.
         if (!_imp->presentedScene && isComposing()) {
             paintComposingStatus();
+        }
+        if (_imp->renderer.getActiveRendererId() != kRenderDelegateStormId) {
+            QTimer::singleShot(10, this, [this]() { update(); });
         }
 
         return;
     }
     _imp->presentedScene = _imp->renderer.hasScene();
+    if (_imp->renderer.hasPendingRendererSwitch()) {
+        // A sync landed between the last one followed and this paint.
+        QTimer::singleShot(0, this, [this]() { followSceneRenderer(); });
+    }
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
+    publishRefineState();
     publishTransformState();
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    const QString renderError = QString::fromStdString(_imp->renderer.takeRenderError());
+    if (!renderError.isEmpty()) {
+        _imp->error = renderError;
+        publishState();
+    }
     const QString rendererError = QString::fromStdString(_imp->renderer.getRendererError());
     setProperty("natronSceneRendererError", rendererError);
+    if (_imp->announcedRenderer != _imp->renderer.getActiveRendererId()) {
+        // The render row shown or hidden resizes this widget, which inside its paint frees the
+        // texture Qt then composes the window from.
+        QTimer::singleShot(0, this, [this]() { publishActiveRenderer(); });
+    }
     // Whether the stage's own lights lit this paint, and the guides it drew: path, kind and a
     // point on each in widget pixels.
     setProperty("natronSceneSceneLit", _imp->renderer.isSceneLit());
@@ -5649,6 +6530,18 @@ SceneViewport::paintGL()
                           .arg(mode)
                           .arg(view)
                           .arg(_imp->renderer.getTimeCode(), 0, 'g', 6);
+        if (refine.active) {
+            // The samples of the frame shown, against the cap.
+            const QString drawn = (refine.drawnSamples >= 0) ? QString::number(refine.drawnSamples) : QString::fromUtf8("-");
+            if (refine.maxSamples > 0) {
+                hud += tr(" | %1 / %2 samples").arg(drawn).arg(refine.maxSamples);
+            } else {
+                hud += tr(" | %1 samples").arg(drawn);
+            }
+            if (refine.stopped) {
+                hud += tr(" (paused)");
+            }
+        }
         const std::vector<std::string>& selected = _imp->renderer.getSelectedPrims();
         if (selected.size() == 1) {
             hud += tr(" | %1").arg(QString::fromStdString(selected.back()));
@@ -5671,9 +6564,10 @@ SceneViewport::paintGL()
     if (converged) {
         // When the last finished frame was drawn, for benchmarks and scripts.
         setProperty("natronSceneLastPaintMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
-    } else {
+    } else if (status == SceneViewportRenderer::eRenderStatusRefining) {
         update();
     }
+    // eRenderStatusWaiting: the background render's listener asks for the next paint.
 } // paintGL
 
 void
@@ -6328,6 +7222,18 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     QMenu* renderers = menu.addMenu(tr("Renderer"));
     QActionGroup* rendererGroup = new QActionGroup(renderers);
     const std::string& rendererId = _imp->renderer.getRendererId();
+    {
+        QAction* action = renderers->addAction(tr("Scene Default"));
+        action->setCheckable(true);
+        action->setChecked(rendererId == kRenderDelegateSceneDefaultId);
+        action->setActionGroup(rendererGroup);
+        action->setToolTip(tr("Renders with the renderer the scene's active render settings prim names, "
+                              "Storm without one, and with that prim's settings for it."));
+        QObject::connect(action, &QAction::triggered, this, [this]() {
+            setRendererId(QString::fromUtf8(kRenderDelegateSceneDefaultId));
+        });
+        renderers->addSeparator();
+    }
     for (const RenderDelegates::Delegate& delegate : RenderDelegates::list()) {
         QString label = QString::fromStdString(delegate.displayName);
         if (!delegate.available) {

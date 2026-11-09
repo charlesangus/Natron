@@ -46,10 +46,6 @@
 #include <QTextStream>
 #include <QRunnable>
 
-#include "Global/MathUtils.h"
-#ifdef DEBUG
-#include "Global/FloatingPointExceptions.h"
-#endif
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -79,6 +75,8 @@
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
+#include "Global/FloatingPointExceptions.h"
+#include "Global/MathUtils.h"
 
 #ifdef DEBUG
 //#define TRACE_SCHEDULER
@@ -2237,6 +2235,7 @@ RenderThreadTask::run()
 #ifdef TRACE_SCHEDULER
         qDebug() << "Parallel Render Thread: Picking frame to render: " << time;
 #endif
+        boost_adaptbx::floating_point::follow_software_renderer();
         renderFrame(time, viewsToRender, enableRenderStats);
 
         appPTR->getAppTLS()->cleanupTLSForThread();

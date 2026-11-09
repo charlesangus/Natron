@@ -5,6 +5,8 @@ along the source curve moves onto the destination curve, and the rest of the ima
 smoothly. Curves are drawn with the viewer's curve tools (Bezier, open Bezier, Ellipse,
 Rectangle, and a point tool that makes a curve of one point) and listed in the settings panel.
 
+The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
+
 The settings panel has three pages:
 
 - **Warp:** what applies to the whole warp: `amount`, `invert`, `layerAmount`, `linkAmount`, `boundaryBBox`, `cropToFormat`,

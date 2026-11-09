@@ -190,6 +190,13 @@ try:
 
     usd = create("USDRead", 0, 0)
     viewer = app.getNode("Viewer1") or create("Viewer", 0, 150)
+    # BENCH_VIEWER_GAIN (f-stops) and BENCH_VIEWER_GAMMA grade the scene view, so that frame times
+    # with and without the viewer's gain and gamma can be compared.
+    for knob_name, enable_name, env_name in (("gain", "enableGain", "BENCH_VIEWER_GAIN"),
+                                             ("gamma", "enableGamma", "BENCH_VIEWER_GAMMA")):
+        if os.environ.get(env_name):
+            viewer.getParam(enable_name).setValue(True)
+            viewer.getParam(knob_name).setValue(float(os.environ[env_name]))
 
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]

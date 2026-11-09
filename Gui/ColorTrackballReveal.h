@@ -42,6 +42,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
+#include "Engine/GlobalModeKind.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -49,6 +50,7 @@ class ColorModeDiscWidget;
 class ColorTrackballHudBlock;
 class ColorTrackballPill;
 class ColorWheelWidget;
+class ValueModeDiscWidget;
 struct ColorTrackballHudState;
 
 /**
@@ -137,6 +139,27 @@ public:
      **/
     void setHudState(const ColorTrackballHudState& state);
 
+    /**
+     * @brief Shows the value disc for kind with its direction pills in place of the colour
+     * wheel or mode disc, until the next setMode().
+     **/
+    void setValueKind(GlobalModeKindEnum kind);
+
+    /**
+     * @brief The value stroke's travel in screen pixels, which moves the value disc's puck.
+     **/
+    void setValueTravel(double dx, double dy);
+
+    bool isShowingValueKind() const
+    {
+        return _showingValue;
+    }
+
+    ValueModeDiscWidget* getValueDisc() const
+    {
+        return _valueDisc;
+    }
+
     ColorGlobalModeEnum getMode() const
     {
         return _mode;
@@ -201,8 +224,12 @@ private:
     // and keeps the disc's centre where it was on screen.
     void relayout();
 
+    void setPillTexts(const ColorTrackballRevealLabels& labels);
+
     ColorWheelWidget* _wheel;
     ColorModeDiscWidget* _disc;
+    ValueModeDiscWidget* _valueDisc;
+    bool _showingValue;
     ColorGlobalModeEnum _mode;
     ColorKnobRoleEnum _role;
     LumaBasis _basis;

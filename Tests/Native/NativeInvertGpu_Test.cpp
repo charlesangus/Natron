@@ -138,8 +138,10 @@ class NativeInvertGpuTest
     : public BaseTest {
 };
 
-// 1 - v is exact in both renders, so only a divisor (Vulkan division is 2.5 ulp) or a blend
-// (mask or mix below 1) widens the class to arithmetic().
+// 1 - v is exact in both renders, so only a divisor or a blend (mask or mix below 1) widens the
+// class to arithmetic(). The divisor goes through divideRounded, which rounds as the CPU does only
+// within its operand bounds (2^-100 to 2^100); outside them the device quotient within 2.5 ulp
+// stands, and a device may flush subnormals.
 TEST_F(NativeInvertGpuTest, MatchesTheCpuRender)
 {
 #ifndef NATRON_HAVE_GPU

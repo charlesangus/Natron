@@ -42,6 +42,7 @@
 #include "Engine/BezierCP.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/RotoDrawableItem.h"
@@ -617,6 +618,9 @@ RotoCurveContext::removeItem(const RotoItemPtr& item,
     if (!_imp->trackLinkConnections.empty() || _imp->trackLinkWarningPosted) {
         refreshTrackLinkListeners();
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
 
     Q_EMIT selectionChanged((int)reason);
 }
@@ -646,6 +650,9 @@ RotoCurveContext::addItem(const RotoLayerPtr& layer,
     }
     if (itemHasTrackLinks(item)) {
         refreshTrackLinkListeners();
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
     }
     Q_EMIT itemInserted(indexInLayer, reason);
 }
@@ -1905,12 +1912,18 @@ void
 RotoCurveContext::incrementAge()
 {
     _imp->incrementRotoAge();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
 }
 
 void
 RotoCurveContext::evaluateChange()
 {
     _imp->incrementRotoAge();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     getNode()->getEffectInstance()->incrHashAndEvaluate(true, false);
 }
 
@@ -1989,24 +2002,36 @@ RotoCurveContext::onItemLockedChanged(const RotoItemPtr& item,
         knob->setAllDimensionsEnabled(enabled);
     }
     _imp->lastLockedItem = item;
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemLockedChanged((int)reason);
 }
 
 void
 RotoCurveContext::onItemGloballyActivatedChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemGloballyActivatedChanged(item);
 }
 
 void
 RotoCurveContext::onItemScriptNameChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemScriptNameChanged(item);
 }
 
 void
 RotoCurveContext::onItemLabelChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemLabelChanged(item);
 }
 

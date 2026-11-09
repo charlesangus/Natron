@@ -40,6 +40,8 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -932,7 +934,7 @@ USDCamera::authorLayer(const SceneLayerEdit& edit,
 
     // Millimetres to tenths of a scene unit: a tenth of a scene unit is 100 x the project's
     // metersPerUnit mm.
-    const double millimetresToCameraUnits = 1. / (100. * SceneNodeAuthoring::getMetersPerUnit(edit));
+    const double millimetresToCameraUnits = reciprocalOrInfinity(productOrInfinity(100., SceneNodeAuthoring::getMetersPerUnit(edit)));
     using SceneNodeAuthoring::authorValue;
     using SceneNodeAuthoring::isAnimated;
     bool authored = true;
@@ -946,12 +948,12 @@ USDCamera::authorLayer(const SceneLayerEdit& edit,
                                   const PXR_NS::UsdAttribute& to,
                                   const KnobDoublePtr& knob,
                                   double knobToFile) {
-        if (file.enabled && (!file.editLens || (!isAnimated(knob) && fileHolds<float>(from, edit, fileTime, [&](float v) { return nearlyEqual(knob->getValue() * knobToFile, v); })))) {
+        if (file.enabled && (!file.editLens || (!isAnimated(knob) && fileHolds<float>(from, edit, fileTime, [&](float v) { return nearlyEqual(productOrInfinity(knob->getValue(), knobToFile), v); })))) {
             return copyAttribute<float>(from, to, edit, fileTime);
         }
 
         return authorValue(to, edit, isAnimated(knob), [&knob, knobToFile](double frame) {
-            return (float)(knob->getValueAtTime(frame, 0) * knobToFile);
+            return knobValueAsFloat(productOrInfinity(knob->getValueAtTime(frame, 0), knobToFile));
         });
     };
     {
@@ -982,7 +984,7 @@ USDCamera::authorLayer(const SceneLayerEdit& edit,
             authored = copyAttribute<PXR_NS::GfVec2f>(fileAttr(&PXR_NS::UsdGeomCamera::GetClippingRangeAttr), camera.CreateClippingRangeAttr(), edit, fileTime);
         } else {
             authored = authorValue(camera.CreateClippingRangeAttr(), edit, clippingAnimated, [&nearKnob, &farKnob](double frame) {
-                return PXR_NS::GfVec2f((float)nearKnob->getValueAtTime(frame, 0), (float)farKnob->getValueAtTime(frame, 0));
+                return PXR_NS::GfVec2f(knobValueAsFloat(nearKnob->getValueAtTime(frame, 0)), knobValueAsFloat(farKnob->getValueAtTime(frame, 0)));
             });
         }
     }

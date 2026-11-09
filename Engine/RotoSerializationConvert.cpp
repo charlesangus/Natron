@@ -54,36 +54,38 @@ NATRON_NAMESPACE_ENTER
 void
 BezierCP::toSerialization(Serialization::BezierCPSerialization* serialization) const
 {
-    _imp->curveX->toSerialization(&serialization->xCurve);
-    _imp->curveY->toSerialization(&serialization->yCurve);
-    _imp->curveLeftBezierX->toSerialization(&serialization->leftXCurve);
-    _imp->curveLeftBezierY->toSerialization(&serialization->leftYCurve);
-    _imp->curveRightBezierX->toSerialization(&serialization->rightXCurve);
-    _imp->curveRightBezierY->toSerialization(&serialization->rightYCurve);
+    // The GUI copy is never behind the internal one, and alone holds edits made during a render
+    // until they are written back. Writing them back here would change the curves under the render.
+    _imp->guiCurveX->toSerialization(&serialization->xCurve);
+    _imp->guiCurveY->toSerialization(&serialization->yCurve);
+    _imp->guiCurveLeftBezierX->toSerialization(&serialization->leftXCurve);
+    _imp->guiCurveLeftBezierY->toSerialization(&serialization->leftYCurve);
+    _imp->guiCurveRightBezierX->toSerialization(&serialization->rightXCurve);
+    _imp->guiCurveRightBezierY->toSerialization(&serialization->rightYCurve);
 
     const std::string trackerName = getTrackLinkTrackerName();
     const std::string trackName = getTrackLinkTrackName();
 
     QMutexLocker k(&_imp->staticPositionMutex);
-    serialization->hasTrackLink = bool(_imp->trackLink);
-    if (_imp->trackLink) {
+    serialization->hasTrackLink = bool(_imp->guiTrackLink);
+    if (_imp->guiTrackLink) {
         serialization->trackLinkTracker = trackerName;
         serialization->trackLinkTrack = trackName;
-        serialization->trackOffsetX = _imp->trackOffsets.x;
-        serialization->trackOffsetY = _imp->trackOffsets.y;
-        serialization->trackOffsetLeftX = _imp->trackOffsets.leftX;
-        serialization->trackOffsetLeftY = _imp->trackOffsets.leftY;
-        serialization->trackOffsetRightX = _imp->trackOffsets.rightX;
-        serialization->trackOffsetRightY = _imp->trackOffsets.rightY;
-        serialization->trackFrozenX = _imp->trackLink->frozenX;
-        serialization->trackFrozenY = _imp->trackLink->frozenY;
+        serialization->trackOffsetX = _imp->guiTrackOffsets.x;
+        serialization->trackOffsetY = _imp->guiTrackOffsets.y;
+        serialization->trackOffsetLeftX = _imp->guiTrackOffsets.leftX;
+        serialization->trackOffsetLeftY = _imp->guiTrackOffsets.leftY;
+        serialization->trackOffsetRightX = _imp->guiTrackOffsets.rightX;
+        serialization->trackOffsetRightY = _imp->guiTrackOffsets.rightY;
+        serialization->trackFrozenX = _imp->guiTrackLink->frozenX;
+        serialization->trackFrozenY = _imp->guiTrackLink->frozenY;
     }
-    serialization->x = _imp->x;
-    serialization->y = _imp->y;
-    serialization->leftX = _imp->leftX;
-    serialization->leftY = _imp->leftY;
-    serialization->rightX = _imp->rightX;
-    serialization->rightY = _imp->rightY;
+    serialization->x = _imp->guiX;
+    serialization->y = _imp->guiY;
+    serialization->leftX = _imp->guiLeftX;
+    serialization->leftY = _imp->guiLeftY;
+    serialization->rightX = _imp->guiRightX;
+    serialization->rightY = _imp->guiRightY;
     serialization->broken = _imp->broken;
 }
 
@@ -139,6 +141,7 @@ BezierCP::fromSerialization(const Serialization::BezierCPSerialization& serializ
         link->frozenX = serialization.trackFrozenX;
         link->frozenY = serialization.trackFrozenY;
         _imp->trackLink = link;
+        _imp->guiTrackLink = link;
         _imp->trackOffsets.x = serialization.trackOffsetX;
         _imp->trackOffsets.y = serialization.trackOffsetY;
         _imp->trackOffsets.leftX = serialization.trackOffsetLeftX;
@@ -148,6 +151,7 @@ BezierCP::fromSerialization(const Serialization::BezierCPSerialization& serializ
         _imp->guiTrackOffsets = _imp->trackOffsets;
     } else {
         _imp->trackLink.reset();
+        _imp->guiTrackLink.reset();
     }
 }
 

@@ -2,7 +2,7 @@
 
 Sections (all by default; LENSCORRECT_GUI_SECTIONS selects some, comma-separated):
     plugin-id        the native plug-in is in the plug-in list and creates
-    metadata         a CheckerBoard with lens EXIF keys set by ModifyMetadata (no JPEG fixture with lens
+    metadata         a CheckerBoard with lens EXIF keys set by MetadataModify (no JPEG fixture with lens
                      EXIF is shipped): the info knob reports the camera and lens it found and that the
                      focal length came from metadata; a typed focal length then wins; the manual
                      vignette and a fisheye reprojection change the picture
@@ -28,12 +28,12 @@ ALL_SECTIONS = ("plugin-id", "metadata", "raw", "settings-panel")
 
 PLUGIN_CHECKER = "CheckerBoard"
 PLUGIN_VIEWER = "Viewer"
-PLUGIN_MODIFY = "ModifyMetadata"
+PLUGIN_MODIFY = "MetadataModify"
 PLUGIN_LENS = "LensCorrect"
 READ_ID = "Read"
 CHAIN_LAST_ID = "RawColorCalibration"
 
-# ModifyMetadata's operation and type indices: Set, Double and String.
+# MetadataModify's operation and type indices: Set, Double and String.
 OPERATION_SET = 1
 TYPE_DOUBLE = 1
 TYPE_STRING = 2

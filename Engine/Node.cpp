@@ -77,6 +77,7 @@
 #include "Engine/FileSystemModel.h"
 #include "Engine/Format.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Hash64.h"
@@ -123,6 +124,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/Ops/GraphOp.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -261,6 +263,7 @@ Node::Node(const AppInstancePtr& app,
         _imp->cacheID = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     } while (!claimCacheID(_imp->cacheID));
     _imp->cacheIDClaimed = true;
+    _imp->nodeId = QUuid::createUuid().toString(QUuid::Id128).toStdString();
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
     QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);
@@ -860,6 +863,14 @@ Node::getStoredContentHash() const
     return _imp->contentHash;
 }
 
+U64
+Node::getStoredBaseContentHash() const
+{
+    QReadLocker l(&_imp->contentHashMutex);
+
+    return _imp->baseContentHash;
+}
+
 bool
 Node::getHashValueIfUpToDate(U64* hash) const
 {
@@ -916,6 +927,20 @@ Node::getCacheID() const
     return _imp->cacheID;
 }
 
+std::string
+Node::getNodeId() const
+{
+    QMutexLocker k(&_imp->nameMutex);
+
+    return _imp->nodeId;
+}
+
+bool
+Node::isValidNodeId(const std::string& id)
+{
+    return Serialization::isWellFormedNodeId(id);
+}
+
 bool
 Node::computeHashInternal(U64 projectDigest,
                           const HashInputs& inputs,
@@ -931,7 +956,9 @@ Node::computeHashInternal(U64 projectDigest,
 
     // Computed before taking contentHashMutex: knob content hashing and input reads must not run
     // under this node's write lock.
-    const U64 contentHash = computeContentHash(projectDigest, inputs);
+    HashNamespacesConstPtr namespaces;
+    U64 baseContentHash = 0;
+    const U64 contentHash = computeContentHash(projectDigest, inputs, nullptr, &namespaces, &baseContentHash);
 
     U64 oldContentHash;
     {
@@ -939,11 +966,38 @@ Node::computeHashInternal(U64 projectDigest,
 
         oldContentHash = _imp->contentHash;
         _imp->contentHash = contentHash;
+        _imp->baseContentHash = baseContentHash;
+        _imp->hashNamespaces = namespaces;
     }
     *newContentHash = contentHash;
 
     return oldContentHash != contentHash;
 } // Node::computeHashInternal
+
+namespace {
+// The digest of the entries in hashNamespace; empty is the knobs of the content hash.
+template <class Entries>
+U64
+digestKnobsDigestEntries(const Entries& entries,
+                         const std::string& hashNamespace)
+{
+    ContentHasher h;
+    U64 count = 0;
+
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].hashNamespace != hashNamespace) {
+            continue;
+        }
+        h.appendString(entries[i].name);
+        const KnobIPtr liveKnob = entries[i].liveKnob.lock();
+        h.appendU64(liveKnob ? liveKnob->getContentHash() : entries[i].hash);
+        ++count;
+    }
+    h.appendU64(count);
+
+    return h.finalize();
+}
+} // anon namespace
 
 U64
 Node::getKnobsContentDigest(bool* hasExpression) const
@@ -973,6 +1027,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
             Implementation::KnobsDigestEntry entry;
             entry.name = knob->getName();
             entry.hash = 0;
+            entry.hashNamespace = knob->getHashNamespace();
             // A knob owned by another holder invalidates that holder's generation, not this one,
             // so it is hashed live like a knob that reads another knob or a file.
             if (readsOutsideKnob || (knob->getHolder() != holder)) {
@@ -992,13 +1047,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         _imp->knobsDigestGeneration = generation;
         _imp->knobsDigestValid = true;
         if (!anyLive) {
-            ContentHasher h;
-            h.appendU64(entries.size());
-            for (std::size_t i = 0; i < entries.size(); ++i) {
-                h.appendString(entries[i].name);
-                h.appendU64(entries[i].hash);
-            }
-            _imp->knobsDigest = h.finalize();
+            _imp->knobsDigest = digestKnobsDigestEntries(entries, std::string());
         }
     }
 
@@ -1007,26 +1056,80 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         return _imp->knobsDigest;
     }
 
+    return digestKnobsDigestEntries(_imp->knobsDigestEntries, std::string());
+} // Node::getKnobsContentDigest
+
+std::map<std::string, U64>
+Node::getKnobsNamespaceDigests() const
+{
+    std::map<std::string, U64> digests;
+
+    if (!_imp->effect) {
+        return digests;
+    }
+    // Brings the entries up to date.
+    bool hasExpression = false;
+    (void)getKnobsContentDigest(&hasExpression);
+
+    QMutexLocker l(&_imp->knobsDigestMutex);
     const std::vector<Implementation::KnobsDigestEntry>& entries = _imp->knobsDigestEntries;
-    ContentHasher h;
-    h.appendU64(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        h.appendString(entries[i].name);
-        const KnobIPtr liveKnob = entries[i].liveKnob.lock();
-        h.appendU64(liveKnob ? liveKnob->getContentHash() : entries[i].hash);
+        const std::string& hashNamespace = entries[i].hashNamespace;
+        if (!hashNamespace.empty() && !digests.count(hashNamespace)) {
+            digests[hashNamespace] = digestKnobsDigestEntries(entries, hashNamespace);
+        }
     }
 
-    return h.finalize();
-} // Node::getKnobsContentDigest
+    return digests;
+}
+
+HashNamespacesConstPtr
+Node::getHashNamespaces() const
+{
+    QReadLocker l(&_imp->contentHashMutex);
+
+    return _imp->hashNamespaces;
+}
+
+void
+HashNamespaces::appendAll(ContentHasher& h) const
+{
+    h.appendU64(scopes.size());
+    for (std::map<std::string, Scope>::const_iterator scope = scopes.begin(); scope != scopes.end(); ++scope) {
+        h.appendString(scope->first);
+        h.appendString(scope->second.defaultRenderer);
+        h.appendBool(scope->second.settled);
+        h.appendU64(scope->second.digests.size());
+        for (std::map<std::string, U64>::const_iterator digest = scope->second.digests.begin(); digest != scope->second.digests.end(); ++digest) {
+            h.appendString(digest->first);
+            h.appendU64(digest->second);
+        }
+    }
+    h.appendString(active);
+    h.appendBool(uncertain);
+    h.appendBool(activeSettled);
+}
+
+void
+HashNamespaces::unsettle()
+{
+    uncertain = true;
+    activeSettled = false;
+    for (std::map<std::string, Scope>::iterator scope = scopes.begin(); scope != scopes.end(); ++scope) {
+        scope->second.settled = false;
+    }
+}
 
 U64
 Node::computeContentHash(U64 projectDigest,
                          const HashInputs& inputs,
-                         const std::function<U64(const Node&)>* inputHash) const
+                         const std::function<U64(const Node&)>* inputHash,
+                         HashNamespacesConstPtr* namespaces,
+                         U64* baseHash) const
 {
     ContentHasher h;
     auto hashOf = [inputHash](const Node& input) -> U64 {
-        return inputHash ? (*inputHash)(input) : input.getStoredContentHash();
+        return inputHash ? (*inputHash)(input) : input.getStoredBaseContentHash();
     };
 
     h.appendString(getPluginID());
@@ -1120,8 +1223,120 @@ Node::computeContentHash(U64 projectDigest,
 
     h.appendU64(projectDigest ? projectDigest : project->getContentDigest());
 
-    return h.finalize();
+    // The namespaced knobs upstream are in the stage this node reads, so every node folds them
+    // all, but an effect that folds what it reads of them itself and outputs no stage. They are
+    // folded last and kept out of the base hash: the inputs' base hashes are what a node folds, so
+    // a consumer is not moved by the namespaces it leaves out.
+    HashNamespacesConstPtr table;
+    if (!_imp->effect->consumesHashNamespaces()) {
+        table = mergeHashNamespaces(inputs);
+    }
+    if (namespaces) {
+        *namespaces = table;
+    }
+    const U64 base = h.finalize();
+    if (baseHash) {
+        *baseHash = base;
+    }
+    if (!table) {
+        return base;
+    }
+    ContentHasher full;
+    full.appendU64(base);
+    table->appendAll(full);
+
+    return full.finalize();
 } // Node::computeContentHash
+
+HashNamespacesConstPtr
+Node::mergeHashNamespaces(const HashInputs& inputs) const
+{
+    // The inputs' tables, weakest first, as USDMerge stacks a later input's layers over an
+    // earlier one's, then the node's own on top.
+    std::shared_ptr<HashNamespaces> merged;
+    HashNamespacesConstPtr only;
+    int tables = 0;
+    bool unsettled = false;
+    for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+        const NodePtr& input = inputs.bySlot[i].second;
+        HashNamespacesConstPtr table = input ? input->getHashNamespaces() : HashNamespacesConstPtr();
+        if (!table) {
+            continue;
+        }
+        if (tables++ == 0) {
+            only = table;
+            continue;
+        }
+        if (!merged) {
+            merged = std::make_shared<HashNamespaces>(*only);
+            unsettled = only->uncertain;
+        }
+        unsettled = unsettled || table->uncertain;
+        for (std::map<std::string, HashNamespaces::Scope>::const_iterator scope = table->scopes.begin(); scope != table->scopes.end(); ++scope) {
+            HashNamespaces::Scope& into = merged->scopes[scope->first];
+            for (std::map<std::string, U64>::const_iterator digest = scope->second.digests.begin(); digest != scope->second.digests.end(); ++digest) {
+                ContentHasher h;
+                h.appendU64(into.digests[digest->first]);
+                h.appendU64(digest->second);
+                into.digests[digest->first] = h.finalize();
+            }
+            if (scope->second.defaultRenderer.empty()) {
+                continue;
+            }
+            // A layer two inputs share keeps its weakest position in the merge, so the later
+            // input is not stronger for what it shares: two renderers on a prim stay unsettled.
+            if (!into.defaultRenderer.empty() && (into.defaultRenderer != scope->second.defaultRenderer)) {
+                unsettled = true;
+            }
+            into.defaultRenderer = scope->second.defaultRenderer;
+        }
+        if (!table->active.empty()) {
+            if (!merged->active.empty() && (merged->active != table->active)) {
+                unsettled = true;
+            }
+            merged->active = table->active;
+        }
+    }
+
+    // A file read may author render settings prims, naming another renderer or active prim.
+    if (_imp->effect && _imp->effect->mayAuthorUntrackedRenderSettings()) {
+        unsettled = true;
+    }
+
+    std::string path, defaultRenderer;
+    bool active = false;
+    const bool authors = _imp->effect && _imp->effect->getHashNamespaceScope(&path, &defaultRenderer, &active);
+    if (!authors && !unsettled) {
+        return merged ? HashNamespacesConstPtr(merged) : only;
+    }
+    if (!merged) {
+        merged = only ? std::make_shared<HashNamespaces>(*only) : std::make_shared<HashNamespaces>();
+    }
+    if (unsettled) {
+        merged->unsettle();
+    }
+    if (!authors) {
+        return merged;
+    }
+    HashNamespaces::Scope& own = merged->scopes[path];
+    const std::map<std::string, U64> digests = getKnobsNamespaceDigests();
+    for (std::map<std::string, U64>::const_iterator digest = digests.begin(); digest != digests.end(); ++digest) {
+        // What upstream authors on the prim stays where this node authors nothing.
+        ContentHasher h;
+        h.appendU64(own.digests[digest->first]);
+        h.appendU64(digest->second);
+        own.digests[digest->first] = h.finalize();
+    }
+    // The node's layer is over everything upstream, so what it authors is settled.
+    own.defaultRenderer = defaultRenderer;
+    own.settled = true;
+    if (active) {
+        merged->active = path;
+        merged->activeSettled = true;
+    }
+
+    return merged;
+} // Node::mergeHashNamespaces
 
 void
 Node::walkLoopBody(const std::vector<NodePtr>& begins,
@@ -4749,6 +4964,9 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if ( !_imp->effect || !isActivated() ) {
         return;
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeDeactivating(this);
+    }
     _imp->effect->quitBackgroundWork(true);
     //first tell the gui to clear any persistent message linked to this node
     clearPersistentMessage(false);
@@ -5006,7 +5224,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     if ( !_imp->effect || isActivated() ) {
         return;
     }
-
+    GraphEditRecorder::CreationScope creationScope(this);
 
     ///No need to lock, guiInputs is only written to by the main-thread
     NodePtr thisShared = shared_from_this();
@@ -8397,7 +8615,7 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (QThread::currentThread() != qApp->thread()) {
-            while (_imp->nodeIsDequeuing && !aborted()) {
+            while ((_imp->nodeIsDequeuing || (_imp->renderStartsHeldByEdits > 0)) && !aborted()) {
                 _imp->nodeIsDequeuingCond.wait(k.mutex());
             }
         }
@@ -8473,6 +8691,33 @@ Node::isNodeRendering() const
     QMutexLocker k(&_imp->nodeIsRenderingMutex);
 
     return _imp->nodeIsRendering > 0;
+}
+
+bool
+Node::holdRenderStartsForEdit()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+    {
+        QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
+        if (_imp->nodeIsRendering > 0) {
+            return false;
+        }
+    }
+    ++_imp->renderStartsHeldByEdits;
+
+    return true;
+}
+
+void
+Node::releaseRenderStartsForEdit()
+{
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+
+    assert(_imp->renderStartsHeldByEdits > 0);
+    if (--_imp->renderStartsHeldByEdits == 0) {
+        _imp->nodeIsDequeuingCond.wakeAll();
+    }
 }
 
 void
@@ -9352,6 +9597,22 @@ Node::hasSize() const
     return _imp->hasSizeSet;
 }
 
+void
+Node::clearSize()
+{
+    {
+        QMutexLocker k(&_imp->layoutMutex);
+
+        if (!_imp->hasSizeSet) {
+            return;
+        }
+        _imp->hasSizeSet = false;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
+}
+
 bool
 Node::getColor(double* r,
                double *g,
@@ -9434,21 +9695,31 @@ void
 Node::setLayoutFromGuiPosition(double x,
                                double y)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->posX = x;
-    _imp->posY = y;
+        _imp->posX = x;
+        _imp->posY = y;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void
 Node::setLayoutFromGuiSize(double w,
                            double h)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->sizeW = w;
-    _imp->sizeH = h;
-    _imp->hasSizeSet = true;
+        _imp->sizeW = w;
+        _imp->sizeH = h;
+        _imp->hasSizeSet = true;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void
@@ -9457,12 +9728,17 @@ Node::setLayoutFromGuiUserColor(bool hasColor,
                                 double g,
                                 double b)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->userColorSet = hasColor;
-    _imp->userColor[0] = hasColor ? r : 0.;
-    _imp->userColor[1] = hasColor ? g : 0.;
-    _imp->userColor[2] = hasColor ? b : 0.;
+        _imp->userColorSet = hasColor;
+        _imp->userColor[0] = hasColor ? r : 0.;
+        _imp->userColor[1] = hasColor ? g : 0.;
+        _imp->userColor[2] = hasColor ? b : 0.;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void

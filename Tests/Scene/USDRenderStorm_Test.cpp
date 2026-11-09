@@ -35,12 +35,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <list>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -74,6 +76,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
@@ -88,6 +91,7 @@
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Nodes/Scene/USDSphere.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -95,6 +99,7 @@
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
+#include "RenderSettingsTestUtils.h"
 #include "SceneTestEffect.h"
 #include "Tests/Native/NativeGolden.h"
 #include "ofxNatron.h"
@@ -141,6 +146,15 @@ const char* const kGreyAsset = "#usda 1.0\n"
 const float kChannelTolerance = 0.02f;
 const double kDifferingFraction = 0.005;
 const double kMeanTolerance = 0.002;
+
+/**
+ * The projection references were recorded on llvmpipe. Storm's samplers ask for 16x anisotropy, and
+ * llvmpipe's anisotropic path blurs some fragment quads across a checker edge even on a card seen
+ * square on, which radeonsi does not, so the two legitimately disagree this much within
+ * kProjectedEdgeReach plate pixels of an edge. Beyond that they agree within kChannelTolerance, and the unchanged mean bound is what catches a small shift. It stays a tolerance
+ * rather than an exclusion because a projection that has moved takes these pixels further off.
+ **/
+const float kProjectedEdgeTolerance = 0.15f;
 
 // The dev image's /usr/local glvnd lists only NVIDIA; the system directory holds Mesa. Set before
 // the first EGL use, as the render thread's context is made once.
@@ -341,7 +355,8 @@ checkAgainstReference(const RenderedPlane& rgba,
 void
 checkCropAgainstReference(const RenderedPlane& rgba,
                           const RectI& crop,
-                          const char* goldenCase)
+                          const char* goldenCase,
+                          const std::function<bool(int, int)>& nearProjectedEdge = nullptr)
 {
     const int nComps = (int)rgba.channels.size();
     const int width = crop.width();
@@ -397,12 +412,15 @@ checkCropAgainstReference(const RenderedPlane& rgba,
     double sum = 0.;
     float worst = 0.;
     for (std::size_t p = 0; p < pixels.size() / (std::size_t)nComps; ++p) {
+        const int x = crop.x1 + (int)(p % (std::size_t)width);
+        const int y = crop.y1 + (int)(p / (std::size_t)width);
+        const float tolerance = (nearProjectedEdge && nearProjectedEdge(x, y)) ? kProjectedEdgeTolerance : kChannelTolerance;
         bool differs = false;
         for (int k = 0; k < nComps; ++k) {
             const float d = std::fabs(pixels[p * nComps + k] - reference[p * nComps + k]);
             sum += d;
             worst = std::max(worst, d);
-            differs = differs || (d > kChannelTolerance);
+            differs = differs || (d > tolerance);
         }
         differing += differs ? 1 : 0;
     }
@@ -495,6 +513,7 @@ const double kProjectorZ = 5.;
 const double kPlateBox = 25.;
 const double kCardWidth = 16.;
 const double kCardHeight = 8.;
+const double kProjectedEdgeReach = 2.5;
 
 // The z = 0 point render pixel (x, y)'s centre sees, rows counted from the bottom.
 void
@@ -552,6 +571,25 @@ expectedProjection(double u,
     const long sum = (long)std::floor(bu) + (long)std::floor(bv);
 
     return (sum % 2 == 0) ? eProjectedRed : eProjectedBlue;
+}
+
+// The format's edges are checker edges too, as it holds a whole number of squares each side of its
+// centre; beyond the format nothing projects, so bleed there stays under the strict tolerance.
+bool
+isNearProjectedEdge(int x,
+                    int y,
+                    double cardShift)
+{
+    double X = 0., Y = 0., u = 0., v = 0.;
+    renderPixelToPlane(x, y, &X, &Y);
+    planeToPlate(X - cardShift, Y, &u, &v);
+    if ((u < 0.) || (u > kWidth) || (v < 0.) || (v > kHeight)) {
+        return false;
+    }
+    const double bu = (u - kWidth / 2.) / kPlateBox;
+    const double bv = (v - kHeight / 2.) / kPlateBox;
+
+    return std::min(std::fabs(bu - std::round(bu)), std::fabs(bv - std::round(bv))) * kPlateBox <= kProjectedEdgeReach;
 }
 
 ProjectedColourEnum
@@ -787,10 +825,7 @@ protected:
 
         KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
         KnobColor* diffuse = knob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
-        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!file || !diffuse || !renderCamera || !size || !par) {
+        if (!file || !diffuse) {
             return NodePtr();
         }
         file->setValue(std::string(kFixture));
@@ -824,12 +859,18 @@ protected:
         connectNodes(transform, merge, 1, true);
         connectNodes(rig, merge, 2, true);
         connectNodes(merge, prune, 0, true);
-        connectNodes(prune, render, 0, true);
+        // The render settings prim frames the camera at kWidth x kHeight.
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        if (!settings) {
+            ADD_FAILURE() << "USDRenderSettings is not registered";
 
-        renderCamera->setActiveEntry(ChoiceOption(kRenderCamera, kRenderCamera, ""));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+            return NodePtr();
+        }
+        connectNodes(prune, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, kRenderCamera, kWidth, kHeight)) {
+            return NodePtr();
+        }
 
         return render;
     } // createReferenceGraph
@@ -859,10 +900,7 @@ protected:
         }
 
         KnobColor* diffuse = knob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
-        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!diffuse || !renderCamera || !size || !par) {
+        if (!diffuse) {
             return NodePtr();
         }
         diffuse->setValue(0.8, ViewSpec::all(), 0);
@@ -892,12 +930,18 @@ protected:
         connectNodes(right, merge, 1, true);
         connectNodes(camera, merge, 2, true);
         connectNodes(light, merge, 3, true);
-        connectNodes(merge, render, 0, true);
+        // The render settings prim frames the camera at kWidth x kHeight.
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        if (!settings) {
+            ADD_FAILURE() << "USDRenderSettings is not registered";
 
-        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+            return NodePtr();
+        }
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kWidth, kHeight)) {
+            return NodePtr();
+        }
 
         return render;
     } // createPrimitivesGraph
@@ -926,12 +970,6 @@ protected:
 
             return NodePtr();
         }
-        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!renderCamera || !size || !par) {
-            return NodePtr();
-        }
         bool ok = true;
         ok = ok && setString(material, kSceneParamPrimPath, "/Live");
         ok = ok && setString(card, kSceneParamPrimPath, "/Card");
@@ -948,11 +986,18 @@ protected:
         if (light) {
             connectNodes(light, merge, 2, true);
         }
-        connectNodes(merge, render, 0, true);
-        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+        // The render settings prim frames the camera at kWidth x kHeight.
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        if (!settings) {
+            ADD_FAILURE() << "USDRenderSettings is not registered";
+
+            return NodePtr();
+        }
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kWidth, kHeight)) {
+            return NodePtr();
+        }
         *constant = source;
 
         return render;
@@ -1054,10 +1099,7 @@ protected:
         KnobDouble* boxSize = knob<KnobDouble>(checker, kCheckerBoardParamBoxSize);
         KnobDouble* centerlineWidth = knob<KnobDouble>(checker, kCheckerBoardParamCenterLineWidth);
         KnobDouble* lineWidth = knob<KnobDouble>(checker, kCheckerBoardParamLineWidth);
-        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!boxSize || !centerlineWidth || !lineWidth || !renderCamera || !size || !par) {
+        if (!boxSize || !centerlineWidth || !lineWidth) {
             return NodePtr();
         }
         boxSize->setValue(kPlateBox, ViewSpec::all(), 0);
@@ -1106,12 +1148,18 @@ protected:
         connectNodes(project3D, geometry, 0, true);
         connectNodes(geometry, merge, 0, true);
         connectNodes(camera, merge, 1, true);
-        connectNodes(merge, render, 0, true);
+        // The render settings prim frames the camera at kWidth x kHeight.
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        if (!settings) {
+            ADD_FAILURE() << "USDRenderSettings is not registered";
 
-        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+            return NodePtr();
+        }
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kWidth, kHeight)) {
+            return NodePtr();
+        }
         *plate = checker;
         *projector = project3D;
         *card = geometry;
@@ -1125,7 +1173,7 @@ protected:
                                    const NodePtr& projector,
                                    const NodePtr& card)
     {
-        NodePtr merge = render->getInput(0);
+        NodePtr merge = render->getInput(0)->getInput(0);
         NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
         if (!merge || !assign || !setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card")) {
             ADD_FAILURE() << "could not set up the assign";
@@ -1169,7 +1217,7 @@ protected:
             return;
         }
         ASSERT_EQ(3u, planes.size());
-        checkCropAgainstReference(planes[0], goldenCrop, goldenCase);
+        checkCropAgainstReference(planes[0], goldenCrop, goldenCase, [cardShift](int x, int y) { return isNearProjectedEdge(x, y, cardShift); });
     }
 
     // The colour plane of render at frame 1, failing on a render error or a shader Storm could not
@@ -1224,10 +1272,7 @@ protected:
         KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
         KnobColor* redDiffuse = knob<KnobColor>(red, kUSDMaterialParamDiffuseColor);
         KnobChoice* strengthKnob = knob<KnobChoice>(assign, kUSDAssignMaterialParamStrength);
-        KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-        KnobInt* size = knob<KnobInt>(render, kNatronParamFormatSize);
-        KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-        if (!file || !redDiffuse || !strengthKnob || !renderCamera || !size || !par) {
+        if (!file || !redDiffuse || !strengthKnob) {
             return NodePtr();
         }
         file->setValue(assetPath.toStdString());
@@ -1266,12 +1311,18 @@ protected:
         connectNodes(moved, merge, 0, true);
         connectNodes(camera, merge, 1, true);
         connectNodes(light, merge, 2, true);
-        connectNodes(merge, render, 0, true);
+        // The render settings prim frames the camera at kWidth x kHeight.
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        if (!settings) {
+            ADD_FAILURE() << "USDRenderSettings is not registered";
 
-        renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
-        size->setValue(kWidth, ViewSpec::all(), 0);
-        size->setValue(kHeight, ViewSpec::all(), 1);
-        par->setValue(1.);
+            return NodePtr();
+        }
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kWidth, kHeight)) {
+            return NodePtr();
+        }
 
         return render;
     } // createAssignMaterialGraph
@@ -1549,7 +1600,7 @@ TEST_F(USDRenderStormTest, AHalfTransparentLiveTextureShowsTheBackgroundThroughI
     NodePtr constant;
     NodePtr render = createLiveTextureGraph(&constant, false, true);
     ASSERT_TRUE(render != nullptr);
-    NodePtr merge = render->getInput(0);
+    NodePtr merge = render->getInput(0)->getInput(0);
     ASSERT_TRUE(merge != nullptr);
     NodePtr backMaterial = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
     NodePtr backCard = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
@@ -1592,8 +1643,8 @@ TEST_F(USDRenderStormTest, ASoftLiveTextureEdgeHasNoDarkFringe)
     NodePtr constant;
     NodePtr render = createLiveTextureGraph(&constant, false, true);
     ASSERT_TRUE(render != nullptr);
-    NodePtr merge = render->getInput(0);
-    NodePtr material = render->getInput(0)->getInput(0)->getInput(0);
+    NodePtr merge = render->getInput(0)->getInput(0);
+    NodePtr material = render->getInput(0)->getInput(0)->getInput(0)->getInput(0);
     NodePtr camera = merge ? merge->getInput(1) : NodePtr();
     ASSERT_TRUE(merge && material && camera);
     ASSERT_EQ(std::string(PLUGINID_NATRON_USDEMISSIVEMATERIAL), material->getPluginID());
@@ -1675,7 +1726,7 @@ TEST_F(USDRenderStormTest, ALiveTextureFollowsADisabledNodeToItsInput)
     NodePtr constant;
     NodePtr render = createLiveTextureGraph(&constant, false, true);
     ASSERT_TRUE(render != nullptr);
-    NodePtr material = render->getInput(0)->getInput(0)->getInput(0);
+    NodePtr material = render->getInput(0)->getInput(0)->getInput(0)->getInput(0);
     ASSERT_TRUE(material != nullptr);
     ASSERT_EQ(std::string(PLUGINID_NATRON_USDEMISSIVEMATERIAL), material->getPluginID());
     NodePtr invert = createNode(QString::fromUtf8(PLUGINID_NATRON_INVERT));
@@ -1791,7 +1842,7 @@ TEST_F(USDRenderStormTest, StormProject3DBlendsItsAlphaUnlit)
     }
     projector->disconnectInput(kUSDProject3DInputImage);
     connectNodes(constant, projector, kUSDProject3DInputImage, true);
-    NodePtr merge = render->getInput(0);
+    NodePtr merge = render->getInput(0)->getInput(0);
     ASSERT_TRUE(bool(merge));
 
     for (int lit = 0; lit < 2; ++lit) {
@@ -1963,7 +2014,7 @@ TEST_F(USDRenderStormTest, StormProject3DCameraPathFromTheMergedScene)
     NodePtr render = createProjectionGraph(&plate, &projector, &card);
     ASSERT_TRUE(render != nullptr);
     NodePtr projectorCamera = projector->getInput(kUSDProject3DInputCamera);
-    NodePtr merge = render->getInput(0);
+    NodePtr merge = render->getInput(0)->getInput(0);
     ASSERT_TRUE(projectorCamera && merge);
     projector->disconnectInput(kUSDProject3DInputCamera);
     ASSERT_TRUE(setString(projector, kUSDProject3DParamCameraPath, "/Projector"));
@@ -2096,10 +2147,7 @@ TEST_F(USDRenderStormTest, OverscanShowsWhereTextureCoordinatesLeaveZeroToOne)
     KnobDouble* bottomLeft = knob<KnobDouble>(constant, kNativeGeneratorParamBottomLeft);
     KnobDouble* size = knob<KnobDouble>(constant, kNativeGeneratorParamSize);
     KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
-    KnobChoice* renderCamera = knob<KnobChoice>(render, kUSDRenderParamCamera);
-    KnobInt* renderSize = knob<KnobInt>(render, kNatronParamFormatSize);
-    KnobDouble* par = knob<KnobDouble>(render, kNatronParamFormatPar);
-    ASSERT_TRUE(color && extent && bottomLeft && size && file && renderCamera && renderSize && par);
+    ASSERT_TRUE(color && extent && bottomLeft && size && file);
     color->setValue(1., ViewSpec::all(), 0);
     color->setValue(0., ViewSpec::all(), 1);
     color->setValue(0., ViewSpec::all(), 2);
@@ -2122,11 +2170,11 @@ TEST_F(USDRenderStormTest, OverscanShowsWhereTextureCoordinatesLeaveZeroToOne)
     connectNodes(reader, merge, 0, true);
     connectNodes(material, merge, 1, true);
     connectNodes(camera, merge, 2, true);
-    connectNodes(merge, render, 0, true);
-    renderCamera->setActiveEntry(ChoiceOption("/Cam", "/Cam", ""));
-    renderSize->setValue(kWidth, ViewSpec::all(), 0);
-    renderSize->setValue(kHeight, ViewSpec::all(), 1);
-    par->setValue(1.);
+    NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+    ASSERT_TRUE(settings != nullptr);
+    connectNodes(merge, settings, 0, true);
+    connectNodes(settings, render, 0, true);
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(settings, "/Cam", kWidth, kHeight));
 
     std::vector<RenderedPlane> planes;
     std::string error;
@@ -2238,3 +2286,33 @@ TEST_F(USDRenderStormTest, ASharedMaterialAssignedByPatternRendersAsBound)
         }
     }
 } // TEST_F
+
+// An exception out of Hydra fails the render with its text on the node and leaves the render thread
+// able to render again.
+TEST_F(USDRenderStormTest, AnExceptionFromHydraFailsTheRenderAndTheNextRenderSucceeds)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr node = createReferenceGraph();
+    ASSERT_TRUE(node != nullptr);
+
+    RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    const bool failed = renderOffMainThread(node, 1., &planes, &error);
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_FALSE(failed);
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_NE(std::string::npos, message.toStdString().find("texture commit failed")) << message.toStdString();
+
+    planes.clear();
+    error.clear();
+    ASSERT_TRUE(renderOffMainThread(node, 1., &planes, &error)) << error;
+    ASSERT_EQ(3u, planes.size());
+    checkAgainstReference(planes[0], kGoldenCase);
+}

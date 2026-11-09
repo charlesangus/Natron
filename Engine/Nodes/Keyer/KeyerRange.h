@@ -35,6 +35,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -112,13 +113,13 @@ keyerRangePoints(const double* values,
 
     KnobDouble::rangeOffsetsOf(values, o);
     const double centre = values[KnobDouble::eRangeWidgetDimensionCentre];
-    const double innerLow = centre - o[1];
-    const double innerHigh = centre + o[2];
+    const double innerLow = differenceOrInfinity(centre, o[1]);
+    const double innerHigh = sumOrInfinity(centre, o[2]);
 
-    points[0] = innerLow - o[0];
+    points[0] = differenceOrInfinity(innerLow, o[0]);
     points[1] = innerLow;
     points[2] = innerHigh;
-    points[3] = innerHigh + o[3];
+    points[3] = sumOrInfinity(innerHigh, o[3]);
 }
 
 /**
@@ -137,7 +138,7 @@ keyerRangePoints(const KnobReader& reader,
     double p[4];
     keyerRangePoints(values, p);
     for (int i = 0; i < 4; ++i) {
-        points[i] = (float)p[i];
+        points[i] = knobValueAsFloat(p[i]);
     }
 }
 

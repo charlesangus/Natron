@@ -167,6 +167,8 @@ struct KnobDimensionSerialization {
 struct KnobChoiceExtraSerialization {
     std::vector<std::string> entries;
     std::vector<std::string> helpStrings;
+
+    bool operator==(const KnobChoiceExtraSerialization&) const = default;
 };
 
 /**
@@ -185,6 +187,8 @@ struct KnobValueRangeSerialization {
         , displayMaximum(0.)
     {
     }
+
+    bool operator==(const KnobValueRangeSerialization&) const = default;
 };
 
 /**
@@ -197,6 +201,8 @@ struct KnobFileExtraSerialization {
         : useSequences(false)
     {
     }
+
+    bool operator==(const KnobFileExtraSerialization&) const = default;
 };
 
 /**
@@ -209,6 +215,8 @@ struct KnobPathExtraSerialization {
         : multiPath(false)
     {
     }
+
+    bool operator==(const KnobPathExtraSerialization&) const = default;
 };
 
 /**
@@ -221,6 +229,8 @@ struct KnobLayerSelectExtraSerialization {
         : withChannelButtons(false)
     {
     }
+
+    bool operator==(const KnobLayerSelectExtraSerialization&) const = default;
 };
 
 /**
@@ -237,6 +247,8 @@ struct KnobTextExtraSerialization {
         , usesRichText(false)
     {
     }
+
+    bool operator==(const KnobTextExtraSerialization&) const = default;
 };
 
 /**
@@ -314,6 +326,8 @@ struct KnobSerialization {
         , useHostOverlayHandle()
     {
     }
+
+    bool operator==(const KnobSerialization&) const = default;
 };
 
 struct GroupKnobChildSerialization;
@@ -365,6 +379,22 @@ inline GroupKnobSerialization::GroupKnobSerialization()
     , isRFVGroup(false)
     , children()
 {
+}
+
+inline bool operator==(const GroupKnobSerialization& a, const GroupKnobSerialization& b);
+
+inline bool
+operator==(const GroupKnobChildSerialization& a,
+           const GroupKnobChildSerialization& b)
+{
+    return a.isGroup == b.isGroup && a.knob == b.knob && a.group == b.group;
+}
+
+inline bool
+operator==(const GroupKnobSerialization& a,
+           const GroupKnobSerialization& b)
+{
+    return a.name == b.name && a.label == b.label && a.secret == b.secret && a.isSetAsTab == b.isSetAsTab && a.isOpened == b.isOpened && a.isRFVGroup == b.isRFVGroup && a.children == b.children;
 }
 
 /**

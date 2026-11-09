@@ -32,6 +32,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobLinkGroup.h"
@@ -40,6 +41,7 @@
 #include "Engine/TrackMarker.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoKnobRef.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 #include "Serialization/KnobSerialization.h"
@@ -200,6 +202,9 @@ notifyLinkGroupMembers(const KnobLinkGroupPtr& group)
         if (handler) {
             handler->s_linkChanged();
         }
+        if (member && GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onKnobContentChanged(member.get());
+        }
     }
 }
 
@@ -340,21 +345,119 @@ applyKnobState(const KnobIPtr& knob,
     knob->evaluateValueChange(-1, knob->getCurrentTime(), ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
 }
 
+// Whether the knob state serialized as from and to differs anywhere but in its dimensions; the
+// differing dimensions are added to dimensions.
+bool
+diffKnobSerializations(const Serialization::KnobSerialization& from,
+                       const Serialization::KnobSerialization& to,
+                       std::vector<int>* dimensions)
+{
+    if ((from.dimensions.size() != to.dimensions.size()) || (from.masterIsAlias != to.masterIsAlias) || (from.parametricCurves != to.parametricCurves) || (from.stringAnimation != to.stringAnimation) || (from.choiceOptionID != to.choiceOptionID)) {
+        return true;
+    }
+    for (std::size_t i = 0; i < from.dimensions.size(); ++i) {
+        if (!(from.dimensions[i] == to.dimensions[i])) {
+            dimensions->push_back((int)i);
+        }
+    }
+
+    return false;
+}
+
+// Makes dimension of state what it is in current.
+void
+rebaseKnobStateDimension(KnobState* state,
+                         const KnobState& current,
+                         int dimension)
+{
+    state->values->clone(current.values.get(), dimension, dimension);
+    state->expressions[dimension] = current.expressions[dimension];
+    state->expressionsHaveRet[dimension] = current.expressionsHaveRet[dimension];
+    state->drivers[dimension] = current.drivers[dimension];
+    state->masters[dimension] = current.masters[dimension];
+    std::vector<KnobGroupLink> links;
+    for (std::vector<KnobGroupLink>::const_iterator it = state->groupLinks.begin(); it != state->groupLinks.end(); ++it) {
+        if (it->dimension != dimension) {
+            links.push_back(*it);
+        }
+    }
+    for (std::vector<KnobGroupLink>::const_iterator it = current.groupLinks.begin(); it != current.groupLinks.end(); ++it) {
+        if (it->dimension == dimension) {
+            links.push_back(*it);
+        }
+    }
+    state->groupLinks.swap(links);
+}
+
 /*
  * Restores a knob to the state it had before a step's first Python edit of it. The state to redo
  * is taken when undoing: the history only undoes an entry once every later one is undone, so the
  * knob then holds exactly what the step left it with.
+ *
+ * That snapshot would also hold the edits made while recording was suppressed inside the step,
+ * which then undo with it and redo again. So once a suppression ends, each dimension it changed
+ * is taken into the state to restore, and stays as the suppression left it through undo and redo.
+ * A change outside the dimensions, such as a parametric curve or an alias, takes in the whole
+ * knob: the step no longer changes it at all.
  */
 class KnobStateCommand
-    : public UndoCommand {
+    : public UndoCommand,
+      public UndoSuppressionListenerI {
 public:
     explicit KnobStateCommand(const KnobIPtr& knob)
         : UndoCommand("Edit " + knob->getLabel())
+        , UndoSuppressionListenerI()
         , _knob(knob)
         , _before(captureKnobState(knob))
         , _after()
         , _hasAfter(false)
+        , _suppressedFrom()
+        , _suppressedAliasMaster()
+        , _isSuppressed(false)
     {
+    }
+
+    virtual void suppressionBegins() OVERRIDE FINAL
+    {
+        KnobIPtr knob = _knob.lock();
+        _isSuppressed = bool(knob);
+        if (!knob) {
+            return;
+        }
+        _suppressedFrom = Serialization::KnobSerialization();
+        knob->toSerialization(&_suppressedFrom);
+        _suppressedAliasMaster = knob->getAliasMaster();
+    }
+
+    virtual void suppressionEnds() OVERRIDE FINAL
+    {
+        KnobIPtr knob = _knob.lock();
+        if (!knob || !_isSuppressed) {
+            return;
+        }
+        _isSuppressed = false;
+        Serialization::KnobSerialization now;
+        knob->toSerialization(&now);
+        std::vector<int> dimensions;
+        bool whole = diffKnobSerializations(_suppressedFrom, now, &dimensions) || (_suppressedAliasMaster.lock() != knob->getAliasMaster());
+        _suppressedFrom = Serialization::KnobSerialization();
+        _suppressedAliasMaster.reset();
+        if (!whole && dimensions.empty()) {
+            return;
+        }
+        KnobState current = captureKnobState(knob);
+        int dimensionCount = knob->getDimension();
+        whole = whole || !_before.values || !current.values || ((int)_before.expressions.size() != dimensionCount) || ((int)current.expressions.size() != dimensionCount);
+        if (whole) {
+            _before = current;
+
+            return;
+        }
+        for (std::size_t i = 0; i < dimensions.size(); ++i) {
+            if (dimensions[i] < dimensionCount) {
+                rebaseKnobStateDimension(&_before, current, dimensions[i]);
+            }
+        }
     }
 
     virtual void undo() OVERRIDE FINAL
@@ -394,6 +497,9 @@ private:
     KnobState _before;
     KnobState _after;
     bool _hasAfter;
+    Serialization::KnobSerialization _suppressedFrom;
+    KnobIWPtr _suppressedAliasMaster;
+    bool _isSuppressed;
 };
 
 //================================================================
@@ -852,7 +958,9 @@ recordKnobEdit(const KnobIPtr& knob)
     }
     UndoTouched touched;
     touched.knobs.push_back(knob);
-    recorder->record(std::make_shared<KnobStateCommand>(knob), touched);
+    std::shared_ptr<KnobStateCommand> command = std::make_shared<KnobStateCommand>(knob);
+    recorder->record(command, touched);
+    recorder->watchSuppression(command);
 }
 
 void

@@ -1608,6 +1608,7 @@ IErodeDilate::initializeKnobs()
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"), 2);
     sizeKnob->setName(kIErodeDilateParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(tr("Half the width and height of the structuring element where the Map is white, in pixel units (-1000 to 1000): the rectangle is 2*|size|+1 pixels wide, the disc's radius is |size|. "
                                 "A positive size erodes, a negative size dilates, 0 leaves the axis unchanged; where the axes have opposite signs X is filtered before Y. "
                                 "A fractional size blends the results of the whole sizes either side of it."));

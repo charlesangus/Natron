@@ -35,6 +35,7 @@
 #include <limits>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -59,6 +60,7 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Transform/LensfunRuntime.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -1129,170 +1131,217 @@ struct PixelMapper {
     }
 };
 
-// Positions past this are lensfun's markers for a point it has no answer for.
-const double kNoAnswerPosition = 1e7;
+// A window past this many pixels, with its ring, asks for the whole Source instead of being mapped here.
+const std::int64_t kMaxBoundedPixels = (std::int64_t)1 << 27;
 
-// The lattice sizes per axis tried in turn, each containing the last.
-const int kLatticeSizes[] = { 33, 65, 129 };
+// Pixel coordinates are only bounded within this magnitude, short of the Resampler's 2^30 saturation.
+const double kMaxPixelCoord = 536870912.;
 
-// Keeps both ends, which hold the window's corners.
-std::vector<int>
-latticeAxis(int first,
-            int last,
-            int n)
-{
-    std::vector<int> axis;
-    const int span = last - first;
-    if (span + 1 <= n) {
-        for (int x = first; x <= last; ++x) {
-            axis.push_back(x);
-        }
+// The Resampler saturates finite positions here before it builds a footprint.
+const double kResamplerCoordLimit = 1073741824.;
 
-        return axis;
-    }
-    for (int i = 0; i < n; ++i) {
-        axis.push_back(first + (int)std::lround((double)i * span / (n - 1)));
-    }
-
-    return axis;
-}
-
-/*
- * The box of Source pixels the render of output pixels `pixels` reads: every red, green and blue
- * position the mapper gives them, grown by the filter's reach at the kernel scale the Jacobians
- * can reach there. False when a position has no answer, as a fisheye's far side has none.
- *
- * The map is evaluated on a lattice that always holds the window's corners and edges' ends, and
- * between lattice points it is bounded by its bilinear interpolant plus that interpolant's error,
- * (h^2 / 8) |f''|, taken here eight times over with f'' from the lattice's second divided
- * differences. Lensfun's failures are radial, so a window with any point past the failure radius
- * has a corner past it, and corners are lattice points.
- */
+// The pixels of canonical r, as PassExec::toPixelEnclosing() gives them; false when a side lies past
+// kMaxPixelCoord or is not finite.
 bool
-sourceSampleBox(const PixelMapper& mapper,
-                const RectI& pixels,
-                double filterRadius,
-                RectD* box)
+checkedPixelEnclosing(const RectD& r,
+                      const RenderScale& scale,
+                      double par,
+                      RectI* out)
 {
-    // The Jacobians' central differences map one pixel past the window on every side.
-    const int x0 = pixels.x1 - 1;
-    const int x1 = pixels.x2;
-    const int y0 = pixels.y1 - 1;
-    const int y1 = pixels.y2;
-    const int nSizes = (int)(sizeof(kLatticeSizes) / sizeof(kLatticeSizes[0]));
-
-    for (int level = 0; level < nSizes; ++level) {
-        const std::vector<int> xs = latticeAxis(x0, x1, kLatticeSizes[level]);
-        const std::vector<int> ys = latticeAxis(y0, y1, kLatticeSizes[level]);
-        const int nx = (int)xs.size();
-        const int ny = (int)ys.size();
-        std::vector<double> v((std::size_t)nx * ny * 6);
-        for (int j = 0; j < ny; ++j) {
-            for (int i = 0; i < nx; ++i) {
-                float lf[6], s[6];
-                mapper.map(xs[i], ys[j], lf, s);
-                for (int k = 0; k < 6; ++k) {
-                    if (!std::isfinite(s[k]) || (std::fabs(s[k]) > kNoAnswerPosition)) {
-                        return false;
-                    }
-                    v[((std::size_t)j * nx + i) * 6 + k] = s[k];
-                }
-            }
-        }
-        const auto at = [&](int i, int j, int k) {
-            return v[((std::size_t)j * nx + i) * 6 + k];
-        };
-
-        // A dense axis has no pixel between its lattice points to interpolate.
-        int hx = 0;
-        for (int i = 0; i + 1 < nx; ++i) {
-            hx = std::max(hx, xs[i + 1] - xs[i]);
-        }
-        int hy = 0;
-        for (int j = 0; j + 1 < ny; ++j) {
-            hy = std::max(hy, ys[j + 1] - ys[j]);
-        }
-        const double gapX = (hx > 1) ? hx : 0.;
-        const double gapY = (hy > 1) ? hy : 0.;
-
-        double lo[6], hi[6], slopeX[6], slopeY[6], curveX[6], curveY[6];
-        for (int k = 0; k < 6; ++k) {
-            lo[k] = hi[k] = at(0, 0, k);
-            slopeX[k] = slopeY[k] = curveX[k] = curveY[k] = 0.;
-        }
-        for (int j = 0; j < ny; ++j) {
-            for (int i = 0; i < nx; ++i) {
-                for (int k = 0; k < 6; ++k) {
-                    const double f = at(i, j, k);
-                    lo[k] = std::min(lo[k], f);
-                    hi[k] = std::max(hi[k], f);
-                    if (i + 1 < nx) {
-                        slopeX[k] = std::max(slopeX[k], std::fabs(at(i + 1, j, k) - f) / (xs[i + 1] - xs[i]));
-                    }
-                    if (j + 1 < ny) {
-                        slopeY[k] = std::max(slopeY[k], std::fabs(at(i, j + 1, k) - f) / (ys[j + 1] - ys[j]));
-                    }
-                    if (i + 2 < nx) {
-                        const double d0 = (at(i + 1, j, k) - f) / (xs[i + 1] - xs[i]);
-                        const double d1 = (at(i + 2, j, k) - at(i + 1, j, k)) / (xs[i + 2] - xs[i + 1]);
-                        curveX[k] = std::max(curveX[k], 2. * std::fabs(d1 - d0) / (xs[i + 2] - xs[i]));
-                    }
-                    if (j + 2 < ny) {
-                        const double d0 = (at(i, j + 1, k) - f) / (ys[j + 1] - ys[j]);
-                        const double d1 = (at(i, j + 2, k) - at(i, j + 1, k)) / (ys[j + 2] - ys[j + 1]);
-                        curveY[k] = std::max(curveY[k], 2. * std::fabs(d1 - d0) / (ys[j + 2] - ys[j]));
-                    }
-                }
-            }
-        }
-
-        double interpolationError = 0.;
-        double kernelScale = 1.;
-        for (int k = 0; k < 6; ++k) {
-            interpolationError = std::max(interpolationError, curveX[k] * gapX * gapX + curveY[k] * gapY * gapY);
-            // A lattice slope is the mean over its gap, short of the steepest by at most f'' * gap.
-            const double row = slopeX[k] + curveX[k] * gapX + slopeY[k] + curveY[k] * gapY;
-            kernelScale = std::max(kernelScale, 1.25 * row);
-        }
-        const bool dense = (gapX == 0.) && (gapY == 0.);
-        if (!dense && (interpolationError > 1.) && (level + 1 < nSizes)) {
-            continue;
-        }
-
-        double extent = 0.;
-        for (int k = 0; k < 6; ++k) {
-            extent = std::max(extent, std::max(std::fabs(lo[k]), std::fabs(hi[k])));
-        }
-        // Beyond the unscaled filter's taps, the Resampler's bilinear reads spread over a scaled
-        // footprint, and the slack covers the GPU's float positions and approximate trigonometry.
-        const double reach = std::max(2., filterRadius) * kernelScale + 2.;
-        const double slack = 2. + 1e-4 * extent;
-        const double margin = interpolationError + reach + slack;
-        *box = RectD(std::min(lo[0], std::min(lo[2], lo[4])) - margin,
-                     std::min(lo[1], std::min(lo[3], lo[5])) - margin,
-                     std::max(hi[0], std::max(hi[2], hi[4])) + margin,
-                     std::max(hi[1], std::max(hi[3], hi[5])) + margin);
+    if ((r.x2 <= r.x1) || (r.y2 <= r.y1)) {
+        *out = RectI();
 
         return true;
     }
+    const OfxPointD s = scale.toOfxPointD();
+    const double x1 = std::floor(r.x1 * s.x / par);
+    const double y1 = std::floor(r.y1 * s.y);
+    const double x2 = std::ceil(r.x2 * s.x / par);
+    const double y2 = std::ceil(r.y2 * s.y);
+    for (const double v : { x1, y1, x2, y2 }) {
+        if (!(std::fabs(v) <= kMaxPixelCoord)) {
+            return false;
+        }
+    }
+    *out = RectI((int)x1, (int)y1, (int)x2, (int)y2);
 
-    return false;
+    return true;
 }
 
-// need, moved onto rod: the Resampler clamps a read outside its bounds to their edge, so a need
-// wholly past one side of rod still needs rod's last row or column on that side.
-RectI
-projectOntoRoD(const RectI& need,
-               const RectI& rod)
+// Inclusive first and last pixels along each axis; an infinite side is unbounded.
+struct PixelSpan {
+    double x1;
+    double y1;
+    double x2;
+    double y2;
+};
+
+// The Source's pixels from its canonical RoD; a side past kMaxPixelCoord on its own side counts as
+// unbounded. False when the RoD lies wholly beyond that range.
+bool
+sourcePixelSpan(const RectD& rod,
+                const RenderScale& scale,
+                double par,
+                PixelSpan* out)
 {
-    RectI r;
-    r.x1 = std::min(std::max(need.x1, rod.x1), rod.x2 - 1);
-    r.x2 = std::max(std::min(need.x2, rod.x2), r.x1 + 1);
-    r.y1 = std::min(std::max(need.y1, rod.y1), rod.y2 - 1);
-    r.y2 = std::max(std::min(need.y2, rod.y2), r.y1 + 1);
+    const double inf = std::numeric_limits<double>::infinity();
+    const OfxPointD s = scale.toOfxPointD();
+    const double lo[2] = { rod.x1 * s.x / par, rod.y1 * s.y };
+    const double hi[2] = { rod.x2 * s.x / par, rod.y2 * s.y };
+    double first[2], last[2];
+    for (int a = 0; a < 2; ++a) {
+        if (std::isnan(lo[a]) || std::isnan(hi[a]) || (lo[a] >= kMaxPixelCoord) || (hi[a] <= -kMaxPixelCoord)) {
+            return false;
+        }
+        first[a] = (lo[a] <= -kMaxPixelCoord) ? -inf : std::floor(lo[a]);
+        last[a] = (hi[a] >= kMaxPixelCoord) ? inf : std::ceil(hi[a]) - 1.;
+        if (last[a] < first[a]) {
+            return false;
+        }
+    }
+    *out = PixelSpan { first[0], first[1], last[0], last[1] };
 
-    return r;
+    return true;
 }
+
+/*
+ * The Source pixels a render of output pixels `window` reads, at the render scale: empty when it
+ * reads none. False when the window is too large to map pixel by pixel or a read lies beyond
+ * kMaxPixelCoord, where the caller asks for the whole Source.
+ *
+ * Every output pixel is mapped through the PixelMapper the render uses, with the one-pixel ring its
+ * Jacobians take, and Resampler::coordJacobians() turns the green positions into the Jacobians the
+ * render passes on, so each footprint is built from the very values the render samples with. Around
+ * each finite red, green and blue position the footprint holds every tap of the knob's filter
+ * widened by kernelScale(), a box's integration rectangle, and the nearest pixel a draft render's
+ * impulse reads. Non-finite positions read nothing, as in resampleRowFromCoords(). With
+ * blackOutside, taps past the Source read 0, so a footprint counts only where it overlaps the
+ * Source; otherwise the Resampler clamps taps onto the Source's edge, so the footprint is moved onto
+ * it. An unbounded side of the Source neither clips nor moves anything.
+ */
+bool
+sourceReads(const PixelMapper& mapper,
+            const RectI& window,
+            const Resampler::FilterSpec& filter,
+            bool blackOutside,
+            const PixelSpan& sourceSpan,
+            RectI* reads)
+{
+    *reads = RectI();
+    if (window.isNull()) {
+        return true;
+    }
+    const std::int64_t wide = (std::int64_t)window.width() + 2;
+    if (wide * ((std::int64_t)window.height() + 2) > kMaxBoundedPixels) {
+        return false;
+    }
+    const int n = (int)wide;
+    const bool impulse = (filter.filter == Resampler::eFilterImpulse);
+    const bool box = (filter.filter == Resampler::eFilterBox);
+    const double radius = filter.radius();
+    const double inf = std::numeric_limits<double>::infinity();
+
+    std::mutex mutex;
+    PixelSpan all { inf, inf, -inf, -inf };
+    forEachRowBand(window, kMinParallelRowBandArea, [&](int bandY1, int bandY2) {
+        struct Row {
+            std::vector<float> s;
+            std::vector<float> greenX;
+            std::vector<float> greenY;
+        };
+        const auto mapRow = [&](int y, Row* row) {
+            row->s.resize((std::size_t)6 * n);
+            row->greenX.resize(n);
+            row->greenY.resize(n);
+            for (int i = 0; i < n; ++i) {
+                float lf[6];
+                float* s = &row->s[(std::size_t)6 * i];
+                mapper.map(window.x1 - 1 + i, y, lf, s);
+                row->greenX[i] = s[2];
+                row->greenY[i] = s[3];
+            }
+        };
+        Row prev, cur, next;
+        mapRow(bandY1 - 1, &prev);
+        mapRow(bandY1, &cur);
+        std::vector<float> jacobian((std::size_t)4 * n, 0.f);
+        PixelSpan band { inf, inf, -inf, -inf };
+        for (int y = bandY1; y < bandY2; ++y) {
+            mapRow(y + 1, &next);
+            if (!impulse) {
+                Resampler::coordJacobians(&prev.greenX[0], &cur.greenX[0], &next.greenX[0], &prev.greenY[0], &cur.greenY[0], &next.greenY[0], n, &jacobian[0]);
+            }
+            for (int i = 1; i + 1 < n; ++i) {
+                double reachX = 0.;
+                double reachY = 0.;
+                if (!impulse) {
+                    const float* J = &jacobian[(std::size_t)4 * i];
+                    // A box integrates over the back-transformed pixel's bounding box instead of
+                    // widening a kernel.
+                    reachX = box ? 0.5 * (std::fabs(J[0]) + std::fabs(J[1])) : radius * Resampler::kernelScale(J[0], J[1]);
+                    reachY = box ? 0.5 * (std::fabs(J[2]) + std::fabs(J[3])) : radius * Resampler::kernelScale(J[2], J[3]);
+                }
+                for (int c = 0; c < 3; ++c) {
+                    const double sx = cur.s[(std::size_t)6 * i + 2 * c];
+                    const double sy = cur.s[(std::size_t)6 * i + 2 * c + 1];
+                    if (!std::isfinite(sx) || !std::isfinite(sy)) {
+                        continue;
+                    }
+                    const double fx = std::max(-kResamplerCoordLimit, std::min(sx, kResamplerCoordLimit));
+                    const double fy = std::max(-kResamplerCoordLimit, std::min(sy, kResamplerCoordLimit));
+                    // The GPU maps in float with approximate trigonometry, so its positions stray
+                    // from these by a little, more far out. The slack also keeps the Source's own
+                    // pixels within half a pixel of the position, which decide whether the
+                    // Resampler treats it as inside and supersamples.
+                    const double slack = 2. + 1e-4 * std::max(std::fabs(fx), std::fabs(fy));
+                    // Taps lie in (p - 0.5 - reach, p - 0.5 + reach), a wide footprint's bilinear
+                    // reads one past that, and a box spans p +- reach.
+                    double x1 = std::floor(fx - 0.5 - reachX - slack);
+                    double x2 = std::floor(fx + reachX + slack) + 1.;
+                    double y1 = std::floor(fy - 0.5 - reachY - slack);
+                    double y2 = std::floor(fy + reachY + slack) + 1.;
+                    if (blackOutside) {
+                        x1 = std::max(x1, sourceSpan.x1);
+                        x2 = std::min(x2, sourceSpan.x2);
+                        y1 = std::max(y1, sourceSpan.y1);
+                        y2 = std::min(y2, sourceSpan.y2);
+                        if ((x1 > x2) || (y1 > y2)) {
+                            continue;
+                        }
+                    } else {
+                        x1 = std::min(std::max(x1, sourceSpan.x1), sourceSpan.x2);
+                        x2 = std::min(std::max(x2, sourceSpan.x1), sourceSpan.x2);
+                        y1 = std::min(std::max(y1, sourceSpan.y1), sourceSpan.y2);
+                        y2 = std::min(std::max(y2, sourceSpan.y1), sourceSpan.y2);
+                    }
+                    band.x1 = std::min(band.x1, x1);
+                    band.y1 = std::min(band.y1, y1);
+                    band.x2 = std::max(band.x2, x2);
+                    band.y2 = std::max(band.y2, y2);
+                }
+            }
+            std::swap(prev, cur);
+            std::swap(cur, next);
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        all.x1 = std::min(all.x1, band.x1);
+        all.y1 = std::min(all.y1, band.y1);
+        all.x2 = std::max(all.x2, band.x2);
+        all.y2 = std::max(all.y2, band.y2);
+    });
+
+    if ((all.x1 > all.x2) || (all.y1 > all.y2)) {
+        return true;
+    }
+    for (const double v : { all.x1, all.y1, all.x2, all.y2 }) {
+        if (!(std::fabs(v) <= kMaxPixelCoord)) {
+            return false;
+        }
+    }
+    *reads = RectI((int)all.x1, (int)all.y1, (int)all.x2 + 1, (int)all.y2 + 1);
+
+    return true;
+} // sourceReads
 } // namespace
 
 void
@@ -1323,7 +1372,7 @@ LensCorrect::getRegionsOfInterest(double time,
                                     std::max(sourceRoD.x2, renderWindow.x2), std::max(sourceRoD.y2, renderWindow.y2));
     NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
     NodeMetadataConstPtr sourceMetadata = source->getRenderMetadata(time, view);
-    if (!metadata || !sourceMetadata || sourceRoD.isInfinite() || renderWindow.isInfinite() || renderWindow.isNull()) {
+    if (!metadata || !sourceMetadata) {
         (*ret)[source] = wholeSource;
 
         return;
@@ -1345,21 +1394,20 @@ LensCorrect::getRegionsOfInterest(double time,
     mapper.y2 = model.format.y2;
 
     const double sourcePar = sourceMetadata->getPixelAspectRatio(-1);
-    const RectI windowPixels = PassExec::toPixelEnclosing(renderWindow, scale, metadata->getPixelAspectRatio(-1));
-    const RectI rodPixels = PassExec::toPixelEnclosing(sourceRoD, scale, sourcePar);
-    RectD box;
-    // A draft render's impulse reaches no further than the knob's filter, so one region serves both.
-    if (windowPixels.isNull() || rodPixels.isNull() || !sourceSampleBox(mapper, windowPixels, settings.filter.radius(), &box)) {
+    RectI windowPixels;
+    PixelSpan sourceSpan;
+    RectI reads;
+    // A draft render's impulse reads the nearest pixel, which every footprint holds.
+    if (!checkedPixelEnclosing(renderWindow, scale, metadata->getPixelAspectRatio(-1), &windowPixels) || !sourcePixelSpan(sourceRoD, scale, sourcePar, &sourceSpan) || !sourceReads(mapper, windowPixels, settings.filter, settings.blackOutside, sourceSpan, &reads)) {
         (*ret)[source] = wholeSource;
 
         return;
     }
-    const double limit = (double)INT_MAX / 4;
-    const RectI need((int)std::floor(std::max(box.x1, -limit)), (int)std::floor(std::max(box.y1, -limit)),
-                     (int)std::floor(std::min(box.x2, limit)) + 1, (int)std::floor(std::min(box.y2, limit)) + 1);
-    sourceRoI.merge(PassExec::toCanonical(projectOntoRoD(need, rodPixels), scale, sourcePar));
+    if (!reads.isNull()) {
+        sourceRoI.merge(PassExec::toCanonical(reads, scale, sourcePar));
+    }
     (*ret)[source] = sourceRoI;
-}
+} // LensCorrect::getRegionsOfInterest
 
 bool
 LensCorrect::isOpIdentity(double /*time*/,

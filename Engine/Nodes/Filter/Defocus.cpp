@@ -610,6 +610,7 @@ Defocus::initializeKnobs()
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"));
     sizeKnob->setName(kDefocusParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(tr("Diameter of the bokeh, in pixel units (>=0). Below one pixel the image is left unchanged."));
     sizeKnob->setSpatial(true);
     sizeKnob->setMinimum(0.);
@@ -663,6 +664,7 @@ Defocus::initializeKnobs()
 
     KnobDoublePtr rotationKnob = AppManager::createKnob<KnobDouble>(this, tr("Rotation"));
     rotationKnob->setName(kDefocusParamRotation);
+    rotationKnob->setValueRole(eValueRoleRotate);
     rotationKnob->setHintToolTip(tr("Blades kernel only: the aperture's rotation in degrees, counter-clockwise. At 0 a corner points up."));
     rotationKnob->setDisplayMinimum(-180.);
     rotationKnob->setDisplayMaximum(180.);

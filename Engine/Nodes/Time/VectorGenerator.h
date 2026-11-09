@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <list>
+#include <map>
 #include <mutex>
 #include <string>
 
@@ -48,6 +49,7 @@
 #define kVectorGeneratorParamMatteChannel "matteChannel"
 #define kVectorGeneratorParamTemporalSmoothing "temporalSmoothing"
 #define kVectorGeneratorParamSmoothingStrength "smoothingStrength"
+#define kVectorGeneratorParamShowLowConfidence "showLowConfidence"
 #define kVectorGeneratorParamConfidenceThreshold "confidenceThreshold"
 #define kVectorGeneratorParamOutputs "outputs"
 
@@ -68,6 +70,9 @@
 #define kVectorGeneratorConfidenceLayerID "vectorConfidence"
 #define kVectorGeneratorConfidenceChannelForward "Forward"
 #define kVectorGeneratorConfidenceChannelBackward "Backward"
+
+#define kVectorGeneratorOverlayPlaneLowForward "lowConfidenceForward"
+#define kVectorGeneratorOverlayPlaneLowBackward "lowConfidenceBackward"
 
 NATRON_NAMESPACE_ENTER
 
@@ -205,6 +210,16 @@ public:
                                                 int* passThroughView,
                                                 int* passThroughInputNb) OVERRIDE FINAL;
 
+    virtual bool isOverlayImageViewOn() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual std::list<ImageLayerDesc> overlayImageSourcePlanes(double time,
+                                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void addOverlayImagesFromPlanes(const std::map<ImageLayerDesc, ImagePtr>& planes,
+                                            double time,
+                                            ViewIdx view,
+                                            const RectD& canonicalWindow) OVERRIDE FINAL;
+
     // The Matte is read only while its channel resolves.
     virtual bool readsGpuInput(int inputNb,
                                const ImageLayerDesc& plane,
@@ -299,6 +314,7 @@ private:
     KnobChannelSelectWPtr _matteChannel;
     KnobBoolWPtr _temporalSmoothing;
     KnobDoubleWPtr _smoothingStrength;
+    KnobBoolWPtr _showLowConfidence;
     KnobDoubleWPtr _confidenceThreshold;
     KnobChoiceWPtr _outputs;
     std::mutex _formatMessageMutex;

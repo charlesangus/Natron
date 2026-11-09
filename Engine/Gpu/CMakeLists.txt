@@ -56,6 +56,8 @@ target_compile_features(NatronGpu PUBLIC cxx_std_20)
 target_include_directories(NatronGpu PUBLIC "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/gen")
 target_include_directories(NatronGpu SYSTEM PUBLIC "${NATRON_VMA_INCLUDE_DIR}")
 target_include_directories(NatronGpu SYSTEM PRIVATE "${NATRON_SPIRV_REFLECT_DIR}")
+# Global/FloatingPointExceptions.h: the FpTrapGuard around Mesa driver work.
+target_include_directories(NatronGpu PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../..")
 set_source_files_properties("${NATRON_SPIRV_REFLECT_DIR}/spirv_reflect.c" PROPERTIES COMPILE_OPTIONS -w)
 target_link_libraries(NatronGpu
     PUBLIC

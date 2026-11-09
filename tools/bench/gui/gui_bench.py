@@ -10,7 +10,19 @@ Configured by the environment:
     GUI_BENCH_SIZES       comma-separated node counts (default 300)
     GUI_BENCH_REPS        repetitions per op (default 5)
     GUI_BENCH_OPS         comma-separated op names to run (default all)
-    GUI_BENCH_OP_TIMEOUT_S  per-op budget; an op past it is recorded as "timeout" (default 120)
+    GUI_BENCH_OP_TIMEOUT_S  per-op budget; an op past it is recorded as "timeout" (default 120). A single
+                          step that does not return within 2x that plus 60 s is recorded as a "wedged"
+                          timeout and the process exits with code 3, which run.sh answers by
+                          restarting Natron with GUI_BENCH_RESUME=1
+    GUI_BENCH_RESUME      1 skips every (topology, n, op) already recorded in GUI_BENCH_OUT, and sizes
+                          with nothing left to run
+    GUI_BENCH_SKIP_WEDGED 1 (default) records an op that wedged Natron at a smaller n as a timeout at the
+                          larger sizes without running it
+    GUI_BENCH_HOLD_FILE   when set, each op reports "BEGIN op topology n" after its setup and waits up to
+                          GUI_BENCH_HOLD_S (default 120) for this file to exist before its reps, so a
+                          stack sampler can attach first; the file is removed once seen
+    GUI_BENCH_PTRACER_ANY 1 lets any process of this user attach to Natron (prctl PR_SET_PTRACER_ANY),
+                          for a stack sampler under kernel.yama.ptrace_scope 1
     GUI_BENCH_SEED        generator seed (default 1)
     GUI_BENCH_IDLE_S      length of the idle op (default 5)
     GUI_BENCH_FORCED_REPAINT  0 replaces each interaction event's forced viewport repaint with a
@@ -18,7 +30,8 @@ Configured by the environment:
     GUI_BENCH_SELF_CHECK  1 adds an op that blocks the main thread for 300 ms once and checks
                           that the stall log attributes exactly one stall to it
     GUI_BENCH_OUT         JSON-lines output (default $NATRON_GUI_TEST_OUT/gui_bench.jsonl)
-    GUI_BENCH_MODE, GUI_BENCH_BUILD_TYPE, GUI_BENCH_GIT_SHA, GUI_BENCH_APPIMAGE
+    GUI_BENCH_MODE, GUI_BENCH_BUILD_TYPE, GUI_BENCH_GIT_SHA (the harness checkout), GUI_BENCH_APPIMAGE,
+    GUI_BENCH_APPIMAGE_NAME, GUI_BENCH_APPIMAGE_BYTES, GUI_BENCH_APPIMAGE_MTIME, GUI_BENCH_APPIMAGE_SHA256
                           copied into the host record
     NATRON_STALL_LOG      the stall monitor's log; stalls are attributed to the op whose timed
                           window holds their midpoint
@@ -71,6 +84,11 @@ SELF_CHECK = os.environ.get("GUI_BENCH_SELF_CHECK", "0") == "1"
 FORCED_REPAINT = os.environ.get("GUI_BENCH_FORCED_REPAINT", "1") != "0"
 STALL_LOG = os.environ.get("NATRON_STALL_LOG", "")
 WATCHDOG_S = int(os.environ.get("GUI_BENCH_WATCHDOG_S", str(6 * 3600)))
+RESUME = os.environ.get("GUI_BENCH_RESUME", "0") == "1"
+SKIP_WEDGED = os.environ.get("GUI_BENCH_SKIP_WEDGED", "1") != "0"
+HOLD_FILE = os.environ.get("GUI_BENCH_HOLD_FILE", "")
+HOLD_S = float(os.environ.get("GUI_BENCH_HOLD_S", "120"))
+WEDGED_EXIT = 3
 
 try:
     import NatronEngine
@@ -81,6 +99,15 @@ try:
     import gen_graph
     import guitest as gt
     from guitest import check, report
+
+    if os.environ.get("GUI_BENCH_PTRACER_ANY") == "1":
+        # Under kernel.yama.ptrace_scope 1 only an ancestor may attach, and the stack sampler is not one.
+        import ctypes
+        _libc = ctypes.CDLL(None, use_errno=True)
+        _libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        PR_SET_PTRACER, PR_SET_PTRACER_ANY = 0x59616d61, ctypes.c_ulong(-1).value
+        if _libc.prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0) != 0:
+            report("NOTE prctl(PR_SET_PTRACER_ANY) failed: %s" % os.strerror(ctypes.get_errno()))
 
     import faulthandler
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
@@ -101,7 +128,7 @@ try:
 
     # A single event that never returns can't be caught between events. This thread records the op
     # as a timeout and ends the process once the op has run well past its budget.
-    _guard = {"until": None, "record": None}
+    _guard = {"until": None, "record": None, "phase": None}
 
     def _guard_loop():
         while True:
@@ -109,12 +136,38 @@ try:
             until = _guard["until"]
             if until is not None and time.monotonic() > until:
                 record = dict(_guard["record"])
-                record.update({"status": "timeout", "error": "an event did not return within %.0f s" % GUARD_S})
+                record.update({"status": "timeout", "wedged": True, "timeout_s": GUARD_S, "phase": _guard["phase"],
+                               "error": "the op's %s step did not return within %.0f s" % (_guard["phase"], GUARD_S)})
                 emit(record)
                 _out.close()
-                os._exit(3)
+                report("RESULT " + json.dumps(record, sort_keys=True))
+                report("FAIL [%s-%d] %s wedged Natron in its %s step (> %.0f s); exiting so the run restarts" % (
+                    record["topology"], record["n"], record["op"], _guard["phase"], GUARD_S))
+                os._exit(WEDGED_EXIT)
 
     GUARD_S = OP_TIMEOUT_S * 2 + 60
+
+    def recorded_ops():
+        """({(topology, n, op)} already in OUT_PATH, {(topology, op): (n, timeout_s)} of the smallest n each op wedged at)."""
+        done, wedged = set(), {}
+        if not os.path.isfile(OUT_PATH):
+            return done, wedged
+        with open(OUT_PATH) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("type") != "op":
+                    continue
+                done.add((rec["topology"], rec["n"], rec["op"]))
+                if rec.get("wedged") and not rec.get("not_run"):
+                    key = (rec["topology"], rec["op"])
+                    if key not in wedged or rec["n"] < wedged[key][0]:
+                        wedged[key] = (rec["n"], rec.get("timeout_s", GUARD_S))
+        return done, wedged
+
+    DONE, WEDGED = recorded_ops() if RESUME else (set(), {})
     threading.Thread(target=_guard_loop, daemon=True).start()
 
     # ---- host record ---------------------------------------------------------------------------
@@ -140,6 +193,11 @@ try:
             "build_type": os.environ.get("GUI_BENCH_BUILD_TYPE", "unknown"),
             "git_sha": os.environ.get("GUI_BENCH_GIT_SHA", "unknown"),
             "appimage": bool(os.environ.get("GUI_BENCH_APPIMAGE")),
+            "appimage_name": os.environ.get("GUI_BENCH_APPIMAGE_NAME") or None,
+            "appimage_bytes": int(os.environ.get("GUI_BENCH_APPIMAGE_BYTES") or 0) or None,
+            "appimage_mtime": os.environ.get("GUI_BENCH_APPIMAGE_MTIME") or None,
+            "appimage_sha256": os.environ.get("GUI_BENCH_APPIMAGE_SHA256") or None,
+            "resumed": RESUME,
             "natron_version": NatronEngine.natron.getNatronVersionString(),
             "stall_log": bool(STALL_LOG),
             "reps": REPS,
@@ -224,6 +282,19 @@ try:
         while not win.isActiveWindow() and time.time() < deadline:
             QApplication.processEvents()
             time.sleep(0.02)
+        # Gui calls that take no graph act on the last focused one, which can be a Group's.
+        graph = root_graph()
+        if graph is not None and not graph.hasFocus():
+            graph.setFocus(Qt.OtherFocusReason)
+            QApplication.processEvents()
+
+    # Passing app pins these to the project's graph: without a group they read the last focused
+    # graph, which can be a Group's even while every click lands in the project's.
+    def selected_nodes():
+        return app.getSelectedNodes(app)
+
+    def clear_selection():
+        app.clearSelection(app)
 
     def invoke(slot):
         QMetaObject.invokeMethod(root_graph(), slot)
@@ -264,7 +335,7 @@ try:
     root_offset = [0.0, 0.0]
 
     def fit():
-        app.clearSelection()
+        clear_selection()
         invoke("centerOnAllNodes")
         repaint()
         # Framing moves the graph's root item so the top-left node sits at the scene origin.
@@ -289,23 +360,30 @@ try:
         QApplication.processEvents()
         return to_view(x, y)
 
-    def find_clickable(names):
-        """A node a press at its centre selects. Backdrops can cover a node, so each candidate is tried."""
+    def find_clickable(names, fitted=False):
+        """A node a press at its centre selects, at scale 1 or, when fitted, with the whole graph framed.
+        Backdrops can cover a node, and zoomed out a neighbour can take the press, so each candidate is tried."""
         order = sorted(range(len(names)), key=lambda i: abs(i - len(names) // 2))
         for i in order[:25]:
             name = names[i]
-            pos = frame_on(name)
+            if fitted:
+                activate()
+                fit()
+                pos = to_view(*node_centre(name))
+            else:
+                pos = frame_on(name)
             mouse(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton)
             QApplication.processEvents()
             mouse(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton)
             QApplication.processEvents()
             mouse(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton)
             QApplication.processEvents()
-            ok = name in [n.getScriptName() for n in app.getSelectedNodes()]
-            app.clearSelection()
+            ok = name in [n.getScriptName() for n in selected_nodes()]
+            clear_selection()
             if ok:
                 return name
-        raise RuntimeError("no node near the middle of the graph can be selected by a click")
+        raise RuntimeError("no node near the middle of the graph can be selected by a click%s" %
+                           (" with the graph fitted" if fitted else ""))
 
     def node_centre(name):
         """Where a press grabs the node: its left edge, away from the input and output edges that run
@@ -479,7 +557,7 @@ try:
             yield None
 
         def after(ctx, st, rep):
-            hit = [n.getScriptName() for n in app.getSelectedNodes()]
+            hit = [n.getScriptName() for n in selected_nodes()]
             fit()
             if st["name"] not in hit:
                 raise RuntimeError("click did not select %s (selected %d)" % (st["name"], len(hit)))
@@ -487,13 +565,13 @@ try:
 
     def op_select_all():
         def events(ctx, st, rep):
-            app.selectAllNodes()
+            app.selectAllNodes(app)
             repaint()
             yield None
 
         def after(ctx, st, rep):
-            selected = len(app.getSelectedNodes())
-            app.clearSelection()
+            selected = len(selected_nodes())
+            clear_selection()
             if selected < len(ctx.processing):
                 raise RuntimeError("select all selected %d of %d nodes" % (selected, len(ctx.processing)))
         return {"events": events, "after": after}
@@ -513,7 +591,7 @@ try:
             # sqrt(0.1) of each side covers about a tenth of an evenly filled layout.
             st["corner"] = (x0, y0)
             st["to"] = (x0 + (x1 - x0) * 0.316, y0 + (y1 - y0) * 0.316)
-            app.clearSelection()
+            clear_selection()
 
         def events(ctx, st, rep):
             # The press misses every node, backdrop and edge only if it clears their grab radii,
@@ -535,8 +613,8 @@ try:
             yield None
 
         def after(ctx, st, rep):
-            st["selected"] = len(app.getSelectedNodes())
-            app.clearSelection()
+            st["selected"] = len(selected_nodes())
+            clear_selection()
             if not st["selected"]:
                 raise RuntimeError("the rubber band selected nothing")
 
@@ -546,8 +624,12 @@ try:
 
     def op_drag_move(count):
         def setup(ctx, st):
-            st["names"] = [find_clickable(ctx.processing)] if count == 1 else middle(ctx.processing, count)
-            st["grab"] = st["names"][len(st["names"]) // 2]
+            if count == 1:
+                st["names"] = [find_clickable(ctx.processing)]
+                st["grab"] = st["names"][0]
+            else:
+                st["names"] = middle(ctx.processing, count)
+                st["grab"] = find_clickable(st["names"], fitted=True)
             st["record"] = {"count": len(st["names"])}
 
         def before(ctx, st, rep):
@@ -579,9 +661,9 @@ try:
                 pt = to_view(*node_centre(st["grab"]))
                 item = graph.itemAt(int(pt.x()), int(pt.y()))
                 raise RuntimeError("drag did not move %s (at %s, press at view %s, viewport %s, item %s, selected %d)" % (
-                    st["grab"], st["pos0"], (pt.x(), pt.y()), graph.viewport().size(), item, len(app.getSelectedNodes())))
+                    st["grab"], st["pos0"], (pt.x(), pt.y()), graph.viewport().size(), item, len(selected_nodes())))
             trigger("undo")
-            app.clearSelection()
+            clear_selection()
         return {"setup": setup, "before": before, "events": events, "after": after}
 
     # ---- edit ops ------------------------------------------------------------------------------
@@ -606,7 +688,7 @@ try:
             st["record"] = {"count": len(st["names"])}
             select(st["names"])
             invoke("copySelectedNodes")
-            app.clearSelection()
+            clear_selection()
             st["before"] = root_names()
 
         def events(ctx, st, rep):
@@ -614,7 +696,7 @@ try:
             yield None
 
         def after(ctx, st, rep):
-            app.clearSelection()
+            clear_selection()
             restore_root(st["before"])
         return {"setup": setup, "events": events, "after": after}
 
@@ -632,7 +714,7 @@ try:
             yield None
 
         def after(ctx, st, rep):
-            app.clearSelection()
+            clear_selection()
             restore_root(st["before"])
         return {"setup": setup, "before": before, "events": events, "after": after}
 
@@ -653,7 +735,7 @@ try:
 
         def after(ctx, st, rep):
             trigger("undo")
-            app.clearSelection()
+            clear_selection()
             restore_root(st["before"])
         return {"setup": delete_setup(count), "before": before, "events": events, "after": after}
 
@@ -667,7 +749,7 @@ try:
             yield None
 
         def after(ctx, st, rep):
-            app.clearSelection()
+            clear_selection()
             restore_root(st["before"])
         return {"setup": delete_setup(count), "before": before, "events": events, "after": after}
 
@@ -683,7 +765,7 @@ try:
 
         def after(ctx, st, rep):
             trigger("undo")
-            app.clearSelection()
+            clear_selection()
             restore_root(st["before"])
         return {"setup": delete_setup(count), "before": before, "events": events, "after": after}
 
@@ -855,18 +937,30 @@ try:
         step_wall, step_cpu, loop_pass = [], [], []
         events_per_rep = 0
         status, error = "ok", None
-        deadline = time.monotonic() + OP_TIMEOUT_S
         _guard["record"] = {"type": "op", "op": name, "kind": kind, "topology": ctx.topology, "n": ctx.n,
                             "reps": 0, "stalls": {"count": 0, "max_ms": 0.0, "total_ms": 0.0}}
+        _guard["phase"] = "setup"
         _guard["until"] = time.monotonic() + GUARD_S
         try:
             if "setup" in op:
                 op["setup"](ctx, st)
             yield ("sleep", 0)
+            if HOLD_FILE:
+                _guard["until"] = None
+                report("BEGIN %s %s %d" % (name, ctx.topology, ctx.n))
+                yield ("until", lambda: os.path.exists(HOLD_FILE), HOLD_S)
+                if os.path.exists(HOLD_FILE):
+                    os.remove(HOLD_FILE)
+                else:
+                    report("NOTE %s: not released within %.0f s; running without a sampler" % (name, HOLD_S))
+                _guard["until"] = time.monotonic() + GUARD_S
+            deadline = time.monotonic() + OP_TIMEOUT_S
             for rep in range(reps):
+                _guard["phase"] = "before"
                 if "before" in op:
                     op["before"](ctx, st, rep)
                 yield ("sleep", 0)
+                _guard["phase"] = "events"
                 gen = op["events"](ctx, st, rep)
                 count = 0
                 t0 = mono_ms()
@@ -899,12 +993,14 @@ try:
                 times.append(t1 - t0)
                 windows.append((t0, t1))
                 events_per_rep = count
+                _guard["phase"] = "after"
                 if "after" in op:
                     op["after"](ctx, st, rep)
                 if status != "ok":
                     break
         except Exception:
             status, error = "error", short_error()
+        _guard["phase"] = "teardown"
         try:
             if "teardown" in op:
                 op["teardown"](ctx, st)
@@ -928,6 +1024,8 @@ try:
                 record[field + "_max_ms"] = round(max(values), 3)
         if error:
             record["error"] = error
+        if status == "timeout":
+            record["timeout_s"] = OP_TIMEOUT_S
         record.update(st.get("record", {}))
         emit(record)
         report("RESULT " + json.dumps(record, sort_keys=True))
@@ -944,11 +1042,42 @@ try:
         if not app.resetProject():
             raise RuntimeError("resetProject failed")
 
+    def op_plan(topology, n):
+        """[(name, make, kind)] in run order, less the ops a resumed run has already recorded."""
+        plan = [(name, make, "interaction") for name, make in INTERACTION_OPS if selected(name)]
+        plan += [(name, make, "edit") for name, make in EDIT_OPS if selected(name)]
+        if selected("load"):
+            plan.append(("load", op_load, "interaction"))
+        if SELF_CHECK:
+            plan.append(("self_check", op_self_check, "check"))
+        return [p for p in plan if (topology, n, p[0]) not in DONE]
+
+    def record_not_run(name, kind, topology, n):
+        """Records name as a timeout without running it when it wedged Natron at a smaller n; True if it did."""
+        hit = WEDGED.get((topology, name)) if SKIP_WEDGED else None
+        if hit is None or hit[0] >= n:
+            return False
+        record = {"type": "op", "op": name, "kind": kind, "topology": topology, "n": n, "status": "timeout",
+                  "reps": 0, "wedged": True, "not_run": True, "wedged_at_n": hit[0], "timeout_s": hit[1],
+                  "stalls": {"count": 0, "max_ms": 0.0, "total_ms": 0.0},
+                  "error": "not run: wedged Natron for over %.0f s at n=%d" % (hit[1], hit[0])}
+        emit(record)
+        report("RESULT " + json.dumps(record, sort_keys=True))
+        check(False, "%s %s n=%d: timeout (%s)" % (name, topology, n, record["error"]))
+        return True
+
     def bench_graph(topology, n, workdir, previous_path):
+        plan = op_plan(topology, n)
+        if not plan:
+            report("NOTE %s-%d: every op is already recorded" % (topology, n))
+            return previous_path
+        gt.section("%s-%d" % (topology, n))
+        plan = [p for p in plan if not record_not_run(p[0], p[2], topology, n)]
+        if not plan:
+            return previous_path
         if previous_path is not None:
             clean_reset(previous_path)
             yield ("sleep", SETTLE_MS)
-        gt.section("%s-%d" % (topology, n))
         t0 = mono_ms()
         summary = gen_graph.build(app, topology, n, SEED)
         gen_ms = mono_ms() - t0
@@ -966,26 +1095,22 @@ try:
         activate()
         fit()
         yield ("sleep", SETTLE_MS)
-        for name, make in INTERACTION_OPS:
-            if selected(name):
-                for cmd in run_op(name, make, ctx, "interaction"):
-                    yield cmd
+        edits = [p for p in plan if p[2] == "edit"]
+        first = [p for p in plan if p[2] == "interaction" and p[0] != "load"]
+        last = [p for p in plan if p not in edits and p not in first]
+        for name, make, kind in first:
+            for cmd in run_op(name, make, ctx, kind):
+                yield cmd
         before = root_names()
-        ran_edit = False
-        for name, make in EDIT_OPS:
-            if selected(name):
-                ran_edit = True
-                for cmd in run_op(name, make, ctx, "edit"):
-                    yield cmd
-        if ran_edit:
+        for name, make, kind in edits:
+            for cmd in run_op(name, make, ctx, kind):
+                yield cmd
+        if edits:
             after = root_names()
             check(after == before, "%s n=%d: the edit ops leave the root graph as they found it (%d -> %d nodes)" %
                   (topology, n, len(before), len(after)))
-        if selected("load"):
-            for cmd in run_op("load", op_load, ctx, "interaction"):
-                yield cmd
-        if SELF_CHECK:
-            for cmd in run_op("self_check", op_self_check, ctx, "check"):
+        for name, make, kind in last:
+            for cmd in run_op(name, make, ctx, kind):
                 yield cmd
         return path
 

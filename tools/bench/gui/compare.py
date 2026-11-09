@@ -8,6 +8,11 @@
 A regression is an op whose median grew by more than --tol (a fraction) and by more than
 --min-ms milliseconds, an op whose status fell from ok (a new timeout or error), an op missing
 from the run, or an op with a stall longer than --long-stall-ms (default 250) where the baseline had none. Medians within --min-ms of each other are too close to timer noise to judge.
+An op that timed out in the baseline and completes in the run shows as "baseline timed out (>N s)"
+and improved; "not run here" marks a timeout carried from a smaller n where the op wedged Natron.
+
+The header names each side's build (AppImage file name, size, mtime and sha256) and the harness
+commit, and warns when both sides are the same AppImage.
 
 When both runs carry the per-event split (step_wall_*, step_cpu_*, loop_pass_*), a line under
 each op shows the medians of the step's wall time, its main-thread CPU and the loop pass after it.
@@ -54,8 +59,17 @@ def compare(base_ops, run_ops, tol, min_ms, long_stall_ms=250.0):
             regressions.append(key)
             continue
         if b.get("status") == "ok" and r.get("status") != "ok":
-            rows.append("%s  REGRESSED status %s -> %s" % (label, b.get("status"), r.get("status")))
+            rows.append("%s  REGRESSED status %s -> %s%s" % (label, b.get("status"), r.get("status"), timed_out(r)))
             regressions.append(key)
+            continue
+        if b.get("status") != "ok" and r.get("status") == "ok" and r.get("median_ms") is not None:
+            if b.get("status") == "timeout":
+                rows.append("%s  baseline timed out%s -> %10.2f ms  improved" % (label, timed_out(b), r["median_ms"]))
+            else:
+                rows.append("%s  baseline %s -> %10.2f ms" % (label, b.get("status"), r["median_ms"]))
+            continue
+        if b.get("status") == "timeout" and r.get("status") == "timeout":
+            rows.append("%s  both timed out:%s /%s" % (label, timed_out(b), timed_out(r)))
             continue
         bm, rm = b.get("median_ms"), r.get("median_ms")
         if bm is None or rm is None:
@@ -75,6 +89,15 @@ def compare(base_ops, run_ops, tol, min_ms, long_stall_ms=250.0):
         if split:
             rows.append(split)
     return rows, regressions
+
+
+def timed_out(rec):
+    """' (>N s)' for a timeout record, with where it was measured when it was carried from a smaller n."""
+    if rec.get("status") != "timeout" or rec.get("timeout_s") is None:
+        return ""
+    if rec.get("not_run"):
+        return " (>%.0f s at n=%d, not run here)" % (rec["timeout_s"], rec.get("wedged_at_n", 0))
+    return " (>%.0f s)" % rec["timeout_s"]
 
 
 SPLIT_FIELDS = (("step_wall_median_ms", "wall"), ("step_cpu_median_ms", "cpu"), ("loop_pass_median_ms", "loop"))
@@ -119,11 +142,34 @@ def scaling(run_ops, superlinear):
     return out
 
 
+def describe_build(host):
+    """The build under test: the AppImage's file identity when there is one, else the build type."""
+    if not host.get("appimage_name"):
+        return "%s (no AppImage identity recorded)" % host.get("build_type")
+    return "appimage %s, %s bytes, modified %s, sha256 %s" % (
+        host.get("appimage_name"), host.get("appimage_bytes"), host.get("appimage_mtime"),
+        (host.get("appimage_sha256") or "?")[:16])
+
+
 def describe_host(host):
     if not host:
         return "no host record"
-    return "%s, %s (%s cores), %s, %s %s" % (host.get("hostname"), host.get("cpu_model"), host.get("cores"),
-                                              host.get("qt_platform"), host.get("build_type"), host.get("git_sha"))
+    text = "%s, %s (%s cores), %s, %s; harness %s" % (host.get("hostname"), host.get("cpu_model"), host.get("cores"),
+                                                     host.get("qt_platform"), describe_build(host), host.get("git_sha"))
+    if host.get("mixed_builds"):
+        text += "; WARNING merged from different builds: %s" % " | ".join(host["mixed_builds"])
+    return text
+
+
+def build_id(host):
+    """A key that differs between builds: the AppImage's sha256, else its name, size and mtime."""
+    if not host:
+        return None
+    if host.get("appimage_sha256"):
+        return host["appimage_sha256"]
+    if host.get("appimage_name"):
+        return "%s/%s/%s" % (host.get("appimage_name"), host.get("appimage_bytes"), host.get("appimage_mtime"))
+    return None
 
 
 def self_test():
@@ -165,6 +211,19 @@ def self_test():
     assert len(rows) == 2 and "cpu 3.50 -> 3.50" in rows[1], rows
     rows, _ = compare({("a", "mixed", 300): op("a", 300, 10.0)}, {("a", "mixed", 300): with_split}, 0.2, 5.0)
     assert len(rows) == 1, rows
+    wedged = dict(op("w", 300, None, "timeout"), timeout_s=300.0, wedged=True)
+    carried = dict(op("w", 1000, None, "timeout"), timeout_s=300.0, wedged=True, not_run=True, wedged_at_n=300)
+    rows, regressed = compare({("w", "mixed", 300): wedged, ("w", "mixed", 1000): carried},
+                              {("w", "mixed", 300): op("w", 300, 40.0), ("w", "mixed", 1000): op("w", 1000, 90.0)},
+                              0.2, 5.0)
+    assert not regressed, regressed
+    assert "baseline timed out (>300 s) ->" in rows[0] and rows[0].endswith("improved"), rows
+    assert "(>300 s at n=300, not run here)" in rows[1], rows
+    rows, regressed = compare({("w", "mixed", 300): op("w", 300, 40.0)}, {("w", "mixed", 300): wedged}, 0.2, 5.0)
+    assert regressed and "timeout (>300 s)" in rows[0], rows
+    same = {"appimage_name": "a.AppImage", "appimage_sha256": "ab" * 32}
+    assert build_id(same) == build_id(dict(same)) and build_id({"build_type": "release"}) is None
+    assert "sha256 abababababababab" in describe_host(dict(same, hostname="h")), describe_host(same)
     print("compare.py self-test passed")
     return 0
 
@@ -201,6 +260,8 @@ def main():
     print("# run:      %s" % describe_host(run_host))
     if base_host and run_host and base_host.get("cpu_model") != run_host.get("cpu_model"):
         print("# warning: the runs come from different CPUs")
+    if build_id(base_host) is not None and build_id(base_host) == build_id(run_host):
+        print("# warning: the baseline and the run are the same AppImage")
     rows, regressions = compare(base_ops, run_ops, args.tol, args.min_ms, args.long_stall_ms)
     for row in rows:
         print(row)

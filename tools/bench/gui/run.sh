@@ -22,8 +22,14 @@
 # --xvfb runs detached (setsid, immune to the caller exiting): it prints the result path and
 # writes the exit code to <result>.done when it finishes. --host runs in the foreground.
 #
-# The gui driver runs each topology in its own Natron process, appending to the one result file, so
-# an op that hangs ends only its topology's remaining ops. The exit code is the last non-zero one.
+# The gui driver runs each topology in its own Natron process, appending to the one result file. An
+# op that wedges Natron is recorded as a timeout and Natron is restarted to run the remaining ops and
+# sizes (logs of each restart in <topology>-restart<k>/); at larger sizes that op is recorded as a
+# timeout without running (GUI_BENCH_SKIP_WEDGED=0 runs it). The exit code is the last non-zero
+# one, 3 when an op wedged.
+#
+# A --appimage run records the AppImage's name, size, mtime and sha256 in the host record, which
+# compare.py prints, so results from different builds cannot pass for one another.
 #
 # --xvfb runs Tests/gui/run-gui-test.sh inside the natron-dev container (re-entering it through
 # tools/ci/local/devshell.sh from the host) with build/release/App/Natron, or the AppImage given.
@@ -126,7 +132,10 @@ if [ "$mode" = xvfb ] && [ "${NATRON_IN_CONTAINER:-}" != 1 ]; then
     # The host name belongs to the machine, not the container.
     exec "$repo/tools/ci/local/devshell.sh" env GUI_BENCH_STAMP="$stamp" GUI_BENCH_HOSTNAME="$(hostname -s)" \
         GUI_BENCH_OP_TIMEOUT_S="${GUI_BENCH_OP_TIMEOUT_S:-120}" GUI_BENCH_IDLE_S="${GUI_BENCH_IDLE_S:-5}" \
-        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" GUI_BENCH_WATCHDOG_S="${GUI_BENCH_WATCHDOG_S:-21600}" "${roto_env[@]}" "$self" "${args[@]}" --wait
+        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" GUI_BENCH_WATCHDOG_S="${GUI_BENCH_WATCHDOG_S:-21600}" \
+        GUI_BENCH_SKIP_WEDGED="${GUI_BENCH_SKIP_WEDGED:-1}" GUI_BENCH_HOLD_FILE="${GUI_BENCH_HOLD_FILE:-}" \
+        GUI_BENCH_HOLD_S="${GUI_BENCH_HOLD_S:-120}" GUI_BENCH_PTRACER_ANY="${GUI_BENCH_PTRACER_ANY:-0}" \
+        "${roto_env[@]}" "$self" "${args[@]}" --wait
 fi
 
 host=${GUI_BENCH_HOSTNAME:-$(hostname -s)}
@@ -150,8 +159,17 @@ printf '[General]\ncheckForUpdates=false\n' > "$home/.config/INRIA/Natron.conf"
 export GUI_BENCH_SIZES=$sizes GUI_BENCH_TOPOLOGIES=$topologies GUI_BENCH_REPS=$reps GUI_BENCH_OPS=$ops
 export GUI_BENCH_FORCED_REPAINT=$forced_repaint
 export GUI_BENCH_SELF_CHECK=$self_check GUI_BENCH_OUT=$result GUI_BENCH_MODE=$mode
-export GUI_BENCH_GIT_SHA
+export GUI_BENCH_GIT_SHA GUI_BENCH_APPIMAGE_NAME="" GUI_BENCH_APPIMAGE_BYTES="" GUI_BENCH_APPIMAGE_MTIME="" \
+    GUI_BENCH_APPIMAGE_SHA256=""
 GUI_BENCH_GIT_SHA=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)
+# The AppImage carries no commit of its own (GIT_COMMIT is a committed constant), so its file is the identity.
+if [ -n "$appimage" ]; then
+    GUI_BENCH_APPIMAGE_NAME=$(basename "$appimage")
+    GUI_BENCH_APPIMAGE_BYTES=$(stat -L -c %s "$appimage")
+    GUI_BENCH_APPIMAGE_MTIME=$(date -u -r "$appimage" +%Y-%m-%dT%H:%M:%SZ)
+    GUI_BENCH_APPIMAGE_SHA256=$(sha256sum "$appimage" | cut -c1-64)
+    echo "AppImage $GUI_BENCH_APPIMAGE_NAME, $GUI_BENCH_APPIMAGE_BYTES bytes, modified $GUI_BENCH_APPIMAGE_MTIME, sha256 ${GUI_BENCH_APPIMAGE_SHA256:0:16}"
+fi
 timeout_s=${GUI_BENCH_TIMEOUT:-21600}
 script="$repo/tools/bench/gui/${driver}_bench.py"
 if [ "$driver" = roto ]; then
@@ -161,29 +179,51 @@ else
     unset NATRON_ROTO_LATENCY_LOG
 fi
 
-# Calls run_one with the seconds left of the whole run's cap, once per topology.
+wedged_exit=3
+
+# Calls run_one with the seconds left of the whole run's cap, once per topology. When an op wedges
+# Natron (exit 3, the op recorded as a timeout), starts a fresh Natron that skips what the result
+# file already holds, so the remaining ops and sizes still run; each start gets its own log dir.
 run_topologies() {
-    local deadline=$(( $(date +%s) + timeout_s )) overall=0 topology rc left
+    local deadline=$(( $(date +%s) + timeout_s )) overall=0 topology rc left attempt lines
     local -a list
     IFS=, read -r -a list <<< "$topologies"
     for topology in "${list[@]}"; do
-        left=$(( deadline - $(date +%s) ))
-        if [ "$left" -le 0 ]; then
-            echo "the ${timeout_s}s cap ended the run before $topology"
-            overall=124
-            break
-        fi
-        export GUI_BENCH_TOPOLOGIES=$topology
-        export NATRON_GUI_TEST_OUT="$work/$topology"
-        export NATRON_STALL_LOG="$NATRON_GUI_TEST_OUT/stalls.jsonl"
-        mkdir -p "$NATRON_GUI_TEST_OUT"
-        rm -f "$NATRON_STALL_LOG"
-        run_one "$left"
-        rc=$?
-        if [ "$rc" -ne 0 ]; then
+        attempt=0
+        while :; do
+            left=$(( deadline - $(date +%s) ))
+            if [ "$left" -le 0 ]; then
+                echo "the ${timeout_s}s cap ended the run in $topology"
+                rc=124
+                break
+            fi
+            export GUI_BENCH_TOPOLOGIES=$topology GUI_BENCH_RESUME=$(( attempt > 0 ))
+            if [ "$attempt" = 0 ]; then
+                export NATRON_GUI_TEST_OUT="$work/$topology"
+            else
+                export NATRON_GUI_TEST_OUT="$work/$topology-restart$attempt"
+            fi
+            export NATRON_STALL_LOG="$NATRON_GUI_TEST_OUT/stalls.jsonl"
+            mkdir -p "$NATRON_GUI_TEST_OUT"
+            rm -f "$NATRON_STALL_LOG"
+            lines=$(wc -l < "$result" 2> /dev/null || echo 0)
+            run_one "$left"
+            rc=$?
+            [ "$rc" = "$wedged_exit" ] && [ "$driver" = gui ] || break
+            if [ "$(wc -l < "$result" 2> /dev/null || echo 0)" = "$lines" ]; then
+                echo "$topology: Natron exited with code $rc without recording anything; not restarting"
+                break
+            fi
+            attempt=$((attempt + 1))
+            echo "$topology: an op wedged Natron and is recorded as a timeout; restarting Natron (restart $attempt) to run the rest"
+        done
+        if [ "$attempt" -gt 0 ] && [ "$rc" = 0 ]; then
+            rc=$wedged_exit
+            echo "$topology finished after $attempt restart(s); the wedged ops are recorded as timeouts"
+        elif [ "$rc" -ne 0 ]; then
             echo "$topology ended with exit code $rc"
-            overall=$rc
         fi
+        [ "$rc" -ne 0 ] && overall=$rc
     done
     finish "$overall"
 }

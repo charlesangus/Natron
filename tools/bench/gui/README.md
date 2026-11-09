@@ -66,6 +66,8 @@ caps the whole run.
 ## What a record holds
 
 The first line is a `host` record: CPU, cores, Qt platform, git SHA, build type and the AppImage.
+The git SHA is the harness checkout, not the build: an AppImage carries no commit, so the record
+names it by file name, size, mtime and sha256 (`appimage_*`), and `compare.py` prints those.
 Each graph then gets a `graph` record (its counts and content hash) followed by one `op` record
 per op. An `op` record holds:
 
@@ -74,7 +76,8 @@ per op. An `op` record holds:
 - `step_wall_median_ms`/`step_wall_max_ms`, `step_cpu_median_ms`/`step_cpu_max_ms` and
   `loop_pass_median_ms`/`loop_pass_max_ms`, over every event of every rep (see below);
 - `stalls`: the count, max and total of the stalls whose midpoint falls inside a timed rep;
-- `status`: `ok`, `timeout` or `error`.
+- `status`: `ok`, `timeout` or `error`; a timeout carries `timeout_s`, and `wedged` when a single
+  step never returned (see below).
 
 An op runs its events one at a time on the Qt event loop, so timers and deferred paints land
 between events, as they would for a user. Interaction events force a synchronous viewport
@@ -99,6 +102,10 @@ Qt schedules them (coalesced), which is closer to what a user sees; the host rec
 
 ## Profiling one op
 
+`profile_ops.sh` does all of this for a list of ops, in the container or with `--host` on an
+AppImage, and prints why the sampler could not attach (missing tool, `kernel.yama.ptrace_scope`)
+before the first op. Run it with no arguments for its options. The steps below are the manual path.
+
 `perf` is not available in the container, so profile with wall-clock stack samples. Use an Xvfb
 run of a release build on the `comp` topology at N=3000, one rep, one op:
 
@@ -120,13 +127,25 @@ begun (the graph is generated and loaded first). Summarise the top frames with
 `tools/bench/analyze_stacks.py`. Read `step_cpu_*` against `step_wall_*` first: a step that is
 mostly wall time is waiting, not computing.
 
+`GUI_BENCH_HOLD_FILE=PATH` makes each op report `BEGIN op topology n` after its setup and wait (up to
+`GUI_BENCH_HOLD_S`, default 120 s) until PATH exists, so a sampler can attach before a short op
+starts. On a host with `kernel.yama.ptrace_scope` 1, only an ancestor may attach to Natron;
+`GUI_BENCH_PTRACER_ANY=1` makes the bench allow any process of the same user to attach. The samplers
+exit non-zero with the attach error and the remedy when their first sample gets no stacks.
+
 A stall is any stretch where the main thread doesn't service a 10 ms heartbeat timer for over
 50 ms (`NATRON_STALL_THRESHOLD_MS`). The stall monitor runs only when `NATRON_STALL_LOG` names a
 file, and `run.sh` sets it.
 
-The per-op timeout is checked between events. A single event that doesn't return within twice that
-plus 60 s (300 s by default) ends the run with exit 3 and a `timeout` record. With no stalls logged
-over that time, the event is waiting in a nested event loop, usually a modal dialog, not computing.
+The per-op timeout is checked between events. A single step that doesn't return within twice that
+plus 60 s (300 s by default) wedges Natron: the bench writes a `timeout` record with `wedged` and
+exits 3. With no stalls logged over that time, the step is waiting in a nested event loop, usually a
+modal dialog, not computing.
+
+`run.sh` then restarts Natron for that topology (logs under `<topology>-restart<k>/`) with
+`GUI_BENCH_RESUME=1`, which skips the ops already in the result file. An op that wedged is recorded as
+a not-run timeout at every larger size of the topology instead of being run again; set
+`GUI_BENCH_SKIP_WEDGED=0` to run it anyway. `run.sh` still exits 3 when anything wedged.
 
 Ops whose count is larger than the graph are capped at N/2: at N=300, `paste_1000` and
 `delete_1000` move 150 nodes. The record's `count` field gives the real figure.
@@ -204,6 +223,10 @@ Comparison flags an op when any of the following holds, and then exits 1:
 `--scaling` fits the log-log slope of the median against N for each (op, topology) and ranks them
 steepest first. A slope above 1.2 is marked superlinear: that op's cost grows faster than the
 graph does.
+
+A baseline timeout that the run completes prints as `baseline timed out (>N s) -> X ms`, an
+improvement. When the two files name the same AppImage, `compare.py` warns; `merge.py` warns when
+the files it merges come from different builds.
 
 `compare.py --self-test` runs as ctest `GuiBenchCompareSelfTest`.
 

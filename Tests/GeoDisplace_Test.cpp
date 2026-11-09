@@ -193,3 +193,123 @@ TEST(GeoDisplace, TheImageNeedsAnImageAndTextureCoordinates)
     EXPECT_FALSE(displaceGeometry(noUV, params, &image, &error));
     EXPECT_FALSE(error.empty());
 }
+
+namespace {
+GeoAttribute&
+addNormal(GeoDetailBuilder& b,
+          GeoAttribClassEnum cls)
+{
+    return b.addAttribute(cls, GeoAttributeDesc { "N", eGeoStorageFloat32, 3, eGeoTypeInfoNormal, false });
+}
+
+void
+setTuple(GeoAttribute& a,
+         GeoOffset element,
+         float x,
+         float y,
+         float z)
+{
+    a.set<float>((std::size_t)element, x, 0);
+    a.set<float>((std::size_t)element, y, 1);
+    a.set<float>((std::size_t)element, z, 2);
+}
+
+GeoDisplaceParams
+unitImageParams(bool recomputeNormals)
+{
+    GeoDisplaceParams params;
+    params.displaceBy = eGeoDisplaceByImage;
+    params.amplitude = 1.;
+    params.offset = 0.;
+    params.recomputeNormals = recomputeNormals;
+
+    return params;
+}
+} // anonymous namespace
+
+TEST(GeoDisplace, VertexNormalsGiveTheDirectionAndAreKept)
+{
+    GeoDetailBuilder source { flatGrid(2) };
+    GeoAttribute& n = addNormal(source, eGeoAttribClassVertex);
+    source.detail().vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        setTuple(n, vertex, 2.f, 0.f, 0.f);
+    });
+    const GeoDetail grid = source.finish();
+    const GeoDisplaceImage image = constantImage(1.f);
+    GeoDetailBuilder b { GeoDetail(grid) };
+    std::string error;
+    ASSERT_TRUE(displaceGeometry(b, unitImageParams(false), &image, &error)) << error;
+    const GeoDetail out = b.finish();
+
+    out.pointMap().forEachLive([&](GeoIndex, GeoOffset point) {
+        const std::array<double, 3> before = grid.pointPosition(point);
+        const std::array<double, 3> after = out.pointPosition(point);
+        EXPECT_NEAR(before[0] + 1., after[0], 1e-9);
+        EXPECT_NEAR(before[1], after[1], 1e-9);
+        EXPECT_NEAR(before[2], after[2], 1e-9);
+    });
+    EXPECT_EQ(nullptr, out.findAttribute(eGeoAttribClassPoint, "N"));
+    const GeoAttribute* kept = out.findAttribute(eGeoAttribClassVertex, "N");
+    ASSERT_NE(nullptr, kept);
+    out.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        EXPECT_EQ(2.f, kept->get<float>((std::size_t)vertex, 0));
+        EXPECT_EQ(0.f, kept->get<float>((std::size_t)vertex, 2));
+    });
+}
+
+TEST(GeoDisplace, PrimitiveNormalsAreAveragedAtSharedPoints)
+{
+    GeoDetailBuilder source { flatGrid(2) };
+    GeoAttribute& n = addNormal(source, eGeoAttribClassPrimitive);
+    source.detail().primitiveMap().forEachLive([&](GeoIndex index, GeoOffset primitive) {
+        if (index % 2 == 0) {
+            setTuple(n, primitive, 1.f, 0.f, 0.f);
+        } else {
+            setTuple(n, primitive, 0.f, 3.f, 0.f);
+        }
+    });
+    const GeoDetail grid = source.finish();
+    const GeoDisplaceImage image = constantImage(1.f);
+    GeoDetailBuilder b { GeoDetail(grid) };
+    std::string error;
+    ASSERT_TRUE(displaceGeometry(b, unitImageParams(false), &image, &error)) << error;
+    const GeoDetail out = b.finish();
+
+    const double diagonal = std::sqrt(0.5);
+    out.pointMap().forEachLive([&](GeoIndex index, GeoOffset point) {
+        const std::array<double, 3> before = grid.pointPosition(point);
+        const std::array<double, 3> after = out.pointPosition(point);
+        const int column = (int)index % 3;
+        const std::array<double, 3> expected = column == 0 ? std::array<double, 3> { 1., 0., 0. }
+            : column == 2                                  ? std::array<double, 3> { 0., 1., 0. }
+                                                           : std::array<double, 3> { diagonal, diagonal, 0. };
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_NEAR(before[c] + expected[c], after[c], 1e-9) << "point " << index << " axis " << c;
+        }
+    });
+    EXPECT_EQ(nullptr, out.findAttribute(eGeoAttribClassPoint, "N"));
+    const GeoAttribute* kept = out.findAttribute(eGeoAttribClassPrimitive, "N");
+    ASSERT_NE(nullptr, kept);
+    EXPECT_EQ(3.f, kept->get<float>((std::size_t)out.primitiveMap().offsetFromIndex(1), 1));
+}
+
+TEST(GeoDisplace, RecomputeNormalsReplacesVertexNormalsOnTheVertices)
+{
+    GeoDetailBuilder source { flatGrid(2) };
+    GeoAttribute& n = addNormal(source, eGeoAttribClassVertex);
+    source.detail().vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        setTuple(n, vertex, 0.f, 0.f, 1.f);
+    });
+    const GeoDisplaceImage image = constantImage(1.f);
+    GeoDetailBuilder b { source.finish() };
+    std::string error;
+    ASSERT_TRUE(displaceGeometry(b, unitImageParams(true), &image, &error)) << error;
+    const GeoDetail out = b.finish();
+
+    EXPECT_EQ(nullptr, out.findAttribute(eGeoAttribClassPoint, "N"));
+    const GeoAttribute* recomputed = out.findAttribute(eGeoAttribClassVertex, "N");
+    ASSERT_NE(nullptr, recomputed);
+    out.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        EXPECT_NEAR(1.f, recomputed->get<float>((std::size_t)vertex, 2), 1e-6);
+    });
+}

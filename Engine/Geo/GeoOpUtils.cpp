@@ -335,7 +335,51 @@ geoLiveOffsets(const GeoIndexMap& map)
 std::vector<std::string_view>
 geoSplitPattern(std::string_view pattern)
 {
-    return splitTokens(pattern);
+    const std::vector<std::string_view> words = splitTokens(pattern);
+    std::vector<std::string_view> tokens;
+    tokens.reserve(words.size());
+    for (std::size_t i = 0; i < words.size(); ++i) {
+        const std::string_view word = words[i];
+        const std::size_t at = word.find_first_not_of("^!");
+        if ((at == std::string_view::npos) || (word[at] != '@')) {
+            tokens.push_back(word);
+            continue;
+        }
+        // Words are views into pattern, so a comparison spread over several is the span from the
+        // first word's start to the last one's end.
+        const char* const begin = word.data();
+        std::size_t last = i;
+        auto joined = [&]() {
+            return std::string_view(begin, std::size_t(words[last].data() + words[last].size() - begin));
+        };
+        auto valueOf = [](std::string_view comparison) -> std::optional<std::string_view> {
+            const std::size_t op = comparison.find_first_of("=!<>", comparison.find('@') + 1);
+            if (op == std::string_view::npos) {
+                return std::nullopt;
+            }
+            const std::size_t value = comparison.find_first_not_of("=!<> \t\r\n", op);
+
+            return value == std::string_view::npos ? std::string_view() : comparison.substr(value);
+        };
+        auto unclosedQuote = [](std::string_view value) {
+            return !value.empty() && ((value.front() == '"') || (value.front() == '\'')) && ((value.size() < 2) || (value.back() != value.front()));
+        };
+        while (last + 1 < words.size()) {
+            const std::optional<std::string_view> value = valueOf(joined());
+            if (!value) {
+                if (std::string_view("=!<>").find(words[last + 1].front()) == std::string_view::npos) {
+                    break;
+                }
+            } else if (!value->empty() && !unclosedQuote(*value)) {
+                break;
+            }
+            ++last;
+        }
+        tokens.push_back(joined());
+        i = last;
+    }
+
+    return tokens;
 }
 
 std::vector<std::array<double, 3>>
@@ -521,6 +565,9 @@ geoParseAttribCompare(std::string_view text,
             while (!rest.empty() && std::isspace((unsigned char)rest.back())) {
                 rest.remove_suffix(1);
             }
+            if ((rest.size() >= 2) && ((rest.front() == '"') || (rest.front() == '\'')) && (rest.back() == rest.front())) {
+                rest = rest.substr(1, rest.size() - 2);
+            }
             compare->value = std::string(rest);
 
             return true;
@@ -568,7 +615,7 @@ geoSelectElements(const GeoDetail& detail,
     const GeoIndexMap& map = detail.indexMap(cls);
     const std::size_t size = std::size_t(map.offsetSize());
     mask->assign(size, 0);
-    const std::vector<std::string_view> tokens = splitTokens(pattern);
+    const std::vector<std::string_view> tokens = geoSplitPattern(pattern);
     if (tokens.empty()) {
         selectAllLive(map, *mask);
 

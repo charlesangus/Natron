@@ -225,3 +225,66 @@ TEST(GeoScatter, UnknownGroupSelectsNothing)
 
     EXPECT_EQ(0, scatter(grid, params).pointCount());
 }
+
+TEST(GeoScatter, SourcePrimUVIsTheParametricUVOfTrianglesAndQuads)
+{
+    // A trapezoid, so the bilinear (u, v) is not an affine function of the position, and a triangle.
+    const std::array<std::array<double, 3>, 7> corners = { {
+        { 0., 0., 0. },
+        { 2., 0., 0. },
+        { 1.5, 1., 0. },
+        { 0.5, 1., 0. },
+        { 3., 0., 1. },
+        { 4., 0., 1. },
+        { 3., 2., 1. },
+    } };
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints((GeoIndex)corners.size());
+    for (std::size_t i = 0; i < corners.size(); ++i) {
+        b.setPointPosition(first + (GeoOffset)i, corners[i][0], corners[i][1], corners[i][2]);
+    }
+    const std::vector<std::int32_t> counts = { 4, 3 };
+    const std::vector<GeoOffset> vertices = { first, first + 1, first + 2, first + 3, first + 4, first + 5, first + 6 };
+    b.appendPrimitives(eGeoPrimitivePolygon, counts, vertices);
+    const GeoDetail input = b.finish();
+
+    GeoScatterParams params;
+    params.count = 500;
+    params.outputSourcePrim = true;
+    params.outputSourcePrimUV = true;
+    const GeoDetail points = scatter(input, params);
+
+    const GeoAttribute* sourcePrim = points.findAttribute(eGeoAttribClassPoint, "sourceprim");
+    const GeoAttribute* sourcePrimUV = points.findAttribute(eGeoAttribClassPoint, "sourceprimuv");
+    ASSERT_NE(nullptr, sourcePrim);
+    ASSERT_NE(nullptr, sourcePrimUV);
+    int onQuad = 0;
+    int onTriangle = 0;
+    points.pointMap().forEachLive([&](GeoIndex, GeoOffset offset) {
+        const double u = sourcePrimUV->get<float>((std::size_t)offset, 0);
+        const double v = sourcePrimUV->get<float>((std::size_t)offset, 1);
+        EXPECT_EQ(0.f, sourcePrimUV->get<float>((std::size_t)offset, 2));
+        const std::array<double, 3> p = points.pointPosition(offset);
+        std::array<double, 3> expected;
+        if (sourcePrim->get<std::int32_t>((std::size_t)offset) == 0) {
+            ++onQuad;
+            EXPECT_GE(u, 0.);
+            EXPECT_LE(u, 1.);
+            EXPECT_GE(v, 0.);
+            EXPECT_LE(v, 1.);
+            for (int c = 0; c < 3; ++c) {
+                expected[c] = (1. - u) * (1. - v) * corners[0][c] + u * (1. - v) * corners[1][c] + u * v * corners[2][c] + (1. - u) * v * corners[3][c];
+            }
+        } else {
+            ++onTriangle;
+            for (int c = 0; c < 3; ++c) {
+                expected[c] = (1. - u - v) * corners[4][c] + u * corners[5][c] + v * corners[6][c];
+            }
+        }
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_NEAR(expected[c], p[c], 1e-5) << "point " << offset << " axis " << c;
+        }
+    });
+    EXPECT_GT(onQuad, 0);
+    EXPECT_GT(onTriangle, 0);
+}

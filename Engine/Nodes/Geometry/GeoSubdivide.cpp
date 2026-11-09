@@ -82,28 +82,24 @@ sameValue(const GeoAttribute& attribute,
     return scratchA == scratchB;
 }
 
+// Corners of a point share a value when same(representative, corner) says so.
+template <typename Same>
 FaceVaryingChannel
-buildChannel(const GeoAttribute& attribute,
-             const std::vector<Far::Index>& cornerPoints,
+buildChannel(const std::vector<Far::Index>& cornerPoints,
              const std::vector<GeoOffset>& cornerVertices,
-             std::size_t basePointCount)
+             std::size_t basePointCount,
+             Same same)
 {
     FaceVaryingChannel channel;
-    channel.attribute = &attribute;
     channel.valueIndices.reserve(cornerPoints.size());
-    const bool weldable = geoIsNumeric(attribute) && !attribute.desc().isArray;
-    std::vector<double> a(attribute.desc().tupleSize);
-    std::vector<double> b(attribute.desc().tupleSize);
     std::vector<std::vector<Far::Index>> valuesAtPoint(basePointCount);
     for (std::size_t k = 0; k < cornerPoints.size(); ++k) {
         std::vector<Far::Index>& candidates = valuesAtPoint[(std::size_t)cornerPoints[k]];
         Far::Index value = -1;
-        if (weldable) {
-            for (Far::Index candidate : candidates) {
-                if (sameValue(attribute, channel.representatives[(std::size_t)candidate], cornerVertices[k], a, b)) {
-                    value = candidate;
-                    break;
-                }
+        for (Far::Index candidate : candidates) {
+            if (same(channel.representatives[(std::size_t)candidate], cornerVertices[k])) {
+                value = candidate;
+                break;
             }
         }
         if (value < 0) {
@@ -113,6 +109,23 @@ buildChannel(const GeoAttribute& attribute,
         }
         channel.valueIndices.push_back(value);
     }
+
+    return channel;
+}
+
+FaceVaryingChannel
+buildAttributeChannel(const GeoAttribute& attribute,
+                      const std::vector<Far::Index>& cornerPoints,
+                      const std::vector<GeoOffset>& cornerVertices,
+                      std::size_t basePointCount)
+{
+    const bool weldable = geoIsNumeric(attribute) && !attribute.desc().isArray;
+    std::vector<double> a(attribute.desc().tupleSize);
+    std::vector<double> b(attribute.desc().tupleSize);
+    FaceVaryingChannel channel = buildChannel(cornerPoints, cornerVertices, basePointCount, [&](GeoOffset x, GeoOffset y) {
+        return weldable && sameValue(attribute, x, y, a, b);
+    });
+    channel.attribute = &attribute;
 
     return channel;
 }
@@ -168,8 +181,6 @@ heaviestSource(const std::vector<GeoOffset>& offsets,
 
     return offsets.empty() ? GeoIndexMap::kInvalidOffset : offsets[best];
 }
-
-const char* const kSubdividedGroup = "__geoSubdivideNewFaces";
 } // anonymous namespace
 
 bool
@@ -224,7 +235,17 @@ subdivideGeometry(GeoDetailBuilder& detail,
 
     std::vector<FaceVaryingChannel> channels;
     for (std::size_t i = 0; i < source.attributeCount(eGeoAttribClassVertex); ++i) {
-        channels.push_back(buildChannel(source.attribute(eGeoAttribClassVertex, i), cornerPoints, cornerVertices, basePoints.size()));
+        channels.push_back(buildAttributeChannel(source.attribute(eGeoAttribClassVertex, i), cornerPoints, cornerVertices, basePoints.size()));
+    }
+    const std::size_t firstGroupChannel = channels.size();
+    const std::vector<std::string> vertexGroupNames = source.groupNames(eGeoAttribClassVertex);
+    std::vector<const GeoElementGroup*> vertexGroups;
+    for (const std::string& name : vertexGroupNames) {
+        const GeoElementGroup* group = source.findGroup(eGeoAttribClassVertex, name);
+        vertexGroups.push_back(group);
+        channels.push_back(buildChannel(cornerPoints, cornerVertices, basePoints.size(), [group](GeoOffset x, GeoOffset y) {
+            return !group || (group->contains(x) == group->contains(y));
+        }));
     }
     std::vector<Far::TopologyDescriptor::FVarChannel> descriptorChannels(channels.size());
     for (std::size_t c = 0; c < channels.size(); ++c) {
@@ -348,7 +369,7 @@ subdivideGeometry(GeoDetailBuilder& detail,
     }
 
     // Vertices, face-varying.
-    for (std::size_t c = 0; c < channels.size(); ++c) {
+    for (std::size_t c = 0; c < firstGroupChannel; ++c) {
         const GeoAttribute& from = *channels[c].attribute;
         GeoAttribute* to = detail.attributeForWriting(eGeoAttribClassVertex, from.desc().name);
         const std::unique_ptr<const StencilTable> stencils = createStencils(*refiner, depth, true, (int)c);
@@ -365,33 +386,95 @@ subdivideGeometry(GeoDetailBuilder& detail,
         }
     }
 
-    std::vector<GeoAttribClassEnum> normalClasses;
-    if (params.recomputeNormals) {
-        for (GeoAttribClassEnum cls : { eGeoAttribClassVertex, eGeoAttribClassPoint, eGeoAttribClassPrimitive }) {
-            if (source.findAttribute(cls, "N")) {
-                normalClasses.push_back(cls);
-                break;
+    // A new vertex is in a vertex group when the corner it takes most of its value from is.
+    for (std::size_t g = 0; g < vertexGroups.size(); ++g) {
+        const int c = (int)(firstGroupChannel + g);
+        GeoElementGroup& to = detail.addGroup(eGeoAttribClassVertex, vertexGroupNames[g]);
+        const std::unique_ptr<const StencilTable> stencils = createStencils(*refiner, depth, true, c);
+        if (!vertexGroups[g] || !stencils) {
+            continue;
+        }
+        for (int f = 0; f < newFaceCount; ++f) {
+            const GeoOffset firstVertex = detail.detail().primitiveVertices(firstPrimitive + f).start;
+            const Far::ConstIndexArray values = last.GetFaceFVarValues(f, c);
+            for (int k = 0; k < values.size(); ++k) {
+                stencilSources(*stencils, values[k], channels[(std::size_t)c].representatives, &offsets, &weights);
+                const GeoOffset heaviest = heaviestSource(offsets, weights);
+                if ((heaviest != GeoIndexMap::kInvalidOffset) && vertexGroups[g]->contains(heaviest)) {
+                    to.add(firstVertex + k);
+                }
             }
         }
     }
-    if (!normalClasses.empty()) {
-        GeoElementGroup& added = detail.addGroup(eGeoAttribClassPrimitive, kSubdividedGroup);
-        for (int f = 0; f < newFaceCount; ++f) {
-            added.add(firstPrimitive + f);
+
+    // Both halves of a split edge stay in the edge's groups, at every level.
+    for (const std::string& name : source.edgeGroupNames()) {
+        const GeoEdgeGroup* from = source.findEdgeGroup(name);
+        if (!from || from->empty()) {
+            continue;
+        }
+        const Far::TopologyLevel& base = refiner->GetLevel(0);
+        std::vector<char> inGroup((std::size_t)base.GetNumEdges(), 0);
+        bool any = false;
+        for (int e = 0; e < base.GetNumEdges(); ++e) {
+            const Far::ConstIndexArray ends = base.GetEdgeVertices(e);
+            if (from->contains(basePoints[(std::size_t)ends[0]], basePoints[(std::size_t)ends[1]])) {
+                inGroup[(std::size_t)e] = 1;
+                any = true;
+            }
+        }
+        if (!any) {
+            continue;
+        }
+        for (int level = 0; level < depth; ++level) {
+            const Far::TopologyLevel& parent = refiner->GetLevel(level);
+            std::vector<char> childInGroup((std::size_t)refiner->GetLevel(level + 1).GetNumEdges(), 0);
+            for (int e = 0; e < parent.GetNumEdges(); ++e) {
+                if (!inGroup[(std::size_t)e]) {
+                    continue;
+                }
+                const Far::ConstIndexArray children = parent.GetEdgeChildEdges(e);
+                for (int k = 0; k < children.size(); ++k) {
+                    childInGroup[(std::size_t)children[k]] = 1;
+                }
+            }
+            inGroup.swap(childInGroup);
+        }
+        GeoEdgeGroup* to = detail.edgeGroupForWriting(name);
+        if (!to) {
+            continue;
+        }
+        for (int e = 0; e < last.GetNumEdges(); ++e) {
+            if (inGroup[(std::size_t)e]) {
+                const Far::ConstIndexArray ends = last.GetEdgeVertices(e);
+                to->add(firstPoint + ends[0], firstPoint + ends[1]);
+            }
+        }
+    }
+
+    GeoNormalsTargetEnum normalsTarget = eGeoNormalsTargetPoints;
+    bool recomputeNormals = false;
+    if (params.recomputeNormals) {
+        for (GeoAttribClassEnum cls : { eGeoAttribClassVertex, eGeoAttribClassPoint, eGeoAttribClassPrimitive }) {
+            if (source.findAttribute(cls, "N")) {
+                normalsTarget = cls == eGeoAttribClassVertex ? eGeoNormalsTargetVertices
+                    : cls == eGeoAttribClassPoint            ? eGeoNormalsTargetPoints
+                                                             : eGeoNormalsTargetPrimitives;
+                recomputeNormals = true;
+                break;
+            }
         }
     }
 
     detail.deletePrimitives(faces, true);
 
-    if (!normalClasses.empty()) {
+    if (recomputeNormals) {
+        // The new faces are the last ones: deleting primitives keeps the others in order.
+        const GeoIndex count = detail.detail().primitiveCount();
         GeoNormalsParams normals;
-        normals.group = kSubdividedGroup;
-        normals.target = normalClasses.front() == eGeoAttribClassVertex ? eGeoNormalsTargetVertices
-            : normalClasses.front() == eGeoAttribClassPoint             ? eGeoNormalsTargetPoints
-                                                                        : eGeoNormalsTargetPrimitives;
-        const bool computed = GeoNormals::computeNormals(detail, normals, errorMessage);
-        detail.removeGroup(eGeoAttribClassPrimitive, kSubdividedGroup);
-        if (!computed) {
+        normals.group = std::to_string(count - newFaceCount) + "-" + std::to_string(count - 1);
+        normals.target = normalsTarget;
+        if (!GeoNormals::computeNormals(detail, normals, errorMessage)) {
             return false;
         }
     }

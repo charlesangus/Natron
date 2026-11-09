@@ -58,7 +58,7 @@ struct GeoDeleteParams {
  * Deleted elements are tombstoned, so element numbers of what remains stay in order and the
  * attribute pages are not rewritten. Deleting points also deletes the primitives using them
  * and their vertices. Deleting primitives deletes their vertices, and the points no remaining
- * vertex uses when deleteUnusedPoints is on. A blank pattern selects nothing.
+ * vertex uses when deleteUnusedPoints is on. A blank pattern selects every element.
  **/
 class GeoDelete
     : public NativeEffectBase {

@@ -108,9 +108,11 @@ struct GeoDisplaceParams {
 /**
  * @brief Pushes each point the group selects along its normal by amplitude x value + offset,
  * value being the noise at the point's position (-1 to 1) or the image sampled at its uv (a point
- * uv, else the average of its vertices'). Point normals are used; without them N is computed on
- * the points first. With recomputeNormals, N is then computed from the displaced polygons, on
- * the element class that held it in the input (points when it had none).
+ * uv, else the average of its vertices'). Point normals are used; with N only on the vertices or
+ * the primitives, a point goes along the mean of the unit normals of its vertices or of the
+ * primitives using it, and that N is left as it is; with no N at all, N is computed on the points
+ * first. With recomputeNormals, N is then computed from the displaced polygons, on the element
+ * class that held it in the input (points when it had none).
  *
  * Fails, with *errorMessage set, for a malformed group pattern, for the image with no image
  * given, or for the image when the detail has no uvAttribute.

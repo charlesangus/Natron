@@ -172,7 +172,16 @@ TEST(GeoDeleteTest, DeletingPrimitivesOptionallyDeletesUnusedPoints)
     EXPECT_EQ(25, kept.pointCount());
 
     params.group = "";
-    EXPECT_EQ(16, deleted(input, params).primitiveCount()) << "a blank pattern deletes nothing";
+    params.deleteUnusedPoints = true;
+    const GeoDetail all = deleted(input, params);
+    EXPECT_EQ(0, all.primitiveCount()) << "a blank pattern selects every element";
+    EXPECT_EQ(0, all.pointCount());
+
+    params.group = "  ";
+    params.deleteNonSelected = true;
+    const GeoDetail none = deleted(input, params);
+    EXPECT_EQ(16, none.primitiveCount()) << "deleting what a blank pattern does not select deletes nothing";
+    EXPECT_EQ(25, none.pointCount());
 }
 
 TEST(GeoDeleteTest, DefragmentGivesADenseIdenticalDetail)

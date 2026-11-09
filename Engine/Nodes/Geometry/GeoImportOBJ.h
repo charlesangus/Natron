@@ -73,9 +73,15 @@ public:
                            GeoDetailBuilder& builder,
                            std::string* error);
 
+    /** @brief True when @p pattern names one file per frame (a # or %0Nd frame number). */
+    static bool isFrameSequencePattern(const std::string& pattern);
+
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum renderGeometry(const GeoRenderActionArgs& args,
                                       GeoDetailConstPtr* outputDetail,
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;

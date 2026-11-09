@@ -627,16 +627,22 @@ GeoTransform::knobChanged(KnobI* k,
 bool
 GeoTransform::centrePivot(std::string* errorMessage)
 {
+    const double time = getCurrentTime();
+    const ViewIdx view = getCurrentView();
     GeoDetailConstPtr input;
-    {
-        std::lock_guard<std::mutex> l(_lastInputLock);
-        input = _lastInput;
+    if (const EffectInstancePtr source = getInput(0)) {
+        std::string inputError;
+        if (source->evaluateGeometry(EvaluateGeometryArgs(time, view), &input, &inputError) != eRenderRoIRetCodeOk) {
+            *errorMessage = inputError.empty() ? tr("The input geometry could not be computed.").toStdString() : inputError;
+
+            return false;
+        }
     }
     const KnobDoublePtr pivot = _pivot.lock();
-    const GeoTransformParams params = readParams(getCurrentTime(), ViewSpec::current());
+    const GeoTransformParams params = readParams(time, view);
     Selection sel;
     if (!pivot || !input) {
-        *errorMessage = tr("There is no geometry to centre the pivot on yet.").toStdString();
+        *errorMessage = tr("There is no geometry to centre the pivot on.").toStdString();
 
         return false;
     }
@@ -699,10 +705,6 @@ GeoTransform::renderGeometry(const GeoRenderActionArgs& args,
                              GeoDetailConstPtr* outputDetail,
                              std::string* errorMessage)
 {
-    {
-        std::lock_guard<std::mutex> l(_lastInputLock);
-        _lastInput = args.getInputDetail(0);
-    }
     const GeoTransformParams params = readParams(args.time, args.view);
 
     return renderGeometryFromInput(args, 0, [&params](GeoDetailBuilder& detail, std::string* error) {

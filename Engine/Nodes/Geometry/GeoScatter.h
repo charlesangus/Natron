@@ -74,9 +74,11 @@ struct GeoScatterParams {
 /**
  * @brief Appends to @p output points scattered over @p input's polygons, area-weighted, with no
  * primitives. The count is exact. Polygons are split into fans of triangles; a point records
- * (when asked) sourceprim, the index of its polygon, and sourceprimuv: the barycentric weights
- * of the fan triangle's second and third corners, with the triangle's place in the fan as the
- * third component. Relaxing spreads points apart but keeps each on its own triangle. Fails,
+ * (when asked) sourceprim, the index of its polygon, and sourceprimuv, its parametric uv as
+ * Houdini gives it: on a triangle the barycentric weights of corners 1 and 2, on a quad the
+ * bilinear (u, v) with corner 0 at (0, 0), 1 at (1, 0), 2 at (1, 1) and 3 at (0, 1). On larger
+ * polygons it holds the barycentric weights of the fan triangle's second and third corners,
+ * with the triangle's place in the fan as the third component. Relaxing spreads points apart but keeps each on its own triangle. Fails,
  * with *errorMessage set, for a group name that names no primitive group.
  **/
 bool scatterGeometry(const GeoDetail& input,

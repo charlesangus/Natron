@@ -75,6 +75,80 @@ length(const Vec3& a)
     return std::sqrt(dot(a, a));
 }
 
+// The (u, v) of q on the quad a b c d parametrised bilinearly, a at (0, 0), b at (1, 0), c at
+// (1, 1) and d at (0, 1), solved in the plane of the quad's Newell normal so a warped quad still
+// gives an answer in [0, 1]^2.
+std::array<double, 2>
+inverseBilinear(const Vec3& a,
+                const Vec3& b,
+                const Vec3& c,
+                const Vec3& d,
+                const Vec3& q)
+{
+    const Vec3 corners[4] = { a, b, c, d };
+    Vec3 n = { 0., 0., 0. };
+    for (int i = 0; i < 4; ++i) {
+        const Vec3& p0 = corners[i];
+        const Vec3& p1 = corners[(i + 1) % 4];
+        n[0] += (p0[1] - p1[1]) * (p0[2] + p1[2]);
+        n[1] += (p0[2] - p1[2]) * (p0[0] + p1[0]);
+        n[2] += (p0[0] - p1[0]) * (p0[1] + p1[1]);
+    }
+    const Vec3 helperAxis = (std::abs(n[0]) < std::abs(n[1]) && std::abs(n[0]) < std::abs(n[2])) ? Vec3 { 1., 0., 0. }
+        : (std::abs(n[1]) < std::abs(n[2]))                                                      ? Vec3 { 0., 1., 0. }
+                                                                                                 : Vec3 { 0., 0., 1. };
+    const Vec3 s = cross(n, helperAxis);
+    const Vec3 t = cross(n, s);
+    auto project = [&](const Vec3& p) {
+        const Vec3 r = sub(p, a);
+
+        return std::array<double, 2> { dot(r, s), dot(r, t) };
+    };
+    auto cross2 = [](const std::array<double, 2>& x,
+                     const std::array<double, 2>& y) {
+        return x[0] * y[1] - x[1] * y[0];
+    };
+    const std::array<double, 2> pb = project(b);
+    const std::array<double, 2> pc = project(c);
+    const std::array<double, 2> pd = project(d);
+    const std::array<double, 2> h = project(q);
+    const std::array<double, 2> e = pb;
+    const std::array<double, 2> f = pd;
+    const std::array<double, 2> g = { pc[0] - pb[0] - pd[0], pc[1] - pb[1] - pd[1] };
+    const double k2 = cross2(g, f);
+    const double k1 = cross2(e, f) + cross2(h, g);
+    const double k0 = cross2(h, e);
+    auto uFor = [&](double v) {
+        const double dx = e[0] + g[0] * v;
+        const double dy = e[1] + g[1] * v;
+
+        return std::abs(dx) > std::abs(dy) ? (h[0] - f[0] * v) / dx : (h[1] - f[1] * v) / dy;
+    };
+    auto clamped = [](double u,
+                      double v) {
+        return std::array<double, 2> { std::isfinite(u) ? std::clamp(u, 0., 1.) : 0., std::isfinite(v) ? std::clamp(v, 0., 1.) : 0. };
+    };
+    const double scale = std::max(std::abs(k1), std::max(std::abs(k0), 1e-300));
+    if (std::abs(k2) <= 1e-12 * scale) {
+        const double v = -k0 / k1;
+
+        return clamped(uFor(v), v);
+    }
+    const double discriminant = std::sqrt(std::max(0., k1 * k1 - 4. * k0 * k2));
+    const double v0 = (-k1 - discriminant) / (2. * k2);
+    const double v1 = (-k1 + discriminant) / (2. * k2);
+    const double u0 = uFor(v0);
+    const double u1 = uFor(v1);
+    auto outside = [](double u,
+                      double v) {
+        const double tolerance = 1e-9;
+
+        return !std::isfinite(u) || !std::isfinite(v) || std::max(std::max(-u, u - 1.), std::max(-v, v - 1.)) > tolerance;
+    };
+
+    return (outside(u0, v0) && !outside(u1, v1)) ? clamped(u1, v1) : clamped(u0, v0);
+}
+
 struct Triangle {
     GeoOffset primitive;
     GeoIndex primitiveIndex;
@@ -415,7 +489,22 @@ scatterGeometry(const GeoDetail& input,
             sourcePrim->set<std::int32_t>(point, (std::int32_t)t.primitiveIndex);
         }
         if (sourcePrimUV) {
-            const float uvw[3] = { (float)w[1], (float)w[2], (float)t.fanIndex };
+            // Houdini's primitive uv: barycentric on a triangle, bilinear on a quad. Larger
+            // polygons keep the fan triangle's barycentrics with its place in the fan as w.
+            float uvw[3] = { (float)w[1], (float)w[2], (float)t.fanIndex };
+            const GeoVertexRange range = input.primitiveVertices(t.primitive);
+            if (range.count == 3) {
+                uvw[2] = 0.f;
+            } else if (range.count == 4) {
+                std::array<Vec3, 4> quad;
+                for (int c = 0; c < 4; ++c) {
+                    quad[(std::size_t)c] = input.pointPosition(input.vertexPoint(range.start + c));
+                }
+                const std::array<double, 2> uv = inverseBilinear(quad[0], quad[1], quad[2], quad[3], samplePosition(t, w));
+                uvw[0] = (float)uv[0];
+                uvw[1] = (float)uv[1];
+                uvw[2] = 0.f;
+            }
             sourcePrimUV->setTuple<float>(point, std::span<const float>(uvw, 3));
         }
     }
@@ -535,10 +624,12 @@ GeoScatter::initializeKnobs()
     _outputSourcePrim = createToggle(tr("Output Source Prim"), kGeoScatterParamOutputSourcePrim,
                                      tr("Records on each point, as sourceprim, the number of the polygon it landed on."));
     _outputSourcePrimUV = createToggle(tr("Output Source Prim UV"), kGeoScatterParamOutputSourcePrimUV,
-                                       tr("Records on each point, as sourceprimuv, where on its polygon it landed: the weights "
-                                          "of the second and third corners of the triangle it landed on, and as third "
-                                          "component which triangle of the polygon that is, counting from the first "
-                                          "corner round."));
+                                       tr("Records on each point, as sourceprimuv, where on its polygon it landed: on a triangle "
+                                          "the weights of its second and third corners, on a quad its bilinear (u, v) from "
+                                          "the first corner (u towards the second, v towards the fourth). On larger polygons, "
+                                          "the weights of the second and third corners of the fan triangle it landed on, "
+                                          "and as third component which triangle of the polygon that is, counting from "
+                                          "the first corner round."));
 
     updateEnabled();
 } // GeoScatter::initializeKnobs

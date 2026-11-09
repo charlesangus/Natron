@@ -38,12 +38,6 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-bool
-isBlank(const std::string& s)
-{
-    return s.find_first_not_of(" \t\r\n") == std::string::npos;
-}
-
 template <typename T>
 T
 valueAt(const std::weak_ptr<Knob<T>>& knob,
@@ -67,7 +61,7 @@ GeoDelete::deleteElements(GeoDetailBuilder& builder,
     const GeoDetail& detail = builder.detail();
     const GeoAttribClassEnum cls = params.groupType == eGeoGroupTypePoints ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
     GeoElementMask selected(detail.elementOffsetSize(cls), 0);
-    if (!isBlank(params.group) && !geoSelectElements(detail, cls, params.group, &selected, error)) {
+    if (!geoSelectElements(detail, cls, params.group, &selected, error)) {
         return false;
     }
     if (params.deleteNonSelected) {
@@ -128,7 +122,8 @@ GeoDelete::initializeKnobs()
     group->setName(kGeoDeleteParamGroup);
     group->setHintToolTip(tr("The elements to delete: element numbers and ranges (0-10, 0-20:2), group names or globs, "
                              "* for everything, @attribute comparisons (@P.x<0), and the prefixes ! (everything the "
-                             "term does not select) and ^ (remove the term's elements). Blank deletes nothing.")
+                             "term does not select) and ^ (remove the term's elements). Blank means every element, so Delete Non "
+                             "Selected with a blank group keeps everything.")
                               .toStdString());
     group->setAnimationEnabled(false);
     page->addKnob(group);

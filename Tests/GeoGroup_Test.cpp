@@ -28,6 +28,7 @@
 #include <array>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -216,4 +217,58 @@ TEST(GeoGroupTest, EdgePathPattern)
     const GeoOffset p2 = input.pointMap().offsetFromIndex(2);
     EXPECT_EQ((std::set<GeoEdge> { GeoEdge(p0, p1), GeoEdge(p1, p2) }), edges);
     EXPECT_FALSE(GeoGroup::selectEdges(input, "3", &edges, &error));
+}
+
+TEST(GeoGroupTest, ComparisonsMayHaveSpacesAroundTheOperator)
+{
+    EXPECT_EQ((std::vector<std::string_view> { "@P.y > 0", "left*", "!@Cd.r<=0.5", "^@name == \"foo bar\"", "3-5" }),
+              geoSplitPattern("@P.y > 0  left* !@Cd.r<=0.5 ^@name == \"foo bar\" 3-5"));
+    EXPECT_EQ((std::vector<std::string_view> { "@P.y >0", "@P.y> 0", "@P.y>=0" }), geoSplitPattern("@P.y >0 @P.y> 0 @P.y>=0"));
+    EXPECT_EQ((std::vector<std::string_view> { "@foo", "bar" }), geoSplitPattern("@foo bar"));
+    EXPECT_EQ((std::vector<std::string_view> { "@P.y >" }), geoSplitPattern("@P.y >"));
+
+    GeoDetailBuilder builder(grid());
+    GeoAttributeDesc nameDesc;
+    nameDesc.name = "name";
+    nameDesc.storage = eGeoStorageString;
+    GeoAttribute& name = builder.addAttribute(eGeoAttribClassPrimitive, nameDesc);
+    std::vector<GeoIndex> foo;
+    builder.detail().primitiveMap().forEachLive([&](GeoIndex index, GeoOffset p) {
+        name.setString(std::size_t(p), index % 2 ? "foo" : "bar");
+        if (index % 2) {
+            foo.push_back(index);
+        }
+    });
+    builder.addGroup(eGeoAttribClassPrimitive, "leftEdge").add(builder.detail().primitiveMap().offsetFromIndex(1));
+    builder.addGroup(eGeoAttribClassPrimitive, "leftCorner").add(builder.detail().primitiveMap().offsetFromIndex(4));
+    const GeoDetail input = builder.finish();
+
+    auto selected = [&input](GeoAttribClassEnum cls,
+                             const char* pattern) {
+        GeoElementMask mask;
+        std::string error;
+        EXPECT_TRUE(geoSelectElements(input, cls, pattern, &mask, &error)) << pattern << ": " << error;
+        std::vector<GeoIndex> out;
+        input.indexMap(cls).forEachLive([&](GeoIndex index, GeoOffset offset) {
+            if (mask[std::size_t(offset)]) {
+                out.push_back(index);
+            }
+        });
+
+        return out;
+    };
+
+    const std::vector<GeoIndex> above = selected(eGeoAttribClassPoint, "@P.y>0");
+    EXPECT_FALSE(above.empty());
+    EXPECT_EQ(above, selected(eGeoAttribClassPoint, "@P.y > 0"));
+    EXPECT_EQ(above, selected(eGeoAttribClassPoint, "@P.y >0"));
+    EXPECT_EQ(above, selected(eGeoAttribClassPoint, "@P.y> 0"));
+    EXPECT_EQ(above, selected(eGeoAttribClassPoint, "!@P.y <= 0"));
+
+    EXPECT_EQ(foo, selected(eGeoAttribClassPrimitive, "@name==foo"));
+    EXPECT_EQ(foo, selected(eGeoAttribClassPrimitive, "@name == \"foo\""));
+    EXPECT_EQ(foo, selected(eGeoAttribClassPrimitive, "@name == 'foo'"));
+    EXPECT_EQ(std::vector<GeoIndex>({ 1, 4 }), selected(eGeoAttribClassPrimitive, "left*"));
+    EXPECT_EQ(std::vector<GeoIndex>({ 1, 3, 4 }), selected(eGeoAttribClassPrimitive, "leftEdge 3 leftCorner"));
+    EXPECT_EQ(std::vector<GeoIndex>({ 1 }), selected(eGeoAttribClassPrimitive, "left* ^@name == bar"));
 }

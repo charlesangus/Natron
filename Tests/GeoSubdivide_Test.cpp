@@ -168,3 +168,93 @@ TEST(GeoSubdivide, LoopRejectsQuads)
     EXPECT_FALSE(subdivideGeometry(builder, params, &error));
     EXPECT_FALSE(error.empty());
 }
+
+TEST(GeoSubdivide, VertexGroupsFollowTheFaceVaryingValues)
+{
+    GeoDetailBuilder builder { unitCube() };
+    const GeoOffset face = builder.detail().primitiveMap().offsetFromIndex(0);
+    const GeoVertexRange range = builder.detail().primitiveVertices(face);
+    GeoElementGroup& corners = builder.addGroup(eGeoAttribClassVertex, "firstCorners");
+    for (GeoOffset i = 0; i < range.count; ++i) {
+        corners.add(range.start + i);
+    }
+    const GeoDetail out = subdivide(builder.finish(), GeoSubdivideParams());
+
+    const GeoElementGroup* group = out.findGroup(eGeoAttribClassVertex, "firstCorners");
+    ASSERT_NE(nullptr, group);
+    EXPECT_EQ(16, group->countLive(out.vertexMap()));
+    const GeoElementGroup* first = out.findGroup(eGeoAttribClassPrimitive, "first");
+    ASSERT_NE(nullptr, first);
+    group->forEachLiveMember(out.vertexMap(), [&](GeoIndex, GeoOffset vertex) {
+        EXPECT_TRUE(first->contains(out.vertexPrimitive(vertex))) << "vertex " << vertex;
+    });
+}
+
+TEST(GeoSubdivide, EdgeGroupsFollowBothHalvesOfASplitEdge)
+{
+    GeoDetailBuilder builder { unitCube() };
+    const GeoOffset face = builder.detail().primitiveMap().offsetFromIndex(0);
+    const GeoVertexRange range = builder.detail().primitiveVertices(face);
+    const GeoOffset a = builder.detail().vertexPoint(range.start);
+    const GeoOffset b = builder.detail().vertexPoint(range.start + 1);
+    builder.addEdgeGroup("rim").add(a, b);
+    const std::array<double, 3> pa = builder.detail().pointPosition(a);
+    const std::array<double, 3> pb = builder.detail().pointPosition(b);
+    const GeoDetail cube = builder.finish();
+
+    for (int depth : { 1, 2 }) {
+        GeoSubdivideParams params;
+        params.algorithm = eGeoSubdivideBilinear;
+        params.depth = depth;
+        const GeoDetail out = subdivide(cube, params);
+        const GeoEdgeGroup* rim = out.findEdgeGroup("rim");
+        ASSERT_NE(nullptr, rim);
+        EXPECT_EQ((std::size_t)1 << depth, rim->countLive(out.pointMap())) << "depth " << depth;
+        const std::map<std::pair<GeoOffset, GeoOffset>, int> uses = edgeUses(out);
+        for (const GeoEdge& edge : rim->edges()) {
+            if (!out.pointMap().isLive(edge.p0) || !out.pointMap().isLive(edge.p1)) {
+                continue;
+            }
+            EXPECT_EQ(1u, uses.count(std::make_pair(edge.p0, edge.p1)));
+            // Bilinear subdivision leaves the halves on the original edge's line.
+            for (GeoOffset p : { edge.p0, edge.p1 }) {
+                const std::array<double, 3> q = out.pointPosition(p);
+                double t = -1.;
+                for (int k = 0; k < 3; ++k) {
+                    if (std::abs(pb[k] - pa[k]) > 1e-9) {
+                        t = (q[k] - pa[k]) / (pb[k] - pa[k]);
+                    }
+                }
+                EXPECT_GE(t, -1e-9);
+                EXPECT_LE(t, 1. + 1e-9);
+                for (int k = 0; k < 3; ++k) {
+                    EXPECT_NEAR(pa[k] + t * (pb[k] - pa[k]), q[k], 1e-9);
+                }
+            }
+        }
+    }
+}
+
+TEST(GeoSubdivide, AUserGroupNamedLikeAnInternalOneIsKept)
+{
+    GeoDetailBuilder builder { unitCube() };
+    const GeoOffset second = builder.detail().primitiveMap().offsetFromIndex(1);
+    builder.addGroup(eGeoAttribClassPrimitive, "__geoSubdivideNewFaces").add(second);
+    GeoSubdivideParams params;
+    params.group = "first";
+    ASSERT_TRUE(params.recomputeNormals);
+    const GeoDetail out = subdivide(builder.finish(), params);
+
+    const GeoElementGroup* group = out.findGroup(eGeoAttribClassPrimitive, "__geoSubdivideNewFaces");
+    ASSERT_NE(nullptr, group);
+    EXPECT_EQ(1, group->countLive(out.primitiveMap()));
+    EXPECT_TRUE(group->contains(second));
+    const GeoAttribute* n = out.findAttribute(eGeoAttribClassVertex, "N");
+    ASSERT_NE(nullptr, n);
+    out.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        const double x = n->get<float>((std::size_t)vertex, 0);
+        const double y = n->get<float>((std::size_t)vertex, 1);
+        const double z = n->get<float>((std::size_t)vertex, 2);
+        EXPECT_NEAR(1., std::sqrt(x * x + y * y + z * z), 1e-5) << "vertex " << vertex;
+    });
+}

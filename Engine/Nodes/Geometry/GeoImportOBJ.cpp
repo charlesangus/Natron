@@ -31,6 +31,7 @@
 
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Geometry/ObjParser.h"
 
 NATRON_NAMESPACE_ENTER
@@ -45,6 +46,25 @@ GeoImportOBJ::importFile(const std::string& path,
     }
 
     return ObjParser::parseFile(path, builder, error);
+}
+
+bool
+GeoImportOBJ::isFrameSequencePattern(const std::string& pattern)
+{
+    if (pattern.find('#') != std::string::npos) {
+        return true;
+    }
+    for (std::size_t i = pattern.find('%'); i != std::string::npos; i = pattern.find('%', i + 1)) {
+        std::size_t j = i + 1;
+        while (j < pattern.size() && pattern[j] >= '0' && pattern[j] <= '9') {
+            ++j;
+        }
+        if (j < pattern.size() && pattern[j] == 'd') {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 GeoImportOBJ::GeoImportOBJ(NodePtr node)
@@ -74,9 +94,21 @@ GeoImportOBJ::initializeKnobs()
                              .toStdString());
     file->setFileExtensions({ "obj" });
     file->setAnimationEnabled(false);
-    file->setShowsReloadButton(false);
     page->addKnob(file);
     _file = file;
+}
+
+StatusEnum
+GeoImportOBJ::getPreferredMetadataAt(double /*time*/,
+                                     ViewIdx /*view*/,
+                                     NodeMetadata& metadata)
+{
+    // The geometry cache keys on time only for frame-varying nodes; without this every frame of a
+    // sequence would be served the first frame's mesh.
+    const KnobFilePtr file = _file.lock();
+    metadata.setIsFrameVarying(file && isFrameSequencePattern(file->getValue()));
+
+    return eStatusOK;
 }
 
 StatusEnum

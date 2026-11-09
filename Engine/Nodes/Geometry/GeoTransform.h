@@ -29,7 +29,6 @@
 #include "Global/Macros.h"
 
 #include <array>
-#include <mutex>
 #include <optional>
 #include <string>
 
@@ -167,10 +166,6 @@ private:
     KnobBoolWPtr _invert;
     KnobStringWPtr _attributes;
     KnobBoolWPtr _keepVectorLengths;
-
-    // The last input rendered, for Centre Pivot.
-    std::mutex _lastInputLock;
-    GeoDetailConstPtr _lastInput;
 };
 
 NATRON_NAMESPACE_EXIT

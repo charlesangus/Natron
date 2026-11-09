@@ -85,10 +85,11 @@ struct GeoSubdivideParams {
  * Point attributes, positions included, follow the refinement rule; vertex attributes are
  * interpolated face-varying, so values that differ at a point (uv seams, hard normals) stay
  * apart. Every child face carries its parent's primitive attributes and primitive groups; a new
- * point joins the point groups of the point it is mostly made of. With recomputeNormals, an N
- * the detail had is computed afresh from the new faces on the same element class instead.
- * Other primitives, and points only they use, are untouched; vertex groups and edge groups on
- * the replaced polygons are not carried. Fails, with *errorMessage set, for a malformed group,
+ * point joins the point groups of the point it is mostly made of, and a new vertex the vertex
+ * groups of the corner its face-varying value is mostly made of. An edge in an edge group passes
+ * the group on to the edges it is split into. With recomputeNormals, an N the detail had is
+ * computed afresh from the new faces on the same element class instead. Other primitives, and
+ * points only they use, are untouched. Fails, with *errorMessage set, for a malformed group,
  * non-triangles under Loop, or topology the refiner rejects.
  **/
 bool subdivideGeometry(GeoDetailBuilder& detail,

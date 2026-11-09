@@ -26,14 +26,26 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <fstream>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QString>
+#include <QTemporaryDir>
+
+#include "BaseTest.h"
+
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/GeoDetail.h"
+#include "Engine/KnobFile.h"
+#include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Geometry/GeoImportOBJ.h"
 #include "Engine/Nodes/Geometry/ObjParser.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
 
@@ -153,4 +165,104 @@ TEST(GeoImportOBJTest, ErrorsAndEmptyName)
         EXPECT_TRUE(GeoImportOBJ::importFile("", builder, &error));
         EXPECT_EQ(0, builder.finish().pointCount());
     }
+}
+
+TEST(GeoImportOBJTest, FrameSequencePatterns)
+{
+    EXPECT_TRUE(GeoImportOBJ::isFrameSequencePattern("mesh.####.obj"));
+    EXPECT_TRUE(GeoImportOBJ::isFrameSequencePattern("mesh.%04d.obj"));
+    EXPECT_TRUE(GeoImportOBJ::isFrameSequencePattern("mesh.%d.obj"));
+    EXPECT_FALSE(GeoImportOBJ::isFrameSequencePattern("mesh.obj"));
+    EXPECT_FALSE(GeoImportOBJ::isFrameSequencePattern("mesh.%v.obj"));
+    EXPECT_FALSE(GeoImportOBJ::isFrameSequencePattern("100%.obj"));
+}
+
+namespace {
+void
+writeObj(const QString& path,
+         const char* contents)
+{
+    std::ofstream out(path.toStdString().c_str(), std::ios::binary | std::ios::trunc);
+    out << contents;
+}
+
+const char* const kTriangleObj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+const char* const kQuadObj = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n";
+} // namespace
+
+class GeoImportOBJNodeTest
+    : public BaseTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        ASSERT_TRUE(_tmp.isValid());
+        _import = createNode(QString::fromUtf8(PLUGINID_NATRON_GEOIMPORTOBJ));
+        ASSERT_TRUE(_import != NULL);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        if (_import) {
+            appPTR->removeAllCacheEntriesForHolder(_import.get(), true);
+            _import->destroyNode(false, false);
+            _import.reset();
+        }
+        BaseTest::TearDown();
+    }
+
+    KnobFilePtr fileKnob() const
+    {
+        return std::dynamic_pointer_cast<KnobFile>(_import->getKnobByName(kGeoImportOBJParamFile));
+    }
+
+    // Through the geometry cache, so a wrong cache key serves a stale mesh.
+    GeoIndex pointCountAt(double time)
+    {
+        GeoDetailConstPtr detail;
+        std::string error;
+        const EffectInstance::RenderRoIRetCode ret = _import->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, ViewIdx(0), false /*byPassCache*/), &detail, &error);
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, ret) << error;
+        if (!detail) {
+            return -1;
+        }
+
+        return detail->pointCount();
+    }
+
+    QTemporaryDir _tmp;
+    NodePtr _import;
+};
+
+TEST_F(GeoImportOBJNodeTest, ASequenceIsFrameVaryingAndEachFrameReadsItsFile)
+{
+    writeObj(_tmp.filePath(QString::fromUtf8("mesh.0001.obj")), kTriangleObj);
+    writeObj(_tmp.filePath(QString::fromUtf8("mesh.0002.obj")), kQuadObj);
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+
+    file->setValue(_tmp.filePath(QString::fromUtf8("mesh.0001.obj")).toStdString());
+    EXPECT_FALSE(_import->getEffectInstance()->getTimeInvariantMetadata()->getIsFrameVarying());
+
+    file->setValue(_tmp.filePath(QString::fromUtf8("mesh.####.obj")).toStdString());
+    EXPECT_TRUE(_import->getEffectInstance()->getTimeInvariantMetadata()->getIsFrameVarying());
+    EXPECT_EQ(3, pointCountAt(1.));
+    EXPECT_EQ(4, pointCountAt(2.));
+    EXPECT_EQ(3, pointCountAt(1.));
+}
+
+TEST_F(GeoImportOBJNodeTest, ReloadReadsAFileRewrittenInPlace)
+{
+    const QString path = _tmp.filePath(QString::fromUtf8("mesh.obj"));
+    writeObj(path, kTriangleObj);
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    EXPECT_TRUE(file->showsReloadButton());
+
+    file->setValue(path.toStdString());
+    EXPECT_EQ(3, pointCountAt(1.));
+
+    writeObj(path, kQuadObj);
+    file->reloadFile();
+    EXPECT_EQ(4, pointCountAt(1.));
 }

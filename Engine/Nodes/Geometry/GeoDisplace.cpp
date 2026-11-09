@@ -188,6 +188,39 @@ noiseAt(const NoiseCore::NoiseParams& noise,
     return (double)NoiseCore::noise4(noise, q);
 }
 
+// Per point offset: the point N, or for N on vertices or primitives the mean of the unit normals
+// of the point's vertices or of the primitives using it, so the input's N is read, never replaced.
+std::vector<std::array<double, 3>>
+pointDirections(const GeoDetail& d,
+                GeoAttribClassEnum normalClass)
+{
+    std::vector<std::array<double, 3>> directions((std::size_t)d.pointMap().offsetSize(), std::array<double, 3> { 0., 0., 0. });
+    const GeoAttribute* normal = d.findAttribute(normalClass, kNormalName);
+    std::vector<double> n((std::size_t)normal->tupleSize());
+    if (normalClass == eGeoAttribClassPoint) {
+        d.pointMap().forEachLive([&](GeoIndex, GeoOffset point) {
+            geoReadNumeric(*normal, (std::size_t)point, std::span<double>(n));
+            directions[(std::size_t)point] = { n[0], n[1], n[2] };
+        });
+
+        return directions;
+    }
+    d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        const GeoOffset element = (normalClass == eGeoAttribClassVertex) ? vertex : d.vertexPrimitive(vertex);
+        geoReadNumeric(*normal, (std::size_t)element, std::span<double>(n));
+        const double length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (!(length > 0.) || !std::isfinite(length)) {
+            return;
+        }
+        std::array<double, 3>& sum = directions[(std::size_t)d.vertexPoint(vertex)];
+        for (int c = 0; c < 3; ++c) {
+            sum[c] += n[c] / length;
+        }
+    });
+
+    return directions;
+}
+
 GeoNormalsTargetEnum
 normalsTarget(GeoAttribClassEnum cls)
 {
@@ -255,16 +288,25 @@ displaceGeometry(GeoDetailBuilder& detail,
     }
 
     GeoAttribClassEnum normalClass = eGeoAttribClassPoint;
+    bool hasNormal = false;
     for (GeoAttribClassEnum cls : { eGeoAttribClassPoint, eGeoAttribClassVertex, eGeoAttribClassPrimitive }) {
         if (isUsableNormal(detail.detail().findAttribute(cls, kNormalName))) {
             normalClass = cls;
+            hasNormal = true;
             break;
         }
     }
-    if (!isUsableNormal(detail.detail().findAttribute(eGeoAttribClassPoint, kNormalName))) {
+    if (!hasNormal) {
         GeoNormalsParams normals;
         normals.target = eGeoNormalsTargetPoints;
         if (!GeoNormals::computeNormals(detail, normals, errorMessage)) {
+            return false;
+        }
+        if (!isUsableNormal(detail.detail().findAttribute(eGeoAttribClassPoint, kNormalName))) {
+            if (errorMessage) {
+                *errorMessage = "The geometry has no polygons to take normals from.";
+            }
+
             return false;
         }
     }
@@ -272,14 +314,7 @@ displaceGeometry(GeoDetailBuilder& detail,
     std::vector<std::pair<GeoOffset, std::array<double, 3>>> moved;
     {
         const GeoDetail& d = detail.detail();
-        const GeoAttribute* normal = d.findAttribute(eGeoAttribClassPoint, kNormalName);
-        if (!isUsableNormal(normal)) {
-            if (errorMessage) {
-                *errorMessage = "The geometry has no polygons to take normals from.";
-            }
-
-            return false;
-        }
+        const std::vector<std::array<double, 3>> directions = pointDirections(d, normalClass);
         NoiseCore::NoiseParams noise = NoiseCore::defaultNoiseParams();
         noise.type = std::clamp(params.noiseType, NoiseCore::kNoiseTypePerlin, NoiseCore::kNoiseTypeWhite);
         noise.fractal = std::clamp(params.fractal, NoiseCore::kNoiseFractalNone, NoiseCore::kNoiseFractalHybrid);
@@ -289,12 +324,11 @@ displaceGeometry(GeoDetailBuilder& detail,
         noise.seed = params.seed;
         const bool byImage = params.displaceBy == eGeoDisplaceByImage;
         const GeoPointUVReader uvs(d, params.uvAttribute);
-        std::vector<double> n((std::size_t)normal->tupleSize());
         d.pointMap().forEachLive([&](GeoIndex, GeoOffset point) {
             if (!points[(std::size_t)point]) {
                 return;
             }
-            geoReadNumeric(*normal, (std::size_t)point, std::span<double>(n));
+            const std::array<double, 3>& n = directions[(std::size_t)point];
             const double length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
             if (!(length > 0.) || !std::isfinite(length)) {
                 return;
@@ -493,7 +527,7 @@ GeoDisplace::initializeKnobs()
     KnobBoolPtr recomputeNormals = createKnob<KnobBool>(tr("Recompute Normals").toStdString());
     recomputeNormals->setName(kGeoDisplaceParamRecomputeNormals);
     recomputeNormals->setHintToolTip(tr("Computes N afresh from the displaced surface, on the points, vertices or primitives "
-                                        "the input had it on. Off, the points keep the normals they were pushed along.")
+                                        "the input had it on. Off, the input's N is kept as it was.")
                                          .toStdString());
     recomputeNormals->setDefaultValue(true);
     recomputeNormals->setAnimationEnabled(false);

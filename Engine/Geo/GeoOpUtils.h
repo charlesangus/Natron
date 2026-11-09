@@ -58,7 +58,10 @@ std::vector<std::array<double, 3>> geoPointPositions(const GeoDetail& detail);
 /** @brief The offsets selected in @p mask, ascending. */
 std::vector<GeoOffset> geoMaskedOffsets(const GeoElementMask& mask);
 
-/** @brief The whitespace-separated terms of a pattern. */
+/**
+ * @brief The whitespace-separated terms of a group pattern, an "@attr op value" comparison
+ * counting as one term even with spaces around its operator or inside a quoted value.
+ **/
 std::vector<std::string_view> geoSplitPattern(std::string_view pattern);
 
 /** @brief Glob match with '*' (any run) and '?' (any one character). */
@@ -98,7 +101,10 @@ struct GeoAttribCompare {
  **/
 bool geoParseAttribComponent(std::string_view text, std::string* name, int* component);
 
-/** @brief Parses "@name op value", with or without the '@'; op is one of = == != < <= > >=. */
+/**
+ * @brief Parses "@name op value", with or without the '@'; op is one of = == != < <= > >=. A
+ * value in double or single quotes is taken without them.
+ **/
 bool geoParseAttribCompare(std::string_view text, GeoAttribCompare* compare, std::string* error);
 
 /** @brief False when the component is out of the attribute's tuple or the attribute is an array. */
@@ -112,7 +118,7 @@ enum GeoGroupTypeEnum {
 
 /**
  * @brief Selects elements of a point, vertex or primitive class with a group pattern. Tokens
- * are separated by spaces and applied left to right:
+ * are separated by spaces (see geoSplitPattern()) and applied left to right:
  *   - "N", "A-B", "A-B:step" and "A-B:every,of": element numbers ("0-10:2" every second one,
  *     "0-9:2,3" two of every three);
  *   - a group name of the class, or a glob over the class's group names;

@@ -71,6 +71,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/DiskCacheNode.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FileDownloader.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
@@ -1292,6 +1293,7 @@ NodePtr
 AppInstance::createNodeInternal(CreateNodeArgs& args,
                                 CreateNodeStatusEnum* status)
 {
+    GraphEditRecorder::CreationScope creationScope(this);
     CreateNodeStatusEnum localStatus;
     if (!status) {
         status = &localStatus;

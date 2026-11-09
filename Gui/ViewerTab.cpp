@@ -1581,13 +1581,13 @@ ViewerTab::refreshSceneDisplayTransform()
     ProjectPtr project = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
     if (colorManagement) {
-        // The look is left out: Hydra's OpenColorIO 2 path sets the look name as the display
-        // (v26.08 hdx/colorCorrectionTask.cpp), which would break the whole transform.
         getDisplayTransform(&transform.display, &transform.view, nullptr);
         transform.config = colorManagement->getConfig();
         transform.colorSpace = project->getWorkingColorSpace();
     }
     if (_imp->viewerNode) {
+        // As the 2D viewer takes it: a look the config does not list is none.
+        _imp->viewerNode->getResolvedDisplayTransform(nullptr, nullptr, &transform.look);
         transform.gain = _imp->viewerNode->getGain();
         transform.gamma = _imp->viewerNode->getGamma();
     }

@@ -159,7 +159,7 @@ try:
 
     def viewer_node():
         if not _viewer:
-            _viewer.append(app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer"))
+            _viewer.append(app.getNode("Viewer1") or app.createNode("Viewer"))
             require(_viewer[0] is not None, "the project has a Viewer")
         return _viewer[0]
 

@@ -7,3 +7,7 @@ SceneViewportStorm.ARefinementFailureClearsAtTheNextSceneEdit hung for ~290 s un
 ### 2026-11-09T01:00:00Z — change-request
 - refs: Tests/Scene/ProgressiveRender_Test.cpp:654
 ProgressiveRenderTest.ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverThem is flaky under debug CI load: frames.back()->samples was 1, expected 12 (PR #228 taskgraph job, run 42533824384 first attempt, AMD EPYC 7763; passed on rerun; branch didn't touch scene rendering). Same family as the SceneViewportStorm refinement-failure hang: Cycles progressive refinement timing under `ctest -j`. Make the test wait on the refinement's own completion signal rather than wall time.
+
+### 2026-11-09T19:00Z — change-request
+- refs: Engine/GenericSchedulerThread.cpp (`waitForAbortToComplete_internal`), M219 - Curves Follow Vectors
+- `GenericSchedulerThreadPrivate::waitForAbortToComplete_internal` tests `(state == eThreadStateAborted) || GenericSchedulerThread::eThreadStateIdle`. The second operand is a non-zero enum constant, so the condition is always true and every "blocking" abort returns at once. It has done this since the upstream code. Callers that rely on the wait free state the worker still uses: the render engine, the tracker (`abortTracking_blocking`), previews, the backup thread and `Node::abortAnyProcessing_blocking`. M219 hit it as a segfault in its follow task and works around it with its own mutex. A fix makes those callers actually block the main thread, so it needs a deadlock review of each caller and a check that each worker notices an abort quickly (UI-responsiveness rule).

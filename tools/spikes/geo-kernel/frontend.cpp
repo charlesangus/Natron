@@ -1,4 +1,4 @@
-// A tiny typed front end: just enough of a VEX-like snippet language for the backend comparison
+// A tiny typed front end: just enough of the geometry kernel snippet language for the backend comparison
 // (declarations, @P/@N/@Cd/@ptnum/@numpt/@Time, arithmetic, comparisons, one level of if/else
 // or more, and a handful of builtins).
 

@@ -33,6 +33,7 @@
 
 #include "Engine/ContentHasher.h"
 #include "Engine/Geo/GeoPacked.h"
+#include "Engine/Geo/GeoPointTree.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -71,6 +72,18 @@ struct GeoDetail::Cache {
     std::atomic<U64> hash { 0 };
     std::mutex mutex;
     std::shared_ptr<const GeoReverseTopology> reverse;
+    // Separate from mutex so building a tree does not hold up the other cached values.
+    std::mutex treeMutex;
+    std::shared_ptr<const GeoPointTree> pointTree;
+    // Hash of the P column, its precision and the point numbering the tree was built from.
+    U64 pointTreeKey = 0;
+
+    void inheritPointTree(Cache& from)
+    {
+        std::lock_guard<std::mutex> lock(from.treeMutex);
+        pointTree = from.pointTree;
+        pointTreeKey = from.pointTreeKey;
+    }
 };
 
 namespace {
@@ -324,6 +337,28 @@ GeoDetail::reverseTopology() const
     return _cache->reverse;
 }
 
+std::shared_ptr<const GeoPointTree>
+GeoDetail::pointTree() const
+{
+    ContentHasher hasher;
+    hasher.appendBool(_pointPrecision64);
+    hashIndexMap(hasher, pointMap());
+    hasher.appendU64(_attributes[eGeoAttribClassPoint].front()->contentHash());
+    const U64 key = hasher.finalize();
+
+    std::lock_guard<std::mutex> lock(_cache->treeMutex);
+    if (_cache->pointTree && _cache->pointTreeKey == key) {
+        return _cache->pointTree;
+    }
+    std::shared_ptr<const GeoPointTree> tree = std::make_shared<const GeoPointTree>(*this);
+    if (!_building) {
+        _cache->pointTree = tree;
+        _cache->pointTreeKey = key;
+    }
+
+    return tree;
+}
+
 void
 GeoDetail::warmPageHashes() const
 {
@@ -466,8 +501,11 @@ GeoDetailBuilder::startBuilding()
     // without letting this builder's edits reach the source's cache.
     std::shared_ptr<GeoDetail::Cache> cache = std::make_shared<GeoDetail::Cache>();
     if (_detail._cache) {
-        std::lock_guard<std::mutex> lock(_detail._cache->mutex);
-        cache->reverse = _detail._cache->reverse;
+        {
+            std::lock_guard<std::mutex> lock(_detail._cache->mutex);
+            cache->reverse = _detail._cache->reverse;
+        }
+        cache->inheritPointTree(*_detail._cache);
     }
     _detail._cache = std::move(cache);
     _detail._building = true;
@@ -621,7 +659,11 @@ GeoDetailBuilder::topologyChanged()
     if (geoIsSoleOwner(_detail._cache)) {
         _detail._cache->reverse.reset();
     } else {
-        _detail._cache = std::make_shared<GeoDetail::Cache>();
+        std::shared_ptr<GeoDetail::Cache> cache = std::make_shared<GeoDetail::Cache>();
+        if (_detail._cache) {
+            cache->inheritPointTree(*_detail._cache);
+        }
+        _detail._cache = std::move(cache);
     }
 }
 

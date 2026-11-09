@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -36,9 +37,12 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <new>
 #include <numbers>
 #include <optional>
 #include <set>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 NATRON_NAMESPACE_ENTER
@@ -46,6 +50,18 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 using B = KernelBaseType;
+
+// Bounds that keep a hostile snippet from exhausting the stack or memory while it compiles. The
+// parser, the syntax tree's destructors and the compiler all recurse, so both the parser's nesting
+// and the height of an expression tree (left-associative chains such as a+b+c grow it without
+// parser recursion) are capped; with those caps the trees' recursive destructors stay shallow.
+constexpr int kMaxNesting = 256;
+// Inlined function bodies stack the compiler's recursion, so it is capped across inlining.
+constexpr int kMaxCompileDepth = 1024;
+// Inlining copies a function's body per call, so a chain of functions that each call the next twice
+// grows exponentially.
+constexpr std::size_t kMaxInlinedInstructions = std::size_t(1) << 18;
+constexpr std::size_t kMaxInlinedNodes = std::size_t(1) << 18;
 
 struct Loc {
     int line = 0;
@@ -317,6 +333,7 @@ struct Expr {
     std::int64_t intValue = 0;
     double floatValue = 0.;
     bool prefixForm = false;
+    int height = 1;
     std::vector<ExprPtr> args;
 };
 
@@ -484,6 +501,38 @@ public:
 private:
     std::vector<KernelToken> _t;
     std::size_t _i = 0;
+    int _depth = 0;
+
+    class Nest {
+    public:
+        explicit Nest(Parser& p)
+            : _p(p)
+        {
+            if (_p._depth >= kMaxNesting) {
+                fail(locOf(_p.cur()), "the snippet nests more than " + std::to_string(kMaxNesting) + " levels deep");
+            }
+            ++_p._depth;
+        }
+        ~Nest() { --_p._depth; }
+        Nest(const Nest&) = delete;
+        Nest& operator=(const Nest&) = delete;
+
+    private:
+        Parser& _p;
+    };
+
+    static ExprPtr measured(ExprPtr e)
+    {
+        int h = 0;
+        for (const ExprPtr& a : e->args) {
+            h = std::max(h, a->height);
+        }
+        e->height = h + 1;
+        if (e->height > kMaxNesting) {
+            fail(e->loc, "the expression nests more than " + std::to_string(kMaxNesting) + " levels deep");
+        }
+        return e;
+    }
 
     const KernelToken& cur() const { return _t[_i]; }
     const KernelToken& peek(std::size_t n) const { return _t[std::min(_i + n, _t.size() - 1)]; }
@@ -712,6 +761,7 @@ private:
 
     StmtPtr statement()
     {
+        const Nest nest(*this);
         const KernelToken t = cur();
         auto s = std::make_unique<Stmt>();
         s->loc = locOf(t);
@@ -855,6 +905,7 @@ private:
 
     ExprPtr assignment()
     {
+        const Nest nest(*this);
         ExprPtr lhs = ternary();
         static const char* const ops[] = { "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=" };
         for (const char* op : ops) {
@@ -865,7 +916,7 @@ private:
                 e->text = op;
                 e->args.push_back(std::move(lhs));
                 e->args.push_back(assignment());
-                return e;
+                return measured(std::move(e));
             }
         }
         return lhs;
@@ -883,8 +934,11 @@ private:
         e->args.push_back(std::move(c));
         e->args.push_back(expression());
         expect(":");
-        e->args.push_back(ternary());
-        return e;
+        {
+            const Nest nest(*this);
+            e->args.push_back(ternary());
+        }
+        return measured(std::move(e));
     }
 
     ExprPtr binary(std::size_t level)
@@ -916,17 +970,30 @@ private:
             ++_i;
             e->args.push_back(std::move(a));
             e->args.push_back(binary(level + 1));
-            a = std::move(e);
+            a = measured(std::move(e));
         }
         return a;
     }
 
-    ExprPtr unary()
+    static void checkIntRange(const Expr& e)
+    {
+        if (e.kind == ExprKind::eInt && (e.intValue > INT32_MAX || e.intValue < INT32_MIN)) {
+            fail(e.loc, "integer literal " + std::to_string(e.intValue) + " is out of range");
+        }
+    }
+
+    // negated: a '-' applies to the result, which lets the literal 2147483648 through to become
+    // INT32_MIN.
+    ExprPtr unary(bool negated = false)
     {
         const KernelToken t = cur();
         if (t.isPunct("-") || t.isPunct("+") || t.isPunct("!") || t.isPunct("~")) {
             ++_i;
-            ExprPtr a = unary();
+            ExprPtr a;
+            {
+                const Nest nest(*this);
+                a = unary(t.text == "-");
+            }
             if (t.text == "+") {
                 return a;
             }
@@ -934,27 +1001,37 @@ private:
                 a->intValue = -a->intValue;
                 a->floatValue = -a->floatValue;
                 a->loc = locOf(t);
+                if (!negated) {
+                    checkIntRange(*a);
+                }
                 return a;
             }
             ExprPtr e = make(ExprKind::eUnary, locOf(t));
             e->text = t.text;
             e->args.push_back(std::move(a));
-            return e;
+            return measured(std::move(e));
         }
         if (t.isPunct("++") || t.isPunct("--")) {
             ++_i;
             ExprPtr e = make(ExprKind::eIncDec, locOf(t));
             e->text = t.text;
             e->prefixForm = true;
-            e->args.push_back(unary());
-            return e;
+            {
+                const Nest nest(*this);
+                e->args.push_back(unary());
+            }
+            return measured(std::move(e));
         }
-        return postfix();
+        return postfix(negated);
     }
 
-    ExprPtr postfix()
+    ExprPtr postfix(bool negated)
     {
         ExprPtr e = primary();
+        const KernelToken& next = cur();
+        if (!negated || next.isPunct("[") || next.isPunct(".") || next.isPunct("++") || next.isPunct("--")) {
+            checkIntRange(*e);
+        }
         while (true) {
             const KernelToken t = cur();
             if (t.isPunct("[")) {
@@ -963,7 +1040,7 @@ private:
                 n->args.push_back(std::move(e));
                 n->args.push_back(expression());
                 expect("]");
-                e = std::move(n);
+                e = measured(std::move(n));
             } else if (t.isPunct(".")) {
                 ++_i;
                 if (cur().kind != KernelToken::Kind::eIdentifier) {
@@ -973,13 +1050,13 @@ private:
                 n->text = cur().text;
                 ++_i;
                 n->args.push_back(std::move(e));
-                e = std::move(n);
+                e = measured(std::move(n));
             } else if (t.isPunct("++") || t.isPunct("--")) {
                 ++_i;
                 ExprPtr n = make(ExprKind::eIncDec, locOf(t));
                 n->text = t.text;
                 n->args.push_back(std::move(e));
-                e = std::move(n);
+                e = measured(std::move(n));
             } else {
                 return e;
             }
@@ -1025,7 +1102,11 @@ private:
                     ++k;
                 }
                 if (k > lead.size() && k + 1 < t.text.size() && t.text[k] == '_') {
-                    e->input = std::stoi(t.text.substr(lead.size(), k - lead.size()));
+                    const char* first = t.text.data() + lead.size();
+                    const std::from_chars_result r = std::from_chars(first, t.text.data() + k, e->input);
+                    if (r.ec != std::errc()) {
+                        fail(locOf(t), "input number " + t.text.substr(lead.size(), k - lead.size()) + " is out of range");
+                    }
                     e->text = t.text.substr(k + 1);
                 }
             }
@@ -1046,7 +1127,7 @@ private:
                     } while (accept(","));
                 }
                 expect(")");
-                return e;
+                return measured(std::move(e));
             }
             if (typeKeyword(t.text)) {
                 fail(locOf(t), "expected an expression, found the type '" + t.text + "'");
@@ -1071,7 +1152,7 @@ private:
                     } while (accept(","));
                 }
                 expect("}");
-                return e;
+                return measured(std::move(e));
             }
             break;
         case KernelToken::Kind::eEnd:
@@ -1509,7 +1590,7 @@ public:
             s.readOnly = p.isConst;
             params.push_back(s);
         }
-        inlineFunction(fn, params);
+        inlineFunction(fn, params, fn.loc);
         endStatement();
         popScope();
     }
@@ -1578,6 +1659,11 @@ private:
     std::vector<LoopContext> _loops;
     std::vector<FunctionContext> _functions;
     std::vector<const Function*> _inlineStack;
+    // The call site of each inlined function on _inlineStack.
+    std::vector<Loc> _inlineSites;
+    std::size_t _inlineStart = 0;
+    std::size_t _inlinedNodes = 0;
+    int _depth = 0;
     std::set<const Function*> _called;
     std::map<std::string, std::vector<const Function*>> _userFunctions;
     std::set<std::string> _writtenBindings;
@@ -1680,8 +1766,17 @@ private:
         in.a = a;
         in.b = b;
         in.c = c;
+        if (!_inlineSites.empty() && _code.size() - _inlineStart >= kMaxInlinedInstructions) {
+            failInlined(_inlineSites.front(), "inlining '" + _inlineStack.front()->name + "' makes the kernel larger than " + std::to_string(kMaxInlinedInstructions) + " instructions");
+        }
         _code.push_back(in);
         return _code.size() - 1;
+    }
+
+    // Errors met while inlining point at the outermost call, which is what the user wrote.
+    [[noreturn]] void failInlined(Loc at, std::string message) const
+    {
+        fail(_inlineSites.empty() ? at : _inlineSites.front(), std::move(message));
     }
 
     void attachOperands(std::size_t at, const std::vector<KernelOperand>& operands)
@@ -2737,7 +2832,34 @@ private:
 
     // ---- expressions
 
+    class Deeper {
+    public:
+        Deeper(Compiler& c, Loc at)
+            : _c(c)
+        {
+            if (_c._depth >= kMaxCompileDepth) {
+                _c.failInlined(at, "the snippet nests more than " + std::to_string(kMaxCompileDepth) + " levels deep once its functions are inlined");
+            }
+            ++_c._depth;
+            if (!_c._inlineSites.empty() && ++_c._inlinedNodes > kMaxInlinedNodes) {
+                _c.failInlined(at, "inlining '" + _c._inlineStack.front()->name + "' makes the kernel larger than " + std::to_string(kMaxInlinedNodes) + " expressions and statements");
+            }
+        }
+        ~Deeper() { --_c._depth; }
+        Deeper(const Deeper&) = delete;
+        Deeper& operator=(const Deeper&) = delete;
+
+    private:
+        Compiler& _c;
+    };
+
     Value expr(const Expr& e, KernelType expected = {}, bool discard = false)
+    {
+        const Deeper deeper(*this, e.loc);
+        return exprAt(e, expected, discard);
+    }
+
+    Value exprAt(const Expr& e, KernelType expected, bool discard)
     {
         switch (e.kind) {
         case ExprKind::eInt:
@@ -3627,12 +3749,17 @@ private:
             }
             params.push_back(s);
         }
-        return inlineFunction(*fn, params);
+        return inlineFunction(*fn, params, e.loc);
     }
 
-    Value inlineFunction(const Function& fn, const std::vector<Symbol>& params)
+    Value inlineFunction(const Function& fn, const std::vector<Symbol>& params, Loc site)
     {
+        if (_inlineSites.empty()) {
+            _inlineStart = _code.size();
+            _inlinedNodes = 0;
+        }
         _inlineStack.push_back(&fn);
+        _inlineSites.push_back(site);
         _called.insert(&fn);
         FunctionContext ctx;
         ctx.fn = &fn;
@@ -3674,6 +3801,7 @@ private:
         _mask = savedMask;
         _masked = savedMasked;
         _inlineStack.pop_back();
+        _inlineSites.pop_back();
         Value out = result;
         out.temporary = !fn.result.isVoid();
         return out;
@@ -3977,6 +4105,7 @@ private:
 
     void statement(const Stmt& s)
     {
+        const Deeper deeper(*this, s.loc);
         beginStatement();
         switch (s.kind) {
         case StmtKind::eEmpty:
@@ -4101,11 +4230,11 @@ bool
 kernelCompile(std::string_view source, const KernelBinding& binding, KernelProgram& program, KernelCompileError& error)
 {
     program = KernelProgram {};
-    std::vector<KernelToken> tokens;
-    if (!kernelLex(source, tokens, error)) {
-        return false;
-    }
     try {
+        std::vector<KernelToken> tokens;
+        if (!kernelLex(source, tokens, error)) {
+            return false;
+        }
         const Unit unit = Parser(std::move(tokens)).parse();
         std::vector<const Function*> uncalled;
         {
@@ -4120,6 +4249,14 @@ kernelCompile(std::string_view source, const KernelBinding& binding, KernelProgr
         }
     } catch (const Failure& f) {
         error = f.error;
+        program = KernelProgram {};
+        return false;
+    } catch (const std::bad_alloc&) {
+        error = KernelCompileError { 0, 0, "the snippet is too large to compile" };
+        program = KernelProgram {};
+        return false;
+    } catch (const std::exception& e) {
+        error = KernelCompileError { 0, 0, std::string("the snippet could not be compiled: ") + e.what() };
         program = KernelProgram {};
         return false;
     }

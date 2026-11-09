@@ -26,8 +26,11 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -195,6 +198,51 @@ TEST(GeoKernelTopologyTest, NearpointOnTheSecondInputMatchesBruteForce)
     GeoPointTree tree(second);
     tree.within(first.pointPosition(0), 1.5, 4, within);
     EXPECT_LE(within.size(), 4u);
+}
+
+TEST(GeoKernelTopologyTest, NearpointIgnoresPointsWithoutAPosition)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    GeoDetailBuilder targetsBuilder(makeScatter(3000, 5u));
+    for (GeoOffset o = 0; o < 3000; o += 7) {
+        targetsBuilder.setPointPosition(o, o % 2 ? nan : 1., nan, 2.);
+    }
+    const GeoDetail second = targetsBuilder.finish();
+    GeoDetailBuilder queriesBuilder(makeScatter(kPage + 3, 11u));
+    queriesBuilder.setPointPosition(4, nan, nan, nan);
+    const GeoDetail first = queriesBuilder.finish();
+
+    const std::shared_ptr<const GeoPointTree> tree = GeoPointTree::forDetail(second);
+    ASSERT_TRUE(tree != nullptr);
+    EXPECT_EQ(3000u - 429u, tree->size());
+    EXPECT_EQ(tree.get(), GeoPointTree::forDetail(second).get());
+    const GeoDetail copy = second;
+    EXPECT_EQ(tree.get(), GeoPointTree::forDetail(copy).get());
+    EXPECT_EQ(-1, tree->nearest({ nan, 0., 0. }));
+
+    const GeoDetail* inputs[] = { &first, &second };
+    const GeoKernelRunResult result = run(std::span<const GeoDetail* const>(inputs), "i@near = nearpoint(1, @P);", 8);
+    ASSERT_EQ(KernelRunStatus::eDone, result.status) << result.error;
+    const GeoAttribute* nearAttr = result.detail.findAttribute(eGeoAttribClassPoint, "near");
+    ASSERT_TRUE(nearAttr);
+
+    const std::vector<std::array<double, 3>> targets = livePositions(second);
+    first.pointMap().forEachLive([&](GeoIndex index, GeoOffset offset) {
+        const std::array<double, 3> q = first.pointPosition(offset);
+        std::int32_t best = -1;
+        double bestD2 = 0.;
+        for (std::size_t k = 0; k < targets.size(); ++k) {
+            const double dx = targets[k][0] - q[0];
+            const double dy = targets[k][1] - q[1];
+            const double dz = targets[k][2] - q[2];
+            const double d2 = dx * dx + dy * dy + dz * dz;
+            if (!std::isnan(d2) && (best < 0 || d2 < bestD2)) {
+                best = std::int32_t(k);
+                bestD2 = d2;
+            }
+        }
+        ASSERT_EQ(best, nearAttr->get<std::int32_t>(std::size_t(offset))) << "point " << index;
+    });
 }
 
 TEST(GeoKernelTopologyTest, GroupWritesAppearInTheOutputGroups)

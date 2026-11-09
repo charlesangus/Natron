@@ -293,10 +293,26 @@ invertMatrix(const double* in, double* out, int n)
 // ---------------------------------------------------------------------------------------------
 // sprintf
 
+// Bounds a field width or precision, which would otherwise let one conversion allocate gigabytes.
+constexpr long kMaxFieldWidth = 1024;
+
+template <class... Args>
+std::string
+formatted(const std::string& format, Args... args)
+{
+    const int n = std::snprintf(nullptr, 0, format.c_str(), args...);
+    if (n <= 0) {
+        return std::string();
+    }
+    std::string out(std::size_t(n) + 1, '\0');
+    std::snprintf(out.data(), out.size(), format.c_str(), args...);
+    out.resize(std::size_t(n));
+    return out;
+}
+
 std::string
 operandText(const KernelRegisters& regs, KernelOperand o, int lane, char conversion, const std::string& spec)
 {
-    char buf[512];
     switch (conversion) {
     case 'd':
     case 'i':
@@ -313,13 +329,10 @@ operandText(const KernelRegisters& regs, KernelOperand o, int lane, char convers
         } else if (o.bank == KernelBank::eString) {
             v = std::strtoll(regs.s(o.reg)[lane].c_str(), nullptr, 10);
         }
-        const std::string f = spec + (conversion == 'c' ? "c" : (std::string("ll") + conversion));
         if (conversion == 'c') {
-            std::snprintf(buf, sizeof buf, f.c_str(), int(v));
-        } else {
-            std::snprintf(buf, sizeof buf, f.c_str(), v);
+            return formatted(spec + 'c', int(v));
         }
-        return buf;
+        return formatted(spec + "ll" + conversion, v);
     }
     case 'f':
     case 'F':
@@ -335,8 +348,7 @@ operandText(const KernelRegisters& regs, KernelOperand o, int lane, char convers
         } else if (o.bank == KernelBank::eString) {
             v = std::strtod(regs.s(o.reg)[lane].c_str(), nullptr);
         }
-        std::snprintf(buf, sizeof buf, (spec + conversion).c_str(), v);
-        return buf;
+        return formatted(spec + conversion, v);
     }
     default: {
         std::string text;
@@ -345,12 +357,10 @@ operandText(const KernelRegisters& regs, KernelOperand o, int lane, char convers
         } else if (o.bank == KernelBank::eInt) {
             text = std::to_string(regs.i(o.reg)[lane]);
         } else if (o.bank == KernelBank::eFloat) {
-            std::snprintf(buf, sizeof buf, "%g", double(regs.f(o.reg)[lane]));
-            text = buf;
+            text = formatted("%g", double(regs.f(o.reg)[lane]));
         }
         if (spec.size() > 1) {
-            std::snprintf(buf, sizeof buf, (spec + 's').c_str(), text.c_str());
-            return buf;
+            return formatted(spec + 's', text.c_str());
         }
         return text;
     }
@@ -362,6 +372,9 @@ operandText(const KernelRegisters& regs, KernelOperand o, int lane, char convers
 std::string
 formatLane(const KernelRegisters& regs, const std::string& format, std::span<const KernelOperand> args, int lane)
 {
+    const auto isDigit = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
+    // strchr also matches the terminator, so an embedded NUL must be ruled out first.
+    const auto isOneOf = [](char c, const char* set) { return c != '\0' && std::strchr(set, c) != nullptr; };
     std::string out;
     std::size_t next = 0;
     for (std::size_t k = 0; k < format.size(); ++k) {
@@ -376,14 +389,27 @@ formatLane(const KernelRegisters& regs, const std::string& format, std::span<con
             continue;
         }
         std::size_t j = k + 1;
+        const auto number = [&]() {
+            long v = 0;
+            while (j < format.size() && isDigit(format[j])) {
+                v = std::min(kMaxFieldWidth, v * 10 + (format[j] - '0'));
+                ++j;
+            }
+            return v;
+        };
         std::string spec = "%";
-        while (j < format.size() && std::strchr("-+ #0", format[j])) {
+        while (j < format.size() && isOneOf(format[j], "-+ #0")) {
             spec += format[j++];
         }
-        while (j < format.size() && (std::isdigit(static_cast<unsigned char>(format[j])) || format[j] == '.')) {
-            spec += format[j++];
+        if (j < format.size() && isDigit(format[j])) {
+            spec += std::to_string(number());
         }
-        while (j < format.size() && std::strchr("hlLqjzt", format[j])) {
+        if (j < format.size() && format[j] == '.') {
+            ++j;
+            spec += '.';
+            spec += std::to_string(number());
+        }
+        while (j < format.size() && isOneOf(format[j], "hlLqjzt")) {
             ++j;
         }
         if (j >= format.size()) {
@@ -391,7 +417,7 @@ formatLane(const KernelRegisters& regs, const std::string& format, std::span<con
             break;
         }
         const char conversion = format[j];
-        if (!std::strchr("diouxXcfFeEgGs", conversion)) {
+        if (!isOneOf(conversion, "diouxXcfFeEgGs")) {
             out += format.substr(k, j - k + 1);
             k = j;
             continue;

@@ -1049,10 +1049,16 @@ GeoKernelWorker::gatherSlot(std::size_t s, std::size_t first, int laneCount, Ker
         return;
     }
 
-    std::unique_lock<std::mutex> lock;
-    if (slot.lock) {
-        lock = std::unique_lock<std::mutex>(*slot.lock);
-    }
+    // Other workers write the same string table or array pool; the lock is held per element so
+    // they interleave instead of waiting out each other's batches.
+    const auto locked = [&slot](auto&& access) {
+        if (slot.lock) {
+            std::lock_guard<std::mutex> guard(*slot.lock);
+            access();
+        } else {
+            access();
+        }
+    };
     for (int l = 0; l < laneCount; ++l) {
         const GeoOffset offset = sourceOffset(slot.source, first + std::size_t(l));
         const bool present = offset >= 0;
@@ -1064,10 +1070,10 @@ GeoKernelWorker::gatherSlot(std::size_t s, std::size_t first, int laneCount, Ker
                 continue;
             }
             if (type.base == B::eString) {
-                a->getStringArray(std::size_t(offset), out.strings);
+                locked([&] { a->getStringArray(std::size_t(offset), out.strings); });
                 continue;
             }
-            readNumericArray(*a, offset, _scratch);
+            locked([&] { readNumericArray(*a, offset, _scratch); });
             const int tuple = a->tupleSize();
             const int components = kernelComponentCount(type.base);
             const std::size_t count = _scratch.size() / std::size_t(tuple);
@@ -1086,7 +1092,7 @@ GeoKernelWorker::gatherSlot(std::size_t s, std::size_t first, int laneCount, Ker
         if (type.base == B::eString) {
             std::string& out = registers.s(b.registers[0])[l];
             if (present) {
-                out.assign(a->getString(std::size_t(offset)));
+                locked([&] { out.assign(a->getString(std::size_t(offset))); });
             } else {
                 out.clear();
             }
@@ -1150,15 +1156,16 @@ GeoKernelWorker::scatterSlot(std::size_t s, std::size_t first, int laneCount, co
         return;
     }
 
-    std::lock_guard<std::mutex> lock(*slot.lock);
     for (int l = 0; l < laneCount; ++l) {
         const std::size_t offset = std::size_t(_offsets[first + std::size_t(l)]);
         if (!type.array) {
+            std::lock_guard<std::mutex> lock(*slot.lock);
             a.setString(offset, registers.s(b.registers[0])[l]);
             continue;
         }
         const KernelArrayValue& in = registers.a(b.registers[0])[l];
         if (type.base == B::eString) {
+            std::lock_guard<std::mutex> lock(*slot.lock);
             a.setStringArray(offset, std::span<const std::string>(in.strings));
             continue;
         }
@@ -1170,6 +1177,7 @@ GeoKernelWorker::scatterSlot(std::size_t s, std::size_t first, int laneCount, co
             _scratch.assign(in.floats.begin(), in.floats.end());
         }
         _scratch.resize(_scratch.size() / std::size_t(components) * std::size_t(components));
+        std::lock_guard<std::mutex> lock(*slot.lock);
         writeNumericArray(a, GeoOffset(offset), _scratch);
     }
 }

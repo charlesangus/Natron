@@ -66,6 +66,7 @@ enum GeoPointDeleteModeEnum {
 };
 
 class GeoDetail;
+class GeoPointTree;
 typedef std::shared_ptr<GeoDetail> GeoDetailPtr;
 typedef std::shared_ptr<const GeoDetail> GeoDetailConstPtr;
 
@@ -196,6 +197,13 @@ public:
 
     /** @brief Built on first use; shared by copies until a builder changes the topology. */
     std::shared_ptr<const GeoReverseTopology> reverseTopology() const;
+
+    /**
+     * @brief The k-d tree over the live point positions, built on first use and held by this
+     * detail's cache, so it is freed with the detail. Shared by copies and handed on to details
+     * built from this one, which rebuild it only once P or the point numbering differ.
+     **/
+    std::shared_ptr<const GeoPointTree> pointTree() const;
 
     /**
      * @brief Combined from per-page hashes of every attribute, topology column and group, the

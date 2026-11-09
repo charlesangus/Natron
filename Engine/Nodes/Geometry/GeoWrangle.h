@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -54,6 +56,9 @@ struct GeoWrangleParameterCall {
     std::string name;
     // The function that first names it: "ch", "chf", "chi", "chv", "chs" or "chramp".
     std::string function;
+    // Where the name first appears, 1-based.
+    int line = 0;
+    int column = 0;
 };
 
 /** @brief The parameters source reads through ch functions with a literal name. */
@@ -94,7 +99,9 @@ public:
 
     /**
      * @brief Adds a user parameter for each name the snippet reads with a ch function that the
-     * node lacks, as one undo step. Returns the names added. Main thread only.
+     * node lacks, as one undo step. Returns the names added. A name that is not already a valid
+     * parameter name, or that a built-in control holds, is skipped; compiling reports it. Main
+     * thread only.
      **/
     std::vector<std::string> createParameters();
 
@@ -121,6 +128,8 @@ private:
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     GeoAttribClassEnum runOver() const;
+    // Why name cannot be a user parameter of this node, empty when it can.
+    std::string parameterNameProblem(const std::string& name) const;
     GeoKernelParameters readParameters(double time,
                                        ViewIdx view) const;
     std::shared_ptr<const Compiled> compile(const std::string& snippet,
@@ -135,6 +144,10 @@ private:
     mutable std::mutex _compiledLock;
     mutable std::string _compiledKey;
     mutable std::shared_ptr<const Compiled> _compiled;
+
+    // Bumped by every edit, which stops a run started before it even when the render carries no
+    // abort information.
+    std::atomic<std::uint64_t> _editGeneration { 0 };
 };
 
 NATRON_NAMESPACE_EXIT

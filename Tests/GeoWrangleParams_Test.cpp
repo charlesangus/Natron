@@ -303,3 +303,41 @@ TEST_F(GeoWrangleParamsTest, AParameterOfTheWrongKindIsACompileError)
     EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, pull(_wrangle, 1., &result, &error, true));
     EXPECT_NE(std::string::npos, error.find("'amp'")) << error;
 }
+
+TEST_F(GeoWrangleParamsTest, ANameThatIsNotAParameterNameIsNeverCreated)
+{
+    setSnippet("@P.y += chf(\"my amp\");");
+    const int before = userKnobCount(_wrangle);
+
+    GeoWrangle* effect = dynamic_cast<GeoWrangle*>(_wrangle->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    EXPECT_TRUE(effect->createParameters().empty());
+    pressCreateParameters();
+    pressCreateParameters();
+    EXPECT_EQ(before, userKnobCount(_wrangle));
+
+    GeoDetailConstPtr result;
+    std::string error;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, pull(_wrangle, 1., &result, &error, true));
+    EXPECT_NE(std::string::npos, error.find("'my amp' cannot name a parameter")) << error;
+    EXPECT_NE(std::string::npos, error.find("line 1, column 13")) << error;
+}
+
+TEST_F(GeoWrangleParamsTest, ANameABuiltInControlHoldsIsNeverCreated)
+{
+    setSnippet("@P.y += chf(\"snippet\");");
+    const int before = userKnobCount(_wrangle);
+
+    pressCreateParameters();
+    pressCreateParameters();
+    EXPECT_EQ(before, userKnobCount(_wrangle));
+    KnobIPtr snippet = _wrangle->getKnobByName(kGeoWrangleParamSnippet);
+    ASSERT_TRUE(snippet != NULL);
+    EXPECT_FALSE(snippet->isUserKnob());
+
+    GeoDetailConstPtr result;
+    std::string error;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, pull(_wrangle, 1., &result, &error, true));
+    EXPECT_NE(std::string::npos, error.find("built-in control")) << error;
+    EXPECT_NE(std::string::npos, error.find("'snippet'")) << error;
+}

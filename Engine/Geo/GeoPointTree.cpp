@@ -26,7 +26,7 @@
 #include "GeoPointTree.h"
 
 #include <algorithm>
-#include <mutex>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -35,7 +35,6 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 constexpr std::uint32_t kLeafSize = 8;
-constexpr std::size_t kCachedTrees = 4;
 
 inline double
 distance2(const std::array<double, 3>& a, const std::array<double, 3>& b)
@@ -57,8 +56,13 @@ closer(double d2, GeoIndex index, double bestD2, GeoIndex bestIndex)
 GeoPointTree::GeoPointTree(const GeoDetail& detail)
 {
     _points.reserve(std::size_t(detail.pointCount()));
+    // A NaN coordinate makes every distance to the point NaN, so no query can return it, and it
+    // would break the strict ordering the build sorts by.
     detail.pointMap().forEachLive([&](GeoIndex index, GeoOffset offset) {
-        _points.push_back(Point { detail.pointPosition(offset), index });
+        const std::array<double, 3> p = detail.pointPosition(offset);
+        if (!std::isnan(p[0]) && !std::isnan(p[1]) && !std::isnan(p[2])) {
+            _points.push_back(Point { p, index });
+        }
     });
     if (!_points.empty()) {
         _nodes.reserve(2 * (_points.size() / kLeafSize + 1));
@@ -202,27 +206,7 @@ GeoPointTree::within(const std::array<double, 3>& position, double maxDistance, 
 std::shared_ptr<const GeoPointTree>
 GeoPointTree::forDetail(const GeoDetail& detail)
 {
-    static std::mutex mutex;
-    static std::vector<std::pair<U64, std::shared_ptr<const GeoPointTree>>> cache;
-
-    const U64 hash = detail.contentHash();
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        for (std::size_t k = 0; k < cache.size(); ++k) {
-            if (cache[k].first == hash) {
-                std::shared_ptr<const GeoPointTree> tree = cache[k].second;
-                std::rotate(cache.begin(), cache.begin() + std::ptrdiff_t(k), cache.begin() + std::ptrdiff_t(k) + 1);
-                return tree;
-            }
-        }
-    }
-    std::shared_ptr<const GeoPointTree> tree = std::make_shared<GeoPointTree>(detail);
-    std::lock_guard<std::mutex> lock(mutex);
-    cache.insert(cache.begin(), { hash, tree });
-    if (cache.size() > kCachedTrees) {
-        cache.pop_back();
-    }
-    return tree;
+    return detail.pointTree();
 }
 
 NATRON_NAMESPACE_EXIT

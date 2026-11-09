@@ -28,8 +28,11 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -181,16 +184,30 @@ TEST(GeoKernelRunnerTest, AbortStopsWithinOneBatchPerThread)
 {
     const GeoDetail input = makePoints(64 * kPage);
     for (int threads : { 1, 4, 16 }) {
-        std::atomic<int> checks { 0 };
+        std::mutex mutex;
+        int checks = 0;
+        // Per thread, the checks made once the abort was raised. A thread polls before each batch,
+        // so a thread that stops within the batch it is running polls at most once after it.
+        std::map<std::thread::id, int> checksAfterAbort;
         const GeoDetail* inputs[] = { &input };
         GeoKernelRunOptions options;
         options.threads = threads;
-        // The runner checks before every batch, so only the first eight checks can let one run.
-        options.aborted = [&] { return checks.fetch_add(1) >= 8; };
+        options.aborted = [&] {
+            std::lock_guard<std::mutex> lock(mutex);
+            const bool raised = ++checks > 8;
+            if (raised) {
+                ++checksAfterAbort[std::this_thread::get_id()];
+            }
+            return raised;
+        };
         const GeoKernelRunResult result = geoKernelRun("@P.y += 1;", eGeoAttribClassPoint,
                                                        std::span<const GeoDetail* const>(inputs), options);
         EXPECT_EQ(KernelRunStatus::eAborted, result.status) << threads << " threads";
         EXPECT_LE(result.batches, 8u) << threads << " threads";
+        EXPECT_FALSE(checksAfterAbort.empty()) << threads << " threads";
+        for (const auto& entry : checksAfterAbort) {
+            EXPECT_EQ(1, entry.second) << threads << " threads";
+        }
         EXPECT_EQ(input.contentHash(), result.detail.contentHash());
     }
 }

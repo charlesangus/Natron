@@ -427,3 +427,92 @@ TEST(KernelParserTest, KernelDirectoryIncludesNoGeometryHeaders)
         }
     }
 }
+
+TEST(KernelParserTest, IndirectRecursionIsAnError)
+{
+    expectError("float f(float x) { return g(x); }\nfloat g(float x) { return f(x); }\n@a = f(1);", 2, "f(x)", "calls itself");
+}
+
+TEST(KernelParserTest, IntegerLiteralsOutsideIntRangeAreErrors)
+{
+    Compiled lowest;
+    compile("i@a = -2147483648;", lowest);
+    EXPECT_TRUE(lowest.ok) << lowest.error.message;
+    expectError("i@a = 2147483648;", 1, "2147483648", "out of range");
+    expectError("i@a = 2147483648 - 1;", 1, "2147483648", "out of range");
+    expectError("i@a = 99999999999999999999999;", 1, "9999", "out of range");
+    expectError("i@a = 0x100000000;", 1, "0x", "out of range");
+    Compiled hex;
+    compile("i@a = 0xFFFFFFFF;", hex);
+    EXPECT_TRUE(hex.ok) << hex.error.message;
+}
+
+TEST(KernelParserTest, AHugeInputNumberIsAnError)
+{
+    expectError("float x = @opinput99999999999999999999999_P.x;", 1, "@opinput", "out of range");
+}
+
+TEST(KernelParserTest, DeepNestingIsAnErrorNotACrash)
+{
+    const auto nested = [](const std::string& open, const std::string& middle, const std::string& close, int depth) {
+        std::string s;
+        for (int i = 0; i < depth; ++i) {
+            s += open;
+        }
+        s += middle;
+        for (int i = 0; i < depth; ++i) {
+            s += close;
+        }
+        return s;
+    };
+    const auto sum = [](int terms) {
+        std::string s = "a";
+        for (int i = 1; i < terms; ++i) {
+            s += "+a";
+        }
+        return s;
+    };
+
+    Compiled shallow;
+    compile("float x = " + nested("(", "1", ")", 200) + ";\nfloat a = 1;\nfloat y = " + sum(200) + ";", shallow);
+    EXPECT_TRUE(shallow.ok) << shallow.error.message;
+
+    for (int depth : { 300, 100000 }) {
+        Compiled parens;
+        compile("float x = " + nested("(", "1", ")", depth) + ";", parens);
+        EXPECT_FALSE(parens.ok);
+        EXPECT_NE(std::string::npos, parens.error.message.find("nests more than")) << parens.error.message;
+
+        Compiled unary;
+        compile("int x = " + nested("!", "1", "", depth) + ";", unary);
+        EXPECT_FALSE(unary.ok);
+        EXPECT_NE(std::string::npos, unary.error.message.find("nests more than")) << unary.error.message;
+
+        Compiled blocks;
+        compile(nested("{", "@a = 1;", "}", depth), blocks);
+        EXPECT_FALSE(blocks.ok);
+        EXPECT_NE(std::string::npos, blocks.error.message.find("nests more than")) << blocks.error.message;
+
+        Compiled chain;
+        compile("float a = 1;\nfloat y = " + sum(depth) + ";", chain);
+        EXPECT_FALSE(chain.ok);
+        EXPECT_NE(std::string::npos, chain.error.message.find("nests more than")) << chain.error.message;
+    }
+}
+
+TEST(KernelParserTest, InliningThatDoublesPerCallIsAnErrorAtTheCallSite)
+{
+    std::string source = "float f0(float x) { return x + 1; }\n";
+    for (int k = 1; k < 40; ++k) {
+        source += "float f" + std::to_string(k) + "(float x) { return f" + std::to_string(k - 1) + "(x) + f" + std::to_string(k - 1) + "(x); }\n";
+    }
+    source += "@a = f39(1);";
+    expectError(source, 41, "f39(1)", "larger than");
+
+    std::string empty = "void g0() { }\n";
+    for (int k = 1; k < 40; ++k) {
+        empty += "void g" + std::to_string(k) + "() { g" + std::to_string(k - 1) + "(); g" + std::to_string(k - 1) + "(); }\n";
+    }
+    empty += "g39();";
+    expectError(empty, 41, "g39()", "larger than");
+}

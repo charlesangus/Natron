@@ -44,17 +44,14 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief A k-d tree over the live points of a detail, answering by dense point number. Distances
  * are computed in double from the stored positions; equal distances resolve to the lower point
- * number, so results match a brute-force scan exactly. Immutable once built and safe to query
- * from many threads.
+ * number, so results match a brute-force scan exactly. Points with a NaN coordinate, which no
+ * query can match, are left out. Immutable once built and safe to query from many threads.
  **/
 class GeoPointTree {
 public:
     explicit GeoPointTree(const GeoDetail& detail);
 
-    /**
-     * @brief The tree for detail, shared through a small cache keyed by the detail's content
-     * hash, so a detail re-used across renders is indexed once.
-     **/
+    /** @brief The tree detail holds, see GeoDetail::pointTree(). */
     static std::shared_ptr<const GeoPointTree> forDetail(const GeoDetail& detail);
 
     std::size_t size() const

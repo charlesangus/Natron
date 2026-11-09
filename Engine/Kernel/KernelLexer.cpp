@@ -27,6 +27,7 @@
 
 #include <cctype>
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 
@@ -205,7 +206,12 @@ private:
                 return fail(t.line, t.column, "expected hexadecimal digits after '0x'");
             }
             t.kind = KernelToken::Kind::eInt;
-            t.intValue = static_cast<std::int64_t>(std::strtoull(t.text.c_str() + 2, nullptr, 16));
+            errno = 0;
+            const unsigned long long bits = std::strtoull(t.text.c_str() + 2, nullptr, 16);
+            if (errno == ERANGE || bits > UINT32_MAX) {
+                return fail(t.line, t.column, "integer literal " + t.text + " is out of range");
+            }
+            t.intValue = static_cast<std::int32_t>(static_cast<std::uint32_t>(bits));
             return true;
         }
         bool isFloat = false;
@@ -248,7 +254,8 @@ private:
             t.kind = KernelToken::Kind::eInt;
             errno = 0;
             t.intValue = std::strtoll(t.text.c_str(), nullptr, 10);
-            if (errno == ERANGE || t.intValue > INT32_MAX) {
+            // INT32_MAX + 1 is let through for a leading '-'; the parser rejects it otherwise.
+            if (errno == ERANGE || t.intValue > std::int64_t(INT32_MAX) + 1) {
                 return fail(t.line, t.column, "integer literal " + t.text + " is out of range");
             }
         }

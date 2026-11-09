@@ -27,7 +27,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <iterator>
 #include <set>
 #include <span>
@@ -35,14 +37,17 @@
 #include <vector>
 
 #include <QString>
+#include <QThread>
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Curve.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Kernel/KernelParser.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/PythonUndoCommands.h"
@@ -145,7 +150,7 @@ geoWrangleParameterCalls(const std::string& source)
         if (name.empty() || !seen.insert(name).second) {
             continue;
         }
-        calls.push_back(GeoWrangleParameterCall { name, t.text });
+        calls.push_back(GeoWrangleParameterCall { name, t.text, tokens[k + 2].line, tokens[k + 2].column });
     }
 
     return calls;
@@ -227,6 +232,7 @@ GeoWrangle::knobChanged(KnobI* k,
 
         return true;
     }
+    _editGeneration.fetch_add(1, std::memory_order_relaxed);
 
     return false;
 }
@@ -240,7 +246,8 @@ GeoWrangle::createParameters()
     }
     std::vector<GeoWrangleParameterCall> missing;
     for (const GeoWrangleParameterCall& call : geoWrangleParameterCalls(snippet->getValue())) {
-        if (!getKnobByName(call.name)) {
+        const KnobIPtr existing = getKnobByName(call.name);
+        if (!(existing && existing->isUserKnob()) && parameterNameProblem(call.name).empty()) {
             missing.push_back(call);
         }
     }
@@ -283,10 +290,30 @@ GeoWrangle::createParameters()
             }
             added.push_back(call.name);
         }
+        recreateUserKnobs(true);
+        // recreateUserKnobs() only declares the knobs to Python when a settings panel exists.
+        if (NodePtr node = getNode()) {
+            node->declarePythonFields();
+        }
     }
-    recreateUserKnobs(true);
 
     return added;
+}
+
+std::string
+GeoWrangle::parameterNameProblem(const std::string& name) const
+{
+    const std::string friendly = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(name);
+    if (friendly != name) {
+        return "'" + name + "' cannot name a parameter: a parameter name is letters, digits and underscores, such as '"
+            + (friendly.empty() ? std::string("value") : friendly) + "'";
+    }
+    const KnobIPtr existing = getKnobByName(name);
+    if (existing && !existing->isUserKnob()) {
+        return "'" + name + "' is the name of a built-in control of this node; give the parameter another name";
+    }
+
+    return std::string();
 }
 
 GeoAttribClassEnum
@@ -357,10 +384,24 @@ GeoWrangle::compile(const std::string& snippet,
     }
 
     std::shared_ptr<Compiled> compiled = std::make_shared<Compiled>();
-    const GeoKernelBinding binding(runOver, &parameters);
-    std::shared_ptr<KernelProgram> program = std::make_shared<KernelProgram>();
-    if (kernelCompile(snippet, binding, *program, compiled->error)) {
-        compiled->program = std::move(program);
+    bool namesValid = true;
+    for (const GeoWrangleParameterCall& call : geoWrangleParameterCalls(snippet)) {
+        if (parameters.count(call.name)) {
+            continue;
+        }
+        std::string problem = parameterNameProblem(call.name);
+        if (!problem.empty()) {
+            compiled->error = KernelCompileError { call.line, call.column, std::move(problem) };
+            namesValid = false;
+            break;
+        }
+    }
+    if (namesValid) {
+        const GeoKernelBinding binding(runOver, &parameters);
+        std::shared_ptr<KernelProgram> program = std::make_shared<KernelProgram>();
+        if (kernelCompile(snippet, binding, *program, compiled->error)) {
+            compiled->program = std::move(program);
+        }
     }
 
     std::lock_guard<std::mutex> lock(_compiledLock);
@@ -378,7 +419,7 @@ GeoWrangle::route(double time,
     if (snippet && !isBlank(snippet->getValue())) {
         return Route::none();
     }
-    // renderGeometry(), which clears a compile error once the snippet compiles, no longer runs.
+    // renderGeometry(), which clears a compile error once the snippet compiles, does not run.
     clearPersistentMessage(false);
 
     return Route::input(0, time);
@@ -437,12 +478,26 @@ GeoWrangle::renderGeometry(const GeoRenderActionArgs& args,
     options.time = fps > 0. ? args.time / fps : 0.;
     options.group = cls == eGeoAttribClassDetail || !groupKnob ? std::string() : trimmed(groupKnob->getValue());
     options.parameters = &parameters;
-    // The kernel polls from pool threads, where this node's abort flag is not visible.
+    // The kernel polls from pool threads, where this node's abort state is not visible: they read
+    // the render's abort info, and the stop latched by the render thread, which also runs batches
+    // and can ask aborted(). An edit stops the run even when none of those exist.
     const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
-    if (render) {
-        options.aborted = [render]() { return render->isAborted(); };
-    }
+    const QThread* const renderThread = QThread::currentThread();
+    const std::uint64_t generation = _editGeneration.load(std::memory_order_relaxed);
+    std::atomic<bool> stopped { false };
+    options.aborted = [this, render, renderThread, generation, &stopped]() {
+        if (stopped.load(std::memory_order_relaxed)) {
+            return true;
+        }
+        const bool stop = _editGeneration.load(std::memory_order_relaxed) != generation || (render && render->isAborted())
+            || (QThread::currentThread() == renderThread && aborted());
+        if (stop) {
+            stopped.store(true, std::memory_order_relaxed);
+        }
+
+        return stop;
+    };
 
     GeoKernelRunResult result = geoKernelRun(*compiled->program, cls, std::span<const GeoDetail* const>(inputs), options);
     if (result.status == KernelRunStatus::eAborted) {

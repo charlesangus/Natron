@@ -1284,8 +1284,9 @@ protected:
         translateA->setValueAtTime(11., -3.5, ViewSpec::all(), 0);
         translateB->setValueAtTime(1., 2.5, ViewSpec::all(), 0);
         translateB->setValueAtTime(11., 4.5, ViewSpec::all(), 0);
+        NodePtr merge = render->getInput(0)->getInput(0);
         connectNodes(*projector, *cardB, 0, true);
-        connectNodes(*cardB, render->getInput(0), 2, true);
+        connectNodes(*cardB, merge, 2, true);
         renderColour(render, "the direct connection", rgba, 11.);
 
         for (const std::pair<int, int>& halves : { std::make_pair(0, kWidth / 2), std::make_pair(kWidth / 2, kWidth) }) {
@@ -1296,7 +1297,6 @@ protected:
 
         (*cardA)->disconnectInput(0);
         (*cardB)->disconnectInput(0);
-        NodePtr merge = render->getInput(0);
         merge->disconnectInput(0);
         merge->disconnectInput(2);
         connectNodes(*cardA, *cards, 0, true);
@@ -2042,7 +2042,7 @@ TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughOneAssign)
     ASSERT_TRUE(assign && setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card /Card2"));
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
     connectNodes(projector, assign, kUSDAssignMaterialInputMaterial, true);
-    connectNodes(assign, render->getInput(0), 0, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "one assign");
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
@@ -2064,7 +2064,7 @@ TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughTwoAssigns)
     connectNodes(projector, assignA, kUSDAssignMaterialInputMaterial, true);
     connectNodes(assignA, assignB, kUSDAssignMaterialInputScene, true);
     connectNodes(projector, assignB, kUSDAssignMaterialInputMaterial, true);
-    connectNodes(assignB, render->getInput(0), 0, true);
+    connectNodes(assignB, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "two assigns");
 }
 
@@ -2083,7 +2083,7 @@ TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsByMaterialPath)
     ASSERT_TRUE(setString(assign, kUSDAssignMaterialParamMaterialPath, "/Looks/Projection"));
     connectNodes(projector, cards, 2, true);
     connectNodes(cards, assign, kUSDAssignMaterialInputScene, true);
-    connectNodes(assign, render->getInput(0), 0, true);
+    connectNodes(assign, render->getInput(0)->getInput(0), 0, true);
     expectMatchesReference(render, reference, "Material Path");
     EXPECT_FALSE(assign->hasPersistentMessage());
 }

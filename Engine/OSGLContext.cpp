@@ -43,6 +43,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/GpuDeviceList.h"
+#include "Engine/Nodes/Scene/HydraGLContext.h"
 #include "Engine/StartupGLDiag.h"
 #include "Global/FloatingPointExceptions.h"
 
@@ -282,11 +283,9 @@ OSGLContext::OSGLContext(const FramebufferConfig& pixelFormatAttrs,
             coreProfile = false;
         }
     }
-#ifdef DEBUG
     // Mesa's llvmpipe compiles its built-in shaders while a context is created, and that raises
     // FE_INVALID/FE_DIVBYZERO. Render threads trap those in debug builds.
-    boost_adaptbx::floating_point::exception_trapping trap(0);
-#endif
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
 #ifdef __NATRON_LINUX__
     if (appPTR->isOnWayland()) {
         _imp->_platformContext.reset( new OSGLContext_wayland(pixelFormatAttrs, major, minor, coreProfile, rendererID, shareContext ? static_cast<const OSGLContext_wayland *>(shareContext->_imp->_platformContext.get()) : nullptr) );
@@ -548,6 +547,23 @@ OSGLContext::isSoftwareRendererName(const std::string& rendererName)
     return false;
 }
 
+bool
+OSGLContext::noteSoftwareRenderer(const std::string& rendererName)
+{
+    if (!isSoftwareRendererName(rendererName)) {
+        return false;
+    }
+    boost_adaptbx::floating_point::note_software_renderer();
+
+    return true;
+}
+
+bool
+noteSoftwareGLRenderer(const std::string& renderer)
+{
+    return OSGLContext::noteSoftwareRenderer(renderer);
+}
+
 GLRendererPick
 OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
                           const GpuDeviceSummary* chosenOrNull,
@@ -592,6 +608,7 @@ OSGLContext::pickRenderer(const std::list<OpenGLRendererInfo>& renderers,
     const OpenGLRendererInfo* picked = matched ? matched : firstAllowed;
     pick.enabled = true;
     pick.rendererID = picked->rendererID;
+    pick.software = !picked->accelerated;
     pick.reason = picked->rendererName;
     if (!picked->accelerated) {
         pick.reason += ", software";

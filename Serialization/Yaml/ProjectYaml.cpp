@@ -80,6 +80,10 @@ namespace {
         return savedBy;
     }
 
+} // namespace
+
+namespace YamlDetail {
+
     void
     emitFormats(YAML::Emitter& em,
                 const std::list<FormatSerialization>& formats)
@@ -199,7 +203,7 @@ namespace {
         return std::list<LayerRegistryEntrySerialization>(layers.begin(), layers.end());
     }
 
-} // namespace
+} // namespace YamlDetail
 
 std::string
 encodeProjectYaml(const ProjectSerialization& project,

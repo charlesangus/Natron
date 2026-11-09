@@ -45,6 +45,7 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
@@ -60,6 +61,36 @@ NATRON_NAMESPACE_ENTER
 
 //using std::make_pair;
 //using std::pair;
+
+KnobValueRoleHolder::KnobValueRoleHolder()
+    : _valueRole(eValueRoleNone)
+    , _valueRoleClockwise(false)
+{
+}
+
+void
+KnobValueRoleHolder::setValueRole(ValueRoleEnum role)
+{
+    _valueRole = role;
+}
+
+ValueRoleEnum
+KnobValueRoleHolder::getValueRole() const
+{
+    return _valueRole;
+}
+
+void
+KnobValueRoleHolder::setValueRoleClockwise(bool clockwise)
+{
+    _valueRoleClockwise = clockwise;
+}
+
+bool
+KnobValueRoleHolder::isValueRoleClockwise() const
+{
+    return _valueRoleClockwise;
+}
 
 /******************************KnobInt**************************************/
 KnobInt::KnobInt(KnobHolder* holder,
@@ -621,6 +652,8 @@ KnobChoice::KnobChoice(KnobHolder* holder,
     , _isCascading(false)
     , _menuOnlySelection(false)
     , _notifiesOnReselect(false)
+    , _matchesExactID(false)
+    , _keepActiveEntryOnValueChange(false)
 {
 }
 
@@ -635,6 +668,8 @@ KnobChoice::KnobChoice(KnobHolder* holder,
     , _isCascading(false)
     , _menuOnlySelection(false)
     , _notifiesOnReselect(false)
+    , _matchesExactID(false)
+    , _keepActiveEntryOnValueChange(false)
 {
 }
 
@@ -753,6 +788,11 @@ KnobChoice::onInternalValueChanged(int dimension,
     {
         QMutexLocker k(&_entriesMutex);
 
+        if (_keepActiveEntryOnValueChange) {
+            _keepActiveEntryOnValueChange = false;
+
+            return;
+        }
         if ((index < 0) || (index >= (int)_entries.size()) || sameChoiceOption(_currentEntry, _entries[index])) {
             return;
         }
@@ -781,7 +821,7 @@ KnobChoice::appendExtraContentHash(ContentHasher& h,
     if (indexInMenu) {
         h.appendString(_entries[index].id);
     }
-    if (!indexInMenu || (!_currentEntry.id.empty() && (choiceMatch(_currentEntry.id, _entries, NULL) < 0))) {
+    if (!indexInMenu || (!_currentEntry.id.empty() && (matchEntry(_currentEntry.id, _entries, NULL) < 0))) {
         h.appendString(_currentEntry.id);
     }
     for (KeyFrameSet::const_iterator it = keys.begin(); it != keys.end(); ++it) {
@@ -825,7 +865,7 @@ KnobChoice::findAndSetOldChoice()
 
         if ( !_currentEntry.id.empty() ) {
             ChoiceOption matched;
-            found = choiceMatch(_currentEntry.id, _entries, &matched);
+            found = matchEntry(_currentEntry.id, _entries, &matched);
             if (found != -1) {
                 _currentEntry = matched;
             }
@@ -964,7 +1004,7 @@ KnobChoice::isActiveEntryUnmatchedByEntries() const
 {
     QMutexLocker k(&_entriesMutex);
 
-    return !_currentEntry.id.empty() && (choiceMatch(_currentEntry.id, _entries, NULL) < 0);
+    return !_currentEntry.id.empty() && (matchEntry(_currentEntry.id, _entries, NULL) < 0);
 }
 
 bool
@@ -1015,6 +1055,51 @@ KnobChoice::setActiveEntry(const ChoiceOption& opt)
     invalidateContentHash();
 }
 
+void
+KnobChoice::setActiveEntryAndNotify(const ChoiceOption& opt,
+                                    ValueChangedReasonEnum reason)
+{
+    {
+        QMutexLocker l(&_entriesMutex);
+        _currentEntry = opt;
+        // evaluateValueChange() first runs onInternalValueChanged(), before any callback.
+        _keepActiveEntryOnValueChange = true;
+    }
+    invalidateContentHash();
+    evaluateValueChange(0, getCurrentTime(), ViewSpec::all(), reason);
+    QMutexLocker l(&_entriesMutex);
+    _keepActiveEntryOnValueChange = false;
+}
+
+int
+KnobChoice::findEntry(const std::string& choice,
+                      ChoiceOption* matchedEntry) const
+{
+    QMutexLocker l(&_entriesMutex);
+
+    return matchEntry(choice, _entries, matchedEntry);
+}
+
+int
+KnobChoice::matchEntry(const std::string& choice,
+                       const std::vector<ChoiceOption>& entries,
+                       ChoiceOption* matchedEntry) const
+{
+    if (!_matchesExactID) {
+        return choiceMatch(choice, entries, matchedEntry);
+    }
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id == choice) {
+            if (matchedEntry) {
+                *matchedEntry = entries[i];
+            }
+
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
 
 ChoiceOption
 KnobChoice::getActiveEntry()
@@ -1141,7 +1226,7 @@ KnobChoice::setValueFromID(const std::string & value,
     {
         QMutexLocker k(&_entriesMutex);
         const ChoiceOption previous = _currentEntry;
-        i = choiceMatch(value, _entries, &_currentEntry);
+        i = matchEntry(value, _entries, &_currentEntry);
         entryChanged = !sameChoiceOption(previous, _currentEntry);
     }
     if (entryChanged) {
@@ -1337,7 +1422,7 @@ KnobChoice::choiceRestorationId(KnobChoice* knob,
     int i;
     {
         QMutexLocker k(&_entriesMutex);
-        i = choiceMatch(optionID, _entries, &_currentEntry);
+        i = matchEntry(optionID, _entries, &_currentEntry);
     }
     invalidateContentHash();
 
@@ -1728,11 +1813,15 @@ KnobGroup::isTab() const
 namespace {
 
 // The holder's declarations follow the children of its RFV groups: retaken after each change.
+// The project's variables, in their order, are part of its edit history.
 void
 refreshRFVDeclarations(const KnobGroup& group)
 {
     if (group.isRFVGroup()) {
         RFV::refreshDeclarationSnapshot(group.getHolder());
+        if (GraphEditRecorder::isActive() && dynamic_cast<Project*>(group.getHolder())) {
+            GraphEditRecorder::onKnobListChanged(group.getHolder());
+        }
     }
 }
 } // anonymous namespace

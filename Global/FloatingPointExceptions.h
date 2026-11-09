@@ -2,6 +2,8 @@
 #ifndef FLOATING_POINT_EXCEPTIONS_H
 #define FLOATING_POINT_EXCEPTIONS_H
 
+#include <atomic>
+
 #ifdef __GNUC__
 #include <fenv.h>
 #ifdef __SSE2__
@@ -32,25 +34,48 @@ namespace boost_adaptbx { namespace floating_point {
       [2] GCC documentation
   */
 
+  /** Set once a software GL renderer or a CPU Vulkan device is in use, and never cleared outside tests.
+      Mesa's software drivers raise these exceptions inside their own shader compilers on whichever thread
+      drives them, and threads inherit the float environment of the thread that creates them, so while it
+      is set no thread of a debug build arms the traps. */
+  inline std::atomic<bool>& software_renderer_present()
+  {
+      static std::atomic<bool> present { false };
+      return present;
+  }
+
   inline void trap_exceptions(bool division_by_zero, bool invalid, bool overflow) {
-    #ifdef __linux
+#ifdef DEBUG
+      if (software_renderer_present().load(std::memory_order_relaxed)) {
+          division_by_zero = invalid = overflow = false;
+      }
+#endif
+#ifdef __linux
       int enabled = 0;
       int disabled = 0;
-      #ifdef FE_DIVBYZERO
-        if (division_by_zero) enabled |= FE_DIVBYZERO;
-        else disabled |= FE_DIVBYZERO;
-      #endif
-      #ifdef FE_INVALID
-        if (invalid) enabled |= FE_INVALID;
-        else disabled |= FE_INVALID;
-      #endif
-      #ifdef FE_OVERFLOW
-        if(overflow) enabled |= FE_OVERFLOW;
-        else disabled |= FE_OVERFLOW;
-      #endif
+#ifdef FE_DIVBYZERO
+      if (division_by_zero)
+          enabled |= FE_DIVBYZERO;
+      else
+          disabled |= FE_DIVBYZERO;
+#endif
+#ifdef FE_INVALID
+      if (invalid)
+          enabled |= FE_INVALID;
+      else
+          disabled |= FE_INVALID;
+#endif
+#ifdef FE_OVERFLOW
+      if (overflow)
+          enabled |= FE_OVERFLOW;
+      else
+          disabled |= FE_OVERFLOW;
+#endif
       fedisableexcept(disabled);
+      // A flag raised while its trap was off would otherwise fire on the next float instruction.
+      feclearexcept(enabled);
       feenableexcept(enabled);
-    #elif defined(__APPLE_CC__) && defined(__SSE2__)
+#elif defined(__APPLE_CC__) && defined(__SSE2__)
 #if 1
       unsigned int mask
         = _MM_MASK_INEXACT | _MM_MASK_UNDERFLOW | _MM_MASK_DENORM;
@@ -135,6 +160,36 @@ namespace boost_adaptbx { namespace floating_point {
                         overflow_on_entry);
       }
   };
+
+  /** Turns trapping off for the calling thread in a debug build; does nothing in a release build. For a thread
+      that drives a software driver before the process knows whether it keeps it. A scoped guard alive on the
+      thread restores the traps when it ends, so call it outside any. */
+  inline void disarm_trapping_for_thread()
+  {
+#ifdef DEBUG
+      trap_exceptions(false, false, false);
+#endif
+  }
+
+  /** Sets software_renderer_present() and, in a debug build, turns trapping off for the calling thread. */
+  inline void note_software_renderer()
+  {
+      software_renderer_present().store(true);
+#ifdef DEBUG
+      trap_exceptions(false, false, false);
+#endif
+  }
+
+  /** For a long-lived thread that armed its traps once at start-up: turns them off in a debug build if
+      software_renderer_present() was set since. */
+  inline void follow_software_renderer()
+  {
+#ifdef DEBUG
+      if (software_renderer_present().load(std::memory_order_relaxed)) {
+          trap_exceptions(false, false, false);
+      }
+#endif
+  }
 
   /** Keeps trapping off for the calling thread while it lives in a debug build; does nothing in a
       release build. Third-party maths (OpenColorIO LUT inversion, OIIO colour probing) legitimately

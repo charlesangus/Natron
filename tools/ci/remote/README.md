@@ -63,6 +63,14 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   (`NATRON_CTEST_JOBS=4`, one suite per vCPU), as in PR CI, and cases that
   fail are re-run serially with `ctest --rerun-failed -V`, so the logs carry
   the full output and assert text of each failure.
+- `--scheduler <legacy|taskgraph>` implies `--tests` and runs only that
+  scheduler's ctest leg and smoke test; without it both legs run, as before.
+  Intermediate fix builds may use `--scheduler taskgraph` to halve the wait,
+  but a milestone's verification gate runs without it, so both legs are
+  green. The cross-scheduler smoke render comparison runs only when both legs
+  did, and an unknown name exits with the usage line before dispatching.
+  The workflow takes it as the `schedulers` input, a comma-separated list
+  that defaults to `legacy,taskgraph`.
 - `--record-goldens` implies `--tests`. It also records the native golden
   renders of `NativeGoldenTest`, `NativeIDistortAmountTest` and
   `NativeIWarpTest` on the runner and downloads them into
@@ -104,7 +112,7 @@ run name, watches it, then downloads the artifacts (kept 7 days on GitHub):
 | Artifact | Contents |
 | --- | --- |
 | `natron-<preset>-<sha>` | the `.AppImage`, made executable |
-| `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest-legacy.log` and `ctest-taskgraph.log`, plus `ctest-<scheduler>-seed<seed>.log` per shuffle seed (`--tests` only), uploaded even when the run fails |
+| `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest-legacy.log` and `ctest-taskgraph.log` (only the chosen leg's with `--scheduler`), plus `ctest-<scheduler>-seed<seed>.log` per shuffle seed (`--tests` only), uploaded even when the run fails |
 
 Both land in `build/remote/<preset>/`, which is wiped at the start of each
 download. The script prints the run URL, the `AppImage:` path and, with

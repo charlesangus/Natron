@@ -42,6 +42,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ColorModeDiscWidget.h"
 #include "Gui/ColorTrackballHud.h"
 #include "Gui/ColorWheelWidget.h"
+#include "Gui/ValueModeDiscWidget.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -204,6 +205,8 @@ ColorTrackballReveal::ColorTrackballReveal()
     : QWidget(nullptr, colorTrackballFollowCursorWindowFlags())
     , _wheel(nullptr)
     , _disc(nullptr)
+    , _valueDisc(nullptr)
+    , _showingValue(false)
     , _mode(eColorGlobalModeC)
     , _role(eColorKnobRoleGain)
     , _basis(kRec709LumaWeights)
@@ -221,13 +224,15 @@ ColorTrackballReveal::ColorTrackballReveal()
     _discRect = QRect(0, 0, side, side);
     _wheel = new ColorWheelWidget(this);
     _disc = new ColorModeDiscWidget(this);
-    for (QWidget* w : { static_cast<QWidget*>(_wheel), static_cast<QWidget*>(_disc) }) {
+    _valueDisc = new ValueModeDiscWidget(this);
+    for (QWidget* w : { static_cast<QWidget*>(_wheel), static_cast<QWidget*>(_disc), static_cast<QWidget*>(_valueDisc) }) {
         w->setAttribute(Qt::WA_TransparentForMouseEvents, true);
         w->setFocusPolicy(Qt::NoFocus);
         w->setGeometry(_discRect);
     }
     _wheel->setPreferredDiameter(side);
     _disc->hide();
+    _valueDisc->hide();
 
     const char* pillNames[4] = { "ColorTrackballRevealPillRight", "ColorTrackballRevealPillLeft", "ColorTrackballRevealPillTop", "ColorTrackballRevealPillBottom" };
 
@@ -271,6 +276,8 @@ void
 ColorTrackballReveal::setMode(ColorGlobalModeEnum mode)
 {
     _mode = mode;
+    _showingValue = false;
+    _valueDisc->hide();
     if (mode == eColorGlobalModeC) {
         _disc->hide();
         _wheel->show();
@@ -279,8 +286,30 @@ ColorTrackballReveal::setMode(ColorGlobalModeEnum mode)
         _wheel->hide();
         _disc->show();
     }
+    setPillTexts(colorTrackballRevealDirectionLabels(mode));
+}
 
-    const ColorTrackballRevealLabels labels = colorTrackballRevealDirectionLabels(mode);
+void
+ColorTrackballReveal::setValueKind(GlobalModeKindEnum kind)
+{
+    _showingValue = true;
+    _wheel->hide();
+    _disc->hide();
+    _valueDisc->setKind(kind);
+    _valueDisc->show();
+    setPillTexts(valueModeRevealDirectionLabels(kind));
+}
+
+void
+ColorTrackballReveal::setValueTravel(double dx,
+                                     double dy)
+{
+    _valueDisc->setTravel(dx, dy);
+}
+
+void
+ColorTrackballReveal::setPillTexts(const ColorTrackballRevealLabels& labels)
+{
     const QString texts[4] = { labels.right, labels.left, labels.top, labels.bottom };
     bool changed = false;
 
@@ -355,6 +384,7 @@ ColorTrackballReveal::relayout()
     _discRect = disc.translated(shift);
     _wheel->setGeometry(_discRect);
     _disc->setGeometry(_discRect);
+    _valueDisc->setGeometry(_discRect);
     for (int i = 0; i < 4; ++i) {
         _pills[i]->setGeometry(pillRects[i].translated(shift));
     }
@@ -379,6 +409,9 @@ ColorTrackballReveal::relayout()
 QWidget*
 ColorTrackballReveal::getModeWidget() const
 {
+    if (_showingValue) {
+        return _valueDisc;
+    }
     if (_mode == eColorGlobalModeC) {
         return _wheel;
     }

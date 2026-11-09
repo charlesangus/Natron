@@ -27,8 +27,8 @@
 
 #include <algorithm>
 #include <cmath>
-
-#include <cairo/cairo.h>
+#include <new>
+#include <vector>
 
 #include "Engine/Bezier.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
@@ -76,6 +76,42 @@ getSplineWarpCookieCurves(const SplineWarpContext& context,
     return curves;
 }
 
+namespace {
+
+// The box pads the feather by its distance, which shrinks it for a negative distance although the
+// feather is drawn outward by the distance's magnitude either way; whole draws that out to the
+// pixels the curve can actually reach.
+bool
+curvePixels(const Bezier& curve,
+            double time,
+            double scaleX,
+            double scaleY,
+            bool whole,
+            RectI* pixels)
+{
+    RectD box = curve.getBoundingBox(time);
+    if (box.isNull() || box.isInfinite()) {
+        return false;
+    }
+    if (whole) {
+        const double featherDistance = curve.getFeatherDistance(time);
+        if (featherDistance < 0.) {
+            const double pad = -2. * featherDistance;
+            box.x1 -= pad;
+            box.y1 -= pad;
+            box.x2 += pad;
+            box.y2 += pad;
+        }
+    }
+    // A pixel of margin for the antialiased edge.
+    *pixels = RectI((int)std::floor(box.x1 * scaleX) - 1, (int)std::floor(box.y1 * scaleY) - 1,
+                    (int)std::ceil(box.x2 * scaleX) + 1, (int)std::ceil(box.y2 * scaleY) + 1);
+
+    return true;
+}
+
+} // namespace
+
 RectI
 splineWarpCookieBounds(const std::list<BezierPtr>& curves,
                        double time,
@@ -85,13 +121,10 @@ splineWarpCookieBounds(const std::list<BezierPtr>& curves,
     RectI bounds;
 
     for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        const RectD box = (*it)->getBoundingBox(time);
-        if (box.isNull() || box.isInfinite()) {
+        RectI pixels;
+        if (!curvePixels(**it, time, scaleX, scaleY, false, &pixels)) {
             continue;
         }
-        // A pixel of margin for the antialiased edge.
-        const RectI pixels((int)std::floor(box.x1 * scaleX) - 1, (int)std::floor(box.y1 * scaleY) - 1,
-                           (int)std::ceil(box.x2 * scaleX) + 1, (int)std::ceil(box.y2 * scaleY) + 1);
         if (bounds.isNull()) {
             bounds = pixels;
         } else {
@@ -114,40 +147,36 @@ renderSplineWarpCookieMask(const std::list<BezierPtr>& curves,
     if (window.isNull() || curves.empty()) {
         return mask;
     }
-    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_A8, window.width(), window.height());
-    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        cairo_surface_destroy(surface);
-
-        return mask;
+    try {
+        mask.pixels.assign((std::size_t)window.width() * window.height(), 0.f);
+    } catch (const std::bad_alloc&) {
+        return SplineWarpCookieMask();
     }
-    cairo_surface_set_device_offset(surface, -window.x1, -window.y1);
-    cairo_t* cr = cairo_create(surface);
-    cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
-    // As Roto renders a shape: an antialiased fill leaves seams where the inner polygon meets the
-    // feather's mesh, so the edge's softness comes from the feather.
-    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
-    // The curves are drawn in canonical coordinates at full scale; the matrix takes them to pixels.
-    cairo_scale(cr, scaleX, scaleY);
-    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
-        RotoContextPrivate::renderBezier(cr, it->get(), 1., time, time, time, 1., 0);
-    }
-    cairo_surface_flush(surface);
-
     mask.bounds = window;
-    mask.pixels.assign((std::size_t)window.width() * window.height(), 0.f);
-    const unsigned char* data = cairo_image_surface_get_data(surface);
-    const int stride = cairo_image_surface_get_stride(surface);
-    if (data) {
-        for (int y = 0; y < window.height(); ++y) {
-            const unsigned char* row = data + (std::size_t)y * stride;
-            float* dst = &mask.pixels[(std::size_t)y * window.width()];
-            for (int x = 0; x < window.width(); ++x) {
-                dst[x] = row[x] * (1.f / 255.f);
+    const std::size_t stride = (std::size_t)window.width();
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        RectI pixels = window;
+        if (curvePixels(**it, time, scaleX, scaleY, true, &pixels)) {
+            pixels = pixels.intersect(window);
+        }
+        if (pixels.isNull()) {
+            continue;
+        }
+        // The curves are in canonical coordinates at full scale; the scale takes them to pixels.
+        const bool rendered = RotoContextPrivate::renderBezier(it->get(), time, time, time, 1., 0, scaleX, scaleY, pixels, [&](const RectI& tile, const float* alpha) {
+            const std::size_t width = (std::size_t)tile.width();
+            for (int y = tile.y1; y < tile.y2; ++y) {
+                const float* src = alpha + (std::size_t)(y - tile.y1) * width;
+                float* dst = &mask.pixels[(std::size_t)(y - window.y1) * stride + (std::size_t)(tile.x1 - window.x1)];
+                for (std::size_t x = 0; x < width; ++x) {
+                    dst[x] = src[x] + dst[x] * (1.f - src[x]);
+                }
             }
+        });
+        if (!rendered) {
+            return SplineWarpCookieMask();
         }
     }
-    cairo_destroy(cr);
-    cairo_surface_destroy(surface);
 
     return mask;
 }

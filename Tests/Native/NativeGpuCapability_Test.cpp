@@ -56,18 +56,22 @@
 #include "Engine/Nodes/Color/Premult.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Color/Threshold.h"
+#include "Engine/Nodes/Filter/Bilateral.h"
 #include "Engine/Nodes/Filter/Bloom.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/ContrastTexture.h"
 #include "Engine/Nodes/Filter/Defocus.h"
+#include "Engine/Nodes/Filter/DirBlur.h"
 #include "Engine/Nodes/Filter/EdgeBlur.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Filter/EdgeExtend.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Filter/Glow.h"
+#include "Engine/Nodes/Filter/GodRays.h"
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Filter/IDefocus.h"
 #include "Engine/Nodes/Filter/IErodeDilate.h"
+#include "Engine/Nodes/Filter/Median.h"
 #include "Engine/Nodes/Filter/Sharpen.h"
 #include "Engine/Nodes/Filter/VectorBlur.h"
 #include "Engine/Nodes/Filter/ZDefocus.h"
@@ -195,6 +199,10 @@ gpuCapableIds()
         PLUGINID_NATRON_HSVKEYER,
         PLUGINID_NATRON_DESPILL,
         PLUGINID_NATRON_POSTERIZE,
+        PLUGINID_NATRON_MEDIAN,
+        PLUGINID_NATRON_BILATERAL,
+        PLUGINID_NATRON_DIRBLUR,
+        PLUGINID_NATRON_GODRAYS,
         PLUGINID_NATRON_KEYMIX,
         PLUGINID_NATRON_DIFFERENCE,
         PLUGINID_NATRON_ADJUSTBBOX,

@@ -20,7 +20,7 @@
 
 ## Phase 380.1: Callers and the wait
 
-- [ ] M380.P1.T1 — Remove the waits that would hang once the wait is fixed, and delete the dead blocking-abort API
+- [x] M380.P1.T1 — Remove the waits that would hang once the wait is fixed, and delete the dead blocking-abort API
   - files: `Engine/OutputSchedulerThread.{cpp,h}`, `Engine/Node.{cpp,h}`, `Engine/TrackerContext.{cpp,h}`, `Engine/GenericSchedulerThread.{cpp,h}`, `Engine/GenericSchedulerThreadWatcher.{cpp,h}`, a test
   - approach: drop the wait in `OutputSchedulerThread::notifyRenderFailure` (~2048-2050) and the backup-thread abort wait in `~ViewerCurrentFrameRequestScheduler` (~4120-4122). Delete `Node::abortAnyProcessing_blocking`, `TrackerContext::abortTracking_blocking`, `waitForAbortToCompleteQueued_main_thread`, `RenderEngine::waitForAbortToComplete_main_thread` and `engineAborted`, `onWatcherTaskAbortedEmitted`/`taskAborted`, and the watcher tasks `eBlockingTaskWaitForAbort` and `eBlockingTaskAbortAnyProcessing`. Behaviour is unchanged while the wait is still a no-op.
   - verify: `BlockingRenderIdle_Test`, `SchedulerWriters_Test` and `RenderSchedulerAbort_Test` pass; a new case where a blocking writer render fails partway returns.

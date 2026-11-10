@@ -57,7 +57,7 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
   - verify: gtest on the city — `/city/block3//car*` matches nothing unloaded, the right cars once block3 is in the load set, and all cars with no load set; loading block5 doesn't re-query that node; a literal path matches while unloaded.
   - size: L
 
-- [ ] M331.P2.T2 — Apply a load and its layers together
+- [x] M331.P2.T2 — Apply a load and its layers together
   - files: `Engine/Nodes/Scene/SceneStage.{h,cpp}`, `Gui/SceneViewport.cpp`, `Tests/Scene/SceneStage_Test.cpp`
   - approach: on a load request, evaluate downstream pattern nodes against the future load set on a query stage first, then in one locked step swap the changed sublayers and call `LoadAndUnload`, so Hydra's next sync sees both. Follow M327 - Heavy Scene Spike's recommendation on swap cost.
   - verify: gtest — a USDPrune targeting a prim inside a payload never exposes that prim to a stage listener during the load; harness — the main thread stays within budget with ten pattern nodes downstream.
@@ -71,10 +71,11 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
   - verify: gtest — the three message cases; an invalid pattern stays a persistent error in every context.
   - size: M
 
-- [ ] M331.P3.T2 — Search Unloaded query
+- [x] M331.P3.T2 — Search Unloaded query
   - files: `Engine/Nodes/Scene/SceneOps.{h,cpp}`, `Tests/Scene/ScenePatternContext_Test.cpp`
   - approach: an asynchronous, cancellable API returning a pattern's matches on a private `LoadAll` query stage over the node's input, for previews only. Results never feed evaluation and no viewer stage changes.
   - verify: gtest — it finds matches inside unloaded payloads, the viewer's load set is unchanged, and cancelling stops it mid-way.
   - size: M
 
 **Verification gate:** release gate green; on the city a pattern node's viewer result and USDRender result agree once everything is loaded; a wildcard node opens no payload file in the viewer until a load; harness budgets pass with ten pattern nodes downstream on the GPU host.
+- 2026-11-10 — P2.T2 and P3.T2 completed with tests (ebfadf3bd): a pruned prim inside a payload never shows during its load; Search Unloaded leaves the viewer's stage and the node's result alone. Release gate green (run 42789360725). Still open: the city agreement check and the ten-pattern-node harness budgets on the GPU host.

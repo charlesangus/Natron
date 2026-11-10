@@ -13,7 +13,7 @@ why it never showed there.
 
 ## Phase 310.1: Test
 
-- [ ] M310.P1.T1 — Assert per-device rejection and per-device compiles instead of the global glslang counter
+- [x] M310.P1.T1 — Assert per-device rejection and per-device compiles instead of the global glslang counter
   - files: `Tests/Gpu/CacheStressGpu_Test.cpp`
   - approach: in `DeviceSwitchRetriesRejectedShader`, drop the expectation that `gpu::glslCompileCountForTesting()` rises on the second device. Instead assert that `gate.isRejected(second, shader)` holds after the retry, and that the device-B pipeline cache's `pipelines().stats_.compiles` (`Engine/Gpu/GpuPipelineCache.cpp:332`) records the attempt. Read the current test and those APIs before editing; line numbers may have moved. Leave `compileGlsl`'s process-global memo alone. Keep the single-device skip at lines 792-796.
   - verify: the test passes on a host with two Vulkan devices (RADV + lavapipe, via the gpu host's RADV gate) and still skips its switch half under lavapipe alone; the rest of `CacheStressGpuTest` passes.

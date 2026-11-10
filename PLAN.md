@@ -229,6 +229,15 @@ future core work has solid ground to build on.
 | M385 | OpenNucleon Code Rename | todo | M157, M383, M384 |  | E20 | F17 | | [M385-opennucleon-code-rename.md](PLAN/MILESTONES/M385-opennucleon-code-rename.md) |
 | M386 | Nucleon Branding And Packaging | todo | M382, M385 |  | E20 | F17 | | [M386-nucleon-branding-and-packaging.md](PLAN/MILESTONES/M386-nucleon-branding-and-packaging.md) |
 | M387 | Dev Infrastructure Rename | todo | M385 |  | E20 | F17 | | [M387-dev-infrastructure-rename.md](PLAN/MILESTONES/M387-dev-infrastructure-rename.md) |
+| M388 | Docs Site Scaffold | todo | - |  | E21 | | | [M388-docs-site-scaffold.md](PLAN/MILESTONES/M388-docs-site-scaffold.md) |
+| M389 | Node Reference Export | todo | M388 |  | E21 | | | [M389-node-reference-export.md](PLAN/MILESTONES/M389-node-reference-export.md) |
+| M390 | Python API Reference | todo | M388 |  | E21 | | | [M390-python-api-reference.md](PLAN/MILESTONES/M390-python-api-reference.md) |
+| M391 | In-App Docs Bundle | todo | M386, M389, M390 |  | E21 | | | [M391-in-app-docs-bundle.md](PLAN/MILESTONES/M391-in-app-docs-bundle.md) |
+| M392 | Docs Publishing | todo | M387, M389, M390, M394 |  | E21 | | | [M392-docs-publishing.md](PLAN/MILESTONES/M392-docs-publishing.md) |
+| M393 | Landing Site | todo | M382, M388 |  | E21 | | | [M393-landing-site.md](PLAN/MILESTONES/M393-landing-site.md) |
+| M394 | Release Versioning | todo | M386, M387 |  | E21 | | | [M394-release-versioning.md](PLAN/MILESTONES/M394-release-versioning.md) |
+| M395 | Release Notes 1.0 | todo | M388, M394 |  | E21 | | | [M395-release-notes-1-0.md](PLAN/MILESTONES/M395-release-notes-1-0.md) |
+| M396 | Release 1.0 Cut | todo | M391, M392, M393, M394, M395 |  | E21 | | | [M396-release-1-0-cut.md](PLAN/MILESTONES/M396-release-1-0-cut.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | | | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
@@ -482,6 +491,7 @@ future core work has solid ground to build on.
 | E18 | Motion Vectors | Generate dense motion vectors natively and move Roto, paint and SplineWarp curves along them. |
 | E19 | Utility Renderer | Ship Nucleon Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
 | E20 | OpenNucleon Rebrand | Rename the project OpenNucleon and the app Nucleon throughout, with new logo, splash and icons. |
+| E21 | Nucleon 1.0 Release | Ship Nucleon 1.0 with a public landing site, versioned online and bundled reference docs, release notes and an honest versioning and beta channel. |
 
 # Features
 
@@ -506,6 +516,8 @@ future core work has solid ground to build on.
 | F17 | OpenNucleon Flag Day | open |  |  | feature/f17-opennucleon-flag-day | Rename Natron to OpenNucleon/Nucleon throughout, code included, with new art and the GPLv3 relicence, landed in one switchover at a quiet time the user chooses. |
 
 # Open questions
+- **Nucleon 1.0 must-land list (user, 2026-11-10: "I'll decide later"):** which Features and milestones must be on `main` before 1.0. M396 - Release 1.0 Cut is held, not eligible for pickup, until the user names them; they are then added to its `Deps`.
+- **Site repo setup for E21 - Nucleon 1.0 Release (user action, after the `opennucleon` org exists):** in `opennucleon/opennucleon.github.io`, enable Pages from the `gh-pages` branch, add a deploy key with write access, and store its private half as the OpenNucleon secret `SITE_DEPLOY_KEY`. M392 - Docs Publishing needs this. Once M388 - Docs Site Scaffold merges, add its `Docs` job to `main`'s required checks.
 - **M382 - Nucleon Logo And Artwork (PM, 2026-11-10):** pick one of the four logo concepts (nucleus, orbital, N monogram, node graph), sent as one PNG per concept and background, with notes for the first refinement round.
 - **F17 - OpenNucleon Flag Day is held (user, 2026-11-10):** only M382 - Nucleon Logo And Artwork may start now, and it merges into the Feature branch only. M383 - Rename Script And Guard, M384 - Plugin Forks Rename, M157 - Relicense To GPLv3 Or Later, M385 - OpenNucleon Code Rename, M386 - Nucleon Branding And Packaging and M387 - Dev Infrastructure Rename are not eligible for pickup until the user names the switchover time. Before that, the user creates the `opennucleon` GitHub org, transfers and renames the repo (`opennucleon/OpenNucleon`) and the forks (`openfx-{io,misc,arena,supportext}`, `openfx-natron` → `openfx-nucleon`), and creates `opennucleon.github.io`. After the landing: every open branch merges main and runs `tools/rename/rename.py --changed-since origin/main`, and `/cat-plan` sweeps the `todo` milestone briefs through the same script.
 - **M276 - Upstream Reuse On Edits (PM, 2026-11-06):** the latency baseline and GPU counts need your host: `build/appimages/Natron-m276-upstream-reuse-on-edits.AppImage` with the steps in its `.md`. Also: add a task to M300 - Unified Tiered Cache that prunes dependencies behind a cache hit? Recommend yes; its gate can't pass without it.

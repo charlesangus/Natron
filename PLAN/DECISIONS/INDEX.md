@@ -128,3 +128,4 @@
 - 2026-11-08 — start-hold-removed: the 2026-11-02 "Start nothing new" hold is removed; per-milestone holds stay → DECISIONS/2026-11-08-start-hold-removed.md
 - 2026-11-09 — ci-check-names: required checks renamed to Format / Lint CI / Code rules / Build and test; code rules split out of lint-ci → DECISIONS/2026-11-09-ci-check-names.md
 - 2026-11-10 — rename-to-opennucleon: project OpenNucleon, app Nucleon; total rename incl. code, io.github.opennucleon IDs, .nucz etc.; lands with GPLv3 as F17 at a user-chosen quiet time (user) → DECISIONS/2026-11-10-rename-to-opennucleon.md
+- 2026-11-10 — nucleon-1-0-docs-and-site: Nucleon 1.0.0 via RC+UAT; Astro landing in opennucleon.github.io; MkDocs+mike docs at /docs/ (latest/X.Y/dev), reference-only + getting-started; docs bundled in AppImage; epic-grouped changelog; betas rolling, pruned to 10 (user) → DECISIONS/2026-11-10-nucleon-1-0-docs-and-site.md

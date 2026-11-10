@@ -20,7 +20,7 @@ Rendering a Group node directly returns the pixels of the node feeding its Outpu
 
 ## Phase 319.1: Group as identity
 
-- [ ] M319.P1.T1 — The group's hash folds in what feeds its Output
+- [x] M319.P1.T1 — The group's hash folds in what feeds its Output
   - files: `Engine/NodeGroup.{h,cpp}`, `Engine/GroupOutput.{h,cpp}`, `Tests/GroupDirectRender_Test.cpp` (new)
   - approach: `NodeGroup::appendExtraHashSources` adds `getOutputNodeInput(false)`; `GroupOutput::appendExtraHashDependents` adds the containing group's node.
   - verify: the new test shows the group's hash changes when an inner knob or the Output's input changes.

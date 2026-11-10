@@ -525,12 +525,12 @@ TEST_F(USDRenderCyclesTest, WarnsOfAMaterialWithNoSurfaceForCycles)
 }
 
 // A render that would take minutes is aborted: render() returns within a second, and once the
-// engine is gone the process has no more threads than after an earlier render was aborted the
-// same way (the TBB workers Cycles renders on outlive it, as they serve every TBB user). TBB
-// and Cycles add workers lazily and a few runs in, so the first two runs only warm the pools up.
-// The process also holds threads of other pools that come and go, so the count is not compared
-// with the warm-up's: the first measured run is the reference and later runs may not exceed it,
-// which a thread leaked per abort still fails by the last run.
+// engine is gone the process keeps no thread per abort. Cycles and TBB threads carry no name that
+// tells them from other pools' (they all show the process name), so the whole process is counted:
+// the first two runs warm the lazily grown pools up and set the reference, and the test fails if
+// the count after the last run is more than 2 above it (a thread leaked per abort adds 3 over the
+// three measured runs) or if it rose at every measured run. A single unrelated thread starting
+// meanwhile does neither.
 TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
 {
     if (!cyclesOrSkip()) {
@@ -545,8 +545,13 @@ TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
     ASSERT_TRUE(cyclesRequest(reader, &owner, &request));
 
     typedef std::chrono::steady_clock Clock;
-    int baseline = -1;
-    for (int run = 0; run < 7; ++run) {
+    const int kRuns = 5;
+    const int kWarmUpRuns = 2;
+    const int kAllowance = 2;
+    int reference = -1;
+    int previous = -1;
+    bool roseEveryRun = true;
+    for (int run = 0; run < kRuns; ++run) {
         const Clock::time_point start = Clock::now();
         Clock::time_point abortedAt;
         bool abortSeen = false;
@@ -568,22 +573,28 @@ TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
 
         HydraRender::release(&owner);
         EXPECT_EQ(0u, HydraRender::getCpuEngineCount());
-        if (run < 2) {
-            continue;
-        }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         int threads = threadCount();
-        if (run == 2) {
-            baseline = threads;
-        } else {
+        if (run < kWarmUpRuns - 1) {
+            continue;
+        }
+        if (run == kWarmUpRuns - 1) {
+            reference = threads;
+            previous = threads;
+            continue;
+        }
+        if (run == kRuns - 1) {
             const Clock::time_point deadline = Clock::now() + std::chrono::seconds(2);
-            while (threads > baseline && Clock::now() < deadline) {
+            while (threads > reference + kAllowance && Clock::now() < deadline) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 threads = threadCount();
             }
-            EXPECT_LE(threads, baseline) << "run " << run;
+            EXPECT_LE(threads, reference + kAllowance) << "reference " << reference;
         }
+        roseEveryRun = roseEveryRun && threads > previous;
+        previous = threads;
     }
+    EXPECT_FALSE(roseEveryRun) << "the thread count rose at every measured run from " << reference;
 }
 
 // With the per-effect thread count at 2, Cycles renders on 2 threads: the process uses no more

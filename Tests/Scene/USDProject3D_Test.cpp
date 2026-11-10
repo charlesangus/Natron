@@ -295,6 +295,35 @@ TEST_F(USDProject3DTest, AnAnimatedCameraAuthorsASampleAtEveryProjectFrame)
     EXPECT_NEAR(0.25, projectThrough(getMatrix(shader), PXR_NS::GfVec3d(0., 0., 0.))[0], 1e-6);
 }
 
+TEST_F(USDProject3DTest, ADeletedImageIsAMissingLiveTextureUntilUndone)
+{
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    const std::string name = plate->getFullyQualifiedName();
+    const auto uriOf = [this]() {
+        ScenePayload payload;
+        std::string error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(projector, &payload, &error)) << error;
+        const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+
+        return sources.empty() ? std::string() : sources[0].getUri(1.);
+    };
+    const std::string live = uriOf();
+    ASSERT_FALSE(live.empty());
+
+    const NodesList outputs(1, projector);
+    plate->deactivate(outputs, false, false, true, false);
+    plate->notifyOutputsOfDeletion();
+    EXPECT_EQ(LiveTextureSource::makeUri(name, "rgba", 0), uriOf());
+
+    plate->activate(outputs, false, false);
+    EXPECT_EQ(live, uriOf());
+
+    // Disconnected, there is no texture, only the warning that the projection is black.
+    ignore_result(projector->disconnectInput(kUSDProject3DInputImage));
+    EXPECT_TRUE(uriOf().empty());
+}
+
 TEST_F(USDProject3DTest, TheImageIsALiveTextureTheShaderSamples)
 {
     createRig();

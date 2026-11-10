@@ -86,6 +86,8 @@
 #include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
+#include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -1124,6 +1126,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
+        LiveTextureSceneIndex::registerSceneIndices();
         int threads = 0;
         if (cycles && !openCyclesSession(request, cancel, &threads, error)) {
             return nullptr;
@@ -1255,7 +1258,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
                 break;
             }
-            if (engine->IsConverged()) {
+            // A cancelled pass can have synced a texture it gave up on as missing, which the engine
+            // would keep: even converged, it goes.
+            if (engine->IsConverged() && !(cancel && cancel->load())) {
                 break;
             }
             // A MoonRay session that could not start or broke never converges.
@@ -2057,6 +2062,7 @@ render(const Request& request,
         };
     }
     const bool ran = thread.runAndWait([&]() {
+        const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             ok = entry && thread.frame(*entry, result, error);
@@ -2167,6 +2173,7 @@ renderWindow(const Request& request,
         };
     }
     const bool ran = thread.runAndWait([&]() {
+        const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             if (!entry) {
@@ -2464,6 +2471,8 @@ struct ProgressiveRender::Implementation {
     RendererSettings settings;
     bool stopped = false;
     bool quit = false;
+    // quit, read without the mutex by a texture export the pass is waiting on.
+    std::atomic<bool> quitting { false };
     // Bumped by each edit; a pass begun under another is not published.
     std::uint64_t generation = 0;
     bool pending = false;
@@ -2563,6 +2572,7 @@ struct ProgressiveRender::Implementation {
         parameters.gpuEnabled = false;
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
+        LiveTextureSceneIndex::registerSceneIndices();
         EnginePtr made;
         {
             TfErrorMark mark;
@@ -3029,6 +3039,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 if (readsRestart) {
                     before = engine->GetRenderStats();
                 }
+                const LiveTextureStore::ExportAbortScope exportAbort([this]() { return quitting.load(); });
                 if (renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure)) {
                     rendered = true;
                     converged = engine->IsConverged();
@@ -3055,6 +3066,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         if (!sessionFailure.empty()) {
             fail(lock, workingRenderer, sessionFailure, workingEdits);
             continue;
+        }
+        {
+            // Failing keeps it from asking again: the next edit's sync clears the store's note and tries.
+            const std::string noRoom = LiveTextureStore::instance().getAnyNoRoom();
+            if (!noRoom.empty()) {
+                fail(lock, workingRenderer, noRoom, workingEdits);
+                continue;
+            }
         }
         if (generation != passGeneration) {
             // Edited during the pass: what it rendered is stale.
@@ -3167,6 +3186,7 @@ ProgressiveRender::~ProgressiveRender()
     {
         std::lock_guard<std::mutex> l(_imp->mutex);
         _imp->quit = true;
+        _imp->quitting = true;
         _imp->wake.notify_all();
     }
     if (_imp->worker.joinable()) {

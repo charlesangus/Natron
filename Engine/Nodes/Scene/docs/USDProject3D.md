@@ -60,4 +60,6 @@ Controls:
   every frame. The image still plays.
 
 There is no occlusion: the image falls on every face in the frustum, hidden ones
-included. Without an Image input the projection is black, with a warning.
+included. Without an Image input the projection is black, with a warning. If the
+node on the Image input was deleted, the projection is magenta, with a warning, until
+something is connected to the input or the deletion is undone.

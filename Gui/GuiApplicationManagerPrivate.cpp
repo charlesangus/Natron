@@ -61,7 +61,6 @@ GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager
     , _splashScreen(NULL)
     , _openFileRequest()
     , _actionShortcuts()
-    , _shortcutsChangedVersion(false)
     , _fontFamily()
     , _fontSize(0)
     , _nodeCB()

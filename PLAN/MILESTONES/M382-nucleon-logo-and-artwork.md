@@ -102,3 +102,7 @@ Context:
 - No file outside `Gui/Resources/Branding/`, `tools/branding/` and `tools/license/components/` changed.
 - The user has approved the mark, the lockup and both splashes (recorded in `## Decisions`).
 - The PR targets `feature/f17-opennucleon-flag-day`, never `main`.
+
+## Decisions
+
+- 2026-11-10 — First concept round rejected (user): none of nucleus, orbital, monogram or node graph worked. Second round: four new clean-sheet designs drawn from socialist-realist art, retro-futurist/atompunk, existing and past DCC logos, eighties aesthetics and Bauhaus; interesting and unique but obeying design principles; a greyscale palette, optionally with one or two colours from the default theme (highlight orange, keyframe blue). Drafted by a Fable agent (user). The first concepts are removed from the branch and are not shown to the new drafter.

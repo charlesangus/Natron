@@ -26,9 +26,14 @@
 #include "EffectInstance.h"
 #include "EffectInstancePrivate.h"
 
+#include <atomic>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -73,7 +78,43 @@ setSceneError(std::string* errorMessage,
         *errorMessage = message;
     }
 }
+
+std::atomic<int> scenePreparerCount { 0 };
+
+// Every node upstream of root and root itself, inputs before the nodes reading them. Iterative,
+// as graphs can be deeper than the stack.
+std::vector<EffectInstancePtr>
+upstreamInputsFirst(const EffectInstancePtr& root)
+{
+    std::vector<EffectInstancePtr> order;
+    std::unordered_set<const EffectInstance*> visited;
+    std::vector<std::pair<EffectInstancePtr, int>> stack;
+
+    visited.insert(root.get());
+    stack.emplace_back(root, 0);
+    while (!stack.empty()) {
+        std::pair<EffectInstancePtr, int>& top = stack.back();
+        if (top.second >= top.first->getNInputs()) {
+            order.push_back(top.first);
+            stack.pop_back();
+            continue;
+        }
+        const EffectInstancePtr input = top.first->getInput(top.second);
+        ++top.second;
+        if (input && visited.insert(input.get()).second) {
+            stack.emplace_back(input, 0);
+        }
+    }
+
+    return order;
+}
 } // anonymous namespace
+
+void
+EffectInstance::setPreparesSceneSources(bool prepares)
+{
+    scenePreparerCount.fetch_add(prepares ? 1 : -1);
+}
 
 bool
 EffectInstance::producesSceneData() const
@@ -99,10 +140,6 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return eRenderRoIRetCodeFailed;
     }
     *outputScene = ScenePayload();
-
-    // An evaluation reads layers and opens files from start to end: a layer reload waits for it,
-    // and one waiting holds new evaluations off. Re-entrant, so only the outermost one counts.
-    SceneWriteBarrier::ReadScope read;
 
     // Same guard as renderDeepRoI(): a render clone forwards to the main instance, which owns
     // the node's memoized layer and the TLS.
@@ -137,6 +174,23 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     if (aborted()) {
         return eRenderRoIRetCodeAborted;
     }
+
+    if (!SceneWriteBarrier::isReadingOnThisThread() && (scenePreparerCount.load() > 0)) {
+        const std::vector<EffectInstancePtr> upstream = upstreamInputsFirst(shared_from_this());
+        for (const EffectInstancePtr& effect : upstream) {
+            const RenderRoIRetCode code = effect->prepareSceneSources(args, errorMessage);
+            if (code != eRenderRoIRetCodeOk) {
+                return code;
+            }
+            if (aborted()) {
+                return eRenderRoIRetCodeAborted;
+            }
+        }
+    }
+
+    // An evaluation reads layers and opens files from start to end: a layer reload waits for it,
+    // and one waiting holds new evaluations off. Re-entrant, so only the outermost one counts.
+    SceneWriteBarrier::ReadScope read;
 
     const U64 nodeHash = frameArgs->nodeHash;
 

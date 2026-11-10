@@ -1,0 +1,26 @@
+{
+    "Plugins": [
+        {
+            "Info": {
+                "Types": {
+                    "Natron::GeoLayerResolver": {
+                        "bases": ["ArResolver"],
+                        "uriSchemes": ["natrongeo"]
+                    },
+                    "Natron::GeoSdfFileFormat": {
+                        "bases": ["SdfFileFormat"],
+                        "formatId": "natrongeo",
+                        "extensions": ["natrongeo"],
+                        "target": "usd",
+                        "primary": true,
+                        "supportsWriting": false
+                    }
+                }
+            },
+            "Name": "natronGeo",
+            "Root": ".",
+            "ResourcePath": ".",
+            "Type": "resource"
+        }
+    ]
+}

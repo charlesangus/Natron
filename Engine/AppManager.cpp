@@ -143,6 +143,7 @@
 #include "Engine/TrackerNode.h"
 
 #include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
@@ -432,6 +433,10 @@ AppManager::loadFromArgs(const CLArgs& cl)
         std::string liveTextureError;
         if (!SceneCaches::registerLiveTextures(&liveTextureError)) {
             std::cerr << liveTextureError << std::endl;
+        }
+        std::string geoLayerError;
+        if (!GeoLayers::registerPlugin(&geoLayerError)) {
+            std::cerr << geoLayerError << std::endl;
         }
     }
 

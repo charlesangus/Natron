@@ -63,6 +63,9 @@ list(APPEND NatronEngine_SOURCES ${NatronEngineKernel_SOURCES})
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+# The geometry nodes translate to and from USD, so they include the same headers.
+file(GLOB NatronEngineGeometry_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/*.cpp)
+set_source_files_properties(${NatronEngineGeometry_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
 # Native node registration fragments (see Engine/Nodes/NativeRegistry.h), aggregated into
 # NativeRegistryAll.inc. Sorted so the registration order does not depend on the filesystem.
@@ -274,6 +277,10 @@ install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/na
 set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronProject3D.glslfx)
 configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
 install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
+# The natrongeo: layer resolver and file format, registered at startup by GeoLayers::registerPlugin.
+set(NatronEngine_GEO_LAYER_PLUGINFO ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/plugInfo.json)
+configure_file(${NatronEngine_GEO_LAYER_PLUGINFO} ${CMAKE_BINARY_DIR}/Resources/usd/natronGeo/plugInfo.json COPYONLY)
+install(FILES ${NatronEngine_GEO_LAYER_PLUGINFO} DESTINATION Resources/usd/natronGeo)
 
 # darktable's noise profiles, read at run time by DenoiseProfiled from the same directory.
 set(NatronEngine_NOISE_PROFILES_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Filter/data/noiseprofiles.json)

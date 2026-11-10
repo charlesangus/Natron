@@ -60,14 +60,15 @@ GeoBounds geoTransformBounds(const GeoMatrix4& m, const GeoBounds& b);
 GeoBounds geoUnionBounds(const GeoBounds& a, const GeoBounds& b);
 
 /**
- * Packed primitives are Houdini's: one vertex on one point, the pivot, plus per-primitive
- * intrinsics kept as primitive attributes. The local transform (kGeoPackedXformAttr) places the
- * contents; the pivot's position does not enter it. Bounds are in the primitive's local space.
+ * A packed primitive is one vertex on one point, the pivot, plus per-primitive intrinsics kept as
+ * primitive attributes. The transform (kGeoPackedXformAttr) places the contents in the owning
+ * detail's space, which for USD-sourced geometry is world space; the pivot's position does not
+ * enter it. Bounds are in the primitive's own space, before the transform.
  *
  * Packed Geometry embeds an immutable GeoDetail held in the owning detail's sharedDetails(), so
  * a million instances of one detail cost a million table indices and one detail. Packed USD
- * records the source prim path and the parent's world transform, so that a new world transform
- * can be turned back into a local one.
+ * records the source prim path and the parent's world transform at the time it was read, the
+ * fallback for turning the transform back into a local one when the source stage is not at hand.
  *
  * Packed primitives must be created through the functions below, which keep the attributes
  * consistent. Setters and appenders take storage offsets, like GeoDetailBuilder, and throw
@@ -100,7 +101,7 @@ GeoOffset geoAppendPackedUSD(GeoDetailBuilder& builder,
                              GeoOffset pivotPoint,
                              std::string_view sourcePath,
                              const GeoMatrix4& parentWorldTransform,
-                             const GeoMatrix4& transform,
+                             const GeoMatrix4& worldTransform,
                              const GeoBounds& localBounds);
 
 /** @brief Bounds of the live points and of the nested packed primitives; zero when empty. */
@@ -112,7 +113,7 @@ void geoSetPackedTransform(GeoDetailBuilder& builder, GeoOffset primitive, const
 GeoBounds geoPackedLocalBounds(const GeoDetail& detail, GeoOffset primitive);
 void geoSetPackedLocalBounds(GeoDetailBuilder& builder, GeoOffset primitive, const GeoBounds& bounds);
 
-/** @brief The local bounds carried by the local transform. */
+/** @brief The local bounds carried by the transform. */
 GeoBounds geoPackedWorldBounds(const GeoDetail& detail, GeoOffset primitive);
 
 /** @brief The embedded detail of a packed geometry primitive. */

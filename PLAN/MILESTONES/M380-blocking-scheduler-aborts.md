@@ -53,3 +53,4 @@
 
 - 2026-11-10 — Elaborated at claim from a per-caller audit (consultant). Most callers named in the stub are dead code and are deleted. Previews don't use this wait. M219's `workMutex` lives only on F8 and stays as a data guard.
 - 2026-11-10 — Phase 1 verified: remote debug build with tests green at 364fac688 (run 42796566643), including `GenericSchedulerAbortWait` and the failing-blocking-render case.
+- 2026-11-10 — `SchedulerAbortLatency.ViewerCurrentFrameAbortReturnsWithinBudget` hit a SIGFPE in OCIO's CPU apply on a render thread in the debug build. The viewer display transform and the colour-picking applies now run under `FpTrapGuard` (a8a7c8890). Likely cause: an aborted render leaves tiles unfilled and the viewer colour-processes them. Unconfirmed; if confirmed, the viewer reading unwritten pixels after an abort is its own bug, for an E14 stub.

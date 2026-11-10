@@ -69,6 +69,7 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , maxSamplesBox(NULL)
     , refinementPausedButton(NULL)
     , refineSamplesLabel(NULL)
+    , geoDisplayRow(NULL)
     , layerChoice(NULL)
     , alphaChannelChoice(NULL)
     , layerMenuTime(0.)

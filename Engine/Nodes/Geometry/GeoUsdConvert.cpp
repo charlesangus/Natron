@@ -1553,6 +1553,12 @@ GeoUsdConvert::partitionPath(std::size_t partition) const
     return _partitions.at(partition)->path;
 }
 
+const std::vector<std::size_t>&
+GeoUsdConvert::partitionPrimitives(std::size_t partition) const
+{
+    return _partitions.at(partition)->primitives;
+}
+
 GeoUsdPrimKindEnum
 GeoUsdConvert::partitionKind(std::size_t partition) const
 {

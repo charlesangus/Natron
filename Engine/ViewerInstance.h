@@ -79,6 +79,12 @@
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamPointMarkers "pointMarkers"
+#define kViewerParamPointNumbers "pointNumbers"
+#define kViewerParamPrimitiveNumbers "primitiveNumbers"
+#define kViewerParamNormals "normals"
+#define kViewerParamNormalScale "normalScale"
+#define kViewerParamHighlightGroup "highlightGroup"
 
 NATRON_NAMESPACE_ENTER
 
@@ -97,6 +103,9 @@ public:
     // The input is a scene: renderViewer_internal() evaluates it through the scene action and
     // renders no texture for it.
     bool sceneUpstream = false;
+    // The input is geometry, which the 3D view shows through the viewer's own geometry layer;
+    // sceneUpstream is set along with it.
+    bool geometryUpstream = false;
     std::optional<RawDisplay::Normalisation> rawNormalisation;
     bool forceRender;
     int activeInputIndex;
@@ -631,18 +640,24 @@ private:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
-    // The Viewer is the one place a deep, raw or scene edge may land on an image input: it
-    // flattens deep, shows raw values as they are (RawDisplay), and shows a scene in its 3D view.
+    // The Viewer is the one place a deep, raw, scene or geometry edge may land on an image input:
+    // it flattens deep, shows raw values as they are (RawDisplay), and shows a scene or geometry
+    // in its 3D view.
     // Listing the kinds rather than declaring eDataKindPolymorphic keeps a kind the Viewer cannot
     // show (a future one) an error instead of a silent connection.
     virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
                                                 DataKindEnum kind) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene);
+        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene) || (kind == eDataKindGeometry);
     }
     /*******************************************/
 
     ViewerRenderRetCode evaluateSceneInput(ViewerArgs& inArgs) WARN_UNUSED_RETURN;
+
+    bool evaluateGeometryInput(ViewerArgs& inArgs,
+                               ScenePayload* scene,
+                               std::string* error,
+                               bool* aborted);
 
     ViewerRenderRetCode renderViewer_internal(ViewIdx view,
                                               bool singleThreaded,

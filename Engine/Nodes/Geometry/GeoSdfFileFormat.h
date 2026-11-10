@@ -57,40 +57,58 @@ bool registerPlugin(std::string* errorMessage);
 
 /**
  * @brief The layer identifier serving @p key. @p rootPath and @p packedMode ("instancer",
- * "native" or "unpack") become file format arguments when not empty.
+ * "native" or "unpack") become file format arguments when not empty, and so does @p consumer: a
+ * layer opened for a consumer is a layer of its own, served by the provider registered for that
+ * consumer, so its owner can refresh it without disturbing the stages composing the others.
  **/
 std::string identifier(const std::string& key,
                        const std::string& rootPath = std::string(),
-                       const std::string& packedMode = std::string());
+                       const std::string& packedMode = std::string(),
+                       const std::string& consumer = std::string());
 
 /**
- * @brief Serves @p key from @p provider, which is called on whichever thread opens or refreshes
- * the layer and must return the detail current at that time.
+ * @brief Serves @p key to @p consumer from @p provider, which is called on whichever thread opens
+ * or refreshes the layer and must return the detail current at that time.
  **/
 void setProvider(const std::string& key,
-                 std::function<GeoDetailConstPtr()> provider);
-void removeProvider(const std::string& key);
+                 std::function<GeoDetailConstPtr()> provider,
+                 const std::string& consumer = std::string());
+void removeProvider(const std::string& key,
+                    const std::string& consumer = std::string());
 
 /**
  * @brief The stage @p key's layer is composed over, as GeoUsdConvertOptions::inputScene; null
  * for none. Taken by the next open or refresh of the layer.
  **/
 void setInputScene(const std::string& key,
-                   std::shared_ptr<const GeoUsdInputScene> scene);
-std::shared_ptr<const GeoUsdInputScene> currentInputScene(const std::string& key);
-bool hasProvider(const std::string& key);
+                   std::shared_ptr<const GeoUsdInputScene> scene,
+                   const std::string& consumer = std::string());
+std::shared_ptr<const GeoUsdInputScene> currentInputScene(const std::string& key,
+                                                          const std::string& consumer = std::string());
+bool hasProvider(const std::string& key,
+                 const std::string& consumer = std::string());
 
 /** @brief The provider's current detail, null without a provider. */
-GeoDetailConstPtr currentDetail(const std::string& key);
+GeoDetailConstPtr currentDetail(const std::string& key,
+                                const std::string& consumer = std::string());
+
+/** @brief currentDetail() of the key and consumer the layer @p identifier is opened for. */
+GeoDetailConstPtr servedDetail(const std::string& identifier);
+
+/** @brief Whether @p identifier names a geometry layer opened for a consumer, and which. */
+bool isConsumerLayer(const std::string& identifier,
+                     std::string* consumer = nullptr);
 
 /**
  * @brief Applies the difference between the open layer @p identifier and its provider's current
  * detail as field edits in one change block. Prims whose topology or property set changed are
  * removed and authored again; the others only change values. Does nothing when the detail is
  * unchanged, along with the input scene. Must not run concurrently with readers of the layer.
+ * @p edited, when given, tells whether the layer was edited.
  **/
 bool refresh(const std::string& identifier,
-             std::string* errorMessage);
+             std::string* errorMessage,
+             bool* edited = nullptr);
 
 } // namespace GeoLayers
 

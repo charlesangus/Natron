@@ -57,6 +57,8 @@ class QWheelEvent;
 NATRON_NAMESPACE_ENTER
 
 class SceneStage;
+class SceneStageEditor;
+struct GeoDisplayOptions;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -689,6 +691,21 @@ public:
     // Ends a progressive render and frees its engine and threads; the next render() starts another.
     void releaseRefinement();
 
+    /**
+     * @brief Sets what every sync adds to the stage after composing the payload, null for nothing.
+     * Takes effect from the next sync.
+     **/
+    void setStageEditor(const std::shared_ptr<SceneStageEditor>& editor);
+
+    /**
+     * @brief The view and projection of the last frame drawn, as one row-major matrix taking a
+     * world-space row vector to clip space, and the size it was drawn at in pixels. False before
+     * the first frame. Any thread.
+     **/
+    bool getDrawnView(double viewProjection[16],
+                      int* width,
+                      int* height) const;
+
     // How long the last upload of a progressive frame to its texture took, in milliseconds, and how
     // many pixels it had; -1 and 0 before the first.
     double getLastUploadMs() const;
@@ -775,6 +792,9 @@ public:
     void setMaxSamples(int samples);
 
     void setRefinementPaused(bool paused);
+
+    // What the view draws over geometry it is shown. A change syncs the scene shown again.
+    void setGeoDisplayOptions(const GeoDisplayOptions& options);
 
     void setLookThroughCamera(const QString& path);
 

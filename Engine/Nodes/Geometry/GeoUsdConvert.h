@@ -226,6 +226,9 @@ public:
     const PXR_NS::SdfPath& partitionPath(std::size_t partition) const;
     GeoUsdPrimKindEnum partitionKind(std::size_t partition) const;
 
+    /** @brief The offsets of the primitives the partition's prim is made of, in prim order. */
+    const std::vector<std::size_t>& partitionPrimitives(std::size_t partition) const;
+
     /** @brief Whether the partition's attribute values have been built or adopted. */
     bool isPartitionBuilt(std::size_t partition) const;
 

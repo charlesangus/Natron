@@ -131,12 +131,14 @@
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/GLContextLoss.h"
+#include "Gui/GeoDisplay.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGuides.h"
+#include "Gui/SceneStageEditor.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneTransformWidget.h"
 #include "Gui/UndoHistory.h"
@@ -593,6 +595,33 @@ struct SceneViewportRenderer::Implementation {
     // first included, taking nothing in.
     std::atomic<U64> backgroundStops { 0 };
     std::atomic<U64> backgroundCancels { 0 };
+
+    mutable std::mutex stageEditorMutex;
+    std::shared_ptr<SceneStageEditor> stageEditor;
+
+    mutable std::mutex drawnViewMutex;
+    GfMatrix4d drawnViewProjection;
+    int drawnViewWidth = 0;
+    int drawnViewHeight = 0;
+    bool hasDrawnView = false;
+
+    std::shared_ptr<SceneStageEditor> getStageEditor() const
+    {
+        std::lock_guard<std::mutex> lock(stageEditorMutex);
+
+        return stageEditor;
+    }
+
+    void noteDrawnView(const GfFrustum& frustum,
+                       int width,
+                       int height)
+    {
+        std::lock_guard<std::mutex> lock(drawnViewMutex);
+        drawnViewProjection = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix();
+        drawnViewWidth = width;
+        drawnViewHeight = height;
+        hasDrawnView = true;
+    }
 
     // Takes stageMutex to edit, waiting for it.
     std::unique_lock<std::shared_mutex> lockExclusive()
@@ -1257,7 +1286,8 @@ struct SceneViewportRenderer::Implementation {
         params.highlight = true;
         params.showProxy = showProxy;
         params.showRender = showRender;
-        params.showGuides = showGuidePurpose;
+        const std::shared_ptr<SceneStageEditor> editor = getStageEditor();
+        params.showGuides = showGuidePurpose || (editor && editor->showsGuidePurpose());
         params.enableSceneLights = sceneLit;
         switch (drawMode) {
         case eDrawModeUnshaded:
@@ -2258,11 +2288,16 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         before.renderSettingsPrimPath.clear();
         after.renderSettingsPrimPath.clear();
         StageChangePaths changes(_imp->sceneStage->getStage());
-        if (_imp->sceneStage->sync(payload)) {
+        const std::shared_ptr<SceneStageEditor> editor = _imp->getStageEditor();
+        if (_imp->sceneStage->sync(editor ? editor->stagedPayload(payload) : payload)) {
             // An edit of the render settings prims alone restarts nothing here: what of it the
             // render takes, the active prim's settings for its renderer, reaches it through
             // ProgressiveRender::setSettings(), which makes the engine again when they differ.
             restart = changes.outsideRender || !changes.any || (before != after);
+        }
+        if (editor && editor->editStage(*_imp->sceneStage)) {
+            _imp->sceneStage->noteLayerEdit();
+            restart = true;
         }
         if (framesPerSecond > 0.) {
             _imp->frame = frame;
@@ -3627,6 +3662,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     }
     _imp->noteStageAbsorbed(params);
 
+    _imp->noteDrawnView(frustum, width, height);
     _imp->drawnGuides.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -3765,6 +3801,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         _imp->drawnSamples = -1;
     }
 
+    _imp->noteDrawnView(frustum, width, height);
     _imp->drawnGuides.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -4106,6 +4143,34 @@ SceneViewportRenderer::releaseRefinement()
     _imp->progressive->setRenderer(std::string());
     _imp->setRefineErrorCopy(std::string());
     _imp->refineReleased = true;
+}
+
+void
+SceneViewportRenderer::setStageEditor(const std::shared_ptr<SceneStageEditor>& editor)
+{
+    std::lock_guard<std::mutex> lock(_imp->stageEditorMutex);
+    _imp->stageEditor = editor;
+}
+
+bool
+SceneViewportRenderer::getDrawnView(double viewProjection[16],
+                                    int* width,
+                                    int* height) const
+{
+    std::lock_guard<std::mutex> lock(_imp->drawnViewMutex);
+    if (!_imp->hasDrawnView) {
+        return false;
+    }
+    const double* m = _imp->drawnViewProjection.GetArray();
+    std::copy(m, m + 16, viewProjection);
+    if (width) {
+        *width = _imp->drawnViewWidth;
+    }
+    if (height) {
+        *height = _imp->drawnViewHeight;
+    }
+
+    return true;
 }
 
 double
@@ -4731,6 +4796,7 @@ struct SceneViewport::Implementation {
     QString requestedError;
     ScenePayload requestedPayload;
     bool requestedLiveTextures = false;
+    const std::shared_ptr<GeoDisplay> geoDisplay = std::make_shared<GeoDisplay>();
 
     // The thread requests for payload loads are serviced on. It waits under this mutex's condition
     // for the stage to have requests; a request only needs to wake it.
@@ -4990,6 +5056,9 @@ SceneViewport::SceneViewport(QWidget* parent)
     setObjectName(QString::fromUtf8("SceneViewport"));
     // The selected prims, the current one last, for scripts.
     setProperty("natronSceneSelection", QStringList());
+    // Per selected prim of viewed geometry: its path and the primitive numbers it is made of.
+    setProperty("natronGeoPick", QVariantList());
+    _imp->renderer.setStageEditor(_imp->geoDisplay);
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
     // framebuffer's content between paints; not checked against Qt's source.
@@ -5812,6 +5881,18 @@ SceneViewport::setRefinementPaused(bool paused)
 }
 
 void
+SceneViewport::setGeoDisplayOptions(const GeoDisplayOptions& options)
+{
+    if (!_imp->geoDisplay->setOptions(options)) {
+        return;
+    }
+    if (!_imp->requestedPayload.isEmpty()) {
+        requestSync(_imp->requestedPayload, _imp->requestedError);
+    }
+    update();
+}
+
+void
 SceneViewport::setDisplayTransform(const SceneViewportRenderer::DisplayTransform& transform)
 {
     _imp->renderer.setDisplayTransform(transform);
@@ -5985,6 +6066,20 @@ SceneViewport::setSelection(const QStringList& paths)
     }
     _imp->renderer.setSelectedPrims(p);
     setProperty("natronSceneSelection", paths);
+    {
+        QVariantList picks;
+        for (const std::string& path : p) {
+            GeoViewerLayer::Pick pick;
+            if (_imp->geoDisplay->pickPrimitives(path, &pick)) {
+                QVariantList primitives;
+                for (GeoIndex index : pick.primitives) {
+                    primitives.push_back(QVariant::fromValue<qlonglong>(index));
+                }
+                picks.push_back(QVariantList { QString::fromStdString(pick.primPath), primitives });
+            }
+        }
+        setProperty("natronGeoPick", picks);
+    }
     update();
     Q_EMIT selectionChanged(paths);
 }
@@ -6662,6 +6757,18 @@ SceneViewport::paintGL()
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::TextAntialiasing);
+    {
+        // For scripts: the numbers painted, and the in-place refreshes of the viewed geometry with
+        // the resyncs they caused.
+        int labels = 0;
+        double viewProjection[16];
+        if (_imp->error.isEmpty() && rendererError.isEmpty() && !isComposing() && _imp->renderer.hasScene() && _imp->renderer.getDrawnView(viewProjection, nullptr, nullptr)) {
+            labels = _imp->geoDisplay->paintLabels(painter, viewProjection, width(), height());
+        }
+        setProperty("natronGeoLabels", labels);
+        setProperty("natronGeoRefreshes", QVariant::fromValue<qulonglong>(_imp->geoDisplay->getRefreshCount()));
+        setProperty("natronGeoRefreshResyncs", QVariant::fromValue<qulonglong>(_imp->geoDisplay->getRefreshResyncCount()));
+    }
     if (!_imp->error.isEmpty() || !rendererError.isEmpty()) {
         painter.setPen(QColor(230, 90, 80));
         painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap, _imp->error.isEmpty() ? rendererError : _imp->error);

@@ -88,8 +88,14 @@ public:
      **/
     std::size_t getCommonBaseLength(const ScenePayload& payload) const;
 
-    // How many sync() calls edited the stage.
+    // How many sync() calls edited the stage, plus the noteLayerEdit() calls.
     U64 getEditCount() const;
+
+    /**
+     * @brief Counts an edit the owner made in place to a layer of the payload that no other stage
+     * composes, under the same lock as sync(), so readers of getEditCount() see the stage moved.
+     **/
+    void noteLayerEdit();
 
     // The projections of the payload whose camera the stage lacks, as last synced.
     const std::vector<SceneProjectionCameras::Unresolved>& getUnresolvedProjections() const;

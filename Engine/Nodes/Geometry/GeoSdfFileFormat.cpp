@@ -25,6 +25,7 @@
 
 #include "GeoSdfFileFormat.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -61,6 +62,24 @@ const char* const kScheme = "natrongeo";
 const char* const kPluginName = "natronGeo";
 const char* const kRootArgument = "root";
 const char* const kPackedArgument = "packed";
+const char* const kConsumerArgument = "consumer";
+
+// The registry entry of key as served to consumer; a consumer's entries sort right after the key's
+// own, so lower_bound(key) finds every entry of a key.
+std::string
+servedKey(const std::string& key,
+          const std::string& consumer)
+{
+    return consumer.empty() ? key : key + '\n' + consumer;
+}
+
+std::string
+consumerOf(const SdfFileFormat::FileFormatArguments& args)
+{
+    const auto it = args.find(kConsumerArgument);
+
+    return it == args.end() ? std::string() : it->second;
+}
 
 bool
 keyFromPath(const std::string& path,
@@ -129,14 +148,25 @@ registry()
     return r;
 }
 
-U64
-providerGeneration(const std::string& key)
+// The resolver sees the layer path without its arguments, so it answers for every consumer of key.
+bool
+anyProviderGeneration(const std::string& key,
+                      U64* generation)
 {
     Registry& r = registry();
     std::lock_guard<std::mutex> lock(r.mutex);
-    const auto it = r.providers.find(key);
+    bool found = false;
+    *generation = 0;
+    for (auto it = r.providers.lower_bound(key); it != r.providers.end(); ++it) {
+        const std::string& served = it->first;
+        if (served != key && (served.size() <= key.size() || served.compare(0, key.size(), key) != 0 || served[key.size()] != '\n')) {
+            break;
+        }
+        found = true;
+        *generation = std::max(*generation, it->second.generation);
+    }
 
-    return it == r.providers.end() ? 0 : it->second.generation;
+    return found;
 }
 
 class SpecCollector
@@ -190,8 +220,9 @@ protected:
     virtual ArResolvedPath _Resolve(const std::string& assetPath) const OVERRIDE
     {
         std::string key;
+        U64 generation = 0;
 
-        return keyFromPath(assetPath, &key) && GeoLayers::hasProvider(key) ? ArResolvedPath(assetPath) : ArResolvedPath();
+        return keyFromPath(assetPath, &key) && anyProviderGeneration(key, &generation) ? ArResolvedPath(assetPath) : ArResolvedPath();
     }
 
     virtual ArResolvedPath _ResolveForNewAsset(const std::string& /*assetPath*/) const OVERRIDE
@@ -211,8 +242,10 @@ protected:
         if (!keyFromPath(assetPath, &key)) {
             return ArTimestamp();
         }
+        U64 generation = 0;
+        anyProviderGeneration(key, &generation);
 
-        return ArTimestamp(double(providerGeneration(key) + 1));
+        return ArTimestamp(double(generation + 1));
     }
 
     virtual std::shared_ptr<ArAsset> _OpenAsset(const ArResolvedPath& /*resolvedPath*/) const OVERRIDE
@@ -278,8 +311,9 @@ public:
 
             return false;
         }
-        options.inputScene = GeoLayers::currentInputScene(key);
-        const GeoDetailConstPtr detail = GeoLayers::currentDetail(key);
+        const std::string consumer = consumerOf(layer->GetFileFormatArguments());
+        options.inputScene = GeoLayers::currentInputScene(key, consumer);
+        const GeoDetailConstPtr detail = GeoLayers::currentDetail(key, consumer);
         if (!detail) {
             TF_RUNTIME_ERROR("No geometry is served as \"%s\"", resolvedPath.c_str());
 
@@ -460,7 +494,8 @@ registerPlugin(std::string* errorMessage)
 std::string
 identifier(const std::string& key,
            const std::string& rootPath,
-           const std::string& packedMode)
+           const std::string& packedMode,
+           const std::string& consumer)
 {
     const std::string path = std::string(kScheme) + ":" + key + "." + kScheme;
     SdfLayer::FileFormatArguments args;
@@ -470,70 +505,79 @@ identifier(const std::string& key,
     if (!packedMode.empty()) {
         args[kPackedArgument] = packedMode;
     }
+    if (!consumer.empty()) {
+        args[kConsumerArgument] = consumer;
+    }
 
     return args.empty() ? path : SdfLayer::CreateIdentifier(path, args);
 }
 
 void
 setProvider(const std::string& key,
-            std::function<GeoDetailConstPtr()> provider)
+            std::function<GeoDetailConstPtr()> provider,
+            const std::string& consumer)
 {
     Registry& r = registry();
     std::lock_guard<std::mutex> lock(r.mutex);
-    Provider& p = r.providers[key];
+    Provider& p = r.providers[servedKey(key, consumer)];
     p.provide = std::move(provider);
     p.generation = ++r.generation;
 }
 
 void
-removeProvider(const std::string& key)
+removeProvider(const std::string& key,
+               const std::string& consumer)
 {
     Registry& r = registry();
     std::lock_guard<std::mutex> lock(r.mutex);
-    r.providers.erase(key);
-    r.inputScenes.erase(key);
+    r.providers.erase(servedKey(key, consumer));
+    r.inputScenes.erase(servedKey(key, consumer));
 }
 
 void
 setInputScene(const std::string& key,
-              std::shared_ptr<const GeoUsdInputScene> scene)
+              std::shared_ptr<const GeoUsdInputScene> scene,
+              const std::string& consumer)
 {
     Registry& r = registry();
     std::lock_guard<std::mutex> lock(r.mutex);
     if (scene) {
-        r.inputScenes[key] = std::move(scene);
+        r.inputScenes[servedKey(key, consumer)] = std::move(scene);
     } else {
-        r.inputScenes.erase(key);
+        r.inputScenes.erase(servedKey(key, consumer));
     }
 }
 
 std::shared_ptr<const GeoUsdInputScene>
-currentInputScene(const std::string& key)
+currentInputScene(const std::string& key,
+                  const std::string& consumer)
 {
     Registry& r = registry();
     std::lock_guard<std::mutex> lock(r.mutex);
-    const auto it = r.inputScenes.find(key);
+    const auto it = r.inputScenes.find(servedKey(key, consumer));
 
     return it == r.inputScenes.end() ? GeoUsdInputSceneConstPtr() : it->second;
 }
 
 bool
-hasProvider(const std::string& key)
+hasProvider(const std::string& key,
+            const std::string& consumer)
 {
     Registry& r = registry();
     std::lock_guard<std::mutex> lock(r.mutex);
 
-    return r.providers.count(key) > 0;
+    return r.providers.count(servedKey(key, consumer)) > 0;
 }
 
 GeoDetailConstPtr
-currentDetail(const std::string& key)
+currentDetail(const std::string& key,
+              const std::string& consumer)
 {
     std::function<GeoDetailConstPtr()> provide;
     {
         Registry& r = registry();
         std::lock_guard<std::mutex> lock(r.mutex);
-        const auto it = r.providers.find(key);
+        const auto it = r.providers.find(servedKey(key, consumer));
         if (it == r.providers.end()) {
             return GeoDetailConstPtr();
         }
@@ -545,8 +589,12 @@ currentDetail(const std::string& key)
 
 bool
 refresh(const std::string& identifier,
-        std::string* errorMessage)
+        std::string* errorMessage,
+        bool* edited)
 {
+    if (edited) {
+        *edited = false;
+    }
     const auto fail = [errorMessage](const std::string& message) {
         if (errorMessage) {
             *errorMessage = message;
@@ -569,17 +617,21 @@ refresh(const std::string& identifier,
     if (!data) {
         return fail("The layer \"" + identifier + "\" no longer holds geometry");
     }
-    const GeoDetailConstPtr detail = currentDetail(key);
+    const std::string consumer = consumerOf(args);
+    const GeoDetailConstPtr detail = currentDetail(key, consumer);
     if (!detail) {
         return fail("No geometry is served as \"" + layerPath + "\"");
     }
     const std::shared_ptr<const GeoUsdConvert> before = data->convert();
     GeoUsdConvertOptions options = before->options();
-    const GeoUsdInputSceneConstPtr inputScene = currentInputScene(key);
+    const GeoUsdInputSceneConstPtr inputScene = currentInputScene(key, consumer);
     const GeoUsdInputSceneConstPtr& previousScene = options.inputScene;
     const bool sameScene = (inputScene == previousScene) || (inputScene && previousScene && inputScene->hash == previousScene->hash);
     if (sameScene && (detail == data->source() || (!data->hasEdits() && data->source() && detail->contentHash() == data->source()->contentHash()))) {
         return true;
+    }
+    if (edited) {
+        *edited = true;
     }
     options.inputScene = inputScene;
     const std::shared_ptr<GeoUsdConvert> after = std::make_shared<GeoUsdConvert>(detail, options);
@@ -711,6 +763,37 @@ refresh(const std::string& identifier,
     }
 
     return true;
+}
+
+GeoDetailConstPtr
+servedDetail(const std::string& identifier)
+{
+    std::string layerPath;
+    SdfLayer::FileFormatArguments args;
+    std::string key;
+    if (!SdfLayer::SplitIdentifier(identifier, &layerPath, &args) || !keyFromPath(layerPath, &key)) {
+        return GeoDetailConstPtr();
+    }
+
+    return currentDetail(key, consumerOf(args));
+}
+
+bool
+isConsumerLayer(const std::string& identifier,
+                std::string* consumer)
+{
+    std::string layerPath;
+    SdfLayer::FileFormatArguments args;
+    std::string key;
+    if (!SdfLayer::SplitIdentifier(identifier, &layerPath, &args) || !keyFromPath(layerPath, &key)) {
+        return false;
+    }
+    const std::string served = consumerOf(args);
+    if (consumer) {
+        *consumer = served;
+    }
+
+    return !served.empty();
 }
 
 } // namespace GeoLayers

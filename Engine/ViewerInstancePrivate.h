@@ -64,6 +64,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class GeoViewerLayer;
 
 struct AbortableRenderInfo_CompareAge
 {
@@ -560,8 +561,10 @@ public:
     DataKindEnum notifiedInputDataKind = eDataKindImage;
     bool notifiedWipeDisabled = false;
 
-    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk
+    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk, geometryLayers
     ScenePayload lastScene[2];
+    // Made on the first geometry the input of each texture shows.
+    std::shared_ptr<GeoViewerLayer> geometryLayers[2];
     std::string lastSceneError[2];
     bool lastSceneOk[2];
 

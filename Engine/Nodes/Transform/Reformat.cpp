@@ -154,7 +154,7 @@ ReformatOp::bake(const KnobReader& reader) const
     p.view = reader.view();
     const bool moved = reader.value(center) || reader.value(flip) || reader.value(flop) || reader.value(turn);
     p.identity = !moved && ((Reformat::ResizeEnum)reader.value(resize) == Reformat::eResizeNone);
-    p.filter = (Resampler::FilterEnum)reader.value(filter);
+    p.filter = filterKnobs.read(reader);
     p.clamp = reader.value(clamp);
     p.blackOutside = reader.value(blackOutside);
 
@@ -356,14 +356,6 @@ Reformat::initializeKnobs()
     page->addKnob(scaleUniform);
     _scaleUniform = scaleUniform;
 
-    // The divider an OpenFX host draws under a knob whose layout hint asks for one, with the name
-    // that host gives it.
-    {
-        KnobSeparatorPtr separator = createKnob<KnobSeparator>(std::string());
-        separator->setName(std::string(kReformatParamScaleUniform) + "_separator");
-        page->addKnob(separator);
-    }
-
     KnobChoicePtr resize = createKnob<KnobChoice>(tr("Resize Type"));
     resize->setName(kReformatParamResize);
     resize->setHintToolTip(tr("Format: Converts between formats, the image is resized to fit in the target format. "
@@ -469,10 +461,12 @@ Reformat::initializeKnobs()
     page->addKnob(blackOutside);
     op().blackOutside = blackOutside;
 
+    op().filterKnobs.create(this, page, filter, clamp);
+
     addStageKnobs(page);
 
     refreshVisibility();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 } // Reformat::initializeKnobs
 
 Reformat::ReformatTypeEnum
@@ -520,22 +514,16 @@ Reformat::refreshVisibility()
 }
 
 void
-Reformat::updateClampEnabled(double time, ViewSpec view)
+Reformat::updateFilterVisibility(double time, ViewSpec view)
 {
-    KnobChoicePtr filter = op().filter.lock();
-    KnobBoolPtr clamp = op().clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    op().filterKnobs.updateVisibility(time, view);
 }
 
 void
 Reformat::onKnobsLoaded()
 {
     refreshVisibility();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 bool
@@ -547,7 +535,7 @@ Reformat::knobChanged(KnobI* k,
 {
     KnobChoicePtr filterKnob = op().filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

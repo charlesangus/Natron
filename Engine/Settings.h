@@ -59,7 +59,8 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 public:
     enum ColorTrackballFeedbackEnum {
         eColorTrackballFeedbackCrosshairReveal = 0,
-        eColorTrackballFeedbackWidgetCursor
+        eColorTrackballFeedbackWidgetCursor,
+        eColorTrackballFeedbackCrosshairOnly
     };
 
     enum ColorTrackballWheelWidthEnum {
@@ -67,6 +68,12 @@ public:
         eColorTrackballWheelWidthThird,
         eColorTrackballWheelWidthQuarter,
         eColorTrackballWheelWidthFifth
+    };
+
+    enum RotoShapeDragRenderEnum {
+        eRotoShapeDragRenderAdaptive = 0,
+        eRotoShapeDragRenderAlwaysLive,
+        eRotoShapeDragRenderOnRelease
     };
 
     // The mouse bindings of the 3D viewer's navigation and selection, named after the
@@ -87,6 +94,16 @@ public:
         eViewer3DTransformTargetOpenEdit,
         // A USDEditTransform after the viewed node, reused while the selection stays the same.
         eViewer3DTransformTargetAlwaysEdit
+    };
+
+    // What lights the 3D viewer's shaded mode, in the order of SceneViewportRenderer's lighting modes.
+    enum Viewer3DLightingEnum {
+        // The stage's lights when it has any, else a light at the camera.
+        eViewer3DLightingAuto = 0,
+        // Only the stage's lights: a stage with none shows its lit surfaces black.
+        eViewer3DLightingScene,
+        // Only a light at the camera.
+        eViewer3DLightingHeadlight
     };
 
     enum KnownHostNameEnum
@@ -305,6 +322,8 @@ public:
     // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
     bool isDevelopRawOnReadEnabled() const;
 
+    // Whether the Develop RAW chain demosaics with RawNeuralDenoise instead of RawDemosaic.
+    bool isDevelopRawNeuralDemosaic() const;
     // Whether the Develop RAW chain has DenoiseProfiled between RawDemosaic and RawInputColor.
     bool isDevelopRawDenoiseEnabled() const;
 
@@ -366,6 +385,14 @@ public:
     Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
+
+    RotoShapeDragRenderEnum getRotoShapeDragRender() const;
+
+    // What lights the viewer's 3D views, shared by all of them.
+    Viewer3DLightingEnum getViewer3DLighting() const;
+
+    // Sets the preference and saves it.
+    void setViewer3DLighting(Viewer3DLightingEnum lighting);
     ///////////////////////////////////////////////////////
 
     bool areRGBPixelComponentsSupported() const;
@@ -603,6 +630,7 @@ private:
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _developRawOnRead;
+    KnobChoicePtr _developRawDemosaic;
     KnobBoolPtr _developRawDenoise;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
@@ -676,9 +704,11 @@ private:
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
+    KnobChoicePtr _rotoShapeDragRender;
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;
     KnobChoicePtr _viewer3DTransformTarget;
+    KnobChoicePtr _viewer3DLighting;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

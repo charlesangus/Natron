@@ -8,6 +8,8 @@ opposite direction to find where in the Source it reads, so Distort evaluates th
 function and Undistort its distort function. A damped Newton solve with analytic Jacobians does the
 inversion.
 
+The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
+
 `outputMode` Image resamples the Source. STMap writes the map instead: red and green hold the
 position read, normalized to the Source format ((0,0) is its bottom-left corner, (1,1) its top-right
 one, as STMap expects), blue is 0, and alpha is 1 where the model has a solution and 0 elsewhere.

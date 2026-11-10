@@ -28,6 +28,7 @@
 #include <algorithm> // min, max
 #include <cassert>
 #include <limits>
+#include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
 
@@ -41,16 +42,48 @@
 #include "Engine/BezierCP.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/TrackMarker.h"
+#include "Engine/TrackerContext.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Serialization/RotoSerialization.h"
+#include "Serialization/Yaml/RotoYaml.h"
+
 NATRON_NAMESPACE_ENTER
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+bool
+itemHasTrackLinks(const RotoItemPtr& item)
+{
+    BezierPtr curve = std::dynamic_pointer_cast<Bezier>(item);
+    if (curve) {
+        return curve->hasTrackLinks();
+    }
+    RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(item);
+    if (layer) {
+        const RotoItems& items = layer->getItems();
+        for (RotoItems::const_iterator it = items.begin(); it != items.end(); ++it) {
+            if (itemHasTrackLinks(*it)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 RotoCurveContext::RotoCurveContext(const NodePtr& node,
                                    bool isPaintNode)
@@ -323,8 +356,13 @@ RotoCurveContext::setRippleEditEnabled(bool enabled)
     /// MT-safe: only called on the main-thread
     assert(QThread::currentThread() == qApp->thread());
 
-    QMutexLocker l(&_imp->rotoContextMutex);
-    _imp->rippleEdit = enabled;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->rippleEdit = enabled;
+    }
+    if (_imp->trackLinkWarningPosted) {
+        updateTrackLinks(false);
+    }
 }
 
 bool
@@ -336,6 +374,48 @@ RotoCurveContext::isRippleEditEnabled() const
     QMutexLocker l(&_imp->rotoContextMutex);
 
     return _imp->rippleEdit;
+}
+
+void
+RotoCurveContext::setRippleEditMode(RippleEditModeEnum mode)
+{
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->rippleEditMode = mode;
+    }
+    if (_imp->trackLinkWarningPosted) {
+        updateTrackLinks(false);
+    }
+}
+
+RippleEditModeEnum
+RotoCurveContext::getRippleEditMode() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+
+    return _imp->rippleEditMode;
+}
+
+void
+RotoCurveContext::setRippleEditRange(double first,
+                                     double last)
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    _imp->rippleEditRangeFirst = first;
+    _imp->rippleEditRangeLast = last;
+}
+
+RippleEditKeys
+RotoCurveContext::getRippleEditKeys() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    RippleEditKeys keys;
+    keys.enabled = _imp->rippleEdit;
+    keys.mode = _imp->rippleEditMode;
+    keys.rangeFirst = _imp->rippleEditRangeFirst;
+    keys.rangeLast = _imp->rippleEditRangeLast;
+
+    return keys;
 }
 
 NodePtr
@@ -518,6 +598,7 @@ RotoCurveContext::removeItemRecursively(const RotoItemPtr& item,
             }
         }
     }
+    onItemRemoved(item);
     Q_EMIT itemRemoved(item, (int)reason);
 }
 
@@ -534,6 +615,12 @@ RotoCurveContext::removeItem(const RotoItemPtr& item,
     }
 
     removeItemRecursively(item, reason);
+    if (!_imp->trackLinkConnections.empty() || _imp->trackLinkWarningPosted) {
+        refreshTrackLinkListeners();
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
 
     Q_EMIT selectionChanged((int)reason);
 }
@@ -561,6 +648,12 @@ RotoCurveContext::addItem(const RotoLayerPtr& layer,
         }
         _imp->lastInsertedItem = item;
     }
+    if (itemHasTrackLinks(item)) {
+        refreshTrackLinkListeners();
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemInserted(indexInLayer, reason);
 }
 
@@ -579,7 +672,8 @@ RotoCurveContext::isNearbyBezier(double x,
                                  double acceptance,
                                  int* index,
                                  double* t,
-                                 bool* feather) const
+                                 bool* feather,
+                                 const std::function<bool(const BezierPtr&)>& accept) const
 {
     /// MT-safe: only called on the main-thread
     assert(QThread::currentThread() == qApp->thread());
@@ -590,7 +684,7 @@ RotoCurveContext::isNearbyBezier(double x,
         const RotoItems& items = (*it)->getItems();
         for (RotoItems::const_iterator it2 = items.begin(); it2 != items.end(); ++it2) {
             BezierPtr b = std::dynamic_pointer_cast<Bezier>(*it2);
-            if (b && !b->isLockedRecursive()) {
+            if (b && !b->isLockedRecursive() && (!accept || accept(b))) {
                 double param;
                 int i = b->isPointOnCurve(x, y, acceptance, &param, feather);
                 if (i != -1) {
@@ -711,6 +805,182 @@ RotoCurveContext::getGlobalMotionBlurSettings(const double time,
     }
 
 #endif
+}
+
+void
+RotoCurveContext::createTransformKnobs(const KnobPagePtr& page)
+{
+    assert(_imp->transformKnobs.empty());
+    _imp->createTransformKnobs(page);
+}
+
+RotoCurveContext::TransformKnobs
+RotoCurveContext::getTransformKnobs() const
+{
+    TransformKnobs knobs;
+
+    knobs.translate = _imp->translateKnob.lock();
+    knobs.rotate = _imp->rotateKnob.lock();
+    knobs.scale = _imp->scaleKnob.lock();
+    knobs.scaleUniform = _imp->scaleUniformKnob.lock();
+    knobs.skewX = _imp->skewXKnob.lock();
+    knobs.skewY = _imp->skewYKnob.lock();
+    knobs.skewOrder = _imp->skewOrderKnob.lock();
+    knobs.center = _imp->centerKnob.lock();
+    knobs.extraMatrix = _imp->extraMatrixKnob.lock();
+    knobs.resetCenter = _imp->resetCenterKnob.lock();
+    knobs.resetTransform = _imp->resetTransformKnob.lock();
+
+    return knobs;
+}
+
+bool
+RotoCurveContext::isTransformKnob(const KnobI* knob) const
+{
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->transformKnobs.begin(); it != _imp->transformKnobs.end(); ++it) {
+        if (it->lock().get() == knob) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+RotoCurveContext::setCenterKnob(const KnobDoublePtr& center,
+                                double x,
+                                double y)
+{
+    center->beginChanges();
+    dynamic_cast<KnobI*>(center.get())->removeAnimation(ViewSpec::all(), 0);
+    dynamic_cast<KnobI*>(center.get())->removeAnimation(ViewSpec::all(), 1);
+    center->setValues(x, y, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    center->endChanges();
+}
+
+void
+RotoCurveContext::resetTransformCenter()
+{
+    KnobDoublePtr center = _imp->centerKnob.lock();
+
+    if (!center) {
+        return;
+    }
+    const double time = getNode()->getApp()->getTimeLine()->currentFrame();
+    double x, y;
+    if (!getDefaultTransformCenter(time, &x, &y)) {
+        RectD bbox;
+        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), &bbox);
+        x = (bbox.x1 + bbox.x2) / 2.;
+        y = (bbox.y1 + bbox.y2) / 2.;
+    }
+    setCenterKnob(center, x, y);
+}
+
+void
+RotoCurveContext::resetTransformInternal(const KnobDoublePtr& translate,
+                                         const KnobDoublePtr& scale,
+                                         const KnobDoublePtr& center,
+                                         const KnobDoublePtr& rotate,
+                                         const KnobDoublePtr& skewX,
+                                         const KnobDoublePtr& skewY,
+                                         const KnobBoolPtr& scaleUniform,
+                                         const KnobChoicePtr& skewOrder,
+                                         const KnobDoublePtr& extraMatrix)
+{
+    std::list<KnobI*> knobs;
+
+    knobs.push_back(translate.get());
+    knobs.push_back(scale.get());
+    knobs.push_back(center.get());
+    knobs.push_back(rotate.get());
+    knobs.push_back(skewX.get());
+    knobs.push_back(skewY.get());
+    knobs.push_back(scaleUniform.get());
+    knobs.push_back(skewOrder.get());
+    if (extraMatrix) {
+        knobs.push_back(extraMatrix.get());
+    }
+    bool wasEnabled = translate->isEnabled(0);
+    for (std::list<KnobI*>::iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        for (int i = 0; i < (*it)->getDimension(); ++i) {
+            (*it)->resetToDefaultValue(i);
+        }
+        (*it)->setAllDimensionsEnabled(wasEnabled);
+    }
+}
+
+void
+RotoCurveContext::resetTransform()
+{
+    if (!_imp->translateKnob.lock()) {
+        return;
+    }
+    resetTransformInternal(_imp->translateKnob.lock(), _imp->scaleKnob.lock(), _imp->centerKnob.lock(), _imp->rotateKnob.lock(),
+                           _imp->skewXKnob.lock(), _imp->skewYKnob.lock(), _imp->scaleUniformKnob.lock(), _imp->skewOrderKnob.lock(),
+                           _imp->extraMatrixKnob.lock());
+}
+
+bool
+RotoCurveContext::onTransformButtonPressed(const KnobI* k)
+{
+    KnobButtonPtr resetCenter = _imp->resetCenterKnob.lock();
+    KnobButtonPtr reset = _imp->resetTransformKnob.lock();
+
+    if (resetCenter && (k == resetCenter.get())) {
+        resetTransformCenter();
+
+        return true;
+    }
+    if (reset && (k == reset.get())) {
+        resetTransform();
+
+        return true;
+    }
+
+    return false;
+}
+
+void
+RotoCurveContext::composeItemTransform(const RotoDrawableItem& /*item*/,
+                                       double /*time*/,
+                                       const Transform::Matrix3x3& local,
+                                       Transform::Matrix3x3* matrix) const
+{
+    *matrix = local;
+}
+
+void
+RotoCurveContext::refreshTransformKnobTies(const RotoDrawableItemPtr& item)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    bool viaLayer = false;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        if (std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), item) == _imp->selectedItems.end()) {
+            return;
+        }
+        for (RotoLayerPtr layer = item->getParentLayer(); layer && !viaLayer; layer = layer->getParentLayer()) {
+            viaLayer = std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), layer) != _imp->selectedItems.end();
+        }
+    }
+    const bool tie = tiesTransformKnobs(*item) && !viaLayer;
+    const std::list<KnobIPtr>& itemKnobs = item->getKnobs();
+    for (std::list<KnobIPtr>::const_iterator it = itemKnobs.begin(); it != itemKnobs.end(); ++it) {
+        for (std::list<KnobIWPtr>::const_iterator it2 = _imp->transformKnobs.begin(); it2 != _imp->transformKnobs.end(); ++it2) {
+            KnobIPtr contextKnob = it2->lock();
+            if (!contextKnob || (contextKnob->getName() != (*it)->getName())) {
+                continue;
+            }
+            const bool tied = (*it)->getMaster(0).second == contextKnob;
+            if (tie && !tied) {
+                tieItemKnob(*it, contextKnob, true);
+            } else if (!tie && tied) {
+                untieItemKnob(*it, true);
+            }
+            break;
+        }
+    }
 }
 
 void
@@ -1011,34 +1281,15 @@ RotoCurveContext::selectInternal(const RotoItemPtr& item, bool slaveKnobs)
             }
         }
 
+        const bool tieTransform = tiesTransformKnobs(*isDrawable);
         const std::list<KnobIPtr>& drawableKnobs = isDrawable->getKnobs();
         for (std::list<KnobIPtr>::const_iterator it = drawableKnobs.begin(); it != drawableKnobs.end(); ++it) {
             for (std::list<KnobIWPtr>::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
                 KnobIPtr thisKnob = it2->lock();
                 if (thisKnob->getName() == (*it)->getName()) {
-                    // Clone current state
-                    thisKnob->cloneAndUpdateGui(it->get());
-
-                    // Slave internal knobs of the bezier
-                    if (slaveKnobs) {
-                        assert((*it)->getDimension() == thisKnob->getDimension());
-                        for (int i = 0; i < (*it)->getDimension(); ++i) {
-                            (*it)->slaveTo(i, thisKnob, i);
-                        }
+                    if (tieTransform || !isTransformKnob(thisKnob.get())) {
+                        tieItemKnob(*it, thisKnob, slaveKnobs);
                     }
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(animationRemoved(ViewSpec, int)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(derivativeMoved(double, ViewSpec, int)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::connect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
-                                     this, SLOT(onSelectedKnobCurveChanged()));
-
                     break;
                 }
             }
@@ -1132,6 +1383,84 @@ RotoCurveContext::onSelectedKnobCurveChanged()
 }
 
 void
+RotoCurveContext::onSelectedKnobValueChanged()
+{
+    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
+
+    if (!handler) {
+        return;
+    }
+    KnobIPtr knob = handler->getKnob();
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobIPtr k = it->lock();
+        if (k && (k->getName() == knob->getName())) {
+            // The context knob pushes itself back into its slaved items, which emit this again;
+            // by then they match and the check stops the echo.
+            ignore_result(k->cloneAndCheckIfChanged(knob.get()));
+            break;
+        }
+    }
+}
+
+void
+RotoCurveContext::tieItemKnob(const KnobIPtr& itemKnob,
+                              const KnobIPtr& contextKnob,
+                              bool slave)
+{
+    // Clone current state
+    contextKnob->cloneAndUpdateGui(itemKnob.get());
+
+    // Slave internal knobs of the bezier
+    if (slave) {
+        assert(itemKnob->getDimension() == contextKnob->getDimension());
+        for (int i = 0; i < itemKnob->getDimension(); ++i) {
+            itemKnob->slaveTo(i, contextKnob, i);
+        }
+    }
+    KnobSignalSlotHandler* handler = itemKnob->getSignalSlotHandler().get();
+    QObject::connect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(animationRemoved(ViewSpec, int)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::connect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                     this, SLOT(onSelectedKnobCurveChanged()));
+    // A value written to the item at a time it already has a key emits no keyFrameSet, and
+    // the slaved item reads the context knob, so the write would be lost without this.
+    QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
+                     this, SLOT(onSelectedKnobValueChanged()));
+}
+
+void
+RotoCurveContext::untieItemKnob(const KnobIPtr& itemKnob,
+                                bool copyState)
+{
+    for (int i = 0; i < itemKnob->getDimension(); ++i) {
+        itemKnob->unSlave(i, copyState);
+    }
+    KnobSignalSlotHandler* handler = itemKnob->getSignalSlotHandler().get();
+    QObject::disconnect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(animationRemoved(ViewSpec, int)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                        this, SLOT(onSelectedKnobCurveChanged()));
+    QObject::disconnect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
+                        this, SLOT(onSelectedKnobValueChanged()));
+}
+
+void
 RotoCurveContext::deselectInternal(RotoItemPtr b)
 {
     /// only called on the main-thread
@@ -1168,32 +1497,18 @@ RotoCurveContext::deselectInternal(RotoItemPtr b)
     if (isDrawable) {
         /// first-off set the context knobs to the value of this bezier
 
+        const bool tieTransform = tiesTransformKnobs(*isDrawable);
         const std::list<KnobIPtr>& drawableKnobs = isDrawable->getKnobs();
         for (std::list<KnobIPtr>::const_iterator it = drawableKnobs.begin(); it != drawableKnobs.end(); ++it) {
             for (std::list<KnobIWPtr>::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
                 KnobIPtr knob = it2->lock();
                 if (knob->getName() == (*it)->getName()) {
-                    // Clone current state
-                    knob->cloneAndUpdateGui(it->get());
-
-                    // Slave internal knobs of the bezier
-                    assert((*it)->getDimension() == knob->getDimension());
-                    for (int i = 0; i < (*it)->getDimension(); ++i) {
-                        (*it)->unSlave(i, isBezier ? !bezierDirty : !strokeDirty);
+                    if (tieTransform || !isTransformKnob(knob.get())) {
+                        // Clone current state
+                        knob->cloneAndUpdateGui(it->get());
                     }
-
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(animationRemoved(ViewSpec, int)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(derivativeMoved(double, ViewSpec, int)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
-                    QObject::disconnect((*it)->getSignalSlotHandler().get(), SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
-                                        this, SLOT(onSelectedKnobCurveChanged()));
+                    assert((*it)->getDimension() == knob->getDimension());
+                    untieItemKnob(*it, isBezier ? !bezierDirty : !strokeDirty);
                     break;
                 }
             }
@@ -1597,12 +1912,18 @@ void
 RotoCurveContext::incrementAge()
 {
     _imp->incrementRotoAge();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
 }
 
 void
 RotoCurveContext::evaluateChange()
 {
     _imp->incrementRotoAge();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     getNode()->getEffectInstance()->incrHashAndEvaluate(true, false);
 }
 
@@ -1646,6 +1967,7 @@ RotoCurveContext::getContentHash() const
     if (base) {
         h.appendU64(base->getContentHash());
     }
+    appendHostContentHash(h);
 
     return h.finalize();
 }
@@ -1680,24 +2002,36 @@ RotoCurveContext::onItemLockedChanged(const RotoItemPtr& item,
         knob->setAllDimensionsEnabled(enabled);
     }
     _imp->lastLockedItem = item;
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemLockedChanged((int)reason);
 }
 
 void
 RotoCurveContext::onItemGloballyActivatedChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemGloballyActivatedChanged(item);
 }
 
 void
 RotoCurveContext::onItemScriptNameChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemScriptNameChanged(item);
 }
 
 void
 RotoCurveContext::onItemLabelChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemLabelChanged(item);
 }
 
@@ -1712,6 +2046,176 @@ std::string
 RotoCurveContext::getRotoNodeName() const
 {
     return getNode()->getScriptName_mt_safe();
+}
+
+std::list<BezierPtr>
+RotoCurveContext::getTrackLinkedCurves() const
+{
+    std::list<BezierPtr> ret;
+    std::list<RotoDrawableItemPtr> items = getCurvesByRenderOrder(false);
+    for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        BezierPtr curve = std::dynamic_pointer_cast<Bezier>(*it);
+        if (curve && curve->hasTrackLinks()) {
+            ret.push_back(curve);
+        }
+    }
+
+    return ret;
+}
+
+void
+RotoCurveContext::warnBoundedRippleOnLinkedPoint()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    node->setPersistentMessage(eMessageTypeWarning, tr("A point that follows a track has one offset for all frames, so ripple edit cannot limit an edit of it to some keyframes. The point was left unchanged: set ripple edit to All, or turn it off, to edit it.").toStdString());
+    _imp->trackLinkWarningPosted = true;
+}
+
+void
+RotoCurveContext::noteRippleEditCheck(bool refused)
+{
+    if (refused) {
+        ++_imp->rippleEditsRefused;
+    } else {
+        ++_imp->rippleEditsAllowed;
+    }
+}
+
+void
+RotoCurveContext::getRippleEditCheckCounts(quint64* refused,
+                                           quint64* allowed) const
+{
+    *refused = _imp->rippleEditsRefused;
+    *allowed = _imp->rippleEditsAllowed;
+}
+
+void
+RotoCurveContext::updateTrackLinks(bool redraw)
+{
+    const double time = getTimelineCurrentTime();
+    std::list<std::string> missing;
+    std::list<BezierPtr> curves = getTrackLinkedCurves();
+    bool changed = false;
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        changed |= (*it)->refreshTrackLinks(time, &missing);
+        if (redraw) {
+            (*it)->invalidateContentHash();
+            (*it)->invalidatePolygonOrientation();
+        }
+    }
+
+    NodePtr node = getNode();
+    if (node) {
+        if (!missing.empty()) {
+            std::string message = tr("Control points follow tracks that cannot be found and stay where they last were:").toStdString();
+            for (std::list<std::string>::const_iterator it = missing.begin(); it != missing.end(); ++it) {
+                message += "\n" + *it;
+            }
+            node->setPersistentMessage(eMessageTypeWarning, message);
+            _imp->trackLinkWarningPosted = true;
+        } else if (_imp->trackLinkWarningPosted) {
+            node->clearPersistentMessage(false);
+            _imp->trackLinkWarningPosted = false;
+        }
+    }
+
+    if ((redraw || changed) && !curves.empty()) {
+        evaluateChange();
+        emitRefreshViewerOverlays();
+    }
+}
+
+void
+RotoCurveContext::refreshTrackLinkListeners()
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    for (std::list<QMetaObject::Connection>::iterator it = _imp->trackLinkConnections.begin(); it != _imp->trackLinkConnections.end(); ++it) {
+        QObject::disconnect(*it);
+    }
+    _imp->trackLinkConnections.clear();
+
+    std::set<TrackMarker*> markers;
+    std::set<TrackerContext*> contexts;
+    std::set<Node*> nodes;
+    std::list<BezierPtr> curves = getTrackLinkedCurves();
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        BezierCPs points = (*it)->getControlPoints();
+        const BezierCPs& feathers = (*it)->getFeatherPoints();
+        points.insert(points.end(), feathers.begin(), feathers.end());
+        for (BezierCPs::const_iterator itP = points.begin(); itP != points.end(); ++itP) {
+            TrackMarkerPtr marker = (*itP)->getLinkedTrack();
+            if (!marker || !markers.insert(marker.get()).second) {
+                continue;
+            }
+            std::list<QMetaObject::Connection>& c = _imp->trackLinkConnections;
+            KnobDoublePtr centre = marker->getCenterKnob();
+            KnobSignalSlotHandlerPtr handler = centre ? centre->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+            if (handler) {
+                KnobSignalSlotHandler* h = handler.get();
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::valueChanged, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::keyFrameSet, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::keyFrameRemoved, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::keyFrameMoved, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::multipleKeyFramesSet, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::multipleKeyFramesRemoved, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::animationRemoved, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::derivativeMoved, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(h, &KnobSignalSlotHandler::keyFrameInterpolationChanged, this, [this]() { updateTrackLinks(true); }));
+            }
+            TrackerContextPtr context = marker->getContext();
+            if (context && contexts.insert(context.get()).second) {
+                // A removed or restored track changes which links resolve, and what to watch.
+                c.push_back(QObject::connect(context.get(), &TrackerContext::trackRemoved, this, [this]() {
+                    refreshTrackLinkListeners();
+                    updateTrackLinks(true);
+                }));
+                c.push_back(QObject::connect(context.get(), &TrackerContext::trackInserted, this, [this]() {
+                    refreshTrackLinkListeners();
+                    updateTrackLinks(true);
+                }));
+            }
+            NodePtr node = context ? context->getNode() : NodePtr();
+            if (node && nodes.insert(node.get()).second) {
+                c.push_back(QObject::connect(node.get(), &Node::activated, this, [this]() { updateTrackLinks(true); }));
+                c.push_back(QObject::connect(node.get(), &Node::deactivated, this, [this]() { updateTrackLinks(true); }));
+            }
+        }
+    }
+
+    updateTrackLinks(false);
+}
+
+void
+RotoCurveContext::resolveTrackLinks()
+{
+    NodePtr node = getNode();
+    AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
+    if (!app) {
+        return;
+    }
+    std::list<BezierPtr> curves = getTrackLinkedCurves();
+    for (std::list<BezierPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+        BezierCPs points = (*it)->getControlPoints();
+        const BezierCPs& feathers = (*it)->getFeatherPoints();
+        points.insert(points.end(), feathers.begin(), feathers.end());
+        for (BezierCPs::const_iterator itP = points.begin(); itP != points.end(); ++itP) {
+            if (!(*itP)->isLinkedToTrack() || (*itP)->getLinkedTrack()) {
+                continue;
+            }
+            NodePtr tracker = app->getNodeByFullySpecifiedName((*itP)->getTrackLinkTrackerName());
+            TrackerContextPtr context = tracker ? tracker->getTrackerContext() : TrackerContextPtr();
+            TrackMarkerPtr marker = context ? context->getMarkerByName((*itP)->getTrackLinkTrackName()) : TrackMarkerPtr();
+            if (marker) {
+                (*itP)->resolveTrackLink(marker);
+                (*it)->invalidateContentHash();
+            }
+        }
+    }
+    refreshTrackLinkListeners();
 }
 
 void
@@ -1868,6 +2372,266 @@ RotoCurveContext::declarePythonFields()
     for (std::list<RotoLayerPtr>::iterator it = _imp->layers.begin(); it != _imp->layers.end(); ++it) {
         declareItemAsPythonField(*it);
     }
+}
+
+namespace {
+bool
+hasGivenAncestor(const RotoItemPtr& item,
+                 const std::set<const RotoItem*>& given)
+{
+    for (RotoLayerPtr parent = item->getParentLayer(); parent; parent = parent->getParentLayer()) {
+        if (given.count(parent.get())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+appendChildSerialization(const RotoItemPtr& item,
+                         std::list<Serialization::RotoLayerChildSerialization>* children)
+{
+    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
+    RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(item);
+
+    if (!isStroke && !isBezier && !isLayer) {
+        return;
+    }
+    children->push_back(Serialization::RotoLayerChildSerialization());
+    Serialization::RotoLayerChildSerialization& child = children->back();
+    if (isStroke) {
+        child.type = Serialization::eRotoLayerChildTypeStroke;
+        isStroke->toSerialization(&child.stroke);
+        child.stroke.parentLayerName.clear();
+    } else if (isBezier) {
+        child.type = Serialization::eRotoLayerChildTypeBezier;
+        isBezier->toSerialization(&child.bezier);
+        child.bezier.parentLayerName.clear();
+    } else {
+        child.type = Serialization::eRotoLayerChildTypeLayer;
+        isLayer->toSerialization(&child.layer);
+        child.layer.parentLayerName.clear();
+    }
+}
+
+Serialization::RotoItemSerialization&
+childItemSerialization(Serialization::RotoLayerChildSerialization& child)
+{
+    switch (child.type) {
+    case Serialization::eRotoLayerChildTypeStroke:
+        return child.stroke;
+    case Serialization::eRotoLayerChildTypeLayer:
+        return child.layer;
+    case Serialization::eRotoLayerChildTypeBezier:
+    default:
+        return child.bezier;
+    }
+}
+
+// Drops the strokes a geometry host refuses and renames the items so no name is used twice,
+// pointing each child at its layer's new name.
+void
+preparePastedChildren(const RotoCurveContext& context,
+                      std::list<Serialization::RotoLayerChildSerialization>* children,
+                      const std::string& parentName,
+                      bool refuseStrokes,
+                      std::map<std::string, std::string>* names,
+                      std::set<std::string>* taken,
+                      int* droppedStrokes)
+{
+    for (std::list<Serialization::RotoLayerChildSerialization>::iterator it = children->begin(); it != children->end();) {
+        if (refuseStrokes && (it->type == Serialization::eRotoLayerChildTypeStroke)) {
+            ++(*droppedStrokes);
+            it = children->erase(it);
+            continue;
+        }
+        Serialization::RotoItemSerialization& item = childItemSerialization(*it);
+        const std::string original = item.name;
+        std::string name = original;
+        for (int i = 1; context.getItemByName(name) || taken->count(name); ++i) {
+            std::stringstream ss;
+            ss << original << "_copy";
+            if (i > 1) {
+                ss << i;
+            }
+            name = ss.str();
+        }
+        taken->insert(name);
+        (*names)[original] = name;
+        if (item.label.empty() || (item.label == original)) {
+            item.label = name;
+        }
+        item.name = name;
+        item.parentLayerName = parentName;
+        if (it->type == Serialization::eRotoLayerChildTypeLayer) {
+            preparePastedChildren(context, &it->layer.children, name, refuseStrokes, names, taken, droppedStrokes);
+        }
+        ++it;
+    }
+}
+} // anonymous namespace
+
+void
+RotoCurveContext::itemsToSerialization(const std::list<RotoItemPtr>& items,
+                                       Serialization::RotoContextSerialization* serialization) const
+{
+    std::set<const RotoItem*> given;
+
+    for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        if (*it) {
+            given.insert(it->get());
+        }
+    }
+    std::set<const RotoItem*> written;
+    for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        if (!*it || written.count(it->get()) || hasGivenAncestor(*it, given)) {
+            continue;
+        }
+        written.insert(it->get());
+        RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
+        if (isLayer && !isLayer->getParentLayer()) {
+            std::list<RotoItemPtr> children = isLayer->getItems_mt_safe();
+            for (std::list<RotoItemPtr>::const_iterator c = children.begin(); c != children.end(); ++c) {
+                appendChildSerialization(*c, &serialization->baseLayer.children);
+            }
+        } else {
+            appendChildSerialization(*it, &serialization->baseLayer.children);
+        }
+    }
+}
+
+std::string
+RotoCurveContext::encodeItems(const Serialization::RotoContextSerialization& serialization) const
+{
+    NodePtr node = getNode();
+    Serialization::InlineBlobSink sink;
+
+    return Serialization::encodeRotoYaml(serialization, node ? node->getFullyQualifiedName() : std::string("curves"), sink);
+}
+
+Serialization::RotoContextSerialization
+RotoCurveContext::decodeItems(const std::string& blob)
+{
+    try {
+        Serialization::NoBlobSource source;
+
+        return Serialization::decodeRotoYaml(blob, source);
+    } catch (const std::exception& e) {
+        throw std::invalid_argument(std::string("The clipboard does not hold curves: ") + e.what());
+    }
+}
+
+std::string
+RotoCurveContext::serializeItems(const std::list<RotoItemPtr>& items) const
+{
+    Serialization::RotoContextSerialization serialization;
+
+    itemsToSerialization(items, &serialization);
+
+    return encodeItems(serialization);
+}
+
+int
+RotoCurveContext::countPastableItems(const std::string& blob,
+                                     int* droppedStrokes) const
+{
+    int dropped = 0;
+    int count = 0;
+
+    try {
+        Serialization::RotoContextSerialization serialization = decodeItems(blob);
+        std::map<std::string, std::string> names;
+        std::set<std::string> taken;
+        preparePastedChildren(*this, &serialization.baseLayer.children, std::string(), !isRotoPaint(), &names, &taken, &dropped);
+        count = (int)serialization.baseLayer.children.size();
+    } catch (const std::invalid_argument&) {
+    }
+    if (droppedStrokes) {
+        *droppedStrokes = dropped;
+    }
+
+    return count;
+}
+
+std::list<RotoItemPtr>
+RotoCurveContext::pasteSerialization(const Serialization::RotoContextSerialization& serialization,
+                                     const RotoLayerPtr& layer,
+                                     std::map<std::string, std::string>* names,
+                                     int* droppedStrokes)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    std::list<RotoItemPtr> pasted;
+    int dropped = 0;
+    RotoLayerPtr target = layer;
+    if (!target && !getLayers().empty()) {
+        target = getLayers().front();
+    }
+    if (target) {
+        Serialization::RotoLayerSerialization tree = serialization.baseLayer;
+        std::set<std::string> taken;
+        preparePastedChildren(*this, &tree.children, std::string(), !isRotoPaint(), names, &taken, &dropped);
+
+        RotoCurveContextPtr thisShared = shared_from_this();
+        for (std::list<Serialization::RotoLayerChildSerialization>::const_iterator it = tree.children.begin(); it != tree.children.end(); ++it) {
+            RotoItemPtr item;
+            switch (it->type) {
+            case Serialization::eRotoLayerChildTypeBezier: {
+                BezierPtr bezier(new Bezier(thisShared, kRotoBezierBaseName, RotoLayerPtr(), false));
+                onItemCreated(bezier, true);
+                bezier->fromSerialization(it->bezier);
+                item = bezier;
+                break;
+            }
+            case Serialization::eRotoLayerChildTypeStroke: {
+                RotoStrokeItemPtr stroke(new RotoStrokeItem((RotoStrokeType)it->stroke.brushType, thisShared, kRotoPaintBrushBaseName, RotoLayerPtr()));
+                onItemCreated(stroke, true);
+                stroke->fromSerialization(it->stroke);
+                item = stroke;
+                break;
+            }
+            case Serialization::eRotoLayerChildTypeLayer: {
+                RotoLayerPtr copy(new RotoLayer(thisShared, kRotoLayerBaseName, RotoLayerPtr()));
+                copy->fromSerialization(it->layer);
+                item = copy;
+                break;
+            }
+            }
+            if (item) {
+                pasted.push_back(item);
+            }
+        }
+        // Inserted last first at the top, so they keep the text's order.
+        for (std::list<RotoItemPtr>::reverse_iterator it = pasted.rbegin(); it != pasted.rend(); ++it) {
+            addItem(target, 0, *it, RotoItem::eSelectionReasonOther);
+            incrementAge();
+        }
+        resolveTrackLinks();
+    }
+    if (droppedStrokes) {
+        *droppedStrokes = dropped;
+    }
+
+    return pasted;
+}
+
+std::list<RotoItemPtr>
+RotoCurveContext::pasteItems(const std::string& blob,
+                             const RotoLayerPtr& layer,
+                             int* droppedStrokes)
+{
+    Serialization::RotoContextSerialization serialization = decodeItems(blob);
+    std::map<std::string, std::string> names;
+    std::list<RotoItemPtr> pasted = pasteSerialization(serialization, layer, &names, droppedStrokes);
+
+    if (!pasted.empty()) {
+        onStructureChanged();
+        evaluateChange();
+    }
+
+    return pasted;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -28,6 +28,7 @@
 #include <QThread>
 
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeGuiI.h"
 
@@ -160,12 +161,17 @@ Node::setLayoutFromGuiOverlayColor(bool hasColor,
                                    double g,
                                    double b)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->overlayColorSet = hasColor;
-    _imp->overlayColor[0] = hasColor ? r : 0.;
-    _imp->overlayColor[1] = hasColor ? g : 0.;
-    _imp->overlayColor[2] = hasColor ? b : 0.;
+        _imp->overlayColorSet = hasColor;
+        _imp->overlayColor[0] = hasColor ? r : 0.;
+        _imp->overlayColor[1] = hasColor ? g : 0.;
+        _imp->overlayColor[2] = hasColor ? b : 0.;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void
@@ -368,7 +374,6 @@ Node::addPositionInteract(const KnobDoublePtr& position,
 void
 Node::addRectangleInteract(const KnobDoublePtr& bottomLeft,
                            const KnobDoublePtr& size,
-                           const KnobBoolPtr& interactive,
                            const KnobBoolPtr& enable)
 {
     assert(QThread::currentThread() == qApp->thread());
@@ -376,14 +381,34 @@ Node::addRectangleInteract(const KnobDoublePtr& bottomLeft,
     HostOverlayKnobsRectanglePtr knobs = std::make_shared<HostOverlayKnobsRectangle>();
     knobs->addKnob(bottomLeft, HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft);
     knobs->addKnob(size, HostOverlayKnobsRectangle::eKnobsEnumerationSize);
-    if (interactive) {
-        knobs->addKnob(interactive, HostOverlayKnobsRectangle::eKnobsEnumerationInteractive);
-    }
     if (enable) {
         knobs->addKnob(enable, HostOverlayKnobsRectangle::eKnobsEnumerationEnable);
     }
     // Unlike the other host overlays this is kept in background mode too, so the declaration
     // can be checked without a GUI; it is never drawn there.
+    NodeGuiIPtr nodeGui = getNodeGui();
+    if (!nodeGui) {
+        _imp->nativeOverlays.push_back(knobs);
+    } else {
+        nodeGui->addDefaultInteract(knobs);
+    }
+}
+
+void
+Node::addRampInteract(const KnobDoublePtr& point0,
+                      const KnobDoublePtr& point1,
+                      const KnobBoolPtr& interactive)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    HostOverlayKnobsRampPtr knobs = std::make_shared<HostOverlayKnobsRamp>();
+    knobs->addKnob(point0, HostOverlayKnobsRamp::eKnobsEnumerationPoint0);
+    knobs->addKnob(point1, HostOverlayKnobsRamp::eKnobsEnumerationPoint1);
+    if (interactive) {
+        knobs->addKnob(interactive, HostOverlayKnobsRamp::eKnobsEnumerationInteractive);
+    }
+    // Kept in background mode too, like the rectangle, so the declaration can be checked without
+    // a GUI.
     NodeGuiIPtr nodeGui = getNodeGui();
     if (!nodeGui) {
         _imp->nativeOverlays.push_back(knobs);
@@ -407,10 +432,33 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
                            const KnobDoublePtr& skewY,
                            const KnobChoicePtr& skewOrder,
                            const KnobDoublePtr& center,
-                           const KnobBoolPtr& invert,
-                           const KnobBoolPtr& interactive)
+                           const KnobBoolPtr& invert)
 {
     assert( QThread::currentThread() == qApp->thread() );
+
+    // Recorded before the background check: the roles and the knob set describe the node, and
+    // a background run classifies the knobs the same way the GUI does.
+    const std::pair<KnobDoublePtr, ValueRoleEnum> roles[] = {
+        std::make_pair(translate, eValueRoleTranslate),
+        std::make_pair(rotate, eValueRoleRotate),
+        std::make_pair(scale, eValueRoleScale),
+        std::make_pair(skewX, eValueRoleSkew),
+        std::make_pair(skewY, eValueRoleSkew),
+    };
+    for (const std::pair<KnobDoublePtr, ValueRoleEnum>& role : roles) {
+        if (role.first) {
+            role.first->setValueRole(role.second);
+        }
+    }
+    TransformInteractWeakKnobs interactKnobs;
+    interactKnobs.translate = translate;
+    interactKnobs.rotate = rotate;
+    interactKnobs.scale = scale;
+    interactKnobs.skewX = skewX;
+    interactKnobs.skewY = skewY;
+    interactKnobs.center = center;
+    _imp->transformInteracts.push_back(interactKnobs);
+
     if ( appPTR->isBackground() ) {
         return;
     }
@@ -418,7 +466,9 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
     HostOverlayKnobsTransformPtr knobs = std::make_shared<HostOverlayKnobsTransform>();
     knobs->addKnob(translate, HostOverlayKnobsTransform::eKnobsEnumerationTranslate);
     knobs->addKnob(scale, HostOverlayKnobsTransform::eKnobsEnumerationScale);
-    knobs->addKnob(scaleUniform, HostOverlayKnobsTransform::eKnobsEnumerationUniform);
+    if (scaleUniform) {
+        knobs->addKnob(scaleUniform, HostOverlayKnobsTransform::eKnobsEnumerationUniform);
+    }
     knobs->addKnob(rotate, HostOverlayKnobsTransform::eKnobsEnumerationRotate);
     knobs->addKnob(center, HostOverlayKnobsTransform::eKnobsEnumerationCenter);
     knobs->addKnob(skewX, HostOverlayKnobsTransform::eKnobsEnumerationSkewx);
@@ -426,9 +476,6 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
     knobs->addKnob(skewOrder, HostOverlayKnobsTransform::eKnobsEnumerationSkewOrder);
     if (invert) {
         knobs->addKnob(invert, HostOverlayKnobsTransform::eKnobsEnumerationInvert);
-    }
-    if (interactive) {
-        knobs->addKnob(interactive, HostOverlayKnobsTransform::eKnobsEnumerationInteractive);
     }
     NodeGuiIPtr nodeGui = getNodeGui();
     if (!nodeGui) {
@@ -438,6 +485,36 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
     }
 }
 
+bool
+TransformInteractKnobs::isEmpty() const
+{
+    return !translate && !rotate && !scale && !skewX && !skewY && !center;
+}
+
+bool
+TransformInteractKnobs::contains(const KnobI* knob) const
+{
+    return knob && ((translate.get() == knob) || (rotate.get() == knob) || (scale.get() == knob) || (skewX.get() == knob) || (skewY.get() == knob) || (center.get() == knob));
+}
+
+TransformInteractKnobs
+Node::getTransformInteractKnobs(const KnobI* member) const
+{
+    for (const TransformInteractWeakKnobs& weak : _imp->transformInteracts) {
+        TransformInteractKnobs knobs;
+        knobs.translate = weak.translate.lock();
+        knobs.rotate = weak.rotate.lock();
+        knobs.scale = weak.scale.lock();
+        knobs.skewX = weak.skewX.lock();
+        knobs.skewY = weak.skewY.lock();
+        knobs.center = weak.center.lock();
+        if (!member || knobs.contains(member)) {
+            return knobs;
+        }
+    }
+
+    return TransformInteractKnobs();
+}
 
 void
 Node::addCornerPinInteract(const KnobDoublePtr& from1,
@@ -453,8 +530,7 @@ Node::addCornerPinInteract(const KnobDoublePtr& from1,
                            const KnobBoolPtr& enable3,
                            const KnobBoolPtr& enable4,
                            const KnobChoicePtr& overlayPoints,
-                           const KnobBoolPtr& invert,
-                           const KnobBoolPtr& interactive)
+                           const KnobBoolPtr& invert)
 {
     assert( QThread::currentThread() == qApp->thread() );
     if ( appPTR->isBackground() ) {
@@ -480,9 +556,6 @@ Node::addCornerPinInteract(const KnobDoublePtr& from1,
 
     if (invert) {
         knobs->addKnob(invert, HostOverlayKnobsCornerPin::eKnobsEnumerationInvert);
-    }
-    if (interactive) {
-        knobs->addKnob(interactive, HostOverlayKnobsCornerPin::eKnobsEnumerationInteractive);
     }
     NodeGuiIPtr nodeGui = getNodeGui();
     if (!nodeGui) {
@@ -522,7 +595,7 @@ Node::hasOverlay() const
         }
     }
 
-    return _imp->effect->hasOverlay();
+    return _imp->effect->hasOverlay() || _imp->effect->hasOverlayDrawList();
 }
 
 

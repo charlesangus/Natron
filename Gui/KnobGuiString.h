@@ -33,6 +33,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QMimeData>
 #include <QObject>
 #include <QStyledItemDelegate>
 #include <QTextEdit>
@@ -152,6 +153,10 @@ private:
     virtual void dropEvent(QDropEvent* e) OVERRIDE FINAL;
 
 private:
+    // Whether mime carries prims the knob takes.
+    bool acceptsPrimPaths(const QMimeData* mime) const;
+
+    KnobGuiWPtr _knobGui;
     KnobWidgetDnDPtr _dnd;
 };
 
@@ -183,6 +188,12 @@ public:
 
     virtual std::string getDescriptionLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // Whether the knob takes scene prims dropped on its field.
+    bool acceptsPrimPaths() const;
+
+    // Sets the knob to the dropped prims as its prim path hint says, in one undo step.
+    void dropPrimPaths(const QStringList& paths);
+
 public Q_SLOTS:
 
     ///if the knob is not multiline
@@ -204,6 +215,9 @@ public Q_SLOTS:
     void italicChanged(bool toggled);
 
     void colorFontButtonClicked();
+
+    // Opens the prim picker over the node's input scene.
+    void onPickPrimsClicked();
 
     void updateFontColorIcon(const QColor & color);
 
@@ -257,6 +271,7 @@ private:
 
 private:
     KnobLineEdit *_lineEdit; //< if single line
+    Button* _pickPrimsButton; //< if single line with a prim path hint
     Label* _label; // if label and the actual label is an icon
     QWidget* _container; //< only used when multiline is on
     QVBoxLayout* _mainLayout; //< only used when multiline is on

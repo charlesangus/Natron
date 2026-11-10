@@ -36,6 +36,7 @@
 #include "BaseTest.h"
 #include "NativeGolden.h"
 #include "NativeParity.h"
+#include "SplineWarpTestCurves.h"
 
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
@@ -43,6 +44,7 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
@@ -84,6 +86,7 @@
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Position.h"
 #include "Engine/Nodes/Transform/Reformat.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/Transform.h"
 
 NATRON_NAMESPACE_USING
@@ -227,10 +230,23 @@ rotateAndScale(const GoldenGraph& g)
     return centerTransform(g) && num(g, kTransformNodeParamRotate, { 30. }) && num(g, kTransformNodeParamScale, { 0.5, 0.75 }) && choice(g, kResamplerParamFilterType, "cubic");
 }
 
-bool
-keyerColorMode(const GoldenGraph& g)
+// The Keyer's range as the trapezoid a <= b <= c <= d: outer low, inner low, centre, inner high
+// and outer high, the centre midway along the plateau.
+std::vector<double>
+keyerRange(double a,
+           double b,
+           double c,
+           double d)
 {
-    return choice(g, kKeyerParamMode, "color") && num(g, kKeyerParamKeyColor, { 0.1, 0.8, 0.2 });
+    const double centre = 0.5 * (b + c);
+
+    return { b - a, centre - b, centre, c - centre, d - c };
+}
+
+bool
+keyerGreen(const GoldenGraph& g)
+{
+    return choice(g, kKeyerParamKeySource, "green") && num(g, kKeyerParamRange, keyerRange(0.1, 0.3, 0.7, 1.2));
 }
 
 bool
@@ -302,6 +318,104 @@ addMergeCases(std::vector<GoldenVariant>* variants,
                                         return choice(g, kNativeMergeParamOperation, operation) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
                                     })));
     variants->push_back(maskVariant("maskplain", allLayers(op)));
+}
+
+// SplineWarp curves live in the 64x48 frame, keyed at the time checkGolden renders.
+SplineWarpContextPtr
+splineWarpContext(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = SplineWarpTestCurves::contextOf(g.node);
+
+    if (!ctx) {
+        ADD_FAILURE() << "SplineWarp has no SplineWarp curve context";
+    }
+
+    return ctx;
+}
+
+// A scaled, shifted link and a shifted one bent by two correspondences.
+bool
+splineWarpTwoLinks(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+    if (!ctx || !SplineWarpTestCurves::linkQuad(ctx, 10., 8., 12., 2., -1.5, 1.3)) {
+        return false;
+    }
+    SplineWarpLinkPtr bent = SplineWarpTestCurves::linkQuad(ctx, 38., 24., 10., -2.5, 2.);
+    if (!bent) {
+        return false;
+    }
+    ctx->addCorrespondence(bent, 0.5, 1.);
+    ctx->addCorrespondence(bent, 2.5, 2.25);
+
+    return true;
+}
+
+// A one-point curve moved against a still quadrilateral, which keeps the warp from being a plain
+// translation.
+bool
+splineWarpSinglePoint(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+    if (!ctx) {
+        return false;
+    }
+    BezierPtr from = SplineWarpTestCurves::makeCurve(ctx, { { 20., 16. } }, false);
+    BezierPtr to = SplineWarpTestCurves::makeCurve(ctx, { { 24., 19. } }, false);
+
+    return from && to && ctx->linkWithAlignment(from, to, 0., false) && SplineWarpTestCurves::linkQuad(ctx, 40., 28., 10., 0., 0.);
+}
+
+bool
+splineWarpOpenCurve(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+    if (!ctx) {
+        return false;
+    }
+    BezierPtr from = SplineWarpTestCurves::makeCurve(ctx, { { 8., 30. }, { 30., 38. }, { 56., 28. } }, false);
+    BezierPtr to = SplineWarpTestCurves::makeCurve(ctx, { { 8., 27. }, { 30., 41. }, { 56., 25. } }, false);
+
+    return from && to && ctx->linkWithAlignment(from, to, 0., false);
+}
+
+bool
+splineWarpFeatheredBoundary(const GoldenGraph& g)
+{
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+    if (!ctx) {
+        return false;
+    }
+    BezierPtr boundary = SplineWarpTestCurves::makeRectangle(ctx, 14., 10., 50., 38.);
+    if (!boundary) {
+        return false;
+    }
+    boundary->setFeatherDistance(6., SplineWarpTestCurves::kTime);
+    ctx->setBoundary(boundary, true);
+
+    return bool(SplineWarpTestCurves::linkQuad(ctx, 26., 19., 8., 2.5, 1.5));
+}
+
+// Puts a rotating, scaling Transform between the source and the SplineWarp, which concatenates it
+// into its own resample.
+bool
+splineWarpAfterTransform(const GoldenGraph& g)
+{
+    NodePtr transform = createNodeAtMajor(g.node->getApp(), PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    if (!transform) {
+        return false;
+    }
+    if (!NodeCollection::connectNodes(0, g.source, transform) || !g.node->replaceInput(transform, kSplineWarpInputSource)) {
+        ADD_FAILURE() << "cannot put a Transform before the SplineWarp";
+
+        return false;
+    }
+    if (!setKnobValues(transform, kTransformNodeParamCenter, { 32., 24. }) || !setKnobValues(transform, kTransformNodeParamRotate, { 30. }) || !setKnobValues(transform, kTransformNodeParamScale, { 0.5, 0.5 })) {
+        return false;
+    }
+    SplineWarpContextPtr ctx = splineWarpContext(g);
+
+    return ctx && SplineWarpTestCurves::linkQuad(ctx, 26., 18., 10., 2.5, 1.5);
 }
 
 } // namespace
@@ -618,17 +732,6 @@ TEST_F(NativeGoldenTest, Constant)
     run(generatorSpec("Constant", PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT), v);
 }
 
-TEST_F(NativeGoldenTest, Solid)
-{
-    std::vector<GoldenVariant> v;
-    v.push_back(variant("default"));
-    v.push_back(variant("color", [](const GoldenGraph& g) { return num(g, kConstantParamColor, { 0.3, 0.6, 0.9 }); }));
-    v.push_back(variant("extent", [](const GoldenGraph& g) {
-        return choice(g, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize) && num(g, kNativeGeneratorParamBottomLeft, { 5., 9. }) && num(g, kNativeGeneratorParamSize, { 30., 20. }) && num(g, kConstantParamColor, { 0.7, -0.2, 1.4 });
-    }));
-    run(generatorSpec("Solid", PLUGINID_NATRON_SOLID, PLUGIN_MAJOR_NATRON_CONSTANT), v);
-}
-
 TEST_F(NativeGoldenTest, CheckerBoard)
 {
     std::vector<GoldenVariant> v;
@@ -766,26 +869,23 @@ TEST_F(NativeGoldenTest, Glow)
     run(filterSpec("Glow", PLUGINID_NATRON_GLOW, PLUGIN_MAJOR_NATRON_GLOW), v);
 }
 
-TEST_F(NativeGoldenTest, Erode)
+TEST_F(NativeGoldenTest, ErodeDilate)
 {
     const Apply wide = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { 3., 1. }); };
+    const Apply dilate = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -1., -1. }); };
+    const Apply dilateWide = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -3., -1. }); };
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
     v.push_back(variant("wide", wide));
-    v.push_back(variant("negative", [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -2., -2. }) && num(g, kErodeDilateParamExpandRoD, { 0. }); }));
+    v.push_back(variant("dilateClipped", [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -2., -2. }) && num(g, kErodeDilateParamExpandRoD, { 0. }); }));
     v.push_back(filterMaskMix(wide));
-    run(filterSpec("Erode", PLUGINID_NATRON_ERODE, PLUGIN_MAJOR_NATRON_ERODE), v);
-}
-
-TEST_F(NativeGoldenTest, Dilate)
-{
-    const Apply wide = [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { 3., 1. }); };
-    std::vector<GoldenVariant> v;
-    v.push_back(variant("default"));
-    v.push_back(variant("wide", wide));
-    v.push_back(variant("negative", [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { -2., -2. }) && num(g, kErodeDilateParamExpandRoD, { 0. }); }));
-    v.push_back(filterMaskMix(wide));
-    run(filterSpec("Dilate", PLUGINID_NATRON_DILATE, PLUGIN_MAJOR_NATRON_DILATE), v);
+    v.push_back(variant("dilate", dilate));
+    v.push_back(variant("dilateWide", dilateWide));
+    v.push_back(variant("erodeClipped", [](const GoldenGraph& g) { return num(g, kErodeDilateParamSize, { 2., 2. }) && num(g, kErodeDilateParamExpandRoD, { 0. }); }));
+    v.push_back(maskVariant("dilateMaskmix", [dilateWide](const GoldenGraph& g) {
+        return dilateWide(g) && num(g, kOfxMixParamName, { 0.5 }) && num(g, kOfxMaskInvertParamName, { 1. });
+    }));
+    run(filterSpec("ErodeDilate", PLUGINID_NATRON_ERODEDILATE, PLUGIN_MAJOR_NATRON_ERODEDILATE), v);
 }
 
 TEST_F(NativeGoldenTest, Transform)
@@ -799,18 +899,13 @@ TEST_F(NativeGoldenTest, Transform)
     v.push_back(variant("invert", [](const GoldenGraph& g) {
         return centerTransform(g) && num(g, kTransformNodeParamRotate, { 12. }) && num(g, kTransformNodeParamTranslate, { -4.5, 2. }) && num(g, kTransformNodeParamInvert, { 1. }) && choice(g, kResamplerParamFilterType, "bilinear");
     }));
-    run(plainSpec("Transform", PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM), v);
-}
-
-TEST_F(NativeGoldenTest, TransformMasked)
-{
-    std::vector<GoldenVariant> v;
-    v.push_back(variant("default", centerTransform));
-    v.push_back(variant("rotatescale", rotateAndScale));
     v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) {
         return centerTransform(g) && num(g, kTransformNodeParamTranslate, { 4.5, -2.25 }) && num(g, kTransformNodeParamRotate, { 20. }) && num(g, kOfxMixParamName, { 0.5 });
     }));
-    run(filterSpec("TransformMasked", PLUGINID_NATRON_TRANSFORMMASKED, PLUGIN_MAJOR_NATRON_TRANSFORMMASKED), v);
+    v.push_back(variant("sinclobes3", [](const GoldenGraph& g) {
+        return rotateAndScale(g) && choice(g, kResamplerParamFilterType, "sinc") && num(g, kResamplerParamLobes, { 3. });
+    }));
+    run(filterSpec("Transform", PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM), v);
 }
 
 TEST_F(NativeGoldenTest, Crop)
@@ -836,6 +931,9 @@ TEST_F(NativeGoldenTest, Reformat)
     }));
     v.push_back(variant("flipturn", [](const GoldenGraph& g) {
         return choice(g, kReformatParamType, kReformatParamTypeOptionToBox) && num(g, kReformatParamBoxSize, { 40., 30. }) && num(g, kReformatParamBoxFixed, { 1. }) && choice(g, kReformatParamResize, kReformatParamResizeOptionDistort) && num(g, kReformatParamFlip, { 1. }) && num(g, kReformatParamTurn, { 1. }) && num(g, kResamplerParamFilterClamp, { 1. });
+    }));
+    v.push_back(variant("lanczos3downscale", [](const GoldenGraph& g) {
+        return choice(g, kReformatParamType, kReformatParamTypeOptionScale) && num(g, kReformatParamScale, { 0.25, 0.25 }) && choice(g, kResamplerParamFilterType, "lanczos3");
     }));
     run(plainSpec("Reformat", PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT), v);
 }
@@ -980,25 +1078,21 @@ TEST_F(NativeGoldenTest, MergeMultiply)
 TEST_F(NativeGoldenTest, Keyer)
 {
     GoldenNodeSpec spec = plainSpec("Keyer", PLUGINID_NATRON_KEYER, PLUGIN_MAJOR_NATRON_KEYER);
-    spec.maskInput = "InM";
-    spec.extraInputs.push_back("Bg");
+    spec.maskInput = "Mask";
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
-    v.push_back(variant("color", keyerColorMode));
-    v.push_back(variant("screencomposite", [](const GoldenGraph& g) {
-        return choice(g, kKeyerParamMode, "screen") && num(g, kKeyerParamKeyColor, { 0.1, 0.8, 0.2 }) && choice(g, kKeyerParamShow, "composite") && choice(g, kKeyerParamSourceAlpha, "normal");
+    v.push_back(variant("green", keyerGreen));
+    v.push_back(variant("hardedges", [](const GoldenGraph& g) {
+        return choice(g, kKeyerParamLuminanceMath, "rec709") && num(g, kKeyerParamRange, keyerRange(0.2, 0.2, 0.6, 0.6));
     }));
-    v.push_back(variant("despill", [](const GoldenGraph& g) {
-        return keyerColorMode(g) && num(g, kKeyerParamDespill, { 1. }) && num(g, kKeyerParamDespillAngle, { 180. }) && choice(g, kKeyerParamShow, "unpremultiplied");
-    }));
-    v.push_back(maskVariant("insidemask", [](const GoldenGraph& g) { return keyerColorMode(g) && choice(g, kKeyerParamShow, "premultiplied"); }));
+    v.push_back(maskVariant("mask", keyerGreen));
     run(spec, v);
 }
 
 TEST_F(NativeGoldenTest, ChromaKeyer)
 {
     GoldenNodeSpec spec = plainSpec("ChromaKeyer", PLUGINID_NATRON_CHROMAKEYER, PLUGIN_MAJOR_NATRON_CHROMAKEYER);
-    spec.maskInput = "InM";
+    spec.maskInput = "Mask";
     spec.extraInputs.push_back("Bg");
     std::vector<GoldenVariant> v;
     v.push_back(variant("default"));
@@ -1007,8 +1101,23 @@ TEST_F(NativeGoldenTest, ChromaKeyer)
         return chromaKey(g) && num(g, kChromaKeyerParamAcceptanceAngle, { 60. }) && num(g, kChromaKeyerParamKeyGain, { 1.5 }) && choice(g, kChromaKeyerParamShow, "premultiplied") && choice(g, kChromaKeyerParamSourceAlpha, "normal");
     }));
     v.push_back(variant("composite", [](const GoldenGraph& g) {
-        return chromaKey(g) && num(g, kChromaKeyerParamLinear, { 1. }) && choice(g, kChromaKeyerParamColorspace, "rec2020") && choice(g, kChromaKeyerParamShow, "composite");
+        return chromaKey(g) && num(g, kChromaKeyerParamKeyLift, { 0.2 }) && choice(g, kChromaKeyerParamShow, "composite");
     }));
-    v.push_back(maskVariant("insidemask", [](const GoldenGraph& g) { return chromaKey(g) && choice(g, kChromaKeyerParamShow, "unpremultiplied"); }));
+    v.push_back(maskVariant("maskmix", [](const GoldenGraph& g) {
+        return chromaKey(g) && choice(g, kChromaKeyerParamShow, "unpremultiplied") && num(g, kOfxMixParamName, { 0.6 });
+    }));
+    run(spec, v);
+}
+
+TEST_F(NativeGoldenTest, SplineWarp)
+{
+    GoldenNodeSpec spec = filterSpec("SplineWarp", PLUGINID_NATRON_SPLINEWARP, PLUGIN_MAJOR_NATRON_SPLINEWARP);
+    spec.allowNonUserCreatable = true;
+    std::vector<GoldenVariant> v;
+    v.push_back(variant("twolinks", splineWarpTwoLinks));
+    v.push_back(variant("singlepoint", splineWarpSinglePoint));
+    v.push_back(variant("opencurve", splineWarpOpenCurve));
+    v.push_back(variant("featheredboundary", splineWarpFeatheredBoundary));
+    v.push_back(variant("aftertransform", splineWarpAfterTransform));
     run(spec, v);
 }

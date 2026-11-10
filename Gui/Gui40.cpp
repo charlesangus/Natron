@@ -51,6 +51,7 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -531,6 +532,12 @@ Gui::getProgressPanel() const
     return _imp->_progressPanel;
 }
 
+SceneGraphPanel*
+Gui::getSceneGraphPanel() const
+{
+    return _imp->_sceneGraphPanel;
+}
+
 PropertiesBinWrapper*
 Gui::getPropertiesBin() const
 {
@@ -920,6 +927,21 @@ Gui::onEnableRenderStatsActionTriggered()
             _imp->statsDialog = new RenderStatsDialog(this);
         }
         _imp->statsDialog->show();
+    }
+}
+
+void
+Gui::onToggleInteractiveActionTriggered()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    appPTR->getCurrentSettings()->setRenderOnEditingFinishedOnly(!_imp->actionToggleInteractive->isChecked());
+}
+
+void
+Gui::syncInteractiveActionWithSettings()
+{
+    if (_imp->actionToggleInteractive) {
+        _imp->actionToggleInteractive->setChecked(!appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly());
     }
 }
 

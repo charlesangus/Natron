@@ -29,8 +29,10 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <list>
 #include <mutex>
+#include <optional>
 
 #include "Global/FloatingPointExceptions.h"
 
@@ -39,6 +41,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 
@@ -257,7 +260,8 @@ OcioNodeKnobs::gpu(const OcioProcessor& processor,
         }
         block.luma[3] = 0.f;
         block.gain = display->gain;
-        block.invGamma = (display->gamma > 0.) ? (float)(1. / display->gamma) : 0.f;
+        // 1 / gamma reaches 2^1024 once gamma is at most 2^-1024.
+        block.invGamma = (display->gamma > 0.) ? knobValueAsFloat(reciprocalOrInfinity(display->gamma)) : 0.f;
         block.channel = display->channel;
         block.gammaMode = (display->gamma <= 0.) ? 1 : ((display->gamma != 1.) ? 2 : 0);
         inputs.addUniform(kOcioDisplayBlock, block);
@@ -278,6 +282,7 @@ OcioNodeKnobs::gpu(const OcioProcessor& processor,
 OcioNodeKnobs::OcioNodeKnobs()
     : _holder(nullptr)
     , _spaces()
+    , _contextOnly()
     , _menuRefreshers()
     , _watched()
     , _watchId(-1)
@@ -313,6 +318,31 @@ OcioNodeKnobs::addSpace(KnobHolder* holder,
     _spaces.push_back(std::move(knobs));
 }
 
+void
+OcioNodeKnobs::addContext(KnobHolder* holder,
+                          const KnobPagePtr& page)
+{
+    _holder = holder;
+    _contextOnly.reset(new OcioSpaceKnobs());
+    _contextOnly->createContextOnly(holder, page);
+}
+
+void
+OcioNodeKnobs::addWorkingSpace(KnobHolder* holder,
+                               const KnobPagePtr& page,
+                               const std::string& name,
+                               const QString& label,
+                               const QString& hint,
+                               const OcioSpaceKnobs::ChoiceMade& choiceMade)
+{
+    OcioSpaceKnobs::Description description;
+    description.name = name;
+    description.label = label;
+    description.hint = hint;
+    description.defaultHint = tr("The project's working colorspace, following it as it changes.");
+    addSpace(holder, page, description, [this]() { return std::optional<std::string>(workingSpace()); }, choiceMade);
+}
+
 std::size_t
 OcioNodeKnobs::spaceCount() const
 {
@@ -337,7 +367,12 @@ void
 OcioNodeKnobs::addKnob(const KnobPagePtr& page,
                        const KnobIPtr& knob)
 {
-    KnobGroupPtr context = _spaces.empty() ? KnobGroupPtr() : _spaces.front()->contextGroup();
+    KnobGroupPtr context;
+    if (!_spaces.empty()) {
+        context = _spaces.front()->contextGroup();
+    } else if (_contextOnly) {
+        context = _contextOnly->contextGroup();
+    }
     if (context) {
         const std::vector<KnobIPtr> children = page->getChildren();
         for (std::size_t i = 0; i < children.size(); ++i) {
@@ -365,7 +400,11 @@ OcioNodeKnobs::workingSpace() const
 std::vector<std::pair<std::string, std::string>>
 OcioNodeKnobs::contextVariables(double time) const
 {
-    return _spaces.empty() ? std::vector<std::pair<std::string, std::string>>() : _spaces.front()->contextVariables(time);
+    if (!_spaces.empty()) {
+        return _spaces.front()->contextVariables(time);
+    }
+
+    return _contextOnly ? _contextOnly->contextVariables(time) : std::vector<std::pair<std::string, std::string>>();
 }
 
 bool
@@ -390,8 +429,25 @@ OcioNodeKnobs::refreshMenus()
     for (std::size_t i = 0; i < _spaces.size(); ++i) {
         _spaces[i]->refreshMenu();
     }
+    refreshProjectDefaults();
     for (std::size_t i = 0; i < _menuRefreshers.size(); ++i) {
         _menuRefreshers[i]();
+    }
+}
+
+void
+OcioNodeKnobs::refreshProjectDefaults()
+{
+    for (std::size_t i = 0; i < _spaces.size(); ++i) {
+        _spaces[i]->refreshProjectDefault();
+    }
+}
+
+void
+OcioNodeKnobs::appendHash(ContentHasher& h) const
+{
+    for (std::size_t i = 0; i < _spaces.size(); ++i) {
+        _spaces[i]->appendHash(h);
     }
 }
 

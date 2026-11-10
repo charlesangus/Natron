@@ -49,9 +49,11 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h" // checkHolderIsEditable
 #include "Engine/PyRoto.h"
+#include "Engine/PySplineWarp.h"
 #include "Engine/PyTracker.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
@@ -521,6 +523,12 @@ QString
 Effect::getScriptName() const
 {
     return QString::fromUtf8( getInternalNode()->getScriptName_mt_safe().c_str() );
+}
+
+QString
+Effect::getNodeId() const
+{
+    return QString::fromUtf8(getInternalNode()->getNodeId().c_str());
 }
 
 bool
@@ -1340,6 +1348,18 @@ Effect::getRotoContext() const
 
     if (roto) {
         return new Roto(roto);
+    }
+
+    return 0;
+}
+
+SplineWarpCurves*
+Effect::getSplineWarp() const
+{
+    SplineWarpContextPtr ctx = std::dynamic_pointer_cast<SplineWarpContext>(getInternalNode()->getCurveContext());
+
+    if (ctx) {
+        return new SplineWarpCurves(ctx);
     }
 
     return 0;

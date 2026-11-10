@@ -78,9 +78,9 @@ struct GeneratorRowChannels {
  * @brief What native image generators share, reproducing the openfx-misc Generator helper
  * (SupportExt/ofxsGenerator) knob for knob: the extent choice (Format, Size, Project, Default),
  * recenter, reformat, the host-managed format choice with its secret size and pixel aspect ratio,
- * bottomLeft/size with normalised defaults (the project extent), interactive, hidpi and
- * frameRange; the region of definition, output pixel aspect ratio, output format and time domain
- * they imply; and the rectangle overlay in Size extent.
+ * bottomLeft/size with normalised defaults (the project extent) and frameRange; the region of
+ * definition, output pixel aspect ratio, output format and time domain they imply; and the
+ * rectangle overlay in Size extent.
  *
  * A generator has no input: Default extent is the project's, and the channels of the target
  * layer its op does not write are zero.
@@ -89,11 +89,12 @@ class NativeGenerator {
 public:
     typedef ExtentKnobs::ExtentEnum ExtentEnum;
 
-    explicit NativeGenerator(EffectInstance* effect);
+    explicit NativeGenerator(EffectInstance* effect,
+                             ExtentEnum defaultExtent = ExtentKnobs::eExtentDefault);
 
     /**
-     * @brief Declares the generator knobs on page, in the openfx-misc order, with Default the
-     * initial extent. The generator knobs come before the op's.
+     * @brief Declares the generator knobs on page, in the openfx-misc order, with the
+     * constructor's default extent the initial one. The generator knobs come before the op's.
      **/
     void createKnobs(const KnobPagePtr& page);
 
@@ -139,7 +140,7 @@ public:
                                       NodeMetadata& metadata) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Only ofx/framerate and ofx/pixelaspect. ofx/frame is omitted because it numbers an
+     * @brief Only natron/framerate and natron/pixelaspect. natron/frame is omitted because it numbers an
      * image within a source and a generator has none.
      **/
     ImageMetadata deriveOutputMetadata(double time,
@@ -149,6 +150,21 @@ private:
     EffectInstance* _effect;
     ExtentKnobs _extentKnobs;
 };
+
+/**
+ * @brief The extent a generator over OP starts with: OP::kDefaultExtent when it declares one,
+ * else Default.
+ **/
+template <typename OP>
+constexpr ExtentKnobs::ExtentEnum
+generatorDefaultExtent()
+{
+    if constexpr (requires { OP::kDefaultExtent; }) {
+        return OP::kDefaultExtent;
+    } else {
+        return ExtentKnobs::eExtentDefault;
+    }
+}
 
 /**
  * @brief An image generator made of an Op with no input: an ImageNode over OP and SPEC that
@@ -173,7 +189,7 @@ public:
 
     explicit GeneratorNode(NodePtr node)
         : Base(node)
-        , _generator(this)
+        , _generator(this, generatorDefaultExtent<OP>())
     {
         if constexpr (requires(OP& o, const NativeGenerator* g) { o.generator = g; }) {
             this->op().generator = &_generator;

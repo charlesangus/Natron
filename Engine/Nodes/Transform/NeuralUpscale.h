@@ -173,6 +173,8 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
     virtual void onEffectCreated(bool mayCreateFileDialog,
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 

@@ -30,14 +30,16 @@
 
 #include <list>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "Global/Macros.h"
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/RippleEditKeys.h"
+#include "Engine/ViewIdx.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -106,11 +108,11 @@ public:
     void removeAnimation(bool useGuiCurves, double currentTime);
 
     ///returns true if a keyframe was set
-    bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, bool rippleEdit, const std::pair<double, double>& pixelScale);
+    bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const std::pair<double, double>& pixelScale);
 
-    ///returns true if a keyframe was set
-    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, bool rippleEdit, const std::pair<double, double>& pixelScale);
-
+    /// returns true if a keyframe was set. transform is the curve's at time: the caller reads it
+    /// before taking itemMutex, because composing it may lock that mutex.
+    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const Transform::Matrix3x3& transform, const std::pair<double, double>& pixelScale);
 
     virtual bool isFeatherPoint() const
     {
@@ -171,6 +173,13 @@ public:
     void cloneGuiCurvesToInternalCurves();
 
     /**
+     * @brief Copies the GUI curves, static positions, broken flag, track link and offsets of other,
+     * which are never behind its internal ones, onto this point's GUI copy, and onto its internal
+     * state too when alsoInternal is true.
+     **/
+    void cloneGuiState(const BezierCP& other, bool alsoInternal);
+
+    /**
      * @brief Mirrors the internal keyframe at time, or its absence, and its neighbours onto the
      * GUI curves (see Curve::copyKeyFrameFrom()), along with the static positions. The GUI
      * curves must otherwise equal the internal ones.
@@ -189,6 +198,53 @@ public:
      **/
     void appendContentHash(ContentHasher& h) const;
 
+    /**
+     * @brief Whether the point follows a track. A linked point evaluates to the track's centre
+     * plus the offsets taken at the link time, for the point and both tangents; its own
+     * animation is kept but ignored until it is unlinked. Renders follow the internal link: a
+     * link or unlink made during one changes the GUI copy's alone until it is written back. The
+     * other track-link getters read the GUI copy's.
+     **/
+    bool isLinkedToTrack(bool useGuiCurves = true) const;
+
+    /**
+     * @brief The linked track when it can be followed: it still exists, belongs to its tracker
+     * and the tracker node is active. Null otherwise.
+     **/
+    TrackMarkerPtr getResolvedTrack(bool useGuiCurves = true) const;
+
+    /**
+     * @brief The linked track object while it is alive, resolvable or not. Null otherwise.
+     **/
+    TrackMarkerPtr getLinkedTrack() const;
+
+    /**
+     * @brief The tracker node's fully qualified name and the track's script name, read from the
+     * track when it is alive so renames are followed. Empty when unlinked.
+     **/
+    std::string getTrackLinkTrackerName() const;
+    std::string getTrackLinkTrackName() const;
+
+    /**
+     * @brief The centre the point is evaluated against at time: the track's when resolved, the
+     * last known one otherwise. Returns false when unlinked.
+     **/
+    bool getTrackLinkCentre(double time, double* x, double* y) const;
+
+    /**
+     * @brief Keeps the centre used while the track cannot be resolved up to date: while it
+     * resolves, the track's centre at time; when it stops resolving, the centre at time of the
+     * track object if it is still alive, else the last one kept. Returns true when the link's
+     * state changed.
+     **/
+    bool updateTrackLinkState(double time);
+
+    /**
+     * @brief Points an unresolved link (as loaded) at marker, keeping its offsets. Does nothing
+     * when unlinked.
+     **/
+    void resolveTrackLink(const TrackMarkerPtr& marker);
+
     void toSerialization(Serialization::BezierCPSerialization* serialization) const;
 
     /**
@@ -197,6 +253,28 @@ public:
     void fromSerialization(const Serialization::BezierCPSerialization& serialization);
 
 private:
+    /**
+     * @brief Links the point to marker, taking the offsets of its values from the track's
+     * centre at time: of the GUI copy's alone when useGuiCurves, else of both sides.
+     * Bezier::linkPointToTrack() calls it for both the point and its feather point.
+     **/
+    void linkToTrack(const TrackMarkerPtr& marker, double time, bool useGuiCurves);
+
+    /**
+     * @brief Drops the link, of the GUI copy alone when useGuiCurves; the point evaluates from
+     * its own animation again.
+     **/
+    void unlinkFromTrack(bool useGuiCurves);
+
+    // The point's own value, ignoring any link. which: 0 position, 1 left, 2 right.
+    bool getStoredPointAtTime(bool useGuiCurves, int which, double time, double* x, double* y) const;
+
+    // Updates the link offsets for a value set at time, and keys the stored curves with their
+    // own value there so the keyframe layout matches the other points.
+    void setLinkedPointAtTime(bool useGuiCurves, int which, double time, double x, double y);
+
+    // Updates the link offsets for a value set without a time, against the current frame's centre.
+    void setLinkedStaticPoint(bool useGuiCurves, int which, double x, double y);
 
     std::unique_ptr<BezierCPPrivate> _imp;
 };

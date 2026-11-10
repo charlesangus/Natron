@@ -99,10 +99,10 @@ ClipboardSerialization
 blurIntoGrade()
 {
     ClipboardSerialization clipboard;
-    NodeSerializationPtr grade = makeNode("Grade1", "net.sf.openfx.GradePlugin");
+    NodeSerializationPtr grade = makeNode("Grade1", "Grade");
     grade->inputs["Source"] = "Blur1";
     grade->inputs["Mask"] = "Read1";
-    NodeSerializationPtr blur = makeNode("Blur1", "net.sf.cimg.CImgBlur");
+    NodeSerializationPtr blur = makeNode("Blur1", "Blur");
     blur->knobs.push_back(foldedDoubleKnob("size", 3.5));
     clipboard.nodes = { grade, blur };
     setPosition(grade, 10., 120.);
@@ -175,7 +175,7 @@ TEST(ClipboardYaml, AnEditedBlurSizeAndTheBlurToGradeConnectionSurviveTheText)
 TEST(ClipboardYaml, ACopiedNodeLeavesItsCacheIDBehind)
 {
     ClipboardSerialization clipboard;
-    NodeSerializationPtr blur = makeNode("Blur1", "net.sf.cimg.CImgBlur");
+    NodeSerializationPtr blur = makeNode("Blur1", "Blur");
     blur->cacheID = "0b6f1d3c-6a0e-4c43-9f55-2f7e8d1a4b90";
     clipboard.nodes = { blur };
     const std::string text = Serialization::encodeClipboardYaml(clipboard);
@@ -231,11 +231,11 @@ TEST(ClipboardYaml, AWeightedKeyKeepsItsWeights)
 TEST(ClipboardYaml, AGroupKeepsThePositionsOfItsChildren)
 {
     ClipboardSerialization clipboard;
-    NodeSerializationPtr group = makeNode("Group1", "fr.inria.built-in.Group");
-    NodeSerializationPtr output = makeNode("Output1", "fr.inria.built-in.Output");
+    NodeSerializationPtr group = makeNode("Group1", "Group");
+    NodeSerializationPtr output = makeNode("Output1", "Output");
     output->inputs["Source"] = "Blur2";
-    NodeSerializationPtr blur = makeNode("Blur2", "net.sf.cimg.CImgBlur");
-    NodeSerializationPtr input = makeNode("Input1", "fr.inria.built-in.Input");
+    NodeSerializationPtr blur = makeNode("Blur2", "Blur");
+    NodeSerializationPtr input = makeNode("Input1", "Input");
     blur->inputs["Source"] = "Input1";
     group->children = { output, blur, input };
     clipboard.nodes = { group };

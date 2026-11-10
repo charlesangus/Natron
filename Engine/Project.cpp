@@ -99,6 +99,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
@@ -475,12 +476,12 @@ Project::hasMissingPluginNode() const
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-// The parameter names the native Read and Write take from openfx-io's GenericOCIO
-// (see Engine/Nodes/IO/OcioSpaceKnobs.h). The native OCIO nodes share the config pair
-// and check their own colourspaces.
+// The parameter names of the config pair every node with OcioSpaceKnobs carries
+// (see Engine/Nodes/IO/OcioSpaceKnobs.h), and of the native Read's and Write's file colourspace.
+// The native OCIO nodes check their own colourspaces.
 const char* const ocioConfigFileKnobName = "ocioConfigFile";
 const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
-const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
+const char* const ioColorSpaceKnobName = "colorspace";
 
 // A "scheme://" source is a built-in config, not a file on disk.
 bool
@@ -489,21 +490,23 @@ isOCIOConfigFile(const std::string& source)
     return !source.empty() && (source.find("://") == std::string::npos);
 }
 
+// The colourspace a native Read or Write was set to, empty while it follows the project's
+// defaults, which always resolve.
 std::string
-getStringKnobValue(const NodePtr& node,
-                   const char* knobName)
+chosenFileColorSpace(const NodePtr& node)
 {
-    KnobIPtr knob = node->getKnobByName(knobName);
+    const std::string pluginID = node ? node->getPluginID() : std::string();
 
+    if ((pluginID != PLUGINID_NATRON_READ) && (pluginID != PLUGINID_NATRON_WRITE)) {
+        return std::string();
+    }
+    KnobChoicePtr knob = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(ioColorSpaceKnobName));
     if (!knob) {
         return std::string();
     }
-    KnobStringBasePtr stringKnob = std::dynamic_pointer_cast<KnobStringBase>(knob);
-    if (!stringKnob) {
-        return std::string();
-    }
+    const std::string id = knob->getActiveEntry().id;
 
-    return stringKnob->getValue();
+    return (id == OcioSpaceKnobs::projectDefaultID()) ? std::string() : id;
 }
 
 void
@@ -568,13 +571,10 @@ Project::reportUnresolvedOCIOColorSpaces()
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         QStringList unresolved;
-        for (std::size_t i = 0; i < sizeof(ocioColorSpaceKnobNames) / sizeof(ocioColorSpaceKnobNames[0]); ++i) {
-            const std::string colorSpace = getStringKnobValue(*it, ocioColorSpaceKnobNames[i]);
-            if (colorSpace.empty() || config->getColorSpace(colorSpace.c_str())) {
-                continue;
-            }
+        const std::string colorSpace = chosenFileColorSpace(*it);
+        if (!colorSpace.empty() && !config->getColorSpace(colorSpace.c_str())) {
             unresolved.push_back(tr("%1 = \"%2\" is not a colorspace in the OpenColorIO config \"%3\".")
-                                     .arg(QString::fromUtf8(ocioColorSpaceKnobNames[i]))
+                                     .arg(QString::fromUtf8(ioColorSpaceKnobName))
                                      .arg(QString::fromUtf8(colorSpace.c_str()))
                                      .arg(QString::fromUtf8(config->getName())));
         }
@@ -1200,6 +1200,89 @@ Project::getLoadWarnings() const
     QMutexLocker k(&_imp->loadWarningsMutex);
 
     return _imp->loadWarnings;
+}
+
+NodePtr
+Project::findNodeHoldingId(const std::string& id) const
+{
+    NodePtr node;
+    {
+        QMutexLocker k(&_imp->nodesByIdMutex);
+        std::unordered_map<std::string, NodeWPtr>::const_iterator found = _imp->nodesById.find(id);
+        if (found == _imp->nodesById.end()) {
+            return NodePtr();
+        }
+        node = found->second.lock();
+    }
+    // Read outside the index lock: Node::getNodeId() takes the node's name mutex.
+    if (!node || (node->getNodeId() != id)) {
+        return NodePtr();
+    }
+
+    return node;
+}
+
+GraphEditRecorder*
+Project::getGraphEditRecorder() const
+{
+    return _imp->graphEditRecorder.get();
+}
+
+NodePtr
+Project::findNodeById(const std::string& id) const
+{
+    NodePtr node = findNodeHoldingId(id);
+    if (!node || !node->isActivated()) {
+        return NodePtr();
+    }
+
+    return node;
+}
+
+void
+Project::registerNodeId(const NodePtr& node)
+{
+    if (!node) {
+        return;
+    }
+    const std::string id = node->getNodeId();
+    QMutexLocker k(&_imp->nodesByIdMutex);
+    _imp->nodesById[id] = node;
+}
+
+void
+Project::unregisterNodeId(const Node* node)
+{
+    if (!node) {
+        return;
+    }
+    const std::string id = node->getNodeId();
+    QMutexLocker k(&_imp->nodesByIdMutex);
+    std::unordered_map<std::string, NodeWPtr>::iterator found = _imp->nodesById.find(id);
+    if (found == _imp->nodesById.end()) {
+        return;
+    }
+    NodePtr indexed = found->second.lock();
+    if (!indexed || (indexed.get() == node)) {
+        _imp->nodesById.erase(found);
+    }
+}
+
+void
+Project::onNodeIdChanged(const NodePtr& node,
+                         const std::string& previousId)
+{
+    if (!node) {
+        return;
+    }
+    const std::string id = node->getNodeId();
+    QMutexLocker k(&_imp->nodesByIdMutex);
+    std::unordered_map<std::string, NodeWPtr>::iterator found = _imp->nodesById.find(previousId);
+    if ((found == _imp->nodesById.end()) || (found->second.lock() != node)) {
+        return;
+    }
+    _imp->nodesById.erase(found);
+    _imp->nodesById[id] = node;
 }
 
 void
@@ -2290,6 +2373,8 @@ Project::refreshColorManagement(bool warnOnFallback,
     // environment overrides it.
     Node::invalidateAllHashes("OCIO config loaded");
     pushOCIOConfigToNodes();
+    // The config's file rules and the project's file defaults may both have moved.
+    Q_EMIT fileColorSpacesChanged();
     cm.notifyConfigChanged();
 
     reportUnresolvedOCIOColorSpaces();
@@ -2488,6 +2573,9 @@ Project::tryAddProjectFormat(const Format & f, bool* existed)
     _imp->additionalFormats.push_back(f);
     ++_imp->formatsGeneration;
     Node::invalidateAllHashes("project formats changed");
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onProjectDataChanged(this);
+    }
     if ( !f.getName().empty() ) {
         _imp->formatKnob->appendChoice( ChoiceOption(f.getName(), formatStr.toStdString(), "") );
     } else {
@@ -2589,6 +2677,9 @@ Project::addLayer(const ImageLayerDesc& desc, LayerRegistryEntry::OriginEnum ori
         if (!isLoadingProject()) {
             notifyLayersChanged();
         }
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onProjectDataChanged(this);
+        }
     }
     return ret;
 }
@@ -2621,6 +2712,9 @@ Project::removeLayer(const std::string& id, std::string* error)
         Node::invalidateAllHashes("a layer was removed");
         if (!isLoadingProject()) {
             notifyLayersChanged();
+        }
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onProjectDataChanged(this);
         }
     }
     return ok;
@@ -2951,6 +3045,12 @@ Project::onKnobValueChanged(KnobI* knob,
     } else if (knob == _imp->ocioConfig.get() || knob == _imp->ocioConfigFile.get()) {
         if (!_imp->suppressColorManagementRefresh) {
             refreshColorManagement(true);
+        }
+        shouldAutoSave = true;
+    } else if (knob == _imp->colorSpace8Bit.get() || knob == _imp->colorSpace16Bit.get() || knob == _imp->colorSpaceLog.get() || knob == _imp->colorSpaceFloat.get()) {
+        if (!_imp->suppressColorManagementRefresh) {
+            Q_EMIT fileColorSpacesChanged();
+            getApp()->renderAllViewers(true);
         }
         shouldAutoSave = true;
     } else if (knob == _imp->viewerDisplay.get()) {
@@ -4820,6 +4920,14 @@ Project::addFormat(const std::string& formatSpec)
     } else {
         return false;
     }
+}
+
+void
+Project::addAdditionalFormat(const Format& f)
+{
+    QMutexLocker k(&_imp->formatMutex);
+    bool existed;
+    tryAddProjectFormat(f, &existed);
 }
 
 void

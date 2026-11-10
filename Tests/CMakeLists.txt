@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -63,6 +63,8 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
+    GlobalModeKind_Test.cpp
+    GlobalModeStroke_Test.cpp
     GpuContext_Test.cpp
     GpuMemberTiming_Test.cpp
     GpuPlacement_Test.cpp
@@ -80,9 +82,11 @@ set(Tests_SOURCES
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
+    KnobValueRole_Test.cpp
     KnobLayerSelect_Test.cpp
     KnobShuffleMap_Test.cpp
     KnobContentHash_Test.cpp
+    KnobDriver_Test.cpp
     KnobLinkGroup_Test.cpp
     KnobNoOpWrite_Test.cpp
     KnobQueuedValueChange_Test.cpp
@@ -90,12 +94,25 @@ set(Tests_SOURCES
     LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
+    NodeId_Test.cpp
+    GraphOpApply_Test.cpp
+    GraphEditRecorder_Test.cpp
+    GraphEditReplay_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
+    PyRotoCreate_Test.cpp
+    CurveTrackLink_Test.cpp
+    CurveClipboard_Test.cpp
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp
     BezierIncrementalCopy_Test.cpp
+    BezierSmooth_Test.cpp
+    RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
+    RotoDragUndo_Test.cpp
+    RotoDragRenderThrottle_Test.cpp
+    RotoKeyDuringRender_Test.cpp
+    StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp
@@ -129,6 +146,7 @@ set(Tests_SOURCES
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
     PoolSharing_Test.cpp
+    FpTrapGuard_Test.cpp
     PremultAbsence_Test.cpp
     ProjectColorManagement_Test.cpp
     QueuedInputEdit_Test.cpp
@@ -168,6 +186,7 @@ set(Tests_SOURCES
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
     RenderSchedulerMode_Test.cpp
+    RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
     SchedulerEquivalence_Test.cpp
@@ -191,6 +210,8 @@ set(Tests_SOURCES
     OfxMetadataBridge_Test.cpp
     OfxRetired_Test.cpp
     OfxTestPlugin_Test.cpp
+    OverlayDrawList_Test.cpp
+    OverlayImage_Test.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on
@@ -217,6 +238,7 @@ target_link_libraries(Tests
         Python3::Python
         openMVG
         rawspeed::rawspeed
+        lensfun::lensfun
         # The scene tests inspect payloads through USD directly; NatronEngine links it privately.
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
@@ -245,9 +267,13 @@ string(TOUPPER "${CMAKE_BUILD_TYPE}" NATRON_GOLDEN_BUILD_TYPE_UPPER)
 string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${NATRON_GOLDEN_BUILD_TYPE_UPPER}}" NATRON_GOLDEN_FLAGS)
 string(REGEX REPLACE "[^A-Za-z0-9.+=-]+" "_" NATRON_GOLDEN_FLAGS "${NATRON_GOLDEN_FLAGS}")
 set(NATRON_GOLDEN_CONFIG "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}-${CMAKE_BUILD_TYPE}-${NATRON_GOLDEN_FLAGS}")
+# What fetch-assets.sh pins, against what the installed lensfun was built from: stale assets fail.
+file(STRINGS "${CMAKE_SOURCE_DIR}/tools/ci/local/fetch-assets.sh" NATRON_TESTS_LENSFUN_PIN REGEX "^LENSFUN_REF=")
+string(REGEX MATCH "[0-9a-f]+" NATRON_TESTS_LENSFUN_PIN "${NATRON_TESTS_LENSFUN_PIN}")
 target_compile_definitions(Tests
     PRIVATE
         NATRON_GOLDEN_CONFIG="${NATRON_GOLDEN_CONFIG}"
+        NATRON_TESTS_LENSFUN_PIN="${NATRON_TESTS_LENSFUN_PIN}"
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
         NATRON_TESTS_ENGINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Engine"
@@ -293,6 +319,7 @@ set(GuiTests_SOURCES
     DisplayLegendColour_Test.cpp
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GlobalModeTargeting_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp
@@ -306,29 +333,41 @@ set(GuiTests_SOURCES
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
+    OverlayImageRenderer_Test.cpp
+    PythonUndoStep_Test.cpp
     RenderDialogRange_Test.cpp
+    RotoLatencyProbe_Test.cpp
     RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp
     SceneGizmo_Test.cpp
+    SceneGraphModel_Test.cpp
     SceneGuides_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
+    SpinBox_Test.cpp
+    StallMonitor_Test.cpp
     TabMenuBridge_Test.cpp
     TextRenderer_Test.cpp
     ThemedIcon_Test.cpp
+    TransformGroupGlobalModeTarget_Test.cpp
     UndoHistory_Test.cpp
+    ValueKnobEditSession_Test.cpp
+    ValueKnobGlobalModeTarget_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )
+# QAbstractItemModelTester checks the item models.
+find_package(Qt6 6.8 CONFIG REQUIRED COMPONENTS Test)
 add_executable(GuiTests ${GuiTests_SOURCES})
 # Build their scenes with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneGizmo_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui
         NatronEngine
         Qt::Core
         Qt::Widgets
+        Qt::Test
         Python3::Python
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
@@ -363,6 +402,24 @@ natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
 natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
+# SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
+# from the configure step is written to an include that ctest runs just before it.
+# A build configured with a MoonRay install bundles it, so MoonRayDelegate must fail, not skip, if
+# the plug-in is not registered (the test itself skips on a CPU the runtime gate refuses).
+if(NATRON_MOONRAY_PREFIX)
+    set(NATRON_MOONRAY_BUNDLED ON)
+else()
+    set(NATRON_MOONRAY_BUNDLED OFF)
+endif()
+# A build whose OpenUSD install carries the Cycles delegate (tools/ci/local/build-cycles.sh) bundles
+# it, so CyclesDelegate must fail, not skip, if the plug-in is not registered.
+if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
+    set(NATRON_CYCLES_BUNDLED ON)
+else()
+    set(NATRON_CYCLES_BUNDLED OFF)
+endif()
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 
 if(NATRON_GPU)
@@ -373,6 +430,8 @@ find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME RenderProfileReportSelfTest
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/render-profile-report.py --self-test)
+    add_test(NAME GuiBenchCompareSelfTest
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/gui/compare.py --self-test)
     add_test(NAME TabTabTabPython
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/run_tabtabtab_tests.py)
 endif()

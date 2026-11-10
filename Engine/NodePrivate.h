@@ -146,6 +146,16 @@ struct FormatKnob
     KnobChoiceWPtr formatChoice;
 };
 
+// Weak, because the effect owns its knobs: a strong reference here would keep a knob alive past
+// its effect, destroying it with no holder.
+struct TransformInteractWeakKnobs {
+    KnobDoubleWPtr translate;
+    KnobDoubleWPtr rotate;
+    KnobDoubleWPtr scale;
+    KnobDoubleWPtr skewX;
+    KnobDoubleWPtr skewY;
+    KnobDoubleWPtr center;
+};
 
 struct Node::Implementation
 {
@@ -162,6 +172,7 @@ public:
         , app(app_)
         , isPartOfProject(true)
         , knobsInitialized(false)
+        , restoringKnobs(false)
         , inputsInitialized(false)
         , outputsMutex()
         , outputs()
@@ -178,6 +189,7 @@ public:
         , label()
         , cacheID()
         , cacheIDClaimed(false)
+        , nodeId()
         , deactivatedState()
         , activatedMutex()
         , activated(true)
@@ -195,6 +207,7 @@ public:
         , renderInstancesSharedMutex()
         , contentHashMutex()
         , contentHash(0)
+        , baseContentHash(0)
         , nodeLinksMutex()
         , nodeLinks()
         , nodeSettingsPage()
@@ -235,6 +248,7 @@ public:
         , lastInputNRenderStartedSlotCallTime()
         , nodeIsDequeuing(false)
         , actionsQueued(false)
+        , renderStartsHeldByEdits(0)
         , nodeIsDequeuingMutex()
         , nodeIsDequeuingCond()
         , nodeIsRendering(0)
@@ -260,6 +274,7 @@ public:
         , overlayColorSet(false)
         , overlayColor { 0., 0., 0. }
         , nativeOverlays()
+        , transformInteracts()
         , nodeCreated(false)
         , wasCreatedSilently(false)
         , paintStroke()
@@ -350,6 +365,8 @@ public:
     AppInstanceWPtr app; // pointer to the app: needed to access the application's default-project's format
     bool isPartOfProject;
     bool knobsInitialized;
+    // Main thread only: set while fromSerialization() restores the knobs.
+    bool restoringKnobs;
     bool inputsInitialized;
     mutable QMutex outputsMutex;
     NodesWList outputs, guiOutputs;
@@ -378,6 +395,7 @@ public:
     // A UUID, not the script name: the caches are shared by every project in the process.
     std::string cacheID;
     bool cacheIDClaimed; // protected by nameMutex
+    std::string nodeId; // protected by nameMutex
     DeactivatedState deactivatedState;
     mutable QMutex activatedMutex;
     bool activated;
@@ -394,8 +412,10 @@ public:
     QWaitCondition mustQuitPreviewCond;
     QMutex renderInstancesSharedMutex; //< see eRenderSafetyInstanceSafe in EffectInstance::renderRoI
     //only 1 clone can render at any time
-    mutable QReadWriteLock contentHashMutex; //< protects contentHash
+    mutable QReadWriteLock contentHashMutex; //< protects contentHash, baseContentHash and hashNamespaces
     U64 contentHash; //< 0 until first computed
+    U64 baseContentHash; //< contentHash without hashNamespaces folded; 0 until first computed
+    HashNamespacesConstPtr hashNamespaces;
 
     // The hashes are recomputed lazily. Any thread marks the node by moving hashDirtyGeneration; a
     // recompute records the generation and the global hash epoch it started from, so an edit
@@ -421,7 +441,14 @@ public:
         // reached through expression rechecks with no effect to resolve against.
         KnobIWPtr liveKnob; //< null when hash below is memoized
         U64 hash;
+        std::string hashNamespace; //< empty for a knob of the content hash
     };
+    mutable QMutex overlayImageFrameMutex;
+    OverlayImageFrameConstPtr overlayImageFrame;
+    std::uint64_t overlayImageGeneration = 0;
+    // Shared with the tokens, which can outlive the node.
+    std::shared_ptr<std::atomic<int>> overlayImagePassesPending = std::make_shared<std::atomic<int>>(0);
+
     mutable QMutex knobsDigestMutex; //< protects the knobsDigest* fields
     mutable bool knobsDigestValid = false;
     mutable U64 knobsDigestGeneration = 0;
@@ -499,6 +526,8 @@ public:
     bool nodeIsDequeuing;
     // An edit waits in a queue for the renders holding the node to end; protected by nodeIsDequeuingMutex
     bool actionsQueued;
+    // Main-thread edits holding back render starts on other threads; protected by nodeIsDequeuingMutex
+    int renderStartsHeldByEdits;
     QMutex nodeIsDequeuingMutex;
     QWaitCondition nodeIsDequeuingCond;
 
@@ -544,6 +573,7 @@ public:
     bool overlayColorSet;
     double overlayColor[3];
     std::list<HostOverlayKnobsPtr> nativeOverlays;
+    std::list<TransformInteractWeakKnobs> transformInteracts;
     bool nodeCreated;
     bool wasCreatedSilently;
     RotoDrawableItemWPtr paintStroke;
@@ -585,9 +615,9 @@ public:
     // as a result if we don't call glFinish() before calling the render action, the plug-in context might use textures that were not finished yet.
     bool requiresGLFinishBeforeRender;
 
-    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (KeyMix picks A vs B per
-    // channel, DenoiseSharpen collapses R/G/B into one flag, ClipTest ORs the selection into a
-    // zebra decision): adoptChannelQuad() leaves their quad alone instead of forcing it.
+    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (DenoiseSharpen collapses
+    // R/G/B into one flag, ClipTest ORs the selection into a zebra decision): adoptChannelQuad()
+    // leaves their quad alone instead of forcing it.
     bool pluginOwnsChannelMask;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose

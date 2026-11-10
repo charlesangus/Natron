@@ -39,8 +39,8 @@
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
 
-#define PLUGINID_NATRON_SHUFFLE "fr.natron.Shuffle"
-#define PLUGINID_NATRON_SHUFFLECOPY "fr.natron.ShuffleCopy"
+#define PLUGINID_NATRON_SHUFFLE "Shuffle"
+#define PLUGINID_NATRON_SHUFFLECOPY "ShuffleCopy"
 
 #define kShuffleParamIn1 "in1"
 #define kShuffleParamIn2 "in2"
@@ -293,8 +293,7 @@ private:
 
     /**
      * @brief Builds the node-graph sub-label text (unparenthesized) from the current
-     * in1/in2/out1/out2 selections, following kNatronOfxParamStringSublabelName's
-     * PrecompNode precedent: Node wraps and displays it, this only computes the text.
+     * in1/in2/out1/out2 selections; Node wraps and displays it.
      **/
     std::string buildSubLabel();
 
@@ -306,7 +305,6 @@ private:
     KnobLayerSelectWPtr _out2;
     std::weak_ptr<KnobShuffleMap> _mapping;
     KnobChoiceWPtr _bbox;
-    KnobStringWPtr _subLabel;
 };
 
 /**

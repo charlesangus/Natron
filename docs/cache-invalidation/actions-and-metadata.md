@@ -119,7 +119,7 @@ summaries in every state, generation++). Metadata frames per state are capped at
   `getRegionOfDefinition` overrides take `U64 /*hash*/`: OfxEffectInstance.cpp:2300, Shuffle.cpp:701,
   NativeRead.cpp:1155, ChromaKeyer.cpp:867, NativeWrite.cpp:1871, Crop.cpp:474, USDRender.cpp:251,
   Keyer.cpp:1067, STMap.cpp:434, IDistort.cpp:306, DeepRead.cpp:93, LensDistortion.cpp:873,
-  Merge.cpp:902, Dissolve.cpp:210, CopyMetadata.cpp:83. For example, `STMap::getRegionOfDefinition`
+  Merge.cpp:902, Dissolve.cpp:210, MetadataCopy.cpp:83. For example, `STMap::getRegionOfDefinition`
   reads `getInput()` (STMap.cpp:440-441), which returns the render-side `inputs` array
   (`Node::getInput` NodeInputs.cpp:236 → `getInputInternal(false, ...)` 259), and
   `uv->getRenderMetadata` (STMap.cpp:450). The answer reflects the graph when it runs, not the

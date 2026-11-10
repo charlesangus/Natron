@@ -31,10 +31,57 @@
 #include <QMutex>
 #include <QReadWriteLock>
 
+#include <atomic>
+#include <memory>
+#include <string>
+
 #include "Engine/Curve.h"
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief Where a control point linked to a track reads its centre from. Replaced as a whole,
+ * never edited in place, so readers can hold a copy without the lock.
+ **/
+struct BezierCPTrackLink {
+    TrackMarkerWPtr marker;
+    // The names saved with the point, also used to resolve it on load.
+    std::string trackerName, trackName;
+    // The centre used while the track cannot be resolved.
+    double frozenX, frozenY;
+    // Whether the track was found unresolvable by the last updateTrackLinkState().
+    bool lost;
+
+    BezierCPTrackLink()
+        : marker()
+        , trackerName()
+        , trackName()
+        , frozenX(0)
+        , frozenY(0)
+        , lost(false)
+    {
+    }
+};
+
+typedef std::shared_ptr<const BezierCPTrackLink> BezierCPTrackLinkConstPtr;
+
+/**
+ * @brief The point and its tangents relative to the linked track's centre.
+ **/
+struct BezierCPTrackOffsets {
+    double x, y, leftX, leftY, rightX, rightY;
+
+    BezierCPTrackOffsets()
+        : x(0)
+        , y(0)
+        , leftX(0)
+        , leftY(0)
+        , rightX(0)
+        , rightY(0)
+    {
+    }
+};
 
 struct BezierCPPrivate
 {
@@ -45,7 +92,8 @@ struct BezierCPPrivate
     CurvePtr guiCurveX, guiCurveY;
     double x, y; //< used when there is no keyframe
     double guiX, guiY;
-    bool broken; //< true if both tangents are independent
+    // Atomic because the mesh and Coons paths of a render read it without any lock.
+    std::atomic<bool> broken; //< true if both tangents are independent
 
     ///the animation curves for the derivatives
     ///They do not need to be protected as Curve is a thread-safe class.
@@ -54,6 +102,11 @@ struct BezierCPPrivate
     mutable QMutex staticPositionMutex; //< protects the  leftX,rightX,leftY,rightY
     double leftX, rightX, leftY, rightY; //< used when there is no keyframe
     double guiLeftX, guiRightX, guiLeftY, guiRightY; //< used when there is no keyframe
+
+    // Null when the point follows no track. Protected by staticPositionMutex, like the offsets.
+    // Renders follow trackLink; a link change made during a render reaches it on write-back.
+    BezierCPTrackLinkConstPtr trackLink, guiTrackLink;
+    BezierCPTrackOffsets trackOffsets, guiTrackOffsets;
 
     BezierCPPrivate(const BezierPtr& curve)
         : holder(curve)
@@ -83,6 +136,10 @@ struct BezierCPPrivate
         , guiRightX(0)
         , guiLeftY(0)
         , guiRightY(0)
+        , trackLink()
+        , guiTrackLink()
+        , trackOffsets()
+        , guiTrackOffsets()
     {
         curveX= std::make_shared<Curve>();
         curveY= std::make_shared<Curve>();

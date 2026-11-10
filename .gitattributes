@@ -26,6 +26,7 @@ PKGBUILD eol=lf
 *.jpg binary
 *.jpeg binary
 *.exr binary
+*.tx binary
 *.ico binary
 *.a binary
 *.so binary

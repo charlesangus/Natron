@@ -34,8 +34,6 @@
 #                 "Max concurrent tasks" from the -stats.txt file are recorded as tasks_run and
 #                 max_concurrent_tasks. Needs the stats-capable CLI path, so it is a separate cold render.
 #   BENCH_RENDERER  NatronRenderer binary for that render (default build/release/Renderer/NatronRenderer)
-#   BENCH_IMPL    native (default) | ofx: which implementation of the IDs in NATIVE_MAJORS to create; the
-#                 OFX plugin and its native replacement share an ID and differ by major version
 #   BENCH_SESSION a | bc | playback: a session that counts one-time costs (no warm-up render, setup is part of the
 #                 measurement) instead of the timed-frames loop. a renders BENCH_SESSION_FRAME once, labelled
 #                 BENCH_LABEL (default a); bc renders it, then re-renders it BENCH_RERENDERS times (default 4)
@@ -117,10 +115,10 @@ if DRY_RUN:
             return _Node(plugin_id)
 
         def createReader(self, path, *args):
-            return _Node("fr.inria.built-in.Read")
+            return _Node("Read")
 
         def createWriter(self, path, *args):
-            return _Node("fr.inria.built-in.Write")
+            return _Node("Write")
 
         def getProjectParam(self, name):
             return _Param()
@@ -159,16 +157,6 @@ WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", 
 PLATES = os.environ.get("BENCH_PLATES_DIR") or os.path.join(os.getcwd(), "build", "bench", "fixtures")
 # Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path.
 NAMED = os.environ.get("BENCH_NAMED", "1") != "0"
-IMPL = os.environ.get("BENCH_IMPL", "native")
-if IMPL not in ("ofx", "native"):
-    raise SystemExit("BENCH_IMPL must be ofx or native, got %r" % IMPL)
-
-# plugin ID -> (OFX major, native major). A native node takes over its OFX ID at the next major, so
-# an unversioned request already resolves to it; only the benchmark needs to pick one explicitly.
-NATIVE_MAJORS = {
-    "net.sf.openfx.GradePlugin": (2, 3),
-}
-
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
 if SESSION:
     LAST_FRAME = max(LAST_FRAME, JUMP_FRAME, SESSION_FRAME + PLAYBACK_FRAMES) + 1
@@ -186,7 +174,6 @@ MOTION_BLUR = float(os.environ.get("BENCH_MOTION_BLUR", "1"))
 ERODE_SIZE = int(os.environ.get("BENCH_ERODE_SIZE", "6"))
 
 counts = {}
-majors = {}
 # Per frame, the plate file bytes the graph decodes: one entry per Read/DeepRead node.
 plate_reads = []
 
@@ -197,9 +184,7 @@ def log(msg):
 
 
 def make(plugin_id):
-    pair = NATIVE_MAJORS.get(plugin_id)
-    major = -1 if pair is None else pair[0 if IMPL == "ofx" else 1]
-    majors[plugin_id] = major
+    major = -1
     if NAMED:
         name = "n%d" % sum(counts.values())
         props = {"CreateNodeArgsPropNodeInitialName": NatronEngine.StringNodeCreationProperty(name)}
@@ -248,8 +233,8 @@ def read(index):
         node = app.createReader(pattern)
     if node is None:
         raise RuntimeError("could not create a reader for " + pattern)
-    counts["fr.inria.built-in.Read"] = counts.get("fr.inria.built-in.Read", 0) + 1
-    for name in ("before", "after"):
+    counts["Read"] = counts.get("Read", 0) + 1
+    for name in ("beforeFirstFrame", "afterLastFrame"):
         if node.getParam(name) is not None:
             set_choice(node, name, "loop")
         else:
@@ -264,7 +249,7 @@ def deep_read():
         raise RuntimeError("deepcomp renders frames 1-%d but %s has %d frames; DeepRead cannot loop, so "
                            "regenerate with BENCH_PLATE_FRAMES=%d or lower BENCH_FRAMES/BENCH_RANGE"
                            % (LAST_FRAME, pattern, n_frames, LAST_FRAME))
-    node = make("fr.natron.DeepRead")
+    node = make("DeepRead")
     param(node, "filename").set(pattern)
     plate_reads.append(frame_bytes)
     return node
@@ -272,7 +257,7 @@ def deep_read():
 
 def source(index):
     # Animated so that nothing downstream is treated as frame-invariant and cached once.
-    cb = make("net.sf.openfx.CheckerBoardPlugin")
+    cb = make("CheckerBoard")
     if RES == "tiny" or CUSTOM_SIZE:
         param(cb, "extent").set("Size")
         param(cb, "size").set(*SIZES[RES])
@@ -285,28 +270,28 @@ def source(index):
 
 
 def grade(inp, i):
-    n = make("net.sf.openfx.GradePlugin")
+    n = make("Grade")
     n.connectInput(0, inp)
     param(n, "multiply").set(1.0 + 0.0001 * (i % 7 + 1), 1.0, 1.0, 1.0)
     return n
 
 
 def colorcorrect(inp, i):
-    n = make("net.sf.openfx.ColorCorrectPlugin")
+    n = make("ColorCorrect")
     n.connectInput(0, inp)
     param(n, "MasterSaturation").set(1.0 + 0.001 * (i % 5 + 1), 1.0, 1.0, 1.0)
     return n
 
 
 def transform(inp, i):
-    n = make("net.sf.openfx.TransformPlugin")
+    n = make("Transform")
     n.connectInput(0, inp)
     param(n, "translate").set(0.25 + 0.01 * (i % 3), 0.0)
     return n
 
 
 def blur(inp, i):
-    n = make("net.sf.cimg.CImgBlur")
+    n = make("Blur")
     n.connectInput(0, inp)
     param(n, "size").set(BLUR_SIZE, BLUR_SIZE)
     if BLUR_FILTER:
@@ -330,7 +315,7 @@ def merge(a, b, mask=None):
 
 def moving(inp, i):
     # A small per-frame translate, like a stabilised plate drifting, so no frame repeats another.
-    n = make("net.sf.openfx.TransformPlugin")
+    n = make("Transform")
     n.connectInput(0, inp)
     t = param(n, "translate")
     for f in range(1, LAST_FRAME + 1):
@@ -340,7 +325,7 @@ def moving(inp, i):
 
 
 def roto(i):
-    n = make("fr.inria.built-in.Roto")
+    n = make("Roto")
     ctx = n.getRotoContext()
     if ctx is None:
         raise RuntimeError("Roto node has no Python roto context")
@@ -355,7 +340,7 @@ def roto(i):
 
 
 def dot(inp):
-    n = make("fr.inria.built-in.Dot")
+    n = make("Dot")
     n.connectInput(0, inp)
     return n
 
@@ -407,7 +392,7 @@ def build_mergesrcchain():
 
 
 def animated_transform(inp):
-    xf = make("net.sf.openfx.TransformPlugin")
+    xf = make("Transform")
     xf.connectInput(0, inp)
     w, h = SIZES[RES]
     param(xf, "center").set(w / 2.0, h / 2.0)
@@ -428,20 +413,20 @@ def build_gtg():
 
 
 def erode(inp):
-    n = make("net.sf.cimg.CImgErode")
+    n = make("ErodeDilate")
     n.connectInput(0, inp)
     param(n, "size").set(ERODE_SIZE, ERODE_SIZE)
     return n
 
 
 def chromakeyer(inp):
-    n = make("net.sf.openfx.ChromaKeyerPlugin")
+    n = make("ChromaKeyer")
     n.connectInput(0, inp)
     return n
 
 
 def edgedetect(inp):
-    n = make("eu.cimg.EdgeDetect")
+    n = make("EdgeDetect")
     n.connectInput(0, inp)
     return n
 
@@ -543,11 +528,11 @@ def build_deepcomp():
     k = max(2, N // 2)
     out = deep_read()
     for _ in range(1, k):
-        m = make("fr.natron.DeepMerge")
+        m = make("DeepMerge")
         m.connectInput(0, deep_read())
         m.connectInput(1, out)
         out = m
-    flat = make("fr.natron.DeepToImage")
+    flat = make("DeepToImage")
     flat.connectInput(0, out)
     return merge(flat, read(0))
 
@@ -636,8 +621,15 @@ def load_comp(path, render_dir):
     session_app = loaded if loaded is not None else app
     if CUSTOM_SIZE and CUSTOM_SIZE != "3840x2160":
         w, h = (int(v) for v in CUSTOM_SIZE.lower().split("x"))
-        session_app.addFormat("bench%dx%d %d %d 1" % (w, h, w, h))
-        session_app.getProjectParam("outputFormat").set("bench%dx%d" % (w, h))
+        session_app.addFormat("bench%dx%d %dx%d 1" % (w, h, w, h))
+        name = "bench%dx%d" % (w, h)
+        output_format = session_app.getProjectParam("outputFormat")
+        output_format.set(name)
+        # addFormat keeps an existing entry of the same size under its own name, and set() then leaves the menu where it was.
+        chosen = output_format.getOption(output_format.get())
+        if chosen != name:
+            raise RuntimeError("output format is %s after setting %s: a project format of %dx%d already exists under another name"
+                               % (chosen, name, w, h))
     writer = session_app.getNode("Write")
     if writer is None:
         raise RuntimeError("%s has no Write node" % path)
@@ -847,8 +839,7 @@ def main_session():
         writer = app.createWriter(os.path.join(RENDER_DIR, "%s_%s_####.exr" % (TOPO, RES)))
         writer.connectInput(0, root)
         working = writer.getParam("ocioWorkingSpace").get()
-        writer.getParam("ocioOutputSpace").set(working)
-        writer.getParam("ocioOutputSpaceSet").set(True)
+        writer.getParam("colorspace").set(working)
         comp_param = writer.getParam("compression")
         if comp_param is not None:
             comp_param.set("none")
@@ -899,7 +890,6 @@ def main():
     build_s = time.time() - t0
     if DRY_RUN:
         log("dry run: %s N=%d nodes=%d %s" % (TOPO, N, sum(counts.values()), json.dumps(counts, sort_keys=True)))
-        log("dry run: impl=%s majors %s" % (IMPL, json.dumps(majors, sort_keys=True)))
         log("dry run: plate bytes per frame %d over %d reads" % (sum(plate_reads), len(plate_reads)))
         return
 
@@ -913,8 +903,7 @@ def main():
     writer = app.createWriter(path)
     writer.connectInput(0, root)
     working = writer.getParam("ocioWorkingSpace").get()
-    writer.getParam("ocioOutputSpace").set(working)
-    writer.getParam("ocioOutputSpaceSet").set(True)
+    writer.getParam("colorspace").set(working)
     for name, value in (("compression", "none"),):
         p = writer.getParam(name)
         if p is not None:
@@ -981,8 +970,6 @@ def main():
         "rss_before_mb": rss_before,
         "rss_peak_mb": vm("VmHWM"),
         "counts": counts,
-        "impl": IMPL,
-        "majors": majors,
         "pixels": SIZES[fmt][0] * SIZES[fmt][1] if fmt in SIZES else None,
         "cpus": os.cpu_count(),
         "mem_total_mb": mem_total_mb(),

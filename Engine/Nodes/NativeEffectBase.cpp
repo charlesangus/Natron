@@ -188,6 +188,8 @@ NativeEffectBase::NativeEffectBase(NodePtr node)
     , _metadataGeneration(0)
     , _metadataCacheHash(0)
     , _sceneLayerMemo()
+    , _sublabelMutex()
+    , _sublabel()
 {
     // Left unresolved, render-scale support is settled only by the probe in
     // Node::refreshAllInputRelatedData(), which runs when inputs change and needs
@@ -259,6 +261,30 @@ int
 NativeEffectBase::getMinorVersion() const
 {
     return nodeSpec()->minorVersion;
+}
+
+std::string
+NativeEffectBase::getSublabel() const
+{
+    std::lock_guard<std::mutex> lock(_sublabelMutex);
+
+    return _sublabel;
+}
+
+void
+NativeEffectBase::setSublabel(const std::string& sublabel)
+{
+    {
+        std::lock_guard<std::mutex> lock(_sublabelMutex);
+        if (sublabel == _sublabel) {
+            return;
+        }
+        _sublabel = sublabel;
+    }
+    NodePtr node = getNode();
+    if (node) {
+        node->refreshSublabel();
+    }
 }
 
 bool
@@ -977,6 +1003,13 @@ NativeEffectBase::getSceneLayerKey(const SceneLayerReads& reads,
     h.appendI64(getMinorVersion());
     bool hasExpression = false;
     h.appendU64(node->getKnobsContentDigest(&hasExpression));
+    // The knobs the content hash leaves to a namespace author the layer all the same.
+    const std::map<std::string, U64> namespaces = node->getKnobsNamespaceDigests();
+    h.appendU64(namespaces.size());
+    for (std::map<std::string, U64>::const_iterator it = namespaces.begin(); it != namespaces.end(); ++it) {
+        h.appendString(it->first);
+        h.appendU64(it->second);
+    }
     appendNodeContentHash(h);
     // Same reason as Node::computeContentHash(): an expression resolves names relative to the
     // node, so the same expression under another name can author something else.
@@ -1016,6 +1049,8 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
 
         return getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
     };
+
+    _sceneLayerMemo.setOwner(getNode());
 
     return _sceneLayerMemo.produce(key, upstream, getScriptName_mt_safe(), author, output, errorMessage, keyStillValid);
 }

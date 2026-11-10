@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 #include <limits>
 #include <list>
 #include <map>
@@ -57,15 +58,17 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
+#include "Engine/RippleEditKeys.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoFeatherRaster.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
 
 #define ROTO_DEFAULT_OPACITY 1.
 #define ROTO_DEFAULT_FEATHER 1.5
@@ -331,10 +334,6 @@ enum RotoPaintItemLifeTimeTypeEnum
 #define kRotoResetCenterParamLabel "Reset Center"
 #define kRotoResetCenterParamHint "Reset the transform center"
 
-#define kRotoTransformInteractive "RotoTransformInteractive"
-#define kRotoTransformInteractiveLabel "Interactive"
-#define kRotoTransformInteractiveHint "When check, modifying the transform will directly render the shape in the viewer. When unchecked, modifications are applied when releasing the mouse button."
-
 #define kRotoMotionBlurModeParam "motionBlurMode"
 #define kRotoMotionBlurModeParamLabel "Mode"
 #define kRotoMotionBlurModeParamHint "Per-shape motion blurs applies motion blur independently to each shape and then blends them together." \
@@ -394,6 +393,8 @@ struct RotoTriangles
     std::list<Point> vertices;
 };
 
+struct BezierOverlayPolygons;
+
 struct BezierPrivate
 {
     BezierCPs points; //< the control points of the curve
@@ -416,6 +417,16 @@ struct BezierPrivate
     bool guiDirtyAll;
     std::set<double> guiDirtyTimes;
     std::set<BezierCPPtr> guiDirtyPoints;
+    // Advanced by each edit of the GUI copy alone, which leaves the content hash as it was.
+    std::atomic<U64> guiEditGeneration;
+
+    // The last Bezier::getOverlayPolygons() result and what it was evaluated from.
+    mutable std::shared_ptr<const BezierOverlayPolygons> overlayPolygons;
+    mutable double overlayTime;
+    mutable U64 overlayGeometryGeneration;
+    mutable U64 overlayGuiEditGeneration;
+    mutable U64 overlayTrackLinkHash;
+    mutable Transform::Matrix3x3 overlayTransform;
 
     BezierPrivate(bool isOpenBezier)
         : points()
@@ -433,6 +444,13 @@ struct BezierPrivate
         , guiDirtyAll(false)
         , guiDirtyTimes()
         , guiDirtyPoints()
+        , guiEditGeneration(0)
+        , overlayPolygons()
+        , overlayTime(0.)
+        , overlayGeometryGeneration(0)
+        , overlayGuiEditGeneration(0)
+        , overlayTrackLinkHash(0)
+        , overlayTransform()
     {
     }
 
@@ -440,6 +458,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         guiDirtyAll = true;
     }
 
@@ -447,6 +466,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         if (!guiDirtyAll) {
             guiDirtyTimes.insert(time);
         }
@@ -456,6 +476,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         if (!guiDirtyAll && point) {
             guiDirtyPoints.insert(point);
         }
@@ -1427,6 +1448,8 @@ public:
     std::list<RotoLayerPtr> layers;
     bool autoKeying;
     bool rippleEdit;
+    RippleEditModeEnum rippleEditMode;
+    double rippleEditRangeFirst, rippleEditRangeLast;
     bool featherLink;
     bool isCurrentlyLoading;
     NodeWPtr node;
@@ -1471,7 +1494,6 @@ public:
     KnobDoubleWPtr rotateKnob;
     KnobDoubleWPtr scaleKnob;
     KnobBoolWPtr scaleUniformKnob;
-    KnobBoolWPtr transformInteractiveKnob;
     KnobDoubleWPtr skewXKnob;
     KnobDoubleWPtr skewYKnob;
     KnobChoiceWPtr skewOrderKnob;
@@ -1495,20 +1517,39 @@ public:
     std::list<KnobIWPtr> cloneKnobs;
     std::list<KnobIWPtr> strokeKnobs;
     std::list<KnobIWPtr> shapeKnobs;
+    // The knobs createTransformKnobs() made, empty when the host has no Transform page.
+    std::list<KnobIWPtr> transformKnobs;
 
     ///This keeps track  of the items linked to the context knobs
     std::list<RotoItemPtr> selectedItems;
     RotoItemPtr lastInsertedItem;
     RotoItemPtr lastLockedItem;
     mutable QMutex doingNeatRenderMutex;
-    QWaitCondition doingNeatRenderCond;
     bool doingNeatRender;
     bool mustDoNeatRender;
+    // The neat render's frame is on its way to a viewer; the render has landed once that frame is uploaded.
+    bool awaitingNeatDisplay;
+    unsigned int neatDisplayGeneration;
+
+    // Main thread only.
+    std::list<std::function<void()>> neatRenderLandedCallbacks;
+    RotoStrokeItemWPtr displayedStroke;
+    std::vector<int> displayedStrokeAges;
 
     /*
      * A merge node (or more if there are more than 64 items) used when all items share the same compositing operator to make the rotopaint tree shallow
      */
     NodesList globalMergeNodes;
+
+    // What the context watches for its track-linked points (see refreshTrackLinkListeners()),
+    // and whether it posted the missing-track warning.
+    std::list<QMetaObject::Connection> trackLinkConnections;
+    bool trackLinkWarningPosted;
+
+    // How many edits of a point the ripple check refused and let through, for an undo step to
+    // tell an edit that changed nothing from one that did.
+    quint64 rippleEditsRefused;
+    quint64 rippleEditsAllowed;
 
     RotoContextPrivate(const NodePtr& n,
                        bool paintNode)
@@ -1517,13 +1558,25 @@ public:
         , layers()
         , autoKeying(true)
         , rippleEdit(false)
+        , rippleEditMode(eRippleEditModeAll)
+        , rippleEditRangeFirst(1.)
+        , rippleEditRangeLast(100.)
         , featherLink(true)
         , isCurrentlyLoading(false)
         , node(n)
         , age(0)
         , doingNeatRender(false)
         , mustDoNeatRender(false)
+        , awaitingNeatDisplay(false)
+        , neatDisplayGeneration(0)
+        , neatRenderLandedCallbacks()
+        , displayedStroke()
+        , displayedStrokeAges()
         , globalMergeNodes()
+        , trackLinkConnections()
+        , trackLinkWarningPosted(false)
+        , rippleEditsRefused(0)
+        , rippleEditsAllowed(0)
     {
         assert( n && n->getEffectInstance() );
         EffectInstancePtr effect = n->getEffectInstance();
@@ -1807,8 +1860,7 @@ public:
             resetCloneTransformKnob = resetCloneTransform;
 
             node.lock()->addTransformInteract(translate, scale, scaleUniform, rotate, skewX, skewY, skewOrder, center,
-                                              KnobBoolPtr() /*invert*/,
-                                              KnobBoolPtr() /*interactive*/);
+                                              KnobBoolPtr() /*invert*/);
 
             KnobChoicePtr filter = AppManager::createKnob<KnobChoice>(effect.get(), tr(kRotoBrushFilterParamLabel), 1, true);
             filter->setName(kRotoBrushFilterParam);
@@ -2006,141 +2058,11 @@ public:
             brushVisiblePortionKnob = visiblePortion;
         }
 
-        KnobDoublePtr translate = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemTranslateParamLabel), 2, true);
-        translate->setName(kRotoDrawableItemTranslateParam);
-        translate->setHintToolTip( tr(kRotoDrawableItemTranslateParamHint) );
-        translate->setDefaultAllDimensionsEnabled(false);
-        translate->setIncrement(10);
-        transformPage->addKnob(translate);
-        knobs.push_back(translate);
-        translateKnob = translate;
+        createTransformKnobs(transformPage);
 
-        KnobDoublePtr rotate = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemRotateParamLabel), 1, true);
-        rotate->setName(kRotoDrawableItemRotateParam);
-        rotate->setHintToolTip( tr(kRotoDrawableItemRotateParamHint) );
-        rotate->setDefaultAllDimensionsEnabled(false);
-        rotate->setDisplayMinimum(-180);
-        rotate->setDisplayMaximum(180);
-        transformPage->addKnob(rotate);
-        knobs.push_back(rotate);
-        rotateKnob = rotate;
-
-        KnobDoublePtr scale = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemScaleParamLabel), 2, true);
-        scale->setName(kRotoDrawableItemScaleParam);
-        scale->setHintToolTip( tr(kRotoDrawableItemScaleParamHint) );
-        scale->setDefaultValue(1, 0);
-        scale->setDefaultValue(1, 1);
-        scale->setDisplayMinimum(0.1, 0);
-        scale->setDisplayMinimum(0.1, 1);
-        scale->setDisplayMaximum(10, 0);
-        scale->setDisplayMaximum(10, 1);
-        scale->setAddNewLine(false);
-        scale->setDefaultAllDimensionsEnabled(false);
-        transformPage->addKnob(scale);
-        knobs.push_back(scale);
-        scaleKnob = scale;
-
-        KnobBoolPtr scaleUniform = AppManager::createKnob<KnobBool>(effect.get(), tr(kRotoDrawableItemScaleUniformParamLabel), 1, true);
-        scaleUniform->setName(kRotoDrawableItemScaleUniformParam);
-        scaleUniform->setHintToolTip( tr(kRotoDrawableItemScaleUniformParamHint) );
-        scaleUniform->setDefaultValue(true);
-        scaleUniform->setDefaultAllDimensionsEnabled(false);
-        scaleUniform->setAnimationEnabled(false);
-        transformPage->addKnob(scaleUniform);
-        knobs.push_back(scaleUniform);
-        scaleUniformKnob = scaleUniform;
-
-        KnobDoublePtr skewX = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemSkewXParamLabel), 1, true);
-        skewX->setName(kRotoDrawableItemSkewXParam);
-        skewX->setHintToolTip( tr(kRotoDrawableItemSkewXParamHint) );
-        skewX->setDefaultAllDimensionsEnabled(false);
-        skewX->setDisplayMinimum(-1, 0);
-        skewX->setDisplayMaximum(1, 0);
-        transformPage->addKnob(skewX);
-        knobs.push_back(skewX);
-        skewXKnob = skewX;
-
-        KnobDoublePtr skewY = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemSkewYParamLabel), 1, true);
-        skewY->setName(kRotoDrawableItemSkewYParam);
-        skewY->setHintToolTip( tr(kRotoDrawableItemSkewYParamHint) );
-        skewY->setDefaultAllDimensionsEnabled(false);
-        skewY->setDisplayMinimum(-1, 0);
-        skewY->setDisplayMaximum(1, 0);
-        transformPage->addKnob(skewY);
-        knobs.push_back(skewY);
-        skewYKnob = skewY;
-
-        KnobChoicePtr skewOrder = AppManager::createKnob<KnobChoice>(effect.get(), tr(kRotoDrawableItemSkewOrderParamLabel), 1, true);
-        skewOrder->setName(kRotoDrawableItemSkewOrderParam);
-        skewOrder->setHintToolTip( tr(kRotoDrawableItemSkewOrderParamHint) );
-        skewOrder->setDefaultValue(0);
-        {
-            std::vector<ChoiceOption> choices;
-            choices.push_back(ChoiceOption("XY"));
-            choices.push_back(ChoiceOption("YX"));
-            skewOrder->populateChoices(choices);
-        }
-        skewOrder->setDefaultAllDimensionsEnabled(false);
-        skewOrder->setAnimationEnabled(false);
-        transformPage->addKnob(skewOrder);
-        knobs.push_back(skewOrder);
-        skewOrderKnob = skewOrder;
-
-        KnobDoublePtr center = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemCenterParamLabel), 2, true);
-        center->setName(kRotoDrawableItemCenterParam);
-        center->setHintToolTip( tr(kRotoDrawableItemCenterParamHint) );
-        center->setDefaultAllDimensionsEnabled(false);
-        center->setDefaultValuesAreNormalized(true);
-        center->setAddNewLine(false);
-        center->setDefaultValue(0.5, 0);
-        center->setDefaultValue(0.5, 1);
-        transformPage->addKnob(center);
-        knobs.push_back(center);
-        centerKnob = center;
-
-        KnobButtonPtr resetCenter = AppManager::createKnob<KnobButton>(effect.get(), tr(kRotoResetCenterParamLabel), 1, true);
-        resetCenter->setName(kRotoResetCenterParam);
-        resetCenter->setHintToolTip( tr(kRotoResetCenterParamHint) );
-        resetCenter->setAllDimensionsEnabled(false);
-        transformPage->addKnob(resetCenter);
-        knobs.push_back(resetCenter);
-        resetCenterKnob = resetCenter;
-
-        KnobBoolPtr transformInteractive = AppManager::createKnob<KnobBool>(effect.get(), tr(kRotoTransformInteractiveLabel), 1, true);
-        transformInteractive->setName(kRotoTransformInteractive);
-        transformInteractive->setHintToolTip(tr(kRotoTransformInteractiveHint));
-        transformInteractive->setDefaultValue(true);
-        transformInteractive->setAllDimensionsEnabled(false);
-        transformPage->addKnob(transformInteractive);
-        knobs.push_back(transformInteractive);
-        transformInteractiveKnob = transformInteractive;
-
-
-
-        KnobDoublePtr extraMatrix = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
-        extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
-        extraMatrix->setHintToolTip( tr(kRotoDrawableItemExtraMatrixParamHint) );
-        extraMatrix->setDefaultAllDimensionsEnabled(false);
-        // Set to identity
-        extraMatrix->setDefaultValue(1, 0);
-        extraMatrix->setDefaultValue(1, 4);
-        extraMatrix->setDefaultValue(1, 8);
-        transformPage->addKnob(extraMatrix);
-        knobs.push_back(extraMatrix);
-        extraMatrixKnob = extraMatrix;
-
-        KnobButtonPtr resetTransform = AppManager::createKnob<KnobButton>(effect.get(), tr(kRotoResetTransformParamLabel), 1, true);
-        resetTransform->setName(kRotoResetTransformParam);
-        resetTransform->setHintToolTip( tr(kRotoResetTransformParamHint) );
-        resetTransform->setAllDimensionsEnabled(false);
-        transformPage->addKnob(resetTransform);
-        knobs.push_back(resetTransform);
-        resetTransformKnob = resetTransform;
-
-        node.lock()->addTransformInteract(translate, scale, scaleUniform, rotate, skewX, skewY, skewOrder, center,
-                                          KnobBoolPtr() /*invert*/,
-                                          transformInteractive /*interactive*/);
-
+        node.lock()->addTransformInteract(translateKnob.lock(), scaleKnob.lock(), scaleUniformKnob.lock(), rotateKnob.lock(),
+                                          skewXKnob.lock(), skewYKnob.lock(), skewOrderKnob.lock(), centerKnob.lock(),
+                                          KnobBoolPtr() /*invert*/);
 
 #ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
         KnobPagePtr mbPage = AppManager::createKnob<KnobPage>(effect.get(), tr("Motion Blur"), 1, true);
@@ -2292,6 +2214,145 @@ public:
     }
 
     /**
+     * @brief Creates the translate, rotate, scale, skew, center and extra matrix knobs on page, tied
+     * to the selected items like the other context knobs, and their two reset buttons. The
+     * transform handle follows the "Refresh viewer only when editing is finished" preference.
+     **/
+    void createTransformKnobs(const KnobPagePtr& transformPage)
+    {
+        EffectInstancePtr effect = node.lock()->getEffectInstance();
+
+        KnobDoublePtr translate = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemTranslateParamLabel), 2, true);
+        translate->setName(kRotoDrawableItemTranslateParam);
+        translate->setHintToolTip(tr(kRotoDrawableItemTranslateParamHint));
+        translate->setDefaultAllDimensionsEnabled(false);
+        translate->setIncrement(10);
+        transformPage->addKnob(translate);
+        knobs.push_back(translate);
+        translateKnob = translate;
+
+        KnobDoublePtr rotate = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemRotateParamLabel), 1, true);
+        rotate->setName(kRotoDrawableItemRotateParam);
+        rotate->setHintToolTip(tr(kRotoDrawableItemRotateParamHint));
+        rotate->setDefaultAllDimensionsEnabled(false);
+        rotate->setDisplayMinimum(-180);
+        rotate->setDisplayMaximum(180);
+        transformPage->addKnob(rotate);
+        knobs.push_back(rotate);
+        rotateKnob = rotate;
+
+        KnobDoublePtr scale = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemScaleParamLabel), 2, true);
+        scale->setName(kRotoDrawableItemScaleParam);
+        scale->setHintToolTip(tr(kRotoDrawableItemScaleParamHint));
+        scale->setDefaultValue(1, 0);
+        scale->setDefaultValue(1, 1);
+        scale->setDisplayMinimum(0.1, 0);
+        scale->setDisplayMinimum(0.1, 1);
+        scale->setDisplayMaximum(10, 0);
+        scale->setDisplayMaximum(10, 1);
+        scale->setAddNewLine(false);
+        scale->setDefaultAllDimensionsEnabled(false);
+        transformPage->addKnob(scale);
+        knobs.push_back(scale);
+        scaleKnob = scale;
+
+        KnobBoolPtr scaleUniform = AppManager::createKnob<KnobBool>(effect.get(), tr(kRotoDrawableItemScaleUniformParamLabel), 1, true);
+        scaleUniform->setName(kRotoDrawableItemScaleUniformParam);
+        scaleUniform->setHintToolTip(tr(kRotoDrawableItemScaleUniformParamHint));
+        scaleUniform->setDefaultValue(true);
+        scaleUniform->setDefaultAllDimensionsEnabled(false);
+        scaleUniform->setAnimationEnabled(false);
+        transformPage->addKnob(scaleUniform);
+        knobs.push_back(scaleUniform);
+        scaleUniformKnob = scaleUniform;
+
+        KnobDoublePtr skewX = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemSkewXParamLabel), 1, true);
+        skewX->setName(kRotoDrawableItemSkewXParam);
+        skewX->setHintToolTip(tr(kRotoDrawableItemSkewXParamHint));
+        skewX->setDefaultAllDimensionsEnabled(false);
+        skewX->setDisplayMinimum(-1, 0);
+        skewX->setDisplayMaximum(1, 0);
+        transformPage->addKnob(skewX);
+        knobs.push_back(skewX);
+        skewXKnob = skewX;
+
+        KnobDoublePtr skewY = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemSkewYParamLabel), 1, true);
+        skewY->setName(kRotoDrawableItemSkewYParam);
+        skewY->setHintToolTip(tr(kRotoDrawableItemSkewYParamHint));
+        skewY->setDefaultAllDimensionsEnabled(false);
+        skewY->setDisplayMinimum(-1, 0);
+        skewY->setDisplayMaximum(1, 0);
+        transformPage->addKnob(skewY);
+        knobs.push_back(skewY);
+        skewYKnob = skewY;
+
+        KnobChoicePtr skewOrder = AppManager::createKnob<KnobChoice>(effect.get(), tr(kRotoDrawableItemSkewOrderParamLabel), 1, true);
+        skewOrder->setName(kRotoDrawableItemSkewOrderParam);
+        skewOrder->setHintToolTip(tr(kRotoDrawableItemSkewOrderParamHint));
+        skewOrder->setDefaultValue(0);
+        {
+            std::vector<ChoiceOption> choices;
+            choices.push_back(ChoiceOption("XY"));
+            choices.push_back(ChoiceOption("YX"));
+            skewOrder->populateChoices(choices);
+        }
+        skewOrder->setDefaultAllDimensionsEnabled(false);
+        skewOrder->setAnimationEnabled(false);
+        transformPage->addKnob(skewOrder);
+        knobs.push_back(skewOrder);
+        skewOrderKnob = skewOrder;
+
+        KnobDoublePtr center = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemCenterParamLabel), 2, true);
+        center->setName(kRotoDrawableItemCenterParam);
+        center->setHintToolTip(tr(kRotoDrawableItemCenterParamHint));
+        center->setDefaultAllDimensionsEnabled(false);
+        center->setDefaultValuesAreNormalized(true);
+        center->setAddNewLine(false);
+        center->setDefaultValue(0.5, 0);
+        center->setDefaultValue(0.5, 1);
+        transformPage->addKnob(center);
+        knobs.push_back(center);
+        centerKnob = center;
+
+        KnobButtonPtr resetCenter = AppManager::createKnob<KnobButton>(effect.get(), tr(kRotoResetCenterParamLabel), 1, true);
+        resetCenter->setName(kRotoResetCenterParam);
+        resetCenter->setHintToolTip(tr(kRotoResetCenterParamHint));
+        resetCenter->setAllDimensionsEnabled(false);
+        transformPage->addKnob(resetCenter);
+        knobs.push_back(resetCenter);
+        resetCenterKnob = resetCenter;
+
+        KnobDoublePtr extraMatrix = AppManager::createKnob<KnobDouble>(effect.get(), tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
+        extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
+        extraMatrix->setHintToolTip(tr(kRotoDrawableItemExtraMatrixParamHint));
+        extraMatrix->setDefaultAllDimensionsEnabled(false);
+        // Set to identity
+        extraMatrix->setDefaultValue(1, 0);
+        extraMatrix->setDefaultValue(1, 4);
+        extraMatrix->setDefaultValue(1, 8);
+        transformPage->addKnob(extraMatrix);
+        knobs.push_back(extraMatrix);
+        extraMatrixKnob = extraMatrix;
+
+        KnobButtonPtr resetTransform = AppManager::createKnob<KnobButton>(effect.get(), tr(kRotoResetTransformParamLabel), 1, true);
+        resetTransform->setName(kRotoResetTransformParam);
+        resetTransform->setHintToolTip(tr(kRotoResetTransformParamHint));
+        resetTransform->setAllDimensionsEnabled(false);
+        transformPage->addKnob(resetTransform);
+        knobs.push_back(resetTransform);
+        resetTransformKnob = resetTransform;
+
+        // Off until a selection turns them on, as createPaintKnobs() makes every context knob.
+        const KnobIPtr created[] = {
+            translate, rotate, scale, scaleUniform, skewX, skewY, skewOrder, center, resetCenter, extraMatrix, resetTransform
+        };
+        for (const KnobIPtr& k : created) {
+            transformKnobs.push_back(k);
+            k->setDefaultAllDimensionsEnabled(false);
+        }
+    }
+
+    /**
      * @brief Call this after any change to notify the mask has changed for the cache.
      **/
     void incrementRotoAge()
@@ -2345,8 +2406,20 @@ public:
                                double opacity,
                                double time,
                                unsigned int mipmapLevel);
-    static void renderBezier(cairo_t* cr, const Bezier* bezier, double opacity, double time, double startTime, double endTime, double mbFrameStep, unsigned int mipmapLevel);
-    static void renderFeather(const Bezier * bezier, double time, unsigned int mipmapLevel, double shapeColor[3], double opacity, double featherDist, double fallOff, cairo_pattern_t * mesh);
+    typedef std::function<void(const RectI& tile, const float* alpha)> AlphaTileSink;
+
+    /**
+     * @brief Renders the closed shape with its feather over roi, each motion blur sample over the
+     * previous ones, and hands the result to sink one tile at a time: alpha is tile.width() x
+     * tile.height(), row 0 at tile.y1, and the tiles cover roi once, in rows of roi's full width.
+     * The shape is drawn in its coordinates at mipmapLevel, scaled by scaleX and scaleY into the
+     * pixels roi is in. A shape that draws nothing still hands over zeros.
+     *
+     * Memory for the render is bounded by a tile, not by roi. Returns false, possibly after
+     * handing over some tiles, when that memory could not be had.
+     **/
+    static bool renderBezier(const Bezier* bezier, double time, double startTime, double endTime, double mbFrameStep, unsigned int mipmapLevel, double scaleX, double scaleY, const RectI& roi, const AlphaTileSink& sink);
+    static void computeFeatherQuads(const Bezier* bezier, double time, unsigned int mipmapLevel, double featherDist, std::vector<RotoFeatherQuad>* quads);
     static void renderFeather_cairo(const std::list<RotoFeatherVertex>& vertices, double shapeColor[3],  double fallOff, cairo_pattern_t * mesh);
     static void renderInternalShape_cairo(const std::list<RotoTriangles>& triangles,
                                           const std::list<RotoTriangleFans>& fans,
@@ -2355,7 +2428,6 @@ public:
     static void computeTriangles(const Bezier * bezier, double time, unsigned int mipmapLevel,  double featherDist, std::list<RotoFeatherVertex>* featherMesh, std::list<RotoTriangleFans>* internalFans, std::list<RotoTriangles>* internalTriangles,std::list<RotoTriangleStrips>* internalStrips);
     static void renderInternalShape(double time, unsigned int mipmapLevel, double shapeColor[3], double opacity, const Transform::Matrix3x3 & transform, cairo_t * cr, cairo_pattern_t * mesh, const BezierCPs &cps);
     static void bezulate(double time, const BezierCPs& cps, std::list<BezierCPs>* patches);
-    static void applyAndDestroyMask(cairo_t* cr, cairo_pattern_t* mesh);
 };
 
 NATRON_NAMESPACE_EXIT

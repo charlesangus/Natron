@@ -6,6 +6,8 @@ where u and v are the channels `channelU` and `channelV` select from any layer o
 (by default rgba.R and rgba.G). A channel the UV input lacks, or a selector set to None, reads 0.
 Offsets are in full-resolution pixels and are multiplied by the render scale.
 
+The node shares the resampling Filter list and its Lobes, Bicubic B and Bicubic C controls; see [Transform](Transform.md).
+
 Every filter except impulse sizes its footprint from the Jacobian of the sample point. The Jacobian
 comes from central differences of the coordinates of neighbouring pixels. Those coordinates are
 read one pixel past the render window, so the result does not depend on how the frame is tiled.

@@ -13,7 +13,10 @@ Tolerance:
 - **GPU against CPU** (`Tests/Native/NativeMergeGpu_Test.cpp`): exact for the Porter-Duff
   operators that only multiply and add (atop, copy, in, mask, matte, out, over, stencil, under,
   xor), since `precise` keeps the GPU's multiplies apart from their adds as the CPU has them;
-  arithmetic for conjoint-over and disjoint-over, which divide (Vulkan division is 2.5 ulp);
+  arithmetic for conjoint-over and disjoint-over, which divide through `divideRounded`
+  (`Engine/Gpu/Kernels/exactdivide.slang`): correctly rounded while the operands and the quotient
+  lie between 2^-100 and 2^100, the device's own quotient (within 2.5 ulp) outside, and subnormals
+  a device may flush;
   transcendental for every blend mode.
 - **The node against expected pixels** (`Tests/Native/NativeMerge_Test.cpp`): 1e-6 relative, the
   rounding of a fused or reordered operation, for folds, layers, alpha sources, mask and mix; a

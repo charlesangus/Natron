@@ -216,7 +216,7 @@ TEST_F(BaseTest, RoundTripsNodesConnectionsAndKnobValues)
     const std::string outputPath("/tmp/natron-roundtrip-test.####.exr");
     filename->setValue(outputPath);
 
-    KnobString* key1 = dynamic_cast<KnobString*>(writer->getKnobByName("key1").get());
+    KnobString* key1 = dynamic_cast<KnobString*>(writer->getKnobByName("contextKey1").get());
     ASSERT_TRUE(key1 != NULL);
     const std::string key1Value("roundtrip-marker");
     key1->setValue(key1Value);
@@ -260,7 +260,7 @@ TEST_F(BaseTest, RoundTripsNodesConnectionsAndKnobValues)
     ASSERT_TRUE(filename2 != NULL);
     EXPECT_EQ(outputPath, filename2->getValue());
 
-    KnobString* key1_2 = dynamic_cast<KnobString*>(writer2->getKnobByName("key1").get());
+    KnobString* key1_2 = dynamic_cast<KnobString*>(writer2->getKnobByName("contextKey1").get());
     ASSERT_TRUE(key1_2 != NULL);
     EXPECT_EQ(key1Value, key1_2->getValue());
 }
@@ -373,7 +373,7 @@ TEST_F(BaseTest, RoundTripsLayerRegistry)
 
     {
         std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
-        EXPECT_EQ((std::size_t)10, snapshot->size()); // rgba, rgb, alpha, xy, DisparityLeft, DisparityRight, Backward, Forward + depth, primId
+        EXPECT_EQ((std::size_t)11, snapshot->size()); // rgba, rgb, alpha, xy, DisparityLeft, DisparityRight, Backward, Forward + depth, primId, normal
         ImageLayerDesc unused;
         EXPECT_FALSE(project->findLayer("diffuse", &unused));
         EXPECT_FALSE(project->findLayer("specular", &unused));

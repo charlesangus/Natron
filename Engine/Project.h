@@ -150,6 +150,31 @@ public:
     QStringList getLoadWarnings() const;
 
     /**
+     * @brief The active node of the project, at any depth, whose persistent ID is id, or null.
+     * A deleted node is not found until an undo reactivates it. MT-safe.
+     **/
+    NodePtr findNodeById(const std::string& id) const;
+
+    /**
+     * @brief The node of the project, active or deactivated, that holds id, or null. MT-safe.
+     **/
+    NodePtr findNodeHoldingId(const std::string& id) const;
+
+    /**
+     * @brief Turns the edits made to this project into graph operations. Lives as long as the
+     * project.
+     **/
+    GraphEditRecorder* getGraphEditRecorder() const;
+
+    /**
+     * @brief Index upkeep for findNodeById(): NodeCollection::addNode() and removeNode() add and
+     * drop nodes, and onNodeIdChanged() re-keys a node whose ID was replaced while it was indexed.
+     **/
+    void registerNodeId(const NodePtr& node);
+    void unregisterNodeId(const Node* node);
+    void onNodeIdChanged(const NodePtr& node, const std::string& previousId);
+
+    /**
      * @brief Writes a project file at filePath without ever leaving a partial one there:
      * writeArchive writes the whole archive to a new file in the same directory, beforeReplace
      * runs once it is complete and synced, then that file replaces filePath. When writeArchive
@@ -304,6 +329,11 @@ public:
     bool getFormatNameFromRect(const RectI& rect, double par, std::string* name) const;
 
     void getAdditionalFormats(std::list<Format> *formats) const;
+
+    /**
+     * @brief Appends f to the project's formats unless they already hold it.
+     **/
+    void addAdditionalFormat(const Format& f);
 
     void setupProjectForStereo();
 
@@ -783,6 +813,10 @@ Q_SIGNALS:
     void projectViewsChanged();
 
     void projectLayersChanged();
+
+    // The colourspaces a Read or Write following the project's defaults takes may have changed:
+    // the config was loaded again or a file default was edited.
+    void fileColorSpacesChanged();
 
 private:
     U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,

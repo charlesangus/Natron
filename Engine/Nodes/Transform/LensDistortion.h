@@ -32,6 +32,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/LensModels.h"
@@ -284,7 +285,7 @@ private:
     struct Settings {
         LensModels::Direction direction = LensModels::eDirectionDistort;
         bool stmap = false;
-        Resampler::FilterEnum filter = Resampler::eFilterCubic;
+        Resampler::FilterSpec filter;
         bool clamp = false;
         bool blackOutside = true;
     };
@@ -380,6 +381,7 @@ private:
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
     KnobBoolWPtr _blackOutside;
+    Resampler::FilterKnobs _filterKnobs;
     KnobBoolWPtr _cropToFormat;
     KnobBoolWPtr _useRoD;
 };

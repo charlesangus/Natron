@@ -317,6 +317,12 @@ public:
     QString getScriptName() const;
 
     /**
+     * @brief Returns the node's persistent ID, 32 lowercase hex characters. It survives saving
+     * and loading the project and renaming the node; a copy of the node gets a new one.
+     **/
+    QString getNodeId() const;
+
+    /**
      * @brief Set the internal script name of the effect
      * @returns False upon failure, True upon success.
      **/
@@ -433,6 +439,11 @@ public:
      * @brief Get the tracker context for this node if it has any. Currently only Tracker has one.
      **/
     Tracker* getTrackerContext() const;
+
+    /**
+     * @brief Get the links and boundaries of a SplineWarp node's curves, or None for any other node.
+     **/
+    SplineWarpCurves* getSplineWarp() const;
 
     RectD getRegionOfDefinition(double time, int /* Python API: do not use ViewIdx */ view) const;
 

@@ -99,22 +99,12 @@ ITransform::initializeKnobs()
     createMapKnobs(page);
     addStageKnobs(page);
 
-    KnobBoolPtr srcClipChanged = createKnob<KnobBool>(std::string(kTransformNodeParamSrcClipChanged));
-    srcClipChanged->setName(kTransformNodeParamSrcClipChanged);
-    srcClipChanged->setDefaultValue(false);
-    srcClipChanged->setSecretByDefault(true);
-    srcClipChanged->setDefaultAllDimensionsEnabled(false);
-    srcClipChanged->setAnimationEnabled(false);
-    srcClipChanged->setEvaluateOnChange(false);
-    page->addKnob(srcClipChanged);
-    _srcClipChanged = srcClipChanged;
-
     updateShutterEnabled();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
-        node->addTransformInteract(_op.translate.lock(), _op.scale.lock(), _op.uniform.lock(), _op.rotate.lock(), _op.skewX.lock(), _op.skewY.lock(), _op.skewOrder.lock(), _op.center.lock(), _op.invert.lock(), _op.interactive.lock());
+        node->addTransformInteract(_op.translate.lock(), _op.scale.lock(), KnobBoolPtr(), _op.rotate.lock(), _op.skewX.lock(), _op.skewY.lock(), _op.skewOrder.lock(), _op.center.lock(), _op.invert.lock());
     }
     declareMapLayerKnob();
 } // ITransform::initializeKnobs
@@ -143,40 +133,17 @@ ITransform::updateShutterEnabled()
 }
 
 void
-ITransform::updateClampEnabled(double time,
-                               ViewSpec view)
+ITransform::updateFilterVisibility(double time,
+                                   ViewSpec view)
 {
-    KnobChoicePtr filter = _op.filter.lock();
-    KnobBoolPtr clamp = _op.clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
-}
-
-void
-ITransform::updateUniformVisibility(bool allowHiding)
-{
-    KnobBoolPtr uniform = _op.uniform.lock();
-
-    if (!uniform) {
-        return;
-    }
-    const bool used = uniform->getValue() || (uniform->getKeyFramesCount(ViewSpec(0), 0) > 0);
-    if (!used && !allowHiding) {
-        return;
-    }
-    uniform->setSecret(!used);
-    uniform->setAllDimensionsEnabled(used);
+    _op.filterKnobs.updateVisibility(time, view);
 }
 
 void
 ITransform::onKnobsLoaded()
 {
     updateShutterEnabled();
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
-    updateUniformVisibility(true);
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -219,21 +186,13 @@ ITransform::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = _op.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }
     KnobBoolPtr directionalBlur = _op.directionalBlur.lock();
     if (directionalBlur && (k == directionalBlur.get())) {
         updateShutterEnabled();
-
-        return true;
-    }
-    KnobBoolPtr uniform = _op.uniform.lock();
-    if (uniform && (k == uniform.get())) {
-        if (reason != eValueChangedReasonTimeChanged) {
-            updateUniformVisibility(false);
-        }
 
         return true;
     }

@@ -202,6 +202,8 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+
     // Drops the whole frame kept for Strength's detail recovery, as Clear Caches does.
     virtual void purgeCaches() OVERRIDE FINAL;
 

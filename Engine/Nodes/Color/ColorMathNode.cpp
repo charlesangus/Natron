@@ -140,10 +140,10 @@ ColorMathOp<KIND>::bake(const KnobReader& reader) const
         }
         if constexpr (KIND == eColorMathOperationGamma) {
             const double exponent = gammaExponent(v, invertValue);
-            p.value[i] = (float)exponent;
+            p.value[i] = knobValueAsFloat(exponent);
             p.isUnit[i] = (exponent == 1.);
         } else {
-            p.value[i] = (float)v;
+            p.value[i] = knobValueAsFloat(v);
             p.isUnit[i] = false;
         }
     }

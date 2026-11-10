@@ -52,6 +52,7 @@ CLANG_DIAG_ON(deprecated-declarations)
 #define kRotoOpenBezierBaseName "Pencil"
 #define kRotoEllipseBaseName "Ellipse"
 #define kRotoRectangleBaseName "Rectangle"
+#define kRotoPointBaseName "Point"
 #define kRotoObjectBaseName "Object"
 #define kRotoPaintBrushBaseName "Brush"
 #define kRotoPaintEraserBaseName "Eraser"
@@ -164,6 +165,12 @@ public:
      * hash equal whatever the item's identity or name. Never 0. MT-safe.
      **/
     U64 getContentHash() const;
+
+    /**
+     * @brief A counter invalidateContentHash() advances: while it holds, the state
+     * appendGeometryContentHash() covers has not changed. Lock-free.
+     **/
+    U64 getGeometryGeneration() const;
 
     /**
      * @brief Must follow every change to the state appendGeometryContentHash() covers.

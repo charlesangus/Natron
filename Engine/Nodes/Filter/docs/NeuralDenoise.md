@@ -48,7 +48,7 @@ never saw beyond 1.
 | NIND UNet | `denoise` | sRGB Encoded Rec.709 (sRGB) |
 | NAFNet-SIDD | `denoise` | sRGB Encoded Rec.709 (sRGB) |
 
-Until a space is picked, `modelColourspace` follows the selected model: Linear Rec.2020 for a
+The Project default entry of `modelColourspace` follows the selected model: Linear Rec.2020 for a
 `denoise-linear` model, sRGB Encoded Rec.709 for a `denoise` one. A config that names neither
 keeps the name, and the render reports that the config does not have it. A picked space stays when
 the model changes. A space the config does not have stops the render with an error naming it.
@@ -56,7 +56,7 @@ the model changes. A space the config does not have stops the render with an err
 | Parameter | Default | Meaning |
 |---|---|---|
 | `model` | the registry's default `denoise-linear` model | The model, `denoise-linear` models first |
-| `modelColourspace` | follows the model | The OpenColorIO space the model runs in |
+| `modelColourspace` | Project default, which follows the model | The OpenColorIO space the model runs in |
 | `strength` | 1 | Detail recovery (sRGB models) or mix (linear models), as darktable's |
 | `preserveWideGamut` | on | sRGB models: out-of-gamut pixels keep their colour |
 | `shadowBoost` | Auto | sRGB models: square-root shadow lift around the model |

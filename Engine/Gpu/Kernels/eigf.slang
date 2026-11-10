@@ -1,3 +1,5 @@
+import exactdivide;
+
 /*
  * Ported from darktable, DARKTABLE_REF release-5.6.2 (commit 20891f6c6fa7), src/common/eigf.h and
  * src/common/gaussian.c (order 0), Copyright (C) 2009-2026 darktable developers, distributed under
@@ -235,7 +237,7 @@ float blend(float pixel, float a, float b)
     if ((params.mode & kBlendGeomean) != 0)
     {
         precise float prod = pixel * clipped;
-        return sqrt(prod);
+        return sqrtRounded(prod);
     }
     return clipped;
 }
@@ -257,11 +259,11 @@ void eigf_blend_mask(uint3 tid : SV_DispatchThreadID)
     precise float pm = avg_m * maskBuf[k];
     const float norm_g = fmaxCpu(pg, 1e-6f);
     const float norm_m = fmaxCpu(pm, 1e-6f);
-    const float normalized_var_guide = var_g / norm_g;
+    const float normalized_var_guide = divideRounded(var_g, norm_g);
     precise float nn = norm_g * norm_m;
-    const float normalized_covar = covar_mg / sqrt(nn);
+    const float normalized_covar = divideRounded(covar_mg, sqrtRounded(nn));
     precise float denom = normalized_var_guide + params.feathering;
-    const float a = normalized_covar / denom;
+    const float a = divideRounded(normalized_covar, denom);
     precise float b = avg_m - a * avg_g;
     outBuf[k] = blend(pixel, a, b);
 }
@@ -279,9 +281,9 @@ void eigf_blend(uint3 tid : SV_DispatchThreadID)
     const float var_g = avBuf[2 * k + 1];
     precise float pg = avg_g * pixel;
     const float norm_g = fmaxCpu(pg, 1e-6f);
-    const float normalized_var_guide = var_g / norm_g;
+    const float normalized_var_guide = divideRounded(var_g, norm_g);
     precise float denom = normalized_var_guide + params.feathering;
-    const float a = normalized_var_guide / denom;
+    const float a = divideRounded(normalized_var_guide, denom);
     precise float b = avg_g - a * avg_g;
     outBuf[k] = blend(pixel, a, b);
 }

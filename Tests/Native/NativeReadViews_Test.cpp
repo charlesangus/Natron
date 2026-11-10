@@ -40,7 +40,6 @@
 #include <QTemporaryDir>
 
 #include <ofxImageEffect.h>
-#include <ofxMetadata.h>
 
 #include "BaseTest.h"
 #include "RenderBothWays.h"
@@ -53,6 +52,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Project.h"
@@ -266,11 +266,7 @@ protected:
                 file->setValue(path);
             }
             // These tests compare with the raw pixels, so the file is read without conversion.
-            KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
-            EXPECT_TRUE(inputSpace != NULL);
-            if (inputSpace) {
-                inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-            }
+            fileInWorkingSpace(node);
             node->getEffectInstance()->dropCachedMetadata();
         }
 
@@ -543,14 +539,13 @@ TEST_F(NativeReadViewsTest, AReadCreatedWithItsFileGetsTheViewsAndTheColourDefau
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(dynamic_cast<NativeRead*>(node->getEffectInstance().get()));
 
-    KnobStringBasePtr inputSpace = std::dynamic_pointer_cast<KnobStringBase>(node->getKnobByName("ocioInputSpace"));
-    KnobBoolPtr inputSpaceSet = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName("ocioInputSpaceSet"));
-    ASSERT_TRUE(inputSpace && inputSpaceSet);
-    EXPECT_EQ(std::string("ACES2065-1"), inputSpace->getValue());
-    EXPECT_FALSE(inputSpaceSet->getValue());
+    KnobChoicePtr inputSpace = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kNatronReadParamColorspace));
+    ASSERT_TRUE(bool(inputSpace));
+    EXPECT_EQ(std::string("ACES2065-1"), dynamic_cast<NativeRead*>(node->getEffectInstance().get())->colorspace());
+    EXPECT_EQ(std::string(OcioSpaceKnobs::projectDefaultID()), inputSpace->getActiveEntry().id);
 
     // The per-view checks below compare with the raw pixels, so the file is read without conversion.
-    inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
+    fileInWorkingSpace(node);
     node->getEffectInstance()->dropCachedMetadata();
 
     const int left = projectViewIndex("left");
@@ -598,7 +593,7 @@ TEST_F(NativeReadViewsTest, AViewVariableReadsEachViewsOwnFile)
     for (int v = 0; v < 2; ++v) {
         SCOPED_TRACE(views[v]);
         expectLayer(node, v, ImageLayerDesc::getRGBAComponents(), (FileView)v, eColour);
-        const std::optional<std::string> path = effect->getOutputMetadata(1., ViewIdx(v)).getString(kOfxMetadataKeyFilePath);
+        const std::optional<std::string> path = effect->getOutputMetadata(1., ViewIdx(v)).getString(kNatronMetadataKeyFilePath);
         ASSERT_TRUE(path.has_value());
         EXPECT_EQ(paths[v], *path);
         EXPECT_EQ(std::vector<std::string>(v == 1 ? 1 : 0, "diffuse"), layerIDs(producedLayers(node, v)));

@@ -302,7 +302,7 @@ isIdentityAt(const RenderScale& scale,
 {
     const OfxPointD rs = scale.toOfxPointD();
 
-    return (std::floor(params.sizeX * rs.x) == 0) && (std::floor(params.sizeY * rs.y) == 0);
+    return (std::floor(std::abs(params.sizeX) * rs.x) == 0) && (std::floor(std::abs(params.sizeY) * rs.y) == 0);
 }
 
 /// The halo of an axis, which the one pass running on that axis carries.
@@ -315,8 +315,7 @@ axisHalo(int size,
 
 PassList
 erodeDilatePasses(const ErodeDilateParams& params,
-                  const RenderScale& scale,
-                  bool dilate)
+                  const RenderScale& scale)
 {
     const OfxPointD rs = scale.toOfxPointD();
     PassList list;
@@ -325,33 +324,30 @@ erodeDilatePasses(const ErodeDilateParams& params,
     bool gpuFits = true;
 #endif
 
-    // The operation of the positive axes first, then the opposite one on the negative axes.
-    for (int ph = 0; ph < 2; ++ph) {
-        const int sign = (ph == 0) ? 1 : -1;
-        const bool takeMax = (ph == 0) ? dilate : !dilate;
-        const bool onX = (sign * params.sizeX) > 0;
-        const bool onY = (sign * params.sizeY) > 0;
-        const int halfX = (int)std::floor(std::max(0, sign * params.sizeX) * rs.x);
-        const int halfY = (int)std::floor(std::max(0, sign * params.sizeY) * rs.y);
-
-        if (onX) {
-            const int halo = axisHalo(params.sizeX, rs.x);
-            list.passes.push_back(Pass::lineX(halo, takeMax ? halo : 0, lineWorker(halfX, takeMax)));
-        }
-        if (onY) {
-            const int halo = axisHalo(params.sizeY, rs.y);
-            Pass pass = Pass::lineY(halo, takeMax ? halo : 0, lineWorker(halfY, takeMax));
-            pass.columnBlock = ErodeDilateKernels::kColumnBlock;
-            list.passes.push_back(pass);
-        }
+    if (params.sizeX != 0) {
+        const bool takeMax = params.sizeX < 0;
+        const int halfX = (int)std::floor(std::abs(params.sizeX) * rs.x);
+        const int halo = axisHalo(params.sizeX, rs.x);
+        list.passes.push_back(Pass::lineX(halo, takeMax ? halo : 0, lineWorker(halfX, takeMax)));
 #ifdef NATRON_HAVE_GPU
         if (halfX > 0) {
             gpuPasses.push_back(gpu::GpuMorphPass { (uint32_t)halfX, false, takeMax });
         }
+        gpuFits = gpuFits && (halfX <= (int)gpu::kGpuMorphMaxRadius);
+#endif
+    }
+    if (params.sizeY != 0) {
+        const bool takeMax = params.sizeY < 0;
+        const int halfY = (int)std::floor(std::abs(params.sizeY) * rs.y);
+        const int halo = axisHalo(params.sizeY, rs.y);
+        Pass pass = Pass::lineY(halo, takeMax ? halo : 0, lineWorker(halfY, takeMax));
+        pass.columnBlock = ErodeDilateKernels::kColumnBlock;
+        list.passes.push_back(pass);
+#ifdef NATRON_HAVE_GPU
         if (halfY > 0) {
             gpuPasses.push_back(gpu::GpuMorphPass { (uint32_t)halfY, true, takeMax });
         }
-        gpuFits = gpuFits && (halfX <= (int)gpu::kGpuMorphMaxRadius) && (halfY <= (int)gpu::kGpuMorphMaxRadius);
+        gpuFits = gpuFits && (halfY <= (int)gpu::kGpuMorphMaxRadius);
 #endif
     }
 
@@ -365,14 +361,15 @@ erodeDilatePasses(const ErodeDilateParams& params,
 } // erodeDilatePasses
 } // anonymous namespace
 
-template <ErodeDilateMode MODE>
 void
-ErodeDilateOp<MODE>::createKnobs(KnobHolder* holder,
-                                 const KnobPagePtr& page)
+ErodeDilateOp::createKnobs(KnobHolder* holder,
+                           const KnobPagePtr& page)
 {
     KnobIntPtr sizeKnob = AppManager::createKnob<KnobInt>(holder, EffectInstance::tr("Size"), 2);
     sizeKnob->setName(kErodeDilateParamSize);
-    sizeKnob->setHintToolTip(EffectInstance::tr("Width/height of the rectangular structuring element is 2*size+1, in pixel units (>=0)."));
+    sizeKnob->setValueRole(eValueRoleSize);
+    sizeKnob->setHintToolTip(EffectInstance::tr("Half the width and height of the rectangular structuring element, which is 2*|size|+1 pixels, in pixel units (-1000 to 1000). "
+                                                "A positive size erodes, a negative size dilates, 0 leaves the axis unchanged; the axes may have opposite signs, X being filtered before Y."));
     for (int d = 0; d < 2; ++d) {
         sizeKnob->setMinimum(-1000, d);
         sizeKnob->setMaximum(1000, d);
@@ -385,19 +382,14 @@ ErodeDilateOp<MODE>::createKnobs(KnobHolder* holder,
 
     KnobBoolPtr expandRoDKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Expand RoD"));
     expandRoDKnob->setName(kErodeDilateParamExpandRoD);
-    if (kDilate) {
-        expandRoDKnob->setHintToolTip(EffectInstance::tr("Expand the source region of definition by 2*size pixels if size is positive"));
-    } else {
-        expandRoDKnob->setHintToolTip(EffectInstance::tr("Expand the source region of definition by 2*size pixels if size is negative"));
-    }
+    expandRoDKnob->setHintToolTip(EffectInstance::tr("Grow the source region of definition by |size| pixels on each axis whose size is negative (dilating)."));
     expandRoDKnob->setDefaultValue(true);
     page->addKnob(expandRoDKnob);
     expandRoD = expandRoDKnob;
 }
 
-template <ErodeDilateMode MODE>
-typename ErodeDilateOp<MODE>::Params
-ErodeDilateOp<MODE>::bake(const KnobReader& reader) const
+ErodeDilateOp::Params
+ErodeDilateOp::bake(const KnobReader& reader) const
 {
     Params params;
 
@@ -408,103 +400,88 @@ ErodeDilateOp<MODE>::bake(const KnobReader& reader) const
     return params;
 }
 
-template <ErodeDilateMode MODE>
 bool
-ErodeDilateOp<MODE>::isIdentity(const Params& params,
-                                const PassContext& context) const
+ErodeDilateOp::isIdentity(const Params& params,
+                          const PassContext& context) const
 {
     return isIdentityAt(context.scale, params);
 }
 
-template <ErodeDilateMode MODE>
 PassList
-ErodeDilateOp<MODE>::passes(const Params& params,
-                            const PassContext& context) const
+ErodeDilateOp::passes(const Params& params,
+                      const PassContext& context) const
 {
-    return erodeDilatePasses(params, context.scale, kDilate);
+    return erodeDilatePasses(params, context.scale);
 }
 
-template <ErodeDilateMode MODE>
 std::optional<GpuWeight>
-ErodeDilateOp<MODE>::gpuWeight(const Params& params,
-                               const PassContext& context) const
+ErodeDilateOp::gpuWeight(const Params& params,
+                         const PassContext& context) const
 {
     return gpuSizeScaledWeight(std::floor(std::max(std::abs(params.sizeX), std::abs(params.sizeY)) * context.scale.toOfxPointD().x));
 }
 
-template struct ErodeDilateOp<ErodeDilateMode::Erode>;
-template struct ErodeDilateOp<ErodeDilateMode::Dilate>;
-
-template <ErodeDilateMode MODE>
-ErodeDilateNode<MODE>::ErodeDilateNode(NodePtr node)
-    : ImageNode<ErodeDilateOp<MODE>>(node)
+ErodeDilate::ErodeDilate(NodePtr node)
+    : ImageNode<ErodeDilateOp>(node)
 {
 }
 
-template <ErodeDilateMode MODE>
-ErodeDilateNode<MODE>::~ErodeDilateNode()
+ErodeDilate::~ErodeDilate()
 {
 }
 
-template <ErodeDilateMode MODE>
 void
-ErodeDilateNode<MODE>::addAcceptedComponents(int inputNb,
-                                             std::list<ImageLayerDesc>* comps)
+ErodeDilate::addAcceptedComponents(int inputNb,
+                                   std::list<ImageLayerDesc>* comps)
 {
-    ImageNode<ErodeDilateOp<MODE>>::addAcceptedComponents(inputNb, comps);
+    ImageNode<ErodeDilateOp>::addAcceptedComponents(inputNb, comps);
     if (!this->isInputMask(inputNb)) {
         comps->push_back(ImageLayerDesc::getXYComponents());
     }
 }
 
-template <ErodeDilateMode MODE>
 void
-ErodeDilateNode<MODE>::getParams(double time,
-                                 ViewIdx view,
-                                 ErodeDilateParams* params) const
+ErodeDilate::getParams(double time,
+                       ViewIdx view,
+                       ErodeDilateParams* params) const
 {
     *params = bakeParams(this->op(), time, view);
 }
 
-template <ErodeDilateMode MODE>
 RectI
-ErodeDilateNode<MODE>::getSourceRoI(const RectI& rect,
-                                    const RenderScale& scale,
-                                    const ErodeDilateParams& params)
+ErodeDilate::getSourceRoI(const RectI& rect,
+                          const RenderScale& scale,
+                          const ErodeDilateParams& params)
 {
-    return passListSourceRoI(rect, erodeDilatePasses(params, scale, ErodeDilateOp<MODE>::kDilate));
+    return passListSourceRoI(rect, erodeDilatePasses(params, scale));
 }
 
-template <ErodeDilateMode MODE>
 bool
-ErodeDilateNode<MODE>::paramsAreIdentity(const RenderScale& scale,
-                                         const ErodeDilateParams& params)
+ErodeDilate::paramsAreIdentity(const RenderScale& scale,
+                               const ErodeDilateParams& params)
 {
     return isIdentityAt(scale, params);
 }
 
-template <ErodeDilateMode MODE>
 void
-ErodeDilateNode<MODE>::getExpansion(const RenderScale& scale,
-                                    const ErodeDilateParams& params,
-                                    bool dilate,
-                                    int* deltaX,
-                                    int* deltaY)
+ErodeDilate::getExpansion(const RenderScale& scale,
+                          const ErodeDilateParams& params,
+                          int* deltaX,
+                          int* deltaY)
 {
-    const PassExtent extent = passListExtent(erodeDilatePasses(params, scale, dilate));
+    const PassExtent extent = passListExtent(erodeDilatePasses(params, scale));
 
     *deltaX = extent.growX;
     *deltaY = extent.growY;
 }
 
-template <ErodeDilateMode MODE>
 bool
-ErodeDilateNode<MODE>::clipRegionOfDefinition(double time,
-                                              const RenderScale& /*scale*/,
-                                              ViewIdx view,
-                                              const EffectInstancePtr& /*source*/,
-                                              const RectI& srcRoD,
-                                              RectI* rod)
+ErodeDilate::clipRegionOfDefinition(double time,
+                                    const RenderScale& /*scale*/,
+                                    ViewIdx view,
+                                    const EffectInstancePtr& /*source*/,
+                                    const RectI& srcRoD,
+                                    RectI* rod)
 {
     ErodeDilateParams params;
 
@@ -516,8 +493,5 @@ ErodeDilateNode<MODE>::clipRegionOfDefinition(double time,
 
     return true;
 }
-
-template class ErodeDilateNode<ErodeDilateMode::Erode>;
-template class ErodeDilateNode<ErodeDilateMode::Dilate>;
 
 NATRON_NAMESPACE_EXIT

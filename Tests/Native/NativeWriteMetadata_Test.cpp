@@ -52,6 +52,7 @@
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/Merge/Switch.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
@@ -160,6 +161,7 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         _write.reset();
+        _modify.reset();
         _dot.reset();
         _read.reset();
         getApp()->getProject()->reset(false, true);
@@ -194,24 +196,19 @@ protected:
     void configureWrite(const std::string& output)
     {
         // The file is compared with what went in, so no colour conversion may sit between them.
-        KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(_write->getKnobByName("ocioOutputSpace").get());
-        KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(_write->getKnobByName("ocioOutputSpaceSet").get());
-        if (outputSpace && outputSpaceSet) {
-            outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-            outputSpaceSet->setValue(true);
-        }
+        fileInWorkingSpace(_write);
 
         KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(_write->getKnobByName(kOfxImageEffectFileParamName).get());
         ASSERT_TRUE(file != NULL);
         file->setValue(output);
     }
 
-    void setWriteMetadata(bool on)
+    void setMetadataMode(int index)
     {
-        KnobBool* knob = dynamic_cast<KnobBool*>(_write->getKnobByName(kNatronWriteParamWriteMetadata).get());
+        KnobChoice* knob = dynamic_cast<KnobChoice*>(_write->getKnobByName(kNatronWriteParamMetadata).get());
 
         ASSERT_TRUE(knob != NULL);
-        knob->setValue(on);
+        knob->setValue(index);
     }
 
     void renderFrame()
@@ -268,8 +265,66 @@ protected:
         return effect ? effect->getOutputMetadata(1., ViewIdx(0)) : ImageMetadata();
     }
 
+    void setSlot(int slot,
+                 const std::string& key,
+                 const std::string& value)
+    {
+        const std::string suffix = std::to_string(slot);
+        KnobChoice* operation = dynamic_cast<KnobChoice*>(_modify->getKnobByName("operation" + suffix).get());
+        KnobString* keyKnob = dynamic_cast<KnobString*>(_modify->getKnobByName("key" + suffix).get());
+        KnobChoice* type = dynamic_cast<KnobChoice*>(_modify->getKnobByName("type" + suffix).get());
+        KnobString* stringValue = dynamic_cast<KnobString*>(_modify->getKnobByName("stringValue" + suffix).get());
+
+        ASSERT_TRUE(operation && keyKnob && type && stringValue);
+        operation->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
+        keyKnob->setValue(key, ViewSpec::all(), 0);
+        type->setValue((int)MetadataModify::eValueTypeString, ViewSpec::all(), 0);
+        stringValue->setValue(value, ViewSpec::all(), 0);
+    }
+
+    void setDoubleSlot(int slot,
+                       const std::string& key,
+                       double value)
+    {
+        const std::string suffix = std::to_string(slot);
+        KnobChoice* operation = dynamic_cast<KnobChoice*>(_modify->getKnobByName("operation" + suffix).get());
+        KnobString* keyKnob = dynamic_cast<KnobString*>(_modify->getKnobByName("key" + suffix).get());
+        KnobChoice* type = dynamic_cast<KnobChoice*>(_modify->getKnobByName("type" + suffix).get());
+        KnobDouble* doubleValue = dynamic_cast<KnobDouble*>(_modify->getKnobByName("doubleValue" + suffix).get());
+
+        ASSERT_TRUE(operation && keyKnob && type && doubleValue);
+        operation->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
+        keyKnob->setValue(key, ViewSpec::all(), 0);
+        type->setValue((int)MetadataModify::eValueTypeDouble, ViewSpec::all(), 0);
+        doubleValue->setValue(value, ViewSpec::all(), 0);
+    }
+
+    void buildEditedChain(const std::string& output,
+                          int mode)
+    {
+        ASSERT_TRUE(writeSizedExr(pathOf("src.0001.exr"), kSize, kSize, 1.f, "src"));
+        _read = createRead(pathOf("src.####.exr"));
+        _modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
+        _dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+        _write = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+        ASSERT_TRUE(_read && _modify && _dot && _write);
+
+        connectNodes(_read, _modify, 0, true);
+        connectNodes(_modify, _dot, 0, true);
+        connectNodes(_dot, _write, 0, true);
+        ASSERT_NO_FATAL_FAILURE(setSlot(1, "shot", "sh010"));
+        ASSERT_NO_FATAL_FAILURE(setSlot(2, "natron/comment", "a note"));
+        ASSERT_NO_FATAL_FAILURE(setSlot(3, "natron/creator", "test tool"));
+        ASSERT_NO_FATAL_FAILURE(setDoubleSlot(4, "exr/gain", 0.1));
+        ASSERT_NO_FATAL_FAILURE(setSlot(5, "compression", "none"));
+        ASSERT_NO_FATAL_FAILURE(setSlot(6, "name", "structural"));
+        configureWrite(output);
+        setMetadataMode(mode);
+    }
+
     QTemporaryDir _dir;
     NodePtr _read;
+    NodePtr _modify;
     NodePtr _dot;
     NodePtr _write;
 };
@@ -314,7 +369,7 @@ TEST_F(NativeWriteMetadataTest, ExrAttributesSurviveReadDotWrite)
     EXPECT_EQ(std::optional<double>(1.5), metadata.getDouble("exr/myFloat"));
     EXPECT_EQ(std::optional<std::vector<double>>(std::vector<double>({ 1., 2., 3. })), metadata.getDoubleVector("exr/myVec"));
     EXPECT_EQ(std::optional<std::string>("NatronCam"), metadata.getString("exif/Make"));
-    EXPECT_EQ(std::optional<std::string>("01:02:03:04"), metadata.getString("ofx/timecode"));
+    EXPECT_EQ(std::optional<std::string>("01:02:03:04"), metadata.getString("natron/timecode"));
     EXPECT_EQ(std::optional<double>(24000. / 1001.), metadata.getDouble("exr/FramesPerSecond"));
 }
 
@@ -333,12 +388,12 @@ TEST_F(NativeWriteMetadataTest, SourceLayoutIsNotWritten)
     EXPECT_NE("none", spec->get_string_attribute("compression"));
 }
 
-TEST_F(NativeWriteMetadataTest, SwitchedOffWritesNoneOfTheCustomAttributes)
+TEST_F(NativeWriteMetadataTest, NoMetadataWritesNoneOfTheCustomAttributes)
 {
     ASSERT_TRUE(writeSourceExr(pathOf("src.0001.exr")));
     buildChain(pathOf("src.####.exr"), pathOf("out.exr"));
     ASSERT_TRUE(bool(_write));
-    setWriteMetadata(false);
+    setMetadataMode(0);
 
     renderFrame();
 
@@ -349,13 +404,14 @@ TEST_F(NativeWriteMetadataTest, SwitchedOffWritesNoneOfTheCustomAttributes)
     }
 }
 
-TEST_F(NativeWriteMetadataTest, WriteMetadataDefaultsOn)
+TEST_F(NativeWriteMetadataTest, MetadataDefaultsToAllExceptInput)
 {
     NodePtr write = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
     ASSERT_TRUE(bool(write));
-    KnobBool* knob = dynamic_cast<KnobBool*>(write->getKnobByName(kNatronWriteParamWriteMetadata).get());
+    KnobChoice* knob = dynamic_cast<KnobChoice*>(write->getKnobByName(kNatronWriteParamMetadata).get());
     ASSERT_TRUE(knob != NULL);
-    EXPECT_TRUE(knob->getValue());
+    EXPECT_EQ(2, knob->getValue());
+    EXPECT_EQ(std::string(kNatronWriteMetadataAllExceptInput), knob->getActiveEntry().id);
 }
 
 TEST_F(NativeWriteMetadataTest, JpegKeepsTheExifFieldsItCanHold)
@@ -390,17 +446,17 @@ TEST(OiioWriteMetadata, MapsEachPrefixToItsAttributeAndFormat)
     metadata.setString("tiff/Foo", "t");
     metadata.setString("dpx/Creator", "d");
     metadata.setInt("oiio/Custom", 3);
-    metadata.setString("ofx/filepath", "/x");
-    metadata.setInt("ofx/frame", 4);
-    metadata.setDouble("ofx/framerate", 24.);
+    metadata.setString("natron/filepath", "/x");
+    metadata.setInt("natron/frame", 4);
+    metadata.setDouble("natron/framerate", 24.);
     metadata.setString("oiio/ColorSpace", "x");
     metadata.setString("exr/compression", "none");
     metadata.setString("tiff/Compression", "8");
     metadata.setString("dpx/Packing", "p");
-    metadata.setString("ofx/edgecode", "1:2:3:4:5:6:7");
+    metadata.setString("natron/edgecode", "1:2:3:4:5:6:7");
 
     OIIO::ImageSpec exr;
-    OiioWriteSupport::applyMetadata(exr, metadata, "openexr");
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
     EXPECT_EQ("a", exr.get_string_attribute("custom"));
     EXPECT_EQ("cam", exr.get_string_attribute("Exif:Make"));
     EXPECT_FLOAT_EQ(35.f, exr.get_float_attribute("Exif:FocalLength", -1.f));
@@ -418,7 +474,7 @@ TEST(OiioWriteMetadata, MapsEachPrefixToItsAttributeAndFormat)
     }
 
     OIIO::ImageSpec tiff;
-    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff");
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::Default);
     EXPECT_EQ("t", tiff.get_string_attribute("tiff:Foo"));
     EXPECT_EQ("cam", tiff.get_string_attribute("Make"));
     EXPECT_TRUE(tiff.find_attribute("custom") == NULL);
@@ -427,21 +483,365 @@ TEST(OiioWriteMetadata, MapsEachPrefixToItsAttributeAndFormat)
     EXPECT_FLOAT_EQ(35.f, tiff.get_float_attribute("Exif:FocalLength", -1.f));
 
     OIIO::ImageSpec dpx;
-    OiioWriteSupport::applyMetadata(dpx, metadata, "dpx");
+    OiioWriteSupport::applyMetadata(dpx, metadata, "dpx", OiioWriteSupport::WriteMetadataMode::Default);
     EXPECT_EQ("d", dpx.get_string_attribute("dpx:Creator"));
     EXPECT_TRUE(dpx.find_attribute("dpx:Packing") == NULL);
     EXPECT_TRUE(dpx.find_attribute("tiff:Foo") == NULL);
+}
+
+TEST(OiioWriteMetadata, StandardKeysMapToTheirTagsAndNativeKeysWin)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("natron/creator", "tool");
+    metadata.setString("natron/copyright", "me");
+    metadata.setString("natron/comment", "note");
+    metadata.setDouble("natron/framerate", 24.);
+    metadata.setDouble("natron/focallength", 50.);
+    metadata.setDouble("natron/fnumber", 2.8);
+    metadata.setDouble("natron/exposuretime", 0.5);
+
+    OIIO::ImageSpec tiff;
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_EQ("tool", tiff.get_string_attribute("Software"));
+    EXPECT_EQ("me", tiff.get_string_attribute("Copyright"));
+    EXPECT_EQ("note", tiff.get_string_attribute("ImageDescription"));
+    EXPECT_TRUE(tiff.find_attribute("FramesPerSecond") != NULL);
+    EXPECT_FLOAT_EQ(50.f, tiff.get_float_attribute("Exif:FocalLength", -1.f));
+    EXPECT_FLOAT_EQ(2.8f, tiff.get_float_attribute("FNumber", -1.f));
+    EXPECT_FLOAT_EQ(0.5f, tiff.get_float_attribute("ExposureTime", -1.f));
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_EQ("tool", exr.get_string_attribute("Software"));
+    EXPECT_EQ("me", exr.get_string_attribute("Copyright"));
+    EXPECT_EQ("note", exr.get_string_attribute("ImageDescription"));
+    EXPECT_FLOAT_EQ(2.8f, exr.get_float_attribute("Exif:FNumber", -1.f));
+    EXPECT_TRUE(exr.find_attribute("Exif:Software") == NULL);
+    EXPECT_TRUE(exr.find_attribute("Exif:Copyright") == NULL);
+    EXPECT_TRUE(exr.find_attribute("Exif:ImageDescription") == NULL);
+
+    metadata.setString("exif/Software", "native");
+    OIIO::ImageSpec both;
+    OiioWriteSupport::applyMetadata(both, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_EQ("native", both.get_string_attribute("Software"));
+}
+
+TEST(OiioWriteMetadata, ExrKeysBeatStandardKeysUnderEverySpelling)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("natron/creator", "natron");
+    metadata.setString("natron/copyright", "natron");
+    metadata.setString("natron/comment", "natron");
+    metadata.setDouble("natron/fnumber", 8.);
+    metadata.setDouble("natron/exposuretime", 8.);
+    metadata.setString("exif/Software", "native");
+    metadata.setString("exr/owner", "native");
+    metadata.setString("exr/ImageDescription", "native");
+    metadata.setDouble("exr/FNumber", 2.);
+    metadata.setDouble("exif/ExposureTime", 2.);
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_EQ("native", exr.get_string_attribute("Exif:Software"));
+    EXPECT_TRUE(exr.find_attribute("Software") == NULL);
+    EXPECT_EQ("native", exr.get_string_attribute("owner"));
+    EXPECT_TRUE(exr.find_attribute("Copyright") == NULL);
+    EXPECT_EQ("native", exr.get_string_attribute("ImageDescription"));
+    EXPECT_TRUE(exr.find_attribute("Exif:ImageDescription") == NULL);
+    EXPECT_FLOAT_EQ(2.f, exr.get_float_attribute("FNumber", -1.f));
+    EXPECT_TRUE(exr.find_attribute("Exif:FNumber") == NULL);
+    EXPECT_FLOAT_EQ(2.f, exr.get_float_attribute("Exif:ExposureTime", -1.f));
+    EXPECT_TRUE(exr.find_attribute("ExposureTime") == NULL);
+}
+
+TEST(OiioWriteMetadata, ExrNumbersAreFloatWhenAFloatHoldsThemOrTheNameRequiresIt)
+{
+    ImageMetadata metadata;
+
+    metadata.setDouble("exr/widened", (double)0.1f);
+    metadata.setDouble("exr/precise", 0.1);
+    metadata.setDouble("precise", 0.1);
+    metadata.setDouble("widened", (double)0.1f);
+    metadata.setDouble("huge", 1e300);
+    metadata.setDouble("exr/ExposureTime", 0.1);
+    metadata.setDouble("exr/FNumber", 0.1);
+    metadata.setDouble("exr/XResolution", 0.1);
+    metadata.setDouble("exr/screenWindowWidth", 0.1);
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    for (const char* name : { "widened", "ExposureTime", "FNumber", "XResolution", "screenWindowWidth" }) {
+        const OIIO::ParamValue* attribute = exr.find_attribute(name);
+        ASSERT_TRUE(attribute != NULL) << name;
+        EXPECT_EQ(OIIO::TypeFloat, attribute->type()) << name;
+    }
+    for (const char* name : { "precise", "huge" }) {
+        const OIIO::ParamValue* attribute = exr.find_attribute(name);
+        ASSERT_TRUE(attribute != NULL) << name;
+        EXPECT_EQ(OIIO::TypeDesc::DOUBLE, attribute->type().basetype) << name;
+    }
+}
+
+TEST(OiioWriteMetadata, ExrDoubleVectorsStayDoubleWhereTheFormatHasTheType)
+{
+    ImageMetadata metadata;
+    const std::vector<double> matrix = { 0.1, 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1. };
+
+    metadata.setDoubleVector("exr/precise2", { 0.1, 0.2 });
+    metadata.setDoubleVector("exr/precise3", { 0.1, 0.2, 0.3 });
+    metadata.setDoubleVector("exr/precise9", { 0.1, 0., 0., 0., 1., 0., 0., 0., 1. });
+    metadata.setDoubleVector("exr/precise16", matrix);
+    metadata.setDoubleVector("exr/widened3", { 0.5, 1.5, 2.5 });
+    metadata.setDoubleVector("exr/precise4", { 0.1, 0.2, 0.3, 0.4 });
+    metadata.setDoubleVector("exr/screenWindowCenter", { 0.1, 0.2 });
+    metadata.setDoubleVector("exr/worldToCamera", matrix);
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
+    for (const char* name : { "precise2", "precise3", "precise9", "precise16" }) {
+        const OIIO::ParamValue* attribute = exr.find_attribute(name);
+        ASSERT_TRUE(attribute != NULL) << name;
+        EXPECT_EQ(OIIO::TypeDesc::DOUBLE, attribute->type().basetype) << name;
+    }
+    EXPECT_DOUBLE_EQ(0.3, static_cast<const double*>(exr.find_attribute("precise3")->data())[2]);
+    for (const char* name : { "widened3", "precise4", "screenWindowCenter", "worldToCamera" }) {
+        const OIIO::ParamValue* attribute = exr.find_attribute(name);
+        ASSERT_TRUE(attribute != NULL) << name;
+        EXPECT_EQ(OIIO::TypeDesc::FLOAT, attribute->type().basetype) << name;
+    }
+}
+
+TEST(OiioWriteMetadata, StructuralNamesAndWriterDirectivesAreExcludedWhateverTheirCase)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("Compression", "none");
+    metadata.setString("COMPRESSION", "none");
+    metadata.setString("exr/Compression", "none");
+    metadata.setString("openexr:lineOrder", "decreasingY");
+    metadata.setString("OpenEXR:LineOrder", "decreasingY");
+    metadata.setString("exr/openexr:lineOrder", "decreasingY");
+    metadata.setString("oiio:subimagename", "part");
+    metadata.setString("exr/oiio:subimagename", "part");
+    metadata.setString("Name", "part");
+    metadata.setString("exr/textureformat", "Plain Texture");
+    metadata.setInt("acesImageContainerFlag", 1);
+    metadata.setString("oiio/colorspace", "x");
+
+    for (const char* format : { "openexr", "png" }) {
+        OIIO::ImageSpec spec;
+        OiioWriteSupport::applyMetadata(spec, metadata, format, OiioWriteSupport::WriteMetadataMode::All);
+        for (const OIIO::ParamValue& attribute : spec.extra_attribs) {
+            ADD_FAILURE() << format << " took " << attribute.name().string();
+        }
+    }
+}
+
+TEST(OiioWriteMetadata, TimecodesPngCannotHoldAndUnparseableOnesAreWrittenAsText)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("natron/timecode", "01:02:03:04");
+    metadata.setString("natron/edgecode", "1:2:3:4:5:6:7");
+
+    OIIO::ImageSpec png;
+    OiioWriteSupport::applyMetadata(png, metadata, "png", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_EQ("01:02:03:04", png.get_string_attribute("natron/timecode"));
+    EXPECT_EQ("1:2:3:4:5:6:7", png.get_string_attribute("natron/edgecode"));
+    EXPECT_TRUE(png.find_attribute("smpte:TimeCode") == NULL);
+    EXPECT_TRUE(png.find_attribute("smpte:KeyCode") == NULL);
+
+    OIIO::ImageSpec pngDefault;
+    OiioWriteSupport::applyMetadata(pngDefault, metadata, "png", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_TRUE(pngDefault.extra_attribs.empty());
+
+    OIIO::ImageSpec parsed;
+    OiioWriteSupport::applyMetadata(parsed, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_TRUE(parsed.find_attribute("smpte:TimeCode") != NULL);
+    EXPECT_TRUE(parsed.find_attribute("natron/timecode") == NULL);
+
+    metadata.setString("natron/timecode", "not a timecode");
+    metadata.setString("natron/edgecode", "nor an edgecode");
+    OIIO::ImageSpec unparseable;
+    OiioWriteSupport::applyMetadata(unparseable, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_EQ("not a timecode", unparseable.get_string_attribute("natron/timecode"));
+    EXPECT_EQ("nor an edgecode", unparseable.get_string_attribute("natron/edgecode"));
+    EXPECT_TRUE(unparseable.find_attribute("smpte:TimeCode") == NULL);
+    EXPECT_TRUE(unparseable.find_attribute("smpte:KeyCode") == NULL);
+
+    OIIO::ImageSpec unparseableDefault;
+    OiioWriteSupport::applyMetadata(unparseableDefault, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_TRUE(unparseableDefault.extra_attribs.empty());
+}
+
+TEST(OiioWriteMetadata, CustomOiioKeysGoUnderTheirFullKeyInTheAllMetadataModes)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("oiio/Custom", "kept");
+    metadata.setString("oiio/ColorSpace", "x");
+
+    for (const char* format : { "openexr", "png" }) {
+        OIIO::ImageSpec spec;
+        OiioWriteSupport::applyMetadata(spec, metadata, format, OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+        EXPECT_EQ("kept", spec.get_string_attribute("oiio/Custom")) << format;
+        EXPECT_TRUE(spec.find_attribute("oiio:Custom") == NULL) << format;
+        EXPECT_TRUE(spec.find_attribute("oiio/ColorSpace") == NULL) << format;
+    }
+
+    OIIO::ImageSpec defaults;
+    OiioWriteSupport::applyMetadata(defaults, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_TRUE(defaults.find_attribute("oiio/Custom") == NULL);
+
+    OIIO::ImageSpec tiff;
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_EQ("kept", tiff.get_string_attribute("oiio:Custom"));
+    EXPECT_TRUE(tiff.find_attribute("oiio/Custom") == NULL);
+}
+
+TEST(OiioWriteMetadata, SourceLayoutStandardKeysAreWrittenOnlyInAllMetadata)
+{
+    ImageMetadata metadata;
+    const char* const layoutKeys[] = { "natron/pixelaspect", "natron/width", "natron/height", "natron/bitdepth", "natron/sampletype", "natron/viewnames" };
+
+    metadata.setDouble("natron/pixelaspect", 2.);
+    metadata.setInt("natron/width", 1920);
+    metadata.setInt("natron/height", 1080);
+    metadata.setInt("natron/bitdepth", 16);
+    metadata.setString("natron/sampletype", "float");
+    metadata.setString("natron/viewnames", "main");
+
+    for (const char* format : { "openexr", "png" }) {
+        OIIO::ImageSpec except;
+        OiioWriteSupport::applyMetadata(except, metadata, format, OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+        EXPECT_TRUE(except.extra_attribs.empty()) << format;
+
+        OIIO::ImageSpec defaults;
+        OiioWriteSupport::applyMetadata(defaults, metadata, format, OiioWriteSupport::WriteMetadataMode::Default);
+        EXPECT_TRUE(defaults.extra_attribs.empty()) << format;
+
+        OIIO::ImageSpec all;
+        OiioWriteSupport::applyMetadata(all, metadata, format, OiioWriteSupport::WriteMetadataMode::All);
+        for (const char* key : layoutKeys) {
+            EXPECT_TRUE(all.find_attribute(key) != NULL) << format << " " << key;
+        }
+    }
+}
+
+TEST(OiioWriteMetadata, AllExceptInputWritesRemainingKeysVerbatimToExrAndPng)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("shot", "sh010");
+    metadata.setString("natron/creator", "tool");
+    metadata.setDouble("natron/custom", 0.1);
+    metadata.setInt("natron/count", 7);
+    metadata.setString("exr/Lens", "50mm");
+    metadata.setString("quicktime/Reel", "r1");
+    metadata.setString("natron/filepath", "/x");
+    metadata.setInt("natron/frame", 4);
+    metadata.setDouble("natron/filesize", 10.);
+    metadata.setDouble("natron/mtime", 11.);
+    metadata.setString("exr/compression", "none");
+    metadata.setString("compression", "zip");
+    metadata.setString("name", "n");
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_EQ("sh010", exr.get_string_attribute("shot"));
+    EXPECT_EQ("tool", exr.get_string_attribute("natron/creator"));
+    EXPECT_EQ("tool", exr.get_string_attribute("Software"));
+    EXPECT_EQ("50mm", exr.get_string_attribute("Lens"));
+    EXPECT_EQ("r1", exr.get_string_attribute("quicktime/Reel"));
+    const OIIO::ParamValue* custom = exr.find_attribute("natron/custom");
+    ASSERT_TRUE(custom != NULL);
+    EXPECT_EQ(OIIO::TypeDesc::DOUBLE, custom->type().basetype);
+    EXPECT_DOUBLE_EQ(0.1, *(const double*)custom->data());
+    EXPECT_EQ(7, exr.get_int_attribute("natron/count", -1));
+    EXPECT_TRUE(exr.find_attribute("natron/filepath") == NULL);
+    EXPECT_TRUE(exr.find_attribute("natron/frame") == NULL);
+    EXPECT_TRUE(exr.find_attribute("natron/filesize") == NULL);
+    EXPECT_TRUE(exr.find_attribute("natron/mtime") == NULL);
+    EXPECT_TRUE(exr.find_attribute("compression") == NULL);
+    EXPECT_TRUE(exr.find_attribute("name") == NULL);
+
+    OIIO::ImageSpec png;
+    OiioWriteSupport::applyMetadata(png, metadata, "png", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_EQ("sh010", png.get_string_attribute("shot"));
+    EXPECT_EQ("tool", png.get_string_attribute("natron/creator"));
+    EXPECT_EQ("50mm", png.get_string_attribute("exr/Lens"));
+    EXPECT_EQ("7", png.get_string_attribute("natron/count"));
+    const OIIO::ParamValue* text = png.find_attribute("natron/custom");
+    ASSERT_TRUE(text != NULL);
+    EXPECT_EQ(OIIO::TypeDesc::STRING, text->type().basetype);
+    EXPECT_DOUBLE_EQ(0.1, std::stod(png.get_string_attribute("natron/custom")));
+    EXPECT_TRUE(png.find_attribute("exr/compression") == NULL);
+    EXPECT_TRUE(png.find_attribute("compression") == NULL);
+    EXPECT_TRUE(png.find_attribute("natron/filepath") == NULL);
+
+    OIIO::ImageSpec tiff;
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::AllExceptInput);
+    EXPECT_TRUE(tiff.find_attribute("shot") == NULL);
+    EXPECT_TRUE(tiff.find_attribute("natron/creator") == NULL);
+    EXPECT_TRUE(tiff.find_attribute("exr/Lens") == NULL);
+    EXPECT_EQ("tool", tiff.get_string_attribute("Software"));
+}
+
+TEST(OiioWriteMetadata, AllAddsTheInputIdentityKeysAndDefaultAddsNoCustomKeys)
+{
+    ImageMetadata metadata;
+
+    metadata.setString("shot", "sh010");
+    metadata.setString("natron/filepath", "/x");
+    metadata.setInt("natron/frame", 4);
+    metadata.setDouble("natron/filesize", 10.);
+    metadata.setDouble("natron/mtime", 11.);
+    metadata.setString("oiio/ColorSpace", "x");
+    metadata.setString("oiio/colorInteropID", "lin_rec709_scene");
+    metadata.setString("exr/colorInteropID", "lin_rec709_scene");
+    metadata.setString("tiff/Compression", "8");
+
+    OIIO::ImageSpec exr;
+    OiioWriteSupport::applyMetadata(exr, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::All);
+    EXPECT_EQ("sh010", exr.get_string_attribute("shot"));
+    EXPECT_EQ("/x", exr.get_string_attribute("natron/filepath"));
+    EXPECT_EQ(4, exr.get_int_attribute("natron/frame", -1));
+    EXPECT_TRUE(exr.find_attribute("natron/filesize") != NULL);
+    EXPECT_TRUE(exr.find_attribute("natron/mtime") != NULL);
+    EXPECT_TRUE(exr.find_attribute("oiio/ColorSpace") == NULL);
+    EXPECT_TRUE(exr.find_attribute("oiio:ColorSpace") == NULL);
+    EXPECT_TRUE(exr.find_attribute("oiio/colorInteropID") == NULL);
+    EXPECT_TRUE(exr.find_attribute("oiio:colorInteropID") == NULL);
+    EXPECT_TRUE(exr.find_attribute("exr/colorInteropID") == NULL);
+    EXPECT_TRUE(exr.find_attribute("colorInteropID") == NULL);
+    EXPECT_TRUE(exr.find_attribute("tiff/Compression") == NULL);
+
+    OIIO::ImageSpec png;
+    OiioWriteSupport::applyMetadata(png, metadata, "png", OiioWriteSupport::WriteMetadataMode::All);
+    EXPECT_EQ("/x", png.get_string_attribute("natron/filepath"));
+    EXPECT_EQ("4", png.get_string_attribute("natron/frame"));
+
+    OIIO::ImageSpec tiff;
+    OiioWriteSupport::applyMetadata(tiff, metadata, "tiff", OiioWriteSupport::WriteMetadataMode::All);
+    EXPECT_TRUE(tiff.find_attribute("natron/filepath") == NULL);
+
+    OIIO::ImageSpec defaults;
+    OiioWriteSupport::applyMetadata(defaults, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
+    EXPECT_TRUE(defaults.find_attribute("shot") == NULL);
+    EXPECT_TRUE(defaults.find_attribute("natron/filepath") == NULL);
 }
 
 TEST(OiioWriteMetadata, TimecodeAndEdgecodeAreRebuiltFromTheirStrings)
 {
     ImageMetadata metadata;
 
-    metadata.setString("ofx/timecode", "10:20:30;15");
-    metadata.setString("ofx/edgecode", "12:34:056789:1234:05:4:64");
+    metadata.setString("natron/timecode", "10:20:30;15");
+    metadata.setString("natron/edgecode", "12:34:056789:1234:05:4:64");
 
     OIIO::ImageSpec spec;
-    OiioWriteSupport::applyMetadata(spec, metadata, "openexr");
+    OiioWriteSupport::applyMetadata(spec, metadata, "openexr", OiioWriteSupport::WriteMetadataMode::Default);
 
     const OIIO::ParamValue* timecode = spec.find_attribute("smpte:TimeCode");
     ASSERT_TRUE(timecode != NULL);
@@ -499,4 +899,250 @@ TEST_F(NativeWriteMetadataTest, EachFileOfASequenceTakesItsOwnFramesFormat)
     EXPECT_FLOAT_EQ(2.f, second->get_float_attribute("PixelAspectRatio", 1.f));
     EXPECT_EQ("narrow", first->get_string_attribute("mySource"));
     EXPECT_EQ("wide", second->get_string_attribute("mySource"));
+}
+
+namespace {
+const int kModeNone = 0;
+const int kModeDefault = 1;
+const int kModeAllExceptInput = 2;
+const int kModeAll = 3;
+
+const char* const kIdentityKeys[] = { "natron/filepath", "natron/frame", "natron/filesize", "natron/mtime" };
+} // namespace
+
+TEST_F(NativeWriteMetadataTest, ExrDefaultModeWritesStandardTagsOnly)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeDefault));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("a note", spec->get_string_attribute("ImageDescription"));
+    EXPECT_EQ("test tool", spec->get_string_attribute("Software"));
+    EXPECT_TRUE(spec->find_attribute("Exif:ImageDescription") == NULL);
+    EXPECT_TRUE(spec->find_attribute("Exif:Software") == NULL);
+    EXPECT_TRUE(spec->find_attribute("shot") == NULL);
+    EXPECT_TRUE(spec->find_attribute("natron/comment") == NULL);
+    EXPECT_TRUE(spec->find_attribute("natron/creator") == NULL);
+
+    const ImageMetadata metadata = reread(pathOf("out.exr"));
+    EXPECT_EQ(std::optional<std::string>("a note"), metadata.getString("exr/ImageDescription"));
+    EXPECT_EQ(std::optional<std::string>("test tool"), metadata.getString("exr/Software"));
+    EXPECT_FALSE(metadata.getString("exr/shot").has_value());
+}
+
+TEST_F(NativeWriteMetadataTest, ExrFloatAttributesSurviveAReadWriteRoundTripAsFloats)
+{
+    OIIO::ImageSpec source(kSize, kSize, 4, OIIO::TypeDesc::FLOAT);
+    source.attribute("compression", "none");
+    source.attribute("ExposureTime", 0.01f);
+    source.attribute("FNumber", 2.8f);
+    source.attribute("screenWindowWidth", 2.5f);
+    source.attribute("myCustomFloat", 0.1f);
+    ASSERT_TRUE(writeImage(pathOf("src.0001.exr"), source));
+
+    for (int mode : { kModeDefault, kModeAllExceptInput, kModeAll }) {
+        const std::string output = "out" + std::to_string(mode) + ".exr";
+        buildChain(pathOf("src.####.exr"), pathOf(output));
+        ASSERT_TRUE(bool(_write));
+        setMetadataMode(mode);
+
+        renderFrame();
+
+        const std::optional<OIIO::ImageSpec> spec = specOf(pathOf(output));
+        ASSERT_TRUE(spec.has_value());
+        const struct {
+            const char* name;
+            float value;
+        } expected[] = { { "ExposureTime", 0.01f }, { "FNumber", 2.8f }, { "screenWindowWidth", 2.5f }, { "myCustomFloat", 0.1f } };
+        for (const auto& attribute : expected) {
+            const OIIO::ParamValue* written = spec->find_attribute(attribute.name);
+            ASSERT_TRUE(written != NULL) << attribute.name << " in mode " << mode;
+            EXPECT_EQ(OIIO::TypeFloat, written->type()) << attribute.name << " in mode " << mode;
+            EXPECT_EQ(attribute.value, *static_cast<const float*>(written->data())) << attribute.name << " in mode " << mode;
+        }
+
+        const ImageMetadata metadata = reread(pathOf(output));
+        EXPECT_EQ(std::optional<double>((double)0.01f), metadata.getDouble("exr/ExposureTime"));
+        EXPECT_EQ(std::optional<double>((double)2.8f), metadata.getDouble("exr/FNumber"));
+        EXPECT_EQ(std::optional<double>(2.5), metadata.getDouble("exr/screenWindowWidth"));
+        EXPECT_EQ(std::optional<double>((double)0.1f), metadata.getDouble("exr/myCustomFloat"));
+    }
+}
+
+TEST_F(NativeWriteMetadataTest, ExrKeyBeatsTheStandardKeyInTheFile)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeDefault));
+    ASSERT_NO_FATAL_FAILURE(setSlot(7, "exr/ImageDescription", "native note"));
+    ASSERT_NO_FATAL_FAILURE(setSlot(8, "exr/Software", "native tool"));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("native note", spec->get_string_attribute("ImageDescription"));
+    EXPECT_EQ("native tool", spec->get_string_attribute("Software"));
+    EXPECT_TRUE(spec->find_attribute("Exif:ImageDescription") == NULL);
+    EXPECT_TRUE(spec->find_attribute("Exif:Software") == NULL);
+
+    const ImageMetadata metadata = reread(pathOf("out.exr"));
+    EXPECT_EQ(std::optional<std::string>("native note"), metadata.getString("exr/ImageDescription"));
+    EXPECT_EQ(std::optional<std::string>("native tool"), metadata.getString("exr/Software"));
+    EXPECT_FALSE(metadata.getString("exif/ImageDescription").has_value());
+    EXPECT_FALSE(metadata.getString("exif/Software").has_value());
+}
+
+TEST_F(NativeWriteMetadataTest, OutputHashIsNeverOverwrittenByAnInputKey)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeAllExceptInput));
+    ASSERT_NO_FATAL_FAILURE(setSlot(7, "natron:outputHash", "stale"));
+    ASSERT_NO_FATAL_FAILURE(setSlot(8, std::string("exr/") + kNatronWriteOutputHashAttribute, "stale"));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    const std::string hash = spec->get_string_attribute(kNatronWriteOutputHashAttribute);
+    EXPECT_FALSE(hash.empty());
+    EXPECT_NE("stale", hash);
+}
+
+TEST_F(NativeWriteMetadataTest, ExrAllExceptInputRoundTripsEveryKeyWithoutTheInputIdentity)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeAllExceptInput));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("sh010", spec->get_string_attribute("shot"));
+    EXPECT_EQ("a note", spec->get_string_attribute("natron/comment"));
+    EXPECT_EQ("test tool", spec->get_string_attribute("natron/creator"));
+    const OIIO::ParamValue* gain = spec->find_attribute("gain");
+    ASSERT_TRUE(gain != NULL);
+    EXPECT_EQ(OIIO::TypeDesc::DOUBLE, gain->type().basetype);
+    EXPECT_DOUBLE_EQ(0.1, *(const double*)gain->data());
+    for (const char* key : kIdentityKeys) {
+        EXPECT_TRUE(spec->find_attribute(key) == NULL) << key;
+    }
+    EXPECT_NE("none", spec->get_string_attribute("compression"));
+    EXPECT_TRUE(spec->find_attribute("name") == NULL);
+
+    const ImageMetadata metadata = reread(pathOf("out.exr"));
+    EXPECT_EQ(std::optional<std::string>("sh010"), metadata.getString("exr/shot"));
+    EXPECT_EQ(std::optional<std::string>("a note"), metadata.getString("natron/comment"));
+    EXPECT_EQ(std::optional<std::string>("test tool"), metadata.getString("natron/creator"));
+    EXPECT_EQ(std::optional<double>(0.1), metadata.getDouble("exr/gain"));
+    EXPECT_FALSE(metadata.getString("exr/name").has_value());
+    EXPECT_TRUE(spec->find_attribute("natron/pixelaspect") == NULL);
+}
+
+TEST_F(NativeWriteMetadataTest, ExrAllWritesTheInputIdentityToo)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeAll));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_NE(std::string::npos, spec->get_string_attribute("natron/filepath").find("src.0001.exr"));
+    EXPECT_TRUE(spec->find_attribute("natron/frame") != NULL);
+    EXPECT_TRUE(spec->find_attribute("natron/filesize") != NULL);
+    EXPECT_TRUE(spec->find_attribute("natron/mtime") != NULL);
+    EXPECT_TRUE(spec->find_attribute("natron/pixelaspect") != NULL);
+    EXPECT_EQ("sh010", spec->get_string_attribute("shot"));
+    EXPECT_TRUE(spec->find_attribute("name") == NULL);
+}
+
+TEST_F(NativeWriteMetadataTest, ExrNoMetadataWritesNoneOfTheEditedKeys)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.exr"), kModeNone));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.exr"));
+    ASSERT_TRUE(spec.has_value());
+    for (const char* name : { "shot", "natron/comment", "natron/creator", "gain", "ImageDescription", "Software", "Exif:ImageDescription", "Exif:Software", "natron/filepath", "name" }) {
+        EXPECT_TRUE(spec->find_attribute(name) == NULL) << name;
+    }
+}
+
+TEST_F(NativeWriteMetadataTest, PngDefaultModeWritesStandardTagsOnly)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.png"), kModeDefault));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.png"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("a note", spec->get_string_attribute("ImageDescription"));
+    EXPECT_EQ("test tool", spec->get_string_attribute("Software"));
+    EXPECT_TRUE(spec->find_attribute("shot") == NULL);
+    EXPECT_TRUE(spec->find_attribute("natron/comment") == NULL);
+
+    const ImageMetadata metadata = reread(pathOf("out.png"));
+    EXPECT_EQ(std::optional<std::string>("a note"), metadata.getString("exif/ImageDescription"));
+    EXPECT_EQ(std::optional<std::string>("test tool"), metadata.getString("exif/Software"));
+    EXPECT_FALSE(metadata.getString("exif/shot").has_value());
+    EXPECT_FALSE(metadata.getString("natron/comment").has_value());
+    EXPECT_FALSE(metadata.getString("natron/creator").has_value());
+}
+
+TEST_F(NativeWriteMetadataTest, PngAllExceptInputKeepsEveryKeyAsTextWithoutTheInputIdentity)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.png"), kModeAllExceptInput));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.png"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_EQ("sh010", spec->get_string_attribute("shot"));
+    EXPECT_EQ("a note", spec->get_string_attribute("natron/comment"));
+    EXPECT_EQ("test tool", spec->get_string_attribute("natron/creator"));
+    EXPECT_DOUBLE_EQ(0.1, std::stod(spec->get_string_attribute("exr/gain")));
+    for (const char* key : kIdentityKeys) {
+        EXPECT_TRUE(spec->find_attribute(key) == NULL) << key;
+    }
+    EXPECT_TRUE(spec->find_attribute("natron/pixelaspect") == NULL);
+    EXPECT_TRUE(spec->find_attribute("DocumentName") == NULL);
+
+    const ImageMetadata metadata = reread(pathOf("out.png"));
+    EXPECT_EQ(std::optional<std::string>("sh010"), metadata.getString("exif/shot"));
+    EXPECT_EQ(std::optional<std::string>("a note"), metadata.getString("natron/comment"));
+    EXPECT_EQ(std::optional<std::string>("test tool"), metadata.getString("natron/creator"));
+    EXPECT_EQ(std::optional<std::string>("a note"), metadata.getString("exif/ImageDescription"));
+    EXPECT_EQ(std::optional<std::string>("test tool"), metadata.getString("exif/Software"));
+    const std::optional<std::string> gain = metadata.getString("exr/gain");
+    ASSERT_TRUE(gain.has_value());
+    EXPECT_DOUBLE_EQ(0.1, std::stod(*gain));
+    EXPECT_FALSE(metadata.getString("exif/DocumentName").has_value());
+}
+
+TEST_F(NativeWriteMetadataTest, PngAllWritesTheInputIdentityToo)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.png"), kModeAll));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.png"));
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_NE(std::string::npos, spec->get_string_attribute("natron/filepath").find("src.0001.exr"));
+    EXPECT_TRUE(spec->find_attribute("natron/pixelaspect") != NULL);
+    EXPECT_EQ("sh010", spec->get_string_attribute("shot"));
+
+    const ImageMetadata metadata = reread(pathOf("out.png"));
+    EXPECT_EQ(std::optional<std::string>("sh010"), metadata.getString("exif/shot"));
+    EXPECT_EQ(std::optional<std::string>("a note"), metadata.getString("natron/comment"));
+    EXPECT_EQ(std::optional<std::string>("test tool"), metadata.getString("natron/creator"));
+}
+
+TEST_F(NativeWriteMetadataTest, PngNoMetadataWritesNoneOfTheEditedKeys)
+{
+    ASSERT_NO_FATAL_FAILURE(buildEditedChain(pathOf("out.png"), kModeNone));
+    renderFrame();
+
+    const std::optional<OIIO::ImageSpec> spec = specOf(pathOf("out.png"));
+    ASSERT_TRUE(spec.has_value());
+    for (const char* name : { "shot", "natron/comment", "natron/creator", "exr/gain", "ImageDescription", "Software", "natron/filepath", "DocumentName" }) {
+        EXPECT_TRUE(spec->find_attribute(name) == NULL) << name;
+    }
+
+    const ImageMetadata metadata = reread(pathOf("out.png"));
+    EXPECT_FALSE(metadata.getString("exif/shot").has_value());
+    EXPECT_FALSE(metadata.getString("natron/comment").has_value());
+    EXPECT_FALSE(metadata.getString("exr/gain").has_value());
+    EXPECT_FALSE(metadata.getString("exif/ImageDescription").has_value());
+    EXPECT_FALSE(metadata.getString("exif/Software").has_value());
 }

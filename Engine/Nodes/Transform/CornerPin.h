@@ -32,6 +32,7 @@
 #include <optional>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/FilterKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Image/TransformMath.h"
@@ -57,7 +58,7 @@ struct CornerPinPoints {
 struct CornerPinNodeParams {
     CornerPinPoints pin;
     bool invert = false;
-    Resampler::FilterEnum filter = Resampler::eFilterCubic;
+    Resampler::FilterSpec filter;
     bool clamp = false;
     bool blackOutside = true;
     Resampler::BlurSettings blur;
@@ -165,11 +166,11 @@ struct CornerPinOp {
     KnobDoubleWPtr amount;
     KnobDoubleWPtr extraMatrix;
     KnobChoiceWPtr overlayPoints;
-    KnobBoolWPtr interactive;
     KnobBoolWPtr invert;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
     KnobBoolWPtr blackOutside;
+    Resampler::FilterKnobs filterKnobs;
     KnobDoubleWPtr motionBlur;
     KnobDoubleWPtr shutter;
     KnobChoiceWPtr shutterOffset;
@@ -274,7 +275,7 @@ protected:
 private:
     bool getSourceRoD(double time, RectD* rod) const;
 
-    void updateClampEnabled(double time, ViewSpec view);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     static bool isPointsEdit(ValueChangedReasonEnum reason);
 

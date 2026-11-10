@@ -561,13 +561,12 @@ TEST_F(ShuffleTest, SubLabelFollowsTheMapping)
     KnobLayerSelectPtr in2 = layerKnob(shuffle, kShuffleParamIn2);
     KnobLayerSelectPtr out1 = layerKnob(shuffle, kShuffleParamOut1);
     KnobLayerSelectPtr out2 = layerKnob(shuffle, kShuffleParamOut2);
-    KnobStringPtr sublabel = std::dynamic_pointer_cast<KnobString>(shuffle->getKnobByName(kNatronOfxParamStringSublabelName));
+    EXPECT_FALSE(bool(shuffle->getKnobByName(kNatronOfxParamStringSublabelName)));
     ASSERT_TRUE(bool(mapping));
     ASSERT_TRUE(bool(in1));
     ASSERT_TRUE(bool(in2));
     ASSERT_TRUE(bool(out1));
     ASSERT_TRUE(bool(out2));
-    ASSERT_TRUE(bool(sublabel));
 
     in1->setLayer(kNatronColorViewRGBA);
     in2->setLayer("specular");
@@ -576,7 +575,7 @@ TEST_F(ShuffleTest, SubLabelFollowsTheMapping)
 
     // Out1 only passes rgba through, so only out2 (fed by specular) is named.
     const std::string arrow = " \xE2\x86\x92 ";
-    const std::string specularToDiffuse = sublabel->getValue();
+    const std::string specularToDiffuse = shuffle->getSublabel();
     const std::size_t arrowPos = specularToDiffuse.find(arrow);
     ASSERT_NE(std::string::npos, arrowPos) << specularToDiffuse;
     const std::string specular = specularToDiffuse.substr(0, arrowPos);
@@ -586,13 +585,13 @@ TEST_F(ShuffleTest, SubLabelFollowsTheMapping)
     EXPECT_FALSE(diffuse.empty());
 
     mapping->setSource(1, 0, ShuffleSource::makeInput(2, 0));
-    EXPECT_EQ(color + ", " + specular + arrow + color + "\n" + specularToDiffuse, sublabel->getValue());
+    EXPECT_EQ(color + ", " + specular + arrow + color + "\n" + specularToDiffuse, shuffle->getSublabel());
 
     mapping->setSource(2, 1, ShuffleSource::makeInput(1, 1));
-    EXPECT_EQ(color + ", " + specular + arrow + color + "\n" + color + ", " + specular + arrow + diffuse, sublabel->getValue());
+    EXPECT_EQ(color + ", " + specular + arrow + color + "\n" + color + ", " + specular + arrow + diffuse, shuffle->getSublabel());
 
     mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
-    EXPECT_EQ(color + ", " + specular + arrow + diffuse, sublabel->getValue());
+    EXPECT_EQ(color + ", " + specular + arrow + diffuse, shuffle->getSublabel());
 }
 
 TEST_F(ShuffleTest, ProducedColorPlaneKeepsTheMainLayoutWhenItCoversTheOutputViews)

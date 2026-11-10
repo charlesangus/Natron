@@ -38,10 +38,12 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Node.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/TLSHolder.h"
@@ -93,6 +95,7 @@ renderLayer(const NodePtr& node,
             unsigned int mipmapLevel,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
+            const RectI* window,
             RectI* roi,
             ImagePtr* image)
 {
@@ -120,7 +123,19 @@ renderLayer(const NodePtr& node,
     }
     const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(time, view);
     const double par = renderMetadata->getPixelAspectRatio(-1);
-    *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
+    if (window) {
+        // Clipped in canonical coordinates first, so an infinite side never reaches pixel ints.
+        const RectD clipped = rod.intersect(Format(*window, par).toCanonicalFormat());
+        *roi = clipped.isNull() ? RectI() : clipped.toPixelEnclosing(mipmapLevel, par).intersect(*window);
+        if (roi->isNull()) {
+            // Nothing of the image inside the window: a valid, empty result.
+            image->reset();
+
+            return true;
+        }
+    } else {
+        *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
+    }
     if (roi->isNull()) {
         return false;
     }
@@ -163,17 +178,21 @@ renderLayer(const NodePtr& node,
 
 } // namespace
 
+namespace {
 ImagePtr
-renderNodeImage(const NodePtr& node,
-                double time,
-                ViewIdx view,
-                unsigned int mipmapLevel,
-                const RectI& pixelRect,
-                const ImageLayerDesc& layer,
-                RectI* renderedRect,
-                const AbortableRenderInfoPtr& abortInfoArg)
+renderNodeImageImpl(const NodePtr& node,
+                    double time,
+                    ViewIdx view,
+                    unsigned int mipmapLevel,
+                    const RectI& pixelRect,
+                    const ImageLayerDesc& layer,
+                    const RectI* window,
+                    RectI* renderedRect,
+                    const AbortableRenderInfoPtr& abortInfoArg,
+                    bool* rendered)
 {
-    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || pixelRect.isNull()) {
+    *rendered = false;
+    if (!node || !node->getEffectInstance() || !node->isActivated() || node->isNodeDisabled(time) || (!window && pixelRect.isNull())) {
         return ImagePtr();
     }
     if (node->hasMandatoryInputDisconnected()) {
@@ -198,7 +217,7 @@ renderNodeImage(const NodePtr& node,
 
     RectI roi;
     ImagePtr image;
-    const bool rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, &roi, &image);
+    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -206,7 +225,7 @@ renderNodeImage(const NodePtr& node,
         appPTR->getAppTLS()->cleanupTLSForThread();
     }
 
-    if (!rendered) {
+    if (!*rendered) {
         return ImagePtr();
     }
     if (renderedRect) {
@@ -214,7 +233,82 @@ renderNodeImage(const NodePtr& node,
     }
 
     return image;
-} // renderNodeImage
+} // renderNodeImageImpl
+} // namespace
+
+ImagePtr
+renderNodeImage(const NodePtr& node,
+                double time,
+                ViewIdx view,
+                unsigned int mipmapLevel,
+                const RectI& pixelRect,
+                const ImageLayerDesc& layer,
+                RectI* renderedRect,
+                const AbortableRenderInfoPtr& abortInfo)
+{
+    bool rendered;
+
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, abortInfo, &rendered);
+}
+
+bool
+getNodeImageWindow(const NodePtr& node,
+                   double time,
+                   ViewIdx view,
+                   RectI* format,
+                   RectI* window)
+{
+    const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    if (!effect || !node->isActivated()) {
+        return false;
+    }
+    const NodeMetadataConstPtr metadata = effect->getRenderMetadata(time, view);
+    if (!metadata) {
+        return false;
+    }
+    RectI outputFormat = metadata->getOutputFormat();
+    if (outputFormat.isNull()) {
+        Format projectFormat;
+        node->getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+        outputFormat = projectFormat;
+    }
+    if (outputFormat.isNull()) {
+        return false;
+    }
+    *format = outputFormat;
+    *window = outputFormat;
+
+    RectD rod;
+    if (effect->getRegionOfDefinition_public(effect->getRenderHash(), time, RenderScale::identity, view, &rod, nullptr) == eStatusFailed) {
+        // An empty region of definition: the format alone, all transparent black.
+        return true;
+    }
+    if (rod.isInfinite() || rod.isNull()) {
+        // The region of definition normally comes back with an infinite side already clipped; one
+        // that is not has no pixels to allocate, so the texture is the format, as in the viewer.
+        return true;
+    }
+    window->merge(rod.toPixelEnclosing(0, metadata->getPixelAspectRatio(-1)));
+
+    return true;
+} // getNodeImageWindow
+
+bool
+renderNodeImageOverWindow(const NodePtr& node,
+                          double time,
+                          ViewIdx view,
+                          const ImageLayerDesc& layer,
+                          const RectI& window,
+                          ImagePtr* image,
+                          RectI* renderedRect)
+{
+    bool rendered;
+
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, AbortableRenderInfoPtr(), &rendered);
+
+    return rendered;
+}
 
 bool
 sampleNodeColor(const NodePtr& node,

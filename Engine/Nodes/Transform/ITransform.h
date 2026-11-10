@@ -96,12 +96,9 @@ protected:
 private:
     void updateShutterEnabled();
 
-    void updateClampEnabled(double time, ViewSpec view);
-
-    void updateUniformVisibility(bool allowHiding);
+    void updateFilterVisibility(double time, ViewSpec view);
 
     TransformOp _op;
-    KnobBoolWPtr _srcClipChanged;
 };
 
 NATRON_NAMESPACE_EXIT

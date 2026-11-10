@@ -26,6 +26,7 @@
 #include "ViewerTab.h"
 #include "ViewerTabPrivate.h"
 
+#include <algorithm>
 #include <cassert>
 #include <set>
 #include <stdexcept>
@@ -44,6 +45,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
@@ -69,6 +71,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneSelectionActions.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
@@ -113,6 +116,8 @@ const char* const kViewerKnobNames[] = {
     kViewerParamFullFrame,
     kViewerParamEnableDownscale,
     kViewerParamDownscaleLevel,
+    kViewerParamMaxSamples,
+    kViewerParamRefinementPaused,
 };
 
 // One value per dimension: numbers for bool/int/double knobs, strings for string knobs.
@@ -131,10 +136,27 @@ struct ViewerKnobValues {
     }
 };
 
+// The display, view and look menus can hold a name the config lacks, which only the entry ID keeps.
+KnobChoicePtr
+displayTransformKnob(const KnobIPtr& knob)
+{
+    const std::string name = knob->getName();
+    if ((name != kViewerParamDisplay) && (name != kViewerParamView) && (name != kViewerParamLook)) {
+        return KnobChoicePtr();
+    }
+
+    return std::dynamic_pointer_cast<KnobChoice>(knob);
+}
+
 ViewerKnobValues
 readViewerKnob(const KnobIPtr& knob)
 {
     ViewerKnobValues values;
+    if (KnobChoicePtr choice = displayTransformKnob(knob)) {
+        values.strings.push_back(choice->getActiveEntry().id);
+
+        return values;
+    }
     const int nDims = knob->getDimension();
 
     for (int i = 0; i < nDims; ++i) {
@@ -159,6 +181,13 @@ writeViewerKnob(const KnobIPtr& knob,
 {
     const ViewerKnobValues current = readViewerKnob(knob);
 
+    if (KnobChoicePtr choice = displayTransformKnob(knob)) {
+        if (!values.strings.empty() && (values != current)) {
+            ViewerInstance::selectDisplayTransformEntry(choice, values.strings[0]);
+        }
+
+        return;
+    }
     for (std::size_t i = 0; i < values.strings.size() && i < current.strings.size(); ++i) {
         if (values.strings[i] != current.strings[i]) {
             dynamic_cast<KnobStringBase*>(knob.get())->setValue(values.strings[i], ViewSpec::all(), (int)i);
@@ -327,8 +356,8 @@ primPathOf(const NodePtr& node)
 
 /**
  * @brief The USDCamera node upstream of node whose prim ends up at primPath in node's scene. A
- * reparenting node grafts its inputs' root prims under its own Prim Path, so the path is looked
- * for in its inputs without that prefix. Grafts renamed by Auto Rename are not followed.
+ * reparenting node moves its inputs' prims, so the path is looked for in its inputs where it
+ * came from (SceneReparentNode::mapToInputPath()).
  **/
 NodePtr
 findCameraNode(const NodePtr& node,
@@ -340,19 +369,21 @@ findCameraNode(const NodePtr& node,
     }
     const bool disabled = node->isNodeDisabled();
     std::string inputPath = primPath;
+    int inputs = node->getNInputs();
     if (!disabled) {
         if (node->getPluginID() == PLUGINID_NATRON_USDCAMERA) {
             return (primPathOf(node) == primPath) ? node : NodePtr();
         }
-        if (dynamic_cast<SceneReparentNode*>(node->getEffectInstance().get())) {
-            const std::string parent = primPathOf(node);
-            if (parent.empty() || (primPath.size() <= parent.size() + 1) || (primPath.compare(0, parent.size(), parent) != 0) || (primPath[parent.size()] != '/')) {
+        if (const SceneReparentNode* reparent = dynamic_cast<const SceneReparentNode*>(node->getEffectInstance().get())) {
+            inputPath = reparent->mapToInputPath(primPath);
+            if (inputPath.empty()) {
                 return NodePtr();
             }
-            inputPath = primPath.substr(parent.size());
+            if (reparent->isWrapping()) {
+                inputs = std::min(inputs, 1);
+            }
         }
     }
-    const int inputs = node->getNInputs();
     for (int i = 0; i < inputs; ++i) {
         NodePtr found = findCameraNode(node->getInput(i), inputPath, visited);
         if (found) {
@@ -832,6 +863,50 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->pickerButton, SIGNAL(clicked(bool)), this, SLOT(onPickerButtonClicked(bool)) );
 
     _imp->secondRowLayout->addWidget(_imp->pickerButton);
+
+    /*Progressive render row*/
+    _imp->sceneRenderRow = new QWidget(this);
+    _imp->sceneRenderRow->setObjectName(QString::fromUtf8("sceneRenderRow"));
+    _imp->sceneRenderRowLayout = new QHBoxLayout(_imp->sceneRenderRow);
+    _imp->sceneRenderRowLayout->setSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING));
+    _imp->sceneRenderRowLayout->setContentsMargins(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING),
+                                                   TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING));
+    _imp->mainLayout->addWidget(_imp->sceneRenderRow);
+
+    const QString maxSamplesTt = NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel the renderer refines the 3D view to; "
+                                                                           "0 uses the renderer's default. A change restarts the render."),
+                                                                        NATRON_NAMESPACE::WhiteSpaceNormal);
+    Label* maxSamplesLabel = new Label(tr("Max Samples"), _imp->sceneRenderRow);
+    maxSamplesLabel->setToolTip(maxSamplesTt);
+    _imp->sceneRenderRowLayout->addWidget(maxSamplesLabel);
+    _imp->maxSamplesBox = new SpinBox(_imp->sceneRenderRow, SpinBox::eSpinBoxTypeInt);
+    _imp->maxSamplesBox->setObjectName(QString::fromUtf8(kViewerParamMaxSamples));
+    _imp->maxSamplesBox->setMinimum(0);
+    _imp->maxSamplesBox->setValue(0);
+    _imp->maxSamplesBox->setMinimumWidth(_imp->maxSamplesBox->fontMetrics().horizontalAdvance(QString::fromUtf8("1048576")) + TO_DPIX(24));
+    _imp->maxSamplesBox->setToolTip(maxSamplesTt);
+    _imp->sceneRenderRowLayout->addWidget(_imp->maxSamplesBox);
+
+    _imp->refinementPausedButton = new Button(tr("Pause"), _imp->sceneRenderRow);
+    _imp->refinementPausedButton->setObjectName(QString::fromUtf8(kViewerParamRefinementPaused));
+    _imp->refinementPausedButton->setFocusPolicy(Qt::NoFocus);
+    _imp->refinementPausedButton->setCheckable(true);
+    _imp->refinementPausedButton->setChecked(false);
+    _imp->refinementPausedButton->setDown(false);
+    _imp->refinementPausedButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Holds the refinement at its current samples; "
+                                                                                       "releasing it continues from them. Edits wait until it is released."),
+                                                                                    NATRON_NAMESPACE::WhiteSpaceNormal));
+    _imp->sceneRenderRowLayout->addWidget(_imp->refinementPausedButton);
+
+    _imp->refineSamplesLabel = new Label(QString(), _imp->sceneRenderRow);
+    _imp->refineSamplesLabel->setObjectName(QString::fromUtf8("refineSamples"));
+    _imp->refineSamplesLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel of the frame shown, against the cap."),
+                                                                                NATRON_NAMESPACE::WhiteSpaceNormal));
+    _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
+    _imp->sceneRenderRowLayout->addStretch();
+    _imp->sceneRenderRow->hide();
+    QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
+    QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
     /*=============================================*/
 
     /*OpenGL viewer*/
@@ -1329,6 +1404,22 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                 }
             });
         }
+        // The Project default entries name the project's viewer display and view, which a viewer following them shows.
+        const char* const projectKnobNames[] = { "viewerDisplay", "viewerView" };
+        for (const char* knobName : projectKnobNames) {
+            KnobIPtr knob = project ? project->getKnobByName(knobName) : KnobIPtr();
+            KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+            if (handler) {
+                QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
+                    // Closing a project resets these knobs after its nodes are gone, while the tab waits for its deferred deletion.
+                    ProjectPtr p = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
+                    if (p && _imp->viewerNode && !p->isLoadingProject() && !p->isProjectClosing()) {
+                        _imp->viewerNode->onProjectDisplayTransformChanged();
+                        refreshDisplayTransformMenus();
+                    }
+                });
+            }
+        }
     }
 
     // The toolbar shows the viewer node's knobs, and follows them whoever sets them.
@@ -1412,6 +1503,20 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->setViewedNodeProvider([this]() -> NodePtr {
             return getSceneViewedNode();
         });
+        refreshSceneDisplayTransform();
+        {
+            SceneViewport::SelectionActions actions;
+            actions.setOnNodeBlocker = [this](const QStringList& paths) -> QString {
+                return SceneSelectionActions::setOnNodeBlocker(getGui(), paths);
+            };
+            actions.setOnNode = [this](const QStringList& paths) {
+                SceneSelectionActions::setOnCurrentNode(getGui(), paths);
+            };
+            actions.createFromSelection = [this](const QStringList& paths) {
+                SceneSelectionActions::createFromSelection(getGui(), getSceneViewedNode(), paths);
+            };
+            _imp->sceneViewport->setSelectionActions(actions);
+        }
         {
             SceneTransformPolicyTarget::Context context;
             context.viewedNode = [this]() -> NodePtr {
@@ -1433,6 +1538,9 @@ ViewerTab::onActiveInputDataKindChanged()
         if (Gui* gui = getGui()) {
             _imp->sceneViewport->setUndoHistory(gui->getUndoHistory());
         }
+        QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
+        QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
+        refreshSceneRenderFromKnobs();
     }
     if (!_imp->sceneViewport) {
         return;
@@ -1447,6 +1555,8 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->clearScene();
         _imp->viewer->show();
     }
+    refreshSceneRenderRow();
+    Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
 
 NodePtr
@@ -1461,6 +1571,29 @@ ViewerTab::getSceneViewedNode() const
     EffectInstancePtr input = (a >= 0) ? _imp->viewerNode->getInput(a) : EffectInstancePtr();
 
     return input ? input->getNode() : NodePtr();
+}
+
+void
+ViewerTab::refreshSceneDisplayTransform()
+{
+    if (!_imp->sceneViewport) {
+        return;
+    }
+    SceneViewportRenderer::DisplayTransform transform;
+    ProjectPtr project = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if (colorManagement) {
+        getDisplayTransform(&transform.display, &transform.view, nullptr);
+        transform.config = colorManagement->getConfig();
+        transform.colorSpace = project->getWorkingColorSpace();
+    }
+    if (_imp->viewerNode) {
+        // As the 2D viewer takes it: a look the config does not list is none.
+        _imp->viewerNode->getResolvedDisplayTransform(nullptr, nullptr, &transform.look);
+        transform.gain = _imp->viewerNode->getGain();
+        transform.gamma = _imp->viewerNode->getGamma();
+    }
+    _imp->sceneViewport->setDisplayTransform(transform);
 }
 
 void
@@ -1571,6 +1704,8 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
     } else if ((name == kViewerParamInPoint) || (name == kViewerParamOutPoint)) {
         refreshFrameRangeFromKnobs();
         abortViewersAndRefresh();
+    } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused)) {
+        refreshSceneRenderFromKnobs();
     }
 }
 
@@ -1587,6 +1722,7 @@ ViewerTab::refreshAllFromViewerKnobs()
     refreshViewsMenuFromKnob();
     refreshFpsFromKnobs();
     refreshFrameRangeFromKnobs();
+    refreshSceneRenderFromKnobs();
 }
 
 void
@@ -1633,6 +1769,7 @@ ViewerTab::refreshColorControlsFromKnobs()
 
     _imp->viewer->setGain(_imp->viewerNode->getGain());
     _imp->viewer->setGamma(_imp->viewerNode->getGamma());
+    refreshSceneDisplayTransform();
     _imp->viewer->redraw();
 }
 
@@ -1645,13 +1782,7 @@ ViewerTab::refreshWipeAndRoIFromKnobs()
     _imp->viewer->setWipeControls(center, _imp->viewerValue<double>(kViewerParamWipeAmount, 1.),
                                   _imp->viewerValue<double>(kViewerParamWipeAngle, 0.));
 
-    const double width = _imp->viewerValue<double>(kViewerParamUserRoISize, 0., 0);
-    const double height = _imp->viewerValue<double>(kViewerParamUserRoISize, 0., 1);
-    if ((width > 0.) && (height > 0.)) {
-        const double x1 = _imp->viewerValue<double>(kViewerParamUserRoIBottomLeft, 0., 0);
-        const double y1 = _imp->viewerValue<double>(kViewerParamUserRoIBottomLeft, 0., 1);
-        _imp->viewer->setUserRoI(RectD(x1, y1, x1 + width, y1 + height));
-    }
+    _imp->viewer->setUserRoI(_imp->viewer->getUserRegionOfInterest());
 
     const bool roiEnabled = _imp->viewerValue<bool>(kViewerParamEnableUserRoI, false);
     {
@@ -1680,6 +1811,74 @@ ViewerTab::refreshProcessingButtonsFromKnobs()
     _imp->activateRenderScale->setChecked(downscale);
     _imp->activateRenderScale->setDown(downscale);
     _imp->renderScaleCombo->setCurrentIndex_no_emit(level);
+}
+
+void
+ViewerTab::refreshSceneRenderFromKnobs()
+{
+    const int maxSamples = _imp->viewerValue<int>(kViewerParamMaxSamples, 0);
+    const bool paused = _imp->viewerValue<bool>(kViewerParamRefinementPaused, false);
+
+    {
+        QSignalBlocker b0(_imp->maxSamplesBox), b1(_imp->refinementPausedButton);
+        if (_imp->maxSamplesBox->value() != maxSamples) {
+            _imp->maxSamplesBox->setValue(maxSamples);
+        }
+        _imp->refinementPausedButton->setChecked(paused);
+        _imp->refinementPausedButton->setDown(paused);
+    }
+    if (_imp->sceneViewport) {
+        _imp->sceneViewport->setMaxSamples(maxSamples);
+        _imp->sceneViewport->setRefinementPaused(paused);
+    }
+}
+
+void
+ViewerTab::onMaxSamplesBoxChanged(double value)
+{
+    editViewerKnobs(tr("Max Samples"), [this, value]() { _imp->setViewerValue<int>(kViewerParamMaxSamples, (int)value); }, _imp->maxSamplesBox->getGestureKey());
+    refreshSceneRenderFromKnobs();
+}
+
+void
+ViewerTab::onRefinementPausedButtonClicked(bool paused)
+{
+    editViewerKnobs(tr("Refinement Paused"), [this, paused]() {
+        _imp->setViewerValue<bool>(kViewerParamRefinementPaused, paused);
+    });
+    refreshSceneRenderFromKnobs();
+}
+
+void
+ViewerTab::refreshSceneRenderRow()
+{
+    if (!_imp->sceneRenderRow) {
+        return;
+    }
+    bool topVisible;
+    {
+        QMutexLocker l(&_imp->visibleToolbarsMutex);
+        topVisible = _imp->topToolbarVisible;
+    }
+    const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
+
+    _imp->sceneRenderRow->setVisible(topVisible && progressive);
+    refreshRefineSamplesLabel();
+}
+
+void
+ViewerTab::refreshRefineSamplesLabel()
+{
+    if (!_imp->sceneViewport || !_imp->sceneRenderRow->isVisible()) {
+        return;
+    }
+    const SceneViewportRenderer::RefineStatus refine = _imp->sceneViewport->getRenderer().getRefineStatus();
+    const QString drawn = (refine.active && (refine.drawnSamples >= 0)) ? QString::number(refine.drawnSamples) : QString::fromUtf8("-");
+    const QString text = (refine.maxSamples > 0) ? tr("%1 / %2 samples").arg(drawn).arg(refine.maxSamples) : tr("%1 samples").arg(drawn);
+
+    if (_imp->refineSamplesLabel->text() != text) {
+        _imp->refineSamplesLabel->setText(text);
+    }
 }
 
 void

@@ -1,22 +1,25 @@
 name: Beta Release
 
+run-name: ${{ format('Beta · after {0}', github.event.workflow_run.display_title) }}
+
 on:
   workflow_run:
-    workflows: ['Tests']
+    workflows: ['Build and test']
     types: [completed]
 
 jobs:
   dispatch-beta:
-    name: dispatch-beta
+    name: Tag and dispatch beta
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: write
-    # `main`'s branch protection already requires the Checks workflow (format,
-    # lint-ci) and this Tests workflow's build-and-test job to pass before a
-    # merge can land, so a green post-merge Tests run implies Checks already
-    # passed too. Keying off Tests alone is therefore not a gap; re-checking
-    # Checks' conclusion here would just be redundant cross-workflow polling.
+    # `main`'s branch protection already requires the Lint workflow (Format,
+    # Lint CI, Code rules) and this workflow's Build and test job to pass
+    # before a merge can land, so a green post-merge Build and test run implies
+    # Lint already passed too. Keying off Build and test alone is therefore not
+    # a gap; re-checking Lint's conclusion here would just be redundant
+    # cross-workflow polling.
     # Revisit only if branch protection on `main` is ever relaxed.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
@@ -75,3 +78,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run release.yml --ref main -f tag="${{ steps.next_tag.outputs.tag }}"
+
+      - name: Record allocated tag
+        if: always()
+        env:
+          BETA_TAG: ${{ steps.next_tag.outputs.tag }}
+        run: |
+          if [[ -n "$BETA_TAG" ]]; then
+            echo "Beta tag: \`$BETA_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No beta tag was allocated." >> "$GITHUB_STEP_SUMMARY"
+          fi

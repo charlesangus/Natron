@@ -3,7 +3,7 @@
 Tolerance: none recorded.
 
 `NativeWrite` (`NativeWrite.h`) mirrors the Read. It is the only plug-in
-registered under `PLUGINID_NATRON_WRITE` (`fr.inria.built-in.Write`), at one
+registered under `PLUGINID_NATRON_WRITE` (`Write`), at one
 version, `PLUGIN_MAJOR_NATRON_WRITE`. There is no Write container and no OFX
 writer behind it: `WriteNode` is gone, and `OfxHost::loadOFXPlugins()` skips any
 OFX plug-in whose contexts include `kOfxImageEffectContextWriter`. Encoding
@@ -22,14 +22,14 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   `PLUGINID_NATRON_WRITE` (or empty). Everything that creates a Write (Render
   Selected, `app.createWriter`, the command-line render of an output file)
   names `PLUGINID_NATRON_WRITE` directly. Don't hard-code an extension set elsewhere.
-- **Knobs.** The script names are WriteOIIO's, because tests, `tools/bench` and
-  host code look them up by name: `filename`, `overwrite`,
-  `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncr`,
+- **Knobs.** Tests, `tools/bench` and host code look them up by name:
+  `filename`, `overwrite`,
+  `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncrement`,
   `bitDepth`, `compression`, `quality`, `dwaCompressionLevel`,
-  `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`,
-  `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
-  group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
-  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack`,
+  `zipCompressionLevel`, `tileSize`, `partSplitting`, `views`,
+  `colorspace`, the `ocioContext` group of `contextKey1`..`contextKey4` and
+  `contextValue1`..`contextValue4`, the hidden `ocioConfigFile`
+  and `ocioWorkingSpace`, `startRender`, `metadata`, `readBack`,
   and `reload` (a Reload button on the `readBack` row). The compression, bit-depth and per-format knobs follow the
   file name through `OiioWriteSupport::paramVisibility()`.
 - **Format.** The file always takes the input's format and pixel aspect
@@ -47,13 +47,18 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
 - **Colour.** Rows go from the working space to the output space through the
   project's OCIO config, in the band callback. The default output space is
   from the config's file rules, then the project's file default for the pixel
-  depth. The file is tagged with `oiio:ColorSpace`, set to the space's Color
+  depth. The `colorspace` menu's first entry, `projectDefault`, labelled
+  with the space it currently stands for, follows that chain live, as on the Read, and the resolved space is
+  part of the output hash. The file is tagged with `oiio:ColorSpace`, set to the space's Color
   Interop ID when the config has one, else to the space name
   (`IoColorSpace::fileTag()`).
-- **Metadata.** With `writeMetadata` on, the upstream metadata is written by
-  `OiioWriteSupport::applyMetadata()`, the inverse of
-  `OiioReadSupport::attributeMetadata()`. The routing rules are in the
-  Metadata section above.
+- **Metadata.** The `metadata` choice picks what of the upstream metadata is
+  written by `OiioWriteSupport::applyMetadata()`, the inverse of
+  `OiioReadSupport::attributeMetadata()`: No Metadata skips the call, Default
+  Metadata writes the keys with a native attribute, All Metadata Except Input
+  (the default) also writes the rest under their full key names, and All
+  Metadata adds the keys that describe the input file. The routing rules are in
+  the Metadata section of `Engine/Nodes/README.md`.
 - **When the file is written.** Only a frame of the Write's own render to
   disk encodes: the panel's Render button, Render Selected, `app.render` and
   the `-w` command-line render all run through `startWritersRendering()` and

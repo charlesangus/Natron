@@ -1099,6 +1099,61 @@ try:
                   "badge-tooltip: empty graph space shows no badge tooltip")
             QToolTip.hideText()
 
+        # ---- pan-fit: a middle-button pan scrolls the view, so every node moves on screen by the
+        # pan and keeps its scene position, and fitting again puts each node back where it was.
+        gt.section("pan-fit")
+        gt.close_all_panels()
+        app.clearSelection()
+        graph_p = root_graph()
+        probes = [nav_a, nav_b, src_v]
+
+        def fit_all():
+            QMetaObject.invokeMethod(graph_p, "centerOnAllNodes")
+            QApplication.processEvents()
+
+        def view_positions():
+            out = []
+            for n in probes:
+                p = graph_p.mapFromScene(QPointF(*node_center_scene(n)))
+                out.append((p.x(), p.y()))
+            return out
+
+        def near(a, b, tol=1.0):
+            return all(abs(pa[0] - pb[0]) <= tol and abs(pa[1] - pb[1]) <= tol for pa, pb in zip(a, b))
+
+        fit_all()
+        yield ("sleep", SETTLE_MS)
+        graph_shot(graph_p, "panfit-01-fitted")
+        fitted = view_positions()
+        scene_before = [n.getPosition() for n in probes]
+        hbar_before = graph_p.horizontalScrollBar().value()
+        vbar_before = graph_p.verticalScrollBar().value()
+
+        vp = graph_p.viewport()
+        start = QPointF(vp.width() / 2.0, vp.height() / 2.0)
+        pan = QPointF(120.0, 70.0)
+        send_mouse(vp, QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton)
+        send_mouse(vp, QEvent.MouseButtonPress, start, Qt.MiddleButton, Qt.MiddleButton)
+        for i in range(1, DRAG_STEPS + 1):
+            send_mouse(vp, QEvent.MouseMove, start + pan * (i / float(DRAG_STEPS)), Qt.NoButton, Qt.MiddleButton)
+        send_mouse(vp, QEvent.MouseButtonRelease, start + pan, Qt.MiddleButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        graph_shot(graph_p, "panfit-02-panned")
+
+        panned = view_positions()
+        want = [(x + pan.x(), y + pan.y()) for x, y in fitted]
+        report("NOTE pan-fit: fitted %r, panned %r" % (fitted, panned))
+        check(near(panned, want), "pan-fit: a middle-button pan moves every node on screen by the pan")
+        check([n.getPosition() for n in probes] == scene_before, "pan-fit: a pan leaves the nodes' positions alone")
+        check(graph_p.horizontalScrollBar().value() == hbar_before - int(pan.x())
+              and graph_p.verticalScrollBar().value() == vbar_before - int(pan.y()),
+              "pan-fit: the pan scrolls the view by the pan")
+
+        fit_all()
+        yield ("sleep", SETTLE_MS)
+        graph_shot(graph_p, "panfit-03-refitted")
+        check(near(view_positions(), fitted), "pan-fit: fitting after a pan puts every node back where the first fit had it")
+
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

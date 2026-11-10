@@ -332,21 +332,15 @@ try:
         else:
             QApplication.processEvents()
 
-    root_offset = [0.0, 0.0]
-
     def fit():
         clear_selection()
         invoke("centerOnAllNodes")
         repaint()
-        # Framing moves the graph's root item so the top-left node sits at the scene origin.
-        positions = [c.getPosition() for c in app.getChildren()]
-        if positions:
-            root_offset[0] = -min(p[0] for p in positions)
-            root_offset[1] = -min(p[1] for p in positions)
 
     def to_view(x, y):
+        """Node positions are scene coordinates: the graph pans by scrolling, its root item stays put."""
         graph = root_graph()
-        p = graph.mapFromScene(QPointF(x + root_offset[0], y + root_offset[1]))
+        p = graph.mapFromScene(QPointF(x, y))
         return QPointF(p.x(), p.y())
 
     def frame_on(name):
@@ -356,7 +350,7 @@ try:
         graph = root_graph()
         x, y = node_centre(name)
         graph.resetTransform()
-        graph.centerOn(x + root_offset[0], y + root_offset[1])
+        graph.centerOn(x, y)
         QApplication.processEvents()
         return to_view(x, y)
 

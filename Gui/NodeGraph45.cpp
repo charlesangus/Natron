@@ -692,10 +692,4 @@ NodeGraph::copyNodesAndCreateInGroup(const NodesGuiList& nodes,
     getGui()->getApp()->getProject()->forceComputeInputDependentDataOnAllTrees();
 }
 
-QPointF
-NodeGraph::getRootPos() const
-{
-    return _imp->_root->pos();
-}
-
 NATRON_NAMESPACE_EXIT

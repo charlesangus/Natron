@@ -100,6 +100,12 @@ public:
     void updateNavigator();
 
     /**
+     * @brief Refreshes the overlays (navigator, cache size text) once control returns to the
+     * event loop, however many times it is called before then.
+     **/
+    void scheduleOverlayRefresh();
+
+    /**
      * @brief Call when the nodes' bounds or appearance change: the navigator thumbnail is
      * rendered again shortly after, once for any number of calls in between.
      **/
@@ -198,8 +204,6 @@ public:
      * it was copied from: each of its knobs is linked two-way to the original's.
      **/
     void createLinkedNodes(const QPointF& pos);
-
-    QPointF getRootPos() const;
 
     bool isDoingNavigatorRender() const;
 
@@ -424,6 +428,7 @@ private:
     virtual void mouseDoubleClickEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void resizeEvent(QResizeEvent* e) OVERRIDE FINAL;
     virtual void paintEvent(QPaintEvent* e) OVERRIDE FINAL;
+    virtual void scrollContentsBy(int dx, int dy) OVERRIDE FINAL;
     virtual void wheelEvent(QWheelEvent* e) OVERRIDE FINAL;
     virtual void focusInEvent(QFocusEvent* e) OVERRIDE FINAL;
     virtual void focusOutEvent(QFocusEvent* e) OVERRIDE FINAL;
@@ -449,7 +454,14 @@ private:
                                       NodeGui** node,
                                       Edge** edge);
 
-    void moveRootInternal(double dx, double dy);
+    // Scrolls the view so that the content moves by delta view pixels.
+    void panContentBy(const QPoint& delta);
+
+    // Places the overlays at the view's corners and recomposes the navigator.
+    void refreshOverlays();
+
+    // An uneditable or unedited PyPlug's graph is painted under a veil with the unlock button.
+    bool isDrawingLockedVeil() const;
 
     void wheelEventInternal(bool ctrlDown, double delta);
 

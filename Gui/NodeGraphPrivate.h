@@ -73,8 +73,10 @@ CLANG_DIAG_ON(uninitialized)
 // Matches the height below which a node's name text stops being drawn.
 #define NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX 4
 
-#define NATRON_SCENE_MAX 1e6
-#define NATRON_SCENE_MIN 0
+// Bounds of the fixed scene rectangle the view scrolls over. At the largest zoom (50) its width
+// in view pixels stays below INT_MAX, which the scroll bar values are limited to.
+#define NATRON_SCENE_MAX 1e7
+#define NATRON_SCENE_MIN -1e7
 
 NATRON_NAMESPACE_ENTER
 
@@ -258,7 +260,9 @@ public:
     /// Enables the create-node shortcut that opens the tab menu.
     /// This is set to true on enterEvent and set back to false on leaveEvent
     bool _nodeCreationShortcutEnabled;
-    QGraphicsItem* _root; ///< this is the parent of all items in the graph
+    // The parent of all items in the graph. It stays at the scene origin: the view pans by
+    // scrolling, so root, node-root and scene coordinates are all the same.
+    QGraphicsItem* _root;
     QGraphicsItem* _nodeRoot; ///< this is the parent of all nodes
     LoopBlockOverlay* _loopBlocks;
     QGraphicsSimpleTextItem* _cacheSizeText;
@@ -266,8 +270,11 @@ public:
     QTimer _refreshCacheTextTimer;
     Navigator* _navigator;
     QMenu* _menu;
-    QGraphicsItem *_tL, *_tR, *_bR, *_bL;
-    bool _refreshOverlays;
+    // Coalesces overlay refreshes asked for by content changes; view changes refresh at once so
+    // the overlays move in the same frame as the scrolled content.
+    QTimer overlayRefreshTimer;
+    // Set while a pan sets both scroll bars, so that the overlays are refreshed once, not per bar.
+    bool overlayRefreshSuspended;
 
     Edge* _hintInputEdge;
     Edge* _hintOutputEdge;
@@ -323,9 +330,8 @@ public:
     std::map<NodeGuiPtr, NodesGuiList> _nodesWithinBDAtPenDown;
     QRectF _selectionRect;
 
-    // eEventStateCutting: the cut line drawn so far, in _root's coordinates so that panning keeps
-    // it on the pipes, and the pipes it crosses by destination and input, highlighted until the
-    // cut ends.
+    // eEventStateCutting: the cut line drawn so far, in scene coordinates, and the pipes it
+    // crosses by destination and input, highlighted until the cut ends.
     std::vector<QPointF> _cutLine;
     std::map<NodeGuiWPtr, std::set<int>, std::owner_less<NodeGuiWPtr>> _cutPipes;
     bool _bendPointsVisible;
@@ -348,13 +354,12 @@ public:
 
     // The navigator shows a thumbnail of the nodes rendered once per graph change, at the latest
     // after navigatorRenderTimer fires; panning and zooming only recompose it with the view
-    // rectangle. Both rectangles are in _root coordinates, so that panning, which moves _root,
-    // leaves them valid.
+    // rectangle. Both rectangles are in scene coordinates.
     QImage navigatorContent;
     QRectF navigatorContentRect;
     bool navigatorContentDirty;
     QTimer navigatorRenderTimer;
-    QRectF nodesBoundsInRoot;
+    QRectF nodesBounds;
     bool nodesBoundsDirty;
     // While a node drag is under way the navigator keeps the thumbnail it had, and the bounds
     // only grow, so that no move pays for walking every node; the drag's end renders it once.
@@ -373,10 +378,10 @@ public:
     };
     static constexpr int kGridNodeSlot = -2;
 
-    // The subtree bounds of every node and edge in _nodeRoot coordinates, which panning leaves
-    // alone. Any navigator invalidation outside a node drag rebuilds it on the next query, since
-    // whatever changes the nodes' look may change their bounds; moves and edge geometry changes
-    // during a drag update just the items in itemGridStale.
+    // The subtree bounds of every node and edge in _nodeRoot coordinates. Any navigator
+    // invalidation outside a node drag rebuilds it on the next query, since whatever changes the
+    // nodes' look may change their bounds; moves and edge geometry changes during a drag update
+    // just the items in itemGridStale.
     NodeGraphItemGrid<const QGraphicsItem*, GridItem> itemGrid;
     bool itemGridDirty;
     std::unordered_map<const QGraphicsItem*, GridItem> itemGridStale;

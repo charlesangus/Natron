@@ -632,7 +632,6 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         QPointF mousePosSceneCoordinates;
         bool insideNavigator = isNearbyNavigator(e->pos(), mousePosSceneCoordinates);
         if (insideNavigator) {
-            _imp->_refreshOverlays = true;
             centerOn(mousePosSceneCoordinates);
             _imp->_evtState = eEventStateDraggingNavigator;
             didSomething = true;

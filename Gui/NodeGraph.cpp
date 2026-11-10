@@ -39,6 +39,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QPolygonF>
+#include <QScrollBar>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -122,14 +123,20 @@ NodeGraph::NodeGraph(Gui* gui,
 
     QObject::connect( &_imp->autoScrollTimer, SIGNAL(timeout()), this, SLOT(onAutoScrollTimerTriggered()) );
 
+    _imp->overlayRefreshTimer.setSingleShot(true);
+    QObject::connect(&_imp->overlayRefreshTimer, &QTimer::timeout, this, [this]() {
+        refreshOverlays();
+    });
 
     setMouseTracking(true);
     setCacheMode(CacheBackground);
+    // Any mode but FullViewportUpdate lets a scroll blit the viewport and paint only the exposed
+    // strip; the pan relies on that.
     setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
     setRenderHint(QPainter::Antialiasing);
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
-    //setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
-    //setResizeAnchor(QGraphicsView::AnchorUnderMouse);
+    // Fixed, so that items never grow or shrink the scrollable area and panning is a scroll.
+    setSceneRect(QRectF(NATRON_SCENE_MIN, NATRON_SCENE_MIN, NATRON_SCENE_MAX - NATRON_SCENE_MIN, NATRON_SCENE_MAX - NATRON_SCENE_MIN));
     scale(0.8, 0.8);
 
     _imp->_root = new NodeGraphTextItem(this, 0, false);
@@ -177,26 +184,6 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_kissPreviewEdge->setZValue(16);
     _imp->_kissPreviewEdge->hide();
 
-    _imp->_tL = new NodeGraphTextItem(this, 0, false);
-    _imp->_tL->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    scene->addItem(_imp->_tL);
-
-    _imp->_tR = new NodeGraphTextItem(this, 0, false);
-    _imp->_tR->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    scene->addItem(_imp->_tR);
-
-    _imp->_bR = new NodeGraphTextItem(this, 0, false);
-    _imp->_bR->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    scene->addItem(_imp->_bR);
-
-    _imp->_bL = new NodeGraphTextItem(this, 0, false);
-    _imp->_bL->setFlag(QGraphicsItem::ItemIgnoresTransformations);
-    scene->addItem(_imp->_bL);
-
-    _imp->_tL->setPos( _imp->_tL->mapFromScene( QPointF(NATRON_SCENE_MIN, NATRON_SCENE_MAX) ) );
-    _imp->_tR->setPos( _imp->_tR->mapFromScene( QPointF(NATRON_SCENE_MAX, NATRON_SCENE_MAX) ) );
-    _imp->_bR->setPos( _imp->_bR->mapFromScene( QPointF(NATRON_SCENE_MAX, NATRON_SCENE_MIN) ) );
-    _imp->_bL->setPos( _imp->_bL->mapFromScene( QPointF(NATRON_SCENE_MIN, NATRON_SCENE_MIN) ) );
     centerOn(0, 0);
 
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -367,6 +354,78 @@ NodeGraph::resizeEvent(QResizeEvent* e)
     // The thumbnail is rendered at the navigator's size, which follows the view's.
     invalidateNavigatorContent();
     QGraphicsView::resizeEvent(e);
+    refreshOverlays();
+}
+
+void
+NodeGraph::scrollContentsBy(int dx,
+                            int dy)
+{
+    QGraphicsView::scrollContentsBy(dx, dy);
+    if (isDrawingLockedVeil()) {
+        // The unlock button is painted at a fixed place in the viewport, so a blit would move it.
+        viewport()->update();
+    }
+    if (!_imp->overlayRefreshSuspended) {
+        refreshOverlays();
+    }
+}
+
+void
+NodeGraph::panContentBy(const QPoint& delta)
+{
+    if (delta.isNull()) {
+        return;
+    }
+    _imp->overlayRefreshSuspended = true;
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+    _imp->overlayRefreshSuspended = false;
+    refreshOverlays();
+}
+
+void
+NodeGraph::scheduleOverlayRefresh()
+{
+    if (!_imp->overlayRefreshTimer.isActive()) {
+        _imp->overlayRefreshTimer.start(0);
+    }
+}
+
+void
+NodeGraph::refreshOverlays()
+{
+    // QGraphicsView scrolls while the constructor sets the view up, before the overlays exist.
+    if (!_imp->_navigator || !_imp->_cacheSizeText) {
+        return;
+    }
+    _imp->overlayRefreshTimer.stop();
+
+    QRectF visibleScene = visibleSceneRect();
+    QRect visibleWidget = visibleWidgetRect();
+
+    _imp->_cacheSizeText->setPos(visibleScene.topLeft());
+
+    double navWidth = NATRON_NAVIGATOR_BASE_WIDTH * width();
+    double navHeight = NATRON_NAVIGATOR_BASE_HEIGHT * height();
+    QPoint btmRightWidget = visibleWidget.bottomRight();
+    QPoint navTopLeftWidget = btmRightWidget - QPoint(navWidth, navHeight);
+    QPointF navTopLeftScene = mapToScene(navTopLeftWidget);
+
+    _imp->_navigator->refreshPosition(navTopLeftScene, navWidth, navHeight);
+    updateNavigator();
+}
+
+bool
+NodeGraph::isDrawingLockedVeil() const
+{
+    NodeCollectionPtr collection = getGroup();
+    NodeGroup* isGroup = dynamic_cast<NodeGroup*>( collection.get() );
+    if (!isGroup || !isGroup->getNode()->isPyPlug()) {
+        return false;
+    }
+
+    return !isGroup->isSubGraphEditable() || !isGroup->getNode()->hasPyPlugBeenEdited();
 }
 
 void
@@ -374,42 +433,17 @@ NodeGraph::paintEvent(QPaintEvent* e)
 {
     AppInstancePtr app;
 
-    if ( getGui() ) {
+    if (getGui()) {
         app = getGui()->getApp();
     }
-    if ( app && app->getProject()->isLoadingProjectInternal() ) {
+    if (app && app->getProject()->isLoadingProjectInternal()) {
         return;
     }
 
     NodeCollectionPtr collection = getGroup();
-    NodeGroup* isGroup = dynamic_cast<NodeGroup*>( collection.get() );
-    bool isGroupEditable = true;
-    bool groupEdited = true;
-    if (isGroup && isGroup->getNode()->isPyPlug()) {
-        isGroupEditable = isGroup->isSubGraphEditable();
-        groupEdited = isGroup->getNode()->hasPyPlugBeenEdited();
-    }
-
-    bool drawLockedMode = !isGroupEditable || !groupEdited;
-
-    if (_imp->_refreshOverlays) {
-        ///The visible portion of the scene, in scene coordinates
-        QRectF visibleScene = visibleSceneRect();
-        QRect visibleWidget = visibleWidgetRect();
-
-        ///Set the cache size overlay to be in the top left corner of the view
-        _imp->_cacheSizeText->setPos( visibleScene.topLeft() );
-
-        double navWidth = NATRON_NAVIGATOR_BASE_WIDTH * width();
-        double navHeight = NATRON_NAVIGATOR_BASE_HEIGHT * height();
-        QPoint btmRightWidget = visibleWidget.bottomRight();
-        QPoint navTopLeftWidget = btmRightWidget - QPoint(navWidth, navHeight );
-        QPointF navTopLeftScene = mapToScene(navTopLeftWidget);
-
-        _imp->_navigator->refreshPosition(navTopLeftScene, navWidth, navHeight);
-        updateNavigator();
-        _imp->_refreshOverlays = false;
-    }
+    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(collection.get());
+    const bool drawLockedMode = isDrawingLockedVeil();
+    const bool isGroupEditable = !isGroup || !isGroup->getNode()->isPyPlug() || isGroup->isSubGraphEditable();
 
     // A zoom repaints the whole view, so the items need no extra update when this flips.
     _imp->lowDetail = std::abs(transform().m22()) * _imp->lowDetailFontHeight < NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX;
@@ -461,7 +495,7 @@ NodeGraph::paintEvent(QPaintEvent* e)
         p.setPen(pen);
         QPolygonF line;
         for (std::size_t i = 0; i < _imp->_cutLine.size(); ++i) {
-            line << mapFromScene(_imp->_root->mapToScene(_imp->_cutLine[i]));
+            line << mapFromScene(_imp->_cutLine[i]);
         }
         p.drawPolyline(line);
     }

@@ -185,8 +185,8 @@ NodeGraph::wheelEventInternal(bool ctrlDown,
             scaleFactor = pow( NATRON_WHEEL_ZOOM_PER_DELTA, _imp->_accumDelta );
             scale(scaleFactor, scaleFactor);
             _imp->_accumDelta = 0;
+            refreshOverlays();
         }
-        _imp->_refreshOverlays = true;
     }
 }
 
@@ -463,9 +463,8 @@ NodeGraph::updateNavigator()
         painter.translate(-sceneR.topLeft());
 
         if (!_imp->navigatorContent.isNull()) {
-            QRectF contentScene = _imp->_root->mapRectToScene(_imp->navigatorContentRect);
             painter.setRenderHint(QPainter::SmoothPixmapTransform);
-            painter.drawImage(contentScene, _imp->navigatorContent);
+            painter.drawImage(_imp->navigatorContentRect, _imp->navigatorContent);
         }
 
         QRectF viewRect = visibleSceneRect();
@@ -507,11 +506,11 @@ NodeGraph::invalidateNavigatorContent()
     _imp->navigatorDeferredByDrag = false;
     _imp->nodesBoundsDirty = true;
     _imp->itemGridDirty = true;
-    _imp->_refreshOverlays = true;
     if (isLoadingProjectNodes()) {
-        // paintEvent() skips the load; onProjectNodesRestored() invalidates once more.
+        // onProjectNodesRestored() invalidates once more.
         return;
     }
+    scheduleOverlayRefresh();
     if (!_imp->navigatorRenderTimer.isActive()) {
         _imp->navigatorRenderTimer.start(NATRON_NAVIGATOR_RENDER_DELAY_MS);
     }
@@ -528,8 +527,7 @@ NodeGraph::onNavigatorRenderTimerTimeout()
         return;
     }
     _imp->renderNavigatorContent();
-    _imp->_refreshOverlays = true;
-    viewport()->update();
+    refreshOverlays();
 }
 
 bool

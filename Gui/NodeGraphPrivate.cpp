@@ -75,11 +75,8 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _refreshCacheTextTimer()
     , _navigator(NULL)
     , _menu(NULL)
-    , _tL(NULL)
-    , _tR(NULL)
-    , _bR(NULL)
-    , _bL(NULL)
-    , _refreshOverlays(false)
+    , overlayRefreshTimer()
+    , overlayRefreshSuspended(false)
     , _hintInputEdge(NULL)
     , _hintOutputEdge(NULL)
     , _backdropResized()
@@ -101,7 +98,7 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , navigatorContentRect()
     , navigatorContentDirty(true)
     , navigatorRenderTimer()
-    , nodesBoundsInRoot()
+    , nodesBounds()
     , nodesBoundsDirty(true)
     , navigatorDeferredByDrag(false)
     , navigatorBatchDepth(0)
@@ -261,11 +258,11 @@ NodeGraphPrivate::calcNodesBoundingRect()
                 }
             }
         }
-        nodesBoundsInRoot = ret.isNull() ? QRectF() : _root->mapRectFromScene(ret);
+        nodesBounds = ret;
         nodesBoundsDirty = false;
     }
 
-    return nodesBoundsInRoot.isNull() ? QRectF() : _root->mapRectToScene(nodesBoundsInRoot);
+    return nodesBounds;
 }
 
 void
@@ -275,15 +272,15 @@ NodeGraphPrivate::growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved)
         // The next calcNodesBoundingRect() walks every node anyway.
         return;
     }
-    QRectF grown = nodesBoundsInRoot;
+    QRectF grown = nodesBounds;
     for (std::set<NodeGuiPtr>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
         if ((*it)->isVisible()) {
-            grown = grown.united(_root->mapRectFromScene((*it)->boundingRectWithEdges()));
+            grown = grown.united((*it)->boundingRectWithEdges());
         }
     }
-    if (grown != nodesBoundsInRoot) {
-        nodesBoundsInRoot = grown;
-        _refreshOverlays = true;
+    if (grown != nodesBounds) {
+        nodesBounds = grown;
+        _publicInterface->scheduleOverlayRefresh();
     }
 }
 
@@ -346,7 +343,7 @@ NodeGraphPrivate::renderNavigatorContent()
         _publicInterface->scene()->render(&painter, navigatorContent.rect(), nodesScene, Qt::KeepAspectRatio);
         isDoingPreviewRender = false;
     }
-    navigatorContentRect = _root->mapRectFromScene(nodesScene);
+    navigatorContentRect = nodesScene;
 }
 
 void

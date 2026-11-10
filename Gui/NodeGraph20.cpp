@@ -719,14 +719,13 @@ NodeGraph::disconnectShakenNodes(const std::set<NodeGuiPtr>& shaken,
 void
 NodeGraph::extendCutLine(const QPointF& scenePos)
 {
-    const QPointF point = _imp->_root->mapFromScene(scenePos);
     if (_imp->_cutLine.empty()) {
-        _imp->_cutLine.push_back(point);
+        _imp->_cutLine.push_back(scenePos);
 
         return;
     }
-    const QLineF step(_imp->_root->mapToScene(_imp->_cutLine.back()), scenePos);
-    _imp->_cutLine.push_back(point);
+    const QLineF step(_imp->_cutLine.back(), scenePos);
+    _imp->_cutLine.push_back(scenePos);
 
     // The pipes keep still for the whole cut, so only the newest step of the line can cross more,
     // and the scene index narrows that to the pipes whose bounds meet the step. The rect is padded
@@ -980,14 +979,7 @@ void
 NodeGraph::mouseMoveEvent(QMouseEvent* e)
 {
     QPointF newPos = mapToScene( e->pos() );
-    QPointF lastMousePosScene = mapToScene( _imp->_lastMousePos.x(), _imp->_lastMousePos.y() );
-    double dx, dy;
-    {
-        QPointF newPosRoot = _imp->_root->mapFromScene(newPos);
-        QPointF lastMousePosRoot = _imp->_root->mapFromScene(lastMousePosScene);
-        dx = newPosRoot.x() - lastMousePosRoot.x();
-        dy = newPosRoot.y() - lastMousePosRoot.y();
-    }
+    QPointF lastMousePosScene = mapToScene(_imp->_lastMousePos.x(), _imp->_lastMousePos.y());
 
     _imp->_hasMovedOnce = true;
 
@@ -1053,9 +1045,9 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
         break;
     }
     case eEventStateMovingArea: {
-        mustUpdateNavigator = true;
-        moveRootInternal(dx, dy);
-        mustUpdate = true;
+        // The scroll repaints only the strip it exposes and moves the overlays itself.
+        panContentBy(e->pos() - _imp->_lastMousePos);
+        mustUpdate = false;
         _imp->cursorSet = true;
         setCursor( QCursor(Qt::SizeAllCursor) );
         break;
@@ -1101,11 +1093,9 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
         QPointF mousePosSceneCoordinates;
         bool insideNavigator = isNearbyNavigator(e->pos(), mousePosSceneCoordinates);
         if (insideNavigator) {
-            _imp->_refreshOverlays = true;
             centerOn(mousePosSceneCoordinates);
             _imp->_lastMousePos = e->pos();
             dragPickedUpArrowToCursor();
-            update();
 
             return;
         }
@@ -1181,7 +1171,7 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
     dragPickedUpArrowToCursor();
 
     if (mustUpdateNavigator) {
-        _imp->_refreshOverlays = true;
+        scheduleOverlayRefresh();
         mustUpdate = true;
     }
 

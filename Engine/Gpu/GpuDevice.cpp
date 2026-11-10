@@ -459,18 +459,31 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         }
     } else {
         std::vector<GpuDeviceCandidate> candidates(pds.size());
+        std::string skippedCpu;
         for (size_t i = 0; i < pds.size(); ++i) {
             candidates[i].index = static_cast<uint32_t>(i);
             candidates[i].type = props[i].deviceType;
             candidates[i].deviceLocalHeapSize = largestDeviceLocalHeap(pds[i]);
             candidates[i].name = props[i].deviceName;
             candidates[i].meetsRequirements = meetsRequirements(pds[i], props[i]);
+            if (props[i].deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                // A software rasteriser is only ever used when the user names it.
+                if (candidates[i].meetsRequirements) {
+                    skippedCpu += (skippedCpu.empty() ? "" : ", ") + candidates[i].name;
+                }
+                candidates[i].meetsRequirements = false;
+            }
         }
         if (const std::optional<GpuAutoPick> best = pickAutoDevice(candidates)) {
             pick = static_cast<int>(candidates[best->candidate].index);
             selectionReason = best->reason;
         }
         if (pick < 0) {
+            if (!skippedCpu.empty()) {
+                return fail(VK_ERROR_FEATURE_NOT_PRESENT,
+                            "only CPU Vulkan devices (" + skippedCpu
+                                + ") are present; set NATRON_GPU_DEVICE to use one");
+            }
             return fail(VK_ERROR_FEATURE_NOT_PRESENT, "no device meets the required features");
         }
     }

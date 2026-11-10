@@ -57,7 +57,8 @@ struct GpuFaultPlan {
 };
 
 struct GpuDeviceOptions {
-    // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick.
+    // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick, which never chooses a CPU-type
+    // device (lavapipe, llvmpipe); naming one here or in NATRON_GPU_DEVICE is the only way to get it.
     std::string deviceSelector;
     // NATRON_GPU_VALIDATION=1 also enables it. Silently off when the Khronos layer is not installed.
     bool enableValidation = false;
@@ -137,8 +138,8 @@ struct GpuAutoPick {
 
 // The automatic choice: best type (discrete, integrated, virtual, cpu, other), then the larger device-local heap, then
 // the lower index, so it does not depend on the loader's enumeration order. Candidates that fail the requirements are
-// never picked. A CPU-type device is picked when nothing better qualifies; refusing it in auto mode is the caller's
-// policy. Empty when no candidate qualifies.
+// never picked. A CPU-type device is picked when nothing better qualifies; GpuDevice::create excludes them
+// before calling this. Empty when no candidate qualifies.
 std::optional<GpuAutoPick> pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates);
 
 // The queues a device opens and the one each QueueKind submits to; the fields match GpuDeviceInfo's.

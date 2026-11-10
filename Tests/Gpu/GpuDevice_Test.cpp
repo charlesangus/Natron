@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "GpuDevice.h"
@@ -82,6 +84,35 @@ candidate(uint32_t index, VkPhysicalDeviceType type, uint64_t gib, const char* n
     c.meetsRequirements = ok;
     return c;
 }
+
+class ScopedGpuDeviceEnv {
+public:
+    explicit ScopedGpuDeviceEnv(const char* value)
+    {
+        if (const char* old = std::getenv("NATRON_GPU_DEVICE")) {
+            had_ = true;
+            old_ = old;
+        }
+        if (value) {
+            setenv("NATRON_GPU_DEVICE", value, 1);
+        } else {
+            unsetenv("NATRON_GPU_DEVICE");
+        }
+    }
+
+    ~ScopedGpuDeviceEnv()
+    {
+        if (had_) {
+            setenv("NATRON_GPU_DEVICE", old_.c_str(), 1);
+        } else {
+            unsetenv("NATRON_GPU_DEVICE");
+        }
+    }
+
+private:
+    bool had_ = false;
+    std::string old_;
+};
 
 } // namespace
 
@@ -221,4 +252,42 @@ GPU_TEST_F(GpuDeviceTest, LostStateIsSticky)
     VkSemaphore sem = VK_NULL_HANDLE;
     EXPECT_EQ(dev->createTimelineSemaphore(0, sem).result, VK_ERROR_DEVICE_LOST);
     EXPECT_EQ(dev->waitIdle().result, VK_ERROR_DEVICE_LOST);
+}
+
+TEST(GpuDeviceCpuSelection, RankedPickNeverReturnsCpuDeviceButExplicitSelectorDoes)
+{
+    std::unique_ptr<GpuDevice> lavapipe;
+    {
+        ScopedGpuDeviceEnv env(nullptr);
+        gpu::GpuDeviceOptions o = gputest::deviceOptions();
+        o.deviceSelector = "llvmpipe";
+        const GpuStatus s = GpuDevice::create(o, lavapipe);
+        if (!s.ok()) {
+            std::printf("[  SKIPPED ] no lavapipe device: %s\n", s.message.c_str());
+            return;
+        }
+    }
+    ASSERT_EQ(lavapipe->info().type, VK_PHYSICAL_DEVICE_TYPE_CPU);
+    lavapipe.reset();
+
+    {
+        ScopedGpuDeviceEnv env(nullptr);
+        std::unique_ptr<GpuDevice> ranked;
+        const GpuStatus s = GpuDevice::create(gputest::deviceOptions(), ranked);
+        if (s.ok()) {
+            EXPECT_NE(ranked->info().type, VK_PHYSICAL_DEVICE_TYPE_CPU) << ranked->info().name;
+        } else {
+            EXPECT_EQ(s.result, VK_ERROR_FEATURE_NOT_PRESENT);
+            EXPECT_NE(s.message.find("only CPU Vulkan devices ("), std::string::npos) << s.message;
+            EXPECT_NE(s.message.find("set NATRON_GPU_DEVICE"), std::string::npos) << s.message;
+        }
+    }
+
+    {
+        ScopedGpuDeviceEnv env("llvmpipe");
+        std::unique_ptr<GpuDevice> named;
+        const GpuStatus s = GpuDevice::create(gputest::deviceOptions(), named);
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_EQ(named->info().type, VK_PHYSICAL_DEVICE_TYPE_CPU);
+    }
 }

@@ -902,9 +902,11 @@ class FollowVectorsUndoCommand
     Q_DECLARE_TR_FUNCTIONS(FollowVectorsUndoCommand)
 
 public:
-    // Takes the state to go back to, so the shapes must be untouched yet.
+    // Takes the state to go back to, so the shapes must be untouched yet. With hostState, also the
+    // host's own state (RotoCurveContext::saveHostState()), for a follow that writes it.
     FollowVectorsUndoCommand(const RotoCurveContextPtr& context,
-                             const std::list<RotoDrawableItemPtr>& items);
+                             const std::list<RotoDrawableItemPtr>& items,
+                             bool hostState = false);
 
     virtual ~FollowVectorsUndoCommand();
 
@@ -933,6 +935,7 @@ private:
 
     RotoCurveContextWPtr _context;
     std::list<ItemState> _items;
+    std::shared_ptr<RotoCurveContextHostState> _hostBefore, _hostAfter;
     bool _done;
 };
 

@@ -293,8 +293,15 @@ private:
 struct FollowShape {
     RotoDrawableItemPtr item;
     BezierPtr bezier;
+    // Set instead of item and bezier for points that are not a curve's.
+    VectorFollowPointsPtr points;
     VectorFollowShapeSetup setup;
-    // The control points tracked one by one, when the model says so.
+    // A fit whose item's own transform knobs do not drive it: the fit is applied to reference and
+    // keyed on the points instead.
+    bool bakesFit = false;
+    // The tracked points, as trackedPointsAt() gives them, at the first anchor.
+    std::vector<FollowPoint> reference;
+    // The control points tracked one by one, when the model says so, or a baked fit moves.
     std::vector<int> tracked;
     // The shape's point count when the follow began, which the indices in tracked refer to.
     int pointCount = 0;
@@ -420,6 +427,13 @@ trackedPointsAt(const FollowShape& shape,
     return out;
 }
 
+// Whether the shape is keyed on its points, rather than on its transform knobs.
+bool
+keysPoints(const FollowShape& shape)
+{
+    return (shape.setup.model == VectorFollowModel::ePerPoint) || shape.bakesFit;
+}
+
 std::vector<int>
 pointsToTrack(const Bezier& bezier,
               const std::set<int>* selected)
@@ -462,10 +476,64 @@ struct VectorFollowRun::Imp {
     }
 
     std::unique_ptr<FollowShape> makeShape(const RotoDrawableItemPtr& item, std::string* refusal) const;
+    std::unique_ptr<FollowShape> makePointsShape(const VectorFollowPointsPtr& points) const;
+    void addAnchorFrames(FollowShape& shape) const;
     std::set<int> keyFramesOf(const FollowShape& shape, int first, int last) const;
+    bool writePoints(FollowShape& shape, double time, const std::vector<FollowPoint>& points) const;
     void writeFrame(FollowShape& shape, const VectorFollowFrame& frame) const;
     void removeKeys(FollowShape& shape) const;
+    void orderByTransformSources();
 };
+
+/*
+ * A shape's keys are converted through its transform at their frame, so a shape whose transform
+ * comes in part from another followed shape is keyed after it: converted through that shape's old
+ * transform, its keys would move again as the new one lands.
+ */
+void
+VectorFollowRun::Imp::orderByTransformSources()
+{
+    std::vector<std::unique_ptr<FollowShape>> pending;
+    pending.swap(shapes);
+    std::vector<std::list<RotoItemPtr>> sources(pending.size());
+    for (std::size_t i = 0; i < pending.size(); ++i) {
+        if (pending[i]->item) {
+            sources[i] = context->getTransformSources(*pending[i]->item);
+        }
+    }
+    while (!pending.empty()) {
+        std::set<const RotoItem*> waiting;
+        for (const std::unique_ptr<FollowShape>& shape : pending) {
+            if (shape->item) {
+                waiting.insert(shape->item.get());
+            }
+        }
+        std::vector<std::unique_ptr<FollowShape>> later;
+        std::vector<std::list<RotoItemPtr>> laterSources;
+        for (std::size_t i = 0; i < pending.size(); ++i) {
+            bool waits = false;
+            for (const RotoItemPtr& source : sources[i]) {
+                waits = waits || ((source.get() != pending[i]->item.get()) && waiting.count(source.get()));
+            }
+            if (waits) {
+                later.push_back(std::move(pending[i]));
+                laterSources.push_back(sources[i]);
+            } else {
+                shapes.push_back(std::move(pending[i]));
+            }
+        }
+        // Links never form a cycle, but should one, its shapes keep their order rather than hang.
+        if (later.size() == pending.size()) {
+            for (std::unique_ptr<FollowShape>& shape : later) {
+                shapes.push_back(std::move(shape));
+            }
+            later.clear();
+            laterSources.clear();
+        }
+        pending.swap(later);
+        sources.swap(laterSources);
+    }
+}
 
 // The keys of what the shape's model drives: its points for per-point, its transform knobs for a fit.
 std::set<int>
@@ -473,8 +541,11 @@ VectorFollowRun::Imp::keyFramesOf(const FollowShape& shape,
                                   int first,
                                   int last) const
 {
+    if (shape.points) {
+        return shape.points->getKeyFrames(first, last);
+    }
     std::set<int> frames;
-    if (shape.setup.model == VectorFollowModel::ePerPoint) {
+    if (keysPoints(shape)) {
         std::set<double> keys;
         shape.bezier->getKeyframeTimes(&keys);
         for (double t : keys) {
@@ -541,27 +612,22 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
             shape->setup.model = VectorFollowModel::eAffine;
         }
     }
-    if (shape->setup.model != VectorFollowModel::ePerPoint) {
-        *refusal = context->getTransformFitRefusal(*item);
-        if (!refusal->empty()) {
+    if ((shape->setup.model != VectorFollowModel::ePerPoint) && !context->fitKeysOwnTransform(*item)) {
+        if (!shape->bezier) {
+            *refusal = "its transform is not its own, and it has no points to key";
+
+            return nullptr;
+        }
+        shape->bakesFit = true;
+        shape->tracked = pointsToTrack(*shape->bezier, 0);
+        if (shape->tracked.empty()) {
+            *refusal = "its transform is not its own, and it has no points to key";
+
             return nullptr;
         }
     }
 
-    shape->anchorFrames = keyFramesOf(*shape, params.first, params.last);
-    const bool forward = params.direction == VectorFollowDirection::eForward;
-    const int start = forward ? params.first : params.last;
-    /*
-     * What the start frame shows is only worth keeping when a key behind it shaped it. Then it is
-     * an anchor like any key, and bridges to the next key ahead. Without one, a key ahead is the
-     * only state the artist set, so the follow tracks back from it to the start frame instead.
-     */
-    const bool keyBehind = forward ? !keyFramesOf(*shape, std::numeric_limits<int>::min(), params.first - 1).empty()
-                                   : !keyFramesOf(*shape, params.last + 1, std::numeric_limits<int>::max()).empty();
-    if (shape->anchorFrames.empty() || (keyBehind && !shape->anchorFrames.count(start))) {
-        shape->anchorFrames.insert(start);
-        shape->setup.seedIsNew = true;
-    }
+    addAnchorFrames(*shape);
 
     KnobDoublePtr translate = doubleKnob(*item, kRotoDrawableItemTranslateParam);
     for (int frame : shape->anchorFrames) {
@@ -572,7 +638,7 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
         if (anchor.samples.empty()) {
             return nullptr;
         }
-        switch (shape->setup.model) {
+        switch (shape->bakesFit ? VectorFollowModel::ePerPoint : shape->setup.model) {
         case VectorFollowModel::ePerPoint:
             anchor.points = trackedPointsAt(*shape, frame);
             break;
@@ -587,6 +653,20 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
         shape->setup.anchors.push_back(anchor);
     }
 
+    if (shape->bakesFit) {
+        /*
+         * The fit's transform maps the first anchor's points to where they go, so each anchor's is
+         * the fit of the first anchor's points to its own: the identity for the first, and for a
+         * key that changed the shape otherwise, the nearest the model gets to it.
+         */
+        shape->reference = shape->setup.anchors.front().points;
+        const std::vector<double> weights(shape->reference.size(), 1.);
+        for (VectorFollowAnchor& anchor : shape->setup.anchors) {
+            const VectorFollowFit fit = fitFollowMotion(shape->setup.model, shape->reference, anchor.points, weights);
+            anchor.transform = fit.valid ? fit.matrix : FollowMatrix();
+            anchor.points.clear();
+        }
+    }
     if (shape->setup.model != VectorFollowModel::ePerPoint) {
         const VectorFollowAnchor& firstAnchor = shape->setup.anchors.front();
         shape->setup.corners = boxCorners(firstAnchor.samples);
@@ -605,51 +685,128 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
 }
 
 void
+VectorFollowRun::Imp::addAnchorFrames(FollowShape& shape) const
+{
+    shape.anchorFrames = keyFramesOf(shape, params.first, params.last);
+    const bool forward = params.direction == VectorFollowDirection::eForward;
+    const int start = forward ? params.first : params.last;
+    /*
+     * What the start frame shows is only worth keeping when a key behind it shaped it. Then it is
+     * an anchor like any key, and bridges to the next key ahead. Without one, a key ahead is the
+     * only state the artist set, so the follow tracks back from it to the start frame instead.
+     */
+    const bool keyBehind = forward ? !keyFramesOf(shape, std::numeric_limits<int>::min(), params.first - 1).empty()
+                                   : !keyFramesOf(shape, params.last + 1, std::numeric_limits<int>::max()).empty();
+    if (shape.anchorFrames.empty() || (keyBehind && !shape.anchorFrames.count(start))) {
+        shape.anchorFrames.insert(start);
+        shape.setup.seedIsNew = true;
+    }
+}
+
+std::unique_ptr<FollowShape>
+VectorFollowRun::Imp::makePointsShape(const VectorFollowPointsPtr& points) const
+{
+    std::unique_ptr<FollowShape> shape(new FollowShape);
+    shape->points = points;
+    shape->setup.direction = params.direction;
+    shape->setup.confidenceThreshold = params.confidenceThreshold;
+    shape->setup.first = params.first;
+    shape->setup.last = params.last;
+    shape->setup.model = VectorFollowModel::ePerPoint;
+    shape->setup.forwardOnly = forwardOnly;
+    addAnchorFrames(*shape);
+    for (int frame : shape->anchorFrames) {
+        VectorFollowAnchor anchor;
+        anchor.frame = frame;
+        anchor.points = points->getPointsAtTime(frame);
+        // With no outline around them, the points stand for the motion that moves an unsure one.
+        anchor.samples = anchor.points;
+        if (anchor.points.empty()) {
+            return nullptr;
+        }
+        shape->setup.anchors.push_back(anchor);
+    }
+    shape->pointCount = (int)shape->setup.anchors.front().points.size();
+
+    return shape;
+}
+
+bool
+VectorFollowRun::Imp::writePoints(FollowShape& shape,
+                                  double time,
+                                  const std::vector<FollowPoint>& points) const
+{
+    // The host refuses point edits while the follow runs, but should one get through, the
+    // tracked indices would land on other points than the ones followed.
+    const std::size_t needed = shape.tracked.size() * (shape.feather ? 6 : 3);
+    if ((shape.bezier->getControlPointsCount() != shape.pointCount) || (points.size() < needed)) {
+        return false;
+    }
+    FollowMatrix inverse;
+    if (!totalTransformAt(*shape.item, time).inverted(&inverse)) {
+        return false;
+    }
+    const auto toPoint = [&](int index, bool feather, std::size_t at) {
+        const FollowPoint p = inverse.apply(points[at]);
+        const FollowPoint left = inverse.apply(points[at + 1]);
+        const FollowPoint right = inverse.apply(points[at + 2]);
+        Bezier::FollowedPoint out;
+        out.index = index;
+        out.feather = feather;
+        out.x = p.x;
+        out.y = p.y;
+        out.leftX = left.x;
+        out.leftY = left.y;
+        out.rightX = right.x;
+        out.rightY = right.y;
+
+        return out;
+    };
+    std::vector<Bezier::FollowedPoint> followed;
+    std::size_t at = 0;
+    for (int index : shape.tracked) {
+        followed.push_back(toPoint(index, false, at));
+        at += 3;
+        if (shape.feather) {
+            followed.push_back(toPoint(index, true, at));
+            at += 3;
+        }
+    }
+    shape.bezier->setFollowedPoints(time, followed);
+
+    return true;
+}
+
+void
 VectorFollowRun::Imp::writeFrame(FollowShape& shape,
                                  const VectorFollowFrame& frame) const
 {
     const double time = frame.frame;
-    switch (shape.setup.model) {
-    case VectorFollowModel::ePerPoint: {
-        // The host refuses point edits while the follow runs, but should one get through, the
-        // tracked indices would land on other points than the ones followed.
-        const std::size_t needed = shape.tracked.size() * (shape.feather ? 6 : 3);
-        if ((shape.bezier->getControlPointsCount() != shape.pointCount) || (frame.points.size() < needed)) {
-            return;
+    if (shape.points) {
+        if ((int)frame.points.size() == shape.pointCount) {
+            shape.points->setPointsAtTime(time, frame.points);
+            shape.written.insert(frame.frame);
         }
-        FollowMatrix inverse;
-        if (!totalTransformAt(*shape.item, time).inverted(&inverse)) {
-            return;
-        }
-        const auto toPoint = [&](int index, bool feather, std::size_t at) {
-            const FollowPoint p = inverse.apply(frame.points[at]);
-            const FollowPoint left = inverse.apply(frame.points[at + 1]);
-            const FollowPoint right = inverse.apply(frame.points[at + 2]);
-            Bezier::FollowedPoint out;
-            out.index = index;
-            out.feather = feather;
-            out.x = p.x;
-            out.y = p.y;
-            out.leftX = left.x;
-            out.leftY = left.y;
-            out.rightX = right.x;
-            out.rightY = right.y;
 
-            return out;
-        };
-        std::vector<Bezier::FollowedPoint> points;
-        std::size_t at = 0;
-        for (int index : shape.tracked) {
-            points.push_back(toPoint(index, false, at));
-            at += 3;
-            if (shape.feather) {
-                points.push_back(toPoint(index, true, at));
-                at += 3;
-            }
-        }
-        shape.bezier->setFollowedPoints(time, points);
-        break;
+        return;
     }
+    if (shape.bakesFit) {
+        std::vector<FollowPoint> moved(shape.reference.size());
+        for (std::size_t i = 0; i < moved.size(); ++i) {
+            moved[i] = frame.transform.apply(shape.reference[i]);
+        }
+        if (writePoints(shape, time, moved)) {
+            shape.written.insert(frame.frame);
+        }
+
+        return;
+    }
+    switch (shape.setup.model) {
+    case VectorFollowModel::ePerPoint:
+        if (!writePoints(shape, time, frame.points)) {
+            return;
+        }
+        break;
     case VectorFollowModel::eTranslate:
         shape.item->setTranslateKeyframe(time, frame.transform.m[2], frame.transform.m[5]);
         break;
@@ -685,7 +842,7 @@ VectorFollowRun::Imp::removeKeys(FollowShape& shape) const
     if (shape.removed.empty()) {
         return;
     }
-    if (shape.setup.model == VectorFollowModel::ePerPoint) {
+    if (keysPoints(shape)) {
         std::set<double> times(shape.removed.begin(), shape.removed.end());
         shape.bezier->removeKeyframes(times);
 
@@ -742,6 +899,13 @@ VectorFollowRun::prepare(std::string* error)
             _imp->refused.push_back(VectorFollowRefusal { item->getScriptName(), refusal });
         }
     }
+    _imp->orderByTransformSources();
+    for (const VectorFollowPointsPtr& points : params.points) {
+        std::unique_ptr<FollowShape> shape = points ? _imp->makePointsShape(points) : nullptr;
+        if (shape) {
+            _imp->shapes.push_back(std::move(shape));
+        }
+    }
     if (_imp->shapes.empty()) {
         _imp->tieSuspension.reset();
         *error = "None of the given shapes can follow vectors.";
@@ -752,11 +916,11 @@ VectorFollowRun::prepare(std::string* error)
         return false;
     }
 
-    _imp->undo = std::make_shared<FollowVectorsUndoCommand>(_imp->context, items);
+    _imp->undo = std::make_shared<FollowVectorsUndoCommand>(_imp->context, items, !params.points.empty());
 
     // An anchor keyed on another knob only would slide once keys land around it on the extra matrix.
     for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
-        if ((shape->setup.model != VectorFollowModel::eAffine) && (shape->setup.model != VectorFollowModel::ePerspective)) {
+        if (shape->bakesFit || ((shape->setup.model != VectorFollowModel::eAffine) && (shape->setup.model != VectorFollowModel::ePerspective))) {
             continue;
         }
         const KnobDoublePtr extraKnob = doubleKnob(*shape->item, kRotoDrawableItemExtraMatrixParam);
@@ -807,6 +971,10 @@ void
 VectorFollowRun::prepareReduction()
 {
     for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
+        // Points that are not a curve's keep every key the follow wrote.
+        if (shape->points) {
+            continue;
+        }
         shape->removable = shape->written;
         for (int frame : shape->anchorFrames) {
             shape->removable.erase(frame);
@@ -817,7 +985,7 @@ VectorFollowRun::prepareReduction()
 
         std::set<int> keys = shape->written;
         keys.insert(shape->anchorFrames.begin(), shape->anchorFrames.end());
-        switch (shape->setup.model) {
+        switch (shape->bakesFit ? VectorFollowModel::ePerPoint : shape->setup.model) {
         case VectorFollowModel::ePerPoint:
             shape->motion.reset(new PointCurvesMotion(*shape->bezier, keys));
             break;
@@ -885,7 +1053,7 @@ VectorFollowRun::finish(bool sourceLost,
     for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
         wroteAnything = wroteAnything || !shape->written.empty();
         VectorFollowShapeReport shapeReport;
-        shapeReport.name = shape->item->getScriptName();
+        shapeReport.name = shape->points ? shape->points->getName() : shape->item->getScriptName();
         shapeReport.inferred = shape->outcome.inferred;
         shapeReport.passStops = shape->outcome.passStops;
         shapeReport.unfollowed = shape->outcome.unfollowed;
@@ -909,6 +1077,11 @@ VectorFollowRun::finish(bool sourceLost,
     }
     _imp->undo.reset();
     _imp->tieSuspension.reset();
+    for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
+        if (shape->points) {
+            shape->points->followEnded();
+        }
+    }
     _imp->context->refreshTrackLinkListeners();
     _imp->context->emitRefreshViewerOverlays();
     _imp->context->evaluateChange();

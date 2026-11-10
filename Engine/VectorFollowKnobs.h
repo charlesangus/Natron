@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <memory>
 #include <string>
@@ -38,7 +39,9 @@
 NATRON_NAMESPACE_ENTER
 
 class RotoCurveInteract;
+class VectorFollowPoints;
 class VectorFollowTask;
+typedef std::shared_ptr<VectorFollowPoints> VectorFollowPointsPtr;
 struct VectorFollowReport;
 
 /**
@@ -72,6 +75,14 @@ public:
     virtual std::string getItemText(const RotoItemPtr& item, int column) const OVERRIDE FINAL;
     virtual std::vector<MenuAction> getItemMenuActions(const std::list<RotoItemPtr>& items) const OVERRIDE FINAL;
     virtual void onItemMenuActionTriggered(const std::string& actionId, const std::list<RotoItemPtr>& items) OVERRIDE FINAL;
+
+    virtual VectorFollowControls* getVectorFollowControls() const OVERRIDE FINAL
+    {
+        return const_cast<VectorFollowControls*>(this);
+    }
+
+    // Points the host has selected beside its curves, which the buttons follow with them.
+    void setSelectedPointsProvider(const std::function<std::list<VectorFollowPointsPtr>()>& provider);
 
 private:
     struct Imp;

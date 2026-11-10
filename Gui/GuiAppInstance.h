@@ -145,6 +145,7 @@ public:
     virtual void progressStart(const NodePtr& node, const std::string &message, const std::string &messageid, bool canCancel = true) OVERRIDE FINAL;
     virtual void progressEnd(const NodePtr& node) OVERRIDE FINAL;
     virtual bool progressUpdate(const NodePtr& node, double t) OVERRIDE FINAL;
+    virtual std::shared_ptr<void> showProgressModal(const NodePtr& node, const std::string& title, const std::function<void()>& onCancel) OVERRIDE FINAL;
     virtual void onMaxPanelsOpenedChanged(int maxPanels) OVERRIDE FINAL;
     virtual void onRenderQueuingChanged(bool queueingEnabled) OVERRIDE FINAL;
     virtual void connectViewersToViewerCache() OVERRIDE FINAL;

@@ -107,6 +107,7 @@ set(Tests_SOURCES
     VectorFollowModels_Test.cpp
     VectorFollowBake_Test.cpp
     VectorFollowReduce_Test.cpp
+    SplineWarpFollowVectors_Test.cpp
     CurveClipboard_Test.cpp
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp

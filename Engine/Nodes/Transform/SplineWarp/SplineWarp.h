@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
+#include "Engine/VectorFollowKnobs.h"
 
 #define PLUGINID_NATRON_SPLINEWARP "SplineWarp"
 #define PLUGIN_MAJOR_NATRON_SPLINEWARP 1
@@ -188,6 +189,7 @@ public:
     virtual bool onOverlayPenDoubleClicked(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool onOverlayKeyDown(double time, const RenderScale& renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) OVERRIDE FINAL;
     virtual bool onOverlayKeyUp(double time, const RenderScale& renderScale, ViewIdx view, Key key, KeyboardModifiers modifiers) OVERRIDE FINAL;
+    virtual bool onOverlayFocusGained(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
     virtual bool onOverlayFocusLost(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
     virtual void onInteractViewportSelectionCleared() OVERRIDE FINAL;
     virtual void onInteractViewportSelectionUpdated(const RectD& rectangle, bool onRelease) OVERRIDE FINAL;
@@ -456,6 +458,7 @@ private:
 
     SplineWarpInteractPtr _ui;
     std::unique_ptr<SplineWarpPanelHook> _panelHook;
+    std::unique_ptr<VectorFollowControls> _vectorFollow;
     // Whether a drag of the interact turned the viewer's draft render on.
     bool _draftDrag;
 

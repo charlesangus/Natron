@@ -43,6 +43,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class VectorFollowPoints;
+
 namespace Serialization {
 struct SplineWarpAnimatedValueSerialization;
 struct SplineWarpLinkSerialization;
@@ -431,7 +433,23 @@ public:
      * parameter is out of range.
      **/
     void setCorrespondence(const SplineWarpLinkPtr& link, int index, double sourceParam, double destinationParam, double time);
-    void setCorrespondenceAtTime(const SplineWarpLinkPtr& link, int index, double time, double sourceParam, double destinationParam);
+
+    /**
+     * @brief Without evaluate, the node only learns that its output changed, and renders when the
+     * caller evaluates it, so keying many frames at once does not render once per key. Without markDirty the hash stays
+     * as it was too, and the caller owes correspondenceKeysWritten.
+     **/
+    void setCorrespondenceAtTime(const SplineWarpLinkPtr& link, int index, double time, double sourceParam, double destinationParam, bool evaluate = true, bool markDirty = true);
+
+    // Invalidates the node's hash once for correspondence keys written with markDirty false.
+    void correspondenceKeysWritten();
+
+    /**
+     * @brief The two ends of correspondence index of link, as points a vector follow moves, one
+     * on each curve. Each moved end is keyed at the parameter of its curve nearest to where it
+     * went, kept between the correspondences next to it. Null when index is out of range.
+     **/
+    std::shared_ptr<VectorFollowPoints> makeCorrespondenceFollowPoints(const SplineWarpLinkPtr& link, int index);
 
     void removeCorrespondence(const SplineWarpLinkPtr& link, int index);
 
@@ -465,10 +483,15 @@ public:
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const OVERRIDE;
 
     /**
-     * @brief Refuses a transform-linked item: its own transform is unused, and its link target's
+     * @brief False for a transform-linked item: its own transform is unused, and its link target's
      * belongs to that target and every other item linked to it.
      **/
-    virtual std::string getTransformFitRefusal(const RotoDrawableItem& item) const OVERRIDE;
+    virtual bool fitKeysOwnTransform(const RotoDrawableItem& item) const OVERRIDE;
+
+    /**
+     * @brief What item and each of its parent layers are transform linked to.
+     **/
+    virtual std::list<RotoItemPtr> getTransformSources(const RotoDrawableItem& item) const OVERRIDE;
 
     /**
      * @brief Saves the links (the same objects, with their values), the boundaries and the layer

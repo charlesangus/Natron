@@ -53,7 +53,7 @@
 
 #define kFollowParamBackwardToStart "followBackwardToStart"
 #define kFollowParamBackwardToStartLabel "Follow Backward To Start"
-#define kFollowParamBackwardToStartHint "Follows the selection from the current frame back to the start of the range. When the selection has a key after the current frame, it keeps the current frame as it shows now, and down to an earlier key it tracks backward from the current frame and forward from that key and blends the two, so the follow meets both exactly. With no key at or after the current frame, it tracks forward from the nearest earlier key instead. Press any of these buttons during a follow to stop it."
+#define kFollowParamBackwardToStartHint "Follows the selection from the current frame back to the start of the range. When the selection has a key after the current frame, it keeps the current frame as it shows now, and down to an earlier key it tracks backward from the current frame and forward from that key and blends the two, so the follow meets both exactly. With no key at or after the current frame, it tracks forward from the nearest earlier key instead. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
 
 #define kFollowParamBackwardOne "followBackwardOne"
 #define kFollowParamBackwardOneLabel "Follow Backward One"
@@ -65,7 +65,7 @@
 
 #define kFollowParamForwardToEnd "followForwardToEnd"
 #define kFollowParamForwardToEndLabel "Follow Forward To End"
-#define kFollowParamForwardToEndHint "Follows the selection from the current frame to the end of the range. When the selection has a key before the current frame, it keeps the current frame as it shows now, and up to a later key it tracks forward from the current frame and backward from that key and blends the two, so the follow meets both exactly. With no key at or before the current frame, it tracks backward from the nearest later key instead. Press any of these buttons during a follow to stop it."
+#define kFollowParamForwardToEndHint "Follows the selection from the current frame to the end of the range. When the selection has a key before the current frame, it keeps the current frame as it shows now, and up to a later key it tracks forward from the current frame and backward from that key and blends the two, so the follow meets both exactly. With no key at or before the current frame, it tracks backward from the nearest later key instead. While it runs, a progress window blocks the interface; its Cancel button stops the follow and keeps the frames already followed."
 
 #define kFollowParamRange "followRange"
 #define kFollowParamRangeLabel "Follow Range"
@@ -138,6 +138,7 @@ public:
     KnobDoublePtr tolerance;
     KnobDoublePtr confidenceThreshold;
     std::unique_ptr<VectorFollowTask> task;
+    std::function<std::list<VectorFollowPointsPtr>()> selectedPoints;
 
     Imp(EffectInstance* host_,
         RotoCurveInteract* interact_)
@@ -189,7 +190,7 @@ VectorFollowControls::Imp::follow(const VectorFollowParams& shapes,
     }
 
     VectorFollowParams params = shapes;
-    if (params.items.empty()) {
+    if (params.items.empty() && params.points.empty()) {
         warn(tr("Select the shapes or points to follow.").toStdString());
 
         return;
@@ -253,6 +254,9 @@ VectorFollowControls::Imp::followSelection(VectorFollowDirection direction,
             params.selectedPoints[bezier.get()].insert(index);
         }
     }
+    if (selectedPoints) {
+        params.points = selectedPoints();
+    }
 
     follow(params, direction, toRangeEnd);
 }
@@ -265,6 +269,12 @@ VectorFollowControls::VectorFollowControls(EffectInstance* host,
 
 VectorFollowControls::~VectorFollowControls()
 {
+}
+
+void
+VectorFollowControls::setSelectedPointsProvider(const std::function<std::list<VectorFollowPointsPtr>()>& provider)
+{
+    _imp->selectedPoints = provider;
 }
 
 void

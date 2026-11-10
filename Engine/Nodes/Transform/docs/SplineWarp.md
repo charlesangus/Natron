@@ -127,6 +127,23 @@ it, is selected with a select tool, the viewer shows the transform handle; dragg
 item's transform, setting keys when auto-keying is on. Editing the curve's points wins over the
 handle where they overlap.
 
+**Follow Vectors:** the viewer's toolbar row and the Follow Vectors group (Follow Source, Follow
+Model, Follow Backward To Start, Follow Backward One, Follow Forward One, Follow Forward To End,
+Follow Range, Follow In, Follow Out, Follow Reduce, Follow Tolerance, Follow Confidence Threshold)
+key the selection along the motion vectors of the node picked as Follow Source, as in Roto. Any
+selected curve follows, source or destination: following one end of a link leaves the other
+curve where it is, and the link stays. A correspondence selected with the correspondence tool
+follows too, keyed at its own frames: each end moves with the picture under it and is keyed where
+its curve passes nearest, within the correspondences on either side. Follow Reduce thins the
+curves' keys only; a correspondence keeps every key the follow set. A follow keys every frame it
+reaches, refreshes the viewer frame by frame as it goes, and is one undo step, curves and
+correspondences together. The Translate, Affine and Perspective models normally key a curve's transform; on a
+curve whose transform is linked to another item they key the curve's own points instead, so the
+target's transform and the other curves linked to it never change, the link stays and the
+Transform page stays disabled. While a follow started from the buttons runs, an application-modal
+progress window blocks the rest of the interface; its Cancel button stops the follow and keeps the
+frames already followed, with no further message.
+
 ## Notes
 
 - `curveResolution` and `boundaryCurveResolution` are distances in pixels between samples (default
@@ -139,6 +156,8 @@ handle where they overlap.
 `node.getSplineWarp()` returns the links, boundaries, cookie cutters, layer amounts and transform
 links of the node's curves. The curves themselves are made and edited through
 `node.getRotoContext()`, and each curve's transform through its parameters (`curve.getParam("translate")`).
+The context's `followVectors(...)`, `isFollowingVectors()` and `getLastFollowReport()` work as on
+Roto, for curves; correspondences follow only from the viewer.
 
 - `link(source, destination, duplicate=False)`, `unlink(curve)`, `getLink(curve)`, `getLinks()`
 - `setBoundary(curve, on)`, `isBoundary(curve)`: boundaries, closed unlinked curves only. Set the

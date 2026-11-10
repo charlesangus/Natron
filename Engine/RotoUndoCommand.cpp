@@ -2647,12 +2647,18 @@ snapshotPoint(const BezierCPPtr& point)
 } // anonymous namespace
 
 FollowVectorsUndoCommand::FollowVectorsUndoCommand(const RotoCurveContextPtr& context,
-                                                   const std::list<RotoDrawableItemPtr>& items)
+                                                   const std::list<RotoDrawableItemPtr>& items,
+                                                   bool hostState)
     : UndoCommand()
     , _context(context)
     , _items()
+    , _hostBefore()
+    , _hostAfter()
     , _done(false)
 {
+    if (hostState) {
+        _hostBefore = context->saveHostState();
+    }
     for (const RotoDrawableItemPtr& item : items) {
         ItemState state;
         state.item = item;
@@ -2699,6 +2705,10 @@ FollowVectorsUndoCommand::captureResult()
             saveKnobCurves(knobState.knob, &knobState.after, &knobState.valuesAfter);
         }
     }
+    RotoCurveContextPtr context = _context.lock();
+    if (_hostBefore && context) {
+        _hostAfter = context->saveHostState();
+    }
     _done = true;
 }
 
@@ -2734,6 +2744,10 @@ FollowVectorsUndoCommand::restore(bool after)
     }
 
     RotoCurveContextPtr context = _context.lock();
+    const std::shared_ptr<RotoCurveContextHostState>& hostState = after ? _hostAfter : _hostBefore;
+    if (context && hostState) {
+        context->restoreHostState(hostState);
+    }
     if (context) {
         context->refreshTrackLinkListeners();
         context->emitRefreshViewerOverlays();

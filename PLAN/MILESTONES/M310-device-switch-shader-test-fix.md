@@ -20,3 +20,4 @@ why it never showed there.
   - size: M
 
 **Verification gate:** `CacheStressGpuTest` passes in PR CI and on a two-device Vulkan host (gpu PM's RADV gate).
+- 2026-11-10 — PR #252 is open. Release run 42803460920 is green, after a re-run for an unrelated ProgressiveRenderTest flake. The review round closed with no blocking findings. The merge waits on the two-device half passing on the GPU host's RADV gate, run by the GPU-host PM or the user: `CacheStressGpuTest` on RADV plus lavapipe at milestone/m310-device-switch-shader-test-fix.

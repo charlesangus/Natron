@@ -33,7 +33,7 @@
 
 ## Phase 380.2: Abort latency
 
-- [ ] M380.P2.T1 — Abort latency check per worker type
+- [x] M380.P2.T1 — Abort latency check per worker type
   - files: `Tests/GenericSchedulerAbortWait_Test.cpp` or `Tests/RenderSchedulerAbort_Test.cpp`, `Tests/TrackerLayer_Test.cpp`, and the worker whose polling misses the budget
   - approach: time `abortThreadedTask` to the wait returning while a slow abort-polling effect is mid-render, for the writer (`DefaultScheduler`), viewer playback, the current-frame scheduler plus backup thread, and `TrackScheduler`; generous budget (500 ms) for CI noise. Fix a worker's abort polling here if it misses.
   - verify: the tests pass in PR CI with debug asserts.

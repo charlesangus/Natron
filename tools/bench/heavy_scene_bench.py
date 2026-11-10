@@ -41,6 +41,9 @@
                          this says)
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
+        BENCH_HOLD_FILE  when set, populate_full and populate_pruned report "BEGIN populate" and wait up to
+                         BENCH_HOLD_S (default 120) for this file to exist before opening the scene, so a stack
+                         sampler can attach first; BENCH_PTRACER_ANY=1 lets any process of the user attach
         BENCH_SCENARIO_LIMIT_S  wall-clock limit of a scenario, from outside Natron (default 300)
         BENCH_OPEN_LIMIT_S      the same for one that opens or loads the whole file (default 1800)
         BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see heavy_scene_watchdog.sh
@@ -116,6 +119,8 @@ TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
 SCENARIO_LIMIT_S = int(os.environ.get("BENCH_SCENARIO_LIMIT_S", "300"))
 OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
 PICK_LIMIT_S = int(os.environ.get("BENCH_PICK_LIMIT_S", "900"))
+HOLD_FILE = os.environ.get("BENCH_HOLD_FILE", "")
+HOLD_S = float(os.environ.get("BENCH_HOLD_S", "120"))
 OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "load_all")
 DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal", "reveal_cancel", "orbit10k", "boxes_shot",
                   "sibling_state", "sibling_shot", "noedit", "draw_budget")
@@ -143,6 +148,14 @@ try:
     STATE_ROLE = Qt.UserRole + 3
     STATE_UNLOADED, STATE_LOADED, STATE_FAILED = 1, 3, 4
     LOADING_LABEL = "Loading..."
+
+    if os.environ.get("BENCH_PTRACER_ANY") == "1":
+        # Under kernel.yama.ptrace_scope 1 only an ancestor may attach, and a stack sampler is not one.
+        import ctypes
+        _libc = ctypes.CDLL(None, use_errno=True)
+        _libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        if _libc.prctl(0x59616d61, ctypes.c_ulong(-1).value, 0, 0, 0) != 0:
+            report("NOTE prctl(PR_SET_PTRACER_ANY) failed: %s" % os.strerror(ctypes.get_errno()))
 
     ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
     fixture = os.environ.get("BENCH_FIXTURE", "flat")
@@ -683,6 +696,13 @@ try:
         if hidden_root:
             target = widgets_of("SceneViewport")[0]
             draw_call(target, "setDrawState", Q_ARG("QString", rows["root"]), Q_ARG("QString", "bbox"))
+        if HOLD_FILE:
+            report("BEGIN populate")
+            yield ("until", lambda: os.path.exists(HOLD_FILE), HOLD_S)
+            if os.path.exists(HOLD_FILE):
+                os.remove(HOLD_FILE)
+            else:
+                report("NOTE wait expired: %s was not created within %.0f s; populating without a sampler" % (HOLD_FILE, HOLD_S))
         t0_ms = yield from open_file(m, connected=True)
         stats = draw_stats()
         added_at = stats.get("lastInputAddedEpochMs")

@@ -11,6 +11,7 @@
 #
 # Usage:
 #   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
+#   tools/ci/local/test.sh repeat <ctest-name-or-regex> <N> [--parallel P] [--gdb] [debug|release|fast]
 #   [NATRON_CTEST_JOBS=<n>] tools/ci/local/test.sh ctest ...
 #   [GTEST_SHUFFLE=1] [GTEST_RANDOM_SEED=<n>] [GTEST_REPEAT=<n>] tools/ci/local/test.sh ctest ...
 #   [NATRON_SMOKE_OUTPUT_DIR=<dir>|NATRON_SMOKE_REFERENCE_DIR=<dir>] tools/ci/local/test.sh smoke ...
@@ -56,6 +57,22 @@
 #                              NatronRenderer, located the same way ci.yml
 #                              locates it (`find . -maxdepth 4 -type f -name
 #                              NatronRenderer | head -n1` from the build dir).
+#   repeat <name> <N>      -> runs one ctest case N times, P instances at a time
+#                              (--parallel P, default 4), while `ctest -j 4 -E <name>`
+#                              runs the rest of the suite in the background as load.
+#                              <name> is a regex that must match exactly one ctest
+#                              test; the matched name and command line are printed.
+#                              The command comes from `ctest --show-only=json-v1`
+#                              and runs with that test's ENVIRONMENT and
+#                              WORKING_DIRECTORY. Stops at the first failing
+#                              iteration, prints its number and complete output
+#                              (the SIGSEGV handler's instruction pointer is enough
+#                              for addr2line) and exits non-zero. Every iteration's
+#                              output stays in <build dir>/Testing/repeat/<name>/.
+#                              With --gdb each run is wrapped in `gdb -batch -ex
+#                              run -ex "thread apply all bt" --args`, and a run
+#                              that ends in a signal or a non-zero exit counts as
+#                              failed even though gdb itself exits 0.
 #   startup                -> starts the built GUI binary under a GLX-capable
 #                              Xvfb on software GL and requires its main window
 #                              to be exposed (Tests/gui/debug_startup.py, through
@@ -106,10 +123,18 @@ SMOKE_TIMEOUT_SECONDS=300
 SUBCOMMAND=""
 BUILD_TYPE="debug"
 USE_GDB=0
+REPEAT_NAME=""
+REPEAT_COUNT=""
+REPEAT_PARALLEL=4
+ORIG_ARGS=("$@")
+USAGE="usage: test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
+       test.sh repeat <ctest-name-or-regex> <N> [--parallel P] [--gdb] [debug|release|fast]"
 
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
     case "${arg}" in
-        ctest|smoke|startup)
+        ctest|smoke|startup|repeat)
             SUBCOMMAND="${arg}"
             ;;
         debug|release|fast)
@@ -118,17 +143,37 @@ for arg in "$@"; do
         --gdb)
             USE_GDB=1
             ;;
+        --parallel)
+            if [[ $# -eq 0 || ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+                echo "test.sh: --parallel needs a positive integer, got '${1:-}'" >&2
+                exit 1
+            fi
+            REPEAT_PARALLEL="$1"
+            shift
+            ;;
         *)
-            echo "test.sh: unknown argument '${arg}'" >&2
-            echo "usage: test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]" >&2
-            exit 1
+            if [[ "${SUBCOMMAND}" == "repeat" && -z "${REPEAT_NAME}" ]]; then
+                REPEAT_NAME="${arg}"
+            elif [[ "${SUBCOMMAND}" == "repeat" && -z "${REPEAT_COUNT}" && "${arg}" =~ ^[1-9][0-9]*$ ]]; then
+                REPEAT_COUNT="${arg}"
+            else
+                echo "test.sh: unknown argument '${arg}'" >&2
+                echo "${USAGE}" >&2
+                exit 1
+            fi
             ;;
     esac
 done
 
 if [[ -z "${SUBCOMMAND}" ]]; then
     echo "test.sh: missing subcommand" >&2
-    echo "usage: test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]" >&2
+    echo "${USAGE}" >&2
+    exit 1
+fi
+
+if [[ "${SUBCOMMAND}" == "repeat" && ( -z "${REPEAT_NAME}" || -z "${REPEAT_COUNT}" ) ]]; then
+    echo "test.sh: repeat needs a test name and a positive iteration count" >&2
+    echo "${USAGE}" >&2
     exit 1
 fi
 
@@ -164,7 +209,7 @@ if ! in_container; then
         fi
     done
     exec "${SCRIPT_DIR}/devshell.sh" env ${forwarded_env[@]+"${forwarded_env[@]}"} \
-        "${REPO_ROOT}/tools/ci/local/test.sh" "$@"
+        "${REPO_ROOT}/tools/ci/local/test.sh" "${ORIG_ARGS[@]}"
 fi
 
 # --- from here on, we are inside the dev container ---------------------------
@@ -187,7 +232,7 @@ if [[ ! -d "${BUILD_DIR}" ]]; then
     exit 1
 fi
 
-if [[ "${SUBCOMMAND}" == "ctest" ]] && grep -qs '^NATRON_BUILD_TESTS:[A-Z]*=OFF$' "${BUILD_DIR}/CMakeCache.txt"; then
+if [[ ( "${SUBCOMMAND}" == "ctest" || "${SUBCOMMAND}" == "repeat" ) ]] && grep -qs '^NATRON_BUILD_TESTS:[A-Z]*=OFF$' "${BUILD_DIR}/CMakeCache.txt"; then
     echo "test.sh: ERROR: ${BUILD_DIR} was configured without tests." >&2
     echo "Run tools/ci/local/build.sh ${BUILD_TYPE} --tests first." >&2
     exit 1
@@ -275,6 +320,200 @@ case "${SUBCOMMAND}" in
             xvfb-run --auto-servernum ctest --rerun-failed -V --timeout "${CTEST_TIMEOUT_SECONDS}" || true
         fi
         exit "${rc}"
+        ;;
+
+    repeat)
+        # One Xvfb server for the runs and the load, started once: re-enter under it.
+        if [[ -z "${NATRON_REPEAT_IN_XVFB:-}" ]]; then
+            exec xvfb-run --auto-servernum env NATRON_REPEAT_IN_XVFB=1 "${REPO_ROOT}/tools/ci/local/test.sh" "${ORIG_ARGS[@]}"
+        fi
+        cd "${BUILD_DIR}"
+        SELECTION="$(mktemp)"
+        # Emits shell assignments for the one matching test, so the command line survives
+        # quoting intact.
+        python3 -I - "${REPEAT_NAME}" > "${SELECTION}" <<'PY'
+import json, re, shlex, subprocess, sys
+
+pattern = sys.argv[1]
+tests = json.loads(subprocess.check_output(["ctest", "--show-only=json-v1"]))["tests"]
+hits = [t for t in tests if re.search(pattern, t["name"])]
+if len(hits) != 1:
+    print("test.sh: '%s' matched %d ctest tests (need exactly 1): %s"
+          % (pattern, len(hits), ", ".join(t["name"] for t in hits) or "none"), file=sys.stderr)
+    sys.exit(2)
+test = hits[0]
+props = {p["name"]: p["value"] for p in test.get("properties", [])}
+print("REPEAT_TEST=%s" % shlex.quote(test["name"]))
+# ctest -E takes a CMake regex, whose metacharacters differ from Python's.
+print("REPEAT_EXCLUDE=%s" % shlex.quote("^" + re.sub(r"([][\\^$.|?*+()])", r"\\\1", test["name"]) + "$"))
+print("REPEAT_CMD=(%s)" % " ".join(shlex.quote(a) for a in test["command"]))
+print("REPEAT_ENV=(%s)" % " ".join(shlex.quote(e) for e in props.get("ENVIRONMENT", [])))
+print("REPEAT_CWD=%s" % shlex.quote(props.get("WORKING_DIRECTORY", ".")))
+print("REPEAT_TIMEOUT=%d" % int(props.get("TIMEOUT", 300)))
+PY
+        # shellcheck disable=SC1090
+        source "${SELECTION}"
+        rm -f "${SELECTION}"
+        echo "== test.sh: repeat ${REPEAT_TEST} x ${REPEAT_COUNT}, ${REPEAT_PARALLEL} at a time (${BUILD_TYPE}) =="
+        echo "+ cd ${REPEAT_CWD} && env ${REPEAT_ENV[*]} ${REPEAT_CMD[*]}"
+
+        LOG_DIR="${BUILD_DIR}/Testing/repeat/${REPEAT_TEST//[^A-Za-z0-9_.-]/_}"
+        mkdir -p "${LOG_DIR}"
+        find "${LOG_DIR}" -maxdepth 1 -name 'iter-*' -delete
+
+        # Load and iterations each get their own session (setsid), so killing the process group
+        # takes timeout, the test binary and gdb with it; timeout would otherwise escape into a
+        # process group of its own.
+        LOAD_PID=""
+        LOAD_STARTED=0
+        LOAD_RESTARTS=1
+        start_load() {
+            setsid ctest -j 4 -E "${REPEAT_EXCLUDE}" --timeout 300 >> "${LOG_DIR}/load.log" 2>&1 < /dev/null &
+            LOAD_PID=$!
+            LOAD_STARTED=${SECONDS}
+        }
+        : > "${LOG_DIR}/load.log"
+        start_load
+
+        ITER_PIDS=()
+        stop_iterations() {
+            local n pgid
+            for ((n = 1; n <= ${#ITER_PIDS[@]}; n++)); do
+                if [[ -s "${LOG_DIR}/iter-${n}.pgid" ]]; then
+                    pgid="$(<"${LOG_DIR}/iter-${n}.pgid")"
+                    kill -TERM -- "-${pgid}" 2>/dev/null || true
+                fi
+                kill -TERM "${ITER_PIDS[n - 1]}" 2>/dev/null || true
+            done
+            for pgid in "${ITER_PIDS[@]}"; do
+                wait "${pgid}" 2>/dev/null || true
+            done
+        }
+        # shellcheck disable=SC2317,SC2329
+        stop_all() {
+            stop_iterations
+            if [[ -n "${LOAD_PID}" ]]; then
+                kill -TERM -- "-${LOAD_PID}" 2>/dev/null || true
+                wait "${LOAD_PID}" 2>/dev/null || true
+            fi
+        }
+        trap stop_all EXIT
+
+        run_iteration() {
+            local n="$1" log="${LOG_DIR}/iter-$1.log" rc child
+            set +e
+            if [[ "${USE_GDB}" -eq 1 ]]; then
+                (cd "${REPEAT_CWD}" && exec setsid timeout -k 10 "${REPEAT_TIMEOUT}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
+                    gdb -batch -ex run -ex "thread apply all bt" --args "${REPEAT_CMD[@]}") > "${log}" 2>&1 < /dev/null &
+                child=$!
+                echo "${child}" > "${LOG_DIR}/iter-${n}.pgid"
+                wait "${child}"
+                rc=$?
+                # gdb exits 0 after the debuggee crashed or failed.
+                if [[ "${rc}" -eq 0 ]] && grep -qE 'Program (received signal|terminated with signal)|exited with code' "${log}"; then
+                    rc=1
+                fi
+            else
+                (cd "${REPEAT_CWD}" && exec setsid timeout -k 10 "${REPEAT_TIMEOUT}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
+                    "${REPEAT_CMD[@]}") > "${log}" 2>&1 < /dev/null &
+                child=$!
+                echo "${child}" > "${LOG_DIR}/iter-${n}.pgid"
+                wait "${child}"
+                rc=$?
+            fi
+            echo "${rc}" > "${LOG_DIR}/iter-${n}.rc"
+        }
+
+        live_iterations() {
+            local running pid count=0
+            running=" $(jobs -rp | tr '\n' ' ') "
+            for pid in "${ITER_PIDS[@]}"; do
+                if [[ "${running}" == *" ${pid} "* ]]; then
+                    count=$((count + 1))
+                fi
+            done
+            echo "${count}"
+        }
+
+        # Without the load the iterations no longer run under contention, so keep it going; a
+        # load that exits almost at once would only spin, so that one is left down.
+        check_load() {
+            [[ -n "${LOAD_PID}" ]] || return 0
+            if [[ " $(jobs -rp | tr '\n' ' ') " == *" ${LOAD_PID} "* ]]; then
+                return 0
+            fi
+            wait "${LOAD_PID}" 2>/dev/null || true
+            local ran=$((SECONDS - LOAD_STARTED))
+            if [[ "${ran}" -lt 10 ]]; then
+                echo "test.sh: warning: the ctest load exited after ${ran}s with iterations still running; continuing without it (see ${LOG_DIR}/load.log)" >&2
+                LOAD_PID=""
+                return 0
+            fi
+            echo "test.sh: warning: the ctest load finished before the iterations; restarting it (run $((LOAD_RESTARTS + 1)))" >&2
+            LOAD_RESTARTS=$((LOAD_RESTARTS + 1))
+            start_load
+        }
+
+        FAILED_ITER=""
+        find_failure() {
+            local f rc n
+            for f in "${LOG_DIR}"/iter-*.rc; do
+                [[ -e "${f}" ]] || continue
+                rc="$(<"${f}")"
+                if [[ "${rc}" -ne 0 ]]; then
+                    n="${f##*/iter-}"
+                    FAILED_ITER="${n%.rc}"
+                    FAILED_RC="${rc}"
+                    return 0
+                fi
+            done
+            return 1
+        }
+
+        i=1
+        while [[ "${i}" -le "${REPEAT_COUNT}" ]]; do
+            while [[ "$(live_iterations)" -ge "${REPEAT_PARALLEL}" ]]; do
+                wait -n || true
+                check_load
+            done
+            if find_failure; then
+                break
+            fi
+            run_iteration "${i}" &
+            ITER_PIDS+=("$!")
+            i=$((i + 1))
+        done
+        while [[ -z "${FAILED_ITER}" && "$(live_iterations)" -gt 0 ]]; do
+            wait -n || true
+            check_load
+            find_failure || true
+        done
+        if [[ -n "${FAILED_ITER}" ]]; then
+            stop_iterations
+        fi
+        for pid in "${ITER_PIDS[@]}"; do
+            wait "${pid}" 2>/dev/null || true
+        done
+        find_failure || true
+
+        if [[ -n "${FAILED_ITER}" ]]; then
+            echo "test.sh: ERROR: ${REPEAT_TEST} failed in iteration ${FAILED_ITER} of ${REPEAT_COUNT} (exit ${FAILED_RC})" >&2
+            echo "== iteration ${FAILED_ITER} output (${LOG_DIR}/iter-${FAILED_ITER}.log) =="
+            cat "${LOG_DIR}/iter-${FAILED_ITER}.log"
+            exit 1
+        fi
+        passed=0
+        for ((n = 1; n <= REPEAT_COUNT; n++)); do
+            if [[ -s "${LOG_DIR}/iter-${n}.rc" && "$(<"${LOG_DIR}/iter-${n}.rc")" == "0" ]]; then
+                passed=$((passed + 1))
+            fi
+        done
+        if [[ "${passed}" -ne "${REPEAT_COUNT}" ]]; then
+            echo "test.sh: ERROR: only ${passed} of ${REPEAT_COUNT} iterations of ${REPEAT_TEST} recorded a pass" >&2
+            exit 1
+        fi
+        echo "== test.sh: ${REPEAT_TEST} passed ${REPEAT_COUNT} of ${REPEAT_COUNT} iterations =="
+        exit 0
         ;;
 
     smoke)

@@ -1,5 +1,7 @@
 name: Nightly
 
+run-name: ${{ format('Nightly · {0} · {1}', github.event_name == 'schedule' && 'scheduled' || github.event_name == 'push' && 'after merge' || 'manual', github.ref_name) }}
+
 # The PR gate (ci.yml) is deliberately a fast smoke check: debug build +
 # ctest only, so a PR gets a signal in minutes. This workflow runs the
 # fuller, slower suite that gate intentionally skips -- release build,

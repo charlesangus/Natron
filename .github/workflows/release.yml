@@ -1,5 +1,7 @@
 name: Release
 
+run-name: ${{ format('Release · {0}', inputs.tag || github.ref_name) }}
+
 on:
   push:
     tags:

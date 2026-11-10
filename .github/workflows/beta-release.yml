@@ -1,5 +1,7 @@
 name: Beta Release
 
+run-name: ${{ format('Beta · after {0}', github.event.workflow_run.display_title) }}
+
 on:
   workflow_run:
     workflows: ['Build and test']
@@ -76,3 +78,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run release.yml --ref main -f tag="${{ steps.next_tag.outputs.tag }}"
+
+      - name: Record allocated tag
+        if: always()
+        env:
+          BETA_TAG: ${{ steps.next_tag.outputs.tag }}
+        run: |
+          if [[ -n "$BETA_TAG" ]]; then
+            echo "Beta tag: \`$BETA_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No beta tag was allocated." >> "$GITHUB_STEP_SUMMARY"
+          fi

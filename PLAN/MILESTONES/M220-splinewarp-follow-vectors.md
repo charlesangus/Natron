@@ -78,3 +78,4 @@ Scouted facts: none yet. Neither SplineWarp nor its context exists on `origin/ma
 
 - 2026-10-25 — **SplineWarp follows whatever is selected (user),** with no pairing logic.
 - 2026-11-10 — Screenshots approved (user): modal follow window, SplineWarp follow at frames 1/6/12, from the gate run on the F8-merged branch. PR #247.
+- 2026-11-10 — **A follow refreshes the viewer frame by frame, correspondences included (user):** "so the user can cancel a track that is not happening as expected". Correspondence writes dirty the node once per completed frame, not per key and not only at the end.

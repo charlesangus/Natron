@@ -238,6 +238,7 @@ future core work has solid ground to build on.
 | M394 | Release Versioning | todo | M386, M387 |  | E21 | | | [M394-release-versioning.md](PLAN/MILESTONES/M394-release-versioning.md) |
 | M395 | Release Notes 1.0 | todo | M388, M394 |  | E21 | | | [M395-release-notes-1-0.md](PLAN/MILESTONES/M395-release-notes-1-0.md) |
 | M396 | Release 1.0 Cut | todo | M391, M392, M393, M394, M395 |  | E21 | | | [M396-release-1-0-cut.md](PLAN/MILESTONES/M396-release-1-0-cut.md) |
+| M397 | Label Resize Keeps Node Top-Centre | todo | - |  | E10 | | | [M397-label-resize-keeps-node-top-centre.md](PLAN/MILESTONES/M397-label-resize-keeps-node-top-centre.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | | | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |

@@ -28,7 +28,7 @@ The RenderIsolation ctest hit its 300 s timeout on 2026-10-27/28 (M228 - 3D View
   - approach: the deadline on `renderWithActionAtFrame` (~154-263) defaults to the value `RefusedEditRenderStress` uses, not zero, so the original cases (~323, ~339) get it too. Before `std::abort()`, print which test and frame stalled.
   - verify: syntax-check; the PM's build runs RenderIsolation green on both ctest legs.
   - size: M
-- [ ] M273.P1.T3 — 200 runs per scheduler on current main (PM run)
+- [x] M273.P1.T3 — 200 runs per scheduler on current main (PM run)
   - files: none
   - approach: `build.sh release --repeat-test RenderIsolation:200` with T1 and T2; split the run if it doesn't fit the 90-minute repeat step.
   - verify: both `ctest-<scheduler>-repeat.log` files show 200/200, or a captured `iter-N.stacks`.
@@ -36,7 +36,7 @@ The RenderIsolation ctest hit its 300 s timeout on 2026-10-27/28 (M228 - 3D View
 
 ## Phase 273.2: Fix (only if T3 reproduces)
 
-- [ ] M273.P2.T1 — Fix the stall the stacks show
+- [ ] ~~M273.P2.T1 — Fix the stall the stacks show~~ (dropped: 200/200 on both legs, no stall)
   - files: from the stacks (likely `Engine/OutputSchedulerThread.cpp`, `Engine/RenderScheduler.cpp`), `Tests/RenderIsolation_Test.cpp`
   - approach: read the blocked threads (scheduler, frame threads, GIL holder, the refused-edit thread), fix the lock order or lost wakeup, and add a `RefusedEditRenderStress` case that reproduces the interleaving.
   - verify: T3's command passes 200/200 on both legs.
@@ -47,3 +47,4 @@ The RenderIsolation ctest hit its 300 s timeout on 2026-10-27/28 (M228 - 3D View
 ## Decisions
 
 - 2026-11-10 — Elaborated at claim (consultant): the stub's "exit hang" was a mid-render stall already diagnosed by M298 and fixed by M321, so this milestone confirms the fix and adds stack capture rather than hunting a new race. M322 touches only the exit path and is unrelated. The board name stays as it is; renaming is plan-scoped.
+- 2026-11-10 — P1.T3: `RenderIsolation` passed 200 of 200 under load on both legs (release run 42850235106), and 100 of 100 earlier (42832794252). P2 is dropped. The run's legacy ctest leg failed only on `SceneViewportStorm` timing out at 300 s, which is M378 - Scene Render Test Stability's hang; this branch has neither its Cycles locks nor its watchdog.

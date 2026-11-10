@@ -23,7 +23,7 @@ The RenderIsolation ctest hit its 300 s timeout on 2026-10-27/28 (M228 - 3D View
   - approach: in `run_iteration`, replace `timeout` with a watchdog: start the binary, wait up to `REPEAT_TIMEOUT - 20` s, run `eu-stack -p <pid>` (fall back to `gdb -p <pid> -batch -ex 'thread apply all bt'`) into `iter-N.stacks`, then kill it. If ptrace is refused, fall back to the `--gdb` launch (`timeout -s INT` to gdb, then `thread apply all bt`). Print the stacks path in the summary.
   - verify: `repeat` on a throwaway test that sleeps past a short `REPEAT_TIMEOUT` leaves a stacks file showing the sleeping frame, locally in natron-dev and on one remote run.
   - size: M
-- [ ] M273.P1.T2 — Every RenderIsolation render has a deadline
+- [x] M273.P1.T2 — Every RenderIsolation render has a deadline
   - files: `Tests/RenderIsolation_Test.cpp`
   - approach: the deadline on `renderWithActionAtFrame` (~154-263) defaults to the value `RefusedEditRenderStress` uses, not zero, so the original cases (~323, ~339) get it too. Before `std::abort()`, print which test and frame stalled.
   - verify: syntax-check; the PM's build runs RenderIsolation green on both ctest legs.

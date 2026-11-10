@@ -381,8 +381,9 @@ typedef std::function<bool(const PXR_NS::UsdPrim& prim)> PatternFilter;
  * pattern and filterKey, and a load set equal to the remembered one or changed only where the
  * pattern cannot reach, they are taken without a query. A stage is borrowed into *lease, with
  * context's load set, when there is none yet and one is needed; a caller reading the stage
- * afterwards borrows it the same way when *lease is still empty. Returns false with
- * *errorMessage set when pattern does not parse or the stage does not compose.
+ * afterwards borrows it the same way when *lease is still empty. The pattern's reach goes to
+ * context's reach, when set. Returns false with *errorMessage set when pattern does not parse or
+ * the stage does not compose.
  **/
 bool matchPattern(PrimPatternCache* cache,
                   const ScenePayload& upstream,

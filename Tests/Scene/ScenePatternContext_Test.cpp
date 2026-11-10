@@ -294,6 +294,51 @@ TEST_F(ScenePatternContextTest, LoadingWhereThePatternCannotReachDoesNotQueryAga
     EXPECT_FALSE(activeWhenLoaded(payload, car(0, 1)));
 }
 
+TEST_F(ScenePatternContextTest, ALoadOrUnloadReEvaluatesOnlyWhereAPatternReaches)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    ASSERT_TRUE(bool(source));
+    const U64 viewer = SceneEvaluationContext::makeId();
+    const SceneLoadSetPtr nothing = loading({});
+    const SceneLoadSetPtr building = loading({ "/World/Block_0/B_0" });
+    const SceneLoadSetPtr otherBlock = loading({ "/World/Block_1/B_0" });
+    const SceneLoadSetPtr both = loading({ "/World/Block_0/B_0", "/World/Block_1/B_0" });
+
+    // No pattern: neither a load nor an unload asks for the scene again.
+    ScenePayload payload;
+    SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(source, SceneEvaluationContext(viewer, nothing, reach), &payload));
+    EXPECT_TRUE(reach->getPrefixes().empty());
+    EXPECT_FALSE(SceneOps::loadChangeReaches(nothing.get(), building.get(), reach->getPrefixes()));
+    EXPECT_FALSE(SceneOps::loadChangeReaches(building.get(), nothing.get(), reach->getPrefixes()));
+
+    NodePtr node = prune(source, "/World/Block_0//car*");
+    ASSERT_TRUE(bool(node));
+    reach = std::make_shared<SceneLoadReach>();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, nothing, reach), &payload));
+    EXPECT_EQ(reach->getPrefixes(), std::vector<std::string>({ "/World/Block_0" }));
+    EXPECT_TRUE(activeWhenLoaded(payload, car(0, 0)));
+    const U64 before = queries(node);
+
+    // A pattern that cannot reach the payload: still nothing to evaluate.
+    EXPECT_FALSE(SceneOps::loadChangeReaches(nothing.get(), otherBlock.get(), reach->getPrefixes()));
+    EXPECT_FALSE(SceneOps::loadChangeReaches(both.get(), building.get(), reach->getPrefixes()));
+
+    // One that can: evaluated once more, it matches inside the loaded payload.
+    ASSERT_TRUE(SceneOps::loadChangeReaches(nothing.get(), building.get(), reach->getPrefixes()));
+    reach = std::make_shared<SceneLoadReach>();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, building, reach), &payload));
+    EXPECT_EQ(before + 1, queries(node));
+    EXPECT_FALSE(activeWhenLoaded(payload, car(0, 0)));
+    EXPECT_TRUE(activeWhenLoaded(payload, car(0, 1)));
+
+    // Its unload reaches it as well, and the match goes with it.
+    ASSERT_TRUE(SceneOps::loadChangeReaches(building.get(), nothing.get(), reach->getPrefixes()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, nothing, reach), &payload));
+    EXPECT_TRUE(activeWhenLoaded(payload, car(0, 0)));
+}
+
 TEST_F(ScenePatternContextTest, PlainPathsMatchInsideUnloadedPayloads)
 {
     CarCity city(1, 2);

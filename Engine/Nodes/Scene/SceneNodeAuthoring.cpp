@@ -359,48 +359,6 @@ PrimPatternCache::getState()
 }
 
 namespace {
-/**
- * Whether what a pattern reaching below prefixes selects can differ between stages loading from
- * and to. A changed rule changes what is loaded from the highest prim on its path whose
- * effective rule differs (an ancestor's own payload loads once a descendant asks for anything),
- * or else below its own path.
- **/
-bool
-loadChangeReaches(const SceneLoadSetPtr& from,
-                  const SceneLoadSetPtr& to,
-                  const std::vector<std::string>& prefixes)
-{
-    const std::vector<std::string> changed = SceneLoadSet::getChangedPaths(from.get(), to.get());
-    if (changed.empty()) {
-        return false;
-    }
-    const PXR_NS::UsdStageLoadRules fromRules = SceneOps::getLoadRules(from.get());
-    const PXR_NS::UsdStageLoadRules toRules = SceneOps::getLoadRules(to.get());
-    std::vector<PXR_NS::SdfPath> reach;
-    for (const std::string& prefix : prefixes) {
-        reach.push_back(PXR_NS::SdfPath(prefix));
-    }
-    for (const std::string& path : changed) {
-        const PXR_NS::SdfPath changedPath(path);
-        PXR_NS::SdfPath region = changedPath;
-        for (const PXR_NS::SdfPath& ancestor : changedPath.GetAncestorsRange()) {
-            if (fromRules.GetEffectiveRuleForPath(ancestor) != toRules.GetEffectiveRuleForPath(ancestor)) {
-                region = ancestor;
-            }
-        }
-        if (fromRules.GetEffectiveRuleForPath(PXR_NS::SdfPath::AbsoluteRootPath()) != toRules.GetEffectiveRuleForPath(PXR_NS::SdfPath::AbsoluteRootPath())) {
-            region = PXR_NS::SdfPath::AbsoluteRootPath();
-        }
-        for (const PXR_NS::SdfPath& prefix : reach) {
-            if (region.HasPrefix(prefix) || prefix.HasPrefix(region)) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-} // loadChangeReaches
-
 bool
 borrowFor(const ScenePayload& upstream,
           const SceneEvaluationContext& context,
@@ -448,6 +406,9 @@ matchPattern(PrimPatternCache* cache,
     if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
         return true;
     }
+    if (context.reach) {
+        context.reach->add(reach.prefixes);
+    }
 
     PrimPatternCache::State& state = cache->getState();
     {
@@ -459,7 +420,7 @@ matchPattern(PrimPatternCache* cache,
             }
             const bool sameLoadSet = it->loadSet ? (context.loadSet && (*it->loadSet == *context.loadSet)) : !context.loadSet;
             // Literal paths in a partial load set match by what is loaded above them.
-            if (!sameLoadSet && (reach.literalOnly || loadChangeReaches(it->loadSet, context.loadSet, reach.prefixes))) {
+            if (!sameLoadSet && (reach.literalOnly || SceneOps::loadChangeReaches(it->loadSet.get(), context.loadSet.get(), reach.prefixes))) {
                 continue;
             }
             *matches = it->matches;

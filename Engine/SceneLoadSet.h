@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -104,6 +105,25 @@ private:
 typedef std::shared_ptr<const SceneLoadSet> SceneLoadSetPtr;
 
 /**
+ * @brief Where the prim patterns an evaluation matched can select prims, as the literal leading
+ * paths PrimSelector::getReach() gives, gathered while the evaluation runs. A load set change
+ * that reaches none of them (SceneOps::loadChangeReaches()) leaves that evaluation's scene as it
+ * is. Empty when no pattern was matched against the loaded payloads. MT-safe.
+ **/
+class SceneLoadReach {
+public:
+    void add(const std::vector<std::string>& prefixes);
+
+    std::vector<std::string> getPrefixes() const;
+
+private:
+    mutable std::mutex _mutex;
+    std::vector<std::string> _prefixes;
+};
+
+typedef std::shared_ptr<SceneLoadReach> SceneLoadReachPtr;
+
+/**
  * @brief Who a scene evaluation is for. A viewer evaluates with its own id and the load set of
  * its stage; renders, writes and scripts use the default, id 0 with every payload included.
  * Nodes keep their memoized layers per id, so two evaluators do not evict each other.
@@ -111,17 +131,22 @@ typedef std::shared_ptr<const SceneLoadSet> SceneLoadSetPtr;
 struct SceneEvaluationContext {
     U64 id;
     SceneLoadSetPtr loadSet;
+    // Gathers the reach of the patterns the evaluation matches, when set.
+    SceneLoadReachPtr reach;
 
     SceneEvaluationContext()
         : id(0)
         , loadSet()
+        , reach()
     {
     }
 
     SceneEvaluationContext(U64 id_,
-                           const SceneLoadSetPtr& loadSet_)
+                           const SceneLoadSetPtr& loadSet_,
+                           const SceneLoadReachPtr& reach_ = SceneLoadReachPtr())
         : id(id_)
         , loadSet(loadSet_)
+        , reach(reach_)
     {
     }
 

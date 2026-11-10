@@ -124,6 +124,26 @@ SceneLoadSet::getChangedPaths(const SceneLoadSet* a,
     return changed;
 }
 
+void
+SceneLoadReach::add(const std::vector<std::string>& prefixes)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    for (const std::string& prefix : prefixes) {
+        if (std::find(_prefixes.begin(), _prefixes.end(), prefix) == _prefixes.end()) {
+            _prefixes.push_back(prefix);
+        }
+    }
+}
+
+std::vector<std::string>
+SceneLoadReach::getPrefixes() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return _prefixes;
+}
+
 U64
 SceneEvaluationContext::makeId()
 {

@@ -39,6 +39,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -46,6 +47,7 @@
 // Before Qt's OpenGL headers.
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneViewport.h"
+#include "Tests/TestWatchdog.h"
 
 #include <QColor>
 #include <QImage>
@@ -324,6 +326,7 @@ class SceneViewportStorm
 protected:
     void SetUp() override
     {
+        _watchdog.start();
         if (!appPTR->isOpenGLLoaded()) {
             _skip = skipWithoutGL("Natron did not load OpenGL");
 
@@ -385,6 +388,22 @@ protected:
         _fbo.reset();
         _surface.reset();
         _context.reset();
+        _watchdog.stop();
+    }
+
+    bool renderFrame()
+    {
+        _watchdog.setPhase("render");
+
+        return _renderer.render(_fbo->handle(), kSize, kSize);
+    }
+
+    template <typename... Args>
+    bool syncScene(Args&&... args)
+    {
+        _watchdog.setPhase("syncScene");
+
+        return _renderer.syncScene(std::forward<Args>(args)...);
     }
 
     QImage render()
@@ -392,7 +411,7 @@ protected:
         bool converged = false;
 
         for (int i = 0; i < 4 && !converged; ++i) {
-            converged = _renderer.render(_fbo->handle(), kSize, kSize);
+            converged = renderFrame();
         }
         EXPECT_TRUE(converged) << "Storm did not converge";
 
@@ -437,10 +456,11 @@ protected:
     // converged frame, the delegate fails, or the time is up. True if both held.
     bool refineUntil(const std::function<bool(const SceneViewportRenderer::RefineStatus&)>& done)
     {
+        _watchdog.setPhase("refineTo");
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
 
         while (std::chrono::steady_clock::now() < end) {
-            const bool drawn = _renderer.render(_fbo->handle(), kSize, kSize);
+            const bool drawn = renderFrame();
             if (!_renderer.getRendererError().empty()) {
                 ADD_FAILURE() << _renderer.getRendererError();
 
@@ -464,6 +484,7 @@ protected:
         });
     }
 
+    TestWatchdog _watchdog;
     bool _skip = false;
     std::unique_ptr<QOpenGLContext> _context;
     std::unique_ptr<QOffscreenSurface> _surface;
@@ -1125,9 +1146,9 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
 
     while (glGetError() != GL_NO_ERROR) {
     }
-    (void)_renderer.render(_fbo->handle(), kSize, kSize);
+    (void)renderFrame();
     _renderer.setShowGrid(true);
-    (void)_renderer.render(_fbo->handle(), kSize, kSize);
+    (void)renderFrame();
     (void)_renderer.pick(128, 128, kSize, kSize);
 
     GLint value = -1;
@@ -1429,7 +1450,7 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
 
     _renderer.setRendererId(stub);
     EXPECT_FALSE(_renderer.hasEngine());
-    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    EXPECT_TRUE(renderFrame());
     EXPECT_FALSE(_renderer.hasEngine());
     EXPECT_EQ(engines, _renderer.getEngineCount());
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
@@ -1453,7 +1474,7 @@ TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
     const std::string stub = "NatronTestStubRendererPlugin";
     const ScenePayload base = referenceScene();
     std::string error;
-    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+    ASSERT_TRUE(syncScene(base, &error)) << error;
 
     _renderer.setRendererId(kRenderDelegateSceneDefaultId);
     EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
@@ -1461,26 +1482,26 @@ TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
 
     // A prim without natron:renderer: still Storm.
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 4, 4, 0x5e771ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 4, 4, 0x5e771ULL), &error)) << error;
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
 
     // A prim naming a renderer that is not installed: the view says so instead of drawing.
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e772ULL), &error)) << error;
-    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e772ULL), &error)) << error;
+    EXPECT_TRUE(renderFrame());
     EXPECT_EQ(stub, _renderer.getActiveRendererId());
     EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
     EXPECT_FALSE(_renderer.hasEngine());
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
 
     // The prim gone, Storm again.
-    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+    ASSERT_TRUE(syncScene(base, &error)) << error;
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
     EXPECT_TRUE(_renderer.getRendererError().empty()) << _renderer.getRendererError();
 
     // A renderer chosen beats the prim's.
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e773ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e773ULL), &error)) << error;
     _renderer.setRendererId(kRenderDelegateStormId);
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
@@ -1496,7 +1517,7 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
     }
     const ScenePayload base = referenceScene();
     std::string error;
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e781ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e781ULL), &error)) << error;
     _renderer.setRendererId(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(6));
 
@@ -1506,10 +1527,10 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
     const U64 frames = _renderer.getRefineStatus().frames;
 
     // The MoonRay tab's edit: only /Render changes, in a namespace Cycles does not read.
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 128, 0x5e782ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 6, 128, 0x5e782ULL), &error)) << error;
     const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
     while (std::chrono::steady_clock::now() < end) {
-        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        (void)renderFrame();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_EQ(restarts, _renderer.getRefineStatus().restarts);
@@ -1518,7 +1539,7 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
 
     // The Cycles tab's edit, without the cap: the prim's new samples.
     _renderer.setMaxSamples(0);
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
     ASSERT_TRUE(refineTo(9));
     EXPECT_GT(_renderer.getRefineStatus().restarts, restarts);
 }
@@ -1553,7 +1574,7 @@ TEST_F(SceneViewportStorm, ARefinementFailureClearsAtTheNextSceneEdit)
     }
     const ScenePayload base = referenceScene();
     std::string error;
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e791ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e791ULL), &error)) << error;
     std::atomic<bool> armed(true);
     RenderDelegates::setRenderFaultHook([&armed]() {
         if (armed.exchange(false)) {
@@ -1563,15 +1584,15 @@ TEST_F(SceneViewportStorm, ARefinementFailureClearsAtTheNextSceneEdit)
     _renderer.setRendererId(kRenderDelegateCyclesId);
     const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
     while (_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
-        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        (void)renderFrame();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     RenderDelegates::setRenderFaultHook(nullptr);
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find("texture commit failed")) << _renderer.getRendererError();
 
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 64, 0x5e792ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 9, 64, 0x5e792ULL), &error)) << error;
     while (!_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
-        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        (void)renderFrame();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     EXPECT_TRUE(refineTo(9));
@@ -1617,7 +1638,7 @@ TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRender
     const U64 engines = _renderer.getEngineCount();
 
     RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
-    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    EXPECT_TRUE(renderFrame());
     RenderDelegates::setRenderFaultHook(nullptr);
 
     EXPECT_FALSE(_renderer.hasEngine());

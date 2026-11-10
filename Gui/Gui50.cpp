@@ -832,6 +832,28 @@ Gui::getNodesEntitledForOverlays(NodesList & nodes) const
 }
 
 void
+Gui::getNodesEntitledForOverlayImages(NodesList& nodes) const
+{
+    std::list<DockablePanel*> panels;
+    {
+        QMutexLocker k(&_imp->openedPanelsMutex);
+        panels = _imp->openedPanels;
+    }
+
+    for (DockablePanel* it : panels) {
+        NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(it);
+        if (!panel) {
+            continue;
+        }
+        NodeGuiPtr node = panel->getNode();
+        NodePtr internalNode = node ? node->getNode() : NodePtr();
+        if (internalNode && internalNode->isActivated() && !internalNode->isNodeDisabled() && !internalNode->isSettingsPanelMinimized()) {
+            nodes.push_back(internalNode);
+        }
+    }
+}
+
+void
 Gui::redrawAllViewers()
 {
     QMutexLocker k(&_imp->_viewerTabsMutex);
@@ -944,10 +966,18 @@ Gui::onColorTrackballActionTriggered()
         return;
     }
 
-    KnobGuiColor* target = resolveColorTrackballTarget(this);
+    KnobGui* target = resolveGlobalModeKnob(this, QApplication::widgetAt(QCursor::pos()));
 
-    if (target) {
-        target->engageGlobalMode();
+    if (!target) {
+        return;
+    }
+    if (KnobGuiColor* color = dynamic_cast<KnobGuiColor*>(target)) {
+        color->engageGlobalMode();
+
+        return;
+    }
+    if (mode) {
+        mode->engage(makeGlobalModeTarget(target));
     }
 }
 

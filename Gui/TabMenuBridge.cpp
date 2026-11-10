@@ -25,6 +25,7 @@
 
 #include "TabMenuBridge.h"
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -38,16 +39,24 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
+#include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
 QPointer<NodeGraph> g_target;
 QPointF g_scenePos;
+// The filtered launch's context, until the menu's choice is triggered, the menu closes without
+// one, or the next launch.
+std::shared_ptr<TabMenuBridge::LaunchContext> g_context;
 
 // Puts back the context that was set before, however the action returns, so that an action
 // triggered from inside another one hands the outer action its context back; an app the action
@@ -92,9 +101,162 @@ pythonStringLiteral(const QString& s)
 
     return "'" + escaped + "'";
 }
+
+void
+openMenu(NodeGraph* graph,
+         const std::string& pythonContext)
+{
+    Gui* gui = graph->getGui();
+    GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
+    if (!app) {
+        return;
+    }
+
+    std::string script = "import tabtabtab_natron\n";
+    script += "tabtabtab_natron.launch(" + app->getAppIDString() + pythonContext + ")\n";
+    std::string err;
+    std::string output;
+    if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output)) {
+        app->appendToScriptEditor(err);
+        std::cerr << "Tab menu: " << err << std::endl;
+    } else if (!output.empty()) {
+        app->appendToScriptEditor(output);
+    }
+}
+
+// The kind every selected node outputs, false when the selection is empty, mixed, or holds a node
+// whose output kind is polymorphic or not yet resolved.
+bool
+selectedOutputKind(NodeGraph* graph,
+                   DataKindEnum* kind)
+{
+    bool found = false;
+
+    for (const NodeGuiPtr& nodeGui : graph->getSelectedNodes()) {
+        NodePtr node = nodeGui ? nodeGui->getNode() : NodePtr();
+        if (!node) {
+            continue;
+        }
+        bool ambiguous = false;
+        const DataKindEnum nodeKind = node->getEffectiveOutputDataKind(&ambiguous);
+        if (ambiguous || (nodeKind == eDataKindPolymorphic) || (found && (nodeKind != *kind))) {
+            return false;
+        }
+        *kind = nodeKind;
+        found = true;
+    }
+
+    return found;
+}
+
+// Puts back the nodes menu's previous args decorator however the action returns.
+class NodesMenuArgsDecoratorScope {
+public:
+    explicit NodesMenuArgsDecoratorScope(const GuiApplicationManager::NodesMenuArgsDecorator& decorator)
+        : _previous(appPTR->swapNodesMenuArgsDecorator(decorator))
+    {
+    }
+
+    ~NodesMenuArgsDecoratorScope()
+    {
+        appPTR->swapNodesMenuArgsDecorator(_previous);
+    }
+
+    NodesMenuArgsDecoratorScope(const NodesMenuArgsDecoratorScope&) = delete;
+    NodesMenuArgsDecoratorScope& operator=(const NodesMenuArgsDecoratorScope&) = delete;
+
+private:
+    GuiApplicationManager::NodesMenuArgsDecorator _previous;
+};
+
+// Closes the undo step it opened however the action returns.
+class UndoStepScope {
+public:
+    UndoStepScope(UndoHistory* history,
+                  const QString& name)
+        : _history(history)
+    {
+        if (_history) {
+            _history->openStep(name);
+        }
+    }
+
+    ~UndoStepScope()
+    {
+        if (_history) {
+            _history->closeStep();
+        }
+    }
+
+    UndoStepScope(const UndoStepScope&) = delete;
+    UndoStepScope& operator=(const UndoStepScope&) = delete;
+
+private:
+    UndoHistory* _history;
+};
+
+// Triggers action on graph as context says; see TabMenuBridge::launch(NodeGraph*, const LaunchContext&).
+// Without a graph, or once its app or group is gone, the action is triggered as is.
+void
+triggerInContext(QAction* action,
+                 const TabMenuBridge::LaunchContext& context,
+                 NodeGraph* graph,
+                 const QPointF& scenePos)
+{
+    Gui* gui = graph ? graph->getGui() : nullptr;
+    GuiAppInstancePtr app = gui ? gui->getApp() : GuiAppInstancePtr();
+    NodeCollectionPtr collection = graph ? graph->getGroup() : NodeCollectionPtr();
+    if (!app || !collection) {
+        action->trigger();
+
+        return;
+    }
+
+    QString text = action->text();
+    text.remove(QLatin1Char('&'));
+    UndoStepScope step(gui->getUndoHistory(), QCoreApplication::translate("TabMenuBridge", "Create %1").arg(text));
+
+    graph->clearSelection();
+    const NodesList before = collection->getNodes();
+    {
+        NodeCreationContextScope scope(app, collection, scenePos);
+        NodesMenuArgsDecoratorScope decorator(context.decorateArgs);
+        action->trigger();
+    }
+    NodePtr created;
+    const NodesList after = collection->getNodes();
+    for (const NodePtr& node : after) {
+        if (std::find(before.begin(), before.end(), node) == before.end()) {
+            created = node;
+            break;
+        }
+    }
+    if (created && context.created) {
+        context.created(created);
+    }
+}
 } // anonymous namespace
 
 namespace TabMenuBridge {
+QString
+dataKindKey(DataKindEnum kind)
+{
+    switch (kind) {
+    case eDataKindImage:
+        return QString::fromUtf8("image");
+    case eDataKindDeep:
+        return QString::fromUtf8("deep");
+    case eDataKindScene:
+        return QString::fromUtf8("scene");
+    case eDataKindPolymorphic:
+        return QString::fromUtf8("polymorphic");
+    case eDataKindRaw:
+        return QString::fromUtf8("raw");
+    }
+
+    return QString();
+}
+
 void
 triggerActionInGraph(QAction* action,
                      NodeGraph* graph,
@@ -111,7 +273,6 @@ triggerActionInGraph(QAction* action,
 
         return;
     }
-
     NodeCreationContextScope scope(app, collection, scenePos);
     action->trigger();
 }
@@ -119,6 +280,17 @@ triggerActionInGraph(QAction* action,
 void
 triggerAction(QAction* action)
 {
+    // One choice per launch, and a nested trigger from inside the action is a plain one.
+    std::shared_ptr<LaunchContext> context;
+    context.swap(g_context);
+    if (!action) {
+        return;
+    }
+    if (context) {
+        triggerInContext(action, *context, g_target.data(), g_scenePos);
+
+        return;
+    }
     triggerActionInGraph(action, g_target.data(), g_scenePos);
 }
 
@@ -139,17 +311,29 @@ launch(NodeGraph* graph)
 
     g_target = graph;
     g_scenePos = graph->mapToScene(graph->mapFromGlobal(QCursor::pos()));
-
-    std::string script = "import tabtabtab_natron\n";
-    script += "tabtabtab_natron.launch(" + app->getAppIDString() + ")\n";
-    std::string err;
-    std::string output;
-    if (!NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &err, &output)) {
-        app->appendToScriptEditor(err);
-        std::cerr << "Tab menu: " << err << std::endl;
-    } else if (!output.empty()) {
-        app->appendToScriptEditor(output);
+    g_context.reset();
+    DataKindEnum kind = eDataKindImage;
+    if (selectedOutputKind(graph, &kind)) {
+        openMenu(graph, ", {'selectedKind': " + pythonStringLiteral(dataKindKey(kind)) + "}");
+    } else {
+        openMenu(graph, std::string());
     }
+}
+
+void
+launch(NodeGraph* graph,
+       const LaunchContext& context)
+{
+    if (!graph || !graph->getGui() || !graph->getGui()->getApp()) {
+        return;
+    }
+
+    g_target = graph;
+    g_scenePos = graph->mapToScene(graph->mapFromGlobal(QCursor::pos()));
+    g_context = std::make_shared<LaunchContext>(context);
+    std::string filter = ", {'inputKind': " + pythonStringLiteral(dataKindKey(context.inputKind));
+    filter += std::string(", 'needsPrimPathKnob': ") + (context.needsPrimPathKnob ? "True" : "False") + "}";
+    openMenu(graph, filter);
 }
 
 void

@@ -58,7 +58,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kBlurID = PLUGINID_NATRON_BLUR;
-const int kOfxBlurMajor = 4;
 const int kNativeBlurMajor = PLUGIN_MAJOR_NATRON_BLUR;
 const double kTime = 1.;
 
@@ -126,11 +125,10 @@ protected:
 
     ParityPair makePair(bool withMask = false)
     {
-        ParityPair pair = makeParityPair(getApp(), kBlurID, kOfxBlurMajor, kNativeBlurMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), kBlurID, kNativeBlurMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Blur is retired, so parity replays the recorded references";
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
         }
@@ -148,7 +146,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Blur " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;

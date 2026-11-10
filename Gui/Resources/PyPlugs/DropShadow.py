@@ -188,7 +188,7 @@ def createInstance(app,group):
     del lastNode
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
+    lastNode = app.createNode("ShuffleCopy", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(759, 87)
@@ -208,7 +208,7 @@ def createInstance(app,group):
     # End of node "Shuffle1"
 
     # Start of node "Transform2"
-    lastNode = app.createNode("net.sf.openfx.TransformPlugin", 1, group)
+    lastNode = app.createNode("Transform", 1, group)
     lastNode.setScriptName("Transform2")
     lastNode.setLabel("Transform2")
     lastNode.setPosition(759, 167)
@@ -254,7 +254,7 @@ def createInstance(app,group):
     # End of node "Premult1"
 
     # Start of node "Multiply1"
-    lastNode = app.createNode("net.sf.openfx.MultiplyPlugin", 2, group)
+    lastNode = app.createNode("Multiply", 1, group)
     lastNode.setScriptName("Multiply1")
     lastNode.setLabel("Multiply1")
     lastNode.setPosition(759, -23)
@@ -284,7 +284,7 @@ def createInstance(app,group):
     # End of node "Multiply1"
 
     # Start of node "Solid1"
-    lastNode = app.createNode("net.sf.openfx.Solid", 1, group)
+    lastNode = app.createNode("Constant", 1, group)
     lastNode.setScriptName("Solid1")
     lastNode.setLabel("Solid1")
     lastNode.setPosition(584, 87)
@@ -303,11 +303,16 @@ def createInstance(app,group):
         param.setValue(540, 1)
         del param
 
+    param = lastNode.getParam("color")
+    if param is not None:
+        param.setValue(1, 3)
+        del param
+
     del lastNode
     # End of node "Solid1"
 
     # Start of node "InputSource"
-    lastNode = app.createNode("fr.inria.built-in.Input", 1, group)
+    lastNode = app.createNode("Input", 1, group)
     lastNode.setScriptName("InputSource")
     lastNode.setLabel("InputSource")
     lastNode.setPosition(759, -112)
@@ -319,7 +324,7 @@ def createInstance(app,group):
     # End of node "InputSource"
 
     # Start of node "Output1"
-    lastNode = app.createNode("fr.inria.built-in.Output", 1, group)
+    lastNode = app.createNode("Output", 1, group)
     lastNode.setLabel("Output1")
     lastNode.setPosition(1000, 497)
     lastNode.setSize(104, 34)
@@ -330,7 +335,7 @@ def createInstance(app,group):
     # End of node "Output1"
 
     # Start of node "Blur1"
-    lastNode = app.createNode("net.sf.cimg.CImgBlur", 3, group)
+    lastNode = app.createNode("Blur", 1, group)
     lastNode.setScriptName("Blur1")
     lastNode.setLabel("Blur1")
     lastNode.setPosition(759, 260)
@@ -389,8 +394,10 @@ def createInstance(app,group):
     param = groupMultiply1.getParam("value")
     group.getParam("shadowOpacity").setAsAlias(param)
     del param
+    # The Constant's colour is RGBA and the group's RGB, so the two are linked by expressions.
     param = groupSolid1.getParam("color")
-    group.getParam("shadowColor").setAsAlias(param)
+    for dimension in range(3):
+        param.setExpression("thisGroup.shadowColor.getValue(%d)" % dimension, False, dimension)
     del param
     param = groupBlur1.getParam("size")
     group.getParam("shadowBlur").setAsAlias(param)

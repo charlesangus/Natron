@@ -54,20 +54,38 @@ NATRON_NAMESPACE_ENTER
 void
 BezierCP::toSerialization(Serialization::BezierCPSerialization* serialization) const
 {
-    _imp->curveX->toSerialization(&serialization->xCurve);
-    _imp->curveY->toSerialization(&serialization->yCurve);
-    _imp->curveLeftBezierX->toSerialization(&serialization->leftXCurve);
-    _imp->curveLeftBezierY->toSerialization(&serialization->leftYCurve);
-    _imp->curveRightBezierX->toSerialization(&serialization->rightXCurve);
-    _imp->curveRightBezierY->toSerialization(&serialization->rightYCurve);
+    // The GUI copy is never behind the internal one, and alone holds edits made during a render
+    // until they are written back. Writing them back here would change the curves under the render.
+    _imp->guiCurveX->toSerialization(&serialization->xCurve);
+    _imp->guiCurveY->toSerialization(&serialization->yCurve);
+    _imp->guiCurveLeftBezierX->toSerialization(&serialization->leftXCurve);
+    _imp->guiCurveLeftBezierY->toSerialization(&serialization->leftYCurve);
+    _imp->guiCurveRightBezierX->toSerialization(&serialization->rightXCurve);
+    _imp->guiCurveRightBezierY->toSerialization(&serialization->rightYCurve);
+
+    const std::string trackerName = getTrackLinkTrackerName();
+    const std::string trackName = getTrackLinkTrackName();
 
     QMutexLocker k(&_imp->staticPositionMutex);
-    serialization->x = _imp->x;
-    serialization->y = _imp->y;
-    serialization->leftX = _imp->leftX;
-    serialization->leftY = _imp->leftY;
-    serialization->rightX = _imp->rightX;
-    serialization->rightY = _imp->rightY;
+    serialization->hasTrackLink = bool(_imp->guiTrackLink);
+    if (_imp->guiTrackLink) {
+        serialization->trackLinkTracker = trackerName;
+        serialization->trackLinkTrack = trackName;
+        serialization->trackOffsetX = _imp->guiTrackOffsets.x;
+        serialization->trackOffsetY = _imp->guiTrackOffsets.y;
+        serialization->trackOffsetLeftX = _imp->guiTrackOffsets.leftX;
+        serialization->trackOffsetLeftY = _imp->guiTrackOffsets.leftY;
+        serialization->trackOffsetRightX = _imp->guiTrackOffsets.rightX;
+        serialization->trackOffsetRightY = _imp->guiTrackOffsets.rightY;
+        serialization->trackFrozenX = _imp->guiTrackLink->frozenX;
+        serialization->trackFrozenY = _imp->guiTrackLink->frozenY;
+    }
+    serialization->x = _imp->guiX;
+    serialization->y = _imp->guiY;
+    serialization->leftX = _imp->guiLeftX;
+    serialization->leftY = _imp->guiLeftY;
+    serialization->rightX = _imp->guiRightX;
+    serialization->rightY = _imp->guiRightY;
     serialization->broken = _imp->broken;
 }
 
@@ -113,6 +131,28 @@ BezierCP::fromSerialization(const Serialization::BezierCPSerialization& serializ
     _imp->guiRightY = serialization.rightY;
 
     _imp->broken = serialization.broken;
+
+    // The track is resolved by name once every node exists (see
+    // RotoCurveContext::resolveTrackLinks()).
+    if (serialization.hasTrackLink) {
+        std::shared_ptr<BezierCPTrackLink> link = std::make_shared<BezierCPTrackLink>();
+        link->trackerName = serialization.trackLinkTracker;
+        link->trackName = serialization.trackLinkTrack;
+        link->frozenX = serialization.trackFrozenX;
+        link->frozenY = serialization.trackFrozenY;
+        _imp->trackLink = link;
+        _imp->guiTrackLink = link;
+        _imp->trackOffsets.x = serialization.trackOffsetX;
+        _imp->trackOffsets.y = serialization.trackOffsetY;
+        _imp->trackOffsets.leftX = serialization.trackOffsetLeftX;
+        _imp->trackOffsets.leftY = serialization.trackOffsetLeftY;
+        _imp->trackOffsets.rightX = serialization.trackOffsetRightX;
+        _imp->trackOffsets.rightY = serialization.trackOffsetRightY;
+        _imp->guiTrackOffsets = _imp->trackOffsets;
+    } else {
+        _imp->trackLink.reset();
+        _imp->guiTrackLink.reset();
+    }
 }
 
 void
@@ -162,10 +202,6 @@ RotoDrawableItem::fromSerialization(const Serialization::RotoDrawableItemSeriali
     restoreSavedKnobs(serialization.knobs, serialization.overlayColor);
 }
 
-// Saving and loading a bezier have always gone through a copy of each point made with
-// BezierCP::clone, which leaves the broken flag out, so project files record every tangent as
-// unbroken and a loaded bezier starts with unbroken tangents whatever the file says.
-
 void
 Bezier::toSerialization(Serialization::BezierSerialization* serialization) const
 {
@@ -183,11 +219,9 @@ Bezier::toSerialization(Serialization::BezierSerialization* serialization) const
         for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
             serialization->controlPoints.push_back(Serialization::BezierCPSerialization());
             (*it)->toSerialization(&serialization->controlPoints.back());
-            serialization->controlPoints.back().broken = false;
             if (useFeather && (featherIt != _imp->featherPoints.end())) {
                 serialization->featherPoints.push_back(Serialization::BezierCPSerialization());
                 (*featherIt)->toSerialization(&serialization->featherPoints.back());
-                serialization->featherPoints.back().broken = false;
                 ++featherIt;
             }
         }
@@ -212,13 +246,11 @@ Bezier::fromSerialization(const Serialization::BezierSerialization& serializatio
         for (std::list<Serialization::BezierCPSerialization>::const_iterator it = serialization.controlPoints.begin(); it != serialization.controlPoints.end(); ++it) {
             BezierCPPtr controlPoint = std::make_shared<BezierCP>(thisShared);
             controlPoint->fromSerialization(*it);
-            controlPoint->setBroken(false);
             _imp->points.push_back(controlPoint);
 
             if (useFeather && (featherIt != serialization.featherPoints.end())) {
                 BezierCPPtr featherPoint = std::make_shared<FeatherPoint>(thisShared);
                 featherPoint->fromSerialization(*featherIt);
-                featherPoint->setBroken(false);
                 _imp->featherPoints.push_back(featherPoint);
                 ++featherIt;
             }
@@ -363,6 +395,9 @@ RotoCurveContext::toSerialization(Serialization::RotoContextSerialization* seria
     serialization->autoKeying = _imp->autoKeying;
     serialization->featherLink = _imp->featherLink;
     serialization->rippleEdit = _imp->rippleEdit;
+    serialization->rippleEditMode = (int)_imp->rippleEditMode;
+    serialization->rippleEditRangeFirst = _imp->rippleEditRangeFirst;
+    serialization->rippleEditRangeLast = _imp->rippleEditRangeLast;
 
     assert(!_imp->layers.empty());
     if (!_imp->layers.empty()) {
@@ -384,6 +419,11 @@ RotoCurveContext::fromSerialization(const Serialization::RotoContextSerializatio
     _imp->autoKeying = serialization.autoKeying;
     _imp->featherLink = serialization.featherLink;
     _imp->rippleEdit = serialization.rippleEdit;
+    _imp->rippleEditMode = (serialization.rippleEditMode >= eRippleEditModeAll && serialization.rippleEditMode <= eRippleEditModeRange)
+        ? (RippleEditModeEnum)serialization.rippleEditMode
+        : eRippleEditModeAll;
+    _imp->rippleEditRangeFirst = serialization.rippleEditRangeFirst;
+    _imp->rippleEditRangeLast = serialization.rippleEditRangeLast;
 
     // Which of these knobs are on follows from the selection restored below, not from what the
     // node's knobs loaded.

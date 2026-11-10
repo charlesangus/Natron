@@ -408,6 +408,10 @@ USDRead::authorLayer(const SceneLayerEdit& edit,
     if (fileLayer->HasDefaultPrim()) {
         layer->SetDefaultPrim(fileLayer->GetDefaultPrim());
     }
+    std::string renderSettingsPrimPath;
+    if (fileLayer->HasField(root, PXR_NS::UsdRenderTokens->renderSettingsPrimPath, &renderSettingsPrimPath)) {
+        layer->SetField(root, PXR_NS::UsdRenderTokens->renderSettingsPrimPath, renderSettingsPrimPath);
+    }
     // The same rate as the file, so USD applies no rate conversion across the sublayer arc and
     // the offset below is the whole time mapping.
     const double timeCodesPerSecond = SceneFileSource::getTimeCodesPerSecond(fileLayer);

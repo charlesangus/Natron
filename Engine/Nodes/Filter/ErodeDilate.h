@@ -17,8 +17,7 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-// Registrable classes: ErodeDilate (plugin ID net.sf.cimg.CImgErode, a positive size erodes) and
-// Dilate (plugin ID net.sf.cimg.CImgDilate, a positive size dilates).
+// Registrable class: ErodeDilate (plugin ID ErodeDilate).
 
 #ifndef Engine_Nodes_Filter_ErodeDilate_h
 #define Engine_Nodes_Filter_ErodeDilate_h
@@ -40,10 +39,8 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/RectI.h"
 
-#define PLUGINID_NATRON_ERODE "net.sf.cimg.CImgErode"
-#define PLUGIN_MAJOR_NATRON_ERODE 3
-#define PLUGINID_NATRON_DILATE "net.sf.cimg.CImgDilate"
-#define PLUGIN_MAJOR_NATRON_DILATE 3
+#define PLUGINID_NATRON_ERODEDILATE "ErodeDilate"
+#define PLUGIN_MAJOR_NATRON_ERODEDILATE 1
 
 #define kErodeDilateParamSize "size"
 #define kErodeDilateParamExpandRoD "expandRoD"
@@ -104,54 +101,37 @@ struct ErodeDilateParams {
     }
 };
 
-/**
- * @brief Which operation a positive size runs: the erosion of Erode, the dilation of Dilate.
- **/
-enum class ErodeDilateMode {
-    Erode,
-    Dilate
-};
-
 inline constexpr InputSpec kErodeDilateInputs[] = {
     InputSpec { .label = "Source" },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
 };
 
 /**
- * @brief Erode (or dilate) by a rectangular structuring element, as openfx-misc's CImgErode and
- * CImgDilate do; MODE picks which of the two this is. Each takes a size per axis: a positive size
- * runs the node's own operation over a window of floor(size * renderScale) * 2 + 1 pixels, a
- * negative size runs the opposite operation. Min and max filters don't commute, so parity needs
- * the OpenFX order: positive axes before negative ones, X before Y.
+ * @brief Erode or dilate by a rectangular structuring element, with a signed size per axis: a
+ * positive size erodes (a minimum over a window of floor(size * renderScale) * 2 + 1 pixels), a
+ * negative size dilates (a maximum), and the two axes may have opposite signs. It is one line
+ * filter on X, then one on Y, each with its own axis's operation; min and max filters don't
+ * commute, so the order is part of the result.
  *
  * Its passes are those line filters over one buffer covering the render window plus the halo,
- * clipped to the output's region of definition, as the OpenFX plug-ins do: outside the source
- * image the buffer reads as zero, and the window clamps at the buffer's edge. Each pass runs over
- * whole lines, which gives the same pixels at any thread count.
+ * clipped to the output's region of definition: outside the source image the buffer reads as
+ * zero, and the window clamps at the buffer's edge. Each pass runs over whole lines, which gives
+ * the same pixels at any thread count.
  **/
-template <ErodeDilateMode MODE>
 struct ErodeDilateOp {
     using Params = ErodeDilateParams;
 
-    static constexpr bool kDilate = (MODE == ErodeDilateMode::Dilate);
-
     static constexpr NodeSpec kNodeSpec = {
-        .id = kDilate ? PLUGINID_NATRON_DILATE : PLUGINID_NATRON_ERODE,
-        .label = kDilate ? "Dilate" : "Erode",
-        .description = kDilate ? "Dilate (or erode) input stream by a rectangular structuring element of specified size and Neumann boundary conditions (pixels out of the image get the value of the nearest pixel).\n"
-                                 "A negative size will perform an erosion instead of a dilation.\n"
-                                 "Different sizes can be given for the x and y axis.\n"
-                                 "The operation is the 'dilate' and 'erode' behaviour of the CImg library (http://cimg.eu), "
-                                 "distributed under the CeCILL-C licence."
-                               : "Erode (or dilate) input stream by a rectangular structuring element of specified size and Neumann boundary conditions (pixels out of the image get the value of the nearest pixel).\n"
-                                 "A negative size will perform a dilation instead of an erosion.\n"
-                                 "Different sizes can be given for the x and y axis.\n"
-                                 "The operation is the 'erode' and 'dilate' behaviour of the CImg library (http://cimg.eu), "
-                                 "distributed under the CeCILL-C licence.",
+        .id = PLUGINID_NATRON_ERODEDILATE,
+        .label = "ErodeDilate",
+        .description = "Erode or dilate the input by a rectangular structuring element of 2*size+1 pixels on each axis.\n"
+                       "A positive size erodes (each pixel takes the minimum of the pixels around it), a negative size dilates (the maximum), and 0 leaves the axis unchanged. "
+                       "The two axes may have opposite signs: X is filtered first, then Y, each by its own sign.\n"
+                       "Pixels outside the image read as transparent black, and the window is clamped to the processed region.",
         .grouping = PLUGIN_GROUP_FILTER,
-        .majorVersion = kDilate ? PLUGIN_MAJOR_NATRON_DILATE : PLUGIN_MAJOR_NATRON_ERODE,
+        .majorVersion = PLUGIN_MAJOR_NATRON_ERODEDILATE,
         .minorVersion = 0,
-        .icon = kDilate ? NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgDilate.png" : NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgErode.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/ErodeDilate.png",
         .inputs = kErodeDilateInputs,
     };
 
@@ -167,17 +147,18 @@ struct ErodeDilateOp {
     Params bake(const KnobReader& reader) const;
 
     /**
-     * @brief ErodeDilateNode::paramsAreIdentity() at the context's scale.
+     * @brief ErodeDilate::paramsAreIdentity() at the context's scale.
      **/
     bool isIdentity(const Params& params,
                     const PassContext& context) const;
 
     /**
-     * @brief One line filter per axis with a non-zero size, the positive axes' then the negative
-     * axes', X before Y. Each carries its axis's halo, ErodeDilateNode::getSourceRoI(), and the
-     * filter that dilates its axis's spread, ErodeDilateNode::getExpansion(); one whose half width
-     * is zero at the context's scale only contributes them. The GPU recorder is left out where a
-     * half width exceeds the morphology kernel's tile.
+     * @brief One line filter per axis with a non-zero size, X then Y, each the minimum where its
+     * size is positive and the maximum where it is negative. Each carries its axis's halo,
+     * ErodeDilate::getSourceRoI(), and a dilating pass its axis's spread,
+     * ErodeDilate::getExpansion(); one whose half width is zero at the context's scale only
+     * contributes them. The GPU recorder is left out where a half width exceeds the morphology
+     * kernel's tile.
      **/
     PassList passes(const Params& params,
                     const PassContext& context) const;
@@ -193,24 +174,19 @@ struct ErodeDilateOp {
     KnobBoolWPtr expandRoD;
 };
 
-extern template struct ErodeDilateOp<ErodeDilateMode::Erode>;
-extern template struct ErodeDilateOp<ErodeDilateMode::Dilate>;
+static_assert(PassesOp<ErodeDilateOp>);
 
-static_assert(PassesOp<ErodeDilateOp<ErodeDilateMode::Erode>>);
-static_assert(PassesOp<ErodeDilateOp<ErodeDilateMode::Dilate>>);
-
-template <ErodeDilateMode MODE>
-class ErodeDilateNode
-    : public ImageNode<ErodeDilateOp<MODE>> {
+class ErodeDilate
+    : public ImageNode<ErodeDilateOp> {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new ErodeDilateNode(node);
+        return new ErodeDilate(node);
     }
 
-    explicit ErodeDilateNode(NodePtr node);
+    explicit ErodeDilate(NodePtr node);
 
-    virtual ~ErodeDilateNode();
+    virtual ~ErodeDilate();
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
@@ -226,16 +202,16 @@ public:
     static RectI getSourceRoI(const RectI& rect, const RenderScale& scale, const ErodeDilateParams& params) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Whether params leave the image unchanged at scale, including the OpenFX plug-ins'
-     * rule that a negative size smaller than one pixel at scale is never identity.
+     * @brief Whether params leave the image unchanged at scale: both axes' half widths,
+     * floor(|size| * scale), are zero, whatever the signs.
      **/
     static bool paramsAreIdentity(const RenderScale& scale, const ErodeDilateParams& params) WARN_UNUSED_RETURN;
 
     /**
      * @brief How far the region of definition grows on each axis at scale: the size of the axes
-     * whose sign selects a dilation, in pixels rounded up.
+     * that dilate, in pixels rounded up.
      **/
-    static void getExpansion(const RenderScale& scale, const ErodeDilateParams& params, bool dilate, int* deltaX, int* deltaY);
+    static void getExpansion(const RenderScale& scale, const ErodeDilateParams& params, int* deltaX, int* deltaY);
 
 protected:
     /**
@@ -248,12 +224,6 @@ protected:
                                         const RectI& srcRoD,
                                         RectI* rod) OVERRIDE FINAL;
 };
-
-extern template class ErodeDilateNode<ErodeDilateMode::Erode>;
-extern template class ErodeDilateNode<ErodeDilateMode::Dilate>;
-
-using ErodeDilate = ErodeDilateNode<ErodeDilateMode::Erode>;
-using Dilate = ErodeDilateNode<ErodeDilateMode::Dilate>;
 
 NATRON_NAMESPACE_EXIT
 

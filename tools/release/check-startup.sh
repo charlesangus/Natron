@@ -28,8 +28,8 @@
 #
 # The server does have to serve GLX, though: Qt 6.8 builds its backing store
 # through QRhiGles2, and on an Xvfb started with -extension GLX the GUI hangs
-# constructing its main window. That in turn means a build compiled with
-# -DDEBUG cannot be checked on a software-GL host at all -- see run_probe.
+# constructing its main window. A build compiled with -DDEBUG also arms the
+# floating-point traps, and run_probe says what a SIGFPE then means.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -41,6 +41,7 @@ if [[ $# -ne 1 ]]; then
     echo "  NATRON_STARTUP_CHECK_PRELOAD  LD_PRELOAD for the GUI probe only, for" >&2
     echo "                                hosts whose Mesa and LLVM disagree." >&2
     echo "  NATRON_STARTUP_CHECK_SCREENSHOT  write the X root grab here as PNG." >&2
+    echo "  NATRON_RELEASE_WITHOUT_MOONRAY=1  accept a bundle with no moonray/." >&2
     exit 1
 fi
 
@@ -107,6 +108,8 @@ BUNDLE_ENV=(
     -u QT_QPA_PLATFORM_PLUGIN_PATH
     -u NATRON_PLUGIN_PATH
     -u PXR_PLUGINPATH_NAME
+    -u RDL2_DSO_PATH
+    -u ARRAS_SESSION_PATH
     # Without this the probes leave __pycache__ directories behind in the very
     # tree they are inspecting, so the gate would change the artefact it exists
     # to check.
@@ -187,13 +190,15 @@ run_probe() {
         signal="SIG$(kill -l "$((status - 128))")"
         note=""
         # main() arms FE_DIVBYZERO/FE_INVALID/FE_OVERFLOW for the whole process
-        # under -DDEBUG, and the host's software GL driver raises one while
-        # compiling its own shaders during context creation, killing the
-        # process inside the driver. Nothing in the staged tree is involved,
-        # and neither the excludelist nor the closure can change it.
+        # under -DDEBUG. Natron disarms them around the GL driver's context
+        # creation and first calls, since a software rasteriser raises one
+        # compiling its own shaders, so reaching here means the trap fired
+        # somewhere else: in Natron's own code, or in a driver call that is
+        # not guarded yet. Nothing in the staged tree is involved, and neither
+        # the excludelist nor the closure can change it.
         if [[ "$signal" == "SIGFPE" ]]; then
-            note=" -- a build compiled with -DDEBUG traps floating-point exceptions"
-            note+=" that the host's software GL driver raises; stage a non-debug build"
+            note=" -- a build compiled with -DDEBUG traps floating-point exceptions;"
+            note+=" find the faulting frame, which is either a bug in Natron or a driver call needing a guard"
         fi
         report_failure "$label" "$logfile" "died of $signal$note"
     fi
@@ -259,8 +264,8 @@ if not plugin_ids:
     fail("NatronEngine.natron.getPluginIDs() returned no plugins at all")
 
 expected_plugins = {
-    "reader": "fr.inria.built-in.Read",
-    "writer": "fr.inria.built-in.Write",
+    "reader": "Read",
+    "writer": "Write",
     "Merge": "Merge",
     "USDRead": "USDRead",
 }
@@ -298,11 +303,53 @@ if outside:
 for plugin_name in ("usd", "sdf", "sdr", "usdGeom", "usdLux", "usdShade", "usdAbc"):
     if not Plug.Registry().GetPluginWithName(plugin_name):
         fail("OpenUSD has no %s plug-in registered; lib/usd or plugin/usd is missing" % plugin_name)
+# Natron registers the natron:// live-texture resolver and image reader itself at startup.
+if not Plug.Registry().GetPluginWithName("natronLiveTexture"):
+    fail("OpenUSD has no natronLiveTexture plug-in registered; Resources/usd/natronLiveTexture is missing")
+# USDProject3D's Storm surface ships beside that plug-in's plugInfo.json.
+if not Plug.Registry().GetPluginWithName("natronLiveTexture").FindPluginResource("natronProject3D.glslfx", True):
+    fail("Resources/usd/natronLiveTexture/natronProject3D.glslfx is missing")
 for extension in ("usda", "usdc", "abc"):
     if not Sdf.FileFormat.FindByExtension(extension):
         fail("OpenUSD has no file format for .%s" % extension)
 if not Usd.Stage.CreateInMemory():
     fail("OpenUSD could not create an in-memory stage")
+
+# USD only dlopen()s the Cycles render delegate when a render asks for it, so load it here: that
+# resolves its whole library closure from the bundle, with LD_LIBRARY_PATH unset.
+cycles_plugin = Plug.Registry().GetPluginWithName("hdCycles")
+if not cycles_plugin:
+    fail("OpenUSD has no hdCycles plug-in registered; plugin/usd/hdCycles is missing "
+         "(built in a natron-dev container older than its Cycles layer?)")
+if not cycles_plugin.Load():
+    fail("the hdCycles plug-in at %s did not load" % cycles_plugin.path)
+
+# Natron registers a bundled MoonRay at start-up and points its search paths into the bundle.
+# Loading the delegate resolves its whole library closure from the bundle, LD_LIBRARY_PATH unset.
+moonray_dir = os.path.join(BUNDLE, "moonray")
+if os.path.isdir(moonray_dir):
+    moonray_plugin = Plug.Registry().GetPluginWithName("hd_moonray")
+    if not moonray_plugin:
+        fail("the bundle ships moonray/ but no hd_moonray plug-in is registered "
+             "(a CPU without AVX2 also leaves it out)")
+    if not os.path.realpath(moonray_plugin.path).startswith(moonray_dir + os.sep):
+        fail("hd_moonray was registered from %s, outside the bundle" % moonray_plugin.path)
+    if not moonray_plugin.Load():
+        fail("the hd_moonray plug-in at %s did not load" % moonray_plugin.path)
+    for variable, entry in (("RDL2_DSO_PATH", "rdl2dso"), ("ARRAS_SESSION_PATH", "sessions"),
+                            ("PATH", "bin")):
+        first = os.environ.get(variable, "").split(":")[0]
+        if os.path.realpath(first) != os.path.join(moonray_dir, entry):
+            fail("%s starts with %r, not the bundle's moonray/%s" % (variable, first, entry))
+    if not os.access(os.path.join(moonray_dir, "bin", "execComp"), os.X_OK):
+        fail("the bundle ships moonray/ without its execComp render process")
+elif os.environ.get("NATRON_RELEASE_WITHOUT_MOONRAY") != "1":
+    fail("the bundle ships no moonray/ (set NATRON_RELEASE_WITHOUT_MOONRAY=1 to ship without it)")
+
+# Cycles and MoonRay's denoiser share one OpenImageDenoise, which dlopen()s its CPU device module.
+oidn_core = glob.glob(os.path.join(BUNDLE, "lib", "libOpenImageDenoise_core.so*"))
+if oidn_core and not glob.glob(os.path.join(BUNDLE, "lib", "libOpenImageDenoise_device_cpu.so*")):
+    fail("the bundle ships OpenImageDenoise without its CPU device module")
 
 # Model downloads go through QNetworkAccessManager over HTTPS, so Qt has to find
 # its TLS backend under the bundle's plugins/tls and load OpenSSL 3 from lib/.
@@ -351,6 +398,7 @@ print("natron-startup-probe: interpreter prefix %s" % sys.prefix)
 print("natron-startup-probe: fontconfig %s" % fontconfig_path)
 print("natron-startup-probe: OCIO %s" % ocio.decode("utf-8", "replace"))
 print("natron-startup-probe: %d OFX/PyPlug plugins loaded" % len(plugin_ids))
+print("natron-startup-probe: MoonRay %s" % ("loaded" if os.path.isdir(moonray_dir) else "not bundled"))
 print("natron-startup-probe: %d OpenUSD plug-ins registered" % len(usd_plugins))
 print("$SENTINEL")
 sys.stdout.flush()

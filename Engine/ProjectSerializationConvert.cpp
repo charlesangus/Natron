@@ -52,6 +52,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/MissingPluginNode.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/RotoContext.h"
@@ -190,6 +191,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         serialization->scriptName = getScriptName_mt_safe();
         serialization->knobsAge = 0;
         serialization->cacheID = getCacheID();
+        serialization->id = getNodeId();
         serialization->inputs.clear();
         if (serializeInputs) {
             getInputNames(serialization->inputs);
@@ -233,6 +235,9 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
             serialization->knobs.push_back(knobSerialization);
         }
     }
+    if (const USDRenderSettings* renderSettings = dynamic_cast<const USDRenderSettings*>(effect.get())) {
+        renderSettings->appendUnmatchedKnobs(serialization);
+    }
 
     for (std::list<KnobIPtr>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {
         serialization->userPages.push_back(Serialization::GroupKnobSerialization());
@@ -244,6 +249,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     serialization->label = getLabel_mt_safe();
     serialization->scriptName = getScriptName_mt_safe();
     serialization->cacheID = getCacheID();
+    serialization->id = getNodeId();
     serialization->pluginID = getPluginID();
 
     if (!hasPyPlugBeenEdited()) {

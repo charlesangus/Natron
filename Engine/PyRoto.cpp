@@ -35,6 +35,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/PyNode.h"
+#include "Engine/PyTracker.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -181,10 +182,16 @@ Layer::insertItem(int pos,
 void
 Layer::removeItem(ItemBase* item)
 {
-    if (refusesShapeEdit(_layer->getContext())) {
+    RotoCurveContextPtr context = _layer->getContext();
+    if (refusesShapeEdit(context)) {
         return;
     }
-    _layer->removeItem( item->getInternalItem() );
+    RotoItemPtr internalItem = item ? item->getInternalItem() : RotoItemPtr();
+    if (!context || !internalItem || (internalItem->getParentLayer() != _layer)) {
+        return;
+    }
+    // Through the context, so the item leaves the selection and the panel, and its host data goes with it.
+    context->removeItem(internalItem);
 }
 
 std::list<ItemBase*>
@@ -348,6 +355,35 @@ int
 BezierCurve::getNumControlPoints() const
 {
     return _bezier->getControlPointsCount();
+}
+
+void
+BezierCurve::linkPointToTrack(int index,
+                              Track* track)
+{
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
+    TrackMarkerPtr marker = track ? track->getInternalMarker() : TrackMarkerPtr();
+    try {
+        _bezier->linkPointToTrack(index, marker, _bezier->getContext()->getTimelineCurrentTime());
+    } catch (const std::invalid_argument& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+BezierCurve::unlinkPoint(int index,
+                         bool bake)
+{
+    if (refusesShapeEdit(_bezier->getContext())) {
+        return;
+    }
+    try {
+        _bezier->unlinkPoint(index, bake);
+    } catch (const std::invalid_argument& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
 }
 
 void
@@ -692,6 +728,10 @@ Roto::createEllipse(double x,
     BezierPtr  ret = _ctx->makeEllipse(x, y, diameter, fromCenter, time);
 
     if (ret) {
+        // A finished shape, so render and redraw it as setCurveFinished(true) does.
+        _ctx->emitRefreshViewerOverlays();
+        _ctx->evaluateChange();
+
         return new BezierCurve(ret);
     }
 
@@ -710,6 +750,10 @@ Roto::createRectangle(double x,
     BezierPtr  ret = _ctx->makeSquare(x, y, size, time);
 
     if (ret) {
+        // A finished shape, so render and redraw it as setCurveFinished(true) does.
+        _ctx->emitRefreshViewerOverlays();
+        _ctx->evaluateChange();
+
         return new BezierCurve(ret);
     }
 

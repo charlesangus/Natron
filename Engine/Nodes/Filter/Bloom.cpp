@@ -123,6 +123,7 @@ BloomOp::createKnobs(KnobHolder* holder,
 {
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Size"), 2);
     sizeKnob->setName(kBloomParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(EffectInstance::tr("Size (diameter) of the first, smallest blur, in pixel units (>=0). The standard deviation of the corresponding Gaussian is size/2.4. 0 leaves the image unchanged."));
     sizeKnob->setSpatial(true);
     sizeKnob->setCanAutoFoldDimensions(true);

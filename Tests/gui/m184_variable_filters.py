@@ -1,13 +1,15 @@
-"""GUI check: IBlur, IErode and IDilate in the GUI.
+"""GUI check: IBlur and IErodeDilate in the GUI.
 
 (a) Eye blur: a CheckerBoard through IBlur whose Map is a feathered Roto ellipse. The viewer shows the
     blur strong inside the shape and none outside; the script compares the local contrast of two
     patches of the viewer.
-(b) Key: a white disc with alpha through IErode and through IDilate, each sized by a horizontal ramp
-    Map (no change at the left edge of the frame, the full Size at the right edge). The disc is
-    symmetric, so the lit pixels left and right of its centre are equal until a ramp-sized filter
-    shrinks or grows its right side more than its left.
-Screenshots: the viewer crop of each result, and the node graph with the three I-node icons.
+(b) Key: a white disc with alpha through three IErodeDilates, each sized by a horizontal ramp Map:
+    one eroding (Size 80) and one dilating (Size -80), from no change at the left edge of the frame
+    to the full Size at the right edge, and one whose radius crosses 0 at the disc's centre (Size At
+    Black -40, Size 40), dilating the left side and eroding the right. The disc is symmetric, so the
+    lit pixels left and right of its centre are equal until a ramp-sized filter shrinks or grows one
+    side more than the other.
+Screenshots: the viewer crop of each result, and the node graph with the I-node icons.
 """
 import os
 import sys
@@ -169,7 +171,7 @@ try:
     def steps():
         ok = yield ("until", lambda: root_graph() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "node graph is up")
-        create("fr.inria.built-in.Viewer", 600, 700)
+        create("Viewer", 600, 700)
         ok = yield ("until", lambda: viewer_gl() is not None, STARTUP_TIMEOUT_S)
         gt.require(ok, "the viewer is up")
         gt.close_all_panels()
@@ -180,9 +182,9 @@ try:
 
         # ---- (a) eye blur ---------------------------------------------------------------
         gt.section("eye-blur")
-        checker = create("net.sf.openfx.CheckerBoardPlugin", 0, 0)
+        checker = create("CheckerBoard", 0, 0)
         setp(checker, "boxSize", 48, 48)
-        roto = create("fr.inria.built-in.Roto", 300, 0)
+        roto = create("Roto", 300, 0)
         ctx = roto.getRotoContext()
         gt.require(ctx is not None, "the Roto node has a roto context")
         ellipse = ctx.createEllipse(960.0, 540.0, 440.0, True, 1.0)
@@ -217,23 +219,26 @@ try:
 
         # ---- (b) key --------------------------------------------------------------------
         gt.section("erode-dilate")
-        disc = create("net.sf.openfx.Radial", 0, 500)
+        disc = create("Radial", 0, 500)
         setp(disc, "softness", 0.0)
-        small = create("net.sf.openfx.TransformPlugin", 150, 600)
+        small = create("Transform", 150, 600)
         setp(small, "center", 960.0, 540.0)
         setp(small, "scale", 0.5, 0.5)
         connect(small, 0, disc)
-        ramp = create("net.sf.openfx.Ramp", 400, 500)
+        ramp = create("Ramp", 400, 500)
         setp(ramp, "point0", 0.0, 0.0)
         setp(ramp, "point1", 1920.0, 0.0)
         setp(ramp, "color0", 0.0, 0.0, 0.0, 0.0)
         setp(ramp, "color1", 1.0, 1.0, 1.0, 1.0)
-        ierode = create("IErode", 150, 800)
-        idilate = create("IDilate", 400, 800)
+        ierode = create("IErodeDilate", 150, 800)
+        idilate = create("IErodeDilate", 400, 800)
+        icross = create("IErodeDilate", 650, 800)
         check_map_knobs(ierode)
-        check_map_knobs(idilate)
-        for node in (ierode, idilate):
-            setp(node, "size", 80.0, 80.0)
+        setp(ierode, "size", 80.0, 80.0)
+        setp(idilate, "size", -80.0, -80.0)
+        setp(icross, "sizeAtBlack", -40.0, -40.0)
+        setp(icross, "size", 40.0, 40.0)
+        for node in (ierode, idilate, icross):
             connect(node, 0, small)
             connect(node, 2, ramp)
 
@@ -261,7 +266,8 @@ try:
         check(abs(l0 - r0) <= 0.05 * (l0 + r0), "the disc is symmetric (left %d, right %d lit)" % (l0, r0))
 
         for key, node, shot_name, want_less in (("erode", ierode, "variable-filters-ierode.png", True),
-                                                ("dilate", idilate, "variable-filters-idilate.png", False)):
+                                                ("dilate", idilate, "variable-filters-idilate.png", False),
+                                                ("cross", icross, "variable-filters-icross.png", True)):
             show(node)
             fit_viewer()
             ok = yield ("until", counted(key), RENDER_TIMEOUT_S)
@@ -270,12 +276,15 @@ try:
             left, right = counts[key]
             report("NOTE %s lit left %d right %d (disc %d / %d)" % (key, left, right, l0, r0))
             ratio = right / float(left)
-            if want_less:
+            if key == "cross":
+                check(left > l0 and right < r0,
+                      "IErodeDilate crossing size 0 grows the left side and shrinks the right (left %d, right %d, disc %d / %d)" % (left, right, l0, r0))
+            elif want_less:
                 check(left > 200 and ratio < 0.9 * base_ratio,
-                      "IErode erodes the ramp's right side more than its left (right/left %.2f, disc %.2f)" % (ratio, base_ratio))
+                      "IErodeDilate at size 80 erodes the ramp's right side more than its left (right/left %.2f, disc %.2f)" % (ratio, base_ratio))
             else:
                 check(ratio > 1.1 * base_ratio,
-                      "IDilate grows the ramp's right side more than its left (right/left %.2f, disc %.2f)" % (ratio, base_ratio))
+                      "IErodeDilate at size -80 grows the ramp's right side more than its left (right/left %.2f, disc %.2f)" % (ratio, base_ratio))
             save_viewer(shot_name)
 
         # ---- node graph with the three icons --------------------------------------------
@@ -285,12 +294,13 @@ try:
         iblur.setPosition(100, 900)
         ierode.setPosition(400, 900)
         idilate.setPosition(700, 900)
+        icross.setPosition(1000, 900)
         ramp.setPosition(900, 700)
         yield ("sleep", SETTLE_MS)
-        frame_graph([iblur, ierode, idilate])
+        frame_graph([iblur, ierode, idilate, icross])
         yield ("sleep", SETTLE_MS)
         save_graph("variable-filters-nodegraph-icons.png")
-        frame_graph([checker, roto, iblur, disc, small, ramp, ierode, idilate])
+        frame_graph([checker, roto, iblur, disc, small, ramp, ierode, idilate, icross])
         yield ("sleep", SETTLE_MS)
         save_graph("variable-filters-nodegraph-all.png")
         gt.shot("variable-filters-window.png")

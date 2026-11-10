@@ -59,7 +59,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kInvertID = PLUGINID_NATRON_INVERT;
-const int kOfxInvertMajor = 2;
 const int kNativeInvertMajor = PLUGIN_MAJOR_NATRON_INVERT;
 
 const ParityTolerance kInvertTolerance = ParityTolerance::exact();
@@ -108,10 +107,9 @@ class NativeInvertTest
 protected:
     ParityPair makePair(bool withMask = false)
     {
-        ParityPair pair = makeParityPair(getApp(), kInvertID, kOfxInvertMajor, kNativeInvertMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), kInvertID, kNativeInvertMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Invert is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -124,7 +122,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kInvertTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Invert " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -177,7 +174,7 @@ TEST_F(NativeInvertTest, InvertingTwiceRestoresTheSource)
     Format format(0, 0, 128, 96, "nativeInvertTwiceFormat", 1.);
     getApp()->getProject()->setOrAddProjectFormat(format);
 
-    NodePtr checker = createNode(QString::fromUtf8("net.sf.openfx.CheckerBoardPlugin"));
+    NodePtr checker = createNode(QString::fromUtf8("CheckerBoard"));
     ASSERT_TRUE(bool(checker));
     NodePtr first = createNode(QString::fromUtf8(kInvertID));
     NodePtr second = createNode(QString::fromUtf8(kInvertID));
@@ -208,7 +205,7 @@ TEST_F(NativeInvertTest, ChainRendersTheSameInBothSchedulerModesWithNoUnplannedP
     Format format(0, 0, 128, 96, "nativeInvertChainFormat", 1.);
     getApp()->getProject()->setOrAddProjectFormat(format);
 
-    NodePtr previous = createNode(QString::fromUtf8("net.sf.openfx.CheckerBoardPlugin"));
+    NodePtr previous = createNode(QString::fromUtf8("CheckerBoard"));
     ASSERT_TRUE(bool(previous));
     NodePtr last;
     for (int i = 0; i < 3; ++i) {
@@ -239,8 +236,6 @@ TEST_F(NativeInvertTest, UnversionedRequestsGetTheNativeInvert)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeInvertMajor, unversioned->getMajorVersion());
-
-    EXPECT_FALSE(isPluginMajorRegistered(kInvertID, kOfxInvertMajor));
 }
 
 TEST_F(NativeInvertTest, RegisteredIdentity)

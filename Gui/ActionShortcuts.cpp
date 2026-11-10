@@ -70,6 +70,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionShowAbout);
     (void)QT_TR_NOOP(kShortcutDescActionRenderSelected);
     (void)QT_TR_NOOP(kShortcutDescActionEnableRenderStats);
+    (void)QT_TR_NOOP(kShortcutDescActionToggleInteractive);
     (void)QT_TR_NOOP(kShortcutDescActionRenderAll);
     (void)QT_TR_NOOP(kShortcutDescActionConnectViewerToInput1);
     (void)QT_TR_NOOP(kShortcutDescActionConnectViewerToInput2);
@@ -500,6 +501,8 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DCycleTool, kShortcutDescActionViewer3DCycleTool, Qt::NoModifier, Qt::Key_Y, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DToggleSpace, kShortcutDescActionViewer3DToggleSpace, Qt::NoModifier, Qt::Key_D, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, Qt::Key(0), Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

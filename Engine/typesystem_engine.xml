@@ -757,6 +757,54 @@
     </object-type>
     <object-type name="StringNodeCreationProperty">
     </object-type>
+    <object-type name="UndoStepContext" copyable="false">
+        <inject-documentation format="target">
+            The context manager returned by :doc:`App.newUndoStep`. Use it in a with statement:
+            every edit made through the Natron Python API inside the block becomes one entry of the
+            project window's undo history. A step opened inside another step adds to it, so the
+            entry keeps the outermost label. A block that adds nothing leaves no entry. If the block
+            raises, the step still closes with the edits made before the exception, and the
+            exception propagates; nothing is rolled back. Without an undo history (background or
+            command-line use) or off the main thread, the block runs normally and nothing is recorded.
+        </inject-documentation>
+        <modify-function signature="enter()" remove="all"/>
+        <modify-function signature="exit()" remove="all"/>
+        <add-function signature="__enter__()" return-type="UndoStepContext">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.enter();
+                Py_INCREF(%PYSELF);
+                %PYARG_0 = %PYSELF;
+            </inject-code>
+        </add-function>
+        <add-function signature="__exit__(PyObject*,PyObject*,PyObject*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.exit();
+            </inject-code>
+        </add-function>
+    </object-type>
+    <object-type name="NoUndoStepContext" copyable="false">
+        <inject-documentation format="target">
+            The context manager returned by :doc:`App.noUndoStep`. Use it in a with statement: edits
+            made through the Natron Python API inside the block are not recorded for undo, also
+            inside an open undo step, where only the block itself goes unrecorded. Steps opened
+            inside the block record nothing. Without an undo history or off the main thread it does
+            nothing.
+        </inject-documentation>
+        <modify-function signature="enter()" remove="all"/>
+        <modify-function signature="exit()" remove="all"/>
+        <add-function signature="__enter__()" return-type="NoUndoStepContext">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.enter();
+                Py_INCREF(%PYSELF);
+                %PYARG_0 = %PYSELF;
+            </inject-code>
+        </add-function>
+        <add-function signature="__exit__(PyObject*,PyObject*,PyObject*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.exit();
+            </inject-code>
+        </add-function>
+    </object-type>
     <object-type name="App" copyable="false">
         <inject-code class="native" position="beginning">
         #include &lt;limits&gt;
@@ -789,6 +837,11 @@
             </inject-code>
         </modify-function>
         <modify-function signature="getProjectParam(QString)const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="getNodeById(QString)const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
@@ -893,6 +946,35 @@
                 %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME();
                 %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
             </inject-code>
+        </modify-function>
+        <modify-function signature="newUndoStep(QString)">
+            <inject-documentation format="target">
+                Returns a context manager that makes the edits of its with block one undo entry
+                named label::
+
+                    with app.newUndoStep("Set up blur"):
+                        blur.size.setValue(4.0, 0)
+                        blur.size.setValue(4.0, 1)
+                        blur.getParam("cropToFormat").setValue(False)
+
+                See :doc:`UndoStepContext` for nesting, exceptions and background use.
+            </inject-documentation>
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="noUndoStep()">
+            <inject-documentation format="target">
+                Returns a context manager whose with block is not recorded for undo::
+
+                    with app.noUndoStep():
+                        blur.size.setValue(0.0, 0)
+
+                See :doc:`NoUndoStepContext`.
+            </inject-documentation>
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
         </modify-function>
     </object-type>
     
@@ -1321,6 +1403,11 @@
             </modify-argument>
         </modify-function>
         <modify-function signature="getTrackerContext()const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="getSplineWarp()const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
@@ -2057,6 +2144,22 @@
         </modify-function>
     </object-type>
     <object-type name="BezierCurve">
+        <modify-function signature="linkPointToTrack(int,Track*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="unlinkPoint(int,bool)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
         <modify-function signature="getActivatedParam()const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
@@ -2254,6 +2357,196 @@
                 }
                 return ret;
             </inject-code>
+        </modify-function>
+    </object-type>
+    <object-type name="SplineWarpCurveLink">
+        <modify-function signature="getSource()const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="getDestination()const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="setAmount(double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setAmountAtTime(double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setAlignment(double,bool)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="addCorrespondence(double,double)">
+            <inject-code class="target" position="beginning">
+                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setCorrespondence(int,double,double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setCorrespondenceAtTime(int,double,double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="removeCorrespondence(int)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getCorrespondences(double,std::list&lt;double&gt;*)const">
+            <modify-argument index="2">
+                <remove-argument/>
+            </modify-argument>
+            <modify-argument index="return">
+                <replace-type modified-type="PyList"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                std::list&lt;double&gt; params;
+                %CPPSELF.%FUNCTION_NAME(%1, &amp;params);
+                PyObject* ret = PyList_New((int) (params.size() / 2));
+                int idx = 0;
+                for (std::list&lt;double&gt;::iterator it = params.begin(); it != params.end(); ++idx) {
+                    const double s = *it++;
+                    const double d = *it++;
+                    PyList_SET_ITEM(ret, idx, Py_BuildValue("(dd)", s, d));
+                }
+                return ret;
+            </inject-code>
+        </modify-function>
+        <modify-function signature="remove()">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+    </object-type>
+    <object-type name="SplineWarpCurves">
+        <modify-function signature="link(BezierCurve*,BezierCurve*,bool)">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="unlink(BezierCurve*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getLink(BezierCurve*)const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="getLinks()const">
+            <inject-code class="target" position="beginning">
+                std::list&lt;SplineWarpCurveLink*&gt; links = %CPPSELF.%FUNCTION_NAME();
+                PyObject* ret = PyList_New((int) links.size());
+                int idx = 0;
+                for (std::list&lt;SplineWarpCurveLink*&gt;::iterator it = links.begin(); it != links.end(); ++it, ++idx) {
+                    PyObject* item = %CONVERTTOPYTHON[SplineWarpCurveLink*](*it);
+                    Shiboken::Object::getOwnership(item);
+                    PyList_SET_ITEM(ret, idx, item);
+                }
+                return ret;
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setBoundary(BezierCurve*,bool)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setCookieCutter(BezierCurve*,bool)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setLayerAmount(Layer*,double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setLayerAmountAtTime(Layer*,double,double)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="linkTransform(ItemBase*,ItemBase*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="unlinkTransform(ItemBase*)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getTransformLink(ItemBase*)const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
         </modify-function>
     </object-type>
     <object-type name="Roto">

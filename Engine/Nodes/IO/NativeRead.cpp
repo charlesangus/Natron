@@ -49,12 +49,12 @@
 #include <QString>
 
 #include <ofxImageEffect.h>
-#include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
@@ -104,12 +104,12 @@ const char* const kKnobCustomProxyScale = "customProxyScale";
 const char* const kKnobOriginalFrameRange = "originalFrameRange";
 const char* const kKnobFirstFrame = "firstFrame";
 const char* const kKnobLastFrame = "lastFrame";
-const char* const kKnobBefore = "before";
-const char* const kKnobAfter = "after";
+const char* const kKnobBefore = "beforeFirstFrame";
+const char* const kKnobAfter = "afterLastFrame";
 const char* const kKnobOnMissingFrame = "onMissingFrame";
-const char* const kKnobFrameMode = "frameMode";
-const char* const kKnobStartingTime = "startingTime";
-const char* const kKnobTimeOffset = "timeOffset";
+const char* const kKnobFrameMode = "frameOffsetMode";
+const char* const kKnobStartingTime = "startAt";
+const char* const kKnobTimeOffset = "frameOffset";
 const char* const kKnobTimeDomainUserEdited = "timeDomainUserEdited";
 
 bool
@@ -156,7 +156,7 @@ void
 NativeRead::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-    KnobFilePtr filename = createKnob<KnobFile>(tr("File"));
+    KnobFilePtr filename = createKnob<KnobFile>(tr("Filename"));
 
     filename->setName(kOfxImageEffectFileParamName);
     filename->setAsInputImage();
@@ -164,7 +164,7 @@ NativeRead::initializeKnobs()
     // NativeEffectBase has no counterpart of an OpenFX clip-preferences slave param, so without
     // this the preferred metadata is only consulted once, at creation, before a file is chosen.
     filename->setIsMetadataSlave(true);
-    // The Reload button reloads File and Proxy File together.
+    // The Reload button reloads Filename and Proxy together.
     filename->setShowsReloadButton(false);
     filename->setAddNewLine(false);
     page->addKnob(filename);
@@ -180,18 +180,18 @@ NativeRead::initializeKnobs()
     page->addKnob(reload);
     _reload = reload;
 
-    KnobFilePtr proxy = createKnob<KnobFile>(tr("Proxy File"));
+    KnobFilePtr proxy = createKnob<KnobFile>(tr("Proxy"));
     proxy->setName(kOfxImageEffectProxyParamName);
     proxy->setAsInputImage();
     proxy->setShowsReloadButton(false);
-    proxy->setHintToolTip(tr("Filename of the proxy images. They are used instead of the images read from the File parameter "
+    proxy->setHintToolTip(tr("Filename of the proxy images. They are used instead of the images read from Filename "
                              "when the render scale is at or below the proxy threshold.\n"
                              "Not available for a camera raw file, which is always read at full size: downscaling the "
                              "colour filter array mosaic of a raw file would mix the colours of its photosites."));
     page->addKnob(proxy);
     _proxy = proxy;
 
-    KnobDoublePtr proxyThreshold = createKnob<KnobDouble>(tr("Proxy threshold"), 2);
+    KnobDoublePtr proxyThreshold = createKnob<KnobDouble>(tr("Proxy Threshold"), 2);
     proxyThreshold->setName(kKnobProxyThreshold);
     proxyThreshold->setHintToolTip(tr("When the render scale is at or below this scale, the proxy images are used instead of the "
                                       "original images. It is set from the scale of the proxy images when the proxy file is "
@@ -249,7 +249,7 @@ NativeRead::initializeKnobs()
     KnobIntPtr firstFrame = createKnob<KnobInt>(tr("First Frame"));
     firstFrame->setName(kKnobFirstFrame);
     firstFrame->setHintToolTip(tr("The first frame number to read from this image sequence. It cannot be less than the first "
-                                  "frame of the sequence or greater than its last. If Starting Time is 1 or Time Offset is 0, "
+                                  "frame of the sequence or greater than its last. With Frame Offset at 0, or Start At equal to it, "
                                   "this is also the first output frame."));
     firstFrame->setDefaultValue(0);
     firstFrame->setAnimationEnabled(false);
@@ -258,7 +258,7 @@ NativeRead::initializeKnobs()
     page->addKnob(firstFrame);
     _firstFrame = firstFrame;
 
-    KnobChoicePtr before = createKnob<KnobChoice>(tr("Before"));
+    KnobChoicePtr before = createKnob<KnobChoice>(tr("Before First Frame"));
     before->setName(kKnobBefore);
     before->setHintToolTip(tr("What to do before the first frame of the sequence."));
     before->populateChoices(beforeAfterChoices);
@@ -269,7 +269,7 @@ NativeRead::initializeKnobs()
     KnobIntPtr lastFrame = createKnob<KnobInt>(tr("Last Frame"));
     lastFrame->setName(kKnobLastFrame);
     lastFrame->setHintToolTip(tr("The last frame number to read from this image sequence. It cannot be less than the first "
-                                 "frame of the sequence or greater than its last. If Starting Time is 1 or Time Offset is 0, "
+                                 "frame of the sequence or greater than its last. With Frame Offset at 0, or Start At equal to First Frame, "
                                  "this is also the last output frame."));
     lastFrame->setDefaultValue(0);
     lastFrame->setAnimationEnabled(false);
@@ -278,7 +278,7 @@ NativeRead::initializeKnobs()
     page->addKnob(lastFrame);
     _lastFrame = lastFrame;
 
-    KnobChoicePtr after = createKnob<KnobChoice>(tr("After"));
+    KnobChoicePtr after = createKnob<KnobChoice>(tr("After Last Frame"));
     after->setName(kKnobAfter);
     after->setHintToolTip(tr("What to do after the last frame of the sequence."));
     after->populateChoices(beforeAfterChoices);
@@ -300,11 +300,11 @@ NativeRead::initializeKnobs()
     page->addKnob(onMissing);
     _onMissingFrame = onMissing;
 
-    KnobChoicePtr frameMode = createKnob<KnobChoice>(tr("Frame Mode"));
+    KnobChoicePtr frameMode = createKnob<KnobChoice>(tr("Frame Offset Mode"));
     frameMode->setName(kKnobFrameMode);
     std::vector<ChoiceOption> modeChoices;
-    modeChoices.push_back(ChoiceOption("startingTime", tr("Starting Time").toStdString(), tr("Set at what output frame the first sequence frame is output. The sequence frame designated by First Frame is output at that frame.").toStdString()));
-    modeChoices.push_back(ChoiceOption("timeOffset", tr("Time Offset").toStdString(), tr("Set an offset to be applied as a number of frames. The sequence frame designated by First Frame is output at First Frame + Time Offset.").toStdString()));
+    modeChoices.push_back(ChoiceOption("startAt", tr("Start At").toStdString(), tr("Start At sets the output frame of the sequence frame designated by First Frame.").toStdString()));
+    modeChoices.push_back(ChoiceOption("offset", tr("Offset").toStdString(), tr("Frame Offset is added to every frame number: the sequence frame designated by First Frame is output at First Frame + Frame Offset.").toStdString()));
     frameMode->populateChoices(modeChoices);
     frameMode->setDefaultValue((int)ReadTimeDomain::eFrameModeStartingTime);
     frameMode->setAnimationEnabled(false);
@@ -312,18 +312,18 @@ NativeRead::initializeKnobs()
     page->addKnob(frameMode);
     _frameMode = frameMode;
 
-    KnobIntPtr startingTime = createKnob<KnobInt>(tr("Starting Time"));
+    KnobIntPtr startingTime = createKnob<KnobInt>(tr("Start At"));
     startingTime->setName(kKnobStartingTime);
-    startingTime->setHintToolTip(tr("At what time (on the timeline) this sequence starts."));
+    startingTime->setHintToolTip(tr("The output frame of the sequence frame designated by First Frame, when Frame Offset Mode is Start At."));
     startingTime->setDefaultValue(0);
     startingTime->setAnimationEnabled(false);
     startingTime->setAddNewLine(false);
     page->addKnob(startingTime);
     _startingTime = startingTime;
 
-    KnobIntPtr timeOffset = createKnob<KnobInt>(tr("Time Offset"));
+    KnobIntPtr timeOffset = createKnob<KnobInt>(tr("Frame Offset"));
     timeOffset->setName(kKnobTimeOffset);
-    timeOffset->setHintToolTip(tr("Offset applied to the sequence in time units (frames)."));
+    timeOffset->setHintToolTip(tr("The number of frames added to every frame number of the sequence, when Frame Offset Mode is Offset."));
     timeOffset->setDefaultValue(0);
     timeOffset->setAnimationEnabled(false);
     page->addKnob(timeOffset);
@@ -360,16 +360,33 @@ NativeRead::initializeKnobs()
     _availableViews = availableViews;
 
     OcioSpaceKnobs::Description inputSpace;
-    inputSpace.prefix = kNatronReadNodeOCIOParamInputSpace;
-    inputSpace.label = tr("Input Colorspace");
-    inputSpace.spaceHint = tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
-                              "working space. It is shown only when the project's config has no colorspace of that name.");
-    inputSpace.menuHint = tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
-                             "working space. A new Read takes the colorspace the config's file rules give the file, else the "
-                             "colorspace tagged in the file, else the project's default for files of its kind. The "
-                             "config's default rule does not count. Reset to default returns to that colorspace.");
-    inputSpace.setLabel = tr("Input Colorspace Set");
+    inputSpace.name = kNatronReadParamColorspace;
+    inputSpace.label = tr("Colorspace");
+    inputSpace.hint = tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
+                         "working space. Project default takes the colorspace the config's file rules give the file, "
+                         "else the colorspace tagged in the file, else the project's default for files of its kind, "
+                         "and follows them as they change; its label shows the colorspace it currently stands for. "
+                         "The config's default rule does not count.");
+    inputSpace.defaultHint = tr("The colorspace the config's file rules give the file, else the colorspace tagged in the "
+                                "file, else the project's default for files of its kind, following them as they change.");
     _inputSpace.create(this, page, inputSpace, [this]() { return automaticInputSpace(); });
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    NodePtr node = getNode();
+    if (project && node) {
+        // A render can keep this effect alive after its node is destroyed, and refreshing the menu then
+        // reaches the node, so the node scopes the connection. A render thread may also drop the last
+        // reference while the project emits on the main thread, so the slot holds the node, and through
+        // it this effect, or skips once the node no longer holds this effect.
+        NodeWPtr weakNode = node;
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                _inputSpace.sourceChanged();
+            }
+        });
+    }
 
     refreshTimeKnobState();
     refreshProxyKnobState();
@@ -381,6 +398,7 @@ NativeRead::onKnobsLoaded()
 {
     refreshOutputDataKind();
     _inputSpace.refreshMenu();
+    _inputSpace.refreshProjectDefault();
     refreshTimeKnobState();
     refreshProxyKnobState();
     refreshRawKnobState();
@@ -443,6 +461,7 @@ NativeRead::onEffectCreated(bool mayCreateFileDialog,
         }
         filename->setValue(path);
     }
+    _inputSpace.refreshProjectDefault();
     RawDevelop::onReadCreated(getNode(), args);
 }
 
@@ -938,6 +957,18 @@ NativeRead::automaticInputSpace() const
     return guess;
 }
 
+void
+NativeRead::appendNodeContentHash(ContentHasher& h) const
+{
+    _inputSpace.appendHash(h);
+}
+
+std::string
+NativeRead::colorspace() const
+{
+    return _inputSpace.space();
+}
+
 bool
 NativeRead::colourKnobChanged(KnobI* k,
                               ValueChangedReasonEnum reason)
@@ -1134,7 +1165,7 @@ NativeRead::deriveOutputMetadata(double time,
     ImageMetadata metadata;
 
     NodeMetadataConstPtr own = getMetadata(time, view);
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
+    metadata.setDouble(kNatronMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
 
     // A frame that loads black or an error has no file to describe, and a key whose value is
     // unknown is left out rather than published empty.
@@ -1146,16 +1177,16 @@ NativeRead::deriveOutputMetadata(double time,
     if (!info.isFile()) {
         return metadata;
     }
-    metadata.setString(kOfxMetadataKeyFilePath, target.path);
-    metadata.setInt(kOfxMetadataKeySourceFrame, target.frame);
-    metadata.setDouble(kOfxMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
-    metadata.setDouble(kOfxMetadataKeyFileSize, (double)info.size());
+    metadata.setString(kNatronMetadataKeyFilePath, target.path);
+    metadata.setInt(kNatronMetadataKeySourceFrame, target.frame);
+    metadata.setDouble(kNatronMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
+    metadata.setDouble(kNatronMetadataKeyFileSize, (double)info.size());
 
     std::string error;
     if (RawExtensions::isRawPath(target.path)) {
         const std::shared_ptr<const RawDecodeSupport::Header> raw = RawDecodeSupport::readHeader(target.path, &error);
         if (raw) {
-            metadata.setDouble(kOfxMetadataKeyPixelAspect, raw->pixelAspect);
+            metadata.setDouble(kNatronMetadataKeyPixelAspect, raw->pixelAspect);
             metadata.merge(raw->metadata, ImageMetadata::eMergePreferThis);
         }
 
@@ -1164,7 +1195,7 @@ NativeRead::deriveOutputMetadata(double time,
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(target.path, &error);
     if (header && !header->subimages.empty()) {
         const OIIO::ImageSpec& spec = header->subimages[(std::size_t)colourSubimageOf(*header, projectViewName(view))];
-        metadata.setDouble(kOfxMetadataKeyPixelAspect, pixelAspectOf(spec));
+        metadata.setDouble(kNatronMetadataKeyPixelAspect, pixelAspectOf(spec));
         metadata.merge(OiioReadSupport::attributeMetadata(target.path, spec), ImageMetadata::eMergePreferThis);
     }
 

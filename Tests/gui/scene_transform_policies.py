@@ -96,7 +96,7 @@ try:
     require(merge.connectInput(1, usd), "connect Read into Merge")
     viewer = app.getNode("Viewer1")
     if viewer is None:
-        viewer = app.createNode("fr.inria.built-in.Viewer")
+        viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(150, 400)
     light_translate = key_light.getParam("translate")

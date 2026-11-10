@@ -27,7 +27,6 @@
 
 #include <cmath>
 
-#include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
@@ -40,22 +39,24 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 ExtentPolicy
-generatorExtentPolicy()
+generatorExtentPolicy(ExtentKnobs::ExtentEnum defaultExtent)
 {
     ExtentPolicy policy;
 
-    policy.defaultExtent = ExtentKnobs::eExtentDefault;
+    policy.defaultExtent = defaultExtent;
     policy.reformatToggle = true;
     policy.overlayFollowsExtent = true;
     policy.recenterOnSource = false;
+    policy.frameRange = true;
 
     return policy;
 }
 } // anonymous namespace
 
-NativeGenerator::NativeGenerator(EffectInstance* effect)
+NativeGenerator::NativeGenerator(EffectInstance* effect,
+                                 ExtentEnum defaultExtent)
     : _effect(effect)
-    , _extentKnobs(effect, generatorExtentPolicy())
+    , _extentKnobs(effect, generatorExtentPolicy(defaultExtent))
 {
 }
 
@@ -138,9 +139,9 @@ NativeGenerator::deriveOutputMetadata(double time,
 {
     ImageMetadata metadata;
 
-    metadata.setDouble(kOfxMetadataKeyFrameRate, _effect->getApp()->getProjectFrameRate());
+    metadata.setDouble(kNatronMetadataKeyFrameRate, _effect->getApp()->getProjectFrameRate());
     NodeMetadataConstPtr own = _effect->getMetadata(time, view);
-    metadata.setDouble(kOfxMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
+    metadata.setDouble(kNatronMetadataKeyPixelAspect, own ? own->getPixelAspectRatio(-1) : 1.);
 
     return metadata;
 }

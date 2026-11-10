@@ -49,9 +49,10 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/ActionShortcuts.h" // AppShortcuts
 #include "Gui/GuiApplicationManager.h" // PythonUserCommand
-#include "Gui/NodeClipBoard.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeClipBoard.h"
 #include "Gui/PreviewThread.h"
+#include "Gui/StallMonitor.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -71,6 +72,7 @@ struct GuiApplicationManagerPrivate
     QPointer<QMenu> nodesMenuPopup;
     bool nodesMenuPopupShown;
     quint64 nodesMenuTargetGeneration;
+    GuiApplicationManager::NodesMenuArgsDecorator nodesMenuArgsDecorator;
     std::unique_ptr<KnobsClipBoard> _knobsClipBoard;
     std::unique_ptr<KnobGuiFactory> _knobGuiFactory;
     QCursor _colorPickerCursor, _linkToCursor, _linkMultCursor;
@@ -96,7 +98,7 @@ struct GuiApplicationManagerPrivate
     PreviewThread previewRenderThread;
     int dpiX, dpiY;
     std::unique_ptr<DocumentationManager> documentation;
-
+    std::unique_ptr<StallMonitor> stallMonitor;
 
     GuiApplicationManagerPrivate(GuiApplicationManager* publicInterface);
 

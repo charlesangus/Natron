@@ -51,6 +51,7 @@
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TrackerContext.h"
 
@@ -325,24 +326,6 @@ isPresetResettable(const KnobIPtr& knob)
     KnobI* k = knob.get();
 
     return !dynamic_cast<KnobPage*>(k) && !dynamic_cast<KnobGroup*>(k) && !dynamic_cast<KnobButton*>(k) && !dynamic_cast<KnobSeparator*>(k);
-}
-
-void
-removeKnobLinks(const KnobIPtr& knob)
-{
-    KnobIPtr aliasMaster = knob->getAliasMaster();
-    if (aliasMaster) {
-        knob->setKnobAsAliasOfThis(aliasMaster, false);
-    }
-    for (int i = 0; i < knob->getDimension(); ++i) {
-        if (knob->isSlave(i)) {
-            knob->unSlave(i, false);
-        }
-        // Two-way links go too; aliases of this knob stay, as its alias master link did above.
-        if (knob->getLinkGroup(i) && !knob->isLinkPermanent(i)) {
-            knob->leaveLinkGroups(i);
-        }
-    }
 }
 
 // Drops the user knobs of a preset's user pages that this node already has a knob of the same name
@@ -672,6 +655,12 @@ Node::restoreKnobsLinks(const NodesList & allNodes,
         if (group) {
             _imp->restoreKnobLinksRecursive(allNodes, group, oldNewScriptNamesMapping, throwOnFailure);
         }
+    }
+
+    // Curve points linked to tracks resolve them by name once every tracker exists.
+    RotoCurveContextPtr curves = getCurveContext();
+    if (curves) {
+        curves->resolveTrackLinks();
     }
 }
 

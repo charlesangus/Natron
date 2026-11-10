@@ -45,7 +45,7 @@ erodeWeightAt(int size,
     PassContext context;
     context.scale = RenderScale::fromMipmapLevel(mipmapLevel);
 
-    const std::optional<GpuWeight> weight = ErodeDilateOp<ErodeDilateMode::Erode>().gpuWeight(params, context);
+    const std::optional<GpuWeight> weight = ErodeDilateOp().gpuWeight(params, context);
     EXPECT_TRUE(weight.has_value());
 
     return weight.value_or(GpuWeight::point());

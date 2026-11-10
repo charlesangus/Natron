@@ -130,10 +130,10 @@ try:
         ok = yield ("until", lambda: win.isActiveWindow(), 10.0)
         gt.require(ok, "the main window is active",
                    "QGraphicsItem::isActive() is false in an inactive window, so the press misses the node")
-        src = create("net.sf.openfx.ConstantPlugin", 0, 0)
-        dst = create("net.sf.cimg.CImgBlur", 0, 300)
+        src = create("Constant", 0, 0)
+        dst = create("Blur", 0, 300)
         dst.connectInput(0, src)
-        mover = create("net.sf.cimg.CImgBlur", 400, 150)
+        mover = create("Blur", 400, 150)
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)

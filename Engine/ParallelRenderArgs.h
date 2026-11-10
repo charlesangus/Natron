@@ -209,6 +209,10 @@ public:
     ///A pointer to the node that requested the current render.
     NodePtr treeRoot;
 
+    /// Set only on the args of the node whose overlay images are being rendered, so that the nodes
+    /// upstream of it render and cache as they always do.
+    OverlayImagePassPtr overlayImagePass;
+
     ///In the tree originating from the root treeRoot, how many times this node is visited ? this is used to determine
     ///if we should cache the output and whether we should do GPU rendering or not
     int visitsCount;
@@ -241,6 +245,10 @@ public:
 
     ///Was the render started in the instanceChangedAction (knobChanged)
     bool isAnalysis : 1;
+
+    /// Installed only for the node's own instance-changed action: no render is running, so code
+    /// that reads a render's state (its context, its time) reads as it would outside one.
+    bool isInstanceChangedAction : 1;
 
     ///If true, the attached paint stroke is being drawn currently
     bool isDuringPaintStrokeCreation : 1;

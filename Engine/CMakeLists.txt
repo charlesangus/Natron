@@ -209,6 +209,7 @@ target_link_libraries(NatronEngine
         OpenColorIO::OpenColorIO
         $<$<BOOL:${NATRON_GPU}>:NatronGpu>
         onnxruntime::headers
+        CDT
     PRIVATE
         ${SHIBOKEN_LIB}
         ${PYSIDE_LIB}
@@ -224,6 +225,7 @@ target_link_libraries(NatronEngine
         openMVG
         tess
         rawspeed::rawspeed
+        lensfun::lensfun
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
@@ -234,11 +236,27 @@ target_link_libraries(NatronEngine
 configure_file(${rawspeed_CAMERAS_XML} ${CMAKE_BINARY_DIR}/Resources/rawspeed/cameras.xml COPYONLY)
 install(FILES ${rawspeed_CAMERAS_XML} DESTINATION Resources/rawspeed)
 
+# lensfun's lens database, read at run time from <bin>/../Resources/lensfun the same way.
+file(GLOB NatronEngine_LENSFUN_DATABASE CONFIGURE_DEPENDS ${lensfun_DATABASE_DIR}/*.xml)
+file(REMOVE_RECURSE ${CMAKE_BINARY_DIR}/Resources/lensfun)
+file(COPY ${NatronEngine_LENSFUN_DATABASE} DESTINATION ${CMAKE_BINARY_DIR}/Resources/lensfun)
+install(FILES ${NatronEngine_LENSFUN_DATABASE} DESTINATION Resources/lensfun)
+
 # darktable's white balance presets, read at run time by RawTemperature from
 # <bin>/../Resources/darktable, the same way.
 set(NatronEngine_WB_PRESETS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Raw/data/wb_presets.json)
 configure_file(${NatronEngine_WB_PRESETS_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/wb_presets.json COPYONLY)
 install(FILES ${NatronEngine_WB_PRESETS_JSON} DESTINATION Resources/darktable)
+
+# The plugInfo.json declaring the natron:// live-texture resolver and image reader to OpenUSD,
+# registered at startup from <bin>/../Resources/usd/natronLiveTexture (SceneCaches::registerLiveTextures).
+set(NatronEngine_LIVE_TEXTURE_PLUGINFO ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/plugInfo.json)
+configure_file(${NatronEngine_LIVE_TEXTURE_PLUGINFO} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/plugInfo.json COPYONLY)
+install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/natronLiveTexture)
+# USDProject3D's Storm surface, found through that plug-in's resources (USDProject3D::getShaderPath).
+set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronProject3D.glslfx)
+configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
+install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
 
 # darktable's noise profiles, read at run time by DenoiseProfiled from the same directory.
 set(NatronEngine_NOISE_PROFILES_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Filter/data/noiseprofiles.json)
@@ -281,10 +299,20 @@ target_include_directories(NatronEngine
 if(NATRON_GPU)
     target_compile_definitions(NatronEngine PUBLIC NATRON_HAVE_GPU=1)
 endif()
+if(NATRON_MOONRAY_PREFIX)
+    set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/MoonRayRuntime.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        NATRON_MOONRAY_PREFIX="${NATRON_MOONRAY_PREFIX}")
+    # MoonRay logs through log4cplus; linking the copy it loads lets a render take its log.
+    find_package(log4cplus CONFIG REQUIRED)
+    target_link_libraries(NatronEngine PRIVATE log4cplus::log4cplus)
+    set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/MoonRayAovs.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        NATRON_HAVE_LOG4CPLUS=1)
+endif()
 target_compile_definitions(NatronEngine
     PRIVATE
         NATRON_CUSTOM_BUILD_USER_TOKEN="${BUILD_USER_NAME}"
         NATRON_BUILD_NUMBER=0
         NATRON_RAWSPEED_VERSION="${rawspeed_REF}"
+        NATRON_LENSFUN_VERSION="${lensfun_REF}"
         QT_NO_KEYWORDS
 )

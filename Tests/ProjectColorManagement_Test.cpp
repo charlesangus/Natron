@@ -739,7 +739,7 @@ TEST_F(ProjectColorManagementPageTest, NodePreviewGoesThroughTheDefaultDisplayAn
 {
     ASSERT_EQ(std::string("ACEScg"), project()->getWorkingColorSpace());
 
-    CreateNodeArgs args("net.sf.openfx.ConstantPlugin", project());
+    CreateNodeArgs args("Constant", project());
     NodePtr constant = appPTR->getTopLevelInstance()->createNode(args);
     ASSERT_TRUE(bool(constant));
     KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());

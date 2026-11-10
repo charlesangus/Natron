@@ -20,10 +20,10 @@
 /*
  * The colour checker calibration of darktable's color calibration module, DARKTABLE_REF
  * release-5.6.2 (commit 20891f6c6fa7): _extract_patches(), _compute_patches_delta_E(),
- * _extract_color_checker(), _validate_color_checker(), _commit_profile_callback() and the
- * checker section of gui_init() in src/iop/channelmixerrgb.c, get_homography() and
- * apply_homography() in src/chart/common.c, and gauss_solve() and pseudo_solve_gaussian() in
- * src/iop/gaussian_elimination.h, Copyright (C) 2016-2026 darktable developers, distributed under
+ * _extract_color_checker(), _validate_color_checker(), _commit_profile_callback(),
+ * gui_post_expose() and the checker section of gui_init() in src/iop/channelmixerrgb.c,
+ * get_homography(), apply_homography() and apply_homography_scaling() in src/chart/common.c, and
+ * gauss_solve() and pseudo_solve_gaussian() in src/iop/gaussian_elimination.h, Copyright (C) 2016-2026 darktable developers, distributed under
  * the GNU GPL version 3 or later.
  */
 
@@ -38,6 +38,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <utility>
+
+#include "Engine/Nodes/Raw/RawColorMath.h"
+#include "Engine/OverlayDrawList.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -47,6 +51,30 @@ using RawColorCheckerData::ColorChecker;
 using RawColorCheckerData::ColorCheckerTarget;
 
 namespace {
+    const float kPatchCrossedOnce = 2.3f;
+    const float kPatchCrossedTwice = 4.6f;
+    const int kPatchDiscPoints = 32;
+
+    // The viewer shows overlay colours as they are, so the reference needs a display encoding.
+    std::array<float, 3> referenceDisplayColor(const float lab[3])
+    {
+        const Vec3 xyz = labToXyz({ lab[0], lab[1], lab[2] });
+        const RawColorMath::Vec3 d50 = { xyz[0], xyz[1], xyz[2] };
+        const std::optional<RawColorMath::Mat3> adapt = RawColorMath::bradford(RawColorMath::lcmsD50White(), RawColorMath::d65White());
+        const std::optional<RawColorMath::Mat3> toRgb = RawColorMath::invert(RawColorMath::srgbToXyz());
+        std::array<float, 3> encoded = { 0.f, 0.f, 0.f };
+        if (!adapt || !toRgb) {
+            return encoded;
+        }
+        const RawColorMath::Vec3 linear = RawColorMath::apply(*toRgb, RawColorMath::apply(*adapt, d50));
+        for (int c = 0; c < 3; ++c) {
+            const double v = std::clamp(linear[(std::size_t)c], 0., 1.);
+            encoded[(std::size_t)c] = (float)((v <= 0.0031308) ? (12.92 * v) : (1.055 * std::pow(v, 1. / 2.4) - 0.055));
+        }
+
+        return encoded;
+    }
+
     const float kNormMin = 1.52587890625e-05f;
     const float kPiF = 3.14159265358979323846f;
     const float k2PiF = 6.28318530717958647693f;
@@ -435,6 +463,21 @@ applyHomography(const Point& p,
     return { x, y };
 }
 
+float
+applyHomographyScaling(const Point& p,
+                       const Homography& h)
+{
+    const float x = p.x * h[0] + p.y * h[1] + h[2];
+    const float y = p.x * h[3] + p.y * h[4] + h[5];
+    const float s = p.x * h[6] + p.y * h[7] + h[8];
+    const float j00 = h[0] * s - h[6] * x;
+    const float j01 = h[1] * s - h[7] * x;
+    const float j10 = h[3] * s - h[6] * y;
+    const float j11 = h[4] * s - h[7] * y;
+
+    return std::fabs(j00 * j11 - j01 * j10) / (s * s * s * s);
+}
+
 std::optional<PatchExtraction>
 extractPatches(const RgbImage& image,
                const ChartPlacement& placement,
@@ -776,6 +819,7 @@ extractColorChecker(const RgbImage& image,
     const DeltaE output = computePatchesDeltaE(patches, checker);
     profile.outputAverage = output.average;
     profile.outputMaximum = output.maximum;
+    profile.outputPerPatch = output.perPatch;
 
     const DaylightCheck daylight = checkIfCloseToDaylight(profile.illuminant.x, profile.illuminant.y);
     profile.temperature = daylight.temperature;
@@ -799,11 +843,75 @@ validateColorChecker(const RgbImage& image,
     Validation validation;
     validation.average = deltaE.average;
     validation.maximum = deltaE.maximum;
+    validation.perPatch = deltaE.perPatch;
     validation.exposure = extraction->exposure;
     validation.black = extraction->black;
 
     return validation;
 }
+
+void
+buildPatchOverlay(const ChartPlacement& placement,
+                  const std::vector<float>* deltaE,
+                  OverlayDrawList* list)
+{
+    if (!placement.checker) {
+        return;
+    }
+    const ColorChecker& checker = *placement.checker;
+    const std::optional<Homography> homography = getHomography(idealBox(), placement.box);
+    if (!homography) {
+        return;
+    }
+    const auto toCanvas = [&homography](const Point& p) {
+        const Point mapped = applyHomography(p, *homography);
+
+        return OverlayDrawList::Point { mapped.x, mapped.y };
+    };
+    const OverlayColor white = OverlayColor::fromRGBA(1.f, 1.f, 1.f);
+    const OverlayColor black = OverlayColor::fromRGBA(0.f, 0.f, 0.f);
+
+    const OverlayDrawList::Point axes[4] = { toCanvas({ 0.5f, 1.f }), toCanvas({ 0.5f, 0.f }), toCanvas({ 0.f, 0.5f }), toCanvas({ 1.f, 0.5f }) };
+    list->addLine(axes[0].x, axes[0].y, axes[1].x, axes[1].y, white);
+    list->addLine(axes[2].x, axes[2].y, axes[3].x, axes[3].y, white);
+
+    const float radiusX = checker.radius * std::hypot(1.f, checker.ratio) * placement.patchScale;
+    const float radiusY = radiusX / checker.ratio;
+    const bool hasDeltaE = deltaE && (deltaE->size() == checker.patches);
+    for (std::size_t k = 0; k < checker.patches; ++k) {
+        const Point center = { checker.values[k].x, checker.values[k].y };
+        const std::vector<OverlayDrawList::Point> quad = { toCanvas({ center.x - radiusX, center.y - radiusY }),
+                                                           toCanvas({ center.x + radiusX, center.y - radiusY }),
+                                                           toCanvas({ center.x + radiusX, center.y + radiusY }),
+                                                           toCanvas({ center.x - radiusX, center.y + radiusY }) };
+        std::vector<OverlayDrawList::Point> diagonals;
+        if (hasDeltaE && ((*deltaE)[k] > kPatchCrossedOnce)) {
+            diagonals.push_back(quad[0]);
+            diagonals.push_back(quad[2]);
+        }
+        if (hasDeltaE && ((*deltaE)[k] > kPatchCrossedTwice)) {
+            diagonals.push_back(quad[1]);
+            diagonals.push_back(quad[3]);
+        }
+        for (const auto& [color, width] : { std::pair<OverlayColor, float> { black, 5.f }, std::pair<OverlayColor, float> { white, 2.f } }) {
+            list->addPolyline(quad, true, color, width);
+            if (!diagonals.empty()) {
+                list->addLines(diagonals, color, width);
+            }
+        }
+
+        const float scaling = applyHomographyScaling(center, *homography);
+        const double discRadius = 0.25 * (double)(radiusX + radiusY) * std::sqrt((double)scaling);
+        const OverlayDrawList::Point middle = toCanvas(center);
+        std::vector<OverlayDrawList::Point> disc(kPatchDiscPoints);
+        for (int i = 0; i < kPatchDiscPoints; ++i) {
+            const double angle = 2. * M_PI * (double)i / (double)kPatchDiscPoints;
+            disc[(std::size_t)i] = { middle.x + discRadius * std::cos(angle), middle.y + discRadius * std::sin(angle) };
+        }
+        const std::array<float, 3> reference = referenceDisplayColor(checker.values[k].Lab);
+        list->addPolygon(disc, OverlayColor::fromRGBA(reference[0], reference[1], reference[2]));
+    }
+} // buildPatchOverlay
 
 const char*
 qualityDiagnostic(float averageDeltaE)

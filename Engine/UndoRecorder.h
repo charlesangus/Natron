@@ -47,6 +47,19 @@ struct UndoTouched {
 };
 
 /**
+ * @brief A record that snapshots state it does not own edit by edit, so must be told when
+ * recording is suppressed while its step is open: edits made then are not the step's.
+ **/
+class UndoSuppressionListenerI {
+public:
+    virtual ~UndoSuppressionListenerI() { }
+
+    virtual void suppressionBegins() = 0;
+
+    virtual void suppressionEnds() = 0;
+};
+
+/**
  * @brief Where edits that have no undo command of their own, those made from Python, are
  * recorded into the project window's undo history.
  *
@@ -62,6 +75,12 @@ public:
     virtual ~UndoRecorderI();
 
     virtual void openStep(const std::string& text) = 0;
+
+    /**
+     * @brief Like openStep(), except that a step ending up with a single record is still labelled
+     * text rather than by that record. A recorder without the distinction opens a plain step.
+     **/
+    virtual void openLabelledStep(const std::string& text);
 
     virtual void closeStep() = 0;
 
@@ -100,22 +119,34 @@ public:
      **/
     bool claimKnob(const KnobIPtr& knob);
 
+    /**
+     * @brief Tells listener, a record just made, each time recording is suppressed and resumed
+     * while the outermost open step or pushed command it was recorded in is still open.
+     **/
+    void watchSuppression(const std::shared_ptr<UndoSuppressionListenerI>& listener);
+
 private:
     int _suppressDepth;
     std::uint64_t _claimSerial;
     std::list<KnobIWPtr> _claimedKnobs;
+    std::uint64_t _watchSerial;
+    std::list<std::weak_ptr<UndoSuppressionListenerI>> _watchers;
+    // The watchers told that the current suppression began, which are told when it ends.
+    std::list<std::weak_ptr<UndoSuppressionListenerI>> _suppressedWatchers;
 };
 
 typedef std::shared_ptr<UndoRecorderI> UndoRecorderPtr;
 
 /**
- * @brief Opens a step on the application's recorder for the guard's lifetime. Does nothing
- * without a recorder or off the main thread.
+ * @brief Opens a step on the application's recorder for the guard's lifetime, labelled with
+ * openLabelledStep() when keepsText is set. Does nothing without a recorder or off the main
+ * thread.
  **/
 class UndoStepGuard {
 public:
     UndoStepGuard(const AppInstancePtr& app,
-                  const std::string& text);
+                  const std::string& text,
+                  bool keepsText = false);
 
     ~UndoStepGuard();
 

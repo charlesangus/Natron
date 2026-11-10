@@ -51,6 +51,16 @@
 #define kResamplerParamFilterBlackOutsideLabel "Black outside"
 #define kResamplerParamFilterBlackOutsideHint "Fill the area outside the source image with black"
 
+#define kResamplerParamLobes "lobes"
+#define kResamplerParamLobesLabel "Lobes"
+#define kResamplerParamLobesHint "The lobes of the Sinc filter, which are also its radius in source pixels. More lobes are sharper, ring more and read more of the source."
+#define kResamplerParamBicubicB "bicubicB"
+#define kResamplerParamBicubicBLabel "Bicubic B"
+#define kResamplerParamBicubicBHint "The B parameter of the Bicubic filter. Higher values blur more."
+#define kResamplerParamBicubicC "bicubicC"
+#define kResamplerParamBicubicCLabel "Bicubic C"
+#define kResamplerParamBicubicCHint "The C parameter of the Bicubic filter. Higher values sharpen more."
+
 #define kResamplerParamShutterOffset "shutterOffset"
 #define kResamplerParamShutterOffsetLabel "Shutter Offset"
 #define kResamplerParamShutterOffsetHint "Controls when the shutter should be open/closed. Ignored if there is no motion blur (i.e. shutter=0 or motionBlur=0)."
@@ -61,11 +71,9 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The resampling core of the native spatial nodes (Transform, TransformMasked, Reformat):
- * a port of openfx-misc's ofxsFilter.h filters and supersampling, the Transform3x3 processor's
- * per-pixel loop (including motion blur) and its region helpers, with the same formulas,
- * evaluation order and precision (double maths, float accumulation where OFX accumulates in
- * float), so a native node reproduces the OFX output to rounding.
+ * @brief The resampling core of the native spatial nodes: weighted filter kernels that widen
+ * when minifying, the per-pixel loop (including motion blur) and the region helpers. Weights
+ * are computed in double and pixels accumulated in float.
  *
  * Coordinates are pixel coordinates at the render scale: the centre of pixel (i, j) is
  * (i + 0.5, j + 0.5). Everything here is stateless and thread-safe; nothing spawns threads,
@@ -83,7 +91,7 @@ NATRON_NAMESPACE_ENTER
  * RegionParams filled from the same knobs.
  **/
 namespace Resampler {
-/// The filter choice, in the OFX option order (the knob's option index).
+/// The filter choice, in the knob's option order.
 enum FilterEnum {
     eFilterImpulse = 0,
     eFilterBox,
@@ -95,6 +103,47 @@ enum FilterEnum {
     eFilterMitchell,
     eFilterParzen,
     eFilterNotch,
+    eFilterLanczos2,
+    eFilterLanczos3,
+    eFilterLanczos4,
+    eFilterSinc,
+    eFilterBlackmanHarris,
+    eFilterGaussian,
+    eFilterBicubic,
+};
+
+/// The most taps a footprint reads per axis; a wider one spreads this many evenly over itself.
+const int kFilterMaxTapsPerAxis = 81;
+
+/**
+ * @brief A filter choice with its parameters: lobes for eFilterSinc (2 to 8), B and C for
+ * eFilterBicubic. Converts implicitly from FilterEnum, taking the knobs' defaults.
+ **/
+struct FilterSpec {
+    FilterEnum filter;
+    int lobes;
+    double B;
+    double C;
+
+    FilterSpec(FilterEnum filter_ = eFilterCubic,
+               int lobes_ = 4,
+               double B_ = 1. / 3.,
+               double C_ = 1. / 3.)
+        : filter(filter_)
+        , lobes(lobes_)
+        , B(B_)
+        , C(C_)
+    {
+    }
+
+    /// The support of the unscaled kernel, in source pixels: weight(x) is 0 for |x| >= radius().
+    double radius() const;
+
+    /**
+     * @brief The unnormalised kernel at x source pixels from the sample point, before scaling.
+     * Lanczos and Sinc return exactly 1 at 0 and exactly 0 at nonzero integers.
+     **/
+    double weight(double x) const;
 };
 
 /// The shutterOffset choice, in the OFX option order.
@@ -112,27 +161,35 @@ struct ChoiceOption {
     const char* id;
 };
 
-/// The ten filter options, indexed by FilterEnum; the knob's default is eFilterCubic.
+/// The filter options, indexed by FilterEnum; the knob's default is eFilterCubic.
 const std::vector<ChoiceOption>& filterOptions();
 
 /// The four shutterOffset options, indexed by ShutterOffsetEnum.
 const std::vector<ChoiceOption>& shutterOffsetOptions();
 
-/// Source pixels each 1-D interpolation reads: 1 (impulse, box), 2 (bilinear, cubic) or 4.
-int filterTaps(FilterEnum filter);
+/// Source pixels the unscaled kernel spans along one axis: the width of its support, rounded up.
+int filterTaps(const FilterSpec& filter);
 
 /**
- * @brief Whether the clamp knob affects the filter: only Keys, Simon, Rifman and Mitchell clamp
- * (to the range of the two centre samples). Cubic is never clamped, as in OFX's dispatch, and
- * Parzen and Notch never overshoot.
+ * @brief Whether the clamp knob affects the filter: Keys, Simon, Rifman, Mitchell, Lanczos 2/3/4,
+ * Sinc and Bicubic clamp to the range of the footprint's samples. Cubic is never clamped, and
+ * Blackman-Harris, Gaussian, Parzen and Notch never overshoot.
  **/
 bool filterHonoursClamp(FilterEnum filter);
 
 /**
- * @brief How far, in source pixels, a filter reads beyond the back-transformed window:
- * 0 (impulse, box), 0.5 (bilinear, cubic) or 1.5 (the 4-tap filters).
+ * @brief How much a filter's footprint widens along one source axis, from that axis's row of the
+ * back-transform's Jacobian: max(1, hypot(a, b)). A non-finite norm gives 1.
  **/
-double filterRoIExpansion(FilterEnum filter);
+double kernelScale(double a, double b);
+
+/**
+ * @brief How far, in source pixels, a filter reads beyond the back-transformed window along one
+ * source axis whose kernel scale is `scale` (kernelScale() of that axis's Jacobian row):
+ * radius * scale - 0.5, so 0.5 for bilinear and cubic and 1.5 for the 4-tap filters at scale 1.
+ * 0 for impulse and box. A scale below 1 or not finite counts as 1.
+ **/
+double filterRoIExpansion(const FilterSpec& filter, double scale = 1.);
 
 ///////////////////////////////////////////////////////////////////////////////
 // 1-D filters. Ip, Ic, In, Ia are the samples at offsets -1, 0, +1, +2 from the
@@ -248,9 +305,10 @@ filterNotch(double Ip,
 
 /**
  * @brief The 1-D interpolation of the given filter between (Ip, Ic, In, Ia) at distance d from
- * Ic, applying clamp only where filterHonoursClamp() says so. Impulse picks Ic below d = 0.5
- * and In from it on, which is what the 2-D sampler's floor(x) choice amounts to; box, which
- * only differs from impulse when minifying, does the same.
+ * Ic, applying clamp only where filterHonoursClamp() says so, here to the two centre samples.
+ * Impulse picks Ic below d = 0.5 and In from it on, which is what the 2-D sampler's floor(x)
+ * choice amounts to; box, which only differs from impulse when minifying, does the same. A filter
+ * wider than four samples is truncated to them and renormalised, with its default parameters.
  **/
 double filter1D(FilterEnum filter, double Ip, double Ic, double In, double Ia, double d, bool clamp);
 
@@ -311,30 +369,24 @@ struct SourceImage {
 };
 
 /**
- * @brief Samples src at (fx, fy) with the filter, no supersampling, writing src.nComps floats
- * to out. With blackOutside, taps outside the bounds read 0; otherwise their coordinates are
- * clamped into the bounds. Returns false (and writes zeros) when every tap is outside, i.e.
- * the point is in the black surround. clamp only acts on the filters filterHonoursClamp() names.
+ * @brief Samples src at (fx, fy) with the unscaled filter, writing src.nComps floats to out.
+ * Impulse and box read the nearest pixel; every other filter weights the pixels inside its
+ * support, normalised over all of them, including those outside the bounds. With blackOutside,
+ * taps outside the bounds read 0; otherwise their coordinates are clamped into the bounds.
+ * Returns false (and writes zeros) when every tap is outside, i.e. the point is in the black
+ * surround. clamp only acts on the filters filterHonoursClamp() names.
  **/
-bool interpolate(FilterEnum filter, bool clamp, double fx, double fy, const SourceImage& src, bool blackOutside, float* out);
-
-/**
- * @brief Whether interpolateSuper() supersamples for a back-transform with Jacobian
- * (Jxx = dfx/dx, Jxy = dfx/dy, Jyx = dfy/dx, Jyy = dfy/dy) and, if so, the number of
- * levels per axis: the samples per axis are 3^level, level in 0..4. Supersampling happens only
- * when the squared norm of a Jacobian column exceeds 1 (minification); a scale factor of
- * sqrt(3) or more starts level 1, and level 4 (81 samples per axis) is the maximum.
- **/
-bool supersampleLevels(double Jxx, double Jxy, double Jyx, double Jyy, int* levelX, int* levelY);
+bool interpolate(const FilterSpec& filter, bool clamp, double fx, double fy, const SourceImage& src, bool blackOutside, float* out);
 
 /**
  * @brief Samples src at (fx, fy) for a destination pixel whose back-transform has the given
- * Jacobian, supersampling when minifying (supersampleLevels()): the centre is sampled with the
- * filter and the other supersamples bilinearly, unclamped, and all are averaged. A zero
- * Jacobian samples like interpolate(). The box filter instead integrates src over the bounding
- * box of the back-transformed pixel.
+ * Jacobian. The kernel widens per source axis by kernelScale() of the Jacobian's row, so
+ * magnification, 1:1, pure rotation and a zeroed row use the plain kernel. Past
+ * kFilterMaxTapsPerAxis taps, that many spread evenly over the whole footprint with bilinear
+ * reads. A zero Jacobian samples like interpolate(), and so does impulse with any Jacobian. The
+ * box filter instead integrates src over the bounding box of the back-transformed pixel.
  **/
-void interpolateSuper(FilterEnum filter, bool clamp, double fx, double fy, double Jxx, double Jxy, double Jyx, double Jyy, const SourceImage& src, bool blackOutside, float* out);
+void interpolateSuper(const FilterSpec& filter, bool clamp, double fx, double fy, double Jxx, double Jxy, double Jyx, double Jyy, const SourceImage& src, bool blackOutside, float* out);
 
 ///////////////////////////////////////////////////////////////////////////////
 // Per-pixel coordinates (STMap, IDistort, lens distortion)
@@ -379,7 +431,7 @@ void resampleRowFromCoords(const SourceImage& src,
                            const float* sy,
                            const float* jacobian,
                            int n,
-                           FilterEnum filter,
+                           const FilterSpec& filter,
                            bool clamp,
                            bool blackOutside,
                            WrapMode wrapU,
@@ -564,7 +616,7 @@ struct ResampleParams {
     const TransformMath::Mat3* invTransforms;
     const double* alphas;
     std::size_t count;
-    FilterEnum filter;
+    FilterSpec filter;
     bool clamp;
     bool blackOutside;
     double motionBlur;
@@ -581,7 +633,7 @@ struct ResampleParams {
     }
 };
 
-ResampleParams makeResampleParams(const SamplingTransforms& transforms, FilterEnum filter, bool clamp, bool blackOutside);
+ResampleParams makeResampleParams(const SamplingTransforms& transforms, const FilterSpec& filter, bool clamp, bool blackOutside);
 
 /**
  * @brief Resamples destination pixels [x1, x2) of row y into dst, src.nComps floats per pixel,
@@ -636,10 +688,10 @@ void expandRoD(double par, double sx, double sy, bool blackOutside, RectD* rod);
 
 /**
  * @brief Grows srcRoI, the back-transformed roi, by filterRoIExpansion() source pixels on each
- * finite side, then unions it with roi when masking or mixing (mix != 1), which read the
- * source under the output pixel. An empty roi gives srcRoI = roi.
+ * finite side (scaleX along x, scaleY along y), then unions it with roi when masking or mixing
+ * (mix != 1), which read the source under the output pixel. An empty roi gives srcRoI = roi.
  **/
-void expandRoI(const RectD& roi, double par, double sx, double sy, FilterEnum filter, bool doMasking, double mix, RectD* srcRoI);
+void expandRoI(const RectD& roi, double par, double sx, double sy, const FilterSpec& filter, bool doMasking, double mix, RectD* srcRoI, double scaleX = 1., double scaleY = 1.);
 
 /**
  * @brief The knob state the region actions depend on. invert is the node's invert knob;
@@ -650,11 +702,12 @@ void expandRoI(const RectD& roi, double par, double sx, double sy, FilterEnum fi
 struct RegionParams {
     bool invert;
     BlurSettings blur;
-    FilterEnum filter;
+    FilterSpec filter;
     bool blackOutside;
     bool isIdentity;
     bool doMasking;
     double mix;
+    bool readsUnprocessed;
 
     RegionParams()
         : invert(false)
@@ -664,6 +717,7 @@ struct RegionParams {
         , isIdentity(false)
         , doMasking(false)
         , mix(1.)
+        , readsUnprocessed(false)
     {
     }
 };
@@ -686,10 +740,31 @@ void getRegionOfDefinition(const CanonicalTransformFn& fn,
                            RectD* rod);
 
 /**
+ * @brief Raises *scaleX and *scaleY to the largest kernelScale() per source axis of canonical
+ * matrix's Jacobian in pixels, over the corners of roi. Sets *cornerBehind when a corner falls at
+ * or behind z = 0, which has no footprint to measure.
+ **/
+void growKernelScales(const TransformMath::Mat3& matrix,
+                      const RectD& roi,
+                      double srcPar,
+                      double dstPar,
+                      double sx,
+                      double sy,
+                      double* scaleX,
+                      double* scaleY,
+                      bool* cornerBehind);
+
+/**
  * @brief The source RoI for an output roi, as the OFX Transform3x3 computes it: roi itself for
  * mix 0 under a mask; otherwise the back-transformed roi (transformRegion() with the render's
- * inverse matrix), expanded by expandRoI(). An infinite result is replaced by its intersection
- * with srcRoD, unioned with the project rectangle projectRect. srcPar is the source's PAR.
+ * inverse matrix), expanded by expandRoI(). The expansion follows the kernel's widening: the
+ * scale per source axis is the largest kernelScale() of the pixel matrix's Jacobian over the
+ * corners of roi and over every matrix buildSamplingTransforms() evaluates for the blur (each of
+ * them, not a sample), whose back-transformed roi is also unioned in. That is
+ * kMotionBlurTransformCount calls of fn for a blur. A kernel filter whose corner falls at or behind
+ * z = 0 reads the whole of srcRoD. An infinite result is replaced by its intersection with
+ * srcRoD, unioned with the project rectangle projectRect. srcPar and dstPar are the source's and
+ * the output's PAR.
  **/
 void getRegionOfInterest(const CanonicalTransformFn& fn,
                          const RectD& roi,
@@ -697,6 +772,7 @@ void getRegionOfInterest(const CanonicalTransformFn& fn,
                          const RectD& projectRect,
                          double time,
                          double srcPar,
+                         double dstPar,
                          double sx,
                          double sy,
                          const RegionParams& params,

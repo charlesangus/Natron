@@ -27,6 +27,7 @@
 
 #include <functional>
 #include <iostream>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -63,7 +64,6 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kDissolveID = PLUGINID_NATRON_DISSOLVE;
-const int kOfxDissolveMajor = 1;
 const int kNativeDissolveMajor = PLUGIN_MAJOR_NATRON_DISSOLVE;
 const double kTime = 1.;
 
@@ -114,10 +114,9 @@ protected:
     ParityPair makePair(int inputs,
                         bool withMask = false)
     {
-        ParityPair pair = makeParityPair(getApp(), kDissolveID, kOfxDissolveMajor, kNativeDissolveMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), kDissolveID, kNativeDissolveMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX Dissolve is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -141,7 +140,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel), mipmapLevel, kDissolveTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Dissolve " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -190,13 +188,42 @@ TEST_F(NativeDissolveTest, WhichBetweenZeroAndOne)
     expectParity(pair, "which-0.3", true);
 }
 
-TEST_F(NativeDissolveTest, WhichTwoAndAHalfIsClampedToTheLastInput)
+TEST_F(NativeDissolveTest, WhichTwoAndAHalfDissolvesTheLastInputHalfwayToBlack)
 {
     resetProject();
     ParityPair pair = makePair(3);
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 2.5 }));
-    expectParity(pair, "which-2.5", true);
+
+    // Input 3 is unconnected and reads black, so the result is input 2 halfway to black. The region is
+    // the union of the connected inputs, so the OpenFX Dissolve's project-format region is not the
+    // reference here; input 2 alone defines it.
+    NodePtr last = pair.native->getInput(3);
+    ASSERT_TRUE(bool(last));
+    EffectInstancePtr nativeEffect = pair.native->getEffectInstance();
+    EffectInstancePtr lastEffect = last->getEffectInstance();
+    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+        const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+        RectD nativeRod, lastRod;
+        ASSERT_NE(eStatusFailed, nativeEffect->getRegionOfDefinition(nativeEffect->getRenderHash(), kTime, scale, ViewIdx(0), &nativeRod));
+        ASSERT_NE(eStatusFailed, lastEffect->getRegionOfDefinition(lastEffect->getRenderHash(), kTime, scale, ViewIdx(0), &lastRod));
+        EXPECT_EQ(lastRod, nativeRod) << "mipmap " << mipmapLevel;
+
+        const RectI window = lastRod.toPixelEnclosing(mipmapLevel, 1.);
+        const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+        std::vector<RenderedPlane> out, in;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(pair.native, kTime, ViewIdx(0), mipmapLevel, window, layers, &out, &error)) << error;
+        ASSERT_TRUE(renderNodePlanesDirect(last, kTime, ViewIdx(0), mipmapLevel, window, layers, &in, &error)) << error;
+        ASSERT_EQ(1u, out.size());
+        ASSERT_EQ(1u, in.size());
+        ASSERT_EQ(in[0].pixels.size(), out[0].pixels.size());
+        for (std::size_t i = 0; i < in[0].pixels.size(); ++i) {
+            const float from = in[0].pixels[i];
+            const float expected = (0.f - from) * 0.5f + from;
+            ASSERT_EQ(expected, out[0].pixels[i]) << "mipmap " << mipmapLevel << ", sample " << i;
+        }
+    }
 }
 
 TEST_F(NativeDissolveTest, MaskedBlend)
@@ -275,12 +302,10 @@ TEST_F(NativeDissolveTest, RegisteredIdentity)
 
 namespace {
 
-// A native Constant whose output format is width x height at par.
+// A native Constant whose Extent is the entry extentId.
 NodePtr
-createFormatConstant(const AppInstancePtr& app,
-                     double width,
-                     double height,
-                     double par)
+createExtentConstant(const AppInstancePtr& app,
+                     const char* extentId)
 {
     NodePtr node = createNodeAtMajor(app, PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
     KnobChoice* extent = node ? dynamic_cast<KnobChoice*>(node->getKnobByName(kNativeGeneratorParamExtent).get()) : NULL;
@@ -291,16 +316,73 @@ createFormatConstant(const AppInstancePtr& app,
     }
     const std::vector<ChoiceOption> entries = extent->getEntries_mt_safe();
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        if (entries[i].id == kNativeGeneratorExtentFormat) {
+        if (entries[i].id == extentId) {
             extent->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
         }
     }
-    if (!setKnobValues(node, kNatronParamFormatSize, { width, height }) || !setKnobValues(node, kNatronParamFormatPar, { par })) {
+
+    return node;
+}
+
+// A native Constant whose output format is width x height at par.
+NodePtr
+createFormatConstant(const AppInstancePtr& app,
+                     double width,
+                     double height,
+                     double par)
+{
+    NodePtr node = createExtentConstant(app, kNativeGeneratorExtentFormat);
+
+    if (!node || !setKnobValues(node, kNatronParamFormatSize, { width, height }) || !setKnobValues(node, kNatronParamFormatPar, { par })) {
         return NodePtr();
     }
 
     return node;
 }
+
+// A native Constant of colour rgba over box.
+NodePtr
+createBoxConstant(const AppInstancePtr& app,
+                  const RectD& box,
+                  const std::vector<double>& rgba)
+{
+    NodePtr node = createExtentConstant(app, kNativeGeneratorExtentSize);
+
+    if (!node || !setKnobValues(node, kNativeGeneratorParamBottomLeft, { box.x1, box.y1 }) || !setKnobValues(node, kNativeGeneratorParamSize, { box.width(), box.height() }) || !setKnobValues(node, kConstantParamColor, rgba)) {
+        return NodePtr();
+    }
+
+    return node;
+}
+
+// The RGBA of node over window at time and full scale, row-major from the bottom row.
+bool
+renderRGBA(const NodePtr& node,
+           double time,
+           const RectI& window,
+           std::vector<float>* pixels)
+{
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::mapNCompsToColorLayer(4));
+    std::vector<RenderedPlane> planes;
+    std::string error;
+
+    if (!renderNodePlanesDirect(node, time, ViewIdx(0), 0, window, layers, &planes, &error)) {
+        ADD_FAILURE() << error;
+
+        return false;
+    }
+    if ((planes.size() != 1) || (planes[0].channels.size() != 4)) {
+        ADD_FAILURE() << "expected one RGBA plane";
+
+        return false;
+    }
+    *pixels = planes[0].pixels;
+
+    return true;
+}
+
+const double kFromColor[4] = { 0.2, 0.4, 0.6, 1. };
+const double kToColor[4] = { 1., 0.5, 0., 0.5 };
 
 } // namespace
 
@@ -332,4 +414,114 @@ TEST_F(NativeDissolveTest, AFractionalDissolveKeepsTheDefaultDerivation)
     ASSERT_TRUE(bool(passed));
     EXPECT_EQ(RectI(0, 0, 100, 30), passed->getOutputFormat());
     EXPECT_DOUBLE_EQ(2., passed->getPixelAspectRatio(-1));
+}
+
+// The mask and mix blend the dissolve with input 0, the lower of the two inputs: by the mask's
+// alpha times the mix, or by its complement times the mix when inverted.
+TEST_F(NativeDissolveTest, MaskInvertAndMixBlendWithTheLowerInput)
+{
+    resetProject();
+    const RectD box(0., 0., 16., 16.);
+    NodePtr from = createBoxConstant(getApp(), box, { kFromColor[0], kFromColor[1], kFromColor[2], kFromColor[3] });
+    NodePtr to = createBoxConstant(getApp(), box, { kToColor[0], kToColor[1], kToColor[2], kToColor[3] });
+    NodePtr mask = createBoxConstant(getApp(), box, { 0., 0., 0., 0.25 });
+    NodePtr node = createNode(QString::fromUtf8(kDissolveID), kNativeDissolveMajor);
+    ASSERT_TRUE(from && to && mask && isNative(node));
+    connectNodes(from, node, Dissolve::sourceInput(0), true);
+    connectNodes(to, node, Dissolve::sourceInput(1), true);
+    connectNodes(mask, node, kDissolveMaskInput, true);
+    ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
+    ASSERT_TRUE(setChannelSelect(node, "maskChannel_Mask", "rgba.A"));
+    ASSERT_TRUE(setKnobValues(node, kDissolveParamWhich, { 0.4 }));
+
+    struct Case {
+        bool invert;
+        double mix;
+    };
+    const Case cases[] = { { false, 1. }, { false, 0.5 }, { true, 0.5 }, { true, 0. } };
+    const RectI window(0, 0, 16, 16);
+    for (const Case& c : cases) {
+        ASSERT_TRUE(setKnobValues(node, kOfxMaskInvertParamName, { c.invert ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { c.mix }));
+        std::vector<float> pixels;
+        ASSERT_TRUE(renderRGBA(node, kTime, window, &pixels));
+        ASSERT_EQ((std::size_t)window.width() * window.height() * 4, pixels.size());
+        const double amount = (c.invert ? 0.75 : 0.25) * c.mix;
+        for (std::size_t i = 0; i < pixels.size(); ++i) {
+            const int k = (int)(i % 4);
+            const double dissolved = kFromColor[k] + (kToColor[k] - kFromColor[k]) * 0.4;
+            const double expected = kFromColor[k] + (dissolved - kFromColor[k]) * amount;
+            ASSERT_NEAR(expected, pixels[i], 1e-6) << "invert " << c.invert << ", mix " << c.mix << ", float " << i;
+        }
+    }
+}
+
+// An unconnected input reads black, so the region is that of the connected input alone, and
+// nothing at all when neither of the blended inputs is connected.
+TEST_F(NativeDissolveTest, AnUnconnectedInputAddsNoRegion)
+{
+    resetProject();
+    const RectD box(11., 7., 48., 30.);
+    NodePtr to = createBoxConstant(getApp(), box, { kToColor[0], kToColor[1], kToColor[2], kToColor[3] });
+    NodePtr node = createNode(QString::fromUtf8(kDissolveID), kNativeDissolveMajor);
+    ASSERT_TRUE(to && isNative(node));
+    connectNodes(to, node, Dissolve::sourceInput(1), true);
+    EffectInstancePtr effect = node->getEffectInstance();
+
+    ASSERT_TRUE(setKnobValues(node, kDissolveParamWhich, { 0.5 }));
+    RectD rod;
+    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod));
+    EXPECT_EQ(box, rod);
+
+    std::vector<float> pixels;
+    const RectI window(0, 0, 64, 40);
+    ASSERT_TRUE(renderRGBA(node, kTime, window, &pixels));
+    ASSERT_EQ((std::size_t)window.width() * window.height() * 4, pixels.size());
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const bool inside = (x >= box.x1) && (x < box.x2) && (y >= box.y1) && (y < box.y2);
+            for (int k = 0; k < 4; ++k) {
+                const float value = pixels[(((std::size_t)(y - window.y1) * window.width()) + (x - window.x1)) * 4 + k];
+                ASSERT_NEAR(inside ? kToColor[k] * 0.5 : 0., value, 1e-6) << "(" << x << ", " << y << ") channel " << k;
+            }
+        }
+    }
+
+    ASSERT_TRUE(setKnobValues(node, kDissolveParamWhich, { 0. }));
+    rod = RectD(0., 0., 1., 1.);
+    ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod));
+    EXPECT_TRUE(rod.isNull()) << rod.x1 << " " << rod.y1 << " " << rod.x2 << " " << rod.y2;
+}
+
+// An animated Which blends by its value at the rendered frame.
+TEST_F(NativeDissolveTest, AnimatedWhichBlendsByItsValueAtEachFrame)
+{
+    resetProject();
+    const RectD box(0., 0., 8., 8.);
+    NodePtr from = createBoxConstant(getApp(), box, { kFromColor[0], kFromColor[1], kFromColor[2], kFromColor[3] });
+    NodePtr to = createBoxConstant(getApp(), box, { kToColor[0], kToColor[1], kToColor[2], kToColor[3] });
+    NodePtr node = createNode(QString::fromUtf8(kDissolveID), kNativeDissolveMajor);
+    ASSERT_TRUE(from && to && isNative(node));
+    connectNodes(from, node, Dissolve::sourceInput(0), true);
+    connectNodes(to, node, Dissolve::sourceInput(1), true);
+    KnobDouble* which = dynamic_cast<KnobDouble*>(node->getKnobByName(kDissolveParamWhich).get());
+    ASSERT_TRUE(which != NULL);
+    which->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    which->setValueAtTime(11., 1., ViewSpec::all(), 0);
+
+    const RectI window(0, 0, 8, 8);
+    for (const double time : { 1., 4., 6., 11. }) {
+        const double w = which->getValueAtTime(time, 0, ViewSpec::current());
+        if ((time > 1.) && (time < 11.)) {
+            ASSERT_GT(w, 0.) << time;
+            ASSERT_LT(w, 1.) << time;
+        }
+        std::vector<float> pixels;
+        ASSERT_TRUE(renderRGBA(node, time, window, &pixels));
+        ASSERT_EQ((std::size_t)window.width() * window.height() * 4, pixels.size());
+        for (std::size_t i = 0; i < pixels.size(); ++i) {
+            const int k = (int)(i % 4);
+            ASSERT_NEAR(kFromColor[k] + (kToColor[k] - kFromColor[k]) * w, pixels[i], 1e-6) << "frame " << time << ", float " << i;
+        }
+    }
 }

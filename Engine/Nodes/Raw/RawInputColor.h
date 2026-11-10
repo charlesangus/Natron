@@ -46,7 +46,7 @@
 #include "Engine/Nodes/Raw/RawColorProfiles.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWINPUTCOLOR "fr.natron.RawInputColor"
+#define PLUGINID_NATRON_RAWINPUTCOLOR "RawInputColor"
 #define PLUGIN_MAJOR_NATRON_RAWINPUTCOLOR 1
 
 #define kRawInputColorParamProfileOverride "inputProfileOverride"

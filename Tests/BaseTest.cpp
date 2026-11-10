@@ -169,14 +169,7 @@ BaseTest::createNativeWriter(const std::string& filename)
         return writer;
     }
     // The default output space comes from OCIO file rules and would convert the pixels the tests compare.
-    KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(writer->getKnobByName("ocioOutputSpace").get());
-    KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(writer->getKnobByName("ocioOutputSpaceSet").get());
-    EXPECT_TRUE(outputSpace != NULL);
-    EXPECT_TRUE(outputSpaceSet != NULL);
-    if (outputSpace && outputSpaceSet) {
-        outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-        outputSpaceSet->setValue(true);
-    }
+    fileInWorkingSpace(writer);
     if (!filename.empty()) {
         writer->setOutputFilesForWriter(filename);
     }
@@ -202,16 +195,27 @@ BaseTest::createWorkingSpaceRead(const std::string& filePath)
 void
 BaseTest::readInWorkingSpace(const NodePtr& reader)
 {
-    KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(reader->getKnobByName("ocioInputSpace").get());
-    KnobBool* inputSpaceSet = dynamic_cast<KnobBool*>(reader->getKnobByName("ocioInputSpaceSet").get());
-
-    ASSERT_TRUE(inputSpace != NULL) << reader->getScriptName_mt_safe();
-    ASSERT_TRUE(inputSpaceSet != NULL) << reader->getScriptName_mt_safe();
-    inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
-    // Marked as chosen by hand: otherwise a reload or a new file re-guesses the space from the
+    // A pick, not Project default: otherwise a reload or a new file re-guesses the space from the
     // file and the pixels the tests compare get converted after all.
-    inputSpaceSet->setValue(true);
+    fileInWorkingSpace(reader);
     reader->getEffectInstance()->dropCachedMetadata();
+}
+
+void
+BaseTest::setFileColorspace(const NodePtr& node,
+                            const std::string& space)
+{
+    ASSERT_TRUE(bool(node));
+    KnobChoice* menu = dynamic_cast<KnobChoice*>(node->getKnobByName("colorspace").get());
+    ASSERT_TRUE(menu != NULL) << node->getScriptName_mt_safe();
+    menu->setValueFromID(space, 0);
+    EXPECT_EQ(space, menu->getActiveEntry().id) << node->getScriptName_mt_safe();
+}
+
+void
+BaseTest::fileInWorkingSpace(const NodePtr& node)
+{
+    setFileColorspace(node, getApp()->getProject()->getWorkingColorSpace());
 }
 
 void

@@ -1,8 +1,7 @@
 import resamplecore;
 
 // Resampler::resampleRowFromCoords for one pixel: sampling at a per-pixel source coordinate, wrapped
-// per axis, with resamplecore.slang's interpolate, or its interpolateSuper when the caller has a
-// Jacobian.
+// per axis, with resamplecore.slang's interpolateSuper, on the Jacobian when the caller has one.
 
 // Resampler::WrapMode.
 static const uint kWrapNone = 0;
@@ -81,32 +80,20 @@ bool wrapCoord(float s, int lo, int hi, uint mode, out FF result, out bool moved
     return true;
 }
 
+// A parameter block's Resampler::FilterSpec: the filter's word, and lobes, B and C from word `lobesWord`.
+FilterSpec loadFilterSpec(StructuredBuffer<uint> params, uint filterWord, uint lobesWord)
+{
+    FilterSpec s;
+    s.filter = params[filterWord];
+    s.lobes = int(params[lobesWord]);
+    s.B = asfloat(params[lobesWord + 1]);
+    s.C = asfloat(params[lobesWord + 2]);
+    return s;
+}
+
 float finiteOrZero(float v)
 {
     return isFiniteF(v) ? v : 0.0;
-}
-
-// The interpolateSuper state byte of Jacobian (Jxx Jxy; Jyx Jyy), as Resampler::supersampleLevels
-// decides it: level n along an axis once the squared norm of its column exceeds 3^(2n - 1), up to 4.
-uint jacobianState(float Jxx, float Jxy, float Jyx, float Jyy)
-{
-    if (Jxx == 0.0 && Jxy == 0.0 && Jyx == 0.0 && Jyy == 0.0)
-        return 0x40u;
-    const float dx = Jxx * Jxx + Jyx * Jyx;
-    const float dy = Jxy * Jxy + Jyy * Jyy;
-    uint levelX = 0;
-    uint levelY = 0;
-    float threshold = 3.0;
-    [ForceUnroll]
-    for (int n = 0; n < 4; ++n)
-    {
-        if (dx > threshold)
-            ++levelX;
-        if (dy > threshold)
-            ++levelY;
-        threshold *= 9.0;
-    }
-    return levelX | (levelY << 3);
 }
 
 // The sample of `src` at source coordinate (sx, sy), wrapped in `domain` (x1, y1, x2, y2; the source's bounds
@@ -116,7 +103,7 @@ uint jacobianState(float Jxx, float Jxy, float Jyx, float Jyy)
 // Otherwise non-finite entries read 0, the row of an axis that clamping moved is zeroed, and, as
 // resample.slang's samplePixel does, so is the row of an axis with no source pixel within half a
 // pixel, both rows under black-outside when either axis is out.
-float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobian, uint filter, bool clampOn, uint wrapU, uint wrapV,
+float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobian, FilterSpec spec, bool clampOn, uint wrapU, uint wrapV,
                 int4 domain)
 {
     const float4 zero = float4(0.0, 0.0, 0.0, 0.0);
@@ -131,16 +118,11 @@ float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobi
     if (!wrapCoord(sx, domain.x, domain.z, wrapU, fx, movedX) || !wrapCoord(sy, domain.y, domain.w, wrapV, fy, movedY))
         return zero;
 
-    float4 r;
-    if (filter == kFilterImpulse || !hasJacobian)
-    {
-        interpolate(src, filter, clampOn, fx, fy, r);
-        return r;
-    }
-    float Jxx = finiteOrZero(J.x);
-    float Jxy = finiteOrZero(J.y);
-    float Jyx = finiteOrZero(J.z);
-    float Jyy = finiteOrZero(J.w);
+    const bool useJacobian = hasJacobian && spec.filter != kFilterImpulse;
+    float Jxx = useJacobian ? finiteOrZero(J.x) : 0.0;
+    float Jxy = useJacobian ? finiteOrZero(J.y) : 0.0;
+    float Jyx = useJacobian ? finiteOrZero(J.z) : 0.0;
+    float Jyy = useJacobian ? finiteOrZero(J.w) : 0.0;
     bool xinside = toPos(ffAddF(fx, 0.5)).i >= src.x1 && toPos(ffAddF(fx, -0.5)).i < src.x2;
     bool yinside = toPos(ffAddF(fy, 0.5)).i >= src.y1 && toPos(ffAddF(fy, -0.5)).i < src.y2;
     if (src.blackOutside && !(xinside && yinside))
@@ -158,6 +140,5 @@ float4 sampleAt(ResampleSource src, float sx, float sy, float4 J, bool hasJacobi
         Jyx = 0.0;
         Jyy = 0.0;
     }
-    return interpolateSuper(src, filter, clampOn, fx, fy, ffMake(Jxx, 0.0), ffMake(Jxy, 0.0), ffMake(Jyx, 0.0),
-                            ffMake(Jyy, 0.0), jacobianState(Jxx, Jxy, Jyx, Jyy), 0);
+    return interpolateSuper(src, spec, clampOn, fx, fy, ffMake(Jxx, 0.0), ffMake(Jxy, 0.0), ffMake(Jyx, 0.0), ffMake(Jyy, 0.0));
 }

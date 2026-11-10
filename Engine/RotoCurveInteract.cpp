@@ -26,6 +26,7 @@
 #include "RotoCurveInteract.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -39,14 +40,21 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
+#include "Engine/Project.h"
+#include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
+#include "Engine/Settings.h"
+#include "Engine/TrackMarker.h"
+#include "Engine/TrackerContext.h"
 #include "Engine/Transform.h"
+#include "Engine/ViewerInstance.h"
 #include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -55,6 +63,11 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , selectedCps()
     , selectedCpsBbox()
     , showCpsBbox(false)
+    , cpsPivot()
+    , cpsPivotSet(false)
+    , cpsPivotSelection()
+    , sketchSamples()
+    , closingTangentDrag(false)
     , transformMode()
     , builtBezier()
     , bezierBeingDragged()
@@ -75,9 +88,14 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , shiftDown(0)
     , ctrlDown(0)
     , altDown(0)
+    , altPressClaimed(false)
+    , featherBarKeepsTangents(false)
     , cloneOffset(0., 0.)
     , mouseCenterOnSizeChange()
     , _host(host)
+    , _dragRender()
+    , _dragRenderWatch()
+    , _dragRenderGesture(0)
 {
 }
 
@@ -137,6 +155,26 @@ RotoCurveInteract::pushUndoCommand(UndoCommand* command)
     _host->pushUndoCommand(command);
 }
 
+template <class Cmd>
+std::shared_ptr<Cmd>
+RotoCurveInteract::getOpenDragCommand(double time) const
+{
+    std::shared_ptr<Cmd> command = std::dynamic_pointer_cast<Cmd>(_openDragCommand);
+
+    if (!command || !command->isOpenIn(undoGesture.key()) || (command->getTime() != time)) {
+        return std::shared_ptr<Cmd>();
+    }
+
+    return command;
+}
+
+void
+RotoCurveInteract::pushDragCommand(const std::shared_ptr<RotoDragUndoCommand>& command)
+{
+    _openDragCommand = command;
+    _host->pushUndoCommand(command);
+}
+
 void
 RotoCurveInteract::evaluate(bool redraw)
 {
@@ -158,6 +196,190 @@ void
 RotoCurveInteract::redrawOverlays()
 {
     _host->redrawOverlayInteract();
+}
+
+namespace {
+// A render slower than this stops live renders for the rest of an adaptive drag: the real render must converge within
+// 100 ms of the pen.
+const double kDragRenderAdaptiveThresholdMs = 100.;
+
+double
+dragRenderNowMs()
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool
+isLiveRenderedDragState(EventStateEnum state)
+{
+    switch (state) {
+    case eEventStateDraggingSelectedControlPoints:
+    case eEventStateDraggingControlPoint:
+    case eEventStateDraggingLeftTangent:
+    case eEventStateDraggingRightTangent:
+    case eEventStateDraggingFeatherBar:
+    case eEventStateDraggingBBoxTopLeft:
+    case eEventStateDraggingBBoxTopRight:
+    case eEventStateDraggingBBoxBtmRight:
+    case eEventStateDraggingBBoxBtmLeft:
+    case eEventStateDraggingBBoxMidTop:
+    case eEventStateDraggingBBoxMidBtm:
+    case eEventStateDraggingBBoxMidLeft:
+    case eEventStateDraggingBBoxMidRight:
+        return true;
+    default:
+        return false;
+    }
+}
+} // anonymous namespace
+
+void
+RotoCurveInteract::beginDragRender()
+{
+    endDragRender();
+
+    RotoDragRenderThrottle::ModeEnum mode = RotoDragRenderThrottle::eModeOnRelease;
+    switch (appPTR->getCurrentSettings()->getRotoShapeDragRender()) {
+    case Settings::eRotoShapeDragRenderAdaptive:
+        mode = RotoDragRenderThrottle::eModeAdaptive;
+        break;
+    case Settings::eRotoShapeDragRenderAlwaysLive:
+        mode = RotoDragRenderThrottle::eModeAlwaysLive;
+        break;
+    case Settings::eRotoShapeDragRenderOnRelease:
+        mode = RotoDragRenderThrottle::eModeOnRelease;
+        break;
+    }
+
+    // Playback renders the edit as it goes.
+    NodePtr node = getNode();
+    if (node) {
+        std::list<ViewerInstance*> viewers;
+        node->hasViewersConnected(&viewers);
+        for (std::list<ViewerInstance*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+            if ((*it)->getRenderEngine()->isDoingSequentialRender()) {
+                mode = RotoDragRenderThrottle::eModeOnRelease;
+                break;
+            }
+        }
+    }
+
+    ++_dragRenderGesture;
+    _dragRender.beginGesture(mode, kDragRenderAdaptiveThresholdMs);
+}
+
+void
+RotoCurveInteract::requestDragRender()
+{
+    if (!_dragRender.isLive()) {
+        return;
+    }
+    if (!_dragRenderWatch) {
+        // From the first edit of a shape drag to pen up, every viewer render requested on this thread is tracked, the
+        // ones the GUI copy of the shapes issues as a render ends included: a render started after an edit shows it,
+        // so the edit needs no render of its own. Paint strokes never arm it.
+        std::weak_ptr<RotoCurveInteract> weakThis = shared_from_this();
+        const U64 gesture = _dragRenderGesture;
+        _dragRenderWatch = std::make_shared<RenderEndWatch>(
+            [weakThis]() {
+                RotoCurveInteractPtr self = weakThis.lock();
+                if (self) {
+                    self->_dragRender.renderStarted(dragRenderNowMs());
+                }
+            },
+            [weakThis, gesture](double elapsedMs) {
+                if (!qApp) {
+                    return;
+                }
+                QMetaObject::invokeMethod(qApp, [weakThis, gesture, elapsedMs]() {
+                    RotoCurveInteractPtr self = weakThis.lock();
+                    if (self) {
+                        self->onDragRenderEnded(gesture, elapsedMs);
+                    } }, Qt::QueuedConnection);
+            });
+        RenderEndWatch::setActiveOnThisThread(_dragRenderWatch);
+    }
+    applyDragRenderAction(_dragRender.edited(dragRenderNowMs()));
+}
+
+void
+RotoCurveInteract::onDragRenderEnded(U64 gesture,
+                                     double elapsedMs)
+{
+    if ((gesture != _dragRenderGesture) || !_dragRender.isGestureOpen()) {
+        return;
+    }
+    applyDragRenderAction(_dragRender.renderEnded(elapsedMs, dragRenderNowMs()));
+}
+
+void
+RotoCurveInteract::applyDragRenderAction(RotoDragRenderThrottle::ActionEnum action)
+{
+    switch (action) {
+    case RotoDragRenderThrottle::eActionNone:
+        break;
+    case RotoDragRenderThrottle::eActionRender: {
+        RotoCurveContextPtr context = getCurveContext();
+        if (context) {
+            context->evaluateChange();
+        }
+        break;
+    }
+    case RotoDragRenderThrottle::eActionAbort:
+        abortDragRenders();
+        break;
+    }
+}
+
+void
+RotoCurveInteract::abortDragRenders()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    // A RotoPaint's neat stroke render lands asynchronously after its pen up and must not be lost to a shape drag.
+    RotoContextPtr paintContext = node->getRotoContext();
+    if (paintContext && (paintContext->isDoingNeatRender() || paintContext->mustDoNeatRender())) {
+        return;
+    }
+    std::list<ViewerInstance*> viewers;
+    node->hasViewersConnected(&viewers);
+    for (std::list<ViewerInstance*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+        (*it)->markAllOnGoingRendersAsAborted(false);
+    }
+}
+
+void
+RotoCurveInteract::endDragRender()
+{
+    if (_dragRenderWatch) {
+        RenderEndWatch::setActiveOnThisThread(RenderEndWatchPtr());
+        _dragRenderWatch.reset();
+    }
+    // The renders still running show an older state than the final render that follows.
+    if ((_dragRender.endGesture() == RotoDragRenderThrottle::eActionAbort) && evaluateOnPenUp) {
+        abortDragRenders();
+    }
+}
+
+void
+RotoCurveInteract::getCurveOverlayColor(const RotoDrawableItemPtr& item,
+                                        double color[4]) const
+{
+    item->getOverlayColor(color);
+}
+
+BezierPtr
+RotoCurveInteract::nearbyShownBezier(const QPointF& pos,
+                                     double tolerance,
+                                     int* index,
+                                     double* t,
+                                     bool* feather) const
+{
+    return getCurveContext()->isNearbyBezier(pos.x(), pos.y(), tolerance, index, t, feather, [this](const BezierPtr& curve) {
+        return isCurveShown(curve);
+    });
 }
 
 bool
@@ -525,8 +747,10 @@ RotoCurveInteract::drawSelectedCpsBBOX()
         glVertex2f(btmRight.x(), btmRight.y());
         glEnd();
 
-        double midX = (topLeft.x() + btmRight.x()) / 2.;
-        double midY = (btmRight.y() + topLeft.y()) / 2.;
+        const QPointF pivot = getSelectedCpsPivot();
+        const bool pivotMoved = pivot != selectedCpsBbox.center();
+        double midX = pivot.x();
+        double midY = pivot.y();
         double xHairMidSizeX = kXHairSelectedCpsBox * pixelScale.first;
         double xHairMidSizeY = kXHairSelectedCpsBox * pixelScale.second;
         QLineF selectedCpsCrossHorizLine;
@@ -534,13 +758,31 @@ RotoCurveInteract::drawSelectedCpsBBOX()
         QLineF selectedCpsCrossVertLine;
         selectedCpsCrossVertLine.setLine(midX, midY - xHairMidSizeY, midX, midY + xHairMidSizeY);
 
+        if (pivotMoved) {
+            glColor4f(0.9, 0.5, 0, 1.);
+        }
         glLineWidth(1.5 * screenPixelRatio);
         glBegin(GL_LINES);
-        glVertex2f(std::max(selectedCpsCrossHorizLine.p1().x(), topLeft.x()), selectedCpsCrossHorizLine.p1().y());
-        glVertex2f(std::min(selectedCpsCrossHorizLine.p2().x(), btmRight.x()), selectedCpsCrossHorizLine.p2().y());
-        glVertex2f(selectedCpsCrossVertLine.p1().x(), std::max(selectedCpsCrossVertLine.p1().y(), btmRight.y()));
-        glVertex2f(selectedCpsCrossVertLine.p2().x(), std::min(selectedCpsCrossVertLine.p2().y(), topLeft.y()));
+        if (pivotMoved) {
+            // A placed pivot may sit outside the box, so its cross is not clipped to it.
+            glVertex2f(selectedCpsCrossHorizLine.p1().x(), selectedCpsCrossHorizLine.p1().y());
+            glVertex2f(selectedCpsCrossHorizLine.p2().x(), selectedCpsCrossHorizLine.p2().y());
+            glVertex2f(selectedCpsCrossVertLine.p1().x(), selectedCpsCrossVertLine.p1().y());
+            glVertex2f(selectedCpsCrossVertLine.p2().x(), selectedCpsCrossVertLine.p2().y());
+        } else {
+            glVertex2f(std::max(selectedCpsCrossHorizLine.p1().x(), topLeft.x()), selectedCpsCrossHorizLine.p1().y());
+            glVertex2f(std::min(selectedCpsCrossHorizLine.p2().x(), btmRight.x()), selectedCpsCrossHorizLine.p2().y());
+            glVertex2f(selectedCpsCrossVertLine.p1().x(), std::max(selectedCpsCrossVertLine.p1().y(), btmRight.y()));
+            glVertex2f(selectedCpsCrossVertLine.p2().x(), std::min(selectedCpsCrossVertLine.p2().y(), topLeft.y()));
+        }
         glEnd();
+        if (pivotMoved) {
+            if (hoverState == eHoverStateBbox) {
+                glColor4f(0.9, 0.5, 0, 1.);
+            } else {
+                glColor4f(0.8, 0.8, 0.8, 1.);
+            }
+        }
 
         glCheckError();
 
@@ -747,6 +989,10 @@ RotoCurveInteract::getToolForAction(const KnobButtonPtr& k,
         *tool = eRotoToolDrawEllipse;
     } else if (k == drawRectangleAction.lock()) {
         *tool = eRotoToolDrawRectangle;
+    } else if (k == drawOpenBezierAction.lock()) {
+        *tool = eRotoToolOpenBezier;
+    } else if (k == drawPointAction.lock()) {
+        *tool = eRotoToolDrawPoint;
     } else if (objectSelect && (k == objectSelectAction.lock())) {
         *tool = eRotoToolObjectSelect;
     } else {
@@ -789,6 +1035,7 @@ RotoCurveInteract::onRoleChangedInternal(const KnobGroupPtr& roleGroup)
             b->setInViewerContextSecret(isPaintRole || isObjectRole);
         }
     }
+    refreshRippleEditKnobsVisibility(isPaintRole || isObjectRole);
     if (objectSelect) {
         objectSelect->setActive(isObjectRole);
     }
@@ -813,10 +1060,14 @@ RotoCurveInteract::onToolChangedInternal(const KnobButtonPtr& actionButton)
         return true;
     }
 
-    // Clear all selection if we were building a new bezier
-    if ((selectedRole == eRotoRoleBezierEdition) && ((selectedTool == eRotoToolDrawBezier) || (selectedTool == eRotoToolOpenBezier)) && builtBezier && (tool != selectedTool)) {
-        builtBezier->setCurveFinished(true);
-        clearSelection();
+    // Leaving the tool ends the shape it was making: a later click with a drawing tool must start
+    // a new shape, not continue or hit this one.
+    if (builtBezier && (tool != selectedTool)) {
+        if (!builtBezier->isCurveFinished()) {
+            builtBezier->setCurveFinished(true);
+            clearSelection();
+        }
+        builtBezier.reset();
     }
     selectedToolAction = actionButton;
     {
@@ -824,6 +1075,9 @@ RotoCurveInteract::onToolChangedInternal(const KnobButtonPtr& actionButton)
         KnobGroupPtr parentGroup = std::dynamic_pointer_cast<KnobGroup>(parentKnob);
         assert(parentGroup);
         selectedToolRole = parentGroup;
+        if (parentGroup && (parentGroup == selectToolGroup.lock())) {
+            lastSelectToolAction = actionButton;
+        }
     }
     selectedTool = tool;
     onToolSelected(actionButton, tool);
@@ -1049,6 +1303,34 @@ RotoCurveInteract::createToolbarKnobs(int toolSet)
             editBezierToolButton->addKnob(tool);
             drawRectangleAction = tool;
         }
+
+        if (toolSet & eRotoCurveToolSetOpenBezier) {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamOpenBezierToolButtonActionLabel));
+            tool->setName(kRotoUIParamOpenBezierToolButtonAction);
+            tool->setHintToolTip(tr(kRotoUIParamOpenBezierToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/spline.svg");
+            tool->setIsPersistent(false);
+            editBezierToolButton->addKnob(tool);
+            drawOpenBezierAction = tool;
+        }
+
+        if (toolSet & eRotoCurveToolSetPoint) {
+            KnobButtonPtr tool = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamPointToolButtonActionLabel));
+            tool->setName(kRotoUIParamPointToolButtonAction);
+            tool->setHintToolTip(tr(kRotoUIParamPointToolButtonActionHint));
+            tool->setCheckable(true);
+            tool->setDefaultValue(false);
+            tool->setSecretByDefault(true);
+            tool->setEvaluateOnChange(false);
+            tool->setIconLabel(NATRON_ICONS_PATH "lucide/locate-fixed.svg");
+            tool->setIsPersistent(false);
+            editBezierToolButton->addKnob(tool);
+            drawPointAction = tool;
+        }
     }
 
     if (toolSet & eRotoCurveToolSetObjectSelect) {
@@ -1157,6 +1439,45 @@ RotoCurveInteract::createViewerButtonKnobs(const KnobPagePtr& page)
     page->addKnob(rippleEditEnabled);
     rippleEditEnabledButton = rippleEditEnabled;
 
+    KnobChoicePtr rippleEditMode = AppManager::createKnob<KnobChoice>(_host, tr(kRotoUIParamRippleEditModeLabel));
+    rippleEditMode->setName(kRotoUIParamRippleEditMode);
+    rippleEditMode->setHintToolTip(tr(kRotoUIParamRippleEditModeHint));
+    rippleEditMode->setEvaluateOnChange(false);
+    rippleEditMode->setSecretByDefault(true);
+    {
+        std::vector<ChoiceOption> choices;
+        choices.push_back(ChoiceOption("all", tr("All").toStdString(), tr("Ripple to every keyframe").toStdString()));
+        choices.push_back(ChoiceOption("fromStart", tr("From Start").toStdString(), tr("Ripple to the keyframes from the first one to the current frame").toStdString()));
+        choices.push_back(ChoiceOption("toEnd", tr("To End").toStdString(), tr("Ripple to the keyframes from the current frame to the last one").toStdString()));
+        choices.push_back(ChoiceOption("range", tr("Range").toStdString(), tr("Ripple to the keyframes inside the ripple range").toStdString()));
+        rippleEditMode->populateChoices(choices);
+    }
+    rippleEditMode->setDefaultValue(0);
+    page->addKnob(rippleEditMode);
+    rippleEditModeChoice = rippleEditMode;
+
+    KnobIntPtr rippleRangeStart = AppManager::createKnob<KnobInt>(_host, tr(kRotoUIParamRippleRangeStartLabel));
+    rippleRangeStart->setName(kRotoUIParamRippleRangeStart);
+    rippleRangeStart->setInViewerContextLabel(tr("Start"));
+    rippleRangeStart->setHintToolTip(tr(kRotoUIParamRippleRangeStartHint));
+    rippleRangeStart->setEvaluateOnChange(false);
+    rippleRangeStart->setSecretByDefault(true);
+    rippleRangeStart->setDefaultValue(1);
+    rippleRangeStart->disableSlider();
+    page->addKnob(rippleRangeStart);
+    rippleRangeStartSpinBox = rippleRangeStart;
+
+    KnobIntPtr rippleRangeEnd = AppManager::createKnob<KnobInt>(_host, tr(kRotoUIParamRippleRangeEndLabel));
+    rippleRangeEnd->setName(kRotoUIParamRippleRangeEnd);
+    rippleRangeEnd->setInViewerContextLabel(tr("End"));
+    rippleRangeEnd->setHintToolTip(tr(kRotoUIParamRippleRangeEndHint));
+    rippleRangeEnd->setEvaluateOnChange(false);
+    rippleRangeEnd->setSecretByDefault(true);
+    rippleRangeEnd->setDefaultValue(100);
+    rippleRangeEnd->disableSlider();
+    page->addKnob(rippleRangeEnd);
+    rippleRangeEndSpinBox = rippleRangeEnd;
+
     KnobButtonPtr addKeyframe = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamAddKeyFrameLabel));
     addKeyframe->setName(kRotoUIParamAddKeyFrame);
     addKeyframe->setEvaluateOnChange(false);
@@ -1197,6 +1518,9 @@ RotoCurveInteract::createViewerButtonKnobs(const KnobPagePtr& page)
     _host->addKnobToViewerUI(stickySelection);
     _host->addKnobToViewerUI(bboxClickAnywhere);
     _host->addKnobToViewerUI(rippleEditEnabled);
+    _host->addKnobToViewerUI(rippleEditMode);
+    _host->addKnobToViewerUI(rippleRangeStart);
+    _host->addKnobToViewerUI(rippleRangeEnd);
     _host->addKnobToViewerUI(addKeyframe);
     _host->addKnobToViewerUI(removeKeyframe);
     _host->addKnobToViewerUI(showTransform);
@@ -1273,6 +1597,28 @@ RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
         _host->addOverlaySlaveParam(action);
         page->addKnob(action);
         removeItemFeatherMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionIncreaseFeatherLabel));
+        action->setName(kRotoUIParamRightClickMenuActionIncreaseFeather);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionIncreaseFeatherHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        increaseFeatherMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsLabel));
+        action->setName(kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangents);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        action->setInViewerContextCanHaveShortcut(true);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        increaseFeatherKeepTangentsMenuAction = action;
     }
     {
         KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionNudgeBottomLabel));
@@ -1361,6 +1707,36 @@ RotoCurveInteract::createRightClickMenuKnobs(const KnobPagePtr& page)
         page->addKnob(action);
         lockShapeMenuAction = action;
     }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionLinkToTrackLabel));
+        action->setName(kRotoUIParamRightClickMenuActionLinkToTrack);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionLinkToTrackHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        linkToTrackMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionUnlinkTrackLabel));
+        action->setName(kRotoUIParamRightClickMenuActionUnlinkTrack);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionUnlinkTrackHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        unlinkTrackMenuAction = action;
+    }
+    {
+        KnobButtonPtr action = AppManager::createKnob<KnobButton>(_host, tr(kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeLabel));
+        action->setName(kRotoUIParamRightClickMenuActionUnlinkTrackAndBake);
+        action->setHintToolTip(tr(kRotoUIParamRightClickMenuActionUnlinkTrackAndBakeHint));
+        action->setSecretByDefault(true);
+        action->setEvaluateOnChange(false);
+        _host->addOverlaySlaveParam(action);
+        page->addKnob(action);
+        unlinkTrackAndBakeMenuAction = action;
+    }
 } // RotoCurveInteract::createRightClickMenuKnobs
 
 void
@@ -1441,7 +1817,8 @@ RotoCurveInteract::getToolbarShortcuts(int toolSet,
         shortcuts->push_back(PluginActionShortcut(kRotoUIParamSelectionToolButton, kRotoUIParamSelectionToolButtonLabel, Key_Q));
     }
     if (toolSet & eRotoCurveToolSetPointsEdition) {
-        shortcuts->push_back(PluginActionShortcut(kRotoUIParamEditPointsToolButton, kRotoUIParamEditPointsToolButtonLabel, Key_D));
+        // D belongs to the dodge/burn group; this group has no default key.
+        shortcuts->push_back(PluginActionShortcut(kRotoUIParamEditPointsToolButton, kRotoUIParamEditPointsToolButtonLabel));
     }
     if (toolSet & eRotoCurveToolSetShapesDrawing) {
         shortcuts->push_back(PluginActionShortcut(kRotoUIParamBezierEditionToolButton, kRotoUIParamBezierEditionToolButtonLabel, Key_V));
@@ -1458,6 +1835,8 @@ RotoCurveInteract::getRightClickMenuShortcuts(std::list<PluginActionShortcut>* s
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionCuspItems, kRotoUIParamRightClickMenuActionCuspItemsLabel, Key_Z, eKeyboardModifierShift));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionSmoothItems, kRotoUIParamRightClickMenuActionSmoothItemsLabel, Key_Z));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionRemoveItemsFeather, kRotoUIParamRightClickMenuActionRemoveItemsFeatherLabel, Key_E, eKeyboardModifierShift));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionIncreaseFeather, kRotoUIParamRightClickMenuActionIncreaseFeatherLabel, Key_E));
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangents, kRotoUIParamRightClickMenuActionIncreaseFeatherKeepTangentsLabel, Key_E, eKeyboardModifierAlt));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeLeft, kRotoUIParamRightClickMenuActionNudgeLeftLabel, Key_4, eKeyboardModifierKeypad));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeBottom, kRotoUIParamRightClickMenuActionNudgeBottomLabel, Key_2, eKeyboardModifierKeypad));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionNudgeTop, kRotoUIParamRightClickMenuActionNudgeTopLabel, Key_8, eKeyboardModifierKeypad));
@@ -1467,6 +1846,23 @@ RotoCurveInteract::getRightClickMenuShortcuts(std::list<PluginActionShortcut>* s
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionLockShapes, kRotoUIParamRightClickMenuActionLockShapesLabel, Key_L, eKeyboardModifierShift));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionShowInCurveEditor, kRotoUIParamRightClickMenuActionShowInCurveEditorLabel));
     shortcuts->push_back(PluginActionShortcut(kRotoUIParamRightClickMenuActionRemoveFromCurveEditor, kRotoUIParamRightClickMenuActionRemoveFromCurveEditorLabel));
+}
+
+void
+RotoCurveInteract::refreshRippleEditKnobsVisibility(bool isPaintRole)
+{
+    KnobChoicePtr mode = rippleEditModeChoice.lock();
+    if (!mode) {
+        return;
+    }
+    mode->setInViewerContextSecret(isPaintRole);
+    bool showRange = !isPaintRole && (mode->getValue() == eRippleEditModeRange);
+    if (KnobIntPtr start = rippleRangeStartSpinBox.lock()) {
+        start->setInViewerContextSecret(!showRange);
+    }
+    if (KnobIntPtr end = rippleRangeEndSpinBox.lock()) {
+        end->setInViewerContextSecret(!showRange);
+    }
 }
 
 bool
@@ -1505,6 +1901,14 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
         ctx->onAutoKeyingChanged(autoKeyingEnabledButton.lock()->getValue());
     } else if (k == rippleEditEnabledButton.lock().get()) {
         ctx->onRippleEditChanged(rippleEditEnabledButton.lock()->getValue());
+        redrawOverlays();
+    } else if (k == rippleEditModeChoice.lock().get()) {
+        int mode = rippleEditModeChoice.lock()->getValue();
+        ctx->setRippleEditMode((mode >= eRippleEditModeAll && mode <= eRippleEditModeRange) ? (RippleEditModeEnum)mode : eRippleEditModeAll);
+        bool isPaintRole = (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleCloneBrush) || (selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRoleEffectBrush);
+        refreshRippleEditKnobsVisibility(isPaintRole || (selectedRole == eRotoRoleObjectSelect));
+    } else if ((k == rippleRangeStartSpinBox.lock().get()) || (k == rippleRangeEndSpinBox.lock().get())) {
+        ctx->setRippleEditRange(rippleRangeStartSpinBox.lock()->getValue(), rippleRangeEndSpinBox.lock()->getValue());
     } else if (k == addKeyframeButton.lock().get()) {
         for (SelectedItems::iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
             Bezier* isBezier = dynamic_cast<Bezier*>(it->get());
@@ -1542,6 +1946,26 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
         if (!removeFeatherForSelectedCurve()) {
             *ret = false;
         }
+    } else if (k == increaseFeatherMenuAction.lock().get()) {
+        if (!increaseFeatherForSelection(false)) {
+            *ret = false;
+        }
+    } else if (k == increaseFeatherKeepTangentsMenuAction.lock().get()) {
+        if (!increaseFeatherForSelection(true)) {
+            *ret = false;
+        }
+    } else if (k == linkToTrackMenuAction.lock().get()) {
+        if (!linkSelectedPointsToTrack(time)) {
+            *ret = false;
+        }
+    } else if (k == unlinkTrackMenuAction.lock().get()) {
+        if (!unlinkSelectedPoints(false)) {
+            *ret = false;
+        }
+    } else if (k == unlinkTrackAndBakeMenuAction.lock().get()) {
+        if (!unlinkSelectedPoints(true)) {
+            *ret = false;
+        }
     } else if (k == nudgeLeftMenuAction.lock().get()) {
         if (!moveSelectedCpsWithKeyArrows(-1, 0)) {
             *ret = false;
@@ -1564,6 +1988,10 @@ RotoCurveInteract::onKnobChanged(KnobI* k,
         if (selectedItems.empty()) {
             std::list<RotoDrawableItemPtr> bez = ctx->getCurvesByRenderOrder();
             for (std::list<RotoDrawableItemPtr>::const_iterator it = bez.begin(); it != bez.end(); ++it) {
+                BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
+                if (isBezier && !isCurveShown(isBezier)) {
+                    continue;
+                }
                 ctx->select(*it, RotoItem::eSelectionReasonOverlayInteract);
                 selectedItems.push_back(*it);
             }
@@ -1694,6 +2122,21 @@ RotoCurveInteract::computeSelectedCpsBBOX()
 QPointF
 RotoCurveInteract::getSelectedCpsBBOXCenter()
 {
+    if (cpsPivotSet && (cpsPivotSelection != selectedCps)) {
+        cpsPivotSet = false;
+        cpsPivotSelection.clear();
+    }
+
+    return getSelectedCpsPivot();
+}
+
+QPointF
+RotoCurveInteract::getSelectedCpsPivot() const
+{
+    if (cpsPivotSet && (cpsPivotSelection == selectedCps)) {
+        return cpsPivot;
+    }
+
     return selectedCpsBbox.center();
 }
 
@@ -1764,7 +2207,7 @@ RotoCurveInteract::handleControlPointSelection(const std::pair<BezierCPPtr,
 }
 
 void
-RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& /*cp*/)
+RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& cp)
 {
     KnobChoicePtr menu = rightClickMenuKnob.lock();
 
@@ -1777,20 +2220,32 @@ RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& /*cp*/)
     menuKnobs.push_back(smoothItemMenuAction.lock());
     menuKnobs.push_back(cuspItemMenuAction.lock());
     menuKnobs.push_back(removeItemFeatherMenuAction.lock());
+    menuKnobs.push_back(increaseFeatherMenuAction.lock());
+    menuKnobs.push_back(increaseFeatherKeepTangentsMenuAction.lock());
     menuKnobs.push_back(nudgeLeftMenuAction.lock());
     menuKnobs.push_back(nudgeBottomMenuAction.lock());
     menuKnobs.push_back(nudgeRightMenuAction.lock());
     menuKnobs.push_back(nudgeTopMenuAction.lock());
+    menuKnobs.push_back(linkToTrackMenuAction.lock());
+    bool anyLinked = cp && cp->isLinkedToTrack();
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end() && !anyLinked; ++it) {
+        anyLinked = it->first->isLinkedToTrack();
+    }
+    if (anyLinked) {
+        menuKnobs.push_back(unlinkTrackMenuAction.lock());
+        menuKnobs.push_back(unlinkTrackAndBakeMenuAction.lock());
+    }
     menuKnobs.push_back(showInCurveEditorMenuAction.lock());
     menuKnobs.push_back(removeFromCurveEditorMenuAction.lock());
+    // The click selected the point's curve, which the host's actions work on.
+    appendCurveMenuActions(&menuKnobs);
 
     std::vector<ChoiceOption> choices(menuKnobs.size());
     for (std::size_t i = 0; i < menuKnobs.size(); ++i) {
         choices[i].id = menuKnobs[i]->getName();
         choices[i].tooltip = menuKnobs[i]->getHintToolTip();
     }
-    menu->populateChoices(choices);
-
+    menu->populateChoices(choices, true);
 } // showMenuForControlPoint
 
 void
@@ -1813,8 +2268,11 @@ RotoCurveInteract::showMenuForCurve(const BezierPtr& curve)
     menuKnobs.push_back(cuspItemMenuAction.lock());
     if (!curve->isOpenBezier()) {
         menuKnobs.push_back(removeItemFeatherMenuAction.lock());
+        menuKnobs.push_back(increaseFeatherMenuAction.lock());
+        menuKnobs.push_back(increaseFeatherKeepTangentsMenuAction.lock());
     }
     menuKnobs.push_back(lockShapeMenuAction.lock());
+    appendCurveMenuActions(&menuKnobs);
 
     std::vector<ChoiceOption> choices(menuKnobs.size());
     for (std::size_t i = 0; i < menuKnobs.size(); ++i) {
@@ -1822,7 +2280,7 @@ RotoCurveInteract::showMenuForCurve(const BezierPtr& curve)
         choices[i].tooltip = menuKnobs[i]->getHintToolTip();
     }
 
-    menu->populateChoices(choices);
+    menu->populateChoices(choices, true);
 } // showMenuForCurve
 
 bool
@@ -1834,14 +2292,11 @@ RotoCurveInteract::isNearbySelectedCpsCrossHair(const QPointF& pos) const
 
     double xHairMidSizeX = kXHairSelectedCpsBox * pixelScale.first;
     double xHairMidSizeY = kXHairSelectedCpsBox * pixelScale.second;
-    double l = selectedCpsBbox.topLeft().x();
-    double r = selectedCpsBbox.bottomRight().x();
-    double b = selectedCpsBbox.bottomRight().y();
-    double t = selectedCpsBbox.topLeft().y();
     double toleranceX = kXHairSelectedCpsTolerance * pixelScale.first;
     double toleranceY = kXHairSelectedCpsTolerance * pixelScale.second;
-    double midX = (l + r) / 2.;
-    double midY = (b + t) / 2.;
+    const QPointF pivot = getSelectedCpsPivot();
+    double midX = pivot.x();
+    double midY = pivot.y();
     double lCross = midX - xHairMidSizeX;
     double rCross = midX + xHairMidSizeX;
     double bCross = midY - xHairMidSizeY;
@@ -2044,7 +2499,9 @@ RotoCurveInteract::isMouseInteractingWithCPSBbox(const QPointF& pos,
     bool clickAnywhere = isBboxClickAnywhereEnabled();
     EventStateEnum state = eEventStateNone;
 
-    if (showCpsBbox && isNearbyBBoxTopLeft(pos, cpSelectionTolerance, pixelScale)) {
+    if (showCpsBbox && ctrlDown && !shiftDown && !altDown && isNearbySelectedCpsCrossHair(pos)) {
+        state = eEventStateDraggingCpsPivot;
+    } else if (showCpsBbox && isNearbyBBoxTopLeft(pos, cpSelectionTolerance, pixelScale)) {
         state = eEventStateDraggingBBoxTopLeft;
     } else if (showCpsBbox && isNearbyBBoxTopRight(pos, cpSelectionTolerance, pixelScale)) {
         state = eEventStateDraggingBBoxTopRight;
@@ -2314,6 +2771,18 @@ RotoCurveInteract::getBezierBeingBuild() const
     return builtBezier;
 }
 
+BezierPtr
+RotoCurveInteract::makePointCurve(double x,
+                                  double y,
+                                  double time)
+{
+    // Held here: without a GUI the push runs redo() and drops the command.
+    std::shared_ptr<MakePointCurveUndoCommand> cmd = std::make_shared<MakePointCurveUndoCommand>(shared_from_this(), x, y, time);
+    _host->pushUndoCommand(cmd);
+
+    return cmd->getCurve();
+}
+
 bool
 RotoCurveInteract::smoothSelectedCurve()
 {
@@ -2406,17 +2875,121 @@ RotoCurveInteract::cuspSelectedCurve()
     return false;
 }
 
+std::list<std::pair<BezierPtr, int>>
+RotoCurveInteract::getSelectedPointRefs() const
+{
+    std::list<std::pair<BezierPtr, int>> ret;
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+        const BezierCPPtr& point = it->first;
+        BezierPtr curve = point ? point->getBezier() : BezierPtr();
+        if (!curve) {
+            continue;
+        }
+        const int index = point->isFeatherPoint() ? curve->getFeatherPointIndex(point) : curve->getControlPointIndex(point);
+        if (index < 0) {
+            continue;
+        }
+        std::pair<BezierPtr, int> ref(curve, index);
+        if (std::find(ret.begin(), ret.end(), ref) == ret.end()) {
+            ret.push_back(ref);
+        }
+    }
+
+    return ret;
+}
+
+bool
+RotoCurveInteract::linkSelectedPointsToTrack(double time)
+{
+    std::list<std::pair<BezierPtr, int>> points = getSelectedPointRefs();
+    if (points.empty()) {
+        return false;
+    }
+
+    // Every track of every tracker in the project, as "tracker / track".
+    AppInstancePtr app = _host->getApp();
+    NodesList nodes;
+    app->getProject()->getNodes_recursive(nodes, true);
+    std::vector<std::string> labels;
+    std::vector<TrackMarkerPtr> markers;
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        TrackerContextPtr tracker = (*it)->getTrackerContext();
+        if (!tracker) {
+            continue;
+        }
+        std::vector<TrackMarkerPtr> all;
+        tracker->getAllMarkers(&all);
+        for (std::vector<TrackMarkerPtr>::const_iterator itM = all.begin(); itM != all.end(); ++itM) {
+            labels.push_back((*it)->getFullyQualifiedName() + " / " + (*itM)->getScriptName_mt_safe());
+            markers.push_back(*itM);
+        }
+    }
+    if (markers.empty()) {
+        app->warningDialog(tr("Link To Track").toStdString(), tr("There is no track in the project to link to.").toStdString(), false);
+
+        return false;
+    }
+    const int chosen = app->chooseItemDialog(tr("Link To Track").toStdString(), tr("Track:").toStdString(), labels);
+    if ((chosen < 0) || (chosen >= (int)markers.size())) {
+        return false;
+    }
+    pushUndoCommand(new TrackLinkUndoCommand(shared_from_this(), points, TrackLinkUndoCommand::eActionLink, markers[chosen], time));
+
+    return true;
+}
+
+bool
+RotoCurveInteract::unlinkSelectedPoints(bool bake)
+{
+    std::list<std::pair<BezierPtr, int>> points;
+    std::list<std::pair<BezierPtr, int>> all = getSelectedPointRefs();
+    for (std::list<std::pair<BezierPtr, int>>::const_iterator it = all.begin(); it != all.end(); ++it) {
+        BezierCPPtr cp = it->first->getControlPointAtIndex(it->second);
+        BezierCPPtr fp = it->first->getFeatherPointAtIndex(it->second);
+        if ((cp && cp->isLinkedToTrack()) || (fp && fp->isLinkedToTrack())) {
+            points.push_back(*it);
+        }
+    }
+    if (points.empty()) {
+        return false;
+    }
+    pushUndoCommand(new TrackLinkUndoCommand(shared_from_this(), points, bake ? TrackLinkUndoCommand::eActionUnlinkAndBake : TrackLinkUndoCommand::eActionUnlink, TrackMarkerPtr(), 0.));
+
+    return true;
+}
+
 bool
 RotoCurveInteract::removeFeatherForSelectedCurve()
 {
     std::list<RemoveFeatherUndoCommand::RemoveFeatherData> datas;
 
     if (!selectedCps.empty()) {
+        // One entry per curve, each feather point once: the command saves a point's state when it
+        // reaches it, so a point listed twice would be saved already reset and undo would keep it reset.
         for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
-            RemoveFeatherUndoCommand::RemoveFeatherData data;
-            data.curve = it->first->getBezier();
-            data.newPoints = data.curve->getFeatherPoints();
-            datas.push_back(data);
+            const BezierCPPtr fp = it->first->isFeatherPoint() ? it->first : it->second;
+            if (!fp) {
+                continue;
+            }
+            BezierPtr curve = fp->getBezier();
+            if (!curve) {
+                continue;
+            }
+            std::list<RemoveFeatherUndoCommand::RemoveFeatherData>::iterator found = datas.begin();
+            for (; found != datas.end(); ++found) {
+                if (found->curve == curve) {
+                    break;
+                }
+            }
+            if (found == datas.end()) {
+                RemoveFeatherUndoCommand::RemoveFeatherData data;
+                data.curve = curve;
+                datas.push_back(data);
+                found = --datas.end();
+            }
+            if (std::find(found->newPoints.begin(), found->newPoints.end(), fp) == found->newPoints.end()) {
+                found->newPoints.push_back(fp);
+            }
         }
     } else {
         for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
@@ -2436,6 +3009,48 @@ RotoCurveInteract::removeFeatherForSelectedCurve()
     }
 
     return false;
+}
+
+bool
+RotoCurveInteract::increaseFeatherForSelection(bool keepTangents)
+{
+    std::list<std::pair<BezierCPPtr, BezierCPPtr>> points = selectedCps;
+    if (points.empty()) {
+        for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+            BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
+            if (!bezier) {
+                continue;
+            }
+            const std::list<BezierCPPtr>& cps = bezier->getControlPoints();
+            const std::list<BezierCPPtr>& fps = bezier->getFeatherPoints();
+            if (fps.size() != cps.size()) {
+                continue;
+            }
+            std::list<BezierCPPtr>::const_iterator fpIt = fps.begin();
+            for (std::list<BezierCPPtr>::const_iterator cpIt = cps.begin(); cpIt != cps.end(); ++cpIt, ++fpIt) {
+                points.push_back(std::make_pair(*cpIt, *fpIt));
+            }
+        }
+    }
+    if (points.empty()) {
+        return false;
+    }
+
+    std::pair<double, double> pixelScale;
+    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+    const double step = 10. * pixelScale.first;
+    pushUndoCommand(new MoveFeatherBarUndoCommand(shared_from_this(), step, points, _host->getCurrentTime(), keepTangents));
+    getCurveContext()->evaluateChange();
+
+    return true;
+}
+
+KnobButtonPtr
+RotoCurveInteract::getLastSelectTool() const
+{
+    KnobButtonPtr last = lastSelectToolAction.lock();
+
+    return last ? last : selectAllAction.lock();
 }
 
 bool
@@ -2488,9 +3103,6 @@ RotoCurveInteract::moveSelectedCpsWithKeyArrows(int x,
 
         MoveControlPointsUndoCommand* cmd = new MoveControlPointsUndoCommand(shared_from_this(), points, (double)x * pixelScale.first,
                                                                              (double)y * pixelScale.second, time);
-        // Each nudge is its own undo step: the knob action that runs this cannot tell a held
-        // arrow's auto-repeat from a separate press, so it never folds into the previous nudge.
-        cmd->setGestureKey(0);
         _host->pushUndoCommand(cmd);
         computeSelectedCpsBBOX();
         getCurveContext()->evaluateChange();
@@ -2546,6 +3158,101 @@ RotoCurveInteract::removeCurve(const RotoDrawableItemPtr& curve)
     getCurveContext()->removeItem(curve);
 }
 
+namespace {
+
+// Whether rect, in the overlay's coordinates, falls wholly outside the view: all its corners lie
+// beyond the same clip plane once through the current model view and projection, so it holds
+// whatever transform the viewer draws this overlay under.
+bool
+isOutsideView(const RectD& rect,
+              const GLdouble* modelView,
+              const GLdouble* projection)
+{
+    if (!(rect.x1 <= rect.x2) || !(rect.y1 <= rect.y2)) {
+        return true;
+    }
+    const double corners[4][2] = { { rect.x1, rect.y1 }, { rect.x2, rect.y1 }, { rect.x2, rect.y2 }, { rect.x1, rect.y2 } };
+    int outside = 0xF;
+    for (int c = 0; c < 4; ++c) {
+        double eye[4], clip[4];
+        for (int j = 0; j < 4; ++j) {
+            eye[j] = modelView[j] * corners[c][0] + modelView[4 + j] * corners[c][1] + modelView[12 + j];
+        }
+        for (int j = 0; j < 4; ++j) {
+            clip[j] = projection[j] * eye[0] + projection[4 + j] * eye[1] + projection[8 + j] * eye[2] + projection[12 + j] * eye[3];
+        }
+        if (clip[3] <= 0.) {
+            return false;
+        }
+        int code = 0;
+        if (clip[0] < -clip[3]) {
+            code |= 0x1;
+        }
+        if (clip[0] > clip[3]) {
+            code |= 0x2;
+        }
+        if (clip[1] < -clip[3]) {
+            code |= 0x4;
+        }
+        if (clip[1] > clip[3]) {
+            code |= 0x8;
+        }
+        outside &= code;
+    }
+
+    return outside != 0;
+}
+
+// Leaves the client vertex array state, and any bound vertex array or array buffer, as the viewer
+// had them, so that the overlay can draw from client-side arrays.
+class OverlayVertexArrayScope {
+public:
+    OverlayVertexArrayScope()
+        : _vertexArray(0)
+        , _arrayBuffer(0)
+    {
+        glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &_vertexArray);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &_arrayBuffer);
+        if (_vertexArray) {
+            glBindVertexArray(0);
+        }
+        if (_arrayBuffer) {
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+    }
+
+    ~OverlayVertexArrayScope()
+    {
+        if (_arrayBuffer) {
+            glBindBuffer(GL_ARRAY_BUFFER, _arrayBuffer);
+        }
+        if (_vertexArray) {
+            glBindVertexArray(_vertexArray);
+        }
+        glPopClientAttrib();
+    }
+
+private:
+    GLint _vertexArray;
+    GLint _arrayBuffer;
+};
+
+void
+drawLineVertices(const std::vector<float>& vertices,
+                 GLenum mode)
+{
+    if (vertices.empty()) {
+        return;
+    }
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 0, &vertices[0]);
+    glDrawArrays(mode, 0, (GLsizei)(vertices.size() / 2));
+    glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+} // anonymous namespace
+
 void
 RotoCurveInteract::drawOverlay(double time)
 {
@@ -2566,6 +3273,13 @@ RotoCurveInteract::drawOverlay(double time)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_LINE_SMOOTH);
         glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
+
+        OverlayVertexArrayScope vertexArrays;
+        GLdouble modelView[16], projection[16];
+        glGetDoublev(GL_MODELVIEW_MATRIX, modelView);
+        glGetDoublev(GL_PROJECTION_MATRIX, projection);
+        // Lines are drawn wider than the polygon they come from.
+        const double cullMargin = 4. * screenPixelRatio * std::max(pixelScale.first, pixelScale.second);
 
         double cpWidth = kControlPointMidSize * 2;
         for (std::list<RotoDrawableItemPtr>::const_iterator it = drawables.begin(); it != drawables.end(); ++it) {
@@ -2596,7 +3310,7 @@ RotoCurveInteract::drawOverlay(double time)
                 bool locked = (*it)->isLockedRecursive();
                 double curveColor[4];
                 if (!locked) {
-                    (*it)->getOverlayColor(curveColor);
+                    getCurveOverlayColor(*it, curveColor);
                 } else {
                     curveColor[0] = 0.8;
                     curveColor[1] = 0.8;
@@ -2614,78 +3328,11 @@ RotoCurveInteract::drawOverlay(double time)
                     glEnd();
                 }
             } else if (isBezier) {
-                /// draw the bezier
-                // check if the bbox is visible
-                // if the bbox is visible, compute the polygon and draw it.
-
-                RectD bbox = isBezier->getBoundingBox(time);
-
+                if (!isCurveShown(std::static_pointer_cast<Bezier>(*it))) {
+                    continue;
+                }
                 // Is the Bezier a closed curve? Only if not an open Bezier, and it's finished.
                 const bool isLoop = !isBezier->isOpenBezier() && isBezier->isCurveFinished();
-
-                // To decomment you must transform the viewport by the OpenGL transform first
-                // if ( !_host->getCurrentViewportForOverlays()->isVisibleInViewport(bbox) ) {
-                //                  continue;
-                //            }
-
-                std::list<ParametricPoint> points;
-
-                isBezier->evaluateAtTime_DeCasteljau(true, time, 0,
-#ifdef ROTO_BEZIER_EVAL_ITERATIVE
-                                                     100,
-#else
-                                                     1,
-#endif
-                                                     &points, NULL);
-
-                bool locked = (*it)->isLockedRecursive();
-                double curveColor[4];
-                if (!locked) {
-                    (*it)->getOverlayColor(curveColor);
-                } else {
-                    curveColor[0] = 0.8;
-                    curveColor[1] = 0.8;
-                    curveColor[2] = 0.8;
-                    curveColor[3] = 1.;
-                }
-                glColor4dv(curveColor);
-                glLineWidth(1.5 * screenPixelRatio);
-                glBegin(isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
-                for (std::list<ParametricPoint>::const_iterator it2 = points.begin(); it2 != points.end(); ++it2) {
-                    glVertex2f(it2->x, it2->y);
-                }
-                glEnd();
-
-                /// draw the feather points
-                std::list<ParametricPoint> featherPoints;
-                RectD featherBBox(std::numeric_limits<double>::infinity(),
-                                  std::numeric_limits<double>::infinity(),
-                                  -std::numeric_limits<double>::infinity(),
-                                  -std::numeric_limits<double>::infinity());
-                bool clockWise = isBezier->isFeatherPolygonClockwiseOriented(true, time);
-
-                if (featherVisible) {
-                    /// Draw feather only if visible (button is toggled in the user interface)
-                    isBezier->evaluateFeatherPointsAtTime_DeCasteljau(true, time, 0,
-#ifdef ROTO_BEZIER_EVAL_ITERATIVE
-                                                                      100,
-#else
-                                                                      1,
-#endif
-                                                                      true, &featherPoints, &featherBBox);
-
-                    if (!featherPoints.empty()) {
-                        glLineStipple(2, 0xAAAA);
-                        glEnable(GL_LINE_STIPPLE);
-                        glLineWidth(1.5 * screenPixelRatio);
-                        glBegin(isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
-                        for (std::list<ParametricPoint>::const_iterator it2 = featherPoints.begin(); it2 != featherPoints.end(); ++it2) {
-                            glVertex2f(it2->x, it2->y);
-                        }
-                        glEnd();
-                        glDisable(GL_LINE_STIPPLE);
-                    }
-                }
 
                 /// draw the control points if the bezier is selected
                 bool selected = false;
@@ -2694,6 +3341,52 @@ RotoCurveInteract::drawOverlay(double time)
                         selected = true;
                         break;
                     }
+                }
+
+                BezierOverlayPolygonsConstPtr polygons = isBezier->getOverlayPolygons(time, featherVisible);
+
+                // A selected shape is always drawn: its tangent handles can reach past its polygons.
+                if (!selected) {
+                    RectD bbox = polygons->curveBBox;
+                    if (featherVisible && !polygons->feather.empty()) {
+                        bbox.x1 = std::min(bbox.x1, polygons->featherBBox.x1);
+                        bbox.y1 = std::min(bbox.y1, polygons->featherBBox.y1);
+                        bbox.x2 = std::max(bbox.x2, polygons->featherBBox.x2);
+                        bbox.y2 = std::max(bbox.y2, polygons->featherBBox.y2);
+                    }
+                    bbox.x1 -= cullMargin;
+                    bbox.y1 -= cullMargin;
+                    bbox.x2 += cullMargin;
+                    bbox.y2 += cullMargin;
+                    if (isOutsideView(bbox, modelView, projection)) {
+                        continue;
+                    }
+                }
+
+                bool locked = (*it)->isLockedRecursive();
+                double curveColor[4];
+                if (!locked) {
+                    getCurveOverlayColor(*it, curveColor);
+                } else {
+                    curveColor[0] = 0.8;
+                    curveColor[1] = 0.8;
+                    curveColor[2] = 0.8;
+                    curveColor[3] = 1.;
+                }
+                glColor4dv(curveColor);
+                glLineWidth(1.5 * screenPixelRatio);
+                drawLineVertices(polygons->curve, isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
+
+                /// draw the feather points
+                bool clockWise = isBezier->isFeatherPolygonClockwiseOriented(true, time);
+
+                if (featherVisible && !polygons->feather.empty()) {
+                    /// Draw feather only if visible (button is toggled in the user interface)
+                    glLineStipple(2, 0xAAAA);
+                    glEnable(GL_LINE_STIPPLE);
+                    glLineWidth(1.5 * screenPixelRatio);
+                    drawLineVertices(polygons->feather, isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
+                    glDisable(GL_LINE_STIPPLE);
                 }
 
                 if (selected && !locked) {
@@ -2792,6 +3485,26 @@ RotoCurveInteract::drawOverlay(double time)
                         glBegin(GL_POINTS);
                         glVertex2f(x, y);
                         glEnd();
+
+                        // A point following a track gets a square around it: magenta while the
+                        // track resolves, red when it is lost.
+                        if ((*it2)->isLinkedToTrack()) {
+                            const double halfX = cpWidth * 1.5 * pixelScale.first;
+                            const double halfY = cpWidth * 1.5 * pixelScale.second;
+                            if ((*it2)->getResolvedTrack()) {
+                                glColor3f(1., 0.3, 1.);
+                            } else {
+                                glColor3f(1., 0.15, 0.15);
+                            }
+                            glLineWidth(1.5 * screenPixelRatio);
+                            glBegin(GL_LINE_LOOP);
+                            glVertex2f(x - halfX, y - halfY);
+                            glVertex2f(x + halfX, y - halfY);
+                            glVertex2f(x + halfX, y + halfY);
+                            glVertex2f(x - halfX, y + halfY);
+                            glEnd();
+                            colorChanged = true;
+                        }
 
                         if (colorChanged) {
                             glColor3d(0.85, 0.67, 0.);
@@ -2902,6 +3615,8 @@ RotoCurveInteract::drawOverlay(double time)
             glCheckError();
         } // for (std::list<RotoDrawableItemPtr>::const_iterator it = drawables.begin(); it != drawables.end(); ++it) {
 
+        drawOverlayExtras(time, screenPixelRatio, pixelScale);
+
         if (!_host->isDrawingPassiveOverlay()) {
             drawPaintToolOverlay(screenPixelRatio, viewportSize);
             if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
@@ -2913,8 +3628,46 @@ RotoCurveInteract::drawOverlay(double time)
     if (showCpsBbox) {
         drawSelectedCpsBBOX();
     }
+    if ((state == eEventStateSketchingBezier) && !sketchSamples.empty()) {
+        GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT);
+        glLineWidth(1.5 * screenPixelRatio);
+        glColor3d(0.9, 0.5, 0.);
+        glBegin(GL_LINE_STRIP);
+        for (std::list<std::pair<double, double>>::const_iterator it = sketchSamples.begin(); it != sketchSamples.end(); ++it) {
+            glVertex2d(it->first, it->second);
+        }
+        glVertex2d(lastMousePos.x(), lastMousePos.y());
+        glEnd();
+    }
+    drawRippleEditBorder(screenPixelRatio, pixelScale);
     glCheckError();
 } // drawOverlay
+
+void
+RotoCurveInteract::drawRippleEditBorder(double screenPixelRatio,
+                                        const std::pair<double, double>& pixelScale)
+{
+    bool isPaintRole = (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleCloneBrush) || (selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRoleEffectBrush);
+    if (isPaintRole || _host->isDrawingPassiveOverlay() || !getCurveContext()->isRippleEditEnabled()) {
+        return;
+    }
+    RectD view = _host->getCurrentViewportForOverlays()->getViewportRect();
+    // Inset by half the line width so the whole line stays inside the viewport.
+    const double lineWidth = 3. * screenPixelRatio;
+    double insetX = 0.5 * lineWidth * pixelScale.first;
+    double insetY = 0.5 * lineWidth * pixelScale.second;
+
+    GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT);
+    glDisable(GL_LINE_SMOOTH);
+    glLineWidth(lineWidth);
+    glColor3d(0.9, 0.1, 0.1);
+    glBegin(GL_LINE_LOOP);
+    glVertex2d(view.x1 + insetX, view.y1 + insetY);
+    glVertex2d(view.x2 - insetX, view.y1 + insetY);
+    glVertex2d(view.x2 - insetX, view.y2 - insetY);
+    glVertex2d(view.x1 + insetX, view.y2 - insetY);
+    glEnd();
+}
 
 void
 RotoCurveInteract::onViewportSelectionCleared()
@@ -2964,7 +3717,7 @@ RotoCurveInteract::onViewportSelectionUpdated(const RectD& rectangle,
     std::list<RotoDrawableItemPtr> curves = ctx->getCurvesByRenderOrder();
     for (std::list<RotoDrawableItemPtr>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
-        if ((*it)->isLockedRecursive()) {
+        if ((*it)->isLockedRecursive() || (isBezier && !isCurveShown(isBezier))) {
             continue;
         }
 
@@ -3015,7 +3768,7 @@ RotoCurveInteract::onOverlayPenDoubleClicked(const QPointF& pos)
         double nearbyBezierT;
         int nearbyBezierCPIndex;
         bool isFeather;
-        BezierPtr nearbyBezier = getCurveContext()->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+        BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
 
         if (nearbyBezier) {
             /// If the bezier is already selected and we re-click on it, change the transform mode
@@ -3040,14 +3793,106 @@ RotoCurveInteract::onOverlayPenDoubleClicked(const QPointF& pos)
 } // onOverlayPenDoubleClicked
 
 bool
+RotoCurveInteract::claimsAltPenDown(double time,
+                                    const QPointF& pos)
+{
+    altPressClaimed = false;
+    if ((selectedTool != eRotoToolSelectAll) && (selectedTool != eRotoToolSelectFeatherPoints)) {
+        return false;
+    }
+    if (!isFeatherVisible()) {
+        return false;
+    }
+    std::pair<double, double> pixelScale;
+    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+
+    // Same precedence as onOverlayPenDown (a point, then a tangent handle, then a feather bar), so
+    // the press is claimed exactly when onOverlayPenDown would grab a feather handle with it.
+    RotoCurveContextPtr context = getCurveContext();
+    assert(context);
+    double nearbyBezierT;
+    int nearbyBezierCPIndex;
+    bool isFeather;
+    BezierPtr nearbyBezier = context->isNearbyBezier(pos.x(), pos.y(), kBezierSelectionTolerance * pixelScale.first, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+    if (nearbyBezier) {
+        const Bezier::ControlPointSelectionPrefEnum pref = (selectedTool == eRotoToolSelectFeatherPoints) ? Bezier::eControlPointSelectionPrefFeatherFirst : Bezier::eControlPointSelectionPrefWhateverFirst;
+        int nearbyCpIndex = -1;
+        std::pair<BezierCPPtr, BezierCPPtr> nearbyCP = nearbyBezier->isNearbyControlPoint(pos.x(), pos.y(), kControlPointSelectionTolerance * pixelScale.first, pref, &nearbyCpIndex);
+        if (nearbyCP.first) {
+            altPressClaimed = nearbyCP.first->isFeatherPoint();
+
+            return altPressClaimed;
+        }
+    }
+    const double tangentSelectionTol = kTangentHandleSelectionTolerance * pixelScale.first;
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+        BezierCPPtr tangentOf;
+        if (selectedTool == eRotoToolSelectAll) {
+            if (it->first->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0) {
+                tangentOf = it->first;
+            } else if (it->second && (it->second->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0)) {
+                tangentOf = it->second;
+            }
+        } else {
+            const BezierCPPtr& fp = it->first->isFeatherPoint() ? it->first : it->second;
+            if (fp && (fp->isNearbyTangent(true, time, ViewIdx(0), pos.x(), pos.y(), tangentSelectionTol) >= 0)) {
+                tangentOf = fp;
+            }
+        }
+        if (tangentOf) {
+            altPressClaimed = tangentOf->isFeatherPoint();
+
+            return altPressClaimed;
+        }
+    }
+    if (isNearbyFeatherBar(time, pixelScale, pos).first) {
+        altPressClaimed = true;
+
+        return true;
+    }
+
+    return false;
+}
+
+void
+RotoCurveInteract::syncModifiers(KeyboardModifiers modifiers)
+{
+    const std::pair<int*, KeyboardModifierEnum> held[] = {
+        std::make_pair(&shiftDown, eKeyboardModifierShift),
+        std::make_pair(&ctrlDown, eKeyboardModifierControl),
+        std::make_pair(&altDown, eKeyboardModifierAlt),
+    };
+    for (const std::pair<int*, KeyboardModifierEnum>& h : held) {
+        if (!modifiers.testFlag(h.second)) {
+            *h.first = 0;
+        } else if (*h.first == 0) {
+            *h.first = 1;
+        }
+    }
+    if (!modifiers.testFlag(eKeyboardModifierAlt)) {
+        altPressClaimed = false;
+    }
+}
+
+bool
 RotoCurveInteract::onOverlayPenDown(double time,
                                     const QPointF& pos,
                                     double pressure,
                                     double timestamp,
                                     PenType pen)
 {
+    // A drag's first motion measures from here. The last hover cannot stand in: a pen may not report
+    // one, and a viewer pan or a modal dialog moves the cursor over the canvas with no motion sent here.
+    lastClickPos = pos;
+    lastMousePos = pos;
+
+    const bool altPress = altPressClaimed;
+    altPressClaimed = false;
+    featherBarKeepsTangents = false;
+
     // Every command this press and the drag after it push is one undo step, closed at pen up.
     undoGesture.begin();
+    beginDragRender();
 
     if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
         return objectSelect->penDown(time, pos, shiftDown > 0);
@@ -3074,7 +3919,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
     double nearbyBezierT;
     int nearbyBezierCPIndex;
     bool isFeather;
-    BezierPtr nearbyBezier = context->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+    BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
     std::pair<BezierCPPtr, BezierCPPtr> nearbyCP;
     int nearbyCpIndex = -1;
     if (nearbyBezier) {
@@ -3180,6 +4025,14 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 if (pen == ePenTypeRMB) {
                     state = eEventStateNone;
                     showMenuForControlPoint(nearbyCP.first);
+                } else if ((pen == ePenTypeLMB) && ctrlDown && !shiftDown && !altDown) {
+                    // Ctrl+click breaks the point's handles rather than starting a drag.
+                    state = eEventStateNone;
+                    cpBeingDragged.first.reset();
+                    cpBeingDragged.second.reset();
+                    std::list<SelectedCP> toBreak;
+                    toBreak.push_back(nearbyCP);
+                    pushUndoCommand(new BreakTangentsUndoCommand(shared_from_this(), toBreak, time));
                 }
                 didSomething = true;
             } else if (featherBarSel.first) {
@@ -3196,6 +4049,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                     handleBezierSelection(nearbyBezier);
                 }
                 state = eEventStateDraggingFeatherBar;
+                featherBarKeepsTangents = altPress;
                 evaluateOnPenUp = true;
                 didSomething = true;
             } else {
@@ -3230,6 +4084,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                     handleControlPointSelection(featherBarBeingDragged);
                 }
                 state = eEventStateDraggingFeatherBar;
+                featherBarKeepsTangents = altPress;
                 evaluateOnPenUp = true;
                 didSomething = true;
             }
@@ -3353,10 +4208,6 @@ RotoCurveInteract::onOverlayPenDown(double time,
     case eRotoToolOpenBezier: {
         if (builtBezier && builtBezier->isCurveFinished()) {
             builtBezier.reset();
-            clearSelection();
-            setCurrentTool(selectAllAction.lock());
-
-            return true;
         }
         if (builtBezier) {
             /// if the user clicked on a control point of the bezier, select the point instead.
@@ -3368,17 +4219,22 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 (*it)->getPositionAtTime(true, time, ViewIdx(0), &x, &y);
                 if ((x >= (pos.x() - cpSelectionTolerance)) && (x <= (pos.x() + cpSelectionTolerance)) && (y >= (pos.y() - cpSelectionTolerance)) && (y <= (pos.y() + cpSelectionTolerance))) {
                     if (it == cps.begin()) {
-                        pushUndoCommand(new OpenCloseUndoCommand(shared_from_this(), builtBezier));
+                        BezierPtr closed = builtBezier;
+                        OpenCloseUndoCommand* closeCommand = new OpenCloseUndoCommand(shared_from_this(), builtBezier);
+                        closeCommand->setGestureKey(undoGesture.key());
+                        pushUndoCommand(closeCommand);
 
                         builtBezier.reset();
 
                         selectedCps.clear();
-                        setCurrentTool(selectAllAction.lock());
+                        setCurrentTool(getLastSelectTool());
 
-                        // continue editing the tangent
-
-                        //->ui->tangentBeingDragged = *it;
-                        // state = eEventStateDraggingRightTangent;
+                        // Dragging on from the click pulls out the first point's handles.
+                        BezierCPPtr fp = closed->getFeatherPointAtIndex(0);
+                        selectedCps.push_back(std::make_pair(*it, fp));
+                        tangentBeingDragged = *it;
+                        closingTangentDrag = true;
+                        state = eEventStateDraggingRightTangent;
                     } else {
                         BezierCPPtr fp = builtBezier->getFeatherPointAtIndex(i);
                         assert(fp);
@@ -3391,7 +4247,16 @@ RotoCurveInteract::onOverlayPenDown(double time,
         }
 
         bool isOpenBezier = selectedTool == eRotoToolOpenBezier;
-        MakeBezierUndoCommand* cmd = new MakeBezierUndoCommand(shared_from_this(), builtBezier, isOpenBezier, true, pos.x(), pos.y(), time);
+        if ((pen == ePenTypeLMB) && ctrlDown && !shiftDown && !altDown) {
+            sketchSamples.clear();
+            sketchSamples.push_back(std::make_pair(pos.x(), pos.y()));
+            state = eEventStateSketchingBezier;
+            didSomething = true;
+            break;
+        }
+        const bool sharpenPrevious = shiftDown && !ctrlDown && !altDown && builtBezier;
+        MakeBezierUndoCommand* cmd = new MakeBezierUndoCommand(shared_from_this(), builtBezier, isOpenBezier, true, pos.x(), pos.y(), time,
+                                                               false, sharpenPrevious);
         pushUndoCommand(cmd);
         builtBezier = cmd->getCurve();
         assert(builtBezier);
@@ -3401,6 +4266,11 @@ RotoCurveInteract::onOverlayPenDown(double time,
     }
     case eRotoToolDrawBSpline:
 
+        break;
+    case eRotoToolDrawPoint:
+        makePointCurve(pos.x(), pos.y(), time);
+        evaluateOnPenUp = true;
+        didSomething = true;
         break;
     case eRotoToolDrawEllipse: {
         click = pos;
@@ -3421,9 +4291,6 @@ RotoCurveInteract::onOverlayPenDown(double time,
         didSomething = onPaintToolPenDown(time, pos, pressure, timestamp);
         break;
     } // switch
-
-    lastClickPos = pos;
-    lastMousePos = pos;
 
     return didSomething;
 } // penDown
@@ -3514,7 +4381,7 @@ RotoCurveInteract::onOverlayPenMotion(double time,
             double nearbyBezierT;
             int nearbyBezierCPIndex;
             bool isFeather;
-            BezierPtr nearbyBezier = context->isNearbyBezier(pos.x(), pos.y(), bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
+            BezierPtr nearbyBezier = nearbyShownBezier(pos, bezierSelectionTolerance, &nearbyBezierCPIndex, &nearbyBezierT, &isFeather);
             if (isFeather && !featherVisible) {
                 nearbyBezier.reset();
             }
@@ -3559,9 +4426,18 @@ RotoCurveInteract::onOverlayPenMotion(double time,
 
     double dx = pos.x() - lastMousePos.x();
     double dy = pos.y() - lastMousePos.y();
+    TangentDragModeEnum tangentDragMode = eTangentDragModeAligned;
+    if (shiftDown && !ctrlDown && !altDown) {
+        tangentDragMode = eTangentDragModeTogether;
+    } else if (closingTangentDrag && !ctrlDown) {
+        // As when drawing a point: the handles grow mirrored from the closing click.
+        tangentDragMode = eTangentDragModeMirrored;
+    }
     switch (state) {
     case eEventStateDraggingSelectedControlPoints: {
-        if (bezierBeingDragged) {
+        if (std::shared_ptr<MoveControlPointsUndoCommand> open = getOpenDragCommand<MoveControlPointsUndoCommand>(time)) {
+            open->addDelta(dx, dy);
+        } else if (bezierBeingDragged) {
             SelectedCPs cps;
             const std::list<BezierCPPtr>& c = bezierBeingDragged->getControlPoints();
             const std::list<BezierCPPtr>& f = bezierBeingDragged->getFeatherPoints();
@@ -3576,20 +4452,48 @@ RotoCurveInteract::onOverlayPenMotion(double time,
                     cps.push_back(std::make_pair(*itCp, BezierCPPtr()));
                 }
             }
-            pushUndoCommand(new MoveControlPointsUndoCommand(shared_from_this(), cps, dx, dy, time));
+            pushDragCommand(std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), cps, dx, dy, time));
         } else {
-            pushUndoCommand(new MoveControlPointsUndoCommand(shared_from_this(), selectedCps, dx, dy, time));
+            pushDragCommand(std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), selectedCps, dx, dy, time));
+        }
+        if (cpsPivotSet && (cpsPivotSelection == selectedCps)) {
+            cpsPivot += QPointF(dx, dy);
         }
         evaluateOnPenUp = true;
         computeSelectedCpsBBOX();
         didSomething = true;
         break;
     }
+    case eEventStateDraggingCpsPivot: {
+        cpsPivot = getSelectedCpsPivot() + QPointF(dx, dy);
+        cpsPivotSet = true;
+        cpsPivotSelection = selectedCps;
+        redraw = true;
+        didSomething = true;
+        break;
+    }
+    case eEventStateSketchingBezier: {
+        // Samples closer than this on screen add points without adding shape.
+        const double spacing = 12. * pixelScale.first;
+        const std::pair<double, double>& lastSample = sketchSamples.back();
+        double sx = pos.x() - lastSample.first;
+        double sy = pos.y() - lastSample.second;
+        if ((sx * sx + sy * sy) >= (spacing * spacing)) {
+            sketchSamples.push_back(std::make_pair(pos.x(), pos.y()));
+        }
+        redraw = true;
+        didSomething = true;
+        break;
+    }
     case eEventStateDraggingControlPoint: {
         assert(cpBeingDragged.first);
-        std::list<SelectedCP> toDrag;
-        toDrag.push_back(cpBeingDragged);
-        pushUndoCommand(new MoveControlPointsUndoCommand(shared_from_this(), toDrag, dx, dy, time));
+        if (std::shared_ptr<MoveControlPointsUndoCommand> open = getOpenDragCommand<MoveControlPointsUndoCommand>(time)) {
+            open->addDelta(dx, dy);
+        } else {
+            std::list<SelectedCP> toDrag;
+            toDrag.push_back(cpBeingDragged);
+            pushDragCommand(std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), toDrag, dx, dy, time));
+        }
         evaluateOnPenUp = true;
         computeSelectedCpsBBOX();
         didSomething = true;
@@ -3597,13 +4501,14 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     case eEventStateBuildingBezierControlPointTangent: {
         assert(builtBezier);
         bool isOpenBezier = selectedTool == eRotoToolOpenBezier;
-        pushUndoCommand(new MakeBezierUndoCommand(shared_from_this(), builtBezier, isOpenBezier, false, dx, dy, time));
+        pushUndoCommand(new MakeBezierUndoCommand(shared_from_this(), builtBezier, isOpenBezier, false, dx, dy, time,
+                                                  ctrlDown && !shiftDown && !altDown));
         didSomething = true;
         break;
     }
     case eEventStateBuildingEllipse: {
-        bool fromCenter = ctrlDown > 0;
-        bool constrained = shiftDown > 0;
+        bool fromCenter = (ctrlDown > 0) && (shiftDown > 0);
+        bool constrained = (shiftDown > 0) && !ctrlDown;
         pushUndoCommand(new MakeEllipseUndoCommand(shared_from_this(), false, fromCenter, constrained, click.x(), click.y(), pos.x(), pos.y(), time));
 
         didSomething = true;
@@ -3611,8 +4516,8 @@ RotoCurveInteract::onOverlayPenMotion(double time,
         break;
     }
     case eEventStateBuildingRectangle: {
-        bool fromCenter = ctrlDown > 0;
-        bool constrained = shiftDown > 0;
+        bool fromCenter = (ctrlDown > 0) && (shiftDown > 0);
+        bool constrained = (shiftDown > 0) && !ctrlDown;
         pushUndoCommand(new MakeRectangleUndoCommand(shared_from_this(), false, fromCenter, constrained, click.x(), click.y(), pos.x(), pos.y(), time));
         didSomething = true;
         evaluateOnPenUp = true;
@@ -3620,22 +4525,35 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     }
     case eEventStateDraggingLeftTangent: {
         assert(tangentBeingDragged);
-        pushUndoCommand(new MoveTangentUndoCommand(shared_from_this(), dx, dy, time, tangentBeingDragged, true,
-                                                   ctrlDown && !shiftDown && !altDown));
+        if (std::shared_ptr<MoveTangentUndoCommand> open = getOpenDragCommand<MoveTangentUndoCommand>(time)) {
+            open->addDelta(dx, dy, ctrlDown && !shiftDown && !altDown, tangentDragMode);
+        } else {
+            pushDragCommand(std::make_shared<MoveTangentUndoCommand>(shared_from_this(), dx, dy, time, tangentBeingDragged, true,
+                                                                     ctrlDown && !shiftDown && !altDown, tangentDragMode));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
     }
     case eEventStateDraggingRightTangent: {
         assert(tangentBeingDragged);
-        pushUndoCommand(new MoveTangentUndoCommand(shared_from_this(), dx, dy, time, tangentBeingDragged, false,
-                                                   ctrlDown && !shiftDown && !altDown));
+        if (std::shared_ptr<MoveTangentUndoCommand> open = getOpenDragCommand<MoveTangentUndoCommand>(time)) {
+            open->addDelta(dx, dy, ctrlDown && !shiftDown && !altDown, tangentDragMode);
+        } else {
+            pushDragCommand(std::make_shared<MoveTangentUndoCommand>(shared_from_this(), dx, dy, time, tangentBeingDragged, false,
+                                                                     ctrlDown && !shiftDown && !altDown, tangentDragMode));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
     }
     case eEventStateDraggingFeatherBar: {
-        pushUndoCommand(new MoveFeatherBarUndoCommand(shared_from_this(), dx, dy, featherBarBeingDragged, selectedCps, time));
+        if (std::shared_ptr<MoveFeatherBarUndoCommand> open = getOpenDragCommand<MoveFeatherBarUndoCommand>(time)) {
+            open->addDelta(dx, dy, featherBarKeepsTangents || (altDown != 0));
+        } else {
+            pushDragCommand(std::make_shared<MoveFeatherBarUndoCommand>(shared_from_this(), dx, dy, featherBarBeingDragged, selectedCps, time,
+                                                                        featherBarKeepsTangents || (altDown != 0)));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
@@ -3665,7 +4583,11 @@ RotoCurveInteract::onOverlayPenMotion(double time,
 
         double tx = 0., ty = 0.;
         double skewX = 0., skewY = 0.;
-        pushUndoCommand(new TransformUndoCommand(shared_from_this(), center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy, time));
+        if (std::shared_ptr<TransformUndoCommand> open = getOpenDragCommand<TransformUndoCommand>(time)) {
+            open->addTransform(center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy);
+        } else {
+            pushDragCommand(std::make_shared<TransformUndoCommand>(shared_from_this(), center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy, time));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
@@ -3741,7 +4663,11 @@ RotoCurveInteract::onOverlayPenMotion(double time,
             }
         }
 
-        pushUndoCommand(new TransformUndoCommand(shared_from_this(), center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy, time));
+        if (std::shared_ptr<TransformUndoCommand> open = getOpenDragCommand<TransformUndoCommand>(time)) {
+            open->addTransform(center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy);
+        } else {
+            pushDragCommand(std::make_shared<TransformUndoCommand>(shared_from_this(), center.x(), center.y(), rot, skewX, skewY, tx, ty, sx, sy, time));
+        }
         evaluateOnPenUp = true;
         didSomething = true;
         break;
@@ -3756,6 +4682,10 @@ RotoCurveInteract::onOverlayPenMotion(double time,
     } // switch
     lastMousePos = pos;
 
+    if (didSomething && isLiveRenderedDragState(state)) {
+        requestDragRender();
+    }
+
     if (redraw) {
         redrawOverlays();
     }
@@ -3766,7 +4696,28 @@ RotoCurveInteract::onOverlayPenMotion(double time,
 bool
 RotoCurveInteract::onOverlayPenUp()
 {
+    if ((state == eEventStateSketchingBezier) && !sketchSamples.empty()) {
+        // Pushed before the gesture closes so the sketch undoes in one step.
+        const std::pair<double, double>& lastSample = sketchSamples.back();
+        if ((lastSample.first != lastMousePos.x()) || (lastSample.second != lastMousePos.y())) {
+            sketchSamples.push_back(std::make_pair(lastMousePos.x(), lastMousePos.y()));
+        }
+        std::pair<double, double> pixelScale;
+        _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
+        SketchBezierUndoCommand* cmd = new SketchBezierUndoCommand(shared_from_this(), builtBezier, selectedTool == eRotoToolOpenBezier,
+                                                                   sketchSamples, _host->getCurrentTime(), pixelScale);
+        pushUndoCommand(cmd);
+        builtBezier = cmd->getCurve();
+        evaluateOnPenUp = true;
+    }
+    sketchSamples.clear();
+    closingTangentDrag = false;
+    // A claimed Alt press that another overlay took first must not make the next press an Alt one.
+    altPressClaimed = false;
+
     undoGesture.end();
+    _openDragCommand.reset();
+    endDragRender();
 
     if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
         return objectSelect->penUp();
@@ -3808,6 +4759,7 @@ RotoCurveInteract::onOverlayPenUp()
 
     if ((selectedTool == eRotoToolDrawEllipse) || (selectedTool == eRotoToolDrawRectangle)) {
         selectedCps.clear();
+        builtBezier.reset();
         setCurrentTool(selectAllAction.lock());
         ret = true;
     }
@@ -3849,16 +4801,19 @@ RotoCurveInteract::onOverlayKeyDown(Key key)
         }
     }
 
-    if (((key == Key_Escape) && ((selectedTool == eRotoToolDrawBezier) || (selectedTool == eRotoToolOpenBezier)))) {
-        if (((selectedTool == eRotoToolDrawBezier) || (selectedTool == eRotoToolOpenBezier)) && builtBezier && !builtBezier->isCurveFinished()) {
+    if ((key == Key_Escape) && ((selectedTool == eRotoToolDrawBezier) || (selectedTool == eRotoToolOpenBezier))) {
+        if (builtBezier && !builtBezier->isCurveFinished()) {
             pushUndoCommand(new OpenCloseUndoCommand(shared_from_this(), builtBezier));
 
             builtBezier.reset();
             selectedCps.clear();
-            setCurrentTool(selectAllAction.lock());
             getCurveContext()->evaluateChange();
-            didSomething = true;
         }
+        setCurrentTool(getLastSelectTool());
+        didSomething = true;
+    } else if ((key == Key_Escape) && (state == eEventStateNone) && (selectedToolRole.lock() != selectToolGroup.lock())) {
+        setCurrentTool(getLastSelectTool());
+        didSomething = true;
     }
 
     return didSomething;

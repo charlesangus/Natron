@@ -33,8 +33,11 @@
 #include <utility>
 
 #include "Engine/AppInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Project.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -138,10 +141,63 @@ Node::initNodeScriptName(const Serialization::NodeSerialization* serialization, 
         setNameInternal(name.c_str(), false);
     }
 
-
-
+    if (serialization) {
+        restoreSerializedNodeId(serialization->id);
+    }
 }
 
+void
+Node::restoreSerializedNodeId(const std::string& id)
+{
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project || !project->isLoadingProject() || id.empty()) {
+        return;
+    }
+    const QString nodeName = QString::fromUtf8(getFullyQualifiedName().c_str());
+    QString refusal;
+    if (!adoptNodeId(id, &refusal)) {
+        project->addLoadWarning(tr("%1: %2; the node was given a new ID").arg(nodeName).arg(refusal));
+    }
+}
+
+bool
+Node::adoptNodeId(const std::string& id,
+                  QString* refusal)
+{
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    const std::string current = getNodeId();
+    if (id == current) {
+        return true;
+    }
+    if (!isValidNodeId(id)) {
+        if (refusal) {
+            *refusal = tr("the node ID \"%1\" is not 32 lowercase hex digits").arg(QString::fromUtf8(id.c_str()));
+        }
+
+        return false;
+    }
+    NodePtr holder = project ? project->findNodeHoldingId(id) : NodePtr();
+    if (holder && (holder.get() != this)) {
+        if (refusal) {
+            *refusal = tr("its node ID %1 is already used by %2")
+                           .arg(QString::fromUtf8(id.c_str()))
+                           .arg(QString::fromUtf8(holder->getFullyQualifiedName().c_str()));
+        }
+
+        return false;
+    }
+    {
+        QMutexLocker k(&_imp->nameMutex);
+        _imp->nodeId = id;
+    }
+    if (project) {
+        project->onNodeIdChanged(shared_from_this(), current);
+    }
+
+    return true;
+}
 
 const std::string &
 Node::getScriptName() const
@@ -213,6 +269,9 @@ Node::setLabel(const std::string& label)
             return;
         }
         _imp->label = label;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeRenamed(this);
     }
     NodeCollectionPtr collection = getGroup();
     if (collection) {
@@ -406,6 +465,11 @@ Node::setNameInternal(const std::string& name,
             _imp->label = newName;
         }
     }
+    if (!oldName.empty() && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeRenamed(this);
+    }
+    // A loop lists its LoopBegins by script name.
+    LoopEnd::onGraphChanged();
     std::string fullySpecifiedName = getFullyQualifiedName();
 
     if (collection) {
@@ -461,6 +525,7 @@ Node::setNameInternal(const std::string& name,
         } catch (const std::exception& e) {
             qDebug() << e.what();
         }
+        LoopEnd::onLoopBeginRenamed(shared_from_this(), oldName);
     }
 
     QString qnewName = QString::fromUtf8( newName.c_str() );

@@ -57,9 +57,9 @@ PANEL_MS = 900
 PAINT_WINDOW_MS = 300
 PAINT_SETTLE_MS = 700
 
-GRADE_ID = "net.sf.openfx.GradePlugin"
-CC_ID = "net.sf.openfx.ColorCorrectPlugin"
-BLUR_ID = "net.sf.cimg.CImgBlur"
+GRADE_ID = "Grade"
+CC_ID = "ColorCorrect"
+BLUR_ID = "Blur"
 GAIN = "white"
 CC_GAIN = "MasterGain"
 
@@ -455,7 +455,7 @@ try:
     def trackball_action():
         win = main_window()
         for a in win.actions():
-            if "Colour Trackball" in a.text():
+            if a.shortcut().toString() == "Ctrl+E" or "Hovered or Last-Touched" in a.text():
                 return a
         return None
 
@@ -804,6 +804,13 @@ try:
         globe = child_named(row, "ColorGlobalModeButton")
         require(selector is not None and globe is not None, "the gain row has its ▾ and global-mode buttons")
 
+        # The bin is one scroll area for every open panel; the Grade and the Blur together can be taller
+        # than it, and the scrollbar that appears then takes 15 px from every row's width.
+        bin_scroll = bin_scroll_area(bin_wrapper())
+        if bin_scroll is not None:
+            bin_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            QApplication.processEvents()
+
         default_width = bin_wrapper().width()
         report("NOTE default properties bin width %d px" % default_width)
 
@@ -992,7 +999,7 @@ try:
 
         # =========================================================================================
         gt.section("fresh-engage")
-        require(trackball_action() is not None, "found the Engage Colour Trackball action")
+        require(trackball_action() is not None, "found the Ctrl+E global mode action")
         globe = child_named(knob_row(gp, GAIN), "ColorGlobalModeButton")
         globe.click()
         yield ("sleep", SETTLE_MS)

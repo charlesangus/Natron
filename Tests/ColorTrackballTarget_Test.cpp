@@ -113,7 +113,7 @@ TEST(ColorTrackballTarget, UnrecognisedPluginPicksFirstVisibleColorKnob)
     std::vector<ColorKnobInfo> knobs;
 
     knobs.push_back(makeKnobInfo("color"));
-    int idx = pickTargetIndex("net.sf.openfx.ConstantPlugin", knobs, -1);
+    int idx = pickTargetIndex("Constant", knobs, -1);
 
     ASSERT_GE(idx, 0);
     EXPECT_EQ(std::string("color"), knobs[idx].scriptName);

@@ -1,17 +1,15 @@
 import pixelwrap;
 
-// ChromaKeyer::render() per pixel, in float where the CPU keys in double. The wrap's push block
-// carries the source (wrap.nComps is the source's component count, 0 for none), the destination
-// (always RGBA) and the inside mask; the parameter block in wrapAux carries the per-frame
-// constants ChromaKeyKernel derives on the host, the Bg view and the outside mask view.
-// ChromaKeyGpuParams in Engine/Nodes/Keyer/ChromaKeyer.cpp mirrors the block's words.
+// ChromaKeyKernel::process() in Engine/Nodes/Keyer/ChromaKeyer.cpp per pixel, in float where the
+// CPU keys partly in double, run through the wrap's stages. The parameter block carries the
+// per-frame constants the host derives and the Bg view; Bg is the input bound after it.
+// ChromaKeyGpuParams in ChromaKeyer.cpp mirrors the block's words.
 
 [[vk::binding(4, 0)]] StructuredBuffer<float> ckBg;
-[[vk::binding(5, 0)]] StructuredBuffer<float> ckOutMask;
 
-static const uint kCkLinear = 1;
-static const uint kCkAcceptAll = 2;
-static const uint kCkSuppressAll = 4;
+static const uint kCkAcceptAll = 1;
+static const uint kCkSuppressAll = 2;
+static const uint kCkSourceHasAlpha = 4;
 
 static const uint kCkGainRamp = 0;
 static const uint kCkGainNonPositive = 1;
@@ -55,10 +53,7 @@ struct ChromaKey
     uint gainMode;
     uint show;
     uint sourceAlpha;
-    uint channelMask;
     CkView bg;
-    CkView outMask;
-    uint outMaskChannel;
 }
 
 CkView ckLoadView(StructuredBuffer<uint> params, uint i)
@@ -75,8 +70,7 @@ CkView ckLoadView(StructuredBuffer<uint> params, uint i)
 }
 
 // Parameter block, in words: the thirteen floats in member order, flags, gainMode, show,
-// sourceAlpha, channelMask, the Bg view (offset, stride, x1, y1, x2, y2, comps), the outside mask
-// view in the same layout, then its channel.
+// sourceAlpha, then the Bg view (offset, stride, x1, y1, x2, y2, comps).
 ChromaKey ckLoad(StructuredBuffer<uint> params)
 {
     ChromaKey k;
@@ -97,10 +91,7 @@ ChromaKey ckLoad(StructuredBuffer<uint> params)
     k.gainMode = params[14];
     k.show = params[15];
     k.sourceAlpha = params[16];
-    k.channelMask = params[17];
-    k.bg = ckLoadView(params, 18);
-    k.outMask = ckLoadView(params, 25);
-    k.outMaskChannel = params[32];
+    k.bg = ckLoadView(params, 17);
     return k;
 }
 
@@ -129,24 +120,6 @@ float ckBound(float v)
     if (v < -bound)
         return -bound;
     return v;
-}
-
-// ColorMath::toRec709 and fromRec709. The folded constants are the CPU's float quotients and
-// difference, given as bits so that no device divides them.
-float ckToRec709(float v)
-{
-    if (v < 0.0181f)
-        return (v < 0.0) ? 0.0 : v * 4.5f;
-    precise float r = 1.0993f * pow(v, 0.45f) - asfloat(0x3dcb5dd0u);
-    return r;
-}
-
-float ckFromRec709(float v)
-{
-    if (v < 0.08145f)
-        return (v < 0.0) ? 0.0 : v * asfloat(0x3e638e39u);
-    precise float base = (v + 0.0993f) * asfloat(0x3f68e01eu);
-    return pow(base, asfloat(0x400e38e4u));
 }
 
 void ckToYPbPr(ChromaKey k, float r, float g, float b, out float y, out float pb, out float pr)
@@ -189,32 +162,20 @@ float4 ckReadBg(CkView v, int2 p)
     return c;
 }
 
-float ckReadOutMask(ChromaKey k, int2 p)
-{
-    if (!ckInside(k.outMask, p))
-        return 0.0;
-    return ckOutMask[k.outMask.offset + uint(p.y - k.outMask.y1) * k.outMask.stride
-                     + uint(p.x - k.outMask.x1) * k.outMask.comps + k.outMaskChannel];
-}
-
 // ChromaKeyKernel::process() with fg present when hasSrc.
-float4 ckProcess(ChromaKey k, bool hasSrc, float4 fg, bool fgHasAlpha, float4 bg, float inMaskValue, float outMaskValue)
+float4 ckProcess(ChromaKey k, bool hasSrc, float4 fg, float4 bg)
 {
-    float inMask = inMaskValue;
+    const bool fgHasAlpha = (k.flags & kCkSourceHasAlpha) != 0;
+    float inMask = 0.0;
     if (k.sourceAlpha == kCkSourceAlphaInsideMask && hasSrc && fgHasAlpha)
-        inMask = ckMax(inMask, fg.a);
-    float outMask = outMaskValue;
+        inMask = ckClamp(fg.a, 0.0, 1.0);
     float Kbg = 0.0;
-
-    inMask = ckClamp(inMask, 0.0, 1.0);
-    outMask = ckClamp(outMask, 0.0, 1.0);
 
     float fgr = hasSrc ? ckBound(fg.r) : 0.0;
     float fgg = hasSrc ? ckBound(fg.g) : 0.0;
     float fgb = hasSrc ? ckBound(fg.b) : 0.0;
-    const bool linear = (k.flags & kCkLinear) != 0;
 
-    if (!hasSrc || outMask >= 1.0)
+    if (!hasSrc)
     {
         Kbg = 1.0;
         fgr = 0.0;
@@ -223,12 +184,6 @@ float4 ckProcess(ChromaKey k, bool hasSrc, float4 fg, bool fgHasAlpha, float4 bg
     }
     else
     {
-        if (!linear)
-        {
-            fgr = ckToRec709(fgr);
-            fgg = ckToRec709(fgg);
-            fgb = ckToRec709(fgb);
-        }
         float fgy, fgcb, fgcr;
         ckToYPbPr(k, fgr, fgg, fgb, fgy, fgcb, fgcr);
 
@@ -254,8 +209,6 @@ float4 ckProcess(ChromaKey k, bool hasSrc, float4 fg, bool fgHasAlpha, float4 bg
         precise float inLimit = 1.0 - inMask;
         if (inMask > 0.0 && Kfg > inLimit)
             KfgNew = inLimit;
-        if (outMask > 0.0 && Kfg < outMask)
-            KfgNew = outMask;
         // Written as a negated equality: a NaN key differs from zero, as on the CPU.
         if (!(Kfg == 0.0))
         {
@@ -276,32 +229,12 @@ float4 ckProcess(ChromaKey k, bool hasSrc, float4 fg, bool fgHasAlpha, float4 bg
             {
                 precise float cb = fgcb - Kfg * k.cosKey / 2.0;
                 precise float cr = fgcr - Kfg * k.sinKey / 2.0;
-                fgcb = ckClamp(cb, -0.5, 0.5);
-                fgcr = ckClamp(cr, -0.5, 0.5);
+                fgcb = cb;
+                fgcr = cr;
             }
 
             precise float y = fgy - k.ys * Kfg;
-            fgy = y;
-            if (fgy < 0.0)
-            {
-                fgy = 0.0;
-                fgr = 0.0;
-                fgg = 0.0;
-                fgb = 0.0;
-            }
-            else
-            {
-                ckToRGB(k, fgy, fgcb, fgcr, fgr, fgg, fgb);
-                fgr = ckClamp(fgr, 0.0, 1.0);
-                fgg = ckClamp(fgg, 0.0, 1.0);
-                fgb = ckClamp(fgb, 0.0, 1.0);
-                if (!linear)
-                {
-                    fgr = ckFromRec709(fgr);
-                    fgg = ckFromRec709(fgg);
-                    fgb = ckFromRec709(fgb);
-                }
-            }
+            ckToRGB(k, y, fgcb, fgcr, fgr, fgg, fgb);
         }
 
         if (k.gainMode == kCkGainNonPositive)
@@ -315,12 +248,8 @@ float4 ckProcess(ChromaKey k, bool hasSrc, float4 fg, bool fgHasAlpha, float4 bg
         else
         {
             precise float ramp = (Kfg / k.gainXKey - k.keyLift) / k.oneMinusLift;
-            Kbg = ramp;
+            Kbg = ckBound(ramp);
         }
-        if (Kbg > 1.0)
-            Kbg = 1.0;
-        else if (Kbg < 0.0)
-            Kbg = 0.0;
     }
 
     precise float fga = 1.0 - Kbg;
@@ -355,31 +284,26 @@ float4 ckProcess(ChromaKey k, bool hasSrc, float4 fg, bool fgHasAlpha, float4 bg
     return o;
 }
 
+struct ChromaKeyerOp : IPixelOp
+{
+    ChromaKey k;
+
+    [mutating] void load(StructuredBuffer<uint> params)
+    {
+        k = ckLoad(params);
+    }
+
+    float4 apply(float4 v, int2 xy)
+    {
+        const bool hasSrc = wrapInside(xy, wrap.srcX1, wrap.srcY1, wrap.srcX2, wrap.srcY2);
+        return ckProcess(k, hasSrc, v, ckReadBg(k.bg, xy));
+    }
+};
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void chromakeyer_main(uint3 tid : SV_DispatchThreadID)
+void chromakeyer_wrapped(uint3 tid : SV_DispatchThreadID)
 {
-    if (wrapOutside(tid))
-        return;
-    const int2 p = wrapPixel(tid);
-    const ChromaKey k = ckLoad(wrapAux);
-
-    const uint srcComps = wrap.nComps;
-    const bool hasSrc = srcComps != 0 && wrapInside(p, wrap.srcX1, wrap.srcY1, wrap.srcX2, wrap.srcY2);
-    const bool fgHasAlpha = srcComps >= 4 || srcComps == 1;
-    float4 fg = wrapReadSource(p);
-    if (hasSrc && !fgHasAlpha)
-        fg.a = 1.0;
-
-    const float4 result = ckProcess(k, hasSrc, fg, fgHasAlpha, ckReadBg(k.bg, p), wrapMaskValue(p), ckReadOutMask(k, p));
-
-    const uint base = wrap.dstOffset + tid.y * wrap.dstStride + tid.x * 4;
-    [ForceUnroll]
-    for (uint c = 0; c < 4; ++c)
-    {
-        if ((k.channelMask & (1u << c)) != 0)
-            wrapDst[base + c] = result[c];
-        else
-            wrapDst[base + c] = (hasSrc && (c < 3 || fgHasAlpha)) ? fg[c] : 0.0;
-    }
+    ChromaKeyerOp op;
+    runWrapped<ChromaKeyerOp>(op, tid);
 }

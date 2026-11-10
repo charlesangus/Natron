@@ -1,0 +1,17 @@
+upstream: https://github.com/artem-ogre/CDT
+tag: 2.0.1
+commit: 53eff288a4e77ad1c0afe1a10f60bd2b57f877b8
+licence: MPL-2.0 (LICENSE); include/predicates.h BSD-3-Clause (LICENSE-predicates.txt); include/portable_nth_element.hpp Apache-2.0 WITH LLVM-exception (LICENSE-LLVM.txt)
+contents: CDT/include/ verbatim, header-only
+sha256:
+  6041e6daa665b8a7dff63ec19403b31c48f4b28028687f0678eb9e1acf98b967  CDT.h
+  0ebf62422d24f72a939d6a8c1a350a837ca0a936b0037c02bc621d721c18b440  CDT.hpp
+  9a3e6801ff6e14e307b649b8ea62d0abf69378b55216b34c12ad1fbf6ce05e96  CDTUtils.h
+  9a39de0ab6af89e54510b638de03d34e41398652dbc8d5c2f3149d5c42ae393c  CDTUtils.hpp
+  f63fba08504451ddba36dd89cdef6dc96d5a1198cef4ff35daacf978ee908d99  KDTree.h
+  e4bd046501dd339265ffb4541dfcb1b59771bf746d309864e606cf995e95ab8c  LocatorKDTree.h
+  fac6dc424acdad000b17978be6ffcee2523cd59a605bbfefe2b2deeb1fbaa0f4  Triangulation.h
+  a857333624fe816f597250dd542e4aa02e0fe7b3a1e0742cfd63685ce961c1ed  Triangulation.hpp
+  fab9ccbd4cf6ec078d5ffca43277b7c5d4403e31716a4ec0e39b0857d4d4119e  portable_nth_element.hpp
+  d9f8ac6a0fa510f88a9dff844e0ff371bc80abffd598b9f00a58e93ce7799863  predicates.h
+  9f7cf7d2a87a64f74dc924c2c8b8e3ec4ecb13b9b0e4452706da3efe2f5e485c  remove_at.hpp

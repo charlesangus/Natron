@@ -48,12 +48,12 @@ RENDER_TIMEOUT_S = 180.0
 START_WAIT_S = 5.0
 SETTLE_MS = 500
 
-READ_ID = "fr.inria.built-in.Read"
-BACKDROP_ID = "fr.inria.built-in.BackDrop"
-CHAIN_IDS = ["fr.natron.RawPrepare", "fr.natron.RawTemperature", "fr.natron.RawHighlights",
-             "fr.natron.RawDemosaic", "fr.natron.RawInputColor", "fr.natron.RawColorCalibration"]
-EXTRA_IDS = ["fr.natron.RawCACorrect", "fr.natron.RawHotPixels", "fr.natron.RawDenoise"]
-TO_IMAGE_ID = "fr.natron.RawToImage"
+READ_ID = "Read"
+BACKDROP_ID = "Backdrop"
+CHAIN_IDS = ["RawPrepare", "RawTemperature", "RawHighlights",
+             "RawDemosaic", "RawInputColor", "RawColorCalibration"]
+EXTRA_IDS = ["RawCACorrect", "RawHotPixels", "RawDenoise"]
+TO_IMAGE_ID = "RawToImage"
 BAYER_METHODS = ["rcd", "ppg", "amaze", "vng4"]
 XTRANS_METHODS = ["markesteijn1", "markesteijn3", "vng"]
 BAYER_MODES = ["rcd", "ppg", "amaze", "vng4", "passthroughMonochrome", "photositeColor", "lmmse", "rcdDual", "amazeDual"]
@@ -281,7 +281,7 @@ try:
     def show_in_viewer(node):
         viewer = viewer_holder.get("v")
         if viewer is None:
-            viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.getNode("Viewer1") or app.createNode("Viewer")
             require(viewer is not None, "a Viewer node exists")
             viewer.setPosition(-400, 0)
             viewer_holder["v"] = viewer
@@ -682,7 +682,7 @@ try:
         check(develop.getValue(), "Develop RAW files on read is on by default")
         fixtures = all(is_real_fixture(p) for p in (CR2, RAF, DNG))
         if fixtures:
-            viewer = app.getNode("Viewer1") or app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.getNode("Viewer1") or app.createNode("Viewer")
             require(viewer is not None, "a Viewer node exists")
             viewer.setPosition(-400, 0)
             viewer_holder["v"] = viewer
@@ -716,9 +716,9 @@ try:
         check(all(n.getPosition()[1] > ry for n in chain), "the chain is below the Read")
         ys = [n.getPosition()[1] for n in chain]
         check(ys == sorted(ys), "the chain runs top to bottom in order")
-        held = sorted((n for n in app.getChildren() if n.getPluginID() not in (BACKDROP_ID, "fr.inria.built-in.Viewer") and inside(n, backdrop)),
+        held = sorted((n for n in app.getChildren() if n.getPluginID() not in (BACKDROP_ID, "Viewer") and inside(n, backdrop)),
                       key=lambda n: n.getPosition()[1])
-        check(len(held) == 6 and held[-1].getPluginID() == "fr.natron.RawColorCalibration",
+        check(len(held) == 6 and held[-1].getPluginID() == "RawColorCalibration",
               "Develop RAW holds six nodes with RawColorCalibration last (%r)" % [n.getPluginID() for n in held])
         check(choice_id(chain[1], "mode") == "asShotToReference",
               "RawTemperature starts on As Shot to Reference (%r)" % choice_id(chain[1], "mode"))
@@ -760,7 +760,7 @@ try:
                 owners = [b for b in backdrops if inside(c[0], b)]
                 check(any(all(inside(n, b) for n in c) and not inside(r, b) for b in owners),
                       "%s's chain sits in a backdrop below its Read" % os.path.basename(path))
-            frame_graph([n for n in app.getChildren() if n.getPluginID() != "fr.inria.built-in.Viewer"])
+            frame_graph([n for n in app.getChildren() if n.getPluginID() != "Viewer"])
             gt.shot("m80-develop-all.png")
         counts = settle_counts()
 
@@ -824,7 +824,7 @@ try:
             temperature = cr2_chain[1]
             # RawColorCalibration derives its default illuminant from the applied white balance
             # and would adapt the cast away, so the cast is read before it.
-            input_color = cr2_chain[CHAIN_IDS.index("fr.natron.RawInputColor")]
+            input_color = cr2_chain[CHAIN_IDS.index("RawInputColor")]
             temperature.getParam("temperature").setValue(3000.0)
             check(temperature.getParam("mode").getValue() == 2, "editing the temperature switches the mode to Custom")
             report("NOTE 3000 K multipliers %r" % [temperature.getParam(c).getValue() for c in ("red", "green", "blue")])

@@ -4,7 +4,10 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string_view>
+
+#include "Global/FloatingPointExceptions.h"
 
 namespace gpu {
 
@@ -126,6 +129,9 @@ namespace {
     GpuStatus enumeratePhysical(VkInstance inst, std::vector<VkPhysicalDevice>& out)
     {
         uint32_t n = 0;
+        // lavapipe initialises while the devices are enumerated, and Mesa's compilers raise FE_INVALID,
+        // which debug builds trap on the thread making the call.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
         VkResult r = vkEnumeratePhysicalDevices(inst, &n, nullptr);
         if (r != VK_SUCCESS) {
             return fail(r, "vkEnumeratePhysicalDevices failed");
@@ -196,6 +202,7 @@ namespace {
     GpuStatus createInstance(bool wantValidation, const GpuDebugMessageFn& debug, VkInstance& inst,
                              bool& validationOn, bool& messengerOn)
     {
+        requestTransferOnlyFamily();
         VkApplicationInfo app { VK_STRUCTURE_TYPE_APPLICATION_INFO };
         app.pApplicationName = "natron-gpu";
         app.apiVersion = VK_API_VERSION_1_3;
@@ -219,7 +226,12 @@ namespace {
             ci.enabledExtensionCount = 1;
             ci.ppEnabledExtensionNames = &kDebugUtils;
         }
-        VkResult r = vkCreateInstance(&ci, nullptr, &inst);
+        VkResult r;
+        {
+            // The loader and Mesa's drivers do float work of their own here, which debug builds trap.
+            const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+            r = vkCreateInstance(&ci, nullptr, &inst);
+        }
         if (r != VK_SUCCESS) {
             return fail(r, "vkCreateInstance failed");
         }
@@ -272,6 +284,98 @@ pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates)
         }
     }
     return pick;
+}
+
+// RADV exposes its SDMA engines as a transfer-only queue family only under RADV_PERFTEST=transfer_queue, which it
+// reads as each instance is created. Copies there run several times faster than on the compute queue and stop
+// contending with kernels; other drivers ignore the variable.
+void
+requestTransferOnlyFamily()
+{
+#ifndef _WIN32
+    static std::once_flag once;
+    std::call_once(once, [] {
+        const char* current = std::getenv("RADV_PERFTEST");
+        const std::string value = withPerftestToken(current, "transfer_queue");
+        if (!current || value != current) {
+            setenv("RADV_PERFTEST", value.c_str(), 1);
+        }
+    });
+#endif
+}
+
+std::string
+withPerftestToken(const char* current, std::string_view token)
+{
+    std::string value = current ? current : "";
+    // Mesa splits these lists on commas and spaces alike.
+    std::string_view rest = value;
+    while (!rest.empty()) {
+        const size_t skip = rest.find_first_not_of(", ");
+        if (skip == std::string_view::npos) {
+            break;
+        }
+        rest.remove_prefix(skip);
+        const size_t end = rest.find_first_of(", ");
+        if (rest.substr(0, end) == token) {
+            return value;
+        }
+        rest = (end == std::string_view::npos) ? std::string_view() : rest.substr(end);
+    }
+    if (!value.empty()) {
+        value += ',';
+    }
+    value += token;
+    return value;
+}
+
+std::optional<GpuQueuePlan>
+planQueues(std::span<const VkQueueFamilyProperties> families)
+{
+    // Prefer a compute family without graphics so compute work does not share a hardware queue with it.
+    int compute = -1;
+    for (size_t i = 0; i < families.size(); ++i) {
+        if (!(families[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+            continue;
+        }
+        if (compute < 0 || !(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+            compute = static_cast<int>(i);
+            if (!(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+                break;
+            }
+        }
+    }
+    if (compute < 0) {
+        return std::nullopt;
+    }
+    int transfer = -1;
+    for (size_t i = 0; i < families.size(); ++i) {
+        if ((families[i].queueFlags & VK_QUEUE_TRANSFER_BIT)
+            && !(families[i].queueFlags & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT))) {
+            transfer = static_cast<int>(i);
+            break;
+        }
+    }
+    // Uploads and downloads get queues of their own, so that both overlap compute and each other, as far as the
+    // families have queues to give: without a transfer-only family they come out of the compute family, and with
+    // only two queues there they share the second.
+    GpuQueuePlan plan;
+    plan.computeFamily = static_cast<uint32_t>(compute);
+    plan.computeQueueIndex = 0;
+    plan.computeQueues = 1;
+    if (transfer >= 0) {
+        plan.transferFamily = static_cast<uint32_t>(transfer);
+        plan.transferQueues = std::min<uint32_t>(std::max<uint32_t>(families[transfer].queueCount, 1), 2);
+        plan.uploadQueueIndex = 0;
+        plan.downloadQueueIndex = plan.transferQueues - 1;
+    } else {
+        plan.transferFamily = plan.computeFamily;
+        plan.computeQueues = std::min<uint32_t>(std::max<uint32_t>(families[compute].queueCount, 1), 3);
+        plan.uploadQueueIndex = plan.computeQueues > 1 ? 1 : 0;
+        plan.downloadQueueIndex = plan.computeQueues - 1;
+    }
+    plan.transferSharesComputeQueue = transfer < 0 && plan.computeQueues == 1;
+    return plan;
 }
 
 GpuStatus
@@ -385,49 +489,16 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     std::vector<VkQueueFamilyProperties> fams(nf);
     vkGetPhysicalDeviceQueueFamilyProperties(dev->physical_, &nf, fams.data());
 
-    // Prefer a compute family without graphics so compute work does not share a hardware queue with it.
-    int compute = -1;
-    for (uint32_t i = 0; i < nf; ++i) {
-        if (!(fams[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
-            continue;
-        }
-        if (compute < 0 || !(fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-            compute = static_cast<int>(i);
-            if (!(fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-                break;
-            }
-        }
-    }
-    if (compute < 0) {
+    const std::optional<GpuQueuePlan> queues = planQueues(fams);
+    if (!queues) {
         return fail(VK_ERROR_FEATURE_NOT_PRESENT, "no compute queue family");
     }
-    int transfer = -1;
-    for (uint32_t i = 0; i < nf; ++i) {
-        if ((fams[i].queueFlags & VK_QUEUE_TRANSFER_BIT)
-            && !(fams[i].queueFlags & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT))) {
-            transfer = static_cast<int>(i);
-            break;
-        }
-    }
-    // Uploads and downloads get queues of their own, so that both overlap compute and each other, as far as the
-    // families have queues to give: without a transfer-only family they come out of the compute family, and with
-    // only two queues there they share the second.
-    dev->info_.computeFamily = static_cast<uint32_t>(compute);
-    dev->info_.computeQueueIndex = 0;
-    uint32_t computeQueues = 1;
-    uint32_t transferQueues = 0;
-    if (transfer >= 0) {
-        dev->info_.transferFamily = static_cast<uint32_t>(transfer);
-        transferQueues = std::min<uint32_t>(std::max<uint32_t>(fams[transfer].queueCount, 1), 2);
-        dev->info_.uploadQueueIndex = 0;
-        dev->info_.downloadQueueIndex = transferQueues - 1;
-    } else {
-        dev->info_.transferFamily = dev->info_.computeFamily;
-        computeQueues = std::min<uint32_t>(std::max<uint32_t>(fams[compute].queueCount, 1), 3);
-        dev->info_.uploadQueueIndex = computeQueues > 1 ? 1 : 0;
-        dev->info_.downloadQueueIndex = computeQueues - 1;
-    }
-    dev->info_.transferSharesComputeQueue = transfer < 0 && computeQueues == 1;
+    dev->info_.computeFamily = queues->computeFamily;
+    dev->info_.transferFamily = queues->transferFamily;
+    dev->info_.computeQueueIndex = queues->computeQueueIndex;
+    dev->info_.uploadQueueIndex = queues->uploadQueueIndex;
+    dev->info_.downloadQueueIndex = queues->downloadQueueIndex;
+    dev->info_.transferSharesComputeQueue = queues->transferSharesComputeQueue;
 
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(dev->physical_, nullptr, &ne, nullptr);
@@ -494,9 +565,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         q.pQueuePriorities = prios;
         qcis.push_back(q);
     };
-    addQueues(dev->info_.computeFamily, computeQueues);
-    if (transferQueues > 0) {
-        addQueues(dev->info_.transferFamily, transferQueues);
+    addQueues(queues->computeFamily, queues->computeQueues);
+    if (queues->transferQueues > 0) {
+        addQueues(queues->transferFamily, queues->transferQueues);
     }
 
     VkDeviceCreateInfo dci { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
@@ -505,7 +576,13 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     dci.pQueueCreateInfos = qcis.data();
     dci.enabledExtensionCount = static_cast<uint32_t>(enabled.size());
     dci.ppEnabledExtensionNames = enabled.data();
-    VkResult r = vkCreateDevice(dev->physical_, &dci, nullptr, &dev->device_);
+    VkResult r;
+    {
+        // lavapipe builds its blitter shaders while the device is created, and Mesa's compilers raise
+        // FE_INVALID, which debug builds trap on this thread.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+        r = vkCreateDevice(dev->physical_, &dci, nullptr, &dev->device_);
+    }
     if (r != VK_SUCCESS) {
         return fail(r, "vkCreateDevice failed on " + dev->info_.name + " (VkResult " + std::to_string(static_cast<int>(r)) + ")");
     }

@@ -25,9 +25,12 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <list>
 #include <mutex>
@@ -57,6 +60,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProcessHandler.h"
@@ -71,7 +75,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kCheckerBoardPluginID = "net.sf.openfx.CheckerBoardPlugin";
+const char* const kCheckerBoardPluginID = "CheckerBoard";
 const int kFirstFrame = 1;
 const int kLastFrame = 20;
 const int kActionFrame = 3;
@@ -100,7 +104,7 @@ protected:
     {
         _source = createNode(QString::fromUtf8(kCheckerBoardPluginID));
         ASSERT_TRUE(bool(_source));
-        _grade = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+        _grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
         ASSERT_TRUE(bool(_grade));
         _writer = createNativeWriter();
         ASSERT_TRUE(bool(_writer));
@@ -147,13 +151,22 @@ protected:
      * kActionFrame is reported. The render runs on a thread of its own while the main thread processes events, so
      * the main thread is free to run the action. The render waits for the action to return, so the action always
      * lands while frames remain to be rendered.
+     * With a non-zero `deadline`, a render still running after it is aborted and kRenderTimedOut returned, so a
+     * stalled render fails its test instead of reaching the ctest timeout. One that does not return from the abort
+     * within a further deadline of its own ends the process, since the render thread still refers to this frame's locals.
+     * With `peakRenderThreads`, it receives the most frame threads the engine had at once while the render ran.
      * Returns the render's exit code, or -1 if it never reported one.
      **/
     int renderWithActionAtFrame(const std::function<void()>& action,
                                 ActionThreadEnum actionThread,
-                                bool* actionRan)
+                                bool* actionRan,
+                                std::chrono::milliseconds deadline = std::chrono::milliseconds::zero(),
+                                int* peakRenderThreads = NULL)
     {
         *actionRan = false;
+        if (peakRenderThreads) {
+            *peakRenderThreads = 0;
+        }
         OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
         EXPECT_TRUE(writerEffect != NULL);
         if (!writerEffect) {
@@ -174,8 +187,16 @@ protected:
         bool renderReturned = false;
 
         std::atomic<bool> ran { false };
+        std::atomic<int> peakThreads { 0 };
+        const auto samplePeak = [&engine, &peakThreads]() {
+            const int nThreads = engine->getNRenderThreads();
+            int seen = peakThreads.load();
+            while ((nThreads > seen) && !peakThreads.compare_exchange_weak(seen, nThreads)) {
+            }
+        };
         // Runs on the scheduler thread, which is in the render's own context: the action must run elsewhere.
         const auto runActionAtFrame = [&](int time, double /*progress*/) {
+            samplePeak();
             if ((time != kActionFrame) || ran.exchange(true)) {
                 return;
             }
@@ -205,6 +226,9 @@ protected:
             changed.notify_all();
         });
 
+        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+        bool timedOut = false;
+        std::chrono::steady_clock::time_point abortRequested;
         {
             std::unique_lock<std::mutex> lock(mutex);
             while (!renderReturned) {
@@ -221,6 +245,22 @@ protected:
                 QCoreApplication::processEvents();
                 lock.lock();
                 changed.wait_for(lock, std::chrono::milliseconds(10), [&]() { return renderReturned || mainActionPending; });
+                samplePeak();
+                if (renderReturned || (deadline == std::chrono::milliseconds::zero())) {
+                    continue;
+                }
+                const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+                if (!timedOut && (now - started > deadline)) {
+                    timedOut = true;
+                    lock.unlock();
+                    engine->abortRenderingNoRestart(false);
+                    abortRequested = std::chrono::steady_clock::now();
+                    lock.lock();
+                } else if (timedOut && (now - abortRequested > deadline)) {
+                    std::fprintf(stderr, "RenderIsolation: a render stalled past %lld ms and did not return from its abort\n", (long long)deadline.count());
+                    std::fflush(stderr);
+                    std::abort();
+                }
             }
         }
         renderThread.join();
@@ -229,9 +269,14 @@ protected:
         QObject::disconnect(onFrame);
         QObject::disconnect(finished);
         *actionRan = ran.load();
+        if (peakRenderThreads) {
+            *peakRenderThreads = peakThreads.load();
+        }
 
-        return finishedCode;
+        return timedOut ? kRenderTimedOut : finishedCode;
     }
+
+    static constexpr int kRenderTimedOut = -2;
 
     NodePtr _source;
     NodePtr _grade;
@@ -398,7 +443,7 @@ TEST_F(RenderIsolation, EditOutsideTheRenderGoesThrough)
     buildGraph(tmp);
     ASSERT_TRUE(bool(_writer));
 
-    NodePtr loose = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr loose = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(loose));
     KnobColor* looseMultiply = dynamic_cast<KnobColor*>(loose->getKnobByName("multiply").get());
     ASSERT_TRUE(looseMultiply != NULL);
@@ -582,9 +627,9 @@ TEST_F(RenderIsolation, EditUpstreamOfMetadataSourceIsRefusedDuringWriteRender)
     ASSERT_TRUE(bool(_writer));
 
     // upstream -> metadataSource, outside the Write's inputs.
-    NodePtr upstream = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr upstream = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(upstream));
-    NodePtr metadataSource = createNode(QString::fromUtf8(PLUGINID_OFX_GRADE));
+    NodePtr metadataSource = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     ASSERT_TRUE(bool(metadataSource));
     connectNodes(upstream, metadataSource, 0, true);
 
@@ -804,6 +849,87 @@ TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
     for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
         EXPECT_TRUE(QFile::exists(frameFile(frame))) << "frame " << frame << " was not written";
     }
+}
+
+// The refused-edit render, repeated under the task-graph scheduler with fewer parallel renders allowed than pool
+// threads: frame threads finishing together then race to open and stop threads, which is where a render that
+// strands its queued frames comes from. Each render has a deadline, so a stall fails here rather than at the
+// ctest timeout.
+TEST_F(RenderIsolation, RefusedEditRenderStress)
+{
+    QTemporaryDir firstDir;
+    ASSERT_TRUE(firstDir.isValid());
+    buildGraph(firstDir);
+    ASSERT_TRUE(bool(_writer));
+
+    struct StressScope {
+        RenderSchedulerModeEnum savedMode;
+        int savedPoolThreads;
+        int savedParallelRenders;
+
+        StressScope()
+            : savedMode(appPTR->getRenderSchedulerMode())
+            , savedPoolThreads(QThreadPool::globalInstance()->maxThreadCount())
+            , savedParallelRenders(appPTR->getCurrentSettings()->getNumberOfParallelRenders())
+        {
+            appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
+            // Room for more frame threads than the caps below allow, whatever the runner's core count.
+            QThreadPool::globalInstance()->setMaxThreadCount(std::max(6, savedPoolThreads));
+        }
+
+        ~StressScope()
+        {
+            appPTR->getCurrentSettings()->setNumberOfParallelRenders(savedParallelRenders);
+            QThreadPool::globalInstance()->setMaxThreadCount(savedPoolThreads);
+            appPTR->setRenderSchedulerMode(savedMode);
+        }
+    } stress;
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(_grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    const double before = multiply->getValue(0);
+    std::atomic<int> returnCode { -1 };
+    const std::function<void()> edit = [multiply, before, &returnCode]() {
+        returnCode = (int)multiply->setValue(before + 1., ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    };
+
+    // Every round runs, however slow the runner; the budget only ends the loop early once enough rounds are done.
+    const int kRounds = 40;
+    const int kMinRounds = 5;
+    const std::chrono::milliseconds kRenderDeadline(60000);
+    const std::chrono::minutes kLoopBudget(5);
+    const std::chrono::steady_clock::time_point loopStart = std::chrono::steady_clock::now();
+    int rounds = 0;
+    int roundsWithConcurrentThreads = 0;
+    for (; rounds < kRounds; ++rounds) {
+        if ((rounds >= kMinRounds) && (std::chrono::steady_clock::now() - loopStart > kLoopBudget)) {
+            break;
+        }
+        QTemporaryDir tmp;
+        ASSERT_TRUE(tmp.isValid());
+        setPattern(tmp);
+        appPTR->getCurrentSettings()->setNumberOfParallelRenders(2 + (rounds % 3));
+        returnCode = -1;
+
+        bool actionRan = false;
+        int peakThreads = 0;
+        const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan, kRenderDeadline, &peakThreads);
+
+        ASSERT_NE(kRenderTimedOut, finishedCode) << "render " << rounds << " stalled for " << kRenderDeadline.count() << " ms";
+        ASSERT_TRUE(actionRan) << "render " << rounds << ": frame " << kActionFrame << " was never reported";
+        ASSERT_EQ((int)KnobHelper::eValueChangedReturnCodeNothingChanged, returnCode.load()) << "render " << rounds;
+        ASSERT_EQ(0, finishedCode) << "render " << rounds;
+        for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
+            ASSERT_TRUE(QFile::exists(frameFile(frame))) << "render " << rounds << ": frame " << frame << " was not written";
+        }
+        if (peakThreads > 1) {
+            ++roundsWithConcurrentThreads;
+        }
+    }
+    EXPECT_DOUBLE_EQ(before, multiply->getValue(0));
+    EXPECT_GE(rounds, kMinRounds);
+    EXPECT_GT(roundsWithConcurrentThreads * 2, rounds)
+        << "only " << roundsWithConcurrentThreads << " of " << rounds << " renders had more than one frame thread at once, so the thread-count race was not exercised";
 }
 
 // Restarting a background render reuses the project file saved when it was submitted, which outlives

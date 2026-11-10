@@ -37,13 +37,13 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Phase 331.1: Load set as an evaluation input
 
-- [ ] M331.P1.T1 — Pass the load set through scene evaluation
+- [x] M331.P1.T1 — Pass the load set through scene evaluation
   - files: `Engine/ViewerInstance.cpp`, `Engine/Nodes/Scene/SceneOps.{h,cpp}`, `Engine/Nodes/Scene/SceneQueryPool.{h,cpp}`, `Tests/Scene/SceneQueryPool_Test.cpp`
   - approach: a small value type (a sorted path list and its hash) that viewers pass when evaluating. `SceneQueryPool::borrow(stack, loadSet)` returns a stage with those payloads loaded, preferring the closest load set, and applying the difference with `LoadAndUnload`. USDRender and USDWrite pass nothing and get `LoadAll` as today.
   - verify: gtest — borrowing with a set loads only that set's layers; borrowing without one loads all; returning and re-borrowing the same set does no load.
   - size: L
 
-- [ ] M331.P1.T2 — One memo slot per evaluation context
+- [x] M331.P1.T2 — One memo slot per evaluation context
   - files: `Engine/Nodes/Scene/SceneLayerMemo.h`, `Engine/Nodes/Scene/SceneOps.cpp`, `Tests/Scene/SceneLayerMemo_Test.cpp`
   - approach: `SceneLayerMemo` holds a few least-recently-used slots keyed by context, with the existing `Key` inside each slot, so viewer and render evaluations stop evicting each other. A layer already handed out is still never edited.
   - verify: gtest — alternating viewer and render evaluations of a pattern node authors each layer once; a knob edit invalidates both.
@@ -51,7 +51,7 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Phase 331.2: Pattern nodes
 
-- [ ] M331.P2.T1 — Match per context and skip by prefix
+- [x] M331.P2.T1 — Match per context and skip by prefix
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.cpp`, `Engine/Nodes/Scene/USDPrune.cpp`, `Engine/Nodes/Scene/USDEditTransform.cpp`, `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Tests/Scene/ScenePatternContext_Test.cpp`
   - approach: pattern nodes borrow with the context's load set. Patterns made only of literal paths skip the query. A load re-evaluates only nodes whose literal prefix reaches a loaded path; add the prefix helper beside `PrimSelector`.
   - verify: gtest on the city — `/city/block3//car*` matches nothing unloaded, the right cars once block3 is in the load set, and all cars with no load set; loading block5 doesn't re-query that node; a literal path matches while unloaded.
@@ -65,7 +65,7 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Phase 331.3: Honest results
 
-- [ ] M331.P3.T1 — Replace the zero-match warning with the unsearched note
+- [x] M331.P3.T1 — Replace the zero-match warning with the unsearched note
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}`, `Engine/Nodes/Scene/USDPrune.cpp`, `Tests/Scene/ScenePatternContext_Test.cpp`
   - approach: when a viewer-context match leaves unloaded payload prims the pattern could reach, the node's message reads "0 matches, N unloaded branches not searched". The plain warning stays when everything reachable is loaded, and in render context.
   - verify: gtest — the three message cases; an invalid pattern stays a persistent error in every context.

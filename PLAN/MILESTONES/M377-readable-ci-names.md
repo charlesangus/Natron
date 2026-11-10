@@ -68,7 +68,7 @@ renames the required checks. It switches branch protection over when it merges.
 
 ## Phase 377.2: Job names
 
-- [ ] M377.P2.T1 — Rename the non-required jobs in every workflow
+- [x] M377.P2.T1 — Rename the non-required jobs in every workflow
   - files: `.github/workflows/ci.yml`, `dev-image.yml`, `remote-build.yml`, `nightly.yml`, `release.yml`, `beta-release.yml`
   - approach: Use the sentence-case `<Verb> · <what>` pattern the user picked. Callers: `Dev image`; callee job in `dev-image.yml`: `Build or reuse`. `ci.yml`: `Build · debug`, `Build · release`, `Test · ${{ matrix.scheduler }} scheduler`, using the display word `task-graph` for `taskgraph`, through a matrix `include` that adds a `label` field. Keep `matrix.scheduler` itself unchanged, because steps and artifacts use it. `remote-build.yml`: the build job becomes `Build · ${{ env.PRESET }}`, plus ` + AppImage` when it packages one (an expression in `name:`). `ctest-legs` becomes `Setup · pick test legs`, `ctest` becomes `Test · <label> scheduler`, `gui-matrix` becomes `Setup · pick GUI scripts`, `gui` becomes `GUI · ${{ matrix.name }}`, and `results` becomes `Collect logs and compare renders`. `nightly.yml`: `Build and test · release` and `Build and test · release, GPU off`. `release.yml`: `Build and package release` and `Publish release`. `beta-release.yml`: `Tag and dispatch beta`. Leave job IDs (the YAML keys) unchanged, because `needs:` and outputs refer to them. Update the `::error::` messages and comments that quote old job names.
   - verify: `actionlint` is clean. A remote run (`tools/ci/remote/build.sh fast --tests --gui "<one script>"`) and the PR run both show the new names. In `gh run view <id> --json jobs`, no job name contains `/ dev image` or a bare YAML key.

@@ -81,7 +81,7 @@ renames the required checks. It switches branch protection over when it merges.
 
 ## Phase 377.3: Run titles
 
-- [ ] M377.P3.T1 — Remote build run title names the milestone and what ran
+- [x] M377.P3.T1 — Remote build run title names the milestone and what ran
   - files: `.github/workflows/remote-build.yml`, `tools/ci/remote/build.sh`
   - approach: Add a `label` input (string, default `''`, "Human label for the run title, usually the PR title"). In `build.sh`, before dispatching, set the label to `gh pr list --head "$BRANCH" --state open --json title --jq '.[0].title'`. If that is empty, use the branch name. Pass it with `-f label=…`. Shorten the token to `#<8 hex random>` and keep the SHA in the head-SHA lookup build.sh already does. Rewrite `run-name` to `Remote build · <preset> · <what ran> · <label> · <token>`. `<what ran>` is a comma list built from inputs: `tests`, `AppImage`, `<n> GUI` (or `GUI` when `gui_scripts` is set), `GUI only (from run <id>)` for `from_run`, `goldens`, and `cmake:<args>`. A push run gets `Remote build · fast · <ref_name> (cache warm)`. Build it in one `run-name` expression. If that becomes unreadable, use `format()` with nested `&&`/`||` parts and comment each part. build.sh still finds the run by `contains(displayTitle, token)`.
   - verify: `actionlint` is clean. Dispatch twice through build.sh, once with tests + GUI and once with `--from-run`, and check that both titles in `gh run list -w remote-build.yml` read as specified and that build.sh found and watched each run. A branch with no PR shows its branch name.

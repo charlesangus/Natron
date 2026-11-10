@@ -2367,7 +2367,7 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     ScenePayload scene;
     std::string error;
     EffectInstance::RenderRoIRetCode code;
-    const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet());
+    const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet(), std::make_shared<SceneLoadReach>());
     try {
         code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view, context), &scene, &error);
     } catch (const std::exception& e) {
@@ -2392,6 +2392,7 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
             _imp->lastSceneError[textureIndex] = ok ? std::string() : error;
             _imp->lastSceneOk[textureIndex] = ok;
             _imp->lastSceneLoadSet[textureIndex] = context.loadSet;
+            _imp->lastSceneReach[textureIndex] = context.reach;
         }
         Q_EMIT sceneEvaluated(textureIndex);
     }
@@ -5166,7 +5167,8 @@ bool
 ViewerInstance::getLastEvaluatedScene(int textureIndex,
                                       ScenePayload* scene,
                                       std::string* error,
-                                      SceneLoadSetPtr* loadSet) const
+                                      SceneLoadSetPtr* loadSet,
+                                      SceneLoadReachPtr* reach) const
 {
     if ((textureIndex != 0) && (textureIndex != 1)) {
         return false;
@@ -5180,6 +5182,9 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
     }
     if (loadSet) {
         *loadSet = _imp->lastSceneLoadSet[textureIndex];
+    }
+    if (reach) {
+        *reach = _imp->lastSceneReach[textureIndex];
     }
 
     return _imp->lastSceneOk[textureIndex];
@@ -5203,6 +5208,7 @@ ViewerInstance::getSceneLoadSet() const
 bool
 ViewerInstance::evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
                                         ScenePayload* scene,
+                                        SceneLoadReachPtr* reach,
                                         std::string* error)
 {
     assert(scene);
@@ -5213,7 +5219,7 @@ ViewerInstance::evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
     if (!input || !input->producesSceneData()) {
         return false;
     }
-    const SceneEvaluationContext context(_imp->sceneContextId, loadSet);
+    const SceneEvaluationContext context(_imp->sceneContextId, loadSet, std::make_shared<SceneLoadReach>());
     std::string evaluationError;
     EffectInstance::RenderRoIRetCode code;
     try {
@@ -5232,6 +5238,9 @@ ViewerInstance::evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
         }
 
         return false;
+    }
+    if (reach) {
+        *reach = context.reach;
     }
 
     return true;
@@ -5259,6 +5268,7 @@ ViewerInstance::refreshActiveInputDataKind()
                 _imp->lastSceneError[i].clear();
                 _imp->lastSceneOk[i] = false;
                 _imp->lastSceneLoadSet[i].reset();
+                _imp->lastSceneReach[i].reset();
             }
         }
     }

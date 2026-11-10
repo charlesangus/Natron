@@ -190,6 +190,7 @@ set(Tests_SOURCES
     RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
+    SchedulerAbortLatency_Test.cpp
     SchedulerEquivalence_Test.cpp
     SchedulerWriters_Test.cpp
     Shuffle_Test.cpp

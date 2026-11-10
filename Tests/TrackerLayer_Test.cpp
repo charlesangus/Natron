@@ -32,6 +32,7 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QThread>
 #include <QTimer>
@@ -215,6 +216,46 @@ TEST_F(TrackerLayerTest, CanceledRunWritesNoKeyAfterTrackingFinished)
     }
     EXPECT_EQ(keysAtFinish, center->getKeyFramesCount(ViewSpec(0), 0)) << "keys were written after trackingFinished";
     EXPECT_EQ(lastKeyAtFinish, lastKey) << "keys were written after trackingFinished";
+}
+
+// The scheduler checks for an abort once per tracked frame, so a cancel partway through a long run must end it within
+// the budget of the other schedulers' abort checks.
+TEST_F(TrackerLayerTest, AbortEndsATrackingRunWithinBudget)
+{
+    createTrackerOverFixture("tracker-patch.####.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    const int farEnd = 100000;
+    const qint64 budgetMs = 500;
+    KnobDoublePtr center = _marker->getCenterKnob();
+    std::list<TrackMarkerPtr> markers;
+    markers.push_back(_marker);
+    _context->trackMarkers(markers, kStartFrame, farEnd, 1, NULL);
+
+    QElapsedTimer clock;
+    clock.start();
+    while ((center->getKeyFramesCount(ViewSpec(0), 0) < 3) && (clock.elapsed() < 20000)) {
+        QCoreApplication::processEvents();
+        QThread::msleep(2);
+    }
+    ASSERT_GE(center->getKeyFramesCount(ViewSpec(0), 0), 3) << "the run never tracked a frame";
+    ASSERT_TRUE(_context->isCurrentlyTracking());
+
+    clock.start();
+    _context->abortTracking();
+    while (_context->isCurrentlyTracking() && (clock.elapsed() < 20000)) {
+        QCoreApplication::processEvents();
+        QThread::msleep(1);
+    }
+    const qint64 latencyMs = clock.elapsed();
+
+    EXPECT_FALSE(_context->isCurrentlyTracking()) << "the run did not end after the abort";
+    EXPECT_LT(latencyMs, budgetMs);
+    double lastKey = -1.;
+    ASSERT_TRUE(center->getLastKeyFrameTime(ViewSpec(0), 0, &lastKey));
+    EXPECT_LT(lastKey, (double)farEnd - 1) << "the abort did not stop the run";
 }
 
 namespace {

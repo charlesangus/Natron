@@ -705,9 +705,8 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
     query->draftMode = frameArgs && frameArgs->draftMode;
 #ifdef NATRON_HAVE_GPU
     GpuContext* gpuContext = appPTR ? appPTR->getGpuContext() : nullptr;
-    gpu::GpuRuntime* runtime = gpuContext ? gpuContext->runtime() : nullptr;
-    if (runtime) {
-        query->maxScratchBytes = gpu::GpuRecordContext::maxScratchBytesFor(runtime->device().info().maxStorageBufferRange);
+    if (gpuContext && gpuContext->runtime()) {
+        query->maxScratchBytes = gpu::GpuRecordContext::maxScratchBytesFor(gpuContext->maxStorageBufferRange());
     }
 #endif
 

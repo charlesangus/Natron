@@ -349,6 +349,12 @@ fi
 
 TOKEN="${PRESET}-${HEAD_SHA:0:8}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 
+# A ref whose workflow predates the repeat_test input rejects it, so send it only when used.
+REPEAT_ARGS=()
+if [[ -n "${REPEAT_TEST}" ]]; then
+    REPEAT_ARGS=(-f "repeat_test=${REPEAT_TEST}")
+fi
+
 echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token=${TOKEN} =="
 gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "preset=${PRESET}" \
@@ -356,7 +362,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "record_goldens=${RECORD_GOLDENS}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
-    -f "repeat_test=${REPEAT_TEST}" \
+    ${REPEAT_ARGS[@]+"${REPEAT_ARGS[@]}"} \
     -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "token=${TOKEN}" \

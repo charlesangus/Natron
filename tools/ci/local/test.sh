@@ -344,6 +344,8 @@ if len(hits) != 1:
 test = hits[0]
 props = {p["name"]: p["value"] for p in test.get("properties", [])}
 print("REPEAT_TEST=%s" % shlex.quote(test["name"]))
+# ctest -E takes a CMake regex, whose metacharacters differ from Python's.
+print("REPEAT_EXCLUDE=%s" % shlex.quote("^" + re.sub(r"([][\\^$.|?*+()])", r"\\\1", test["name"]) + "$"))
 print("REPEAT_CMD=(%s)" % " ".join(shlex.quote(a) for a in test["command"]))
 print("REPEAT_ENV=(%s)" % " ".join(shlex.quote(e) for e in props.get("ENVIRONMENT", [])))
 print("REPEAT_CWD=%s" % shlex.quote(props.get("WORKING_DIRECTORY", ".")))
@@ -359,37 +361,97 @@ PY
         mkdir -p "${LOG_DIR}"
         find "${LOG_DIR}" -maxdepth 1 -name 'iter-*' -delete
 
-        # setsid gives the load its own process group so the whole ctest tree can be killed.
-        setsid ctest -j 4 -E "${REPEAT_NAME}" --timeout 300 > "${LOG_DIR}/load.log" 2>&1 &
-        LOAD_PID=$!
+        # Load and iterations each get their own session (setsid), so killing the process group
+        # takes timeout, the test binary and gdb with it; timeout would otherwise escape into a
+        # process group of its own.
+        LOAD_PID=""
+        LOAD_STARTED=0
+        LOAD_RESTARTS=1
+        start_load() {
+            setsid ctest -j 4 -E "${REPEAT_EXCLUDE}" --timeout 300 >> "${LOG_DIR}/load.log" 2>&1 < /dev/null &
+            LOAD_PID=$!
+            LOAD_STARTED=${SECONDS}
+        }
+        : > "${LOG_DIR}/load.log"
+        start_load
+
+        ITER_PIDS=()
+        stop_iterations() {
+            local n pgid
+            for ((n = 1; n <= ${#ITER_PIDS[@]}; n++)); do
+                if [[ -s "${LOG_DIR}/iter-${n}.pgid" ]]; then
+                    pgid="$(<"${LOG_DIR}/iter-${n}.pgid")"
+                    kill -TERM -- "-${pgid}" 2>/dev/null || true
+                fi
+                kill -TERM "${ITER_PIDS[n - 1]}" 2>/dev/null || true
+            done
+            for pgid in "${ITER_PIDS[@]}"; do
+                wait "${pgid}" 2>/dev/null || true
+            done
+        }
         # shellcheck disable=SC2329
         stop_all() {
-            kill -TERM -- "-${LOAD_PID}" 2>/dev/null || true
-            local pid
-            for pid in $(jobs -rp); do
-                kill -TERM "${pid}" 2>/dev/null || true
-            done
-            wait 2>/dev/null || true
+            stop_iterations
+            if [[ -n "${LOAD_PID}" ]]; then
+                kill -TERM -- "-${LOAD_PID}" 2>/dev/null || true
+                wait "${LOAD_PID}" 2>/dev/null || true
+            fi
         }
         trap stop_all EXIT
 
         run_iteration() {
-            local n="$1" log="${LOG_DIR}/iter-$1.log" rc
+            local n="$1" log="${LOG_DIR}/iter-$1.log" rc child
             set +e
             if [[ "${USE_GDB}" -eq 1 ]]; then
-                (cd "${REPEAT_CWD}" && timeout -k 10 "${REPEAT_TIMEOUT}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
-                    gdb -batch -ex run -ex "thread apply all bt" --args "${REPEAT_CMD[@]}") > "${log}" 2>&1
+                (cd "${REPEAT_CWD}" && exec setsid timeout -k 10 "${REPEAT_TIMEOUT}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
+                    gdb -batch -ex run -ex "thread apply all bt" --args "${REPEAT_CMD[@]}") > "${log}" 2>&1 < /dev/null &
+                child=$!
+                echo "${child}" > "${LOG_DIR}/iter-${n}.pgid"
+                wait "${child}"
                 rc=$?
                 # gdb exits 0 after the debuggee crashed or failed.
                 if [[ "${rc}" -eq 0 ]] && grep -qE 'Program (received signal|terminated with signal)|exited with code' "${log}"; then
                     rc=1
                 fi
             else
-                (cd "${REPEAT_CWD}" && timeout -k 10 "${REPEAT_TIMEOUT}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
-                    "${REPEAT_CMD[@]}") > "${log}" 2>&1
+                (cd "${REPEAT_CWD}" && exec setsid timeout -k 10 "${REPEAT_TIMEOUT}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
+                    "${REPEAT_CMD[@]}") > "${log}" 2>&1 < /dev/null &
+                child=$!
+                echo "${child}" > "${LOG_DIR}/iter-${n}.pgid"
+                wait "${child}"
                 rc=$?
             fi
             echo "${rc}" > "${LOG_DIR}/iter-${n}.rc"
+        }
+
+        live_iterations() {
+            local running pid count=0
+            running=" $(jobs -rp | tr '\n' ' ') "
+            for pid in "${ITER_PIDS[@]}"; do
+                if [[ "${running}" == *" ${pid} "* ]]; then
+                    count=$((count + 1))
+                fi
+            done
+            echo "${count}"
+        }
+
+        # Without the load the iterations no longer run under contention, so keep it going; a
+        # load that exits almost at once would only spin, so that one is left down.
+        check_load() {
+            [[ -n "${LOAD_PID}" ]] || return 0
+            if [[ " $(jobs -rp | tr '\n' ' ') " == *" ${LOAD_PID} "* ]]; then
+                return 0
+            fi
+            wait "${LOAD_PID}" 2>/dev/null || true
+            local ran=$((SECONDS - LOAD_STARTED))
+            if [[ "${ran}" -lt 10 ]]; then
+                echo "test.sh: warning: the ctest load exited after ${ran}s with iterations still running; continuing without it (see ${LOG_DIR}/load.log)" >&2
+                LOAD_PID=""
+                return 0
+            fi
+            echo "test.sh: warning: the ctest load finished before the iterations; restarting it (run $((LOAD_RESTARTS + 1)))" >&2
+            LOAD_RESTARTS=$((LOAD_RESTARTS + 1))
+            start_load
         }
 
         FAILED_ITER=""
@@ -410,19 +472,27 @@ PY
 
         i=1
         while [[ "${i}" -le "${REPEAT_COUNT}" ]]; do
-            while [[ "$(jobs -rp | wc -l)" -ge $((REPEAT_PARALLEL + 1)) ]]; do
+            while [[ "$(live_iterations)" -ge "${REPEAT_PARALLEL}" ]]; do
                 wait -n || true
+                check_load
             done
             if find_failure; then
                 break
             fi
             run_iteration "${i}" &
+            ITER_PIDS+=("$!")
             i=$((i + 1))
         done
-        # The load counts as a job too, so wait only on the iteration jobs.
-        while [[ -z "${FAILED_ITER}" && "$(jobs -rp | wc -l)" -gt 1 ]]; do
+        while [[ -z "${FAILED_ITER}" && "$(live_iterations)" -gt 0 ]]; do
             wait -n || true
+            check_load
             find_failure || true
+        done
+        if [[ -n "${FAILED_ITER}" ]]; then
+            stop_iterations
+        fi
+        for pid in "${ITER_PIDS[@]}"; do
+            wait "${pid}" 2>/dev/null || true
         done
         find_failure || true
 
@@ -430,6 +500,16 @@ PY
             echo "test.sh: ERROR: ${REPEAT_TEST} failed in iteration ${FAILED_ITER} of ${REPEAT_COUNT} (exit ${FAILED_RC})" >&2
             echo "== iteration ${FAILED_ITER} output (${LOG_DIR}/iter-${FAILED_ITER}.log) =="
             cat "${LOG_DIR}/iter-${FAILED_ITER}.log"
+            exit 1
+        fi
+        passed=0
+        for ((n = 1; n <= REPEAT_COUNT; n++)); do
+            if [[ -s "${LOG_DIR}/iter-${n}.rc" && "$(<"${LOG_DIR}/iter-${n}.rc")" == "0" ]]; then
+                passed=$((passed + 1))
+            fi
+        done
+        if [[ "${passed}" -ne "${REPEAT_COUNT}" ]]; then
+            echo "test.sh: ERROR: only ${passed} of ${REPEAT_COUNT} iterations of ${REPEAT_TEST} recorded a pass" >&2
             exit 1
         fi
         echo "== test.sh: ${REPEAT_TEST} passed ${REPEAT_COUNT} of ${REPEAT_COUNT} iterations =="

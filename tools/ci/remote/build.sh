@@ -347,7 +347,10 @@ if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "build.sh: warning: uncommitted changes are not part of the remote build" >&2
 fi
 
-TOKEN="${PRESET}-${HEAD_SHA:0:8}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+TOKEN="#$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+
+LABEL="$(gh pr list --head "${BRANCH}" --state open --json title --jq '.[0].title // empty' 2>/dev/null || true)"
+LABEL="${LABEL:-${BRANCH}}"
 
 # A ref whose workflow predates the repeat_test input rejects it, so send it only when used.
 REPEAT_ARGS=()
@@ -365,6 +368,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     ${REPEAT_ARGS[@]+"${REPEAT_ARGS[@]}"} \
     -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
+    -f "label=${LABEL}" \
     -f "token=${TOKEN}" \
     -f "gui_scripts=${GUI_SCRIPTS}" \
     -f "from_run=${FROM_RUN}" \
@@ -516,7 +520,7 @@ if [[ -n "${GUI_SCRIPTS}" ]]; then
         else
             echo "build.sh: run ${RUN_ID} uploaded no output for ${script}" >&2
         fi
-        conclusion="$(awk -F'\t' -v job="gui (${name})" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
+        conclusion="$(awk -F'\t' -v job="GUI · ${name}" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
         detail=""
         if [[ -f "${dir}/results.txt" ]]; then
             detail="$(grep -c '^PASS' "${dir}/results.txt" || true) passed, $(grep -c '^FAIL' "${dir}/results.txt" || true) failed"

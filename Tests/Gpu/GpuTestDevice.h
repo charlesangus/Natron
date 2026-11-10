@@ -42,7 +42,8 @@ hardwareRequirementMarker()
 inline bool
 deviceRequired(const std::string& createError)
 {
-    return envSet("NATRON_TEST_REQUIRE_GPU") || createError.find(hardwareRequirementMarker()) != std::string::npos;
+    return envSet("NATRON_TEST_REQUIRE_GPU") || envSet(hardwareRequirementMarker())
+        || createError.find(hardwareRequirementMarker()) != std::string::npos;
 }
 
 inline std::atomic<uint64_t>&

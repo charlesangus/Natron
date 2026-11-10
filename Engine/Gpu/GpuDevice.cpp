@@ -389,6 +389,8 @@ enumeratePhysicalDeviceTypes()
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
     VkInstance instance = VK_NULL_HANDLE;
+    // The loader and Mesa's drivers do float work of their own here, which debug builds trap.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) {
         return types;
     }
@@ -486,12 +488,16 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     } else {
         std::vector<GpuDeviceCandidate> candidates(pds.size());
         std::string skippedCpu;
+        std::string skippedFeatures;
         for (size_t i = 0; i < pds.size(); ++i) {
             candidates[i].index = static_cast<uint32_t>(i);
             candidates[i].type = props[i].deviceType;
             candidates[i].deviceLocalHeapSize = largestDeviceLocalHeap(pds[i]);
             candidates[i].name = props[i].deviceName;
             candidates[i].meetsRequirements = meetsRequirements(pds[i], props[i]);
+            if (!candidates[i].meetsRequirements && props[i].deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                skippedFeatures += (skippedFeatures.empty() ? "" : ", ") + candidates[i].name;
+            }
             if (props[i].deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
                 // A software rasteriser is only ever used when the user names it.
                 if (candidates[i].meetsRequirements) {
@@ -505,6 +511,13 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             selectionReason = best->reason;
         }
         if (pick < 0) {
+            if (!skippedFeatures.empty()) {
+                std::string message = "no GPU meets the required features (" + skippedFeatures + ")";
+                if (!skippedCpu.empty()) {
+                    message += "; CPU devices (" + skippedCpu + ") need NATRON_GPU_DEVICE";
+                }
+                return fail(VK_ERROR_FEATURE_NOT_PRESENT, message);
+            }
             if (!skippedCpu.empty()) {
                 return fail(VK_ERROR_FEATURE_NOT_PRESENT,
                             "only CPU Vulkan devices (" + skippedCpu

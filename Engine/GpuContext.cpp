@@ -507,7 +507,7 @@ GpuContext::initialize()
         if (!status) {
             failure = status.message.empty() ? "no usable Vulkan device" : status.message;
         } else if (!isDeviceAllowed(_mode, runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU)) {
-            failure = "only a CPU-type Vulkan device is present (" + runtime->device().info().name + ")";
+            failure = "Auto mode refuses the selected CPU-type Vulkan device (" + runtime->device().info().name + ")";
         } else {
             if (runtime->device().info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
                 noteCpuDevice(runtime->device().info().name);

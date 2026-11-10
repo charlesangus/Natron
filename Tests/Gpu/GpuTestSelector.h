@@ -25,21 +25,25 @@ cpuFallbackSelector()
     if (selected && *selected) {
         return std::string();
     }
-    static const std::string cached = [] {
-        std::unique_ptr<gpu::GpuDevice> probe;
-        gpu::GpuDeviceOptions o;
-        if (gpu::GpuDevice::create(o, probe).result != VK_ERROR_FEATURE_NOT_PRESENT) {
-            return std::string();
+    // Not cached: tests point the Vulkan loader at other driver files (VK_ICD_FILENAMES), so the answer
+    // depends on the environment at each call.
+    const std::vector<VkPhysicalDeviceType> types = gpu::enumeratePhysicalDeviceTypes();
+    int cpuIndex = -1;
+    for (size_t i = 0; i < types.size(); ++i) {
+        if (types[i] == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+            cpuIndex = static_cast<int>(i);
+            break;
         }
-        const std::vector<VkPhysicalDeviceType> types = gpu::enumeratePhysicalDeviceTypes();
-        for (size_t i = 0; i < types.size(); ++i) {
-            if (types[i] == VK_PHYSICAL_DEVICE_TYPE_CPU) {
-                return std::to_string(i);
-            }
-        }
+    }
+    if (cpuIndex < 0) {
         return std::string();
-    }();
-    return cached;
+    }
+    std::unique_ptr<gpu::GpuDevice> probe;
+    gpu::GpuDeviceOptions o;
+    if (gpu::GpuDevice::create(o, probe).result != VK_ERROR_FEATURE_NOT_PRESENT) {
+        return std::string();
+    }
+    return std::to_string(cpuIndex);
 }
 
 } // namespace gputest

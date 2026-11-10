@@ -166,37 +166,37 @@ jobs:
 
           actionlint -version
 
-      - name: shellcheck tools/ci/local and tools/ci/remote
+      - name: Run shellcheck on tools/ci/local and tools/ci/remote
         shell: bash
         run: |
           set -euo pipefail
           shellcheck tools/ci/local/*.sh tools/ci/remote/*.sh
 
-      - name: shellcheck tools/bench
+      - name: Run shellcheck on tools/bench
         shell: bash
         run: |
           set -euo pipefail
           shellcheck tools/bench/*.sh
 
-      - name: shellcheck tools/ci/check_serialization_layering.sh
+      - name: Run shellcheck on check_serialization_layering.sh
         shell: bash
         run: |
           set -euo pipefail
           shellcheck tools/ci/check_serialization_layering.sh
 
-      - name: shellcheck tools/ci/check_kernel_fma.sh
+      - name: Run shellcheck on check_kernel_fma.sh
         shell: bash
         run: |
           set -euo pipefail
           shellcheck tools/ci/check_kernel_fma.sh
 
-      - name: Slang and glslang pins match local image
+      - name: Check Slang and glslang pins match local image
         shell: bash
         run: |
           set -euo pipefail
           tools/ci/local/check-image-pins.sh
 
-      - name: actionlint workflows
+      - name: Run actionlint on workflows
         shell: bash
         run: |
           set -euo pipefail
@@ -209,13 +209,13 @@ jobs:
       - name: Checkout branch
         uses: actions/checkout@v5.0.1
 
-      - name: Serialization/ layering check
+      - name: Check Serialization/ layering
         shell: bash
         run: |
           set -euo pipefail
           tools/ci/check_serialization_layering.sh
 
-      - name: Kernel fma check
+      - name: Reject fma(x, y, -z) in Slang kernels
         shell: bash
         run: |
           set -euo pipefail

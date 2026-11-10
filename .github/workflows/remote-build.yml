@@ -176,7 +176,7 @@ jobs:
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 
-      - name: Build
+      - name: Build ${{ env.PRESET }} preset
         id: build
         env:
           WITH_TESTS: ${{ inputs.tests && '1' || '' }}
@@ -327,7 +327,7 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
 
@@ -421,7 +421,7 @@ jobs:
 
       # Missing when recording failed outright; the leg then replays the committed references,
       # as it would have in the build job.
-      - name: Download native goldens
+      - name: Download native goldens from the build job
         if: inputs.record_goldens
         continue-on-error: true
         uses: actions/download-artifact@v7.0.0
@@ -429,7 +429,7 @@ jobs:
           name: native-goldens-${{ env.PRESET }}-${{ github.sha }}
           path: Tests/fixtures/native-golden
 
-      - name: Download native parity references
+      - name: Download native parity references from the build job
         if: inputs.record_goldens
         continue-on-error: true
         uses: actions/download-artifact@v7.0.0
@@ -437,13 +437,13 @@ jobs:
           name: native-parity-${{ env.PRESET }}-${{ github.sha }}
           path: Tests/fixtures/native-parity
 
-      - name: Download build tree
+      - name: Download build tree from the build job
         uses: actions/download-artifact@v7.0.0
         with:
           name: build-tree-${{ env.PRESET }}
 
       # The tree's absolute paths hold because every job's workspace is mounted at the same path.
-      - name: Unpack build tree
+      - name: Unpack build tree from the build job
         run: |
           tar -xf build-tree.tar
           rm build-tree.tar
@@ -492,7 +492,7 @@ jobs:
           done
           exit "$rc"
 
-      - name: Python bindings smoke test (${{ matrix.scheduler }} scheduler)
+      - name: Run Python bindings smoke test (${{ matrix.scheduler }} scheduler)
         if: success() || failure()
         env:
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
@@ -525,7 +525,7 @@ jobs:
     if: always() && inputs.tests && !inputs.from_run
     runs-on: ubuntu-latest
     steps:
-      - name: Download ctest logs
+      - name: Download ctest logs from every ctest leg
         uses: actions/download-artifact@v7.0.0
         with:
           pattern: ctest-log-*-${{ env.PRESET }}-${{ github.sha }}
@@ -549,7 +549,7 @@ jobs:
             exit 1
           fi
 
-      - name: Download smoke renders
+      - name: Download smoke renders from every ctest leg
         if: ${{ contains(needs.ctest-legs.outputs.schedulers, 'legacy') && contains(needs.ctest-legs.outputs.schedulers, 'taskgraph') }}
         uses: actions/download-artifact@v7.0.0
         with:
@@ -724,7 +724,7 @@ jobs:
           git lfs install --local
           git lfs pull --include "$INCLUDE"
 
-      - name: Download AppImage
+      - name: Download AppImage from the build job
         uses: actions/download-artifact@v7.0.0
         with:
           name: ${{ needs.gui-matrix.outputs.artifact }}

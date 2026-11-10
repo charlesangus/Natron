@@ -176,7 +176,7 @@ jobs:
         continue-on-error: true
         run: tools/ci/local/test.sh ctest release
 
-      - name: Python bindings smoke test (release)
+      - name: Run Python bindings smoke test (release)
         id: run_smoke
         continue-on-error: true
         run: tools/ci/local/test.sh smoke release
@@ -209,7 +209,7 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
 
@@ -221,7 +221,7 @@ jobs:
       # because of the build step's own (non-continue-on-error) failure, so
       # this step doesn't need to fail it a second time for tests that
       # never got a chance to run.
-      - name: Check test results
+      - name: Fail the job if any test step failed
         if: always()
         run: |
           status=0
@@ -346,11 +346,11 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
 
-      - name: Check test results
+      - name: Fail the job if any test step failed
         if: always()
         run: |
           echo "ctest outcome: ${{ steps.run_ctest.outcome }}"

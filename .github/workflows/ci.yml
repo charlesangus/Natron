@@ -179,7 +179,7 @@ jobs:
 
       # A tar because artifacts drop the executable bit. Object files and static archives are
       # only build inputs.
-      - name: Pack build tree
+      - name: Pack build tree for the ctest legs
         run: |
           tar -cf build-tree.tar --exclude='*.o' --exclude='*.a' build/debug
           ls -lh build-tree.tar
@@ -212,7 +212,7 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
 
@@ -294,7 +294,7 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
 
@@ -364,13 +364,13 @@ jobs:
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 
-      - name: Download build tree
+      - name: Download build tree from Build · debug
         uses: actions/download-artifact@v7.0.0
         with:
           name: build-tree-debug
 
       # The tree's absolute paths hold because every job's workspace is mounted at the same path.
-      - name: Unpack build tree
+      - name: Unpack build tree from Build · debug
         run: |
           tar -xf build-tree.tar
           rm build-tree.tar
@@ -378,7 +378,7 @@ jobs:
       # lavapipe is the CPU Vulkan device; without it the Gpu tests would
       # skip silently, so REQUIRE_GPU turns that into a failure.
       # GALLIUM_OVERRIDE_CPU_CAPS=avx keeps llvmpipe's JIT off AVX-512, where it hangs or zeroes some kernels on Xeon runners.
-      - name: Run ctest suite (debug)
+      - name: Run ctest suite (debug, ${{ matrix.label }} scheduler)
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           GALLIUM_OVERRIDE_CPU_CAPS: avx
@@ -390,14 +390,14 @@ jobs:
           grep -m1 'model name' /proc/cpuinfo; nproc; grep -o -w 'avx512f' /proc/cpuinfo | head -1 || true
           tools/ci/local/test.sh ctest debug
 
-      - name: Python bindings smoke test (debug)
+      - name: Run Python bindings smoke test (debug, ${{ matrix.label }} scheduler)
         if: success() || failure()
         env:
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           NATRON_SMOKE_OUTPUT_DIR: ${{ github.workspace }}/build/smoke-reference
         run: tools/ci/local/test.sh smoke debug
 
-      - name: Upload smoke renders
+      - name: Upload smoke renders for the cross-scheduler comparison
         if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
@@ -434,7 +434,7 @@ jobs:
             exit 1
           fi
 
-      - name: Download smoke renders
+      - name: Download smoke renders from every ctest leg
         uses: actions/download-artifact@v4
         with:
           pattern: smoke-render-*

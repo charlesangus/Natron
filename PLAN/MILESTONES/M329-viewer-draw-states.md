@@ -181,3 +181,9 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 - 2026-11-07 — Per-viewer state follows Gaffer's small expansion object beside a lazy scene (`gaffer/1.7.5.0/WorkingWithScenes/AnatomyOfAScene`); neither Katana nor Gaffer holds it per viewer (research note). Solaris changes USD draw mode for expansion (`solaris/support/expansionstates.html`), which our rule that display state stays out of layers forbids.
 - 2026-11-07 — Box sources: a location's bound as union of its contents (Gaffer), extentsHint and tint for unloaded (Katana, `all_tips.html`). Key family from Gaffer's Expand, Fully Expand and Collapse selection (`Interface/ControlsAndShortcuts`) and Katana's arrow keys (`ug/appendix_hotkeys/hotkeys.html`).
 - 2026-11-07 — Lobby stage check: no instances or prototypes; Geometry holds 628 meshes and 594 Xforms, no lights or materials. 30 lights sit in `lights_Lobby`, so the yellow dots are probably light guides (`SceneViewport.cpp:1674-1678`; inferred, no grab inspected). Materials sit in `Looks` scopes beside geometry, hence geometry-only hiding.
+- 2026-11-10 — P2.T4 GPU-host budget (`results-20261110T025252Z`, RX 7900 XTX, build 565185f7b):
+  - **Main-thread stall during draw changes:** 29–31 ms on every fixture, within 100 ms.
+  - **Sibling row, time to picture:** flat 82 ms (repeats 65), city 94 ms (repeats 70); was 145–203 ms; both now within 100 ms. Lobby 9 ms, Island 1 ms.
+  - **Wide row (/World, 936k–1M prims), time to picture:** 1.33–1.44 s, was 3.0–4.8 s. apply 765–865 ms on the render thread (estimate was 0.2–0.35 s); Storm render 475–555 ms; GPU tail 42–53 ms. Misses 100 ms; reported per the user's budget rule.
+  - **Populate stall:** flat 102.7 ms (limit 100); Island 1714 ms with first frame 2.74 s (limit 2 s), Island run for the first time; city 41 ms, Lobby 43 ms.
+  - **unrequested_payloads:** 0 everywhere.

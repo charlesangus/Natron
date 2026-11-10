@@ -389,7 +389,7 @@ PY
                 wait "${pgid}" 2>/dev/null || true
             done
         }
-        # shellcheck disable=SC2329
+        # shellcheck disable=SC2317,SC2329
         stop_all() {
             stop_iterations
             if [[ -n "${LOAD_PID}" ]]; then

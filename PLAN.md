@@ -223,6 +223,12 @@ future core work has solid ground to build on.
 | M379 | GpuContext Test Segfault | doing | - | bosley-native-nodes | E5 | | | [M379-gpucontext-test-segfault.md](PLAN/MILESTONES/M379-gpucontext-test-segfault.md) |
 | M380 | Blocking Scheduler Aborts | todo | - |  | E14 | | | [M380-blocking-scheduler-aborts.md](PLAN/MILESTONES/M380-blocking-scheduler-aborts.md) |
 | M381 | Deferred Matching Coverage | todo | M331 |  | E9 | F4 | | [M381-deferred-matching-coverage.md](PLAN/MILESTONES/M381-deferred-matching-coverage.md) |
+| M382 | Nucleon Logo And Artwork | todo | - |  | E20 | F17 | | [M382-nucleon-logo-and-artwork.md](PLAN/MILESTONES/M382-nucleon-logo-and-artwork.md) |
+| M383 | Rename Script And Guard | todo | - |  | E20 | F17 | | [M383-rename-script-and-guard.md](PLAN/MILESTONES/M383-rename-script-and-guard.md) |
+| M384 | Plugin Forks Rename | todo | M383 |  | E20 | F17 | | [M384-plugin-forks-rename.md](PLAN/MILESTONES/M384-plugin-forks-rename.md) |
+| M385 | OpenNucleon Code Rename | todo | M157, M383, M384 |  | E20 | F17 | | [M385-opennucleon-code-rename.md](PLAN/MILESTONES/M385-opennucleon-code-rename.md) |
+| M386 | Nucleon Branding And Packaging | todo | M382, M385 |  | E20 | F17 | | [M386-nucleon-branding-and-packaging.md](PLAN/MILESTONES/M386-nucleon-branding-and-packaging.md) |
+| M387 | Dev Infrastructure Rename | todo | M385 |  | E20 | F17 | | [M387-dev-infrastructure-rename.md](PLAN/MILESTONES/M387-dev-infrastructure-rename.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | | | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
@@ -285,7 +291,7 @@ future core work has solid ground to build on.
 | M154 | Fresh Buffer Page Zeroing | done | M109 | gpu | E5 | | | [M154-fresh-buffer-page-zeroing.md](PLAN/MILESTONES/M154-fresh-buffer-page-zeroing.md) |
 | M155 | Per-Suite Test Processes | done | - | bosley-native-nodes | E2 | | | [M155-per-suite-test-processes.md](PLAN/MILESTONES/M155-per-suite-test-processes.md) |
 | M156 | GPU Download Throughput In Comps | done | M109 | gpu | E5 | | | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
-| M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | | | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
+| M157 | Relicense To GPLv3 Or Later | todo | - |  | E2 | F17 | | [M157-relicense-to-gplv3-or-later.md](PLAN/MILESTONES/M157-relicense-to-gplv3-or-later.md) |
 | M158 | Node Toolbar As Menu | done | - | bosley-native-nodes | E10 | | | [M158-node-toolbar-as-menu.md](PLAN/MILESTONES/M158-node-toolbar-as-menu.md) |
 | M161 | Startup Compositor Crash | done | - | bosley-native-nodes | E10 | | | [M161-startup-compositor-crash.md](PLAN/MILESTONES/M161-startup-compositor-crash.md) |
 | M170 | Engine Render Races | done | - | bosley-native-nodes | E14 | | | [M170-engine-render-races.md](PLAN/MILESTONES/M170-engine-render-races.md) |
@@ -474,7 +480,8 @@ future core work has solid ground to build on.
 | E16 | AI Tools | Bring darktable's ONNX-based AI tools in as scene-linear-safe nodes and a Roto object-select tool, on an on-demand model manager. |
 | E17 | darktable Image Tools | Port darktable's scene-referred image modules as native nodes on a shared edge-aware filter library. |
 | E18 | Motion Vectors | Generate dense motion vectors natively and move Roto, paint and SplineWarp curves along them. |
-| E19 | Utility Renderer | Ship Natron Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
+| E19 | Utility Renderer | Ship Nucleon Utility, a GPU-native ray-traced Hydra utility renderer with CPU fallback, AOVs, motion blur, subdivision and deep output. |
+| E20 | OpenNucleon Rebrand | Rename the project OpenNucleon and the app Nucleon throughout, with new logo, splash and icons. |
 
 # Features
 
@@ -486,7 +493,7 @@ future core work has solid ground to build on.
 | F4 | Heavy Scene Viewer | open |  |  | feature/f4-heavy-scene-viewer | Open and inspect production-sized USD scenes without blocking, with deferred loading, draw states and full prim inspection. |
 | F5 | Live Sessions V1 | open |  |  | feature/f5-live-sessions-v1 | Let several artists edit one graph live, with presence, per-user undo and viewer following. |
 | F6 | Unified Tiered Cache | open |  |  | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |
-| F7 | Natron Utility Core | open |  |  | feature/f7-natron-utility-core | A usable Natron Utility renderer on CPU and GPU, with materials, lights, sampling, reflection, subdivision and projection modes. Ships only after F9 - Delegate Projection lands, for M364 - Delegate Cancel Responsiveness. |
+| F7 | Natron Utility Core | open |  |  | feature/f7-natron-utility-core | A usable Nucleon Utility renderer on CPU and GPU, with materials, lights, sampling, reflection, subdivision and projection modes. Ships only after F9 - Delegate Projection lands, for M364 - Delegate Cancel Responsiveness. |
 | F8 | Motion Vectors | open |  |  | feature/f8-motion-vectors | Generate dense motion vectors classically, on the GPU and with a neural model, and move Roto and SplineWarp curves along them. |
 | F9 | Delegate Projection | open |  |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |
 | F10 | Viewer Polish | open |  |  | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |
@@ -496,8 +503,10 @@ future core work has solid ground to build on.
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
 | F15 | Native Geometry | open |  |  | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
 | F16 | User Knob Editor | open |  |  | feature/f16-user-knob-editor | Create and manage user knobs in place on the properties panel, with type changes, undo, button scripts, drag-in links and copy/paste. |
+| F17 | OpenNucleon Flag Day | open |  |  | feature/f17-opennucleon-flag-day | Rename Natron to OpenNucleon/Nucleon throughout, code included, with new art and the GPLv3 relicence, landed in one switchover at a quiet time the user chooses. |
 
 # Open questions
+- **F17 - OpenNucleon Flag Day is held (user, 2026-11-10):** only M382 - Nucleon Logo And Artwork may start now, and it merges into the Feature branch only. M383 - Rename Script And Guard, M384 - Plugin Forks Rename, M157 - Relicense To GPLv3 Or Later, M385 - OpenNucleon Code Rename, M386 - Nucleon Branding And Packaging and M387 - Dev Infrastructure Rename are not eligible for pickup until the user names the switchover time. Before that, the user creates the `opennucleon` GitHub org, transfers and renames the repo (`opennucleon/OpenNucleon`) and the forks (`openfx-{io,misc,arena,supportext}`, `openfx-natron` → `openfx-nucleon`), and creates `opennucleon.github.io`. After the landing: every open branch merges main and runs `tools/rename/rename.py --changed-since origin/main`, and `/cat-plan` sweeps the `todo` milestone briefs through the same script.
 - **M276 - Upstream Reuse On Edits (PM, 2026-11-06):** the latency baseline and GPU counts need your host: `build/appimages/Natron-m276-upstream-reuse-on-edits.AppImage` with the steps in its `.md`. Also: add a task to M300 - Unified Tiered Cache that prunes dependencies behind a cache hit? Recommend yes; its gate can't pass without it.
 - **NativeSplineWarpGpuTest timeouts (PM, 2026-11-06):** the suite takes about 150-285 s against a 300 s limit on loaded runners and timed out in one leg on the M296 - Raw Prepare Output Format, M333 - Prim Inspector and M320 - Write All Input Metadata runs, with no spline or warp code touched. Treated as runner load. M270 - Lanczos Sinc Resampling Filters adds filters to this suite, so it raises the limit or splits the suite in P2.T4.
 - **F3 - Cycles And MoonRay Delegates, render settings that do nothing (PM, 2026-11-06):** MoonRay's denoiser likely doesn't run in our build (traced, not run), and Cycles' Path Guiding isn't compiled in. Keep them as controls whose tooltips say so? Recommend: patch MoonRay to select OIDN and mark the guides on outputs (a follow-up milestone), and build Cycles with openpgl only if you want guiding. Raise with the panel screenshots.

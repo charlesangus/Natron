@@ -127,3 +127,4 @@
 - 2026-11-08 — native-geometry-follows-sops: native geometry follows Houdini SOPs (unified paged detail, SOP attribute names, no pxr; `path` is just an attribute read by the bridges); replaces the UsdGeom container sketch (user, M54 grill) → DECISIONS/2026-11-08-native-geometry-follows-sops.md
 - 2026-11-08 — start-hold-removed: the 2026-11-02 "Start nothing new" hold is removed; per-milestone holds stay → DECISIONS/2026-11-08-start-hold-removed.md
 - 2026-11-09 — ci-check-names: required checks renamed to Format / Lint CI / Code rules / Build and test; code rules split out of lint-ci → DECISIONS/2026-11-09-ci-check-names.md
+- 2026-11-10 — rename-to-opennucleon: project OpenNucleon, app Nucleon; total rename incl. code, io.github.opennucleon IDs, .nucz etc.; lands with GPLv3 as F17 at a user-chosen quiet time (user) → DECISIONS/2026-11-10-rename-to-opennucleon.md

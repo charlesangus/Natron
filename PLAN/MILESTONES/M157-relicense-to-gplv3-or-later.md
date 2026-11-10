@@ -40,6 +40,10 @@ Context:
 - The only GPLv2-only files on the shipped path are `Magick/Sketch.cpp` and `Magick/MagickPlugin.h`. The audit established this by reading headers at the pinned SHAs, not by legal review.
 - An SPDX identifier plus a pointer to `LICENSE.txt` is a sufficient grant notice.
 
+## Decisions
+
+- 2026-11-10 — Ships in F17 - OpenNucleon Flag Day with the rename, at a quiet time the user chooses (user): both rewrite nearly every file, so landing them together means one round of rebases for open branches. Header text uses the OpenNucleon wording directly (see `DECISIONS/2026-11-10-rename-to-opennucleon.md`). The PR targets `feature/f17-opennucleon-flag-day`.
+
 ## Phase 157.1: Arena GPLv2-Only Plug-ins Out
 
 - [ ] M157.P1.T1 — Drop the GPLv2-only Magick plug-ins from the openfx-arena fork build
@@ -86,7 +90,14 @@ Context:
 - [ ] M157.P3.T1 — Write a header checker and fixer, and new templates
   - files: `tools/license/headers.py` (new), `tools/license/gpl-header-{c,hash,xml,bat}.txt`, `tools/license/third-party-paths.txt` (new)
   - approach:
-    - New templates: an `SPDX-License-Identifier: GPL-3.0-or-later` line, the "This file is part of Natron <https://natrongithub.github.io/>," line, the two existing copyright lines unchanged, and "See LICENSE.txt for the licence terms." Write them in C, hash and XML comment syntax.
+    - New templates:
+      - an `SPDX-License-Identifier: GPL-3.0-or-later` line
+      - "This file is part of OpenNucleon <https://opennucleon.github.io/>, a fork of Natron."
+      - the two existing copyright lines, unchanged
+      - a new "(C) 2026 The OpenNucleon developers" line
+      - "See LICENSE.txt for the licence terms."
+
+      Write them in C, hash and XML comment syntax. The OpenNucleon wording is used directly because this milestone ships in F17 - OpenNucleon Flag Day with the rename, so headers are rewritten only once.
     - `headers.py --check [paths]` walks first-party sources: `.cpp .h .c .py .xml CMakeLists.txt` under `App Engine Gui Global Renderer PythonBin Serialization Tests tools libs/OpenFX_extensions`. It skips everything listed in `third-party-paths.txt` (seeded from this milestone's Context), `Gui/Resources/PyPlugs/`, `Tests/google-*` and every vendored lib. It exits 1 on any file that lacks the SPDX line or still contains "version 2 of the License".
     - `--fix` replaces an existing `BEGIN LICENSE BLOCK … END LICENSE BLOCK` with the template, preserving any additional copyright lines the old block carried. It inserts the template into a headerless file after any shebang or XML declaration line.
   - verify: Copy the tree to a temp dir and run `--fix` there. `--check` on the result exits 0, and on the original tree it exits 1. `git diff --no-index` on three sample files of different types shows only the header changed. Every third-party path is untouched.

@@ -491,31 +491,53 @@ NodeGraph::updateNavigator()
 void
 NodeGraph::invalidateNavigatorContent()
 {
-    _imp->navigatorContentDirty = true;
-    if (_imp->_evtState == eEventStateDraggingNode) {
+    _imp->invalidateNavigator(true);
+}
+
+void
+NodeGraph::invalidateNavigatorImage()
+{
+    _imp->invalidateNavigator(false);
+}
+
+void
+NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
+{
+    navigatorContentDirty = true;
+    if (_evtState == eEventStateDraggingNode) {
         // Positions change on every move of the drag; growNodesBoundsForDrag() and the grid's
         // stale items keep up with them until the release ends the deferral.
-        _imp->navigatorDeferredByDrag = true;
+        navigatorDeferredByDrag = true;
+        navigatorDeferredRebuildsGrid = navigatorDeferredRebuildsGrid || rebuildGrid;
 
         return;
     }
-    if (_imp->navigatorBatchDepth > 0) {
-        _imp->navigatorBatchPending = true;
+    if (navigatorBatchDepth > 0) {
+        navigatorBatchPending = true;
+        navigatorDeferredRebuildsGrid = navigatorDeferredRebuildsGrid || rebuildGrid;
 
         return;
     }
-    _imp->navigatorDeferredByDrag = false;
-    _imp->nodesBoundsDirty = true;
-    _imp->itemGridDirty = true;
-    if (isLoadingProjectNodes()) {
+    rebuildGrid = rebuildGrid || navigatorDeferredRebuildsGrid;
+    navigatorDeferredRebuildsGrid = false;
+    navigatorDeferredByDrag = false;
+    nodesBoundsDirty = true;
+    if (rebuildGrid) {
+        itemGridDirty = true;
+    }
+    if (_publicInterface->isLoadingProjectNodes()) {
         // onProjectNodesRestored() invalidates once more.
         return;
     }
-    scheduleOverlayRefresh();
-    if (!_imp->navigatorRenderTimer.isActive()) {
-        _imp->navigatorRenderTimer.start(NATRON_NAVIGATOR_RENDER_DELAY_MS);
+    _publicInterface->scheduleOverlayRefresh();
+    if (!navigatorRenderTimer.isActive()) {
+        navigatorRenderTimer.start(NATRON_NAVIGATOR_RENDER_DELAY_MS);
     }
-    viewport()->update();
+    // The low-detail layers draw from the grid, so a rebuild can change what they show anywhere;
+    // an item-by-item change repaints just the items it touches.
+    if (rebuildGrid) {
+        _publicInterface->viewport()->update();
+    }
 }
 
 void

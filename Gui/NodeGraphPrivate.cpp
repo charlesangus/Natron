@@ -105,6 +105,7 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , navigatorDeferredByDrag(false)
     , navigatorBatchDepth(0)
     , navigatorBatchPending(false)
+    , navigatorDeferredRebuildsGrid(false)
     , itemGrid()
     , itemGridDirty(true)
     , itemGridStale()
@@ -158,7 +159,7 @@ NodeGraphPrivate::endNavigatorBatch()
     }
     if (navigatorBatchPending) {
         navigatorBatchPending = false;
-        _publicInterface->invalidateNavigatorContent();
+        invalidateNavigator(false);
     }
 }
 
@@ -293,7 +294,7 @@ NodeGraphPrivate::endNavigatorDragDeferral()
         return;
     }
     navigatorDeferredByDrag = false;
-    _publicInterface->invalidateNavigatorContent();
+    invalidateNavigator(false);
 }
 
 void

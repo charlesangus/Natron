@@ -33,6 +33,7 @@
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
@@ -330,13 +331,40 @@ NodeGraph::stackNodesAboveOverlapping(const std::vector<NodeGui*>& nodes)
         bboxes.push_back(bbox);
         all = all.united(bbox);
     }
-    // One walk over the graph finds the few nodes near any of them; the margin keeps a node whose
-    // edge only grazes the union, as rounded in another item's coordinates, a candidate.
+    // The margin keeps a node whose edge only grazes the union, as rounded in another item's
+    // coordinates, a candidate.
     all.adjust(-1, -1, 1, 1);
     std::vector<NodeGui*> candidates;
-    for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        if ((*it)->isVisible() && all.intersects((*it)->mapRectToScene((*it)->boundingRect()))) {
-            candidates.push_back(it->get());
+    // A node drag restacks its nodes on every move, so the hit-test grid finds the few nodes near
+    // them rather than a walk over the whole graph. It is only trusted while it knows every node:
+    // a pending rebuild means nodes came or went unreported, and refreshing a stale grid from
+    // here could take _nodesMutex, which some callers of node methods already hold. Large
+    // batches, a load or a paste, walk the graph once instead of querying once per node.
+    const std::size_t kMaxNodesForGridQuery = 256;
+    const bool useGrid = !_imp->itemGridDirty && !_imp->navigatorDeferredRebuildsGrid && (nodes.size() <= kMaxNodesForGridQuery);
+    if (useGrid) {
+        std::vector<NodeGraphPrivate::GridItem> found;
+        for (std::size_t i = 0; i < bboxes.size(); ++i) {
+            _imp->getGridItems(_imp->_nodeRoot->mapRectFromScene(bboxes[i].adjusted(-1, -1, 1, 1)), &found);
+        }
+        std::unordered_set<NodeGui*> seen;
+        for (std::vector<NodeGraphPrivate::GridItem>::const_iterator it = found.begin(); it != found.end(); ++it) {
+            NodeGui* node = it->owner;
+            if ((it->slot == NodeGraphPrivate::kGridNodeSlot) && seen.insert(node).second && node->isVisible() && all.intersects(node->mapRectToScene(node->boundingRect()))) {
+                candidates.push_back(node);
+            }
+        }
+        // Candidates are visited in graph order, as the walk below finds them, since that order
+        // decides the stacking among them.
+        const IndexedNodeGuiList& graphNodes = _imp->_nodes;
+        std::sort(candidates.begin(), candidates.end(), [&graphNodes](NodeGui* a, NodeGui* b) {
+            return graphNodes.orderOf(a) < graphNodes.orderOf(b);
+        });
+    } else {
+        for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
+            if ((*it)->isVisible() && all.intersects((*it)->mapRectToScene((*it)->boundingRect()))) {
+                candidates.push_back(it->get());
+            }
         }
     }
     if (nodes.size() * candidates.size() <= 4096) {

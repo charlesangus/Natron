@@ -241,7 +241,8 @@ Edge::invalidateGraphNavigator()
     NodeGuiPtr dst = _imp->dest.lock();
     NodeGraph* graph = dst ? dst->getDagGui() : NULL;
     if (graph) {
-        graph->invalidateNavigatorContent();
+        reportGeometryToGraph(this);
+        graph->invalidateNavigatorImage();
     }
 }
 

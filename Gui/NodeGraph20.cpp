@@ -151,6 +151,7 @@ NodeGraph::buildSplicePlan()
     _imp->_spliceEntry.reset();
     _imp->_spliceEntryInputs.clear();
     _imp->_spliceEntryInput = -1;
+    _imp->_spliceEntryInputForPipe.clear();
     _imp->_spliceExit.reset();
 
     SplicePlan plan = planSpliceForSelection(_imp->_selection);
@@ -211,6 +212,7 @@ NodeGraph::resetSplicePlan()
     _imp->_spliceEntry.reset();
     _imp->_spliceEntryInputs.clear();
     _imp->_spliceEntryInput = -1;
+    _imp->_spliceEntryInputForPipe.clear();
     _imp->_spliceExit.reset();
 }
 
@@ -289,27 +291,9 @@ NodeGraph::checkForSpliceHint()
     double bestDistSq = 0.;
     for (std::set<std::pair<NodeGui*, int>>::const_iterator it = candidatePipes.begin(); it != candidatePipes.end(); ++it) {
         NodeGui* destGui = it->first;
-        std::map<NodeGui*, bool>::iterator known = destIsCandidate.find(destGui);
-        if (known == destIsCandidate.end()) {
-            bool ok = (selectedNodes.find(destGui) == selectedNodes.end()) && destGui->isVisible();
-            if (ok) {
-                NodePtr destNode = destGui->getNode();
-                // A Viewer pipe only shows a node, so it is never a place to insert one.
-                ok = destNode && !destNode->isEffectViewer();
-            }
-            if (ok) {
-                std::vector<QGraphicsItem*> hits;
-                _imp->collectGraphItemsMeetingViewportRect(visibleWidget, false, std::vector<QGraphicsItem*>(1, destGui), &hits);
-                ok = !hits.empty();
-            }
-            known = destIsCandidate.insert(std::make_pair(destGui, ok)).first;
-        }
-        if (!known->second) {
+        if ((selectedNodes.find(destGui) != selectedNodes.end()) || !destGui->isVisible()) {
             continue;
         }
-        NodePtr destNode = destGui->getNode();
-        EffectInstancePtr destEffect = destNode->getEffectInstance();
-
         Edge* pipe = destGui->getInputArrow(it->second);
         if (!pipe || !pipe->isVisible() || !pipe->hasSource()) {
             continue;
@@ -318,10 +302,9 @@ NodeGraph::checkForSpliceHint()
         if (!srcGui || (selectedNodes.find(srcGui.get()) != selectedNodes.end())) {
             continue;
         }
-        if (destEffect && destEffect->isInputRotoBrush(pipe->getInputNumber())) {
-            continue;
-        }
 
+        // Every test a pipe has to pass is cheap next to finding whether its destination is on
+        // screen, which tests the destination's items' shapes, so the cheap ones go first.
         QLineF segment = pipe->line();
         segment.setP1(pipe->mapToScene(segment.p1()));
         segment.setP2(pipe->mapToScene(segment.p2()));
@@ -342,6 +325,26 @@ NodeGraph::checkForSpliceHint()
             continue;
         }
 
+        NodePtr destNode = destGui->getNode();
+        // A Viewer pipe only shows a node, so it is never a place to insert one.
+        if (!destNode || destNode->isEffectViewer()) {
+            continue;
+        }
+        EffectInstancePtr destEffect = destNode->getEffectInstance();
+        if (destEffect && destEffect->isInputRotoBrush(pipe->getInputNumber())) {
+            continue;
+        }
+
+        std::map<NodeGui*, bool>::iterator known = destIsCandidate.find(destGui);
+        if (known == destIsCandidate.end()) {
+            std::vector<QGraphicsItem*> hits;
+            _imp->collectGraphItemsMeetingViewportRect(visibleWidget, false, std::vector<QGraphicsItem*>(1, destGui), &hits);
+            known = destIsCandidate.insert(std::make_pair(destGui, !hits.empty())).first;
+        }
+        if (!known->second) {
+            continue;
+        }
+
         NodePtr srcNode = srcGui->getNode();
         if (!srcNode) {
             continue;
@@ -358,13 +361,19 @@ NodeGraph::checkForSpliceHint()
         if (alreadyFeedsEntry) {
             continue;
         }
-        int entryInput = -1;
-        for (std::size_t e = 0; e < _imp->_spliceEntryInputs.size(); ++e) {
-            if (canSpliceIntoPipe(destNode, pipe->getInputNumber(), srcNode, entryNode, _imp->_spliceEntryInputs[e], exitNode)) {
-                entryInput = _imp->_spliceEntryInputs[e];
-                break;
+        const std::pair<std::pair<const Node*, int>, const Node*> pipeKey(std::make_pair(destNode.get(), pipe->getInputNumber()), srcNode.get());
+        std::map<std::pair<std::pair<const Node*, int>, const Node*>, int>::const_iterator validated = _imp->_spliceEntryInputForPipe.find(pipeKey);
+        if (validated == _imp->_spliceEntryInputForPipe.end()) {
+            int allowed = -1;
+            for (std::size_t e = 0; e < _imp->_spliceEntryInputs.size(); ++e) {
+                if (canSpliceIntoPipe(destNode, pipe->getInputNumber(), srcNode, entryNode, _imp->_spliceEntryInputs[e], exitNode)) {
+                    allowed = _imp->_spliceEntryInputs[e];
+                    break;
+                }
             }
+            validated = _imp->_spliceEntryInputForPipe.insert(std::make_pair(pipeKey, allowed)).first;
         }
+        const int entryInput = validated->second;
         if (entryInput == -1) {
             continue;
         }

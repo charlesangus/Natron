@@ -632,7 +632,8 @@ void
 NodeGui::invalidateGraphNavigator()
 {
     if (_graph) {
-        _graph->invalidateNavigatorContent();
+        _graph->noteNodeGeometryChanged(this);
+        _graph->invalidateNavigatorImage();
     }
 }
 
@@ -3859,7 +3860,8 @@ NodeGuiDecorations::badgeGeometryChanged()
         update();
     }
     if (_graph) {
-        _graph->invalidateNavigatorContent();
+        _graph->noteNodeGeometryChanged(dynamic_cast<NodeGui*>(parentItem()));
+        _graph->invalidateNavigatorImage();
     }
 }
 

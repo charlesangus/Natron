@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <list>
 #include <map>
 #include <memory>
@@ -122,6 +123,15 @@ public:
 
     bool contains(const NodeGuiPtr& node) const { return contains(node.get()); }
 
+    // A key that sorts the nodes in list order, so that a few nodes found some other way can be
+    // put in that order without walking the list. Only valid while the node is in the list.
+    std::uint64_t orderOf(const NodeGui* node) const
+    {
+        std::unordered_map<NodeGui*, Entry>::const_iterator found = _index.find(const_cast<NodeGui*>(node));
+
+        return (found == _index.end()) ? 0 : found->second.order;
+    }
+
     // Returns false, leaving the order alone, if the node is already in the list.
     bool push_back(const NodeGuiPtr& node)
     {
@@ -129,7 +139,9 @@ public:
             return false;
         }
         _list.push_back(node);
-        _index[node.get()] = --_list.end();
+        Entry& entry = _index[node.get()];
+        entry.it = --_list.end();
+        entry.order = ++_lastOrder;
 
         return true;
     }
@@ -144,12 +156,12 @@ public:
     // Returns the removed node, or a null pointer if the node was not in the list.
     NodeGuiPtr remove(const NodeGui* node)
     {
-        std::unordered_map<NodeGui*, iterator>::iterator found = _index.find(const_cast<NodeGui*>(node));
+        std::unordered_map<NodeGui*, Entry>::iterator found = _index.find(const_cast<NodeGui*>(node));
         if (found == _index.end()) {
             return NodeGuiPtr();
         }
-        NodeGuiPtr ret = *found->second;
-        _list.erase(found->second);
+        NodeGuiPtr ret = *found->second.it;
+        _list.erase(found->second.it);
         _index.erase(found);
 
         return ret;
@@ -162,8 +174,15 @@ public:
     }
 
 private:
+    struct Entry {
+        iterator it;
+        std::uint64_t order = 0;
+    };
+
     NodesGuiList _list;
-    std::unordered_map<NodeGui*, iterator> _index;
+    std::unordered_map<NodeGui*, Entry> _index;
+    // Only ever grows, so a node pushed later always sorts after every node already in the list.
+    std::uint64_t _lastOrder = 0;
 };
 
 // The navigator overlay. It paints its own border and nothing at all while the graph renders its
@@ -290,6 +309,10 @@ public:
     // The entry's inputs the plan allows, best first, and the one the hinted pipe goes into.
     std::vector<int> _spliceEntryInputs;
     int _spliceEntryInput = -1;
+    // Which entry input, or -1 for none, each pipe met so far allows, keyed by the pipe's
+    // destination, input and source. Validating a pipe walks the graph upstream, and the same
+    // pipe is met on every move while the selection lies over it.
+    std::map<std::pair<std::pair<const Node*, int>, const Node*>, int> _spliceEntryInputForPipe;
     NodeGuiPtr _spliceExit;
     Edge* _splicePipe = nullptr;
     // Set by Escape or focus loss, and cleared by the next press, so that the rest of the drag
@@ -369,6 +392,9 @@ public:
     bool navigatorDeferredByDrag;
     int navigatorBatchDepth;
     bool navigatorBatchPending;
+    // Whether what the drag or the batch put off includes a change that can leave the hit-test
+    // grid wrong everywhere, rather than only the image and the bounds.
+    bool navigatorDeferredRebuildsGrid;
 
     // A node, or an edge held by the node owner, as the hit-test grid stores it. slot is
     // kGridNodeSlot for the node itself, -1 for its output edge and the input number otherwise.
@@ -381,10 +407,9 @@ public:
     };
     static constexpr int kGridNodeSlot = -2;
 
-    // The subtree bounds of every node and edge in _nodeRoot coordinates. Any navigator
-    // invalidation outside a node drag rebuilds it on the next query, since whatever changes the
-    // nodes' look may change their bounds; moves and edge geometry changes during a drag update
-    // just the items in itemGridStale.
+    // The subtree bounds of every node and edge in _nodeRoot coordinates. invalidateNavigatorContent()
+    // rebuilds it on the next query, for nodes or edges coming or going; a node or edge reporting
+    // a change to its own look or geometry updates just the items in itemGridStale.
     NodeGraphItemGrid<const QGraphicsItem*, GridItem> itemGrid;
     bool itemGridDirty;
     std::unordered_map<const QGraphicsItem*, GridItem> itemGridStale;
@@ -420,6 +445,10 @@ public:
     // Unites the moved nodes into the cached bounds the navigator frames while it is deferred.
     void growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved);
     void endNavigatorDragDeferral();
+
+    // rebuildGrid is for changes the hit-test grid is not told about item by item, such as nodes
+    // or edges coming or going; it makes the next query refile every item.
+    void invalidateNavigator(bool rebuildGrid);
 
     bool isGridItemValid(const GridItem& gridItem) const;
     void refreshItemGrid();

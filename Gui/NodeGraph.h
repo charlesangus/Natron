@@ -106,10 +106,18 @@ public:
     void scheduleOverlayRefresh();
 
     /**
-     * @brief Call when the nodes' bounds or appearance change: the navigator thumbnail is
-     * rendered again shortly after, once for any number of calls in between.
+     * @brief Call when nodes or edges come, go or change in ways not reported to
+     * noteNodeGeometryChanged() or noteEdgeGeometryChanged(): the navigator thumbnail is rendered
+     * again shortly after, once for any number of calls in between, and the next hit test or
+     * low-detail paint refiles every item.
      **/
     void invalidateNavigatorContent();
+
+    /**
+     * @brief Like invalidateNavigatorContent(), for a change to items that are, or are about to
+     * be, reported one by one: only the thumbnail and the nodes' bounds are refreshed.
+     **/
+    void invalidateNavigatorImage();
 
     /**
      * @brief Call when a node of this graph, or one of its edges, may have moved or changed shape,

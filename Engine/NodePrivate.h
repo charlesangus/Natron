@@ -303,6 +303,7 @@ public:
         , effectiveDataKindCacheSet(false)
         , effectiveDataKindCache(eDataKindPolymorphic)
         , effectiveDataKindCacheAmbiguous(false)
+        , downstreamDataKindRequirements()
     {
         ///Initialize timers
         gettimeofday(&lastRenderStartedSlotCallTime, 0);
@@ -627,6 +628,18 @@ public:
     mutable bool effectiveDataKindCacheSet;
     mutable DataKindEnum effectiveDataKindCache;
     mutable bool effectiveDataKindCacheAmbiguous;
+
+    // What Node::collectDownstreamDataKindRequirement() turns each starting constraint into. Without
+    // it every node of a chain re-walks everything below it, so resolving a chain after an edit
+    // costs the square of its length. Guarded by effectiveDataKindMutex and dropped with the cache
+    // above.
+    struct DownstreamDataKindRequirement {
+        DataKindEnum fromKind;
+        bool fromAmbiguous;
+        DataKindEnum kind;
+        bool ambiguous;
+    };
+    mutable std::vector<DownstreamDataKindRequirement> downstreamDataKindRequirements;
 };
 
 

@@ -2505,6 +2505,7 @@ struct DataKindResolutionFrame {
 }
 
 static thread_local std::vector<DataKindResolutionFrame> dataKindResolutionStack;
+static thread_local U64 dataKindResolutionTruncations = 0;
 
 // Truncating a resolution loop yields an answer that depends on which node the query started from,
 // so nothing currently being resolved may be memoized: caching one of those would freeze one entry
@@ -2512,6 +2513,7 @@ static thread_local std::vector<DataKindResolutionFrame> dataKindResolutionStack
 static void
 markDataKindResolutionCycle()
 {
+    ++dataKindResolutionTruncations;
     for (std::vector<DataKindResolutionFrame>::iterator it = dataKindResolutionStack.begin(); it != dataKindResolutionStack.end(); ++it) {
         it->reachedThroughCycle = true;
     }
@@ -2760,6 +2762,24 @@ Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
 
         return;
     }
+
+    // The walk folds the consumers' requirements into the constraint it starts from, and the
+    // adapter test reads that running constraint, so the result is a function of the starting
+    // constraint alone unless a loop truncated the walk somewhere below.
+    const DataKindConstraint from = *constraint;
+    {
+        QMutexLocker l(&_imp->effectiveDataKindMutex);
+        for (const Implementation::DownstreamDataKindRequirement& memo : _imp->downstreamDataKindRequirements) {
+            if ((memo.fromKind == from.kind) && (memo.fromAmbiguous == from.ambiguous)) {
+                constraint->kind = memo.kind;
+                constraint->ambiguous = memo.ambiguous;
+
+                return;
+            }
+        }
+    }
+    const U64 truncationsBefore = dataKindResolutionTruncations;
+
     requirementStack.push_back(this);
 
     NodePtr deliveringNode = dataKindDeliveringNode(this);
@@ -2811,6 +2831,11 @@ Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
     }
 
     requirementStack.pop_back();
+
+    if (dataKindResolutionTruncations == truncationsBefore) {
+        QMutexLocker l(&_imp->effectiveDataKindMutex);
+        _imp->downstreamDataKindRequirements.push_back({ from.kind, from.ambiguous, constraint->kind, constraint->ambiguous });
+    }
 } // collectDownstreamDataKindRequirement
 
 bool
@@ -2961,6 +2986,7 @@ Node::invalidateEffectiveOutputDataKindCache()
         {
             QMutexLocker l(&node->_imp->effectiveDataKindMutex);
             node->_imp->effectiveDataKindCacheSet = false;
+            node->_imp->downstreamDataKindRequirements.clear();
         }
 
         // Group nodes and their GroupInput and GroupOutput nodes each resolve a kind of their own,

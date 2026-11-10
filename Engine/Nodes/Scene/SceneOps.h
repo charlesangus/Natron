@@ -31,16 +31,19 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
@@ -391,6 +394,90 @@ bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  const std::string& expression,
                  std::vector<PXR_NS::SdfPath>* paths,
                  std::string* errorMessage);
+
+/**
+ * @brief selectPrims() that polls cancelled as it walks and gives up as soon as it turns true,
+ * returning false with *paths and *errorMessage empty.
+ **/
+bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
+                 const std::string& expression,
+                 std::vector<PXR_NS::SdfPath>* paths,
+                 std::string* errorMessage,
+                 const std::function<bool()>& cancelled);
+
+// The stage load rules loadSet stands for: every payload for a null one.
+PXR_NS::UsdStageLoadRules getLoadRules(const SceneLoadSet* loadSet);
+
+// rules as a load set, without the rules that change nothing.
+SceneLoadSetPtr makeLoadSet(const PXR_NS::UsdStageLoadRules& rules);
+
+/**
+ * @brief Makes the payloads stage includes those of loadSet (every one for a null set) with
+ * LoadAndUnload(), which recomposes only the prims whose inclusion changes. Rules on paths the
+ * stage cannot load yet, with no prim at or above them but the root, are left out. Returns
+ * whether anything was loaded or unloaded.
+ **/
+bool applyLoadSet(const PXR_NS::UsdStageRefPtr& stage,
+                  const SceneLoadSet* loadSet);
+
+/**
+ * @brief How many payloads stage leaves unloaded at or below the prims of paths, counting a
+ * nested payload only once the one above it is loaded. A path with no prim counts the unloaded
+ * payload above it, if there is one.
+ **/
+std::size_t countUnloadedPayloads(const PXR_NS::UsdStageRefPtr& stage,
+                                  const std::vector<std::string>& paths);
+
+/**
+ * @brief A prim selection evaluated on a private stage that loads every payload, so it reaches
+ * what an evaluator has left unloaded, for previews only: what it finds never feeds an
+ * evaluation, and no other stage is touched. The search runs on a thread of its own and stops
+ * as soon as it is cancelled, or stopWhen() turns true, even in the middle of a payload file.
+ **/
+class UnloadedSearch {
+public:
+    enum StatusEnum {
+        eStatusRunning,
+        eStatusDone,
+        eStatusCancelled,
+        eStatusFailed
+    };
+
+    // Searches scene for the prims expression selects.
+    static std::shared_ptr<UnloadedSearch> start(const ScenePayload& scene,
+                                                 const std::string& expression,
+                                                 const std::function<bool()>& stopWhen = std::function<bool()>());
+
+    // Searches what effect's input inputNb evaluates to, as a render sees it.
+    static std::shared_ptr<UnloadedSearch> start(const EffectInstancePtr& effect,
+                                                 int inputNb,
+                                                 const std::string& expression,
+                                                 const std::function<bool()>& stopWhen = std::function<bool()>());
+
+    // Cancels the search and waits for its thread.
+    ~UnloadedSearch();
+
+    void cancel();
+
+    StatusEnum getStatus() const;
+
+    // Waits for the search to end, at most timeoutMs when it is not negative. Returns whether it has.
+    bool wait(double timeoutMs = -1.) const;
+
+    // The selected prims, in depth-first stage order, once the status is eStatusDone.
+    std::vector<std::string> getMatches() const;
+
+    // Why the search failed, for eStatusFailed.
+    std::string getError() const;
+
+    struct State;
+
+private:
+    UnloadedSearch();
+
+    std::shared_ptr<State> _state;
+    std::thread _thread;
+};
 
 /**
  * @brief The rotation about X, in degrees, that turns correction's from up axis into its to up

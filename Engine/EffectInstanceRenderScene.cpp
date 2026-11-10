@@ -174,7 +174,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                     return eRenderRoIRetCodeFailed;
                 }
 
-                return evaluateScene(EvaluateSceneArgs(identityTime, identityView), outputScene, errorMessage);
+                return evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context), outputScene, errorMessage);
             }
 
             EffectInstancePtr identityInput = getInput(identityInputNb);
@@ -182,7 +182,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                 return eRenderRoIRetCodeOk;
             }
 
-            return identityInput->evaluateScene(EvaluateSceneArgs(identityTime, identityView), outputScene, errorMessage);
+            return identityInput->evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context), outputScene, errorMessage);
         }
     }
 
@@ -193,6 +193,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     actionArgs.time = args.time;
     actionArgs.view = args.view;
     actionArgs.isRenderResponseToUserInteraction = frameArgs->isRenderResponseToUserInteraction;
+    actionArgs.context = args.context;
 
     const int nInputs = getNInputs();
     for (int i = 0; i < nInputs; ++i) {
@@ -223,6 +224,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     std::string renderError;
     StatusEnum st;
     try {
+        // What the node's memoized layer is kept for, without every node passing it on.
+        SceneEvaluationContext::Scope contextScope(args.context);
         st = renderScene(actionArgs, &renderedScene, &renderError);
     } catch (const std::exception& e) {
         st = eStatusFailed;

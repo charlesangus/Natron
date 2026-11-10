@@ -57,7 +57,7 @@ Context:
   - verify: `python3 -c "import cairosvg"` renders each file without error, and `xmllint --noout` passes on all four.
   - size: L
 
-- [ ] M382.P1.T2 — Render the concept sheets and send them for a pick
+- [x] M382.P1.T2 — Render the concept sheets and send them for a pick
   - files: `tools/branding/render.py` (new), output under `build/branding/concepts/` (untracked)
   - approach: `render.py` uses CairoSVG to render any SVG to PNG at a list of sizes, over a given background colour. For each concept, render the mark at 16, 32 and 256 px on dark and on light, plus the lockup at 1024 px wide on dark. Send one PNG per concept-and-background via SendUserFile, then put the pick to the user as a `response` question under `# Open questions`.
   - verify: `render.py` exits 0 and produces the expected files. The pick is recorded in this milestone's `## Decisions`.

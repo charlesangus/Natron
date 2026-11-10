@@ -983,8 +983,9 @@ struct SceneGraphPanel::Implementation {
         }
         const QModelIndex top = tree->indexAt(QPoint(0, 0));
         const QString path = model->pathOf(top);
-        if (!path.isEmpty()) {
+        if (!path.isEmpty() && (path != topPath)) {
             topPath = path;
+            panel->setProperty("natronSceneGraphTopPath", topPath);
         }
     }
 

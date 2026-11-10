@@ -158,6 +158,12 @@ NodeGraphPixmapItem::~NodeGraphPixmapItem()
 {
 }
 
+int
+NodeGraphPixmapItem::minimumPaintedHeightPx()
+{
+    return NODEGRAPH_PIXMAP_ITEM_MIN_HEIGHT_PX;
+}
+
 void
 NodeGraphPixmapItem::paint(QPainter *painter,
                            const QStyleOptionGraphicsItem *option,

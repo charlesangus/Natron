@@ -60,6 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/LoopBlockOverlay.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGui.h"
 #include "Gui/UndoHistory.h"
@@ -183,6 +184,12 @@ NodeGraph::NodeGraph(Gui* gui,
     // (the dragged node's own free input arrow lies along the preview), but still under the nodes.
     _imp->_kissPreviewEdge->setZValue(16);
     _imp->_kissPreviewEdge->hide();
+
+    // Created after the graph's own pipes, so that at equal z the nodes' pipes still draw above
+    // them, as they do when they draw themselves.
+    _imp->lowDetailEdgeLayer = new NodeGraphLowDetailLayer(_imp.get(), NodeGraphLowDetailLayer::ePassEdges, _imp->_nodeRoot);
+    _imp->lowDetailNodeLayer = new NodeGraphLowDetailLayer(_imp.get(), NodeGraphLowDetailLayer::ePassNodes, _imp->_nodeRoot);
+    refreshDetailLevel();
 
     centerOn(0, 0);
 
@@ -445,8 +452,8 @@ NodeGraph::paintEvent(QPaintEvent* e)
     const bool drawLockedMode = isDrawingLockedVeil();
     const bool isGroupEditable = !isGroup || !isGroup->getNode()->isPyPlug() || isGroup->isSubGraphEditable();
 
-    // A zoom repaints the whole view, so the items need no extra update when this flips.
-    _imp->lowDetail = std::abs(transform().m22()) * _imp->lowDetailFontHeight < NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX;
+    // The zooms refresh it as they happen; this catches any other change to the transform.
+    refreshDetailLevel();
 
     QGraphicsView::paintEvent(e);
 

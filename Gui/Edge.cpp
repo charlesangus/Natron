@@ -214,6 +214,26 @@ reportGeometryToGraph(Edge* edge)
     }
 }
 
+// A faded edge drops its own update() requests; its owner's graph repaints it from the
+// low-detail layer instead.
+void
+Edge::appearanceChanged()
+{
+    update();
+    reportGeometryToGraph(this);
+}
+
+QVariant
+Edge::itemChange(GraphicsItemChange change,
+                 const QVariant& value)
+{
+    if (change == QGraphicsItem::ItemVisibleHasChanged) {
+        reportGeometryToGraph(this);
+    }
+
+    return QGraphicsLineItem::itemChange(change, value);
+}
+
 void
 Edge::invalidateGraphNavigator()
 {
@@ -271,14 +291,14 @@ void
 Edge::turnOnRenderingColor()
 {
     _imp->useRenderingColor = true;
-    update();
+    appearanceChanged();
 }
 
 void
 Edge::turnOffRenderingColor()
 {
     _imp->useRenderingColor = false;
-    update();
+    appearanceChanged();
 }
 
 bool
@@ -300,7 +320,7 @@ void
 Edge::setIsSpliceHint(bool hint)
 {
     _imp->isSpliceHint = hint;
-    update();
+    appearanceChanged();
 }
 
 bool
@@ -405,14 +425,18 @@ Edge::setOptional(bool optional)
 void
 Edge::setDashed(bool dashed)
 {
+    if (_imp->paintWithDash == dashed) {
+        return;
+    }
     _imp->paintWithDash = dashed;
+    appearanceChanged();
 }
 
 void
 Edge::setUseHighlight(bool highlight)
 {
     _imp->useHighlight = highlight;
-    update();
+    appearanceChanged();
 }
 
 void
@@ -422,7 +446,7 @@ Edge::setUseSelected(bool val)
         return;
     }
     _imp->useSelected = val;
-    update();
+    appearanceChanged();
 }
 
 static void
@@ -887,15 +911,46 @@ Edge::refreshDataKindPen(bool force)
     _imp->dataKind = kind;
     // Cached rather than read in paint() so the colour only follows saved Preferences.
     _imp->hasKindTint = kindTintColor(kind, &_imp->kindTint);
-    update();
+    appearanceChanged();
+}
+
+QPen
+Edge::getDrawnPen() const
+{
+    QPen myPen = pen();
+    if (_imp->paintWithDash) {
+        QVector<qreal> dashStyle;
+        qreal space = 4;
+        dashStyle << 3 << space;
+        myPen.setDashPattern(dashStyle);
+    } else {
+        myPen.setStyle(Qt::SolidLine);
+    }
+
+    QColor color;
+    // A highlight marks a pipe an edit in progress will change, which matters more than the
+    // selection of its node.
+    if (_imp->isSpliceHint) {
+        color = selectionColorWithAlpha(100);
+    } else if (_imp->useHighlight) {
+        color = selectionColorWithAlpha();
+    } else if (_imp->useSelected) {
+        color = Qt::white;
+    } else if (_imp->useRenderingColor) {
+        color = _imp->renderingColor;
+    } else {
+        color = _imp->hasKindTint ? _imp->kindTint : _imp->defaultColor;
+    }
+    myPen.setColor(color);
+
+    return myPen;
 }
 
 void
-Edge::paint(QPainter *painter,
-            const QStyleOptionGraphicsItem * /*options*/,
-            QWidget * /*parent*/)
+Edge::paint(QPainter* painter,
+            const QStyleOptionGraphicsItem* /*options*/,
+            QWidget* /*parent*/)
 {
-    QPen myPen = pen();
     NodeGuiPtr dst = _imp->dest.lock();
     NodeGraph* graph = dst ? dst->getDagGui() : NULL;
     if (graph && graph->isDoingNavigatorRender()) {
@@ -911,30 +966,8 @@ Edge::paint(QPainter *painter,
         painter->setRenderHint(QPainter::Antialiasing, false);
     }
 
-    if (_imp->paintWithDash) {
-        QVector<qreal> dashStyle;
-        qreal space = 4;
-        dashStyle << 3 << space;
-        myPen.setDashPattern(dashStyle);
-    } else {
-        myPen.setStyle(Qt::SolidLine);
-    }
-
-    QColor color, arrowColor;
-    // A highlight marks a pipe an edit in progress will change, which matters more than the
-    // selection of its node.
-    if (_imp->isSpliceHint) {
-        color = arrowColor = selectionColorWithAlpha(100);
-    } else if (_imp->useHighlight) {
-        color = arrowColor = selectionColorWithAlpha();
-    } else if (_imp->useSelected) {
-        color = arrowColor = Qt::white;
-    } else if (_imp->useRenderingColor) {
-        color = arrowColor = _imp->renderingColor;
-    } else {
-        color = arrowColor = _imp->hasKindTint ? _imp->kindTint : _imp->defaultColor;
-    }
-    myPen.setColor(color);
+    QPen myPen = getDrawnPen();
+    const QColor color = myPen.color();
     painter->setPen(myPen);
 
 
@@ -950,7 +983,6 @@ Edge::paint(QPainter *painter,
     QPainterPath headPath;
     headPath.addPolygon(_imp->arrowHead);
     headPath.closeSubpath();
-    myPen.setColor(arrowColor);
     myPen.setJoinStyle(Qt::MiterJoin);
     painter->fillPath(headPath, color);
     painter->strokePath(headPath, myPen); // also draw the outline, or arrows are too small

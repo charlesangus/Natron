@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsLineItem>
 #include <QLineF>
+#include <QPen>
 #include <QPointF>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -139,11 +140,18 @@ public:
      **/
     void refreshDataKindPen(bool force = false);
 
+    // The pen the line is stroked with in the current state, dashes included.
+    QPen getDrawnPen() const;
+
 private:
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *options, QWidget *parent = 0) OVERRIDE FINAL;
 
+    virtual QVariant itemChange(GraphicsItemChange change, const QVariant& value) OVERRIDE;
+
     void invalidateGraphNavigator();
+
+    void appearanceChanged();
 
     std::unique_ptr<EdgePrivate> _imp;
 };

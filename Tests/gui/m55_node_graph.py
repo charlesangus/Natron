@@ -52,7 +52,7 @@ DRAG_STEPS = 4
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication, QHelpEvent, QKeyEvent, QMouseEvent
+    from PySide6.QtGui import QFontMetrics, QGuiApplication, QHelpEvent, QKeyEvent, QMouseEvent
     from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMainWindow, QPushButton, QToolTip, QWidget
 
     import guitest as gt
@@ -1153,6 +1153,41 @@ try:
         yield ("sleep", SETTLE_MS)
         graph_shot(graph_p, "panfit-03-refitted")
         check(near(view_positions(), fitted), "pan-fit: fitting after a pan puts every node back where the first fit had it")
+
+        # ---- lod: the same graph far out, just inside the low level of detail and close up. The
+        # graph switches to its low level once the application font would be drawn under 4 px
+        # tall (NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX).
+        gt.section("lod")
+        gt.close_all_panels()
+        app.clearSelection()
+        graph_l = root_graph()
+        lod_nodes = []
+        for col in range(6):
+            prev = create("Constant", 14000 + col * 220, 0)
+            lod_nodes.append(prev)
+            for row in range(1, 5):
+                cur = create("Blur" if (row % 2) else "Grade", 14000 + col * 220, row * 160)
+                connect(cur, 0, prev)
+                lod_nodes.append(cur)
+                prev = cur
+        lod_nodes[7].setColor(0.8, 0.3, 0.2)
+        lod_nodes[13].setColor(0.2, 0.6, 0.3)
+        gt.close_all_panels()
+        app.clearSelection()
+        app.selectNode(lod_nodes[9], False)
+        yield ("sleep", SETTLE_MS)
+        switch_zoom = 4.0 / QFontMetrics(QApplication.font()).height()
+        report("NOTE lod: the low level of detail starts below zoom %.3f" % switch_zoom)
+        xs = [box(n)[0] for n in lod_nodes]
+        ys = [box(n)[1] for n in lod_nodes]
+        centre = ((min(xs) + max(xs) + box(lod_nodes[0])[2]) / 2.0, (min(ys) + max(ys) + box(lod_nodes[0])[3]) / 2.0)
+        for name, zoom in (("lod-far.png", switch_zoom * 0.3), ("lod-mid.png", switch_zoom * 0.9), ("lod-close.png", 1.0)):
+            graph_l.resetTransform()
+            graph_l.scale(zoom, zoom)
+            graph_l.centerOn(centre[0], centre[1])
+            graph_l.viewport().update()
+            yield ("sleep", SETTLE_MS)
+            gt.shot(name)
 
         faulthandler.cancel_dump_traceback_later()
 

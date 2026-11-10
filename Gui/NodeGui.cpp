@@ -112,6 +112,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NearestMemberLines.h"
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGraphRectItem.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGraphUndoRedo.h"
@@ -474,7 +475,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(inputVisibilityChanged(int)), this, SLOT(onInputVisibilityChanged(int)) );
     QObject::connect(internalNode.get(), SIGNAL(dataKindChanged()), this, SLOT(onDataKindChanged()));
     QObject::connect( this, SIGNAL(previewImageComputed()), this, SLOT(onPreviewImageComputed()) );
-    setCacheMode(DeviceCoordinateCache);
+    setCacheMode(kNodeCacheModeFullDetail);
 
     OutputEffectInstance* isOutput = dynamic_cast<OutputEffectInstance*>( internalNode->getEffectInstance().get() );
     if (isOutput) {
@@ -1414,6 +1415,9 @@ NodeGui::resize(int width,
     resizeExtraContent(width, height, forceSize);
 
     refreshPosition( pos().x(), pos().y(), true );
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
+    }
 } // NodeGui::resize
 
 void
@@ -1824,6 +1828,9 @@ NodeGui::onPreviewImageComputed()
     } else {
         QRectF bbox(topLeft.x(), topLeft.y(), width, height);
         refreshPreviewAndLabelPosition(bbox);
+    }
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
     }
 }
 
@@ -2236,6 +2243,9 @@ NodeGui::refreshCurrentBrush()
     refreshUserColorBorder();
     refreshNameItemTextColor();
     refreshExtraLabelColor();
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
+    }
 }
 
 void
@@ -2282,6 +2292,9 @@ NodeGui::refreshUserColorBorder()
     refreshUserColorBorderGeometry();
     if (_userColorBorder->rect() != ringBefore) {
         refreshAttachedEdgesAndLinks();
+    }
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
     }
 }
 
@@ -2861,6 +2874,9 @@ NodeGui::refreshStateIndicator()
         _stateIndicator->hide();
     } else {
         update();
+    }
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
     }
 }
 
@@ -3536,6 +3552,9 @@ NodeGui::onDisabledKnobToggled(bool disabled)
     applyDisabledState(!enabled);
     invalidateGraphNavigator();
     update();
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
+    }
 }
 
 void

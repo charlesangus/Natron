@@ -237,6 +237,7 @@ public:
 };
 
 class LoopBlockOverlay;
+class NodeGraphLowDetailLayer;
 
 class NodeGraphPrivate
 {
@@ -265,6 +266,8 @@ public:
     QGraphicsItem* _root;
     QGraphicsItem* _nodeRoot; ///< this is the parent of all nodes
     LoopBlockOverlay* _loopBlocks;
+    NodeGraphLowDetailLayer* lowDetailEdgeLayer;
+    NodeGraphLowDetailLayer* lowDetailNodeLayer;
     QGraphicsSimpleTextItem* _cacheSizeText;
     bool cacheSizeHidden;
     QTimer _refreshCacheTextTimer;
@@ -420,6 +423,13 @@ public:
 
     bool isGridItemValid(const GridItem& gridItem) const;
     void refreshItemGrid();
+
+    // The grid entries of the nodes and edges whose subtree bounds may meet queryRoot, given in
+    // _nodeRoot coordinates.
+    void getGridItems(const QRectF& queryRoot, std::vector<GridItem>* items);
+
+    // Fades the nodes and their edges in or out for the level of detail lowDetail says.
+    void applyDetailLevel();
 
     // The nodes and edges whose subtree bounds may meet queryRoot, given in _nodeRoot coordinates.
     void getGridCandidates(const QRectF& queryRoot, std::vector<QGraphicsItem*>* candidates);

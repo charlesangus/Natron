@@ -226,6 +226,10 @@ DotGui::refreshStateIndicator()
     } else {
         update();
     }
+    NodeGraph* graph = getDagGui();
+    if (graph) {
+        graph->noteNodeGeometryChanged(this);
+    }
 }
 
 void

@@ -728,11 +728,15 @@ NodeGraph::extendCutLine(const QPointF& scenePos)
     _imp->_cutLine.push_back(scenePos);
 
     // The pipes keep still for the whole cut, so only the newest step of the line can cross more,
-    // and the scene index narrows that to the pipes whose bounds meet the step. The rect is padded
+    // and the item grid narrows that to the pipes whose bounds meet the step. The grid rather than
+    // the scene, which skips the pipes the low level of detail fades out. The rect is padded
     // because an axis-aligned step has an empty bounding rect, which intersects nothing.
     const QRectF stepBounds = QRectF(step.p1(), step.p2()).normalized().adjusted(-1., -1., 1., 1.);
-    const QList<QGraphicsItem*> nearby = scene()->items(stepBounds, Qt::IntersectsItemBoundingRect);
-    for (QList<QGraphicsItem*>::const_iterator it = nearby.begin(); it != nearby.end(); ++it) {
+    std::vector<QGraphicsItem*> nearby;
+    if (_imp->_nodeRoot->isVisible()) {
+        _imp->getGridCandidates(_imp->_nodeRoot->mapRectFromScene(stepBounds), &nearby);
+    }
+    for (std::vector<QGraphicsItem*>::const_iterator it = nearby.begin(); it != nearby.end(); ++it) {
         Edge* pipe = dynamic_cast<Edge*>(*it);
         if (!pipe || !pipe->isVisible() || !pipe->hasSource() || pipe->isOutputEdge()) {
             continue;

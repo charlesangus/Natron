@@ -39,6 +39,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QMouseEvent>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QToolTip>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -57,6 +58,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // isKeyBind
 #include "Gui/GuiMacros.h"
+#include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/TabMenuBridge.h"
@@ -211,6 +213,21 @@ NodeGraph::viewportEvent(QEvent* e)
         QRect pointRect(he->pos(), QSize(1, 1));
         std::vector<QGraphicsItem*> hits;
         getGraphItemsMeetingViewportRect(pointRect, false, &hits);
+        if (isLowDetail()) {
+            // The scene looks only at items it can see, and the nodes are faded out at this level.
+            for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
+                QGraphicsItem* top = *it;
+                while (top->parentItem() && (top->parentItem() != _imp->_nodeRoot)) {
+                    top = top->parentItem();
+                }
+                NodeGui* node = dynamic_cast<NodeGui*>(top);
+                if (node && NodeGraphLowDetailLayer::isFaded(node) && !node->toolTip().isEmpty()) {
+                    QToolTip::showText(he->globalPos(), node->toolTip(), viewport());
+
+                    return true;
+                }
+            }
+        }
         if (!hits.empty()) {
             QPolygonF polygonScene = mapToScene(pointRect);
             QPainterPath pathScene;

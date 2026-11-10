@@ -701,6 +701,7 @@ NodeGraph::centerOnAllNodes()
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     }
 
+    refreshDetailLevel();
     refreshOverlays();
     update();
 } // NodeGraph::centerOnAllNodes

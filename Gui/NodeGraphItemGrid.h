@@ -93,6 +93,18 @@ public:
         return _entries.find(key) != _entries.end();
     }
 
+    bool rectOf(const Key& key,
+                QRectF* rect) const
+    {
+        typename std::unordered_map<Key, Entry>::const_iterator found = _entries.find(key);
+        if (found == _entries.end()) {
+            return false;
+        }
+        *rect = found->second.rect;
+
+        return true;
+    }
+
     // Appends, once each and in no particular order, the payloads of the rectangles that overlap rect.
     void query(const QRectF& rect,
                std::vector<Payload>* out)

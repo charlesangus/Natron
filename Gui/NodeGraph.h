@@ -119,6 +119,10 @@ public:
     void noteNodeGeometryChanged(NodeGui* node);
     void noteEdgeGeometryChanged(NodeGui* owner, int slot, Edge* edge);
 
+    // Repaints what the low-detail layers draw of item, a node or an edge, both where its grid
+    // entry still has it and where it is now: a faded item ignores its own update().
+    void repaintLowDetailItem(QGraphicsItem* item);
+
     const NodesGuiList & getAllActiveNodes() const;
     NodesGuiList getAllActiveNodes_mt_safe() const;
 
@@ -213,6 +217,10 @@ public:
     // True when the view is zoomed out past the point where node names become too small to read:
     // nodes then draw their body only, and edges their line only.
     bool isLowDetail() const;
+
+    // Re-derives the level of detail from the zoom and, when it flips, swaps the nodes and edges
+    // between drawing themselves and being drawn by the low-detail layers.
+    void refreshDetailLevel();
 
     /**
      * @brief While a batch is open, a node that moves or resizes does not restack itself above

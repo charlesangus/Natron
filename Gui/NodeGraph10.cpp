@@ -26,6 +26,8 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <vector>
 
@@ -51,6 +53,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
+#include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 
@@ -110,16 +113,21 @@ adjustDegenerateRect(QRectF* rect)
 // Appends the items of the subtree rooted at item whose shape meets the query, which is what
 // QGraphicsScene::items() with Qt::IntersectsItemShape returns for that subtree.
 // queryParent bounds the query in item's parent's coordinates; pathScene is the query itself.
+// parentOpacity is the opacity item's parent passes on. A candidate, a node or an edge, that the
+// low level of detail fades out counts as opaque, since a layer draws it in its place.
 static void
 collectItemsMeetingQuery(QGraphicsItem* item,
                          const QRectF& queryParent,
                          const QPainterPath& pathScene,
                          bool skipText,
+                         bool isCandidate,
+                         qreal parentOpacity,
                          std::vector<QGraphicsItem*>* hits)
 {
     if (!item->isVisible()) {
         return;
     }
+    const qreal opacity = parentOpacity * ((isCandidate && NodeGraphLowDetailLayer::isFaded(item)) ? 1. : item->opacity());
     QRectF itemRect = item->boundingRect();
     adjustDegenerateRect(&itemRect);
     QRectF subtreeRect = item->mapRectToParent(itemRect.united(item->childrenBoundingRect()));
@@ -129,7 +137,7 @@ collectItemsMeetingQuery(QGraphicsItem* item,
     }
     QRectF queryLocal = item->mapRectFromParent(queryParent);
     bool isText = (item->type() == QGraphicsTextItem::Type) || (item->type() == QGraphicsSimpleTextItem::Type);
-    if ((!skipText || !isText) && itemRect.intersects(queryLocal) && (item->effectiveOpacity() >= 0.001)) {
+    if ((!skipText || !isText) && itemRect.intersects(queryLocal) && (opacity >= 0.001)) {
         QPainterPath pathLocal = item->mapFromScene(pathScene);
         // A node's badge letters are text like any other.
         bool meets = (skipText && item->type() == NodeGuiDecorations::Type) ? static_cast<NodeGuiDecorations*>(item)->collidesWithPathIgnoringText(pathLocal) : item->collidesWithPath(pathLocal, Qt::IntersectsItemShape);
@@ -139,7 +147,7 @@ collectItemsMeetingQuery(QGraphicsItem* item,
     }
     const QList<QGraphicsItem*> children = item->childItems();
     for (QList<QGraphicsItem*>::const_iterator it = children.begin(); it != children.end(); ++it) {
-        collectItemsMeetingQuery(*it, queryLocal, pathScene, skipText, hits);
+        collectItemsMeetingQuery(*it, queryLocal, pathScene, skipText, false, opacity, hits);
     }
 }
 
@@ -216,18 +224,30 @@ NodeGraphPrivate::refreshItemGrid()
 }
 
 void
-NodeGraphPrivate::getGridCandidates(const QRectF& queryRoot,
-                                    std::vector<QGraphicsItem*>* candidates)
+NodeGraphPrivate::getGridItems(const QRectF& queryRoot,
+                               std::vector<GridItem>* items)
 {
     refreshItemGrid();
     std::vector<GridItem> found;
     itemGrid.query(queryRoot, &found);
+    items->reserve(items->size() + found.size());
     for (std::vector<GridItem>::const_iterator it = found.begin(); it != found.end(); ++it) {
         if (isGridItemValid(*it)) {
-            candidates->push_back(it->item);
+            items->push_back(*it);
         } else {
             itemGrid.remove(it->item);
         }
+    }
+}
+
+void
+NodeGraphPrivate::getGridCandidates(const QRectF& queryRoot,
+                                    std::vector<QGraphicsItem*>* candidates)
+{
+    std::vector<GridItem> found;
+    getGridItems(queryRoot, &found);
+    for (std::vector<GridItem>::const_iterator it = found.begin(); it != found.end(); ++it) {
+        candidates->push_back(it->item);
     }
     // The graph's own preview pipes belong to no node; there are only ever these three.
     Edge* const graphEdges[] = { _hintInputEdge, _hintOutputEdge, _kissPreviewEdge };
@@ -262,8 +282,9 @@ NodeGraphPrivate::collectGraphItemsMeetingViewportRect(const QRect& rect,
     pathScene.addPolygon(polygonScene);
     pathScene.closeSubpath();
     QRectF queryRoot = _nodeRoot->mapRectFromScene(polygonScene.boundingRect());
+    const qreal rootOpacity = _nodeRoot->effectiveOpacity();
     for (std::vector<QGraphicsItem*>::const_iterator it = candidates.begin(); it != candidates.end(); ++it) {
-        collectItemsMeetingQuery(*it, queryRoot, pathScene, skipText, hits);
+        collectItemsMeetingQuery(*it, queryRoot, pathScene, skipText, true, rootOpacity, hits);
     }
 }
 
@@ -280,9 +301,61 @@ NodeGraph::getGraphItemsMeetingViewportRect(const QRect& rect,
 }
 
 void
+NodeGraphPrivate::applyDetailLevel()
+{
+    lowDetailEdgeLayer->setVisible(lowDetail);
+    lowDetailNodeLayer->setVisible(lowDetail);
+    // The trash too: a node restored from it must not come back faded at the full level.
+    const IndexedNodeGuiList* lists[] = { &_nodes, &_nodesTrash };
+    QMutexLocker l(&_nodesMutex);
+    for (std::size_t i = 0; i < sizeof(lists) / sizeof(lists[0]); ++i) {
+        for (NodesGuiList::const_iterator it = lists[i]->begin(); it != lists[i]->end(); ++it) {
+            NodeGui* node = it->get();
+            NodeGraphLowDetailLayer::applyDetailLevel(node, true, lowDetail);
+            const std::vector<Edge*>& inputs = node->getInputsArrows();
+            for (std::size_t j = 0; j < inputs.size(); ++j) {
+                NodeGraphLowDetailLayer::applyDetailLevel(inputs[j], false, lowDetail);
+            }
+            NodeGraphLowDetailLayer::applyDetailLevel(node->getOutputArrow(), false, lowDetail);
+        }
+    }
+}
+
+void
+NodeGraph::refreshDetailLevel()
+{
+    const bool lowDetail = std::abs(transform().m22()) * _imp->lowDetailFontHeight < NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX;
+    if (lowDetail == _imp->lowDetail) {
+        return;
+    }
+    _imp->lowDetail = lowDetail;
+    _imp->applyDetailLevel();
+}
+
+void
+NodeGraph::repaintLowDetailItem(QGraphicsItem* item)
+{
+    if (!_imp->lowDetail || !NodeGraphLowDetailLayer::isFaded(item) || (item->parentItem() != _imp->_nodeRoot)) {
+        return;
+    }
+    QRectF dirty = gridRectOf(item);
+    QRectF filed;
+    if (_imp->itemGrid.rectOf(item, &filed)) {
+        dirty |= filed;
+    }
+    _imp->lowDetailEdgeLayer->update(dirty);
+    _imp->lowDetailNodeLayer->update(dirty);
+}
+
+void
 NodeGraph::noteNodeGeometryChanged(NodeGui* node)
 {
-    if (_imp->itemGridDirty || !node) {
+    if (!node) {
+        return;
+    }
+    NodeGraphLowDetailLayer::applyDetailLevel(node, true, _imp->lowDetail);
+    repaintLowDetailItem(node);
+    if (_imp->itemGridDirty) {
         return;
     }
     NodeGraphPrivate::GridItem gridItem;
@@ -297,7 +370,12 @@ NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
                                    int slot,
                                    Edge* edge)
 {
-    if (_imp->itemGridDirty || !owner || !edge) {
+    if (!owner || !edge) {
+        return;
+    }
+    NodeGraphLowDetailLayer::applyDetailLevel(edge, false, _imp->lowDetail);
+    repaintLowDetailItem(edge);
+    if (_imp->itemGridDirty) {
         return;
     }
     NodeGraphPrivate::GridItem gridItem;

@@ -185,6 +185,7 @@ NodeGraph::wheelEventInternal(bool ctrlDown,
             scaleFactor = pow( NATRON_WHEEL_ZOOM_PER_DELTA, _imp->_accumDelta );
             scale(scaleFactor, scaleFactor);
             _imp->_accumDelta = 0;
+            refreshDetailLevel();
             refreshOverlays();
         }
     }

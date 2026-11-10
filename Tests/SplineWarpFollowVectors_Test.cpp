@@ -307,6 +307,31 @@ TEST_F(SplineWarpFollowVectorsTest, ARenderAfterTheFollowShowsTheNewKeys)
     EXPECT_LT(largestDifference(renderAt(last), before), 1e-6);
 }
 
+// Only the correspondence moves here, so a changed render can only come from its keys.
+TEST_F(SplineWarpFollowVectorsTest, ARenderAfterACorrespondenceOnlyFollowShowsTheNewKeys)
+{
+    ASSERT_EQ(_warp->addCorrespondence(_link, kCorrespondenceParam, kCorrespondenceParam), 0);
+    const double last = kStart + kSpan;
+    const std::vector<float> before = renderAt(last);
+    ASSERT_FALSE(before.empty());
+
+    VectorFollowParams follow = params();
+    follow.points.push_back(_warp->makeCorrespondenceFollowPoints(_link, 0));
+    UndoCommandPtr undo;
+    const VectorFollowReport report = _warp->followVectors(follow, &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    ASSERT_TRUE(bool(undo));
+    EXPECT_EQ(keyCount(_source), 1u);
+    EXPECT_EQ(keyCount(_destination), 1u);
+    EXPECT_TRUE(_link->getCorrespondences()[0].source.isAnimated());
+
+    const std::vector<float> after = renderAt(last);
+    EXPECT_GT(largestDifference(after, before), 1e-3);
+
+    undo->undo();
+    EXPECT_LT(largestDifference(renderAt(last), before), 1e-6);
+}
+
 TEST_F(SplineWarpFollowVectorsTest, OneUndoRevertsTheCurvesAndTheCorrespondence)
 {
     ASSERT_EQ(_warp->addCorrespondence(_link, kCorrespondenceParam, kCorrespondenceParam), 0);

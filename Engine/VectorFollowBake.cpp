@@ -1023,6 +1023,11 @@ VectorFollowRun::finish(bool sourceLost,
     }
     _imp->undo.reset();
     _imp->tieSuspension.reset();
+    for (const std::unique_ptr<FollowShape>& shape : _imp->shapes) {
+        if (shape->points) {
+            shape->points->followEnded();
+        }
+    }
     _imp->context->refreshTrackLinkListeners();
     _imp->context->emitRefreshViewerOverlays();
     _imp->context->evaluateChange();

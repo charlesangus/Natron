@@ -855,7 +855,6 @@ followReportToPython(const VectorFollowReport& report)
     return result;
 }
 
-// The Follow Vectors group of the context's node, whatever node type hosts it.
 const VectorFollowControls*
 followHost(const RotoCurveContextPtr& context)
 {

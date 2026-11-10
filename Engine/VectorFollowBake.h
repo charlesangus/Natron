@@ -60,6 +60,12 @@ public:
 
     // Keys them at time where the follow moved them, as near as they can go.
     virtual void setPointsAtTime(double time, const std::vector<FollowPoint>& points) = 0;
+
+    // True when the keys written by setPointsAtTime change nothing the host renders until followEnded.
+    virtual bool defersChangeToEnd() const { return false; }
+
+    // Called once, on the main thread, when the follow has written its last key or been undone.
+    virtual void followEnded() { }
 };
 
 typedef std::shared_ptr<VectorFollowPoints> VectorFollowPointsPtr;

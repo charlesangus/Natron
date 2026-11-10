@@ -1567,7 +1567,8 @@ SplineWarpContext::setCorrespondenceAtTime(const SplineWarpLinkPtr& link,
                                            double time,
                                            double sourceParam,
                                            double destinationParam,
-                                           bool evaluate)
+                                           bool evaluate,
+                                           bool markDirty)
 {
     if (!link) {
         throw std::invalid_argument("SplineWarp: the link is null.");
@@ -1589,7 +1590,15 @@ SplineWarpContext::setCorrespondenceAtTime(const SplineWarpLinkPtr& link,
         link->_correspondences[index].source.setValueAtTime(time, sourceParam);
         link->_correspondences[index].destination.setValueAtTime(time, destinationParam);
     }
-    warpDataChanged(evaluate);
+    if (markDirty) {
+        warpDataChanged(evaluate);
+    }
+}
+
+void
+SplineWarpContext::correspondenceFollowEnded()
+{
+    warpDataChanged(false);
 }
 
 namespace {
@@ -1696,7 +1705,21 @@ public:
         };
         const double sourceParam = nearest(sourceShape, true, points[0]);
         const double destinationParam = nearest(destinationShape, false, points[1]);
-        context->setCorrespondenceAtTime(_link, _index, time, sourceParam, destinationParam, false);
+        context->setCorrespondenceAtTime(_link, _index, time, sourceParam, destinationParam, false, false);
+    }
+
+    // One key per frame would otherwise bump the node's hash generation each time.
+    virtual bool defersChangeToEnd() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual void followEnded() OVERRIDE FINAL
+    {
+        const SplineWarpContextPtr context = _context.lock();
+        if (context) {
+            context->correspondenceFollowEnded();
+        }
     }
 
 private:

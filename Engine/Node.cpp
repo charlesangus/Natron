@@ -3351,7 +3351,6 @@ Node::Implementation::checkForExitPreview()
 }
 
 namespace {
-// The Follow Vectors group of a curve host, whatever node type hosts it.
 VectorFollowControls*
 vectorFollowOf(EffectInstance* effect)
 {

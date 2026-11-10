@@ -94,7 +94,7 @@ renames the required checks. It switches branch protection over when it merges.
 
 ## Phase 377.4: Step names and job summaries
 
-- [ ] M377.P4.T1 — Make step names say what they do
+- [x] M377.P4.T1 — Make step names say what they do
   - files: every `.github/workflows/*.yml`
   - approach: Go through every `- name:` and rename any that don't make the failure clear on their own. Example: `Run tests` becomes `Run ctest suite (<scheduler> scheduler)`, and a generic `Download` becomes `Download build tree from Build · debug`. Add `name:` to `uses:` and `run:` steps that have none. Use sentence case and no trailing periods. Don't change commands, `id:`s, or step order.
   - verify: `actionlint` is clean. In `git diff -U0`, every changed line is a `name:` line or a comment. The PR's own run shows the new step names.

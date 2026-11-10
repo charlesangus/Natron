@@ -179,6 +179,9 @@ wrapParams(const GpuWrap& wrap, GpuWrapParams& out, const GpuWrapView* filtered)
     out.nComps = n;
     out.channelMask = wrap.channelMask & 0xFu;
     out.mix = wrap.mix;
+    if (wrap.clampAlpha) {
+        out.flags |= kGpuWrapFlagClampAlpha;
+    }
     out.divisorChannel = wrap.divisorChannel < 0 ? -1 : wrap.divisorChannel;
     out.skipChannel = wrap.skipChannel < 0 ? -1 : wrap.skipChannel;
 

@@ -25,6 +25,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -543,15 +544,15 @@ protected:
         return constant;
     }
 
-    // An IErode or IDilate of `source` at `size`, its Map `map` when there is one.
+    // An IErodeDilate of `source` eroding at `size`, or dilating at it when `dilate` negates it, its
+    // Map `map` when there is one.
     NodePtr makeNode(bool dilate,
                      const NodePtr& source,
                      const NodePtr& map,
                      double sizeX,
                      double sizeY)
     {
-        NodePtr node = dilate ? createNode(QString::fromUtf8(PLUGINID_NATRON_IDILATE), PLUGIN_MAJOR_NATRON_IDILATE)
-                              : createNode(QString::fromUtf8(PLUGINID_NATRON_IERODE), PLUGIN_MAJOR_NATRON_IERODE);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_IERODEDILATE), PLUGIN_MAJOR_NATRON_IERODEDILATE);
 
         EXPECT_TRUE(bool(node));
         if (!node) {
@@ -563,26 +564,27 @@ protected:
         if (map) {
             connectNodes(map, node, kIErodeDilateInputMap, true);
         }
-        EXPECT_TRUE(setKnobValues(node, kIErodeDilateParamSize, { sizeX, sizeY }));
+        const double sign = dilate ? -1. : 1.;
+        EXPECT_TRUE(setKnobValues(node, kIErodeDilateParamSize, { sign * sizeX, sign * sizeY }));
 
         return node;
     }
 
-    // Erode or Dilate of `source` at the whole size.
+    // ErodeDilate of `source` eroding at the whole size, or dilating at it when `dilate` negates it.
     NodePtr makeBase(bool dilate,
                      const NodePtr& source,
                      int sizeX,
                      int sizeY)
     {
-        NodePtr node = dilate ? createNode(QString::fromUtf8(PLUGINID_NATRON_DILATE), PLUGIN_MAJOR_NATRON_DILATE)
-                              : createNode(QString::fromUtf8(PLUGINID_NATRON_ERODE), PLUGIN_MAJOR_NATRON_ERODE);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE), PLUGIN_MAJOR_NATRON_ERODEDILATE);
 
         EXPECT_TRUE(bool(node));
         if (!node) {
             return node;
         }
         connectNodes(source, node, 0, true);
-        EXPECT_TRUE(setKnobValues(node, kErodeDilateParamSize, { (double)sizeX, (double)sizeY }));
+        const double sign = dilate ? -1. : 1.;
+        EXPECT_TRUE(setKnobValues(node, kErodeDilateParamSize, { sign * sizeX, sign * sizeY }));
 
         return node;
     }
@@ -632,7 +634,7 @@ TEST_F(NativeIErodeDilateTest, MapZeroIsBitIdentical)
         RenderedPlane expected, actual;
         ASSERT_TRUE(renderRGBA(source, kWindow, &expected));
         ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
-        EXPECT_EQ(0u, countDiffering(expected, actual)) << (dilate ? "IDilate" : "IErode");
+        EXPECT_EQ(0u, countDiffering(expected, actual)) << (dilate ? "dilate" : "erode");
     }
 }
 
@@ -645,11 +647,12 @@ TEST_F(NativeIErodeDilateTest, HugeSizeAtBlackRenders)
         NodePtr node = makeNode(dilate, source, map, 7., 7.);
         ASSERT_TRUE(bool(source) && bool(map) && bool(node));
         for (double huge : { 1e200, 1e300 }) {
-            setKnobValues(node, kMapInputParamSizeAtBlack, { huge, huge });
+            const double sizeAtBlack = dilate ? -huge : huge;
+            setKnobValues(node, kMapInputParamSizeAtBlack, { sizeAtBlack, sizeAtBlack });
             RenderedPlane actual;
             ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
             for (float v : actual.pixels) {
-                ASSERT_TRUE(std::isfinite(v)) << (dilate ? "IDilate" : "IErode");
+                ASSERT_TRUE(std::isfinite(v)) << (dilate ? "dilate" : "erode");
             }
         }
     }
@@ -673,19 +676,19 @@ TEST_F(NativeIErodeDilateTest, InvertedMapIsFullSizeOutsideItsImage)
         ASSERT_TRUE(renderRGBA(full, kWindow, &expected));
         ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
         ASSERT_EQ(expected.pixels.size(), actual.pixels.size());
-        EXPECT_NE(input.pixels, actual.pixels) << (dilate ? "IDilate" : "IErode");
+        EXPECT_NE(input.pixels, actual.pixels) << (dilate ? "dilate" : "erode");
         std::size_t differing = 0;
         for (std::size_t i = 0; i < expected.pixels.size(); ++i) {
             if (expected.pixels[i] != actual.pixels[i]) {
                 ++differing;
             }
         }
-        EXPECT_EQ(0u, differing) << (dilate ? "IDilate" : "IErode");
+        EXPECT_EQ(0u, differing) << (dilate ? "dilate" : "erode");
     }
 }
 
-// A white Map, or none, with the square shape and a whole Size gives Erode's and Dilate's result
-// bit for bit.
+// A white Map, or none, with the square shape and a whole Size gives ErodeDilate's result bit for
+// bit.
 TEST_F(NativeIErodeDilateTest, MapOneSquareMatchesErodeDilate)
 {
     const int sizes[][2] = { { 1, 1 }, { 3, 2 }, { 0, 4 }, { 6, 6 } };
@@ -701,7 +704,7 @@ TEST_F(NativeIErodeDilateTest, MapOneSquareMatchesErodeDilate)
                 RenderedPlane expected, actual;
                 ASSERT_TRUE(renderRGBA(base, kWindow, &expected));
                 ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
-                EXPECT_EQ(0u, countDiffering(expected, actual)) << (dilate ? "IDilate " : "IErode ") << s[0] << "x" << s[1] << (connected ? ", white Map" : ", no Map");
+                EXPECT_EQ(0u, countDiffering(expected, actual)) << (dilate ? "dilate " : "erode ") << s[0] << "x" << s[1] << (connected ? ", white Map" : ", no Map");
             }
         }
     }
@@ -745,7 +748,7 @@ TEST_F(NativeIErodeDilateTest, DiscMatchesBruteForce)
 
 // A Map stepping from 0 to 1 across the window dilates a horizontal white band by a growing
 // fractional radius: each column's red holds at least as much white as the one before it, and
-// IErode grows a black band likewise.
+// eroding grows a black band likewise.
 TEST_F(NativeIErodeDilateTest, MapRampIsMonotonic)
 {
     for (bool dilate : { false, true }) {
@@ -774,11 +777,11 @@ TEST_F(NativeIErodeDilateTest, MapRampIsMonotonic)
             }
         }
         for (int x = 1; x < width; ++x) {
-            EXPECT_GE(amount[x], amount[x - 1]) << (dilate ? "IDilate" : "IErode") << " column " << x;
+            EXPECT_GE(amount[x], amount[x - 1]) << (dilate ? "dilate" : "erode") << " column " << x;
         }
         // The band itself where the Map is black, grown by 5.5 rows each side where it is white.
-        EXPECT_DOUBLE_EQ(8., amount[0]) << (dilate ? "IDilate" : "IErode");
-        EXPECT_DOUBLE_EQ(19., amount[width - 1]) << (dilate ? "IDilate" : "IErode");
+        EXPECT_DOUBLE_EQ(8., amount[0]) << (dilate ? "dilate" : "erode");
+        EXPECT_DOUBLE_EQ(19., amount[width - 1]) << (dilate ? "dilate" : "erode");
     }
 }
 
@@ -792,7 +795,7 @@ TEST_F(NativeIErodeDilateTest, DisconnectedMapWarns)
     QString message;
     int type = 0;
     node->getPersistentMessage(&message, &type, false);
-    EXPECT_EQ(QString::fromUtf8(IErode::mapNotConnectedMessage().c_str()), message);
+    EXPECT_EQ(QString::fromUtf8(IErodeDilate::mapNotConnectedMessage().c_str()), message);
 
     NodePtr map = makeParitySource();
     ASSERT_TRUE(bool(map));
@@ -803,35 +806,142 @@ TEST_F(NativeIErodeDilateTest, DisconnectedMapWarns)
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }
 
+// A size of 0 on both axes is an identity, and the passes are empty, so the input passes through.
+TEST_F(NativeIErodeDilateTest, SizeZeroIsIdentity)
+{
+    NodePtr source = makeParitySource();
+    NodePtr node = makeNode(false, source, NodePtr(), 0., 0.);
+    ASSERT_TRUE(bool(source) && bool(node));
+
+    RenderedPlane expected, actual;
+    ASSERT_TRUE(renderRGBA(source, kWindow, &expected));
+    ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+    EXPECT_EQ(0u, countDiffering(expected, actual));
+}
+
+// A positive size erodes and a negative one dilates: the result is never above, or never below,
+// the input, and differs from it somewhere.
+TEST_F(NativeIErodeDilateTest, SignPicksErodeOrDilate)
+{
+    for (bool dilate : { false, true }) {
+        NodePtr source = makeParitySource();
+        NodePtr node = makeNode(dilate, source, NodePtr(), 3., 2.);
+        ASSERT_TRUE(bool(source) && bool(node));
+
+        RenderedPlane input, actual;
+        ASSERT_TRUE(renderRGBA(source, kWindow, &input));
+        ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+        ASSERT_EQ(input.pixels.size(), actual.pixels.size());
+        std::size_t wrongSide = 0;
+        for (std::size_t i = 0; i < input.pixels.size(); ++i) {
+            if (dilate ? (actual.pixels[i] < input.pixels[i]) : (actual.pixels[i] > input.pixels[i])) {
+                ++wrongSide;
+            }
+        }
+        EXPECT_EQ(0u, wrongSide) << (dilate ? "dilate" : "erode");
+        EXPECT_NE(input.pixels, actual.pixels) << (dilate ? "dilate" : "erode");
+    }
+}
+
+// Sizes of opposite signs filter X and then Y: with no Map, the square shape gives ErodeDilate's
+// result, whose passes run in that order, bit for bit.
+TEST_F(NativeIErodeDilateTest, OppositeSignsFilterXThenY)
+{
+    const double sizes[][2] = { { 3., -2. }, { -4., 1. } };
+    for (const double* s : sizes) {
+        NodePtr source = makeParitySource();
+        NodePtr node = makeNode(false, source, NodePtr(), s[0], s[1]);
+        NodePtr base = createNode(QString::fromUtf8(PLUGINID_NATRON_ERODEDILATE), PLUGIN_MAJOR_NATRON_ERODEDILATE);
+        ASSERT_TRUE(bool(source) && bool(node) && bool(base));
+        connectNodes(source, base, 0, true);
+        ASSERT_TRUE(setKnobValues(base, kErodeDilateParamSize, { s[0], s[1] }));
+
+        RenderedPlane expected, actual;
+        ASSERT_TRUE(renderRGBA(base, kWindow, &expected));
+        ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+        EXPECT_EQ(0u, countDiffering(expected, actual)) << s[0] << "x" << s[1];
+    }
+}
+
+// A Map ramp from Size At Black -4 to Size 4 crosses 0 mid-image: a white band over black is
+// dilated where the Map is dark, eroded where it is bright, and left as it is where the size is 0.
+TEST_F(NativeIErodeDilateTest, MapRampCrossesZero)
+{
+    NodePtr background = makeConstant(kWindow, { 0., 0., 0., 1. });
+    NodePtr band = makeConstant(RectI(0, 16, kParitySourceWidth, 32), { 1., 1., 1., 1. });
+    NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+    NodePtr map = makeStepRamp(8);
+    ASSERT_TRUE(bool(background) && bool(band) && bool(over) && bool(map));
+    EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
+    connectNodes(background, over, 0, true);
+    connectNodes(band, over, 1, true);
+    NodePtr node = makeNode(false, over, map, 0., 4.);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { 0., -4. }));
+
+    RenderedPlane actual;
+    ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+    const int width = kWindow.width();
+    std::vector<double> amount(width, 0.);
+    for (int y = 0; y < kWindow.height(); ++y) {
+        for (int x = 0; x < width; ++x) {
+            amount[x] += actual.pixels[((std::size_t)y * width + x) * 4];
+        }
+    }
+    for (int x = 1; x < width; ++x) {
+        EXPECT_LE(amount[x], amount[x - 1]) << "column " << x;
+    }
+    // The band of 16 rows grown by 4 each side at black, shrunk by 4 each side at white, and as
+    // it is where the ramp's middle step gives a size of 0.
+    EXPECT_DOUBLE_EQ(24., amount[0]);
+    EXPECT_DOUBLE_EQ(8., amount[width - 1]);
+    EXPECT_DOUBLE_EQ(16., amount[(kParitySourceWidth / 9) * 4 + 1]);
+}
+
 // Regression fixtures: the parity source filtered through a Map that is another parity source,
 // whose alpha bands give exact 0, exact 1 and a ramp.
 TEST_F(NativeIErodeDilateTest, Golden)
 {
-    for (bool dilate : { false, true }) {
-        GoldenNodeSpec spec;
-        spec.name = dilate ? "IDilate" : "IErode";
-        spec.pluginID = dilate ? PLUGINID_NATRON_IDILATE : PLUGINID_NATRON_IERODE;
-        spec.major = dilate ? PLUGIN_MAJOR_NATRON_IDILATE : PLUGIN_MAJOR_NATRON_IERODE;
-        spec.maskInput = "Mask";
-        spec.extraInputs.push_back(kMapInputLabel);
+    GoldenNodeSpec spec;
+    spec.name = "IErodeDilate";
+    spec.pluginID = PLUGINID_NATRON_IERODEDILATE;
+    spec.major = PLUGIN_MAJOR_NATRON_IERODEDILATE;
+    spec.maskInput = "Mask";
+    spec.extraInputs.push_back(kMapInputLabel);
 
-        const std::function<bool(const GoldenGraph&)> sized = [](const GoldenGraph& g) {
-            return setKnobValues(g.node, kIErodeDilateParamSize, { 6.5, 3. });
+    std::vector<GoldenVariant> v;
+    for (bool dilate : { false, true }) {
+        const double sign = dilate ? -1. : 1.;
+        const std::string prefix = dilate ? "dilate" : "";
+        // The variant's name, "dilate" leading the dilating ones.
+        const auto name = [&prefix](const std::string& base) {
+            if (prefix.empty()) {
+                return base;
+            }
+            if (base == "default") {
+                return prefix;
+            }
+            std::string upper = base;
+            upper[0] = (char)std::toupper((unsigned char)upper[0]);
+
+            return prefix + upper;
         };
-        std::vector<GoldenVariant> v;
-        v.push_back(goldenVariant("default", false, sized));
-        v.push_back(goldenVariant("disc", false, [sized](const GoldenGraph& g) {
+        const std::function<bool(const GoldenGraph&)> sized = [sign](const GoldenGraph& g) {
+            return setKnobValues(g.node, kIErodeDilateParamSize, { sign * 6.5, sign * 3. });
+        };
+        v.push_back(goldenVariant(name("default"), false, sized));
+        v.push_back(goldenVariant(name("disc"), false, [sized](const GoldenGraph& g) {
             return sized(g) && setKnobValue(g.node, kIErodeDilateParamShape, std::string(kIErodeDilateParamShapeDisc));
         }));
-        v.push_back(goldenVariant("sizeatblack", false, [sized](const GoldenGraph& g) {
-            return sized(g) && setKnobValues(g.node, kMapInputParamSizeAtBlack, { 2., 4.5 }) && setKnobValues(g.node, kMapInputParamInvert, { 1. });
+        v.push_back(goldenVariant(name("sizeatblack"), false, [sized, sign](const GoldenGraph& g) {
+            return sized(g) && setKnobValues(g.node, kMapInputParamSizeAtBlack, { sign * 2., sign * 4.5 }) && setKnobValues(g.node, kMapInputParamInvert, { 1. });
         }));
-        v.push_back(goldenVariant("remap", false, [sized](const GoldenGraph& g) {
+        v.push_back(goldenVariant(name("remap"), false, [sized](const GoldenGraph& g) {
             return sized(g) && setKnobValues(g.node, kMapInputParamGamma, { 0.5 }) && setKnobValue(g.node, kMapInputParamResponse, std::string(kMapInputParamResponseSmooth)) && setKnobValues(g.node, kIErodeDilateParamExpandRoD, { 0. });
         }));
-        v.push_back(goldenVariant("maskmix", true, [sized](const GoldenGraph& g) {
+        v.push_back(goldenVariant(name("maskmix"), true, [sized](const GoldenGraph& g) {
             return sized(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });
         }));
-        runGoldenCases(getApp(), spec, v);
     }
+    runGoldenCases(getApp(), spec, v);
 }

@@ -68,6 +68,7 @@
 #include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -834,7 +835,7 @@ NativeWrite::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    KnobOutputFilePtr filename = createKnob<KnobOutputFile>(tr("File"));
+    KnobOutputFilePtr filename = createKnob<KnobOutputFile>(tr("Filename"));
     filename->setName(kOfxImageEffectFileParamName);
     filename->setAsOutputImageFile();
     filename->setHintToolTip(tr("The image or image sequence to write."));
@@ -894,15 +895,6 @@ NativeWrite::initializeKnobs()
     page->addKnob(lastFrame);
     _lastFrame = lastFrame;
 
-    // Node.cpp shows this knob's value, in parentheses, next to the node's label; it follows the
-    // file name there.
-    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
-    sublabel->setName(kNatronOfxParamStringSublabelName);
-    sublabel->setSecretByDefault(true);
-    sublabel->setAnimationEnabled(false);
-    sublabel->setEvaluateOnChange(false);
-    page->addKnob(sublabel);
-
     KnobIntPtr frameIncr = createKnob<KnobInt>(tr(kNatronWriteParamFrameStepLabel));
     frameIncr->setName(kNatronWriteParamFrameStep);
     frameIncr->setHintToolTip(tr(kNatronWriteParamFrameStepHint));
@@ -912,15 +904,15 @@ NativeWrite::initializeKnobs()
     page->addKnob(frameIncr);
 
     OcioSpaceKnobs::Description outputSpace;
-    outputSpace.prefix = kNatronWriteParamOCIOOutputSpace;
-    outputSpace.label = tr("Output Colorspace");
-    outputSpace.spaceHint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
-                               "working space. It is shown only when the project's config has no colorspace of that name.");
-    outputSpace.menuHint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
-                              "working space. A new Write takes the colorspace the config's file rules give the file name, "
-                              "else the project's default for files of its kind. The config's default rule does not count. "
-                              "Reset to default returns to that colorspace.");
-    outputSpace.setLabel = tr("Output Colorspace Set");
+    outputSpace.name = kNatronWriteParamColorspace;
+    outputSpace.label = tr("Colorspace");
+    outputSpace.hint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
+                          "working space. Project default takes the colorspace the config's file rules give the file "
+                          "name, else the project's default for files of its kind, and follows them as they change; "
+                          "its label shows the colorspace it currently stands for. The config's default rule does not "
+                          "count.");
+    outputSpace.defaultHint = tr("The colorspace the config's file rules give the file name, else the project's default "
+                                 "for files of its kind, following them as they change.");
     _outputSpace.create(this, page, outputSpace, [this]() { return automaticOutputSpace(); });
 
     KnobChoicePtr bitDepth = createKnob<KnobChoice>(tr("Bit Depth"));
@@ -994,7 +986,7 @@ NativeWrite::initializeKnobs()
     page->addKnob(tileSize);
     _tileSize = tileSize;
 
-    KnobChoicePtr partSplitting = createKnob<KnobChoice>(tr("Parts"));
+    KnobChoicePtr partSplitting = createKnob<KnobChoice>(tr("Part Splitting"));
     partSplitting->setName(kNatronWriteParamPartSplitting);
     partSplitting->setHintToolTip(tr("Defines whether to separate views and layers in different EXR parts or not. Multi-part files can be opened only with applications supporting OpenEXR 2."));
     {
@@ -1011,7 +1003,7 @@ NativeWrite::initializeKnobs()
 
     // Its script name and its first entry are what OutputEffectInstance and Node look for.
     KnobChoicePtr views = createKnob<KnobChoice>(tr("Views"));
-    views->setName(kNatronWriteParamViewsSelector);
+    views->setName(kNatronWriteParamViews);
     views->setHintToolTip(tr("Select the views to render. When choosing All, make sure the output filename does not have a %v or %V view pattern in which case each view would be written to a separate file."));
     views->populateChoices(std::vector<ChoiceOption>(1, ChoiceOption(kNatronWriteViewsAll)));
     views->setDefaultValue(0);
@@ -1019,13 +1011,25 @@ NativeWrite::initializeKnobs()
     page->addKnob(views);
     _views = views;
 
-    KnobBoolPtr writeMetadata = createKnob<KnobBool>(tr("Write Metadata"));
-    writeMetadata->setName(kNatronWriteParamWriteMetadata);
-    writeMetadata->setHintToolTip(tr("When checked, the metadata of the input image (EXR attributes, EXIF fields, timecode and so on) is written to the file, as far as the file format can hold it."));
-    writeMetadata->setDefaultValue(true);
-    writeMetadata->setAnimationEnabled(false);
-    page->addKnob(writeMetadata);
-    _writeMetadata = writeMetadata;
+    KnobChoicePtr metadata = createKnob<KnobChoice>(tr("Metadata"));
+    metadata->setName(kNatronWriteParamMetadata);
+    metadata->setHintToolTip(tr("Which metadata of the input image is written to the file. Formats without custom attributes (TIFF, JPEG, DPX) only take their standard tags, whatever the choice."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kNatronWriteMetadataNone, tr("No Metadata").toStdString(),
+                                       tr("Write no metadata from the input.").toStdString()));
+        options.push_back(ChoiceOption(kNatronWriteMetadataDefault, tr("Default Metadata").toStdString(),
+                                       tr("Write only the keys that map to the file format's own attributes and standard tags, such as the timecode, EXIF fields, creator and comment.").toStdString()));
+        options.push_back(ChoiceOption(kNatronWriteMetadataAllExceptInput, tr("All Metadata Except Input").toStdString(),
+                                       tr("Write every key, including custom ones, under its full key name. The keys that describe the input file are left out: its path, frame, size and modification time, and its pixel aspect, width, height, bit depth, sample type and view names.").toStdString()));
+        options.push_back(ChoiceOption(kNatronWriteMetadataAll, tr("All Metadata").toStdString(),
+                                       tr("Write every key, including the keys that describe the input file. Its pixel aspect, width, height, bit depth, sample type and view names can contradict the file being written if the image has been changed since it was read.").toStdString()));
+        metadata->populateChoices(options);
+    }
+    metadata->setDefaultValue(2);
+    metadata->setAnimationEnabled(false);
+    page->addKnob(metadata);
+    _metadata = metadata;
 
     KnobBoolPtr readBack = createKnob<KnobBool>(tr(kNatronWriteParamReadBackLabel));
     readBack->setName(kNatronWriteParamReadBack);
@@ -1042,21 +1046,44 @@ NativeWrite::initializeKnobs()
     KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
     reload->setName(kNatronWriteParamReload);
     reload->setHintToolTip(tr("Reads the written files again: forgets their headers and layers and the images read from "
-                              "them, so a file changed on disk is what the node outputs. Only while Read back file is on."));
+                              "them, so a file changed on disk is what the node outputs. Only while Read Back is on."));
     reload->setIsMetadataSlave(true);
     reload->setAllDimensionsEnabled(false);
     page->addKnob(reload);
     _reload = reload;
 
+    // A render can keep this effect alive after its node is destroyed, and purging caches or refreshing
+    // a menu then reaches the node, so the node scopes the connections. A render thread may also drop
+    // the last reference while a slot is about to run on the main thread, so the slots hold the node,
+    // and through it this effect, or skip once the node no longer holds this effect.
+    NodePtr node = getNode();
+    NodeWPtr weakNode = node;
     RenderEnginePtr engine = getRenderEngine();
-    if (engine) {
-        QObject::connect(engine.get(), &RenderEngine::renderFinished, this, [this](int) { onSequenceRenderFinished(); });
+    if (engine && node) {
+        QObject::connect(engine.get(), &RenderEngine::renderFinished, node.get(), [this, weakNode](int) {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                onSequenceRenderFinished();
+            }
+        });
     }
     ProjectPtr project = getApp()->getProject();
-    if (project) {
-        QObject::connect(project.get(), &Project::projectViewsChanged, this, [this]() {
-            refreshViewsMenu();
-            _viewToKeep.clear();
+    if (project && node) {
+        QObject::connect(project.get(), &Project::projectViewsChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                refreshViewsMenu();
+                _viewToKeep.clear();
+            }
+        });
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                _outputSpace.sourceChanged();
+            }
         });
     }
 
@@ -1067,11 +1094,26 @@ void
 NativeWrite::onKnobsLoaded()
 {
     _outputSpace.refreshMenu();
+    _outputSpace.refreshProjectDefault();
     // The project's views may load after this node's knobs, so a saved view missing from the menu now stays chosen until they arrive.
     KnobChoicePtr views = _views.lock();
     const std::string saved = views ? views->getActiveEntry().id : std::string();
     _viewToKeep = saved == kNatronWriteViewsAll ? std::string() : saved;
     refreshOptions();
+    refreshSublabel();
+}
+
+void
+NativeWrite::refreshSublabel()
+{
+    KnobOutputFilePtr filename = _filename.lock();
+    std::string pattern = filename ? filename->getValue() : std::string();
+    const std::size_t slash = pattern.find_last_of('/');
+
+    if (slash != std::string::npos) {
+        pattern = pattern.substr(slash + 1);
+    }
+    setSublabel(pattern);
 }
 
 std::optional<std::string>
@@ -1341,6 +1383,7 @@ NativeWrite::onEffectCreated(bool mayCreateFileDialog,
 
     KnobOutputFilePtr filename = _filename.lock();
 
+    _outputSpace.refreshProjectDefault();
     if (filename && !filename->getValue().empty()) {
         rejectUnsupportedFormat(filename->getValue());
 
@@ -1493,9 +1536,22 @@ NativeWrite::getOutputContentHash() const
         h.appendDouble(last);
     }
     h.appendU64(project->getContentDigest());
+    _outputSpace.appendHash(h);
 
     return h.finalize();
 } // NativeWrite::getOutputContentHash
+
+void
+NativeWrite::appendNodeContentHash(ContentHasher& h) const
+{
+    _outputSpace.appendHash(h);
+}
+
+std::string
+NativeWrite::colorspace() const
+{
+    return _outputSpace.space();
+}
 
 bool
 NativeWrite::isInputOptional(int inputNb) const
@@ -1726,6 +1782,7 @@ NativeWrite::knobChanged(KnobI* k,
     }
     if (filename && (k == filename.get())) {
         refreshOptions();
+        refreshSublabel();
         _outputSpace.sourceChanged();
         const std::string path = filename->getValue();
         if (path.empty() || !rejectUnsupportedFormat(path)) {
@@ -2199,7 +2256,7 @@ NativeWrite::render(const RenderActionArgs& args)
             }
         }
         if (window.par != 1.) {
-            spec.attribute("PixelAspectRatio", (float)window.par);
+            spec.attribute("PixelAspectRatio", knobValueAsFloat(window.par));
         }
         if (caps.displayWindow) {
             spec.x = dataWindow.x1;
@@ -2210,9 +2267,16 @@ NativeWrite::render(const RenderActionArgs& args)
             spec.full_height = window.display.height();
         }
 
-        const KnobBoolPtr writeMetadata = _writeMetadata.lock();
-        if (!writeMetadata || writeMetadata->getValue()) {
-            OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName);
+        const KnobChoicePtr metadataKnob = _metadata.lock();
+        const std::string metadataID = metadataKnob ? activeID(metadataKnob) : std::string(kNatronWriteMetadataAllExceptInput);
+        if (metadataID != kNatronWriteMetadataNone) {
+            OiioWriteSupport::WriteMetadataMode mode = OiioWriteSupport::WriteMetadataMode::AllExceptInput;
+            if (metadataID == kNatronWriteMetadataDefault) {
+                mode = OiioWriteSupport::WriteMetadataMode::Default;
+            } else if (metadataID == kNatronWriteMetadataAll) {
+                mode = OiioWriteSupport::WriteMetadataMode::All;
+            }
+            OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName, mode);
         }
         if (formatName == "openexr") {
             spec.attribute(kNatronWriteOutputHashAttribute, outputHashText(outputHash));

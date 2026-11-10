@@ -214,18 +214,29 @@ MapInput::clampSize(double size)
     return std::min(size, kMapInputMaxSize);
 }
 
+double
+MapInput::clampSignedSize(double size)
+{
+    if (std::isnan(size)) {
+        return 0.;
+    }
+
+    return std::max(-kMapInputMaxSize, std::min(size, kMapInputMaxSize));
+}
+
 void
 MapInput::createSizeAtBlackKnob(KnobHolder* holder,
                                 const KnobPagePtr& page,
-                                int sizeDimensions)
+                                int sizeDimensions,
+                                bool isSigned)
 {
     KnobDoublePtr sizeAtBlack = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Size At Black"), sizeDimensions);
     sizeAtBlack->setName(kMapInputParamSizeAtBlack);
     for (int d = 0; d < sizeDimensions; ++d) {
         sizeAtBlack->setDefaultValue(0., d);
-        sizeAtBlack->setMinimum(0., d);
+        sizeAtBlack->setMinimum(isSigned ? -kMapInputMaxSize : 0., d);
         sizeAtBlack->setMaximum(kMapInputMaxSize, d);
-        sizeAtBlack->setDisplayMinimum(0., d);
+        sizeAtBlack->setDisplayMinimum(isSigned ? -100. : 0., d);
         sizeAtBlack->setDisplayMaximum(100., d);
     }
     sizeAtBlack->setHintToolTip(EffectInstance::tr("The size where the Map is black. Size is the size where it is white. At 0 "
@@ -233,6 +244,7 @@ MapInput::createSizeAtBlackKnob(KnobHolder* holder,
     page->addKnob(sizeAtBlack);
     _sizeAtBlack = sizeAtBlack;
     _sizeDimensions = sizeDimensions;
+    _signedSize = isSigned;
 }
 
 void
@@ -302,7 +314,8 @@ MapInput::bake(const KnobReader& reader) const
     params.exponent = (float)(1. / std::max(0.01, reader.value(_gamma)));
     // A node without Size At Black, such as a variable warp, keeps the default.
     for (int d = 0; (d < 2) && (_sizeDimensions > 0); ++d) {
-        params.sizeAtBlack[d] = MapInput::clampSize(reader.value(_sizeAtBlack, std::min(d, _sizeDimensions - 1)));
+        const double value = reader.value(_sizeAtBlack, std::min(d, _sizeDimensions - 1));
+        params.sizeAtBlack[d] = _signedSize ? MapInput::clampSignedSize(value) : MapInput::clampSize(value);
     }
 
     return params;

@@ -75,7 +75,7 @@ constexpr NodeSpec kEdgeBlurNodeSpec = {
                    "with External Matte on and no Matte connected the image is left unchanged. The Mask and Mix limit the result as usual.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_EDGEBLUR,
-    .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png",
+    .icon = NATRON_IMAGES_PATH "NativeNodes/Blur.png",
     .inputs = kEdgeBlurInputs,
 };
 
@@ -256,6 +256,7 @@ EdgeBlur::initializeKnobs()
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"));
     sizeKnob->setName(kEdgeBlurParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(tr("Size (diameter) of the blur where the edge weight is 1, and of the edge detection's pre-blur, in pixel units (0 to 1000). Each pixel's blur is this Size times its edge weight, three boxes approximating the Gaussian of standard deviation size/2.4."));
     sizeKnob->setSpatial(true);
     sizeKnob->setMinimum(0.);
@@ -697,6 +698,8 @@ EdgeBlur::readsGpuInput(int inputNb,
 
 RectI
 EdgeBlur::opPassesInputRoI(int inputNb,
+                           double time,
+                           ViewIdx view,
                            const RectI& outputRect,
                            const RenderScale& scale) const
 {
@@ -704,7 +707,7 @@ EdgeBlur::opPassesInputRoI(int inputNb,
         return outputRect;
     }
 
-    return matteRoIOf(getParams(getCurrentTime(), getCurrentView()), getPassContext(getCurrentTime(), getCurrentView(), scale), outputRect);
+    return matteRoIOf(getParams(time, view), getPassContext(time, view, scale), outputRect);
 }
 
 bool

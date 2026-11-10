@@ -45,6 +45,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Raw/RawGpuParams.h"
 #include "Engine/RectD.h"
 
@@ -239,6 +240,7 @@ RawPrepare::initializeKnobs()
     cropOverride->setHintToolTip(tr("Crop by the margins below instead of to the active area the raw file gives."));
     cropOverride->setDefaultValue(false);
     cropOverride->setAnimationEnabled(false);
+    cropOverride->setIsMetadataSlave(true);
     page->addKnob(cropOverride);
     _cropOverride = cropOverride;
 
@@ -262,6 +264,7 @@ RawPrepare::initializeKnobs()
         knob->setDisplayMinimum(0);
         knob->setDisplayMaximum(256);
         knob->setAnimationEnabled(false);
+        knob->setIsMetadataSlave(true);
         page->addKnob(knob);
         *margin.store = knob;
     }
@@ -464,8 +467,11 @@ RawPrepare::resolveSettings(double time,
         white = *fromFile;
     }
     for (int i = 0; i < 4; ++i) {
-        s.sub[i] = (float)black[(std::size_t)i % black.size()];
-        const float div = (float)white - s.sub[i];
+        s.sub[i] = knobValueAsFloat(black[(std::size_t)i % black.size()]);
+        const float whiteF = knobValueAsFloat(white);
+        // The double difference of two floats rounds to the float difference, so narrowing it
+        // gives the float subtraction's result, overflow and inf - inf included, without its trap.
+        const float div = knobValueAsFloat(differenceOrInfinity(whiteF, s.sub[i]));
         s.div[i] = (div != 0.f) ? div : 1.f;
     }
 
@@ -573,6 +579,23 @@ RawPrepare::deriveOutputMetadata(double time,
     }
 
     return metadata;
+}
+
+StatusEnum
+RawPrepare::getPreferredMetadataAt(double time,
+                                   ViewIdx view,
+                                   NodeMetadata& metadata)
+{
+    const StatusEnum status = StagedImageEffect::getPreferredMetadataAt(time, view, metadata);
+    const std::optional<Settings> settings = resolveSettings(time, view);
+
+    // The output is at the origin, so a format left at the input's would show the kept area
+    // in a corner of the full sensor.
+    if (settings && !settings->passThrough) {
+        metadata.setOutputFormat(RectI(0, 0, settings->kept.width(), settings->kept.height()));
+    }
+
+    return status;
 }
 
 bool

@@ -72,6 +72,16 @@
 #define kRawMetadataMonochrome "raw/monochrome"
 #define kRawMetadataHighlightPreservation "raw/highlight_preservation"
 
+// The EXIF camera and lens keys the Read sets for a raw file, from the file's own EXIF IFDs: the
+// names OiioReadSupport gives the same tags of every other file, so a node that reads them works
+// on any image. Absent when the file does not carry the tag.
+#define kExifMetadataMake "exif/Make"
+#define kExifMetadataModel "exif/Model"
+#define kExifMetadataLensModel "exif/LensModel"
+#define kExifMetadataFocalLength "exif/FocalLength"
+#define kExifMetadataFNumber "exif/FNumber"
+#define kExifMetadataSubjectDistance "exif/SubjectDistance"
+
 #define kRawCfaPatternNone "none"
 #define kRawStageRaw "raw"
 #define kRawStagePrepared "prepared"

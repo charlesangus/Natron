@@ -35,6 +35,7 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/IsolatedJob.h"
@@ -42,6 +43,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
@@ -451,10 +453,10 @@ Node::isInputOnlyAlpha(int inputNb) const
 int
 Node::getNInputs() const
 {
-    ///MT-safe, never changes
-    assert(_imp->effect);
-
-    return _imp->effect->getNInputs();
+    /// MT-safe, never changes
+    // A destroyed node has none, and an output with a queued input edit still reads it until the
+    // edit lands.
+    return _imp->effect ? _imp->effect->getNInputs() : 0;
 }
 
 void
@@ -518,6 +520,7 @@ Node::initializeInputs()
         _imp->effect->addAcceptedComponents(-1, &_imp->outputComponents);
     }
     _imp->inputsInitialized = true;
+    LoopEnd::onGraphChanged();
 
     Q_EMIT inputsInitialized();
 } // Node::initializeInputs
@@ -861,6 +864,9 @@ Node::connectInput(const NodePtr & input,
     QObject::connect( input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
 
     ///Notify the GUI
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputNumber);
+    }
     Q_EMIT inputChanged(inputNumber);
     bool mustCallEnd = false;
 
@@ -953,6 +959,9 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhil
     QObject::connect( input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
 
     ///Notify the GUI
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputNumber);
+    }
     Q_EMIT inputChanged(inputNumber);
     bool mustCallEnd = false;
     if (!useGuiInputs) {
@@ -1057,7 +1066,13 @@ Node::switchInput0And1()
         // Under the render-start lock, as in connectInput().
         markHashDirty();
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputAIndex);
+    }
     Q_EMIT inputChanged(inputAIndex);
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputBIndex);
+    }
     Q_EMIT inputChanged(inputBIndex);
     bool mustCallEnd = false;
     if (!useGuiInputs) {
@@ -1121,6 +1136,7 @@ Node::connectOutput(bool useGuiValues,
             _imp->guiOutputs.push_back(output);
         }
     }
+    LoopEnd::onGraphChanged();
     Q_EMIT outputsChanged();
 }
 
@@ -1171,6 +1187,9 @@ Node::disconnectInput(int inputNumber)
         }
     }
 
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputNumber);
+    }
     Q_EMIT inputChanged(inputNumber);
     bool mustCallEnd = false;
     if (!useGuiValues) {
@@ -1240,6 +1259,9 @@ Node::disconnectInputInternal(Node* input, bool queueWhileRendering)
     }
     if (found != -1) {
         input->disconnectOutput(useGuiValues, this);
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onInputChanged(this, found);
+        }
         Q_EMIT inputChanged(found);
         bool mustCallEnd = false;
         if (!useGuiValues) {
@@ -1300,6 +1322,7 @@ Node::disconnectOutput(bool useGuiValues,
         }
     }
 
+    LoopEnd::onGraphChanged();
     //Will just refresh the gui
     Q_EMIT outputsChanged();
 
@@ -1625,6 +1648,7 @@ void
 Node::onInputChanged(int inputNb,
                      bool isInputA)
 {
+    LoopEnd::onGraphChanged();
     // A destroy deferred until the node's renders quit can finish after its app is gone.
     AppInstancePtr app = getApp();
     if (!app || app->getProject()->isProjectClosing()) {
@@ -1682,6 +1706,9 @@ Node::onInputChanged(int inputNb,
         ///Don't do clip preferences while loading a project, they will be refreshed globally once the project is loaded.
         _imp->effect->onInputChanged(inputNb);
         _imp->inputsModified.insert(inputNb);
+
+        // A LoopBegin wired into or out of a loop body changes what its LoopEnd shows.
+        LoopEnd::refreshLoopsOf(shared_from_this());
 
         // If the effect has render clones, kill them as the plug-in might have changed its internal state
         _imp->effect->clearRenderInstances();
@@ -2070,6 +2097,7 @@ Node::getContextReadSuccessors(std::vector<NodePtr>* successors,
             overridden->push_back(RenderContextReadSet());
         }
     }
+    _imp->effect->appendExtraContextReadSuccessors(successors, overridden);
 }
 
 namespace {
@@ -2148,9 +2176,10 @@ Node::getUpstreamContextReadSet() const
     static const RenderContextReadSetConstPtr emptyReads = std::make_shared<const RenderContextReadSet>();
 
     // Tarjan's strongly connected components, iteratively so that a deep graph cannot overflow
-    // the stack. Expressions can make the graph cyclic; the nodes of a cycle read each other, so
-    // they share one read-set. Every node walked gets its memo, so asking each node of a graph
-    // in turn walks the graph once.
+    // the stack. Expressions and Feedback LoopBegins can make the graph cyclic. An edge of a cycle
+    // can override variables, as the LoopEnd of a loop nested in a Feedback body does, so the nodes
+    // of a cycle read different sets: each component is solved to its least fixed point. Every
+    // node walked gets its memo, so asking each node of a graph in turn walks the graph once.
     struct Visit {
         const Node* node;
         NodePtr hold;
@@ -2210,19 +2239,42 @@ Node::getUpstreamContextReadSet() const
 
         callStack.pop_back();
         if (visits[v].lowlink == visits[v].index) {
-            RenderContextReadSet componentReads;
             std::size_t first = componentStack.size();
             do {
                 --first;
-                componentReads.merge(visits[componentStack[first]].reads);
             } while (componentStack[first] != v);
-            const RenderContextReadSetConstPtr closure = componentReads.empty() ? emptyReads : std::make_shared<const RenderContextReadSet>(std::move(componentReads));
+            // Each member's reads hold what leaves the component so far. Reads flow against the
+            // edges and discovery order follows them, so walking it backwards takes few passes.
+            bool changed = (componentStack.size() - first) > 1;
+            while (changed) {
+                changed = false;
+                for (std::size_t i = componentStack.size(); i-- > first;) {
+                    Visit& member = visits[componentStack[i]];
+                    for (std::size_t edge = 0; edge < member.successors.size(); ++edge) {
+                        std::unordered_map<const Node*, std::size_t>::const_iterator found = visitOf.find(member.successors[edge].get());
+                        if ((found == visitOf.end()) || !visits[found->second].onStack || (found->second == componentStack[i])) {
+                            continue;
+                        }
+                        const bool readAll = member.reads.readsAll();
+                        const std::size_t nNames = member.reads.names().size();
+                        mergeSuccessorReads(&member.reads, visits[found->second].reads, member.overridden[edge]);
+                        changed = changed || (member.reads.readsAll() != readAll) || (member.reads.names().size() != nNames);
+                    }
+                }
+            }
+            RenderContextReadSetConstPtr closure;
+            for (std::size_t i = first; i < componentStack.size(); ++i) {
+                Visit& member = visits[componentStack[i]];
+                if (!closure || (*closure != member.reads)) {
+                    closure = member.reads.empty() ? emptyReads : std::make_shared<const RenderContextReadSet>(member.reads);
+                }
+                member.closure = closure;
+                member.node->setMemoizedContextReads(generation, closure);
+            }
             for (std::size_t i = first; i < componentStack.size(); ++i) {
                 Visit& member = visits[componentStack[i]];
                 member.onStack = false;
-                member.closure = closure;
                 member.reads = RenderContextReadSet();
-                member.node->setMemoizedContextReads(generation, closure);
             }
             componentStack.resize(first);
         }

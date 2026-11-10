@@ -4,11 +4,12 @@ knobs:
   projectPaths: "<Name>Project</Name><Value>@TMP@</Value>"
 layers:
   depth: {label: "depth", channelsLabel: "Z", channels: ["Z"], origin: 1}
+  normal: {label: "normal", channelsLabel: "XYZ", channels: ["X", "Y", "Z"], origin: 1}
   primId: {label: "primId", channelsLabel: "id", channels: ["id"], origin: 1}
 timeline: {current: 1}
 nodes:
   RotoPaint1:
-    plugin: "fr.inria.built-in.RotoPaint"
+    plugin: "RotoPaint"
     version: [1, 0]
     pos: [120, -80]
     knobs:
@@ -22,9 +23,8 @@ nodes:
       skewx: 0
       skewy: 0
       skewOrder: "XY"
-      center: [0, 0]
+      center: [100, 60]
       resetTransformCenter: ~
-      RotoTransformInteractive: true
       extraMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
       resetTransform: ~
     pages: ["General", "Shape", "Stroke", "Clone", "Transform", "Toolbar", "Node", "Info"]
@@ -57,7 +57,7 @@ nodes:
                 skewx: 0
                 skewy: 0
                 skewOrder: "XY"
-                center: [0, 0]
+                center: [30, 70]
                 extraMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
                 brushSize: 25
                 brushSpacing: 0.1
@@ -95,7 +95,7 @@ nodes:
                     overlay: [0.85164, 0.196936, 0.196936, 1]
                     knobs:
                       opacity: 1
-                      feather: 1.5
+                      feather: 3
                       featherFallOff: 1
                       lifeTime: "All"
                       lifeTimeFrame: {value: 0, secret: true}
@@ -109,7 +109,7 @@ nodes:
                       skewx: 0
                       skewy: 0
                       skewOrder: "XY"
-                      center: [0, 0]
+                      center: [100, 60]
                       extraMatrix: [1, 0, 0, 0, 1, 0, 0, 0, 1]
                       brushSize: {value: 25, enabled: false}
                       brushSpacing: {value: 0.1, enabled: false}

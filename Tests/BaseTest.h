@@ -92,6 +92,13 @@ protected:
     /// Sets an existing Read's input colourspace to the project's working space.
     void readInWorkingSpace(const NodePtr& reader);
 
+    /// Picks `space` in a native Read's or Write's colorspace menu, failing the test when the
+    /// menu does not offer it.
+    static void setFileColorspace(const NodePtr& node, const std::string& space);
+
+    /// Picks the project's working space in a native Read's or Write's colorspace menu.
+    void fileInWorkingSpace(const NodePtr& node);
+
     void registerTestPlugins();
 
     ///////////////Pointers to plug-ins that might be used by all the tests. This makes

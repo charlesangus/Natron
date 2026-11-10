@@ -53,7 +53,6 @@
 
 #define kRectangleParamBottomLeft "bottomLeft"
 #define kRectangleParamSize "size"
-#define kRectangleParamInteractive "interactive"
 #define kRectangleParamEnable "rectangleInteractEnable"
 
 NATRON_NAMESPACE_ENTER
@@ -102,13 +101,8 @@ private:
         size->setDefaultValue(50., 1);
         page->addKnob(size);
 
-        KnobBoolPtr interactive;
         KnobBoolPtr enable;
         if (WITH_OPTIONAL_KNOBS) {
-            interactive = createKnob<KnobBool>(std::string("Interactive Update"));
-            interactive->setName(kRectangleParamInteractive);
-            page->addKnob(interactive);
-
             enable = createKnob<KnobBool>(std::string("Rectangle Interact Enable"));
             enable->setName(kRectangleParamEnable);
             enable->setDefaultValue(true);
@@ -118,7 +112,7 @@ private:
 
         NodePtr node = getNode();
         if (node) {
-            node->addRectangleInteract(bottomLeft, size, interactive, enable);
+            node->addRectangleInteract(bottomLeft, size, enable);
         }
     }
 };
@@ -204,22 +198,19 @@ TEST_F(RectangleOverlayTest, GuiLessNodeStoresTheRectangleOverlayKnobs)
 
     KnobIPtr bottomLeft = node->getKnobByName(kRectangleParamBottomLeft);
     KnobIPtr size = node->getKnobByName(kRectangleParamSize);
-    KnobIPtr interactive = node->getKnobByName(kRectangleParamInteractive);
     KnobIPtr enable = node->getKnobByName(kRectangleParamEnable);
     ASSERT_TRUE(bool(bottomLeft));
     ASSERT_TRUE(bool(size));
-    ASSERT_TRUE(bool(interactive));
     ASSERT_TRUE(bool(enable));
 
     EXPECT_EQ(bottomLeft, knobs->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft));
     EXPECT_EQ(size, knobs->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationSize));
-    EXPECT_EQ(interactive, knobs->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationInteractive));
     EXPECT_EQ(enable, knobs->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationEnable));
     EXPECT_EQ(bottomLeft, knobs->getFirstKnob());
     EXPECT_TRUE(knobs->checkHostOverlayValid());
 }
 
-TEST_F(RectangleOverlayTest, OptionalInteractiveAndEnableKnobsMayBeOmitted)
+TEST_F(RectangleOverlayTest, OptionalEnableKnobMayBeOmitted)
 {
     NodePtr node = createNode(QString::fromUtf8(kRectangleOverlayMinimalPluginID));
     ASSERT_TRUE(bool(node));
@@ -229,7 +220,6 @@ TEST_F(RectangleOverlayTest, OptionalInteractiveAndEnableKnobsMayBeOmitted)
 
     EXPECT_EQ(node->getKnobByName(kRectangleParamBottomLeft), knobs->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft));
     EXPECT_EQ(node->getKnobByName(kRectangleParamSize), knobs->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationSize));
-    EXPECT_FALSE(bool(knobs->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationInteractive)));
     EXPECT_FALSE(bool(knobs->getKnob(HostOverlayKnobsRectangle::eKnobsEnumerationEnable)));
     EXPECT_TRUE(knobs->checkHostOverlayValid());
 }
@@ -240,9 +230,9 @@ TEST_F(RectangleOverlayTest, OverlayIsInvalidWithoutSizeOrWithAWrongKnobType)
     ASSERT_TRUE(bool(node));
 
     KnobIPtr bottomLeft = node->getKnobByName(kRectangleParamBottomLeft);
-    KnobIPtr interactive = node->getKnobByName(kRectangleParamInteractive);
+    KnobIPtr enable = node->getKnobByName(kRectangleParamEnable);
     ASSERT_TRUE(bool(bottomLeft));
-    ASSERT_TRUE(bool(interactive));
+    ASSERT_TRUE(bool(enable));
 
     HostOverlayKnobsRectangle missingSize;
     missingSize.addKnob(bottomLeft, HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft);
@@ -250,6 +240,6 @@ TEST_F(RectangleOverlayTest, OverlayIsInvalidWithoutSizeOrWithAWrongKnobType)
 
     HostOverlayKnobsRectangle boolAsSize;
     boolAsSize.addKnob(bottomLeft, HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft);
-    boolAsSize.addKnob(interactive, HostOverlayKnobsRectangle::eKnobsEnumerationSize);
+    boolAsSize.addKnob(enable, HostOverlayKnobsRectangle::eKnobsEnumerationSize);
     EXPECT_FALSE(boolAsSize.checkHostOverlayValid());
 }

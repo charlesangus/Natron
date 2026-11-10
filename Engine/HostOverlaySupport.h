@@ -90,9 +90,7 @@ class HostOverlayKnobsTransform
     : public HostOverlayKnobs
 {
 public:
-
-    enum KnobsEnumeration
-    {
+    enum KnobsEnumeration {
         eKnobsEnumerationTranslate,
         eKnobsEnumerationScale,
         eKnobsEnumerationUniform,
@@ -101,8 +99,7 @@ public:
         eKnobsEnumerationSkewy,
         eKnobsEnumerationCenter,
         eKnobsEnumerationSkewOrder,
-        eKnobsEnumerationInvert,
-        eKnobsEnumerationInteractive
+        eKnobsEnumerationInvert
     };
 
     HostOverlayKnobsTransform()
@@ -119,9 +116,7 @@ class HostOverlayKnobsCornerPin
     : public HostOverlayKnobs
 {
 public:
-
-    enum KnobsEnumeration
-    {
+    enum KnobsEnumeration {
         eKnobsEnumerationFrom1,
         eKnobsEnumerationFrom2,
         eKnobsEnumerationFrom3,
@@ -135,8 +130,7 @@ public:
         eKnobsEnumerationEnable3,
         eKnobsEnumerationEnable4,
         eKnobsEnumerationOverlayPoints,
-        eKnobsEnumerationInvert,
-        eKnobsEnumerationInteractive
+        eKnobsEnumerationInvert
     };
 
     HostOverlayKnobsCornerPin()
@@ -177,7 +171,6 @@ public:
     enum KnobsEnumeration {
         eKnobsEnumerationBottomLeft,
         eKnobsEnumerationSize,
-        eKnobsEnumerationInteractive,
         eKnobsEnumerationEnable
     };
 
@@ -193,6 +186,27 @@ private:
 };
 
 typedef std::shared_ptr<HostOverlayKnobsRectangle> HostOverlayKnobsRectanglePtr;
+
+// Two points, each drawn with a dashed line through it orthogonal to the line between them.
+class HostOverlayKnobsRamp
+    : public HostOverlayKnobs {
+public:
+    enum KnobsEnumeration {
+        eKnobsEnumerationPoint0,
+        eKnobsEnumerationPoint1,
+        eKnobsEnumerationInteractive
+    };
+
+    HostOverlayKnobsRamp()
+        : HostOverlayKnobs()
+    {
+    }
+
+    virtual ~HostOverlayKnobsRamp() { }
+
+private:
+    virtual void describeOverlayKnobs() OVERRIDE FINAL;
+};
 
 NATRON_NAMESPACE_EXIT
 

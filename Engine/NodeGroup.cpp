@@ -42,6 +42,7 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
@@ -55,6 +56,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGraphI.h"
 #include "Engine/NodeGuiI.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
@@ -162,17 +164,30 @@ NodeCollection::addNode(const NodePtr& node)
         QMutexLocker k(&_imp->nodesMutex);
         _imp->nodes.push_back(node);
     }
+    AppInstancePtr app = getApplication();
+    if (ProjectPtr project = app ? app->getProject() : ProjectPtr()) {
+        project->registerNodeId(node);
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeAdded(node);
+    }
 }
 
 void
 NodeCollection::removeNode(const Node* node)
 {
-    QMutexLocker k(&_imp->nodesMutex);
-    for (NodesList::iterator it =_imp->nodes.begin(); it != _imp->nodes.end();++it) {
-        if ( it->get() == node ) {
-            _imp->nodes.erase(it);
-            break;
+    {
+        QMutexLocker k(&_imp->nodesMutex);
+        for (NodesList::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
+            if (it->get() == node) {
+                _imp->nodes.erase(it);
+                break;
+            }
         }
+    }
+    AppInstancePtr app = getApplication();
+    if (ProjectPtr project = app ? app->getProject() : ProjectPtr()) {
+        project->unregisterNodeId(node);
     }
 }
 
@@ -1269,6 +1284,7 @@ NodeGroup::notifyNodeDeactivated(const NodePtr& node)
         _imp->guiInputs = _imp->inputs;
         _imp->guiOutputs = _imp->outputs;
     }
+    LoopEnd::onGraphChanged();
 
     ///Notify outputs of the group nodes that their inputs may have changed
     const NodesWList& outputs = thisNode->getOutputs();
@@ -1306,6 +1322,7 @@ NodeGroup::notifyNodeActivated(const NodePtr& node)
             _imp->guiOutputs.push_back(node);
         }
     }
+    LoopEnd::onGraphChanged();
     ///Notify outputs of the group nodes that their inputs may have changed
     const NodesWList& outputs = thisNode->getOutputs();
     for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
@@ -1344,10 +1361,13 @@ NodeGroup::notifyNodeNameChanged(const NodePtr& node)
 void
 NodeGroup::dequeueConnexions()
 {
-    QMutexLocker k(&_imp->nodesLock);
+    {
+        QMutexLocker k(&_imp->nodesLock);
 
-    _imp->inputs = _imp->guiInputs;
-    _imp->outputs = _imp->guiOutputs;
+        _imp->inputs = _imp->guiInputs;
+        _imp->outputs = _imp->guiOutputs;
+    }
+    LoopEnd::onGraphChanged();
 }
 
 NodePtr

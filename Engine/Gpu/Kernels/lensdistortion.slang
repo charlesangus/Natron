@@ -18,10 +18,11 @@ static const uint kLensDistortionSample = 8;
 static const uint kLensDistortionSTMap = 16;
 
 static const uint kLensDistortionModelBase = 20;
+static const uint kLensDistortionLobesWord = 120;
 
 struct LensDistortion
 {
-    uint filter;
+    FilterSpec spec;
     uint flags;
     // The direction each output pixel is mapped in to reach the Source: the opposite of the knob's.
     uint direction;
@@ -44,7 +45,7 @@ FF lensDistortionFF(StructuredBuffer<uint> params, uint index)
 LensDistortion lensDistortionLoad(StructuredBuffer<uint> params)
 {
     LensDistortion d;
-    d.filter = params[0];
+    d.spec = loadFilterSpec(params, 0, kLensDistortionLobesWord);
     d.flags = params[1];
     d.direction = params[2];
     d.scaleX = lensDistortionFF(params, 4);
@@ -114,7 +115,7 @@ float4 lensDistortionPixel(LensDistortion d, int2 p)
                        ffToFloat(ffDiv(ffMul(s.J.j2, d.scaleY), d.scaleX)), ffToFloat(s.J.j3));
         }
     }
-    const float4 v = sampleAt(lensDistortionSource(d), sx, sy, J, jacobian, d.filter, (d.flags & kLensDistortionClamp) != 0, kWrapNone, kWrapNone,
+    const float4 v = sampleAt(lensDistortionSource(d), sx, sy, J, jacobian, d.spec, (d.flags & kLensDistortionClamp) != 0, kWrapNone, kWrapNone,
                               int4(0, 0, 0, 0));
     if (wrap.nComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);

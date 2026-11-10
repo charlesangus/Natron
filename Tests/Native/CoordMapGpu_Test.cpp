@@ -68,6 +68,9 @@ struct CoordCase {
     std::vector<float> coords;
     bool hasJacobian = false;
     Resampler::FilterEnum filter = Resampler::eFilterImpulse;
+    int lobes = 4;
+    double bicubicB = 1. / 3.;
+    double bicubicC = 1. / 3.;
     bool clamp = false;
     bool blackOutside = true;
     Resampler::WrapMode wrapU = Resampler::eWrapNone;
@@ -153,6 +156,7 @@ renderCpu(const CoordCase& c)
     std::vector<float> sx(c.width);
     std::vector<float> sy(c.width);
     std::vector<float> jacobian((std::size_t)c.width * 4);
+    const Resampler::FilterSpec spec(c.filter, c.lobes, c.bicubicB, c.bicubicC);
     for (int j = 0; j < c.height; ++j) {
         for (int i = 0; i < c.width; ++i) {
             const float* w = &c.coords[((std::size_t)j * c.width + i) * kCoordWords];
@@ -162,7 +166,7 @@ renderCpu(const CoordCase& c)
                 jacobian[(std::size_t)i * 4 + k] = w[2 + k];
             }
         }
-        Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), c.hasJacobian ? jacobian.data() : 0, c.width, c.filter, c.clamp,
+        Resampler::resampleRowFromCoords(src, sx.data(), sy.data(), c.hasJacobian ? jacobian.data() : 0, c.width, spec, c.clamp,
                                          c.blackOutside, c.wrapU, c.wrapV, &out[(std::size_t)j * c.width * c.nComps], c.nComps,
                                          c.domain.isNull() ? 0 : &c.domain);
     }
@@ -191,7 +195,7 @@ std::string
 describe(const CoordCase& c)
 {
     std::ostringstream s;
-    s << c.name << " filter " << (int)c.filter << " clamp " << c.clamp << " blackOutside " << c.blackOutside << " wrap " << wrapName(c.wrapU)
+    s << c.name << " filter " << (int)c.filter << " lobes " << c.lobes << " B " << c.bicubicB << " C " << c.bicubicC << " clamp " << c.clamp << " blackOutside " << c.blackOutside << " wrap " << wrapName(c.wrapU)
       << "/" << wrapName(c.wrapV) << " jacobian " << c.hasJacobian << " nComps " << c.nComps;
 
     return s.str();
@@ -263,6 +267,9 @@ renderGpu(GpuParityRuntime& runtime,
     p.srcY2 = c.bounds.y2;
     p.nComps = (uint32_t)c.nComps;
     p.filter = (uint32_t)c.filter;
+    p.lobes = c.lobes;
+    p.B = (float)c.bicubicB;
+    p.C = (float)c.bicubicC;
     p.flags = kFlagSrcValid | ((c.clamp && Resampler::filterHonoursClamp(c.filter)) ? kFlagClamp : 0u) | (c.blackOutside ? kFlagBlackOutside : 0u);
     p.states = (uint32_t)c.wrapU | ((uint32_t)c.wrapV << 2) | (c.hasJacobian ? kStateJacobian : 0u);
 
@@ -352,6 +359,53 @@ TEST(CoordMapGpu, IdentityMapCopiesTheSource)
 #endif
 }
 
+// At pixel centres every tap but the centre's weighs exactly 0, so the sinc kernels return the source
+// bit for bit, with a unit Jacobian and with none.
+TEST(CoordMapGpu, IdentityMapUnderSincKernelsCopiesTheSource)
+{
+#ifndef NATRON_HAVE_GPU
+    reportNoGpu("built without the GPU backend");
+#else
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    CoordCase c;
+    c.name = "sinc identity";
+    c.bounds = RectI(1, 2, 8, 7);
+    c.nComps = 4;
+    c.src = makeSource(c.bounds, c.nComps);
+    resizeGrid(c, c.bounds.width(), c.bounds.height());
+    for (int j = 0; j < c.height; ++j) {
+        for (int i = 0; i < c.width; ++i) {
+            setCoord(c, i, j, c.bounds.x1 + i + 0.5f, c.bounds.y1 + j + 0.5f, 1.f, 0.f, 0.f, 1.f);
+        }
+    }
+    const struct {
+        Resampler::FilterEnum filter;
+        int lobes;
+    } kernels[] = {
+        { Resampler::eFilterLanczos2, 4 },
+        { Resampler::eFilterLanczos3, 4 },
+        { Resampler::eFilterLanczos4, 4 },
+        { Resampler::eFilterSinc, 2 },
+        { Resampler::eFilterSinc, 8 },
+    };
+    for (const auto& kernel : kernels) {
+        for (bool hasJacobian : { false, true }) {
+            c.filter = kernel.filter;
+            c.lobes = kernel.lobes;
+            c.hasJacobian = hasJacobian;
+            std::vector<float> gpu;
+            ASSERT_TRUE(renderGpu(*runtime, c, &gpu)) << describe(c);
+            const ImageDiff diff = compareImages(c.src, gpu, ParityTolerance::exact());
+            EXPECT_EQ(0u, diff.mismatches) << describe(c) << ": first at float " << diff.firstMismatchIndex;
+            expectParity(*runtime, c);
+        }
+    }
+#endif
+}
+
 // Coordinates spanning several periods on each side of a 4x4 ramp whose bounds are off the origin,
 // for every wrap, with the black-outside and Jacobian variants. No coordinate lies within a tenth
 // of a pixel of a pixel edge, before or after wrapping, so impulse sampling picks the same pixel.
@@ -376,7 +430,7 @@ TEST(CoordMapGpu, WrapModesMatchTheCpu)
         }
     }
     const Resampler::FilterEnum filters[] = { Resampler::eFilterImpulse, Resampler::eFilterBox, Resampler::eFilterBilinear, Resampler::eFilterCubic,
-                                              Resampler::eFilterKeys };
+                                              Resampler::eFilterKeys, Resampler::eFilterLanczos3, Resampler::eFilterSinc };
     const Resampler::WrapMode pairs[][2] = {
         { Resampler::eWrapNone, Resampler::eWrapNone },
         { Resampler::eWrapClamp, Resampler::eWrapClamp },
@@ -476,8 +530,8 @@ TEST(CoordMapGpu, NonFiniteCoordinatesReadOutside)
 #endif
 }
 
-// Minifying Jacobians, axis-aligned and rotated, supersample as interpolateSuper does on the CPU,
-// for every filter, with the filter's clamp on and off.
+// Minifying Jacobians, axis-aligned and rotated, widen the kernel as on the CPU, for every filter,
+// with the filter's clamp on and off. Scale 64 overruns the tap budget, so its taps spread.
 TEST(CoordMapGpu, JacobianMinificationMatchesTheCpu)
 {
 #ifndef NATRON_HAVE_GPU
@@ -504,7 +558,23 @@ TEST(CoordMapGpu, JacobianMinificationMatchesTheCpu)
         { "scale 2x5", 2., 0., 0., 5. },
         { "rotate scale 6", 6. * std::cos(angle), -6. * std::sin(angle), 6. * std::sin(angle), 6. * std::cos(angle) },
         { "shear", 1.2, 2.5, -0.4, 1.7 },
+        { "scale 64", 64., 0., 0., 64. },
     };
+
+    struct Kernel {
+        Resampler::FilterEnum filter;
+        int lobes;
+        double B, C;
+    };
+    std::vector<Kernel> kernels;
+    for (int f = 0; f <= (int)Resampler::eFilterBicubic; ++f) {
+        kernels.push_back({ (Resampler::FilterEnum)f, 4, 1. / 3., 1. / 3. });
+    }
+    kernels.push_back({ Resampler::eFilterSinc, 2, 1. / 3., 1. / 3. });
+    kernels.push_back({ Resampler::eFilterSinc, 8, 1. / 3., 1. / 3. });
+    kernels.push_back({ Resampler::eFilterBicubic, 4, 0., 0.5 });
+    kernels.push_back({ Resampler::eFilterBicubic, 4, 1., 0. });
+
     for (const Scale& s : scales) {
         // An affine map about the source's centre, sampled at the destination's pixel centres.
         const double cx = (c.bounds.x1 + c.bounds.x2) / 2.;
@@ -516,11 +586,14 @@ TEST(CoordMapGpu, JacobianMinificationMatchesTheCpu)
                 setCoord(c, i, j, (float)(cx + s.a * x + s.b * y), (float)(cy + s.cc * x + s.d * y), (float)s.a, (float)s.b, (float)s.cc, (float)s.d);
             }
         }
-        for (int f = 0; f <= (int)Resampler::eFilterNotch; ++f) {
+        for (const Kernel& kernel : kernels) {
             for (bool clamp : { false, true }) {
                 for (bool blackOutside : { true, false }) {
                     c.name = std::string("minify ") + s.name;
-                    c.filter = (Resampler::FilterEnum)f;
+                    c.filter = kernel.filter;
+                    c.lobes = kernel.lobes;
+                    c.bicubicB = kernel.B;
+                    c.bicubicC = kernel.C;
                     c.clamp = clamp;
                     c.blackOutside = blackOutside;
                     c.hasJacobian = true;

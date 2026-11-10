@@ -75,9 +75,9 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kConstantPluginID = "net.sf.openfx.ConstantPlugin";
+const char* const kConstantPluginID = "Constant";
 // Grade renders through ofxsProcessing's ImageProcessor, which slices the window over the multithread suite.
-const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
+const char* const kGradePluginID = "Grade";
 const char* const kMergePluginID = "Merge";
 
 const double kTime = 1.;

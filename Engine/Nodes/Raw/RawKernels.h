@@ -346,7 +346,9 @@ struct CaptureSettings {
  * comes out the same whatever buffer it is computed in. filters and xtrans describe the
  * pattern from the buffer's top-left; wbApplied are the white balance multipliers applied
  * upstream (darktable's temperature coefficients, 1 when none are), whose 0.9 is the clip
- * level of each colour. Frames under 5 photosites on a side are left untouched.
+ * level of each colour. Frames under 5 photosites on a side are left untouched. sharpenedAreas
+ * and sigmaIndex, when given, hold width x height floats and receive what darktable's two views
+ * show: the blend mask, and the per-pixel Gaussian's table index over 255.
  **/
 void captureSharpen(float* rgb,
                     const float* cfa,
@@ -360,7 +362,9 @@ void captureSharpen(float* rgb,
                     const std::uint8_t (*xtrans)[6],
                     const float wbApplied[3],
                     const CaptureSettings& settings,
-                    const ParallelFor& parallel);
+                    const ParallelFor& parallel,
+                    float* sharpenedAreas = nullptr,
+                    float* sigmaIndex = nullptr);
 
 /**
  * @brief darktable's passthrough_monochrome(): every photosite's value in all three channels.

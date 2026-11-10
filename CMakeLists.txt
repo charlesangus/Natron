@@ -35,6 +35,12 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(NATRON_SYSTEM_LIBS "use system versions of dependencies instead of bundled ones" OFF)
 option(NATRON_BUILD_TESTS "build the Natron test suite" ON)
 option(NATRON_GPU "Vulkan compute backend" ON)
+set(NATRON_LINK_JOBS "" CACHE STRING "Maximum concurrent link steps (Ninja only); empty leaves links unlimited")
+
+if(NATRON_LINK_JOBS)
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS natron_link=${NATRON_LINK_JOBS})
+    set(CMAKE_JOB_POOL_LINK natron_link)
+endif()
 
 if(NATRON_GPU)
     find_package(Vulkan)
@@ -124,6 +130,15 @@ endif()
 find_package(rawspeed CONFIG REQUIRED PATHS "${NATRON_RAWSPEED_ROOT}" NO_DEFAULT_PATH)
 # fetch-assets.sh rewrites the config when the pin moves; rawspeed_REF must follow it.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NATRON_RAWSPEED_ROOT}/lib/cmake/rawspeed/rawspeedConfig.cmake")
+
+# lensfun is built and installed by tools/ci/local/fetch-assets.sh the same way, and found here for
+# the same reason.
+set(NATRON_LENSFUN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/build/assets/lensfun" CACHE PATH "The lensfun install fetch-assets.sh produces")
+if(NOT EXISTS "${NATRON_LENSFUN_ROOT}/lib/cmake/lensfun/lensfunConfig.cmake")
+    message(FATAL_ERROR "lensfun is not installed at ${NATRON_LENSFUN_ROOT}. Run tools/ci/local/fetch-assets.sh first.")
+endif()
+find_package(lensfun CONFIG REQUIRED PATHS "${NATRON_LENSFUN_ROOT}" NO_DEFAULT_PATH)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NATRON_LENSFUN_ROOT}/lib/cmake/lensfun/lensfunConfig.cmake")
 
 # ONNX Runtime is unpacked by tools/ci/local/fetch-assets.sh. Only its C API headers are used at
 # build time: Engine/Ai dlopen()s the library, which tools/release/stage-bundle.sh ships.

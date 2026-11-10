@@ -31,8 +31,8 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_GRADE "net.sf.openfx.GradePlugin"
-#define PLUGIN_MAJOR_NATRON_GRADE 3
+#define PLUGINID_NATRON_GRADE "Grade"
+#define PLUGIN_MAJOR_NATRON_GRADE 1
 
 #define kGradeParamBlackPoint "blackPoint"
 #define kGradeParamWhitePoint "whitePoint"
@@ -102,7 +102,7 @@ struct GradeOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_GRADE,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GradePlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Grade.png",
         .inputs = kGradeInputs,
     };
 

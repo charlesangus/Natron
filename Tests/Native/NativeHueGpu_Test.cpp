@@ -61,9 +61,12 @@ namespace {
 
 const double kTime = 1.;
 
-// The kernels compute as the CPU does, statement for statement, but Vulkan leaves division within
-// 2.5 ulp rather than correctly rounded; the hue and saturation divisions carry that through the
-// rotations and the trapezoid ramps, which scale it by the chroma and the ramp slope.
+// The kernels compute as the CPU does, statement for statement, and divide through divideRounded,
+// which rounds as the CPU does only while the operands and the quotient lie between 2^-100 and
+// 2^100; outside that the device's quotient, within 2.5 ulp, stands. A device may also flush
+// subnormal intermediates, and HSVKeyer's OkLCh chroma takes the device's square root, which
+// Vulkan does not round correctly. The rotations and the trapezoid ramps scale those differences
+// by the chroma and the ramp slope.
 ParityTolerance
 pointTolerance()
 {

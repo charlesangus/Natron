@@ -62,12 +62,50 @@ GCC_ONLY_DIAG_ON(class-memaccess)
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief What a numeric knob's value stands for, which picks how global mode drags it.
+ **/
+enum ValueRoleEnum {
+    eValueRoleNone,
+    eValueRoleTranslate,
+    eValueRoleRotate,
+    eValueRoleScale,
+    eValueRoleSize,
+    eValueRoleSkew
+};
+
+/**
+ * @brief The value role shared by KnobDouble and KnobInt. It is a property of the node's
+ * definition, set when the knob is created, so it is never serialized.
+ **/
+class KnobValueRoleHolder {
+public:
+    KnobValueRoleHolder();
+
+    void setValueRole(ValueRoleEnum role);
+
+    ValueRoleEnum getValueRole() const;
+
+    /**
+     * @brief For eValueRoleRotate, whether a positive angle turns the image clockwise on
+     * screen rather than counter-clockwise. Off by default.
+     **/
+    void setValueRoleClockwise(bool clockwise);
+
+    bool isValueRoleClockwise() const;
+
+private:
+    ValueRoleEnum _valueRole;
+    bool _valueRoleClockwise;
+};
+
 /******************************KnobInt**************************************/
 
 class KnobInt
-    : public QObject, public KnobIntBase
-{
-GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    : public QObject,
+      public KnobIntBase,
+      public KnobValueRoleHolder {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
@@ -196,9 +234,10 @@ private:
 /******************************KnobDouble**************************************/
 
 class KnobDouble
-    :  public QObject, public KnobDoubleBase
-{
-GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    : public QObject,
+      public KnobDoubleBase,
+      public KnobValueRoleHolder {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
@@ -670,15 +709,23 @@ public:
     }
 
     /**
+     * @brief Also true while the active entry is one the menu lacks, which only its saved id keeps.
+     **/
+    virtual bool hasModificationsForSerialization() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
      * @brief Fills-up the menu with the given entries and optionnally their tooltip.
      * @param entriesHelp Can either be empty, meaning no-tooltip or must be of the size of the entries.
      * @param mergingFunctor If not set, the internal menu will be completely reset and replaced with the given entries.
      * Otherwise the internal menu entries will be merged with the given entries according to this equality functor.
      * @param mergingData Can be passed when mergingFunctor is not null to speed up the comparisons.
      *
+     * @param notifyIfUnchanged Emit populated() even if the entries are the same as the current ones. A right-click
+     * menu knob needs this, since populated() is what opens its menu.
+     *
      * @returns true if something changed, false otherwise.
      **/
-    bool populateChoices(const std::vector<ChoiceOption> &entries);
+    bool populateChoices(const std::vector<ChoiceOption>& entries, bool notifyIfUnchanged = false);
 
     void resetChoices();
 
@@ -686,10 +733,38 @@ public:
 
     bool isActiveEntryPresentInEntries() const;
 
+    /**
+     * @brief True when the active entry is one that loading could not match back to any entry of the menu.
+     **/
+    bool isActiveEntryUnmatchedByEntries() const;
+
     std::vector<ChoiceOption> getEntries_mt_safe() const;
     ChoiceOption getEntry(int v) const;
     ChoiceOption getActiveEntry();
     void setActiveEntry(const ChoiceOption& opt);
+
+    /**
+     * @brief Makes \p opt the active entry, one of the menu's or one it lacks, and reports a value
+     * change in which knobChanged and listeners already read it. For an entry the index cannot
+     * select, which a value change would otherwise replace with the entry at the index.
+     **/
+    void setActiveEntryAndNotify(const ChoiceOption& opt, ValueChangedReasonEnum reason);
+
+    /**
+     * @brief When set, a name matches an entry only by an identical ID, without the looser
+     * matching restoring a choice otherwise allows, so a name the menu lacks stays the unlisted
+     * active entry. For menus of external names, such as OpenColorIO displays, where a similar
+     * name is another one.
+     **/
+    void setMatchesExactID(bool exact)
+    {
+        _matchesExactID = exact;
+    }
+
+    /**
+     * @brief The index of the entry \p choice names, by the rule of setMatchesExactID(), or -1.
+     **/
+    int findEntry(const std::string& choice, ChoiceOption* matchedEntry) const;
 
     int getNumEntries() const;
 
@@ -782,6 +857,9 @@ private:
 
     void findAndSetOldChoice();
 
+    // choiceMatch(), or an identical ID under setMatchesExactID(). The caller holds _entriesMutex when entries is _entries.
+    int matchEntry(const std::string& choice, const std::vector<ChoiceOption>& entries, ChoiceOption* matchedEntry) const;
+
     virtual bool canAnimate() const OVERRIDE FINAL;
     virtual const std::string & typeName() const OVERRIDE FINAL;
     virtual void handleSignalSlotsForAliasLink(const KnobIPtr& alias, bool connect) OVERRIDE FINAL;
@@ -801,6 +879,8 @@ private:
     bool _isCascading;
     bool _menuOnlySelection;
     bool _notifiesOnReselect;
+    bool _matchesExactID;
+    bool _keepActiveEntryOnValueChange; // protected by _entriesMutex
 };
 
 /******************************KnobSeparator**************************************/
@@ -1085,6 +1165,26 @@ public:
         return _isCustom;
     }
 
+    // What dropping scene prims on the knob's field puts in it.
+    enum PrimPathHintEnum {
+        // Prims are not dropped on it.
+        ePrimPathHintNone = 0,
+        // The first prim's path.
+        ePrimPathHintPath,
+        // Every prim's path, separated by spaces.
+        ePrimPathHintPattern
+    };
+
+    void setPrimPathHint(PrimPathHintEnum hint)
+    {
+        _primPathHint = hint;
+    }
+
+    PrimPathHintEnum getPrimPathHint() const
+    {
+        return _primPathHint;
+    }
+
     virtual bool supportsInViewerContext() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return !_multiLine;
@@ -1109,6 +1209,7 @@ private:
     bool _customHtmlText;
     bool _isLabel;
     bool _isCustom;
+    PrimPathHintEnum _primPathHint = ePrimPathHintNone;
 };
 
 /******************************KnobGroup**************************************/

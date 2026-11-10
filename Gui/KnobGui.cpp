@@ -48,6 +48,7 @@
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/KnobDriverRow.h"
 #include "Gui/KnobGuiPrivate.h"
 #include "Gui/UndoHistory.h"
 
@@ -273,6 +274,11 @@ KnobGui::createGUI(QWidget* fieldContainer,
         createWidget(layout);
         onHasModificationsChanged();
         updateToolTip();
+        if (!_imp->isInViewerUIKnob && LoopDriverEdit::canDrive(knob)) {
+            _imp->driverRow = new KnobDriverRow(shared_from_this(), fieldContainer);
+            layout->addWidget(_imp->driverRow);
+            _imp->driverRow->refresh();
+        }
     }
 
     // A linked knob's name takes the link colour, and its tool tip says what it is linked to.
@@ -859,7 +865,55 @@ KnobGui::createAnimationMenu(QMenu* menu,
         QObject::connect(promoteAction, SIGNAL(triggered()), this, SLOT(onPromoteToProjectActionTriggered()));
         menu->addAction(promoteAction);
     }
+    if (_imp->driverRow) {
+        menu->addSeparator();
+        if (LoopDriverEdit::isDriven(knob, dimension)) {
+            QAction* removeAction = new QAction(tr("Remove loop driver"), menu);
+            removeAction->setData(dimension);
+            QObject::connect(removeAction, SIGNAL(triggered()), this, SLOT(onRemoveLoopDriverActionTriggered()));
+            menu->addAction(removeAction);
+        } else {
+            QAction* driveAction = new QAction(tr("Drive from loop"), menu);
+            driveAction->setData(dimension);
+            if (LoopDriverEdit::loopVariables(LoopDriverEdit::nodeOf(knob)).empty()) {
+                driveAction->setEnabled(false);
+                driveAction->setToolTip(tr("The node is not inside a loop: no LoopEnd below it pairs with a LoopBegin above it."));
+                menu->setToolTipsVisible(true);
+            }
+            QObject::connect(driveAction, SIGNAL(triggered()), this, SLOT(onDriveFromLoopActionTriggered()));
+            menu->addAction(driveAction);
+        }
+    }
 } // createAnimationMenu
+
+void
+KnobGui::reflectDriverState(bool driven)
+{
+    if (_imp->customInteract || _imp->guiRemoved) {
+        return;
+    }
+    if (driven) {
+        _hide();
+    } else {
+        _show();
+    }
+}
+
+void
+KnobGui::onDriveFromLoopActionTriggered()
+{
+    QAction* action = qobject_cast<QAction*>(sender());
+
+    LoopDriverEdit::driveFromLoop(getGui(), getKnob(), action ? action->data().toInt() : -1);
+}
+
+void
+KnobGui::onRemoveLoopDriverActionTriggered()
+{
+    QAction* action = qobject_cast<QAction*>(sender());
+
+    LoopDriverEdit::removeLoopDriver(getGui(), getKnob(), action ? action->data().toInt() : -1);
+}
 
 namespace {
 

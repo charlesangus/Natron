@@ -38,7 +38,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
-#define PLUGINID_NATRON_DEEPTOIMAGE "fr.natron.DeepToImage"
+#define PLUGINID_NATRON_DEEPTOIMAGE "DeepToImage"
 
 #define kDeepToImageParamChannels "channels"
 

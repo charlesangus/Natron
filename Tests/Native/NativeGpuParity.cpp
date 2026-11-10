@@ -30,13 +30,20 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <list>
+#include <mutex>
 #include <set>
+#include <string>
+#include <thread>
 
 #include <gtest/gtest.h>
+
+#include <sys/prctl.h>
+#include <unistd.h>
 
 #include <QElapsedTimer>
 #include <QThread>
@@ -168,10 +175,12 @@ GpuParityRuntime::buffer(int slot,
 }
 
 bool
-createRuntime(std::unique_ptr<GpuParityRuntime>& runtime)
+createRuntime(std::unique_ptr<GpuParityRuntime>& runtime,
+              bool pushDescriptors)
 {
     std::unique_ptr<GpuParityRuntime> created(new GpuParityRuntime);
     gpu::GpuRuntimeOptions options;
+    options.device.disablePushDescriptor = !pushDescriptors;
     const gpu::GpuStatus status = gpu::GpuRuntime::create(options, created->_impl->runtime);
     if (!status) {
         reportNoGpu(status.message);
@@ -399,6 +408,7 @@ bool
 prepareFrame(const NodePtr& root,
              double time,
              const RectI& window,
+             unsigned mipmapLevel,
              FrameRun* run,
              std::string* error)
 {
@@ -421,8 +431,9 @@ prepareFrame(const NodePtr& root,
                                        false /*draftMode*/,
                                        run->stats);
     std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
-    const RectD rod(window.x1, window.y1, window.x2, window.y2);
-    if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, rod, root, *request) == eStatusFailed) {
+    const RectI canonical = window.upscalePowerOfTwo(mipmapLevel);
+    const RectD rod(canonical.x1, canonical.y1, canonical.x2, canonical.y2);
+    if (EffectInstance::computeRequestPass(time, ViewIdx(0), mipmapLevel, rod, root, *request) == eStatusFailed) {
         *error = "request pass failed";
 
         return false;
@@ -442,7 +453,7 @@ prepareFrame(const NodePtr& root,
                                               false /*draftMode*/,
                                               run->stats);
     run->context->setRequest(request);
-    run->graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), 0 /*mipmapLevel*/);
+    run->graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), mipmapLevel);
     if (run->graph.tasks.empty()) {
         *error = "empty graph";
 
@@ -582,13 +593,120 @@ EndToEndResult::ranInRegion(const NodePtr& node) const
     return false;
 }
 
+namespace {
+
+// Plain values only, so the watchdog thread never touches gtest or node state.
+struct HangCase {
+    std::string testName;
+    std::string rootName;
+    RectI window;
+    double time;
+    unsigned mipmapLevel;
+};
+
+HangCase
+makeHangCase(const NodePtr& root,
+             const RectI& window,
+             double time,
+             unsigned mipmapLevel)
+{
+    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    HangCase c;
+    c.testName = info ? std::string(info->test_case_name()) + "." + info->name() : "?";
+    c.rootName = root ? root->getScriptName_mt_safe() : "?";
+    c.window = window;
+    c.time = time;
+    c.mipmapLevel = mipmapLevel;
+
+    return c;
+}
+
+// The hung thread cannot be joined, so the process is aborted: ctest then records a crash with the stacks in
+// its log instead of killing the test silently at its own timeout.
+[[noreturn]] void
+reportHangAndAbort(const char* half,
+                   const HangCase& c)
+{
+    std::fprintf(stderr,
+                 "\nHANG: %s did not finish within %lld ms in %s (root '%s', time %g, mipmap level %u, window %d,%d-%d,%d)\n",
+                 half,
+                 (long long)kFrameTimeoutMs,
+                 c.testName.c_str(),
+                 c.rootName.c_str(),
+                 c.time,
+                 c.mipmapLevel,
+                 c.window.x1,
+                 c.window.y1,
+                 c.window.x2,
+                 c.window.y2);
+    std::fflush(stderr);
+
+    // gdb is a child of this process, which Yama's default ptrace scope refuses to let attach to its parent.
+    prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+    const long pid = (long)getpid();
+    char command[512];
+    if (std::system("command -v gdb >/dev/null 2>&1") == 0) {
+        std::snprintf(command, sizeof(command), "timeout 60 gdb -p %ld -batch -ex 'thread apply all bt' 1>&2", pid);
+    } else if (std::system("command -v eu-stack >/dev/null 2>&1") == 0) {
+        std::snprintf(command, sizeof(command), "timeout 60 eu-stack -p %ld 1>&2", pid);
+    } else {
+        command[0] = '\0';
+        std::fprintf(stderr, "Neither gdb nor eu-stack is on PATH: no thread stacks to dump.\n");
+    }
+    if (command[0] != '\0') {
+        std::fprintf(stderr, "Dumping all thread stacks of pid %ld\n", pid);
+        std::fflush(stderr);
+        const int status = std::system(command);
+        if (status != 0) {
+            std::fprintf(stderr, "The stack dump exited with status %d (ptrace may be refused in this container)\n", status);
+        }
+    }
+    std::fprintf(stderr, "FAIL: %s hung; aborting because the hung thread cannot be joined\n", half);
+    std::fflush(stderr);
+    std::abort();
+}
+
+// The CPU reference render must stay on the calling thread (cache purges assert on the main thread), so the
+// deadline is enforced from a second thread that aborts the process if the render never returns.
+class CpuWatchdog {
+public:
+    explicit CpuWatchdog(const HangCase& c)
+        : _thread([this, c]() {
+            std::unique_lock<std::mutex> lock(_mutex);
+            if (!_cv.wait_for(lock, std::chrono::milliseconds(kFrameTimeoutMs), [this]() { return _done; })) {
+                reportHangAndAbort("the CPU reference render", c);
+            }
+        })
+    {
+    }
+
+    ~CpuWatchdog()
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _done = true;
+        }
+        _cv.notify_one();
+        _thread.join();
+    }
+
+private:
+    std::mutex _mutex;
+    std::condition_variable _cv;
+    bool _done = false;
+    std::thread _thread;
+};
+
+} // namespace
+
 EndToEndResult
 renderEndToEnd(const std::vector<NodePtr>& graph,
                const NodePtr& root,
                const RectI& window,
                double time,
                const GpuContextReady& onGpuContext,
-               const GpuFrameDone& onGpuFrame)
+               const GpuFrameDone& onGpuFrame,
+               unsigned mipmapLevel)
 {
     EndToEndResult result;
     result.window = window;
@@ -610,7 +728,7 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         RegionBodyScope body(scheduler);
         appPTR->clearAllCaches();
         FrameRun run;
-        if (!prepareFrame(root, time, window, &run, &result.error)) {
+        if (!prepareFrame(root, time, window, mipmapLevel, &run, &result.error)) {
             return result;
         }
         placeOnGpu(&run, graph);
@@ -627,11 +745,9 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         timer.start();
         while (!run.future->isFinished()) {
             if (timer.elapsed() > kFrameTimeoutMs) {
-                scheduler->abort(run.context);
-                run.future->wait();
-                result.error = "the GPU frame timed out";
-
-                return result;
+                // Dumped before the abort request, which cannot pre-empt a running dispatch and would
+                // only change what the stacks show.
+                reportHangAndAbort("the GPU dispatch", makeHangCase(root, window, time, mipmapLevel));
             }
             QThread::msleep(1);
         }
@@ -659,6 +775,10 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();
         result.uploads = run.stats->getUploadCount();
         result.downloads = run.stats->getDownloadCount();
+        result.cpuFallbackReasons = run.stats->getCpuFallbackReasons();
+#ifdef NATRON_HAVE_GPU
+        result.poolPeakBytes = appPTR->getGpuContext()->runtime()->pool().stats().peakBytes;
+#endif
     }
     if (onGpuFrame) {
         onGpuFrame();
@@ -668,7 +788,12 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
     {
         GpuPlacementOffGuard off;
         std::vector<RenderedPlane> planes;
-        if (!renderNodePlanesDirect(root, time, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error)) {
+        const bool rendered = [&]() {
+            CpuWatchdog watchdog(makeHangCase(root, window, time, mipmapLevel));
+
+            return renderNodePlanesDirect(root, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &result.error);
+        }();
+        if (!rendered) {
             return result;
         }
         if (planes.size() != 1) {

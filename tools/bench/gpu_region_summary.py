@@ -2,6 +2,7 @@
 """Splits GPU region time from NATRON_RENDER_PROFILE files into its phases, per region and per node.
 
     python3 -I tools/bench/gpu_region_summary.py [--skip-frames N] [--import-rate GBPS] [--import-rate-up GBPS] PROFILE_PREFIX_OR_FILE...
+    python3 -I tools/bench/gpu_region_summary.py --copy-rate PROFILE_PREFIX_OR_FILE...
     python3 -I tools/bench/gpu_region_summary.py --driver OUT_DIR_OR_DRIVER_JSONL
     python3 -I tools/bench/gpu_region_summary.py --self-test
 
@@ -50,6 +51,13 @@ place, how many downloads were of another region's device image (pinned; the fra
 are never timestamped), and the queue. deviceMs is null for a copy that was not timestamped (a pinned
 download, or a device without timestamps); the rate and the last-strip share then read n/a. The device time
 is the transfer queue's own: it does not replace transferExposedMs, which the host measures.
+
+--copy-rate appends, after each render label's tables, the copy contention table: the device rate of the
+timestamped copies (GB/s, bytes over summed deviceMs) grouped by direction, by whether the copy overlapped a
+kernel, and by queue (family.index). A copy overlaps a kernel when more than half of its [beginNs, endNs]
+lies inside the union of the region's memberIntervals; both are timestamps from the region's earliest one.
+A copy with no timestamps is counted but has no rate, and a region with no memberIntervals counts its copies
+as not overlapped. The run's tag names the comp and size, so each run's table is that comp at that size.
 """
 import collections
 import glob
@@ -263,6 +271,56 @@ def transfer_stats(region, key):
             "queue": "%d.%d" % (copies[0].get("queueFamily", 0), copies[0].get("queueIndex", 0))}
 
 
+def overlap_ns(begin, end, intervals):
+    """The length of [begin, end] covered by the union of the intervals, which are sorted by begin."""
+    covered = 0
+    cursor = begin
+    for b, e in intervals:
+        b = max(b, cursor)
+        e = min(e, end)
+        if e > b:
+            covered += e - b
+            cursor = e
+    return covered
+
+
+def copy_rate_groups(regions):
+    """Per (direction, overlapped, queue): copy count, timed bytes, timed device ms and untimed count."""
+    groups = collections.OrderedDict()
+    for g in regions:
+        intervals = sorted((m["beginNs"], m["endNs"]) for m in g.get("memberIntervals", []))
+        for key in TRANSFERS:
+            for d in g.get(key) or []:
+                timed = d.get("deviceMs") is not None
+                overlapped = False
+                if timed and d.get("beginNs") is not None and d.get("endNs") is not None and d["endNs"] > d["beginNs"]:
+                    covered = overlap_ns(d["beginNs"], d["endNs"], intervals)
+                    overlapped = 2 * covered > d["endNs"] - d["beginNs"]
+                queue = "%d.%d" % (d.get("queueFamily", 0), d.get("queueIndex", 0))
+                entry = groups.setdefault((key[:-1], overlapped, queue), {"copies": 0, "bytes": 0, "ms": 0.0, "untimed": 0})
+                entry["copies"] += 1
+                if timed:
+                    entry["bytes"] += d["bytes"]
+                    entry["ms"] += d["deviceMs"]
+                else:
+                    entry["untimed"] += 1
+    return groups
+
+
+def format_copy_rate(rows):
+    regions = [r["region"] for r in rows]
+    groups = copy_rate_groups(regions)
+    lines = ["Copy rate by overlap and queue (all regions of this render label; GB/s over timestamped copies)"]
+    lines.append(" | ".join(("dir", "overlapped kernel", "queue", "copies", "untimed", "MB", "device ms", "rate GB/s")))
+    for (direction, overlapped, queue), e in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][1])):
+        rate = ("%.2f" % (e["bytes"] / (e["ms"] * 1e6))) if e["ms"] > 0 else "n/a"
+        lines.append(" | ".join((direction, "yes" if overlapped else "no", queue, str(e["copies"]), str(e["untimed"]),
+                                 "%.1f" % (e["bytes"] / 1e6), "%.2f" % e["ms"], rate)))
+    if not groups:
+        lines.append("(no copies)")
+    return "\n".join(lines)
+
+
 def mean(values):
     return sum(values) / len(values) if values else 0.0
 
@@ -364,7 +422,7 @@ def format_renders(marks, records):
     return "\n".join(lines)
 
 
-def summarise_run(arg, skip, import_rate_gbps, import_rate_up_gbps=None):
+def summarise_run(arg, skip, import_rate_gbps, import_rate_up_gbps=None, copy_rate=False):
     records = read_records([arg])
     marks = read_marks(arg)
     if skip is None:
@@ -383,6 +441,9 @@ def summarise_run(arg, skip, import_rate_gbps, import_rate_up_gbps=None):
             out.append("== render label %s ==" % label)
         out.append(format_summary(summarise(group, import_rate_gbps, import_rate_up_gbps)))
         out.append("")
+        if copy_rate:
+            out.append(format_copy_rate(group))
+            out.append("")
     return "\n".join(out), bool(rows)
 
 
@@ -490,7 +551,20 @@ def self_test():
         assert by[("new", "auto")]["thp_fault_alloc"] == 10 and by[("new", "auto")]["thp"] == "madvise/madvise/1"
         assert ratios == [("a-warm", "auto", 2, 0.625)], ratios
         assert "new/base" in format_driver(entries, ratios) and "peak RSS MB" in format_driver(entries, ratios)
+    a = {"strip": 0, "bytes": 1000000, "deviceMs": 1.0, "queueFamily": 2, "queueIndex": 0, "beginNs": 0, "endNs": 1000000}
+    b = dict(a, bytes=2000000, deviceMs=1.0, beginNs=5000000, endNs=6000000, queueFamily=1)
+    u = {"strip": 0, "bytes": 500000, "deviceMs": None, "queueFamily": 2, "queueIndex": 0}
+    region = {"uploads": [a, u], "downloads": [b], "memberIntervals": [
+        {"beginNs": 400000, "endNs": 900000}, {"beginNs": 800000, "endNs": 1200000}]}
+    cg = copy_rate_groups([region])
+    assert cg[("upload", True, "2.0")]["copies"] == 1 and cg[("upload", False, "2.0")]["untimed"] == 1
+    assert cg[("download", False, "1.0")]["bytes"] == 2000000
+    assert overlap_ns(0, 1000000, [(400000, 900000), (800000, 1200000)]) == 600000
+    ctext = format_copy_rate([{"region": region}])
+    assert "upload | yes | 2.0 | 1 | 0 | 1.0 | 1.00 | 1.00" in ctext, ctext
+    assert "download | no | 1.0 | 1 | 0 | 2.0 | 1.00 | 2.00" in ctext, ctext
     print(text)
+    print(ctext)
     print("self-test ok")
 
 
@@ -507,6 +581,7 @@ def main(argv):
     skip = None
     rate = None
     rate_up = None
+    copy_rate = False
     paths = []
     i = 0
     while i < len(argv):
@@ -516,6 +591,9 @@ def main(argv):
         elif argv[i] == "--import-rate":
             rate = float(argv[i + 1])
             i += 2
+        elif argv[i] == "--copy-rate":
+            copy_rate = True
+            i += 1
         elif argv[i] == "--import-rate-up":
             rate_up = float(argv[i + 1])
             i += 2
@@ -527,7 +605,7 @@ def main(argv):
         return 2
     status = 0
     for path in paths:
-        text, any_rows = summarise_run(path, skip, rate, rate_up)
+        text, any_rows = summarise_run(path, skip, rate, rate_up, copy_rate)
         print(text)
         if not any_rows:
             sys.stderr.write("no region records in %s after skipping\n" % path)

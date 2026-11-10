@@ -61,7 +61,7 @@ TEST(LayerRegistry, BuiltinOrder)
     LayerRegistry registry;
     std::shared_ptr<const std::vector<LayerRegistryEntry>> snap = registry.snapshot();
 
-    ASSERT_EQ(10u, snap->size());
+    ASSERT_EQ(11u, snap->size());
     EXPECT_EQ(std::string(kNatronColorViewRGBA), (*snap)[0].desc.getLayerID());
     EXPECT_EQ(LayerRegistryEntry::eOriginBuiltin, (*snap)[0].origin);
     EXPECT_EQ(std::string(kNatronColorViewRGB), (*snap)[1].desc.getLayerID());
@@ -75,6 +75,8 @@ TEST(LayerRegistry, BuiltinOrder)
     EXPECT_EQ(LayerRegistryEntry::eOriginUser, (*snap)[8].origin);
     EXPECT_EQ("primId", (*snap)[9].desc.getLayerID());
     EXPECT_EQ(LayerRegistryEntry::eOriginUser, (*snap)[9].origin);
+    EXPECT_EQ("normal", (*snap)[10].desc.getLayerID());
+    EXPECT_EQ(LayerRegistryEntry::eOriginUser, (*snap)[10].origin);
 }
 
 TEST(LayerRegistry, ColorViewExactReaddIsUnchangedNoOp)
@@ -276,8 +278,8 @@ TEST(LayerRegistry, ToStoragePlanesFoldsColorViewsToOneRGBAEntry)
     EXPECT_EQ(1, colorCount);
     EXPECT_TRUE(colorIsRgba);
 
-    // Non-colour entries survive untouched: DisparityLeft, DisparityRight, Backward, Forward, depth, primId.
-    EXPECT_EQ(std::size_t(10 - 4 + 1), storagePlanes.size());
+    // Non-colour entries survive untouched: DisparityLeft, DisparityRight, Backward, Forward, depth, primId, normal.
+    EXPECT_EQ(std::size_t(11 - 4 + 1), storagePlanes.size());
 }
 
 TEST(LayerRegistry, RemoveDepthSucceeds)
@@ -457,7 +459,7 @@ TEST_F(BaseTest, ReferencedLayerCannotBeRemoved)
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
 
     connectNodes(reader, blur, 0, true);
@@ -542,7 +544,7 @@ TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
     EXPECT_EQ(std::string("0"), row[2]);
     EXPECT_TRUE(findLayersKnobRow(layersKnob, "specular", &row));
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
     connectNodes(reader, blur, 0, true);
 
@@ -598,7 +600,7 @@ TEST_F(BaseTest, PresentLayersFollowInputMetadataChange)
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
-    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
     ASSERT_TRUE(bool(blur));
 
     connectNodes(reader, blur, 0, true);

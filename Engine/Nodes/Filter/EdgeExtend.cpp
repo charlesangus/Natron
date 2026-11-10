@@ -587,6 +587,7 @@ EdgeExtendOp::createKnobs(KnobHolder* holder,
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(holder, EffectInstance::tr("Size"));
     sizeKnob->setName(kEdgeExtendParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(EffectInstance::tr("How far the colour is extended, in pixel units (>=0): the size (diameter) of the blur the slices add up to. The standard deviation of the corresponding Gaussian is size/2.4."));
     sizeKnob->setSpatial(true);
     sizeKnob->setMinimum(0.);

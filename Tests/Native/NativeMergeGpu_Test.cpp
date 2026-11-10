@@ -183,8 +183,10 @@ queryFor(const NodePtr& op,
 }
 
 // The Porter-Duff operators compute products and sums the GPU keeps unfused, so they match the CPU
-// exactly. The conjoint and disjoint overs also divide, the GPU's division being within 2.5 ulp,
-// and the blend modes divide, take roots or blend colours.
+// exactly. The conjoint and disjoint overs also divide, and the blend modes divide, take roots or
+// blend colours. Division and roots go through divideRounded and sqrtRounded, which round as the
+// CPU does only within their operand bounds (2^-100 to 2^100 for division, 2^-76 to 2^100 for the
+// root); outside them the device's own result stands, and a device may flush subnormals.
 ParityTolerance
 toleranceOf(MergeOps::Operator op)
 {

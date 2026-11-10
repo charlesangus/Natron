@@ -105,35 +105,29 @@ ICornerPin::initializeKnobs()
     page->addKnob(srcClipChanged);
     _srcClipChanged = srcClipChanged;
 
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 
     NodePtr node = getNode();
     if (node) {
         node->addCornerPinInteract(_op.from[0].lock(), _op.from[1].lock(), _op.from[2].lock(), _op.from[3].lock(),
                                    _op.to[0].lock(), _op.to[1].lock(), _op.to[2].lock(), _op.to[3].lock(),
                                    _op.enable[0].lock(), _op.enable[1].lock(), _op.enable[2].lock(), _op.enable[3].lock(),
-                                   _op.overlayPoints.lock(), _op.invert.lock(), _op.interactive.lock());
+                                   _op.overlayPoints.lock(), _op.invert.lock());
     }
     declareMapLayerKnob();
 } // ICornerPin::initializeKnobs
 
 void
-ICornerPin::updateClampEnabled(double time,
-                               ViewSpec view)
+ICornerPin::updateFilterVisibility(double time,
+                                   ViewSpec view)
 {
-    KnobChoicePtr filter = _op.filter.lock();
-    KnobBoolPtr clamp = _op.clamp.lock();
-
-    if (!filter || !clamp) {
-        return;
-    }
-    clamp->setAllDimensionsEnabled(Resampler::filterHonoursClamp((Resampler::FilterEnum)filter->getValueAtTime(time, 0, view)));
+    _op.filterKnobs.updateVisibility(time, view);
 }
 
 void
 ICornerPin::onKnobsLoaded()
 {
-    updateClampEnabled(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
+    updateFilterVisibility(getApp()->getTimeLine()->currentFrame(), ViewIdx(0));
 }
 
 void
@@ -212,7 +206,7 @@ ICornerPin::knobChanged(KnobI* k,
     }
     KnobChoicePtr filterKnob = _op.filter.lock();
     if (filterKnob && (k == filterKnob.get())) {
-        updateClampEnabled(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
+        updateFilterVisibility(time, (view.isAll() || view.isCurrent()) ? ViewIdx(0) : ViewIdx(view));
 
         return true;
     }

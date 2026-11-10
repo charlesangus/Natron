@@ -97,6 +97,8 @@ struct NodeLayoutSerialization {
  * nodes it holds. Node names are script names.
  **/
 struct NodeSerialization {
+    // The node's persistent ID, 32 lowercase hex characters, or empty when it is not known.
+    std::string id;
     std::string label;
     std::string scriptName;
     std::string pluginID;
@@ -135,7 +137,8 @@ struct NodeSerialization {
     std::string cacheID;
 
     NodeSerialization()
-        : label()
+        : id()
+        , label()
         , scriptName()
         , pluginID()
         , pluginMajorVersion(-1)

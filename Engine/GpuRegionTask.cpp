@@ -309,12 +309,17 @@ struct Member {
 
     // The first nInputs are indexed by input number, -1 for an input the member does not read at its own time; the
     // others are read from input inputSlotInput[k] at inputSlotTime[k] in inputSlotLayer[k]: the layers
-    // getGpuExtraInputLayers() names at the member's time, and the inputs at the other times its query lists.
+    // getGpuExtraInputLayers() names at the member's time, and the inputs at the other times its query lists; then
+    // one per output the task requests under a context, in the request's order, inputSlotInput[k] being
+    // kContextRequestInputNb, inputSlotTime[k] the member's time and the slot -1 for one the member does not read.
     int nInputs = 0;
     std::vector<int> inputSlots;
     std::vector<int> inputSlotInput;
     std::vector<ImageLayerDesc> inputSlotLayer;
     std::vector<double> inputSlotTime;
+
+    // Installed around every call asking effect about the task or recording it; null under no context.
+    ParallelRenderArgsPtr contextArgs;
 };
 
 /**
@@ -804,6 +809,32 @@ private:
             }
         }
 
+        for (std::size_t e = 0; e < edges.size(); ++e) {
+            const int inputNb = edges[e].first;
+            if (inputNb != FrameViewRequest::TaskEdge::kContextRequestInputNb) {
+                continue;
+            }
+            int slot = -1;
+            ImageLayerDesc layer;
+            if (effect->readsGpuInput(inputNb, member->plane, task.key.time, task.key.view)) {
+                if (!effect->getGpuInputLayer(inputNb, member->plane, task.key.time, task.key.view, &layer)) {
+                    return fail(member->task, "the node cannot read an output it requests under a context on the GPU");
+                }
+                if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
+                    return fail(member->task, "an output requested under a context renders an empty window");
+                }
+                const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, task.renderedRoI, member->query.mappedScale);
+                slot = readSlot(edges[e].second, layer, needed);
+                if (slot < 0) {
+                    return fail(member->task, "an output requested under a context is not in the layer the node reads");
+                }
+            }
+            member->inputSlots.push_back(slot);
+            member->inputSlotInput.push_back(inputNb);
+            member->inputSlotLayer.push_back(layer);
+            member->inputSlotTime.push_back(task.key.time);
+        }
+
         return true;
     } // planInputs
 
@@ -866,10 +897,13 @@ private:
                 continue;
             }
 
-            NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(task.key.node->getEffectInstance().get());
+            const EffectInstancePtr owner = task.key.node->getEffectInstance();
+            NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(owner.get());
             if (!effect) {
                 return fail(taskIndex, "the node has no GPU path");
             }
+            const ParallelRenderArgsPtr contextArgs = gpuTaskContextArgs(task, *_context);
+            const ContextFrameArgsScope contextScope(owner, contextArgs);
             std::vector<GpuTaskPlane> planes;
             std::string refusal;
             if (!makeGpuTaskPlanes(task, *_context, &planes, &refusal)) {
@@ -904,6 +938,7 @@ private:
                 }
 
                 member.query = plane.query;
+                member.contextArgs = contextArgs;
                 if (!planInputs(edges, &member)) {
                     return false;
                 }
@@ -1736,20 +1771,32 @@ private:
         return true;
     }
 
-    // The views of the slots member reads, by input number and as layer inputs; false when one is not on the device.
+    // The views of the slots member reads, by input number, as layer inputs and as context inputs; false when one is
+    // not on the device.
     bool setInputs(const Member& member,
                    GpuRenderArgs* args) const
     {
         args->inputs.assign(member.nInputs, GpuImageView());
         args->layerInputs.clear();
+        args->contextInputs.clear();
         args->timedInputs.clear();
         for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
+            const bool contextInput = ((int)k >= member.nInputs) && (member.inputSlotInput[k] == FrameViewRequest::TaskEdge::kContextRequestInputNb);
+            if (contextInput) {
+                GpuContextInput input;
+                input.layer = member.inputSlotLayer[k];
+                args->contextInputs.push_back(input);
+            }
             if (member.inputSlots[k] < 0) {
                 continue;
             }
             const GpuImageView& view = _slots[member.inputSlots[k]].view;
             if (!view.buffer) {
                 return false;
+            }
+            if (contextInput) {
+                args->contextInputs.back().view = view;
+                continue;
             }
             if ((int)k < member.nInputs) {
                 args->inputs[k] = view;
@@ -1891,6 +1938,7 @@ private:
                 args.output = out.view;
                 StatusEnum status = eStatusFailed;
                 try {
+                    const ContextFrameArgsScope contextScope(member.contextArgs ? member.effect->shared_from_this() : EffectInstancePtr(), member.contextArgs);
                     status = member.effect->renderGpu(args);
                 } catch (const std::exception& e) {
                     fail(member.task, std::string("recording threw: ") + e.what());
@@ -2089,7 +2137,11 @@ private:
             const double time = member.query.time;
             const ViewIdx view = member.query.view;
             const std::vector<int> inputOfSlot = member.inputSlotInput;
-            stripMember.inputRoI = [effect, time, view, scale, inputOfSlot](int k, const RectI& rect) {
+            const ParallelRenderArgsPtr contextArgs = member.contextArgs;
+            const EffectInstancePtr owner = contextArgs ? effect->shared_from_this() : EffectInstancePtr();
+            stripMember.inputRoI = [effect, owner, contextArgs, time, view, scale, inputOfSlot](int k, const RectI& rect) {
+                const ContextFrameArgsScope contextScope(owner, contextArgs);
+
                 return effect->getGpuInputRoI(inputOfSlot[k], time, view, rect, scale);
             };
             graph.members.push_back(stripMember);
@@ -2377,6 +2429,7 @@ private:
             args.output = out.view;
             StatusEnum status = eStatusFailed;
             try {
+                const ContextFrameArgsScope contextScope(member.contextArgs ? member.effect->shared_from_this() : EffectInstancePtr(), member.contextArgs);
                 status = member.effect->renderGpu(args);
             } catch (const std::exception& e) {
                 fail(member.task, std::string("recording threw: ") + e.what());

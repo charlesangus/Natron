@@ -71,6 +71,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/DiskCacheNode.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FileDownloader.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
@@ -1292,6 +1293,7 @@ NodePtr
 AppInstance::createNodeInternal(CreateNodeArgs& args,
                                 CreateNodeStatusEnum* status)
 {
+    GraphEditRecorder::CreationScope creationScope(this);
     CreateNodeStatusEnum localStatus;
     if (!status) {
         status = &localStatus;
@@ -1338,20 +1340,8 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
 
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, false);
-    } catch (const std::exception & e1) {
-        ///Ok try with the old Ids we had in Natron prior to 1.0
-        try {
-            plugin = appPTR->getPluginBinaryFromOldID(argsPluginID, versionMajor, versionMinor);
-        } catch (const std::exception& e2) {
-            if (!isSilentCreation) {
-                Dialogs::errorDialog(tr("Plugin error").toStdString(),
-                                 tr("Cannot load plug-in executable.").toStdString() + ": " + e2.what(), false );
-            } else {
-                std::cerr << tr("Cannot load plug-in executable.").toStdString() + ": " + e2.what() << std::endl;
-            }
-            *status = eCreateNodeStatusPluginNotFound;
-            return node;
-        }
+    } catch (const std::exception&) {
+        plugin = 0;
     }
 
     if (!plugin) {
@@ -1693,6 +1683,7 @@ AppInstance::exportDocs(const QString path)
         groups << QString::fromUtf8(PLUGIN_GROUP_MERGE);
         groups << QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
         groups << QString::fromUtf8(PLUGIN_GROUP_METADATA);
+        groups << QString::fromUtf8(PLUGIN_GROUP_LOOP);
         groups << QString::fromUtf8(PLUGIN_GROUP_RFV);
         groups << QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW);
         groups << QString::fromUtf8(PLUGIN_GROUP_OTHER);

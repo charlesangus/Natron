@@ -35,8 +35,8 @@
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 
-#define PLUGINID_NATRON_SATURATION "net.sf.openfx.SaturationPlugin"
-#define PLUGIN_MAJOR_NATRON_SATURATION 3
+#define PLUGINID_NATRON_SATURATION "Saturation"
+#define PLUGIN_MAJOR_NATRON_SATURATION 1
 
 #define kSaturationParamSaturation "saturation"
 #define kSaturationParamClampBlack "clampBlack"
@@ -75,7 +75,7 @@ struct SaturationOp {
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_SATURATION,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.SaturationPlugin.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/Saturation.png",
         .inputs = kSaturationInputs,
     };
 

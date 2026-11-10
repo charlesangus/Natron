@@ -10,7 +10,7 @@ whose contexts include `kOfxImageEffectContextReader`, so none is registered.
 Decoding lives in
 `OiioReadSupport.*` (header cache, layer grouping, metadata), time mapping in
 `ReadTimeDomain.*` and colour in `IoColorSpace.*`, with the colourspace knobs
-(`ocioInputSpace` and the rest below) in `OcioSpaceKnobs.*`, which takes a
+(`colorspace` and the rest below) in `OcioSpaceKnobs.*`, which takes a
 script-name prefix so the Write can share it.
 
 - **Formats.** `OiioReadSupport::readableExtensions()` is OIIO's
@@ -35,14 +35,14 @@ script-name prefix so the Write can share it.
   `PLUGINID_NATRON_READ`, or empty) and
   `AppManager::getSupportedReaderFileFormats()` (the extension list). Don't
   hard-code an extension set or a reader id elsewhere.
-- **Knobs.** The script names are `GenericReader`'s, so existing scripts and
-  the host hooks that look knobs up by name keep working: `filename`, `proxy`,
+- **Knobs.** Scripts, tests and the host hooks (DopeSheet included) look knobs
+  up by name: `filename`, `proxy`,
   `proxyThreshold`, `originalProxyScale`, `customProxyScale`,
-  `originalFrameRange`, `firstFrame`, `lastFrame`, `before`, `after`,
-  `onMissingFrame`, `frameMode`, `startingTime`, `timeOffset`,
-  `timeDomainUserEdited`, `ocioInputSpace`,
-  `ocioInputSpaceIndex`, `ocioInputSpaceSet`, the `Context` group of
-  `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
+  `originalFrameRange`, `firstFrame`, `lastFrame`, `beforeFirstFrame`,
+  `afterLastFrame`, `onMissingFrame`, `frameOffsetMode` (`startAt` or
+  `offset`), `startAt`, `frameOffset`, `timeDomainUserEdited`, `colorspace`,
+  the `ocioContext` group of `contextKey1`..`contextKey4` and
+  `contextValue1`..`contextValue4`, and the hidden `ocioConfigFile`,
   `ocioWorkingSpace` and `availableViews`. `reload` (`kNatronReadParamReload`)
   is a Reload button on the `filename` row. It is the panel's only reload: the
   `filename` and `proxy` knobs are built with
@@ -71,9 +71,12 @@ script-name prefix so the Write can share it.
   file rules (`fileRuleColorSpace()`; a match on the default rule alone does not
   count), the file's `oiio:ColorSpace` tag if the config has a colourspace, role
   or alias of that name (`embeddedColorSpace()`), then the project's file
-  default for the pixel depth (`categoryOf()`: float, 16-bit or 8-bit). Setting
-  the input space by hand (`ocioInputSpaceSet`) overrides the default. The
-  non-empty `key`/`value` pairs are set as OCIO context variables when the
+  default for the pixel depth (`categoryOf()`: float, 16-bit or 8-bit). The
+  `colorspace` menu's first entry, `projectDefault`, labelled with the space it
+  currently stands for ("Project default (sRGB - Texture)"), follows that chain live: it re-resolves when the file, the config or the project's
+  file defaults change (`Project::fileColorSpacesChanged`), and the resolved
+  space is part of the node's hash. Any other entry overrides it. The
+  non-empty `contextKey`/`contextValue` pairs are set as OCIO context variables when the
   processor is built, and are part of its cache key.
 - **Layers and views.** Every layer of the file becomes a produced plane
   (`getComponentsNeededAndProduced()`, grouped by `OiioReadSupport::fileLayers`)
@@ -84,19 +87,19 @@ script-name prefix so the Write can share it.
   default view.
 - **Time.** A filename pattern resolves to one file per output frame, listed
   once per pattern (`FrameListing`). `ReadTimeDomain::resolve()` maps an output
-  frame to a file, black or an error from `before`/`after` (hold, loop, bounce,
+  frame to a file, black or an error from `beforeFirstFrame`/`afterLastFrame` (hold, loop, bounce,
   black, error) and `onMissingFrame` (previous, next, nearest, error, black;
-  searches up to `kMissingFrameSearchRange` frames each way). `frameMode` picks
-  `startingTime` or `timeOffset` for the shift.
+  searches up to `kMissingFrameSearchRange` frames each way). `frameOffsetMode` picks
+  `startAt` or `frameOffset` for the shift.
 - **Proxies.** The `proxy` file is read instead of `filename` when the render
   scale is at or below `proxyThreshold`; it has its own frame listing.
 - **Metadata.** `deriveOutputMetadata()` publishes
-  `ofx/pixelaspect` and, for a frame that loads a file, the file path, source
+  `natron/pixelaspect` and, for a frame that loads a file, the file path, source
   frame, mtime and size plus the file's own attributes
   (`OiioReadSupport::attributeMetadata()`, so a frame rate in the header appears under the
   format's prefix like any other attribute), for downstream native nodes and, via
   `OfxMetadataBridge`, OFX nodes. A black or error frame carries only the pixel aspect. A Read has no frame rate: it
-  leaves the output frame rate at the host default and publishes no `ofx/framerate`.
+  leaves the output frame rate at the host default and publishes no `natron/framerate`.
 - **Camera raw.** A raw file is decoded by rawspeed through
   `RawDecodeSupport.*` and output as `eDataKindRaw`: the undemosaiced sensor
   data, one channel for a colour filter array mosaic, or the file's 3 or 1

@@ -45,7 +45,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
-#define PLUGINID_NATRON_RAWPREPARE "fr.natron.RawPrepare"
+#define PLUGINID_NATRON_RAWPREPARE "RawPrepare"
 #define PLUGIN_MAJOR_NATRON_RAWPREPARE 1
 
 #define kRawPrepareParamBlackOverride "blackLevelsOverride"
@@ -195,6 +195,10 @@ private:
 
     virtual ImageMetadata deriveOutputMetadata(double time,
                                                ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL;
 
     void refreshOverrides();
 

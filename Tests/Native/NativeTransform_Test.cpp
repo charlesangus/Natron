@@ -61,14 +61,11 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const char* const kTransformID = PLUGINID_NATRON_TRANSFORM;
-const char* const kTransformMaskedID = PLUGINID_NATRON_TRANSFORMMASKED;
-const int kOfxTransformMajor = 1;
 const int kNativeTransformMajor = PLUGIN_MAJOR_NATRON_TRANSFORM;
-const int kNativeTransformMaskedMajor = PLUGIN_MAJOR_NATRON_TRANSFORMMASKED;
 const double kTime = 1.;
 
-// The resampler repeats the OpenFX double arithmetic, but sums in a different association order
-// in places, so values may differ in the last float bits.
+// The references are recorded from this resampler in one build; another build's float association
+// order may differ in the last bits.
 const ParityTolerance kResamplingTolerance = ParityTolerance::resampling();
 // Motion blur averages up to hundreds of samples, each with the rounding above.
 const ParityTolerance kMotionBlurTolerance = ParityTolerance::iir();
@@ -158,11 +155,10 @@ protected:
                         int nativeMajor,
                         const std::string& maskInputLabel = std::string())
     {
-        ParityPair pair = makeParityPair(getApp(), id, kOfxTransformMajor, nativeMajor, maskInputLabel);
+        ParityPair pair = makeParityPair(getApp(), id, nativeMajor, maskInputLabel);
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
-        EXPECT_FALSE(pair.live()) << "the OFX " << id << " is retired, so parity replays the recorded references";
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
         }
@@ -181,7 +177,6 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << pair.id << " " << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] " << pair.id << " " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -204,6 +199,34 @@ protected:
         }
     }
 };
+
+TEST_F(NativeTransformTest, FilterParameterKnobsAndTheirDefaults)
+{
+    resetProject();
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(bool(node));
+
+    KnobIntPtr lobes = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kResamplerParamLobes));
+    KnobDoublePtr b = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kResamplerParamBicubicB));
+    KnobDoublePtr c = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kResamplerParamBicubicC));
+    KnobIPtr clamp = node->getKnobByName(kResamplerParamFilterClamp);
+    ASSERT_TRUE(lobes && b && c && clamp);
+
+    EXPECT_EQ("Lobes", lobes->getLabel());
+    EXPECT_EQ("Bicubic B", b->getLabel());
+    EXPECT_EQ("Bicubic C", c->getLabel());
+    EXPECT_EQ(4, lobes->getDefaultValue(0));
+    EXPECT_EQ(2, lobes->getMinimum(0));
+    EXPECT_EQ(8, lobes->getMaximum(0));
+    EXPECT_DOUBLE_EQ(1. / 3., b->getDefaultValue(0));
+    EXPECT_DOUBLE_EQ(1. / 3., c->getDefaultValue(0));
+
+    // The default Cubic reads none of them and is never clamped.
+    EXPECT_TRUE(lobes->getIsSecret());
+    EXPECT_TRUE(b->getIsSecret());
+    EXPECT_TRUE(c->getIsSecret());
+    EXPECT_TRUE(clamp->getIsSecret());
+}
 
 TEST_F(NativeTransformTest, CubicMinifyingAndRotated)
 {
@@ -239,7 +262,7 @@ TEST_F(NativeTransformTest, MotionBlurOverTheShutter)
 TEST_F(NativeTransformTest, MaskedMixHalf)
 {
     resetProject();
-    ParityPair pair = makePair(kTransformMaskedID, kNativeTransformMaskedMajor, "Mask");
+    ParityPair pair = makePair(kTransformID, kNativeTransformMajor, "Mask");
     ASSERT_TRUE(bool(pair.mask));
     ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamRotate, { 30. }));
@@ -279,19 +302,40 @@ TEST_F(NativeTransformTest, ChainConcatenates)
     expectBothSchedulerModesAgree(chain.native);
 }
 
-TEST_F(NativeTransformTest, MaskedTransformDoesNotOfferItsMatrix)
+// Transform offers its matrix only while no mask is applied and mix is 1; it always applies the
+// transforms concatenated into its source.
+TEST_F(NativeTransformTest, MaskOrMixStopsItOfferingItsMatrix)
 {
     resetProject();
-    NodePtr masked = createNode(QString::fromUtf8(kTransformMaskedID), kNativeTransformMaskedMajor);
-    NodePtr plain = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
-    ASSERT_TRUE(isNative(masked));
-    ASSERT_TRUE(isNative(plain));
-    EXPECT_FALSE(masked->getEffectInstance()->getCanTransform());
-    EXPECT_TRUE(plain->getEffectInstance()->getCanTransform());
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr maskSource = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr node = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(bool(maskSource));
+    ASSERT_TRUE(isNative(node));
+    connectNodes(source, node, 0, true);
+    ASSERT_TRUE(setKnobValues(node, kTransformNodeParamTranslate, { 4., 2. }));
+    EffectInstancePtr effect = node->getEffectInstance();
+
     std::list<int> inputs;
-    EXPECT_TRUE(masked->getEffectInstance()->getInputsHoldingTransform(&inputs));
+    EXPECT_TRUE(effect->getInputsHoldingTransform(&inputs));
     ASSERT_EQ(1u, inputs.size());
     EXPECT_EQ(0, inputs.front());
+
+    Transform::Matrix3x3 matrix;
+    EffectInstancePtr inputToTransform;
+    EXPECT_TRUE(effect->getCanTransform());
+    EXPECT_EQ(eStatusOK, effect->getTransform_public(kTime, RenderScale::identity, false, ViewIdx(0), &inputToTransform, &matrix));
+
+    ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
+    EXPECT_TRUE(effect->getCanTransform());
+    EXPECT_NE(eStatusOK, effect->getTransform_public(kTime, RenderScale::identity, false, ViewIdx(0), &inputToTransform, &matrix));
+    ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 1. }));
+
+    connectNodes(maskSource, node, 1, true);
+    ASSERT_TRUE(setKnobValues(node, "enableMask_Mask", { 1. }));
+    EXPECT_FALSE(effect->getCanTransform());
+    EXPECT_NE(eStatusOK, effect->getTransform_public(kTime, RenderScale::identity, false, ViewIdx(0), &inputToTransform, &matrix));
 }
 
 TEST_F(NativeTransformTest, MotionBlurAndDirectionalBlurDoNotConcatenate)
@@ -348,7 +392,7 @@ TEST_F(NativeTransformTest, IdentityRules)
     EXPECT_FALSE(effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
 }
 
-TEST_F(NativeTransformTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
+TEST_F(NativeTransformTest, ClampIsShownOnlyForFiltersThatHonourIt)
 {
     resetProject();
     NodePtr node = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
@@ -356,11 +400,11 @@ TEST_F(NativeTransformTest, ClampIsEnabledOnlyForFiltersThatHonourIt)
     KnobIPtr clamp = node->getKnobByName(kResamplerParamFilterClamp);
     ASSERT_TRUE(bool(clamp));
 
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "keys"));
-    EXPECT_TRUE(clamp->isEnabled(0));
+    EXPECT_FALSE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, "cubic"));
-    EXPECT_FALSE(clamp->isEnabled(0));
+    EXPECT_TRUE(clamp->getIsSecret());
 }
 
 TEST_F(NativeTransformTest, ConnectingASourceCentresTheTransformOnce)
@@ -411,11 +455,6 @@ TEST_F(NativeTransformTest, UnversionedRequestsGetTheNativeTransforms)
     ASSERT_TRUE(bool(transform));
     EXPECT_TRUE(isNative(transform));
     EXPECT_EQ(kNativeTransformMajor, transform->getMajorVersion());
-
-    NodePtr masked = createNode(QString::fromUtf8(kTransformMaskedID));
-    ASSERT_TRUE(bool(masked));
-    EXPECT_TRUE(isNative(masked));
-    EXPECT_EQ(kNativeTransformMaskedMajor, masked->getMajorVersion());
 }
 
 TEST_F(NativeTransformTest, RendersTheSameInBothSchedulerModes)
@@ -431,7 +470,7 @@ TEST_F(NativeTransformTest, RendersTheSameInBothSchedulerModes)
     expectBothSchedulerModesAgree(node);
 
     NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-    NodePtr masked = createNode(QString::fromUtf8(kTransformMaskedID), kNativeTransformMaskedMajor);
+    NodePtr masked = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
     ASSERT_TRUE(bool(mask));
     ASSERT_TRUE(isNative(masked));
     connectNodes(source, masked, 0, true);
@@ -442,7 +481,7 @@ TEST_F(NativeTransformTest, RendersTheSameInBothSchedulerModes)
     expectBothSchedulerModesAgree(masked);
 }
 
-// TransformMasked takes the transform of an upstream Transform as the host concatenates it, so the
+// A masked Transform takes the transform of an upstream Transform as the host concatenates it, so the
 // source it fetches is the one before that Transform. Where mask x mix is below 1 it must still
 // show its immediate input, the upstream Transform's output, not that earlier source.
 TEST_F(NativeTransformTest, MaskedAfterATransformMixesWithItsImmediateInput)
@@ -452,7 +491,7 @@ TEST_F(NativeTransformTest, MaskedAfterATransformMixesWithItsImmediateInput)
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     NodePtr maskSource = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     NodePtr first = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
-    NodePtr masked = createNode(QString::fromUtf8(kTransformMaskedID), kNativeTransformMaskedMajor);
+    NodePtr masked = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
     NodePtr plain = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
     ASSERT_TRUE(bool(source));
     ASSERT_TRUE(bool(maskSource));
@@ -480,7 +519,7 @@ TEST_F(NativeTransformTest, MaskedAfterATransformMixesWithItsImmediateInput)
 
     InputMatrixMap transforms;
     masked->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
-    ASSERT_EQ(1u, transforms.count(0)) << "the upstream Transform must concatenate into TransformMasked";
+    ASSERT_EQ(1u, transforms.count(0)) << "the upstream Transform must concatenate into the masked Transform";
 
     const RectI window(0, 0, 64, 48);
     RenderedPlane out, immediate, transformed, mask, original;
@@ -523,7 +562,7 @@ TEST_F(NativeTransformTest, MaskedPartialWindowFetchesThePassThroughRegion)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-    NodePtr masked = createNode(QString::fromUtf8(kTransformMaskedID), kNativeTransformMaskedMajor);
+    NodePtr masked = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
     ASSERT_TRUE(bool(source));
     ASSERT_TRUE(isNative(masked));
     setParitySourceOrigin(source, 0, 0);
@@ -557,8 +596,60 @@ TEST_F(NativeTransformTest, MaskedPartialWindowFetchesThePassThroughRegion)
     }
 }
 
+TEST_F(NativeTransformTest, InvertedMaskKeepsTheInputWhereTheMaskIsOpaque)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr maskSource = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr masked = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
+    NodePtr plain = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(bool(maskSource));
+    ASSERT_TRUE(isNative(masked));
+    ASSERT_TRUE(isNative(plain));
+    setParitySourceOrigin(source, 0, 0);
+    setParitySourceOrigin(maskSource, 10, 6);
+    connectNodes(source, masked, 0, true);
+    connectNodes(maskSource, masked, 1, true);
+    connectNodes(source, plain, 0, true);
+    const NodePtr both[] = { masked, plain };
+    for (const NodePtr& node : both) {
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamTranslate, { 5., -3. }));
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamRotate, { 10. }));
+    }
+    ASSERT_TRUE(setKnobValues(masked, "enableMask_Mask", { 1. }));
+    ASSERT_TRUE(setKnobValues(masked, kOfxMaskInvertParamName, { 1. }));
+    ASSERT_TRUE(setKnobValues(masked, kOfxMixParamName, { 0.75 }));
+
+    const RectI window(0, 0, 64, 48);
+    RenderedPlane out, transformed, mask, original;
+    ASSERT_TRUE(renderRGBA(masked, window, &out));
+    ASSERT_TRUE(renderRGBA(plain, window, &transformed));
+    ASSERT_TRUE(renderRGBA(maskSource, window, &mask));
+    ASSERT_TRUE(renderRGBA(source, window, &original));
+
+    const float mix = 0.75f;
+    int kept = 0;
+    int blended = 0;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const float alpha = (1.f - planeValue(mask, x, y, 3)) * mix;
+            if (alpha == 0.f) {
+                ++kept;
+            } else {
+                ++blended;
+            }
+            for (int c = 0; c < 4; ++c) {
+                const float expected = planeValue(transformed, x, y, c) * alpha + (1.f - alpha) * planeValue(original, x, y, c);
+                ASSERT_NEAR(expected, planeValue(out, x, y, c), 1e-4) << "x " << x << " y " << y << " c " << c;
+            }
+        }
+    }
+    EXPECT_GT(kept, 0);
+    EXPECT_GT(blended, 0);
+}
+
 TEST_F(NativeTransformTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, "Transform");
-    expectNativeIdentity(PLUGINID_NATRON_TRANSFORMMASKED, PLUGIN_MAJOR_NATRON_TRANSFORMMASKED, "TransformMasked");
 }

@@ -32,6 +32,11 @@ USDScopePrim or other re-parenting node moves them, as the graft re-points one
 relationship per root. Each binding is written as the strongest on its root, so
 where two assigns name the same prims the later node in the graph wins.
 
+A USDProject3D in Geometry space connected to the Material input takes its
+placement from the matched geometry at this node. The material holds one placement:
+matches at different places follow the first in stage order, with a node warning, and of several
+assigns sharing one projection node the later one sets it.
+
 Knobs:
 
 - Prim Pattern: the prims to bind.

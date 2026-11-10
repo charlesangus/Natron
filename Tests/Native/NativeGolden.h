@@ -79,7 +79,8 @@ bool checkGolden(const NodePtr& node,
 /**
  * @brief A node under test. `name` prefixes every case and names its fixture directory. A
  * generator gets no source; every other node gets a noisy parity source on input 0 and one more on
- * each input labelled in `extraInputs`, each at its own origin.
+ * each input labelled in `extraInputs`, each at its own origin. `allowNonUserCreatable` creates a
+ * node registered as internal.
  **/
 struct GoldenNodeSpec {
     std::string name;
@@ -88,6 +89,7 @@ struct GoldenNodeSpec {
     bool generator = false;
     std::string maskInput;
     std::vector<std::string> extraInputs;
+    bool allowNonUserCreatable = false;
 };
 
 /**

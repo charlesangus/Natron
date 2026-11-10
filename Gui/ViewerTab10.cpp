@@ -73,30 +73,26 @@ ViewerTab::onDisplayTransformComboBoxChanged(int /*index*/)
     if (_imp->populatingDisplayTransform) {
         return;
     }
-    const std::string display = _imp->viewerDisplay->getCurrentIndexText().toStdString();
-    std::string view = _imp->viewerView->getCurrentIndexText().toStdString();
-    // The Look menu's first entry is None; an unlisted look is kept as it is.
+    // The first entry of the Display, View and Look menus is the panel's Project default or None.
+    const std::string display = (_imp->viewerDisplay->activeIndex() == 0) ? std::string() : _imp->viewerDisplay->getCurrentIndexText().toStdString();
+    const std::string view = (_imp->viewerView->activeIndex() == 0) ? std::string() : _imp->viewerView->getCurrentIndexText().toStdString();
     const std::string look = (_imp->viewerLook->activeIndex() == 0) ? std::string() : _imp->viewerLook->getCurrentIndexText().toStdString();
 
-    // A display change keeps the view only if the new display lists it.
-    ProjectPtr project = getGui() ? getGui()->getApp()->getProject() : ProjectPtr();
-    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
-    if (colorManagement) {
-        const std::vector<std::string> views = colorManagement->getViews(display);
-        if (std::find(views.begin(), views.end(), view) == views.end()) {
-            std::string projectDisplay, projectView;
-            project->getDefaultDisplayView(&projectDisplay, &projectView);
-            if (std::find(views.begin(), views.end(), projectView) != views.end()) {
-                view = projectView;
-            } else if (!colorManagement->getDefaultView(display).empty()) {
-                view = colorManagement->getDefaultView(display);
-            } else if (!views.empty()) {
-                view = views.front();
-            }
-        }
-    }
     editViewerKnobs(tr("Display Transform"), [this, display, view, look]() {
         setDisplayTransform(display, view, look);
+        // A view the display lacks would read as missing; Project default follows the display.
+        if (!view.empty() && _imp->viewerNode) {
+            std::string resolvedDisplay;
+            _imp->viewerNode->getResolvedDisplayTransform(&resolvedDisplay, NULL, NULL);
+            ProjectPtr project = getGui() ? getGui()->getApp()->getProject() : ProjectPtr();
+            ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+            if (colorManagement) {
+                const std::vector<std::string> views = colorManagement->getViews(resolvedDisplay);
+                if (std::find(views.begin(), views.end(), view) == views.end()) {
+                    setDisplayTransform(display, std::string(), look);
+                }
+            }
+        }
     });
     refreshDisplayTransformMenus();
 }
@@ -125,10 +121,7 @@ ViewerTab::onEnableViewerRoIButtonToggle(bool b)
 void
 ViewerTab::writeUserRoIEnabled(bool b)
 {
-    // An RoI never set takes the one the viewer draws by default.
-    if (b && (_imp->viewerValue<double>(kViewerParamUserRoISize, 0., 0) <= 0.)) {
-        writeUserRoIKnobs(_imp->viewer->getUserRegionOfInterest());
-    }
+    // The viewer node gives an RoI never set the centre half of the project format.
     _imp->setViewerValue<bool>(kViewerParamEnableUserRoI, b);
 }
 
@@ -374,6 +367,22 @@ ViewerTab::onSetDownPlaybackButtonsTimeout()
             if ( (*it)->_imp->play_Backward_Button ) {
                 (*it)->_imp->play_Backward_Button->setDown(false);
                 (*it)->_imp->play_Backward_Button->setChecked(false);
+            }
+        }
+
+        // Playback renders no overlay images and its end renders nothing, so a mask would stay away
+        // until the next edit. With auto-restart on, a render here would restart playback instead.
+        if (!_imp->viewerNode->getRenderEngine()->isPlaybackAutoRestartEnabled()) {
+            const double time = _imp->viewerNode->getTimeline()->currentFrame();
+            const ViewIdx view = _imp->viewer->getCurrentView();
+            NodesList nodes;
+            getGui()->getNodesEntitledForOverlayImages(nodes);
+            for (const NodePtr& node : nodes) {
+                const EffectInstancePtr effect = node->getEffectInstance();
+                if (effect && effect->isOverlayImageRequested() && !effect->getOverlayImages(time, view)) {
+                    _imp->viewerNode->renderCurrentFrame(true);
+                    break;
+                }
             }
         }
     }
@@ -972,6 +981,16 @@ void
 ViewerTab::onViewerChannelsChanged(int i)
 {
     setDisplayChannels(i, false);
+}
+
+bool
+ViewerTab::event(QEvent* e)
+{
+    if ((e->type() == QEvent::ShortcutOverride) && claimShortcutOverride(static_cast<QKeyEvent*>(e))) {
+        return true;
+    }
+
+    return QWidget::event(e);
 }
 
 bool

@@ -46,10 +46,6 @@
 #include <QTextStream>
 #include <QRunnable>
 
-#include "Global/MathUtils.h"
-#ifdef DEBUG
-#include "Global/FloatingPointExceptions.h"
-#endif
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -64,11 +60,14 @@
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RenderEndWatch.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/Settings.h"
+#include "Engine/StrokeRenderCoalescer.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Timer.h"
@@ -76,6 +75,8 @@
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
+#include "Global/FloatingPointExceptions.h"
+#include "Global/MathUtils.h"
 
 #ifdef DEBUG
 //#define TRACE_SCHEDULER
@@ -150,12 +151,31 @@ struct RenderThread
 
 typedef std::list<RenderThread> RenderThreads;
 
+// The point of a live stroke that a produced frame shows, so the overlay preview stops drawing what the frame already has,
+// or that the frame is a neat stroke render, whose upload ends the stroke's preview.
+struct StrokeDisplayMark {
+    NodeWPtr rotoPaintNode;
+    RotoStrokeItemWPtr stroke;
+    int multiStrokeIndex;
+    int age;
+    bool neatRender;
+
+    StrokeDisplayMark()
+        : rotoPaintNode()
+        , stroke()
+        , multiStrokeIndex(-1)
+        , age(-1)
+        , neatRender(false)
+    {
+    }
+};
 
 struct ProducedFrame
 {
     BufferableObjectPtrList frames;
     U64 age;
     RenderStatsPtr stats;
+    StrokeDisplayMark strokeMark;
 };
 
 struct ProducedFrameCompareAgeLess
@@ -200,6 +220,9 @@ struct OutputSchedulerThreadPrivate
     FrameBuffer buf; //the frames rendered by the worker threads that needs to be rendered in order by the output device
     QWaitCondition bufEmptyCondition;
     mutable QMutex bufMutex;
+    // Bumped under bufMutex with every bufEmptyCondition wake: the scheduler waits only if it is unchanged since it
+    // last examined buf, since a frame it cannot process yet keeps buf non-empty and would make it spin.
+    U64 bufWakeGeneration;
 
     //doesn't need any protection since it never changes and is set in the constructor
     OutputSchedulerThread::ProcessFrameModeEnum mode; //is the frame to be processed on the main-thread (i.e OpenGL rendering) or on the scheduler thread
@@ -269,6 +292,7 @@ struct OutputSchedulerThreadPrivate
         : buf()
         , bufEmptyCondition()
         , bufMutex()
+        , bufWakeGeneration(0)
         , mode(mode)
         , timer()
         , renderTimer()
@@ -283,7 +307,7 @@ struct OutputSchedulerThreadPrivate
         , renderThreads()
         , allRenderThreadsInactiveCond()
 #ifdef NATRON_PLAYBACK_USES_THREAD_POOL
-        , threadPool( QThreadPool::globalInstance() )
+        , threadPool(QThreadPool::globalInstance())
 #else
         , allRenderThreadsQuitCond()
         , framesToRender()
@@ -302,6 +326,13 @@ struct OutputSchedulerThreadPrivate
         , bufferedOutputMutex()
         , lastBufferedOutputSize(0)
     {
+    }
+
+    void wakeBufEmptyCondition()
+    {
+        assert(!bufMutex.tryLock());
+        ++bufWakeGeneration;
+        bufEmptyCondition.wakeOne();
     }
 
     void endIsolatedJob()
@@ -501,6 +532,41 @@ struct OutputSchedulerThreadPrivate
     }
 
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
+    int getNLiveRenderThreads() const
+    {
+        assert(!renderThreadsMutex.tryLock());
+        int ret = 0;
+        for (RenderThreads::const_iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
+            if (!it->thread->mustQuit()) {
+                ++ret;
+            }
+        }
+
+        return ret;
+    }
+
+    // 0 flags every thread. Otherwise the last live thread is kept, because a quitting thread leaves the queued
+    // frames to the others and the render would wait forever for them.
+    void flagRenderThreadsToQuit(int nThreadsToStop)
+    {
+        assert(!renderThreadsMutex.tryLock());
+        int toStop = nThreadsToStop;
+        if (nThreadsToStop > 0) {
+            toStop = std::min(nThreadsToStop, getNLiveRenderThreads() - 1);
+            if (toStop <= 0) {
+                return;
+            }
+        }
+        int i = 0;
+        for (RenderThreads::iterator it = renderThreads.begin();
+             it != renderThreads.end() && (nThreadsToStop == 0 || i < toStop); ++it) {
+            if (!it->thread->mustQuit()) {
+                it->thread->scheduleForRemoval();
+                ++i;
+            }
+        }
+    }
+
     void removeQuitRenderThreadsInternal()
     {
         for (;; ) {
@@ -1295,9 +1361,11 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
             }
         }
         bool bufferEmpty;
+        U64 bufWakeGenerationSeen;
         {
             QMutexLocker l(&_imp->bufMutex);
             bufferEmpty = _imp->buf.empty();
+            bufWakeGenerationSeen = _imp->bufWakeGeneration;
         }
         int expectedTimeToRender;
 
@@ -1338,6 +1406,7 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
             {
                 QMutexLocker l(&_imp->bufMutex);
                 _imp->getFromBufferAndErase(expectedTimeToRender, framesToRender->frames);
+                bufWakeGenerationSeen = _imp->bufWakeGeneration;
             }
 
             ///The expected frame is not yet ready, go to sleep again
@@ -1481,6 +1550,7 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
             {
                 QMutexLocker l(&_imp->bufMutex);
                 bufferEmpty = _imp->buf.empty();
+                bufWakeGenerationSeen = _imp->bufWakeGeneration;
             }
         } // while(!bufferEmpty)
 
@@ -1495,8 +1565,12 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
         if (!renderFinished) {
             assert(state == eThreadStateActive);
             QMutexLocker bufLocker (&_imp->bufMutex);
-            // Wait here for more frames to be rendered, we will be woken up once appendToBuffer(...) is called
-            _imp->bufEmptyCondition.wait(bufLocker.mutex());
+            // An abort or quit raised since resolveState() wakes this condition under bufMutex only after flagging,
+            // so re-checking the flags here means that wake-up is either seen now or arrives once waiting.
+            if (!isBeingAborted() && !mustQuitThread() && (_imp->bufWakeGeneration == bufWakeGenerationSeen)) {
+                // Wait here for more frames to be rendered, we will be woken up once appendToBuffer(...) is called
+                _imp->bufEmptyCondition.wait(bufLocker.mutex());
+            }
         } else {
             if ( !_imp->engine->isPlaybackAutoRestartEnabled() ) {
                 //Move the timeline to the last rendered frame to keep it in sync with what is displayed
@@ -1552,7 +1626,7 @@ OutputSchedulerThread::onAbortRequested(bool /*keepOldestRender*/)
     ///that will not be processed anyway because the first thing it does is checking for abort
     {
         QMutexLocker l2(&_imp->bufMutex);
-        _imp->bufEmptyCondition.wakeOne();
+        _imp->wakeBufEmptyCondition();
     }
 }
 
@@ -1570,72 +1644,73 @@ void
 OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
                                              int *lastNThreads)
 {
-    ///////////
-    /////If we were analysing the CPU activity, now set the appropriate number of threads to render.
-    int optimalNThreads;
-
     ///How many parallel renders the user wants
     int userSettingParallelThreads = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
 
-    ///How many current threads are used by THIS renderer
-    int currentParallelRenders = getNRenderThreads();
-
-    *lastNThreads = currentParallelRenders;
+    // The load is read before renderThreadsMutex is taken so that this lock is never held while the
+    // RenderScheduler's is. Counting and creating or flagging under one lock keeps two finishing frame
+    // threads from both acting on the same count.
+    QThreadPool* pool = QThreadPool::globalInstance();
+    const int poolActive = pool->activeThreadCount();
+    bool stoppedOne = false;
 
     if (appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph) {
         // The frame threads only wait for the scheduler, which runs the frames' work on the global pool, so another
         // frame is opened only while the work already queued cannot keep every pool thread busy.
-        QThreadPool* pool = QThreadPool::globalInstance();
         const int poolMax = std::max(1, pool->maxThreadCount());
         const int cap = (userSettingParallelThreads > 0) ? userSettingParallelThreads : poolMax;
         int schedulerRunning = 0;
         int schedulerReady = 0;
         appPTR->getRenderScheduler()->getLoad(&schedulerRunning, &schedulerReady);
+        const bool loadAllowsMore = (schedulerRunning + schedulerReady < poolMax) && (poolActive < poolMax);
 
-        if ((currentParallelRenders == 0) || ((currentParallelRenders < cap) && (schedulerRunning + schedulerReady < poolMax) && (pool->activeThreadCount() < poolMax))) {
-            QMutexLocker l(&_imp->renderThreadsMutex);
-
-            _imp->appendRunnable(createRunnable());
-            *newNThreads = currentParallelRenders + 1;
-        } else if (currentParallelRenders > cap) {
-            stopRenderThreads(1);
-            *newNThreads = currentParallelRenders - 1;
-        } else {
-            *newNThreads = currentParallelRenders;
-        }
-
-        return;
-    }
-
-    /// How many threads are running in the application
-    int runningThreads = appPTR->getNRunningThreads() + QThreadPool::globalInstance()->activeThreadCount();
-
-    if (userSettingParallelThreads == 0) {
-        ///User wants it to be automatically computed, do a simple heuristic: launch as many parallel renders
-        ///as there are cores
-        optimalNThreads = appPTR->getHardwareIdealThreadCount();
-    } else {
-        optimalNThreads = userSettingParallelThreads;
-    }
-    optimalNThreads = std::max(1, optimalNThreads);
-
-
-    if ( ( (runningThreads < optimalNThreads) && (currentParallelRenders < optimalNThreads) ) || (currentParallelRenders == 0) ) {
-        ////////
-        ///Launch 1 thread
         QMutexLocker l(&_imp->renderThreadsMutex);
-
-        _imp->appendRunnable( createRunnable() );
-        *newNThreads = currentParallelRenders +  1;
-    } else if ( (runningThreads > optimalNThreads) && (currentParallelRenders > optimalNThreads) ) {
-        ////////
-        ///Stop 1 thread
-        stopRenderThreads(1);
-        *newNThreads = currentParallelRenders - 1;
+        const int live = _imp->getNLiveRenderThreads();
+        *lastNThreads = live;
+        if ((live == 0) || ((live < cap) && loadAllowsMore)) {
+            _imp->appendRunnable(createRunnable());
+            *newNThreads = live + 1;
+        } else if (live > cap) {
+            _imp->flagRenderThreadsToQuit(1);
+            _imp->removeAllQuitRenderThreads();
+            *newNThreads = live - 1;
+            stoppedOne = true;
+        } else {
+            *newNThreads = live;
+        }
     } else {
-        /////////
-        ///Keep the current count
-        *newNThreads = std::max(1, currentParallelRenders);
+        /// How many threads are running in the application
+        const int runningThreads = appPTR->getNRunningThreads() + poolActive;
+
+        int optimalNThreads;
+        if (userSettingParallelThreads == 0) {
+            /// User wants it to be automatically computed, do a simple heuristic: launch as many parallel renders
+            /// as there are cores
+            optimalNThreads = appPTR->getHardwareIdealThreadCount();
+        } else {
+            optimalNThreads = userSettingParallelThreads;
+        }
+        optimalNThreads = std::max(1, optimalNThreads);
+
+        QMutexLocker l(&_imp->renderThreadsMutex);
+        const int live = _imp->getNLiveRenderThreads();
+        *lastNThreads = live;
+        if (((runningThreads < optimalNThreads) && (live < optimalNThreads)) || (live == 0)) {
+            _imp->appendRunnable(createRunnable());
+            *newNThreads = live + 1;
+        } else if ((runningThreads > optimalNThreads) && (live > optimalNThreads)) {
+            _imp->flagRenderThreadsToQuit(1);
+            _imp->removeAllQuitRenderThreads();
+            *newNThreads = live - 1;
+            stoppedOne = true;
+        } else {
+            *newNThreads = std::max(1, live);
+        }
+    }
+
+    if (stoppedOne) {
+        QMutexLocker framesLocker(&_imp->framesToRenderMutex);
+        _imp->framesToRenderNotEmptyCond.wakeAll();
     }
 }
 
@@ -1689,7 +1764,7 @@ OutputSchedulerThread::notifyFrameRendered(int frame,
             {
                 QMutexLocker bufLocker (&_imp->bufMutex);
                 _imp->appendBufferedFrame( 0, viewIndex, RenderStatsPtr(), BufferableObjectPtr() );
-                _imp->bufEmptyCondition.wakeOne();
+                _imp->wakeBufEmptyCondition();
             }
         } else {
             l.unlock();
@@ -1845,7 +1920,7 @@ OutputSchedulerThread::appendToBuffer_internal(double time,
         _imp->appendBufferedFrame(time, view, stats, frame);
         if (wakeThread) {
             ///Wake up the scheduler thread that an image is available if it is asleep so it can process it.
-            _imp->bufEmptyCondition.wakeOne();
+            _imp->wakeBufEmptyCondition();
         }
     }
 }
@@ -1986,7 +2061,11 @@ OutputSchedulerThread::getNRenderThreads() const
 {
     QMutexLocker l(&_imp->renderThreadsMutex);
 
+#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
+    return _imp->getNLiveRenderThreads();
+#else
     return (int)_imp->renderThreads.size();
+#endif
 }
 
 int
@@ -2002,21 +2081,12 @@ OutputSchedulerThread::stopRenderThreads(int nThreadsToStop)
 {
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     {
-        ///First flag the number of threads to stop
         QMutexLocker l(&_imp->renderThreadsMutex);
-        int i = 0;
-        for (RenderThreads::iterator it = _imp->renderThreads.begin();
-             it != _imp->renderThreads.end() && (i < nThreadsToStop || nThreadsToStop == 0); ++it) {
-            if ( !it->thread->mustQuit() ) {
-                it->thread->scheduleForRemoval();
-                ++i;
-            }
-        }
+        _imp->flagRenderThreadsToQuit(nThreadsToStop);
 
         ///Clean-up remaining zombie threads that are no longer useful
         _imp->removeAllQuitRenderThreads();
     }
-
 
     ///Wake-up all threads to make sure that they are notified that they must quit
     {
@@ -2165,6 +2235,7 @@ RenderThreadTask::run()
 #ifdef TRACE_SCHEDULER
         qDebug() << "Parallel Render Thread: Picking frame to render: " << time;
 #endif
+        boost_adaptbx::floating_point::follow_software_renderer();
         renderFrame(time, viewsToRender, enableRenderStats);
 
         appPTR->getAppTLS()->cleanupTLSForThread();
@@ -3558,6 +3629,12 @@ RenderEngine::isSequentialRenderBeingAborted() const
     return _imp->scheduler->isBeingAborted();
 }
 
+int
+RenderEngine::getNRenderThreads() const
+{
+    return _imp->scheduler ? _imp->scheduler->getNRenderThreads() : 0;
+}
+
 bool
 RenderEngine::hasThreadsAlive() const
 {
@@ -3653,6 +3730,43 @@ ViewerRenderEngine::createScheduler(const OutputEffectInstancePtr& effect)
 }
 
 ////////////////////////ViewerCurrentFrameRequestScheduler////////////////////////
+
+// One live stroke render in flight per viewer.
+struct StrokeRenderGate {
+    StrokeRenderCoalescer coalescer;
+    ViewerInstance* viewer;
+
+    explicit StrokeRenderGate(ViewerInstance* viewer)
+        : coalescer()
+        , viewer(viewer)
+    {
+    }
+};
+
+typedef std::shared_ptr<StrokeRenderGate> StrokeRenderGatePtr;
+typedef std::weak_ptr<StrokeRenderGate> StrokeRenderGateWPtr;
+
+static void
+releaseStrokeRenderGate(const StrokeRenderGateWPtr& weakGate)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    StrokeRenderGatePtr gate = weakGate.lock();
+    if (!gate) {
+        return;
+    }
+    if (!gate->coalescer.finish()) {
+        return;
+    }
+    NodePtr rotoPaintNode;
+    RotoStrokeItemPtr stroke;
+    bool isDrawing = false;
+    gate->viewer->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &stroke, &isDrawing);
+    // After pen-up the neat render covers the whole stroke.
+    if (isDrawing) {
+        gate->viewer->renderCurrentFrame(true);
+    }
+}
+
 class CurrentFrameFunctorArgs
     : public GenericThreadStartArgs
 {
@@ -3670,6 +3784,11 @@ public:
     RotoStrokeItemWPtr strokeItem;
     ViewerArgsPtr args[2];
     bool isRotoNeatRender;
+    // Two viewers may both see the neat render request; only the one that took it ends it.
+    bool tookNeatRender;
+    std::uint64_t latencyMark;
+    StrokeRenderGateWPtr strokeGate;
+    RenderEndWatch::TicketPtr renderEndTicket;
 
     CurrentFrameFunctorArgs()
         : GenericThreadStartArgs()
@@ -3685,6 +3804,10 @@ public:
         , strokeItem()
         , args()
         , isRotoNeatRender(false)
+        , tookNeatRender(false)
+        , latencyMark(0)
+        , strokeGate()
+        , renderEndTicket()
     {
     }
 
@@ -3711,16 +3834,24 @@ public:
         , strokeItem(strokeItem)
         , args()
         , isRotoNeatRender(isRotoNeatRender)
+        , tookNeatRender(false)
+        , latencyMark(0)
+        , strokeGate()
+        , renderEndTicket()
     {
         if (isRotoPaintRequest && isRotoNeatRender) {
-            isRotoPaintRequest->getRotoContext()->setIsDoingNeatRender(true);
+            tookNeatRender = isRotoPaintRequest->getRotoContext()->setIsDoingNeatRender(true);
         }
     }
 
     ~CurrentFrameFunctorArgs()
     {
-        if (isRotoPaintRequest && isRotoNeatRender) {
+        if (isRotoPaintRequest && tookNeatRender) {
             isRotoPaintRequest->getRotoContext()->setIsDoingNeatRender(false);
+        }
+        if (!strokeGate.expired()) {
+            StrokeRenderGateWPtr gate = strokeGate;
+            QMetaObject::invokeMethod(qApp, [gate]() { releaseStrokeRenderGate(gate); }, Qt::QueuedConnection);
         }
     }
 };
@@ -3749,9 +3880,11 @@ struct ViewerCurrentFrameRequestSchedulerPrivate
     // Used to attribute an age to each renderCurrentFrameRequest
     U64 ageCounter;
 
+    StrokeRenderGatePtr strokeGate;
+
     ViewerCurrentFrameRequestSchedulerPrivate(ViewerInstance* viewer)
         : viewer(viewer)
-        , threadPool( QThreadPool::globalInstance() )
+        , threadPool(QThreadPool::globalInstance())
         , producedFramesMutex()
         , producedFrames()
         , producedFramesNotEmpty()
@@ -3759,6 +3892,7 @@ struct ViewerCurrentFrameRequestSchedulerPrivate
         , currentFrameRenderTasksCond()
         , currentFrameRenderTasks()
         , ageCounter(0)
+        , strokeGate(std::make_shared<StrokeRenderGate>(viewer))
     {
     }
 
@@ -3797,7 +3931,8 @@ struct ViewerCurrentFrameRequestSchedulerPrivate
 
     void notifyFrameProduced(const BufferableObjectPtrList& frames,
                              const RenderStatsPtr& stats,
-                             U64 age)
+                             U64 age,
+                             const StrokeDisplayMark& strokeMark = StrokeDisplayMark())
     {
         QMutexLocker k(&producedFramesMutex);
         ProducedFrame p;
@@ -3805,11 +3940,14 @@ struct ViewerCurrentFrameRequestSchedulerPrivate
         p.frames = frames;
         p.age = age;
         p.stats = stats;
+        p.strokeMark = strokeMark;
         producedFrames.insert(p);
         producedFramesNotEmpty.wakeOne();
     }
 
-    void processProducedFrame(const RenderStatsPtr& stats, const BufferableObjectPtrList& frames);
+    void processProducedFrame(const RenderStatsPtr& stats,
+                              const BufferableObjectPtrList& frames,
+                              const StrokeDisplayMark& strokeMark = StrokeDisplayMark());
 };
 
 class RenderCurrentFrameFunctorRunnable
@@ -3849,6 +3987,11 @@ public:
             }
         }
 
+        RotoLatencyProbe* latencyProbe = RotoLatencyProbe::instance();
+        if (latencyProbe) {
+            latencyProbe->noteRenderStarted(_args->latencyMark);
+        }
+
         try {
             if (!_args->isRotoPaintRequest || _args->isRotoNeatRender) {
                 stat = _args->viewer->renderViewer(_args->view, QThread::currentThread() == qApp->thread(), false, _args->viewerHash, _args->canAbort,
@@ -3884,6 +4027,31 @@ public:
                     }
                 }
             }
+            if (latencyProbe) {
+                latencyProbe->noteRenderFinished(_args->latencyMark);
+            }
+        }
+
+        StrokeDisplayMark strokeMark;
+        if (_args->isRotoPaintRequest && !_args->isRotoNeatRender && !ret.empty()) {
+            // Renders of a stroke run one at a time, so the app's stroke data are still the ones this render used.
+            RotoStrokeItemPtr stroke = _args->strokeItem.lock();
+            RotoStrokeItemPtr appStroke;
+            int multiStrokeIndex = -1;
+            _args->viewer->getApp()->getStrokeAndMultiStrokeIndex(&appStroke, &multiStrokeIndex);
+            if (stroke && (appStroke == stroke)) {
+                strokeMark.rotoPaintNode = _args->isRotoPaintRequest;
+                strokeMark.stroke = stroke;
+                strokeMark.multiStrokeIndex = multiStrokeIndex;
+                strokeMark.age = _args->viewer->getApp()->getStrokeLastIndex();
+            }
+        }
+        if (_args->tookNeatRender && !ret.empty()) {
+            // Before the frame is handed on, so its display cannot overtake the hand-over.
+            strokeMark.rotoPaintNode = _args->isRotoPaintRequest;
+            strokeMark.neatRender = true;
+            _args->isRotoPaintRequest->getRotoContext()->notifyNeatRenderFrameProduced();
+            _args->tookNeatRender = false;
         }
 
         if (_args->request) {
@@ -3903,10 +4071,10 @@ public:
                 Q_UNUSED(deviceFrame);
             }
 #endif
-            _args->scheduler->notifyFrameProduced(ret, _args->stats, _args->request->age);
+            _args->scheduler->notifyFrameProduced(ret, _args->stats, _args->request->age, strokeMark);
         } else {
             assert( QThread::currentThread() == qApp->thread() );
-            _args->scheduler->processProducedFrame(_args->stats, ret);
+            _args->scheduler->processProducedFrame(_args->stats, ret, strokeMark);
         }
 
         ///This thread is done, clean-up its TLS
@@ -3925,6 +4093,7 @@ public:
 
     RenderStatsPtr stats;
     BufferableObjectPtrList frames;
+    StrokeDisplayMark strokeMark;
 
     ViewerCurrentFrameRequestSchedulerExecOnMT()
         : GenericThreadExecOnMainThreadArgs()
@@ -4006,6 +4175,7 @@ ViewerCurrentFrameRequestScheduler::threadLoopOnce(const GenericThreadStartArgsP
 
             mtArgs->frames = found->frames;
             mtArgs->stats = found->stats;
+            mtArgs->strokeMark = found->strokeMark;
 
             // Erase from the produced frames all renders that are older that the age we want to render
             // since they are no longer going to be used.
@@ -4049,13 +4219,14 @@ ViewerCurrentFrameRequestScheduler::executeOnMainThread(const GenericThreadExecO
 
     assert(args);
     if (args) {
-        _imp->processProducedFrame(args->stats, args->frames);
+        _imp->processProducedFrame(args->stats, args->frames, args->strokeMark);
     }
 }
 
 void
 ViewerCurrentFrameRequestSchedulerPrivate::processProducedFrame(const RenderStatsPtr& stats,
-                                                                const BufferableObjectPtrList& frames)
+                                                                const BufferableObjectPtrList& frames,
+                                                                const StrokeDisplayMark& strokeMark)
 {
     assert( QThread::currentThread() == qApp->thread() );
 
@@ -4063,7 +4234,7 @@ ViewerCurrentFrameRequestSchedulerPrivate::processProducedFrame(const RenderStat
         viewer->aboutToUpdateTextures();
     }
 
-    //bool hasDoneSomething = false;
+    bool updatedTextures = false;
     for (BufferableObjectPtrList::const_iterator it2 = frames.begin(); it2 != frames.end(); ++it2) {
         assert(*it2);
         UpdateViewerParamsPtr params = std::dynamic_pointer_cast<UpdateViewerParams>(*it2);
@@ -4076,9 +4247,26 @@ ViewerCurrentFrameRequestSchedulerPrivate::processProducedFrame(const RenderStat
             }
 
             viewer->updateViewer(params);
+            updatedTextures = true;
         }
     }
 
+    if (updatedTextures && (strokeMark.age >= 0) && !viewer->isViewerPaused(0)) {
+        NodePtr rotoPaintNode = strokeMark.rotoPaintNode.lock();
+        RotoStrokeItemPtr stroke = strokeMark.stroke.lock();
+        RotoContextPtr roto = rotoPaintNode ? rotoPaintNode->getRotoContext() : RotoContextPtr();
+        if (roto && stroke) {
+            roto->noteStrokeDisplayed(stroke, strokeMark.multiStrokeIndex, strokeMark.age);
+        }
+    }
+    if (updatedTextures && strokeMark.neatRender) {
+        // The texture is uploaded, so the paint that drops the preview already shows the neat frame.
+        NodePtr rotoPaintNode = strokeMark.rotoPaintNode.lock();
+        RotoContextPtr roto = rotoPaintNode ? rotoPaintNode->getRotoContext() : RotoContextPtr();
+        if (roto) {
+            roto->noteNeatRenderDisplayed();
+        }
+    }
 
     ///At least redraw the viewer, we might be here when the user removed a node upstream of the viewer.
     viewer->redrawViewer();
@@ -4153,19 +4341,24 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
     bool isDrawing = false;
     _imp->viewer->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &curStroke, &isDrawing);
 
-    bool rotoUse1Thread = false;
+    // Stroke renders accumulate into the stroke's image, so they run one at a time and in order. Each one still splits
+    // its tiles over the thread pool wherever the nodes allow it.
+    bool serializeRotoRenders = false;
     bool isRotoNeatRender = false;
     if (!isDrawing) {
         isRotoNeatRender = rotoPaintNode ? rotoPaintNode->getRotoContext()->mustDoNeatRender() : false;
         if (rotoPaintNode && isRotoNeatRender) {
-            rotoUse1Thread = true;
+            serializeRotoRenders = true;
         } else {
             rotoPaintNode.reset();
             curStroke.reset();
         }
     } else {
         assert(rotoPaintNode);
-        rotoUse1Thread = true;
+        serializeRotoRenders = true;
+        if (!_imp->strokeGate->coalescer.request()) {
+            return;
+        }
     }
 
     ViewerArgsPtr args[2];
@@ -4276,6 +4469,13 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
 #endif
     functorArgs->args[0] = args[0];
     functorArgs->args[1] = args[1];
+    if (isDrawing) {
+        functorArgs->strokeGate = _imp->strokeGate;
+    }
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        functorArgs->latencyMark = probe->noteRenderRequested();
+    }
+    functorArgs->renderEndTicket = RenderEndWatch::takeTicket();
 
     if (appPTR->getCurrentSettings()->getNumberOfThreads() == -1) {
         RenderCurrentFrameFunctorRunnable task(functorArgs);
@@ -4300,8 +4500,7 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
          */
         int maxThreads = _imp->threadPool->maxThreadCount();
 
-        //When painting, limit the number of threads to 1 to be sure strokes are painted in the right order
-        if (rotoUse1Thread || isTracking) {
+        if (serializeRotoRenders || isTracking) {
             maxThreads = 1;
         }
         // In Task graph mode the render thread waits for the RenderScheduler, which a pool thread must never do; the

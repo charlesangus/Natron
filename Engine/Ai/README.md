@@ -123,7 +123,7 @@ their reservation until they finish.
 
 ## Tiled inference
 
-`runTiled(session, roi, spec, pack, unpack, abort)` runs a one-input, one-output image model over a
+`runTiled(session, roi, spec, pack, unpack, abort, finish)` runs a one-input, one-output image model over a
 region of any size. The `AiTileSpec` gives the tile edge, the overlap, the multiple the model's input
 must be padded to, the output scale and the channel counts.
 
@@ -131,13 +131,16 @@ must be padded to, the output scale and the channel counts.
   edge, and neighbouring tiles share at least `overlap` pixels.
 - **Padding.** Each tile is padded up to `multipleOf` by reflection (numpy's `reflect`, which does
   not repeat the edge pixel). The padding is cropped off the result.
-- **Blending.** Tiles are blended at output resolution with raised-cosine weights. Across a shared
-  span, the weights sum to one.
+- **Blending.** Tiles are blended at output resolution with raised-cosine weights, or linear ones
+  when `linearBlend` is set. Across a shared span, the weights sum to one.
 - **Fixed-size models.** If the model's input has a fixed height or width, tiles are clamped to that
   size, and smaller tiles are padded up to it.
 - **pack and unpack.** These callbacks belong to the caller. `pack` fills each tile's tensor from
   the image, and `unpack` receives the whole blended result once, after every tile has run.
   Colour conversion into and out of the model's space happens there, so each node owns it.
+- **finish.** An optional callback that gets each tile's input tensor and its output before the
+  output is blended, and may change the output. It is for a correction that needs the whole tile,
+  such as RawNeuralDenoise matching each tile's output level to its input's, as darktable does.
 - **Row order.** Tensor row 0 is the top row of the image, `y2 - 1` in Natron's bottom-up
   coordinates.
 
@@ -197,6 +200,79 @@ default of the first task that has one, else the registry's default for the firs
 a model. The menu refreshes when a model of any of its tasks is installed or removed.
 `ModelKnob::resolve()` returns the selected model's files and `ModelConfig`, or posts why it
 can't and returns nothing.
+
+## Object segmentation
+
+`Segmenter` (`Segmentation.h`) runs darktable-ai's two-graph `mask-object` models, SegNext and SAM
+2.1. The encoder sees the image once per (image hash, frame, model, inference resolution) key, and
+the segmenter keeps the last `kCacheCapacity` encodings. The decoder turns click points (and, for SAM, boxes) into a
+probability mask, refined over two passes as darktable's object tool does. `MaskTrace` turns that
+mask into closed Bezier outlines and holes: marching squares, Douglas-Peucker simplification, then
+a Schneider curve fit. Without smoothing, it keeps straight segments between corners.
+
+`Segmentation.cpp` is ported from darktable's `src/common/ai/segmentation.c` (commit
+`fee19b421fdb`), which is GPL-3.0-or-later, so that file is GPL-3.0-or-later too. The Natron tree
+is GPL-2.0-or-later, which allows it, but a build that links the file is distributed under GPLv3.
+`MaskTrace` is written fresh: it does not port darktable's vectorizer or potrace.
+
+The SAM 2.1 models are trained on SA-1B, whose licence is research-only. The model licence notice
+says so before a download, as it does for every model with such training data.
+
+The Roto node's Object Select tool (`Engine/RotoObjectSelect.h`, shortcut O) is the only user of
+both for now. In the viewer:
+
+- A click adds a point on the object, and a Shift-click adds a point to leave out.
+- A drag draws a box (SAM models only).
+- The outline preview follows each prompt and shows the Beziers a commit makes, control points
+  included.
+- Object Density, a slider in the viewer toolbar, sets how many control points they get, and
+  re-traces the preview as it moves. The value stays for the next shape. Corners where the outline
+  turns sharply get broken tangents, so few points follow a sharp silhouette.
+- Backspace removes the last prompt, and Esc clears them all.
+- Return commits the outlines as Beziers keyed on the current frame, as one undo step. Holes
+  become Stencil shapes.
+- Undoing a commit removes the shapes, moves to the commit's frame and brings the selection back
+  (its prompts and the decoder's mask, kept at the inference resolution and upsampled again, so
+  the outline and a new commit match the undone one) to commit again. Adjusting it encodes the
+  Source again if its encoding is gone. Redo commits the undone shapes again.
+- The prompts belong to one frame: changing frame drops them.
+- When the Source cannot be encoded, the error is shown, the outline is cleared and Return commits
+  nothing until a prompt changes.
+- Object Inference Resolution (Full, 50%, 25%, 1K, 2K or 4K; K caps the long edge at 1024, 2048
+  or 4096 pixels, and a smaller image is never enlarged) sets the size of the image the model
+  segments. The viewer, the prompts, the outline and the committed shapes stay at full resolution.
+  Changing it with prompts placed keeps them where they are and segments again, encoding the
+  smaller image unless its encoding is cached. The default is 2K.
+
+Until the tool is picked, Roto pays nothing for it: no model file is looked at, the model menu lists
+the models by name only and does not follow downloads, the segmenter and its encoding cache do not
+exist, and its viewer knobs are left out of the render hash. Picking the tool marks the models that
+are not installed and follows downloads from then on; a saved project keeps its model either way.
+The segmenter is made on the first prompt. Putting the tool down stops any encoding and frees the
+prompts, the segmenter, its encodings and the masks, so picking it again encodes the Source again.
+The ONNX Runtime sessions themselves may stay in the process-wide session cache
+(`InferenceSession`). Closing the project or deleting the node aborts an encoding in progress,
+including the render of the Source, and waits for its thread to let go of the node graph.
+It renders the Source on a worker thread at full resolution, then area-averages it, still scene
+linear, to square pixels at the inference resolution (`SegmentationScaling`). It converts that to
+the project's default display and view as 8-bit sRGB, not the viewer's, and encodes it. Prompts and
+decoding run on the main thread: prompts are kept in canonical coordinates and mapped to the
+inference image for each decode, and the probability mask the decoder returns is upsampled
+bilinearly to full resolution before it is thresholded and traced. Object Density's tolerance and
+Object Min Area are therefore in full-resolution pixels whatever the inference resolution.
+
+Where the time goes on a large plate: the encoders take a fixed input (a 1024-pixel long edge for
+SegNext and SAM 2.1), so their cost does not grow with the image, and neither does the decoder's.
+What grows with the pixel count is everything around them. Once per encoding: reading the rendered
+Source, the display transform and the copy kept as the guide of the mask upsampling. On every
+click: the joint-bilateral upsampling of each decoder pass's mask to the encoded image, the
+interior-point distance transform and box between passes, the IoU check and the seed-area flood
+fill, which all run at the encoded size. A smaller inference resolution moves all of these to the
+small image and leaves one bilinear upsampling and the trace at full resolution. Rendering the
+Source itself stays at full resolution. Since the encoders shrink their input to 1024 anyway, 2K
+costs the model nothing; the area average even gives the encoder a less aliased image than its own
+bilinear resize of an 8K plate would. Below 2K the mask's edge follows a coarser image, so 1K and
+25% trade edge accuracy for speed.
 
 ## Testing
 

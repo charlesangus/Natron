@@ -155,13 +155,13 @@ try:
         yield ("sleep", SETTLE_MS)
         viewer = app.getNode("Viewer1")
         if viewer is None:
-            viewer = app.createNode("fr.inria.built-in.Viewer")
+            viewer = app.createNode("Viewer")
         gt.require(viewer is not None, "a Viewer node exists")
         viewer.setPosition(0, 2400)
 
         gt.section("rotopaint-curves")
-        roto = app.createNode("fr.inria.built-in.RotoPaint")
-        gt.require(roto is not None, "created a RotoPaint node", gt.plugin_problem("fr.inria.built-in.RotoPaint"))
+        roto = app.createNode("RotoPaint")
+        gt.require(roto is not None, "created a RotoPaint node", gt.plugin_problem("RotoPaint"))
         roto.setPosition(0, 0)
         ctx = roto.getRotoContext()
         gt.require(ctx is not None, "the RotoPaint node has a roto context")

@@ -315,8 +315,10 @@ RotoStrokeItem::setStrokeFinished()
         effectNode->setWhileCreatingPaintStroke(false);
         effectNode->markHashDirty();
     }
-    mergeNode->setWhileCreatingPaintStroke(false);
-    mergeNode->markHashDirty();
+    if (mergeNode) {
+        mergeNode->setWhileCreatingPaintStroke(false);
+        mergeNode->markHashDirty();
+    }
     if (timeOffsetNode) {
         timeOffsetNode->setWhileCreatingPaintStroke(false);
         timeOffsetNode->markHashDirty();
@@ -380,7 +382,6 @@ RotoStrokeItem::appendPoint(bool newStroke,
         int nk = stroke->xCurve->getKeyFramesCount();
         double t;
         if (nk == 0) {
-            qDebug() << "start stroke!";
             t = 0.;
             // set time origin for this curve
             _imp->curveT0 = p.timestamp();
@@ -393,26 +394,27 @@ RotoStrokeItem::appendPoint(bool newStroke,
             //Clamp timestamps difference to 1e-3 in case Qt delivers its events all at once
             double dt = t - _imp->lastTimestamp;
             if (dt < 0.01) {
-                qDebug() << "dt is lower than 0.01!";
                 t = _imp->lastTimestamp + 0.01;
             }
         }
         _imp->lastTimestamp = t;
-        qDebug("t[%d]=%g", nk, t);
 
+        // Catmull-Rom keys, so the tangent may be modified by the next point on the curve. They are
+        // inserted as Catmull-Rom rather than switched after insertion: a switch refreshes the last
+        // key's tangents a second time, which a project load does not, and the stroke would change shape.
         bool addKeyFrameOk; // did we add a new keyframe (normally yes, but just in case)
-        int ki; // index of the new keyframe (normally nk, but just in case)
         {
             KeyFrame k;
             k.setTime(t);
             k.setValue(p.pos().x);
+            k.setInterpolation(eKeyframeTypeCatmullRom);
             addKeyFrameOk = stroke->xCurve->addKeyFrame(k);
-            ki = ( addKeyFrameOk ? nk : (nk - 1) );
         }
         {
             KeyFrame k;
             k.setTime(t);
             k.setValue(p.pos().y);
+            k.setInterpolation(eKeyframeTypeCatmullRom);
             bool aok = stroke->yCurve->addKeyFrame(k);
             assert(aok == addKeyFrameOk);
             if (aok != addKeyFrameOk) {
@@ -424,17 +426,13 @@ RotoStrokeItem::appendPoint(bool newStroke,
             KeyFrame k;
             k.setTime(t);
             k.setValue( p.pressure() );
+            k.setInterpolation(eKeyframeTypeCatmullRom);
             bool aok = stroke->pressureCurve->addKeyFrame(k);
             assert(aok == addKeyFrameOk);
             if (aok != addKeyFrameOk) {
                 throw std::logic_error("RotoStrokeItem::appendPoint");
             }
         }
-        // Use CatmullRom interpolation, which means that the tangent may be modified by the next point on the curve.
-        // In a previous version, the previous keyframe was set to Free so its tangents don't get overwritten, but this caused oscillations.
-        stroke->xCurve->setKeyFrameInterpolation(eKeyframeTypeCatmullRom, ki);
-        stroke->yCurve->setKeyFrameInterpolation(eKeyframeTypeCatmullRom, ki);
-        stroke->pressureCurve->setKeyFrameInterpolation(eKeyframeTypeCatmullRom, ki);
     } // QMutexLocker k(&itemMutex);
     invalidateContentHash();
 

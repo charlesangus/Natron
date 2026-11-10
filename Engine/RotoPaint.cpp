@@ -30,25 +30,24 @@
 #include <stdexcept>
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
+#include "Engine/BezierCP.h"
 #include "Engine/Image.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
-#include "Engine/MergingEnum.h"
 #include "Engine/RotoContext.h"
-#include "Engine/Bezier.h"
-#include "Engine/BezierCP.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/RotoStrokeItem.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/RotoDrawableItem.h"
-#include "Engine/RotoPoint.h"
-#include "Engine/RotoUndoCommand.h"
+#include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
+#include "Engine/RotoUndoCommand.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-
 
 #include "Global/GLIncludes.h"
 #include "Global/GlobalDefines.h"
@@ -395,17 +394,7 @@ RotoPaint::initializeKnobs()
     generalPage->addKnob(sourceType);
     _imp->ui->sourceTypeChoice = sourceType;
 
-
-    KnobButtonPtr resetCloneOffset = AppManager::createKnob<KnobButton>( this, tr(kRotoUIParamResetCloneOffsetLabel) );
-    resetCloneOffset->setName(kRotoUIParamResetCloneOffset);
-    resetCloneOffset->setHintToolTip( tr(kRotoUIParamResetCloneOffsetHint) );
-    resetCloneOffset->setEvaluateOnChange(false);
-    resetCloneOffset->setSecretByDefault(true);
-    resetCloneOffset->setInViewerContextCanHaveShortcut(true);
-    resetCloneOffset->setInViewerContextNewLineActivated(true);
-    generalPage->addKnob(resetCloneOffset);
-    addOverlaySlaveParam(resetCloneOffset);
-    _imp->ui->resetCloneOffsetButton = resetCloneOffset;
+    KnobButtonPtr resetCloneOffset = _imp->ui->createResetCloneOffsetKnob(generalPage);
 
     addKnobToViewerUI(multiStroke);
     multiStroke->setInViewerContextItemSpacing(ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX);
@@ -437,7 +426,8 @@ RotoPaint::initializeKnobs()
     addKnobToViewerUI(sourceType);
     addKnobToViewerUI(resetCloneOffset);
 
-    KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll);
+    KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect);
+    _imp->ui->createObjectSelectKnobs(generalPage);
 
     KnobGroupPtr paintToolButton = AppManager::createKnob<KnobGroup>( this, tr(kRotoUIParamPaintBrushToolButtonLabel) );
     paintToolButton->setName(kRotoUIParamPaintBrushToolButton);
@@ -630,11 +620,11 @@ RotoPaint::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamBuildUp, kRotoUIParamBuildUpLabel) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamResetCloneOffset, kRotoUIParamResetCloneOffsetLabel) );
 
-    RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll, shortcuts);
+    RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect, shortcuts);
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamPaintBrushToolButton, kRotoUIParamPaintBrushToolButtonLabel, Key_N) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamCloneBrushToolButton, kRotoUIParamCloneBrushToolButtonLabel, Key_C) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamEffectBrushToolButton, kRotoUIParamEffectBrushToolButtonLabel, Key_X) );
-    shortcuts->push_back( PluginActionShortcut(kRotoUIParamMergeBrushToolButton, kRotoUIParamMergeBrushToolButtonLabel, Key_E) );
+    shortcuts->push_back(PluginActionShortcut(kRotoUIParamMergeBrushToolButton, kRotoUIParamMergeBrushToolButtonLabel, Key_D));
 
     RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
 }
@@ -642,7 +632,9 @@ RotoPaint::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
 bool
 RotoPaint::shouldPreferPluginOverlayOverHostOverlay() const
 {
-    return !_imp->ui->ctrlDown;
+    // Ctrl-drags on the points' transform box (pivot, corners) go to the roto overlay before the
+    // shape's transform jack.
+    return !_imp->ui->ctrlDown || _imp->ui->showCpsBbox;
 }
 
 bool
@@ -653,6 +645,13 @@ RotoPaint::shouldDrawHostOverlay() const
         return true;
     }
     return b->getValue();
+}
+
+void
+RotoPaint::onEffectCreated(bool /*mayCreateFileDialog*/,
+                           const CreateNodeArgs& args)
+{
+    _imp->ui->onHostEffectCreated(args);
 }
 
 void
@@ -719,6 +718,7 @@ RotoPaint::onInputChanged(int inputNb)
     NodePtr inputNode = getNode()->getInput(0);
 
     getNode()->getRotoContext()->onRotoPaintInputChanged(inputNode);
+    _imp->ui->onHostInputChanged();
     EffectInstance::onInputChanged(inputNb);
 }
 
@@ -1038,6 +1038,19 @@ RotoPaint::onOverlayPenDown(double time,
 }
 
 bool
+RotoPaint::onOverlayClaimsAltPenDown(double time,
+                                     const QPointF& pos)
+{
+    return _imp->ui->claimsAltPenDown(time, pos);
+}
+
+void
+RotoPaint::onOverlayPenDownModifiers(KeyboardModifiers modifiers)
+{
+    _imp->ui->syncModifiers(modifiers);
+}
+
+bool
 RotoPaint::onOverlayPenMotion(double time,
                               const RenderScale& /*renderScale*/,
                               ViewIdx /*view*/,
@@ -1111,6 +1124,20 @@ RotoPaintInteractPtr
 RotoPaint::getInteract() const
 {
     return _imp->ui;
+}
+
+void
+RotoPaint::abortObjectSelectEncoding(bool wait)
+{
+    if (_imp->ui && _imp->ui->objectSelect) {
+        _imp->ui->objectSelect->abortEncoding(wait);
+    }
+}
+
+bool
+RotoPaint::isObjectSelectEncoding() const
+{
+    return _imp->ui && _imp->ui->objectSelect && _imp->ui->objectSelect->isEncoding();
 }
 
 void

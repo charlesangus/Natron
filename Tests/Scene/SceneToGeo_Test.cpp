@@ -117,6 +117,22 @@ translation(const GeoMatrix4& m)
 {
     return { m[3], m[7], m[11] };
 }
+
+// Reading from USD marks every primitive, which changes what GeoToUSD authors and so stays in
+// the content hash; the round trip is otherwise the identity.
+GeoDetail
+withoutUsdSource(const GeoDetail& detail)
+{
+    const GeoAttribute* marker = detail.findAttribute(eGeoAttribClassPrimitive, kGeoUsdSourceAttr);
+    EXPECT_TRUE(marker != nullptr);
+    for (GeoIndex p = 0; marker && p < detail.primitiveCount(); ++p) {
+        EXPECT_EQ(1, marker->get<std::int32_t>(std::size_t(p))) << p;
+    }
+    GeoDetailBuilder b(detail);
+    b.removeAttribute(eGeoAttribClassPrimitive, kGeoUsdSourceAttr);
+
+    return b.finish();
+}
 } // anonymous namespace
 
 class SceneToGeoTest
@@ -324,7 +340,7 @@ TEST_F(SceneToGeoTest, AuthoredDetailReadsBackUnpackedAsTheSameDetail)
     ASSERT_TRUE(back != nullptr);
     EXPECT_EQ(back->primitiveCount(), source->primitiveCount());
     EXPECT_EQ(back->pointCount(), source->pointCount());
-    EXPECT_EQ(back->contentHash(), source->contentHash());
+    EXPECT_EQ(withoutUsdSource(*back).contentHash(), source->contentHash());
 }
 
 TEST_F(SceneToGeoTest, FlattenMarksTheDetailAsWorldSpace)

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -131,6 +132,22 @@ expectMatrixNear(const GfMatrix4d& expected,
     }
 }
 
+// Reading from USD marks every primitive, which changes what GeoToUSD authors and so stays in
+// the content hash; the round trip is otherwise the identity.
+GeoDetail
+withoutUsdSource(const GeoDetail& detail)
+{
+    const GeoAttribute* marker = detail.findAttribute(eGeoAttribClassPrimitive, kGeoUsdSourceAttr);
+    EXPECT_TRUE(marker != nullptr);
+    for (GeoIndex p = 0; marker && p < detail.primitiveCount(); ++p) {
+        EXPECT_EQ(1, marker->get<std::int32_t>(std::size_t(p))) << p;
+    }
+    GeoDetailBuilder b(detail);
+    b.removeAttribute(eGeoAttribClassPrimitive, kGeoUsdSourceAttr);
+
+    return b.finish();
+}
+
 } // namespace
 
 TEST(GeoUsdConvert, PathPartitionsBecomeMeshes)
@@ -195,7 +212,7 @@ TEST(GeoUsdConvert, RoundTripKeepsContentHash)
     EXPECT_TRUE(warnings.empty()) << warnings.front();
     EXPECT_EQ(back.primitiveCount(), detail->primitiveCount());
     EXPECT_EQ(back.pointCount(), detail->pointCount());
-    EXPECT_EQ(back.contentHash(), detail->contentHash());
+    EXPECT_EQ(withoutUsdSource(back).contentHash(), detail->contentHash());
 }
 
 TEST(GeoUsdConvert, FieldQueryEqualsAuthoredLayer)

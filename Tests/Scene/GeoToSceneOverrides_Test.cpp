@@ -615,7 +615,12 @@ TEST_F(GeoToSceneOverridesTest, AnUnpackedPrimMissingFromTheSceneGoesUnderTheRoo
     SceneQueryPool::Lease lease;
     const PXR_NS::UsdStageRefPtr stage = stageOf(result, &lease);
     ASSERT_TRUE(stage);
-    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A")).IsValid());
+    // Deactivating keeps the pruned prim on the stage, inactive.
+    const PXR_NS::UsdPrim pruned = stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A"));
+    EXPECT_FALSE(pruned && pruned.IsActive());
+    const PXR_NS::SdfLayerRefPtr geometry = geometryLayer(result);
+    ASSERT_TRUE(geometry);
+    EXPECT_FALSE(geometry->GetPrimAtPath(PXR_NS::SdfPath("/World/A")));
     EXPECT_TRUE(static_cast<bool>(PXR_NS::UsdGeomMesh(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/World/A")))));
 
     QString message;

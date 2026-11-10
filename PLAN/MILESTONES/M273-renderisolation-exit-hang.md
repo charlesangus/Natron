@@ -18,7 +18,7 @@ The RenderIsolation ctest hit its 300 s timeout on 2026-10-27/28 (M228 - 3D View
 
 ## Phase 273.1: Capture and reproduce
 
-- [ ] M273.P1.T1 — `test.sh repeat` dumps thread stacks before it kills a timed-out iteration
+- [x] M273.P1.T1 — `test.sh repeat` dumps thread stacks before it kills a timed-out iteration
   - files: `tools/ci/local/test.sh` (on top of M379 - GpuContext Test Segfault's `repeat` mode; wait for it to merge or cherry-pick its `test.sh`/`build.sh`/`remote-build.yml` changes)
   - approach: in `run_iteration`, replace `timeout` with a watchdog: start the binary, wait up to `REPEAT_TIMEOUT - 20` s, run `eu-stack -p <pid>` (fall back to `gdb -p <pid> -batch -ex 'thread apply all bt'`) into `iter-N.stacks`, then kill it. If ptrace is refused, fall back to the `--gdb` launch (`timeout -s INT` to gdb, then `thread apply all bt`). Print the stacks path in the summary.
   - verify: `repeat` on a throwaway test that sleeps past a short `REPEAT_TIMEOUT` leaves a stacks file showing the sleeping frame, locally in natron-dev and on one remote run.

@@ -301,3 +301,25 @@ TEST_F(BlockingRenderIdleTest, AQueuedSequenceDoesNotLetABlockingRenderReturnBef
     beforeRender->setValue(std::string());
     afterRender->setValue(std::string());
 }
+
+// The failure report runs on the scheduler and render threads, so it must not wait for the abort
+// it requests: the blocking render returns once the scheduler has wound down by itself.
+TEST_F(BlockingRenderIdleTest, ABlockingRenderWhoseEffectFailsPartwayReturns)
+{
+    OutputEffectInstance* effect = writerEffect();
+    ASSERT_TRUE(effect != NULL);
+
+    // A file standing where the output directory should be makes every frame write fail.
+    const QString blockerPath = _dir.path() + QString::fromUtf8("/blocker");
+    QFile blocker(blockerPath);
+    ASSERT_TRUE(blocker.open(QIODevice::WriteOnly));
+    blocker.close();
+    _writer->setOutputFilesForWriter((blockerPath + QString::fromUtf8("/frame.exr")).toStdString());
+
+    IdleTransitionDelay delay(kIdleDelayMs);
+    std::list<AppInstance::RenderWork> works;
+    works.push_back(AppInstance::RenderWork(effect, 1, 5, 1, false));
+    renderBlocking(works);
+
+    EXPECT_FALSE(effect->isDoingSequentialRender());
+}

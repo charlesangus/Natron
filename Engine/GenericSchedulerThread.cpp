@@ -275,16 +275,6 @@ GenericSchedulerThread::waitForThreadToQuit_enforce_blocking()
 }
 
 void
-GenericSchedulerThread::onWatcherTaskAbortedEmitted()
-{
-    if (!_imp->blockingOperationWatcher) {
-        return;
-    }
-    _imp->blockingOperationWatcher.reset();
-    Q_EMIT taskAborted();
-}
-
-void
 GenericSchedulerThread::onWatcherTaskFinishedEmitted()
 {
     if (!_imp->blockingOperationWatcher) {
@@ -447,15 +437,6 @@ GenericSchedulerThreadPrivate::waitForAbortToComplete_internal(bool allowBlockin
     _p->onWaitForAbortCompleted();
 
     return true;
-}
-
-void
-GenericSchedulerThread::waitForAbortToCompleteQueued_main_thread()
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    _imp->blockingOperationWatcher.reset( new GenericSchedulerThreadWatcher(this) );
-    QObject::connect( _imp->blockingOperationWatcher.get(), SIGNAL(taskFinished(int,GenericWatcherCallerArgsPtr)), this, SLOT(onWatcherTaskAbortedEmitted()) );
-    _imp->blockingOperationWatcher->scheduleBlockingTask(GenericSchedulerThreadWatcher::eBlockingTaskWaitForAbort);
 }
 
 bool

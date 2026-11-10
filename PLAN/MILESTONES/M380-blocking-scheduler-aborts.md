@@ -25,7 +25,7 @@
   - approach: drop the wait in `OutputSchedulerThread::notifyRenderFailure` (~2048-2050) and the backup-thread abort wait in `~ViewerCurrentFrameRequestScheduler` (~4120-4122). Delete `Node::abortAnyProcessing_blocking`, `TrackerContext::abortTracking_blocking`, `waitForAbortToCompleteQueued_main_thread`, `RenderEngine::waitForAbortToComplete_main_thread` and `engineAborted`, `onWatcherTaskAbortedEmitted`/`taskAborted`, and the watcher tasks `eBlockingTaskWaitForAbort` and `eBlockingTaskAbortAnyProcessing`. Behaviour is unchanged while the wait is still a no-op.
   - verify: `BlockingRenderIdle_Test`, `SchedulerWriters_Test` and `RenderSchedulerAbort_Test` pass; a new case where a blocking writer render fails partway returns.
   - size: M
-- [ ] M380.P1.T2 — Make the abort wait really block
+- [x] M380.P1.T2 — Make the abort wait really block
   - files: `Engine/GenericSchedulerThread.{cpp,h}`, `Tests/GenericSchedulerAbortWait_Test.cpp` (new, registered in `Tests/CMakeLists.txt`)
   - approach: the early return becomes `state ∈ {Aborted, Idle, Stopped}`. On `run()`'s `Stopped` exit, clear `abortRequested` and wake `abortRequestedCond`. Return false when called from the scheduler's own thread. A main-thread waiter runs a pending `executeOnMainThread` itself: the worker wakes `abortRequestedCond` after posting `executionOnMainThreadRequested`, and a request ID makes the late queued slot a no-op (no assert at ~655).
   - verify: the new test covers (a) a worker holding heap state across the abort, freed after the wait (flag-checked); (b) quit then wait returns; (c) waiting on the worker's own thread returns false; (d) a main-thread wait on a worker that requests main-thread execution after the abort returns. Each wait has a watchdog timeout.

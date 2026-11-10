@@ -795,9 +795,14 @@ TEST_F(CacheStressGpuTest, DeviceSwitchRetriesRejectedShader)
         return;
     }
     std::unique_ptr<GpuContext> previous = appPTR->swapGpuContextForTests(std::move(other));
-    compiles = gpu::glslCompileCountForTesting();
+    // The process-wide GLSL compile memo is keyed without a device, so the shared compile counter
+    // cannot show the retry; each device's own pipeline cache can.
+    gpu::GpuRuntime* secondRuntime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(secondRuntime != nullptr);
+    EXPECT_FALSE(gate.isRejected(second, shader)) << "the first device's rejection leaked to the other";
+    const std::size_t secondCompiles = secondRuntime->pipelines().stats().compiles;
     EXPECT_FALSE(gate.accept(shader, NodePtr()));
-    EXPECT_EQ(compiles + 1, gpu::glslCompileCountForTesting()) << "the other device did not try the shader";
+    EXPECT_EQ(secondCompiles + 1, secondRuntime->pipelines().stats().compiles) << "the other device did not try the shader";
     EXPECT_TRUE(gate.isRejected(second, shader));
 
     other = appPTR->swapGpuContextForTests(std::move(previous));

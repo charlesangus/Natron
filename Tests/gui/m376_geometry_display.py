@@ -201,6 +201,14 @@ try:
         shot("m376-scrubbed-frame-10.png")
         set_knob("pointMarkers", False)
 
+        # The camera framed the sphere once, at frame 1; at frame 10 it is translated off the
+        # view centre the click aims at.
+        refreshes = int(prop("natronGeoRefreshes", 0))
+        seek(1)
+        ok = yield ("until", lambda: int(prop("natronGeoRefreshes", 0)) > refreshes, POLL_TIMEOUT_S)
+        check(ok, "back at frame 1 the viewer's geometry refreshes")
+        yield settle()
+
         v = view()
         centre = v.rect().center()
         for kind, button, buttons in ((QEvent.MouseButtonPress, Qt.LeftButton, Qt.LeftButton),

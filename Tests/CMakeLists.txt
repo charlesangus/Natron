@@ -98,6 +98,7 @@ set(Tests_SOURCES
     GraphOpApply_Test.cpp
     GraphEditRecorder_Test.cpp
     GraphEditReplay_Test.cpp
+    GenericSchedulerAbortWait_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
     PyRotoCreate_Test.cpp

@@ -7,6 +7,8 @@
 #include <mutex>
 #include <string_view>
 
+#include "Global/FloatingPointExceptions.h"
+
 namespace gpu {
 
 namespace {
@@ -127,6 +129,9 @@ namespace {
     GpuStatus enumeratePhysical(VkInstance inst, std::vector<VkPhysicalDevice>& out)
     {
         uint32_t n = 0;
+        // lavapipe initialises while the devices are enumerated, and Mesa's compilers raise FE_INVALID,
+        // which debug builds trap on the thread making the call.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
         VkResult r = vkEnumeratePhysicalDevices(inst, &n, nullptr);
         if (r != VK_SUCCESS) {
             return fail(r, "vkEnumeratePhysicalDevices failed");
@@ -221,7 +226,12 @@ namespace {
             ci.enabledExtensionCount = 1;
             ci.ppEnabledExtensionNames = &kDebugUtils;
         }
-        VkResult r = vkCreateInstance(&ci, nullptr, &inst);
+        VkResult r;
+        {
+            // The loader and Mesa's drivers do float work of their own here, which debug builds trap.
+            const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+            r = vkCreateInstance(&ci, nullptr, &inst);
+        }
         if (r != VK_SUCCESS) {
             return fail(r, "vkCreateInstance failed");
         }
@@ -567,7 +577,13 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     dci.pQueueCreateInfos = qcis.data();
     dci.enabledExtensionCount = static_cast<uint32_t>(enabled.size());
     dci.ppEnabledExtensionNames = enabled.data();
-    VkResult r = vkCreateDevice(dev->physical_, &dci, nullptr, &dev->device_);
+    VkResult r;
+    {
+        // lavapipe builds its blitter shaders while the device is created, and Mesa's compilers raise
+        // FE_INVALID, which debug builds trap on this thread.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+        r = vkCreateDevice(dev->physical_, &dci, nullptr, &dev->device_);
+    }
     if (r != VK_SUCCESS) {
         return fail(r, "vkCreateDevice failed on " + dev->info_.name + " (VkResult " + std::to_string(static_cast<int>(r)) + ")");
     }

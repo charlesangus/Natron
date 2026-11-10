@@ -77,6 +77,7 @@
 #include "Engine/FileSystemModel.h"
 #include "Engine/Format.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Hash64.h"
@@ -123,6 +124,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/Ops/GraphOp.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -292,6 +294,7 @@ Node::Node(const AppInstancePtr& app,
         _imp->cacheID = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     } while (!claimCacheID(_imp->cacheID));
     _imp->cacheIDClaimed = true;
+    _imp->nodeId = QUuid::createUuid().toString(QUuid::Id128).toStdString();
     QObject::connect( this, SIGNAL(pluginMemoryUsageChanged(qint64)), appPTR, SLOT(onNodeMemoryRegistered(qint64)) );
     QObject::connect(this, SIGNAL(mustDequeueActions()), this, SLOT(dequeueActions()));
     QObject::connect(this, SIGNAL(refreshIdentityStateRequested()), this, SLOT(onRefreshIdentityStateRequestReceived()), Qt::QueuedConnection);
@@ -953,6 +956,20 @@ Node::getCacheID() const
     QMutexLocker k(&_imp->nameMutex);
 
     return _imp->cacheID;
+}
+
+std::string
+Node::getNodeId() const
+{
+    QMutexLocker k(&_imp->nameMutex);
+
+    return _imp->nodeId;
+}
+
+bool
+Node::isValidNodeId(const std::string& id)
+{
+    return Serialization::isWellFormedNodeId(id);
 }
 
 bool
@@ -5018,6 +5035,9 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if ( !_imp->effect || !isActivated() ) {
         return;
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeDeactivating(this);
+    }
     _imp->effect->quitBackgroundWork(true);
     //first tell the gui to clear any persistent message linked to this node
     clearPersistentMessage(false);
@@ -5281,6 +5301,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     if ( !_imp->effect || isActivated() ) {
         return;
     }
+    GraphEditRecorder::CreationScope creationScope(this);
 
     // A refresh from reconnecting an output below would read this node's expressions before they
     // can run: its Python attributes are only declared further down.
@@ -8689,7 +8710,7 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
     {
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (QThread::currentThread() != qApp->thread()) {
-            while (_imp->nodeIsDequeuing && !aborted()) {
+            while ((_imp->nodeIsDequeuing || (_imp->renderStartsHeldByEdits > 0)) && !aborted()) {
                 _imp->nodeIsDequeuingCond.wait(k.mutex());
             }
         }
@@ -8765,6 +8786,33 @@ Node::isNodeRendering() const
     QMutexLocker k(&_imp->nodeIsRenderingMutex);
 
     return _imp->nodeIsRendering > 0;
+}
+
+bool
+Node::holdRenderStartsForEdit()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+    {
+        QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
+        if (_imp->nodeIsRendering > 0) {
+            return false;
+        }
+    }
+    ++_imp->renderStartsHeldByEdits;
+
+    return true;
+}
+
+void
+Node::releaseRenderStartsForEdit()
+{
+    QMutexLocker k(&_imp->nodeIsDequeuingMutex);
+
+    assert(_imp->renderStartsHeldByEdits > 0);
+    if (--_imp->renderStartsHeldByEdits == 0) {
+        _imp->nodeIsDequeuingCond.wakeAll();
+    }
 }
 
 void
@@ -9699,6 +9747,22 @@ Node::hasSize() const
     return _imp->hasSizeSet;
 }
 
+void
+Node::clearSize()
+{
+    {
+        QMutexLocker k(&_imp->layoutMutex);
+
+        if (!_imp->hasSizeSet) {
+            return;
+        }
+        _imp->hasSizeSet = false;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
+}
+
 bool
 Node::getColor(double* r,
                double *g,
@@ -9781,21 +9845,31 @@ void
 Node::setLayoutFromGuiPosition(double x,
                                double y)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->posX = x;
-    _imp->posY = y;
+        _imp->posX = x;
+        _imp->posY = y;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void
 Node::setLayoutFromGuiSize(double w,
                            double h)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->sizeW = w;
-    _imp->sizeH = h;
-    _imp->hasSizeSet = true;
+        _imp->sizeW = w;
+        _imp->sizeH = h;
+        _imp->hasSizeSet = true;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void
@@ -9804,12 +9878,17 @@ Node::setLayoutFromGuiUserColor(bool hasColor,
                                 double g,
                                 double b)
 {
-    QMutexLocker k(&_imp->layoutMutex);
+    {
+        QMutexLocker k(&_imp->layoutMutex);
 
-    _imp->userColorSet = hasColor;
-    _imp->userColor[0] = hasColor ? r : 0.;
-    _imp->userColor[1] = hasColor ? g : 0.;
-    _imp->userColor[2] = hasColor ? b : 0.;
+        _imp->userColorSet = hasColor;
+        _imp->userColor[0] = hasColor ? r : 0.;
+        _imp->userColor[1] = hasColor ? g : 0.;
+        _imp->userColor[2] = hasColor ? b : 0.;
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeLayoutChanged(this);
+    }
 }
 
 void

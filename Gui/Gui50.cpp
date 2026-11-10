@@ -977,10 +977,18 @@ Gui::onColorTrackballActionTriggered()
         return;
     }
 
-    KnobGuiColor* target = resolveColorTrackballTarget(this);
+    KnobGui* target = resolveGlobalModeKnob(this, QApplication::widgetAt(QCursor::pos()));
 
-    if (target) {
-        target->engageGlobalMode();
+    if (!target) {
+        return;
+    }
+    if (KnobGuiColor* color = dynamic_cast<KnobGuiColor*>(target)) {
+        color->engageGlobalMode();
+
+        return;
+    }
+    if (mode) {
+        mode->engage(makeGlobalModeTarget(target));
     }
 }
 

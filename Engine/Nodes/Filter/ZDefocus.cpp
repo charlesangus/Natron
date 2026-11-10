@@ -915,6 +915,7 @@ ZDefocus::initializeKnobs()
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"));
     sizeKnob->setName(kZDefocusParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(tr("Manual mode only: the diameter of the bokeh, in pixel units, infinitely far behind the Depth Of Field."));
     sizeKnob->setSpatial(true);
     sizeKnob->setMinimum(0.);
@@ -1061,6 +1062,7 @@ ZDefocus::initializeKnobs()
 
     KnobDoublePtr rotationKnob = AppManager::createKnob<KnobDouble>(this, tr("Rotation"));
     rotationKnob->setName(kZDefocusParamRotation);
+    rotationKnob->setValueRole(eValueRoleRotate);
     rotationKnob->setHintToolTip(tr("Blades kernel only: the aperture's rotation in degrees, counter-clockwise. At 0 a corner points up."));
     rotationKnob->setDisplayMinimum(-180.);
     rotationKnob->setDisplayMaximum(180.);

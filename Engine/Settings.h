@@ -59,7 +59,8 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 public:
     enum ColorTrackballFeedbackEnum {
         eColorTrackballFeedbackCrosshairReveal = 0,
-        eColorTrackballFeedbackWidgetCursor
+        eColorTrackballFeedbackWidgetCursor,
+        eColorTrackballFeedbackCrosshairOnly
     };
 
     enum ColorTrackballWheelWidthEnum {

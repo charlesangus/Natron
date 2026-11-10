@@ -336,24 +336,6 @@ isPresetResettable(const KnobIPtr& knob)
     return !dynamic_cast<KnobPage*>(k) && !dynamic_cast<KnobGroup*>(k) && !dynamic_cast<KnobButton*>(k) && !dynamic_cast<KnobSeparator*>(k);
 }
 
-void
-removeKnobLinks(const KnobIPtr& knob)
-{
-    KnobIPtr aliasMaster = knob->getAliasMaster();
-    if (aliasMaster) {
-        knob->setKnobAsAliasOfThis(aliasMaster, false);
-    }
-    for (int i = 0; i < knob->getDimension(); ++i) {
-        if (knob->isSlave(i)) {
-            knob->unSlave(i, false);
-        }
-        // Two-way links go too; aliases of this knob stay, as its alias master link did above.
-        if (knob->getLinkGroup(i) && !knob->isLinkPermanent(i)) {
-            knob->leaveLinkGroups(i);
-        }
-    }
-}
-
 // Drops the user knobs of a preset's user pages that this node already has a knob of the same name
 // for, so that the node's own knobs keep their definition and value. Groups stay, for the new
 // knobs they hold.

@@ -256,6 +256,7 @@ EdgeBlur::initializeKnobs()
 
     KnobDoublePtr sizeKnob = AppManager::createKnob<KnobDouble>(this, tr("Size"));
     sizeKnob->setName(kEdgeBlurParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(tr("Size (diameter) of the blur where the edge weight is 1, and of the edge detection's pre-blur, in pixel units (0 to 1000). Each pixel's blur is this Size times its edge weight, three boxes approximating the Gaussian of standard deviation size/2.4."));
     sizeKnob->setSpatial(true);
     sizeKnob->setMinimum(0.);

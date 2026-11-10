@@ -122,6 +122,21 @@ struct HashNamespaces {
 
 typedef std::shared_ptr<const HashNamespaces> HashNamespacesConstPtr;
 
+/**
+ * @brief The knobs one transform interact drives, each null where the node passed none.
+ **/
+struct TransformInteractKnobs {
+    KnobDoublePtr translate;
+    KnobDoublePtr rotate;
+    KnobDoublePtr scale;
+    KnobDoublePtr skewX;
+    KnobDoublePtr skewY;
+    KnobDoublePtr center;
+
+    bool isEmpty() const;
+    bool contains(const KnobI* knob) const;
+};
+
 class Node
     : public QObject
     , public std::enable_shared_from_this<Node>
@@ -493,6 +508,29 @@ public:
      * @brief Takes the cache ID saved with the node unless a live node of any project holds it.
      **/
     void adoptSerializedCacheID(const std::string& cacheID);
+
+    /**
+     * @brief The node's persistent ID: 32 lowercase hex characters, made when the node is created
+     * and kept by saving and loading its project. A paste, a duplicate or an import makes a new
+     * node, with a new ID. Unlike the cache ID it is unique within one project only, and
+     * opening a project twice gives both copies the same IDs.
+     **/
+    std::string getNodeId() const;
+
+    static bool isValidNodeId(const std::string& id);
+
+    /**
+     * @brief While its project loads, gives the node the ID saved with it. An ID that another
+     * node of the project holds, or a malformed one, is not taken: the node keeps the ID it was
+     * created with and the project gets a load warning. Does nothing outside a project load.
+     **/
+    void restoreSerializedNodeId(const std::string& id);
+
+    /**
+     * @brief Gives the node the ID id, at any time. Refused, leaving the node's ID as it was and
+     * saying why in refusal, when id is malformed or another node of the project holds it.
+     **/
+    bool adoptNodeId(const std::string& id, QString* refusal);
 
 private:
     static bool claimCacheID(const std::string& cacheID);
@@ -1037,6 +1075,12 @@ public:
      * layout size to save.
      **/
     bool hasSize() const;
+
+    /**
+     * @brief Forgets the size set on the node, so that it has none to save again. A GUI keeps the
+     * size it shows.
+     **/
+    void clearSize();
 
     /**
      * @brief Get the colour of the node as it appears on the nodegraph: the user colour
@@ -1677,6 +1721,15 @@ public:
     bool isNodeRendering() const;
 
     /**
+     * @brief For a main-thread edit of the state renders read, made only while no render holds
+     * the node. Returns false when one does. Otherwise renders starting on other threads wait
+     * until releaseRenderStartsForEdit(), so none can start between the edit's check and its
+     * writes. Render starts on the main thread do not wait.
+     **/
+    bool holdRenderStartsForEdit();
+    void releaseRenderStartsForEdit();
+
+    /**
      * @brief Records that an edit was queued because the node was rendering, so a dequeue
      * deferred by a render that still holds the node aborts the viewer renders instead of waiting
      * for them to end on their own.
@@ -1858,6 +1911,13 @@ public:
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
                               const KnobBoolPtr& invert);
+
+    /**
+     * @brief The knobs of the transform interact that drives member, or of the first one the
+     * node registered when member is null; empty when there is no such interact. A node may
+     * register more than one (Roto has its own and its clone transform's).
+     **/
+    TransformInteractKnobs getTransformInteractKnobs(const KnobI* member = NULL) const;
 
     void addCornerPinInteract(const KnobDoublePtr& from1,
                               const KnobDoublePtr& from2,

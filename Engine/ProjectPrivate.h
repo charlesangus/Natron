@@ -33,6 +33,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -50,6 +51,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/EngineFwd.h"
 #include "Engine/Format.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -85,6 +87,8 @@ public:
     // because it is swapped wholesale on Project::reset(), and LayerRegistry holds a
     // QMutex and is therefore non-copyable/non-assignable.
     std::unique_ptr<LayerRegistry> layers;
+
+    std::unique_ptr<GraphEditRecorder> graphEditRecorder;
 
     ///Project parameters (settings)
     KnobPathPtr envVars;
@@ -151,6 +155,9 @@ public:
 
     mutable QMutex loadWarningsMutex;
     QStringList loadWarnings; //< problems the last load worked around, see Project::addLoadWarning()
+
+    mutable QMutex nodesByIdMutex;
+    std::unordered_map<std::string, NodeWPtr> nodesById; //< see Project::findNodeById()
 
     // Project::getContentDigest() without the OCIO file stamp, and the state it was computed from.
     mutable QMutex contentDigestMutex; //< protects the contentDigest* fields

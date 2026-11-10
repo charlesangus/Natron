@@ -367,6 +367,7 @@ ErodeDilateOp::createKnobs(KnobHolder* holder,
 {
     KnobIntPtr sizeKnob = AppManager::createKnob<KnobInt>(holder, EffectInstance::tr("Size"), 2);
     sizeKnob->setName(kErodeDilateParamSize);
+    sizeKnob->setValueRole(eValueRoleSize);
     sizeKnob->setHintToolTip(EffectInstance::tr("Half the width and height of the rectangular structuring element, which is 2*|size|+1 pixels, in pixel units (-1000 to 1000). "
                                                 "A positive size erodes, a negative size dilates, 0 leaves the axis unchanged; the axes may have opposite signs, X being filtered before Y."));
     for (int d = 0; d < 2; ++d) {

@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <vector>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QColor>
@@ -64,12 +66,24 @@ Qt::WindowFlags colorTrackballFollowCursorWindowFlags();
  * @brief What the global trackball mode's hint block shows, gathered by the controller so the
  * widget needs no reference to the knob or the node.
  **/
+struct ColorTrackballHudChip {
+    QString key;
+    QString caption;
+    bool lit = false;
+    bool dimmed = false;
+};
+
 struct ColorTrackballHudState {
     QString knobLabel;
     ColorGlobalModeEnum mode = eColorGlobalModeC;
     double gear = 1.0;
-    /// "First colour knob." / "Last colour knob.", or empty.
+    /// "First knob." / "Last knob.", or empty.
     QString endOfListMessage;
+    /// A value target's key chips, one or two rows; empty for a colour target, which keeps its
+    /// own C/S/T/V legend.
+    std::vector<std::vector<ColorTrackballHudChip>> chipRows;
+    /// A value target's rate and direction line under the chips.
+    QString rateLine;
 };
 
 /**
@@ -91,6 +105,11 @@ QPoint colorTrackballHudFollowPosition(const QPoint& cursor, const QSize& hudSiz
  **/
 QColor colorTrackballHudFill();
 QColor colorTrackballHudEdge();
+
+/**
+ * @brief The user's selection colour, which lit keys and the global-mode outlines use.
+ **/
+QColor colorTrackballHudAccent();
 
 /**
  * @brief A window mask covering a rounded rect, and the hint block's corner radius.
@@ -139,7 +158,8 @@ public:
     const ColorTrackballHudState& getState() const { return _state; }
 
     /**
-     * @brief The block's lines of text top to bottom, the key caps as "C S T V".
+     * @brief The block's lines of text top to bottom, the key caps as "C S T V", or for a value
+     * target each chip row as "Q X   W Y   ...".
      **/
     QStringList lines() const;
 
@@ -162,6 +182,11 @@ protected:
     virtual void paintEvent(QPaintEvent* e) OVERRIDE FINAL;
 
 private:
+    // A value target's state carries chip rows; a colour target's keeps the C/S/T/V legend.
+    bool isValueLayout() const;
+    double chipWidth(const ColorTrackballHudChip& chip) const;
+    double chipRowWidth(const std::vector<ColorTrackballHudChip>& row) const;
+
     ColorTrackballHudState _state;
     QPoint _cursor;
     bool _followsCursor;

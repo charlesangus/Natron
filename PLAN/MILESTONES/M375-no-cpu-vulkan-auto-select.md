@@ -46,7 +46,7 @@ Today `GpuDevice::create`'s ranked pick (`Engine/Gpu/GpuDevice.cpp` ~263) ranks
 
 ## Phase 375.2: Tests and CI select lavapipe explicitly
 
-- [ ] M375.P2.T1 — Make the GPU test helpers fall back to an explicit lavapipe selection
+- [x] M375.P2.T1 — Make the GPU test helpers fall back to an explicit lavapipe selection
   - files: Tests/Gpu/GpuTestDevice.h, Tests/Gpu/GpuHarness.h (~22 comment), plus every test that calls `GpuDevice::create`/`GpuRuntime::create` directly (Tests/Gpu/GpuTransfer_Test.cpp, BlurGpu_Test.cpp, PixelWrap_Test.cpp, GpuRuntime_Test.cpp, Tests/Native/NativeGpuParity.cpp, Tests/Native/GpuDeviceList_Test.cpp — confirm with `grep -rln "GpuDevice::create\|GpuRuntime::create" Tests`)
   - approach: In the shared helper, when `NATRON_GPU_DEVICE` is unset and the ranked pick finds no hardware device, retry with an explicit CPU-device selector (the first `VK_PHYSICAL_DEVICE_TYPE_CPU` device's index) unless `NATRON_TEST_REQUIRE_GPU_HARDWARE=1`. Route the direct callers through that helper (or the same fallback) so none depends on auto picking lavapipe. Native GPU tests that go through `GpuContext` with `NATRON_GPU=force` need the same explicit device (set `GpuContextOptions::device` or `NATRON_GPU_DEVICE` in the fixture). Update the GpuHarness comment.
   - verify: In natron-dev (lavapipe only) the full GPU ctest set runs on lavapipe with the same pass/skip counts as on main — no suite newly skipped; with `NATRON_TEST_REQUIRE_GPU_HARDWARE=1` they fail as before.

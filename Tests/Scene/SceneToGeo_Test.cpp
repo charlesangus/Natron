@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -324,4 +325,34 @@ TEST_F(SceneToGeoTest, AuthoredDetailReadsBackUnpackedAsTheSameDetail)
     EXPECT_EQ(back->primitiveCount(), source->primitiveCount());
     EXPECT_EQ(back->pointCount(), source->pointCount());
     EXPECT_EQ(back->contentHash(), source->contentHash());
+}
+
+TEST_F(SceneToGeoTest, FlattenMarksTheDetailAsWorldSpace)
+{
+    const NodePtr toGeo = chain(writeScene("meshes.usda", kMeshScene), "/World/A");
+    ASSERT_TRUE(toGeo != nullptr);
+    setBool(toGeo, kUSDToGeoParamUnpack, true);
+    GeoDetailConstPtr detail = evaluate(toGeo);
+    ASSERT_TRUE(detail != nullptr);
+    EXPECT_EQ(detail->findAttribute(eGeoAttribClassDetail, kGeoUsdWorldSpaceAttr), nullptr);
+
+    setBool(toGeo, kUSDToGeoParamFlattenTransforms, true);
+    detail = evaluate(toGeo);
+    ASSERT_TRUE(detail != nullptr);
+    const GeoAttribute* worldSpace = detail->findAttribute(eGeoAttribClassDetail, kGeoUsdWorldSpaceAttr);
+    ASSERT_TRUE(worldSpace != nullptr);
+    EXPECT_NE(worldSpace->get<std::int32_t>(0), 0);
+}
+
+TEST_F(SceneToGeoTest, OnlyAnimatedPrimsMakeTheGeometryVaryOverTime)
+{
+    const NodePtr still = chain(kReferenceScene, "/World/Box");
+    ASSERT_TRUE(still != nullptr);
+    ASSERT_TRUE(evaluate(still, 1.) != nullptr);
+    EXPECT_FALSE(still->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
+
+    const NodePtr moving = chain(kReferenceScene, "/World/Ball");
+    ASSERT_TRUE(moving != nullptr);
+    ASSERT_TRUE(evaluate(moving, 1.) != nullptr);
+    EXPECT_TRUE(moving->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
 }

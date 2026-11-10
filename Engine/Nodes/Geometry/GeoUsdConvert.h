@@ -41,6 +41,20 @@
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief A detail int attribute, nonzero when the detail's points are in world space rather than
+ * in the space of the prims they came from: each prim's points are then written relative to
+ * that prim's world transform. Not exported.
+ **/
+inline constexpr const char* kGeoUsdWorldSpaceAttr = "usdWorldSpace";
+
+/**
+ * @brief A primitive int attribute, and a point one for points prims, nonzero on geometry read
+ * from a USD prim at its `path`: such geometry overrides that prim when the input scene still
+ * holds it. Geometry without it only ever defines new prims. Not exported.
+ **/
+inline constexpr const char* kGeoUsdSourceAttr = "usdSource";
+
 /** @brief How packed geometry primitives become USD prims. */
 enum GeoUsdPackedModeEnum {
     eGeoUsdPackedPointInstancer = 0,
@@ -96,13 +110,40 @@ struct GeoUsdConvertOptions {
     GeoUsdInputSceneConstPtr inputScene;
 };
 
-/** @brief The prim paths a conversion of @p detail would touch, and the packed USD source paths among them. */
+/**
+ * @brief The prim paths a conversion of @p detail would touch, and the packed USD source paths
+ * among them. pathsFromUsd[i] is nonzero when geometry read from USD (kGeoUsdSourceAttr) names
+ * paths[i].
+ **/
 struct GeoUsdDetailPaths {
     std::vector<PXR_NS::SdfPath> paths;
+    std::vector<char> pathsFromUsd;
     std::vector<PXR_NS::SdfPath> sourcePaths;
 };
 GeoUsdDetailPaths geoUsdDetailPaths(const GeoDetail& detail,
                                     const GeoUsdConvertOptions& options);
+
+/** @brief Why geoUsdPlacedPath() moved a path, if it did. */
+enum GeoUsdPlacementEnum {
+    eGeoUsdPlacedAsRequested = 0,
+    // Geometry read from USD whose prim the input scene no longer holds.
+    eGeoUsdPlacedSourceGone,
+    // Geometry not read from USD on a path the input scene already holds.
+    eGeoUsdPlacedCollision,
+};
+
+/**
+ * @brief Where a partition that asks for @p requested is authored: @p requested itself, unless
+ * @p scene is given and @p requested lies outside @p root; then the same path under @p root when
+ * geometry read from USD (@p fromUsd) finds its prim gone, so that it does not reappear where it
+ * was, or when other geometry finds the path taken, since only geometry read from a prim
+ * overrides it.
+ **/
+PXR_NS::SdfPath geoUsdPlacedPath(const PXR_NS::SdfPath& requested,
+                                 const PXR_NS::SdfPath& root,
+                                 const GeoUsdInputScene* scene,
+                                 bool fromUsd,
+                                 GeoUsdPlacementEnum* placement = nullptr);
 
 /**
  * @brief Captures @p stage at @p paths and all their ancestors at @p time. Values are read for
@@ -121,15 +162,22 @@ GeoUsdInputSceneConstPtr geoUsdCaptureInputScene(const PXR_NS::UsdStageRefPtr& s
  * the primitive in one prim per type under the root (mesh_0, curves_0, points_0, instancer_0).
  * Primitives of different types sharing a path become per-type child prims of that path, with
  * a warning. Polygons become a UsdGeomMesh, polylines a linear UsdGeomBasisCurves (one USD point
- * per vertex, since curves cannot share points), unconnected points a UsdGeomPoints. Packed
- * USD primitives become an over on their source path carrying xformOp:transform; packed
- * geometry becomes a UsdGeomPointInstancer, native instances or unpacked geometry, by mode.
- * Packed transforms are in the detail's space, which is world space: each one is written
- * relative to the world transform of the prim it lands under.
+ * per vertex, since curves cannot share points), unconnected points a UsdGeomPoints, placed by
+ * their own `path` point attribute when they have one. Packed USD primitives become an over on
+ * their source path carrying xformOp:transform; packed geometry becomes a
+ * UsdGeomPointInstancer, native instances or unpacked geometry, by mode. A point instancer
+ * cannot hold shear, so packed geometry whose transform shears becomes native instances
+ * instead, with a warning. Packed transforms are in the detail's space, which is world space:
+ * each one is written relative to the world transform of the prim it lands under. Points are in
+ * the space of their prim, or in world space when the detail says so (kGeoUsdWorldSpaceAttr);
+ * normal and vector attributes then follow the points back into prim space.
  *
- * With an input scene, a partition whose prim the input holds becomes an over of it. Meshes,
- * curves and points of the input's type then carry points, plus the values that differ from the
- * input's; topology only when it differs, in full.
+ * With an input scene, a partition read from USD (kGeoUsdSourceAttr) whose prim the input holds
+ * becomes an over of it. Meshes, curves and points of the input's type then carry points, plus
+ * the values that differ from the input's; topology only when it differs, in full. A partition
+ * on an absolute path outside the root goes under the root path, with a warning, when it was read
+ * from a prim the input no longer holds or was not read from USD and the input holds its path
+ * (geoUsdPlacedPath()).
  *
  * Attribute classes map detail -> constant, primitive -> uniform, point -> vertex and
  * vertex -> faceVarying, and names map P -> points, N -> normals, uv -> primvars:st,
@@ -166,6 +214,12 @@ public:
     const std::vector<std::string>& warnings() const
     {
         return _warnings;
+    }
+
+    /** @brief The prims holding packed geometry written as native instances for its shear. */
+    const std::vector<PXR_NS::SdfPath>& shearedInstances() const
+    {
+        return _shearedInstances;
     }
 
     std::size_t partitionCount() const;
@@ -259,6 +313,7 @@ private:
     GeoDetailConstPtr _detail;
     GeoUsdConvertOptions _options;
     std::vector<std::string> _warnings;
+    std::vector<PXR_NS::SdfPath> _shearedInstances;
     std::vector<std::unique_ptr<Partition>> _partitions;
     std::unordered_map<PXR_NS::SdfPath, SpecEntry, PXR_NS::SdfPath::Hash> _specs;
     PXR_NS::SdfPath _topPath;
@@ -280,8 +335,10 @@ GeoDetail geoUnpackPackedGeometry(const GeoDetail& source,
 /**
  * @brief Appends a UsdGeomMesh, UsdGeomBasisCurves or UsdGeomPoints prim to @p builder at
  * @p time, the inverse of GeoUsdConvert's mapping, and sets each new primitive's `path` to the
- * prim path. With @p worldTransform, positions are baked into that space. GeomSubsets of
- * faces become primitive groups and bool primvars become groups. An attribute that exists in
+ * prim path, or for a points prim, which has no primitives, each new point's `path`, and marks
+ * them with kGeoUsdSourceAttr. With @p worldTransform, positions are baked into that space, and
+ * normal and vector attributes too, normals by its inverse transpose and renormalised.
+ * GeomSubsets of faces become primitive groups and bool primvars become groups. An attribute that exists in
  * the builder with another description is skipped with a warning. Returns false with
  * *errorMessage set for another prim type or inconsistent topology, leaving the builder as it
  * was.

@@ -32,9 +32,11 @@
 
 #include <gtest/gtest.h>
 
+#include "Engine/Geo/GeoPacked.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 
 #include <pxr/usd/usdGeom/basisCurves.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/points.h>
 #include <pxr/usd/usdGeom/subset.h>
 
@@ -97,6 +99,36 @@ authored(const GeoUsdConvert& convert)
     EXPECT_TRUE(convert.author(layer, UsdTimeCode::Default(), &err)) << err;
 
     return layer;
+}
+
+// The quad at the origin, packed once per matrix (USD row-vector convention).
+GeoDetailConstPtr
+makePacked(const std::vector<GfMatrix4d>& transforms)
+{
+    GeoDetailBuilder inner;
+    addQuad(inner, 0.);
+    const GeoDetailConstPtr contained = std::make_shared<const GeoDetail>(inner.finish());
+    GeoDetailBuilder b;
+    for (const GfMatrix4d& m : transforms) {
+        const GeoOffset pivot = b.appendPoints(1);
+        const GfVec3d t = m.ExtractTranslation();
+        b.setPointPosition(pivot, t[0], t[1], t[2]);
+        geoAppendPackedGeometry(b, pivot, contained, geoMatrixFromUsd(m));
+    }
+
+    return std::make_shared<const GeoDetail>(b.finish());
+}
+
+void
+expectMatrixNear(const GfMatrix4d& expected,
+                 const GfMatrix4d& actual,
+                 double tolerance)
+{
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(expected[r][c], actual[r][c], tolerance) << "row " << r << " column " << c;
+        }
+    }
 }
 
 } // namespace
@@ -221,4 +253,55 @@ TEST(GeoUsdConvert, NoPathFallsBackToPerTypePrims)
     VtVec3fArray positions;
     points.GetPointsAttr().Get(&positions);
     EXPECT_EQ(positions.size(), 2u);
+}
+
+TEST(GeoUsdConvert, AReflectedInstanceKeepsItsHandedness)
+{
+    GfMatrix4d mirrored(1.);
+    mirrored.SetScale(GfVec3d(-1., 2., 1.));
+    mirrored.SetTranslateOnly(GfVec3d(3., 0., 0.));
+    GfMatrix4d mirroredRotated = GfMatrix4d(1.).SetScale(GfVec3d(1., 1., -0.5)) * GfMatrix4d(1.).SetRotate(GfRotation(GfVec3d(0., 1., 0.), 30.));
+    mirroredRotated.SetTranslateOnly(GfVec3d(0., 4., 0.));
+    const std::vector<GfMatrix4d> transforms { mirrored, mirroredRotated };
+    const GeoUsdConvert convert(makePacked(transforms), GeoUsdConvertOptions());
+    EXPECT_TRUE(convert.shearedInstances().empty());
+
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    const UsdGeomPointInstancer instancer(stage->GetPrimAtPath(SdfPath("/geo/instancer_0")));
+    ASSERT_TRUE(static_cast<bool>(instancer));
+    VtArray<GfMatrix4d> computed;
+    ASSERT_TRUE(instancer.ComputeInstanceTransformsAtTime(&computed, UsdTimeCode::Default(), UsdTimeCode::Default()));
+    ASSERT_EQ(transforms.size(), computed.size());
+    for (std::size_t i = 0; i < transforms.size(); ++i) {
+        SCOPED_TRACE(i);
+        EXPECT_LT(computed[i].GetDeterminant3(), 0.);
+        // Orientations are half-precision quaternions.
+        expectMatrixNear(transforms[i], computed[i], 2e-3);
+    }
+}
+
+TEST(GeoUsdConvert, ShearedPackedGeometryBecomesNativeInstances)
+{
+    GfMatrix4d sheared(1.);
+    sheared.SetRow(1, GfVec4d(0.5, 1., 0., 0.));
+    sheared.SetTranslateOnly(GfVec3d(2., 0., 1.));
+    const GeoUsdConvert convert(makePacked({ GfMatrix4d(1.), sheared }), GeoUsdConvertOptions());
+    ASSERT_EQ(1u, convert.shearedInstances().size());
+    EXPECT_EQ(SdfPath("/geo/instances_0"), convert.shearedInstances().front());
+
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_FALSE(stage->GetPrimAtPath(SdfPath("/geo/instancer_0")).IsValid());
+    const UsdPrim container = stage->GetPrimAtPath(SdfPath("/geo/instances_0"));
+    ASSERT_TRUE(container.IsValid());
+    std::vector<GfMatrix4d> worlds;
+    for (const UsdPrim& child : container.GetChildren()) {
+        if (child.IsInstance()) {
+            worlds.push_back(UsdGeomXformable(child).ComputeLocalToWorldTransform(UsdTimeCode::Default()));
+        }
+    }
+    ASSERT_EQ(2u, worlds.size());
+    expectMatrixNear(GfMatrix4d(1.), worlds[0], 1e-9);
+    expectMatrixNear(sheared, worlds[1], 1e-9);
 }

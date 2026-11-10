@@ -54,8 +54,9 @@ NATRON_NAMESPACE_ENTER
  * it takes its read scope (prepareSceneSources()). The layer is keyed by the node, plus the time
  * when anything upstream varies with it.
  *
- * Primitives whose path names a prim of the Scene input become overrides of that prim, packed
- * transforms written relative to its parent. Copy Into Layer authors the detail into the node's
+ * Primitives read from USD (kGeoUsdSourceAttr) whose path names a prim of the Scene input become
+ * overrides of that prim, packed transforms written relative to its parent; other primitives
+ * only define new prims. Copy Into Layer authors the detail into the node's
  * own layer instead, optionally as time samples over the project range.
  **/
 class GeoToUSD
@@ -76,9 +77,11 @@ public:
         .id = PLUGINID_NATRON_GEOTOUSD,
         .label = "GeoToUSD",
         .description = "Put geometry on the scene, over the optional Scene input. Each primitive's path attribute "
-                       "names the prim it becomes; primitives without one go under Root Path. A path the Scene "
-                       "input already holds is overridden in place, so geometry read with USDToGeo and edited "
-                       "comes back where it was read from. The geometry is served to the scene as it is, "
+                       "names the prim it becomes; primitives without one go under Root Path. Geometry read with "
+                       "USDToGeo overrides the prim it was read from in place when the Scene input still holds it, "
+                       "so once edited it comes back where it was read from; if that prim is gone it goes under "
+                       "Root Path. Other geometry only defines new prims: a path outside Root Path that the Scene "
+                       "input already holds goes under Root Path, with a warning. The geometry is served to the scene as it is, "
                        "without a copy; Copy Into Layer copies it into the node's layer instead.",
         .grouping = PLUGIN_GROUP_3D,
         .majorVersion = 1,

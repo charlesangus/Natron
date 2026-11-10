@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Geometry/GeoToUSD.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -140,16 +141,29 @@ protected:
         mode->setValueFromID(id, 0);
     }
 
-    static ScenePayload evaluate(const NodePtr& node)
+    static ScenePayload evaluate(const NodePtr& node,
+                                 double time = 1.,
+                                 ViewIdx view = ViewIdx(0))
     {
         ScenePayload payload;
         std::string error;
 
         EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
-                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(time, view), &payload, &error))
             << error;
 
         return payload;
+    }
+
+    // The identifier of the geometry layer the node serves at time and view, or empty.
+    static std::string layerIdentifier(const NodePtr& node,
+                                       double time,
+                                       ViewIdx view = ViewIdx(0))
+    {
+        const PXR_NS::SdfLayerRefPtr layer = geometryLayer(evaluate(node, time, view));
+        EXPECT_TRUE(layer);
+
+        return layer ? layer->GetIdentifier() : std::string();
     }
 
     static PXR_NS::UsdStageRefPtr stageOf(const ScenePayload& payload,
@@ -344,4 +358,38 @@ TEST_F(GeoToSceneTest, CopyIntoLayerAuthorsAnAnonymousLayer)
     const PXR_NS::UsdStageRefPtr stage = stageOf(payload, &lease);
     ASSERT_TRUE(stage);
     EXPECT_TRUE(static_cast<bool>(PXR_NS::UsdGeomPointInstancer(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/instancer_0")))));
+}
+
+TEST_F(GeoToSceneTest, EachProjectViewGetsItsOwnLayer)
+{
+    buildScatter();
+    EXPECT_EQ(layerIdentifier(_toUSD, 1.), layerIdentifier(_toUSD, 1.));
+
+    getApp()->getProject()->createProjectViews(std::vector<std::string> { "Right" });
+    ASSERT_EQ(2, getApp()->getProject()->getProjectViewsCount());
+    const std::string left = layerIdentifier(_toUSD, 1., ViewIdx(0));
+    const std::string right = layerIdentifier(_toUSD, 1., ViewIdx(1));
+    ASSERT_FALSE(left.empty());
+    ASSERT_FALSE(right.empty());
+    EXPECT_NE(left, right);
+    EXPECT_EQ(left, layerIdentifier(_toUSD, 1., ViewIdx(0)));
+}
+
+TEST_F(GeoToSceneTest, CloseSubframesOfAnimatedGeometryGetLayersOfTheirOwn)
+{
+    buildScatter();
+    KnobDouble* size = knob<KnobDouble>(_grid, kGeoPrimitiveParamGridSize);
+    ASSERT_TRUE(size != NULL);
+    size->setValueAtTime(1., 1., ViewSpec::all(), 0);
+    size->setValueAtTime(2., 4., ViewSpec::all(), 0);
+
+    // Both print as 1 with nine significant digits.
+    const double a = 1.0000000001;
+    const double b = 1.0000000002;
+    const std::string first = layerIdentifier(_toUSD, a);
+    const std::string second = layerIdentifier(_toUSD, b);
+    ASSERT_FALSE(first.empty());
+    ASSERT_FALSE(second.empty());
+    EXPECT_NE(first, second);
+    EXPECT_EQ(first, layerIdentifier(_toUSD, a));
 }

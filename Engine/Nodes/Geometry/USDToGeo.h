@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <mutex>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -95,10 +96,19 @@ private:
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void updateFlattenEnabled();
+    void setFrameVarying(U64 hash,
+                         bool varying);
 
     PrimSelector _primPattern;
     KnobBoolWPtr _unpack;
     KnobBoolWPtr _flatten;
+
+    // Whether the geometry read at the node hash _varyingHash may differ between frames, learnt
+    // by a render: metadata cannot compose the input scene to ask.
+    std::mutex _varyingMutex;
+    U64 _varyingHash = 0;
+    bool _varyingKnown = false;
+    bool _varying = true;
 };
 
 NATRON_NAMESPACE_EXIT

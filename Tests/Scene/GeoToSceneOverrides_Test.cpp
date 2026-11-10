@@ -25,9 +25,14 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/usdGeom/points.h>
+
 #include "Global/Macros.h"
 
+#include <cstdint>
+#include <memory>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -46,6 +51,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Geometry/GeoToUSD.h"
 #include "Engine/Nodes/Geometry/GeoTransform.h"
+#include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Geometry/USDToGeo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -60,7 +66,8 @@ NATRON_NAMESPACE_USING
 namespace {
 
 // /World is translated, rotated and scaled non-uniformly, so a transform written without its
-// parent's inverse lands elsewhere.
+// parent's inverse lands elsewhere. /World/N is scaled
+// non-uniformly too and carries normals and a vector primvar. Nothing is animated.
 const char* const kScene = "#usda 1.0\n"
                            "(\n"
                            "    metersPerUnit = 0.01\n"
@@ -89,6 +96,30 @@ const char* const kScene = "#usda 1.0\n"
                            "        double3 xformOp:translate = (0, 2, 0)\n"
                            "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
                            "    }\n"
+                           "\n"
+                           "    def Mesh \"N\"\n"
+                           "    {\n"
+                           "        int[] faceVertexCounts = [4]\n"
+                           "        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                           "        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 1), (0, 1, 1)]\n"
+                           "        normal3f[] normals = [(0, -0.70710677, 0.70710677), (0, -0.70710677, 0.70710677), "
+                           "(0, -0.70710677, 0.70710677), (0, -0.70710677, 0.70710677)] (\n"
+                           "            interpolation = \"vertex\"\n"
+                           "        )\n"
+                           "        vector3f[] primvars:v = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)] (\n"
+                           "            interpolation = \"vertex\"\n"
+                           "        )\n"
+                           "        float xformOp:rotateY = 20\n"
+                           "        double3 xformOp:scale = (1, 3, 0.5)\n"
+                           "        uniform token[] xformOpOrder = [\"xformOp:rotateY\", \"xformOp:scale\"]\n"
+                           "    }\n"
+                           "\n"
+                           "    def Points \"P\"\n"
+                           "    {\n"
+                           "        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n"
+                           "        double3 xformOp:translate = (0, 0, 3)\n"
+                           "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                           "    }\n"
                            "}\n";
 
 const double kShift = 5.;
@@ -113,11 +144,154 @@ worldOf(const PXR_NS::UsdStageRefPtr& stage,
     return cache.GetLocalToWorldTransform(stage->GetPrimAtPath(PXR_NS::SdfPath(path)));
 }
 
+// The prim's points in world space.
+std::vector<PXR_NS::GfVec3d>
+worldPoints(const PXR_NS::UsdStageRefPtr& stage,
+            const char* path)
+{
+    std::vector<PXR_NS::GfVec3d> out;
+    PXR_NS::VtVec3fArray points;
+    EXPECT_TRUE(PXR_NS::UsdGeomPointBased(stage->GetPrimAtPath(PXR_NS::SdfPath(path))).GetPointsAttr().Get(&points)) << path;
+    const PXR_NS::GfMatrix4d world = worldOf(stage, path);
+    for (const PXR_NS::GfVec3f& point : points) {
+        out.push_back(world.Transform(PXR_NS::GfVec3d(point)));
+    }
+
+    return out;
+}
+
 void
 expectClose(const PXR_NS::GfMatrix4d& expected,
             const PXR_NS::GfMatrix4d& actual)
 {
     EXPECT_TRUE(PXR_NS::GfIsClose(expected, actual, 1e-6)) << "expected " << expected << "\nactual   " << actual;
+}
+
+PXR_NS::UsdStageRefPtr
+openScene()
+{
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+    EXPECT_TRUE(layer->ImportFromString(kScene));
+
+    return PXR_NS::UsdStage::Open(layer);
+}
+
+// One quad whose `path` is @p path, marked as read from USD when @p fromUsd.
+GeoDetailConstPtr
+quadAt(const char* path,
+       bool fromUsd)
+{
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints(4);
+    b.setPointPosition(first, 0., 0., 0.);
+    b.setPointPosition(first + 1, 1., 0., 0.);
+    b.setPointPosition(first + 2, 1., 1., 0.);
+    b.setPointPosition(first + 3, 0., 1., 0.);
+    const GeoOffset corners[4] = { first, first + 1, first + 2, first + 3 };
+    b.appendPrimitive(eGeoPrimitivePolygon, corners);
+    GeoAttributeDesc pathDesc;
+    pathDesc.name = "path";
+    pathDesc.storage = eGeoStorageString;
+    b.addAttribute(eGeoAttribClassPrimitive, pathDesc).setString(0, path);
+    if (fromUsd) {
+        GeoAttributeDesc sourceDesc;
+        sourceDesc.name = kGeoUsdSourceAttr;
+        sourceDesc.storage = eGeoStorageInt32;
+        b.addAttribute(eGeoAttribClassPrimitive, sourceDesc).set<std::int32_t>(0, 1);
+    }
+
+    return std::make_shared<const GeoDetail>(b.finish());
+}
+
+// Converts @p detail under the default root against openScene() as the input.
+std::unique_ptr<const GeoUsdConvert>
+convertOverScene(const GeoDetailConstPtr& detail)
+{
+    const PXR_NS::UsdStageRefPtr stage = openScene();
+    GeoUsdConvertOptions options;
+    const GeoUsdDetailPaths paths = geoUsdDetailPaths(*detail, options);
+    options.inputScene = geoUsdCaptureInputScene(stage, PXR_NS::UsdTimeCode::Default(), paths.paths, paths.sourcePaths);
+
+    return std::make_unique<const GeoUsdConvert>(detail, options);
+}
+
+bool
+anyWarningHas(const GeoUsdConvert& convert,
+              const std::string& text)
+{
+    for (const std::string& warning : convert.warnings()) {
+        if (warning.find(text) != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+PXR_NS::SdfSpecifier
+authoredSpecifier(const GeoUsdConvert& convert,
+                  const char* path)
+{
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+    std::string error;
+    EXPECT_TRUE(convert.author(layer, PXR_NS::UsdTimeCode::Default(), &error)) << error;
+    const PXR_NS::SdfPrimSpecHandle spec = layer->GetPrimAtPath(PXR_NS::SdfPath(path));
+    EXPECT_TRUE(spec) << path;
+
+    return spec ? spec->GetSpecifier() : PXR_NS::SdfNumSpecifiers;
+}
+
+// @p directions carried as the row-vector point transform @p matrix carries normals, unit length,
+// or vectors.
+std::vector<PXR_NS::GfVec3d>
+carried(const std::vector<PXR_NS::GfVec3d>& directions,
+        const PXR_NS::GfMatrix4d& matrix,
+        bool normals)
+{
+    const PXR_NS::GfMatrix4d m = normals ? matrix.GetInverse().GetTranspose() : matrix;
+    std::vector<PXR_NS::GfVec3d> out;
+    for (const PXR_NS::GfVec3d& d : directions) {
+        const PXR_NS::GfVec3d v = m.TransformDir(d);
+        out.push_back(normals ? v.GetNormalized() : v);
+    }
+
+    return out;
+}
+
+template <typename Array>
+std::vector<PXR_NS::GfVec3d>
+asVec3d(const Array& values)
+{
+    return std::vector<PXR_NS::GfVec3d>(values.begin(), values.end());
+}
+
+std::vector<PXR_NS::GfVec3d>
+pointAttribute(const GeoDetail& detail,
+               const char* name)
+{
+    std::vector<PXR_NS::GfVec3d> out;
+    const GeoAttribute* a = detail.findAttribute(eGeoAttribClassPoint, name);
+    EXPECT_TRUE(a != nullptr) << name;
+    if (!a) {
+        return out;
+    }
+    for (std::size_t p = 0; p < detail.pointCount(); ++p) {
+        float v[3];
+        a->getTuple<float>(p, std::span<float>(v, 3));
+        out.emplace_back(v[0], v[1], v[2]);
+    }
+
+    return out;
+}
+
+void
+expectClose(const std::vector<PXR_NS::GfVec3d>& expected,
+            const std::vector<PXR_NS::GfVec3d>& actual)
+{
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_TRUE(PXR_NS::GfIsClose(expected[i], actual[i], 1e-5)) << i << ": expected " << expected[i] << ", actual " << actual[i];
+    }
 }
 
 } // anonymous namespace
@@ -208,16 +382,34 @@ protected:
         connectNodes(sceneInput ? sceneInput : _reader, _toUSD, kGeoToUSDInputScene, true);
     }
 
-    static ScenePayload evaluate(const NodePtr& node)
+    static ScenePayload evaluate(const NodePtr& node,
+                                 double time = 1.)
     {
         ScenePayload payload;
         std::string error;
 
         EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
-                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0)), &payload, &error))
             << error;
 
         return payload;
+    }
+
+    static PXR_NS::SdfLayerRefPtr geometryLayer(const ScenePayload& payload)
+    {
+        const std::shared_ptr<const ScenePayloadImpl>& imp = payload.getImpl();
+        if (!imp || !imp->top.dependencies || imp->top.dependencies->layers.empty()) {
+            return PXR_NS::SdfLayerRefPtr();
+        }
+
+        return imp->top.dependencies->layers.front();
+    }
+
+    void setFlatten(bool flatten)
+    {
+        KnobBool* k = knob<KnobBool>(_toGeo, kUSDToGeoParamFlattenTransforms);
+        ASSERT_TRUE(k != NULL);
+        k->setValue(flatten);
     }
 
     static PXR_NS::UsdStageRefPtr stageOf(const ScenePayload& payload,
@@ -305,7 +497,8 @@ TEST_F(GeoToSceneOverridesTest, AnUnpackedPrimIsOverriddenOnItsPointsOnly)
     ASSERT_TRUE(spec);
     EXPECT_EQ(PXR_NS::SdfSpecifierOver, spec->GetSpecifier());
     EXPECT_TRUE(spec->GetAttributes().get(PXR_NS::UsdGeomTokens->points));
-    for (const PXR_NS::TfToken& name : { PXR_NS::UsdGeomTokens->faceVertexCounts, PXR_NS::UsdGeomTokens->faceVertexIndices }) {
+    for (const PXR_NS::TfToken& name : { PXR_NS::UsdGeomTokens->faceVertexCounts, PXR_NS::UsdGeomTokens->faceVertexIndices,
+                                         PXR_NS::TfToken(std::string("primvars:") + kGeoUsdSourceAttr) }) {
         EXPECT_FALSE(spec->GetAttributes().get(name)) << name.GetString();
     }
 
@@ -339,4 +532,191 @@ TEST_F(GeoToSceneOverridesTest, APrunedSourcePathRaisesAWarning)
     EXPECT_EQ((int)eMessageTypeWarning, type);
     EXPECT_TRUE(message.contains(QString::fromUtf8("/World/C"))) << message.toStdString();
     EXPECT_FALSE(message.contains(QString::fromUtf8("/World/A"))) << message.toStdString();
+}
+
+TEST_F(GeoToSceneOverridesTest, AFlattenedUnpackRoundTripMovesThePointsOnlyByTheEdit)
+{
+    build("/World/A", true);
+    setFlatten(true);
+    const ScenePayload source = evaluate(_reader);
+    const ScenePayload result = evaluate(_toUSD);
+    SceneQueryPool::Lease sourceLease;
+    SceneQueryPool::Lease resultLease;
+    const PXR_NS::UsdStageRefPtr before = stageOf(source, &sourceLease);
+    const PXR_NS::UsdStageRefPtr after = stageOf(result, &resultLease);
+    ASSERT_TRUE(before && after);
+    EXPECT_EQ(primPaths(before), primPaths(after));
+    expectClose(worldOf(before, "/World/A"), worldOf(after, "/World/A"));
+
+    const std::vector<PXR_NS::GfVec3d> oldPoints = worldPoints(before, "/World/A");
+    const std::vector<PXR_NS::GfVec3d> newPoints = worldPoints(after, "/World/A");
+    ASSERT_EQ(oldPoints.size(), newPoints.size());
+    for (std::size_t i = 0; i < oldPoints.size(); ++i) {
+        EXPECT_TRUE(PXR_NS::GfIsClose(oldPoints[i] + PXR_NS::GfVec3d(0., 0., kShift), newPoints[i], 1e-4))
+            << i << ": " << oldPoints[i] << " -> " << newPoints[i];
+    }
+}
+
+TEST_F(GeoToSceneOverridesTest, AnUnpackedPointsPrimIsOverriddenAtItsPath)
+{
+    build("/World/P", true);
+    GeoDetailConstPtr detail;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              _toGeo->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0)), &detail, &error))
+        << error;
+    ASSERT_TRUE(detail != nullptr);
+    const GeoAttribute* path = detail->findAttribute(eGeoAttribClassPoint, "path");
+    ASSERT_TRUE(path != nullptr);
+    ASSERT_EQ(3, int(detail->pointCount()));
+    const GeoAttribute* fromUsd = detail->findAttribute(eGeoAttribClassPoint, kGeoUsdSourceAttr);
+    ASSERT_TRUE(fromUsd != nullptr);
+    for (std::size_t p = 0; p < 3; ++p) {
+        EXPECT_EQ(std::string("/World/P"), path->getString(p)) << p;
+        EXPECT_EQ(1, fromUsd->get<std::int32_t>(p)) << p;
+    }
+
+    const ScenePayload source = evaluate(_reader);
+    const ScenePayload result = evaluate(_toUSD);
+    SceneQueryPool::Lease sourceLease;
+    SceneQueryPool::Lease resultLease;
+    const PXR_NS::UsdStageRefPtr before = stageOf(source, &sourceLease);
+    const PXR_NS::UsdStageRefPtr after = stageOf(result, &resultLease);
+    ASSERT_TRUE(before && after);
+    EXPECT_EQ(primPaths(before), primPaths(after));
+    const PXR_NS::SdfLayerRefPtr geo = geometryLayer(result);
+    ASSERT_TRUE(geo);
+    const PXR_NS::SdfPrimSpecHandle spec = geo->GetPrimAtPath(PXR_NS::SdfPath("/World/P"));
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(PXR_NS::SdfSpecifierOver, spec->GetSpecifier());
+
+    PXR_NS::VtVec3fArray oldPoints;
+    PXR_NS::VtVec3fArray newPoints;
+    ASSERT_TRUE(PXR_NS::UsdGeomPoints(before->GetPrimAtPath(PXR_NS::SdfPath("/World/P"))).GetPointsAttr().Get(&oldPoints));
+    ASSERT_TRUE(PXR_NS::UsdGeomPoints(after->GetPrimAtPath(PXR_NS::SdfPath("/World/P"))).GetPointsAttr().Get(&newPoints));
+    ASSERT_EQ(oldPoints.size(), newPoints.size());
+    for (std::size_t i = 0; i < oldPoints.size(); ++i) {
+        EXPECT_TRUE(PXR_NS::GfIsClose(oldPoints[i] + PXR_NS::GfVec3f(0.f, 0.f, float(kShift)), newPoints[i], 1e-5)) << i;
+    }
+}
+
+TEST_F(GeoToSceneOverridesTest, AnUnpackedPrimMissingFromTheSceneGoesUnderTheRootWithAWarning)
+{
+    _reader = make(PLUGINID_NATRON_USDREAD);
+    const NodePtr prune = make(PLUGINID_NATRON_USDPRUNE);
+    ASSERT_TRUE(_reader && prune);
+    KnobString* pattern = knob<KnobString>(prune, kUSDPruneParamPrimPattern);
+    ASSERT_TRUE(pattern != NULL);
+    pattern->setValue(std::string("/World/A"));
+    connectNodes(_reader, prune, 0, true);
+    build("/World/A", true, prune);
+
+    const ScenePayload result = evaluate(_toUSD);
+    SceneQueryPool::Lease lease;
+    const PXR_NS::UsdStageRefPtr stage = stageOf(result, &lease);
+    ASSERT_TRUE(stage);
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A")).IsValid());
+    EXPECT_TRUE(static_cast<bool>(PXR_NS::UsdGeomMesh(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/World/A")))));
+
+    QString message;
+    int type = 0;
+    _toUSD->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/A"))) << message.toStdString();
+}
+
+TEST_F(GeoToSceneOverridesTest, GeometryReadFromAStaticSceneSharesOneLayerAcrossFrames)
+{
+    build("/World/A", true);
+    const PXR_NS::SdfLayerRefPtr first = geometryLayer(evaluate(_toUSD, 1.));
+    const PXR_NS::SdfLayerRefPtr second = geometryLayer(evaluate(_toUSD, 2.));
+    const PXR_NS::SdfLayerRefPtr third = geometryLayer(evaluate(_toUSD, 3.));
+    ASSERT_TRUE(first && second && third);
+    EXPECT_EQ(second->GetIdentifier(), third->GetIdentifier());
+    EXPECT_FALSE(_toGeo->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
+}
+
+TEST_F(GeoToSceneOverridesTest, GeometryReadFromAPrimTheSceneHoldsOverridesIt)
+{
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/A", true));
+    ASSERT_EQ(std::size_t(1), convert->partitionCount());
+    EXPECT_EQ(PXR_NS::SdfPath("/World/A"), convert->partitionPath(0));
+    EXPECT_TRUE(convert->warnings().empty());
+    EXPECT_EQ(PXR_NS::SdfSpecifierOver, authoredSpecifier(*convert, "/World/A"));
+}
+
+TEST_F(GeoToSceneOverridesTest, GeometryReadFromAVanishedPrimGoesUnderTheRootWithAWarning)
+{
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/Gone", true));
+    ASSERT_EQ(std::size_t(1), convert->partitionCount());
+    EXPECT_EQ(PXR_NS::SdfPath("/geo/World/Gone"), convert->partitionPath(0));
+    EXPECT_TRUE(anyWarningHas(*convert, "/World/Gone is not in the input scene"));
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, authoredSpecifier(*convert, "/geo/World/Gone"));
+}
+
+TEST_F(GeoToSceneOverridesTest, UnreadGeometryAtANewAbsolutePathIsDefinedThereWithoutAWarning)
+{
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/New", false));
+    ASSERT_EQ(std::size_t(1), convert->partitionCount());
+    EXPECT_EQ(PXR_NS::SdfPath("/World/New"), convert->partitionPath(0));
+    EXPECT_TRUE(convert->warnings().empty());
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, authoredSpecifier(*convert, "/World/New"));
+}
+
+TEST_F(GeoToSceneOverridesTest, UnreadGeometryOnAPrimTheSceneHoldsGoesUnderTheRootWithACollisionWarning)
+{
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/A", false));
+    ASSERT_EQ(std::size_t(1), convert->partitionCount());
+    EXPECT_EQ(PXR_NS::SdfPath("/geo/World/A"), convert->partitionPath(0));
+    EXPECT_TRUE(anyWarningHas(*convert, "/World/A is already in the input scene"));
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, authoredSpecifier(*convert, "/geo/World/A"));
+}
+
+TEST_F(GeoToSceneOverridesTest, AFlattenedUnpackRoundTripKeepsNormalsAndVectors)
+{
+    build("/World/N", true);
+    setFlatten(true);
+    const ScenePayload source = evaluate(_reader);
+    SceneQueryPool::Lease sourceLease;
+    const PXR_NS::UsdStageRefPtr before = stageOf(source, &sourceLease);
+    ASSERT_TRUE(before);
+    const PXR_NS::UsdPrim beforePrim = before->GetPrimAtPath(PXR_NS::SdfPath("/World/N"));
+    PXR_NS::VtVec3fArray normals;
+    ASSERT_TRUE(PXR_NS::UsdGeomMesh(beforePrim).GetNormalsAttr().Get(&normals));
+    PXR_NS::VtVec3fArray vectors;
+    ASSERT_TRUE(PXR_NS::UsdGeomPrimvarsAPI(beforePrim).GetPrimvar(PXR_NS::TfToken("v")).Get(&vectors));
+    const PXR_NS::GfMatrix4d world = worldOf(before, "/World/N");
+
+    GeoDetailConstPtr detail;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              _toGeo->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0)), &detail, &error))
+        << error;
+    ASSERT_TRUE(detail != nullptr);
+    {
+        SCOPED_TRACE("world-space normals");
+        expectClose(carried(asVec3d(normals), world, true), pointAttribute(*detail, "N"));
+    }
+    {
+        SCOPED_TRACE("world-space vectors");
+        expectClose(carried(asVec3d(vectors), world, false), pointAttribute(*detail, "v"));
+    }
+
+    const ScenePayload result = evaluate(_toUSD);
+    SceneQueryPool::Lease resultLease;
+    const PXR_NS::UsdStageRefPtr after = stageOf(result, &resultLease);
+    ASSERT_TRUE(after);
+    const PXR_NS::UsdPrim afterPrim = after->GetPrimAtPath(PXR_NS::SdfPath("/World/N"));
+    PXR_NS::VtVec3fArray newNormals;
+    ASSERT_TRUE(PXR_NS::UsdGeomMesh(afterPrim).GetNormalsAttr().Get(&newNormals));
+    PXR_NS::VtVec3fArray newVectors;
+    ASSERT_TRUE(PXR_NS::UsdGeomPrimvarsAPI(afterPrim).GetPrimvar(PXR_NS::TfToken("v")).Get(&newVectors));
+    {
+        SCOPED_TRACE("round-trip normals");
+        expectClose(asVec3d(normals), asVec3d(newNormals));
+    }
+    {
+        SCOPED_TRACE("round-trip vectors");
+        expectClose(asVec3d(vectors), asVec3d(newVectors));
+    }
 }

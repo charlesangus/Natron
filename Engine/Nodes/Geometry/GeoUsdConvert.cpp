@@ -309,6 +309,146 @@ relativeTo(const GfMatrix4d& world,
     return world * inverse;
 }
 
+bool
+isDirection(GeoTypeInfoEnum typeInfo)
+{
+    return (typeInfo == eGeoTypeInfoNormal) || (typeInfo == eGeoTypeInfoVector);
+}
+
+// The row-vector matrix that carries directions of @p typeInfo as @p m carries points: the
+// inverse transpose for normals, @p m itself for vectors, of which TransformDir() uses the
+// linear part only.
+GfMatrix4d
+directionMatrix(const GfMatrix4d& m,
+                GeoTypeInfoEnum typeInfo)
+{
+    if (typeInfo != eGeoTypeInfoNormal) {
+        return m;
+    }
+    double det = 0.;
+    const GfMatrix4d inverse = m.GetInverse(&det);
+    if (std::abs(det) < 1e-12) {
+        return m;
+    }
+
+    return inverse.GetTranspose();
+}
+
+// Carries @p count float or double 3-vectors of @p typeInfo in place by @p directions, from
+// directionMatrix(); normals come out unit length.
+void
+carryDirections(void* data,
+                GeoStorageEnum storage,
+                std::size_t count,
+                const GfMatrix4d& directions,
+                GeoTypeInfoEnum typeInfo)
+{
+    const auto carry = [&](GfVec3d v) {
+        v = directions.TransformDir(v);
+        const double length = v.GetLength();
+        if ((typeInfo == eGeoTypeInfoNormal) && (length > 1e-12)) {
+            v /= length;
+        }
+
+        return v;
+    };
+    if (storage == eGeoStorageFloat32) {
+        float* f = static_cast<float*>(data);
+        for (std::size_t i = 0; i < count; ++i) {
+            const GfVec3d v = carry(GfVec3d(f[i * 3], f[i * 3 + 1], f[i * 3 + 2]));
+            f[i * 3] = float(v[0]);
+            f[i * 3 + 1] = float(v[1]);
+            f[i * 3 + 2] = float(v[2]);
+        }
+    } else if (storage == eGeoStorageFloat64) {
+        double* d = static_cast<double*>(data);
+        for (std::size_t i = 0; i < count; ++i) {
+            const GfVec3d v = carry(GfVec3d(d[i * 3], d[i * 3 + 1], d[i * 3 + 2]));
+            d[i * 3] = v[0];
+            d[i * 3 + 1] = v[1];
+            d[i * 3 + 2] = v[2];
+        }
+    }
+}
+
+// Whether the upper 3x3 of a USD (row-vector) matrix shears: its rows are not orthogonal.
+bool
+shears(const GfMatrix4d& m)
+{
+    const GfVec3d rows[3] = { m.GetRow3(0), m.GetRow3(1), m.GetRow3(2) };
+    const double lengths[3] = { rows[0].GetLength(), rows[1].GetLength(), rows[2].GetLength() };
+    const int pairs[3][2] = { { 0, 1 }, { 0, 2 }, { 1, 2 } };
+    for (const auto& pair : pairs) {
+        const double scale = lengths[pair[0]] * lengths[pair[1]];
+        if ((scale > 1e-24) && (std::abs(GfDot(rows[pair[0]], rows[pair[1]])) > 1e-6 * scale)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// A shear-free USD matrix as a point instancer's scale, orientation and position, whose product
+// scale * rotation * translation is the matrix again: a reflection is a negative X scale.
+void
+decomposeInstance(const GfMatrix4d& m,
+                  GfVec3f* scale,
+                  GfQuath* orientation,
+                  GfVec3f* position)
+{
+    *position = GfVec3f(m.ExtractTranslation());
+    const GfVec3d rows[3] = { m.GetRow3(0), m.GetRow3(1), m.GetRow3(2) };
+    double lengths[3] = { rows[0].GetLength(), rows[1].GetLength(), rows[2].GetLength() };
+    if (m.GetDeterminant3() < 0.) {
+        lengths[0] = -lengths[0];
+    }
+    *scale = GfVec3f(float(lengths[0]), float(lengths[1]), float(lengths[2]));
+    if ((std::abs(lengths[0]) < 1e-12) || (std::abs(lengths[1]) < 1e-12) || (std::abs(lengths[2]) < 1e-12)) {
+        *orientation = GfQuath(m.RemoveScaleShear().ExtractRotationQuat());
+
+        return;
+    }
+    GfMatrix4d rotation(1.);
+    for (int i = 0; i < 3; ++i) {
+        const GfVec3d row = rows[i] / lengths[i];
+        rotation.SetRow(i, GfVec4d(row[0], row[1], row[2], 0.));
+    }
+    *orientation = GfQuath(rotation.ExtractRotationQuat());
+}
+
+bool
+isWorldSpace(const GeoDetail& d)
+{
+    const GeoAttribute* a = d.findAttribute(eGeoAttribClassDetail, kGeoUsdWorldSpaceAttr);
+
+    return a && (a->storage() == eGeoStorageInt32) && !a->isArray() && (a->get<std::int32_t>(0) != 0);
+}
+
+const GeoAttribute*
+usdSourceAttribute(const GeoDetail& d,
+                   GeoAttribClassEnum cls)
+{
+    const GeoAttribute* a = d.findAttribute(cls, kGeoUsdSourceAttr);
+
+    return (a && (a->storage() == eGeoStorageInt32) && (a->tupleSize() == 1) && !a->isArray()) ? a : nullptr;
+}
+
+bool
+readFromUsd(const GeoAttribute* source,
+            GeoOffset off)
+{
+    return source && (source->get<std::int32_t>(std::size_t(off)) != 0);
+}
+
+// The point attribute that places loose points, when it is a single string.
+const GeoAttribute*
+pointPathAttribute(const GeoDetail& d)
+{
+    const GeoAttribute* a = d.findAttribute(eGeoAttribClassPoint, "path");
+
+    return (a && (a->storage() == eGeoStorageString) && (a->tupleSize() == 1) && !a->isArray()) ? a : nullptr;
+}
+
 void
 hashMatrix(Hash64& h,
            const GfMatrix4d& m)
@@ -652,7 +792,9 @@ GeoUsdConvert::build(bool nested)
     std::vector<SdfPath> resolvedByString;
     std::vector<char> resolvedKnown;
     std::set<SdfPath> overridePaths;
+    std::set<SdfPath> fromUsd;
     bool warnedBadUSDPath = false;
+    const GeoAttribute* primitiveSource = usdSourceAttribute(d, eGeoAttribClassPrimitive);
 
     auto partitionFor = [&](const SdfPath& path, GeoUsdPrimKindEnum kind) -> Partition& {
         const auto key = std::make_pair(path, int(kind));
@@ -711,6 +853,9 @@ GeoUsdConvert::build(bool nested)
                 path = resolvedByString[std::size_t(s)];
             }
         }
+        if (!path.IsEmpty() && readFromUsd(primitiveSource, off)) {
+            fromUsd.insert(path);
+        }
         partitionFor(path, kind).primitives.push_back(std::size_t(off));
     });
 
@@ -722,14 +867,63 @@ GeoUsdConvert::build(bool nested)
                 used[std::size_t(p)] = 1;
             }
         });
-        std::vector<std::size_t> loose;
+        const GeoAttribute* pointPath = pointPathAttribute(d);
+        const GeoAttribute* pointSource = usdSourceAttribute(d, eGeoAttribClassPoint);
+        std::vector<SdfPath> pointPathByString;
+        std::vector<char> pointPathKnown;
         forEachLive(d.pointMap(), [&](GeoOffset p) {
-            if (!used[std::size_t(p)]) {
-                loose.push_back(std::size_t(p));
+            if (used[std::size_t(p)]) {
+                return;
             }
+            SdfPath path;
+            if (pointPath) {
+                const std::int32_t s = pointPath->get<std::int32_t>(std::size_t(p));
+                if (s >= 0) {
+                    if (std::size_t(s) >= pointPathByString.size()) {
+                        pointPathByString.resize(std::size_t(s) + 1);
+                        pointPathKnown.resize(std::size_t(s) + 1, 0);
+                    }
+                    if (!pointPathKnown[std::size_t(s)]) {
+                        pointPathByString[std::size_t(s)] = resolvePathValue(pointPath->getString(std::size_t(p)), _options.rootPath);
+                        pointPathKnown[std::size_t(s)] = 1;
+                    }
+                    path = pointPathByString[std::size_t(s)];
+                }
+            }
+            if (!path.IsEmpty() && readFromUsd(pointSource, p)) {
+                fromUsd.insert(path);
+            }
+            partitionFor(path, eGeoUsdPrimPoints).points.push_back(std::size_t(p));
         });
-        if (!loose.empty()) {
-            partitionFor(SdfPath(), eGeoUsdPrimPoints).points = std::move(loose);
+    }
+
+    for (const auto& p : _partitions) {
+        if ((p->kind == eGeoUsdPrimOverride) || p->requestedPath.IsEmpty()) {
+            continue;
+        }
+        GeoUsdPlacementEnum placement = eGeoUsdPlacedAsRequested;
+        const SdfPath placed = geoUsdPlacedPath(p->requestedPath, _options.rootPath, _options.inputScene.get(), fromUsd.count(p->requestedPath) != 0, &placement);
+        if (placement == eGeoUsdPlacedSourceGone) {
+            _warnings.push_back(p->requestedPath.GetString() + " is not in the input scene; it goes under " + _options.rootPath.GetString());
+        } else if (placement == eGeoUsdPlacedCollision) {
+            _warnings.push_back(p->requestedPath.GetString() + " is already in the input scene and the geometry was not read from it; it goes under " + _options.rootPath.GetString());
+        }
+        p->requestedPath = placed;
+    }
+
+    std::vector<const Partition*> sheared;
+    for (const auto& p : _partitions) {
+        if (p->kind != eGeoUsdPrimInstancer) {
+            continue;
+        }
+        // A generated child path is never on the input, so it shares the frame of its base.
+        const GfMatrix4d frame = frameOf(p->requestedPath.IsEmpty() ? _options.rootPath : p->requestedPath);
+        for (std::size_t off : p->primitives) {
+            if (shears(relativeTo(geoUsdMatrix(geoPackedTransform(d, GeoOffset(off))), frame))) {
+                p->kind = eGeoUsdPrimNativeInstances;
+                sheared.push_back(p.get());
+                break;
+            }
         }
     }
 
@@ -771,6 +965,10 @@ GeoUsdConvert::build(bool nested)
                 break;
             }
         }
+    }
+    for (const Partition* p : sheared) {
+        _shearedInstances.push_back(p->path);
+        _warnings.push_back("Packed geometry at " + p->path.GetString() + " is sheared, which a point instancer cannot hold; it is written as native instances");
     }
     for (const auto& p : _partitions) {
         if (p->kind == eGeoUsdPrimOverride) {
@@ -1011,6 +1209,9 @@ GeoUsdConvert::planProperties(Partition& p)
                 continue;
             }
             if (cls == eGeoAttribClassPrimitive && (name == "path" || name == "name" || isPackedIntrinsic(name))) {
+                continue;
+            }
+            if ((cls == eGeoAttribClassPoint && name == "path") || (cls == eGeoAttribClassDetail && name == kGeoUsdWorldSpaceAttr) || ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && name == kGeoUsdSourceAttr)) {
                 continue;
             }
             if (a.isArray()) {
@@ -1544,9 +1745,7 @@ GeoUsdConvert::buildValues(const Partition& p,
         for (std::size_t i = 0; i < n; ++i) {
             const GfMatrix4d m = relativeTo(geoUsdMatrix(geoPackedTransform(d, GeoOffset(p.primitives[i]))), frame);
             protoIndices[i] = p.instancePrototype[i];
-            positions[i] = GfVec3f(m.ExtractTranslation());
-            scales[i] = GfVec3f(float(m.GetRow3(0).GetLength()), float(m.GetRow3(1).GetLength()), float(m.GetRow3(2).GetLength()));
-            orientations[i] = GfQuath(m.RemoveScaleShear().ExtractRotationQuat());
+            decomposeInstance(m, &scales[i], &orientations[i], &positions[i]);
         }
         values[p.path.AppendProperty(UsdGeomTokens->protoIndices)] = VtValue(protoIndices);
         values[p.path.AppendProperty(UsdGeomTokens->positions)] = VtValue(positions);
@@ -1590,7 +1789,14 @@ GeoUsdConvert::buildValues(const Partition& p,
         values[p.path.AppendProperty(UsdGeomTokens->faceVertexIndices)] = VtValue(indices);
     }
 
-    const VtVec3fArray points = gatherPositions(d, pointElems);
+    VtVec3fArray points = gatherPositions(d, pointElems);
+    const bool worldSpace = isWorldSpace(d);
+    const GfMatrix4d toPrim = worldSpace ? relativeTo(GfMatrix4d(1.), frameOf(p.path)) : GfMatrix4d(1.);
+    if (worldSpace) {
+        for (GfVec3f& point : points) {
+            point = GfVec3f(toPrim.Transform(GfVec3d(point)));
+        }
+    }
     values[p.path.AppendProperty(UsdGeomTokens->points)] = VtValue(points);
     values[p.path.AppendProperty(UsdGeomTokens->extent)] = VtValue(extentOf(points));
     if (p.kind == eGeoUsdPrimMesh) {
@@ -1659,6 +1865,9 @@ GeoUsdConvert::buildValues(const Partition& p,
             for (std::size_t i = 0; i < elems.size(); ++i) {
                 transpose16(m + i * 16);
             }
+        }
+        if (worldSpace && !plan.toTexCoord2 && (plan.elementSize <= 1) && (tuple == 3) && isDirection(plan.type->typeInfo)) {
+            carryDirections(flat.data(), a->storage(), elems.size(), directionMatrix(toPrim, plan.type->typeInfo), plan.type->typeInfo);
         }
         const std::size_t scalars = elems.size() * (plan.toTexCoord2 ? 2 : tuple);
         const std::size_t count = scalars * storageBytes(a->storage()) / plan.type->elementBytes;
@@ -2412,6 +2621,9 @@ geoUsdReadPrim(const UsdPrim& prim,
     }
     std::vector<std::size_t> primOffsets;
     std::vector<std::size_t> vertexOffsets;
+    GeoAttributeDesc sourceDesc;
+    sourceDesc.name = kGeoUsdSourceAttr;
+    sourceDesc.storage = eGeoStorageInt32;
     if (!counts.empty()) {
         const GeoOffset firstVertex = builder.detail().vertexMap().offsetSize();
         std::vector<GeoOffset> corners(indices.size());
@@ -2435,6 +2647,26 @@ geoUsdReadPrim(const UsdPrim& prim,
             const std::string value = prim.GetPath().GetString();
             for (std::size_t off : primOffsets) {
                 path->setString(off, value);
+            }
+        }
+        if (GeoAttribute* source = writableAttribute(target, eGeoAttribClassPrimitive, sourceDesc)) {
+            for (std::size_t off : primOffsets) {
+                source->set<std::int32_t>(off, 1);
+            }
+        }
+    } else if (isPoints) {
+        GeoAttributeDesc pathDesc;
+        pathDesc.name = "path";
+        pathDesc.storage = eGeoStorageString;
+        if (GeoAttribute* path = writableAttribute(target, eGeoAttribClassPoint, pathDesc)) {
+            const std::string value = prim.GetPath().GetString();
+            for (std::size_t off : pointOffsets) {
+                path->setString(off, value);
+            }
+        }
+        if (GeoAttribute* source = writableAttribute(target, eGeoAttribClassPoint, sourceDesc)) {
+            for (std::size_t off : pointOffsets) {
+                source->set<std::int32_t>(off, 1);
             }
         }
     }
@@ -2466,6 +2698,7 @@ geoUsdReadPrim(const UsdPrim& prim,
     };
 
     const UsdGeomPrimvarsAPI primvars(prim);
+    std::vector<std::string> detailNames;
     for (const UsdGeomPrimvar& pv : primvars.GetPrimvarsWithValues()) {
         VtValue value;
         if (!pv.ComputeFlattened(&value, time)) {
@@ -2484,6 +2717,9 @@ geoUsdReadPrim(const UsdPrim& prim,
             continue;
         }
         readValue(target, cls, name, pv.GetTypeName(), pv.GetElementSize(), value, *offsets);
+        if (cls == eGeoAttribClassDetail) {
+            detailNames.push_back(name);
+        }
     }
 
     const UsdAttribute normals = pointBased.GetNormalsAttr();
@@ -2493,6 +2729,51 @@ geoUsdReadPrim(const UsdPrim& prim,
         GeoAttribClassEnum cls = eGeoAttribClassPoint;
         if (const std::vector<std::size_t>* offsets = classFor(pointBased.GetNormalsInterpolation(), &cls)) {
             readValue(target, cls, "N", normals.GetTypeName(), 1, value, *offsets);
+            if (cls == eGeoAttribClassDetail) {
+                detailNames.push_back("N");
+            }
+        }
+    }
+    if (worldTransform) {
+        // The detail element is shared by every prim read, so only what this prim wrote to it moves.
+        const std::pair<GeoAttribClassEnum, const std::vector<std::size_t>*> classes[] = {
+            { eGeoAttribClassPoint, &pointOffsets },
+            { eGeoAttribClassVertex, &vertexOffsets },
+            { eGeoAttribClassPrimitive, &primOffsets },
+            { eGeoAttribClassDetail, &detailOffsets },
+        };
+        for (const auto& [cls, offsets] : classes) {
+            if (offsets->empty()) {
+                continue;
+            }
+            std::vector<std::string> names;
+            const GeoDetail& d = builder.detail();
+            for (std::size_t i = 0; i < d.attributeCount(cls); ++i) {
+                const GeoAttribute& a = d.attribute(cls, i);
+                if (!a.isArray() && (a.tupleSize() == 3) && isDirection(a.typeInfo()) && ((cls != eGeoAttribClassDetail) || (std::find(detailNames.begin(), detailNames.end(), a.name()) != detailNames.end()))) {
+                    names.push_back(a.name());
+                }
+            }
+            for (const std::string& name : names) {
+                GeoAttribute* a = builder.attributeForWriting(cls, name);
+                if (!a) {
+                    continue;
+                }
+                const GfMatrix4d directions = directionMatrix(*worldTransform, a->typeInfo());
+                for (std::size_t off : *offsets) {
+                    if (a->storage() == eGeoStorageFloat32) {
+                        float v[3];
+                        a->getTuple<float>(off, std::span<float>(v, 3));
+                        carryDirections(v, eGeoStorageFloat32, 1, directions, a->typeInfo());
+                        a->setTuple<float>(off, std::span<const float>(v, 3));
+                    } else if (a->storage() == eGeoStorageFloat64) {
+                        double v[3];
+                        a->getTuple<double>(off, std::span<double>(v, 3));
+                        carryDirections(v, eGeoStorageFloat64, 1, directions, a->typeInfo());
+                        a->setTuple<double>(off, std::span<const double>(v, 3));
+                    }
+                }
+            }
         }
     }
     if (isCurves || isPoints) {
@@ -2535,13 +2816,48 @@ geoUsdDetailPaths(const GeoDetail& d,
 {
     GeoUsdDetailPaths out;
     std::unordered_set<SdfPath, SdfPath::Hash> seen;
-    const auto add = [&](const SdfPath& path, bool source) {
-        if (!path.IsEmpty() && seen.insert(path).second) {
-            (source ? out.sourcePaths : out.paths).push_back(path);
+    std::unordered_map<SdfPath, std::size_t, SdfPath::Hash> pathIndex;
+    const auto add = [&](const SdfPath& path, bool source, bool fromUsd) {
+        if (path.IsEmpty()) {
+            return;
+        }
+        if (seen.insert(path).second) {
+            if (source) {
+                out.sourcePaths.push_back(path);
+            } else {
+                pathIndex.emplace(path, out.paths.size());
+                out.paths.push_back(path);
+                out.pathsFromUsd.push_back(0);
+            }
+        }
+        if (fromUsd) {
+            const auto it = pathIndex.find(path);
+            if (it != pathIndex.end()) {
+                out.pathsFromUsd[it->second] = 1;
+            }
         }
     };
     const SdfPath root = (options.rootPath.IsAbsolutePath() && options.rootPath.IsPrimPath()) ? options.rootPath : SdfPath("/geo");
-    add(root, false);
+    add(root, false, false);
+
+    const auto resolver = [&root](const GeoAttribute* a) {
+        return [a, &root, byString = std::vector<SdfPath>(), known = std::vector<char>()](GeoOffset off) mutable -> SdfPath {
+            const std::int32_t s = a->get<std::int32_t>(std::size_t(off));
+            if (s < 0) {
+                return SdfPath();
+            }
+            if (std::size_t(s) >= byString.size()) {
+                byString.resize(std::size_t(s) + 1);
+                known.resize(std::size_t(s) + 1, 0);
+            }
+            if (!known[std::size_t(s)]) {
+                byString[std::size_t(s)] = resolvePathValue(a->getString(std::size_t(off)), root);
+                known[std::size_t(s)] = 1;
+            }
+
+            return byString[std::size_t(s)];
+        };
+    };
 
     const GeoAttribute* pathAttr = nullptr;
     for (const char* name : { "path", "name" }) {
@@ -2551,33 +2867,56 @@ geoUsdDetailPaths(const GeoDetail& d,
             break;
         }
     }
-    std::vector<char> resolved;
-    forEachLive(d.primitiveMap(), [&](GeoOffset off) {
-        if (d.primitiveType(off) == eGeoPrimitivePackedUSD) {
-            const SdfPath source(std::string(geoPackedUSDPath(d, off)));
-            if (!source.IsEmpty() && source.IsAbsolutePath() && source.IsPrimPath()) {
-                add(source, true);
-            }
+    {
+        const GeoAttribute* primitiveSource = usdSourceAttribute(d, eGeoAttribClassPrimitive);
+        auto primitivePath = resolver(pathAttr);
+        forEachLive(d.primitiveMap(), [&](GeoOffset off) {
+            if (d.primitiveType(off) == eGeoPrimitivePackedUSD) {
+                const SdfPath source(std::string(geoPackedUSDPath(d, off)));
+                if (!source.IsEmpty() && source.IsAbsolutePath() && source.IsPrimPath()) {
+                    add(source, true, false);
+                }
 
-            return;
-        }
-        if (!pathAttr) {
-            return;
-        }
-        const std::int32_t s = pathAttr->get<std::int32_t>(std::size_t(off));
-        if (s < 0) {
-            return;
-        }
-        if (std::size_t(s) >= resolved.size()) {
-            resolved.resize(std::size_t(s) + 1, 0);
-        }
-        if (!resolved[std::size_t(s)]) {
-            resolved[std::size_t(s)] = 1;
-            add(resolvePathValue(pathAttr->getString(std::size_t(off)), root), false);
-        }
-    });
+                return;
+            }
+            if (pathAttr) {
+                add(primitivePath(off), false, readFromUsd(primitiveSource, off));
+            }
+        });
+    }
+
+    if (const GeoAttribute* pointPath = pointPathAttribute(d)) {
+        const GeoAttribute* pointSource = usdSourceAttribute(d, eGeoAttribClassPoint);
+        auto pathOf = resolver(pointPath);
+        forEachLive(d.pointMap(), [&](GeoOffset off) {
+            add(pathOf(off), false, readFromUsd(pointSource, off));
+        });
+    }
 
     return out;
+}
+
+SdfPath
+geoUsdPlacedPath(const SdfPath& requested,
+                 const SdfPath& root,
+                 const GeoUsdInputScene* scene,
+                 bool fromUsd,
+                 GeoUsdPlacementEnum* placement)
+{
+    GeoUsdPlacementEnum why = eGeoUsdPlacedAsRequested;
+    if (scene && !requested.IsEmpty() && !requested.HasPrefix(root)) {
+        const bool onInput = scene->find(requested) != nullptr;
+        if (fromUsd && !onInput) {
+            why = eGeoUsdPlacedSourceGone;
+        } else if (!fromUsd && onInput) {
+            why = eGeoUsdPlacedCollision;
+        }
+    }
+    if (placement) {
+        *placement = why;
+    }
+
+    return (why == eGeoUsdPlacedAsRequested) ? requested : root.AppendPath(requested.MakeRelativePath(SdfPath::AbsoluteRootPath()));
 }
 
 GeoUsdInputSceneConstPtr

@@ -29,7 +29,9 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -46,6 +48,7 @@
 #include "Engine/GeoDetail.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoSdfData.h"
 #include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
@@ -81,29 +84,39 @@ packedModeArgument(GeoUsdPackedModeEnum mode)
 }
 
 std::string
-frameKey(double frame)
-{
-    char buffer[64];
-    std::snprintf(buffer, sizeof(buffer), "%.9g", frame);
-    std::string key(buffer);
-    for (char& c : key) {
-        if (c == '.') {
-            c = 'p';
-        } else if (c == '-') {
-            c = 'm';
-        }
-    }
-
-    return key;
-}
-
-std::string
 hexKey(U64 value)
 {
     char buffer[32];
     std::snprintf(buffer, sizeof(buffer), "%016llx", (unsigned long long)value);
 
     return std::string(buffer);
+}
+
+// The view a layer is keyed on, or -1 for one layer shared by every view: upstream nodes can make
+// different geometry per view only when the project has several.
+int
+layerView(const EffectInstance& node,
+          ViewIdx view)
+{
+    const AppInstancePtr app = node.getApp();
+    const bool several = app && app->getProject() && (app->getProject()->getProjectViewsCount() > 1);
+
+    return several ? int(view) : -1;
+}
+
+// The frame's bit pattern, so that subframes that print alike still get layers of their own.
+std::string
+frameKey(double frame)
+{
+    // -0 and 0 are one frame with two bit patterns.
+    if (frame == 0.) {
+        frame = 0.;
+    }
+    U64 bits = 0;
+    static_assert(sizeof(bits) == sizeof(frame), "a frame is a 64-bit double");
+    std::memcpy(&bits, &frame, sizeof(bits));
+
+    return hexKey(bits);
 }
 
 bool
@@ -118,6 +131,7 @@ struct Gathered {
     GeoDetailConstPtr detail;
     GeoUsdInputSceneConstPtr inputScene;
     std::vector<std::string> missing;
+    std::vector<std::string> collisions;
 };
 
 struct NodeSettings {
@@ -132,15 +146,30 @@ inputSceneHash(const GeoUsdInputSceneConstPtr& scene)
     return scene ? scene->hash : 0;
 }
 
-// The paths the detail names that only an input prim gives a meaning to: packed USD sources.
+// The paths the detail names that only an input prim gives a meaning to and that prim is missing:
+// packed USD sources, and absolute paths outside the root read from USD, which move under it. In
+// *collisions, the absolute paths outside the root of geometry not read from USD that the input
+// already holds, which move under it too.
 std::vector<std::string>
 missingSources(const GeoUsdDetailPaths& paths,
-               const GeoUsdInputSceneConstPtr& scene)
+               const GeoUsdConvertOptions& options,
+               const GeoUsdInputSceneConstPtr& scene,
+               std::vector<std::string>* collisions)
 {
     std::vector<std::string> missing;
     for (const PXR_NS::SdfPath& path : paths.sourcePaths) {
         if (!scene || !scene->find(path)) {
             missing.push_back(path.GetString());
+        }
+    }
+    const PXR_NS::SdfPath root = (options.rootPath.IsAbsolutePath() && options.rootPath.IsPrimPath()) ? options.rootPath : PXR_NS::SdfPath("/geo");
+    for (std::size_t i = 0; i < paths.paths.size(); ++i) {
+        GeoUsdPlacementEnum placement = eGeoUsdPlacedAsRequested;
+        geoUsdPlacedPath(paths.paths[i], root, scene.get(), paths.pathsFromUsd[i] != 0, &placement);
+        if (placement == eGeoUsdPlacedSourceGone) {
+            missing.push_back(paths.paths[i].GetString());
+        } else if (placement == eGeoUsdPlacedCollision) {
+            collisions->push_back(paths.paths[i].GetString());
         }
     }
 
@@ -202,10 +231,12 @@ struct GeoToUSD::Implementation {
                             Gathered* out,
                             std::string* errorMessage) const;
 
-    // The natrongeo key: the node, its root and mode, and the frame when timeKeyed.
+    // The natrongeo key: the node, its root and mode, the frame when timeKeyed, and the view
+    // unless it is negative (layerView()).
     std::string layerKey(const GeoUsdConvertOptions& options,
                          bool timeKeyed,
-                         double frame) const;
+                         double frame,
+                         int view) const;
 
     /**
      * Serves gathered as the natrongeo layer under key and sets *layer to it. *current is false
@@ -416,7 +447,7 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
     const GeoUsdDetailPaths paths = geoUsdDetailPaths(*out->detail, options);
     const EffectInstancePtr sceneInput = node->getInput(kGeoToUSDInputScene);
     if (paths.paths.empty() || !sceneInput || !sceneInput->producesSceneData()) {
-        out->missing = missingSources(paths, out->inputScene);
+        out->missing = missingSources(paths, options, out->inputScene, &out->collisions);
 
         return eRenderRoIRetCodeOk;
     }
@@ -446,7 +477,7 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
         const PXR_NS::UsdTimeCode time(SceneOps::frameToTimeCode(*inputScene, frame, fps));
         out->inputScene = geoUsdCaptureInputScene(stage, time, paths.paths, paths.sourcePaths);
     }
-    out->missing = missingSources(paths, out->inputScene);
+    out->missing = missingSources(paths, options, out->inputScene, &out->collisions);
 
     return node->aborted() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
 } // GeoToUSD::Implementation::gather
@@ -454,7 +485,8 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
 std::string
 GeoToUSD::Implementation::layerKey(const GeoUsdConvertOptions& options,
                                    bool timeKeyed,
-                                   double frame) const
+                                   double frame,
+                                   int view) const
 {
     ContentHasher h;
     h.appendString(options.rootPath.GetString());
@@ -462,6 +494,9 @@ GeoToUSD::Implementation::layerKey(const GeoUsdConvertOptions& options,
     std::string key = instanceKey + "-" + hexKey(h.finalize());
     if (timeKeyed) {
         key += "-f" + frameKey(frame);
+    }
+    if (view >= 0) {
+        key += "-v" + std::to_string(view);
     }
 
     return key;
@@ -592,7 +627,7 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
     const bool timeKeyed = isFrameVaryingOrAnimated_Recursive();
     PXR_NS::SdfLayerRefPtr layer;
     bool current = false;
-    (void)_imp->serve(_imp->layerKey(settings.options, timeKeyed, args.time), settings.options, timeKeyed, gathered, true, &layer, &current, &error);
+    (void)_imp->serve(_imp->layerKey(settings.options, timeKeyed, args.time, layerView(*this, args.view)), settings.options, timeKeyed, gathered, true, &layer, &current, &error);
 
     return aborted() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
 }
@@ -609,7 +644,6 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
     const ScenePayload upstream = args.getInputScene(kGeoToUSDInputScene);
-    const bool timeKeyed = isFrameVaryingOrAnimated_Recursive();
 
     std::vector<double> frames;
     if (settings.timeSamples) {
@@ -629,6 +663,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
 
     std::vector<Gathered> gathered(frames.size());
     std::vector<std::string> missing;
+    std::vector<std::string> collisions;
     for (std::size_t i = 0; i < frames.size(); ++i) {
         // The Scene input's payload is evaluated at args.time; other frames evaluate their own.
         const ScenePayload* given = (frames[i] == args.time) ? &upstream : nullptr;
@@ -648,14 +683,21 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
                 missing.push_back(path);
             }
         }
+        for (const std::string& path : gathered[i].collisions) {
+            if (std::find(collisions.begin(), collisions.end(), path) == collisions.end()) {
+                collisions.push_back(path);
+            }
+        }
     }
 
+    // After the gather: rendering the geometry can tell its nodes that it does not vary after all.
+    const bool timeKeyed = isFrameVaryingOrAnimated_Recursive();
     bool copy = settings.copy;
     PXR_NS::SdfLayerRefPtr geoLayer;
     std::string identifier;
     if (!copy && !isEmptyDetail(gathered.front().detail)) {
         bool current = false;
-        if (!_imp->serve(_imp->layerKey(settings.options, timeKeyed, args.time), settings.options, timeKeyed, gathered.front(), false, &geoLayer, &current, errorMessage)) {
+        if (!_imp->serve(_imp->layerKey(settings.options, timeKeyed, args.time, layerView(*this, args.view)), settings.options, timeKeyed, gathered.front(), false, &geoLayer, &current, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
@@ -668,6 +710,30 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             copy = true;
             geoLayer = PXR_NS::SdfLayerRefPtr();
         }
+    }
+
+    std::vector<std::unique_ptr<const GeoUsdConvert>> converts;
+    std::vector<std::string> sheared;
+    const auto noteSheared = [&](const GeoUsdConvert& convert) {
+        for (const PXR_NS::SdfPath& path : convert.shearedInstances()) {
+            if (std::find(sheared.begin(), sheared.end(), path.GetString()) == sheared.end()) {
+                sheared.push_back(path.GetString());
+            }
+        }
+    };
+    if (copy) {
+        converts.resize(gathered.size());
+        for (std::size_t i = 0; i < gathered.size(); ++i) {
+            if (isEmptyDetail(gathered[i].detail)) {
+                continue;
+            }
+            GeoUsdConvertOptions options = settings.options;
+            options.inputScene = gathered[i].inputScene;
+            converts[i].reset(new GeoUsdConvert(gathered[i].detail, options));
+            noteSheared(*converts[i]);
+        }
+    } else if (const std::shared_ptr<const GeoUsdConvert> served = geoLayer ? geoLayerConvert(geoLayer) : std::shared_ptr<const GeoUsdConvert>()) {
+        noteSheared(*served);
     }
 
     ContentHasher facts;
@@ -699,15 +765,12 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
 
             return true;
         }
-        for (const Gathered& g : gathered) {
-            if (isEmptyDetail(g.detail)) {
+        for (std::size_t i = 0; i < gathered.size(); ++i) {
+            if (!converts[i]) {
                 continue;
             }
-            GeoUsdConvertOptions options = settings.options;
-            options.inputScene = g.inputScene;
-            const GeoUsdConvert convert(g.detail, options);
-            const PXR_NS::UsdTimeCode time = settings.timeSamples ? SceneNodeAuthoring::frameToTimeCode(edit, g.frame) : PXR_NS::UsdTimeCode::Default();
-            if (!convert.author(edit.layer, time, error)) {
+            const PXR_NS::UsdTimeCode time = settings.timeSamples ? SceneNodeAuthoring::frameToTimeCode(edit, gathered[i].frame) : PXR_NS::UsdTimeCode::Default();
+            if (!converts[i]->author(edit.layer, time, error)) {
                 return false;
             }
         }
@@ -720,14 +783,38 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    if (missing.empty()) {
+    if (missing.empty() && collisions.empty() && sheared.empty()) {
         clearPersistentMessage(false);
 
         return eStatusOK;
     }
-    QString message = tr("Not in the Scene input, so not overridden:");
-    for (const std::string& path : missing) {
-        message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
+    QString message;
+    if (!missing.empty()) {
+        message = tr("Not in the Scene input, so not overridden (unpacked geometry read from these paths goes "
+                     "under the Root Path):");
+        for (const std::string& path : missing) {
+            message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
+        }
+    }
+    if (!collisions.empty()) {
+        if (!message.isEmpty()) {
+            message += QString::fromUtf8("\n");
+        }
+        message += tr("Already in the Scene input, and only geometry read from a prim overrides it, so this "
+                      "geometry goes under the Root Path:");
+        for (const std::string& path : collisions) {
+            message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
+        }
+    }
+    if (!sheared.empty()) {
+        if (!message.isEmpty()) {
+            message += QString::fromUtf8("\n");
+        }
+        message += tr("Sheared packed geometry, written as native instances because a point instancer cannot hold "
+                      "shear:");
+        for (const std::string& path : sheared) {
+            message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
+        }
     }
     setPersistentMessage(eMessageTypeWarning, message.toStdString());
 

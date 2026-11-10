@@ -27,6 +27,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -44,6 +45,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -82,6 +84,56 @@ bool
 isReadableUnpacked(const PXR_NS::UsdPrim& prim)
 {
     return prim.IsA<PXR_NS::UsdGeomMesh>() || prim.IsA<PXR_NS::UsdGeomPoints>() || prim.IsA<PXR_NS::UsdGeomBasisCurves>();
+}
+
+bool
+attributesMightVary(const PXR_NS::UsdPrim& prim,
+                    bool withTransform)
+{
+    for (const PXR_NS::UsdAttribute& attribute : prim.GetAuthoredAttributes()) {
+        if (!withTransform && PXR_NS::UsdGeomXformOp::IsXformOp(attribute)) {
+            continue;
+        }
+        if (attribute.ValueMightBeTimeVarying()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Whether a packed prim's transform or bounds may change over time.
+bool
+packedMightVary(const PXR_NS::UsdPrim& prim)
+{
+    if (SceneProjectionCameras::transformMightVary(prim)) {
+        return true;
+    }
+    for (const PXR_NS::UsdPrim& descendant : PXR_NS::UsdPrimRange(prim, PXR_NS::UsdTraverseInstanceProxies())) {
+        if (attributesMightVary(descendant, true)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Whether what geoUsdReadPrim() reads from the prim may change over time: its attributes and its
+// GeomSubsets', and its world transform when that is baked in.
+bool
+unpackedMightVary(const PXR_NS::UsdPrim& prim,
+                  bool flatten)
+{
+    if (attributesMightVary(prim, false) || (flatten && SceneProjectionCameras::transformMightVary(prim))) {
+        return true;
+    }
+    for (const PXR_NS::UsdPrim& child : prim.GetChildren()) {
+        if (child.IsA<PXR_NS::UsdGeomSubset>() && attributesMightVary(child, true)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 } // anonymous namespace
@@ -171,10 +223,36 @@ USDToGeo::getPreferredMetadataAt(double /*time*/,
                                  NodeMetadata& metadata)
 {
     // The input scene's payload is the same at every frame while its prims may be animated, so
-    // the geometry cache must key on the time.
-    metadata.setIsFrameVarying(true);
+    // until a render has looked at the prims the geometry must be taken to vary.
+    bool varying = true;
+    {
+        std::lock_guard<std::mutex> lock(_varyingMutex);
+        if (_varyingKnown && (_varyingHash == getHash())) {
+            varying = _varying;
+        }
+    }
+    if (varying) {
+        metadata.setIsFrameVarying(true);
+    }
 
     return eStatusOK;
+}
+
+void
+USDToGeo::setFrameVarying(U64 hash,
+                          bool varying)
+{
+    {
+        std::lock_guard<std::mutex> lock(_varyingMutex);
+        const bool before = (_varyingKnown && (_varyingHash == hash)) ? _varying : true;
+        _varyingHash = hash;
+        _varyingKnown = true;
+        _varying = varying;
+        if ((before == varying) || (getHash() != hash)) {
+            return;
+        }
+    }
+    dropCachedMetadataDownstream();
 }
 
 StatusEnum
@@ -182,6 +260,7 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
                          GeoDetailConstPtr* outputDetail,
                          std::string* errorMessage)
 {
+    const U64 hash = getHash();
     const std::string pattern = _primPattern.getExpression();
     const bool unpack = boolAt(_unpack, args.time, args.view);
     const bool flatten = unpack && boolAt(_flatten, args.time, args.view);
@@ -207,6 +286,7 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
 
     std::vector<std::string> skipped;
     std::vector<std::string> warnings;
+    bool varying = false;
     const StatusEnum status = renderGeometryGenerator([&](GeoDetailBuilder& builder, std::string* error) {
         if (scene.isEmpty()) {
             return eStatusOK;
@@ -239,6 +319,7 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
                     skipped.push_back(path.GetString());
                     continue;
                 }
+                varying = varying || packedMightVary(prim);
                 bool resetsXformStack = false;
                 const PXR_NS::GfMatrix4d local = xforms.GetLocalTransformation(prim, &resetsXformStack);
                 const PXR_NS::GfMatrix4d parentWorld = resetsXformStack ? PXR_NS::GfMatrix4d(1.) : xforms.GetParentToWorldTransform(prim);
@@ -269,11 +350,18 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
                 skipped.push_back(path.GetString());
                 continue;
             }
+            varying = varying || unpackedMightVary(prim, flatten);
             const PXR_NS::GfMatrix4d world = xforms.GetLocalToWorldTransform(prim);
             std::string readError;
             if (!geoUsdReadPrim(prim, time, flatten ? &world : nullptr, builder, &warnings, &readError)) {
                 skipped.push_back(path.GetString() + ": " + readError);
             }
+        }
+        if (flatten) {
+            GeoAttributeDesc worldSpaceDesc;
+            worldSpaceDesc.name = kGeoUsdWorldSpaceAttr;
+            worldSpaceDesc.storage = eGeoStorageInt32;
+            builder.addAttribute(eGeoAttribClassDetail, worldSpaceDesc).set<std::int32_t>(0, 1);
         }
 
         return eStatusOK;
@@ -284,6 +372,7 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
 
         return status;
     }
+    setFrameVarying(hash, varying);
 
     if (skipped.empty() && warnings.empty()) {
         clearPersistentMessage(false);

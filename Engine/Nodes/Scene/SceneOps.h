@@ -412,9 +412,17 @@ PXR_NS::UsdStageLoadRules getLoadRules(const SceneLoadSet* loadSet);
 SceneLoadSetPtr makeLoadSet(const PXR_NS::UsdStageLoadRules& rules);
 
 /**
- * @brief Whether what a pattern reaching below prefixes (PrimSelector::Reach::prefixes) selects
- * can differ between stages loading the payloads of from and of to, null standing for every
- * payload.
+ * @brief prefixes (PrimSelector::Reach::prefixes), each replaced by the outermost prim above it
+ * on stage that carries a payload: loading or unloading that payload adds or removes what lies
+ * at the prefix, whatever else is loaded. Paths already present are not repeated.
+ **/
+std::vector<std::string> getLoadReach(const PXR_NS::UsdStageRefPtr& stage,
+                                      const std::vector<std::string>& prefixes);
+
+/**
+ * @brief Whether what a pattern reaching below prefixes selects can differ between stages loading
+ * the payloads of from and of to, null standing for every payload. prefixes come from
+ * getLoadReach() on a stage composed with from, so that a payload above a prefix counts.
  **/
 bool loadChangeReaches(const SceneLoadSet* from,
                        const SceneLoadSet* to,

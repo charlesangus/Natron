@@ -1,6 +1,9 @@
 name: Remote build
 
-run-name: remote-build ${{ inputs.preset || 'fast' }} ${{ inputs.token }}${{ inputs.cmake_args != '' && format(' cmake:{0}', inputs.cmake_args) || '' }}${{ inputs.from_run != '' && format(' from:{0}', inputs.from_run) || '' }}
+# The "what ran" part is format('build{0}{1}{2}{3}{4}', ...) where each
+# conditional fragment carries its own leading ", ", so no trailing separator
+# can appear. A from_run dispatch builds nothing and replaces the list.
+run-name: ${{ github.event_name == 'push' && format('Remote build · fast · {0} (cache warm)', github.ref_name) || format('Remote build · {0} · {1}{2}{3}', inputs.preset, inputs.from_run != '' && format('GUI only (from run {0})', inputs.from_run) || format('build{0}{1}{2}{3}{4}', inputs.tests && ', tests' || '', inputs.appimage && ', AppImage' || '', inputs.gui_scripts != '' && ', GUI' || '', inputs.record_goldens && ', goldens' || '', inputs.cmake_args != '' && format(', cmake:{0}', inputs.cmake_args) || ''), inputs.label != '' && format(' · {0}', inputs.label) || '', inputs.token != '' && format(' · {0}', inputs.token) || '') }}
 
 on:
   # A push run builds fast with no tests and no AppImage; it exists to
@@ -39,6 +42,11 @@ on:
         required: false
         type: string
         default: ''
+      repeat_test:
+        description: 'Name-regex:N (needs tests): after the ctest run, each ctest leg runs that one case N times under ctest load'
+        required: false
+        type: string
+        default: ''
       cmake_args:
         description: 'Extra CMake arguments, space-separated'
         required: false
@@ -49,6 +57,11 @@ on:
         required: false
         type: string
         default: 'legacy,taskgraph'
+      label:
+        description: 'Human label for the run title, usually the PR title'
+        required: false
+        type: string
+        default: ''
       token:
         description: 'Opaque marker echoed into the run name so a script can find this run'
         required: false
@@ -84,7 +97,7 @@ env:
 
 jobs:
   dev-image:
-    name: dev image
+    name: Dev image
     permissions:
       contents: read
       packages: write
@@ -92,7 +105,7 @@ jobs:
 
   # Builds once; the ctest legs below run off the build tree it uploads.
   remote-build:
-    name: remote-build
+    name: Build · ${{ inputs.preset || 'fast' }}${{ inputs.appimage && inputs.preset != 'debug' && ' + AppImage' || '' }}
     needs: dev-image
     if: ${{ !inputs.from_run }}
     runs-on: ubuntu-latest
@@ -168,7 +181,7 @@ jobs:
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 
-      - name: Build
+      - name: Build ${{ env.PRESET }} preset
         id: build
         env:
           WITH_TESTS: ${{ inputs.tests && '1' || '' }}
@@ -326,13 +339,27 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
 
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          CMAKE_ARGS: ${{ inputs.cmake_args }}
+          APPIMAGE_UPLOAD: ${{ steps.upload_appimage.outcome }}
+          TREE_UPLOAD: ${{ steps.upload_tree.outcome }}
+        run: |
+          artifacts=()
+          if [[ "$TREE_UPLOAD" == success ]]; then artifacts+=("build-tree-$PRESET"); fi
+          if [[ "$APPIMAGE_UPLOAD" == success ]]; then artifacts+=("natron-$PRESET-$GITHUB_SHA"); fi
+          # shellcheck disable=SC2086
+          tools/ci/summary.sh build "$PRESET" "$(IFS=,; echo "${artifacts[*]}")" $CMAKE_ARGS
+
   # Turns the schedulers input into the ctest matrix, and rejects an unknown name before any build starts.
   ctest-legs:
-    name: ctest legs
+    name: Setup · pick test legs
     if: inputs.tests && !inputs.from_run
     runs-on: ubuntu-latest
     outputs:
@@ -359,7 +386,7 @@ jobs:
           echo "schedulers=[${json%,}]" >> "$GITHUB_OUTPUT"
 
   ctest:
-    name: ctest (${{ matrix.scheduler }})
+    name: Test · ${{ matrix.scheduler == 'taskgraph' && 'task-graph' || matrix.scheduler }} scheduler
     needs: [dev-image, remote-build, ctest-legs]
     if: >-
       !cancelled() && inputs.tests && needs.remote-build.outputs.tree == 'success'
@@ -420,7 +447,7 @@ jobs:
 
       # Missing when recording failed outright; the leg then replays the committed references,
       # as it would have in the build job.
-      - name: Download native goldens
+      - name: Download native goldens from the build job
         if: inputs.record_goldens
         continue-on-error: true
         uses: actions/download-artifact@v7.0.0
@@ -428,7 +455,7 @@ jobs:
           name: native-goldens-${{ env.PRESET }}-${{ github.sha }}
           path: Tests/fixtures/native-golden
 
-      - name: Download native parity references
+      - name: Download native parity references from the build job
         if: inputs.record_goldens
         continue-on-error: true
         uses: actions/download-artifact@v7.0.0
@@ -436,13 +463,13 @@ jobs:
           name: native-parity-${{ env.PRESET }}-${{ github.sha }}
           path: Tests/fixtures/native-parity
 
-      - name: Download build tree
+      - name: Download build tree from the build job
         uses: actions/download-artifact@v7.0.0
         with:
           name: build-tree-${{ env.PRESET }}
 
       # The tree's absolute paths hold because every job's workspace is mounted at the same path.
-      - name: Unpack build tree
+      - name: Unpack build tree from the build job
         run: |
           tar -xf build-tree.tar
           rm build-tree.tar
@@ -491,7 +518,21 @@ jobs:
           done
           exit "$rc"
 
-      - name: Python bindings smoke test (${{ matrix.scheduler }} scheduler)
+      - name: Repeat one ctest case (${{ matrix.scheduler }} scheduler)
+        if: (success() || failure()) && inputs.repeat_test != ''
+        timeout-minutes: 90
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
+          NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
+          REPEAT_TEST: ${{ inputs.repeat_test }}
+        run: |
+          set -o pipefail
+          mkdir -p ctest-logs
+          tools/ci/local/test.sh repeat "${REPEAT_TEST%:*}" "${REPEAT_TEST##*:}" "$PRESET" 2>&1 \
+            | tee "ctest-logs/ctest-${{ matrix.scheduler }}-repeat.log"
+
+      - name: Run Python bindings smoke test (${{ matrix.scheduler }} scheduler)
         if: success() || failure()
         env:
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
@@ -516,15 +557,23 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          SCHEDULER: ${{ matrix.scheduler }}
+          SCHEDULER_LABEL: ${{ matrix.scheduler == 'taskgraph' && 'task-graph' || matrix.scheduler }}
+        run: tools/ci/summary.sh ctest "$SCHEDULER" "build/$PRESET" "ctest-log-$SCHEDULER-$PRESET-$GITHUB_SHA" "$SCHEDULER_LABEL"
+
   # Gathers the legs' logs into the one artifact tools/ci/remote/build.sh downloads, and holds the
   # byte-for-byte comparison of the two schedulers' smoke renders, which spans both legs.
   results:
-    name: results
+    name: Collect logs and compare renders
     needs: [remote-build, ctest-legs, ctest]
     if: always() && inputs.tests && !inputs.from_run
     runs-on: ubuntu-latest
     steps:
-      - name: Download ctest logs
+      - name: Download ctest logs from every ctest leg
         uses: actions/download-artifact@v7.0.0
         with:
           pattern: ctest-log-*-${{ env.PRESET }}-${{ github.sha }}
@@ -548,7 +597,7 @@ jobs:
             exit 1
           fi
 
-      - name: Download smoke renders
+      - name: Download smoke renders from every ctest leg
         if: ${{ contains(needs.ctest-legs.outputs.schedulers, 'legacy') && contains(needs.ctest-legs.outputs.schedulers, 'taskgraph') }}
         uses: actions/download-artifact@v7.0.0
         with:
@@ -564,12 +613,33 @@ jobs:
           test -d "smoke-renders/smoke-render-taskgraph-$SUFFIX"
           diff -r "smoke-renders/smoke-render-legacy-$SUFFIX" "smoke-renders/smoke-render-taskgraph-$SUFFIX"
 
+      # The job has no checkout of its own; a sparse one under its own path leaves the downloads alone.
+      - name: Checkout the summary script
+        if: always()
+        uses: actions/checkout@v5.0.1
+        with:
+          path: ci-src
+          sparse-checkout: tools/ci/summary.sh
+          submodules: false
+          lfs: false
+
+      - name: Job summary
+        if: always()
+        env:
+          BUILD_RESULT: ${{ needs.remote-build.result }}
+          CTEST_RESULT: ${{ needs.ctest.result }}
+        run: |
+          ci-src/tools/ci/summary.sh legs "Test results · $PRESET" \
+            "Build · $PRESET=$BUILD_RESULT" \
+            "Test legs=$CTEST_RESULT" \
+            "Log artifact=ctest-logs-$PRESET-$GITHUB_SHA"
+
   # Resolves what the GUI jobs run: the script matrix, the commit whose scripts and fixtures they
   # check out, the AppImage artifact and the run holding it, and the dev image. For from_run all
   # of these come from that run, so a branch without this workflow can still be checked; its
   # commit's dev image matches the PySide6 its AppImage bundles, which run-gui-test.sh relies on.
   gui-matrix:
-    name: gui matrix
+    name: Setup · pick GUI scripts
     needs: dev-image
     if: inputs.gui_scripts != '' || inputs.from_run != ''
     runs-on: ubuntu-latest
@@ -660,7 +730,7 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
   gui:
-    name: gui (${{ matrix.name }})
+    name: GUI · ${{ matrix.name }}
     needs: [gui-matrix, remote-build]
     if: >-
       !cancelled() && needs.gui-matrix.result == 'success'
@@ -723,7 +793,7 @@ jobs:
           git lfs install --local
           git lfs pull --include "$INCLUDE"
 
-      - name: Download AppImage
+      - name: Download AppImage from the build job
         uses: actions/download-artifact@v7.0.0
         with:
           name: ${{ needs.gui-matrix.outputs.artifact }}
@@ -755,3 +825,16 @@ jobs:
           path: build/gui-out
           if-no-files-found: warn
           retention-days: 7
+
+      # The commit under test may predate the script.
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          SCRIPT: ${{ matrix.script }}
+          LEG_NAME: ${{ matrix.name }}
+          TESTED_SHA: ${{ needs.gui-matrix.outputs.sha }}
+        run: |
+          if [[ -x tools/ci/summary.sh ]]; then
+            tools/ci/summary.sh gui "$SCRIPT" "$JOB_STATUS" "gui-$LEG_NAME-$PRESET-$TESTED_SHA"
+          fi

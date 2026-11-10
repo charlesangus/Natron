@@ -1,4 +1,4 @@
-name: Tests
+name: Build and test
 
 on:
   workflow_dispatch: {}
@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   dev-image:
-    name: dev image
+    name: Dev image
     permissions:
       contents: read
       packages: write
@@ -31,7 +31,7 @@ jobs:
 
   # Builds once; the ctest legs below run off the build tree it uploads.
   build:
-    name: build (debug)
+    name: Build · debug
     needs: dev-image
     runs-on: ubuntu-latest
     container:
@@ -179,12 +179,13 @@ jobs:
 
       # A tar because artifacts drop the executable bit. Object files and static archives are
       # only build inputs.
-      - name: Pack build tree
+      - name: Pack build tree for the ctest legs
         run: |
           tar -cf build-tree.tar --exclude='*.o' --exclude='*.a' build/debug
           ls -lh build-tree.tar
 
       - name: Upload build tree
+        id: upload_tree
         uses: actions/upload-artifact@v7.0.1
         with:
           name: build-tree-debug
@@ -212,15 +213,26 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
+
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          TREE_UPLOAD: ${{ steps.upload_tree.outcome }}
+        run: |
+          artifacts=''
+          if [[ "$TREE_UPLOAD" == success ]]; then artifacts=build-tree-debug; fi
+          tools/ci/summary.sh build debug "$artifacts"
+
 
   # Compile-only release build. Debug and release compile different code
   # (-DDEBUG, NDEBUG), so a change can build in debug and break release;
   # nothing runs here, the job exists to catch that before main does.
   build-release:
-    name: build (release)
+    name: Build · release
     needs: dev-image
     runs-on: ubuntu-latest
     container:
@@ -294,18 +306,28 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
 
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: tools/ci/summary.sh build release ''
+
   ctest:
-    name: ctest (${{ matrix.scheduler }})
+    name: Test · ${{ matrix.label }} scheduler
     needs: [dev-image, build]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        scheduler: [legacy, taskgraph]
+        include:
+          - scheduler: legacy
+            label: legacy
+          - scheduler: taskgraph
+            label: task-graph
     container:
       image: ${{ needs.dev-image.outputs.image }}
       credentials:
@@ -360,13 +382,13 @@ jobs:
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 
-      - name: Download build tree
+      - name: Download build tree from Build · debug
         uses: actions/download-artifact@v7.0.0
         with:
           name: build-tree-debug
 
       # The tree's absolute paths hold because every job's workspace is mounted at the same path.
-      - name: Unpack build tree
+      - name: Unpack build tree from Build · debug
         run: |
           tar -xf build-tree.tar
           rm build-tree.tar
@@ -374,7 +396,7 @@ jobs:
       # lavapipe is the CPU Vulkan device; without it the Gpu tests would
       # skip silently, so REQUIRE_GPU turns that into a failure.
       # GALLIUM_OVERRIDE_CPU_CAPS=avx keeps llvmpipe's JIT off AVX-512, where it hangs or zeroes some kernels on Xeon runners.
-      - name: Run ctest suite (debug)
+      - name: Run ctest suite (debug, ${{ matrix.label }} scheduler)
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           GALLIUM_OVERRIDE_CPU_CAPS: avx
@@ -386,14 +408,14 @@ jobs:
           grep -m1 'model name' /proc/cpuinfo; nproc; grep -o -w 'avx512f' /proc/cpuinfo | head -1 || true
           tools/ci/local/test.sh ctest debug
 
-      - name: Python bindings smoke test (debug)
+      - name: Run Python bindings smoke test (debug, ${{ matrix.label }} scheduler)
         if: success() || failure()
         env:
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           NATRON_SMOKE_OUTPUT_DIR: ${{ github.workspace }}/build/smoke-reference
         run: tools/ci/local/test.sh smoke debug
 
-      - name: Upload smoke renders
+      - name: Upload smoke renders for the cross-scheduler comparison
         if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
@@ -402,12 +424,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-  # Branch protection requires a check named exactly `build-and-test`; the
-  # matrix legs are named `ctest (<scheduler>)`, so this job keeps the
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: tools/ci/summary.sh ctest ${{ matrix.scheduler }} build/debug '' ${{ matrix.label }}
+
+  # Branch protection requires a check named exactly `Build and test`; the
+  # matrix legs are named `Test · <label> scheduler`, so this job keeps the
   # required name stable. It also holds the byte-for-byte comparison of the
   # two schedulers' smoke renders, which can no longer happen inside one job.
   build-and-test:
-    name: build-and-test
+    name: Build and test
     needs: [build, build-release, ctest]
     if: always()
     runs-on: ubuntu-latest
@@ -430,7 +458,7 @@ jobs:
             exit 1
           fi
 
-      - name: Download smoke renders
+      - name: Download smoke renders from every ctest leg
         uses: actions/download-artifact@v4
         with:
           pattern: smoke-render-*
@@ -441,3 +469,25 @@ jobs:
           test -d smoke-renders/smoke-render-legacy
           test -d smoke-renders/smoke-render-taskgraph
           diff -r smoke-renders/smoke-render-legacy smoke-renders/smoke-render-taskgraph
+
+      # The job has no checkout of its own; a sparse one under its own path leaves the downloads alone.
+      - name: Checkout the summary script
+        if: always()
+        uses: actions/checkout@v5.0.1
+        with:
+          path: ci-src
+          sparse-checkout: tools/ci/summary.sh
+          submodules: false
+          lfs: false
+
+      - name: Job summary
+        if: always()
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_RESULT: ${{ needs.build-release.result }}
+          CTEST_RESULT: ${{ needs.ctest.result }}
+        run: |
+          ci-src/tools/ci/summary.sh legs 'Build and test' \
+            "Build · debug=$BUILD_RESULT" \
+            "Build · release=$RELEASE_RESULT" \
+            "Test · ctest legs=$CTEST_RESULT"

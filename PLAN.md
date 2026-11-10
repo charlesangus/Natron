@@ -220,7 +220,7 @@ future core work has solid ground to build on.
 | M376 | Geometry Display | doing | M328, M358 | bosley-native-nodes | E9 | F15 | | [M376-geometry-display.md](PLAN/MILESTONES/M376-geometry-display.md) |
 | M377 | Readable CI Names | doing | - | bosley-native-nodes | E2 | | uat | [M377-readable-ci-names.md](PLAN/MILESTONES/M377-readable-ci-names.md) |
 | M378 | Scene Render Test Stability | doing | - | bosley-native-nodes | E9 | | | [M378-scene-render-test-stability.md](PLAN/MILESTONES/M378-scene-render-test-stability.md) |
-| M379 | GpuContext Test Segfault | doing | - | bosley-native-nodes | E5 | | | [M379-gpucontext-test-segfault.md](PLAN/MILESTONES/M379-gpucontext-test-segfault.md) |
+| M379 | GpuContext Test Segfault | done | - | bosley-native-nodes | E5 | | | [M379-gpucontext-test-segfault.md](PLAN/MILESTONES/M379-gpucontext-test-segfault.md) |
 | M380 | Blocking Scheduler Aborts | doing | - | bosley-native-nodes | E14 | | | [M380-blocking-scheduler-aborts.md](PLAN/MILESTONES/M380-blocking-scheduler-aborts.md) |
 | M381 | Deferred Matching Coverage | todo | M331 |  | E9 | F4 | | [M381-deferred-matching-coverage.md](PLAN/MILESTONES/M381-deferred-matching-coverage.md) |
 | M382 | Nucleon Logo And Artwork | doing | - | bosley-native-nodes | E20 | F17 | response | [M382-nucleon-logo-and-artwork.md](PLAN/MILESTONES/M382-nucleon-logo-and-artwork.md) |

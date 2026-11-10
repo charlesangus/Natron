@@ -1,4 +1,4 @@
-name: Tests
+name: Build and test
 
 on:
   workflow_dispatch: {}
@@ -402,12 +402,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-  # Branch protection requires a check named exactly `build-and-test`; the
+  # Branch protection requires a check named exactly `Build and test`; the
   # matrix legs are named `ctest (<scheduler>)`, so this job keeps the
   # required name stable. It also holds the byte-for-byte comparison of the
   # two schedulers' smoke renders, which can no longer happen inside one job.
   build-and-test:
-    name: build-and-test
+    name: Build and test
     needs: [build, build-release, ctest]
     if: always()
     runs-on: ubuntu-latest

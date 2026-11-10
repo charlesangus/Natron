@@ -1,4 +1,4 @@
-name: Checks
+name: Lint
 
 on:
   workflow_dispatch: {}
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   format:
-    name: format
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
@@ -120,7 +120,7 @@ jobs:
           exit "$status"
 
   lint-ci:
-    name: lint-ci
+    name: Lint CI
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
@@ -201,6 +201,13 @@ jobs:
         run: |
           set -euo pipefail
           actionlint .github/workflows/*.yml
+
+  code-rules:
+    name: Code rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
 
       - name: Serialization/ layering check
         shell: bash

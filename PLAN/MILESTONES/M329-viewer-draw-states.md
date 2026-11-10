@@ -187,4 +187,4 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
   - **Wide row (/World, 936k–1M prims), time to picture:** 1.33–1.44 s, was 3.0–4.8 s. apply 765–865 ms on the render thread (estimate was 0.2–0.35 s); Storm render 475–555 ms; GPU tail 42–53 ms. Misses 100 ms; reported per the user's budget rule.
   - **Populate stall:** flat 102.7 ms (limit 100); Island 1714 ms with first frame 2.74 s (limit 2 s), Island run for the first time; city 41 ms, Lobby 43 ms.
   - **unrequested_payloads:** 0 everywhere.
-- 2026-11-10 — **Scope of P2.T4 (user):** "it may be time to accept these numbers and move on". Take only obvious wins from the Island populate and wide-apply profile, then accept the measured numbers.
+- 2026-11-10 — **Scope of P2.T4 (user):** "it may be time to accept these numbers and move on". Take only obvious wins from the Island populate and wide-apply profile, then accept the measured numbers. A profile showing an obvious design error with a clear path to a superior redesign is also acceptable (user); report it with evidence rather than implementing it.

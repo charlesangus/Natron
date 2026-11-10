@@ -23,14 +23,14 @@ permissions:
 
 jobs:
   dev-image:
-    name: dev image
+    name: Dev image
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/dev-image.yml
 
   release:
-    name: build-and-release
+    name: Build and package release
     needs: dev-image
     runs-on: ubuntu-latest
     container:
@@ -177,7 +177,7 @@ jobs:
         run: ccache -s
 
   publish:
-    name: publish-release
+    name: Publish release
     needs: release
     # No container here: the release job's image has no `gh` CLI, but the
     # hosted runner does.

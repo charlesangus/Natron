@@ -7,7 +7,7 @@ on:
 
 jobs:
   dispatch-beta:
-    name: dispatch-beta
+    name: Tag and dispatch beta
     runs-on: ubuntu-latest
     permissions:
       contents: write

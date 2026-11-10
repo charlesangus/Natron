@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   dev-image:
-    name: dev image
+    name: Dev image
     permissions:
       contents: read
       packages: write
@@ -31,7 +31,7 @@ jobs:
 
   # Builds once; the ctest legs below run off the build tree it uploads.
   build:
-    name: build (debug)
+    name: Build · debug
     needs: dev-image
     runs-on: ubuntu-latest
     container:
@@ -220,7 +220,7 @@ jobs:
   # (-DDEBUG, NDEBUG), so a change can build in debug and break release;
   # nothing runs here, the job exists to catch that before main does.
   build-release:
-    name: build (release)
+    name: Build · release
     needs: dev-image
     runs-on: ubuntu-latest
     container:
@@ -299,13 +299,17 @@ jobs:
         run: ccache -s
 
   ctest:
-    name: ctest (${{ matrix.scheduler }})
+    name: Test · ${{ matrix.label }} scheduler
     needs: [dev-image, build]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        scheduler: [legacy, taskgraph]
+        include:
+          - scheduler: legacy
+            label: legacy
+          - scheduler: taskgraph
+            label: task-graph
     container:
       image: ${{ needs.dev-image.outputs.image }}
       credentials:

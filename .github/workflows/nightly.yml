@@ -54,14 +54,14 @@ permissions:
 
 jobs:
   dev-image:
-    name: dev image
+    name: Dev image
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/dev-image.yml
 
   nightly_release:
-    name: release-build-and-test
+    name: Build and test · release
     needs: dev-image
     runs-on: ubuntu-latest
     # The dev image relinks Mesa to the system LLVM, so GLX has FBConfigs and
@@ -239,7 +239,7 @@ jobs:
           exit "${status}"
 
   nightly_gpu_off:
-    name: gpu-off-build-and-test
+    name: Build and test · release, GPU off
     needs: dev-image
     runs-on: ubuntu-latest
     # The dev image relinks Mesa to the system LLVM, so GLX has FBConfigs and

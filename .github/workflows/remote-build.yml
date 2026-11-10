@@ -84,7 +84,7 @@ env:
 
 jobs:
   dev-image:
-    name: dev image
+    name: Dev image
     permissions:
       contents: read
       packages: write
@@ -92,7 +92,7 @@ jobs:
 
   # Builds once; the ctest legs below run off the build tree it uploads.
   remote-build:
-    name: remote-build
+    name: Build · ${{ inputs.preset || 'fast' }}${{ inputs.appimage && inputs.preset != 'debug' && ' + AppImage' || '' }}
     needs: dev-image
     if: ${{ !inputs.from_run }}
     runs-on: ubuntu-latest
@@ -325,7 +325,7 @@ jobs:
 
   # Turns the schedulers input into the ctest matrix, and rejects an unknown name before any build starts.
   ctest-legs:
-    name: ctest legs
+    name: Setup · pick test legs
     if: inputs.tests && !inputs.from_run
     runs-on: ubuntu-latest
     outputs:
@@ -352,7 +352,7 @@ jobs:
           echo "schedulers=[${json%,}]" >> "$GITHUB_OUTPUT"
 
   ctest:
-    name: ctest (${{ matrix.scheduler }})
+    name: Test · ${{ matrix.scheduler == 'taskgraph' && 'task-graph' || matrix.scheduler }} scheduler
     needs: [dev-image, remote-build, ctest-legs]
     if: >-
       !cancelled() && inputs.tests && needs.remote-build.outputs.tree == 'success'
@@ -512,7 +512,7 @@ jobs:
   # Gathers the legs' logs into the one artifact tools/ci/remote/build.sh downloads, and holds the
   # byte-for-byte comparison of the two schedulers' smoke renders, which spans both legs.
   results:
-    name: results
+    name: Collect logs and compare renders
     needs: [remote-build, ctest-legs, ctest]
     if: always() && inputs.tests && !inputs.from_run
     runs-on: ubuntu-latest
@@ -562,7 +562,7 @@ jobs:
   # of these come from that run, so a branch without this workflow can still be checked; its
   # commit's dev image matches the PySide6 its AppImage bundles, which run-gui-test.sh relies on.
   gui-matrix:
-    name: gui matrix
+    name: Setup · pick GUI scripts
     needs: dev-image
     if: inputs.gui_scripts != '' || inputs.from_run != ''
     runs-on: ubuntu-latest
@@ -653,7 +653,7 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
   gui:
-    name: gui (${{ matrix.name }})
+    name: GUI · ${{ matrix.name }}
     needs: [gui-matrix, remote-build]
     if: >-
       !cancelled() && needs.gui-matrix.result == 'success'

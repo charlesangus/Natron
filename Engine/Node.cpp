@@ -4877,6 +4877,14 @@ Node::getEffectInstance() const
 }
 
 namespace {
+std::atomic<U64> downstreamWalkVisits { 0 };
+
+void
+countDownstreamWalkVisit()
+{
+    downstreamWalkVisits.fetch_add(1, std::memory_order_relaxed);
+}
+
 // Depth first through the outputs, visiting each node once; stop decides at a node whether to
 // collect it and go no further below it. Every edit runs it over everything downstream of it, so
 // the visited test is a hash lookup and the outputs are gathered into reused vectors.
@@ -4889,7 +4897,11 @@ walkDownstreamUntil(const Node* start,
     std::vector<NodePtr> outputs;
     std::vector<NodePtr> stack;
 
-    if (!visited->insert(start).second || stop(start)) {
+    if (!visited->insert(start).second) {
+        return;
+    }
+    countDownstreamWalkVisit();
+    if (stop(start)) {
         return;
     }
     start->appendOutputsWithGroupRedirection(&outputs);
@@ -4898,7 +4910,11 @@ walkDownstreamUntil(const Node* start,
         NodePtr node = std::move(stack.back());
         stack.pop_back();
         assert(node);
-        if (!visited->insert(node.get()).second || stop(node.get())) {
+        if (!visited->insert(node.get()).second) {
+            continue;
+        }
+        countDownstreamWalkVisit();
+        if (stop(node.get())) {
             continue;
         }
         outputs.clear();
@@ -7023,6 +7039,7 @@ refreshPreviewsRecursivelyDownstreamInternal(double time,
     if (!node->getNodeGui() || !marked.insert(node).second) {
         return;
     }
+    countDownstreamWalkVisit();
 
     if ( node->isPreviewEnabled() ) {
         node->refreshPreviewImage( time );
@@ -7043,6 +7060,169 @@ Node::refreshPreviewsRecursivelyDownstream(double time)
 {
     std::unordered_set<Node*> marked;
     refreshPreviewsRecursivelyDownstreamInternal(time, this, marked);
+}
+
+namespace {
+// Main thread only, like the batches above.
+int valueChangeCascadeDepth = 0;
+std::vector<NodeWPtr> valueChangeCascadeAborts;
+std::vector<NodeWPtr> valueChangeCascadeInputRelatedRefreshes;
+
+struct CascadeEvaluation {
+    NodeWPtr node;
+    bool significant;
+    double time;
+};
+std::vector<CascadeEvaluation> valueChangeCascadeEvaluations;
+
+bool
+valueChangeCascadeOpenHere()
+{
+    return (QThread::currentThread() == qApp->thread()) && (valueChangeCascadeDepth > 0);
+}
+
+std::vector<NodePtr>
+lockEachOnce(const std::vector<NodeWPtr>& nodes)
+{
+    std::vector<NodePtr> ret;
+    std::unordered_set<const Node*> seen;
+    for (const NodeWPtr& weak : nodes) {
+        NodePtr node = weak.lock();
+        if (node && seen.insert(node.get()).second) {
+            ret.push_back(node);
+        }
+    }
+
+    return ret;
+}
+} // anonymous namespace
+
+Node::ValueChangeCascade::ValueChangeCascade()
+    : _active(QThread::currentThread() == qApp->thread())
+{
+    if (_active) {
+        ++valueChangeCascadeDepth;
+    }
+}
+
+Node::ValueChangeCascade::~ValueChangeCascade()
+{
+    if (!_active || (--valueChangeCascadeDepth > 0)) {
+        return;
+    }
+    // Taken before any of it runs: what it runs may change values again, in a cascade of its own.
+    std::vector<NodeWPtr> abortsWeak;
+    std::vector<NodeWPtr> refreshesWeak;
+    std::vector<CascadeEvaluation> evaluationsWeak;
+    abortsWeak.swap(valueChangeCascadeAborts);
+    refreshesWeak.swap(valueChangeCascadeInputRelatedRefreshes);
+    evaluationsWeak.swap(valueChangeCascadeEvaluations);
+
+    // In the order a single change does them: abort, input-related data, viewers, previews.
+    const std::vector<NodePtr> aborts = lockEachOnce(abortsWeak);
+    if (!aborts.empty()) {
+        // Nothing is connected between these walks, so sharing what they visited hides no output.
+        RemovalBatch shareVisited;
+        for (const NodePtr& node : aborts) {
+            EffectInstancePtr effect = node->getEffectInstance();
+            if (effect) {
+                effect->abortViewerRendersForEdit();
+            }
+        }
+    }
+
+    const std::vector<NodePtr> refreshes = lockEachOnce(refreshesWeak);
+    if (!refreshes.empty()) {
+        refreshShownDownstreamInputRelatedData(refreshes);
+    }
+
+    std::vector<std::pair<NodePtr, double>> significant;
+    std::vector<NodePtr> insignificant;
+    {
+        std::unordered_map<const Node*, std::size_t> index;
+        std::vector<std::pair<NodePtr, CascadeEvaluation>> merged;
+        for (const CascadeEvaluation& evaluation : evaluationsWeak) {
+            NodePtr node = evaluation.node.lock();
+            if (!node) {
+                continue;
+            }
+            std::unordered_map<const Node*, std::size_t>::iterator found = index.find(node.get());
+            if (found == index.end()) {
+                index[node.get()] = merged.size();
+                merged.emplace_back(node, evaluation);
+            } else if (evaluation.significant && !merged[found->second].second.significant) {
+                merged[found->second].second = evaluation;
+            }
+        }
+        for (const std::pair<NodePtr, CascadeEvaluation>& entry : merged) {
+            if (entry.second.significant) {
+                significant.emplace_back(entry.first, entry.second.time);
+            } else {
+                insignificant.push_back(entry.first);
+            }
+        }
+    }
+
+    // A viewer reached from a significant change is rendered, which also redraws it, so the walk
+    // from the others shares what that one visited.
+    std::list<ViewerInstance*> toRender;
+    std::list<ViewerInstance*> toRedraw;
+    std::unordered_set<const Node*> visited;
+    for (const std::pair<NodePtr, double>& entry : significant) {
+        walkDownstreamUntil(entry.first.get(), &visited, [&toRender](const Node* node) {
+            return collectViewer(&toRender, node);
+        });
+    }
+    for (const NodePtr& node : insignificant) {
+        walkDownstreamUntil(node.get(), &visited, [&toRedraw](const Node* reached) {
+            return collectViewer(&toRedraw, reached);
+        });
+    }
+    for (ViewerInstance* viewer : toRender) {
+        viewer->renderCurrentFrame(true);
+    }
+    for (ViewerInstance* viewer : toRedraw) {
+        viewer->redrawViewer();
+    }
+
+    std::unordered_set<Node*> previewsMarked;
+    for (const std::pair<NodePtr, double>& entry : significant) {
+        refreshPreviewsRecursivelyDownstreamInternal(entry.second, entry.first.get(), previewsMarked);
+    }
+} // Node::ValueChangeCascade::~ValueChangeCascade
+
+bool
+Node::deferViewerAbortToCascade(const NodePtr& node)
+{
+    if (!node || !valueChangeCascadeOpenHere()) {
+        return false;
+    }
+    valueChangeCascadeAborts.push_back(node);
+
+    return true;
+}
+
+bool
+Node::deferEvaluationToCascade(const NodePtr& node,
+                               bool isSignificant,
+                               double time)
+{
+    if (!node || !valueChangeCascadeOpenHere()) {
+        return false;
+    }
+    CascadeEvaluation evaluation;
+    evaluation.node = node;
+    evaluation.significant = isSignificant;
+    evaluation.time = time;
+    valueChangeCascadeEvaluations.push_back(evaluation);
+
+    return true;
+}
+
+U64
+Node::getDownstreamWalkVisitCount()
+{
+    return downstreamWalkVisits.load();
 }
 
 void
@@ -9742,6 +9922,12 @@ Node::InputEditBatch::~InputEditBatch()
 void
 Node::refreshShownDownstreamInputRelatedData()
 {
+    assert(QThread::currentThread() == qApp->thread());
+    if (valueChangeCascadeDepth > 0) {
+        valueChangeCascadeInputRelatedRefreshes.push_back(shared_from_this());
+
+        return;
+    }
     refreshShownDownstreamInputRelatedData(std::vector<NodePtr>(1, shared_from_this()));
 }
 
@@ -9762,6 +9948,7 @@ Node::refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited)
         if (!node || !visited.insert(node.get()).second) {
             continue;
         }
+        countDownstreamWalkVisit();
         node->markAllInputRelatedDataDirty();
         reached.push_back(node);
         node->appendOutputsWithGroupRedirection(&toVisit);

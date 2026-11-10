@@ -2107,6 +2107,45 @@ public:
     };
 
     /**
+     * @brief While one lives on the main thread, the walks downstream of the nodes a value change
+     * reaches (aborting viewer renders, refreshing the shown input-related data, rendering or
+     * redrawing the viewers and refreshing previews) wait for the end of the outermost one, which
+     * does each once from all of those nodes. A change with many expression dependents would
+     * otherwise walk everything below each dependent. KnobHolder::endChanges() opens one. Off the
+     * main thread it does nothing.
+     **/
+    class ValueChangeCascade {
+    public:
+        ValueChangeCascade();
+        ~ValueChangeCascade();
+
+        ValueChangeCascade(const ValueChangeCascade&) = delete;
+        ValueChangeCascade& operator=(const ValueChangeCascade&) = delete;
+
+    private:
+        bool _active;
+    };
+
+    /**
+     * @brief If a ValueChangeCascade lives on the calling thread, keeps the abort of the viewer
+     * renders reading `node` for its end and returns true.
+     **/
+    static bool deferViewerAbortToCascade(const NodePtr& node);
+
+    /**
+     * @brief If a ValueChangeCascade lives on the calling thread, keeps the render (`isSignificant`)
+     * or redraw of the viewers downstream of `node`, and the refresh of the previews downstream of
+     * it at `time` when significant, for its end and returns true.
+     **/
+    static bool deferEvaluationToCascade(const NodePtr& node, bool isSignificant, double time);
+
+    /**
+     * @brief The number of nodes visited by the walks downstream of an edit since startup. For
+     * tests.
+     **/
+    static U64 getDownstreamWalkVisitCount();
+
+    /**
      * @brief While one lives on this thread, the walks finding the outputs whose renders to abort
      * share what they visited, so deactivating many nodes walks what is downstream of them once.
      * Open one only around removing nodes: connecting a node inside it would hide the new output.

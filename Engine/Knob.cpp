@@ -9948,6 +9948,8 @@ KnobHolder::endChanges(bool discardRendering)
         return true;
     }
 
+    // Every holder the change reaches through its listeners ends its changes inside this one.
+    Node::ValueChangeCascade cascade;
 
     bool thisChangeSignificant = false;
     bool thisBracketHadChange = false;

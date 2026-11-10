@@ -151,8 +151,8 @@ protected:
      * kActionFrame is reported. The render runs on a thread of its own while the main thread processes events, so
      * the main thread is free to run the action. The render waits for the action to return, so the action always
      * lands while frames remain to be rendered.
-     * With a non-zero `deadline`, a render still running after it is aborted and kRenderTimedOut returned, so a
-     * stalled render fails its test instead of reaching the ctest timeout. One that does not return from the abort
+     * A render still running after `deadline` is aborted and kRenderTimedOut returned, so a stalled render fails
+     * its test instead of reaching the ctest timeout; zero disables the deadline. One that does not return from the abort
      * within a further deadline of its own ends the process, since the render thread still refers to this frame's locals.
      * With `peakRenderThreads`, it receives the most frame threads the engine had at once while the render ran.
      * Returns the render's exit code, or -1 if it never reported one.
@@ -160,7 +160,7 @@ protected:
     int renderWithActionAtFrame(const std::function<void()>& action,
                                 ActionThreadEnum actionThread,
                                 bool* actionRan,
-                                std::chrono::milliseconds deadline = std::chrono::milliseconds::zero(),
+                                std::chrono::milliseconds deadline = kDefaultRenderDeadline,
                                 int* peakRenderThreads = NULL)
     {
         *actionRan = false;
@@ -188,6 +188,7 @@ protected:
 
         std::atomic<bool> ran { false };
         std::atomic<int> peakThreads { 0 };
+        std::atomic<int> lastReportedFrame { kFirstFrame - 1 };
         const auto samplePeak = [&engine, &peakThreads]() {
             const int nThreads = engine->getNRenderThreads();
             int seen = peakThreads.load();
@@ -197,6 +198,7 @@ protected:
         // Runs on the scheduler thread, which is in the render's own context: the action must run elsewhere.
         const auto runActionAtFrame = [&](int time, double /*progress*/) {
             samplePeak();
+            lastReportedFrame = time;
             if ((time != kActionFrame) || ran.exchange(true)) {
                 return;
             }
@@ -257,7 +259,9 @@ protected:
                     abortRequested = std::chrono::steady_clock::now();
                     lock.lock();
                 } else if (timedOut && (now - abortRequested > deadline)) {
-                    std::fprintf(stderr, "RenderIsolation: a render stalled past %lld ms and did not return from its abort\n", (long long)deadline.count());
+                    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
+                    std::fprintf(stderr, "RenderIsolation: %s.%s stalled past %lld ms after frame %d was reported (of %d-%d) and did not return from its abort\n",
+                                 info ? info->test_case_name() : "?", info ? info->name() : "?", (long long)deadline.count(), lastReportedFrame.load(), kFirstFrame, kLastFrame);
                     std::fflush(stderr);
                     std::abort();
                 }
@@ -276,6 +280,9 @@ protected:
         return timedOut ? kRenderTimedOut : finishedCode;
     }
 
+    // Far above the seconds a 20-frame render takes on a loaded debug runner, and with the abort grace still well
+    // inside the 300 s ctest timeout.
+    static constexpr std::chrono::milliseconds kDefaultRenderDeadline { 60000 };
     static constexpr int kRenderTimedOut = -2;
 
     NodePtr _source;
@@ -896,7 +903,7 @@ TEST_F(RenderIsolation, RefusedEditRenderStress)
     // Every round runs, however slow the runner; the budget only ends the loop early once enough rounds are done.
     const int kRounds = 40;
     const int kMinRounds = 5;
-    const std::chrono::milliseconds kRenderDeadline(60000);
+    const std::chrono::milliseconds kRenderDeadline = kDefaultRenderDeadline;
     const std::chrono::minutes kLoopBudget(5);
     const std::chrono::steady_clock::time_point loopStart = std::chrono::steady_clock::now();
     int rounds = 0;

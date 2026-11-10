@@ -491,7 +491,7 @@ if [[ -n "${GUI_SCRIPTS}" ]]; then
         else
             echo "build.sh: run ${RUN_ID} uploaded no output for ${script}" >&2
         fi
-        conclusion="$(awk -F'\t' -v job="gui (${name})" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
+        conclusion="$(awk -F'\t' -v job="GUI · ${name}" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
         detail=""
         if [[ -f "${dir}/results.txt" ]]; then
             detail="$(grep -c '^PASS' "${dir}/results.txt" || true) passed, $(grep -c '^FAIL' "${dir}/results.txt" || true) failed"

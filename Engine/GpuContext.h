@@ -54,8 +54,8 @@ class GpuRuntime;
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief What the setting and the NATRON_GPU environment variable resolve to. Force accepts any device,
- * including CPU-type ones such as lavapipe.
+ * @brief What the setting and the NATRON_GPU environment variable resolve to. Force accepts the explicitly
+ * selected device even when it is CPU-type, such as lavapipe; Auto and Force never pick a CPU device on their own.
  **/
 enum class GpuResolvedMode {
     Off,

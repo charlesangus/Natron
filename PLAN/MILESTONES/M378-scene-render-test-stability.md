@@ -29,7 +29,7 @@ Evidence (consultant, code at the fork pin):
   - approach: add an `_aovMutex`. `SyncAovBindings`, `RemoveAovBinding`, `Set/GetDisplayAovBinding` take it. `update_render_tile`/`write_render_tile` hold it for the whole loop, so `Finalize` waits out a write in progress. `GetAovBindings` returns a copy, used by render_pass.cpp's `IsConverged`/`ResetConverged`.
   - verify: every `_aovBindings` access is under the lock (review); the fork builds in P1.T3's image build
   - size: M
-- [ ] M378.P1.T2 — Make the render buffer's storage and size thread-safe
+- [x] M378.P1.T2 — Make the render buffer's storage and size thread-safe
   - files: fork `src/hydra/render_buffer.{h,cpp}`
   - approach: add a buffer mutex. `Allocate` resizes `_data` immediately under the lock; `Map` takes the lock and holds it until `Unmap`; `WritePixels` only while mapped; `_Deallocate` and the size/format getters take the lock; `Map` never resizes.
   - verify: review; a Map/Allocate/Map sequence leaves `_data.size()==_dataSize`

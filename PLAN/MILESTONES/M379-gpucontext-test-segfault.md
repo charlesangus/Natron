@@ -11,7 +11,7 @@ Evidence (job 129553888682, "ctest (legacy)", `ctest -j 4`, llvmpipe LLVM 21.1.8
   - approach: `gh run download 42709980437 -n build-tree-release` (2.2 GB) and keep only `build/release/Tests/Tests` (non-PIE, has debug info). Run `addr2line -f -C -i -e Tests 0x27ffa16` and `objdump -dC --start-address=0x27ff9e0 --stop-address=0x27ffa40` to find which pointer's field +0x50 was read. Blob-storage downloads can be blocked; retry later if so.
   - verify: the notes name the function, file:line and the null pointer, and which of the candidate threads it is.
   - size: S
-- [ ] M379.P1.T2 — Add a mode that runs one test many times under load
+- [x] M379.P1.T2 — Add a mode that runs one test many times under load
   - files: `tools/ci/local/test.sh`, `tools/ci/remote/build.sh`, `.github/workflows/remote-build.yml`
   - approach: add `test.sh repeat <ctest-name> <N> [--parallel P]`: take the test's command from `ctest --show-only=json-v1`, run it N times, P at a time (default 4), while `ctest -j 4 -E <name>` runs in the background as load; stop at the first crash and keep its output (the built-in SIGSEGV handler's instruction pointer is enough with `addr2line`; an optional `--gdb` wraps each run in `gdb -batch -ex run -ex 'thread apply all bt'`). Add `build.sh --repeat-test <name>:<N>` (implies `--tests`), passed through a new workflow input to the ctest legs, and upload the log. M377 - Readable CI Names is renaming jobs and steps in the same workflow; keep this to a new input and one step so the rebase stays small.
   - verify: a remote fast run with `--repeat-test GpuContextModeTest:5` passes and its log shows 5 runs beside the load; a deliberately failing repeat fails the leg.

@@ -126,3 +126,4 @@
 - 2026-11-05 — start-rule-lifted-for-named-work: user's pick-up list lifts the start hold for M116, M320, M296, F6, F4 and M327; other work stays held → DECISIONS/2026-11-05-start-rule-lifted-for-named-work.md
 - 2026-11-08 — native-geometry-follows-sops: native geometry follows Houdini SOPs (unified paged detail, SOP attribute names, no pxr; `path` is just an attribute read by the bridges); replaces the UsdGeom container sketch (user, M54 grill) → DECISIONS/2026-11-08-native-geometry-follows-sops.md
 - 2026-11-08 — start-hold-removed: the 2026-11-02 "Start nothing new" hold is removed; per-milestone holds stay → DECISIONS/2026-11-08-start-hold-removed.md
+- 2026-11-09 — ci-check-names: required checks renamed to Format / Lint CI / Code rules / Build and test; code rules split out of lint-ci → DECISIONS/2026-11-09-ci-check-names.md

@@ -106,3 +106,10 @@ Context:
 ## Decisions
 
 - 2026-11-10 — First concept round rejected (user): none of nucleus, orbital, monogram or node graph worked. Second round: four new clean-sheet designs drawn from socialist-realist art, retro-futurist/atompunk, existing and past DCC logos, eighties aesthetics and Bauhaus; interesting and unique but obeying design principles; a greyscale palette, optionally with one or two colours from the default theme (highlight orange, keyframe blue). Drafted by a Fable agent (user). The first concepts are removed from the branch and are not shown to the new drafter.
+- 2026-11-10 — Round 2 feedback (user):
+  - Favourites are quarks and wedge.
+  - Wordmarks: likes the strata and quarks lettering, not wedge's.
+  - Quarks: reads poorly on dark. Explore other arrangements of the three dots and other enclosing shapes instead of the right-facing triangle, e.g. the orange dot at the bottom with the two above as if merging into it, or a round enclosure.
+  - Wedge: too busy, drop the square tile, poor at small sizes. Keep the Bauhaus/Kandinsky feel with simpler variations.
+  - Also try Bauhaus/Kandinsky meets Feynman diagram.
+  - Round 3 is variations on these directions, drafted by a Fable agent.

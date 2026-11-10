@@ -31,6 +31,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsItem>
+#include <QPainter>
 #include <QRectF>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -44,7 +45,9 @@ class NodeGraphPrivate;
 // While the graph is at its low level of detail, nodes and their edges are faded to opacity 0,
 // which makes the scene skip their whole subtrees, and these layers draw what is left of them
 // (bodies, frames, state indicators, previews and plain lines) in a few batched calls, culled
-// with the graph's item grid. Hit-testing still goes to the faded items themselves.
+// with the graph's item grid. The children a batch cannot reproduce, labels among them, are
+// painted in their place in the stacking order by their own paint(). Hit-testing still goes to
+// the faded items themselves.
 //
 // The cache mode a node uses at each level. A node's own paint() draws nothing, so its
 // DeviceCoordinateCache only ever holds a transparent pixmap; a faded node is never drawn at all,
@@ -88,7 +91,7 @@ public:
 private:
     void paintEdges(QPainter* painter, const QRectF& exposed);
 
-    void paintNodes(QPainter* painter, const QRectF& exposed);
+    void paintNodes(QPainter* painter, const QRectF& exposed, QPainter::RenderHints viewHints, QWidget* widget);
 
     NodeGraphPrivate* _graph;
     PassEnum _pass;

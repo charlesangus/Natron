@@ -169,17 +169,22 @@ DotGui::refreshLabelText(const QString& label)
     // The label editor wraps even an empty label in a font tag, so only visible text counts.
     if (_labelItem->document()->toPlainText().trimmed().isEmpty()) {
         _labelItem->hide();
+    } else {
+        _labelItem->adjustSize();
 
-        return;
+        const QRectF diskBbox = diskShape->boundingRect();
+        const QRectF labelBbox = _labelItem->boundingRect();
+        const qreal gap = TO_DPIX(DOT_GUI_LABEL_GAP);
+
+        _labelItem->setPos(diskBbox.right() + gap, diskBbox.center().y() - labelBbox.height() / 2.);
+        _labelItem->show();
     }
-    _labelItem->adjustSize();
-
-    const QRectF diskBbox = diskShape->boundingRect();
-    const QRectF labelBbox = _labelItem->boundingRect();
-    const qreal gap = TO_DPIX(DOT_GUI_LABEL_GAP);
-
-    _labelItem->setPos(diskBbox.right() + gap, diskBbox.center().y() - labelBbox.height() / 2.);
-    _labelItem->show();
+    // The label reaches past the disk, so the item grid must refile the Dot; and while the Dot is
+    // faded out the label's own update() is dropped.
+    NodeGraph* graph = getDagGui();
+    if (graph) {
+        graph->noteNodeGeometryChanged(this);
+    }
 }
 
 // The label is drawn beside the disk, over the node graph, so it contrasts with the graph's

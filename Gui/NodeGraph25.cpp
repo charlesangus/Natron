@@ -213,21 +213,6 @@ NodeGraph::viewportEvent(QEvent* e)
         QRect pointRect(he->pos(), QSize(1, 1));
         std::vector<QGraphicsItem*> hits;
         getGraphItemsMeetingViewportRect(pointRect, false, &hits);
-        if (isLowDetail()) {
-            // The scene looks only at items it can see, and the nodes are faded out at this level.
-            for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
-                QGraphicsItem* top = *it;
-                while (top->parentItem() && (top->parentItem() != _imp->_nodeRoot)) {
-                    top = top->parentItem();
-                }
-                NodeGui* node = dynamic_cast<NodeGui*>(top);
-                if (node && NodeGraphLowDetailLayer::isFaded(node) && !node->toolTip().isEmpty()) {
-                    QToolTip::showText(he->globalPos(), node->toolTip(), viewport());
-
-                    return true;
-                }
-            }
-        }
         if (!hits.empty()) {
             QPolygonF polygonScene = mapToScene(pointRect);
             QPainterPath pathScene;
@@ -237,6 +222,42 @@ NodeGraph::viewportEvent(QEvent* e)
                 if ((*it)->type() == NodeGuiDecorations::Type) {
                     static_cast<NodeGuiDecorations*>(*it)->refreshToolTipAt((*it)->mapFromScene(pathScene));
                 }
+            }
+        }
+        if (isLowDetail()) {
+            // The scene looks only at items it can see, and the nodes are faded out at this level,
+            // so the topmost item with a tooltip in a faded subtree is found here. A node's children
+            // all stack above it.
+            QGraphicsItem* best = NULL;
+            qreal bestTopZ = 0.;
+            bool bestIsChild = false;
+            qreal bestZ = 0.;
+            for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
+                QGraphicsItem* item = *it;
+                if (item->toolTip().isEmpty()) {
+                    continue;
+                }
+                QGraphicsItem* top = item;
+                while (top->parentItem() && (top->parentItem() != _imp->_nodeRoot)) {
+                    top = top->parentItem();
+                }
+                if (!NodeGraphLowDetailLayer::isFaded(top)) {
+                    continue;
+                }
+                const bool isChild = (item != top);
+                const qreal topZ = top->zValue();
+                const qreal z = item->zValue();
+                if (!best || (topZ > bestTopZ) || ((topZ == bestTopZ) && ((isChild && !bestIsChild) || ((isChild == bestIsChild) && (z > bestZ))))) {
+                    best = item;
+                    bestTopZ = topZ;
+                    bestIsChild = isChild;
+                    bestZ = z;
+                }
+            }
+            if (best) {
+                QToolTip::showText(he->globalPos(), best->toolTip(), viewport());
+
+                return true;
             }
         }
     }

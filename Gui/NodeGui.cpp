@@ -4136,6 +4136,8 @@ NodeGui::setNameItemHtml(const QString & name,
         const QColor color = _nameItemHasUserFontColor ? _nameItemInputs.userFontColor : contrastingLabelTextColor(getDrawnBodyColor());
         if (_nameItem->defaultTextColor() != color) {
             _nameItem->setDefaultTextColor(color);
+            // A faded node's label ignores its own update().
+            _graph->repaintLowDetailItem(this);
         }
 
         return;

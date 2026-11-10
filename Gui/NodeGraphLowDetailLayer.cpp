@@ -126,11 +126,20 @@ struct PixmapDraw {
     qreal opacity = 1.;
 };
 
+// A child the batches cannot reproduce, painted by its own paint() as the scene would.
+struct ItemDraw {
+    QGraphicsItem* item = nullptr;
+    QTransform toRoot;
+    QRectF bounds;
+    qreal opacity = 1.;
+};
+
 // What every node draws at one place in its children's stacking order.
 struct Bucket {
     std::vector<ShapeBatch> batches;
     std::unordered_multimap<std::uint64_t, std::size_t> batchIndex;
     std::vector<PixmapDraw> pixmaps;
+    std::vector<ItemDraw> itemDraws;
 
     ShapeBatch& batchFor(const QPen& pen,
                          const QBrush& brush,
@@ -200,10 +209,11 @@ addRect(Bucket* bucket,
 }
 
 void
-collectNodeChild(const QGraphicsItem* item,
+collectNodeChild(QGraphicsItem* item,
                  const QTransform& toRoot,
                  qreal opacity,
                  bool navigatorRender,
+                 const QRectF& exposed,
                  Bucket* bucket)
 {
     switch (item->type()) {
@@ -257,21 +267,73 @@ collectNodeChild(const QGraphicsItem* item,
         bucket->pixmaps.push_back(draw);
         break;
     }
-    default:
-        // Text, badges and the disabled cross show nothing at this level, nor do their children.
-        return;
+    default: {
+        // Labels, badges and the disabled cross each decide in paint() what they show at this
+        // level and in the navigator, so they keep exactly the look they had when the scene drew
+        // them. The same culling and opacity test as the scene's.
+        if ((item->flags() & QGraphicsItem::ItemHasNoContents) || (opacity < 0.001)) {
+            break;
+        }
+        ItemDraw draw;
+        draw.item = item;
+        draw.toRoot = toRoot;
+        draw.bounds = item->boundingRect();
+        draw.opacity = opacity;
+        if (toRoot.mapRect(draw.bounds).intersects(exposed)) {
+            bucket->itemDraws.push_back(draw);
+        }
+        break;
+    }
     }
     const QList<QGraphicsItem*> children = item->childItems();
     for (QList<QGraphicsItem*>::const_iterator it = children.begin(); it != children.end(); ++it) {
         if ((*it)->isVisible()) {
-            collectNodeChild(*it, transformToParent(*it) * toRoot, opacity * (*it)->opacity(), navigatorRender, bucket);
+            collectNodeChild(*it, transformToParent(*it) * toRoot, opacity * (*it)->opacity(), navigatorRender, exposed, bucket);
         }
     }
 } // collectNodeChild
 
 void
+drawItems(QPainter* painter,
+          const Bucket& bucket,
+          QPainter::RenderHints viewHints,
+          QWidget* widget)
+{
+    if (bucket.itemDraws.empty()) {
+        return;
+    }
+    painter->save();
+    // The hints the view gives every item, not the plain ones the batches draw with.
+    painter->setRenderHints(~viewHints, false);
+    painter->setRenderHints(viewHints, true);
+    const QTransform base = painter->worldTransform();
+    for (std::vector<ItemDraw>::const_iterator it = bucket.itemDraws.begin(); it != bucket.itemDraws.end(); ++it) {
+        QGraphicsItem* item = it->item;
+        QStyleOptionGraphicsItem option;
+        option.state = QStyle::State_None;
+        option.rect = it->bounds.toRect();
+        option.exposedRect = it->bounds;
+        if (item->isSelected()) {
+            option.state |= QStyle::State_Selected;
+        }
+        if (item->isEnabled()) {
+            option.state |= QStyle::State_Enabled;
+        }
+        if (item->hasFocus()) {
+            option.state |= QStyle::State_HasFocus;
+        }
+        painter->setWorldTransform(it->toRoot * base);
+        painter->setOpacity(it->opacity);
+        item->paint(painter, &option, widget);
+    }
+    painter->restore();
+}
+
+void
 drawBucket(QPainter* painter,
-           const Bucket& bucket)
+           const Bucket& bucket,
+           QPainter::RenderHints viewHints,
+           QWidget* widget)
 {
     for (std::vector<ShapeBatch>::const_iterator it = bucket.batches.begin(); it != bucket.batches.end(); ++it) {
         painter->setOpacity(it->opacity);
@@ -294,6 +356,8 @@ drawBucket(QPainter* painter,
         }
     }
     if (bucket.pixmaps.empty()) {
+        drawItems(painter, bucket, viewHints, widget);
+
         return;
     }
     const QTransform base = painter->worldTransform();
@@ -309,6 +373,7 @@ drawBucket(QPainter* painter,
         painter->drawPixmap(it->item->offset(), it->item->pixmap());
     }
     painter->setWorldTransform(base);
+    drawItems(painter, bucket, viewHints, widget);
 } // drawBucket
 
 } // anon namespace
@@ -360,16 +425,17 @@ NodeGraphLowDetailLayer::applyDetailLevel(QGraphicsItem* item,
 void
 NodeGraphLowDetailLayer::paint(QPainter* painter,
                                const QStyleOptionGraphicsItem* option,
-                               QWidget* /*widget*/)
+                               QWidget* widget)
 {
     if (!_graph->lowDetail) {
         return;
     }
+    const QPainter::RenderHints viewHints = painter->renderHints();
     painter->setRenderHint(QPainter::Antialiasing, false);
     if (_pass == ePassEdges) {
         paintEdges(painter, option->exposedRect);
     } else {
-        paintNodes(painter, option->exposedRect);
+        paintNodes(painter, option->exposedRect, viewHints, widget);
     }
     painter->setOpacity(1.);
 }
@@ -422,7 +488,9 @@ NodeGraphLowDetailLayer::paintEdges(QPainter* painter,
 
 void
 NodeGraphLowDetailLayer::paintNodes(QPainter* painter,
-                                    const QRectF& exposed)
+                                    const QRectF& exposed,
+                                    QPainter::RenderHints viewHints,
+                                    QWidget* widget)
 {
     std::vector<NodeGraphPrivate::GridItem> found;
     _graph->getGridItems(exposed, &found);
@@ -442,16 +510,16 @@ NodeGraphLowDetailLayer::paintNodes(QPainter* painter,
         // scene does.
         const QList<QGraphicsItem*> children = node->childItems();
         for (int i = 0; i < children.size(); ++i) {
-            const QGraphicsItem* child = children[i];
+            QGraphicsItem* child = children[i];
             if (!child->isVisible()) {
                 continue;
             }
             Bucket& bucket = buckets[std::make_pair(child->zValue(), i)];
-            collectNodeChild(child, transformToParent(child) * nodeToRoot, child->opacity(), navigatorRender, &bucket);
+            collectNodeChild(child, transformToParent(child) * nodeToRoot, child->opacity(), navigatorRender, exposed, &bucket);
         }
     }
     for (BucketMap::const_iterator it = buckets.begin(); it != buckets.end(); ++it) {
-        drawBucket(painter, it->second);
+        drawBucket(painter, it->second, viewHints, widget);
     }
 }
 

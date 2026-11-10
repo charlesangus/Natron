@@ -107,7 +107,7 @@ renames the required checks. It switches branch protection over when it merges.
 
 ## Phase 377.5: Cutover at merge
 
-- [ ] M377.P5.T1 — Switch branch protection and refresh open PRs
+- [x] M377.P5.T1 — Switch branch protection and refresh open PRs
   - files: none in the repo (GitHub settings via `gh api`)
   - approach: Run this at the gate, after review and green CI, right before `gh pr merge`. 1) Save the current protection with `gh api repos/charlesangus/Natron/branches/main/protection/required_status_checks > /tmp/old-checks.json`. 2) `gh api -X PATCH repos/charlesangus/Natron/branches/main/protection/required_status_checks --input -` with `{"strict": false, "checks": [{"context":"Format"},{"context":"Lint CI"},{"context":"Code rules"},{"context":"Build and test"}]}`. 3) Merge. 4) Open PRs whose branch a running lane owns pick up the new names at their next rebase onto main (PLAN-FORMAT.md §9a). For every other open PR into `main`, meaning parked, blocked or human PRs, run `gh api -X PUT repos/charlesangus/Natron/pulls/<n>/update-branch`, and cancel its old runs. Merge main into each `feature/**` branch (no rebase, per §9b) so later Feature PRs report the new names. 5) List any open PR still missing a new required check and report it. If the merge fails, restore the saved protection.
   - verify: `gh api .../protection/required_status_checks` lists exactly the four new contexts. `gh pr list --state open` shows no PR into `main` waiting on `format`, `lint-ci` or `build-and-test`. The next merge to main triggers a Beta run, which shows the renamed `workflow_run` link working.
@@ -122,3 +122,4 @@ renames the required checks. It switches branch protection over when it merges.
 - 2026-11-09 — Sentence-case `<Verb> · <what>` job names, and `Remote build · <preset> · <what ran> · <label> · <token>` titles where the label is the PR title or the branch name (user).
 - 2026-11-09 — Cut over by switching protection right before merge and refreshing PRs that no active lane owns (user): lanes already rebase after every merge to main.
 - 2026-11-09 — Also in scope: workflow names, nightly/release/beta run titles, step names, and job summaries (user).
+- 2026-11-10 — Merged (PR #248, a287b0229) after the user approved the checks list and run page. Branch protection now requires Format, Lint CI, Code rules and Build and test. PRs #185 and #187 were refreshed with update-branch, and my lanes' PRs #250-#253 had main merged in. Main merged cleanly into 13 feature branches; F10, F6 and F7 conflict (in ViewerInstance.cpp, AppManager/Node/SuiteProperties, and HydraRenderImpl.cpp) and are left for their members' next merge, so those Feature PRs report the new names once resolved. Memory files citing old check names are for the planner.

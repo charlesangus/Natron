@@ -51,7 +51,7 @@ Context:
 
 ## Phase 382.1: Concepts
 
-- [ ] M382.P1.T1 — Draft four logo concepts as SVG
+- [x] M382.P1.T1 — Draft four logo concepts as SVG
   - files: `Gui/Resources/Branding/concepts/{nucleus,orbital,monogram,graph}.svg` (new)
   - approach: Hand-write four SVGs, one per direction in `## Scope`. Each file holds the mark alone (square viewBox 0 0 512 512) and a horizontal lockup with the "Nucleon" wordmark as outlined paths. Use flat shapes and at most three colours, with a palette that works on both dark and light backgrounds. Keep geometry simple enough to read at 16 px. No filters or embedded bitmaps.
   - verify: `python3 -c "import cairosvg"` renders each file without error, and `xmllint --noout` passes on all four.

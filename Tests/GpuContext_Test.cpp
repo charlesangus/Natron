@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -305,7 +306,16 @@ TEST(GpuContextTest, DeviceLossRightAfterInitDoesNotRaceTheReadyLog)
 {
     ReadyGate gate;
     LogCapture log;
-    GpuContext ctx(makeOptions(GpuResolvedMode::Force, log));
+    // The device is chosen through NATRON_GPU_DEVICE rather than an explicit option, because recreation
+    // reuses the context's options and only the environment can still be made to match nothing afterwards.
+    const std::string cpuSelector = gputest::cpuFallbackSelector();
+    std::optional<ScopedEnv> initDevice;
+    if (!cpuSelector.empty()) {
+        initDevice.emplace("NATRON_GPU_DEVICE", cpuSelector.c_str());
+    }
+    GpuContextOptions options = makeOptions(GpuResolvedMode::Force, log);
+    options.device.clear();
+    GpuContext ctx(options);
     ReleaseOnExit releaseOnExit { gate };
 
     ASSERT_TRUE(ctx.waitForInit(std::chrono::seconds(60)));

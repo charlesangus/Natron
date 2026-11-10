@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1809 512" width="1809" height="512">
+<title>Nucleon lockup, orbital concept</title>
+<g id="mark">
+<g transform="rotate(-30 256 256)">
+<path fill="#7B5BE0" d="M454.1 178.09A240 138 0 1 1 349.84 128.99L335.08 173.99A192 90 0 1 0 429.61 217.57Z"/>
+<circle cx="394.84" cy="168.67" r="44" fill="#EE6A2C"/>
+</g>
+<circle cx="256" cy="256" r="84" fill="#EE6A2C"/>
+</g>
+<g id="wordmark" fill="#7B5BE0" transform="translate(616 363.8) scale(2.45)">
+<path d="M0 -88h16v88h-16Z"/>
+<path d="M60 -88h16v88h-16Z"/>
+<path d="M0 -88L20.44 -88L76 0L55.56 0Z"/>
+<path d="M91 -64V-30A30 30 0 0 0 151 -30H135A14 14 0 0 1 107 -30V-64Z"/>
+<path d="M135 -64h16v64h-16Z"/>
+<path d="M219.52 -54.08A33 33 0 1 0 219.52 -9.92L207.63 -20.62A17 17 0 1 1 207.63 -43.38Z"/>
+<path d="M237 -88h16v88h-16Z"/>
+<path d="M329.02 -24A33 33 0 1 0 322.28 -10.79L310.02 -21.07A17 17 0 1 1 313.49 -27.88Z"/>
+<path d="M266 -40h63.02v16h-63.02Z"/>
+<path fill-rule="evenodd" d="M340 -32A33 33 0 1 1 406 -32A33 33 0 1 1 340 -32ZM356 -32A17 17 0 1 0 390 -32A17 17 0 1 0 356 -32Z"/>
+<path d="M477 0V-34A30 30 0 0 0 417 -34H433A14 14 0 0 1 461 -34V0Z"/>
+<path d="M417 -64h16v64h-16Z"/>
+</g>
+</svg>

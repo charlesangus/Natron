@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<title>Nucleon mark, orbital concept</title>
+<g transform="rotate(-30 256 256)">
+<path fill="#7B5BE0" d="M454.1 178.09A240 138 0 1 1 349.84 128.99L335.08 173.99A192 90 0 1 0 429.61 217.57Z"/>
+<circle cx="394.84" cy="168.67" r="44" fill="#EE6A2C"/>
+</g>
+<circle cx="256" cy="256" r="84" fill="#EE6A2C"/>
+</svg>

@@ -34,7 +34,7 @@ Evidence (consultant, code at the fork pin):
   - approach: add a buffer mutex. `Allocate` resizes `_data` immediately under the lock; `Map` takes the lock and holds it until `Unmap`; `WritePixels` only while mapped; `_Deallocate` and the size/format getters take the lock; `Map` never resizes.
   - verify: review; a Map/Allocate/Map sequence leaves `_data.size()==_dataSize`
   - size: M
-- [ ] M378.P1.T3 — Move the image's Cycles pin to the locked fork commit
+- [x] M378.P1.T3 — Move the image's Cycles pin to the locked fork commit
   - files: `tools/ci/local/Dockerfile` (`NATRON_CYCLES_COMMIT`/`SHA256`)
   - approach: push T1 and T2 to `natron/deep-5.2` (rebase on 4727b1c51, already ahead of the pin), compute the archive sha256, update the ARGs.
   - verify: the PR's dev image job builds and its `build-cycles.sh` checks pass

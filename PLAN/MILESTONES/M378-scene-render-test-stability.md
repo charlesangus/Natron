@@ -24,7 +24,7 @@ Evidence (consultant, code at the fork pin):
 
 ## Phase 378.1: hdCycles thread safety (fork)
 
-- [ ] M378.P1.T1 — Guard the AOV bindings so they cannot change while a tile is being written
+- [x] M378.P1.T1 — Guard the AOV bindings so they cannot change while a tile is being written
   - files: fork `src/hydra/session.{h,cpp}`, `src/hydra/output_driver.cpp`, `src/hydra/render_pass.cpp`
   - approach: add an `_aovMutex`. `SyncAovBindings`, `RemoveAovBinding`, `Set/GetDisplayAovBinding` take it. `update_render_tile`/`write_render_tile` hold it for the whole loop, so `Finalize` waits out a write in progress. `GetAovBindings` returns a copy, used by render_pass.cpp's `IsConverged`/`ResetConverged`.
   - verify: every `_aovBindings` access is under the lock (review); the fork builds in P1.T3's image build

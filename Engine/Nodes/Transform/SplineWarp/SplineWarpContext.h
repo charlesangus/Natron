@@ -437,12 +437,12 @@ public:
     /**
      * @brief Without evaluate, the node only learns that its output changed, and renders when the
      * caller evaluates it, so keying many frames at once does not render once per key. Without markDirty the hash stays
-     * as it was too, and the caller owes correspondenceFollowEnded.
+     * as it was too, and the caller owes correspondenceKeysWritten.
      **/
     void setCorrespondenceAtTime(const SplineWarpLinkPtr& link, int index, double time, double sourceParam, double destinationParam, bool evaluate = true, bool markDirty = true);
 
     // Invalidates the node's hash once for correspondence keys written with markDirty false.
-    void correspondenceFollowEnded();
+    void correspondenceKeysWritten();
 
     /**
      * @brief The two ends of correspondence index of link, as points a vector follow moves, one

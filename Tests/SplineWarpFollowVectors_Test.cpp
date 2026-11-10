@@ -58,6 +58,38 @@ namespace {
 
 using namespace VectorFollowTest;
 
+class CountingPoints
+    : public VectorFollowPoints {
+public:
+    CountingPoints(const VectorFollowPointsPtr& inner)
+        : _inner(inner)
+    {
+    }
+
+    virtual std::string getName() const OVERRIDE FINAL { return _inner->getName(); }
+    virtual std::vector<FollowPoint> getPointsAtTime(double time) const OVERRIDE FINAL { return _inner->getPointsAtTime(time); }
+    virtual std::set<int> getKeyFrames(int first, int last) const OVERRIDE FINAL { return _inner->getKeyFrames(first, last); }
+    virtual void setPointsAtTime(double time, const std::vector<FollowPoint>& points) OVERRIDE FINAL
+    {
+        ++keysWritten;
+        _inner->setPointsAtTime(time, points);
+    }
+
+    virtual void framesWritten() OVERRIDE FINAL
+    {
+        ++batches;
+        _inner->framesWritten();
+    }
+
+    virtual void followEnded() OVERRIDE FINAL { _inner->followEnded(); }
+
+    int keysWritten = 0;
+    int batches = 0;
+
+private:
+    VectorFollowPointsPtr _inner;
+};
+
 constexpr double kFollowTolerance = 0.5;
 constexpr int kStart = 5;
 constexpr int kSpan = 10;
@@ -330,6 +362,21 @@ TEST_F(SplineWarpFollowVectorsTest, ARenderAfterACorrespondenceOnlyFollowShowsTh
 
     undo->undo();
     EXPECT_LT(largestDifference(renderAt(last), before), 1e-6);
+}
+
+TEST_F(SplineWarpFollowVectorsTest, ACorrespondenceFollowDirtiesOncePerFrameBatchNotPerKey)
+{
+    ASSERT_EQ(_warp->addCorrespondence(_link, kCorrespondenceParam, kCorrespondenceParam), 0);
+    const std::shared_ptr<CountingPoints> counting = std::make_shared<CountingPoints>(_warp->makeCorrespondenceFollowPoints(_link, 0));
+
+    VectorFollowParams follow = params();
+    follow.points.push_back(counting);
+    UndoCommandPtr undo;
+    const VectorFollowReport report = _warp->followVectors(follow, &undo);
+    ASSERT_TRUE(report.error.empty()) << report.error;
+    EXPECT_GT(counting->keysWritten, 0);
+    EXPECT_GE(counting->batches, 1);
+    EXPECT_LE(counting->batches, counting->keysWritten);
 }
 
 TEST_F(SplineWarpFollowVectorsTest, OneUndoRevertsTheCurvesAndTheCorrespondence)

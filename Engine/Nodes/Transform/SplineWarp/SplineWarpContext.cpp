@@ -1596,7 +1596,7 @@ SplineWarpContext::setCorrespondenceAtTime(const SplineWarpLinkPtr& link,
 }
 
 void
-SplineWarpContext::correspondenceFollowEnded()
+SplineWarpContext::correspondenceKeysWritten()
 {
     warpDataChanged(false);
 }
@@ -1708,18 +1708,18 @@ public:
         context->setCorrespondenceAtTime(_link, _index, time, sourceParam, destinationParam, false, false);
     }
 
-    // One key per frame would otherwise bump the node's hash generation each time.
-    virtual bool defersChangeToEnd() const OVERRIDE FINAL
+    // The keys are written without dirtying, so the hash changes once per batch rather than once per key.
+    virtual void framesWritten() OVERRIDE FINAL
     {
-        return true;
+        const SplineWarpContextPtr context = _context.lock();
+        if (context) {
+            context->correspondenceKeysWritten();
+        }
     }
 
     virtual void followEnded() OVERRIDE FINAL
     {
-        const SplineWarpContextPtr context = _context.lock();
-        if (context) {
-            context->correspondenceFollowEnded();
-        }
+        framesWritten();
     }
 
 private:

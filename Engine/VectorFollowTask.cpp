@@ -330,10 +330,12 @@ VectorFollowTask::onFramesReady()
         }
     }
     context->emitRefreshViewerOverlays();
-    // A shape whose keys only take effect at the end would render stale data now.
-    const bool deferred = std::any_of(_imp->params.points.begin(), _imp->params.points.end(),
-                                      [](const VectorFollowPointsPtr& points) { return points && points->defersChangeToEnd(); });
-    if (showsCurrent && !deferred) {
+    for (const VectorFollowPointsPtr& points : _imp->params.points) {
+        if (points) {
+            points->framesWritten();
+        }
+    }
+    if (showsCurrent) {
         context->evaluateChange();
     }
 }

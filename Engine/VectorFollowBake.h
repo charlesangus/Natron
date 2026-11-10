@@ -61,8 +61,9 @@ public:
     // Keys them at time where the follow moved them, as near as they can go.
     virtual void setPointsAtTime(double time, const std::vector<FollowPoint>& points) = 0;
 
-    // True when the keys written by setPointsAtTime change nothing the host renders until followEnded.
-    virtual bool defersChangeToEnd() const { return false; }
+    // Called on the main thread once per completed batch of frames, before the host refreshes the viewer,
+    // so keys written silently by setPointsAtTime can invalidate the host once per batch instead of once per key.
+    virtual void framesWritten() { }
 
     // Called once, on the main thread, when the follow has written its last key or been undone.
     virtual void followEnded() { }

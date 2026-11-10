@@ -32,7 +32,7 @@ Scouted facts: none yet. Neither SplineWarp nor its context exists on `origin/ma
 
 ## Phase 220.1: SplineWarp hook-up
 
-- [ ] M220.P1.T1 — Toolbar group and correspondence points
+- [x] M220.P1.T1 — Toolbar group and correspondence points
   - files: `Engine/Nodes/Transform/SplineWarp/SplineWarp.cpp`, `Engine/Nodes/Transform/SplineWarp/SplineWarpContext.{h,cpp}`, `Engine/VectorFollow.cpp`
   - approach:
     - Add M219's Follow Vectors group to SplineWarp's toolbar through the same builder.
@@ -41,7 +41,7 @@ Scouted facts: none yet. Neither SplineWarp nor its context exists on `origin/ma
   - verify: at the phase build, `ctest -R SplineWarpFollowVectors` (T2) passes.
   - size: M
 
-- [ ] M220.P1.T2 — Test SplineWarp following
+- [x] M220.P1.T2 — Test SplineWarp following
   - files: `Tests/SplineWarpFollowVectors_Test.cpp` (new)
   - approach:
     - On a translating fixture through VectorGenerator, check that:
@@ -61,12 +61,12 @@ Scouted facts: none yet. Neither SplineWarp nor its context exists on `origin/ma
 
 ## Phase 220.2: Follow behaviour changes (user, 2026-11-09)
 
-- [ ] M220.P2.T1 — Modal follow
+- [x] M220.P2.T1 — Modal follow
   - files: Engine/VectorFollowTask.*, Engine/VectorFollow*.cpp, Engine/RotoPaint.cpp, Gui (follow toolbar/progress), Engine/PyRoto.cpp
   - approach: a running follow (Roto, RotoPaint, SplineWarp) shows an application-modal progress dialog whose only control is Cancel; cancelling stops the follow like the user stop today (no dialog after). Remove M219's per-entry-point GUI guards (viewer press/double-click/key guards, the second host job refusing knob/input edits) where the modality makes them redundant; keep the Python-edit refusal for scripts. Background follows started from Python without a GUI are unaffected.
   - verify: m219_follow_guards.py reworked: while a follow runs the dialog is modal, viewer/graph/panel input does nothing, Cancel stops it and input works again; ctest follow suites green.
   - size: M
-- [ ] M220.P2.T2 — Fits on linked SplineWarp curves
+- [x] M220.P2.T2 — Fits on linked SplineWarp curves
   - files: Engine/RotoCurveContext.h, Engine/Nodes/Transform/SplineWarp/SplineWarpContext.*, Engine/VectorFollowBake.cpp, Tests/Native/SplineWarpTransform_Test.cpp
   - approach: remove M219's fit refusal for transform-linked curves. A fit writes only the followed curve's own keys: its own transform when it has one apart from the link, else baked point keys; never the link target's transform. The Transform page stays disabled for linked selections.
   - verify: tests — a fit on a linked curve changes only that curve's keys, the link target and other linked curves are unchanged, the link stays.
@@ -77,3 +77,4 @@ Scouted facts: none yet. Neither SplineWarp nor its context exists on `origin/ma
 - 2026-11-09 — **A follow is modal and blocks everything except Cancel (user),** "especially if that simplifies things". Applies to M219's Roto/RotoPaint follow as well as SplineWarp.
 
 - 2026-10-25 — **SplineWarp follows whatever is selected (user),** with no pairing logic.
+- 2026-11-10 — Screenshots approved (user): modal follow window, SplineWarp follow at frames 1/6/12, from the gate run on the F8-merged branch. PR #247.

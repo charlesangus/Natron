@@ -15,3 +15,11 @@ ProgressiveRenderTest.ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverThem is f
 ### 2026-11-09T20:30Z — change-request
 - refs: charlesangus/cycles fork (src/hydra: HdCyclesRenderBuffer, HdCyclesOutputDriver), Tests/Scene/ProgressiveRender_Test.cpp
 - `ProgressiveRenderTest.CoalescesEditsIntoOneRestart` occasionally aborts with `free(): corrupted unsorted chunks` (release gate job 129322983075). The progressive-render fix branch ruled out our holder lifetime, settings locking, stage-edit races and the first buffer resize. Suspect: `HdCyclesRenderBuffer` Map/WritePixels/Allocate take no locks, and `HdCyclesOutputDriver` walks `_aovBindings` while our worker reads buffers. Run the test under ASan/TSan to confirm, then lock in the fork or serialise reads on our side.
+
+### 2026-11-10T02:00Z — change-request
+- refs: Tests/Gpu (GpuContextTest), M331 - Deferred Pattern Matching release gate run 42709980437
+- `GpuContextTest` segfaulted once (5.15 s) on one scheduler in the M331 gate and passed on the retry and on the other scheduler. M331 doesn't touch the GPU context. Probably a lavapipe or teardown race. Needs a look with the core dump or a repeat run under load.
+
+### 2026-11-10T02:00Z — change-request
+- refs: M331 - Deferred Pattern Matching (follow-up), M332 - Scene Graph Points
+- Pattern nodes not yet on load sets still match on fully loaded stages: USDSetAttribute, USDEditPrim, USDVariant, USDProjectUV. Several query-stage borrowers also still load everything: USDEditTransform's transformsPrim and centrePivot (Replace mode with stale matches), the SceneOps merge/graft readInput and rootHoldsGprim, USDRender, USDProject3D, USDRenderSettings, and USDRead's metrics correction (only when Match Up Axis or Units is on). Converting them means deciding whose load set applies, the viewer's or a panel's.

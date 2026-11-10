@@ -219,7 +219,7 @@ future core work has solid ground to build on.
 | M363 | Geometry Display Extras | todo | M358, M376 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
 | M376 | Geometry Display | doing | M328, M358 | bosley-native-nodes | E9 | F15 | | [M376-geometry-display.md](PLAN/MILESTONES/M376-geometry-display.md) |
 | M377 | Readable CI Names | done | - | bosley-native-nodes | E2 | | | [M377-readable-ci-names.md](PLAN/MILESTONES/M377-readable-ci-names.md) |
-| M378 | Scene Render Test Stability | doing | - | bosley-native-nodes | E9 | | | [M378-scene-render-test-stability.md](PLAN/MILESTONES/M378-scene-render-test-stability.md) |
+| M378 | Scene Render Test Stability | done | - | bosley-native-nodes | E9 | | | [M378-scene-render-test-stability.md](PLAN/MILESTONES/M378-scene-render-test-stability.md) |
 | M379 | GpuContext Test Segfault | done | - | bosley-native-nodes | E5 | | | [M379-gpucontext-test-segfault.md](PLAN/MILESTONES/M379-gpucontext-test-segfault.md) |
 | M380 | Blocking Scheduler Aborts | doing | - | bosley-native-nodes | E14 | | | [M380-blocking-scheduler-aborts.md](PLAN/MILESTONES/M380-blocking-scheduler-aborts.md) |
 | M381 | Deferred Matching Coverage | todo | M331 |  | E9 | F4 | | [M381-deferred-matching-coverage.md](PLAN/MILESTONES/M381-deferred-matching-coverage.md) |
@@ -381,7 +381,7 @@ future core work has solid ground to build on.
 | M270 | Lanczos Sinc Resampling Filters | done | - | misty-marten | E3 | | | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
 | M271 | Persistent Message Test Failures | done | - | bosley-native-nodes | E14 | | | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | | | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
-| M273 | RenderIsolation Exit Hang | doing | - | bosley-native-nodes | E6 | | | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
+| M273 | RenderIsolation Exit Hang | done | - | bosley-native-nodes | E6 | | | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
 | M274 | SplineWarp Remaining Controls | done | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | | | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
 | M275 | Viewer Widget Editing | done | - | bosley-native-nodes | E10 | | | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
 | M276 | Upstream Reuse On Edits | done | M260 | misty-marten | E6 | F6 | | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |

@@ -81,6 +81,12 @@ Two kinds of numbers, never mixed:
   - verify: the user returns a run file; `compare.py --scaling` on it succeeds; `BASELINE.md` shows the host table.
   - size: S
 
+- [ ] M117.P2.T3 — Remove the "default appearance changed" startup prompt and keep benches free of modal dialogs
+  - files: `Gui/GuiAppInstance.cpp` (~398-405), `Engine/Settings.{h,cpp}` (`isDefaultAppearanceOutdated`/`restoreDefaultAppearance` if unused after), `tools/bench/gui/run.sh`, `tools/bench/gui/gui_bench.py`
+  - approach: delete the upstream "The default appearance of Natron changed since last version" question at startup (user, 2026-11-10: "should probably be removed"; no backward compatibility in this fork) and any settings code only it uses. In the bench, pre-seed first-run flags in the throwaway HOME, and have the driver dismiss any modal dialog that appears during an op, logging its text in the results.
+  - verify: a fresh-HOME launch shows no appearance prompt; a host bench run completes without manual clicks.
+  - size: M
+
 **Verification gate:**
 - One build. Full ctest is green, including `StallMonitor` and `GuiBenchCompareSelfTest`, and CI is green.
 - `test_gen_graph.py` passes under NatronRenderer.
@@ -98,3 +104,4 @@ Two kinds of numbers, never mixed:
 - 2026-10-13 — Split from the fixes (user): the harness and baseline ship first, so the baseline is recorded before any fix changes it. M118 - Large Graph GUI Responsiveness does the fixes.
 - 2026-10-13 — The stall monitor ships in every build, off by default and zero-cost when off (user agreed to the recommendation).
 - 2026-11-10 — Main merged in (0a1a61cfe; main already carried M117's first harness commit through M224, plus a roto driver, both kept). Release gate green: run 42769498480, full ctest including StallMonitor and GuiBenchCompareSelfTest. The real-host baseline runs through the GPU-host session harness (user): `run-bench.sh` gained `BENCHES=m117` (sizes 300,1000,3000; mixed and comp; 3 reps; capped at 90 min) and `SHUTDOWN=1`, which powers the host off only after the copy-back succeeds. The AppImage and steps are in `build/appimages/Natron-m117-gui-perf-harness.{AppImage,md}`. This sandbox can't resolve `maxsettings`, so the user runs `push-bench.sh`.
+- 2026-11-10 — Second GPU-host run (`results-20261110T151416Z`) got through mixed 300 and 1000 before exiting 3 at a hung `delete_1000`. Click-select, drag and undo ops errored, and the user had to click through modal popups: "The default appearance changed" and link-deletion confirmations. The harness fixes from M118 are being ported; P2.T3 removes the appearance prompt (user) and makes the bench dismiss dialogs.

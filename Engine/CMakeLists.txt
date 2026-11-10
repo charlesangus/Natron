@@ -49,10 +49,23 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/Geo/ is the native geometry data model (attributes, index maps, topology); no pxr types.
+file(GLOB NatronEngineGeo_HEADERS Geo/*.h)
+file(GLOB NatronEngineGeo_SOURCES Geo/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineGeo_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineGeo_SOURCES})
+# Engine/Kernel/ is the context-neutral kernel language front end and bytecode; no Geo types.
+file(GLOB NatronEngineKernel_HEADERS Kernel/*.h)
+file(GLOB NatronEngineKernel_SOURCES Kernel/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineKernel_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineKernel_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+# The geometry nodes translate to and from USD, so they include the same headers.
+file(GLOB NatronEngineGeometry_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/*.cpp)
+set_source_files_properties(${NatronEngineGeometry_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
 # Native node registration fragments (see Engine/Nodes/NativeRegistry.h), aggregated into
 # NativeRegistryAll.inc. Sorted so the registration order does not depend on the filesystem.
@@ -197,6 +210,12 @@ qt_add_resources(NatronEngine AiModelManifest
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data"
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data/ai_models.json"
 )
+# GeoSubdivide refines through OpenSubdiv's Far library, the one USD's own subdivision uses;
+# pxr's package config usually brings the target in already.
+if(NOT TARGET OpenSubdiv::osdCPU)
+    find_package(OpenSubdiv CONFIG REQUIRED)
+endif()
+
 target_link_libraries(NatronEngine
     PUBLIC
         HostSupport
@@ -228,6 +247,7 @@ target_link_libraries(NatronEngine
         lensfun::lensfun
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
+        OpenSubdiv::osdCPU
 )
 
 # rawspeed's camera database, read at run time from <bin>/../Resources/rawspeed beside every
@@ -257,6 +277,10 @@ install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/na
 set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronProject3D.glslfx)
 configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
 install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
+# The natrongeo: layer resolver and file format, registered at startup by GeoLayers::registerPlugin.
+set(NatronEngine_GEO_LAYER_PLUGINFO ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/plugInfo.json)
+configure_file(${NatronEngine_GEO_LAYER_PLUGINFO} ${CMAKE_BINARY_DIR}/Resources/usd/natronGeo/plugInfo.json COPYONLY)
+install(FILES ${NatronEngine_GEO_LAYER_PLUGINFO} DESTINATION Resources/usd/natronGeo)
 
 # darktable's noise profiles, read at run time by DenoiseProfiled from the same directory.
 set(NatronEngine_NOISE_PROFILES_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Filter/data/noiseprofiles.json)

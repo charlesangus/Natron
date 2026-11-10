@@ -143,6 +143,7 @@
 #include "Engine/TrackerNode.h"
 
 #include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
@@ -433,6 +434,10 @@ AppManager::loadFromArgs(const CLArgs& cl)
         if (!SceneCaches::registerLiveTextures(&liveTextureError)) {
             std::cerr << liveTextureError << std::endl;
         }
+        std::string geoLayerError;
+        if (!GeoLayers::registerPlugin(&geoLayerError)) {
+            std::cerr << geoLayerError << std::endl;
+        }
     }
 
     try {
@@ -555,10 +560,14 @@ AppManager::~AppManager()
     if (_imp->_deepImageCache) {
         _imp->_deepImageCache->waitForDeleterThread();
     }
+    if (_imp->_geoDetailCache) {
+        _imp->_geoDetailCache->waitForDeleterThread();
+    }
     _imp->_nodeCache.reset();
     _imp->_viewerCache.reset();
     _imp->_diskCache.reset();
     _imp->_deepImageCache.reset();
+    _imp->_geoDetailCache.reset();
 
     tearDownPython();
     _imp->tearDownGL();
@@ -1121,6 +1130,7 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         U64 viewerCacheSize = _imp->_settings->getMaximumViewerDiskCacheSize();
         U64 maxDiskCacheNode = _imp->_settings->getMaximumDiskCacheNodeSize();
         U64 maxDeepImageCache = _imp->_settings->getMaximumDeepImageCacheSize();
+        U64 maxGeoDetailCache = _imp->_settings->getMaximumGeoDetailCacheSize();
 
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
         _imp->_diskCache = std::make_shared<Cache<Image> >("DiskCache", NATRON_CACHE_VERSION, maxDiskCacheNode, 0.);
@@ -1128,6 +1138,8 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         // RAM-only, like _nodeCache: deep has no on-disk cache in v1, and must not share
         // _nodeCache's budget or a large deep render would evict the entire 2D image cache.
         _imp->_deepImageCache = std::make_shared<Cache<DeepImageCacheEntry>>("DeepImageCache", NATRON_CACHE_VERSION, maxDeepImageCache, 1.);
+        // RAM-only with its own budget, so geometry can never evict the image caches.
+        _imp->_geoDetailCache = std::make_shared<Cache<GeoDetailCacheEntry>>("GeoDetailCache", NATRON_CACHE_VERSION, maxGeoDetailCache, 1.);
         _imp->setViewerCacheTileSize();
     } catch (std::logic_error&) {
         // ignore
@@ -1491,10 +1503,14 @@ AppManager::clearAllCaches()
     if (_imp->_deepImageCache) {
         _imp->_deepImageCache->waitForDeleterThread();
     }
+    if (_imp->_geoDetailCache) {
+        _imp->_geoDetailCache->waitForDeleterThread();
+    }
 
     clearDiskCache();
     clearNodeCache();
     _imp->_deepImageCache->clear();
+    _imp->_geoDetailCache->clear();
     SceneCaches::releaseIdleQueryStages();
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
     SceneCaches::releaseRenderEngines();
@@ -1624,6 +1640,13 @@ AppManager::setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long si
 {
     _imp->_deepImageCache->setMaximumCacheSize(size);
     _imp->_deepImageCache->setMaximumInMemorySize(1);
+}
+
+void
+AppManager::setApplicationsCachesMaximumGeoDetailCacheSize(unsigned long long size)
+{
+    _imp->_geoDetailCache->setMaximumCacheSize(size);
+    _imp->_geoDetailCache->setMaximumInMemorySize(1);
 }
 
 void
@@ -2390,6 +2413,7 @@ AppManager::clearExceedingEntriesFromNodeCache()
 {
     _imp->_nodeCache->clearExceedingEntries();
     _imp->_deepImageCache->clearExceedingEntries();
+    _imp->_geoDetailCache->clearExceedingEntries();
 }
 
 const PluginsMap&
@@ -2511,6 +2535,12 @@ AppManager::removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry)
 }
 
 void
+AppManager::removeFromGeoDetailCache(const GeoDetailCacheEntryPtr& entry)
+{
+    _imp->_geoDetailCache->removeEntry(entry);
+}
+
+void
 AppManager::removeFromNodeCache(U64 hash)
 {
     _imp->_nodeCache->removeEntry(hash);
@@ -2540,6 +2570,8 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
     std::size_t nodeCacheDisk = 0;
     std::size_t deepCacheMem = 0;
     std::size_t deepCacheDisk = 0; // the deep cache is RAM-only, so this is always 0
+    std::size_t geoCacheMem = 0;
+    std::size_t geoCacheDisk = 0; // the geometry cache is RAM-only, so this is always 0
     const Node* isNode = dynamic_cast<const Node*>(holder);
     if (isNode) {
         ViewerInstance* isViewer = isNode->isEffectViewer();
@@ -2550,8 +2582,9 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
     _imp->_diskCache->getMemoryStatsForCacheEntryHolder(holder, &diskCacheMem, &diskCacheDisk);
     _imp->_nodeCache->getMemoryStatsForCacheEntryHolder(holder, &nodeCacheMem, &nodeCacheDisk);
     _imp->_deepImageCache->getMemoryStatsForCacheEntryHolder(holder, &deepCacheMem, &deepCacheDisk);
+    _imp->_geoDetailCache->getMemoryStatsForCacheEntryHolder(holder, &geoCacheMem, &geoCacheDisk);
 
-    *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem + deepCacheMem;
+    *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem + deepCacheMem + geoCacheMem;
     *diskOccupied = diskCacheDisk + viewerCacheDisk + nodeCacheDisk;
 }
 
@@ -2563,6 +2596,7 @@ AppManager::removeAllCacheEntriesForHolder(const CacheEntryHolder* holder,
     _imp->_diskCache->removeAllEntriesForHolderPublic(holder, blocking);
     _imp->_viewerCache->removeAllEntriesForHolderPublic(holder, blocking);
     _imp->_deepImageCache->removeAllEntriesForHolderPublic(holder, blocking);
+    _imp->_geoDetailCache->removeAllEntriesForHolderPublic(holder, blocking);
 }
 
 const QString &
@@ -2622,6 +2656,21 @@ AppManager::getDeepImageOrCreate(const DeepImageKey& key,
                                  DeepImageCacheEntryPtr* returnValue) const
 {
     return _imp->_deepImageCache->getOrCreate(key, params, 0, returnValue);
+}
+
+bool
+AppManager::getGeoDetail(const GeoDetailKey& key,
+                         std::list<GeoDetailCacheEntryPtr>* returnValue) const
+{
+    return _imp->_geoDetailCache->get(key, returnValue);
+}
+
+bool
+AppManager::getGeoDetailOrCreate(const GeoDetailKey& key,
+                                 const GeoDetailParamsPtr& params,
+                                 GeoDetailCacheEntryPtr* returnValue) const
+{
+    return _imp->_geoDetailCache->getOrCreate(key, params, 0, returnValue);
 }
 
 bool
@@ -3012,8 +3061,9 @@ AppManager::evictLRUFromMemoryCaches()
 {
     bool evictedFromNodeCache = _imp->_nodeCache->evictLRUInMemoryEntry();
     bool evictedFromDeepImageCache = _imp->_deepImageCache->evictLRUInMemoryEntry();
+    bool evictedFromGeoDetailCache = _imp->_geoDetailCache->evictLRUInMemoryEntry();
 
-    return evictedFromNodeCache || evictedFromDeepImageCache;
+    return evictedFromNodeCache || evictedFromDeepImageCache || evictedFromGeoDetailCache;
 }
 
 void

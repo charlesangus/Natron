@@ -231,6 +231,15 @@ public:
     bool getDeepImageOrCreate(const DeepImageKey& key, const DeepImageParamsPtr& params,
                               DeepImageCacheEntryPtr* returnValue) const;
 
+    /**
+     * @brief Same as getImage/getImageOrCreate but for the geometry cache, which has its own
+     * memory budget separate from the image caches.
+     **/
+    bool getGeoDetail(const GeoDetailKey& key, std::list<GeoDetailCacheEntryPtr>* returnValue) const;
+
+    bool getGeoDetailOrCreate(const GeoDetailKey& key, const GeoDetailParamsPtr& params,
+                              GeoDetailCacheEntryPtr* returnValue) const;
+
     bool getTexture(const FrameKey & key,
                     std::list<FrameEntryPtr>* returnValue) const;
 
@@ -264,6 +273,8 @@ public:
 
     void setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long size);
 
+    void setApplicationsCachesMaximumGeoDetailCacheSize(unsigned long long size);
+
     void removeFromNodeCache(const ImagePtr & image);
     void removeFromViewerCache(const FrameEntryPtr & texture);
 
@@ -273,6 +284,9 @@ public:
      * half-built entry back out rather than leave it to be found by the next lookup.
      **/
     void removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry);
+
+    /** @brief Drops one geometry entry, for a pull that aborts or fails after creating it. */
+    void removeFromGeoDetailCache(const GeoDetailCacheEntryPtr& entry);
 
     void removeFromNodeCache(U64 hash);
     void removeFromViewerCache(U64 hash);

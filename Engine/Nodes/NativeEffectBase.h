@@ -53,6 +53,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class GeoDetailBuilder;
 struct GpuQuery;
 struct GpuRenderArgs;
 
@@ -584,6 +585,33 @@ protected:
      **/
     static void makeDeepScanlineChunks(const RectI& bounds,
                                        std::vector<RectI>* chunks);
+
+    /**
+     * @brief Builds or edits a detail for renderGeometryFromInput() and renderGeometryGenerator().
+     * On failure returns eStatusFailed, with *errorMessage set to what the user should read.
+     **/
+    typedef std::function<StatusEnum(GeoDetailBuilder& detail, std::string* errorMessage)> GeoBuildFunc;
+
+    /**
+     * @brief For a geometry op's renderGeometry(): hands mutate a builder over a copy of
+     * inputNb's detail at args.time and sets *outputDetail to the result. The copy shares every
+     * page with the input until mutate writes it, so only what mutate touches is detached, and
+     * nothing mutate is given can reach the input's storage. Fails when inputNb has no detail at
+     * args.time.
+     **/
+    StatusEnum renderGeometryFromInput(const GeoRenderActionArgs& args,
+                                       int inputNb,
+                                       const GeoBuildFunc& mutate,
+                                       GeoDetailConstPtr* outputDetail,
+                                       std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a geometry generator's renderGeometry(): hands generate a builder over an empty
+     * detail and sets *outputDetail to the result.
+     **/
+    StatusEnum renderGeometryGenerator(const GeoBuildFunc& generate,
+                                       GeoDetailConstPtr* outputDetail,
+                                       std::string* errorMessage) WARN_UNUSED_RETURN;
 
     /**
      * @brief Wraps the AppManager::createKnob() idiom every initializeKnobs() repeats.

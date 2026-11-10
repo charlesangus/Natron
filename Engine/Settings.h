@@ -161,6 +161,7 @@ public:
     U64 getMaximumDiskCacheNodeSize() const;
 
     U64 getMaximumDeepImageCacheSize() const;
+    U64 getMaximumGeoDetailCacheSize() const;
 
     double getUnreachableRamPercent() const;
 
@@ -269,6 +270,7 @@ public:
     void getEdgeDeepColor(float* r, float* g, float* b) const;
     void getEdgeSceneColor(float* r, float* g, float* b) const;
     void getEdgeRawColor(float* r, float* g, float* b) const;
+    void getEdgeGeometryColor(float* r, float* g, float* b) const;
 
     /**
      * @brief The colour an edge should tint itself with for the given data kind, if any. Returns
@@ -688,6 +690,9 @@ private:
     /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
     /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
     KnobIntPtr _maxDeepImageCacheGB;
+
+    /// Geometry likewise gets its own RAM-only budget.
+    KnobIntPtr _maxGeometryCacheGB;
     KnobPathPtr _diskCachePath;
     KnobButtonPtr _wipeDiskCache;
 
@@ -821,6 +826,7 @@ private:
     KnobColorPtr _edgeDeepColor;
     KnobColorPtr _edgeSceneColor;
     KnobColorPtr _edgeRawColor;
+    KnobColorPtr _edgeGeometryColor;
     KnobColorPtr _linkLineColor;
     KnobColorPtr _expressionLineColor;
     std::vector<ChoiceOption> _knownHostNames;

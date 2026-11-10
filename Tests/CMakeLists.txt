@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h GeoRenderTestEffect.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -62,6 +62,29 @@ set(Tests_SOURCES
     FrameRenderContext_Test.cpp
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
+    GeoAttribute_Test.cpp
+    GeoCopyToPoints_Test.cpp
+    GeoDetail_Test.cpp
+    GeoDetailCache_Test.cpp
+    GeoDelete_Test.cpp
+    GeoDisplace_Test.cpp
+    GeoGroup_Test.cpp
+    GeoImportOBJ_Test.cpp
+    GeoIndexMap_Test.cpp
+    GeoKernelRunner_Test.cpp
+    GeoKernelTopology_Test.cpp
+    GeoMerge_Test.cpp
+    GeoNormals_Test.cpp
+    GeoPacked_Test.cpp
+    GeoPrimitive_Test.cpp
+    GeoPython_Test.cpp
+    GeoRender_Test.cpp
+    GeoScatter_Test.cpp
+    GeoSubdivide_Test.cpp
+    GeoTransform_Test.cpp
+    GeoUVProject_Test.cpp
+    GeoWrangleParams_Test.cpp
+    GeoWrangle_Test.cpp
     GLScheduler_Test.cpp
     GlobalModeKind_Test.cpp
     GlobalModeStroke_Test.cpp
@@ -80,6 +103,7 @@ set(Tests_SOURCES
     HashPluginSweep_Test.cpp
     IdentityHop_Test.cpp
     Image_Test.cpp
+    KernelParser_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
     KnobValueRole_Test.cpp

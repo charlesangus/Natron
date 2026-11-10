@@ -981,6 +981,54 @@ public:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether what this effect puts on its output is geometry, as the graph around it
+     * resolves it: eDataKindGeometry and unambiguously so. Decides whether evaluateGeometry() may
+     * be asked of it.
+     **/
+    bool producesGeometryData() const WARN_UNUSED_RETURN;
+
+    struct EvaluateGeometryArgs {
+        double time;
+        ViewIdx view;
+        bool byPassCache;
+
+        EvaluateGeometryArgs()
+            : time(0)
+            , view(0)
+            , byPassCache(false)
+        {
+        }
+
+        EvaluateGeometryArgs(double time_,
+                             ViewIdx view_,
+                             bool byPassCache_ = false)
+            : time(time_)
+            , view(view_)
+            , byPassCache(byPassCache_)
+        {
+        }
+    };
+
+    /**
+     * @brief The geometry counterpart of renderDeepRoI(): evaluates this effect's detail at the
+     * given time and view and returns it in *outputDetail. A detail is pulled whole: there is
+     * no region of interest and no render scale.
+     *
+     * The same pull pipeline as renderDeepRoI(): identities (Dot, the NoOps, disabled nodes,
+     * group boundaries) hand back their input's detail, the geometry cache is consulted, every
+     * input whose effective data kind is eDataKindGeometry is evaluated at each time
+     * getFramesNeeded() asks for, the render's abort flag is checked between steps, and only
+     * then is this effect's renderGeometry() called.
+     *
+     * On eRenderRoIRetCodeOk, *outputDetail is non-NULL, possibly an empty detail. On any other
+     * return code it is NULL; on eRenderRoIRetCodeFailed, *errorMessage (if given) carries the
+     * message of the node that failed, whichever node upstream that was.
+     **/
+    RenderRoIRetCode evaluateGeometry(const EvaluateGeometryArgs& args,
+                                      GeoDetailConstPtr* outputDetail,
+                                      std::string* errorMessage) WARN_UNUSED_RETURN;
+
     void getImageFromCacheAndConvertIfNeeded(bool useCache,
                                              StorageModeEnum storage,
                                              StorageModeEnum returnStorage,
@@ -1732,6 +1780,41 @@ public:
         ScenePayload getInputScene(int inputNb) const;
     };
 
+    // Like a deep input, a geometry input is fetched once per time getFramesNeeded() asked for.
+    typedef std::map<double, GeoDetailConstPtr> GeoDetailsByTime;
+    typedef std::map<int, GeoDetailsByTime> GeoInputDetailsMap;
+
+    struct GeoRenderActionArgs {
+        double time;
+        ViewIdx view;
+        GeoInputDetailsMap inputDetails;
+        bool isSequentialRender;
+        bool isRenderResponseToUserInteraction;
+        bool byPassCache;
+
+        GeoRenderActionArgs()
+            : time(0)
+            , view(0)
+            , inputDetails()
+            , isSequentialRender(false)
+            , isRenderResponseToUserInteraction(false)
+            , byPassCache(false)
+        {
+        }
+
+        /**
+         * @brief The detail fetched from inputNb at the given time, or NULL if that input is not
+         * connected, does not produce geometry, or was not asked for at that time. The
+         * single-argument overload asks for this render's own time.
+         **/
+        GeoDetailConstPtr getInputDetail(int inputNb, double atTime) const;
+
+        GeoDetailConstPtr getInputDetail(int inputNb) const
+        {
+            return getInputDetail(inputNb, time);
+        }
+    };
+
 protected:
     /**
      * @brief Must fill the image 'output' for the region of interest 'roi' at the given time and
@@ -1775,6 +1858,45 @@ protected:
     virtual StatusEnum renderScene(const SceneRenderActionArgs& /*args*/,
                                    ScenePayload* /*outputScene*/,
                                    std::string* /*errorMessage*/) WARN_UNUSED_RETURN
+    {
+        return eStatusReplyDefault;
+    }
+
+    /**
+     * @brief Called by the outermost evaluateScene() of a thread on every node upstream of it,
+     * inputs first, before that evaluation takes its SceneWriteBarrier::ReadScope: the one point
+     * of a scene evaluation where a node may edit a layer it owns in place, through
+     * SceneWriteBarrier::runExclusive(). Only called while at least one effect has registered
+     * through setPreparesSceneSources(). Must return eRenderRoIRetCodeAborted soon after
+     * aborted() turns true. The default does nothing.
+     **/
+    virtual RenderRoIRetCode prepareSceneSources(const EvaluateSceneArgs& /*args*/,
+                                                 std::string* /*errorMessage*/) WARN_UNUSED_RETURN
+    {
+        return eRenderRoIRetCodeOk;
+    }
+
+    /**
+     * @brief Counts this effect among those overriding prepareSceneSources(), so evaluateScene()
+     * walks the graph only while one exists. Pair every true with a false, at the latest in the
+     * destructor. MT-safe.
+     **/
+    static void setPreparesSceneSources(bool prepares);
+
+    /**
+     * @brief The geometry counterpart of render(): must set *outputDetail to this effect's detail
+     * at args.time. Pre-condition: evaluateGeometry() has already evaluated every geometry input
+     * at every time getFramesNeeded() asked for. An input's detail is shared with the cache and
+     * with every other consumer: change a copy through GeoDetailBuilder, never the input (see
+     * NativeEffectBase::renderGeometryFromInput()).
+     *
+     * On failure returns eStatusFailed with *errorMessage set to what the user should read. The
+     * default returns eStatusReplyDefault, meaning "this effect does not produce geometry",
+     * which evaluateGeometry() turns into a failure.
+     **/
+    virtual StatusEnum renderGeometry(const GeoRenderActionArgs& /*args*/,
+                                      GeoDetailConstPtr* /*outputDetail*/,
+                                      std::string* /*errorMessage*/) WARN_UNUSED_RETURN
     {
         return eStatusReplyDefault;
     }

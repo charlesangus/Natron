@@ -200,6 +200,7 @@ clashesWithAnotherProjection(const PXR_NS::UsdPrim& prim,
 ProjectionPlacement
 readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
                         const std::vector<RootMatches>& roots,
+                        const PXR_NS::SdfPathSet& prototypes,
                         const SceneGeometryProjection& projection,
                         const std::string& materialPath,
                         const ScenePayload& scene,
@@ -209,7 +210,6 @@ readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
     ProjectionPlacement placement;
     std::vector<PXR_NS::UsdPrim> gprims;
     PXR_NS::SdfPathSet seen;
-    const PXR_NS::SdfPathSet prototypes = getPointInstancerPrototypes(stage);
     for (const RootMatches& matches : roots) {
         for (const PXR_NS::SdfPath& path : matches.paths) {
             for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(stage->GetPrimAtPath(path), PXR_NS::UsdTraverseInstanceProxies())) {
@@ -317,6 +317,11 @@ struct USDAssignMaterial::PlacementMemo {
     bool valid = false;
     U64 key = 0;
     std::shared_ptr<const ProjectionPlacement> placement;
+    // Finding them walks the whole stage, so only a new input scene pays for it, not each change to
+    // this node's own controls or the frame range.
+    bool prototypesValid = false;
+    U64 prototypesKey = 0;
+    std::shared_ptr<const PXR_NS::SdfPathSet> prototypes;
 };
 
 USDAssignMaterial::USDAssignMaterial(NodePtr node)
@@ -549,9 +554,12 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             SceneLayerEdit range;
             app->getProject()->getFrameRange(&range.firstFrame, &range.lastFrame);
             const double framesPerSecond = app->getProject()->getProjectFrameRate();
+            ContentHasher upstreamHasher;
+            upstreamHasher.appendU64(upstream.getStackHash());
+            SceneNodeAuthoring::appendUpstreamMetadata(upstream, &upstreamHasher);
+            const U64 upstreamKey = upstreamHasher.finalize();
             ContentHasher keyHasher;
-            keyHasher.appendU64(upstream.getStackHash());
-            SceneNodeAuthoring::appendUpstreamMetadata(upstream, &keyHasher);
+            keyHasher.appendU64(upstreamKey);
             keyHasher.appendString(materialPath);
             keyHasher.appendString(projection.framePrimvar);
             keyHasher.appendString(projection.referencePrimvar);
@@ -576,7 +584,21 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                 }
             }
             if (!memoized) {
-                placement = std::make_shared<const ProjectionPlacement>(readProjectionPlacement(stage, roots, projection, materialPath, upstream, range, framesPerSecond));
+                std::shared_ptr<const PXR_NS::SdfPathSet> prototypes;
+                {
+                    std::lock_guard<std::mutex> l(_placementMemo->lock);
+                    if (_placementMemo->prototypesValid && (_placementMemo->prototypesKey == upstreamKey)) {
+                        prototypes = _placementMemo->prototypes;
+                    }
+                }
+                if (!prototypes) {
+                    prototypes = std::make_shared<const PXR_NS::SdfPathSet>(getPointInstancerPrototypes(stage));
+                    std::lock_guard<std::mutex> l(_placementMemo->lock);
+                    _placementMemo->prototypesValid = true;
+                    _placementMemo->prototypesKey = upstreamKey;
+                    _placementMemo->prototypes = prototypes;
+                }
+                placement = std::make_shared<const ProjectionPlacement>(readProjectionPlacement(stage, roots, *prototypes, projection, materialPath, upstream, range, framesPerSecond));
                 std::lock_guard<std::mutex> l(_placementMemo->lock);
                 _placementMemo->valid = true;
                 _placementMemo->key = placementKey;

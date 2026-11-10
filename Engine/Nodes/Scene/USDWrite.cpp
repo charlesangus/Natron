@@ -938,8 +938,9 @@ struct ProjectionBake {
     std::map<std::string, QStringList> ignoredControls;
     // The prim whose authoring failed, if one did.
     std::string failed;
-    // Of the Geometry projections baked, and of those keeping their Storm shader, which win a spec
-    // both reach: a reference to one layer can place one material at a prim that bakes and one that does not.
+    // The specs the Geometry projections that were baked and those that keep their Storm shader
+    // reach. A baked one's specs are stripped unless a kept one also reaches them, since one
+    // referenced layer can serve both.
     ProjectionSpecs baked;
     ProjectionSpecs kept;
 };

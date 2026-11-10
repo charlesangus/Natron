@@ -2257,6 +2257,49 @@ TEST_F(USDRenderStormTest, StormProject3DGeometryHeldThroughAssignMaterial)
     EXPECT_FALSE(assign->hasPersistentMessage());
 }
 
+// A mirror after the assign reverses the card's winding on screen but not the frame it was placed
+// with, so the face that looked at the projector there still does: Front shows it, Back hides it.
+TEST_F(USDRenderStormTest, StormProject3DProjectOnFrontSurvivesAMirrorAfterTheAssign)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr plate, projector, card;
+    NodePtr render = createProjectionGraph(&plate, &projector, &card);
+    ASSERT_TRUE(render != nullptr);
+    KnobChoice* space = knob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(projector, kUSDProject3DParamFrameHold);
+    KnobChoice* projectOn = knob<KnobChoice>(projector, kUSDProject3DParamProjectOn);
+    ASSERT_TRUE(space && useHold && hold && projectOn);
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    NodePtr assign = assignProjectionToCard(render, projector, card);
+    ASSERT_TRUE(assign != nullptr);
+    NodePtr merge = render->getInput(0)->getInput(0);
+    NodePtr mirror = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    ASSERT_TRUE(merge && mirror);
+    ASSERT_TRUE(setString(mirror, kUSDEditTransformParamPrimPattern, "/Card"));
+    ASSERT_TRUE(setTriple(mirror, kSceneParamScale, -1., 1., 1.));
+    merge->disconnectInput(0);
+    connectNodes(assign, mirror, 0, true);
+    connectNodes(mirror, merge, 0, true);
+
+    std::vector<float> rgba;
+    projectOn->setValue((int)USDProject3D::eProjectOnFront);
+    ASSERT_NO_FATAL_FAILURE(renderColour(render, "Front on the mirrored card", &rgba));
+    RegionColours region = regionColours(rgba, 0, 0, kWidth, kHeight);
+    EXPECT_GT(region.red, 100);
+    EXPECT_GT(region.blue, 100);
+    projectOn->setValue((int)USDProject3D::eProjectOnBack);
+    ASSERT_NO_FATAL_FAILURE(renderColour(render, "Back on the mirrored card", &rgba));
+    region = regionColours(rgba, 0, 0, kWidth, kHeight);
+    EXPECT_EQ(0, region.red);
+    EXPECT_EQ(0, region.blue);
+    EXPECT_FALSE(assign->hasPersistentMessage());
+}
+
 // One material on two cards apart looks as the two grafted copies of a direct connection do.
 TEST_F(USDRenderStormTest, StormProject3DTwoPlacementsThroughOneAssign)
 {

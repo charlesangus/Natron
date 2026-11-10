@@ -1756,6 +1756,11 @@ TEST_F(USDProject3DTest, ChangingTopologyStaysRigidAndWarnsNamingThePrim)
         std::swap(indices[0], indices[1]);
         mesh.GetFaceVertexIndicesAttr().Set(indices, PXR_NS::UsdTimeCode(11.));
         defineRisingQuad(file, "/Fine", 5.f);
+        // The same faces over a point the faces never use, from frame 11 on.
+        const PXR_NS::UsdGeomMesh regrown = defineRisingQuad(file, "/Regrown", 10.f);
+        PXR_NS::VtVec3fArray grown = quadPoints(10.f, 10.f);
+        grown.push_back(PXR_NS::GfVec3f(0.f));
+        regrown.GetPointsAttr().Set(grown, PXR_NS::UsdTimeCode(11.));
         const PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(file, PXR_NS::SdfPath("/RecountedCurves"));
         curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(1, 4), PXR_NS::UsdTimeCode(1.));
         curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(2, 2), PXR_NS::UsdTimeCode(11.));
@@ -1766,7 +1771,7 @@ TEST_F(USDProject3DTest, ChangingTopologyStaysRigidAndWarnsNamingThePrim)
         points.CreatePointsAttr().Set(PXR_NS::VtVec3fArray(2), PXR_NS::UsdTimeCode(11.));
         ASSERT_TRUE(file->GetRootLayer()->Save());
     }
-    NodePtr assign = createHeldAssignOf(path, "/Remeshed /Fine /RecountedCurves /RecountedPoints");
+    NodePtr assign = createHeldAssignOf(path, "/Remeshed /Regrown /Fine /RecountedCurves /RecountedPoints");
     ASSERT_TRUE(bool(assign));
 
     const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
@@ -1774,7 +1779,7 @@ TEST_F(USDProject3DTest, ChangingTopologyStaysRigidAndWarnsNamingThePrim)
     const QString message = getMessage(assign);
     EXPECT_FALSE(message.contains(QString::fromUtf8("/Fine"))) << message.toStdString();
     EXPECT_EQ((std::size_t)1, getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Fine"))).size());
-    for (const char* name : { "/Remeshed", "/RecountedCurves", "/RecountedPoints" }) {
+    for (const char* name : { "/Remeshed", "/Regrown", "/RecountedCurves", "/RecountedPoints" }) {
         EXPECT_TRUE(message.contains(QString::fromUtf8(name))) << name << ": " << message.toStdString();
         const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(name));
         EXPECT_TRUE(getReferencePrimvars(prim).empty()) << name;

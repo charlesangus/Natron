@@ -125,6 +125,25 @@ natronProject3DIsFlipped()
     return flip;
 }
 
+// Whether a face's front side runs against its winding where Preference lies. Ng there turns with
+// the handedness of the map from the current world to it: in Geometry space that is the frame's
+// handedness against the current transform's, which leaves of IsFlipped() only the part the
+// transform does not account for, such as a left-handed orientation.
+bool
+natronProject3DReferenceFlipped()
+{
+    if (HdGet_projectionSpace() != 1) {
+        return natronProject3DIsFlipped();
+    }
+
+    bool flip = (determinant(mat4(HdGet_geometryFrame())) < 0.0);
+#if defined(HD_HAS_isFlipped) && defined(HD_HAS_transform)
+    flip = flip != ((HdGet_isFlipped() != 0) != (determinant(HdGet_transform()) < 0.0));
+#endif
+
+    return flip;
+}
+
 vec4
 natronProject3DOutside()
 {
@@ -138,11 +157,8 @@ natronProject3DOutside()
 vec4
 surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
 {
-    // The surface as the camera values see it: in World the fragment's position; in Geometry the
-    // object as it was where the projection was set up, however it has moved since. That is its
-    // reference point where it has one, whose absence the fallback marks, else its point on the object
-    // through its frame. The points primvar needs no instance transform, which Storm defines on
-    // meshes only.
+    // The fallback of 1e30 marks a prim without reference points. Those points are already in world
+    // space, so that path needs no instance transform, which Storm defines on meshes only.
     vec3 referencePoint = HdGet_referencePoints();
     vec4 Preference;
     if (HdGet_projectionSpace() != 1) {
@@ -174,7 +190,7 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
     int projectOn = HdGet_projectOn();
     if ((projectOn != 0) && hasFaces) {
         vec4 origin = HdGet_projectorOrigin();
-        vec3 outward = (gl_FrontFacing != natronProject3DIsFlipped()) ? Ng : -Ng;
+        vec3 outward = (gl_FrontFacing != natronProject3DReferenceFlipped()) ? Ng : -Ng;
         bool facing = dot(outward, origin.xyz - Preference.xyz * origin.w) > 0.0;
         if (facing != (projectOn == 1)) {
             return natronProject3DOutside();

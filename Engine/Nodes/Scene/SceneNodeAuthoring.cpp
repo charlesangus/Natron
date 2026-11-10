@@ -786,16 +786,19 @@ namespace {
     {
         if (prim.IsA<PXR_NS::UsdGeomMesh>()) {
             const PXR_NS::UsdGeomMesh mesh(prim);
-
-            return holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexCountsAttr(), context)
-                && holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexIndicesAttr(), context);
-        }
-        if (prim.IsA<PXR_NS::UsdGeomCurves>()) {
-            return holdsItsValueOverRange<PXR_NS::VtIntArray>(PXR_NS::UsdGeomCurves(prim).GetCurveVertexCountsAttr(), context);
-        }
-        if (prim.IsA<PXR_NS::UsdGeomPoints>() && !holdsItsValueOverRange<PXR_NS::VtInt64Array>(PXR_NS::UsdGeomPoints(prim).GetIdsAttr(), context)) {
+            if (!holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexCountsAttr(), context)
+                || !holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexIndicesAttr(), context)) {
+                return false;
+            }
+        } else if (prim.IsA<PXR_NS::UsdGeomCurves>()) {
+            if (!holdsItsValueOverRange<PXR_NS::VtIntArray>(PXR_NS::UsdGeomCurves(prim).GetCurveVertexCountsAttr(), context)) {
+                return false;
+            }
+        } else if (prim.IsA<PXR_NS::UsdGeomPoints>() && !holdsItsValueOverRange<PXR_NS::VtInt64Array>(PXR_NS::UsdGeomPoints(prim).GetIdsAttr(), context)) {
             return false;
         }
+        // Unchanged indices can still come with more or fewer unused points, and Storm drops a
+        // vertex primvar whose size differs from the points'.
         std::vector<double> times;
         pointsAttribute.GetTimeSamplesInInterval(PXR_NS::GfInterval(context.firstTime, context.lastTime), &times);
         PXR_NS::VtVec3fArray value;

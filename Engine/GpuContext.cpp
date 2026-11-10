@@ -57,6 +57,31 @@ lowerCase(const char* s)
 
     return out;
 }
+
+std::atomic<bool> readyHookOn(false);
+
+struct ReadyHookSlot {
+    std::mutex mutex;
+    GpuContext::ReadyHook hook;
+};
+
+ReadyHookSlot&
+readyHookSlot()
+{
+    static ReadyHookSlot* slot = new ReadyHookSlot;
+
+    return *slot;
+}
+}
+
+void
+GpuContext::setReadyHookForTesting(const ReadyHook& hook)
+{
+    ReadyHookSlot& slot = readyHookSlot();
+    std::lock_guard<std::mutex> l(slot.mutex);
+
+    slot.hook = hook;
+    readyHookOn.store(bool(hook));
 }
 
 struct GpuContext::Shared {
@@ -65,6 +90,9 @@ struct GpuContext::Shared {
     mutable std::condition_variable cond;
     GpuCalibration calibration;
     std::string deviceName;
+    std::atomic<std::uint64_t> maxStorageBufferRange { 0 };
+    std::atomic<bool> pushDescriptor { false };
+    std::atomic<bool> transferSharesComputeQueue { false };
 
     // Taken before holders is read or changed, and held through a recreation.
     std::mutex holdMutex;
@@ -204,6 +232,24 @@ GpuContext::deviceName() const
     return _shared->deviceName;
 }
 
+std::uint64_t
+GpuContext::maxStorageBufferRange() const
+{
+    return _shared->maxStorageBufferRange.load(std::memory_order_relaxed);
+}
+
+bool
+GpuContext::pushDescriptor() const
+{
+    return _shared->pushDescriptor.load(std::memory_order_relaxed);
+}
+
+bool
+GpuContext::transferSharesComputeQueue() const
+{
+    return _shared->transferSharesComputeQueue.load(std::memory_order_relaxed);
+}
+
 gpu::GpuRuntime*
 GpuContext::runtime() const
 {
@@ -291,6 +337,10 @@ GpuContext::recoverIfLost()
         if (_options.memoryBudgetMB > 0) {
             rt->pool().setUserBudget(_options.memoryBudgetMB << 20);
         }
+        const gpu::GpuDeviceInfo& info = rt->device().info();
+        _shared->maxStorageBufferRange.store(info.maxStorageBufferRange, std::memory_order_relaxed);
+        _shared->pushDescriptor.store(info.pushDescriptor, std::memory_order_relaxed);
+        _shared->transferSharesComputeQueue.store(info.transferSharesComputeQueue, std::memory_order_relaxed);
         message = "GPU compute recovered from a device loss";
     } else {
         _shared->nextRecoveryAttempt = now + std::chrono::seconds(10);
@@ -322,6 +372,23 @@ GpuContext::finish(bool available)
 #ifdef NATRON_HAVE_GPU
 
 namespace {
+void
+runReadyHook()
+{
+    if (!readyHookOn.load(std::memory_order_relaxed)) {
+        return;
+    }
+    GpuContext::ReadyHook hook;
+    {
+        ReadyHookSlot& slot = readyHookSlot();
+        std::lock_guard<std::mutex> l(slot.mutex);
+        hook = slot.hook;
+    }
+    if (hook) {
+        hook();
+    }
+}
+
 void
 noteCpuDevice(const std::string& name)
 {
@@ -531,13 +598,22 @@ GpuContext::initialize()
                 if (_options.memoryBudgetMB > 0) {
                     runtime->pool().setUserBudget(_options.memoryBudgetMB << 20);
                 }
+                const std::string deviceName = runtime->device().info().name;
+                const std::string driverVersion = runtime->device().info().driverVersion;
+                const std::string selectionReason = runtime->device().info().selectionReason;
                 {
                     std::lock_guard<std::mutex> k(shared.mutex);
                     shared.calibration = calibration;
-                    shared.deviceName = runtime->device().info().name;
+                    shared.deviceName = deviceName;
                 }
+                const gpu::GpuDeviceInfo& info = runtime->device().info();
+                shared.maxStorageBufferRange.store(info.maxStorageBufferRange, std::memory_order_relaxed);
+                shared.pushDescriptor.store(info.pushDescriptor, std::memory_order_relaxed);
+                shared.transferSharesComputeQueue.store(info.transferSharesComputeQueue, std::memory_order_relaxed);
                 shared.runtime = std::move(runtime);
+                // Once published, a device loss recovery may tear the device down, so nothing below may read the runtime.
                 finish(true);
+                runReadyHook();
                 const std::chrono::steady_clock::time_point ready = std::chrono::steady_clock::now();
                 qInfo().noquote() << QString::fromLatin1("GPU compute ready on %5 (driver %6, selected by %7) after %1 ms (loader, instance, device and runtime %2 ms, "
                                                          "host import calibration %3 ms, staging calibration %4 ms)")
@@ -545,9 +621,9 @@ GpuContext::initialize()
                                          .arg(elapsedMs(_createdAt, created), 0, 'f', 1)
                                          .arg(timings.importMs, 0, 'f', 1)
                                          .arg(timings.stagingMs, 0, 'f', 1)
-                                         .arg(QString::fromStdString(shared.deviceName),
-                                              QString::fromStdString(shared.runtime->device().info().driverVersion),
-                                              QString::fromStdString(shared.runtime->device().info().selectionReason));
+                                         .arg(QString::fromStdString(deviceName),
+                                              QString::fromStdString(driverVersion),
+                                              QString::fromStdString(selectionReason));
 
                 return;
             }

@@ -79,3 +79,4 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 **Verification gate:** release gate green; on the city a pattern node's viewer result and USDRender result agree once everything is loaded; a wildcard node opens no payload file in the viewer until a load; harness budgets pass with ten pattern nodes downstream on the GPU host.
 - 2026-11-10 — P2.T2 and P3.T2 completed with tests (ebfadf3bd): a pruned prim inside a payload never shows during its load; Search Unloaded leaves the viewer's stage and the node's result alone. Release gate green (run 42789360725). Still open: the city agreement check and the ten-pattern-node harness budgets on the GPU host.
+- 2026-11-10 — The branch carries 7 M329 - Viewer Draw States commits, since M331 was built on M329's draw filter, so its PR into F4 waits until M329 merges into F4, or the PR stacks on M329's branch. Its remaining checks are on the GPU host.

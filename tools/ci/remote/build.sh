@@ -22,9 +22,10 @@
 #                        run. A milestone's verification gate must run without it.
 #                        The smoke renders of the two schedulers are compared
 #                        only when both legs ran.
-#   --record-goldens  -> implies --tests; also records the native and Cycles golden
+#   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest,
+#                        USDRenderCyclesLiveTextureTest, USDRenderMoonRayLiveTextureTest,
 #                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The

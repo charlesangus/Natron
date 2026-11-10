@@ -900,6 +900,60 @@ TEST_F(USDWriteLiveTextureTest, AUriWhoseSourceIsGoneWarnsAsSuch)
     EXPECT_FALSE(message.contains(QString::fromUtf8("Export Live Textures"))) << message.toStdString();
 }
 
+TEST_F(USDWriteLiveTextureTest, ADeletedSourceIsWrittenAsTheMaterialsOwnColourWithAWarning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createMaterial(false);
+    ASSERT_TRUE(bool(material));
+    NodePtr constant = material->getInput(kUSDMaterialInputDiffuseColor);
+    ASSERT_TRUE(bool(constant));
+    constant->destroyNode(true, false);
+    constant.reset();
+    ASSERT_FALSE(material->getInput(kUSDMaterialInputDiffuseColor));
+
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    const bool exports[] = { true, false };
+    for (USDWrite::ExportModeEnum mode : modes) {
+        for (bool exportLiveTextures : exports) {
+            const std::string name = std::string(mode == USDWrite::eExportModeLayered ? "layered" : "flattened") + (exportLiveTextures ? "_exported" : "_unexported");
+            SCOPED_TRACE(name);
+            const QString dir = tmp.path() + QLatin1Char('/') + QString::fromStdString(name);
+            const QString path = dir + QString::fromUtf8("/scene.usda");
+            NodePtr writer = createWriter(material, path, mode, 1, 1);
+            ASSERT_TRUE(writer && getWriter(writer));
+            KnobBool* exportKnob = getKnob<KnobBool>(writer, kUSDWriteParamExportLiveTextures);
+            ASSERT_TRUE(exportKnob != NULL);
+            exportKnob->setValue(exportLiveTextures);
+            ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+
+            ASSERT_TRUE(writer->hasPersistentMessage());
+            QString message;
+            int type = 0;
+            writer->getPersistentMessage(&message, &type, false);
+            EXPECT_EQ((int)eMessageTypeWarning, type);
+            EXPECT_TRUE(message.contains(QString::fromStdString(material->getFullyQualifiedName()))) << message.toStdString();
+            EXPECT_TRUE(message.contains(QString::fromUtf8("own colour"))) << message.toStdString();
+            EXPECT_FALSE(message.contains(QString::fromUtf8("Export Live Textures"))) << message.toStdString();
+            EXPECT_FALSE(QFileInfo(dir + QString::fromUtf8("/scene_textures")).exists());
+
+            PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+            ASSERT_TRUE(bool(stage));
+            EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/diffuseColorTexture")).IsValid());
+            const PXR_NS::UsdShadeShader surface(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/PreviewSurface")));
+            ASSERT_TRUE(bool(surface));
+            const PXR_NS::UsdShadeInput diffuse = surface.GetInput(PXR_NS::TfToken("diffuseColor"));
+            ASSERT_TRUE(bool(diffuse));
+            EXPECT_FALSE(diffuse.HasConnectedSource());
+            PXR_NS::GfVec3f colour;
+            ASSERT_TRUE(diffuse.Get(&colour));
+            EXPECT_NEAR(0.18f, colour[0], 1e-6f);
+            const PXR_NS::UsdShadeInput opacity = surface.GetInput(PXR_NS::TfToken("opacity"));
+            EXPECT_FALSE(opacity && opacity.HasConnectedSource());
+        }
+    }
+}
+
 TEST_F(USDWriteLiveTextureTest, WithoutExportTheUrisAreWrittenWithAWarning)
 {
     QTemporaryDir tmp;

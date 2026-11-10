@@ -46,6 +46,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -693,6 +694,108 @@ writeLiveTextureFile(const LiveTextureBufferConstPtr& buffer,
     }
 
     return ok;
+}
+
+// Whether value is an asset path one of uris names, which it returns in *uri.
+bool
+namesOneOf(const PXR_NS::VtValue& value,
+           const std::set<std::string>& uris,
+           std::string* uri)
+{
+    if (!value.IsHolding<PXR_NS::SdfAssetPath>()) {
+        return false;
+    }
+    const std::string& path = value.UncheckedGet<PXR_NS::SdfAssetPath>().GetAssetPath();
+    if (uris.find(path) == uris.end()) {
+        return false;
+    }
+    *uri = path;
+
+    return true;
+}
+
+/**
+ * @brief Removes from layer every texture shader whose file is one of uris, and every connection to
+ * it, so the inputs it fed take the values authored on them. Returns the URIs it found, each with
+ * the path of a prim whose texture read it.
+ **/
+std::map<std::string, PXR_NS::SdfPath>
+removeTexturesReading(const PXR_NS::SdfLayerHandle& layer,
+                      const std::set<std::string>& uris)
+{
+    std::map<std::string, PXR_NS::SdfPath> found;
+
+    if (uris.empty()) {
+        return found;
+    }
+    const PXR_NS::TfToken fileInput("inputs:file");
+    std::set<PXR_NS::SdfPath> textures;
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&](const PXR_NS::SdfPath& path) {
+        if (!path.IsPrimPropertyPath() || (path.GetNameToken() != fileInput)) {
+            return;
+        }
+        std::string uri;
+        PXR_NS::VtValue value;
+        bool reads = layer->HasField(path, PXR_NS::SdfFieldKeys->Default, &value) && namesOneOf(value, uris, &uri);
+        for (double time : layer->ListTimeSamplesForPath(path)) {
+            if (reads) {
+                break;
+            }
+            reads = layer->QueryTimeSample(path, time, &value) && namesOneOf(value, uris, &uri);
+        }
+        if (reads) {
+            found[uri] = path.GetPrimPath().GetParentPath();
+            textures.insert(path.GetPrimPath());
+        }
+    });
+    if (textures.empty()) {
+        return found;
+    }
+    const auto intoTexture = [&textures](const PXR_NS::SdfPath& target) {
+        for (const PXR_NS::SdfPath& texture : textures) {
+            if (target.HasPrefix(texture)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    std::vector<PXR_NS::SdfAttributeSpecHandle> connected;
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&](const PXR_NS::SdfPath& path) {
+        if (!path.IsPrimPropertyPath()) {
+            return;
+        }
+        const PXR_NS::SdfAttributeSpecHandle attribute = layer->GetAttributeAtPath(path);
+        if (attribute && attribute->HasConnectionPaths()) {
+            connected.push_back(attribute);
+        }
+    });
+
+    PXR_NS::SdfChangeBlock block;
+    for (const PXR_NS::SdfAttributeSpecHandle& attribute : connected) {
+        if (textures.count(attribute->GetPath().GetPrimPath())) {
+            continue;
+        }
+        bool changed = false;
+        for (const PXR_NS::SdfPath& target : attribute->GetConnectionPathList().GetAppliedItems()) {
+            if (intoTexture(target)) {
+                attribute->GetConnectionPathList().RemoveItemEdits(target);
+                changed = true;
+            }
+        }
+        if (changed && attribute->GetConnectionPathList().GetAppliedItems().empty()) {
+            attribute->ClearConnectionPaths();
+        }
+    }
+    for (const PXR_NS::SdfPath& texture : textures) {
+        const PXR_NS::SdfPrimSpecHandle prim = layer->GetPrimAtPath(texture);
+        const PXR_NS::SdfPrimSpecHandle parent = layer->GetPrimAtPath(texture.GetParentPath());
+        if (prim && parent) {
+            parent->RemoveNameChild(prim);
+        }
+    }
+
+    return found;
 }
 
 bool
@@ -1441,6 +1544,20 @@ USDWrite::writeFrameRange(int firstFrame,
     std::set<std::string> unexportedLiveTextures;
     // natron:// URIs no live texture of the scene authors, such as those of a file written earlier.
     std::set<std::string> staleLiveTextures;
+    // The textures of image inputs whose node was deleted, which nothing can render, and the nodes
+    // that author them. Written without them, their materials show their own colour.
+    std::set<std::string> deletedSourceUris;
+    std::map<std::string, std::string> deletedSourceConsumers;
+    for (const std::pair<const std::string, LiveTextureExport>& live : liveTextures) {
+        const NodePtr source = live.second.source.node.lock();
+        if (source && source->isActivated()) {
+            continue;
+        }
+        const NodePtr consumer = live.second.source.consumer.lock();
+        deletedSourceUris.insert(live.first);
+        deletedSourceConsumers[live.first] = consumer ? consumer->getFullyQualifiedName() : std::string();
+    }
+    std::set<std::string> materialsWithoutDeletedSources;
 
     PXR_NS::TfErrorMark mark;
     // What is written, the file itself first, then, in layered mode, the sidecars beside it: the
@@ -1588,6 +1705,10 @@ USDWrite::writeFrameRange(int firstFrame,
         const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer, const WrittenStack& stack) {
             if (stack.hasRange) {
                 clipTimeSamples(layer, stack.startTime, stack.endTime);
+            }
+            for (const std::pair<const std::string, PXR_NS::SdfPath>& removed : removeTexturesReading(layer, deletedSourceUris)) {
+                const std::string& consumer = deletedSourceConsumers[removed.first];
+                materialsWithoutDeletedSources.insert(consumer.empty() ? removed.second.GetString() : consumer);
             }
             PXR_NS::UsdUtilsModifyAssetPaths(layer, [&](const std::string& assetPath) {
                 const std::map<std::string, std::size_t>::const_iterator sidecar = stackOfLayer.find(assetPath);
@@ -1753,6 +1874,10 @@ USDWrite::writeFrameRange(int firstFrame,
                                .arg(outputInfo.fileName())
                                .arg((int)unexportedLiveTextures.size())
                                .arg(QString::fromStdString(*unexportedLiveTextures.begin())));
+    }
+    for (const std::string& material : materialsWithoutDeletedSources) {
+        warnings.push_back(tr("The material %1 is written with its own colour in place of a texture whose node was deleted.")
+                               .arg(QString::fromStdString(material)));
     }
     if (!staleLiveTextures.empty()) {
         warnings.push_back(tr("%1 names %2 live textures, such as %3, whose source is no longer available: "

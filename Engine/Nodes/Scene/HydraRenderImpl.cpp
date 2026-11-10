@@ -86,6 +86,8 @@
 #include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraGLContext.h"
+#include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -1124,6 +1126,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
+        LiveTextureSceneIndex::registerSceneIndices();
         int threads = 0;
         if (cycles && !openCyclesSession(request, cancel, &threads, error)) {
             return nullptr;
@@ -1255,7 +1258,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
                 break;
             }
-            if (engine->IsConverged()) {
+            // A cancelled pass can have synced a texture it gave up on as missing, which the engine
+            // would keep: even converged, it goes.
+            if (engine->IsConverged() && !(cancel && cancel->load())) {
                 break;
             }
             // A MoonRay session that could not start or broke never converges.
@@ -2057,6 +2062,7 @@ render(const Request& request,
         };
     }
     const bool ran = thread.runAndWait([&]() {
+        const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             ok = entry && thread.frame(*entry, result, error);
@@ -2167,6 +2173,7 @@ renderWindow(const Request& request,
         };
     }
     const bool ran = thread.runAndWait([&]() {
+        const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             if (!entry) {
@@ -2464,6 +2471,8 @@ struct ProgressiveRender::Implementation {
     RendererSettings settings;
     bool stopped = false;
     bool quit = false;
+    // quit, read without the mutex by a texture export the pass is waiting on.
+    std::atomic<bool> quitting { false };
     // Bumped by each edit; a pass begun under another is not published.
     std::uint64_t generation = 0;
     bool pending = false;
@@ -2563,6 +2572,7 @@ struct ProgressiveRender::Implementation {
         parameters.gpuEnabled = false;
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
+        LiveTextureSceneIndex::registerSceneIndices();
         EnginePtr made;
         {
             TfErrorMark mark;
@@ -2804,6 +2814,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     int samplesAtRestart = -1;
     double clockAtRestart = -1.;
     bool restartSeen = true;
+    // Whether the delegate's clock has started over since the restart, and its sample count when
+    // that was first seen.
+    bool clockFallen = false;
+    int samplesAtClockFall = -1;
+    bool lastConverged = false;
     bool firstPass = false;
     bool engineFresh = false;
     Clock::time_point restartTime = Clock::now();
@@ -2829,6 +2844,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             log.reset();
             status.active = false;
             status.converged = false;
+            status.paused = false;
             status.samples = -1;
             if ((renderer == failedRenderer) && (sceneEdits != failedEdits)) {
                 if (pending) {
@@ -2886,6 +2902,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             keepFrame = false;
             lastSamples = -1;
+            lastConverged = false;
             engineFresh = true;
             needRestart = true;
             continue;
@@ -2929,10 +2946,12 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 continue;
             }
             status.stopped = true;
+            status.paused = true;
             wake.wait(lock);
             continue;
         }
         status.stopped = false;
+        status.paused = false;
         if (paused) {
             lock.unlock();
             {
@@ -2961,6 +2980,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             needRestart = false;
             done = false;
             ++status.restarts;
+            status.converged = false;
+            clockFallen = false;
+            samplesAtClockFall = -1;
             restartTime = Clock::now();
             stallSince = restartTime;
             firstPass = true;
@@ -3017,6 +3039,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 if (readsRestart) {
                     before = engine->GetRenderStats();
                 }
+                const LiveTextureStore::ExportAbortScope exportAbort([this]() { return quitting.load(); });
                 if (renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure)) {
                     rendered = true;
                     converged = engine->IsConverged();
@@ -3044,6 +3067,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             fail(lock, workingRenderer, sessionFailure, workingEdits);
             continue;
         }
+        {
+            // Failing keeps it from asking again: the next edit's sync clears the store's note and tries.
+            const std::string noRoom = LiveTextureStore::instance().getAnyNoRoom();
+            if (!noRoom.empty()) {
+                fail(lock, workingRenderer, noRoom, workingEdits);
+                continue;
+            }
+        }
         if (generation != passGeneration) {
             // Edited during the pass: what it rendered is stale.
             continue;
@@ -3061,7 +3092,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         const Clock::time_point now = Clock::now();
         if (!restartSeen) {
             const bool samplesFell = (samples >= 0) && (samplesAtRestart >= 0) && (samples < samplesAtRestart);
-            const bool clockFell = (clock >= 0.) && (clockAtRestart >= 0.) && (clock < clockAtRestart);
+            if (!clockFallen && (clock >= 0.) && (clockAtRestart >= 0.) && (clock < clockAtRestart)) {
+                // Cycles starts its clock over when its session resets, before it renders a sample
+                // of the new render: until its sample count moves after that, the count it reports
+                // and the pixels it holds are still the render's of before.
+                clockFallen = true;
+                samplesAtClockFall = samples;
+            }
+            const bool clockFell = clockFallen && ((samples < 0) || (samples != samplesAtClockFall));
             const bool blind = (samples < 0) && (clock < 0.);
             restartSeen = samplesFell || clockFell || blind;
             if (!restartSeen && (now - restartTime >= kRestartUnseen)) {
@@ -3073,15 +3111,20 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 continue;
             }
         }
-        const bool changed = (samples != lastSamples) || (converged != status.converged);
+        const bool changed = (samples != lastSamples) || (converged != lastConverged);
         if (samples != lastSamples) {
             stallSince = now;
         }
         lastSamples = samples;
+        lastConverged = converged;
         status.samples = samples;
         status.maxSamples = cap;
-        status.converged = converged;
-        bool publish = restartSeen && (samples != 0) && (changed || (samples < 0) || !frame || (frame->restart != restartIndex));
+        // Done at the cap; or, for a delegate counting no samples, or one whose adaptive sampling
+        // stopped short of the cap, once it converged and held still. A delegate's word alone is
+        // not enough: Cycles marks its buffers converged when a reset cuts a render short.
+        const bool atCap = (cap > 0) && (samples >= cap);
+        const bool finished = restartSeen && converged && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
+        bool publish = restartSeen && (samples != 0) && (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex));
         if (publish) {
             lock.unlock();
             read.reset(new Frame);
@@ -3105,15 +3148,13 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             read->samples = samples;
             read->generation = passGeneration;
             read->maxSamples = cap;
-            read->converged = converged;
+            read->converged = finished;
             read->restart = restartIndex;
             read->serial = ++status.frames;
             frame = read;
         }
-        // Done at the cap; or, for a delegate counting no samples, or one whose adaptive sampling
-        // stopped short of the cap, once it converged and held still.
-        const bool atCap = (cap > 0) && (samples >= cap);
-        done = restartSeen && converged && (frame && (frame->restart == restartIndex)) && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
+        done = finished && publish;
+        status.converged = done;
         if (publish && listener) {
             lock.unlock();
             listener();
@@ -3145,6 +3186,7 @@ ProgressiveRender::~ProgressiveRender()
     {
         std::lock_guard<std::mutex> l(_imp->mutex);
         _imp->quit = true;
+        _imp->quitting = true;
         _imp->wake.notify_all();
     }
     if (_imp->worker.joinable()) {

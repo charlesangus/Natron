@@ -257,6 +257,7 @@ USDProject3D::initializeKnobs()
     frameHold->setAllDimensionsEnabled(false);
     page->addKnob(frameHold);
     _frameHold = frameHold;
+    SceneNodeAuthoring::createDeletedTextureSourcesKnob(this, page);
 } // USDProject3D::initializeKnobs
 
 void
@@ -275,7 +276,15 @@ void
 USDProject3D::onInputChanged(int inputNo)
 {
     NativeEffectBase::onInputChanged(inputNo);
+    SceneNodeAuthoring::forgetDeletedTextureSourceIfConnected(*this, inputNo);
     scheduleCameraMenuRefresh();
+}
+
+void
+USDProject3D::onInputSourceDeleted(int inputNo,
+                                   const std::string& sourceName)
+{
+    SceneNodeAuthoring::recordDeletedTextureSource(*this, inputNo, sourceName);
 }
 
 void
@@ -718,9 +727,9 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         warnings.push_back(tr("Nothing is connected to the Image input: the projection is black."));
     } else {
         const std::string uri = plate.getUri(args.time);
-        const std::string failure = LiveTextureStore::instance().getFailure(uri);
+        const std::string failure = SceneNodeAuthoring::getLiveTextureFailure(plate, args.time);
         if (!failure.empty()) {
-            warnings.push_back(tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
+            warnings.push_back(tr("The live texture %1 shows magenta, the missing-texture colour: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
         }
     }
     if (warnings.isEmpty()) {

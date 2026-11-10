@@ -8,6 +8,7 @@ on:
   pull_request:
     branches:
     - main
+    - 'feature/**'
 
 concurrency:
   # Only PR runs share a group, so a newer push supersedes an older one.
@@ -307,6 +308,8 @@ jobs:
         scheduler: [legacy, taskgraph]
     container:
       image: ${{ needs.dev-image.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

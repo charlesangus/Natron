@@ -78,6 +78,7 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -2030,6 +2031,49 @@ TEST_F(USDRenderStormTest, ALiveTextureFollowsADisabledNodeToItsInput)
     EXPECT_NEAR(1., passed[0], 0.03) << "disabled " << passed[0] << ", " << passed[1] << ", " << passed[2];
     EXPECT_NEAR(0., passed[1], 0.03);
     EXPECT_NEAR(0., passed[2], 0.03);
+}
+
+TEST_F(USDRenderStormTest, DeletingALiveTexturesSourceShowsMagentaUntilUndone)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr constant;
+    NodePtr render = createLiveTextureGraph(&constant, false, true);
+    ASSERT_TRUE(render != nullptr);
+    NodePtr material = render->getInput(0)->getInput(0)->getInput(0)->getInput(0);
+    ASSERT_TRUE(material != nullptr);
+    ASSERT_EQ(std::string(PLUGINID_NATRON_USDEMISSIVEMATERIAL), material->getPluginID());
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(color != nullptr);
+    color->setValue(0., ViewSpec::all(), 0);
+    color->setValue(1., ViewSpec::all(), 1);
+    color->setValue(0., ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    const std::string name = constant->getFullyQualifiedName();
+
+    // What the delete commands' redo and undo do, with the same arguments.
+    const NodesList outputs(1, material);
+    constant->deactivate(outputs, false, false, true, false);
+    constant->notifyOutputsOfDeletion();
+    double missing[4];
+    centreOf(renderColour(render, 1.), missing);
+    for (int k = 0; k < 3; ++k) {
+        EXPECT_NEAR(kLiveTextureMissingColour[k], missing[k], 0.03) << "deleted " << missing[0] << ", " << missing[1] << ", " << missing[2];
+    }
+    QString message;
+    int type = 0;
+    ASSERT_TRUE(material->hasPersistentMessage());
+    material->getPersistentMessage(&message, &type, false);
+    EXPECT_NE(-1, message.indexOf(QString::fromStdString(name))) << message.toStdString();
+
+    constant->activate(outputs, false, false);
+    double restored[4];
+    centreOf(renderColour(render, 1.), restored);
+    EXPECT_NEAR(0., restored[0], 0.03) << "restored " << restored[0] << ", " << restored[1] << ", " << restored[2];
+    EXPECT_NEAR(1., restored[1], 0.03);
+    EXPECT_NEAR(0., restored[2], 0.03);
+    EXPECT_FALSE(material->hasPersistentMessage());
 }
 
 // The plan's animated Ramp is an animated Constant here: the Ramp is an OpenFX plug-in the test

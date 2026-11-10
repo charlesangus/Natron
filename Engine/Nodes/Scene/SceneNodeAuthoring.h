@@ -144,11 +144,41 @@ std::string getAnchoredFilePath(const KnobFilePtr& knob);
  * renders: the node, its content hash and whether it varies over time, without rendering it, over
  * the project's frame range. False when nothing is connected. A node keys its layer on these (appendLiveTextureSource) and
  * authors them through recordLiveTexture().
+ *
+ * An empty input whose source was deleted (recordDeletedTextureSource) has a source too, with a null
+ * node and content hash 0, which no rendered image's URI has: it fails to render as any texture whose
+ * node is gone does, so every renderer shows it as missing and the consumer warns, naming the node.
  **/
 bool getLiveTextureSource(const EffectInstance& consumer,
                           int inputNb,
                           const std::string& layer,
                           LiveTextureSource* source);
+
+/**
+ * @brief Why source, from getLiveTextureSource(), shows kLiveTextureMissingColour at time, or empty
+ * when nothing says it does. A deleted source is known from the source alone, so its consumer warns
+ * however its texture was last rendered, even when no render has failed since the store was emptied.
+ **/
+std::string getLiveTextureFailure(const LiveTextureSource& source,
+                                  double time);
+
+/**
+ * @brief The knob of a node with live textures that remembers which inputs lost their source to a
+ * deletion: only a deletion leaves them magenta, while an input never connected or disconnected on
+ * purpose keeps the material's own colour, and the empty input looks the same in all of them. It
+ * persists so a reopened project shows the same, and it is hashed so the node's layer follows it.
+ **/
+void createDeletedTextureSourcesKnob(KnobHolder* holder,
+                                     const KnobPagePtr& page);
+
+// For a node's EffectInstance::onInputSourceDeleted().
+void recordDeletedTextureSource(const EffectInstance& consumer,
+                                int inputNb,
+                                const std::string& sourceName);
+
+// For a node's EffectInstance::onInputChanged(): connecting the input replaces what it lost.
+void forgetDeletedTextureSourceIfConnected(const EffectInstance& consumer,
+                                           int inputNb);
 
 // What a layer authoring source reads of it.
 void appendLiveTextureSource(const LiveTextureSource& source,

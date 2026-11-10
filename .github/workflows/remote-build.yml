@@ -98,6 +98,8 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -206,7 +208,7 @@ jobs:
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest)$' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest|USDRenderCyclesLiveTextureTest|USDRenderMoonRayLiveTextureTest)$' --timeout 300 --output-on-failure || rc=$?
           # Storm skips and passes when no GL context can be made; REQUIRE_GL turns that into a failure.
           NATRON_TEST_REQUIRE_GL=1 xvfb-run --auto-servernum ctest -R '^USDRenderStormTest$' --timeout 600 --output-on-failure || rc=$?
           # The node suites' own Golden cases go through the same recorder. ctest entries are whole
@@ -366,6 +368,8 @@ jobs:
         scheduler: ${{ fromJSON(needs.ctest-legs.outputs.schedulers) }}
     container:
       image: ${{ needs.dev-image.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -667,6 +671,8 @@ jobs:
         include: ${{ fromJSON(needs.gui-matrix.outputs.matrix) }}
     container:
       image: ${{ needs.gui-matrix.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

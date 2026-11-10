@@ -157,6 +157,8 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+    virtual void onInputSourceDeleted(int inputNo,
+                                      const std::string& sourceName) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
     virtual bool knobChanged(KnobI* k,

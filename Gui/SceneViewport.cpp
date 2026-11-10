@@ -68,6 +68,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
@@ -1145,6 +1146,7 @@ struct SceneViewportRenderer::Implementation {
         parameters.rendererPluginId = TfToken(rendererId);
         try {
             CyclesAovs::registerSceneIndices();
+            LiveTextureSceneIndex::registerSceneIndices();
             {
                 TfErrorMark mark;
                 engine.reset(new UsdImagingGLEngine(parameters));

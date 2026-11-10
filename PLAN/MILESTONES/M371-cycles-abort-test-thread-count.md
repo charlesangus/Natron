@@ -27,3 +27,4 @@ The process thread count picks up unrelated pool threads.
 ## Decisions
 
 - 2026-11-10 — The check takes its reference count after two warm-up runs, then polls each later run for up to 2 s, so a lasting unrelated pool thread is ignored and a per-abort leak still accumulates. The "Subprocess aborted" in run 42757353797 was a different failure: heap corruption in `EmissionMatchesReferenceRender`. It is passed to M378 - Scene Render Test Stability.
+- 2026-11-10 — Gate: `USDRenderCyclesTest` passed 30 of 30 under load on both legs (release run 42832073303, at 5c40f8625). PR #250 is reviewed and green, and waits on PR #248 (M377 - Readable CI Names) merging so its checks report under the new required names.

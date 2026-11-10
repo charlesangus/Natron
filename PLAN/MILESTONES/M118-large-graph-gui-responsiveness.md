@@ -211,7 +211,7 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - approach: a uniform grid of node and edge bounds in `_nodeRoot` coordinates, updated on move and edge geometry change; hover does one tolerance query; splice hint, rubber band and tooltips use it too.
   - verify: Xvfb `hover` flat from 300 to 3000; `m55_node_graph.py` hover and tooltip checks pass.
   - size: M
-- [ ] M118.P6.T7 — One downstream walk per value-change cascade
+- [x] M118.P6.T7 — One downstream walk per value-change cascade
   - files: `Engine/EffectInstance.cpp`, `Engine/Knob.cpp`, `Engine/Node.cpp`, `Tests/Knob_Test.cpp`
   - approach: collect the nodes reached by an outermost set/endChanges; at its end, one multi-source `refreshShownDownstreamInputRelatedData`, one `getViewersDownstreamOf`, previews refreshed once.
   - verify: gtest — 50 dependents on a 3000-chain each visit a node once (counter); Xvfb `knob_change_fanout` on comp near wide.

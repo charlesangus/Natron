@@ -115,8 +115,24 @@ try:
         except RuntimeError:
             return []
 
-    def scrims():
-        return [it for it in graph_items() if it.data(0) == SCRIM_NAME]
+    def read_items(read):
+        """read(item) for every live scene item; items deleted by an overlay rebuild mid-pass are skipped."""
+        values = []
+        for it in graph_items():
+            try:
+                values.append(read(it))
+            except RuntimeError:
+                continue
+        return values
+
+    def scrim_parent_depths():
+        def depth(it):
+            parent = it.parentItem() if it.data(0) == SCRIM_NAME else None
+            return parent.zValue() if parent is not None else None
+        return [d for d in read_items(depth) if d is not None]
+
+    def scrim_count():
+        return sum(1 for hit in read_items(lambda it: it.data(0) == SCRIM_NAME) if hit)
 
     def shown():
         item = overlay_item()
@@ -334,13 +350,14 @@ try:
                 check(ok, "editing the Saturation fades every node above it, TimeBlur included, and not the "
                           "Saturation (expected %r faded; %s)" % (above, state()))
                 check(prop("regionCount") >= 1, "the faded regions keep their outlines (%s)" % state())
-                check(len(scrims()) == prop("fadedCount"),
-                      "every faded node has one fade cover (%d covers; %s)" % (len(scrims()), state()))
-                lowered = [it for it in graph_items() if it.opacity() < 0.999]
+                check(scrim_count() == prop("fadedCount"),
+                      "every faded node has one fade cover (%d covers; %s)" % (scrim_count(), state()))
+                lowered = [o for o in read_items(lambda it: it.opacity()) if o < 0.999]
                 check(not lowered, "fading lowers no item's opacity, so no pipe shows through a node (%d items)"
                       % len(lowered))
-                node_depths = [s.parentItem().zValue() for s in scrims() if s.parentItem() is not None]
-                pipe_depths = [it.zValue() for it in graph_items() if it.type() == LINE_ITEM_TYPE]
+                node_depths = scrim_parent_depths()
+                pipe_depths = [d for d in read_items(
+                    lambda it: it.zValue() if it.type() == LINE_ITEM_TYPE else None) if d is not None]
                 check(node_depths and pipe_depths and max(pipe_depths) < min(node_depths),
                       "the pipes stay below the faded nodes (pipes %r, nodes %r)"
                       % (sorted(set(pipe_depths)), sorted(set(node_depths))))

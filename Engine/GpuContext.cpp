@@ -531,12 +531,16 @@ GpuContext::initialize()
                 if (_options.memoryBudgetMB > 0) {
                     runtime->pool().setUserBudget(_options.memoryBudgetMB << 20);
                 }
+                const std::string deviceName = runtime->device().info().name;
+                const std::string driverVersion = runtime->device().info().driverVersion;
+                const std::string selectionReason = runtime->device().info().selectionReason;
                 {
                     std::lock_guard<std::mutex> k(shared.mutex);
                     shared.calibration = calibration;
-                    shared.deviceName = runtime->device().info().name;
+                    shared.deviceName = deviceName;
                 }
                 shared.runtime = std::move(runtime);
+                // Once published, a device loss recovery may tear the device down, so nothing below may read the runtime.
                 finish(true);
                 const std::chrono::steady_clock::time_point ready = std::chrono::steady_clock::now();
                 qInfo().noquote() << QString::fromLatin1("GPU compute ready on %5 (driver %6, selected by %7) after %1 ms (loader, instance, device and runtime %2 ms, "
@@ -545,9 +549,9 @@ GpuContext::initialize()
                                          .arg(elapsedMs(_createdAt, created), 0, 'f', 1)
                                          .arg(timings.importMs, 0, 'f', 1)
                                          .arg(timings.stagingMs, 0, 'f', 1)
-                                         .arg(QString::fromStdString(shared.deviceName),
-                                              QString::fromStdString(shared.runtime->device().info().driverVersion),
-                                              QString::fromStdString(shared.runtime->device().info().selectionReason));
+                                         .arg(QString::fromStdString(deviceName),
+                                              QString::fromStdString(driverVersion),
+                                              QString::fromStdString(selectionReason));
 
                 return;
             }

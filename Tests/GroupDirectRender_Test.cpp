@@ -33,6 +33,7 @@
 
 #include "BaseTest.h"
 #include "DeepRenderTestEffect.h"
+#include "NativeMetadataTestEffect.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -183,6 +184,61 @@ protected:
     static std::string modeName(RenderSchedulerModeEnum mode)
     {
         return (mode == eRenderSchedulerModeLegacy) ? "legacy" : "task graph";
+    }
+
+    struct PassThroughBelowAGroup {
+        NodePtr upper;
+        NodePtr fed;
+        NodePtr passThrough;
+        NodePtr dot;
+    };
+
+    void buildPassThroughBelowAGroup(PassThroughBelowAGroup* g)
+    {
+        g->upper = createGroup();
+        ASSERT_TRUE(g->upper != nullptr);
+        g->fed = createSourceInside(g->upper, 80);
+        NodePtr upperOutput = createInside(g->upper, PLUGINID_NATRON_OUTPUT);
+        ASSERT_TRUE(g->fed && upperOutput);
+        ASSERT_TRUE(upperOutput->connectInput(g->fed, 0));
+        g->passThrough = createGroup();
+        ASSERT_TRUE(g->passThrough != nullptr);
+        NodePtr input = createInside(g->passThrough, PLUGINID_NATRON_INPUT);
+        NodePtr output = createInside(g->passThrough, PLUGINID_NATRON_OUTPUT);
+        ASSERT_TRUE(input && output);
+        ASSERT_TRUE(output->connectInput(input, 0));
+        ASSERT_TRUE(g->passThrough->connectInput(g->upper, 0));
+        g->dot = createAtRoot(PLUGINID_NATRON_DOT);
+        ASSERT_TRUE(g->dot != nullptr);
+        ASSERT_TRUE(g->dot->connectInput(g->passThrough, 0));
+    }
+
+    // The caches are kept between the renders, so a pass-through group whose hash missed an edit
+    // inside the group feeding it would serve the previous image.
+    static void expectPassThroughBelowAGroupFollowsAnEditInside(const PassThroughBelowAGroup& g,
+                                                                bool disabled,
+                                                                RenderSchedulerModeEnum mode)
+    {
+        const std::string where = modeName(mode) + (disabled ? ", disabled" : "");
+        appPTR->clearAllCaches();
+        g.passThrough->setNodeDisabled(disabled);
+        setSeed(g.fed, 80);
+        std::vector<RenderedPlane> first;
+        std::string error;
+        ASSERT_TRUE(render(g.passThrough, mode, false, &first, &error)) << where << ": " << error;
+        ASSERT_FALSE(first.empty()) << where;
+        const U64 before = g.passThrough->getHashValue();
+
+        setSeed(g.fed, 81);
+        EXPECT_NE(before, g.passThrough->getHashValue()) << where << ": the edit did not reach the pass-through group's hash";
+        std::vector<RenderedPlane> second;
+        std::vector<RenderedPlane> throughDot;
+        ASSERT_TRUE(render(g.passThrough, mode, false, &second, &error)) << where << ": " << error;
+        ASSERT_TRUE(render(g.dot, mode, true, &throughDot, &error)) << where << ": " << error;
+        ASSERT_FALSE(second.empty()) << where;
+        expectSamePlanes(throughDot, second, where);
+        EXPECT_FALSE(first.front().pixels == second.front().pixels) << where << ": the edit did not reach the pass-through group's render";
+        g.passThrough->setNodeDisabled(false);
     }
 };
 
@@ -575,5 +631,180 @@ TEST_F(GroupDirectRender, InnerEditAfterARenderIsReflectedInTheNextRenderInBothM
         ASSERT_TRUE(render(group, mode, false, &third, &error)) << modeName(mode) << ": " << error;
         ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << modeName(mode) << ": " << error;
         expectSamePlanes(throughDot, third, modeName(mode) + " after the crop edit");
+    }
+}
+
+// The caches are kept between the renders, so a group two or three levels up whose hash missed
+// the edit would serve the previous image.
+TEST_F(GroupDirectRender, EditThreeGroupsDownReachesEveryEnclosingGroupInBothModes)
+{
+    NodePtr outer = createGroup();
+    ASSERT_TRUE(outer != nullptr);
+    NodePtr middle = createGroupInside(outer);
+    ASSERT_TRUE(middle != nullptr);
+    NodePtr inner = createGroupInside(middle);
+    ASSERT_TRUE(inner != nullptr);
+    NodePtr fed = createSourceInside(inner, 70);
+    NodePtr innerOutput = createInside(inner, PLUGINID_NATRON_OUTPUT);
+    NodePtr middleOutput = createInside(middle, PLUGINID_NATRON_OUTPUT);
+    NodePtr outerOutput = createInside(outer, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(fed && innerOutput && middleOutput && outerOutput);
+    ASSERT_TRUE(innerOutput->connectInput(fed, 0));
+    ASSERT_TRUE(middleOutput->connectInput(inner, 0));
+    ASSERT_TRUE(outerOutput->connectInput(middle, 0));
+    NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(dot != nullptr);
+    ASSERT_TRUE(dot->connectInput(outer, 0));
+    const std::vector<NodePtr> groups = { outer, middle, inner };
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        const std::string where = modeName(mode);
+        appPTR->clearAllCaches();
+        setSeed(fed, 70);
+        std::vector<std::vector<RenderedPlane>> first(groups.size());
+        std::vector<U64> before(groups.size());
+        std::string error;
+        for (std::size_t i = 0; i < groups.size(); ++i) {
+            ASSERT_TRUE(render(groups[i], mode, false, &first[i], &error)) << where << ": " << error;
+            ASSERT_FALSE(first[i].empty()) << where;
+            before[i] = groups[i]->getHashValue();
+        }
+
+        setSeed(fed, 71);
+        std::vector<RenderedPlane> throughDot;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << where << ": " << error;
+        for (std::size_t i = 0; i < groups.size(); ++i) {
+            const std::string group = where + ", " + groups[i]->getScriptName_mt_safe();
+            EXPECT_NE(before[i], groups[i]->getHashValue()) << group << ": the edit did not reach the group's hash";
+            std::vector<RenderedPlane> second;
+            ASSERT_TRUE(render(groups[i], mode, false, &second, &error)) << group << ": " << error;
+            expectSamePlanes(throughDot, second, group);
+            ASSERT_FALSE(second.empty()) << group;
+            EXPECT_FALSE(first[i].front().pixels == second.front().pixels) << group << ": the edit did not reach the group's render";
+        }
+    }
+}
+
+TEST_F(GroupDirectRender, PassThroughGroupBelowAGroupFollowsAnEditInsideItInBothModes)
+{
+    PassThroughBelowAGroup g;
+    ASSERT_NO_FATAL_FAILURE(buildPassThroughBelowAGroup(&g));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        ASSERT_NO_FATAL_FAILURE(expectPassThroughBelowAGroupFollowsAnEditInside(g, false, mode));
+    }
+}
+
+// A disabled group renders its external input, here the group above it.
+TEST_F(GroupDirectRender, DisabledPassThroughGroupBelowAGroupFollowsAnEditInsideItInBothModes)
+{
+    PassThroughBelowAGroup g;
+    ASSERT_NO_FATAL_FAILURE(buildPassThroughBelowAGroup(&g));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        ASSERT_NO_FATAL_FAILURE(expectPassThroughBelowAGroupFollowsAnEditInside(g, true, mode));
+    }
+}
+
+// The outer group's GroupInput feeds the nested pass-through group directly, so an edit of the
+// external input reaches the nested group only through the outer one's redirections.
+TEST_F(GroupDirectRender, NestedPassThroughGroupFedByAGroupInputFollowsAnExternalEditInBothModes)
+{
+    NodePtr outer = createGroup();
+    ASSERT_TRUE(outer != nullptr);
+    NodePtr outerInput = createInside(outer, PLUGINID_NATRON_INPUT);
+    NodePtr outerOutput = createInside(outer, PLUGINID_NATRON_OUTPUT);
+    NodePtr inner = createGroupInside(outer);
+    ASSERT_TRUE(outerInput && outerOutput && inner);
+    NodePtr innerInput = createInside(inner, PLUGINID_NATRON_INPUT);
+    NodePtr innerOutput = createInside(inner, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(innerInput && innerOutput);
+    ASSERT_TRUE(innerOutput->connectInput(innerInput, 0));
+    ASSERT_TRUE(inner->connectInput(outerInput, 0));
+    ASSERT_TRUE(outerOutput->connectInput(inner, 0));
+    NodePtr source = createAtRoot(kTestPluginIDImageRenderSource);
+    ASSERT_TRUE(source != nullptr);
+    ASSERT_TRUE(outer->connectInput(source, 0));
+    NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(dot != nullptr);
+    ASSERT_TRUE(dot->connectInput(outer, 0));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        const std::string where = modeName(mode);
+        appPTR->clearAllCaches();
+        setSeed(source, 90);
+        std::vector<RenderedPlane> first;
+        std::string error;
+        ASSERT_TRUE(render(inner, mode, false, &first, &error)) << where << ": " << error;
+        ASSERT_FALSE(first.empty()) << where;
+        const U64 outerBefore = outer->getHashValue();
+        const U64 innerBefore = inner->getHashValue();
+
+        setSeed(source, 91);
+        EXPECT_NE(outerBefore, outer->getHashValue()) << where << ": the edit did not reach the outer group's hash";
+        EXPECT_NE(innerBefore, inner->getHashValue()) << where << ": the edit did not reach the nested group's hash";
+        std::vector<RenderedPlane> second;
+        std::vector<RenderedPlane> throughDot;
+        ASSERT_TRUE(render(inner, mode, false, &second, &error)) << where << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << where << ": " << error;
+        ASSERT_FALSE(second.empty()) << where;
+        expectSamePlanes(throughDot, second, where);
+        EXPECT_FALSE(first.front().pixels == second.front().pixels) << where << ": the edit did not reach the nested group's render";
+    }
+}
+
+// The group is reached as a leaf from the inner mark and through its input from the external
+// one, in either order within one flush.
+TEST_F(GroupDirectRender, InnerAndExternalMarksInOneFlushReachTheGroupsConsumersAndMetadataReader)
+{
+    NodePtr group = createGroup();
+    ASSERT_TRUE(group != nullptr);
+    NodePtr input = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr inputReader = createInside(group, PLUGINID_NATRON_DOT);
+    NodePtr fed = createSourceInside(group, 100);
+    NodePtr output = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(input && inputReader && fed && output);
+    ASSERT_TRUE(inputReader->connectInput(input, 0));
+    ASSERT_TRUE(output->connectInput(fed, 0));
+    NodePtr external = createAtRoot(kTestPluginIDImageRenderSource);
+    ASSERT_TRUE(external != nullptr);
+    ASSERT_TRUE(group->connectInput(external, 0));
+    NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(dot != nullptr);
+    ASSERT_TRUE(dot->connectInput(group, 0));
+    NodePtr reader = createAtRoot(kTestPluginIDMetadataSource);
+    ASSERT_TRUE(reader != nullptr);
+    KnobIPtr readerTag = reader->getKnobByName("tag");
+    ASSERT_TRUE(readerTag != nullptr);
+    ASSERT_NO_THROW(readerTag->setExpression(0, "int(" + group->getScriptName() + ".metadata('exr/tag', 1) or 0)", false, true));
+    std::list<std::pair<KnobIPtr, int>> metadataReaders;
+    group->getMetadataReaders(&metadataReaders);
+    bool registered = false;
+    for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = metadataReaders.begin(); it != metadataReaders.end(); ++it) {
+        registered = registered || (it->first == readerTag);
+    }
+    ASSERT_TRUE(registered) << "the expression did not register the reader with the group";
+
+    const std::vector<NodePtr> expectedDirty = { group, dot, reader, inputReader };
+    for (bool innerFirst : { true, false }) {
+        const std::string where = innerFirst ? "inner mark first" : "external mark first";
+        std::vector<U64> before;
+        for (const NodePtr& node : expectedDirty) {
+            (void)node->getHashValue();
+            before.push_back(node->getHashMarkCount());
+        }
+
+        // Marked directly rather than through knob edits, so that no read between the two
+        // flushes the first mark on its own.
+        if (innerFirst) {
+            fed->markHashDirty();
+            external->markHashDirty();
+        } else {
+            external->markHashDirty();
+            fed->markHashDirty();
+        }
+        for (std::size_t i = 0; i < expectedDirty.size(); ++i) {
+            EXPECT_NE(before[i], expectedDirty[i]->getHashMarkCount()) << where << ": " << expectedDirty[i]->getScriptName_mt_safe() << " was not marked";
+        }
     }
 }

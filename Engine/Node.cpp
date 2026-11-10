@@ -1499,7 +1499,7 @@ Node::getHashDependents(std::vector<NodePtr>* dependents,
     // The appended range doubles as the queue of outputs still to look at; entries it drops are
     // compacted away behind the read position.
     std::size_t write = dependents->size();
-    appendOutputsWithGroupRedirection(dependents);
+    appendOutputsThroughOneRedirection(dependents);
     std::vector<const Node*> passedThrough;
     for (std::size_t read = write; read < dependents->size(); ++read) {
         NodePtr output = (*dependents)[read];
@@ -1514,9 +1514,13 @@ Node::getHashDependents(std::vector<NodePtr>* dependents,
         // Inputs read through a group, its GroupInput and GroupOutput nodes and a precomp, so no
         // hash folds these in and they can stay dirty while the nodes below them are recomputed.
         // A dirty mark walk stops at a dirty node, so the nodes past them are listed here too.
-        if (isSkippedByHashInputs(*output) && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
+        // Each is stepped through one redirection at a time, so that a group the redirection
+        // crosses, such as a pass-through one, is listed too: its hash folds in what it reads
+        // through, but a full redirection jumps past it.
+        const bool redirects = isSkippedByHashInputs(*output) || output->isPrecompOutputNode();
+        if (redirects && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
             passedThrough.push_back(output.get());
-            output->appendOutputsWithGroupRedirection(dependents);
+            output->appendOutputsThroughOneRedirection(dependents);
             if (output->_imp->effect) {
                 output->_imp->effect->appendHashLeafDependents(leaves);
             }
@@ -2033,18 +2037,18 @@ Node::flushHashDirtyMarks()
             if (owed) {
                 node->_imp->hashFlushDeferredVisit = 0;
             }
-            if (mark(node) || owed) {
+            if ((mark(node) || owed) && (node->_imp->hashFlushRootVisit != pass)) {
                 toExpand.push_back(node);
             }
         };
-        // A leaf is not walked past, but nothing folds in its hash for the dirty-stop rule to
-        // cover what it marks, so that is marked whether or not the leaf was dirty.
+        // A leaf's dependents are walked even when the leaf is already dirty: the dirty-stop rule
+        // assumes whatever folds in a dirty node is dirty too, and nothing folds in a leaf's hash.
         auto reachLeaf = [&mark, &leaves, pass](const NodePtr& node) {
             if (!node || (node->_imp->hashFlushLeafVisit == pass)) {
                 return;
             }
             node->_imp->hashFlushLeafVisit = pass;
-            if (mark(node)) {
+            if (mark(node) && (node->_imp->hashFlushRootVisit != pass)) {
                 node->_imp->hashFlushDeferredVisit = pass;
             }
             leaves.push_back(node);

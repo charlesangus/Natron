@@ -937,6 +937,19 @@ public:
     void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
 
     /**
+     * @brief appendOutputsWithGroupRedirection() stopping after one redirection: a group appends
+     * the nodes its GroupInputs feed, a GroupOutput the outputs of its group, a precomp's output
+     * node those of the precomp; any other node its own outputs. The nodes appended may redirect
+     * again.
+     **/
+    void appendOutputsThroughOneRedirection(std::vector<NodePtr>* outputs) const;
+
+    /**
+     * @brief Whether this node is the output node of the precomp it is part of.
+     **/
+    bool isPrecompOutputNode() const;
+
+    /**
      * @brief Walks the body of a loop running from begins up to tail, closed by end: the nodes the
      * inputs of tail reach going up that the outputs of any of begins reach going down without
      * passing end. With digest, sets it to tail's hash with each of begins standing for one fixed
@@ -2279,9 +2292,10 @@ private:
     bool findDataKindConflictInsideGroup(int inputNb, const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
     /**
-     * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
-     * the internal nodes of a roto paint tree; and in leaves, the nodes the effects past which
-     * they are listed append through appendHashLeafDependents().
+     * @brief The nodes whose hash folds in this one's: outputs through group redirections, every
+     * group-redirect node passed through on the way, and the internal nodes of a roto paint tree.
+     * leaves receives the nodes that appendHashLeafDependents() adds, from this node's effect and
+     * from the group-redirect nodes passed through.
      **/
     void getHashDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
 

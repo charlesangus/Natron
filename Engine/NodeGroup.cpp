@@ -1383,6 +1383,16 @@ NodeGroup::getOutputNode(bool useGuiConnexions) const
     return useGuiConnexions ? _imp->guiOutputs.front().lock() : _imp->outputs.front().lock();
 }
 
+void
+NodeGroup::appendExtraHashSources(std::vector<NodePtr>* sources) const
+{
+    const NodePtr fed = getOutputNodeInput(false);
+
+    if (fed) {
+        sources->push_back(fed);
+    }
+}
+
 NodePtr
 NodeGroup::getOutputNodeInput(bool useGuiConnexions) const
 {

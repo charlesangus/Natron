@@ -43,6 +43,7 @@ set(Tests_SOURCES
     CurveHost_Test.cpp
     DataKind_Test.cpp
     DataKindGroup_Test.cpp
+    GroupDirectRender_Test.cpp
     DataKindProjectLoad_Test.cpp
     DeepChannelNodes_Test.cpp
     DeepExpressionEvaluator_Test.cpp

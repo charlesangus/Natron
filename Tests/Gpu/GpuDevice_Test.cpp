@@ -273,7 +273,9 @@ TEST(GpuDeviceCpuSelection, RankedPickNeverReturnsCpuDeviceButExplicitSelectorDo
     {
         ScopedGpuDeviceEnv env(nullptr);
         std::unique_ptr<GpuDevice> ranked;
-        const GpuStatus s = GpuDevice::create(gputest::deviceOptions(), ranked);
+        gpu::GpuDeviceOptions o = gputest::deviceOptions();
+        o.deviceSelector.clear();
+        const GpuStatus s = GpuDevice::create(o, ranked);
         if (s.ok()) {
             EXPECT_NE(ranked->info().type, VK_PHYSICAL_DEVICE_TYPE_CPU) << ranked->info().name;
         } else {

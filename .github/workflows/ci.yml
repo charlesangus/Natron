@@ -185,6 +185,7 @@ jobs:
           ls -lh build-tree.tar
 
       - name: Upload build tree
+        id: upload_tree
         uses: actions/upload-artifact@v7.0.1
         with:
           name: build-tree-debug
@@ -220,7 +221,12 @@ jobs:
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
-        run: tools/ci/summary.sh build debug build-tree-debug
+          TREE_UPLOAD: ${{ steps.upload_tree.outcome }}
+        run: |
+          artifacts=''
+          if [[ "$TREE_UPLOAD" == success ]]; then artifacts=build-tree-debug; fi
+          tools/ci/summary.sh build debug "$artifacts"
+
 
   # Compile-only release build. Debug and release compile different code
   # (-DDEBUG, NDEBUG), so a change can build in debug and break release;
@@ -422,10 +428,10 @@ jobs:
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
-        run: tools/ci/summary.sh ctest ${{ matrix.scheduler }} build/debug ''
+        run: tools/ci/summary.sh ctest ${{ matrix.scheduler }} build/debug '' ${{ matrix.label }}
 
   # Branch protection requires a check named exactly `Build and test`; the
-  # matrix legs are named `ctest (<scheduler>)`, so this job keeps the
+  # matrix legs are named `Test · <label> scheduler`, so this job keeps the
   # required name stable. It also holds the byte-for-byte comparison of the
   # two schedulers' smoke renders, which can no longer happen inside one job.
   build-and-test:

@@ -536,7 +536,8 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
           SCHEDULER: ${{ matrix.scheduler }}
-        run: tools/ci/summary.sh ctest "$SCHEDULER" "build/$PRESET" "ctest-log-$SCHEDULER-$PRESET-$GITHUB_SHA"
+          SCHEDULER_LABEL: ${{ matrix.scheduler == 'taskgraph' && 'task-graph' || matrix.scheduler }}
+        run: tools/ci/summary.sh ctest "$SCHEDULER" "build/$PRESET" "ctest-log-$SCHEDULER-$PRESET-$GITHUB_SHA" "$SCHEDULER_LABEL"
 
   # Gathers the legs' logs into the one artifact tools/ci/remote/build.sh downloads, and holds the
   # byte-for-byte comparison of the two schedulers' smoke renders, which spans both legs.

@@ -33,7 +33,7 @@ Rendering a Group node directly returns the pixels of the node feeding its Outpu
 
 ## Phase 319.2: Drop workarounds, edge coverage
 
-- [ ] M319.P2.T1 — Render groups directly in existing tests
+- [x] M319.P2.T1 — Render groups directly in existing tests
   - files: `Tests/Native/CacheEquivalence_Test.cpp`, `Tests/Native/LightWrapRender_Test.cpp`
   - approach: `consumerOf` keeps only its Precomp branch; LightWrap renders `_wrap` and drops `_out`; the Dot4 check becomes `getOutputNodeInput(false) == inner("Dot4")`.
   - verify: both tests pass in both modes; the sweep reports Group and PyPlugs as compared, not skipped.

@@ -24,7 +24,7 @@ Evidence (job 129553888682, "ctest (legacy)", `ctest -j 4`, llvmpipe LLVM 21.1.8
 
 ## Phase 379.2: Fix
 
-- [ ] M379.P2.T1 — Fix the crash site found in Phase 1
+- [x] M379.P2.T1 — Fix the crash site found in Phase 1
   - files: whichever Phase 1 points at (`Engine/GpuContext.cpp`, `Engine/Gpu/GpuRuntime.cpp`, `Engine/Gpu/GpuTransfer.cpp` or `Engine/HostImageMemory.cpp`), `Tests/GpuContext_Test.cpp`. Not `Engine/Gpu/GpuDevice.cpp`'s device pick, `Tests/Gpu/GpuTestDevice.h` or `Tests/Gpu/GpuHarness.h` (M375 - No CPU Vulkan Auto-Select).
   - approach: our code: fix the order in which the thread starts or stops relative to the object it reads (join or stop it before the pointer is cleared, or publish the pointer before it starts). Add a regression case to `Tests/GpuContext_Test.cpp` that creates and destroys contexts in a loop with `injectFault(DeviceLost)` and `recoverIfLost()`, aimed at the window the trace shows. Lavapipe: a minimal raw-Vulkan repro under `build/m379/`, a Mesa issue, and the narrowest workaround, citing the issue.
   - verify: the new case passes; `--repeat-test GpuContextTest:50` passes remotely.

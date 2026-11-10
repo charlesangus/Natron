@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ''
+      repeat_test:
+        description: 'Name-regex:N (needs tests): after the ctest run, each ctest leg runs that one case N times under ctest load'
+        required: false
+        type: string
+        default: ''
       cmake_args:
         description: 'Extra CMake arguments, space-separated'
         required: false
@@ -483,6 +488,20 @@ jobs:
               | tee "ctest-logs/ctest-${{ matrix.scheduler }}-seed${seed}.log" || rc=$?
           done
           exit "$rc"
+
+      - name: Repeat one ctest case (${{ matrix.scheduler }} scheduler)
+        if: (success() || failure()) && inputs.repeat_test != ''
+        timeout-minutes: 90
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
+          NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
+          REPEAT_TEST: ${{ inputs.repeat_test }}
+        run: |
+          set -o pipefail
+          mkdir -p ctest-logs
+          tools/ci/local/test.sh repeat "${REPEAT_TEST%:*}" "${REPEAT_TEST##*:}" "$PRESET" 2>&1 \
+            | tee "ctest-logs/ctest-${{ matrix.scheduler }}-repeat.log"
 
       - name: Python bindings smoke test (${{ matrix.scheduler }} scheduler)
         if: success() || failure()

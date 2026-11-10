@@ -68,7 +68,8 @@ def make_sheet(concept, bg):
     pad, gap, label_h = 24, 32, 18
     lockup_w = 1024
     mark = CONCEPT_DIR / f"{concept}.svg"
-    lockup = render_svg(CONCEPT_DIR / f"{concept}-lockup.svg", width=lockup_w, bg=bg)
+    lockups = [(p.stem[len(concept) + 1:], render_svg(p, width=lockup_w, bg=bg))
+               for p in list_lockups(concept)]
 
     tiles = []  # (caption, image)
     for size in (16, 32):
@@ -80,7 +81,8 @@ def make_sheet(concept, bg):
     row_h = max(t.height for _, t in tiles)
     row_w = sum(t.width for _, t in tiles) + gap * (len(tiles) - 1)
     width = max(lockup_w, row_w) + 2 * pad
-    height = (pad + label_h + row_h + gap + label_h + lockup.height + pad)
+    height = (pad + label_h + row_h
+              + sum(gap + label_h + img.height for _, img in lockups) + pad)
 
     sheet = Image.new("RGBA", (width, height), bg)
     draw = ImageDraw.Draw(sheet)
@@ -89,15 +91,21 @@ def make_sheet(concept, bg):
         label(draw, (x, pad), caption)
         sheet.alpha_composite(tile, (x, pad + label_h + (row_h - tile.height) // 2))
         x += tile.width + gap
-    y = pad + label_h + row_h + gap
-    label(draw, (pad, y), f"lockup {lockup_w}px")
-    sheet.alpha_composite(lockup, (pad, y + label_h))
+    y = pad + label_h + row_h
+    for caption, img in lockups:
+        y += gap
+        label(draw, (pad, y), f"{caption} {lockup_w}px")
+        sheet.alpha_composite(img, (pad, y + label_h))
+        y += label_h + img.height
     return sheet
 
 
 def list_concepts():
-    return sorted(p.stem for p in CONCEPT_DIR.glob("*.svg")
-                  if not p.stem.endswith("-lockup"))
+    return sorted(p.stem for p in CONCEPT_DIR.glob("*.svg") if "-lockup" not in p.stem)
+
+
+def list_lockups(concept):
+    return sorted(CONCEPT_DIR.glob(f"{concept}-lockup*.svg"))
 
 
 def cmd_concepts(args):

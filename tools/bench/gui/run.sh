@@ -155,9 +155,10 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 home="$scratch/home"
 mkdir -p "$home/.config/INRIA" "$home/.cache"
-# Every Natron start after the first finds existingSettings=true in this HOME, and then asks at
-# start-up, before the driver runs, whether to take the new default appearance and shortcuts unless
-# their saved versions are current; only the comparison matters, so any large version passes.
+# The version keys matter only to AppImages built before Natron stopped asking at start-up whether
+# to take a new default appearance and new shortcuts (commit 9a757f381): those ask on every start
+# after the first in this HOME, before the driver runs, unless the saved versions are current. Only
+# the comparison matters, so any large version passes.
 printf '[General]\ncheckForUpdates=false\nappearanceVersion=1000\nNATRON_SHORTCUTS_DEFAULT_VERSION=1000\n' \
     > "$home/.config/INRIA/Natron.conf"
 

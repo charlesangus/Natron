@@ -12,7 +12,9 @@ An op that timed out in the baseline and completes in the run shows as "baseline
 and improved; "not run here" marks a timeout carried from a smaller n where the op wedged Natron.
 
 The header names each side's build (AppImage file name, size, mtime and sha256) and the harness
-commit, and warns when both sides are the same AppImage.
+commit, and warns when both sides are the same AppImage. When a (topology, n, seed) graph that both
+sides generated has different hashes, the two runs timed different graphs: a warning on stderr names
+each mismatch, and no row for those sizes is a like-for-like comparison.
 
 When both runs carry the per-event split (step_wall_*, step_cpu_*, loop_pass_*), a line under
 each op shows the medians of the step's wall time, its main-thread CPU and the loop pass after it.
@@ -42,6 +44,29 @@ def load(path):
             elif kind == "op":
                 ops[(rec["op"], rec["topology"], rec["n"])] = rec
     return host, ops
+
+
+def load_graphs(path):
+    """{(topology, n, seed): {hash}} of the graph records in path."""
+    graphs = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            if rec.get("type") == "graph":
+                graphs.setdefault((rec["topology"], rec["n"], rec.get("seed")), set()).add(rec.get("hash"))
+    return graphs
+
+
+def graph_mismatches(base_graphs, run_graphs):
+    """[(topology, n, seed, base hashes, run hashes)] for each graph both sides built that differs."""
+    out = []
+    for key in sorted(set(base_graphs) & set(run_graphs), key=lambda k: (k[0], k[1], str(k[2]))):
+        if base_graphs[key] != run_graphs[key]:
+            out.append(key + (sorted(map(str, base_graphs[key])), sorted(map(str, run_graphs[key]))))
+    return out
 
 
 def compare(base_ops, run_ops, tol, min_ms, long_stall_ms=250.0):
@@ -221,6 +246,9 @@ def self_test():
     assert "(>300 s at n=300, not run here)" in rows[1], rows
     rows, regressed = compare({("w", "mixed", 300): op("w", 300, 40.0)}, {("w", "mixed", 300): wedged}, 0.2, 5.0)
     assert regressed and "timeout (>300 s)" in rows[0], rows
+    mismatched = graph_mismatches({("mixed", 300, 1): {"aa"}, ("mixed", 1000, 1): {"bb"}, ("comp", 300, 1): {"cc"}},
+                                  {("mixed", 300, 1): {"aa"}, ("mixed", 1000, 1): {"bx"}, ("wide", 300, 1): {"dd"}})
+    assert mismatched == [("mixed", 1000, 1, ["bb"], ["bx"])], mismatched
     same = {"appimage_name": "a.AppImage", "appimage_sha256": "ab" * 32}
     assert build_id(same) == build_id(dict(same)) and build_id({"build_type": "release"}) is None
     assert "sha256 abababababababab" in describe_host(dict(same, hostname="h")), describe_host(same)
@@ -262,6 +290,14 @@ def main():
         print("# warning: the runs come from different CPUs")
     if build_id(base_host) is not None and build_id(base_host) == build_id(run_host):
         print("# warning: the baseline and the run are the same AppImage")
+    mismatched = graph_mismatches(load_graphs(args.files[0]), load_graphs(args.files[1]))
+    if mismatched:
+        sys.stderr.write("WARNING: the baseline and the run timed different graphs; the rows for these sizes are "
+                         "not comparable; re-record the older side with the current harness:\n")
+        for topology, n, seed, bh, rh in mismatched:
+            sys.stderr.write("WARNING:   %s n=%d seed=%s: baseline hash %s, run hash %s\n" % (
+                topology, n, seed, ",".join(h[:12] for h in bh), ",".join(h[:12] for h in rh)))
+        print("# warning: %d graph(s) differ from the baseline's; see stderr" % len(mismatched))
     rows, regressions = compare(base_ops, run_ops, args.tol, args.min_ms, args.long_stall_ms)
     for row in rows:
         print(row)

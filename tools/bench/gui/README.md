@@ -46,9 +46,11 @@ prints the result path first, then each result line as it lands; a run that writ
 ends with the tail of `natron.log`. On a session whose screen X clients cannot read back
 (XWayland), the run notes it and carries on; the bench itself reads no pixels.
 
-Both modes run Natron under a throwaway HOME seeded with `checkForUpdates=false` and current
-`appearanceVersion` and `NATRON_SHORTCUTS_DEFAULT_VERSION`, so your settings are neither read nor
-changed and no restart asks about a new default appearance or new shortcuts. Each run writes:
+Both modes run Natron under a throwaway HOME seeded with `checkForUpdates=false`, so your settings
+are neither read nor changed. The HOME also carries current `appearanceVersion` and
+`NATRON_SHORTCUTS_DEFAULT_VERSION`, which matter only to AppImages built before commit 9a757f381:
+those ask on every restart whether to take a new default appearance or new shortcuts, and the
+seeds stop them asking. Later builds never ask. Each run writes:
 
 - `build/bench/gui/<UTC>-<host>-<mode>.jsonl`, the results;
 - `build/bench/gui/<UTC>-<host>-<mode>/<topology>-<n>/`, holding `natron.log`, `results.txt` and
@@ -138,7 +140,8 @@ file, and `run.sh` sets it.
 
 The per-op timeout is checked between events. A single step that doesn't return within twice that
 plus 60 s (300 s by default) wedges Natron: the bench writes a `timeout` record with `wedged` and
-exits 3. With no stalls logged over that time, the step is waiting in a nested event loop, not
+exits 3. The 300 s clock restarts before every step (setup, each `before`, each event, each `after`,
+teardown), so an op that is slow overall but keeps returning is a plain `timeout`, never `wedged`. With no stalls logged over that time, the step is waiting in a nested event loop, not
 computing.
 
 `run.sh` then restarts Natron for that topology and size (logs under `<topology>-<n>-restart<k>/`) with
@@ -215,6 +218,12 @@ through is `null`. Without the variable the probe costs one branch per stage.
 tools/bench/gui/compare.py tools/bench/gui/baselines/xvfb.jsonl build/bench/gui/<run>.jsonl --tol 0.2
 tools/bench/gui/compare.py --scaling build/bench/gui/<run>.jsonl
 ```
+
+The committed `baselines/xvfb.jsonl` is stale. It predates the current harness: its graphs and op
+definitions differ from this harness's, so do not use it for regression comparison. It needs
+re-recording, three runs as in "Re-baselining" below. `compare.py` warns on stderr whenever a graph
+that both files generated for the same topology, n and seed has a different hash, because the rows
+for that size then time different graphs.
 
 Comparison flags an op when any of the following holds, and then exits 1:
 

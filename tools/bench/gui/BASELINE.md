@@ -4,7 +4,14 @@ Two baselines: Xvfb on an Intel N100 (below) and a real host ("Real host" sectio
 
 ## Xvfb
 
-Provisional. The file is built from two runs, not three, and most cells have one sample. See "Samples".
+Stale: do not use `baselines/xvfb.jsonl` for regression comparison. It predates the current harness. It was recorded
+when the generator built OFX nodes, so its graphs, and their hashes, differ from what this harness generates for the
+same topology, n and seed, and its op definitions are older. `compare.py` warns on stderr about every graph whose hash
+differs. It needs re-recording with the current harness, three full runs merged as in the README's "Re-baselining".
+Until then the figures below describe the old harness only.
+
+It was also provisional when recorded: the file is built from two runs, not three, and most cells have one sample. See
+"Samples".
 
 Host: Intel N100, 4 cores, Xvfb :79 with the xcb platform, release AppImage at git 4abfe234a. Other agents
 share the container, so some cells carry contention noise.
@@ -84,10 +91,14 @@ Hover is the slowest interaction at 1000 nodes (24 s median on chain).
 - Matrix: mixed and comp at N = 300, 1000 and 3000, 3 reps, 300 s step timeout. `compare.py --scaling baselines/host-ms-E2087B87C9C8.jsonl`
   reproduces the slope table.
 - 15 delete-link confirmation dialogs ("... Continue anyway?") were auto-accepted and logged during delete_1000, undo and redo.
+- Recorded before two harness fixes, so these rows are provisional until a re-run. click_select and drag_move_1 framed
+  the graph on their target node (activate, fit, centre, process events) inside the timed events, so their per-event
+  max includes that framing. The 300 s guard ran once per op rather than once per step, so a "wedged" cell may be an
+  op that was slow but still progressing, not one stuck in a single step.
 
 ### Not measurable on this build
 
-Wedged Natron for over 300 s, recorded as timeouts, larger sizes skipped:
+Provisional (see the guard note above). Wedged Natron for over 300 s, recorded as timeouts, larger sizes skipped:
 
 - delete_1000, undo, redo: mixed at N=300 (all N skipped); comp at N=1000 (N=3000 skipped). comp at N=300 completed.
 - knob_change_fanout: comp at N=300 (N=1000 and 3000 skipped). Mixed completed.

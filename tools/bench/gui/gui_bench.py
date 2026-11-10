@@ -130,9 +130,15 @@ try:
         return time.monotonic() * 1000.0
 
     # A single event that never returns can't be caught between events. This thread records the op
-    # as a timeout and ends the process once the op has run well past its budget.
+    # as a timeout and ends the process once one step, together with the event loop pass that follows
+    # it, has run well past the op's budget. The guard is re-armed before every step, so an op that is
+    # slow overall but keeps returning is left to the per-op budget instead.
     _guard = {"until": None, "record": None, "phase": None}
     _dialogs = []
+
+    def arm_guard(phase):
+        _guard["phase"] = phase
+        _guard["until"] = time.monotonic() + GUARD_S
 
     def _guard_loop():
         while True:
@@ -141,7 +147,7 @@ try:
             if until is not None and time.monotonic() > until:
                 record = dict(_guard["record"])
                 record.update({"status": "timeout", "wedged": True, "timeout_s": GUARD_S, "phase": _guard["phase"],
-                               "error": "the op's %s step did not return within %.0f s" % (_guard["phase"], GUARD_S)})
+                               "error": "one %s step of the op did not return within %.0f s" % (_guard["phase"], GUARD_S)})
                 if _dialogs:
                     record["dialogs"] = list(_dialogs)
                 emit(record)
@@ -575,8 +581,11 @@ try:
             st["name"] = find_clickable(ctx.processing)
             fit()
 
+        def before(ctx, st, rep):
+            st["pos"] = frame_on(st["name"])
+
         def events(ctx, st, rep):
-            pos = frame_on(st["name"])
+            pos = st["pos"]
             mouse(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton)
             QApplication.processEvents()
             mouse(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton)
@@ -591,7 +600,7 @@ try:
             fit()
             if st["name"] not in hit:
                 raise RuntimeError("click did not select %s (selected %d)" % (st["name"], len(hit)))
-        return {"setup": setup, "events": events, "after": after}
+        return {"setup": setup, "before": before, "events": events, "after": after}
 
     def op_select_all():
         def events(ctx, st, rep):
@@ -623,12 +632,15 @@ try:
             st["to"] = (x0 + (x1 - x0) * 0.316, y0 + (y1 - y0) * 0.316)
             clear_selection()
 
-        def events(ctx, st, rep):
+        def before(ctx, st, rep):
             # The press misses every node, backdrop and edge only if it clears their grab radii,
             # which are in viewport pixels: a fixed scene distance falls inside them zoomed out.
             corner = to_view(*st["corner"])
-            start = QPointF(corner.x() - RUBBER_BAND_PRESS_MARGIN, corner.y() - RUBBER_BAND_PRESS_MARGIN)
-            end = to_view(*st["to"])
+            st["start"] = QPointF(corner.x() - RUBBER_BAND_PRESS_MARGIN, corner.y() - RUBBER_BAND_PRESS_MARGIN)
+            st["end"] = to_view(*st["to"])
+
+        def events(ctx, st, rep):
+            start, end = st["start"], st["end"]
             mouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
             repaint()
             yield None
@@ -650,7 +662,7 @@ try:
 
         def teardown(ctx, st):
             st["record"] = {"selected": st.get("selected", 0)}
-        return {"setup": setup, "events": events, "after": after, "teardown": teardown}
+        return {"setup": setup, "before": before, "events": events, "after": after, "teardown": teardown}
 
     def op_drag_move(count):
         def setup(ctx, st):
@@ -666,10 +678,11 @@ try:
             fit()
             select(st["names"])
             repaint()
+            st["start"] = frame_on(st["grab"]) if len(st["names"]) == 1 else to_view(*node_centre(st["grab"]))
+            st["pos0"] = app.getNode(st["grab"]).getPosition()
 
         def events(ctx, st, rep):
-            start = frame_on(st["grab"]) if len(st["names"]) == 1 else to_view(*node_centre(st["grab"]))
-            st["pos0"] = app.getNode(st["grab"]).getPosition()
+            start = st["start"]
             mouse(QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton)
             QApplication.processEvents()
             mouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
@@ -760,7 +773,7 @@ try:
             select(st["names"])
 
         def events(ctx, st, rep):
-            st["record"]["prompts"] = delete_selection()
+            st["record"]["prompts"] = st["record"].get("prompts", 0) + delete_selection()
             yield None
 
         def after(ctx, st, rep):
@@ -772,7 +785,7 @@ try:
     def op_undo(count):
         def before(ctx, st, rep):
             select(st["names"])
-            st["record"]["prompts"] = delete_selection()
+            st["record"]["prompts"] = st["record"].get("prompts", 0) + delete_selection()
 
         def events(ctx, st, rep):
             trigger("undo")
@@ -786,7 +799,7 @@ try:
     def op_redo(count):
         def before(ctx, st, rep):
             select(st["names"])
-            st["record"]["prompts"] = delete_selection()
+            st["record"]["prompts"] = st["record"].get("prompts", 0) + delete_selection()
             trigger("undo")
 
         def events(ctx, st, rep):
@@ -970,8 +983,7 @@ try:
         del _dialogs[:]
         _guard["record"] = {"type": "op", "op": name, "kind": kind, "topology": ctx.topology, "n": ctx.n,
                             "reps": 0, "stalls": {"count": 0, "max_ms": 0.0, "total_ms": 0.0}}
-        _guard["phase"] = "setup"
-        _guard["until"] = time.monotonic() + GUARD_S
+        arm_guard("setup")
         try:
             if "setup" in op:
                 op["setup"](ctx, st)
@@ -984,14 +996,12 @@ try:
                     os.remove(HOLD_FILE)
                 else:
                     report("NOTE wait expired: %s was not released by GUI_BENCH_HOLD_FILE within %.0f s; running without a sampler" % (name, HOLD_S))
-                _guard["until"] = time.monotonic() + GUARD_S
             deadline = time.monotonic() + OP_TIMEOUT_S
             for rep in range(reps):
-                _guard["phase"] = "before"
+                arm_guard("before")
                 if "before" in op:
                     op["before"](ctx, st, rep)
                 yield ("sleep", 0)
-                _guard["phase"] = "events"
                 gen = op["events"](ctx, st, rep)
                 count = 0
                 t0 = mono_ms()
@@ -1001,6 +1011,7 @@ try:
                     if step_end is not None:
                         loop_pass.append(e0 - step_end)
                     c0 = time.thread_time()
+                    arm_guard("events")
                     try:
                         cmd = next(gen)
                         done = False
@@ -1024,14 +1035,14 @@ try:
                 times.append(t1 - t0)
                 windows.append((t0, t1))
                 events_per_rep = count
-                _guard["phase"] = "after"
+                arm_guard("after")
                 if "after" in op:
                     op["after"](ctx, st, rep)
                 if status != "ok":
                     break
         except Exception:
             status, error = "error", short_error()
-        _guard["phase"] = "teardown"
+        arm_guard("teardown")
         try:
             if "teardown" in op:
                 op["teardown"](ctx, st)

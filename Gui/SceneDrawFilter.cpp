@@ -632,38 +632,56 @@ SceneDrawFilter::transition(Node& node,
 void
 SceneDrawFilter::sendChanges()
 {
-    HdSceneIndexObserver::AddedPrimEntries added;
-    HdSceneIndexObserver::DirtiedPrimEntries dirtied;
+    std::size_t addedCount = 0;
     for (Node* node : _changes) {
         node->pending = false;
-        OutputEnum after = node->output;
-        if ((after == eOutputInvisible) && (node->before == eOutputAbsent)) {
+        if ((node->output == eOutputInvisible) && (node->before == eOutputAbsent)) {
             // Shown and boxed again before Hydra heard of it: Hydra has still never held it.
             setOutput(*node, eOutputAbsent);
-            after = eOutputAbsent;
         }
-        if (after == node->before) {
-            continue;
-        }
-        if (after == eOutputAbsent) {
-            added.push_back(HdSceneIndexObserver::AddedPrimEntry(*node->path, TfToken()));
-            ++_hiddenSent;
-        } else if ((after == eOutputShown) && (node->before == eOutputAbsent)) {
-            added.push_back(HdSceneIndexObserver::AddedPrimEntry(*node->path, node->type));
-            ++_shownSent;
-        } else {
-            dirtied.push_back(HdSceneIndexObserver::DirtiedPrimEntry(*node->path, visibilityLocators()));
-            ++((after == eOutputShown) ? _shownSent : _hiddenSent);
+        if ((node->output != node->before) && ((node->output == eOutputAbsent) || (node->before == eOutputAbsent))) {
+            ++addedCount;
         }
     }
-    _changes.clear();
+    HdSceneIndexObserver::AddedPrimEntries added;
+    added.reserve(addedCount);
+    for (const Node* node : _changes) {
+        if (node->output == node->before) {
+            continue;
+        }
+        if (node->output == eOutputAbsent) {
+            added.emplace_back(*node->path, TfToken());
+            ++_hiddenSent;
+        } else if (node->before == eOutputAbsent) {
+            added.emplace_back(*node->path, node->type);
+            ++_shownSent;
+        }
+    }
     if (!added.empty()) {
         _SendPrimsAdded(added);
+    }
+
+    // A dirtied entry carries its locator set inline, hundreds of bytes: a million-prim change built
+    // as one notice spends most of its time on that memory, where a batch at a time stays in cache.
+    const std::size_t dirtiedBatch = 4096;
+    HdSceneIndexObserver::DirtiedPrimEntries dirtied;
+    for (const Node* node : _changes) {
+        if ((node->output == node->before) || (node->output == eOutputAbsent) || (node->before == eOutputAbsent)) {
+            continue;
+        }
+        dirtied.emplace_back(*node->path, visibilityLocators());
+        ++((node->output == eOutputShown) ? _shownSent : _hiddenSent);
+        if (dirtied.size() == dirtiedBatch) {
+            _visibilitySent += dirtied.size();
+            _SendPrimsDirtied(dirtied);
+            dirtied.clear();
+        }
     }
     if (!dirtied.empty()) {
         _visibilitySent += dirtied.size();
         _SendPrimsDirtied(dirtied);
     }
+    _changes.clear();
 }
 
 void

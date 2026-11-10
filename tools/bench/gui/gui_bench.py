@@ -706,7 +706,7 @@ try:
             viewer = app.getNode("BenchViewer")
             if viewer is None:
                 props = {"CreateNodeArgsPropNodeInitialName": NatronEngine.StringNodeCreationProperty("BenchViewer")}
-                viewer = app.createNode("fr.inria.built-in.Viewer", -1, None, props)
+                viewer = app.createNode("Viewer", -1, None, props)
             if viewer is None:
                 raise RuntimeError("could not create a Viewer")
             st["created"] = True

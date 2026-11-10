@@ -24,16 +24,16 @@ import random
 
 import NatronEngine
 
-GRADE = "net.sf.openfx.GradePlugin"
-BLUR = "net.sf.cimg.CImgBlur"
-TRANSFORM = "net.sf.openfx.TransformPlugin"
-COLORCORRECT = "net.sf.openfx.ColorCorrectPlugin"
+GRADE = "Grade"
+BLUR = "Blur"
+TRANSFORM = "Transform"
+COLORCORRECT = "ColorCorrect"
 MERGE = "Merge"
-SOURCE = "net.sf.openfx.CheckerBoardPlugin"
-GROUP = "fr.inria.built-in.Group"
-GROUP_INPUT = "fr.inria.built-in.Input"
-GROUP_OUTPUT = "fr.inria.built-in.Output"
-BACKDROP = "fr.inria.built-in.BackDrop"
+SOURCE = "CheckerBoard"
+GROUP = "Group"
+GROUP_INPUT = "Input"
+GROUP_OUTPUT = "Output"
+BACKDROP = "Backdrop"
 
 KIND_PREFIX = {GRADE: "Grade", BLUR: "Blur", TRANSFORM: "Transform", COLORCORRECT: "ColorCorrect", MERGE: "Merge"}
 PROCESSING = frozenset(KIND_PREFIX)

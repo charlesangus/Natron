@@ -61,10 +61,13 @@
 #define kUSDProject3DShaderName "Projection"
 #define kUSDProject3DTextureName "PlateTexture"
 #define kUSDProject3DReaderName "TexCoordReader"
+#define kUSDProject3DFrameReaderName "GeometryFrameReader"
+#define kUSDProject3DReferenceReaderName "ReferencePointsReader"
 // Shader inputs and attributes read beyond the node: by the geometry nodes the material is grafted
 // under, and by USDWrite's bake.
 #define kUSDProject3DInputProjectionSpace "projectionSpace"
 #define kUSDProject3DInputGeometryFrame "geometryFrame"
+#define kUSDProject3DInputReferencePoints "referencePoints"
 #define kUSDProject3DInputPlateTransform "plateTransform"
 #define kUSDProject3DInputWorldToProjector "worldToProjector"
 #define kUSDProject3DInputProjectorOrigin "projectorOrigin"

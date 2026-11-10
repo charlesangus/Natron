@@ -11,11 +11,13 @@ the Un-tone-mapped view so screen colours are the image's. The checks:
   - Projection Space = Geometry with Use Frame Hold on, then the card moved by USDEditTransform1 after
     USDCard1: the coloured squares move with the card (the card's colour pattern is unchanged, its
     position is not);
+  - a mesh whose points are time-sampled, with no transform, read by USDRead1 and assigned the held
+    Geometry projection: the coloured squares stretch and slide with its points;
   - USDProjectUV1 (Scene = USDCard1, Camera = USDCamera1) has its projection knobs and its panel
     opens.
 
-Screenshots: m234_world.png, m234_assigned.png, m234_geometry_moved.png, m234_projectuv_panel.png (full window), each
-scene shot with a _viewer.png crop.
+Screenshots: m234_world.png, m234_assigned.png, m234_geometry_moved.png, m234_two_placements_held.png,
+m234_two_placements.png, m234_deforming_held.png, m234_deforming.png, m234_projectuv_panel.png (full window), each scene shot with a _viewer.png crop.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -34,6 +36,22 @@ BOX_SIZE = 480.0
 # The edit's op applies inside the card's own 16:9 scale, so this moves the card one world unit. Much
 # further and the short scene view clips too much of the card to compare its pattern.
 EDIT_SHIFT = 0.5625
+# Both cards have to lie inside the camera's frame at their distance, or Crop hides what falls outside.
+PLACED_CARD_X = 0.75
+PLACED_CARD_SCALE = 1.0
+DEFORMING_HOLD = 1
+DEFORMING_LATER = 11
+DEFORMING_USDA = """#usda 1.0
+def Mesh "Deforming" {
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0, 1, 2, 3]
+    uniform token subdivisionScheme = "none"
+    point3f[] points.timeSamples = {
+        1: [(-0.8, -0.45, 0), (0.8, -0.45, 0), (0.8, 0.45, 0), (-0.8, 0.45, 0)],
+        11: [(-0.4, -0.45, 0), (1.6, -0.45, 0), (1.6, 0.45, 0), (-0.4, 0.45, 0)],
+    }
+}
+"""
 
 PROJECTUV_KNOBS = ("camera", "cameraPath", "primPattern", "projection", "plane", "projectOn", "frustumCulling", "invertU",
                    "invertV", "uScale", "vScale", "primvarName", "fitMode", "useFrameHold", "frameHold")
@@ -65,6 +83,10 @@ try:
     project_uv = make("USDProjectUV", 200, 200)
     assign = make("USDAssignMaterial", 200, 100)
     edit = make("USDEditTransform", 400, 200)
+    left_card = make("USDCard", -300, 200)
+    right_card = make("USDCard", -200, 200)
+    cards = make("USDMerge", -250, 300)
+    deforming_read = make("USDRead", 400, 100)
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("Viewer")
@@ -293,6 +315,122 @@ try:
         check(agreement >= 0.75,
               "the projected squares moved with the card: its colour pattern is unchanged (%.0f%% of cells agree)"
               % (100 * agreement))
+
+        # One projection on two cards apart, through one assign: each keeps the image where it was held.
+        viewer.disconnectInput(0)
+        edit.disconnectInput(0)
+        for placed, x in ((left_card, -PLACED_CARD_X), (right_card, PLACED_CARD_X)):
+            param(placed, "translate").set(x, 0.0, 0.0)
+            param(placed, "scale").set(PLACED_CARD_SCALE, PLACED_CARD_SCALE, 1.0)
+        require(cards.connectInput(0, left_card), "connect USDCard2 to USDMerge1")
+        require(cards.connectInput(1, right_card), "connect USDCard3 to USDMerge1")
+        param(assign, "primPattern").set("/USDCard2 /USDCard3")
+        require(assign.connectInput(0, cards), "connect USDMerge1 to USDAssignMaterial1's Scene input")
+        require(assign.connectInput(1, project), "connect USDProject3D1 to USDAssignMaterial1's Material input")
+        require(viewer.connectInput(0, assign), "connect the Viewer to USDAssignMaterial1")
+
+        def sides_of_a_gap():
+            """The left and right hues around the widest empty run of columns, or None until two cards show."""
+            points = card_pixels(coloured_pixels())
+            if len(points) < 20:
+                return None
+            # The nearer card spans more of the view, so the gap is not at the middle of the two cards' span.
+            xs = sorted(set(p[0] for p in points))
+            width, start = max((b - a, a) for a, b in zip(xs, xs[1:])) if len(xs) > 1 else (0, xs[0])
+            if width < (xs[-1] - xs[0]) * 0.1:
+                return None
+            left = [h for x, _y, h in points if x <= start]
+            right = [h for x, _y, h in points if x > start]
+            if len(left) < 20 or len(right) < 20:
+                return None
+            return (set(left), set(right))
+
+        ok = yield ("until", lambda: scene_drawn() and sides_of_a_gap() is not None, POLL_TIMEOUT_S)
+        check(ok, "both assigned cards show the projected squares")
+        yield ("sleep", SETTLE_MS)
+        save_shots("m234_two_placements_held")
+        sides = sides_of_a_gap()
+        require(sides is not None, "the two cards still show apart")
+        check(sides[0] == set("rb") and sides[1] == set("rb"),
+              "each card shows both red and blue squares (%r)" % (sides,))
+        two_held = signature(coloured_pixels())
+        require(two_held is not None, "the two cards show red and blue pixels")
+
+        # Nothing has moved, so a card showing the image from any placement but its own would differ here.
+        param(project, "projectionSpace").set(0)
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the two cards draw in World space")
+        yield ("sleep", SETTLE_MS)
+        two_world = signature(coloured_pixels())
+        require(two_world is not None, "the two cards show red and blue pixels in World space")
+        agreement = pattern_agreement(two_held, two_world)
+        check(agreement >= 0.9,
+              "each card shows the image where the camera sees it (%.0f%% of cells agree with World space)"
+              % (100 * agreement))
+        param(project, "projectionSpace").set(1)
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the two cards draw in Geometry space again")
+
+        def two_cards_moved():
+            current = signature(coloured_pixels())
+            return scene_drawn() and current is not None and abs(current["centroid"][0] - two_held["centroid"][0]) > 20
+
+        viewer.disconnectInput(0)
+        require(edit.connectInput(0, assign), "connect USDAssignMaterial1 to USDEditTransform1's Scene input")
+        require(viewer.connectInput(0, edit), "connect the Viewer to USDEditTransform1")
+        yield ("until", two_cards_moved, POLL_TIMEOUT_S)
+        yield ("sleep", SETTLE_MS)
+        save_shots("m234_two_placements")
+        two_moved = signature(coloured_pixels())
+        require(two_moved is not None, "the two moved cards still show red and blue pixels")
+        agreement = pattern_agreement(two_held, two_moved)
+        check(agreement >= 0.75,
+              "the projected squares moved with both cards (%.0f%% of cells agree)" % (100 * agreement))
+        viewer.disconnectInput(0)
+        edit.disconnectInput(0)
+        assign.disconnectInput(1)
+        assign.disconnectInput(0)
+        cards.disconnectInput(1)
+        cards.disconnectInput(0)
+
+        deforming_file = os.path.join(OUT, "m234_deforming.usda")
+        with open(deforming_file, "w") as f:
+            f.write(DEFORMING_USDA)
+        param(deforming_read, "filename").set(deforming_file)
+        param(assign, "primPattern").set("/Deforming")
+        require(assign.connectInput(0, deforming_read), "connect USDRead1 to USDAssignMaterial1's Scene input")
+        require(assign.connectInput(1, project), "connect USDProject3D1 to USDAssignMaterial1's Material input")
+        require(viewer.connectInput(0, assign), "connect the Viewer to USDAssignMaterial1")
+        py_viewer = app.getViewer(viewer.getScriptName())
+        require(py_viewer is not None, "the Viewer has a Python wrapper")
+        py_viewer.seek(DEFORMING_HOLD)
+        ok = yield ("until", lambda: scene_drawn() and card_shows_checker(), POLL_TIMEOUT_S)
+        check(ok, "the deforming mesh shows the projected squares at the hold (%r)" % (patch_hues(),))
+        yield ("sleep", SETTLE_MS)
+        save_shots("m234_deforming_held")
+        deforming_held = signature(coloured_pixels())
+        require(deforming_held is not None, "the deforming mesh shows red and blue pixels at the hold")
+
+        def mesh_deformed():
+            current = signature(coloured_pixels())
+            return scene_drawn() and current is not None and abs(current["centroid"][0] - deforming_held["centroid"][0]) > 20
+
+        py_viewer.seek(DEFORMING_LATER)
+        ok = yield ("until", mesh_deformed, POLL_TIMEOUT_S)
+        check(ok, "the mesh's points moved on screen at frame %d" % DEFORMING_LATER)
+        yield ("sleep", SETTLE_MS)
+        save_shots("m234_deforming")
+        deformed = signature(coloured_pixels())
+        require(deformed is not None, "the deformed mesh still shows red and blue pixels")
+        agreement = pattern_agreement(deforming_held, deformed)
+        check(agreement >= 0.75,
+              "the projected squares stretched and slid with the points (%.0f%% of cells agree)" % (100 * agreement))
+        py_viewer.seek(DEFORMING_HOLD)
+        viewer.disconnectInput(0)
+        assign.disconnectInput(1)
+        assign.disconnectInput(0)
 
         for name in PROJECTUV_KNOBS:
             check(project_uv.getParam(name) is not None, "USDProjectUV1 has a %s parameter" % name)

@@ -25,7 +25,8 @@
 #   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest,
-#                        USDRenderCyclesLiveTextureTest, USDRenderMoonRayLiveTextureTest)
+#                        USDRenderCyclesLiveTextureTest, USDRenderMoonRayLiveTextureTest,
+#                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The
 #                        references bind bit for bit only under the preset that

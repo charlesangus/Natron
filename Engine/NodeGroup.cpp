@@ -41,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
@@ -1390,6 +1391,18 @@ NodeGroup::appendExtraHashSources(std::vector<NodePtr>* sources) const
 
     if (fed) {
         sources->push_back(fed);
+    }
+}
+
+void
+NodeGroup::appendNodeContentHash(ContentHasher& h) const
+{
+    // The group renders as what feeds its Output, so its hash keys the cache by that node's.
+    const NodePtr fed = getOutputNodeInput(false);
+
+    h.appendBool(bool(fed));
+    if (fed) {
+        h.appendU64(fed->getStoredContentHash());
     }
 }
 

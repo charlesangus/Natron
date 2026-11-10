@@ -1516,6 +1516,9 @@ Node::getHashDependents(std::vector<NodePtr>* dependents) const
         if (isSkippedByHashInputs(*output) && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
             passedThrough.push_back(output.get());
             output->appendOutputsWithGroupRedirection(dependents);
+            if (output->_imp->effect) {
+                output->_imp->effect->appendExtraHashDependents(dependents);
+            }
         }
         (*dependents)[write++] = std::move(output);
     }

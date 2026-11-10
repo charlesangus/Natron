@@ -377,6 +377,7 @@ public:
 
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
     virtual void appendExtraHashSources(std::vector<NodePtr>* sources) const OVERRIDE FINAL;
 
     // What feeds the Output: rendered directly, the group is an identity of it.

@@ -113,3 +113,8 @@ Context:
   - Wedge: too busy, drop the square tile, poor at small sizes. Keep the Bauhaus/Kandinsky feel with simpler variations.
   - Also try Bauhaus/Kandinsky meets Feynman diagram.
   - Round 3 is variations on these directions, drafted by a Fable agent.
+- 2026-11-10 — Round 3 feedback (user):
+  - Quarks: keep all three dots the same size. Try orange at bottom-left with one dot directly above and one to its right, plus the mirror image. The user likes the triangle, so try these inside a triangle.
+  - Wedge-split variations: the wedge going right through, a more extreme split, the wedge passing through the split.
+  - Feynman: liked but too simplistic and unbalanced. Revisit as more Bauhaus, more exaggerated and stylised, less literally a Feynman diagram.
+  - Round 4 goes to the Fable agent.

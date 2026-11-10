@@ -218,7 +218,7 @@ future core work has solid ground to build on.
 | M362 | Geometry Operators II | todo | M359, M360 |  | E9 |  | | [M362-geometry-operators-ii.md](PLAN/MILESTONES/M362-geometry-operators-ii.md) |
 | M363 | Geometry Display Extras | todo | M358, M376 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
 | M376 | Geometry Display | doing | M328, M358 | bosley-native-nodes | E9 | F15 | | [M376-geometry-display.md](PLAN/MILESTONES/M376-geometry-display.md) |
-| M377 | Readable CI Names | doing | - | bosley-native-nodes | E2 | | | [M377-readable-ci-names.md](PLAN/MILESTONES/M377-readable-ci-names.md) |
+| M377 | Readable CI Names | doing | - | bosley-native-nodes | E2 | | uat | [M377-readable-ci-names.md](PLAN/MILESTONES/M377-readable-ci-names.md) |
 | M378 | Scene Render Test Stability | doing | - | bosley-native-nodes | E9 | | | [M378-scene-render-test-stability.md](PLAN/MILESTONES/M378-scene-render-test-stability.md) |
 | M379 | GpuContext Test Segfault | doing | - | bosley-native-nodes | E5 | | | [M379-gpucontext-test-segfault.md](PLAN/MILESTONES/M379-gpucontext-test-segfault.md) |
 | M380 | Blocking Scheduler Aborts | doing | - | bosley-native-nodes | E14 | | | [M380-blocking-scheduler-aborts.md](PLAN/MILESTONES/M380-blocking-scheduler-aborts.md) |

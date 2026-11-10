@@ -104,7 +104,7 @@ constexpr double kBottom = 70.;
 // On the bottom edge of both squares, which the motion carries along that edge for the whole span.
 constexpr double kCorrespondenceParam = 0.2;
 
-// SplineWarp over a translating texture, followed through the vectors VectorGenerator solves from it.
+// SplineWarp over a translating texture, followed through that texture's exact vectors.
 class SplineWarpFollowVectorsTest
     : public NativeTimeNodeTest {
 public:
@@ -113,9 +113,8 @@ public:
         NativeTimeNodeTest::SetUp();
         registerFollowTextureOnce();
         NodePtr texture = createNode(QString::fromUtf8(kTestPluginIDFollowTexture), 1);
-        _vectors = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, texture);
-        // Medium solves at half resolution and undershoots this half-pixel motion.
-        setKnob<KnobChoice>(_vectors, kVectorGeneratorParamQuality, (int)eFlowQualityFine);
+        _vectors = makeVectors(texture);
+        ASSERT_TRUE(bool(_vectors));
         _warpNode = createOver(PLUGINID_NATRON_SPLINEWARP, PLUGIN_MAJOR_NATRON_SPLINEWARP, texture);
         ASSERT_TRUE(bool(_warpNode));
         _warp = std::dynamic_pointer_cast<SplineWarpContext>(_warpNode->getCurveContext());
@@ -125,6 +124,21 @@ public:
         _link = _warp->link(_source, _destination);
         ASSERT_TRUE(bool(_link));
         _warp->clearSelection(RotoItem::eSelectionReasonOther);
+    }
+
+    virtual NodePtr makeVectors(const NodePtr& /*texture*/)
+    {
+        return createNode(QString::fromUtf8(kTestPluginIDFollowVectors), 1);
+    }
+
+    virtual int span() const
+    {
+        return kSpan;
+    }
+
+    int last() const
+    {
+        return kStart + span();
     }
 
     BezierPtr makeSquare(double left) const
@@ -143,7 +157,7 @@ public:
         VectorFollowParams params;
         params.source = _vectors;
         params.first = kStart;
-        params.last = kStart + kSpan;
+        params.last = last();
         params.model = VectorFollowModel::ePerPoint;
 
         return params;
@@ -191,19 +205,68 @@ public:
     void expectFollowed(const BezierPtr& bezier,
                         const FollowPoint& start) const
     {
-        const FollowPoint end = positionAt(bezier, 0, kStart + kSpan);
-        EXPECT_NEAR(end.x, start.x + kShiftX * kSpan, kFollowTolerance) << bezier->getScriptName();
-        EXPECT_NEAR(end.y, start.y + kShiftY * kSpan, kFollowTolerance) << bezier->getScriptName();
-        EXPECT_EQ(keyCount(bezier), (std::size_t)kSpan + 1) << bezier->getScriptName();
+        const FollowPoint end = positionAt(bezier, 0, last());
+        EXPECT_NEAR(end.x, start.x + kShiftX * span(), kFollowTolerance) << bezier->getScriptName();
+        EXPECT_NEAR(end.y, start.y + kShiftY * span(), kFollowTolerance) << bezier->getScriptName();
+        EXPECT_EQ(keyCount(bezier), (std::size_t)span() + 1) << bezier->getScriptName();
     }
 
     void expectStill(const BezierPtr& bezier,
                      double left) const
     {
         EXPECT_EQ(keyCount(bezier), 1u) << bezier->getScriptName();
-        const FollowPoint end = positionAt(bezier, 0, kStart + kSpan);
+        const FollowPoint end = positionAt(bezier, 0, last());
         EXPECT_DOUBLE_EQ(end.x, left) << bezier->getScriptName();
         EXPECT_DOUBLE_EQ(end.y, kBottom) << bezier->getScriptName();
+    }
+
+    // Each end moves with the picture under it and is keyed where its curve passes nearest.
+    void expectACorrespondencePointFollowsAlongItsCurves()
+    {
+        ASSERT_EQ(_warp->addCorrespondence(_link, kCorrespondenceParam, kCorrespondenceParam), 0);
+        Point sourceStart;
+        Point destinationStart;
+        correspondenceAt(kStart, &sourceStart, &destinationStart);
+        ASSERT_NEAR(sourceStart.y, kBottom, 1e-9);
+        ASSERT_NEAR(destinationStart.y, kBottom, 1e-9);
+
+        VectorFollowParams follow = params();
+        VectorFollowPointsPtr points = _warp->makeCorrespondenceFollowPoints(_link, 0);
+        ASSERT_TRUE(bool(points));
+        follow.points.push_back(points);
+        EXPECT_FALSE(bool(_warp->makeCorrespondenceFollowPoints(_link, 1)));
+
+        UndoCommandPtr undo;
+        const VectorFollowReport report = _warp->followVectors(follow, &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        ASSERT_EQ(report.shapes.size(), 1u);
+        EXPECT_FALSE(report.shapes[0].stopped);
+        ASSERT_TRUE(bool(undo));
+
+        Point sourceEnd;
+        Point destinationEnd;
+        correspondenceAt(last(), &sourceEnd, &destinationEnd);
+        EXPECT_NEAR(sourceEnd.x, sourceStart.x + kShiftX * span(), kFollowTolerance);
+        EXPECT_NEAR(sourceEnd.y, kBottom, 1e-6);
+        EXPECT_NEAR(destinationEnd.x, destinationStart.x + kShiftX * span(), kFollowTolerance);
+        EXPECT_NEAR(destinationEnd.y, kBottom, 1e-6);
+
+        const std::vector<SplineWarpCorrespondence> all = _link->getCorrespondences();
+        ASSERT_EQ(all.size(), 1u);
+        EXPECT_EQ(all[0].source.getKeyFrameTimes().size(), (std::size_t)span() + 1);
+        EXPECT_EQ(all[0].destination.getKeyFrameTimes().size(), (std::size_t)span() + 1);
+
+        expectStill(_source, kSourceLeft);
+        expectStill(_destination, kDestinationLeft);
+        expectTheLinkSurvives();
+
+        undo->undo();
+        const std::vector<SplineWarpCorrespondence> back = _link->getCorrespondences();
+        ASSERT_EQ(back.size(), 1u);
+        EXPECT_FALSE(back[0].source.isAnimated());
+        EXPECT_FALSE(back[0].destination.isAnimated());
+        EXPECT_DOUBLE_EQ(back[0].source.getStaticValue(), kCorrespondenceParam);
+        EXPECT_DOUBLE_EQ(back[0].destination.getStaticValue(), kCorrespondenceParam);
     }
 
     std::vector<float> renderAt(double time) const
@@ -274,60 +337,15 @@ TEST_F(SplineWarpFollowVectorsTest, ADestinationCurveFollowsWhileItsSourceStays)
     expectTheLinkSurvives();
 }
 
-// Each end moves with the picture under it and is keyed where its curve passes nearest.
 TEST_F(SplineWarpFollowVectorsTest, ACorrespondencePointFollowsAlongItsCurves)
 {
-    ASSERT_EQ(_warp->addCorrespondence(_link, kCorrespondenceParam, kCorrespondenceParam), 0);
-    Point sourceStart;
-    Point destinationStart;
-    correspondenceAt(kStart, &sourceStart, &destinationStart);
-    ASSERT_NEAR(sourceStart.y, kBottom, 1e-9);
-    ASSERT_NEAR(destinationStart.y, kBottom, 1e-9);
-
-    VectorFollowParams follow = params();
-    VectorFollowPointsPtr points = _warp->makeCorrespondenceFollowPoints(_link, 0);
-    ASSERT_TRUE(bool(points));
-    follow.points.push_back(points);
-    EXPECT_FALSE(bool(_warp->makeCorrespondenceFollowPoints(_link, 1)));
-
-    UndoCommandPtr undo;
-    const VectorFollowReport report = _warp->followVectors(follow, &undo);
-    ASSERT_TRUE(report.error.empty()) << report.error;
-    ASSERT_EQ(report.shapes.size(), 1u);
-    EXPECT_FALSE(report.shapes[0].stopped);
-    ASSERT_TRUE(bool(undo));
-
-    Point sourceEnd;
-    Point destinationEnd;
-    correspondenceAt(kStart + kSpan, &sourceEnd, &destinationEnd);
-    EXPECT_NEAR(sourceEnd.x, sourceStart.x + kShiftX * kSpan, kFollowTolerance);
-    EXPECT_NEAR(sourceEnd.y, kBottom, 1e-6);
-    EXPECT_NEAR(destinationEnd.x, destinationStart.x + kShiftX * kSpan, kFollowTolerance);
-    EXPECT_NEAR(destinationEnd.y, kBottom, 1e-6);
-
-    const std::vector<SplineWarpCorrespondence> all = _link->getCorrespondences();
-    ASSERT_EQ(all.size(), 1u);
-    EXPECT_EQ(all[0].source.getKeyFrameTimes().size(), (std::size_t)kSpan + 1);
-    EXPECT_EQ(all[0].destination.getKeyFrameTimes().size(), (std::size_t)kSpan + 1);
-
-    expectStill(_source, kSourceLeft);
-    expectStill(_destination, kDestinationLeft);
-    expectTheLinkSurvives();
-
-    undo->undo();
-    const std::vector<SplineWarpCorrespondence> back = _link->getCorrespondences();
-    ASSERT_EQ(back.size(), 1u);
-    EXPECT_FALSE(back[0].source.isAnimated());
-    EXPECT_FALSE(back[0].destination.isAnimated());
-    EXPECT_DOUBLE_EQ(back[0].source.getStaticValue(), kCorrespondenceParam);
-    EXPECT_DOUBLE_EQ(back[0].destination.getStaticValue(), kCorrespondenceParam);
+    expectACorrespondencePointFollowsAlongItsCurves();
 }
 
 // The warp field is cached by the node's hash, which the follow's keys must move.
 TEST_F(SplineWarpFollowVectorsTest, ARenderAfterTheFollowShowsTheNewKeys)
 {
-    const double last = kStart + kSpan;
-    const std::vector<float> before = renderAt(last);
+    const std::vector<float> before = renderAt(last());
     ASSERT_FALSE(before.empty());
 
     VectorFollowParams follow = params();
@@ -337,19 +355,18 @@ TEST_F(SplineWarpFollowVectorsTest, ARenderAfterTheFollowShowsTheNewKeys)
     ASSERT_TRUE(report.error.empty()) << report.error;
     ASSERT_TRUE(bool(undo));
 
-    const std::vector<float> after = renderAt(last);
+    const std::vector<float> after = renderAt(last());
     EXPECT_GT(largestDifference(after, before), 1e-3);
 
     undo->undo();
-    EXPECT_LT(largestDifference(renderAt(last), before), 1e-6);
+    EXPECT_LT(largestDifference(renderAt(last()), before), 1e-6);
 }
 
 // Only the correspondence moves here, so a changed render can only come from its keys.
 TEST_F(SplineWarpFollowVectorsTest, ARenderAfterACorrespondenceOnlyFollowShowsTheNewKeys)
 {
     ASSERT_EQ(_warp->addCorrespondence(_link, kCorrespondenceParam, kCorrespondenceParam), 0);
-    const double last = kStart + kSpan;
-    const std::vector<float> before = renderAt(last);
+    const std::vector<float> before = renderAt(last());
     ASSERT_FALSE(before.empty());
 
     VectorFollowParams follow = params();
@@ -362,11 +379,11 @@ TEST_F(SplineWarpFollowVectorsTest, ARenderAfterACorrespondenceOnlyFollowShowsTh
     EXPECT_EQ(keyCount(_destination), 1u);
     EXPECT_TRUE(_link->getCorrespondences()[0].source.isAnimated());
 
-    const std::vector<float> after = renderAt(last);
+    const std::vector<float> after = renderAt(last());
     EXPECT_GT(largestDifference(after, before), 1e-3);
 
     undo->undo();
-    EXPECT_LT(largestDifference(renderAt(last), before), 1e-6);
+    EXPECT_LT(largestDifference(renderAt(last()), before), 1e-6);
 }
 
 TEST_F(SplineWarpFollowVectorsTest, ACorrespondenceFollowDirtiesOncePerFrameBatchNotPerKey)
@@ -387,8 +404,8 @@ TEST_F(SplineWarpFollowVectorsTest, ACorrespondenceFollowDirtiesOncePerFrameBatc
 TEST_F(SplineWarpFollowVectorsTest, OneUndoRevertsTheCurvesAndTheCorrespondence)
 {
     ASSERT_EQ(_warp->addCorrespondence(_link, kCorrespondenceParam, kCorrespondenceParam), 0);
-    const FollowPoint sourceStart = positionAt(_source, 0, kStart + kSpan);
-    const FollowPoint destinationStart = positionAt(_destination, 0, kStart + kSpan);
+    const FollowPoint sourceStart = positionAt(_source, 0, last());
+    const FollowPoint destinationStart = positionAt(_destination, 0, last());
 
     VectorFollowParams follow = params();
     follow.items.push_back(_source);
@@ -404,16 +421,16 @@ TEST_F(SplineWarpFollowVectorsTest, OneUndoRevertsTheCurvesAndTheCorrespondence)
     EXPECT_GT(keyCount(_destination), 1u);
     double followedSource = 0.;
     double followedDestination = 0.;
-    ASSERT_TRUE(_link->getCorrespondence(0, kStart + kSpan, &followedSource, &followedDestination));
+    ASSERT_TRUE(_link->getCorrespondence(0, last(), &followedSource, &followedDestination));
     EXPECT_TRUE(_link->getCorrespondences()[0].source.isAnimated());
 
     undo->undo();
     EXPECT_EQ(keyCount(_source), 1u);
     EXPECT_EQ(keyCount(_destination), 1u);
-    EXPECT_DOUBLE_EQ(positionAt(_source, 0, kStart + kSpan).x, sourceStart.x);
-    EXPECT_DOUBLE_EQ(positionAt(_source, 0, kStart + kSpan).y, sourceStart.y);
-    EXPECT_DOUBLE_EQ(positionAt(_destination, 0, kStart + kSpan).x, destinationStart.x);
-    EXPECT_DOUBLE_EQ(positionAt(_destination, 0, kStart + kSpan).y, destinationStart.y);
+    EXPECT_DOUBLE_EQ(positionAt(_source, 0, last()).x, sourceStart.x);
+    EXPECT_DOUBLE_EQ(positionAt(_source, 0, last()).y, sourceStart.y);
+    EXPECT_DOUBLE_EQ(positionAt(_destination, 0, last()).x, destinationStart.x);
+    EXPECT_DOUBLE_EQ(positionAt(_destination, 0, last()).y, destinationStart.y);
     const std::vector<SplineWarpCorrespondence> back = _link->getCorrespondences();
     ASSERT_EQ(back.size(), 1u);
     EXPECT_FALSE(back[0].source.isAnimated());
@@ -421,12 +438,37 @@ TEST_F(SplineWarpFollowVectorsTest, OneUndoRevertsTheCurvesAndTheCorrespondence)
     expectTheLinkSurvives();
 
     undo->redo();
-    EXPECT_EQ(keyCount(_source), (std::size_t)kSpan + 1);
+    EXPECT_EQ(keyCount(_source), (std::size_t)span() + 1);
     double redoneSource = 0.;
     double redoneDestination = 0.;
-    ASSERT_TRUE(_link->getCorrespondence(0, kStart + kSpan, &redoneSource, &redoneDestination));
+    ASSERT_TRUE(_link->getCorrespondence(0, last(), &redoneSource, &redoneDestination));
     EXPECT_DOUBLE_EQ(redoneSource, followedSource);
     EXPECT_DOUBLE_EQ(redoneDestination, followedDestination);
+}
+
+// Over the vectors VectorGenerator solves from the texture, so a follow keys what the solver reports.
+class SplineWarpFollowSolvedVectorsTest
+    : public SplineWarpFollowVectorsTest {
+public:
+    NodePtr makeVectors(const NodePtr& texture) override
+    {
+        NodePtr vectors = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, texture);
+        // Medium solves at half resolution and undershoots this half-pixel motion.
+        setKnob<KnobChoice>(vectors, kVectorGeneratorParamQuality, (int)eFlowQualityFine);
+
+        return vectors;
+    }
+
+    // Each frame is a whole Fine solve, which takes seconds in a debug build.
+    int span() const override
+    {
+        return 3;
+    }
+};
+
+TEST_F(SplineWarpFollowSolvedVectorsTest, ACorrespondencePointFollowsAlongItsCurves)
+{
+    expectACorrespondencePointFollowsAlongItsCurves();
 }
 
 } // anonymous namespace

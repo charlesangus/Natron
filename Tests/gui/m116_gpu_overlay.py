@@ -126,9 +126,11 @@ try:
         return values
 
     def scrim_parent_depths():
+        # Found from the node's side: PySide takes ownership of whatever parentItem() returns and
+        # deletes the node when that wrapper dies, leaving its pipes pointing at freed memory.
         def depth(it):
-            parent = it.parentItem() if it.data(0) == SCRIM_NAME else None
-            return parent.zValue() if parent is not None else None
+            covered = any(child.data(0) == SCRIM_NAME for child in it.childItems())
+            return it.zValue() if covered else None
         return [d for d in read_items(depth) if d is not None]
 
     def scrim_count():

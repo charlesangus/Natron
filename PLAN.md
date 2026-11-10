@@ -219,7 +219,7 @@ future core work has solid ground to build on.
 | M363 | Geometry Display Extras | todo | M358, M376 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
 | M376 | Geometry Display | doing | M328, M358 | bosley-native-nodes | E9 | F15 | | [M376-geometry-display.md](PLAN/MILESTONES/M376-geometry-display.md) |
 | M377 | Readable CI Names | doing | - | bosley-native-nodes | E2 | | | [M377-readable-ci-names.md](PLAN/MILESTONES/M377-readable-ci-names.md) |
-| M378 | Scene Render Test Stability | todo | - |  | E9 | | | [M378-scene-render-test-stability.md](PLAN/MILESTONES/M378-scene-render-test-stability.md) |
+| M378 | Scene Render Test Stability | doing | - | bosley-native-nodes | E9 | | | [M378-scene-render-test-stability.md](PLAN/MILESTONES/M378-scene-render-test-stability.md) |
 | M379 | GpuContext Test Segfault | doing | - | bosley-native-nodes | E5 | | | [M379-gpucontext-test-segfault.md](PLAN/MILESTONES/M379-gpucontext-test-segfault.md) |
 | M380 | Blocking Scheduler Aborts | todo | - |  | E14 | | | [M380-blocking-scheduler-aborts.md](PLAN/MILESTONES/M380-blocking-scheduler-aborts.md) |
 | M381 | Deferred Matching Coverage | todo | M331 |  | E9 | F4 | | [M381-deferred-matching-coverage.md](PLAN/MILESTONES/M381-deferred-matching-coverage.md) |
@@ -381,7 +381,7 @@ future core work has solid ground to build on.
 | M270 | Lanczos Sinc Resampling Filters | done | - | misty-marten | E3 | | | [M270-lanczos-sinc-resampling-filters.md](PLAN/MILESTONES/M270-lanczos-sinc-resampling-filters.md) |
 | M271 | Persistent Message Test Failures | done | - | bosley-native-nodes | E14 | | | [M271-persistent-message-test-failures.md](PLAN/MILESTONES/M271-persistent-message-test-failures.md) |
 | M272 | Script Writes To Selected Roto Shapes | todo | - |  | E14 | | | [M272-script-writes-to-selected-roto-shapes.md](PLAN/MILESTONES/M272-script-writes-to-selected-roto-shapes.md) |
-| M273 | RenderIsolation Exit Hang | todo | - |  | E6 | | | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
+| M273 | RenderIsolation Exit Hang | doing | - | bosley-native-nodes | E6 | | | [M273-renderisolation-exit-hang.md](PLAN/MILESTONES/M273-renderisolation-exit-hang.md) |
 | M274 | SplineWarp Remaining Controls | done | M147, M148, M149, M150, M151 | bosley-native-nodes | E3 | | | [M274-splinewarp-remaining-controls.md](PLAN/MILESTONES/M274-splinewarp-remaining-controls.md) |
 | M275 | Viewer Widget Editing | done | - | bosley-native-nodes | E10 | | | [M275-viewer-widget-editing.md](PLAN/MILESTONES/M275-viewer-widget-editing.md) |
 | M276 | Upstream Reuse On Edits | done | M260 | misty-marten | E6 | F6 | | [M276-cache-responsiveness-audit.md](PLAN/MILESTONES/M276-cache-responsiveness-audit.md) |
@@ -462,7 +462,7 @@ future core work has solid ground to build on.
 | M367 | USD Camera Exposure | todo | M251, M252, M254 |  | E9 |  | | [M367-usd-camera-exposure.md](PLAN/MILESTONES/M367-usd-camera-exposure.md) |
 | M369 | Curve Slopes Independent Of Edit Order | todo | M304 |  | E14 |  | | [M369-curve-slopes-independent-of-edit-order.md](PLAN/MILESTONES/M369-curve-slopes-independent-of-edit-order.md) |
 | M370 | Roto Point List Render Isolation | todo | M304 |  | E6 |  | | [M370-roto-point-list-render-isolation.md](PLAN/MILESTONES/M370-roto-point-list-render-isolation.md) |
-| M371 | Cycles Abort Test Thread Count | todo | - |  | E9 |  | | [M371-cycles-abort-test-thread-count.md](PLAN/MILESTONES/M371-cycles-abort-test-thread-count.md) |
+| M371 | Cycles Abort Test Thread Count | doing | - | bosley-native-nodes | E9 |  | | [M371-cycles-abort-test-thread-count.md](PLAN/MILESTONES/M371-cycles-abort-test-thread-count.md) |
 | M372 | User Knob Engine Edits | todo | - |  | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
 | M373 | In-Panel Knob Editor | todo | M372 |  | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
 | M374 | Remove Node Magnify On Ctrl-Scroll | todo | - |  | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |

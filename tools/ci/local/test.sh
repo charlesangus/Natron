@@ -404,28 +404,44 @@ PY
         trap stop_all EXIT
 
         # The watchdog fires WATCHDOG_LEAD seconds before ctest's own TIMEOUT so the stacks are
-        # taken from a hung process that is still alive.
-        WATCHDOG_LEAD=20
+        # taken from a hung process that is still alive; a short timeout gets half of itself as lead.
+        WATCHDOG_LEAD=$((REPEAT_TIMEOUT / 2 < 20 ? REPEAT_TIMEOUT / 2 : 20))
         WATCHDOG_SECONDS=$((REPEAT_TIMEOUT > WATCHDOG_LEAD ? REPEAT_TIMEOUT - WATCHDOG_LEAD : 1))
 
-        # Writes every thread's stack of $1 to $2. Returns non-zero when ptrace is refused or no
-        # stack tool is installed.
+        # Writes every thread's stack of $1 to $2. Returns non-zero when ptrace is refused, a tool
+        # hangs past its timeout, or no stack tool is installed.
         dump_stacks() {
-            local pid="$1" out="$2" tmp
+            local pid="$1" out="$2" tmp errs
             tmp="$(mktemp)"
-            if command -v eu-stack > /dev/null 2>&1 && eu-stack -p "${pid}" > "${tmp}" 2>&1 && [[ -s "${tmp}" ]]; then
-                cat "${tmp}" > "${out}"
-            elif command -v gdb > /dev/null 2>&1 && gdb -p "${pid}" -batch -ex 'thread apply all bt' > "${tmp}" 2>&1 && grep -q '^Thread ' "${tmp}"; then
-                cat "${tmp}" > "${out}"
-            else
+            errs="$(mktemp)"
+            if command -v eu-stack > /dev/null 2>&1; then
+                if timeout -k 2 15 eu-stack -p "${pid}" > "${tmp}" 2>&1 && [[ -s "${tmp}" ]]; then
+                    cat "${tmp}" > "${out}"
+                    rm -f "${tmp}" "${errs}"
+                    return 0
+                fi
                 {
-                    echo "stacks unavailable: ptrace refused (yama ptrace_scope or missing CAP_SYS_PTRACE) or no eu-stack/gdb installed"
+                    echo "--- eu-stack (failed or timed out) ---"
                     cat "${tmp}"
-                } > "${out}"
-                rm -f "${tmp}"
-                return 1
+                } >> "${errs}"
             fi
-            rm -f "${tmp}"
+            if command -v gdb > /dev/null 2>&1; then
+                if timeout -k 2 15 gdb -p "${pid}" -batch -ex 'thread apply all bt' > "${tmp}" 2>&1 && grep -q '^Thread ' "${tmp}"; then
+                    cat "${tmp}" > "${out}"
+                    rm -f "${tmp}" "${errs}"
+                    return 0
+                fi
+                {
+                    echo "--- gdb (failed or timed out) ---"
+                    cat "${tmp}"
+                } >> "${errs}"
+            fi
+            {
+                echo "stacks unavailable: ptrace refused (yama ptrace_scope or missing CAP_SYS_PTRACE), a stack tool timed out, or no eu-stack/gdb installed"
+                cat "${errs}"
+            } > "${out}"
+            rm -f "${tmp}" "${errs}"
+            return 1
         }
 
         run_iteration() {
@@ -453,11 +469,16 @@ PY
                 echo "${child}" > "${LOG_DIR}/iter-${n}.pgid"
                 sleep "${WATCHDOG_SECONDS}" &
                 timer=$!
+                # stop_iterations signals this subshell, which would otherwise leave the sleep behind.
+                trap 'kill "${timer}" 2>/dev/null; exit 143' TERM
                 wait -n "${child}" "${timer}"
                 rc=$?
                 if kill -0 "${timer}" 2>/dev/null; then
                     kill "${timer}" 2>/dev/null
                     wait "${timer}" 2>/dev/null
+                elif ! kill -0 "${child}" 2>/dev/null; then
+                    wait "${child}"
+                    rc=$?
                 else
                     dump_stacks "${child}" "${LOG_DIR}/iter-${n}.stacks"
                     kill -TERM -- "-${child}" 2>/dev/null

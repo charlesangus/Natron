@@ -152,8 +152,9 @@ protected:
      * the main thread is free to run the action. The render waits for the action to return, so the action always
      * lands while frames remain to be rendered.
      * A render still running after `deadline` is aborted and kRenderTimedOut returned, so a stalled render fails
-     * its test instead of reaching the ctest timeout; zero disables the deadline. One that does not return from the abort
-     * within a further deadline of its own ends the process, since the render thread still refers to this frame's locals.
+     * its test instead of reaching the ctest timeout; zero disables the deadline. One that does not return from
+     * the abort within a further deadline of its own ends the process, since the render thread still refers to this
+     * frame's locals.
      * With `peakRenderThreads`, it receives the most frame threads the engine had at once while the render ran.
      * Returns the render's exit code, or -1 if it never reported one.
      **/
@@ -254,6 +255,10 @@ protected:
                 const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
                 if (!timedOut && (now - started > deadline)) {
                     timedOut = true;
+                    const ::testing::TestInfo* stalledInfo = ::testing::UnitTest::GetInstance()->current_test_info();
+                    std::fprintf(stderr, "RenderIsolation: %s.%s stalled past %lld ms after frame %d was reported (of %d-%d); aborting the render\n",
+                                 stalledInfo ? stalledInfo->test_case_name() : "?", stalledInfo ? stalledInfo->name() : "?", (long long)deadline.count(), lastReportedFrame.load(), kFirstFrame, kLastFrame);
+                    std::fflush(stderr);
                     lock.unlock();
                     engine->abortRenderingNoRestart(false);
                     abortRequested = std::chrono::steady_clock::now();
@@ -281,7 +286,7 @@ protected:
     }
 
     // Far above the seconds a 20-frame render takes on a loaded debug runner, and with the abort grace still well
-    // inside the 300 s ctest timeout.
+    // inside the ctest timeout.
     static constexpr std::chrono::milliseconds kDefaultRenderDeadline { 60000 };
     static constexpr int kRenderTimedOut = -2;
 

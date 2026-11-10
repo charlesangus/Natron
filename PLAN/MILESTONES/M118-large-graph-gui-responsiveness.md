@@ -196,7 +196,7 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - approach: splice-hint candidates from the selection rect plus tolerance only, rect-tested before any shape test; during a drag gesture grow the node bounds incrementally and render the navigator thumbnail once on release; invalidate the moved rects, not the whole viewport.
   - verify: Xvfb `drag_move_1`/`_50` at 3000 drop, no stalls; splice hint and navigator checks in `m55_node_graph.py` pass.
   - size: M
-- [ ] M118.P6.T4 — Pan by scrolling the view, not moving the root item
+- [x] M118.P6.T4 — Pan by scrolling the view, not moving the root item
   - files: `Gui/NodeGraph.cpp`, `Gui/NodeGraph15.cpp`, `Gui/NodeGraph20.cpp`, `Gui/NodeGraph40.cpp`, `tools/bench/gui/gui_bench.py`
   - approach: a large fixed sceneRect with hidden scrollbars so pan, autoscroll and centre go through `scrollContentsBy` (viewport blit, only the exposed strip painted); overlays positioned on view change, never in `paintEvent`; update the harness's `root_offset` and `to_view`.
   - verify: Xvfb `pan` at 3000 is near the N=300 figure; Xvfb shots before/after pan and fit match.

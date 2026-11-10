@@ -51,10 +51,11 @@ Today `GpuDevice::create`'s ranked pick (`Engine/Gpu/GpuDevice.cpp` ~263) ranks
   - approach: In the shared helper, when `NATRON_GPU_DEVICE` is unset and the ranked pick finds no hardware device, retry with an explicit CPU-device selector (the first `VK_PHYSICAL_DEVICE_TYPE_CPU` device's index) unless `NATRON_TEST_REQUIRE_GPU_HARDWARE=1`. Route the direct callers through that helper (or the same fallback) so none depends on auto picking lavapipe. Native GPU tests that go through `GpuContext` with `NATRON_GPU=force` need the same explicit device (set `GpuContextOptions::device` or `NATRON_GPU_DEVICE` in the fixture). Update the GpuHarness comment.
   - verify: In natron-dev (lavapipe only) the full GPU ctest set runs on lavapipe with the same pass/skip counts as on main — no suite newly skipped; with `NATRON_TEST_REQUIRE_GPU_HARDWARE=1` they fail as before.
   - size: M
-- [ ] M375.P2.T2 — Keep CI's Vulkan test legs on lavapipe
+- [x] M375.P2.T2 — Keep CI's Vulkan test legs on lavapipe
   - files: .github/workflows/ci.yml (~261), .github/workflows/remote-build.yml (~299-302)
   - approach: Confirm the GPU test legs still run on lavapipe after P2.T1 (they rely on `NATRON_TEST_REQUIRE_GPU=1`, which now needs the explicit fallback to find a device). If any leg runs Natron itself (not a gtest fixture) expecting GPU compute, set `NATRON_GPU_DEVICE=llvmpipe` in its env. Keep `GALLIUM_OVERRIDE_CPU_CAPS=avx` wherever PR #231 set it (check main if it isn't on this branch).
   - verify: Dispatched ci.yml run shows the GPU test legs executing (not skipping) on lavapipe and green.
   - size: M
 
 **Verification gate:** build and ctest green in natron-dev with GPU tests running on lavapipe (no newly skipped suites); PR CI green with GPU legs executing on lavapipe; a launch of Natron in natron-dev with `NATRON_GPU=force` and no `NATRON_GPU_DEVICE` logs the new "only CPU Vulkan devices" message and renders on the CPU path.
+- 2026-11-10 — P2.T2 needed no workflow change: `NATRON_TEST_REQUIRE_GPU` is read only by gtest fixtures, which now select lavapipe explicitly. Remote release run 42793789811 is green with the GPU suites running on lavapipe. The only GPU skips are the expected ones: a single Vulkan device, a single queue, and the opt-in pipeline bench. The ranked-pick test was fixed (54692db4d) to clear the helper's fallback selector.

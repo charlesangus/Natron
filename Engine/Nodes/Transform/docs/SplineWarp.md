@@ -134,9 +134,10 @@ key the selection along the motion vectors of the node picked as Follow Source, 
 selected curve follows, source or destination: following one end of a link leaves the other
 curve where it is, and the link stays. A correspondence selected with the correspondence tool
 follows too, keyed at its own frames: each end moves with the picture under it and is keyed where
-its curve passes nearest, within the correspondences on either side. A follow keys every frame it
-reaches, re-solves the warp once when it ends, and is one undo step, curves and correspondences
-together. The Translate, Affine and Perspective models normally key a curve's transform; on a
+its curve passes nearest, within the correspondences on either side. Follow Reduce thins the
+curves' keys only; a correspondence keeps every key the follow set. A follow keys every frame it
+reaches, refreshes the viewer frame by frame as it goes, and is one undo step, curves and
+correspondences together. The Translate, Affine and Perspective models normally key a curve's transform; on a
 curve whose transform is linked to another item they key the curve's own points instead, so the
 target's transform and the other curves linked to it never change, the link stays and the
 Transform page stays disabled. While a follow started from the buttons runs, an application-modal

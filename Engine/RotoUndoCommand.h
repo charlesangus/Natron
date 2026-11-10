@@ -49,8 +49,6 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 class RotoCurveContextHostState;
-
-class RotoCurveContextHostState;
 class RotoCurveInteract;
 class RotoPaintInteract;
 

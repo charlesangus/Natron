@@ -81,7 +81,12 @@ public:
         _inner->framesWritten();
     }
 
-    virtual void followEnded() OVERRIDE FINAL { _inner->followEnded(); }
+    // The end of a follow dirties the host as a batch does.
+    virtual void followEnded() OVERRIDE FINAL
+    {
+        ++batches;
+        _inner->followEnded();
+    }
 
     int keysWritten = 0;
     int batches = 0;

@@ -45,14 +45,15 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Time/VectorGenerator.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurvePanelHook.h"
-#include "Engine/RotoPaint.h"
 #include "Engine/TimeLine.h"
 #include "Engine/VectorFollow.h"
+#include "Engine/VectorFollowKnobs.h"
 #include "Engine/VectorFollowTask.h"
 #include "Engine/ViewIdx.h"
 
@@ -63,6 +64,15 @@ namespace {
 using namespace VectorFollowTest;
 
 constexpr double kFollowTolerance = 0.5;
+
+VectorFollowControls*
+followControlsOf(const NodePtr& node)
+{
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+    RotoCurvePanelHook* hook = effect ? effect->getCurvePanelHook() : NULL;
+
+    return hook ? hook->getVectorFollowControls() : NULL;
+}
 
 // Holds every follow's thread as its phase begins, until released. The destructor releases it and
 // waits out the follow it was given, so the hook never outlives the gate.
@@ -76,8 +86,8 @@ public:
     ~PhaseGate()
     {
         release();
-        if (_paint) {
-            _paint->abortVectorFollow(true);
+        if (_follow) {
+            _follow->abortFollow(true);
         }
         VectorFollowTask::setPhaseStartHookForTesting(std::function<void()>());
     }
@@ -85,9 +95,9 @@ public:
     PhaseGate(const PhaseGate&) = delete;
     PhaseGate& operator=(const PhaseGate&) = delete;
 
-    void setFollow(RotoPaint* paint)
+    void setFollow(VectorFollowControls* follow)
     {
-        _paint = paint;
+        _follow = follow;
     }
 
     bool waitUntilHeld()
@@ -117,7 +127,7 @@ private:
     std::condition_variable _cond;
     bool _held = false;
     bool _released = false;
-    RotoPaint* _paint = NULL;
+    VectorFollowControls* _follow = NULL;
 };
 
 class PyVectorFollowTest
@@ -140,8 +150,8 @@ public:
     void TearDown() override
     {
         // A follow still running would write to the shapes, and read the source, as they go away.
-        if (RotoPaint* paint = _roto ? dynamic_cast<RotoPaint*>(_roto->getEffectInstance().get()) : NULL) {
-            paint->abortVectorFollow(true);
+        if (VectorFollowControls* follow = followControlsOf(_roto)) {
+            follow->abortFollow(true);
         }
         NativeTimeNodeTest::TearDown();
     }
@@ -188,14 +198,13 @@ public:
     }
 
     // Starts a follow of the shape from frame 5 to 12 as the panel does, leaving it running.
-    RotoPaint* startPanelFollow()
+    VectorFollowControls* startPanelFollow()
     {
-        RotoPaint* paint = dynamic_cast<RotoPaint*>(_roto->getEffectInstance().get());
-        RotoCurvePanelHook* hook = paint ? paint->getCurvePanelHook() : NULL;
+        VectorFollowControls* follow = followControlsOf(_roto);
         KnobChoicePtr source = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followSource"));
         KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
         KnobIntPtr out = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
-        if (!hook || !source || !range || !out) {
+        if (!follow || !source || !range || !out) {
             return NULL;
         }
         const std::string sourceName = _generator->getFullyQualifiedName();
@@ -203,9 +212,9 @@ public:
         range->setValue(1, ViewSpec::all(), 0);
         out->setValue(12, ViewSpec::all(), 0);
         getApp()->getTimeLine()->seekFrame(5, false, NULL, eTimelineChangeReasonOtherSeek);
-        hook->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>(1, _bezier));
+        follow->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>(1, _bezier));
 
-        return paint;
+        return follow;
     }
 
     std::set<double> keyTimes() const
@@ -353,10 +362,8 @@ TEST_F(PyVectorFollowTest, UnknownNamesRaise)
 
 TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
 {
-    RotoPaint* paint = dynamic_cast<RotoPaint*>(_roto->getEffectInstance().get());
-    ASSERT_TRUE(paint);
-    RotoCurvePanelHook* hook = paint->getCurvePanelHook();
-    ASSERT_TRUE(hook);
+    VectorFollowControls* follow = followControlsOf(_roto);
+    ASSERT_TRUE(follow);
     KnobChoicePtr source = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followSource"));
     KnobChoicePtr range = std::dynamic_pointer_cast<KnobChoice>(_roto->getKnobByName("followRange"));
     KnobIntPtr out = std::dynamic_pointer_cast<KnobInt>(_roto->getKnobByName("followOut"));
@@ -370,16 +377,16 @@ TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
     expectScriptPasses("assert roto.getLastFollowReport() is None\n"
                        "assert not roto.isFollowingVectors()\n");
 
-    hook->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>(1, _bezier));
-    ASSERT_TRUE(paint->isVectorFollowRunning()) << "the follow was refused or did not start";
+    follow->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>(1, _bezier));
+    ASSERT_TRUE(follow->isFollowing()) << "the follow was refused or did not start";
     expectScriptPasses("assert roto.isFollowingVectors()\n"
                        "assert roto.getLastFollowReport() is None\n");
 
-    for (int i = 0; i < 6000 && paint->isVectorFollowRunning(); ++i) {
+    for (int i = 0; i < 6000 && follow->isFollowing(); ++i) {
         QCoreApplication::processEvents();
         QThread::msleep(10);
     }
-    ASSERT_FALSE(paint->isVectorFollowRunning()) << "the follow did not end in time";
+    ASSERT_FALSE(follow->isFollowing()) << "the follow did not end in time";
 
     expectScriptPasses("report = roto.getLastFollowReport()\n"
                        "assert not roto.isFollowingVectors()\n"
@@ -394,8 +401,8 @@ TEST_F(PyVectorFollowTest, APanelFollowRunsInTheBackgroundAndLeavesItsReport)
     EXPECT_NEAR(end.x, 90. + kShiftX * 7., kFollowTolerance);
     EXPECT_NEAR(end.y, 70. + kShiftY * 7., kFollowTolerance);
 
-    hook->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>());
-    EXPECT_FALSE(paint->isVectorFollowRunning());
+    follow->onItemMenuActionTriggered("followVectors", std::list<RotoItemPtr>());
+    EXPECT_FALSE(follow->isFollowing());
     expectScriptPasses("assert roto.getLastFollowReport() is None\n"
                        "assert not roto.isFollowingVectors()\n");
 }
@@ -411,10 +418,10 @@ TEST_F(PyVectorFollowTest, TheHostRefusesEditsWhileAFollowRuns)
     const std::string opacityParam = getApp()->getAppIDString() + ".getNode(\"" + _roto->getScriptName() + "\").getParam(\"opacity\")";
 
     PhaseGate gate;
-    RotoPaint* paint = startPanelFollow();
-    ASSERT_TRUE(paint);
-    gate.setFollow(paint);
-    ASSERT_TRUE(paint->isVectorFollowRunning()) << "the follow was refused or did not start";
+    VectorFollowControls* follow = startPanelFollow();
+    ASSERT_TRUE(follow);
+    gate.setFollow(follow);
+    ASSERT_TRUE(follow->isFollowing()) << "the follow was refused or did not start";
     ASSERT_TRUE(gate.waitUntilHeld()) << "the follow's thread never began its phase";
 
     EXPECT_EQ((int)KnobHelper::eValueChangedReturnCodeNothingChanged,
@@ -439,12 +446,12 @@ TEST_F(PyVectorFollowTest, TheHostRefusesEditsWhileAFollowRuns)
 
     // A stop asked while the follow's thread is inside its phase, and a waited one ending the follow
     // as that thread leaves it: the follow must not be dropped from under that thread.
-    paint->abortVectorFollow(false);
+    follow->abortFollow(false);
     gate.release();
-    paint->abortVectorFollow(true);
-    ASSERT_FALSE(paint->isVectorFollowRunning());
+    follow->abortFollow(true);
+    ASSERT_FALSE(follow->isFollowing());
     VectorFollowReport report;
-    ASSERT_TRUE(paint->getLastVectorFollowReport(&report));
+    ASSERT_TRUE(follow->getLastReport(&report));
     EXPECT_TRUE(isUserStopVectorFollowReport(report)) << formatVectorFollowReport(report);
 
     opacity->setValue(opacityBefore * 0.5, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);

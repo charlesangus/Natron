@@ -388,6 +388,16 @@ public:
         return true;
     }
 
+    /**
+     * @brief The other items whose own transform knobs make up item's transform, such as a
+     * transform link target. A follow keys them before item, so item's keys are converted through
+     * the transform they end up with.
+     **/
+    virtual std::list<RotoItemPtr> getTransformSources(const RotoDrawableItem& /*item*/) const
+    {
+        return std::list<RotoItemPtr>();
+    }
+
 protected:
     /**
      * @brief False when the Transform page must not edit owner's transform, so selecting owner

@@ -1206,6 +1206,27 @@ SplineWarpContext::fitKeysOwnTransform(const RotoDrawableItem& item) const
     return !resolveTransformLinkLocked(&item);
 }
 
+std::list<RotoItemPtr>
+SplineWarpContext::getTransformSources(const RotoDrawableItem& item) const
+{
+    std::vector<RotoLayerPtr> layers;
+    for (RotoLayerPtr layer = item.getParentLayer(); layer; layer = layer->getParentLayer()) {
+        layers.push_back(layer);
+    }
+    std::list<RotoItemPtr> sources;
+    std::lock_guard<std::mutex> l(_warpMutex);
+    if (RotoItemPtr source = resolveTransformLinkLocked(&item)) {
+        sources.push_back(source);
+    }
+    for (const RotoLayerPtr& layer : layers) {
+        if (RotoItemPtr source = resolveTransformLinkLocked(layer.get())) {
+            sources.push_back(source);
+        }
+    }
+
+    return sources;
+}
+
 bool
 SplineWarpContext::getDefaultTransformCenter(double time,
                                              double* x,

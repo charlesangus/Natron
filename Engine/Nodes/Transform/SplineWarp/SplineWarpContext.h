@@ -489,6 +489,11 @@ public:
     virtual bool fitKeysOwnTransform(const RotoDrawableItem& item) const OVERRIDE;
 
     /**
+     * @brief What item and each of its parent layers are transform linked to.
+     **/
+    virtual std::list<RotoItemPtr> getTransformSources(const RotoDrawableItem& item) const OVERRIDE;
+
+    /**
      * @brief Saves the links (the same objects, with their values), the boundaries and the layer
      * amounts.
      **/

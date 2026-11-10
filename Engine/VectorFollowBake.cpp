@@ -482,7 +482,58 @@ struct VectorFollowRun::Imp {
     bool writePoints(FollowShape& shape, double time, const std::vector<FollowPoint>& points) const;
     void writeFrame(FollowShape& shape, const VectorFollowFrame& frame) const;
     void removeKeys(FollowShape& shape) const;
+    void orderByTransformSources();
 };
+
+/*
+ * A shape's keys are converted through its transform at their frame, so a shape whose transform
+ * comes in part from another followed shape is keyed after it: converted through that shape's old
+ * transform, its keys would move again as the new one lands.
+ */
+void
+VectorFollowRun::Imp::orderByTransformSources()
+{
+    std::vector<std::unique_ptr<FollowShape>> pending;
+    pending.swap(shapes);
+    std::vector<std::list<RotoItemPtr>> sources(pending.size());
+    for (std::size_t i = 0; i < pending.size(); ++i) {
+        if (pending[i]->item) {
+            sources[i] = context->getTransformSources(*pending[i]->item);
+        }
+    }
+    while (!pending.empty()) {
+        std::set<const RotoItem*> waiting;
+        for (const std::unique_ptr<FollowShape>& shape : pending) {
+            if (shape->item) {
+                waiting.insert(shape->item.get());
+            }
+        }
+        std::vector<std::unique_ptr<FollowShape>> later;
+        std::vector<std::list<RotoItemPtr>> laterSources;
+        for (std::size_t i = 0; i < pending.size(); ++i) {
+            bool waits = false;
+            for (const RotoItemPtr& source : sources[i]) {
+                waits = waits || ((source.get() != pending[i]->item.get()) && waiting.count(source.get()));
+            }
+            if (waits) {
+                later.push_back(std::move(pending[i]));
+                laterSources.push_back(sources[i]);
+            } else {
+                shapes.push_back(std::move(pending[i]));
+            }
+        }
+        // Links never form a cycle, but should one, its shapes keep their order rather than hang.
+        if (later.size() == pending.size()) {
+            for (std::unique_ptr<FollowShape>& shape : later) {
+                shapes.push_back(std::move(shape));
+            }
+            later.clear();
+            laterSources.clear();
+        }
+        pending.swap(later);
+        sources.swap(laterSources);
+    }
+}
 
 // The keys of what the shape's model drives: its points for per-point, its transform knobs for a fit.
 std::set<int>
@@ -570,6 +621,8 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
         shape->bakesFit = true;
         shape->tracked = pointsToTrack(*shape->bezier, 0);
         if (shape->tracked.empty()) {
+            *refusal = "its transform is not its own, and it has no points to key";
+
             return nullptr;
         }
     }
@@ -846,6 +899,7 @@ VectorFollowRun::prepare(std::string* error)
             _imp->refused.push_back(VectorFollowRefusal { item->getScriptName(), refusal });
         }
     }
+    _imp->orderByTransformSources();
     for (const VectorFollowPointsPtr& points : params.points) {
         std::unique_ptr<FollowShape> shape = points ? _imp->makePointsShape(points) : nullptr;
         if (shape) {

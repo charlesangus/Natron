@@ -1934,12 +1934,6 @@ RotoCurveContext::followVectors(const VectorFollowParams& params,
         return params.shouldAbort && params.shouldAbort();
     };
     run.compute(sampler, [&run](int shape, const VectorFollowFrame& frame) { run.applyFrame(shape, frame); }, aborted);
-    // Nothing refreshes between frames here, so the whole run is the one batch.
-    for (const VectorFollowPointsPtr& points : params.points) {
-        if (points) {
-            points->framesWritten();
-        }
-    }
     if (params.reduce && !run.wasAborted()) {
         run.prepareReduction();
         run.reduce(aborted);

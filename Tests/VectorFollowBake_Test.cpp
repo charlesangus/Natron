@@ -1248,6 +1248,48 @@ TEST_F(VectorFollowSplineWarpTest, AFitOnATransformLinkedCurveKeysItsOwnPointsOn
     }
 }
 
+// Selected before its link target, a linked curve still moves with the vectors once, rather than
+// again with the transform its target is keyed with.
+TEST_F(VectorFollowSplineWarpTest, ALinkedCurveSelectedBeforeItsTargetMovesOnce)
+{
+    SplineWarpContextPtr warp = warpContext();
+    ASSERT_TRUE(bool(warp));
+    BezierPtr linked = makeSquareIn(warp, kStart);
+    BezierPtr target = makeSquareIn(warp, kStart, 150.);
+    warp->linkTransform(linked, target);
+    warp->clearSelection(RotoItem::eSelectionReasonOther);
+    const FollowPoint linkedStart = shownAt(linked, positionAt(linked, 0, kStart), kStart);
+    const FollowPoint targetStart = shownAt(target, positionAt(target, 0, kStart), kStart);
+    const double end = kStart + kSpan;
+
+    for (VectorFollowModel model : { VectorFollowModel::eTranslate, VectorFollowModel::eAffine, VectorFollowModel::ePerspective }) {
+        SCOPED_TRACE((int)model);
+        VectorFollowParams params = paramsFor(linked, model);
+        params.items = std::list<RotoDrawableItemPtr> { linked, target };
+        UndoCommandPtr undo;
+        const VectorFollowReport report = warp->followVectors(params, &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        EXPECT_TRUE(report.refused.empty());
+        ASSERT_EQ(report.shapes.size(), 2u);
+        ASSERT_TRUE(bool(undo));
+
+        const FollowPoint targetEnd = shownAt(target, positionAt(target, 0, end), end);
+        EXPECT_NEAR(targetEnd.x, targetStart.x + kShiftX * kSpan, kFollowTolerance);
+        EXPECT_NEAR(targetEnd.y, targetStart.y + kShiftY * kSpan, kFollowTolerance);
+        const FollowPoint linkedEnd = shownAt(linked, positionAt(linked, 0, end), end);
+        EXPECT_NEAR(linkedEnd.x, linkedStart.x + kShiftX * kSpan, kFollowTolerance);
+        EXPECT_NEAR(linkedEnd.y, linkedStart.y + kShiftY * kSpan, kFollowTolerance);
+
+        undo->undo();
+        const FollowPoint linkedBack = shownAt(linked, positionAt(linked, 0, end), end);
+        EXPECT_NEAR(linkedBack.x, linkedStart.x, 1e-9);
+        EXPECT_NEAR(linkedBack.y, linkedStart.y, 1e-9);
+        const FollowPoint targetBack = shownAt(target, positionAt(target, 0, end), end);
+        EXPECT_NEAR(targetBack.x, targetStart.x, 1e-9);
+        EXPECT_NEAR(targetBack.y, targetStart.y, 1e-9);
+    }
+}
+
 // A per-point follow writes the linked curve's own points only.
 TEST_F(VectorFollowSplineWarpTest, APerPointFollowMovesALinkedCurvesPointsOnly)
 {

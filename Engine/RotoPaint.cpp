@@ -1151,26 +1151,6 @@ RotoPaint::isObjectSelectEncoding() const
     return _imp->ui && _imp->ui->objectSelect && _imp->ui->objectSelect->isEncoding();
 }
 
-void
-RotoPaint::abortVectorFollow(bool wait)
-{
-    if (_vectorFollow) {
-        _vectorFollow->abortFollow(wait);
-    }
-}
-
-bool
-RotoPaint::isVectorFollowRunning() const
-{
-    return _vectorFollow && _vectorFollow->isFollowing();
-}
-
-bool
-RotoPaint::getLastVectorFollowReport(VectorFollowReport* report) const
-{
-    return _vectorFollow && _vectorFollow->getLastReport(report);
-}
-
 RotoCurvePanelHook*
 RotoPaint::getCurvePanelHook() const
 {

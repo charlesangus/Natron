@@ -453,7 +453,7 @@ Node::setNameInternal(const std::string& name,
                     qDebug() << e.what();
                 }
             }
-        } else { //if (!oldName.empty()) {
+        } else if (!deferPythonDeclarationToBatch()) {
             declareNodeVariableToPython(fullySpecifiedName);
         }
 

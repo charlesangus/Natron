@@ -214,6 +214,10 @@ Node::load(const CreateNodeArgs& args)
     // After the knobs are loaded, so a pasted or duplicated node's saved config does not win.
     getApp()->getProject()->pushOCIOConfigToNode(thisShared);
 
+    if (finishCreationInPythonDeclarationBatch(!serialization && !isLoadingPyPlug)) {
+        return;
+    }
+
     _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
 
     // Expressions written before this node existed may name it. A loading project rechecks
@@ -810,6 +814,9 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
     {
         QMutexLocker k(&_imp->activatedMutex);
         _imp->isBeingDestroyed = true;
+    }
+    if (QThread::currentThread() == qApp->thread()) {
+        releaseStashedPythonObject();
     }
 
     bool allProcessingQuit = areAllProcessingThreadsQuit();

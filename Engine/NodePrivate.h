@@ -398,6 +398,12 @@ public:
     bool cacheIDClaimed; // protected by nameMutex
     std::string nodeId; // protected by nameMutex
     DeactivatedState deactivatedState;
+    // The node's Python object while it is deactivated, put back as is when it is activated again:
+    // declaring it anew would make an object for every one of its parameters.
+    PyObject* deactivatedPythonObject = nullptr; // main thread, owned reference
+    std::string deactivatedPythonObjectName; // the fully qualified name it hung under
+    // Set while a PythonDeclarationBatch is left to declare this created node's Python variable.
+    bool pythonDeclarationDeferred = false; // main thread
     mutable QMutex activatedMutex;
     bool activated;
     Plugin* plugin; //< the plugin which stores the function to instantiate the effect

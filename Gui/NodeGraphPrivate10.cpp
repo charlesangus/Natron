@@ -105,25 +105,30 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             const std::list<Serialization::NodeSerializationPtr>& internalNodesClipBoard = clipboard.nodes;
             std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = internalNodesClipBoard.begin();
             std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
-            for (; itOther != internalNodesClipBoard.end(); ++itOther) {
-                NodePtr sourceNode;
-                if (itSource != clipboard.sourceNodes.end()) {
-                    sourceNode = *itSource;
-                    ++itSource;
-                }
-                const std::string& oldScriptName = (*itOther)->scriptName;
-                NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), 0, &oldNewScriptNamesMapping);
+            {
+                // Closed before the connections and links below, which read the pasted nodes' Python
+                // variables.
+                const Node::PythonDeclarationBatch pythonDeclarationBatch;
+                for (; itOther != internalNodesClipBoard.end(); ++itOther) {
+                    NodePtr sourceNode;
+                    if (itSource != clipboard.sourceNodes.end()) {
+                        sourceNode = *itSource;
+                        ++itSource;
+                    }
+                    const std::string& oldScriptName = (*itOther)->scriptName;
+                    NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), 0, &oldNewScriptNamesMapping);
 
-                if (!node) {
-                    missingNodePlugins.insert((*itOther)->pluginID);
-                    continue;
-                }
-                newNodes->push_back( std::make_pair(oldScriptName, node) );
-                newNodesList.push_back(node);
-                newNodesMap.push_back( std::make_pair( *itOther, node->getNode() ) );
+                    if (!node) {
+                        missingNodePlugins.insert((*itOther)->pluginID);
+                        continue;
+                    }
+                    newNodes->push_back(std::make_pair(oldScriptName, node));
+                    newNodesList.push_back(node);
+                    newNodesMap.push_back(std::make_pair(*itOther, node->getNode()));
 
-                const std::string& newScriptName = node->getNode()->getScriptName();
-                oldNewScriptNamesMapping[oldScriptName] = newScriptName;
+                    const std::string& newScriptName = node->getNode()->getScriptName();
+                    oldNewScriptNamesMapping[oldScriptName] = newScriptName;
+                }
             }
             if (internalNodesClipBoard.size() != newNodes->size()) {
                 std::ostringstream message;

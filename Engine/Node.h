@@ -2160,9 +2160,10 @@ public:
     };
 
     /**
-     * @brief While one lives on the main thread, activate() and deactivate() leave declaring or
-     * deleting the nodes' Python variables, restoring their expression functions and running their
-     * creation callbacks to the end of the outermost one. It runs one script declaring every
+     * @brief While one lives on the main thread, activate(), deactivate() and the creation of a
+     * node outside a PyPlug leave declaring or deleting the nodes' Python variables, restoring
+     * their expression functions and running their creation callbacks to the end of the outermost
+     * one. It runs one script declaring every
      * activated node, one declaring all their parameters and one deleting every deactivated node,
      * without echoing them per node in the Script Editor. Open it inside the InputEditBatch of the
      * edit, whose rechecks and refreshes read the declarations.
@@ -2701,6 +2702,31 @@ private:
      * @brief Leaves deleting this node's Python variable to the end of the PythonDeclarationBatch.
      **/
     void queueNodeVariableDeletion();
+
+    /**
+     * @brief Keeps a reference to this node's Python object, about to be deleted from its parent,
+     * so that activate() can put it back with its parameters and expression functions.
+     **/
+    void stashPythonObject();
+
+    /**
+     * @brief Puts the stashed object back under this node's name unless the name has changed or
+     * something else holds it, then lets go of the stash.
+     **/
+    void restoreStashedPythonObject();
+    void releaseStashedPythonObject();
+
+    /**
+     * @brief While a PythonDeclarationBatch is open, leaves declaring the Python variable and
+     * parameters of this node being created to its end and returns true.
+     **/
+    bool deferPythonDeclarationToBatch();
+
+    /**
+     * @brief Leaves the creation callback and the recheck of expressions naming this node to the
+     * end of the batch when its declaration was left to it, returning whether it was.
+     **/
+    bool finishCreationInPythonDeclarationBatch(bool userEdited);
 
     static void runPendingPythonDeclarations();
 

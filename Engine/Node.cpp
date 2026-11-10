@@ -757,7 +757,7 @@ Node::getStreamWarnings(std::map<StreamWarningEnum, QString>* warnings) const
 void
 Node::declareRotoPythonField()
 {
-    if (getScriptName_mt_safe().empty()) {
+    if (getScriptName_mt_safe().empty() || _imp->pythonDeclarationDeferred) {
         return;
     }
     assert(_imp->curveContext);
@@ -780,7 +780,7 @@ Node::declareRotoPythonField()
 void
 Node::declareTrackerPythonField()
 {
-    if (getScriptName_mt_safe().empty()) {
+    if (getScriptName_mt_safe().empty() || _imp->pythonDeclarationDeferred) {
         return;
     }
 
@@ -3576,6 +3576,7 @@ std::map<const Node*, NodeWPtr> channelSelectorOwners;
 Node::~Node()
 {
     destroyNode(true, false);
+    releaseStashedPythonObject();
     releaseOwnCacheID();
 
     QMutexLocker k(&channelSelectorOwnersMutex);
@@ -4957,7 +4958,8 @@ int pythonDeclarationBatchDepth = 0;
 std::vector<std::pair<NodePtr, std::string>> pythonDeclarationBatchDeleted;
 std::string pythonDeclarationBatchDeletionScript;
 std::vector<NodePtr> pythonDeclarationBatchActivated;
-std::vector<NodePtr> pythonDeclarationBatchCreated;
+// Each node with the userEdited argument of its creation callback.
+std::vector<std::pair<NodePtr, bool>> pythonDeclarationBatchCreated;
 std::set<std::string> pythonDeclarationBatchRechecked;
 
 // Errors abort a script at the failing line, leaving the lines after it unrun.
@@ -5029,8 +5031,25 @@ Node::runPendingPythonDeclarations()
     deletionScript.swap(pythonDeclarationBatchDeletionScript);
     std::vector<NodePtr> activated;
     activated.swap(pythonDeclarationBatchActivated);
-    std::vector<NodePtr> created;
+    std::vector<std::pair<NodePtr, bool>> created;
     created.swap(pythonDeclarationBatchCreated);
+    {
+        // A node whose loading threw before reaching its end was removed from its group.
+        std::unordered_set<const Node*> loaded;
+        for (const std::pair<NodePtr, bool>& node : created) {
+            loaded.insert(node.first.get());
+        }
+        std::vector<NodePtr> kept;
+        kept.reserve(activated.size());
+        for (const NodePtr& node : activated) {
+            const bool abandoned = node->_imp->pythonDeclarationDeferred && !loaded.count(node.get());
+            node->_imp->pythonDeclarationDeferred = false;
+            if (!abandoned) {
+                kept.push_back(node);
+            }
+        }
+        activated.swap(kept);
+    }
     std::set<std::string> rechecked;
     rechecked.swap(pythonDeclarationBatchRechecked);
 
@@ -5048,6 +5067,9 @@ Node::runPendingPythonDeclarations()
 
     if (!activated.empty()) {
         const AppInstancePtr app = activated.front()->getApp();
+        for (const NodePtr& node : activated) {
+            node->restoreStashedPythonObject();
+        }
 
         // A group's variable is declared before the variables of the nodes inside it, which hang
         // under it, because activate() reaches the group first.
@@ -5115,13 +5137,48 @@ Node::runPendingPythonDeclarations()
     for (const NodePtr& node : activated) {
         node->restoreKnobsExpressionFunctions();
     }
-    if (!rechecked.empty()) {
+    if (!rechecked.empty() && !activated.empty()) {
         activated.front()->getApp()->recheckInvalidExpressionsReferencing(rechecked);
     }
-    for (const NodePtr& node : created) {
-        node->_imp->runOnNodeCreatedCB(true);
+    for (const std::pair<NodePtr, bool>& node : created) {
+        node.first->_imp->runOnNodeCreatedCB(node.second);
     }
 } // Node::runPendingPythonDeclarations
+
+bool
+Node::deferPythonDeclarationToBatch()
+{
+#ifdef NATRON_RUN_WITHOUT_PYTHON
+
+    return false;
+#endif
+    if ((pythonDeclarationBatchDepth == 0) || (QThread::currentThread() != qApp->thread()) || _imp->nodeCreated || getScriptName_mt_safe().empty() || !_imp->multiInstanceParentName.empty()) {
+        return false;
+    }
+    // A PyPlug's script reads the variables of the nodes it creates as it goes.
+    AppInstancePtr app = getApp();
+    if (!app || app->isCreatingPythonGroup() || !getPluginPythonModule().empty()) {
+        return false;
+    }
+    _imp->pythonDeclarationDeferred = true;
+    pythonDeclarationBatchActivated.push_back(shared_from_this());
+
+    return true;
+}
+
+bool
+Node::finishCreationInPythonDeclarationBatch(bool userEdited)
+{
+    if (!_imp->pythonDeclarationDeferred) {
+        return false;
+    }
+    pythonDeclarationBatchCreated.push_back(std::make_pair(shared_from_this(), userEdited));
+    if (!getApp()->getProject()->isLoadingProject()) {
+        pythonDeclarationBatchRechecked.insert(getScriptName_mt_safe());
+    }
+
+    return true;
+}
 
 void
 Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
@@ -5473,6 +5530,11 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         _imp->runOnNodeDeleteCB();
     }
 
+    if (beingDestroyed) {
+        releaseStashedPythonObject();
+    } else {
+        stashPythonObject();
+    }
     if ((pythonDeclarationBatchDepth > 0) && (QThread::currentThread() == qApp->thread())) {
         // The pending declarations are run first, as their scripts are made when they run and would
         // otherwise declare this node again.
@@ -5503,6 +5565,106 @@ Node::queueNodeVariableDeletion()
     }
     pythonDeclarationBatchDeleted.push_back(std::make_pair(shared_from_this(), nodeName));
     pythonDeclarationBatchDeletionScript += script;
+}
+
+namespace {
+// A new reference to the object a dotted path names from __main__, or null with no error set.
+PyObject*
+lookupMainPythonPath(const std::string& path)
+{
+    PyObject* object = NATRON_PYTHON_NAMESPACE::getMainModule();
+    if (!object) {
+        return 0;
+    }
+    Py_INCREF(object);
+    std::size_t start = 0;
+    while (start <= path.size()) {
+        std::size_t dot = path.find('.', start);
+        if (dot == std::string::npos) {
+            dot = path.size();
+        }
+        PyObject* attr = PyObject_GetAttrString(object, path.substr(start, dot - start).c_str());
+        Py_DECREF(object);
+        if (!attr) {
+            PyErr_Clear();
+
+            return 0;
+        }
+        object = attr;
+        start = dot + 1;
+    }
+
+    return object;
+}
+} // anonymous namespace
+
+void
+Node::stashPythonObject()
+{
+#ifdef NATRON_RUN_WITHOUT_PYTHON
+
+    return;
+#endif
+    releaseStashedPythonObject();
+    if (getScriptName_mt_safe().empty() || getParentMultiInstance() || (QThread::currentThread() != qApp->thread())) {
+        return;
+    }
+    AppInstancePtr app = getApp();
+    if (!app) {
+        return;
+    }
+    const std::string name = getFullyQualifiedName();
+    PythonGILLocker pgl;
+    _imp->deactivatedPythonObject = lookupMainPythonPath(app->getAppIDString() + "." + name);
+    if (_imp->deactivatedPythonObject) {
+        _imp->deactivatedPythonObjectName = name;
+    }
+}
+
+void
+Node::restoreStashedPythonObject()
+{
+#ifdef NATRON_RUN_WITHOUT_PYTHON
+
+    return;
+#endif
+    if (!_imp->deactivatedPythonObject) {
+        return;
+    }
+    PythonGILLocker pgl;
+    PyObject* object = _imp->deactivatedPythonObject;
+    _imp->deactivatedPythonObject = nullptr;
+    std::string name;
+    name.swap(_imp->deactivatedPythonObjectName);
+    AppInstancePtr app = getApp();
+    if (app && (name == getFullyQualifiedName())) {
+        const std::string path = app->getAppIDString() + "." + name;
+        const std::size_t dot = path.rfind('.');
+        const std::string attrName = path.substr(dot + 1);
+        PyObject* parent = lookupMainPythonPath(path.substr(0, dot));
+        if (parent && !PyObject_HasAttrString(parent, attrName.c_str())) {
+            if (PyObject_SetAttrString(parent, attrName.c_str(), object) != 0) {
+                PyErr_Clear();
+            }
+        }
+        Py_XDECREF(parent);
+    }
+    Py_DECREF(object);
+}
+
+void
+Node::releaseStashedPythonObject()
+{
+    if (!_imp->deactivatedPythonObject) {
+        return;
+    }
+    PyObject* object = _imp->deactivatedPythonObject;
+    _imp->deactivatedPythonObject = nullptr;
+    _imp->deactivatedPythonObjectName.clear();
+    if (Py_IsInitialized()) {
+        PythonGILLocker pgl;
+        Py_DECREF(object);
+    }
 }
 
 void
@@ -5596,6 +5758,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
         pythonDeclarationBatchActivated.push_back(thisShared);
         pythonDeclarationBatchRechecked.insert(getScriptName_mt_safe());
     } else {
+        restoreStashedPythonObject();
         declareAllPythonAttributes();
         restoreKnobsExpressionFunctions();
         std::set<std::string> names;
@@ -5620,7 +5783,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     }
 
     if (batchingPython) {
-        pythonDeclarationBatchCreated.push_back(thisShared);
+        pythonDeclarationBatchCreated.push_back(std::make_pair(thisShared, true));
     } else {
         _imp->runOnNodeCreatedCB(true);
     }
@@ -10446,6 +10609,9 @@ Node::setNodeVariableToPython(const std::string& oldName,
     if (getScriptName_mt_safe().empty()) {
         return;
     }
+    if (_imp->pythonDeclarationDeferred) {
+        return;
+    }
     KnobHelper::moveExpressionFunctionsGeneration();
     QString appID = QString::fromUtf8( getApp()->getAppIDString().c_str() );
     QString str = QString( appID + QString::fromUtf8(".%1 = ") + appID + QString::fromUtf8(".%2\ndel ") + appID + QString::fromUtf8(".%2\n") ).arg( QString::fromUtf8( newName.c_str() ) ).arg( QString::fromUtf8( oldName.c_str() ) );
@@ -10513,7 +10679,7 @@ Node::declarePythonFields()
 
     return;
 #endif
-    if (getScriptName_mt_safe().empty()) {
+    if (getScriptName_mt_safe().empty() || _imp->pythonDeclarationDeferred) {
         return;
     }
     KnobHelper::moveExpressionFunctionsGeneration();
@@ -10580,7 +10746,7 @@ Node::removeParameterFromPython(const std::string& parameterName)
 
     return;
 #endif
-    if (getScriptName_mt_safe().empty()) {
+    if (getScriptName_mt_safe().empty() || _imp->pythonDeclarationDeferred) {
         return;
     }
     KnobHelper::moveExpressionFunctionsGeneration();

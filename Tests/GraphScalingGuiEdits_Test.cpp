@@ -47,6 +47,8 @@
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
+#include "Serialization/NodeSerialization.h"
+
 NATRON_NAMESPACE_USING
 NATRON_PYTHON_NAMESPACE_USING
 
@@ -117,6 +119,20 @@ activateInBatch(const AppInstancePtr& app,
     for (const NodePtr& node : nodes) {
         node->activate(std::list<NodePtr>(), false, false);
     }
+}
+
+// As pasting in the node graph does.
+NodePtr
+pasteSerialization(const AppInstancePtr& app,
+                   const Serialization::NodeSerializationPtr& serialization)
+{
+    CreateNodeArgs args(serialization->pluginID, app->getProject());
+
+    args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, serialization);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+
+    return app->createNode(args);
 }
 
 } // namespace
@@ -622,4 +638,128 @@ TEST_F(GraphScalingGuiEdits, ExpressionsSurviveBatchedDeleteAndUndo)
                                           + appID + ".Inner.offset, 'expression0')\n",
                                       &error, 0))
         << error;
+}
+
+TEST_F(GraphScalingGuiEdits, UndoKeepsTheNodesPythonObjects)
+{
+    NodePtr loose = createWithMix(getApp(), "Loose", 0.25);
+    NodePtr single = createWithMix(getApp(), "Single", 0.5);
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    groupArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "Holder");
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr holder = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(loose && single && holder);
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(holder->getEffectInstance());
+    ASSERT_TRUE(bool(collection));
+    CreateNodeArgs innerArgs(kGradePluginID, collection);
+    innerArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "Inside");
+    NodePtr inside = getApp()->createNode(innerArgs);
+    ASSERT_TRUE(bool(inside));
+    ASSERT_NO_THROW(doubleKnob(inside, "offset")->setExpression(0, "frame * 3", false, true));
+
+    const std::string a = getApp()->getAppIDString();
+    std::string error;
+    ASSERT_TRUE(interpretPythonScript("keptLoose = " + a + ".Loose\n"
+                                                           "keptLoose.userTag = 7\n"
+                                                           "keptMix = "
+                                          + a + ".Loose.mix\n"
+                                                "keptInside = "
+                                          + a + ".Holder.Inside\n"
+                                                "keptSingle = "
+                                          + a + ".Single\n",
+                                      &error, 0))
+        << error;
+
+    const std::vector<NodePtr> removed = { loose, holder };
+    deactivateInBatch(getApp(), removed);
+    single->deactivate(std::list<NodePtr>(), false, false, true, false);
+    EXPECT_TRUE(interpretPythonScript("assert not hasattr(" + a + ", 'Loose')\n"
+                                                                  "assert not hasattr("
+                                          + a + ", 'Holder')\n"
+                                                "assert not hasattr("
+                                          + a + ", 'Single')\n",
+                                      &error, 0))
+        << error;
+
+    activateInBatch(getApp(), removed);
+    single->activate(std::list<NodePtr>(), false, false);
+    EXPECT_TRUE(interpretPythonScript("assert " + a + ".Loose is keptLoose\n"
+                                                      "assert "
+                                          + a + ".Loose.userTag == 7\n"
+                                                "assert "
+                                          + a + ".Loose.mix is keptMix\n"
+                                                "assert "
+                                          + a + ".Holder.Inside is keptInside\n"
+                                                "assert hasattr("
+                                          + a + ".Holder.Inside.offset, 'expression0')\n"
+                                                "assert "
+                                          + a + ".Single is keptSingle\n"
+                                                "assert "
+                                          + a + ".Single.mix.get() == 0.5\n",
+                                      &error, 0))
+        << error;
+    EXPECT_DOUBLE_EQ(21., doubleKnob(inside, "offset")->getValueAtTime(7., 0, ViewSpec::current(), false));
+}
+
+TEST_F(GraphScalingGuiEdits, BatchedPasteRunsTwoScripts)
+{
+    const int kNumNodes = 100;
+    NodePtr source = createWithMix(getApp(), "Source", 0.75);
+    ASSERT_TRUE(bool(source));
+    Serialization::NodeSerializationPtr serialization = std::make_shared<Serialization::NodeSerialization>();
+    source->toSerialization(serialization.get(), false);
+
+    std::vector<NodePtr> pasted;
+    const U64 beforePaste = getInterpretedScriptsCount();
+    {
+        const Node::PythonDeclarationBatch pythonBatch;
+        for (int i = 0; i < kNumNodes; ++i) {
+            NodePtr node = pasteSerialization(getApp(), serialization);
+            ASSERT_TRUE(bool(node));
+            pasted.push_back(node);
+        }
+    }
+    EXPECT_LE(getInterpretedScriptsCount() - beforePaste, 2u);
+
+    const std::string a = getApp()->getAppIDString();
+    std::string names;
+    std::set<std::string> distinct;
+    for (const NodePtr& node : pasted) {
+        names += "'" + node->getScriptName_mt_safe() + "',";
+        distinct.insert(node->getScriptName_mt_safe());
+    }
+    EXPECT_EQ(static_cast<std::size_t>(kNumNodes), distinct.size());
+    std::string error;
+    EXPECT_TRUE(interpretPythonScript("for name in [" + names + "]:\n"
+                                                                "    node = getattr("
+                                          + a + ", name)\n"
+                                                "    assert node.getScriptName() == name, name\n"
+                                                "    assert node.mix.get() == 0.75, name\n",
+                                      &error, 0))
+        << error;
+
+    KnobDoubleBasePtr offset = doubleKnob(pasted.front(), "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, pasted.back()->getScriptName_mt_safe() + ".mix.get()", false, true));
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.75, readOffset(offset));
+}
+
+TEST_F(GraphScalingGuiEdits, ExpressionWrittenInAPasteBatchResolvesAtItsEnd)
+{
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(bool(reader));
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Pasted.mix.get()", false, false));
+    ASSERT_FALSE(offset->isExpressionValid(0, 0));
+
+    {
+        const Node::PythonDeclarationBatch pythonBatch;
+        NodePtr pasted = createWithMix(getApp(), "Pasted", 0.5);
+        ASSERT_TRUE(bool(pasted));
+        EXPECT_FALSE(offset->isExpressionValid(0, 0));
+    }
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.5, readOffset(offset));
 }

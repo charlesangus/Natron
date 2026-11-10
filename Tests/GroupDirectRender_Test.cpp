@@ -283,3 +283,159 @@ TEST_F(GroupDirectRender, UnfedGroupRendersNoPlaneAndSucceeds)
         EXPECT_TRUE(planes.empty()) << modeName(mode);
     }
 }
+
+namespace {
+NodePtr
+connectChain(const NodePtr& from,
+             const std::vector<NodePtr>& chain)
+{
+    NodePtr previous = from;
+    for (const NodePtr& node : chain) {
+        if (!node || !node->connectInput(previous, 0)) {
+            return NodePtr();
+        }
+        previous = node;
+    }
+
+    return previous;
+}
+}
+
+// The inner group has no downstream node of its own, so it can only render directly.
+TEST_F(GroupDirectRender, NestedGroupMatchesADotBelowTheOuterGroupInBothModes)
+{
+    NodePtr outer = createGroup();
+    ASSERT_TRUE(outer != nullptr);
+    NodeCollectionPtr outerCollection = std::dynamic_pointer_cast<NodeCollection>(outer->getEffectInstance());
+    ASSERT_TRUE(outerCollection != nullptr);
+    CreateNodeArgs innerArgs(PLUGINID_NATRON_GROUP, outerCollection);
+    innerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    innerArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr inner = getApp()->createNode(innerArgs);
+    ASSERT_TRUE(inner != nullptr);
+    NodePtr fed = createSourceInside(inner, 3);
+    NodePtr innerOutput = createInside(inner, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(fed && innerOutput);
+    ASSERT_TRUE(innerOutput->connectInput(fed, 0));
+    NodePtr outerOutput = createInside(outer, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(outerOutput != nullptr);
+    ASSERT_TRUE(outerOutput->connectInput(inner, 0));
+    NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(dot != nullptr);
+    ASSERT_TRUE(dot->connectInput(outer, 0));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        for (int run = 0; run < 2; ++run) {
+            const std::string where = modeName(mode) + " run " + std::to_string(run);
+            appPTR->clearAllCaches();
+            setSeed(fed, 20 + run);
+            std::vector<RenderedPlane> direct;
+            std::vector<RenderedPlane> throughDot;
+            std::string error;
+            ASSERT_TRUE(render(outer, mode, false, &direct, &error)) << where << ": " << error;
+            ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << where << ": " << error;
+            ASSERT_FALSE(direct.empty()) << where;
+            expectSamePlanes(throughDot, direct, where);
+        }
+    }
+}
+
+TEST_F(GroupDirectRender, LongChainInsideAGroupMatchesADotBelowTheGroupInBothModes)
+{
+    NodePtr group = createGroup();
+    ASSERT_TRUE(group != nullptr);
+    NodePtr fed = createSourceInside(group, 4);
+    ASSERT_TRUE(fed != nullptr);
+    std::vector<NodePtr> chain;
+    for (int i = 0; i < 6; ++i) {
+        chain.push_back(createInside(group, PLUGINID_NATRON_DOT));
+    }
+    NodePtr output = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(output != nullptr);
+    NodePtr last = connectChain(fed, chain);
+    ASSERT_TRUE(last != nullptr);
+    ASSERT_TRUE(output->connectInput(last, 0));
+    NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(dot != nullptr);
+    ASSERT_TRUE(dot->connectInput(group, 0));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        appPTR->clearAllCaches();
+        std::vector<RenderedPlane> direct;
+        std::vector<RenderedPlane> throughDot;
+        std::string error;
+        ASSERT_TRUE(render(group, mode, false, &direct, &error)) << modeName(mode) << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << modeName(mode) << ": " << error;
+        ASSERT_FALSE(direct.empty()) << modeName(mode);
+        expectSamePlanes(throughDot, direct, modeName(mode));
+    }
+}
+
+TEST_F(GroupDirectRender, PassThroughGroupMatchesADotBelowTheGroupInBothModes)
+{
+    NodePtr group = createGroup();
+    ASSERT_TRUE(group != nullptr);
+    NodePtr input = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr output = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(input && output);
+    ASSERT_TRUE(output->connectInput(input, 0));
+    NodePtr source = createAtRoot(kTestPluginIDImageRenderSource);
+    ASSERT_TRUE(source != nullptr);
+    ASSERT_TRUE(group->connectInput(source, 0));
+    NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(dot != nullptr);
+    ASSERT_TRUE(dot->connectInput(group, 0));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        for (int run = 0; run < 2; ++run) {
+            const std::string where = modeName(mode) + " run " + std::to_string(run);
+            appPTR->clearAllCaches();
+            setSeed(source, 30 + run);
+            std::vector<RenderedPlane> direct;
+            std::vector<RenderedPlane> throughDot;
+            std::string error;
+            ASSERT_TRUE(render(group, mode, false, &direct, &error)) << where << ": " << error;
+            ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << where << ": " << error;
+            ASSERT_FALSE(direct.empty()) << where;
+            expectSamePlanes(throughDot, direct, where);
+        }
+    }
+}
+
+// The caches are kept between the two renders so that a stale hash or region of definition
+// would serve the first render's image.
+TEST_F(GroupDirectRender, InnerEditAfterARenderIsReflectedInTheNextRenderInBothModes)
+{
+    NodePtr group = createGroup();
+    ASSERT_TRUE(group != nullptr);
+    NodePtr fed = createSourceInside(group, 1);
+    ASSERT_TRUE(fed != nullptr);
+    NodePtr inner = createInside(group, PLUGINID_NATRON_DOT);
+    NodePtr output = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(inner && output);
+    NodePtr last = connectChain(fed, { inner });
+    ASSERT_TRUE(last != nullptr);
+    ASSERT_TRUE(output->connectInput(last, 0));
+    NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(dot != nullptr);
+    ASSERT_TRUE(dot->connectInput(group, 0));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        appPTR->clearAllCaches();
+        setSeed(fed, 40);
+        std::vector<RenderedPlane> first;
+        std::string error;
+        ASSERT_TRUE(render(group, mode, false, &first, &error)) << modeName(mode) << ": " << error;
+        ASSERT_FALSE(first.empty()) << modeName(mode);
+
+        setSeed(fed, 41);
+        std::vector<RenderedPlane> second;
+        std::vector<RenderedPlane> throughDot;
+        ASSERT_TRUE(render(group, mode, false, &second, &error)) << modeName(mode) << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << modeName(mode) << ": " << error;
+        ASSERT_FALSE(second.empty()) << modeName(mode);
+
+        expectSamePlanes(throughDot, second, modeName(mode));
+        EXPECT_FALSE(first.front().pixels == second.front().pixels) << modeName(mode) << ": the edit did not reach the second render";
+    }
+}

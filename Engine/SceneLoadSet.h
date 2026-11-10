@@ -106,7 +106,8 @@ typedef std::shared_ptr<const SceneLoadSet> SceneLoadSetPtr;
 
 /**
  * @brief Where the prim patterns an evaluation matched can select prims, as the literal leading
- * paths PrimSelector::getReach() gives, gathered while the evaluation runs. A load set change
+ * paths PrimSelector::getReach() gives widened to the payloads above them
+ * (SceneOps::getLoadReach()), gathered while the evaluation runs. A load set change
  * that reaches none of them (SceneOps::loadChangeReaches()) leaves that evaluation's scene as it
  * is. Empty when no pattern was matched against the loaded payloads. MT-safe.
  **/

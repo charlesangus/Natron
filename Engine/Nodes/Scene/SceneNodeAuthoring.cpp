@@ -318,6 +318,8 @@ struct PrimPatternCache::State {
         std::string pattern;
         U64 filterKey = 0;
         SceneLoadSetPtr loadSet;
+        // SceneOps::getLoadReach() of the pattern's prefixes on the stage the matches came from.
+        std::vector<std::string> loadReach;
         SceneNodeAuthoring::PatternMatches matches;
     };
 
@@ -406,10 +408,6 @@ matchPattern(PrimPatternCache* cache,
     if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
         return true;
     }
-    if (context.reach) {
-        context.reach->add(reach.prefixes);
-    }
-
     PrimPatternCache::State& state = cache->getState();
     {
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -420,10 +418,13 @@ matchPattern(PrimPatternCache* cache,
             }
             const bool sameLoadSet = it->loadSet ? (context.loadSet && (*it->loadSet == *context.loadSet)) : !context.loadSet;
             // Literal paths in a partial load set match by what is loaded above them.
-            if (!sameLoadSet && (reach.literalOnly || SceneOps::loadChangeReaches(it->loadSet.get(), context.loadSet.get(), reach.prefixes))) {
+            if (!sameLoadSet && (reach.literalOnly || SceneOps::loadChangeReaches(it->loadSet.get(), context.loadSet.get(), it->loadReach))) {
                 continue;
             }
             *matches = it->matches;
+            if (context.reach) {
+                context.reach->add(it->loadReach);
+            }
             PrimPatternCache::State::Entry entry = *it;
             entry.context = context.id;
             entry.upstream = upstream;
@@ -443,9 +444,17 @@ matchPattern(PrimPatternCache* cache,
     }
 
     if (!borrowFor(upstream, context, lease, errorMessage)) {
+        if (context.reach) {
+            context.reach->add(reach.prefixes);
+        }
+
         return false;
     }
     const PXR_NS::UsdStageRefPtr stage = lease->getStage();
+    const std::vector<std::string> loadReach = SceneOps::getLoadReach(stage, reach.prefixes);
+    if (context.reach) {
+        context.reach->add(loadReach);
+    }
     const bool partial = !context.includesEverything();
     std::vector<PXR_NS::SdfPath> found;
     if (partial && reach.literalOnly) {
@@ -502,6 +511,7 @@ matchPattern(PrimPatternCache* cache,
     entry.pattern = pattern;
     entry.filterKey = filterKey;
     entry.loadSet = context.loadSet;
+    entry.loadReach = loadReach;
     entry.matches = *matches;
     state.entries.push_front(entry);
     if (state.entries.size() > kPatternCacheEntries) {

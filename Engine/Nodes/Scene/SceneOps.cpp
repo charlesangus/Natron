@@ -910,9 +910,33 @@ namespace {
     }
 } // anonymous namespace
 
-// A changed rule changes what is loaded from the highest prim on its path whose effective rule
-// differs (an ancestor's own payload loads once a descendant asks for anything), or else below
-// its own path.
+std::vector<std::string>
+getLoadReach(const PXR_NS::UsdStageRefPtr& stage,
+             const std::vector<std::string>& prefixes)
+{
+    std::vector<std::string> reach;
+
+    for (const std::string& text : prefixes) {
+        const PXR_NS::SdfPath prefix(text);
+        PXR_NS::SdfPath widened = prefix;
+        if (stage && prefix.IsPrimPath()) {
+            // The range climbs from the parent, so the last payload it meets is the outermost.
+            for (const PXR_NS::SdfPath& ancestor : prefix.GetParentPath().GetAncestorsRange()) {
+                const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(ancestor);
+                if (prim && prim.HasAuthoredPayloads()) {
+                    widened = ancestor;
+                }
+            }
+        }
+        const std::string path = widened.IsEmpty() ? text : widened.GetString();
+        if (std::find(reach.begin(), reach.end(), path) == reach.end()) {
+            reach.push_back(path);
+        }
+    }
+
+    return reach;
+} // getLoadReach
+
 bool
 loadChangeReaches(const SceneLoadSet* from,
                   const SceneLoadSet* to,
@@ -921,30 +945,14 @@ loadChangeReaches(const SceneLoadSet* from,
     if (prefixes.empty()) {
         return false;
     }
-    const std::vector<std::string> changed = SceneLoadSet::getChangedPaths(from, to);
-    if (changed.empty()) {
-        return false;
-    }
-    const PXR_NS::UsdStageLoadRules fromRules = getLoadRules(from);
-    const PXR_NS::UsdStageLoadRules toRules = getLoadRules(to);
-    std::vector<PXR_NS::SdfPath> reach;
-    for (const std::string& prefix : prefixes) {
-        reach.push_back(PXR_NS::SdfPath(prefix));
-    }
-    const bool rootChanged = (fromRules.GetEffectiveRuleForPath(PXR_NS::SdfPath::AbsoluteRootPath()) != toRules.GetEffectiveRuleForPath(PXR_NS::SdfPath::AbsoluteRootPath()));
-    for (const std::string& path : changed) {
-        const PXR_NS::SdfPath changedPath(path);
-        PXR_NS::SdfPath region = changedPath;
-        for (const PXR_NS::SdfPath& ancestor : changedPath.GetAncestorsRange()) {
-            if (fromRules.GetEffectiveRuleForPath(ancestor) != toRules.GetEffectiveRuleForPath(ancestor)) {
-                region = ancestor;
-            }
-        }
-        if (rootChanged) {
-            region = PXR_NS::SdfPath::AbsoluteRootPath();
-        }
-        for (const PXR_NS::SdfPath& prefix : reach) {
-            if (region.HasPrefix(prefix) || prefix.HasPrefix(region)) {
+    // A changed rule changes the effective rule of its own path, of what lies below it and of
+    // its ancestors. An ancestor's own payload is the only thing of an ancestor that loads, and
+    // getLoadReach() has already widened every prefix to the outermost payload above it.
+    for (const std::string& path : SceneLoadSet::getChangedPaths(from, to)) {
+        const PXR_NS::SdfPath changed(path);
+        for (const std::string& prefix : prefixes) {
+            const PXR_NS::SdfPath reach(prefix);
+            if (changed.HasPrefix(reach) || reach.HasPrefix(changed)) {
                 return true;
             }
         }

@@ -25,7 +25,7 @@ Rendering a Group node directly returns the pixels of the node feeding its Outpu
   - approach: `NodeGroup::appendExtraHashSources` adds `getOutputNodeInput(false)`; `GroupOutput::appendExtraHashDependents` adds the containing group's node.
   - verify: the new test shows the group's hash changes when an inner knob or the Output's input changes.
   - size: M
-- [ ] M319.P1.T2 — Internal identity source, used by NodeGroup
+- [x] M319.P1.T2 — Internal identity source, used by NodeGroup
   - files: `Engine/EffectInstance.{h,cpp}`, `Engine/EffectInstanceRenderRoI.cpp`, `Engine/ParallelRenderArgs.cpp`, `Engine/NodeGroup.{h,cpp}`, `Tests/GroupDirectRender_Test.cpp`
   - approach: add a sentinel identity input number (e.g. -3) and `EffectInstance::getIdentitySource(int nb)` (nb≥0 → `getInput`; sentinel → virtual, null by default); replace `getInput(identityNb)` at the identity sites above; make the render-state walk visit the source. `NodeGroup::isIdentity` returns the sentinel when the Output is fed, -1 otherwise. RoD, preferred metadata and frame range come from the source; no layer pass-through to external inputs (confirm the pass-through step before the identity check, EffectInstanceRenderRoI.cpp up to ~590 and ParallelRenderArgs.cpp ~107, doesn't route planes to external input 0). Grep for `identityInputNb >= 0` assumptions; the sentinel must not reach OFX code.
   - verify: a group rendered directly with `renderNodePlanesInMode` in Legacy and Task-graph matches, bit for bit, the same render through a Dot below, over 3 runs with caches cleared after a different-colour render; a generator-only group has the right RoD; an unfed group gives no plane and an Ok code.
@@ -49,3 +49,4 @@ Rendering a Group node directly returns the pixels of the node feeding its Outpu
 ## Decisions
 
 - 2026-11-10 — Elaborated at claim (consultant). An unfed group renders as empty Ok, matching an unconnected Dot (a one-line change in P1.T2 if a hard failure is wanted). PrecompNode has the same gap but is out of scope.
+- 2026-11-10 — P1.T2: the sentinel is -4 (kIdentityInternalSource), because -3 is already TaskEdge::kContextRequestInputNb. Deep and scene renders take the same seam.

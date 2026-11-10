@@ -52,3 +52,4 @@
 ## Decisions
 
 - 2026-11-10 — Elaborated at claim from a per-caller audit (consultant). Most callers named in the stub are dead code and are deleted. Previews don't use this wait. M219's `workMutex` lives only on F8 and stays as a data guard.
+- 2026-11-10 — Phase 1 verified: remote debug build with tests green at 364fac688 (run 42796566643), including `GenericSchedulerAbortWait` and the failing-blocking-render case.

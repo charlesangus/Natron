@@ -91,6 +91,8 @@ struct GpuContext::Shared {
     GpuCalibration calibration;
     std::string deviceName;
     std::atomic<std::uint64_t> maxStorageBufferRange { 0 };
+    std::atomic<bool> pushDescriptor { false };
+    std::atomic<bool> transferSharesComputeQueue { false };
 
     // Taken before holders is read or changed, and held through a recreation.
     std::mutex holdMutex;
@@ -236,6 +238,18 @@ GpuContext::maxStorageBufferRange() const
     return _shared->maxStorageBufferRange.load(std::memory_order_relaxed);
 }
 
+bool
+GpuContext::pushDescriptor() const
+{
+    return _shared->pushDescriptor.load(std::memory_order_relaxed);
+}
+
+bool
+GpuContext::transferSharesComputeQueue() const
+{
+    return _shared->transferSharesComputeQueue.load(std::memory_order_relaxed);
+}
+
 gpu::GpuRuntime*
 GpuContext::runtime() const
 {
@@ -323,7 +337,10 @@ GpuContext::recoverIfLost()
         if (_options.memoryBudgetMB > 0) {
             rt->pool().setUserBudget(_options.memoryBudgetMB << 20);
         }
-        _shared->maxStorageBufferRange.store(rt->device().info().maxStorageBufferRange, std::memory_order_relaxed);
+        const gpu::GpuDeviceInfo& info = rt->device().info();
+        _shared->maxStorageBufferRange.store(info.maxStorageBufferRange, std::memory_order_relaxed);
+        _shared->pushDescriptor.store(info.pushDescriptor, std::memory_order_relaxed);
+        _shared->transferSharesComputeQueue.store(info.transferSharesComputeQueue, std::memory_order_relaxed);
         message = "GPU compute recovered from a device loss";
     } else {
         _shared->nextRecoveryAttempt = now + std::chrono::seconds(10);
@@ -589,7 +606,10 @@ GpuContext::initialize()
                     shared.calibration = calibration;
                     shared.deviceName = deviceName;
                 }
-                shared.maxStorageBufferRange.store(runtime->device().info().maxStorageBufferRange, std::memory_order_relaxed);
+                const gpu::GpuDeviceInfo& info = runtime->device().info();
+                shared.maxStorageBufferRange.store(info.maxStorageBufferRange, std::memory_order_relaxed);
+                shared.pushDescriptor.store(info.pushDescriptor, std::memory_order_relaxed);
+                shared.transferSharesComputeQueue.store(info.transferSharesComputeQueue, std::memory_order_relaxed);
                 shared.runtime = std::move(runtime);
                 // Once published, a device loss recovery may tear the device down, so nothing below may read the runtime.
                 finish(true);

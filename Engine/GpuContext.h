@@ -172,6 +172,13 @@ public:
     std::uint64_t maxStorageBufferRange() const;
 
     /**
+     * @brief The current device's pushDescriptor and transferSharesComputeQueue, kept from its creation like
+     * maxStorageBufferRange(). Valid once initialization succeeded.
+     **/
+    bool pushDescriptor() const;
+    bool transferSharesComputeQueue() const;
+
+    /**
      * @brief The runtime once initialization succeeded, lost or not; null otherwise. Never null once isAvailable()
      * returned true, until destruction.
      **/

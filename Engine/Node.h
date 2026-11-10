@@ -2280,9 +2280,16 @@ private:
 
     /**
      * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
-     * the internal nodes of a roto paint tree.
+     * the internal nodes of a roto paint tree; and in leaves, the nodes the effects past which
+     * they are listed append through appendHashLeafDependents().
      **/
-    void getHashDependents(std::vector<NodePtr>* dependents) const;
+    void getHashDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
+
+    /**
+     * @brief What marking this node as a leaf marks too: its metadata readers, and in leaves what
+     * its effect appends through appendHashLeafDependents().
+     **/
+    void getHashLeafDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
 
     struct HashInputs {
         bool isViewer = false;

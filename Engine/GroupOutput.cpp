@@ -41,15 +41,16 @@ GroupOutput::getPluginDescription() const
 }
 
 void
-GroupOutput::appendExtraHashDependents(std::vector<NodePtr>* dependents) const
+GroupOutput::appendHashLeafDependents(std::vector<NodePtr>* leaves) const
 {
-    // The containing group's hash folds in what feeds this node.
+    // The containing group's hash folds in what feeds this node. The group's consumers read
+    // through it to this node's input, and are reached from there.
     const NodePtr node = getNode();
     const NodeCollectionPtr collection = node ? node->getGroup() : NodeCollectionPtr();
     const NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(collection);
 
     if (group) {
-        dependents->push_back(group->getNode());
+        leaves->push_back(group->getNode());
     }
 }
 

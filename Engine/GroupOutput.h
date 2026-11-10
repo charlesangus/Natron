@@ -75,7 +75,7 @@ public:
         return true;
     }
 
-    virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
+    virtual void appendHashLeafDependents(std::vector<NodePtr>* leaves) const OVERRIDE FINAL;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -379,6 +379,7 @@ public:
     virtual void purgeCaches() OVERRIDE FINAL;
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
     virtual void appendExtraHashSources(std::vector<NodePtr>* sources) const OVERRIDE FINAL;
+    virtual void appendHashLeafDependents(std::vector<NodePtr>* leaves) const OVERRIDE FINAL;
 
     // What feeds the Output: rendered directly, the group is an identity of it.
     virtual EffectInstancePtr getInternalIdentitySource() const OVERRIDE FINAL WARN_UNUSED_RETURN;

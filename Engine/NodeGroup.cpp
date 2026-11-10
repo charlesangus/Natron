@@ -1395,6 +1395,27 @@ NodeGroup::appendExtraHashSources(std::vector<NodePtr>* sources) const
 }
 
 void
+NodeGroup::appendHashLeafDependents(std::vector<NodePtr>* leaves) const
+{
+    // An enclosing group's Output reads through this group to what feeds this group's Output, so
+    // the enclosing group's hash folds that in, and no walk from it passes the redirection.
+    const NodePtr node = getNode();
+
+    if (!node) {
+        return;
+    }
+    NodesWList outputs;
+    node->getOutputs_mt_safe(outputs);
+    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+        const NodePtr output = it->lock();
+        const EffectInstancePtr effect = output ? output->getEffectInstance() : EffectInstancePtr();
+        if (dynamic_cast<const GroupOutput*>(effect.get())) {
+            effect->appendHashLeafDependents(leaves);
+        }
+    }
+}
+
+void
 NodeGroup::appendNodeContentHash(ContentHasher& h) const
 {
     // The group renders as what feeds its Output, so its hash keys the cache by that node's.

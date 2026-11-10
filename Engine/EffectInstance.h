@@ -454,6 +454,15 @@ public:
     }
 
     /**
+     * @brief Appends nodes whose hashes fold in what feeds this one, though nothing folds in
+     * theirs but their metadata readers: marking this node marks them and those readers only,
+     * whether or not they are dirty already, and the walk goes no further below them.
+     **/
+    virtual void appendHashLeafDependents(std::vector<NodePtr>* /*leaves*/) const
+    {
+    }
+
+    /**
      * @brief Appends nodes whose context reads this node's read-set folds in, besides its inputs
      * and the nodes its expressions read, each with the variables it sets on that node.
      **/

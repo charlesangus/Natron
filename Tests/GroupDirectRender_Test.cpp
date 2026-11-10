@@ -41,6 +41,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
@@ -92,6 +94,57 @@ protected:
         args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
 
         return getApp()->createNode(args);
+    }
+
+    NodePtr createGroupInside(const NodePtr& group)
+    {
+        NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+        if (!collection) {
+            return NodePtr();
+        }
+        CreateNodeArgs args(PLUGINID_NATRON_GROUP, collection);
+        args.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+        return getApp()->createNode(args);
+    }
+
+    static void setCropRectangle(const NodePtr& crop,
+                                 double x,
+                                 double y,
+                                 double width,
+                                 double height)
+    {
+        KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(crop->getKnobByName(kNativeGeneratorParamBottomLeft).get());
+        KnobDouble* size = dynamic_cast<KnobDouble*>(crop->getKnobByName(kNativeGeneratorParamSize).get());
+        ASSERT_TRUE(bottomLeft && size);
+        bottomLeft->setValues(x, y, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+        size->setValues(width, height, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    }
+
+    static RectD regionOfDefinition(const NodePtr& node,
+                                    const std::string& where)
+    {
+        EffectInstancePtr effect = node->getEffectInstance();
+        RectD rod;
+        bool isProjectFormat = false;
+        EXPECT_EQ(eStatusOK, effect->getRegionOfDefinition_public(effect->getRenderHash(), 1., RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat)) << where << ": " << node->getScriptName_mt_safe();
+
+        return rod;
+    }
+
+    static bool sameRegion(const RectD& a,
+                           const RectD& b)
+    {
+        return (a.x1 == b.x1) && (a.y1 == b.y1) && (a.x2 == b.x2) && (a.y2 == b.y2);
+    }
+
+    static void expectSameRegion(const RectD& expected,
+                                 const RectD& actual,
+                                 const std::string& where)
+    {
+        EXPECT_TRUE(sameRegion(expected, actual)) << where << ": expected (" << expected.x1 << ", " << expected.y1 << ", " << expected.x2 << ", " << expected.y2
+                                                  << "), got (" << actual.x1 << ", " << actual.y1 << ", " << actual.x2 << ", " << actual.y2 << ")";
     }
 
     NodePtr createAtRoot(const std::string& pluginID)
@@ -220,27 +273,41 @@ TEST_F(GroupDirectRender, DirectRenderMatchesADotBelowTheGroupInBothModes)
     }
 }
 
-TEST_F(GroupDirectRender, GroupInputFeedingTheOutputRendersTheExternalInput)
+// The enabled group is rendered through the caches first, so a disabled render keyed like it
+// would serve the interior's image.
+TEST_F(GroupDirectRender, DisabledGroupRendersItsExternalInputInBothModes)
 {
     NodePtr group = createGroup();
     ASSERT_TRUE(group != nullptr);
     NodePtr input = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr fed = createSourceInside(group, 50);
     NodePtr output = createInside(group, PLUGINID_NATRON_OUTPUT);
-    ASSERT_TRUE(input && output);
-    ASSERT_TRUE(output->connectInput(input, 0));
+    ASSERT_TRUE(input && fed && output);
+    ASSERT_TRUE(output->connectInput(fed, 0));
     NodePtr source = createAtRoot(kTestPluginIDImageRenderSource);
     ASSERT_TRUE(source != nullptr);
-    setSeed(source, 7);
+    setSeed(source, 51);
     ASSERT_TRUE(group->connectInput(source, 0));
 
     for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
-        std::vector<RenderedPlane> expected;
-        std::vector<RenderedPlane> direct;
+        appPTR->clearAllCaches();
+        group->setNodeDisabled(false);
+        std::vector<RenderedPlane> enabled;
         std::string error;
+        ASSERT_TRUE(render(group, mode, false, &enabled, &error)) << modeName(mode) << ": " << error;
+        ASSERT_FALSE(enabled.empty()) << modeName(mode);
+
+        group->setNodeDisabled(true);
+        std::vector<RenderedPlane> disabled;
+        std::vector<RenderedPlane> expected;
+        ASSERT_TRUE(render(group, mode, false, &disabled, &error)) << modeName(mode) << ": " << error;
         ASSERT_TRUE(render(source, mode, true, &expected, &error)) << modeName(mode) << ": " << error;
-        ASSERT_TRUE(render(group, mode, true, &direct, &error)) << modeName(mode) << ": " << error;
-        expectSamePlanes(expected, direct, modeName(mode));
+        ASSERT_FALSE(disabled.empty()) << modeName(mode);
+
+        expectSamePlanes(expected, disabled, modeName(mode));
+        EXPECT_FALSE(enabled.front().pixels == disabled.front().pixels) << modeName(mode) << ": the interior and the external input render alike";
     }
+    group->setNodeDisabled(false);
 }
 
 TEST_F(GroupDirectRender, GeneratorOnlyGroupHasTheGeneratorsRegionOfDefinition)
@@ -301,17 +368,13 @@ connectChain(const NodePtr& from,
 }
 }
 
-// The inner group has no downstream node of its own, so it can only render directly.
-TEST_F(GroupDirectRender, NestedGroupMatchesADotBelowTheOuterGroupInBothModes)
+// A Dot below the outer group reads through both groups to the innermost source, so only the
+// direct renders take the groups' own path.
+TEST_F(GroupDirectRender, NestedGroupsMatchADotBelowTheOuterGroupInBothModes)
 {
     NodePtr outer = createGroup();
     ASSERT_TRUE(outer != nullptr);
-    NodeCollectionPtr outerCollection = std::dynamic_pointer_cast<NodeCollection>(outer->getEffectInstance());
-    ASSERT_TRUE(outerCollection != nullptr);
-    CreateNodeArgs innerArgs(PLUGINID_NATRON_GROUP, outerCollection);
-    innerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
-    innerArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
-    NodePtr inner = getApp()->createNode(innerArgs);
+    NodePtr inner = createGroupInside(outer);
     ASSERT_TRUE(inner != nullptr);
     NodePtr fed = createSourceInside(inner, 3);
     NodePtr innerOutput = createInside(inner, PLUGINID_NATRON_OUTPUT);
@@ -329,14 +392,75 @@ TEST_F(GroupDirectRender, NestedGroupMatchesADotBelowTheOuterGroupInBothModes)
             const std::string where = modeName(mode) + " run " + std::to_string(run);
             appPTR->clearAllCaches();
             setSeed(fed, 20 + run);
-            std::vector<RenderedPlane> direct;
+            std::vector<RenderedPlane> outerDirect;
+            std::vector<RenderedPlane> innerDirect;
             std::vector<RenderedPlane> throughDot;
             std::string error;
-            ASSERT_TRUE(render(outer, mode, false, &direct, &error)) << where << ": " << error;
+            ASSERT_TRUE(render(outer, mode, false, &outerDirect, &error)) << where << ": " << error;
+            ASSERT_TRUE(render(inner, mode, false, &innerDirect, &error)) << where << ": " << error;
             ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << where << ": " << error;
-            ASSERT_FALSE(direct.empty()) << where;
-            expectSamePlanes(throughDot, direct, where);
+            ASSERT_FALSE(outerDirect.empty()) << where;
+            expectSamePlanes(throughDot, outerDirect, where + ", outer group");
+            expectSamePlanes(throughDot, innerDirect, where + ", inner group");
         }
+    }
+}
+
+// The caches are kept between the renders, so an outer group whose hash or region of definition
+// missed an edit two groups down would serve the previous image or region.
+TEST_F(GroupDirectRender, EditInsideANestedGroupReachesTheOuterGroupInBothModes)
+{
+    NodePtr outer = createGroup();
+    ASSERT_TRUE(outer != nullptr);
+    NodePtr inner = createGroupInside(outer);
+    ASSERT_TRUE(inner != nullptr);
+    NodePtr fed = createSourceInside(inner, 60);
+    NodePtr crop = createInside(inner, PLUGINID_NATRON_CROP);
+    NodePtr innerOutput = createInside(inner, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(fed && crop && innerOutput);
+    ASSERT_TRUE(crop->connectInput(fed, 0));
+    ASSERT_TRUE(innerOutput->connectInput(crop, 0));
+    NodePtr outerOutput = createInside(outer, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(outerOutput != nullptr);
+    ASSERT_TRUE(outerOutput->connectInput(inner, 0));
+    NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
+    ASSERT_TRUE(dot != nullptr);
+    ASSERT_TRUE(dot->connectInput(outer, 0));
+
+    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+        const std::string where = modeName(mode);
+        appPTR->clearAllCaches();
+        setSeed(fed, 60);
+        setCropRectangle(crop, 1., 1., 8., 5.);
+        std::vector<RenderedPlane> first;
+        std::string error;
+        ASSERT_TRUE(render(outer, mode, false, &first, &error)) << where << ": " << error;
+        ASSERT_FALSE(first.empty()) << where;
+        const RectD firstRoD = regionOfDefinition(outer, where);
+
+        const U64 outerBefore = outer->getHashValue();
+        const U64 innerBefore = inner->getHashValue();
+        setSeed(fed, 61);
+        EXPECT_NE(outerBefore, outer->getHashValue()) << where << ": the seed edit did not reach the outer group's hash";
+        EXPECT_NE(innerBefore, inner->getHashValue()) << where << ": the seed edit did not reach the inner group's hash";
+        std::vector<RenderedPlane> second;
+        std::vector<RenderedPlane> throughDot;
+        ASSERT_TRUE(render(outer, mode, false, &second, &error)) << where << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << where << ": " << error;
+        ASSERT_FALSE(second.empty()) << where;
+        expectSamePlanes(throughDot, second, where + " after the seed edit");
+        EXPECT_FALSE(first.front().pixels == second.front().pixels) << where << ": the seed edit did not reach the outer group's render";
+
+        const U64 outerBeforeCrop = outer->getHashValue();
+        setCropRectangle(crop, 2., 1., 4., 3.);
+        EXPECT_NE(outerBeforeCrop, outer->getHashValue()) << where << ": the crop edit did not reach the outer group's hash";
+        const RectD croppedRoD = regionOfDefinition(outer, where);
+        expectSameRegion(regionOfDefinition(dot, where), croppedRoD, where + " after the crop edit");
+        EXPECT_FALSE(sameRegion(firstRoD, croppedRoD)) << where << ": the crop edit did not move the outer group's region of definition";
+        std::vector<RenderedPlane> third;
+        ASSERT_TRUE(render(outer, mode, false, &third, &error)) << where << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << where << ": " << error;
+        expectSamePlanes(throughDot, third, where + " after the crop edit");
     }
 }
 
@@ -371,7 +495,7 @@ TEST_F(GroupDirectRender, LongChainInsideAGroupMatchesADotBelowTheGroupInBothMod
     }
 }
 
-TEST_F(GroupDirectRender, PassThroughGroupMatchesADotBelowTheGroupInBothModes)
+TEST_F(GroupDirectRender, PassThroughGroupMatchesItsExternalInputAndADotBelowInBothModes)
 {
     NodePtr group = createGroup();
     ASSERT_TRUE(group != nullptr);
@@ -394,10 +518,13 @@ TEST_F(GroupDirectRender, PassThroughGroupMatchesADotBelowTheGroupInBothModes)
             std::vector<RenderedPlane> direct;
             std::vector<RenderedPlane> throughDot;
             std::string error;
+            std::vector<RenderedPlane> external;
             ASSERT_TRUE(render(group, mode, false, &direct, &error)) << where << ": " << error;
             ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << where << ": " << error;
+            ASSERT_TRUE(render(source, mode, true, &external, &error)) << where << ": " << error;
             ASSERT_FALSE(direct.empty()) << where;
             expectSamePlanes(throughDot, direct, where);
+            expectSamePlanes(external, direct, where + " against the external input");
         }
     }
 }
@@ -410,10 +537,10 @@ TEST_F(GroupDirectRender, InnerEditAfterARenderIsReflectedInTheNextRenderInBothM
     ASSERT_TRUE(group != nullptr);
     NodePtr fed = createSourceInside(group, 1);
     ASSERT_TRUE(fed != nullptr);
-    NodePtr inner = createInside(group, PLUGINID_NATRON_DOT);
+    NodePtr crop = createInside(group, PLUGINID_NATRON_CROP);
     NodePtr output = createInside(group, PLUGINID_NATRON_OUTPUT);
-    ASSERT_TRUE(inner && output);
-    NodePtr last = connectChain(fed, { inner });
+    ASSERT_TRUE(crop && output);
+    NodePtr last = connectChain(fed, { crop });
     ASSERT_TRUE(last != nullptr);
     ASSERT_TRUE(output->connectInput(last, 0));
     NodePtr dot = createAtRoot(PLUGINID_NATRON_DOT);
@@ -423,6 +550,7 @@ TEST_F(GroupDirectRender, InnerEditAfterARenderIsReflectedInTheNextRenderInBothM
     for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
         appPTR->clearAllCaches();
         setSeed(fed, 40);
+        setCropRectangle(crop, 1., 1., 8., 5.);
         std::vector<RenderedPlane> first;
         std::string error;
         ASSERT_TRUE(render(group, mode, false, &first, &error)) << modeName(mode) << ": " << error;
@@ -437,5 +565,15 @@ TEST_F(GroupDirectRender, InnerEditAfterARenderIsReflectedInTheNextRenderInBothM
 
         expectSamePlanes(throughDot, second, modeName(mode));
         EXPECT_FALSE(first.front().pixels == second.front().pixels) << modeName(mode) << ": the edit did not reach the second render";
+
+        const RectD before = regionOfDefinition(group, modeName(mode));
+        setCropRectangle(crop, 2., 1., 4., 3.);
+        const RectD after = regionOfDefinition(group, modeName(mode));
+        expectSameRegion(regionOfDefinition(dot, modeName(mode)), after, modeName(mode) + " after the crop edit");
+        EXPECT_FALSE(sameRegion(before, after)) << modeName(mode) << ": the crop edit did not move the group's region of definition";
+        std::vector<RenderedPlane> third;
+        ASSERT_TRUE(render(group, mode, false, &third, &error)) << modeName(mode) << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << modeName(mode) << ": " << error;
+        expectSamePlanes(throughDot, third, modeName(mode) + " after the crop edit");
     }
 }

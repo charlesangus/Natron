@@ -240,6 +240,14 @@ jobs:
 
           exit "${status}"
 
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          tools/ci/summary.sh build release 'Linux Release Test Logs'
+          tools/ci/summary.sh ctest default build/release 'Linux Release Test Logs'
+
   nightly_gpu_off:
     name: Build and test · release, GPU off
     needs: dev-image
@@ -358,3 +366,11 @@ jobs:
             echo "::error::ctest (release, GPU off) failed"
             exit 1
           fi
+
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          tools/ci/summary.sh build release 'Linux Release GPU-Off Test Logs' -DNATRON_GPU=OFF
+          tools/ci/summary.sh ctest default build/release 'Linux Release GPU-Off Test Logs'

@@ -170,7 +170,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          shellcheck tools/ci/local/*.sh tools/ci/remote/*.sh
+          shellcheck tools/ci/local/*.sh tools/ci/remote/*.sh tools/ci/summary.sh
 
       - name: Run shellcheck on tools/bench
         shell: bash

@@ -216,6 +216,12 @@ jobs:
         if: always()
         run: ccache -s
 
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: tools/ci/summary.sh build debug build-tree-debug
+
   # Compile-only release build. Debug and release compile different code
   # (-DDEBUG, NDEBUG), so a change can build in debug and break release;
   # nothing runs here, the job exists to catch that before main does.
@@ -297,6 +303,12 @@ jobs:
       - name: Show ccache stats
         if: always()
         run: ccache -s
+
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: tools/ci/summary.sh build release ''
 
   ctest:
     name: Test · ${{ matrix.label }} scheduler
@@ -406,6 +418,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: tools/ci/summary.sh ctest ${{ matrix.scheduler }} build/debug ''
+
   # Branch protection requires a check named exactly `Build and test`; the
   # matrix legs are named `ctest (<scheduler>)`, so this job keeps the
   # required name stable. It also holds the byte-for-byte comparison of the
@@ -445,3 +463,25 @@ jobs:
           test -d smoke-renders/smoke-render-legacy
           test -d smoke-renders/smoke-render-taskgraph
           diff -r smoke-renders/smoke-render-legacy smoke-renders/smoke-render-taskgraph
+
+      # The job has no checkout of its own; a sparse one under its own path leaves the downloads alone.
+      - name: Checkout the summary script
+        if: always()
+        uses: actions/checkout@v5.0.1
+        with:
+          path: ci-src
+          sparse-checkout: tools/ci/summary.sh
+          submodules: false
+          lfs: false
+
+      - name: Job summary
+        if: always()
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_RESULT: ${{ needs.build-release.result }}
+          CTEST_RESULT: ${{ needs.ctest.result }}
+        run: |
+          ci-src/tools/ci/summary.sh legs 'Build and test' \
+            "Build · debug=$BUILD_RESULT" \
+            "Build · release=$RELEASE_RESULT" \
+            "Test · ctest legs=$CTEST_RESULT"

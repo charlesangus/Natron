@@ -8,6 +8,8 @@ maximum the largest across the runs, so every contributing run compares clean ag
 An op present in only some of the runs is merged from those runs (the `runs` field counts them).
 An op that is not ok in any run that has it is written with that run's status and no timings. --spread prints
 the run-to-run spread of each op, (max - min) / median of the per-run medians, worst first.
+Runs from different builds (compare.build_id) are still merged, but merge.py warns and the merged
+host record lists them under mixed_builds, which compare.py prints.
 """
 import argparse
 import json
@@ -47,6 +49,14 @@ def merge(runs):
     return merged, spreads
 
 
+def set_of_hosts(hosts):
+    """One host record per distinct build."""
+    seen = {}
+    for h in hosts:
+        seen.setdefault(compare.build_id(h), h)
+    return list(seen.values())
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="+")
@@ -62,9 +72,18 @@ def main():
                 rec = json.loads(line) if line.strip() else {}
                 if rec.get("type") == "graph":
                     graphs[(rec["topology"], rec["n"])] = rec
+    builds = {}
+    for path, (host, _ops) in zip(args.files, loaded):
+        builds.setdefault(compare.build_id(host) if host else None, []).append(path)
     with open(args.out, "w") as out:
         host = dict(loaded[0][0] or {})
         host["merged_runs"] = len(args.files)
+        if len(builds) > 1:
+            host["mixed_builds"] = sorted(compare.describe_build(h) for h in
+                                          set_of_hosts([h for h, _ops in loaded if h]))
+            sys.stderr.write("merge.py: WARNING the runs come from %d different builds:\n" % len(builds))
+            for key, paths in builds.items():
+                sys.stderr.write("  %s: %s\n" % (key, ", ".join(paths)))
         out.write(json.dumps(host, sort_keys=True) + "\n")
         for key in sorted(graphs):
             out.write(json.dumps(graphs[key], sort_keys=True) + "\n")

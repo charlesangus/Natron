@@ -42,7 +42,7 @@ Evidence (consultant, code at the fork pin):
 
 ## Phase 378.2: Stall watchdog and hang fix
 
-- [ ] M378.P2.T1 — A per-test watchdog that dumps thread stacks and aborts
+- [x] M378.P2.T1 — A per-test watchdog that dumps thread stacks and aborts
   - files: new `Tests/TestWatchdog.h`, `Tests/SceneViewport_Test.cpp`, `Tests/Scene/ProgressiveRender_Test.cpp`
   - approach: started in fixture `SetUp` with a 150 s limit; callers report the current phase (`render`, `syncScene`, `refineTo`). On expiry: `prctl(PR_SET_PTRACER_ANY)`, `eu-stack -p getpid()` (fall back to `gdb -p -batch`), print test name and phase, `std::abort()`.
   - verify: a test-only case sleeping past a 2 s limit aborts and prints its own stack (PM build)

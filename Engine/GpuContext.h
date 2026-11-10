@@ -166,6 +166,19 @@ public:
     std::string deviceName() const;
 
     /**
+     * @brief The current device's maxStorageBufferRange, kept from its creation so that reading it needs no hold on a
+     * runtime a device loss recovery may be tearing down. Valid once initialization succeeded.
+     **/
+    std::uint64_t maxStorageBufferRange() const;
+
+    /**
+     * @brief The current device's pushDescriptor and transferSharesComputeQueue, kept from its creation like
+     * maxStorageBufferRange(). Valid once initialization succeeded.
+     **/
+    bool pushDescriptor() const;
+    bool transferSharesComputeQueue() const;
+
+    /**
      * @brief The runtime once initialization succeeded, lost or not; null otherwise. Never null once isAvailable()
      * returned true, until destruction.
      **/
@@ -191,6 +204,13 @@ public:
      * nothing while unavailable. Thread-safe.
      **/
     void releaseIdleMemory();
+
+    /**
+     * @brief Called on the initialization thread of every context right after it became available, before that
+     * thread does anything else. An empty function removes it. For tests.
+     **/
+    typedef std::function<void()> ReadyHook;
+    static void setReadyHookForTesting(const ReadyHook& hook);
 
 private:
     struct Shared;

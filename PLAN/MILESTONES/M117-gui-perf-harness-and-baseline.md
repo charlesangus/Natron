@@ -70,7 +70,7 @@ Two kinds of numbers, never mixed:
 
 ## Phase 117.2: Baseline
 
-- [x] M117.P2.T1 — Record the Xvfb baseline and its noise
+- [ ] M117.P2.T1 — Record the Xvfb baseline and its noise
   - files: `tools/bench/gui/baselines/xvfb.jsonl` (new), `tools/bench/gui/BASELINE.md` (new)
   - approach: on a release build at this milestone's HEAD, in the container with nothing else running, run all four topologies at N=300/1000/3000, three times. If an op times out at 3000, record that, and add a 2000 point for it so a slope still exists. Commit the median-of-runs file as the baseline. In `BASELINE.md`, record per-op run-to-run spread, the compare tolerance chosen from it (at least twice the worst spread for that op class), the `--scaling` table, and the ranked superlinear list. That list is M118's target list.
   - verify: `compare.py baselines/xvfb.jsonl <each of the three runs>` exits 0 with the chosen tolerance. `BASELINE.md` names every op with a slope above 1.2.
@@ -107,3 +107,4 @@ Two kinds of numbers, never mixed:
 - 2026-11-10 — Second GPU-host run (`results-20261110T151416Z`) got through mixed 300 and 1000 before exiting 3 at a hung `delete_1000`. Click-select, drag and undo ops errored, and the user had to click through modal popups: "The default appearance changed" and link-deletion confirmations. The harness fixes from M118 are being ported; P2.T3 removes the appearance prompt (user) and makes the bench dismiss dialogs.
 - 2026-11-10 — P2.T3: both upstream startup prompts are removed, the appearance one and the matching shortcuts-reset one, with their settings bookkeeping (9a757f381). The bench keeps its version seeds, because the baseline AppImage predates this removal.
 - 2026-11-10 — P2.T2: the real-host baseline is committed (640bc5efa, `baselines/host-ms-E2087B87C9C8.jsonl`). It is the GPU-host run `results-20261110T160016Z`: AI PRO R9700, 62 GB, a different GPU and RAM from the same hostname's earlier runs. It covers mixed and comp at 300, 1000 and 3000. delete_1000, undo, redo and comp's knob_change_fanout wedge on this pre-M118 build, and paste_1000 and load time out at 3000; all are recorded as not measurable. compare.py --scaling flags 11 superlinear ops. The gate's build is running (run 42849400659).
+- 2026-11-10 — PR #256 review round 1. The Xvfb baseline predates the current harness (OFX IDs, different graph hashes, older op definitions) and P2.T1's three-run verify was never met, so P2.T1 is unticked and the file is marked stale for regression use. The harness's wedged guard was per op rather than per step, and click_select and drag_move_1 timed their framing work. Both are being fixed, which makes the host baseline's affected rows provisional until a re-run.

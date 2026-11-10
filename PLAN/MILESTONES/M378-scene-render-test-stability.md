@@ -47,7 +47,7 @@ Evidence (consultant, code at the fork pin):
   - approach: started in fixture `SetUp` with a 150 s limit; callers report the current phase (`render`, `syncScene`, `refineTo`). On expiry: `prctl(PR_SET_PTRACER_ANY)`, `eu-stack -p getpid()` (fall back to `gdb -p -batch`), print test name and phase, `std::abort()`.
   - verify: a test-only case sleeping past a 2 s limit aborts and prints its own stack (PM build)
   - size: M
-- [ ] M378.P2.T2 — Fix the stall that P3.T2's watchdog stacks show
+- [ ] ~~M378.P2.T2 — Fix the stall that P3.T2's watchdog stacks show~~ (dropped: no stall reproduced)
   - files: from the stacks (likely `Engine/Nodes/Scene/HydraRenderImpl.cpp`, fork `src/hydra/*` or `src/session/session.cpp`)
   - approach: run after P3.T2's first repeat captures a stall. If the thread holding `scene->mutex` is in a TBB wait under `SceneLock` (a nested `WorkParallelForN`, OpenVDB or Sdr parsing inside a Hydra Sync), isolate the work done under `SceneLock`. If it is in a condition-variable wait, fix the lock or map ordering it shows. If the repeat shows no stall, record that and drop this task.
   - verify: P3.T2's repeat shows no stall
@@ -55,12 +55,12 @@ Evidence (consultant, code at the fork pin):
 
 ## Phase 378.3: Gates (PM runs)
 
-- [ ] M378.P3.T1 — Re-verify `ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverThem` with #243
+- [x] M378.P3.T1 — Re-verify `ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverThem` with #243
   - files: none
   - approach: covered by P3.T2's `ProgressiveRenderTest` repeat; no code change expected
   - verify: 20/20 per scheduler
   - size: S
-- [ ] M378.P3.T2 — Repeat under load on remote debug builds
+- [x] M378.P3.T2 — Repeat under load on remote debug builds
   - files: none
   - approach: `build.sh debug --tests --repeat-test` for `SceneViewportStorm`, `ProgressiveRenderTest` and `USDRenderCyclesTest`, 20 each (one run per suite if `--repeat-test` takes one), both schedulers
   - verify: 20/20 per suite per scheduler; any stall leaves P2.T1's stacks
@@ -74,3 +74,4 @@ Evidence (consultant, code at the fork pin):
 - 2026-11-10 — H1 (TBB task stealing on the Cycles session thread) is ruled out (consultant): the session thread is a plain OS thread whose waits run only its own pool's tasks, and a probe against natron-dev's TBB 2023.1 confirmed it (0 of 51,200 foreign tasks ran on it). `scene->mutex` is a plain `std::mutex`, and the lock order seen in reading is consistent. P2.T2 is rewritten to fix whatever the watchdog's stacks show, and the arena and isolation changes are not made blind.
 - 2026-11-10 — Phase 1 and P2.T1 verified: the remote debug build with tests is green on the new Cycles pin b60a68ed7 (dev image rebuilt; run 42785078929), including the watchdog death test. P3.T2's repeats wait for M379 - GpuContext Test Segfault's `--repeat-test` to merge (PR #249). P2.T2 waits on those repeats' stacks.
 - 2026-11-10 — Another flake for this milestone's repeats: `ProgressiveRenderTest` at `ProgressiveRender_Test.cpp:425`, where `restartsAfter` was 5 against an expected `restartsRefining + 1` (4). It showed up in M310 - Device-Switch Shader Test Fix's release run 42803460920 (legacy leg), on a branch that doesn't touch scene code.
+- 2026-11-10 — P3.T2: debug repeats under load passed 20 of 20 on both legs for `SceneViewportStorm` (42832089613), `ProgressiveRenderTest` (42832074033) and `USDRenderCyclesTest` (42832083455), on the locked Cycles pin, with no stall and no heap abort. P2.T2 is dropped: no stall reproduced to give stacks. The watchdog stays, so a future stall leaves stacks.

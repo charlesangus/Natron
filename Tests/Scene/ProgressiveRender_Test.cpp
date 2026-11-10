@@ -154,6 +154,7 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        _watchdog.setPhase("teardown");
         hold(false);
         _render.reset();
         _stage.reset();

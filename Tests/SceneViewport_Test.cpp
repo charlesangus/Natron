@@ -380,6 +380,7 @@ protected:
 
     void TearDown() override
     {
+        _watchdog.setPhase("teardown");
         if (_context && _surface && _context->makeCurrent(_surface.get())) {
             _renderer.releaseGL();
             _fbo.reset();
@@ -389,6 +390,13 @@ protected:
         _surface.reset();
         _context.reset();
         _watchdog.stop();
+    }
+
+    template <typename Id>
+    void setRenderer(const Id& id)
+    {
+        _watchdog.setPhase("setRenderer");
+        _renderer.setRendererId(id);
     }
 
     bool renderFrame()
@@ -1448,7 +1456,7 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     const U64 engines = _renderer.getEngineCount();
 
-    _renderer.setRendererId(stub);
+    setRenderer(stub);
     EXPECT_FALSE(_renderer.hasEngine());
     EXPECT_TRUE(renderFrame());
     EXPECT_FALSE(_renderer.hasEngine());
@@ -1456,7 +1464,7 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
     EXPECT_EQ(0, countNonBackground(_fbo->toImage()));
 
-    _renderer.setRendererId(kRenderDelegateStormId);
+    setRenderer(kRenderDelegateStormId);
     EXPECT_TRUE(_renderer.getRendererError().empty());
     EXPECT_GT(countNonBackground(render()), 0);
     ASSERT_TRUE(_renderer.hasEngine());
@@ -1476,7 +1484,7 @@ TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
     std::string error;
     ASSERT_TRUE(syncScene(base, &error)) << error;
 
-    _renderer.setRendererId(kRenderDelegateSceneDefaultId);
+    setRenderer(kRenderDelegateSceneDefaultId);
     EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
@@ -1502,7 +1510,7 @@ TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
 
     // A renderer chosen beats the prim's.
     ASSERT_TRUE(syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e773ULL), &error)) << error;
-    _renderer.setRendererId(kRenderDelegateStormId);
+    setRenderer(kRenderDelegateStormId);
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
 }
@@ -1518,7 +1526,7 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
     const ScenePayload base = referenceScene();
     std::string error;
     ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e781ULL), &error)) << error;
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(6));
 
     _renderer.setMaxSamples(3);
@@ -1552,16 +1560,16 @@ TEST_F(SceneViewportStorm, TheRefinementDrawsItsNewFrameAfterASwitchOfRenderer)
         return;
     }
     _renderer.setMaxSamples(1);
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(1));
     const QImage first = _fbo->toImage();
 
-    _renderer.setRendererId(kRenderDelegateStormId);
+    setRenderer(kRenderDelegateStormId);
     (void)render();
     SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
     camera.azimuth = 60.;
     _renderer.setFreeCamera(camera);
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(1));
     EXPECT_NE(first, _fbo->toImage());
 }
@@ -1581,7 +1589,7 @@ TEST_F(SceneViewportStorm, ARefinementFailureClearsAtTheNextSceneEdit)
             throw std::runtime_error("texture commit failed");
         }
     });
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
     while (_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
         (void)renderFrame();
@@ -1623,7 +1631,7 @@ TEST_F(SceneViewportStorm, ARefinementPicksAGuide)
     ASSERT_FALSE(aimed.path.empty()) << "no guide Storm can pick";
 
     _renderer.setMaxSamples(1);
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(1));
     EXPECT_EQ(aimed.path, _renderer.pick((int)aimed.x, (int)aimed.y, kSize, kSize));
 }

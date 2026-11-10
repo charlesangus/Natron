@@ -16,10 +16,14 @@ The process thread count picks up unrelated pool threads.
 
 ## Phase 371.1: Fix the check
 
-- [ ] M371.P1.T1 — Make the abort test's thread check ignore unrelated threads
+- [x] M371.P1.T1 — Make the abort test's thread check ignore unrelated threads
   - files: Tests/Scene/USDRenderCycles_Test.cpp
   - approach: Prefer counting only Cycles/Hydra-owned threads (e.g. by `/proc/self/task/*/comm` names Cycles/TBB give its workers, if they are distinguishable). If they aren't, wait for the global thread pool to settle and retry the comparison a few times with a short delay before failing. Keep the check able to catch a real thread leak (a growing count over repeated aborts).
   - verify: The test passes with `--gtest_repeat=30` while another test binary runs alongside; a deliberate leak (temporarily skip the render's thread join) still fails it.
   - size: M
 
 **Verification gate:** ctest green; `USDRenderCyclesTest.AbortStopsTheRenderPromptly` passes `--gtest_repeat=30` under load.
+
+## Decisions
+
+- 2026-11-10 — The check takes its reference count after two warm-up runs, then polls each later run for up to 2 s, so a lasting unrelated pool thread is ignored and a per-abort leak still accumulates. The "Subprocess aborted" in run 42757353797 was a different failure: heap corruption in `EmissionMatchesReferenceRender`. It is passed to M378 - Scene Render Test Stability.

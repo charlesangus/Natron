@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <list>
 #include <map>
@@ -425,7 +426,13 @@ private:
             if (isAborted()) {
                 return EffectInstance::eRenderRoIRetCodeAborted;
             }
-            if (!submitChain() || !finishChain()) {
+            if (!submitChain()) {
+                return failed();
+            }
+            if (isAborted()) {
+                return EffectInstance::eRenderRoIRetCodeAborted;
+            }
+            if (!finishChain()) {
                 return failed();
             }
         } else {
@@ -542,6 +549,10 @@ private:
     {
         if (recorder.ranOutOfMemory()) {
             fail(memberTask, "the node ran out of device memory recording its GPU work", FailureKind::OutOfMemory);
+        } else if (isAborted()) {
+            // Node code that notices the abort while recording reports it as a failure, which must not cost the frame
+            // a CPU fallback.
+            _stoppedByAbort = true;
         } else {
             fail(memberTask, "the node failed to record its GPU work");
         }
@@ -551,12 +562,29 @@ private:
     {
         drain();
 
-        return EffectInstance::eRenderRoIRetCodeFailed;
+        return _stoppedByAbort ? EffectInstance::eRenderRoIRetCodeAborted : EffectInstance::eRenderRoIRetCodeFailed;
     }
 
     bool isAborted() const
     {
         return isContextAborted(_context);
+    }
+
+    std::function<bool()> stopWhenAborted() const
+    {
+        return [this]() { return isAborted(); };
+    }
+
+    // A record context's submit stopped by stopWhenAborted() left nothing on the device and signals nothing; it fails
+    // only so that the region unwinds.
+    bool noteStopped(const gpu::GpuStatus& status)
+    {
+        if (status.result != VK_INCOMPLETE) {
+            return false;
+        }
+        _stoppedByAbort = true;
+
+        return true;
     }
 
     GpuImageLayout layoutOf(const FrameGraph::Task& task,
@@ -1435,9 +1463,12 @@ private:
             _segmentTimed = false;
             const Clock::time_point waitBegin = Clock::now();
             // The runtime's own entry points report to its state machine; a record context's submission does not.
-            const gpu::GpuStatus status = _runtime.note((*recorder)->submitAndWait());
+            const gpu::GpuStatus status = _runtime.note((*recorder)->submitAndWait(30'000'000'000ull, stopWhenAborted()));
             waitNs = nsBetween(waitBegin, Clock::now());
             recorder->reset();
+            if (noteStopped(status)) {
+                return false;
+            }
             if (!status) {
                 return failGpu(segment.empty() ? -1 : _members[segment.front()].task, "the device work failed", status);
             }
@@ -1833,6 +1864,9 @@ private:
         std::uint32_t firstQuery = 0;
         bool submitted = false;
         gpu::TimelineValue done;
+
+        // What the host blocked submitting it, which a split segment spends on its work.
+        long long submitNs = 0;
     };
 
     int taskOf(const Segment& segment) const
@@ -1928,6 +1962,7 @@ private:
 
                 const FrameGraph::Task& task = _graph.tasks[member.task];
                 GpuRenderArgs args(recorder);
+                args.recordScope = this;
                 args.query = member.query;
                 args.outputRect = task.renderedRoI;
                 if (!setInputs(member, &args)) {
@@ -2000,7 +2035,13 @@ private:
                 waits = _uploadsDone;
             }
             segment.done = gpu::TimelineValue { _computeTimeline, ++_computeValue };
-            const gpu::GpuStatus status = _runtime.note(segment.recorder->submit(waits, segment.done));
+            const Clock::time_point submitBegin = Clock::now();
+            const gpu::GpuStatus status = _runtime.note(segment.recorder->submit(waits, segment.done, stopWhenAborted()));
+            segment.submitNs = nsBetween(submitBegin, Clock::now());
+            _chainSubmitNs += segment.submitNs;
+            if (noteStopped(status)) {
+                return false;
+            }
             if (!status) {
                 return failGpu(taskOf(segment), "the device work failed", status);
             }
@@ -2051,7 +2092,7 @@ private:
             slot.uploadTarget = gpu::GpuBufferHandle();
         }
         if (_report) {
-            _report->uploadMs = msBetween(_uploadBegin, Clock::now());
+            _report->uploadMs = std::max(0., msBetween(_uploadBegin, Clock::now()) - (double)_chainSubmitNs * 1e-6);
         }
         if (!issueDownloads()) {
             return false;
@@ -2065,7 +2106,7 @@ private:
             if (!status) {
                 return failGpu(taskOf(segment), "the device work failed", status);
             }
-            noteSegmentTimes(segment, nsBetween(waitBegin, Clock::now()));
+            noteSegmentTimes(segment, segment.submitNs + nsBetween(waitBegin, Clock::now()));
         }
         // Done on the device, so no other thread acquiring them from the pool can race the work that used them.
         _segments.clear();
@@ -2728,9 +2769,12 @@ private:
         }
         const gpu::TimelineValue done { _computeTimeline, ++_computeValue };
         const Clock::time_point submitBegin = Clock::now();
-        const gpu::GpuStatus status = _runtime.note(recorder.submit(uploads, done));
+        const gpu::GpuStatus status = _runtime.note(recorder.submit(uploads, done, stopWhenAborted()));
         if (_report) {
             _report->submitWaitMs += msBetween(submitBegin, Clock::now());
+        }
+        if (noteStopped(status)) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
         }
         if (!status) {
             failGpu(firstMemberTask(), "the device work failed", status);
@@ -3223,6 +3267,8 @@ private:
     std::vector<gpu::GpuBufferHandle> _recycled;
     VkSemaphore _computeTimeline = VK_NULL_HANDLE;
     std::uint64_t _computeValue = 0;
+    long long _chainSubmitNs = 0;
+    bool _stoppedByAbort = false;
     Clock::time_point _pipelineBegin;
     std::vector<std::vector<int>> _stripSegments;
 

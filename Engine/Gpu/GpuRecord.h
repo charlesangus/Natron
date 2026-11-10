@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <span>
@@ -22,10 +23,10 @@ namespace gpu {
 
 class GpuPipelineCache;
 
-// One command buffer on the compute queue, recorded and submitted by the thread that created it.
-// Node code goes through this class and never sees a Vulkan handle.
+// One piece of work on the compute queue, recorded and submitted by the thread that created it, in one
+// command buffer unless chargeWork() split it. Node code goes through this class and never sees a Vulkan handle.
 //
-// The command buffer comes from a pool owned by the registry and private to the creating
+// The command buffers come from a pool owned by the registry and private to the creating
 // thread, so a context must be used and destroyed on that thread.
 class GpuRecordContext {
 public:
@@ -142,18 +143,57 @@ public:
     // Writes the time at which every command recorded before it, in this buffer and before it on the queue, is done.
     void writeTimestamp(VkQueryPool pool, uint32_t query);
 
+    // Charges `work` to the open command buffer and, once it holds batchWork(), ends it and opens another, so a
+    // long multi-pass node runs as bounded submits that a caller's stop can fall between. Call it only where every
+    // later command may run in a later submit, which is anywhere after computeBarrier(): the barrier's scope
+    // spans command buffers in submission order. One unit of work is about one sampled value.
+    GpuStatus chargeWork(uint64_t work);
+
+    // The work a command buffer holds before chargeWork() ends it: what the device was last seen to finish in about
+    // a tenth of a second, or setBatchWorkForTests().
+    uint64_t batchWork() const;
+
+    // The command buffers the context's work is split into so far.
+    size_t batchCount() const { return finished_.size() + 1; }
+
+    // Overrides batchWork() in every context: 1 ends a buffer at every charge, UINT64_MAX never does; 0 removes the
+    // override.
+    static void setBatchWorkForTests(uint64_t work);
+
+    // The most work any command buffer chargeWork() ended held, over every context, since setBatchWorkForTests() was
+    // last called; only buffers ended under an override count.
+    static uint64_t largestBatchWorkForTests();
+
+    // Calls `hook` on the submitting thread after each command buffer but the last has finished, before `stop` is
+    // asked; an empty hook removes it.
+    static void setBatchFinishedHookForTests(const std::function<void()>& hook);
+
     // Ends the buffer, submits it and blocks until the queue finished it. The context cannot record afterwards.
     // Work still running after timeoutNs fails at once with VK_ERROR_DEVICE_LOST, through
     // GpuDevice::abandonInFlightWork(): what the context holds is parked, and the buffers the caller bound are not
-    // freed when it destroys them, so the work never writes released memory.
-    GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull);
+    // freed when it destroys them, so the work never writes released memory. A split context applies timeoutNs to
+    // each command buffer; when `stop` returns true between them, it fails with VK_INCOMPLETE and none of its work
+    // is left on the device.
+    GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull, const std::function<bool()>& stop = {});
 
-    // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done, without
-    // blocking. The context holds the command buffer and its scratch buffers, so it must not be destroyed before
-    // `signal` is reached.
-    GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal);
+    // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done. The context
+    // holds the command buffer and its scratch buffers, so it must not be destroyed before `signal` is reached.
+    // Only a split context blocks: until all its command buffers but the last have finished, one at a time. When
+    // `stop` returns true between them it fails with VK_INCOMPLETE, `signal` is never signalled, and none of its work
+    // is left on the device.
+    GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal, const std::function<bool()>& stop = {});
 
 private:
+    struct FinishedBatch {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        uint64_t work = 0;
+    };
+
+    GpuStatus beginCommandBuffer(VkCommandBuffer& out);
+    GpuStatus submitFenced(VkCommandBuffer cmd, std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs);
+    GpuStatus waitBeforeBatches(std::span<const TimelineValue> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
+    GpuStatus runBatchesBeforeLast(std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
+    void abandonWork(const char* what);
     void parkInFlightWork();
     std::vector<VkSemaphoreSubmitInfo> externalWaitInfos() const;
     GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;
@@ -180,6 +220,8 @@ private:
     std::vector<VkSemaphore> externalWaits_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+    std::vector<FinishedBatch> finished_;
+    uint64_t work_ = 0;
     bool open_ = false;
     bool outOfMemory_ = false;
 };

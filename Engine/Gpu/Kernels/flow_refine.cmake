@@ -1,0 +1,5 @@
+slang_add_kernel(flow_refine_linearise Kernels/flow_refine.slang ENTRY flow_refine_linearise REGISTRY NatronGpu)
+slang_add_kernel(flow_refine_derivatives Kernels/flow_refine.slang ENTRY flow_refine_derivatives REGISTRY NatronGpu)
+slang_add_kernel(flow_refine_assemble Kernels/flow_refine.slang ENTRY flow_refine_assemble REGISTRY NatronGpu)
+slang_add_kernel(flow_refine_sor Kernels/flow_refine.slang ENTRY flow_refine_sor REGISTRY NatronGpu)
+slang_add_kernel(flow_refine_apply Kernels/flow_refine.slang ENTRY flow_refine_apply REGISTRY NatronGpu)

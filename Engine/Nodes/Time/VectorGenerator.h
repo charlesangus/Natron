@@ -220,6 +220,12 @@ public:
                                             ViewIdx view,
                                             const RectD& canonicalWindow) OVERRIDE FINAL;
 
+    // The Matte is read only while its channel resolves.
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     struct Settings {
         FlowEstimateParams params;
@@ -247,6 +253,28 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief On a float motion or confidence plane without a mask, when every frame the render reads
+     * is a view the region holds that overlaps the window. A frame the CPU would pad with black, or
+     * a sequence whose format changes, stays on the CPU.
+     **/
+    virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getOpGpuInputLayer(int inputNb,
+                                    const ImageLayerDesc& plane,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The solve reads the whole frame, whatever part of it is being written.
+    virtual RectI getOpGpuInputRoI(int inputNb,
+                                   double time,
+                                   ViewIdx view,
+                                   const RectI& outputRect,
+                                   const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     Settings settingsAt(double time,
                         ViewIdx view) const WARN_UNUSED_RETURN;
 
@@ -254,7 +282,18 @@ private:
     bool resolveMatteChannel(double time,
                              ViewIdx view,
                              ImageLayerDesc* layer,
-                             int* channel) WARN_UNUSED_RETURN;
+                             int* channel) const WARN_UNUSED_RETURN;
+
+    // The pixels a render solves over: the Source's region at time. Null when it has none.
+    RectI solveWindow(double time,
+                      ViewIdx view,
+                      const RenderScale& scale) const WARN_UNUSED_RETURN;
+
+    // The frames a render reads, and their slots among the five estimateFlowSmoothed() takes.
+    int framesRead(double time,
+                   const Settings& settings,
+                   double* times,
+                   int* slots) const WARN_UNUSED_RETURN;
 
     // False, with the error naming both frames, when the Source's format at one of frames differs
     // from its format at time.

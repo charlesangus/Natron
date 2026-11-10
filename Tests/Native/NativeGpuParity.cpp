@@ -28,13 +28,17 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <list>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -68,6 +72,8 @@
 #include "Engine/ViewIdx.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 
@@ -579,7 +585,267 @@ placeOnGpu(FrameRun* run,
     placeGraph(run->graph, inputs);
 }
 
+#ifdef NATRON_HAVE_GPU
+class BatchOverride {
+public:
+    BatchOverride(std::uint64_t work,
+                  const std::function<void()>& hook)
+    {
+        gpu::GpuRecordContext::setBatchWorkForTests(work);
+        gpu::GpuRecordContext::setBatchFinishedHookForTests(hook);
+    }
+
+    ~BatchOverride()
+    {
+        gpu::GpuRecordContext::setBatchWorkForTests(0);
+        gpu::GpuRecordContext::setBatchFinishedHookForTests(std::function<void()>());
+    }
+
+    BatchOverride(const BatchOverride&) = delete;
+    BatchOverride& operator=(const BatchOverride&) = delete;
+};
+
+struct GpuFrame {
+    EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+    bool hasPlanes = false;
+    std::vector<float> pixels;
+    std::chrono::steady_clock::time_point finishedAt;
+    std::map<std::string, int> gpuTasksPerNode;
+    std::map<std::string, int> fallbacks;
+};
+
+bool
+runGpuFrame(const std::vector<NodePtr>& graph,
+            const NodePtr& root,
+            const RectI& window,
+            double time,
+            const std::function<void(const FrameRenderContextPtr&)>& beforeSubmit,
+            GpuFrame* frame,
+            std::string* error)
+{
+    RenderScheduler* scheduler = appPTR->getRenderScheduler();
+    FrameRun run;
+    if (!prepareFrame(root, time, window, 0, &run, error)) {
+        return false;
+    }
+    placeOnGpu(&run, graph);
+    if (beforeSubmit) {
+        beforeSubmit(run.context);
+    }
+    run.future = scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+    QElapsedTimer timer;
+    timer.start();
+    while (!run.future->isFinished()) {
+        if (timer.elapsed() > kFrameTimeoutMs) {
+            scheduler->abort(run.context);
+            run.future->wait();
+            *error = "the GPU frame timed out";
+
+            return false;
+        }
+        QThread::msleep(1);
+    }
+    frame->finishedAt = std::chrono::steady_clock::now();
+    frame->code = run.future->wait();
+    const std::map<ImageLayerDesc, ImagePtr> rootPlanes = run.future->getRootPlanes();
+    frame->hasPlanes = !rootPlanes.empty();
+    for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = rootPlanes.begin(); it != rootPlanes.end(); ++it) {
+        if (it->first.isColorLayer()) {
+            frame->pixels = readRgba(it->second, window);
+        }
+    }
+    frame->gpuTasksPerNode = run.stats->getGpuTasksPerNode();
+    frame->fallbacks = run.stats->getCpuFallbackReasons();
+
+    return true;
+}
+
+// Waits for the tasks of a finished frame, which hand what they hold back after its future reports it finished, to end.
+void
+waitForOutstandingRunnables()
+{
+    RenderScheduler* scheduler = appPTR->getRenderScheduler();
+    QElapsedTimer timer;
+    timer.start();
+    while ((scheduler->getOutstandingRunnables() > 0) && (timer.elapsed() < 5000)) {
+        QThread::msleep(1);
+    }
+}
+
+// Clears the caches and waits for what a finished frame's tasks hold to go back to the pool, which happens after its
+// future reports it finished, for as long as a frame that leaked nothing can take.
+unsigned long long
+settledLiveBytes(unsigned long long ceiling)
+{
+    RenderScheduler* scheduler = appPTR->getRenderScheduler();
+    gpu::GpuBufferPool& pool = appPTR->getGpuContext()->runtime()->pool();
+    appPTR->clearAllCaches();
+    QElapsedTimer timer;
+    timer.start();
+    while (((scheduler->getOutstandingRunnables() > 0) || (pool.stats().liveBytes > ceiling)) && (timer.elapsed() < 5000)) {
+        QThread::msleep(1);
+    }
+
+    return pool.stats().liveBytes;
+}
+
+// Renders a frame split into command buffers of batchWork and aborts it once abortAfterBatches have finished. False with
+// *error set when the frame could not be run.
+bool
+runAbortedFrame(const std::vector<NodePtr>& graph,
+                const NodePtr& root,
+                const RectI& window,
+                double time,
+                std::uint64_t batchWork,
+                int abortAfterBatches,
+                AbortedFrameResult* result,
+                std::string* error)
+{
+    std::atomic<int> batches { 0 };
+    std::atomic<bool> fired { false };
+    std::chrono::steady_clock::time_point firedAt;
+    FrameRenderContextPtr context;
+    const BatchOverride split(batchWork, [&]() {
+        if (++batches == abortAfterBatches) {
+            firedAt = std::chrono::steady_clock::now();
+            context->getAbortInfo()->setAborted();
+            fired = true;
+        }
+    });
+    GpuFrame frame;
+    if (!runGpuFrame(graph, root, window, time, [&context](const FrameRenderContextPtr& c) { context = c; }, &frame, error)) {
+        return false;
+    }
+    result->fired = fired;
+    result->code = frame.code;
+    result->hasPlanes = frame.hasPlanes;
+    result->fallbacks = frame.fallbacks;
+    result->batchesAfterAbort = batches - abortAfterBatches;
+    result->largestBatchWork = gpu::GpuRecordContext::largestBatchWorkForTests();
+    if (fired) {
+        result->abortToEndMs = std::chrono::duration<double, std::milli>(frame.finishedAt - firedAt).count();
+    }
+
+    return true;
+}
+#endif // NATRON_HAVE_GPU
 } // namespace
+
+#ifdef NATRON_HAVE_GPU
+AbortedSolveResult
+renderWithAbortMidSolve(const std::vector<NodePtr>& graph,
+                        const NodePtr& root,
+                        const RectI& window,
+                        double time,
+                        int abortAfterBatches)
+{
+    AbortedSolveResult result;
+    ForcedGpuContext forced;
+    if (!forced.installed()) {
+        reportNoGpu(forced.reason());
+        result.skipped = true;
+
+        return result;
+    }
+    RegionBodyScope body(appPTR->getRenderScheduler());
+    appPTR->clearAllCaches();
+    {
+        const BatchOverride never(UINT64_MAX, std::function<void()>());
+        GpuFrame frame;
+        if (!runGpuFrame(graph, root, window, time, nullptr, &frame, &result.error)) {
+            return result;
+        }
+        if (frame.code != EffectInstance::eRenderRoIRetCodeOk) {
+            result.error = "the clean GPU frame failed";
+
+            return result;
+        }
+        result.unsplit = frame.pixels;
+    }
+    result.liveAfterClean = settledLiveBytes(0);
+
+    if (!runAbortedFrame(graph, root, window, time, 1, abortAfterBatches, &result.aborted, &result.error)) {
+        return result;
+    }
+    // The caches stay as the aborted frame left them, so the next frame reads anything it stored.
+    waitForOutstandingRunnables();
+
+    {
+        std::atomic<int> batches { 0 };
+        const BatchOverride split(1, [&batches]() { ++batches; });
+        GpuFrame frame;
+        if (!runGpuFrame(graph, root, window, time, nullptr, &frame, &result.error)) {
+            return result;
+        }
+        if (frame.code != EffectInstance::eRenderRoIRetCodeOk) {
+            result.error = "the GPU frame after the abort failed";
+
+            return result;
+        }
+        result.split = frame.pixels;
+        result.splitBatches = batches;
+        result.splitGpuTasksPerNode = frame.gpuTasksPerNode;
+    }
+    result.liveAfterAbort = settledLiveBytes(result.liveAfterClean);
+
+    return result;
+} // renderWithAbortMidSolve
+
+AbortedFrameResult
+renderAbortedFrame(const std::vector<NodePtr>& graph,
+                   const NodePtr& root,
+                   const RectI& window,
+                   double time,
+                   std::uint64_t batchWork,
+                   int abortAfterBatches)
+{
+    AbortedFrameResult result;
+    ForcedGpuContext forced;
+    if (!forced.installed()) {
+        reportNoGpu(forced.reason());
+        result.skipped = true;
+
+        return result;
+    }
+    RegionBodyScope body(appPTR->getRenderScheduler());
+    result.liveBefore = settledLiveBytes(0);
+    if (runAbortedFrame(graph, root, window, time, batchWork, abortAfterBatches, &result, &result.error)) {
+        result.liveAfter = settledLiveBytes(result.liveBefore);
+    }
+
+    return result;
+}
+
+int
+countBatchesOfFrame(const std::vector<NodePtr>& graph,
+                    const NodePtr& root,
+                    const RectI& window,
+                    double time,
+                    std::string* error)
+{
+    ForcedGpuContext forced;
+    if (!forced.installed()) {
+        reportNoGpu(forced.reason());
+
+        return -1;
+    }
+    RegionBodyScope body(appPTR->getRenderScheduler());
+    appPTR->clearAllCaches();
+    std::atomic<int> batches { 0 };
+    const BatchOverride split(1, [&batches]() { ++batches; });
+    GpuFrame frame;
+    if (!runGpuFrame(graph, root, window, time, nullptr, &frame, error)) {
+        return -1;
+    }
+    if (frame.code != EffectInstance::eRenderRoIRetCodeOk) {
+        *error = "the GPU frame failed";
+
+        return -1;
+    }
+
+    return batches;
+}
+#endif // NATRON_HAVE_GPU
 
 bool
 EndToEndResult::ranInRegion(const NodePtr& node) const
@@ -731,6 +997,15 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         if (!prepareFrame(root, time, window, mipmapLevel, &run, &result.error)) {
             return result;
         }
+        // A root's default planes are the ones it renders, which leaves out the colour of a root that only passes it
+        // through. A viewer on such a root asks for colour explicitly, as the CPU render below does.
+        FrameGraph::Task& rootTask = run.graph.tasks.front();
+        const bool asksForColour = std::any_of(rootTask.components.begin(), rootTask.components.end(), [](const ImageLayerDesc& layer) {
+            return layer.isColorLayer();
+        });
+        if (!asksForColour) {
+            rootTask.components.assign(1, ImageLayerDesc::getRGBAComponents());
+        }
         placeOnGpu(&run, graph);
         result.regions = run.graph.regions;
         for (const FrameGraph::Region& region : run.graph.regions) {
@@ -764,12 +1039,17 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         }
         // The colour plane, which the CPU render below asks for. A root that passes its input's other layers
         // through also returns them, and a layer ID such as "spec" sorts before the colour plane's.
-        std::map<ImageLayerDesc, ImagePtr>::const_iterator colour = rootPlanes.begin();
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator colour = rootPlanes.end();
         for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = rootPlanes.begin(); it != rootPlanes.end(); ++it) {
             if (it->first.isColorLayer()) {
                 colour = it;
                 break;
             }
+        }
+        if (colour == rootPlanes.end()) {
+            result.error = "the GPU frame has no colour plane";
+
+            return result;
         }
         result.gpu = readRgba(colour->second, window);
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();

@@ -1,4 +1,4 @@
-name: Checks
+name: Lint
 
 on:
   workflow_dispatch: {}
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   format:
-    name: format
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
@@ -120,7 +120,7 @@ jobs:
           exit "$status"
 
   lint-ci:
-    name: lint-ci
+    name: Lint CI
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
@@ -166,49 +166,56 @@ jobs:
 
           actionlint -version
 
-      - name: shellcheck tools/ci/local and tools/ci/remote
+      - name: Run shellcheck on tools/ci/local and tools/ci/remote
         shell: bash
         run: |
           set -euo pipefail
-          shellcheck tools/ci/local/*.sh tools/ci/remote/*.sh
+          shellcheck tools/ci/local/*.sh tools/ci/remote/*.sh tools/ci/summary.sh
 
-      - name: shellcheck tools/bench
+      - name: Run shellcheck on tools/bench
         shell: bash
         run: |
           set -euo pipefail
           shellcheck tools/bench/*.sh
 
-      - name: shellcheck tools/ci/check_serialization_layering.sh
+      - name: Run shellcheck on check_serialization_layering.sh
         shell: bash
         run: |
           set -euo pipefail
           shellcheck tools/ci/check_serialization_layering.sh
 
-      - name: shellcheck tools/ci/check_kernel_fma.sh
+      - name: Run shellcheck on check_kernel_fma.sh
         shell: bash
         run: |
           set -euo pipefail
           shellcheck tools/ci/check_kernel_fma.sh
 
-      - name: Slang and glslang pins match local image
+      - name: Check Slang and glslang pins match local image
         shell: bash
         run: |
           set -euo pipefail
           tools/ci/local/check-image-pins.sh
 
-      - name: actionlint workflows
+      - name: Run actionlint on workflows
         shell: bash
         run: |
           set -euo pipefail
           actionlint .github/workflows/*.yml
 
-      - name: Serialization/ layering check
+  code-rules:
+    name: Code rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+
+      - name: Check Serialization/ layering
         shell: bash
         run: |
           set -euo pipefail
           tools/ci/check_serialization_layering.sh
 
-      - name: Kernel fma check
+      - name: Reject fma(x, y, -z) in Slang kernels
         shell: bash
         run: |
           set -euo pipefail

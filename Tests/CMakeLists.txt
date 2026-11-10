@@ -132,6 +132,11 @@ set(Tests_SOURCES
     Gpu/RawRegionGpu_Test.cpp
     Gpu/CacheStressGpu_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
+    Gpu/GpuFlowPyramid_Test.cpp
+    Gpu/GpuDisFlow_Test.cpp
+    Gpu/GpuTvL1Flow_Test.cpp
+    Gpu/GpuFlowConfidence_Test.cpp
+    Gpu/GpuSplitWork_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
     Ai/InferenceSession_Test.cpp

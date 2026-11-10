@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -212,6 +213,75 @@ EndToEndResult renderEndToEnd(const std::vector<NodePtr>& graph,
                               const GpuContextReady& onGpuContext = GpuContextReady(),
                               const GpuFrameDone& onGpuFrame = GpuFrameDone(),
                               unsigned mipmapLevel = 0);
+
+#ifdef NATRON_HAVE_GPU
+// A frame split into command buffers and aborted after some of them had finished.
+struct AbortedFrameResult {
+    bool skipped = false;
+    std::string error;
+
+    bool fired = false;
+    EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeOk;
+    bool hasPlanes = false;
+    double abortToEndMs = 0.;
+    int batchesAfterAbort = 0;
+    std::map<std::string, int> fallbacks;
+    // The most work a command buffer of the frame held, which bounds what the device runs once the abort comes.
+    std::uint64_t largestBatchWork = 0;
+
+    // Pool bytes held, with the caches cleared, before the frame and once it has gone; set by renderAbortedFrame() only.
+    unsigned long long liveBefore = 0;
+    unsigned long long liveAfter = 0;
+};
+
+// What renderWithAbortMidSolve() saw of each of its three frames.
+struct AbortedSolveResult {
+    bool skipped = false;
+    std::string error;
+
+    // The clean frame in one command buffer per region part, and its pixels.
+    std::vector<float> unsplit;
+
+    // The frame split at every charge and aborted after `abortAfterBatches` command buffers.
+    AbortedFrameResult aborted;
+
+    // Pool bytes still held, with the caches cleared, once the clean frame has gone, then once the aborted frame and
+    // the one after it have.
+    unsigned long long liveAfterClean = 0;
+    unsigned long long liveAfterAbort = 0;
+
+    // The frame rendered after the abort without clearing the caches, split at every charge.
+    std::vector<float> split;
+    int splitBatches = 0;
+    std::map<std::string, int> splitGpuTasksPerNode;
+};
+
+// Renders `root` over `window` on the GPU three times under a forced GPU context: clean and unsplit; split at every
+// charge and aborted after abortAfterBatches command buffers have finished; and split again, reading whatever the aborted
+// frame left in the caches.
+AbortedSolveResult renderWithAbortMidSolve(const std::vector<NodePtr>& graph,
+                                           const NodePtr& root,
+                                           const RectI& window,
+                                           double time,
+                                           int abortAfterBatches);
+
+// Renders `root` over `window` on the GPU once under a forced GPU context, split into command buffers of batchWork, and
+// aborts it after abortAfterBatches of them have finished. Only those run on the device, so a large frame costs little.
+AbortedFrameResult renderAbortedFrame(const std::vector<NodePtr>& graph,
+                                      const NodePtr& root,
+                                      const RectI& window,
+                                      double time,
+                                      std::uint64_t batchWork,
+                                      int abortAfterBatches);
+
+// The command buffers a frame split at every charge ran beyond each context's last. Negative when there is no device or
+// the frame failed; *error is empty only when there is no device.
+int countBatchesOfFrame(const std::vector<NodePtr>& graph,
+                        const NodePtr& root,
+                        const RectI& window,
+                        double time,
+                        std::string* error);
+#endif // NATRON_HAVE_GPU
 
 NATRON_NAMESPACE_EXIT
 

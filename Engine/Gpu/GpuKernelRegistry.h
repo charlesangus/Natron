@@ -2,6 +2,7 @@
 
 #include "GpuKernel.h"
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -95,6 +96,8 @@ private:
     std::vector<std::weak_ptr<GpuKernel>> external_;
     std::map<std::thread::id, VkCommandPool> pools_;
     uint32_t activeContexts_ = 0;
+    // What GpuRecordContext learned of this device's speed; 0 until it finished a split context's first batch.
+    std::atomic<uint64_t> learnedBatchWork_ { 0 };
 };
 
 } // namespace gpu

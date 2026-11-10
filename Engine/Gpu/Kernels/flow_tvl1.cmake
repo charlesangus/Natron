@@ -1,0 +1,5 @@
+slang_add_kernel(flow_tvl1_linearise Kernels/flow_tvl1.slang ENTRY flow_tvl1_linearise REGISTRY NatronGpu)
+slang_add_kernel(flow_tvl1_threshold Kernels/flow_tvl1.slang ENTRY flow_tvl1_threshold REGISTRY NatronGpu)
+slang_add_kernel(flow_tvl1_primal Kernels/flow_tvl1.slang ENTRY flow_tvl1_primal REGISTRY NatronGpu)
+slang_add_kernel(flow_tvl1_dual Kernels/flow_tvl1.slang ENTRY flow_tvl1_dual REGISTRY NatronGpu)
+slang_add_kernel(flow_tvl1_median Kernels/flow_tvl1.slang ENTRY flow_tvl1_median REGISTRY NatronGpu)

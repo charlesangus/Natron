@@ -1,0 +1,6 @@
+slang_add_kernel(flow_confidence Kernels/flow_confidence.slang ENTRY flow_confidence REGISTRY NatronGpu)
+slang_add_kernel(flow_temporal Kernels/flow_confidence.slang ENTRY flow_temporal REGISTRY NatronGpu)
+slang_add_kernel(flow_matte_extract Kernels/flow_confidence.slang ENTRY flow_matte_extract REGISTRY NatronGpu)
+slang_add_kernel(flow_matte_weight Kernels/flow_confidence.slang ENTRY flow_matte_weight REGISTRY NatronGpu)
+slang_add_kernel(flow_composite Kernels/flow_confidence.slang ENTRY flow_composite REGISTRY NatronGpu)
+slang_add_kernel(flow_output Kernels/flow_confidence.slang ENTRY flow_output REGISTRY NatronGpu)

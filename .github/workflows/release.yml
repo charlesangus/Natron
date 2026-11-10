@@ -1,5 +1,7 @@
 name: Release
 
+run-name: ${{ format('Release · {0}', inputs.tag || github.ref_name) }}
+
 on:
   push:
     tags:
@@ -23,14 +25,14 @@ permissions:
 
 jobs:
   dev-image:
-    name: dev image
+    name: Dev image
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/dev-image.yml
 
   release:
-    name: build-and-release
+    name: Build and package release
     needs: dev-image
     runs-on: ubuntu-latest
     container:
@@ -126,12 +128,12 @@ jobs:
         continue-on-error: true
         run: tools/ci/local/test.sh ctest release
 
-      - name: Python bindings smoke test (release)
+      - name: Run Python bindings smoke test (release)
         id: run_smoke
         continue-on-error: true
         run: tools/ci/local/test.sh smoke release
 
-      - name: Check test results
+      - name: Fail the job if any test step failed
         if: always()
         run: |
           status=0
@@ -172,12 +174,24 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: ccache stats
+      - name: Show ccache stats
         if: always()
         run: ccache -s
 
+      # The tag's checkout may predate the script.
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [[ -x tools/ci/summary.sh ]]; then
+            tools/ci/summary.sh note "Release $TAG" "Tag: \`$TAG\`" "Result: **$JOB_STATUS**" "Artifact: \`Natron Release Artifacts\`"
+            tools/ci/summary.sh build release 'Natron Release Artifacts'
+            tools/ci/summary.sh ctest default build/release ''
+          fi
+
   publish:
-    name: publish-release
+    name: Publish release
     needs: release
     # No container here: the release job's image has no `gh` CLI, but the
     # hosted runner does.
@@ -201,3 +215,15 @@ jobs:
             prerelease_flag=(--prerelease)
           fi
           gh release create "$TAG" /tmp/artifacts/* --repo "$GITHUB_REPOSITORY" --title "Natron $TAG" --generate-notes "${prerelease_flag[@]}"
+
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "### Publish · $TAG"
+            echo
+            echo "- Tag: \`$TAG\`"
+            echo "- Result: **$JOB_STATUS**"
+          } >> "$GITHUB_STEP_SUMMARY"

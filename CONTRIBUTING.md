@@ -219,12 +219,13 @@ governs for this repo.
 * **Branch naming:** `milestone/<id>-<slug>` for planned milestone work,
   `fix/<slug>` for everything else.
 
-* **Merging:** pull requests are squash-merged into `main`. Three required
-  status checks must pass before merge: `format` (clang-format on touched
-  C/C++ files), `lint-ci` (actionlint on workflows and shellcheck on CI
-  scripts), and `build-and-test` (the containerised debug build, ctest suite,
-  and Python-bindings smoke test). The first two are defined in
-  `.github/workflows/checks.yml`, the third in `.github/workflows/ci.yml`. If
+* **Merging:** pull requests are squash-merged into `main`. Four required
+  status checks must pass before merge: `Format` (clang-format on touched
+  C/C++ files), `Lint CI` (actionlint on workflows and shellcheck on CI
+  scripts), `Code rules` (the Serialization/ layering and kernel fma checks),
+  and `Build and test` (the containerised debug build, ctest suite, and
+  Python-bindings smoke test). The first three are defined in
+  `.github/workflows/checks.yml`, the last in `.github/workflows/ci.yml`. If
   you rename a CI job, update `main`'s required status checks in the same
   change — a required check with no matching job leaves PRs pending forever
   instead of failing them, which is why this fork removed its old stand-in

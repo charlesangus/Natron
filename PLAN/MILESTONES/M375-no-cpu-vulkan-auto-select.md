@@ -38,7 +38,7 @@ Today `GpuDevice::create`'s ranked pick (`Engine/Gpu/GpuDevice.cpp` ~263) ranks
 
 ## Phase 375.1: Device pick
 
-- [ ] M375.P1.T1 — Exclude CPU-type devices from the ranked Vulkan device pick
+- [x] M375.P1.T1 — Exclude CPU-type devices from the ranked Vulkan device pick
   - files: Engine/Gpu/GpuDevice.cpp (ranked loop ~263-277, typeRank ~33), Engine/Gpu/GpuDevice.h (~58 comment), Engine/GpuContext.h (~55-58 Force comment), Tests/Gpu/GpuRuntime_Test.cpp or Tests/Native/GpuDeviceList_Test.cpp (new test)
   - approach: In the `selector.empty()` branch skip devices whose `deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU`. When no device qualifies and at least one CPU-type device was skipped, fail with `VK_ERROR_FEATURE_NOT_PRESENT` and a message like "only CPU Vulkan devices (<name>) are present; set NATRON_GPU_DEVICE to use one". The explicit-selector branch is unchanged. Update the header comments to say auto never picks a CPU device. Add a test, on hosts where lavapipe is present (skip otherwise): with `NATRON_GPU_DEVICE` unset, the ranked pick never returns a CPU-type device; with `NATRON_GPU_DEVICE=llvmpipe` it returns lavapipe. Restore the environment afterwards.
   - verify: The new test passes in natron-dev (lavapipe only: ranked pick fails with the new message, explicit selector gets lavapipe).

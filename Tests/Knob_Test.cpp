@@ -44,6 +44,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
 
@@ -319,16 +320,20 @@ TEST_F(KnobValueChangeCascade, FanOutWalksEachNodeOncePerWalk)
     NodePtr source = createCascadeNode(getApp(), kCascadeGradeID, "Source");
     ASSERT_TRUE(bool(source));
     std::vector<NodePtr> chain(1, source);
-    for (int i = 0; i < kDependents; ++i) {
-        NodePtr dependent = createCascadeNode(getApp(), kCascadeGradeID, "Dependent" + std::to_string(i));
-        ASSERT_TRUE(bool(dependent));
-        disableFollows(dependent, "Source");
-        chain.push_back(dependent);
-    }
-    while ((int)chain.size() < kChain) {
-        NodePtr dot = createCascadeNode(getApp(), PLUGINID_NATRON_DOT);
-        ASSERT_TRUE(bool(dot));
-        chain.push_back(dot);
+    {
+        // Unbatched, finding each Dot a free numbered name scans every node per number tried.
+        const NodeCollection::NamingBatch namingBatch(getApp()->getProject());
+        for (int i = 0; i < kDependents; ++i) {
+            NodePtr dependent = createCascadeNode(getApp(), kCascadeGradeID, "Dependent" + std::to_string(i));
+            ASSERT_TRUE(bool(dependent));
+            disableFollows(dependent, "Source");
+            chain.push_back(dependent);
+        }
+        while ((int)chain.size() < kChain) {
+            NodePtr dot = createCascadeNode(getApp(), PLUGINID_NATRON_DOT);
+            ASSERT_TRUE(bool(dot));
+            chain.push_back(dot);
+        }
     }
     for (std::size_t i = 1; i < chain.size(); ++i) {
         connectNodes(chain[i - 1], chain[i], 0, true);

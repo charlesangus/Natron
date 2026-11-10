@@ -46,6 +46,7 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
@@ -431,22 +432,35 @@ NodeCollection::addNode(const NodePtr& node)
             _imp->indexNodeNames(node);
         }
     }
+    AppInstancePtr app = getApplication();
+    if (ProjectPtr project = app ? app->getProject() : ProjectPtr()) {
+        project->registerNodeId(node);
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onNodeAdded(node);
+    }
 }
 
 void
 NodeCollection::removeNode(const Node* node)
 {
-    QMutexLocker k(&_imp->nodesMutex);
-    for (NodesList::iterator it =_imp->nodes.begin(); it != _imp->nodes.end();++it) {
-        if ( it->get() == node ) {
-            _imp->nodes.erase(it);
-            if (_imp->namingBatches > 0) {
-                _imp->namingMembers.erase(node);
-                _imp->freeName(eNodeNameKindScriptName, node->getScriptName_mt_safe());
-                _imp->freeName(eNodeNameKindLabel, node->getLabel_mt_safe());
+    {
+        QMutexLocker k(&_imp->nodesMutex);
+        for (NodesList::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
+            if (it->get() == node) {
+                _imp->nodes.erase(it);
+                if (_imp->namingBatches > 0) {
+                    _imp->namingMembers.erase(node);
+                    _imp->freeName(eNodeNameKindScriptName, node->getScriptName_mt_safe());
+                    _imp->freeName(eNodeNameKindLabel, node->getLabel_mt_safe());
+                }
+                break;
             }
-            break;
         }
+    }
+    AppInstancePtr app = getApplication();
+    if (ProjectPtr project = app ? app->getProject() : ProjectPtr()) {
+        project->unregisterNodeId(node);
     }
 }
 

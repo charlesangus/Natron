@@ -44,6 +44,11 @@ on:
         required: false
         type: string
         default: ''
+      schedulers:
+        description: 'Comma-separated render schedulers whose ctest legs run (needs tests): legacy, taskgraph, or both. Milestone gates run both'
+        required: false
+        type: string
+        default: 'legacy,taskgraph'
       token:
         description: 'Opaque marker echoed into the run name so a script can find this run'
         required: false
@@ -154,7 +159,6 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
             build/assets/lensfun
@@ -193,15 +197,23 @@ jobs:
         timeout-minutes: 15
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
           NATRON_RENDER_SCHEDULER: legacy
           NATRON_GOLDEN_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-golden
-          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins:${{ github.workspace }}/build/assets/TestPlugins
+          OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins
         working-directory: build/${{ env.PRESET }}
         run: |
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest)$' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest)$' --timeout 300 --output-on-failure || rc=$?
+          # The node suites' own Golden cases go through the same recorder. ctest entries are whole
+          # suites, so the cases are picked by filter, with a process per suite as under ctest.
+          suites=$(cd Tests && ./Tests --gtest_list_tests --gtest_filter='*.Golden*' | sed -n 's/^\([A-Za-z0-9_]*\)\.\( .*\)\{0,1\}$/\1/p') || rc=1
+          test -n "$suites" || rc=1
+          for suite in $suites; do
+            (cd Tests && xvfb-run --auto-servernum timeout 300 ./Tests --gtest_filter="$suite.Golden*") || rc=$?
+          done
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
           exit "$rc"
 
@@ -227,6 +239,7 @@ jobs:
         timeout-minutes: 15
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
           NATRON_RENDER_SCHEDULER: legacy
           NATRON_PARITY_RECORD_DIR: ${{ github.workspace }}/Tests/fixtures/native-parity
           OFX_PLUGIN_PATH: ${{ github.workspace }}/build/assets/Plugins:${{ github.workspace }}/build/assets/TestPlugins
@@ -310,16 +323,45 @@ jobs:
         if: always()
         run: ccache -s
 
+  # Turns the schedulers input into the ctest matrix, and rejects an unknown name before any build starts.
+  ctest-legs:
+    name: ctest legs
+    if: inputs.tests && !inputs.from_run
+    runs-on: ubuntu-latest
+    outputs:
+      schedulers: ${{ steps.legs.outputs.schedulers }}
+    steps:
+      - name: Resolve schedulers
+        id: legs
+        env:
+          SCHEDULERS: ${{ inputs.schedulers }}
+        run: |
+          legs=()
+          IFS=',' read -r -a requested <<< "${SCHEDULERS:-legacy,taskgraph}"
+          for name in "${requested[@]}"; do
+            case "$name" in
+              legacy|taskgraph) ;;
+              *) echo "unknown scheduler '$name' (expected legacy or taskgraph)" >&2; exit 1 ;;
+            esac
+            case " ${legs[*]-} " in
+              *" $name "*) ;;
+              *) legs+=("$name") ;;
+            esac
+          done
+          json="$(printf '"%s",' "${legs[@]}")"
+          echo "schedulers=[${json%,}]" >> "$GITHUB_OUTPUT"
+
   ctest:
     name: ctest (${{ matrix.scheduler }})
-    needs: [dev-image, remote-build]
+    needs: [dev-image, remote-build, ctest-legs]
     if: >-
       !cancelled() && inputs.tests && needs.remote-build.outputs.tree == 'success'
+      && needs.ctest-legs.result == 'success'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        scheduler: [legacy, taskgraph]
+        scheduler: ${{ fromJSON(needs.ctest-legs.outputs.schedulers) }}
     container:
       image: ${{ needs.dev-image.outputs.image }}
       credentials:
@@ -360,7 +402,6 @@ jobs:
         with:
           path: |
             build/assets/Plugins
-            build/assets/TestPlugins
             build/assets/CImg
             build/assets/rawspeed
             build/assets/lensfun
@@ -415,6 +456,7 @@ jobs:
         timeout-minutes: ${{ inputs.shuffle_seeds != '' && 120 || inputs.preset == 'debug' && 75 || 30 }}
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
           SHUFFLE_SEEDS: ${{ inputs.shuffle_seeds }}
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           # One suite per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
@@ -467,11 +509,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
-  # Gathers both legs' logs into the one artifact tools/ci/remote/build.sh downloads, and holds the
+  # Gathers the legs' logs into the one artifact tools/ci/remote/build.sh downloads, and holds the
   # byte-for-byte comparison of the two schedulers' smoke renders, which spans both legs.
   results:
     name: results
-    needs: [remote-build, ctest]
+    needs: [remote-build, ctest-legs, ctest]
     if: always() && inputs.tests && !inputs.from_run
     runs-on: ubuntu-latest
     steps:
@@ -500,12 +542,14 @@ jobs:
           fi
 
       - name: Download smoke renders
+        if: ${{ contains(needs.ctest-legs.outputs.schedulers, 'legacy') && contains(needs.ctest-legs.outputs.schedulers, 'taskgraph') }}
         uses: actions/download-artifact@v7.0.0
         with:
           pattern: smoke-render-*-${{ env.PRESET }}-${{ github.sha }}
           path: smoke-renders
 
       - name: Compare smoke renders across schedulers
+        if: ${{ contains(needs.ctest-legs.outputs.schedulers, 'legacy') && contains(needs.ctest-legs.outputs.schedulers, 'taskgraph') }}
         env:
           SUFFIX: ${{ env.PRESET }}-${{ github.sha }}
         run: |

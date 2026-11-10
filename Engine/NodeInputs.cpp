@@ -35,6 +35,7 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/IsolatedJob.h"
@@ -868,6 +869,9 @@ Node::connectInput(const NodePtr & input,
     QObject::connect( input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
 
     ///Notify the GUI
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputNumber);
+    }
     Q_EMIT inputChanged(inputNumber);
     bool mustCallEnd = false;
 
@@ -960,6 +964,9 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhil
     QObject::connect( input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
 
     ///Notify the GUI
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputNumber);
+    }
     Q_EMIT inputChanged(inputNumber);
     bool mustCallEnd = false;
     if (!useGuiInputs) {
@@ -1064,7 +1071,13 @@ Node::switchInput0And1()
         // Under the render-start lock, as in connectInput().
         markHashDirty();
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputAIndex);
+    }
     Q_EMIT inputChanged(inputAIndex);
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputBIndex);
+    }
     Q_EMIT inputChanged(inputBIndex);
     bool mustCallEnd = false;
     if (!useGuiInputs) {
@@ -1179,6 +1192,9 @@ Node::disconnectInput(int inputNumber)
         }
     }
 
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onInputChanged(this, inputNumber);
+    }
     Q_EMIT inputChanged(inputNumber);
     bool mustCallEnd = false;
     if (!useGuiValues) {
@@ -1248,6 +1264,9 @@ Node::disconnectInputInternal(Node* input, bool queueWhileRendering)
     }
     if (found != -1) {
         input->disconnectOutput(useGuiValues, this);
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onInputChanged(this, found);
+        }
         Q_EMIT inputChanged(found);
         bool mustCallEnd = false;
         if (!useGuiValues) {

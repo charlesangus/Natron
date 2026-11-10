@@ -35,6 +35,7 @@
 #include <limits>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -54,10 +55,12 @@
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/ResampleExecutor.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Transform/LensfunRuntime.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -365,6 +368,7 @@ LensCorrect::initializeKnobs()
 
     KnobDoublePtr scale = createKnob<KnobDouble>(tr("Scale"));
     scale->setName(kLensCorrectParamScale);
+    scale->setValueRole(eValueRoleScale);
     scale->setHintToolTip(tr("The scale of the corrected image, when Auto Scale is off."));
     scale->setDefaultValue(1.);
     scale->setMinimum(0.1);
@@ -1092,40 +1096,6 @@ LensCorrect::getRegionOfDefinition(U64 hash,
     return status;
 } // LensCorrect::getRegionOfDefinition
 
-void
-LensCorrect::getRegionsOfInterest(double time,
-                                  const RenderScale& scale,
-                                  const RectD& outputRoD,
-                                  const RectD& renderWindow,
-                                  ViewIdx view,
-                                  RoIMap* ret)
-{
-    StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
-
-    EffectInstancePtr source = getInput(kLensCorrectInputSource);
-    if (!source) {
-        return;
-    }
-    // Lensfun's map has no bound short of the whole image, so the whole Source is read.
-    RectD sourceRoI = renderWindow;
-    RectD sourceRoD;
-    bool isProjectFormat = false;
-    const RenderScale inputScale = source->supportsRenderScale() ? scale : RenderScale::identity;
-    if ((source->getRegionOfDefinition_public(source->getRenderHash(), time, inputScale, view, &sourceRoD, &isProjectFormat) != eStatusFailed) && !sourceRoD.isNull()) {
-        sourceRoI.merge(sourceRoD);
-    }
-    (*ret)[source] = sourceRoI;
-}
-
-bool
-LensCorrect::isOpIdentity(double /*time*/,
-                          const RenderScale& /*scale*/,
-                          const RectI& /*roi*/,
-                          ViewIdx /*view*/)
-{
-    return false;
-}
-
 namespace {
 // Maps output pixels at the render scale to Source pixels at the render scale through the profile.
 // Lensfun's pixels have their centres on integers and y down, over the Source format at scale 1.
@@ -1161,7 +1131,293 @@ struct PixelMapper {
         }
     }
 };
+
+// A window past this many pixels, with its ring, asks for the whole Source instead of being mapped here.
+const std::int64_t kMaxBoundedPixels = (std::int64_t)1 << 27;
+
+// Pixel coordinates are only bounded within this magnitude, short of the Resampler's 2^30 saturation.
+const double kMaxPixelCoord = 536870912.;
+
+// The Resampler saturates finite positions here before it builds a footprint.
+const double kResamplerCoordLimit = 1073741824.;
+
+// The pixels of canonical r, as PassExec::toPixelEnclosing() gives them; false when a side lies past
+// kMaxPixelCoord or is not finite.
+bool
+checkedPixelEnclosing(const RectD& r,
+                      const RenderScale& scale,
+                      double par,
+                      RectI* out)
+{
+    if ((r.x2 <= r.x1) || (r.y2 <= r.y1)) {
+        *out = RectI();
+
+        return true;
+    }
+    const OfxPointD s = scale.toOfxPointD();
+    const double x1 = std::floor(r.x1 * s.x / par);
+    const double y1 = std::floor(r.y1 * s.y);
+    const double x2 = std::ceil(r.x2 * s.x / par);
+    const double y2 = std::ceil(r.y2 * s.y);
+    for (const double v : { x1, y1, x2, y2 }) {
+        if (!(std::fabs(v) <= kMaxPixelCoord)) {
+            return false;
+        }
+    }
+    *out = RectI((int)x1, (int)y1, (int)x2, (int)y2);
+
+    return true;
+}
+
+// Inclusive first and last pixels along each axis; an infinite side is unbounded.
+struct PixelSpan {
+    double x1;
+    double y1;
+    double x2;
+    double y2;
+};
+
+// The Source's pixels from its canonical RoD; a side past kMaxPixelCoord on its own side counts as
+// unbounded. False when the RoD lies wholly beyond that range.
+bool
+sourcePixelSpan(const RectD& rod,
+                const RenderScale& scale,
+                double par,
+                PixelSpan* out)
+{
+    const double inf = std::numeric_limits<double>::infinity();
+    const OfxPointD s = scale.toOfxPointD();
+    const double lo[2] = { rod.x1 * s.x / par, rod.y1 * s.y };
+    const double hi[2] = { rod.x2 * s.x / par, rod.y2 * s.y };
+    double first[2], last[2];
+    for (int a = 0; a < 2; ++a) {
+        if (std::isnan(lo[a]) || std::isnan(hi[a]) || (lo[a] >= kMaxPixelCoord) || (hi[a] <= -kMaxPixelCoord)) {
+            return false;
+        }
+        first[a] = (lo[a] <= -kMaxPixelCoord) ? -inf : std::floor(lo[a]);
+        last[a] = (hi[a] >= kMaxPixelCoord) ? inf : std::ceil(hi[a]) - 1.;
+        if (last[a] < first[a]) {
+            return false;
+        }
+    }
+    *out = PixelSpan { first[0], first[1], last[0], last[1] };
+
+    return true;
+}
+
+/*
+ * The Source pixels a render of output pixels `window` reads, at the render scale: empty when it
+ * reads none. False when the window is too large to map pixel by pixel or a read lies beyond
+ * kMaxPixelCoord, where the caller asks for the whole Source.
+ *
+ * Every output pixel is mapped through the PixelMapper the render uses, with the one-pixel ring its
+ * Jacobians take, and Resampler::coordJacobians() turns the green positions into the Jacobians the
+ * render passes on, so each footprint is built from the very values the render samples with. Around
+ * each finite red, green and blue position the footprint holds every tap of the knob's filter
+ * widened by kernelScale(), a box's integration rectangle, and the nearest pixel a draft render's
+ * impulse reads. Non-finite positions read nothing, as in resampleRowFromCoords(). With
+ * blackOutside, taps past the Source read 0, so a footprint counts only where it overlaps the
+ * Source; otherwise the Resampler clamps taps onto the Source's edge, so the footprint is moved onto
+ * it. An unbounded side of the Source neither clips nor moves anything.
+ */
+bool
+sourceReads(const PixelMapper& mapper,
+            const RectI& window,
+            const Resampler::FilterSpec& filter,
+            bool blackOutside,
+            const PixelSpan& sourceSpan,
+            RectI* reads)
+{
+    *reads = RectI();
+    if (window.isNull()) {
+        return true;
+    }
+    const std::int64_t wide = (std::int64_t)window.width() + 2;
+    if (wide * ((std::int64_t)window.height() + 2) > kMaxBoundedPixels) {
+        return false;
+    }
+    const int n = (int)wide;
+    const bool impulse = (filter.filter == Resampler::eFilterImpulse);
+    const bool box = (filter.filter == Resampler::eFilterBox);
+    const double radius = filter.radius();
+    const double inf = std::numeric_limits<double>::infinity();
+
+    std::mutex mutex;
+    PixelSpan all { inf, inf, -inf, -inf };
+    forEachRowBand(window, kMinParallelRowBandArea, [&](int bandY1, int bandY2) {
+        struct Row {
+            std::vector<float> s;
+            std::vector<float> greenX;
+            std::vector<float> greenY;
+        };
+        const auto mapRow = [&](int y, Row* row) {
+            row->s.resize((std::size_t)6 * n);
+            row->greenX.resize(n);
+            row->greenY.resize(n);
+            for (int i = 0; i < n; ++i) {
+                float lf[6];
+                float* s = &row->s[(std::size_t)6 * i];
+                mapper.map(window.x1 - 1 + i, y, lf, s);
+                row->greenX[i] = s[2];
+                row->greenY[i] = s[3];
+            }
+        };
+        Row prev, cur, next;
+        mapRow(bandY1 - 1, &prev);
+        mapRow(bandY1, &cur);
+        std::vector<float> jacobian((std::size_t)4 * n, 0.f);
+        PixelSpan band { inf, inf, -inf, -inf };
+        for (int y = bandY1; y < bandY2; ++y) {
+            mapRow(y + 1, &next);
+            if (!impulse) {
+                Resampler::coordJacobians(&prev.greenX[0], &cur.greenX[0], &next.greenX[0], &prev.greenY[0], &cur.greenY[0], &next.greenY[0], n, &jacobian[0]);
+            }
+            for (int i = 1; i + 1 < n; ++i) {
+                double reachX = 0.;
+                double reachY = 0.;
+                if (!impulse) {
+                    const float* J = &jacobian[(std::size_t)4 * i];
+                    // A box integrates over the back-transformed pixel's bounding box instead of
+                    // widening a kernel.
+                    reachX = box ? 0.5 * (std::fabs(J[0]) + std::fabs(J[1])) : radius * Resampler::kernelScale(J[0], J[1]);
+                    reachY = box ? 0.5 * (std::fabs(J[2]) + std::fabs(J[3])) : radius * Resampler::kernelScale(J[2], J[3]);
+                }
+                for (int c = 0; c < 3; ++c) {
+                    const double sx = cur.s[(std::size_t)6 * i + 2 * c];
+                    const double sy = cur.s[(std::size_t)6 * i + 2 * c + 1];
+                    if (!std::isfinite(sx) || !std::isfinite(sy)) {
+                        continue;
+                    }
+                    const double fx = std::max(-kResamplerCoordLimit, std::min(sx, kResamplerCoordLimit));
+                    const double fy = std::max(-kResamplerCoordLimit, std::min(sy, kResamplerCoordLimit));
+                    // The GPU maps in float with approximate trigonometry, so its positions stray
+                    // from these by a little, more far out. The slack also keeps the Source's own
+                    // pixels within half a pixel of the position, which decide whether the
+                    // Resampler treats it as inside and supersamples.
+                    const double slack = 2. + 1e-4 * std::max(std::fabs(fx), std::fabs(fy));
+                    // Taps lie in (p - 0.5 - reach, p - 0.5 + reach), a wide footprint's bilinear
+                    // reads one past that, and a box spans p +- reach.
+                    double x1 = std::floor(fx - 0.5 - reachX - slack);
+                    double x2 = std::floor(fx + reachX + slack) + 1.;
+                    double y1 = std::floor(fy - 0.5 - reachY - slack);
+                    double y2 = std::floor(fy + reachY + slack) + 1.;
+                    if (blackOutside) {
+                        x1 = std::max(x1, sourceSpan.x1);
+                        x2 = std::min(x2, sourceSpan.x2);
+                        y1 = std::max(y1, sourceSpan.y1);
+                        y2 = std::min(y2, sourceSpan.y2);
+                        if ((x1 > x2) || (y1 > y2)) {
+                            continue;
+                        }
+                    } else {
+                        x1 = std::min(std::max(x1, sourceSpan.x1), sourceSpan.x2);
+                        x2 = std::min(std::max(x2, sourceSpan.x1), sourceSpan.x2);
+                        y1 = std::min(std::max(y1, sourceSpan.y1), sourceSpan.y2);
+                        y2 = std::min(std::max(y2, sourceSpan.y1), sourceSpan.y2);
+                    }
+                    band.x1 = std::min(band.x1, x1);
+                    band.y1 = std::min(band.y1, y1);
+                    band.x2 = std::max(band.x2, x2);
+                    band.y2 = std::max(band.y2, y2);
+                }
+            }
+            std::swap(prev, cur);
+            std::swap(cur, next);
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        all.x1 = std::min(all.x1, band.x1);
+        all.y1 = std::min(all.y1, band.y1);
+        all.x2 = std::max(all.x2, band.x2);
+        all.y2 = std::max(all.y2, band.y2);
+    });
+
+    if ((all.x1 > all.x2) || (all.y1 > all.y2)) {
+        return true;
+    }
+    for (const double v : { all.x1, all.y1, all.x2, all.y2 }) {
+        if (!(std::fabs(v) <= kMaxPixelCoord)) {
+            return false;
+        }
+    }
+    *reads = RectI((int)all.x1, (int)all.y1, (int)all.x2 + 1, (int)all.y2 + 1);
+
+    return true;
+} // sourceReads
 } // namespace
+
+void
+LensCorrect::getRegionsOfInterest(double time,
+                                  const RenderScale& scale,
+                                  const RectD& outputRoD,
+                                  const RectD& renderWindow,
+                                  ViewIdx view,
+                                  RoIMap* ret)
+{
+    StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+
+    EffectInstancePtr source = getInput(kLensCorrectInputSource);
+    if (!source) {
+        return;
+    }
+    // The mask and mix, and a pass-through of unprocessed channels, read the Source under the window.
+    RectD sourceRoI = renderWindow;
+    RectD sourceRoD;
+    bool isProjectFormat = false;
+    const RenderScale inputScale = source->supportsRenderScale() ? scale : RenderScale::identity;
+    if ((source->getRegionOfDefinition_public(source->getRenderHash(), time, inputScale, view, &sourceRoD, &isProjectFormat) == eStatusFailed) || sourceRoD.isNull()) {
+        (*ret)[source] = sourceRoI;
+
+        return;
+    }
+    const RectD wholeSource = RectD(std::min(sourceRoD.x1, renderWindow.x1), std::min(sourceRoD.y1, renderWindow.y1),
+                                    std::max(sourceRoD.x2, renderWindow.x2), std::max(sourceRoD.y2, renderWindow.y2));
+    NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    NodeMetadataConstPtr sourceMetadata = source->getRenderMetadata(time, view);
+    if (!metadata || !sourceMetadata) {
+        (*ret)[source] = wholeSource;
+
+        return;
+    }
+
+    Settings settings;
+    readSettings(time, view, &settings);
+    const Model model = buildModel(time, view, settings);
+    if (model.format.isNull()) {
+        (*ret)[source] = sourceRoI;
+
+        return;
+    }
+    PixelMapper mapper;
+    mapper.profile = &model.profile;
+    mapper.scaleX = scale.toOfxPointD().x;
+    mapper.scaleY = scale.toOfxPointD().y;
+    mapper.x1 = model.format.x1;
+    mapper.y2 = model.format.y2;
+
+    const double sourcePar = sourceMetadata->getPixelAspectRatio(-1);
+    RectI windowPixels;
+    PixelSpan sourceSpan;
+    RectI reads;
+    // A draft render's impulse reads the nearest pixel, which every footprint holds.
+    if (!checkedPixelEnclosing(renderWindow, scale, metadata->getPixelAspectRatio(-1), &windowPixels) || !sourcePixelSpan(sourceRoD, scale, sourcePar, &sourceSpan) || !sourceReads(mapper, windowPixels, settings.filter, settings.blackOutside, sourceSpan, &reads)) {
+        (*ret)[source] = wholeSource;
+
+        return;
+    }
+    if (!reads.isNull()) {
+        sourceRoI.merge(PassExec::toCanonical(reads, scale, sourcePar));
+    }
+    (*ret)[source] = sourceRoI;
+} // LensCorrect::getRegionsOfInterest
+
+bool
+LensCorrect::isOpIdentity(double /*time*/,
+                          const RenderScale& /*scale*/,
+                          const RectI& /*roi*/,
+                          ViewIdx /*view*/)
+{
+    return false;
+}
 
 StatusEnum
 LensCorrect::renderOp(const RenderActionArgs& args,
@@ -1430,7 +1686,7 @@ LensCorrect::getOpGpuInputRoI(int inputNb,
                               const RenderScale& scale) const
 {
     if (inputNb == kLensCorrectInputSource) {
-        return warpGpuInputRoI(*this, inputNb, kLensCorrectInputSource, -1, time, view, outputRect, scale);
+        return resampleGpuSourceRoI(*this, inputNb, time, view, outputRect, scale);
     }
 
     return StagedImageEffect::getOpGpuInputRoI(inputNb, time, view, outputRect, scale);

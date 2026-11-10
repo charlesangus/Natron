@@ -1387,6 +1387,16 @@ public:
         return ret;
     }
 
+    /**
+     * @brief Forgets the links and link groups stored and not restored yet, so that storing a
+     * newer serialization replaces them rather than adding to them.
+     **/
+    void clearStoredLinks()
+    {
+        _links.clear();
+        _storedLinkGroups.clear();
+    }
+
 private:
     struct Link {
         int slaveDimension;
@@ -3845,6 +3855,12 @@ KnobIPtr createDetachedKnobFromSerialization(const Serialization::KnobSerializat
  * otherwise. Needed before createDetachedKnobFromSerialization() for such a knob.
  **/
 Serialization::KnobSerialization completeKnobSerializationForKnob(const KnobI& liveKnob, const Serialization::KnobSerialization& serialization);
+
+/**
+ * @brief Drops knob's alias master, its one-way links and the two-way links it can leave. The
+ * knobs that are aliases of it stay so.
+ **/
+void removeKnobLinks(const KnobIPtr& knob);
 
 NATRON_NAMESPACE_EXIT
 

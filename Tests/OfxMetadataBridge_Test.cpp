@@ -70,11 +70,12 @@
 #include <ofxhPropertySuite.h>
 
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
+#include "OfxTestPlugins/natronTestMetadata/NatronTestMetadataPluginIDs.h"
 
 NATRON_NAMESPACE_USING
 
 namespace {
-const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
+const char kMetadataContributeID[] = kNatronTestMetadataContributePluginID;
 const char kOfxPointMatrixID[] = kNatronTestPointMatrixPluginID;
 const int kOfxPointMatrixMajor = kNatronTestPointMatrixMajor;
 const char kContributeNoteParam[] = "note";

@@ -50,6 +50,8 @@
 
 #include "RenderBothWays.h"
 
+#include "Gpu/GpuTestSelector.h"
+
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -181,6 +183,7 @@ createRuntime(std::unique_ptr<GpuParityRuntime>& runtime,
     std::unique_ptr<GpuParityRuntime> created(new GpuParityRuntime);
     gpu::GpuRuntimeOptions options;
     options.device.disablePushDescriptor = !pushDescriptors;
+    options.device.deviceSelector = gputest::cpuFallbackSelector();
     const gpu::GpuStatus status = gpu::GpuRuntime::create(options, created->_impl->runtime);
     if (!status) {
         reportNoGpu(status.message);
@@ -502,6 +505,7 @@ public:
     {
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
         std::shared_ptr<std::string> unavailable = std::make_shared<std::string>();
         options.infoLog = [unavailable](const std::string& line) {
             *unavailable = line;

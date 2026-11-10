@@ -35,6 +35,8 @@
 
 #include <gtest/gtest.h>
 
+#include "Gpu/GpuTestSelector.h"
+
 #include "Engine/GpuContext.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -93,6 +95,9 @@ makeOptions(GpuResolvedMode mode,
     GpuContextOptions o;
     o.mode = mode;
     o.infoLog = log.sink();
+    if (mode == GpuResolvedMode::Force) {
+        o.device = gputest::cpuFallbackSelector();
+    }
 
     return o;
 }

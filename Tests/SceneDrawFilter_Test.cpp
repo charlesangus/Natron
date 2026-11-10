@@ -913,6 +913,237 @@ TEST_F(SceneDrawFilterTest, BoxingOnePrimChangesItsVisibilityAndNotTheRenderInde
     EXPECT_EQ(1, delegate.rprimsDestroyed);
 }
 
+TEST_F(SceneDrawFilterTest, ChangesToSeveralRowsAppliedTogetherAnnounceEachPrimOnce)
+{
+    const SceneDrawDelta world = states.setState("/World", eSceneDrawStateBBox);
+    const SceneDrawDelta a = states.setState("/World/a", eSceneDrawStateFull);
+    const SceneDrawDelta deep = states.setState("/World/a/deep", eSceneDrawStateHidden);
+
+    filter->applyDeltas({ &world, &a, &deep });
+
+    EXPECT_EQ((PathSet { "/World/a/deep/m2" }), recorder.leftHydra);
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), recorder.invisible);
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_EQ(5u, filter->getHiddenSentCount());
+    EXPECT_EQ(0u, filter->getShownSentCount());
+    EXPECT_EQ((PathSet { "/World/a/m1" }), drawnGeometry());
+}
+
+TEST_F(SceneDrawFilterTest, AWideChangeAnnouncesOnlyThePrimsItChanges)
+{
+    filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateBBox));
+    recorder.reset();
+    const unsigned long long hiddenBefore = filter->getHiddenSentCount();
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), recorder.hides);
+    EXPECT_EQ(5u, filter->getHiddenSentCount() - hiddenBefore);
+    EXPECT_EQ(6u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, AChangeDuringARevealKeepsWhatItAnnouncedThatTheNewRulesShow)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 2);
+    filter->stepReveal(2);
+    const PathSet announced = recorder.shows;
+    ASSERT_EQ(2u, announced.size());
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateBBox));
+
+    EXPECT_FALSE(filter->isRevealing());
+    PathSet expected = kAllGeometry;
+    expected.erase("/World/a/deep/m2");
+    EXPECT_EQ(expected, drawnGeometry());
+    for (const std::string& path : recorder.hides) {
+        EXPECT_EQ("/World/a/deep/m2", path);
+    }
+    for (const std::string& path : recorder.shows) {
+        EXPECT_EQ(0u, announced.count(path)) << path << " was announced twice";
+    }
+}
+
+TEST_F(SceneDrawFilterTest, APrimHiddenDuringARevealAndShownAgainIsRevealed)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox), 1);
+    filter->applyDelta(states.clearState("/World/b"), 1);
+
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+    }
+
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+namespace {
+bool
+hiddenByRules(const SceneDrawFilter::Rules& rules,
+              const SdfPath& path,
+              bool light)
+{
+    const SceneDrawFilter::Rules::const_iterator rule = SdfPathFindLongestPrefix(rules, path);
+    if (rule == rules.end()) {
+        return false;
+    }
+    if (light) {
+        return rule->second == SceneDrawFilter::eRuleHidden;
+    }
+    switch (rule->second) {
+    case SceneDrawFilter::eRuleShow:
+        return false;
+    case SceneDrawFilter::eRuleHide:
+    case SceneDrawFilter::eRuleHidden:
+        return true;
+    case SceneDrawFilter::eRuleExpand:
+        return rule->first != path;
+    }
+
+    return false;
+}
+
+// Every geometry prim and light of the input is drawn exactly when the filter's rules show it, and a
+// Hidden row keeps it out of Hydra.
+void
+expectFilteredSceneFollowsTheRules(const HdSceneIndexBase& input,
+                                   const SceneDrawFilter& filter)
+{
+    const std::set<TfToken> geometry = { HdPrimTypeTokens->mesh, HdPrimTypeTokens->sphere, HdPrimTypeTokens->instancer };
+    SdfPathVector stack = input.GetChildPrimPaths(SdfPath::AbsoluteRootPath());
+    std::size_t checked = 0;
+    while (!stack.empty()) {
+        const SdfPath path = stack.back();
+        stack.pop_back();
+        const SdfPathVector children = input.GetChildPrimPaths(path);
+        stack.insert(stack.end(), children.begin(), children.end());
+        const TfToken primType = input.GetPrim(path).primType;
+        const bool light = HdPrimTypeIsLight(primType);
+        if (!light && (geometry.count(primType) == 0)) {
+            continue;
+        }
+        ++checked;
+        const HdSceneIndexPrim prim = filter.GetPrim(path);
+        const bool hidden = hiddenByRules(filter.getRules(), path, light);
+        EXPECT_EQ(!hidden, !prim.primType.IsEmpty() && visible(prim)) << path;
+        const SceneDrawFilter::Rules::const_iterator rule = SdfPathFindLongestPrefix(filter.getRules(), path);
+        if (hidden && (rule != filter.getRules().end()) && (rule->second == SceneDrawFilter::eRuleHidden)) {
+            EXPECT_TRUE(prim.primType.IsEmpty()) << path << " is under a Hidden row";
+        }
+    }
+    EXPECT_LT(0u, checked);
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, TheFilteredSceneFollowsTheRulesThroughBatchedChangesAndInputChanges)
+{
+    addLights(scene);
+    const SceneDrawDelta world = states.setState("/World", eSceneDrawStateBBox);
+    const SceneDrawDelta a = states.setState("/World/a", eSceneDrawStateFull);
+    const SceneDrawDelta deep = states.setState("/World/a/deep", eSceneDrawStateHidden);
+    const SceneDrawDelta b = states.setState("/World/b", eSceneDrawStateChildren);
+    const SceneDrawDelta rig = states.setState("/World/rig/subrig", eSceneDrawStateHidden);
+    filter->applyDeltas({ &world, &a, &deep, &b, &rig });
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+
+    scene->AddPrims({ { SdfPath("/World/a/deep/late"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/b/late"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/d/e/late"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/rig/subrig/late"), HdPrimTypeTokens->sphereLight, someData() } });
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+
+    scene->RemovePrims({ { SdfPath("/World/a") } });
+    const SceneDrawDelta deepCleared = states.clearState("/World/a/deep");
+    const SceneDrawDelta worldFull = states.setState("/World", eSceneDrawStateFull);
+    const SceneDrawDelta rigBoxed = states.setState("/World/rig", eSceneDrawStateBBox);
+    filter->applyDeltas({ &deepCleared, &worldFull, &rigBoxed });
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+
+    scene->AddPrims({ { SdfPath("/World/a/m1"), HdPrimTypeTokens->mesh, someData() } });
+    const SceneDrawDelta cHidden = states.setState("/World/c", eSceneDrawStateHidden);
+    const SceneDrawDelta rigHidden = states.setState("/World/rig", eSceneDrawStateHidden);
+    filter->applyDeltas({ &cHidden, &rigHidden }, 1);
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+    EXPECT_TRUE(drawn("/World/a/m1"));
+}
+
+TEST_F(SceneDrawFilterTest, ASubtreeRemovedAndAddedAgainFollowsTheRules)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    ASSERT_EQ(2u, filter->getHeldInvisibleCount());
+
+    scene->RemovePrims({ { SdfPath("/World/a") } });
+
+    EXPECT_EQ((PathSet { "/World/a" }), recorder.removed);
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+    recorder.reset();
+
+    scene->AddPrims({ { SdfPath("/World/a"), TfToken("xform"), someData() }, { SdfPath("/World/a/m1"), HdPrimTypeTokens->mesh, someData() } });
+
+    EXPECT_EQ((PathSet { "/World/a/m1" }), recorder.leftHydra);
+    EXPECT_FALSE(drawn("/World/a/m1"));
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull));
+
+    EXPECT_EQ((PathSet { "/World/a/m1" }), recorder.shows);
+    EXPECT_TRUE(drawn("/World/a/m1"));
+}
+
+TEST_F(SceneDrawFilterTest, RemovingPrimsDuringARevealLetsItFinish)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+
+    scene->RemovePrims({ { SdfPath("/World/b") }, { SdfPath("/World/a/deep") } });
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+    }
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/inst", "/World/c" }), drawnGeometry());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, AFilterOnAnEmptySceneLearnsThePrimsAsTheyArrive)
+{
+    HdRetainedSceneIndexRefPtr empty = HdRetainedSceneIndex::New();
+    TfRefPtr<SceneDrawFilter> late = SceneDrawFilter::New(empty);
+    Recorder lateRecorder;
+    late->AddObserver(HdSceneIndexObserverPtr(&lateRecorder));
+    SceneDrawStates lateStates;
+    late->applyDelta(lateStates.setState("/World/a", eSceneDrawStateBBox));
+    EXPECT_TRUE(lateRecorder.empty());
+
+    HdRetainedSceneIndex::AddedPrimEntries entries;
+    SdfPathVector stack = scene->GetChildPrimPaths(SdfPath::AbsoluteRootPath());
+    while (!stack.empty()) {
+        const SdfPath path = stack.back();
+        stack.pop_back();
+        entries.push_back({ path, scene->GetPrim(path).primType, someData() });
+        const SdfPathVector children = scene->GetChildPrimPaths(path);
+        stack.insert(stack.end(), children.begin(), children.end());
+    }
+    empty->AddPrims(entries);
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), lateRecorder.leftHydra);
+    EXPECT_TRUE(late->GetPrim(SdfPath("/World/a/m1")).primType.IsEmpty());
+    EXPECT_FALSE(late->GetPrim(SdfPath("/World/b/m3")).primType.IsEmpty());
+    lateRecorder.reset();
+
+    late->applyDelta(lateStates.setState("/World", eSceneDrawStateHidden));
+
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), lateRecorder.leftHydra);
+    lateRecorder.reset();
+
+    late->applyDelta(lateStates.clearAllStates());
+
+    EXPECT_EQ(kAllGeometry, lateRecorder.shows);
+}
+
 TEST_F(SceneDrawFilterTest, RegisteringTwiceIsHarmless)
 {
     SceneDrawFilter::registerForAllRenderers();

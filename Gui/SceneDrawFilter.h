@@ -127,8 +127,8 @@ public:
 
     /**
      * @brief Hides at once what the delta hides. What it shows goes out now if revealBatch is 0, and
-     * otherwise through stepReveal(). A reveal under way stops: what it announced hides again, and
-     * whatever the new rules still show is revealed from the start.
+     * otherwise through stepReveal(). A reveal under way carries on under the new rules: what they
+     * hide goes at once, and what it announced and they still show stays.
      */
     void applyDelta(const SceneDrawDelta& delta, std::size_t revealBatch = 0);
 
@@ -161,7 +161,7 @@ public:
     unsigned long long getShownSentCount() const { return _shownSent; }
     // The hides and shows that went as a visibility change, with the prim kept in Hydra.
     unsigned long long getVisibilitySentCount() const { return _visibilitySent; }
-    std::size_t getHeldInvisibleCount() const { return _invisible.size(); }
+    std::size_t getHeldInvisibleCount() const { return _invisibleCount; }
     Clock::time_point getLastInputAddedTime() const { return _lastInputAdded; }
 
 protected:
@@ -170,48 +170,78 @@ protected:
     void _PrimsDirtied(const PXR_NS::HdSceneIndexBase& sender, const PXR_NS::HdSceneIndexObserver::DirtiedPrimEntries& entries) override;
 
 private:
-    enum OutputEnum {
+    enum OutputEnum : unsigned char {
         eOutputShown,
         eOutputInvisible,
         eOutputAbsent
     };
 
-    struct Change {
-        PXR_NS::SdfPath path;
-        PXR_NS::TfToken primType;
-        OutputEnum before;
-        OutputEnum after;
+    using RulePtr = const Rules::value_type*;
+
+    // The input's hierarchy, kept from its notices, so that a change walks the prims a row governs
+    // without reading them through the input, which costs microseconds a prim on a stage.
+    struct Node {
+        const PXR_NS::SdfPath* path = nullptr;
+        PXR_NS::TfToken type;
+        Node* parent = nullptr;
+        Node* firstChild = nullptr;
+        Node* lastChild = nullptr;
+        Node* prev = nullptr;
+        Node* next = nullptr;
+        // What Hydra holds. It lags the rules only where a reveal has yet to arrive.
+        OutputEnum output = eOutputShown;
+        OutputEnum before = eOutputShown;
+        bool hideable = false;
+        bool light = false;
+        bool pending = false;
+    };
+
+    // now and was are the rules governing node in _rules and _revealFrom; belowNow and belowWas say
+    // whether those have a rule under it, without which its descendants all share its rule.
+    struct Frame {
+        Node* node;
+        Node* next;
+        RulePtr now;
+        RulePtr was;
+        bool belowNow;
+        bool belowWas;
+        bool entered;
+        // Left by an earlier change, so it cannot tell where the rules changed and looks at every
+        // prim the rules may show.
+        bool structural;
     };
 
     explicit SceneDrawFilter(const PXR_NS::HdSceneIndexBaseRefPtr& input);
 
-    bool isHidden(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType) const;
-    void trackLights(const PXR_NS::HdSceneIndexObserver::AddedPrimEntries& entries);
-    bool mayChangeBelow(const PXR_NS::SdfPath& path, bool toHidden) const;
+    Node& nodeAt(const PXR_NS::SdfPath& path);
+    Node* indexPrim(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType);
+    void forget(Node* top);
+    void setOutput(Node& node, OutputEnum output);
+    void transition(Node& node, OutputEnum after);
+    Frame rootFrame(Node* node, bool structural) const;
+    Frame childFrame(const Frame& parent, Node* child) const;
+    bool descends(const Frame& frame, unsigned mode) const;
+    std::size_t visit(const Frame& frame, unsigned mode);
+    std::size_t walk(std::vector<Frame>* stack, unsigned mode, std::size_t maxShown);
     void finishRevealIfDone();
-    std::size_t revealUpTo(std::size_t maxPrims);
-    OutputEnum heldOutput(const PXR_NS::SdfPath& path) const;
-    void transition(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType, OutputEnum before, OutputEnum after);
     void sendChanges();
 
     Rules _rules;
-    // While a reveal runs, _revealFrom holds the rules it started from: a prim those hid and _rules
-    // show stays hidden until it is in _revealed.
+    // The rules before the last change, while its reveal runs.
     bool _revealing = false;
     Rules _revealFrom;
-    std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _revealed;
-    std::vector<PXR_NS::SdfPath> _revealStack;
-    std::vector<PXR_NS::SdfPath> _revealRoots;
+    std::vector<Frame> _revealStack;
+
+    std::unordered_map<PXR_NS::SdfPath, Node, PXR_NS::SdfPath::Hash> _nodes;
+    Node* _root = nullptr;
 
     // Every light the input has announced, whether drawn or not.
-    std::set<PXR_NS::SdfPath> _lights;
+    std::unordered_set<const Node*> _lights;
 
-    // The hidden prims Hydra still holds, invisible. Any other hidden prim is out of Hydra.
-    std::set<PXR_NS::SdfPath> _invisible;
+    std::size_t _invisibleCount = 0;
 
-    // What a call has changed so far, one entry per prim, sent by sendChanges().
-    std::vector<Change> _changes;
-    std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> _changeAt;
+    // What a call has changed so far, sent by sendChanges().
+    std::vector<Node*> _changes;
 
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;

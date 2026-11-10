@@ -12,6 +12,7 @@
 #include <string>
 
 #include "GpuDevice.h"
+#include "GpuTestSelector.h"
 
 // Device creation shared by every GPU test binary.
 //
@@ -20,6 +21,7 @@
 //   NATRON_TEST_GPU_NO_PUSH_DESCRIPTOR=1   force the descriptor-pool path in GpuKernel
 //   NATRON_TEST_REQUIRE_GPU=1        fail instead of skipping when no Vulkan device can be created
 //   NATRON_TEST_REQUIRE_GPU_HARDWARE=1     fail instead of running on a CPU device (lavapipe)
+// With no hardware device and NATRON_GPU_DEVICE unset, deviceOptions() names the CPU device explicitly.
 namespace gputest {
 
 inline bool
@@ -40,7 +42,8 @@ hardwareRequirementMarker()
 inline bool
 deviceRequired(const std::string& createError)
 {
-    return envSet("NATRON_TEST_REQUIRE_GPU") || createError.find(hardwareRequirementMarker()) != std::string::npos;
+    return envSet("NATRON_TEST_REQUIRE_GPU") || envSet(hardwareRequirementMarker())
+        || createError.find(hardwareRequirementMarker()) != std::string::npos;
 }
 
 inline std::atomic<uint64_t>&
@@ -54,6 +57,7 @@ inline gpu::GpuDeviceOptions
 deviceOptions()
 {
     gpu::GpuDeviceOptions o;
+    o.deviceSelector = cpuFallbackSelector();
     o.enableValidation = !envSet("NATRON_TEST_GPU_NO_VALIDATION");
     o.disablePushDescriptor = envSet("NATRON_TEST_GPU_NO_PUSH_DESCRIPTOR");
     o.debugMessage = [](VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT types,

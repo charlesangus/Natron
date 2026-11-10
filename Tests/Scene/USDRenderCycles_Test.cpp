@@ -527,8 +527,10 @@ TEST_F(USDRenderCyclesTest, WarnsOfAMaterialWithNoSurfaceForCycles)
 // A render that would take minutes is aborted: render() returns within a second, and once the
 // engine is gone the process has no more threads than after an earlier render was aborted the
 // same way (the TBB workers Cycles renders on outlive it, as they serve every TBB user). TBB
-// and Cycles add workers lazily and a few runs in, so the first two runs only warm the pools up
-// and the thread count is compared across the later ones, after exiting threads have settled.
+// and Cycles add workers lazily and a few runs in, so the first two runs only warm the pools up.
+// The process also holds threads of other pools that come and go, so the count is not compared
+// with the warm-up's: the first measured run is the reference and later runs may not exceed it,
+// which a thread leaked per abort still fails by the last run.
 TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
 {
     if (!cyclesOrSkip()) {
@@ -544,7 +546,7 @@ TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
 
     typedef std::chrono::steady_clock Clock;
     int baseline = -1;
-    for (int run = 0; run < 3; ++run) {
+    for (int run = 0; run < 7; ++run) {
         const Clock::time_point start = Clock::now();
         Clock::time_point abortedAt;
         bool abortSeen = false;
@@ -566,16 +568,20 @@ TEST_F(USDRenderCyclesTest, AbortStopsTheRenderPromptly)
 
         HydraRender::release(&owner);
         EXPECT_EQ(0u, HydraRender::getCpuEngineCount());
-        int threads = threadCount();
         if (run < 2) {
-            baseline = std::max(baseline, threads);
+            continue;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        int threads = threadCount();
+        if (run == 2) {
+            baseline = threads;
         } else {
             const Clock::time_point deadline = Clock::now() + std::chrono::seconds(2);
             while (threads > baseline && Clock::now() < deadline) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 threads = threadCount();
             }
-            EXPECT_LE(threads, baseline);
+            EXPECT_LE(threads, baseline) << "run " << run;
         }
     }
 }

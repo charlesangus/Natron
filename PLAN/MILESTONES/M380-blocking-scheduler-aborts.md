@@ -1,14 +1,54 @@
 # M380 - Blocking Scheduler Aborts
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
+`GenericSchedulerThreadPrivate::waitForAbortToComplete_internal` (`Engine/GenericSchedulerThread.cpp`) returns at once because its condition is always true (upstream since 1070d8189). The audit (consultant, 2026-11-10) found one live caller that would hang once fixed (a blocking writer render's failure path waits on itself), one destructor wait that can hang on a `Stopped` thread, a main-thread hazard in the viewer schedulers (workers still request main-thread execution after an abort), and several dead blocking APIs. M219's `workMutex` (F8 only) must stay as a data guard; only its wait role is replaced.
 
-`GenericSchedulerThreadPrivate::waitForAbortToComplete_internal` (`Engine/GenericSchedulerThread.cpp`) tests `(state == eThreadStateAborted) || GenericSchedulerThread::eThreadStateIdle`. The second operand is a non-zero enum constant, so the condition is always true, and every "blocking" abort returns immediately. The bug comes from upstream. Callers that rely on the wait can free state the worker is still using: the render engine, the tracker (`abortTracking_blocking`), previews, the backup thread, and `Node::abortAnyProcessing_blocking`. M219 - Curves Follow Vectors hit this as a segfault and worked around it with its own mutex.
+## Scope
 
-Fix the condition. Then each caller really does block the main thread, so audit every caller for deadlocks. Also check that each worker notices an abort quickly, to keep the UI-responsiveness rule (renders cancel fast). Once the wait blocks, M219's workaround mutex may no longer be needed. Remove it if so.
+**In:**
+- Make every live caller safe and delete dead blocking-abort paths before or with the fix.
+- Make the wait correct (Aborted, Idle or Stopped; never from the worker's own thread; main-thread waiters service pending main-thread requests).
+- A unit test and per-worker abort-latency checks.
+- Replacing VectorFollowTask's lock-as-wait on F8.
 
-Blocked on: the per-caller deadlock and abort-latency audit. Whether some callers need a non-blocking path, a timeout, or a worker-side change can't be known until that audit runs.
+**Out:**
+- Quit-path waits (they already block on their own conditions) and the preview abort (own condition variable).
 
-Acceptance sketch:
-- A blocking abort waits until the worker is aborted or idle. A unit test proves it by having a worker that holds state across the abort.
-- No caller deadlocks. An abort latency check per worker type shows the main-thread wait stays within the responsiveness budget.
-- M219's workaround mutex is removed, or the reason it has to stay is recorded.
+**Edge cases:**
+- `notifyRenderFailure` runs on the scheduler thread itself or on render threads: it never waits; `BlockingBackgroundRender` already waits on `_runningCond`.
+- `~ViewerCurrentFrameRequestScheduler`: the member's `~GenericSchedulerThread` already quits and joins.
+- Deleting `abortAnyProcessing_blocking` makes F8's merge drop its `abortFollow(true)` line (F8 Node.cpp ~3536): a trivial conflict.
+
+## Phase 380.1: Callers and the wait
+
+- [ ] M380.P1.T1 — Remove the waits that would hang once the wait is fixed, and delete the dead blocking-abort API
+  - files: `Engine/OutputSchedulerThread.{cpp,h}`, `Engine/Node.{cpp,h}`, `Engine/TrackerContext.{cpp,h}`, `Engine/GenericSchedulerThread.{cpp,h}`, `Engine/GenericSchedulerThreadWatcher.{cpp,h}`, a test
+  - approach: drop the wait in `OutputSchedulerThread::notifyRenderFailure` (~2048-2050) and the backup-thread abort wait in `~ViewerCurrentFrameRequestScheduler` (~4120-4122). Delete `Node::abortAnyProcessing_blocking`, `TrackerContext::abortTracking_blocking`, `waitForAbortToCompleteQueued_main_thread`, `RenderEngine::waitForAbortToComplete_main_thread` and `engineAborted`, `onWatcherTaskAbortedEmitted`/`taskAborted`, and the watcher tasks `eBlockingTaskWaitForAbort` and `eBlockingTaskAbortAnyProcessing`. Behaviour is unchanged while the wait is still a no-op.
+  - verify: `BlockingRenderIdle_Test`, `SchedulerWriters_Test` and `RenderSchedulerAbort_Test` pass; a new case where a blocking writer render fails partway returns.
+  - size: M
+- [ ] M380.P1.T2 — Make the abort wait really block
+  - files: `Engine/GenericSchedulerThread.{cpp,h}`, `Tests/GenericSchedulerAbortWait_Test.cpp` (new, registered in `Tests/CMakeLists.txt`)
+  - approach: the early return becomes `state ∈ {Aborted, Idle, Stopped}`. On `run()`'s `Stopped` exit, clear `abortRequested` and wake `abortRequestedCond`. Return false when called from the scheduler's own thread. A main-thread waiter runs a pending `executeOnMainThread` itself: the worker wakes `abortRequestedCond` after posting `executionOnMainThreadRequested`, and a request ID makes the late queued slot a no-op (no assert at ~655).
+  - verify: the new test covers (a) a worker holding heap state across the abort, freed after the wait (flag-checked); (b) quit then wait returns; (c) waiting on the worker's own thread returns false; (d) a main-thread wait on a worker that requests main-thread execution after the abort returns. Each wait has a watchdog timeout.
+  - size: M
+
+## Phase 380.2: Abort latency
+
+- [ ] M380.P2.T1 — Abort latency check per worker type
+  - files: `Tests/GenericSchedulerAbortWait_Test.cpp` or `Tests/RenderSchedulerAbort_Test.cpp`, `Tests/TrackerLayer_Test.cpp`, and the worker whose polling misses the budget
+  - approach: time `abortThreadedTask` to the wait returning while a slow abort-polling effect is mid-render, for the writer (`DefaultScheduler`), viewer playback, the current-frame scheduler plus backup thread, and `TrackScheduler`; generous budget (500 ms) for CI noise. Fix a worker's abort polling here if it misses.
+  - verify: the tests pass in PR CI with debug asserts.
+  - size: M
+
+## Phase 380.3: M219 workaround
+
+- [ ] M380.P3.T1 — Replace VectorFollowTask's lock-as-wait with the real blocking wait
+  - files: `Engine/VectorFollowTask.cpp` (on `feature/f8-motion-vectors`: a PR into F8, or after F8 merges into main)
+  - approach: replace the lock at ~202-204 with `waitForAbortToComplete_enforce_blocking()` and drop the comment at ~200-201. Keep `workMutex` and the generation check: they guard run/sampler/job/generation (written on the main thread while the phase reads them) and queued phases. Record that reason in a comment and under Decisions.
+  - verify: F8's `VectorFollow_Test`/`PyVectorFollow_Test` and the `m219_follow_abort.py` GUI check pass.
+  - size: M
+
+**Verification gate:** one PM build plus ctest; the new abort-wait and latency tests green; PR CI (asserts) green; a GUI smoke on Xvfb (viewer scrub, playback stop, closing a project during playback, deleting a viewer) with no hang. P3 goes through F8's CI.
+
+## Decisions
+
+- 2026-11-10 — Elaborated at claim from a per-caller audit (consultant). Most callers named in the stub are dead code and are deleted. Previews don't use this wait. M219's `workMutex` lives only on F8 and stays as a data guard.

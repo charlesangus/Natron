@@ -374,9 +374,9 @@ TEST_F(SplineWarpFollowVectorsTest, ACorrespondenceFollowDirtiesOncePerFrameBatc
     UndoCommandPtr undo;
     const VectorFollowReport report = _warp->followVectors(follow, &undo);
     ASSERT_TRUE(report.error.empty()) << report.error;
-    EXPECT_GT(counting->keysWritten, 0);
+    EXPECT_GT(counting->keysWritten, 1);
     EXPECT_GE(counting->batches, 1);
-    EXPECT_LE(counting->batches, counting->keysWritten);
+    EXPECT_LT(counting->batches, counting->keysWritten);
 }
 
 TEST_F(SplineWarpFollowVectorsTest, OneUndoRevertsTheCurvesAndTheCorrespondence)

@@ -131,12 +131,13 @@ public:
         join();
     }
 
-    void start(const RenderEnginePtr& engine)
+    void start(const RenderEnginePtr& engine,
+               bool keepOldestRender = true)
     {
-        _thread = std::thread([this, engine]() {
+        _thread = std::thread([this, engine, keepOldestRender]() {
             QElapsedTimer clock;
             clock.start();
-            engine->abortRenderingNoRestart();
+            engine->abortRenderingNoRestart(keepOldestRender);
             engine->waitForAbortToComplete_not_main_thread();
             _latencyMs = clock.elapsed();
             _done = true;
@@ -435,12 +436,13 @@ protected:
     }
 
     // The render is in progress: aborts it and waits for the abort while the main thread keeps its event loop going.
-    void expectAbortWithinBudget(const RenderEnginePtr& engine)
+    void expectAbortWithinBudget(const RenderEnginePtr& engine,
+                                 bool keepOldestRender = true)
     {
         ASSERT_TRUE(pumpUntil([this]() { return _rendering.load(); }, kStartGuardMs)) << "the slow render never started";
         {
             Watchdog watchdog("the abort wait");
-            _probe.start(engine);
+            _probe.start(engine, keepOldestRender);
             pumpUntil([this]() { return _probe.done(); }, 2 * kWatchdogMs);
             _probe.join();
         }
@@ -498,7 +500,8 @@ TEST_F(SchedulerAbortLatency, ViewerPlaybackAbortReturnsWithinBudget)
     expectAbortWithinBudget(engine);
 }
 
-// The current-frame scheduler, whose render runs on its backup thread in Task graph mode, aborted mid-render.
+// The current-frame scheduler, whose render runs on its backup thread in Task graph mode, aborted mid-render. The abort
+// must not keep the oldest render: that one is the render in progress, which a keep-oldest abort deliberately lets finish.
 TEST_F(SchedulerAbortLatency, ViewerCurrentFrameAbortReturnsWithinBudget)
 {
     ASSERT_TRUE(createViewer());
@@ -507,5 +510,5 @@ TEST_F(SchedulerAbortLatency, ViewerCurrentFrameAbortReturnsWithinBudget)
     ASSERT_TRUE(bool(engine));
 
     _viewer->renderCurrentFrame(true);
-    expectAbortWithinBudget(engine);
+    expectAbortWithinBudget(engine, false);
 }

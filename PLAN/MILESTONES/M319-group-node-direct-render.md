@@ -38,7 +38,7 @@ Rendering a Group node directly returns the pixels of the node feeding its Outpu
   - approach: `consumerOf` keeps only its Precomp branch; LightWrap renders `_wrap` and drops `_out`; the Dot4 check becomes `getOutputNodeInput(false) == inner("Dot4")`.
   - verify: both tests pass in both modes; the sweep reports Group and PyPlugs as compared, not skipped.
   - size: M
-- [ ] M319.P2.T2 — Edge-case direct renders
+- [x] M319.P2.T2 — Edge-case direct renders
   - files: `Tests/GroupDirectRender_Test.cpp`
   - approach: nested group, deep chain in a group, Output fed by a GroupInput, inner edit after a render (no stale RoD or pixels).
   - verify: each case matches its Dot-below reference in both modes.
@@ -50,3 +50,4 @@ Rendering a Group node directly returns the pixels of the node feeding its Outpu
 
 - 2026-11-10 — Elaborated at claim (consultant). An unfed group renders as empty Ok, matching an unconnected Dot (a one-line change in P1.T2 if a hard failure is wanted). PrecompNode has the same gap but is out of scope.
 - 2026-11-10 — P1.T2: the sentinel is -4 (kIdentityInternalSource), because -3 is already TaskEdge::kContextRequestInputNb. Deep and scene renders take the same seam.
+- 2026-11-10 — P2.T2: no deep-data group case. The fixture's render helper covers 2D planes only, and deep rendering goes through `renderDeepFrame`/`renderDeepRoI`. The deep path takes the same identity seam (EffectInstanceRenderDeep.cpp), but no test covers it yet.

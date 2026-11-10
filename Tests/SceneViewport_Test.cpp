@@ -456,11 +456,11 @@ protected:
         return false;
     }
 
-    // The refinement converged on cap samples.
+    // The refinement is done at cap samples, and its last frame is the one drawn.
     bool refineTo(int cap)
     {
         return refineUntil([cap](const SceneViewportRenderer::RefineStatus& status) {
-            return status.active && status.converged && (status.maxSamples == cap) && (status.samples == cap);
+            return status.active && status.converged && (status.maxSamples == cap) && (status.samples == cap) && (status.drawnSamples == cap);
         });
     }
 

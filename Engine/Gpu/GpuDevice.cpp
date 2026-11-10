@@ -378,6 +378,32 @@ planQueues(std::span<const VkQueueFamilyProperties> families)
     return plan;
 }
 
+std::vector<VkPhysicalDeviceType>
+enumeratePhysicalDeviceTypes()
+{
+    std::vector<VkPhysicalDeviceType> types;
+    VkApplicationInfo app {};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici {};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) {
+        return types;
+    }
+    std::vector<VkPhysicalDevice> pds;
+    if (enumeratePhysical(instance, pds)) {
+        for (VkPhysicalDevice pd : pds) {
+            VkPhysicalDeviceProperties props {};
+            vkGetPhysicalDeviceProperties(pd, &props);
+            types.push_back(props.deviceType);
+        }
+    }
+    vkDestroyInstance(instance, nullptr);
+    return types;
+}
+
 GpuStatus
 GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
 {

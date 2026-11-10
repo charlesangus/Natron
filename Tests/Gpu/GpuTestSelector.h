@@ -3,8 +3,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
-#include "Engine/GpuDeviceList.h"
+#include "GpuDevice.h"
 
 namespace gputest {
 
@@ -23,12 +24,13 @@ cpuFallbackSelector()
         return std::string();
     }
     int cpuIndex = -1;
-    for (const NATRON_NAMESPACE::GpuDeviceSummary& d : NATRON_NAMESPACE::enumerateGpuDevices()) {
-        if (d.type != NATRON_NAMESPACE::GpuDeviceType::Cpu) {
+    const std::vector<VkPhysicalDeviceType> types = gpu::enumeratePhysicalDeviceTypes();
+    for (size_t i = 0; i < types.size(); ++i) {
+        if (types[i] != VK_PHYSICAL_DEVICE_TYPE_CPU) {
             return std::string();
         }
         if (cpuIndex < 0) {
-            cpuIndex = d.index;
+            cpuIndex = static_cast<int>(i);
         }
     }
     return cpuIndex < 0 ? std::string() : std::to_string(cpuIndex);

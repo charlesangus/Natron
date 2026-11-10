@@ -168,6 +168,10 @@ std::string withPerftestToken(const char* current, std::string_view token);
 // without that early call.
 void requestTransferOnlyFamily();
 
+// The type of each Vulkan physical device, in the order GpuDevice's numeric selector indexes them, read through a
+// throwaway instance. Empty when there is no loader or no device.
+std::vector<VkPhysicalDeviceType> enumeratePhysicalDeviceTypes();
+
 class GpuDevice {
 public:
     static GpuStatus create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out);

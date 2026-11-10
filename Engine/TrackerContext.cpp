@@ -514,6 +514,12 @@ TrackerContext::abortTracking()
     _imp->scheduler.abortThreadedTask();
 }
 
+bool
+TrackerContext::waitForTrackingAbortToComplete_not_main_thread()
+{
+    return _imp->scheduler.waitForAbortToComplete_not_main_thread();
+}
+
 void
 TrackerContext::quitTrackerThread_non_blocking()
 {

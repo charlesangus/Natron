@@ -3568,18 +3568,6 @@ RenderEngine::waitForAbortToComplete_not_main_thread()
 }
 
 void
-RenderEngine::waitForAbortToComplete_enforce_blocking()
-{
-    if (_imp->scheduler) {
-        _imp->scheduler->waitForAbortToComplete_enforce_blocking();
-    }
-
-    if (_imp->currentFrameScheduler) {
-        _imp->currentFrameScheduler->waitForAbortToComplete_enforce_blocking();
-    }
-}
-
-void
 RenderEngine::onWatcherEngineQuitEmitted()
 {
     assert(_imp->engineWatcher);

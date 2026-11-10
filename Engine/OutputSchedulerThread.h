@@ -746,11 +746,6 @@ public:
     void waitForAbortToComplete_not_main_thread();
 
     /**
-     * @brief Use this as last resort, this will block the caller thread until abort is completed
-     **/
-    void waitForAbortToComplete_enforce_blocking();
-
-    /**
      * @brief Returns true if threads owned by the engine are still alive
      **/
     bool hasThreadsAlive() const;

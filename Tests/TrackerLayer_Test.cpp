@@ -23,9 +23,16 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <list>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -74,6 +81,47 @@ hasKeyframeAt(const KnobDoublePtr& knob,
 
     return knob->getCurve(ViewSpec(0), 0)->getKeyFrameWithTime(time, &k);
 }
+
+const int kWatchdogMs = 60000;
+
+// Aborts the whole test binary when a wait does not return in time: the thread stuck in a
+// blocking wait cannot fail an EXPECT itself.
+class Watchdog {
+public:
+    explicit Watchdog(const char* what)
+        : _mutex()
+        , _cond()
+        , _done(false)
+        , _thread([this, what]() {
+            std::unique_lock<std::mutex> lock(_mutex);
+            if (!_cond.wait_for(lock, std::chrono::milliseconds(kWatchdogMs), [this]() { return _done; })) {
+                std::fprintf(stderr, "TrackerLayer: %s did not return within %d ms\n", what, kWatchdogMs);
+                std::fflush(stderr);
+                std::abort();
+            }
+        })
+    {
+    }
+
+    ~Watchdog()
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _done = true;
+        }
+        _cond.notify_all();
+        _thread.join();
+    }
+
+    Watchdog(const Watchdog&) = delete;
+    Watchdog& operator=(const Watchdog&) = delete;
+
+private:
+    std::mutex _mutex;
+    std::condition_variable _cond;
+    bool _done;
+    std::thread _thread;
+};
 
 } // namespace
 
@@ -229,6 +277,26 @@ TEST_F(TrackerLayerTest, AbortEndsATrackingRunWithinBudget)
 
     const int farEnd = 100000;
     const qint64 budgetMs = 500;
+
+    // A run that misses the abort would otherwise keep tracking into TearDown.
+    struct QuitTrackerIfStillTracking {
+        TrackerContextPtr context;
+
+        ~QuitTrackerIfStillTracking()
+        {
+            if (!context->isCurrentlyTracking()) {
+                return;
+            }
+            context->quitTrackerThread_non_blocking();
+            QElapsedTimer quitClock;
+            quitClock.start();
+            while (!context->hasTrackerThreadQuit() && (quitClock.elapsed() < 20000)) {
+                QCoreApplication::processEvents();
+                QThread::msleep(2);
+            }
+        }
+    } quitGuard { _context };
+
     KnobDoublePtr center = _marker->getCenterKnob();
     std::list<TrackMarkerPtr> markers;
     markers.push_back(_marker);
@@ -243,16 +311,30 @@ TEST_F(TrackerLayerTest, AbortEndsATrackingRunWithinBudget)
     ASSERT_GE(center->getKeyFramesCount(ViewSpec(0), 0), 3) << "the run never tracked a frame";
     ASSERT_TRUE(_context->isCurrentlyTracking());
 
-    clock.start();
-    _context->abortTracking();
-    while (_context->isCurrentlyTracking() && (clock.elapsed() < 20000)) {
-        QCoreApplication::processEvents();
-        QThread::msleep(1);
+    std::atomic<qint64> latencyMs(-1);
+    std::atomic<bool> done(false);
+    {
+        Watchdog watchdog("the tracker abort wait");
+        TrackerContextPtr context = _context;
+        // The wait may not run on the main thread, which keeps pumping events for the scheduler's
+        // main-thread requests meanwhile.
+        std::thread prober([context, &latencyMs, &done]() {
+            QElapsedTimer abortClock;
+            abortClock.start();
+            context->abortTracking();
+            context->waitForTrackingAbortToComplete_not_main_thread();
+            latencyMs.store(abortClock.elapsed());
+            done.store(true);
+        });
+        while (!done.load()) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        prober.join();
     }
-    const qint64 latencyMs = clock.elapsed();
 
     EXPECT_FALSE(_context->isCurrentlyTracking()) << "the run did not end after the abort";
-    EXPECT_LT(latencyMs, budgetMs);
+    EXPECT_LT(latencyMs.load(), budgetMs);
     double lastKey = -1.;
     ASSERT_TRUE(center->getLastKeyFrameTime(ViewSpec(0), 0, &lastKey));
     EXPECT_LT(lastKey, (double)farEnd - 1) << "the abort did not stop the run";

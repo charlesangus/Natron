@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -41,6 +42,7 @@
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QObject>
 #include <QThread>
 
 #include "Engine/GenericSchedulerThread.h"
@@ -120,6 +122,7 @@ class TestScheduler
 public:
     std::function<ThreadStateEnum(TestScheduler*)> loop;
     std::function<void()> onMainThread;
+    std::function<void(const std::list<GenericThreadStartArgsPtr>&)> onDropped;
 
     TestScheduler()
         : GenericSchedulerThread()
@@ -170,6 +173,13 @@ private:
     {
         if (onMainThread) {
             onMainThread();
+        }
+    }
+
+    virtual void onQueuedTasksDropped(const std::list<GenericThreadStartArgsPtr>& tasks) OVERRIDE FINAL
+    {
+        if (onDropped) {
+            onDropped(tasks);
         }
     }
 };
@@ -382,4 +392,55 @@ TEST(GenericSchedulerAbortWait, MainThreadRequestWithoutAWaiterRunsOnce)
         sleepMs(1);
     }
     EXPECT_EQ(mainThreadCalls.load(), 2);
+}
+
+// The stateChanged(eThreadStateStopped) emission and the dropped-task report bracket the quitting
+// thread's abort reset, so the hooks below run just before and just after it on the scheduler
+// thread, while the thread still counts as running.
+TEST(GenericSchedulerAbortWait, ARestartedThreadRunsItsTaskAfterALateAbort)
+{
+    std::atomic<int> runs(0);
+    std::atomic<bool> started(false);
+    std::atomic<bool> injected(false);
+    std::atomic<int> queuedDuringQuit(-1);
+    std::atomic<int> droppedOnExit(0);
+    std::atomic<int> lateAbortAccepted(-1);
+
+    TestScheduler scheduler;
+    scheduler.loop = [&](TestScheduler* self) {
+        if (++runs == 1) {
+            started.store(true);
+
+            return self->spinUntilAborted();
+        }
+
+        return self->pollState();
+    };
+    QObject::connect(&scheduler, &GenericSchedulerThread::stateChanged, &scheduler, [&](int state) {
+        if ((state == (int)GenericSchedulerThread::eThreadStateStopped) && !injected.exchange(true)) {
+            queuedDuringQuit.store(startTask(scheduler) ? 1 : 0);
+        } }, Qt::DirectConnection);
+    scheduler.onDropped = [&](const std::list<GenericThreadStartArgsPtr>& tasks) {
+        if (QThread::currentThread() != &scheduler) {
+            return;
+        }
+        droppedOnExit += (int)tasks.size();
+        lateAbortAccepted.store(scheduler.abortThreadedTask() ? 1 : 0);
+    };
+
+    ASSERT_TRUE(startTask(scheduler));
+    ASSERT_TRUE(waitUntil([&]() { return started.load(); }));
+    ASSERT_TRUE(scheduler.quitThread(true));
+    {
+        Watchdog watchdog("waitForThreadToQuit_enforce_blocking after a restartable quit");
+        scheduler.waitForThreadToQuit_enforce_blocking();
+    }
+
+    EXPECT_EQ(queuedDuringQuit.load(), 1);
+    EXPECT_EQ(droppedOnExit.load(), 1);
+    EXPECT_EQ(lateAbortAccepted.load(), 0);
+    EXPECT_FALSE(scheduler.isBeingAborted());
+
+    ASSERT_TRUE(startTask(scheduler));
+    EXPECT_TRUE(waitUntil([&]() { return runs.load() >= 2; }));
 }

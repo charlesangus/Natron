@@ -177,8 +177,8 @@ applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& proc
         }
     }
     if (processor.cpu) {
-        // OCIO's CPU kernels run libm pow/log on whatever the pixels hold, including NaN, Inf and the
-        // uninitialised pixels of a tile whose render was aborted; debug builds would trap on those.
+        // OCIO's CPU kernels call libm on NaN and Inf pixels, which raises FP exceptions that
+        // debug builds trap.
         const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
         try {
             // Any other gamma would amplify the approximation's error past a code value.

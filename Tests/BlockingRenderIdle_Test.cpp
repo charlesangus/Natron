@@ -38,6 +38,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
@@ -309,12 +310,10 @@ TEST_F(BlockingRenderIdleTest, ABlockingRenderWhoseEffectFailsPartwayReturns)
     OutputEffectInstance* effect = writerEffect();
     ASSERT_TRUE(effect != NULL);
 
-    // A file standing where the output directory should be makes every frame write fail.
-    const QString blockerPath = _dir.path() + QString::fromUtf8("/blocker");
-    QFile blocker(blockerPath);
-    ASSERT_TRUE(blocker.open(QIODevice::WriteOnly));
-    blocker.close();
-    _writer->setOutputFilesForWriter((blockerPath + QString::fromUtf8("/frame.exr")).toStdString());
+    // A directory standing at frame 3's path makes only that frame's write fail, after the
+    // earlier frames could be written.
+    ASSERT_TRUE(QDir(_dir.path()).mkpath(QString::fromUtf8("frame.0003.exr/blocker")));
+    _writer->setOutputFilesForWriter((_dir.path() + QString::fromUtf8("/frame.####.exr")).toStdString());
 
     IdleTransitionDelay delay(kIdleDelayMs);
     std::list<AppInstance::RenderWork> works;

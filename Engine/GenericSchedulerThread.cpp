@@ -381,15 +381,17 @@ GenericSchedulerThread::abortThreadedTask(bool keepOldestRender)
         return false;
     }
 
-    ThreadStateEnum state = getThreadState();
-    bool shouldRequestAbort = state != eThreadStateAborted && state != eThreadStateIdle;
-    if ( keepOldestRender && !shouldRequestAbort ) {
-        return false;
-    }
-
     {
         QMutexLocker l(&_imp->abortRequestedMutex);
 
+        // The quitting thread sets eThreadStateStopped before it clears abortRequested under this
+        // mutex, so reading the state here keeps a late abort from outliving that clear and
+        // routing the next started task to the post-abort queue.
+        const ThreadStateEnum state = getThreadState();
+        const bool shouldRequestAbort = state != eThreadStateAborted && state != eThreadStateIdle && state != eThreadStateStopped;
+        if (keepOldestRender && !shouldRequestAbort) {
+            return false;
+        }
 
         // We are already aborting
         if (_imp->abortRequested > 0 && keepOldestRender) {
@@ -445,7 +447,7 @@ GenericSchedulerThreadPrivate::waitForAbortToComplete_internal(bool allowBlockin
     }
 
     const bool onMainThread = qApp && (QThread::currentThread() == qApp->thread());
-    // This function may NOT be called on the main-thread, because we may deadlock if executeOnMainThread is called OR block the UI.
+    // The main-thread wait services pending main-thread requests, so refusing it here only keeps the UI from freezing.
     if (!allowBlockingForMainThread && onMainThread) {
         return false;
     }
@@ -588,12 +590,19 @@ GenericSchedulerThread::run()
             qDebug() << getThreadName().c_str() << ": Quitting thread";
 #endif
 
+            std::list<GenericThreadStartArgsPtr> dropped;
             {
                 // Waiters must not hang on a thread that has quit, and a restarted thread must not
                 // route its new tasks to the post-abort queue.
+                QMutexLocker tasksLocker(&_imp->enqueuedTasksMutex);
                 QMutexLocker a(&_imp->abortRequestedMutex);
+                // No later abort settles this queue once the thread is gone.
+                dropped.swap(_imp->queuedTaskWhileProcessingAbort);
                 _imp->abortRequested = 0;
                 _imp->abortRequestedCond.wakeAll();
+            }
+            if (!dropped.empty()) {
+                onQueuedTasksDropped(dropped);
             }
 
             QMutexLocker k(&_imp->mustQuitMutex);

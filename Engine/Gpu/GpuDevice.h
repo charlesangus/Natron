@@ -52,8 +52,26 @@ struct GpuFaultPlan {
     Kind kind = Kind::Off;
     uint64_t atOperation = 0;
 
-    // Parses "lost@N" or "oom@N" with N >= 1.
+    // Only the operations a thread makes while a GpuRegionFaultScope lives on it are counted, so that the fault lands
+    // in a GPU region's run whatever start-up, hand-offs and other work did before.
+    bool regionOnly = false;
+
+    // Parses "lost@N", "oom@N", "lost@region:N" or "oom@region:N" with N >= 1.
     static bool parse(const std::string& text, GpuFaultPlan& out);
+};
+
+// Marks the calling thread as running a GPU region, for a fault plan with regionOnly set. Scopes nest.
+class GpuRegionFaultScope {
+public:
+    GpuRegionFaultScope();
+    ~GpuRegionFaultScope();
+    GpuRegionFaultScope(const GpuRegionFaultScope&) = delete;
+    GpuRegionFaultScope& operator=(const GpuRegionFaultScope&) = delete;
+
+    static bool active();
+
+private:
+    bool previous_;
 };
 
 struct GpuDeviceOptions {
@@ -249,7 +267,9 @@ private:
     // The fault plan, written by injectFault() while other threads count operations; faultAt_ 0 means none.
     std::atomic<GpuFaultPlan::Kind> faultKind_ { GpuFaultPlan::Kind::Off };
     std::atomic<uint64_t> faultAt_ { 0 };
+    std::atomic<bool> faultRegionOnly_ { false };
     std::atomic<uint64_t> operations_ { 0 };
+    std::atomic<uint64_t> regionOperations_ { 0 };
     std::function<void()> onDeviceLost_;
     std::atomic<bool> lost_ { false };
     std::atomic<bool> abandoned_ { false };

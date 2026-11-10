@@ -417,7 +417,7 @@ GpuRuntime::create(const GpuRuntimeOptions& options, std::unique_ptr<GpuRuntime>
         if (const char* env = std::getenv("NATRON_GPU_FAULT")) {
             GpuFaultPlan plan;
             if (!GpuFaultPlan::parse(env, plan)) {
-                return { VK_ERROR_INITIALIZATION_FAILED, "NATRON_GPU_FAULT must be lost@N or oom@N with N >= 1" };
+                return { VK_ERROR_INITIALIZATION_FAILED, "NATRON_GPU_FAULT must be lost@N, oom@N, lost@region:N or oom@region:N with N >= 1" };
             }
             dev.fault = plan;
         }

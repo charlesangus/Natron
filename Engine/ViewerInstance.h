@@ -33,6 +33,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -94,7 +95,7 @@ struct ShadowPlacement;
 /**
  * @brief The GPU regions of one viewer render, as the cache-ignoring shadow plan placed them, for the GUI thread to read
  * after the render is over. Nodes are held weakly because they may be gone by then, and a node with several tasks, or in
- * several merged graphs, appears once. No regions at all means there is nothing to draw.
+ * several merged graphs, appears once. No regions and no node runs means there is nothing to draw.
  **/
 struct GpuPlacementSnapshot {
     // An input of a node, which is how the node graph finds a pipe.
@@ -141,6 +142,18 @@ struct GpuPlacementSnapshot {
     };
 
     std::vector<Region> regions;
+
+    // A node with a task in the real render, on the GPU or not.
+    struct NodeRun {
+        NodeWPtr node;
+
+        // Some task of the node computed pixels rather than taking them all from the cache or passing its input
+        // through.
+        bool ran = false;
+    };
+
+    // Empty when the snapshot does not come from a render that recorded which nodes computed pixels.
+    std::vector<NodeRun> nodeRuns;
 };
 
 typedef std::shared_ptr<const GpuPlacementSnapshot> GpuPlacementSnapshotPtr;
@@ -157,8 +170,16 @@ public:
     // For a graph placement left alone because there is no GPU, which contributes no region.
     void addUnplacedGraph();
 
-    // Called once the most recently added graph has rendered.
-    void finishGraph(EffectInstance::RenderRoIRetCode retCode, const std::vector<RegionFallback>& fallbacks);
+    // As addUnplacedGraph(), keeping real's tasks so that finishGraph() can tell which of them ran.
+    void addUnplacedGraph(const FrameGraph& real);
+
+    /**
+     * @brief Called once the most recently added graph has rendered. renderedNodes are the nodes that computed pixels
+     * in it; null when the render did not record them.
+     **/
+    void finishGraph(EffectInstance::RenderRoIRetCode retCode,
+                     const std::vector<RegionFallback>& fallbacks,
+                     const std::unordered_set<const Node*>* renderedNodes = nullptr);
 
     /**
      * @brief The merged snapshot. Null when no graph was added, or one was aborted: a newer render has then been asked
@@ -166,12 +187,16 @@ public:
      **/
     GpuPlacementSnapshotPtr build() const;
 
+    // Whether some graph was added with a shadow plan, rather than left unplaced.
+    bool hasPlacedGraph() const;
+
 private:
     struct TaskPlan {
         NodeWPtr node;
         int region = -1;
         int realRegion = -1;
         bool cached = false;
+        bool ran = false;
         FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
         std::string detail;
     };
@@ -187,10 +212,12 @@ private:
         std::vector<EdgePlan> edges;
         int regionCount = 0;
         std::vector<RegionFallback> fallbacks;
+        bool recordsRuns = false;
     };
 
     std::vector<GraphPlan> _graphs;
     bool _aborted = false;
+    bool _placed = false;
 };
 
 class ViewerArgs

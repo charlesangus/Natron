@@ -50,6 +50,7 @@
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/Cache.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
@@ -1320,6 +1321,14 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     }
 
     bool hasSomethingToRender = !layersToRender->rectsToRender.empty();
+    if (const FrameRenderContext* frameContext = AppTLS::currentFrameContext()) {
+        for (const RectToRender& rect : layersToRender->rectsToRender) {
+            if (!rect.isIdentity) {
+                frameContext->noteNodeRendered(getNode().get());
+                break;
+            }
+        }
+    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// End Determine rectangles left to render /////////////////////////////////////////////////

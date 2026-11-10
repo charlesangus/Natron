@@ -5,7 +5,8 @@ a red X and "no GPU path" where the upper region feeds TimeBlur, and an entry ti
 one. Placement is weight-based: a region of Point nodes alone (Saturation, Grade) weighs under kGpuRegionMinWeight
 and stays on the CPU, so each side of the TimeBlur has a Blur, a Filter that is enough on its own. The overlay's
 outline item publishes what it draws as properties (regionCount, exitCount, entryCount, fallbackCount, fadedCount,
-mixedCount, exitLabels), which the checks read.
+fadedNodes, mixedCount, exitLabels), which the checks read. A faded node is covered by a child item whose data(0) is
+"gpuFadeScrim"; its own opacity stays 1.
 
 Whether a GPU is usable is read from natron.log: "GPU compute ready on" or "GPU compute is unavailable:".
 
@@ -17,19 +18,24 @@ Cases:
   mixed      with a usable GPU, the chain places at least one region, the regions round the TimeBlur draw at
              least one exit or entry, every exit label is one of the overlay's reasons, and TimeBlur's input
              reads "no GPU path"
-  cached     with a GPU, editing the lower Saturation serves the upper region from the cache, which fades it
-  fallback   with NATRON_GPU_FAULT set, a region that failed on the device gets the fallback outline. N must be
-             past the operations GPU start-up uses: oom@1 fails start-up itself, so the session has no GPU
+  cached     with a GPU, editing the lower Saturation re-renders only it: every node above it, TimeBlur included,
+             is served from the cache and faded, Saturation stays coloured, no item of the graph has its opacity
+             lowered, and the pipes inside a region stay below the nodes
+  fallback   with NATRON_GPU_FAULT=lost@region:1 the first operation of the first GPU region run loses the device,
+             and that region gets the fallback outline. The preference is on from the start in this mode, so that
+             the render the fault lands in is one the overlay records
+  stable     with a GPU, moving the main window changes neither the regions nor the fading, and turning the
+             preference off and on shows the regions again without a render or an edit
 
 Screenshots in $NATRON_GUI_TEST_OUT, one per state: m116_off.png, m116_on.png, m116_no_gpu.png or
-m116_mixed.png, m116_cached.png, m116_fallback.png. Each has a NOTE caption in results.txt.
+m116_mixed.png, m116_cached.png, m116_retoggled.png, m116_fallback.png. Each has a NOTE caption in results.txt.
 
 Usage (no GPU, as the remote --gui jobs run it):
     Tests/gui/run-gui-test.sh Tests/gui/m116_gpu_overlay.py
 With a GPU (natron-dev-gpu for a hardware device; lavapipe's cost model may keep few regions on the GPU):
     docker exec -e NATRON_GPU=force -w /home/bosley/git/Natron natron-dev-gpu \\
         Tests/gui/run-gui-test.sh Tests/gui/m116_gpu_overlay.py build/fast/App/Natron
-    docker exec -e NATRON_GPU=force -e NATRON_GPU_FAULT=oom@40 -w /home/bosley/git/Natron natron-dev-gpu \\
+    docker exec -e NATRON_GPU=force -e NATRON_GPU_FAULT=lost@region:1 -w /home/bosley/git/Natron natron-dev-gpu \\
         Tests/gui/run-gui-test.sh Tests/gui/m116_gpu_overlay.py build/fast/App/Natron
 """
 import os
@@ -48,6 +54,8 @@ NODE_SPACING = 92
 GPU_ENV = os.environ.get("NATRON_GPU", "")
 FAULT_ENV = os.environ.get("NATRON_GPU_FAULT", "")
 PREF_NAME = "showGpuRegions"
+SCRIM_NAME = "gpuFadeScrim"
+LINE_ITEM_TYPE = 6
 ACTION_TEXT = "Show GPU Regions"
 REASONS = ("region split", "graph has a cycle", "no GPU path", "no downscale", "cached", "identity",
            "raw run on the CPU", "would form a cycle", "cost model")
@@ -94,9 +102,21 @@ try:
         if item is None:
             return 0
         value = item.property(name)
-        if name == "exitLabels":
+        if name in ("exitLabels", "fadedNodes"):
             return [str(v) for v in value] if value else []
         return int(value) if value is not None else 0
+
+    def graph_items():
+        view = node_graph_view()
+        if view is None:
+            return []
+        try:
+            return list(view.items())
+        except RuntimeError:
+            return []
+
+    def scrims():
+        return [it for it in graph_items() if it.data(0) == SCRIM_NAME]
 
     def shown():
         item = overlay_item()
@@ -104,9 +124,10 @@ try:
         return item is not None and markers is not None and item.isVisible() and markers.isVisible()
 
     def state():
-        return "pref=%r shown=%r regions=%d exits=%d entries=%d fallbacks=%d faded=%d mixed=%d labels=%r" % (
+        return ("pref=%r shown=%r regions=%d exits=%d entries=%d fallbacks=%d faded=%d fadedNodes=%r mixed=%d "
+                "labels=%r") % (
             pref.getValue(), shown(), prop("regionCount"), prop("exitCount"), prop("entryCount"),
-            prop("fallbackCount"), prop("fadedCount"), prop("mixedCount"), prop("exitLabels"))
+            prop("fallbackCount"), prop("fadedCount"), prop("fadedNodes"), prop("mixedCount"), prop("exitLabels"))
 
     def gpu_log_state():
         """("ready", line) or ("unavailable", line) from the first GPU compute start-up line in natron.log, else None."""
@@ -183,7 +204,7 @@ try:
         require(ok, "the node graph is on screen")
         gt.close_all_panels()
         require(pref is not None, "the preferences have %s" % PREF_NAME)
-        pref.setValue(False)
+        pref.setValue(bool(FAULT_ENV))
         ok = yield ("until", lambda: overlay_item() is not None and overlay_item("GpuRegionMarkerItem") is not None,
                     POLL_TIMEOUT_S)
         require(ok, "the graph has the overlay's outline and marker items")
@@ -211,6 +232,25 @@ try:
         py_viewer = hold(app.getViewer(viewer.getScriptName()))
         node_graph_view().centerOn(0, len(chain) * NODE_SPACING // 2)
         yield ("sleep", 1500)
+
+        if FAULT_ENV:
+            gt.section("fallback")
+            yield ("until", lambda: gpu_log_state() is not None, GPU_STATE_TIMEOUT_S)
+            gpu = gpu_log_state()
+            if gpu is None or gpu[0] != "ready":
+                gt.report("NOTE fallback case skipped: no usable GPU (%s)" % (gpu[1] if gpu else "no start-up line"))
+            else:
+                fell_back = yield ("until", lambda: prop("fallbackCount") >= 1, 3.0)
+                for attempt in range(FALLBACK_ATTEMPTS):
+                    if fell_back:
+                        break
+                    # Until the GPU is up, renders place no region and the fault waits for the first that does.
+                    set_all(grade, "multiply", 1.5 + 0.1 * (attempt + 1))
+                    fell_back = yield ("until", lambda: prop("fallbackCount") >= 1, 3.0)
+                check(fell_back, "a device fault in a region gives it the fallback outline (%s)" % state())
+                caption("m116_fallback.png", "the region that lost the device has the dashed fallback outline")
+            pref.setValue(False)
+            yield ("until", lambda: not shown(), POLL_TIMEOUT_S)
 
         gt.section("toggle")
         check(not shown(), "with the preference off the overlay is hidden")
@@ -259,7 +299,7 @@ try:
             gt.section("no GPU")
             yield ("sleep", 1000)
             check(prop("regionCount") == 0 and prop("exitCount") == 0 and prop("entryCount") == 0
-                  and prop("fallbackCount") == 0 and prop("fadedCount") == 0,
+                  and prop("fallbackCount") == 0,
                   "with no GPU the overlay draws no region (%s)" % state())
             check(shown(), "with no GPU the overlay stays on and empty")
             check(not gt.viewer_messages(), "with no GPU the viewer shows no error (%r)" % gt.viewer_messages())
@@ -282,29 +322,54 @@ try:
             caption("m116_mixed.png", "regions split round the TimeBlur: red X and reason on its input, entry tick below")
 
             gt.section("cached")
-            if upper_member and not FAULT_ENV:
-                faded_before = prop("fadedCount")
+            if not FAULT_ENV:
+                above = sorted(n.getScriptName() for n in chain[:-1])
                 lower.getParam("saturation").setValue(0.6)
-                ok = yield ("until", lambda: prop("fadedCount") > faded_before, POLL_TIMEOUT_S)
-                check(ok, "editing below the TimeBlur fades the cached upper region (%s)" % state())
-                check(prop("regionCount") >= 1, "the cached region keeps its outline (%s)" % state())
-                caption("m116_cached.png", "the upper region served from the cache is faded")
-            else:
-                gt.report("NOTE cached case skipped: %s" %
-                          ("a device fault is injected" if FAULT_ENV else "the upper chain is not in a region"))
 
-            gt.section("fallback")
-            if FAULT_ENV:
-                fell_back = False
-                for attempt in range(FALLBACK_ATTEMPTS):
-                    set_all(grade, "multiply", 1.5 + 0.1 * (attempt + 1))
-                    fell_back = yield ("until", lambda: prop("fallbackCount") >= 1, 3.0)
-                    if fell_back:
-                        break
-                check(fell_back, "a device fault gives a region the fallback outline (%s)" % state())
-                caption("m116_fallback.png", "the region that failed on the device has the dashed fallback outline")
+                def faded_as_expected():
+                    faded = prop("fadedNodes")
+                    return all(name in faded for name in above) and lower.getScriptName() not in faded
+
+                ok = yield ("until", faded_as_expected, POLL_TIMEOUT_S)
+                check(ok, "editing the Saturation fades every node above it, TimeBlur included, and not the "
+                          "Saturation (expected %r faded; %s)" % (above, state()))
+                check(prop("regionCount") >= 1, "the faded regions keep their outlines (%s)" % state())
+                check(len(scrims()) == prop("fadedCount"),
+                      "every faded node has one fade cover (%d covers; %s)" % (len(scrims()), state()))
+                lowered = [it for it in graph_items() if it.opacity() < 0.999]
+                check(not lowered, "fading lowers no item's opacity, so no pipe shows through a node (%d items)"
+                      % len(lowered))
+                node_depths = [s.parentItem().zValue() for s in scrims() if s.parentItem() is not None]
+                pipe_depths = [it.zValue() for it in graph_items() if it.type() == LINE_ITEM_TYPE]
+                check(node_depths and pipe_depths and max(pipe_depths) < min(node_depths),
+                      "the pipes stay below the faded nodes (pipes %r, nodes %r)"
+                      % (sorted(set(pipe_depths)), sorted(set(node_depths))))
+                caption("m116_cached.png", "every node above the edited Saturation is faded; Saturation is not")
             else:
-                gt.report("NOTE fallback case skipped: set NATRON_GPU_FAULT=oom@1 to inject a device fault")
+                gt.report("NOTE cached case skipped: a device fault is injected")
+
+            gt.section("stable")
+            regions_before = prop("regionCount")
+            faded_before = sorted(prop("fadedNodes"))
+            window = gt._find_main_window()
+            if check(window is not None, "the main window is found"):
+                where = window.pos()
+                window.move(where.x() + 40, where.y() + 30)
+                yield ("sleep", 2000)
+                check(prop("regionCount") == regions_before and sorted(prop("fadedNodes")) == faded_before and shown(),
+                      "moving the window leaves the regions and the fading alone (before regions=%d faded=%r; %s)"
+                      % (regions_before, faded_before, state()))
+                window.move(where)
+                yield ("sleep", 500)
+            pref.setValue(False)
+            ok = yield ("until", lambda: not shown(), POLL_TIMEOUT_S)
+            check(ok, "turning the preference off hides the overlay")
+            pref.setValue(True)
+            ok = yield ("until", lambda: shown() and prop("regionCount") == regions_before, POLL_TIMEOUT_S)
+            check(ok, "turning the preference back on shows the regions again with no render or edit (%s)" % state())
+            caption("m116_retoggled.png", "the regions after the preference was turned off and on, with no render")
+            if not FAULT_ENV:
+                gt.report("NOTE fallback case skipped: set NATRON_GPU_FAULT=lost@region:1 to inject a device fault")
 
         gt.section("off again")
         pref.setValue(False)

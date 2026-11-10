@@ -286,11 +286,17 @@ public:
 
     GpuPlacementStamp currentGpuPlacementStamp() const;
 
-    // Whether a real render already published against the current state of the graph, which a dry run could only
-    // replace with less: it has no fallback information.
-    bool hasRealRenderGpuPlacement() const;
+    // Whether a dry run already planned the current state of the graph.
+    bool hasDryRunGpuPlacement() const;
 
-    // Returns whether this changed what getGpuPlacementSnapshot() returns, by more than the identity of the snapshot.
+    /**
+     * @brief Returns whether this changed what getGpuPlacementSnapshot() returns, by more than the identity of the
+     * snapshot.
+     *
+     * The regions shown come from the dry run of the current state, which plans the whole displayed frame. A real
+     * render only adds what it alone can know, which nodes computed pixels and which regions fell back, because what
+     * it placed may cover only the tiles it had to render. It stands in for the regions until the dry run publishes.
+     **/
     bool publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder,
                              const GpuPlacementStamp& stamp,
                              bool isDryRun);
@@ -490,7 +496,12 @@ public:
     mutable std::mutex gpuPlacementSnapshotMutex;
     GpuPlacementSnapshotPtr gpuPlacementSnapshot;
     GpuPlacementStamp gpuPlacementSnapshotStamp;
-    bool gpuPlacementSnapshotFromRender = false;
+    GpuPlacementSnapshotPtr gpuPlacementRegions;
+    GpuPlacementStamp gpuPlacementRegionsStamp;
+    bool gpuPlacementRegionsFromDryRun = false;
+    bool gpuPlacementRegionsPlaced = false;
+    GpuPlacementSnapshotPtr gpuPlacementRun;
+    GpuPlacementStamp gpuPlacementRunStamp;
     std::atomic<U64> gpuPlacementGraphEdits { 0 };
     std::shared_ptr<GpuPlacementPlanner> gpuPlacementPlanner;
 

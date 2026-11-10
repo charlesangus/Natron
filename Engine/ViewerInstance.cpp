@@ -59,7 +59,9 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/GenericSchedulerThread.h"
+#include "Engine/GpuContext.h"
 #include "Engine/GpuPlacement.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
@@ -1475,7 +1477,7 @@ addPlacedGraphToSnapshot(FrameGraph* graph,
 
         return true;
     }
-    builder->addUnplacedGraph();
+    builder->addUnplacedGraph(*graph);
 
     return false;
 }
@@ -1576,6 +1578,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             reason = "request does not reach the viewer input";
         } else {
             if (placementBuilder) {
+                context->setRecordsRenderedNodes(true);
                 if (addPlacedGraphToSnapshot(&graph, context, placementBuilder)) {
                     gGpuShadowPlacementCount.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -1637,6 +1640,13 @@ GpuPlacementSnapshotBuilder::addGraph(const FrameGraph& real,
         }
     }
     _graphs.push_back(std::move(plan));
+    _placed = true;
+}
+
+bool
+GpuPlacementSnapshotBuilder::hasPlacedGraph() const
+{
+    return _placed;
 }
 
 void
@@ -1646,14 +1656,37 @@ GpuPlacementSnapshotBuilder::addUnplacedGraph()
 }
 
 void
+GpuPlacementSnapshotBuilder::addUnplacedGraph(const FrameGraph& real)
+{
+    GraphPlan plan;
+    plan.tasks.reserve(real.tasks.size());
+    for (const FrameGraph::Task& task : real.tasks) {
+        TaskPlan taskPlan;
+        taskPlan.node = task.key.node;
+        plan.tasks.push_back(std::move(taskPlan));
+    }
+    _graphs.push_back(std::move(plan));
+}
+
+void
 GpuPlacementSnapshotBuilder::finishGraph(EffectInstance::RenderRoIRetCode retCode,
-                                         const std::vector<RegionFallback>& fallbacks)
+                                         const std::vector<RegionFallback>& fallbacks,
+                                         const std::unordered_set<const Node*>* renderedNodes)
 {
     if (retCode == EffectInstance::eRenderRoIRetCodeAborted) {
         _aborted = true;
     }
-    if (!_graphs.empty()) {
-        _graphs.back().fallbacks = fallbacks;
+    if (_graphs.empty()) {
+        return;
+    }
+    GraphPlan& plan = _graphs.back();
+    plan.fallbacks = fallbacks;
+    if (renderedNodes) {
+        plan.recordsRuns = true;
+        for (TaskPlan& task : plan.tasks) {
+            const NodePtr node = task.node.lock();
+            task.ran = node && renderedNodes->count(node.get()) > 0;
+        }
     }
 }
 
@@ -1863,6 +1896,24 @@ GpuPlacementSnapshotBuilder::build() const
         }
     }
 
+    std::map<NodeWPtr, std::size_t, NodeOwnerLess> runOfNode;
+    for (const GraphPlan& graph : _graphs) {
+        if (!graph.recordsRuns) {
+            continue;
+        }
+        for (const TaskPlan& task : graph.tasks) {
+            const std::pair<std::map<NodeWPtr, std::size_t, NodeOwnerLess>::iterator, bool> added = runOfNode.insert(std::make_pair(task.node, snapshot->nodeRuns.size()));
+            if (added.second) {
+                GpuPlacementSnapshot::NodeRun run;
+                run.node = task.node;
+                snapshot->nodeRuns.push_back(run);
+            }
+            if (task.ran) {
+                snapshot->nodeRuns[added.first->second].ran = true;
+            }
+        }
+    }
+
     return snapshot;
 } // GpuPlacementSnapshotBuilder::build
 
@@ -1942,10 +1993,17 @@ sameRegion(const GpuPlacementSnapshot::Region& a,
 }
 
 bool
+sameNodeRun(const GpuPlacementSnapshot::NodeRun& a,
+            const GpuPlacementSnapshot::NodeRun& b)
+{
+    return sameNode(a.node, b.node) && (a.ran == b.ran);
+}
+
+bool
 sameGpuPlacement(const GpuPlacementSnapshot& a,
                  const GpuPlacementSnapshot& b)
 {
-    return std::equal(a.regions.begin(), a.regions.end(), b.regions.begin(), b.regions.end(), sameRegion);
+    return std::equal(a.regions.begin(), a.regions.end(), b.regions.begin(), b.regions.end(), sameRegion) && std::equal(a.nodeRuns.begin(), a.nodeRuns.end(), b.nodeRuns.begin(), b.nodeRuns.end(), sameNodeRun);
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -1962,13 +2020,127 @@ ViewerInstance::ViewerInstancePrivate::currentGpuPlacementStamp() const
 }
 
 bool
-ViewerInstance::ViewerInstancePrivate::hasRealRenderGpuPlacement() const
+ViewerInstance::ViewerInstancePrivate::hasDryRunGpuPlacement() const
 {
     const GpuPlacementStamp stamp = currentGpuPlacementStamp();
     std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
 
-    return gpuPlacementSnapshotFromRender && (gpuPlacementSnapshotStamp == stamp);
+    return gpuPlacementRegions && gpuPlacementRegionsFromDryRun && (gpuPlacementRegionsStamp == stamp);
 }
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// run with the nodes earlier also ran and the regions that earlier fell back, for renders of one state of the graph:
+// one that renders only the tiles another left out ran the rest of the nodes too, and a region that recovered from a
+// lost device in one render fell back in the other.
+GpuPlacementSnapshotPtr
+withEarlierRuns(const GpuPlacementSnapshotPtr& run,
+                const GpuPlacementSnapshotPtr& earlier)
+{
+    std::shared_ptr<GpuPlacementSnapshot> merged = std::make_shared<GpuPlacementSnapshot>(*run);
+    for (const GpuPlacementSnapshot::Region& region : earlier->regions) {
+        if (!region.fellBack || region.members.empty()) {
+            continue;
+        }
+        bool known = false;
+        for (const GpuPlacementSnapshot::Region& now : merged->regions) {
+            for (const GpuPlacementSnapshot::Member& member : now.members) {
+                known = known || (now.fellBack && sameNode(member.node, region.members.front().node));
+            }
+        }
+        if (!known) {
+            merged->regions.push_back(region);
+        }
+    }
+    for (const GpuPlacementSnapshot::NodeRun& before : earlier->nodeRuns) {
+        bool found = false;
+        for (GpuPlacementSnapshot::NodeRun& now : merged->nodeRuns) {
+            if (sameNode(now.node, before.node)) {
+                now.ran = now.ran || before.ran;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            merged->nodeRuns.push_back(before);
+        }
+    }
+
+    return merged;
+}
+
+bool
+anyNodeRan(const GpuPlacementSnapshot& snapshot)
+{
+    for (const GpuPlacementSnapshot::NodeRun& run : snapshot.nodeRuns) {
+        if (run.ran) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The regions of placement, with what run knows of them: which members came from the cache and which regions fell
+// back. A region of run that shares a node with one of placement is that region.
+GpuPlacementSnapshotPtr
+composeGpuPlacement(const GpuPlacementSnapshot& placement,
+                    const GpuPlacementSnapshot* run)
+{
+    std::shared_ptr<GpuPlacementSnapshot> out = std::make_shared<GpuPlacementSnapshot>();
+    out->regions = placement.regions;
+    if (run) {
+        out->nodeRuns = run->nodeRuns;
+    }
+    for (GpuPlacementSnapshot::Region& region : out->regions) {
+        region.fellBack = false;
+        region.fallbackReason.clear();
+        region.deviceLost = false;
+        region.retries = 0;
+        region.fallbackMixed = false;
+        std::vector<const GpuPlacementSnapshot::Region*> matched;
+        for (GpuPlacementSnapshot::Member& member : region.members) {
+            member.cached = false;
+            if (!run) {
+                continue;
+            }
+            for (const GpuPlacementSnapshot::Region& ranRegion : run->regions) {
+                for (const GpuPlacementSnapshot::Member& ranMember : ranRegion.members) {
+                    if (!sameNode(ranMember.node, member.node)) {
+                        continue;
+                    }
+                    member.cached = ranMember.cached;
+                    if (std::find(matched.begin(), matched.end(), &ranRegion) == matched.end()) {
+                        matched.push_back(&ranRegion);
+                    }
+                }
+            }
+        }
+        bool anyKept = false;
+        for (const GpuPlacementSnapshot::Region* ranRegion : matched) {
+            if (!ranRegion->fellBack) {
+                anyKept = true;
+                continue;
+            }
+            if (!region.fellBack) {
+                region.fellBack = true;
+                region.fallbackReason = ranRegion->fallbackReason;
+            } else if (region.fallbackReason != ranRegion->fallbackReason) {
+                region.fallbackMixed = true;
+            }
+            region.deviceLost = region.deviceLost || ranRegion->deviceLost;
+            region.retries = std::max(region.retries, ranRegion->retries);
+            region.fallbackMixed = region.fallbackMixed || ranRegion->fallbackMixed;
+        }
+        if (region.fellBack && anyKept) {
+            region.fallbackMixed = true;
+        }
+    }
+
+    return out;
+} // composeGpuPlacement
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 bool
 ViewerInstance::ViewerInstancePrivate::publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder,
@@ -1982,24 +2154,56 @@ ViewerInstance::ViewerInstancePrivate::publishGpuPlacement(const GpuPlacementSna
     if (!snapshot) {
         return false;
     }
-    std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
+    const bool placed = builder.hasPlacedGraph();
+    bool replan = false;
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
 
-    // Checked under the lock so that of a real render and a dry run racing on one state, the real render wins whichever
-    // finishes first. A plan of an older state is dropped: a re-plan of the new one is already asked for.
-    if (stamp != currentGpuPlacementStamp()) {
-        return false;
+        // A plan of an older state is dropped: a re-plan of the new one is already asked for.
+        if (stamp != currentGpuPlacementStamp()) {
+            return false;
+        }
+        const bool haveRegions = gpuPlacementRegions && (gpuPlacementRegionsStamp == stamp);
+        if (isDryRun) {
+            // A device lost since the render placed is no reason to stop showing where it ran.
+            if (!haveRegions || placed || !gpuPlacementRegionsPlaced) {
+                gpuPlacementRegions = snapshot;
+                gpuPlacementRegionsStamp = stamp;
+                gpuPlacementRegionsFromDryRun = true;
+                gpuPlacementRegionsPlaced = placed;
+            }
+        } else {
+            if (!haveRegions || (placed && !gpuPlacementRegionsPlaced)) {
+                gpuPlacementRegions = snapshot;
+                gpuPlacementRegionsStamp = stamp;
+                gpuPlacementRegionsFromDryRun = false;
+                gpuPlacementRegionsPlaced = placed;
+                replan = placed;
+            }
+            if (!gpuPlacementRun || (gpuPlacementRunStamp != stamp)) {
+                gpuPlacementRun = snapshot;
+                gpuPlacementRunStamp = stamp;
+            } else if (anyNodeRan(*snapshot)) {
+                // A render that took everything from the cache, such as a redraw, says nothing new about this state.
+                gpuPlacementRun = withEarlierRuns(snapshot, gpuPlacementRun);
+            }
+        }
+        const bool haveRun = gpuPlacementRun && (gpuPlacementRunStamp == stamp);
+        GpuPlacementSnapshotPtr composed = composeGpuPlacement(*gpuPlacementRegions, haveRun ? gpuPlacementRun.get() : nullptr);
+        const bool hadSnapshot = gpuPlacementSnapshot && (gpuPlacementSnapshotStamp.overlayGeneration == stamp.overlayGeneration);
+        changed = !hadSnapshot || !sameGpuPlacement(*gpuPlacementSnapshot, *composed);
+        if (changed) {
+            gpuPlacementSnapshot = std::move(composed);
+        }
+        gpuPlacementSnapshotStamp = stamp;
     }
-    if (isDryRun && gpuPlacementSnapshotFromRender && (gpuPlacementSnapshotStamp == stamp)) {
-        return false;
+    if (replan) {
+        gpuPlacementPlanner->request();
     }
-    const bool hadSnapshot = gpuPlacementSnapshot && (gpuPlacementSnapshotStamp.overlayGeneration == stamp.overlayGeneration);
-    const bool changed = !hadSnapshot || !sameGpuPlacement(*gpuPlacementSnapshot, *snapshot);
-    gpuPlacementSnapshot = std::move(snapshot);
-    gpuPlacementSnapshotStamp = stamp;
-    gpuPlacementSnapshotFromRender = !isDryRun;
 
     return changed;
-}
+} // ViewerInstance::ViewerInstancePrivate::publishGpuPlacement
 
 void
 ViewerInstance::requestGpuPlacementDryRun()
@@ -2242,8 +2446,12 @@ void
 ViewerInstance::runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo)
 {
     OpenGLViewerI* uiContext = _imp->uiContext;
-    if (!isGpuPlacementOverlayEnabled() || !uiContext || !getNode()->isActivated() || _imp->hasRealRenderGpuPlacement()) {
+    if (!isGpuPlacementOverlayEnabled() || !uiContext || !getNode()->isActivated() || _imp->hasDryRunGpuPlacement()) {
         return;
+    }
+    if (GpuContext* gpu = appPTR->getGpuContext()) {
+        // A loss is otherwise only recovered from by the next render, and until then nothing would be planned.
+        gpu->recoverIfLost();
     }
     const ViewerInstancePrivate::GpuPlacementStamp stamp = _imp->currentGpuPlacementStamp();
     GpuPlacementSnapshotBuilder builder;
@@ -3538,7 +3746,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 if (future) {
                     retCode = future->wait();
                     if (placementBuilder) {
-                        placementBuilder->finishGraph(retCode, future->getRegionFallbacks());
+                        const std::unordered_set<const Node*> renderedNodes = frameContext ? frameContext->renderedNodes() : std::unordered_set<const Node*>();
+                        placementBuilder->finishGraph(retCode, future->getRegionFallbacks(), frameContext ? &renderedNodes : nullptr);
                     }
                     layers = future->getRootPlanes();
                     if (const SchedulerResultHook hook = schedulerResultHook()) {

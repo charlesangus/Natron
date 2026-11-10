@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QFont>
 #include <QFontMetricsF>
+#include <QGraphicsRectItem>
 #include <QPainter>
 #include <QPainterPathStroker>
 #include <QStringList>
@@ -66,7 +67,11 @@ const double kOutlinePadding = 12.;
 const double kMarkerHalfSize = 6.;
 const double kMarkerDistance = 26.;
 const double kLabelGap = 4.;
-const double kFadedOpacity = 0.4;
+// Fading paints the graph's background over the node rather than lowering the node's opacity, which would show the
+// pipes running under it.
+const double kFadeAmount = 0.6;
+const int kScrimKey = 0;
+const char* const kScrimName = "gpuFadeScrim";
 
 // Bounds a walk through nested groups, in case a corrupt graph loops.
 const int kMaxGroupDepth = 256;
@@ -131,6 +136,18 @@ QRectF
 sceneRectOf(const NodeGuiPtr& gui)
 {
     return gui->mapToScene(gui->boundingRect()).boundingRect();
+}
+
+QGraphicsRectItem*
+scrimOf(NodeGui* gui)
+{
+    for (QGraphicsItem* child : gui->childItems()) {
+        if (child->data(kScrimKey).toString() == QString::fromUtf8(kScrimName)) {
+            return static_cast<QGraphicsRectItem*>(child);
+        }
+    }
+
+    return 0;
 }
 
 QFont
@@ -541,9 +558,28 @@ void
 GpuRegionOverlay::remap()
 {
     _regions.clear();
+    _runs.clear();
     const NodeCollectionPtr collection = _graph->getGroup();
     if (!_snapshot || !collection) {
         return;
+    }
+    std::map<NodeGui*, std::size_t> runIndex;
+    for (const GpuPlacementSnapshot::NodeRun& run : _snapshot->nodeRuns) {
+        const NodeGuiPtr gui = guiOf(mapNodeToCollection(run.node.lock(), collection));
+        if (!gui) {
+            continue;
+        }
+        std::map<NodeGui*, std::size_t>::iterator found = runIndex.find(gui.get());
+        if (found == runIndex.end()) {
+            runIndex[gui.get()] = _runs.size();
+            MappedRun entry;
+            entry.gui = gui;
+            entry.ran = run.ran;
+            _runs.push_back(entry);
+        } else {
+            // A Group node stays coloured when anything it stands for ran.
+            _runs[found->second].ran = _runs[found->second].ran || run.ran;
+        }
     }
     for (const GpuPlacementSnapshot::Region& region : _snapshot->regions) {
         MappedRegion mapped;
@@ -558,13 +594,10 @@ GpuRegionOverlay::remap()
                 memberIndex[gui.get()] = mapped.members.size();
                 MappedMember entry;
                 entry.gui = gui;
-                entry.cached = member.cached;
                 entry.mixed = member.mixed;
                 mapped.members.push_back(entry);
             } else {
-                // A Group node is faded only when everything it stands for came from the cache.
                 MappedMember& entry = mapped.members[found->second];
-                entry.cached = entry.cached && member.cached;
                 entry.mixed = entry.mixed || member.mixed;
             }
         }
@@ -616,15 +649,34 @@ GpuRegionOverlay::setFaded(const std::vector<NodeGuiWPtr>& faded)
     std::set<NodeGui*> keep;
     for (const NodeGuiWPtr& weak : faded) {
         const NodeGuiPtr gui = weak.lock();
-        if (gui) {
-            gui->setOpacity(kFadedOpacity);
-            keep.insert(gui.get());
+        if (!gui) {
+            continue;
         }
+        keep.insert(gui.get());
+        QGraphicsRectItem* scrim = scrimOf(gui.get());
+        if (!scrim) {
+            scrim = new QGraphicsRectItem(gui.get());
+            scrim->setData(kScrimKey, QString::fromUtf8(kScrimName));
+            scrim->setPen(Qt::NoPen);
+            scrim->setAcceptedMouseButtons(Qt::NoButton);
+            scrim->setAcceptHoverEvents(false);
+        }
+        qreal top = 0.;
+        for (QGraphicsItem* child : gui->childItems()) {
+            if (child != scrim) {
+                top = std::max(top, child->zValue());
+            }
+        }
+        scrim->setZValue(top + 1.);
+        scrim->setRect(gui->boundingRect());
+        QColor shade = _graph->viewport()->palette().color(_graph->viewport()->backgroundRole());
+        shade.setAlphaF(kFadeAmount);
+        scrim->setBrush(shade);
     }
     for (const NodeGuiWPtr& weak : _faded) {
         const NodeGuiPtr gui = weak.lock();
         if (gui && !keep.count(gui.get())) {
-            gui->setOpacity(1.);
+            delete scrimOf(gui.get());
         }
     }
     _faded = faded;
@@ -636,6 +688,7 @@ GpuRegionOverlay::clear()
     watchViewer(0);
     _snapshot.reset();
     _regions.clear();
+    _runs.clear();
     _remapPending = true;
     setFaded(std::vector<NodeGuiWPtr>());
     _outlines->setShapes(std::vector<GpuRegionItem::Outline>(), std::vector<GpuRegionItem::Marker>(), std::vector<GpuRegionItem::Tag>());
@@ -658,6 +711,7 @@ GpuRegionOverlay::refresh()
     int fallbackCount = 0;
     int mixedCount = 0;
     QStringList exitLabels;
+    QStringList fadedNames;
     std::vector<NodeGuiWPtr> faded;
 
     if (!isEnabled()) {
@@ -671,6 +725,15 @@ GpuRegionOverlay::refresh()
             _snapshot = snapshot;
             _remapPending = false;
             remap();
+        }
+
+        for (const MappedRun& run : _runs) {
+            const NodeGuiPtr gui = run.gui.lock();
+            const NodePtr node = gui ? gui->getNode() : NodePtr();
+            if (node && !run.ran) {
+                faded.push_back(gui);
+                fadedNames.push_back(QString::fromUtf8(node->getScriptName_mt_safe().c_str()));
+            }
         }
 
         std::vector<GpuRegionItem::Outline> outlines;
@@ -694,9 +757,6 @@ GpuRegionOverlay::refresh()
                 const QRectF rect = sceneRectOf(gui);
                 path.addRoundedRect(rect.adjusted(-kOutlinePadding, -kOutlinePadding, kOutlinePadding, kOutlinePadding),
                                     kOutlinePadding, kOutlinePadding);
-                if (member.cached) {
-                    faded.push_back(gui);
-                }
                 if (member.mixed) {
                     GpuRegionItem::Tag tag;
                     tag.at = rect.topRight() + QPointF(-kOutlinePadding, -kLabelGap);
@@ -769,6 +829,7 @@ GpuRegionOverlay::refresh()
     _outlines->setProperty("entryCount", entryCount);
     _outlines->setProperty("fallbackCount", fallbackCount);
     _outlines->setProperty("fadedCount", (int)_faded.size());
+    _outlines->setProperty("fadedNodes", fadedNames);
     _outlines->setProperty("mixedCount", mixedCount);
     _outlines->setProperty("exitLabels", exitLabels);
 } // GpuRegionOverlay::refresh

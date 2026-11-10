@@ -377,6 +377,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     if (options.fault.kind != GpuFaultPlan::Kind::Off) {
         dev->faultKind_.store(options.fault.kind);
         dev->faultAt_.store(options.fault.atOperation);
+        dev->faultRegionOnly_.store(options.fault.regionOnly);
     }
     dev->onDeviceLost_ = options.onDeviceLost;
 
@@ -679,9 +680,18 @@ GpuDevice::check(VkResult result, const char* what)
 GpuStatus
 GpuDevice::countOperation()
 {
-    const uint64_t n = operations_.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint64_t n = operations_.fetch_add(1, std::memory_order_relaxed) + 1;
     const uint64_t at = faultAt_.load(std::memory_order_acquire);
-    if (at == 0 || n != at) {
+    if (at == 0) {
+        return {};
+    }
+    if (faultRegionOnly_.load(std::memory_order_acquire)) {
+        if (!GpuRegionFaultScope::active()) {
+            return {};
+        }
+        n = regionOperations_.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+    if (n != at) {
         return {};
     }
     const GpuFaultPlan::Kind kind = faultKind_.load(std::memory_order_acquire);
@@ -702,6 +712,7 @@ GpuDevice::injectFault(GpuFaultPlan::Kind kind, uint64_t inOperations)
         faultKind_.store(GpuFaultPlan::Kind::Off, std::memory_order_release);
         return;
     }
+    faultRegionOnly_.store(false, std::memory_order_release);
     faultKind_.store(kind, std::memory_order_release);
     faultAt_.store(operations_.load(std::memory_order_relaxed) + inOperations, std::memory_order_release);
 }
@@ -749,7 +760,12 @@ GpuFaultPlan::parse(const std::string& text, GpuFaultPlan& out)
         return false;
     }
     const std::string kind = text.substr(0, at);
-    const std::string num = text.substr(at + 1);
+    std::string num = text.substr(at + 1);
+    const std::string regionPrefix = "region:";
+    const bool regionOnly = num.compare(0, regionPrefix.size(), regionPrefix) == 0;
+    if (regionOnly) {
+        num = num.substr(regionPrefix.size());
+    }
     if (num.empty() || num.find_first_not_of("0123456789") != std::string::npos || num.size() > 18) {
         return false;
     }
@@ -758,13 +774,34 @@ GpuFaultPlan::parse(const std::string& text, GpuFaultPlan& out)
         return false;
     }
     if (kind == "lost") {
-        out = { Kind::DeviceLost, n };
+        out = { Kind::DeviceLost, n, regionOnly };
     } else if (kind == "oom") {
-        out = { Kind::OutOfMemory, n };
+        out = { Kind::OutOfMemory, n, regionOnly };
     } else {
         return false;
     }
     return true;
+}
+
+namespace {
+    thread_local bool tInGpuRegion = false;
+}
+
+GpuRegionFaultScope::GpuRegionFaultScope()
+    : previous_(tInGpuRegion)
+{
+    tInGpuRegion = true;
+}
+
+GpuRegionFaultScope::~GpuRegionFaultScope()
+{
+    tInGpuRegion = previous_;
+}
+
+bool
+GpuRegionFaultScope::active()
+{
+    return tInGpuRegion;
 }
 
 GpuStatus

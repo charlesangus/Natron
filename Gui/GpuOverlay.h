@@ -166,8 +166,12 @@ private:
 
     struct MappedMember {
         NodeGuiWPtr gui;
-        bool cached = true;
         bool mixed = false;
+    };
+
+    struct MappedRun {
+        NodeGuiWPtr gui;
+        bool ran = false;
     };
 
     struct MappedRegion {
@@ -191,6 +195,7 @@ private:
     QPointer<QObject> _watchedViewer;
     GpuPlacementSnapshotPtr _snapshot;
     std::vector<MappedRegion> _regions;
+    std::vector<MappedRun> _runs;
     std::vector<NodeGuiWPtr> _faded;
     bool _pending;
     bool _remapPending;

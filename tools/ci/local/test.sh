@@ -69,6 +69,10 @@
 #                              (the SIGSEGV handler's instruction pointer is enough
 #                              for addr2line) and exits non-zero. Every iteration's
 #                              output stays in <build dir>/Testing/repeat/<name>/.
+#                              An iteration still running 20 s before the test's
+#                              TIMEOUT gets its thread stacks written to iter-N.stacks
+#                              (eu-stack, else gdb -p; "stacks unavailable" when ptrace
+#                              is refused) and its process group killed.
 #                              With --gdb each run is wrapped in `gdb -batch -ex
 #                              run -ex "thread apply all bt" --args`, and a run
 #                              that ends in a signal or a non-zero exit counts as
@@ -399,11 +403,37 @@ PY
         }
         trap stop_all EXIT
 
+        # The watchdog fires WATCHDOG_LEAD seconds before ctest's own TIMEOUT so the stacks are
+        # taken from a hung process that is still alive.
+        WATCHDOG_LEAD=20
+        WATCHDOG_SECONDS=$((REPEAT_TIMEOUT > WATCHDOG_LEAD ? REPEAT_TIMEOUT - WATCHDOG_LEAD : 1))
+
+        # Writes every thread's stack of $1 to $2. Returns non-zero when ptrace is refused or no
+        # stack tool is installed.
+        dump_stacks() {
+            local pid="$1" out="$2" tmp
+            tmp="$(mktemp)"
+            if command -v eu-stack > /dev/null 2>&1 && eu-stack -p "${pid}" > "${tmp}" 2>&1 && [[ -s "${tmp}" ]]; then
+                cat "${tmp}" > "${out}"
+            elif command -v gdb > /dev/null 2>&1 && gdb -p "${pid}" -batch -ex 'thread apply all bt' > "${tmp}" 2>&1 && grep -q '^Thread ' "${tmp}"; then
+                cat "${tmp}" > "${out}"
+            else
+                {
+                    echo "stacks unavailable: ptrace refused (yama ptrace_scope or missing CAP_SYS_PTRACE) or no eu-stack/gdb installed"
+                    cat "${tmp}"
+                } > "${out}"
+                rm -f "${tmp}"
+                return 1
+            fi
+            rm -f "${tmp}"
+        }
+
         run_iteration() {
-            local n="$1" log="${LOG_DIR}/iter-$1.log" rc child
+            local n="$1" log="${LOG_DIR}/iter-$1.log" rc child timer
             set +e
             if [[ "${USE_GDB}" -eq 1 ]]; then
-                (cd "${REPEAT_CWD}" && exec setsid timeout -k 10 "${REPEAT_TIMEOUT}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
+                # SIGINT stops the debuggee, so gdb goes on to print every thread's backtrace.
+                (cd "${REPEAT_CWD}" && exec setsid timeout -s INT -k 10 "${WATCHDOG_SECONDS}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
                     gdb -batch -ex run -ex "thread apply all bt" --args "${REPEAT_CMD[@]}") > "${log}" 2>&1 < /dev/null &
                 child=$!
                 echo "${child}" > "${LOG_DIR}/iter-${n}.pgid"
@@ -413,13 +443,32 @@ PY
                 if [[ "${rc}" -eq 0 ]] && grep -qE 'Program (received signal|terminated with signal)|exited with code' "${log}"; then
                     rc=1
                 fi
+                if [[ "${rc}" -eq 124 ]]; then
+                    echo "stacks: see the backtrace at the end of ${log}" > "${LOG_DIR}/iter-${n}.stacks"
+                fi
             else
-                (cd "${REPEAT_CWD}" && exec setsid timeout -k 10 "${REPEAT_TIMEOUT}" env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
+                (cd "${REPEAT_CWD}" && exec setsid env ${REPEAT_ENV[@]+"${REPEAT_ENV[@]}"} \
                     "${REPEAT_CMD[@]}") > "${log}" 2>&1 < /dev/null &
                 child=$!
                 echo "${child}" > "${LOG_DIR}/iter-${n}.pgid"
-                wait "${child}"
+                sleep "${WATCHDOG_SECONDS}" &
+                timer=$!
+                wait -n "${child}" "${timer}"
                 rc=$?
+                if kill -0 "${timer}" 2>/dev/null; then
+                    kill "${timer}" 2>/dev/null
+                    wait "${timer}" 2>/dev/null
+                else
+                    dump_stacks "${child}" "${LOG_DIR}/iter-${n}.stacks"
+                    kill -TERM -- "-${child}" 2>/dev/null
+                    sleep 10 &
+                    timer=$!
+                    wait -n "${child}" "${timer}"
+                    kill -KILL -- "-${child}" 2>/dev/null
+                    kill "${timer}" 2>/dev/null
+                    wait "${child}"
+                    rc=124
+                fi
             fi
             echo "${rc}" > "${LOG_DIR}/iter-${n}.rc"
         }
@@ -498,6 +547,9 @@ PY
 
         if [[ -n "${FAILED_ITER}" ]]; then
             echo "test.sh: ERROR: ${REPEAT_TEST} failed in iteration ${FAILED_ITER} of ${REPEAT_COUNT} (exit ${FAILED_RC})" >&2
+            if [[ -s "${LOG_DIR}/iter-${FAILED_ITER}.stacks" ]]; then
+                echo "test.sh: thread stacks at the hang: ${LOG_DIR}/iter-${FAILED_ITER}.stacks" >&2
+            fi
             echo "== iteration ${FAILED_ITER} output (${LOG_DIR}/iter-${FAILED_ITER}.log) =="
             cat "${LOG_DIR}/iter-${FAILED_ITER}.log"
             exit 1

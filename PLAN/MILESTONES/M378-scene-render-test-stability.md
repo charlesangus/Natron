@@ -47,10 +47,10 @@ Evidence (consultant, code at the fork pin):
   - approach: started in fixture `SetUp` with a 150 s limit; callers report the current phase (`render`, `syncScene`, `refineTo`). On expiry: `prctl(PR_SET_PTRACER_ANY)`, `eu-stack -p getpid()` (fall back to `gdb -p -batch`), print test name and phase, `std::abort()`.
   - verify: a test-only case sleeping past a 2 s limit aborts and prints its own stack (PM build)
   - size: M
-- [ ] M378.P2.T2 — Stop task stealing while Cycles' scene lock is held (H1)
-  - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp` (renderGuarded, Cycles makeEngine/dropEngine); fork `src/session/session.cpp`
-  - approach: in the fork, run the locked part of `run_update_for_next_iteration` through `isolate_task`; on our side, run Cycles engine calls (Render, make, drop) in a dedicated `tbb::task_arena` owned by the worker and by RenderThread::cpu. If P3.T2's stacks show H2 or H3 instead, replace this task with that fix.
-  - verify: review; P3.T2's repeat shows no stall
+- [ ] M378.P2.T2 — Fix the stall that P3.T2's watchdog stacks show
+  - files: from the stacks (likely `Engine/Nodes/Scene/HydraRenderImpl.cpp`, fork `src/hydra/*` or `src/session/session.cpp`)
+  - approach: run after P3.T2's first repeat captures a stall. If the thread holding `scene->mutex` is in a TBB wait under `SceneLock` (a nested `WorkParallelForN`, OpenVDB or Sdr parsing inside a Hydra Sync), isolate the work done under `SceneLock`. If it is in a condition-variable wait, fix the lock or map ordering it shows. If the repeat shows no stall, record that and drop this task.
+  - verify: P3.T2's repeat shows no stall
   - size: M
 
 ## Phase 378.3: Gates (PM runs)
@@ -71,3 +71,4 @@ Evidence (consultant, code at the fork pin):
 ## Decisions
 
 - 2026-11-10 — Elaborated at claim (consultant): the heap corruption is fixed from code reading in the fork (no sanitizer build; Cycles, USD and TBB aren't instrumented), the cap test is already fixed by #243, and the hang gets a stack-dumping watchdog plus the ranked H1 fix. M371's run showed the same corruption in `EmissionMatchesReferenceRender`, so the cause is hdCycles, not progressive coalescing.
+- 2026-11-10 — H1 (TBB task stealing on the Cycles session thread) is ruled out (consultant): the session thread is a plain OS thread whose waits run only its own pool's tasks, and a probe against natron-dev's TBB 2023.1 confirmed it (0 of 51,200 foreign tasks ran on it). `scene->mutex` is a plain `std::mutex`, and the lock order seen in reading is consistent. P2.T2 is rewritten to fix whatever the watchdog's stacks show, and the arena and isolation changes are not made blind.

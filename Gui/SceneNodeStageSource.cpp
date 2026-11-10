@@ -37,6 +37,31 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+bool
+evaluateNode(const NodeWPtr& weakNode,
+             const SceneEvaluationContext& context,
+             double time,
+             ScenePayload* payload,
+             std::string* error)
+{
+    NodePtr node = weakNode.lock();
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+    bool ok = false;
+
+    if (effect && node->isActivated() && effect->producesSceneData()) {
+        ok = (effect->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0), context), payload, error) == EffectInstance::eRenderRoIRetCodeOk);
+    } else {
+        *error = "The node puts out no scene.";
+    }
+    node.reset();
+    effect.reset();
+    appPTR->getAppTLS()->cleanupTLSForThread();
+
+    return ok;
+}
+} // namespace
+
 SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
                                            QObject* context,
                                            const SyncedFunc& synced,
@@ -45,6 +70,8 @@ SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
     , _context(context)
     , _synced(synced)
     , _loadPayloads(loadPayloads)
+    , _contextId(SceneEvaluationContext::makeId())
+    , _loadSet(loadPayloads ? SceneLoadSetPtr() : std::make_shared<const SceneLoadSet>(SceneLoadSet::none()))
 {
     _worker = std::thread([this]() { run(); });
 }
@@ -196,7 +223,28 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
         std::lock_guard<std::mutex> lock(_stageMutex);
         section();
     };
-    _stage->serviceLoads(locked, locked, [this]() { return _stopRequested.load(); });
+    const SceneStage::LockedSection committing = [this](const std::function<void()>& section) {
+        SceneWriteBarrier::ReadScope readScope;
+        std::lock_guard<std::mutex> lock(_stageMutex);
+        section();
+        _loadSet = _stage->getLoadSet();
+    };
+    // The node is evaluated again for the set the batch leaves, so that its pattern nodes match
+    // within the payloads just loaded, and stop matching within those just unloaded.
+    const SceneStage::LoadPreparer prepare = [this](const SceneLoadSetPtr& loadSet) -> std::function<void()> {
+        ScenePayload payload;
+        std::string error;
+        if (!evaluateNode(_node, SceneEvaluationContext(_contextId, loadSet), _time, &payload, &error) || _stopRequested) {
+            return std::function<void()>();
+        }
+
+        return [this, payload]() {
+            _stage->sync(payload);
+            _shown = !payload.isEmpty();
+            _editCount = _stage->getEditCount();
+        };
+    };
+    _stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare);
     if (_stopRequested) {
         return;
     }
@@ -232,19 +280,10 @@ SceneNodeStageSource::run()
             serviceLoads(loads);
             continue;
         }
-        NodePtr node = _node.lock();
-        EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+        _time = time;
         ScenePayload payload;
         std::string error;
-        bool ok = false;
-        if (effect && node->isActivated() && effect->producesSceneData()) {
-            ok = (effect->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0)), &payload, &error) == EffectInstance::eRenderRoIRetCodeOk);
-        } else {
-            error = "The node puts out no scene.";
-        }
-        node.reset();
-        effect.reset();
-        appPTR->getAppTLS()->cleanupTLSForThread();
+        const bool ok = evaluateNode(_node, SceneEvaluationContext(_contextId, _loadSet), time, &payload, &error);
         if (_stopRequested) {
             continue;
         }

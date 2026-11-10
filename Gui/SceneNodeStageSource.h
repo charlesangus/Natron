@@ -41,6 +41,7 @@
 #include <QtCore/QStringList>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/SceneLoadSet.h"
 #include "Gui/SceneGraphModel.h"
 
 NATRON_NAMESPACE_ENTER
@@ -50,7 +51,9 @@ NATRON_NAMESPACE_ENTER
  * query pool would be bound to the thread that leased it, and a view may hold this one for as
  * long as it shows the node. Without loadPayloads the stage opens with no payload loaded, and
  * requestLoad() loads them on the same worker, which opens their files with no lock held, as the
- * viewer's stage does.
+ * viewer's stage does. The node is evaluated in a context of the source's own, with the payloads
+ * its stage includes, so that the pattern nodes upstream load no more than the stage shows; a
+ * batch of loads or unloads commits along with the node evaluated again for the new set.
  **/
 class SceneNodeStageSource
     : public SceneGraphStageSource,
@@ -113,6 +116,10 @@ private:
     QObject* _context;
     SyncedFunc _synced;
     const bool _loadPayloads;
+    const U64 _contextId;
+    // Worker only: the set the stage includes, and the time of the last evaluation.
+    SceneLoadSetPtr _loadSet;
+    double _time = 0.;
     mutable std::mutex _stageMutex;
     std::unique_ptr<SceneStage> _stage;
     std::atomic<bool> _shown { false };

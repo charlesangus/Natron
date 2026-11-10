@@ -1,6 +1,9 @@
 name: Remote build
 
-run-name: remote-build ${{ inputs.preset || 'fast' }} ${{ inputs.token }}${{ inputs.cmake_args != '' && format(' cmake:{0}', inputs.cmake_args) || '' }}${{ inputs.from_run != '' && format(' from:{0}', inputs.from_run) || '' }}
+# The "what ran" part is format('build{0}{1}{2}{3}{4}', ...) where each
+# conditional fragment carries its own leading ", ", so no trailing separator
+# can appear. A from_run dispatch builds nothing and replaces the list.
+run-name: ${{ github.event_name == 'push' && format('Remote build · fast · {0} (cache warm)', github.ref_name) || format('Remote build · {0} · {1}{2}{3}', inputs.preset, inputs.from_run != '' && format('GUI only (from run {0})', inputs.from_run) || format('build{0}{1}{2}{3}{4}', inputs.tests && ', tests' || '', inputs.appimage && ', AppImage' || '', inputs.gui_scripts != '' && ', GUI' || '', inputs.record_goldens && ', goldens' || '', inputs.cmake_args != '' && format(', cmake:{0}', inputs.cmake_args) || ''), inputs.label != '' && format(' · {0}', inputs.label) || '', inputs.token != '' && format(' · {0}', inputs.token) || '') }}
 
 on:
   # A push run builds fast with no tests and no AppImage; it exists to
@@ -49,6 +52,11 @@ on:
         required: false
         type: string
         default: 'legacy,taskgraph'
+      label:
+        description: 'Human label for the run title, usually the PR title'
+        required: false
+        type: string
+        default: ''
       token:
         description: 'Opaque marker echoed into the run name so a script can find this run'
         required: false

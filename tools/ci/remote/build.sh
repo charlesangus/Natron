@@ -329,7 +329,10 @@ if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "build.sh: warning: uncommitted changes are not part of the remote build" >&2
 fi
 
-TOKEN="${PRESET}-${HEAD_SHA:0:8}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+TOKEN="#$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+
+LABEL="$(gh pr list --head "${BRANCH}" --state open --json title --jq '.[0].title // empty' 2>/dev/null || true)"
+LABEL="${LABEL:-${BRANCH}}"
 
 echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token=${TOKEN} =="
 gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
@@ -340,6 +343,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
     -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
+    -f "label=${LABEL}" \
     -f "token=${TOKEN}" \
     -f "gui_scripts=${GUI_SCRIPTS}" \
     -f "from_run=${FROM_RUN}" \

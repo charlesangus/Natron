@@ -438,8 +438,8 @@ future core work has solid ground to build on.
 | M338 | Viewer Input Keys And Locks | done | - | misty-marten | E10 | F10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
 | M339 | File Knob Reload Button Cleanup | done | M52 | misty-marten | E10 | F10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |
 | M340 | Viewer Gain Gamma On Rendered Pixels | done | M234 | bosley-native-nodes | E9 | | | [M340-viewer-gain-gamma-on-rendered-pixels.md](PLAN/MILESTONES/M340-viewer-gain-gamma-on-rendered-pixels.md) |
-| M341 | Per-Placement Geometry Projection | doing | M234 | bosley-native-nodes | E9 | F9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
-| M342 | Sticky Projections On Deforming Geometry | doing | M234 | bosley-native-nodes | E9 | F9 | | [M342-sticky-projections-deforming-geometry.md](PLAN/MILESTONES/M342-sticky-projections-deforming-geometry.md) |
+| M341 | Per-Placement Geometry Projection | done | M234 | bosley-native-nodes | E9 | F9 | | [M341-per-placement-geometry-projection.md](PLAN/MILESTONES/M341-per-placement-geometry-projection.md) |
+| M342 | Sticky Projections On Deforming Geometry | done | M234 | bosley-native-nodes | E9 | F9 | | [M342-sticky-projections-deforming-geometry.md](PLAN/MILESTONES/M342-sticky-projections-deforming-geometry.md) |
 | M343 | Live Textures In Delegates | done | M233, M251, M252, M254 | | E9 | F9 | | [M343-live-textures-in-delegates.md](PLAN/MILESTONES/M343-live-textures-in-delegates.md) |
 | M344 | Camera Projection In Delegates | todo | M234, M325, M343 |  | E9 | F9 | | [M344-camera-projection-in-delegates.md](PLAN/MILESTONES/M344-camera-projection-in-delegates.md) |
 | M345 | VDB Rendering Fixes | todo | M251, M252, M325 |  | E9 | F1 | | [M345-vdb-rendering-fixes.md](PLAN/MILESTONES/M345-vdb-rendering-fixes.md) |

@@ -47,7 +47,7 @@ Requires M54 - Native Geometry Data Model and M52 (`PrimSelector`); it no longer
   - verify: unit test — `SdfLayer::FindOrOpen` on a registered `GeoConstant` identifier gives a stage whose mesh matches the detail; querying one of two partitions builds only that partition's arrays; changing one point value and reloading keeps the identifier, and `UsdNotice::ObjectsChanged` reports `points` under changed-info-only, not as a resync; a topology change resyncs that prim alone; the layer refuses `Save`.
   - size: L
 
-- [ ] M358.P1.T3 — `GeoToUSD`
+- [x] M358.P1.T3 — `GeoToUSD`
   - files: `Engine/Nodes/Geometry/GeoToUSD.h`/`.cpp`/`.reg.inc`, `Tests/GeoToScene_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: inputs Geometry (+ optional Scene to append to). Knobs: root scope path; "author time samples across range" (default off, since vertex data is never auto-baked); "Packed Primitives" (Point Instancer default, Native Instances, Unpack, as SOP Import); "Copy Into Layer" (default off). Output kind **scene**. By default the node contributes its `natrongeo` layer (M358.P1.T2) to the `ScenePayload` layer stack, over the optional Scene input, with the detail's partitions under the scope path. Nothing is copied, and the plugin converts on demand. The layer is keyed per M19's per-node read keys, and a detail-hash change reloads it in place. "Copy Into Layer" authors the detail into the node's anonymous layer through `GeoUsdConvert` instead. This is the slower path, and the knob's tooltip says so. An empty detail contributes an empty layer.
   - verify: unit test — a `GeoConstant` detail appears under the scope path on the composed stage, and the stack holds a `natrongeo` layer and no anonymous copy; re-evaluating with an unchanged detail re-emits the same layer handle; a changed point value keeps the layer identifier; 100 packed-geometry copies author one `UsdGeomPointInstancer` with 100 instances by default, and native instances or meshes in the other modes; with "Copy Into Layer" on, the same prims come from an anonymous layer instead.
@@ -59,13 +59,13 @@ Requires M54 - Native Geometry Data Model and M52 (`PrimSelector`); it no longer
   - verify: unit test — `USDRead`(reference `.usda`) → `USDToGeo` gives one packed primitive per matched prim with the right `path` and transforms, and no topology; with Unpack on it yields the expected polygons in one point pool; with flatten also on, a translated prim's points move; `GeoToUSD` → `USDToGeo`(unpacked) is the identity on a detail.
   - size: M
 
-- [ ] M358.P1.T6 — Packed transforms in world space
+- [x] M358.P1.T6 — Packed transforms in world space
   - files: `Engine/Nodes/Geometry/USDToGeo.cpp`, `Engine/Nodes/Geometry/GeoCopyToPoints.cpp`, `Engine/Nodes/Geometry/GeoToUSD.cpp`, `Engine/Nodes/Geometry/GeoUsdConvert.cpp`, `Tests/GeoToSceneOverrides_Test.cpp`
   - approach: `packedXform` is world space for every packed primitive, as in SOP Import (`.local/docs/solaris/docs/houdini/nodes/lop/sopimport.html:818-822`, `GeoPacked.h:62-69`). `USDToGeo` stores the packed primitive's world transform in `packedXform` (`USDToGeo.cpp:243-249` stores local today). `GeoCopyToPoints` uses plain `xform × packed` for every packed type (`GeoCopyToPoints.cpp:591-600`). The override writer (T5) writes `parent⁻¹ × world`, with the parent taken from `GeoToUSD`'s Scene input when the path exists there, else the stored parent, and handles `resetXformStack`.
   - verify: a test with a rotated, scaled parent round-trips `USDRead` → `USDToGeo` → `GeoTransform` → `GeoToUSD` to the right composed world position.
   - size: S
 
-- [ ] M358.P1.T5 — `GeoToUSD` writes back overrides on source paths
+- [x] M358.P1.T5 — `GeoToUSD` writes back overrides on source paths
   - files: `Engine/Nodes/Geometry/GeoToUSD.cpp`, `Engine/Nodes/Geometry/GeoSdfData.cpp`, `Engine/Nodes/Geometry/GeoUsdConvert.cpp`, `Tests/GeoToSceneOverrides_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: the SOP Modify writeback. When a Scene input is connected, partitions whose `path` exists on the input stage are served as `over` specs on that path in the `natrongeo` layer (the overrides mode arg) instead of new prims under the scope path. Other partitions still go under the scope. Packed USD → `xformOp:transform` local transform (new world × inverse parent world; see T6). Unpacked → `points` and changed primvars, plus full topology when the counts differ from the source. Paths missing upstream become a node warning (Scope edge cases).
   - verify: unit test — `USDRead` → `USDToGeo`(packed) → a test-only node that translates each packed primitive through the `GeoDetail` API → `GeoToUSD` moves the source prims on the composed stage at their original paths and adds no new prims; the unpacked chain overrides `points` only; a pruned source path raises the warning.

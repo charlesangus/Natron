@@ -19,7 +19,6 @@ REPO = Path(__file__).resolve().parents[2]
 CONCEPT_DIR = REPO / "Gui" / "Resources" / "Branding" / "concepts"
 DEFAULT_CONCEPT_OUT = REPO / "build" / "branding" / "concepts"
 
-CONCEPTS = ("nucleus", "orbital", "monogram", "graph")
 BACKGROUNDS = {"dark": "#1e1e1e", "light": "#f0f0f0"}
 LABEL_COLOUR = (136, 136, 136, 255)
 
@@ -96,9 +95,14 @@ def make_sheet(concept, bg):
     return sheet
 
 
+def list_concepts():
+    return sorted(p.stem for p in CONCEPT_DIR.glob("*.svg")
+                  if not p.stem.endswith("-lockup"))
+
+
 def cmd_concepts(args):
     out = Path(args.out)
-    for concept in CONCEPTS:
+    for concept in list_concepts():
         for name, hexcol in BACKGROUNDS.items():
             sheet = make_sheet(concept, parse_colour(hexcol))
             save_png(sheet, out / f"{concept}-{name}.png")

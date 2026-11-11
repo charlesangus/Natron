@@ -67,6 +67,15 @@ struct PendingFrame {
 
 std::mutex phaseStartHookMutex;
 std::function<void()> phaseStartHook;
+std::function<void()> phaseEntryHook;
+
+std::function<void()>
+hookForTesting(const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> locker(phaseStartHookMutex);
+
+    return hook;
+}
 
 } // anonymous namespace
 
@@ -196,14 +205,28 @@ VectorFollowTask::abortFollow(bool wait)
         return;
     }
     requestAbort();
-    if (wait) {
-        // Not waitForAbortToComplete_enforce_blocking(): it returns once the thread is idle, and a
-        // phase queued but not yet begun is not aborted and would start after it.
-        {
-            std::lock_guard<std::mutex> waited(_imp->workMutex);
-        }
-        onPhaseDone(ePhaseCompute, _imp->generation);
+    if (!wait) {
+        return;
     }
+    int generation = 0;
+    {
+        // A phase may need the Python lock to finish, and a Python caller, such as a script
+        // destroying a group, holds it.
+        PyThreadState* python = (Py_IsInitialized() && PyGILState_Check()) ? PyEval_SaveThread() : nullptr;
+        waitForAbortToComplete_enforce_blocking();
+        {
+            // The wait returns at once while the thread is idle, which it also is with a phase
+            // queued or just taken from the queue. Such a phase sees the abort under workMutex and
+            // does nothing; the new generation also turns away any phase that begins after this.
+            std::lock_guard<std::mutex> locker(_imp->workMutex);
+            generation = ++_imp->generation;
+        }
+        if (python) {
+            PyEval_RestoreThread(python);
+        }
+    }
+    // Only teardown waits: the node or the project is going away, and a dialog would block it.
+    endFollowPhase(ePhaseCompute, generation, false);
 }
 
 void
@@ -211,6 +234,13 @@ VectorFollowTask::setPhaseStartHookForTesting(const std::function<void()>& hook)
 {
     std::lock_guard<std::mutex> locker(phaseStartHookMutex);
     phaseStartHook = hook;
+}
+
+void
+VectorFollowTask::setPhaseEntryHookForTesting(const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> locker(phaseStartHookMutex);
+    phaseEntryHook = hook;
 }
 
 bool
@@ -269,18 +299,18 @@ VectorFollowTask::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
 {
     std::shared_ptr<PhaseArgs> args = std::dynamic_pointer_cast<PhaseArgs>(inArgs);
     assert(args);
+    if (std::function<void()> entryHook = hookForTesting(phaseEntryHook)) {
+        entryHook();
+    }
     {
         // Must end before phaseDone: the main thread may drop the job and the run as soon as it is
         // emitted.
         std::lock_guard<std::mutex> working(_imp->workMutex);
-        // A phase queued before a waited abort can begin after that abort already ended its follow.
-        if ((args->generation == _imp->generation) && _imp->run) {
-            std::function<void()> hook;
-            {
-                std::lock_guard<std::mutex> locker(phaseStartHookMutex);
-                hook = phaseStartHook;
-            }
-            if (hook) {
+        // An abort asked while the thread was idle is not waited out, so a phase queued or taken up
+        // before it is checked here. That abort set aborted before it read the thread's state, and
+        // the thread became active after, so this read sees it.
+        if ((args->generation == _imp->generation) && _imp->run && !_imp->aborted) {
+            if (std::function<void()> hook = hookForTesting(phaseStartHook)) {
                 hook();
             }
             IsolatedJob::ThreadScope inJob(_imp->job.get());
@@ -368,6 +398,14 @@ void
 VectorFollowTask::onPhaseDone(int phase,
                               int generation)
 {
+    endFollowPhase(phase, generation, true);
+}
+
+void
+VectorFollowTask::endFollowPhase(int phase,
+                                 int generation,
+                                 bool showDialog)
+{
     if (!_imp->run || (generation != _imp->generation)) {
         return;
     }
@@ -422,7 +460,7 @@ VectorFollowTask::onPhaseDone(int phase,
     if (host) {
         const std::string text = formatVectorFollowReport(report);
         host->setQuietInfoMessage(text);
-        if (!isCleanVectorFollowReport(report) && !isUserStopVectorFollowReport(report)) {
+        if (showDialog && !isCleanVectorFollowReport(report) && !isUserStopVectorFollowReport(report)) {
             host->message(eMessageTypeInfo, text);
         }
     }

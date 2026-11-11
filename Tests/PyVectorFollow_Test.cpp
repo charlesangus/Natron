@@ -24,6 +24,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
@@ -74,13 +75,16 @@ followControlsOf(const NodePtr& node)
     return hook ? hook->getVectorFollowControls() : NULL;
 }
 
-// Holds every follow's thread as its phase begins, until released. The destructor releases it and
-// waits out the follow it was given, so the hook never outlives the gate.
+using PhaseHookSetter = void (*)(const std::function<void()>&);
+
+// Holds every follow's thread at the given hook, by default as its phase begins, until released. The
+// destructor releases it and waits out the follow it was given, so the hook never outlives the gate.
 class PhaseGate {
 public:
-    PhaseGate()
+    explicit PhaseGate(PhaseHookSetter setHook = &VectorFollowTask::setPhaseStartHookForTesting)
+        : _setHook(setHook)
     {
-        VectorFollowTask::setPhaseStartHookForTesting([this]() { hold(); });
+        _setHook([this]() { hold(); });
     }
 
     ~PhaseGate()
@@ -89,7 +93,7 @@ public:
         if (_follow) {
             _follow->abortFollow(true);
         }
-        VectorFollowTask::setPhaseStartHookForTesting(std::function<void()>());
+        _setHook(std::function<void()>());
     }
 
     PhaseGate(const PhaseGate&) = delete;
@@ -123,11 +127,37 @@ private:
         _cond.wait(locker, [this]() { return _released; });
     }
 
+    const PhaseHookSetter _setHook;
     std::mutex _mutex;
     std::condition_variable _cond;
     bool _held = false;
     bool _released = false;
     VectorFollowControls* _follow = NULL;
+};
+
+// Counts the phases that reach their work, for as long as it lives.
+class PhaseWorkCounter {
+public:
+    PhaseWorkCounter()
+    {
+        VectorFollowTask::setPhaseStartHookForTesting([this]() { ++_count; });
+    }
+
+    ~PhaseWorkCounter()
+    {
+        VectorFollowTask::setPhaseStartHookForTesting(std::function<void()>());
+    }
+
+    PhaseWorkCounter(const PhaseWorkCounter&) = delete;
+    PhaseWorkCounter& operator=(const PhaseWorkCounter&) = delete;
+
+    int count() const
+    {
+        return _count.load();
+    }
+
+private:
+    std::atomic<int> _count { 0 };
 };
 
 class PyVectorFollowTest
@@ -458,6 +488,36 @@ TEST_F(PyVectorFollowTest, TheHostRefusesEditsWhileAFollowRuns)
     EXPECT_DOUBLE_EQ(opacityBefore * 0.5, opacity->getValue(0));
     expectScriptPasses("shape.addControlPointOnSegment(0, 0.5)\n");
     EXPECT_EQ(_bezier->getControlPointsCount(), points + 1);
+}
+
+// An abort that reaches the follow's thread while it is idle, with the phase queued or just taken
+// from the queue, is not waited out: that phase must find the abort and leave the follow alone.
+TEST_F(PyVectorFollowTest, APhaseTakenUpAfterAnAbortDoesNoWork)
+{
+    // Declared first so that it goes last: the gate waits out the follow before the count's hook goes.
+    PhaseWorkCounter work;
+    PhaseGate entry(&VectorFollowTask::setPhaseEntryHookForTesting);
+    VectorFollowControls* follow = startPanelFollow();
+    ASSERT_TRUE(follow);
+    entry.setFollow(follow);
+    ASSERT_TRUE(follow->isFollowing()) << "the follow was refused or did not start";
+    ASSERT_TRUE(entry.waitUntilHeld()) << "the follow's thread never took up its phase";
+
+    follow->abortFollow(false);
+    entry.release();
+    follow->abortFollow(true);
+    ASSERT_FALSE(follow->isFollowing());
+    EXPECT_EQ(0, work.count()) << "the phase ran after its follow was stopped";
+    VectorFollowReport report;
+    ASSERT_TRUE(follow->getLastReport(&report));
+    EXPECT_TRUE(isUserStopVectorFollowReport(report)) << formatVectorFollowReport(report);
+
+    // The stopped phase's own end is still queued, and must not set the follow going again.
+    for (int i = 0; i < 10; ++i) {
+        QCoreApplication::processEvents();
+    }
+    EXPECT_EQ(0, work.count());
+    EXPECT_FALSE(follow->isFollowing());
 }
 
 } // anonymous namespace

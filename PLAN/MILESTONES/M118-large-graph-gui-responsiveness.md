@@ -181,7 +181,7 @@ The Xvfb runs only have to show no op regressing against M117's Xvfb baseline. T
 
 Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work). Causes below are read from code, not yet profiled; T1 confirms or corrects them. Note: interaction cost is not flat in N (comp pan 15.8→45.8 ms/event from 300 to 3000); the N≤1000 figures sit on a ~16.7 ms frame floor, and the harness's per-event time includes a forced full repaint plus the event-loop pass after each event.
 
-- [ ] M118.P6.T1 — Split the bench timing and profile the misses on the dev host
+- [x] M118.P6.T1 — Split the bench timing and profile the misses on the dev host
   - files: `tools/bench/gui/gui_bench.py`, `tools/bench/gui/compare.py`, `tools/bench/gui/README.md`
   - approach: per event, record the step's wall and main-thread CPU (`time.thread_time`) and the loop pass after it separately; add `--no-forced-repaint` (process posted events in the step instead). Under Xvfb, release build, comp, N=3000, reps 1, one op per run (pan, hover, zoom_step, drag_move_1, select_all, knob_change_fanout, undo, redo) with eu-stack sampling (`tools/bench/sample_stacks.sh`, `-u root --privileged`), each run under 10 min. Record the top frames per op in Decisions and correct T2–T8 where they disagree.
   - verify: every failing op has a profile-backed cause in Decisions; the frame-floor finding goes to the user as a budget question (one frame vs main-thread CPU per event).
@@ -221,6 +221,22 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - approach: `setUserSelected` only acts on change; `replaceSelection` invalidates the navigator once and skips per-node edge/indicator updates whose state didn't change.
   - verify: Xvfb `select_all` at 3000 improves and stays linear 1000→3000; selection shots match.
   - size: S
+- [ ] M118.P6.T10 — Edges and link arrows out of `_nodeRoot`; z bands instead of `stackBefore`
+  - files: `Gui/NodeGui.cpp`, `Gui/Edge.cpp`, `Gui/NodeGraph35.cpp`, `Gui/NodeGraph.cpp`, `Gui/NodeGraphPrivate.*`
+  - approach: Qt's sibling-order work under `_nodeRoot` (~9000 children) is O(siblings) per `stackBefore`/`setParentItem`. Edges and LinkArrows go in their own container items. Node stacking uses z bands, with no per-node `stackBefore`; a restack only happens on drag release.
+  - verify: Xvfb gate `drag_move_50` and `undo` at 3000 drop sharply; node stacking and overlap shots match; `m55_node_graph.py` passes.
+  - size: M
+- [ ] M118.P6.T11 — Cached low-detail layer render with partial invalidation
+  - files: `Gui/NodeGraphLowDetailLayer.{h,cpp}`, `Gui/NodeGraph10.cpp`, `Gui/NodeGraph40.cpp`
+  - approach: the layers render to a cached pixmap invalidated by changed rects. Item changes coalesce into one layer update per event-loop pass. `getGridItems` never refiles the grid inside paint. `centerOnAllNodes` doesn't queue a second full paint.
+  - verify: Xvfb gate `select_all`, `fit_all` loop pass and `click_select` p95 at 3000 drop; the three-zoom shots match.
+  - size: M
+- [ ] M118.P6.T12 — Node GUI construction does each refresh once per node in bulk paste
+  - files: `Gui/NodeGui.cpp`, `Gui/Edge.cpp`
+  - approach: `setNameItemHtml` runs once per created node, not three times. During a paste batch, edge and data-kind pen refreshes are deferred to the batch end. `Edge::initLine` caches label widths.
+  - verify: Xvfb gate `paste_100`, `duplicate_100` and `paste_1000` drop; the paste and duplicate checks in `m55_node_graph.py` pass.
+  - size: M
+
 - [ ] M118.P6.T9 — GPU-host bench rerun against the merge base
   - files: `tools/bench/gui/BASELINE.md`, this milestone file
   - approach: one release AppImage of this branch and one of `bench/m118-base` (0553d5c3a); one sitting on the GPU host, before and after back to back, all topologies 300–3000; report per-event CPU and the loop pass separately.
@@ -274,3 +290,9 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - Against the base, everything improved except fit_all and click_select. The base wedged on duplicate_100 at 3000 and on undo at 300.
   - P6.T9's rerun is this run.
   - P6.T1 profiling of the remaining misses is running on the dev host with the gate harness.
+- 2026-11-11 — P6.T1 profile (dev-host N100, Xvfb gate comp-3000, eu-stack and gdb; evidence in `.worktrees/m117/build/m118-prof/`). Two costs dominate. First, Qt sibling-order work under `_nodeRoot`: `stackBefore` and `setParentItem` → `ensureSequentialSiblingIndex`, O(siblings) per call. That covers the drag restack, and undo's LinkArrow creation through `onKnobSlaved` → `onKnobsLinksChanged`. Second, full O(visible N) low-detail repaints per item change, with `refreshItemGrid` run inside paint (select_all, drag, fit_all's loop pass). Other findings:
+  - Undo runs 558 Python scripts per 1000-node undo, from the invalid-expression recheck (`setExpressionInternal` parses and validates per dimension). The Python object restore itself is cheap.
+  - The paste declare batching works (one script). paste_1000 has no single hotspot: `setNameItemHtml` runs three times per node, and connect does data-kind pen refreshes.
+  - Delete and redo do per-node deactivate work: edges, links, data-kind invalidation and downstream walks.
+  - Mapped to tasks: P6.T8 is the selection indicator (only act on change, one union repaint); P6.T2 gains the recheck and per-link signal coalescing; P6.T3 gains the label-width cache, now in T12. New tasks: T10 (edges out of `_nodeRoot`, z bands), T11 (cached low-detail render), T12 (paste construction).
+  - paste_1000 at 100 ms per 1000 nodes needs about 24× less work on the GPU host. Even after T12 it likely needs lazy NodeGui construction or a separate bulk-paste budget; that is for the user to decide when the numbers are in.

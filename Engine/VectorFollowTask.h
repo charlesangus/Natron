@@ -64,7 +64,8 @@ public:
 
     bool isFollowing() const;
 
-    // A follow that was running ends with what it had done so far. With wait, it has ended on return.
+    // A follow that was running ends with what it had done so far. With wait, it has ended on return
+    // and opens no dialog: only teardown waits.
     void abortFollow(bool wait);
 
     // False when no follow has ended since the last forgetLastReport() or startFollow().
@@ -74,6 +75,9 @@ public:
     // Tests only: hook runs on the follow's thread as each phase begins, so a test can hold a
     // follow mid-run. Empty removes it.
     static void setPhaseStartHookForTesting(const std::function<void()>& hook);
+    // Tests only: as above, but as the thread takes up each phase, before it checks whether the
+    // phase still has work to do.
+    static void setPhaseEntryHookForTesting(const std::function<void()>& hook);
 
 Q_SIGNALS:
 
@@ -89,6 +93,7 @@ private Q_SLOTS:
 
 private:
     void requestAbort();
+    void endFollowPhase(int phase, int generation, bool showDialog);
 
     virtual TaskQueueBehaviorEnum tasksQueueBehaviour() const OVERRIDE FINAL;
     virtual ThreadStateEnum threadLoopOnce(const GenericThreadStartArgsPtr& inArgs) OVERRIDE FINAL WARN_UNUSED_RETURN;

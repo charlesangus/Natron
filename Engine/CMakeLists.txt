@@ -58,6 +58,8 @@ list(APPEND NatronEngine_SOURCES ${NatronEngineFlow_SOURCES})
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+# Releases the Python lock only if its caller holds it, which the limited API cannot ask.
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/VectorFollowTask.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
 # Native node registration fragments (see Engine/Nodes/NativeRegistry.h), aggregated into
 # NativeRegistryAll.inc. Sorted so the registration order does not depend on the filesystem.

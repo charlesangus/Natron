@@ -8,12 +8,15 @@ Tests/gui/run-gui-test.sh (Xvfb) or runs an AppImage on the host display:
 Configured by the environment:
     GUI_BENCH_TOPOLOGIES  comma-separated gen_graph topologies (default mixed)
     GUI_BENCH_SIZES       comma-separated node counts (default 300)
-    GUI_BENCH_REPS        repetitions per op (default 5)
+    GUI_BENCH_REPS        repetitions per op (default 5), or auto: an op with 10 or more events per rep
+                          runs once, and the others repeat until 5 reps or 3 s, whichever comes first
     GUI_BENCH_OPS         comma-separated op names to run (default all)
-    GUI_BENCH_OP_TIMEOUT_S  per-op budget; an op past it is recorded as "timeout" (default 120). A single
-                          step that does not return within 2x that plus 60 s is recorded as a "wedged"
-                          timeout and the process exits with code 3, which run.sh answers by
-                          restarting Natron with GUI_BENCH_RESUME=1
+    GUI_BENCH_OP_TIMEOUT_S  cap on every op's per-rep timeout, and the timeout of an op with neither a
+                          budget nor a baseline (default 120)
+    GUI_BENCH_BASELINE    a result file whose ok medians, for the same op, topology and n, feed the timeouts
+    GUI_BENCH_GRAPH_CACHE directory of generated graphs keyed by topology, n, seed and gen_graph.py's sha1.
+                          A miss generates and saves the graph; a hit opens it, and that open is the load
+                          op's one rep. Restarts open it from the cache too
     GUI_BENCH_RESUME      1 skips every (topology, n, op) already recorded in GUI_BENCH_OUT, and sizes
                           with nothing left to run
     GUI_BENCH_SKIP_WEDGED 1 (default) records an op that wedged Natron at a smaller n as a timeout at the
@@ -36,20 +39,33 @@ Configured by the environment:
     NATRON_STALL_LOG      the stall monitor's log; stalls are attributed to the op whose timed
                           window holds their midpoint
 
+Each rep has its own timeout: 5x the larger of the op's budget (OP_BUDGET_MS per event times its
+events) and its baseline median, clamped to 2-30 s. A rep past it is abandoned before its next event
+and the op is recorded as "over_budget" with censored_ms, the time the rep had reached. A single timed
+step that does not return within the timeout plus 10 s (untimed setup and cleanup get at least 60 s)
+is recorded as a "wedged" over_budget and the process exits with code 3, which run.sh answers by
+restarting Natron with GUI_BENCH_RESUME=1.
+
+delete_1000, undo and redo run as one cycle per rep: the delete, its undo and the redo are each timed
+and recorded under their own name. When one is not ok, the ones after it are recorded as "not_run".
+
 Output: one host record, then per (topology, n) one graph record and one record per op with the
 median, p95, min and max of the per-rep wall times, the longest single event, and the stalls.
 Each op also reports, over all its events, the median and max of the timed step's wall time
 (step_wall_*), its main-thread CPU time (step_cpu_*) and the event-loop pass that follows it
-(loop_pass_*), which the per-rep wall time folds together.
+(loop_pass_*), which the per-rep wall time folds together, plus the step wall time's p50, p90 and
+p95 (step_wall_p*) and the samples themselves (samples_ms, 0.1 ms, at most 200, thinned evenly).
 Each rep's events run on the Qt event loop, one at a time, so timers and deferred paints land
 between them as they would for a user; interaction events force a synchronous viewport repaint,
 so paint cost lands inside the event that caused it.
 """
+import hashlib
 import json
 import math
 import os
 import platform
 import re
+import shutil
 import socket
 import statistics
 import sys
@@ -78,9 +94,34 @@ def env_list(name, default):
 
 TOPOLOGIES = env_list("GUI_BENCH_TOPOLOGIES", "mixed")
 SIZES = [int(v) for v in env_list("GUI_BENCH_SIZES", "300")]
-REPS = int(os.environ.get("GUI_BENCH_REPS", "5"))
+REPS_SETTING = os.environ.get("GUI_BENCH_REPS", "5").strip().lower()
+AUTO_REPS = REPS_SETTING == "auto"
+REPS = 1 if AUTO_REPS else int(REPS_SETTING)
+AUTO_MAX_SAMPLES = 5
+AUTO_MAX_S = 3.0
+AUTO_ONE_REP_EVENTS = 10
 ONLY_OPS = set(env_list("GUI_BENCH_OPS", ""))
 OP_TIMEOUT_S = float(os.environ.get("GUI_BENCH_OP_TIMEOUT_S", "120"))
+GRAPH_CACHE = os.environ.get("GUI_BENCH_GRAPH_CACHE", "")
+BASELINE_PATH = os.environ.get("GUI_BENCH_BASELINE", "")
+TIMEOUT_FACTOR = 5.0
+TIMEOUT_MIN_S = 2.0
+TIMEOUT_MAX_S = 30.0
+EVENT_GUARD_PAD_S = 10.0
+UNTIMED_GUARD_MIN_S = 60.0
+SAMPLES_CAP = 200
+INTERACTION_BUDGET_MS = 16.0
+EDIT_BUDGET_MS = 100.0
+OP_BUDGET_MS = dict(
+    [(name, INTERACTION_BUDGET_MS) for name in ("pan", "zoom_step", "hover", "drag_move_1", "drag_move_50",
+                                                "click_select", "rubber_band", "select_all", "fit_all")] +
+    [(name, EDIT_BUDGET_MS) for name in ("delete_1000", "undo", "redo", "paste_100", "paste_1000", "duplicate_100",
+                                         "knob_change_fanout", "set_expression", "edit_label", "create_one",
+                                         "connect")])
+# Events per rep; an op not listed has one.
+OP_EVENTS = {"zoom_step": 20, "pan": DRAG_EVENTS, "hover": 200, "click_select": 2, "rubber_band": DRAG_EVENTS,
+             "drag_move_1": DRAG_EVENTS, "drag_move_50": DRAG_EVENTS, "frame_step": 10}
+DELETE_CYCLE = ("delete_1000", "undo", "redo")
 SEED = int(os.environ.get("GUI_BENCH_SEED", "1"))
 IDLE_S = float(os.environ.get("GUI_BENCH_IDLE_S", "5"))
 SELF_CHECK = os.environ.get("GUI_BENCH_SELF_CHECK", "0") == "1"
@@ -102,6 +143,9 @@ try:
     import gen_graph
     import guitest as gt
     from guitest import check, report
+
+    with open(os.path.splitext(gen_graph.__file__)[0] + ".py", "rb") as _f:
+        GEN_GRAPH_SHA = hashlib.sha1(_f.read()).hexdigest()[:12]
 
     if os.environ.get("GUI_BENCH_PTRACER_ANY") == "1":
         # Under kernel.yama.ptrace_scope 1 only an ancestor may attach, and the stack sampler is not one.
@@ -130,37 +174,53 @@ try:
         return time.monotonic() * 1000.0
 
     # A single event that never returns can't be caught between events. This thread records the op
-    # as a timeout and ends the process once one step, together with the event loop pass that follows
-    # it, has run well past the op's budget. The guard is re-armed before every step, so an op that is
-    # slow overall but keeps returning is left to the per-op budget instead.
-    _guard = {"until": None, "record": None, "phase": None}
+    # as over budget and ends the process once one step, together with the event loop pass that
+    # follows it, has run well past the op's timeout. The guard is re-armed before every step, so an
+    # op that is slow overall but keeps returning is left to its per-rep timeout instead.
+    _guard = {"until": None, "record": None, "phase": None, "guard_s": None, "rep_t0": None, "companions": None}
     _dialogs = []
 
-    def arm_guard(phase):
+    def arm_guard(phase, seconds):
         _guard["phase"] = phase
-        _guard["until"] = time.monotonic() + GUARD_S
+        _guard["guard_s"] = seconds
+        _guard["until"] = time.monotonic() + seconds
+
+    def disarm_guard():
+        _guard["until"] = None
+        _guard["phase"] = None
+        _guard["rep_t0"] = None
+        _guard["companions"] = None
 
     def _guard_loop():
         while True:
-            time.sleep(1.0)
+            time.sleep(0.25)
             until = _guard["until"]
-            if until is not None and time.monotonic() > until:
-                record = dict(_guard["record"])
-                record.update({"status": "timeout", "wedged": True, "timeout_s": GUARD_S, "phase": _guard["phase"],
-                               "error": "one %s step of the op did not return within %.0f s" % (_guard["phase"], GUARD_S)})
-                if _dialogs:
-                    record["dialogs"] = list(_dialogs)
-                emit(record)
-                _out.close()
-                report("RESULT " + json.dumps(record, sort_keys=True))
-                report("FAIL [%s-%d] %s wedged Natron in its %s step (> %.0f s); exiting so the run restarts" % (
-                    record["topology"], record["n"], record["op"], _guard["phase"], GUARD_S))
-                os._exit(WEDGED_EXIT)
-
-    GUARD_S = OP_TIMEOUT_S * 2 + 60
+            if until is None or time.monotonic() <= until:
+                continue
+            phase, guard_s, rep_t0 = _guard["phase"], _guard["guard_s"], _guard["rep_t0"]
+            record = dict(_guard["record"])
+            record.update({"status": "over_budget", "wedged": True, "guard_s": guard_s, "phase": phase,
+                           "error": "one %s step of the op did not return within %.0f s" % (phase, guard_s)})
+            if phase == "events" and rep_t0 is not None:
+                record["censored_ms"] = round(mono_ms() - rep_t0, 1)
+            if _dialogs:
+                record["dialogs"] = list(_dialogs)
+            pre, post = [], []
+            if _guard["companions"] is not None:
+                try:
+                    pre, post = _guard["companions"](record)
+                except Exception:
+                    report("NOTE could not record the ops that share the wedged step's cycle: " + short_error())
+            for rec in pre + [record] + post:
+                emit(rec)
+                report("RESULT " + json.dumps(rec, sort_keys=True))
+            _out.close()
+            report("FAIL [%s-%d] %s wedged Natron in its %s step (> %.0f s); exiting so the run restarts" % (
+                record["topology"], record["n"], record["op"], phase, guard_s))
+            os._exit(WEDGED_EXIT)
 
     def recorded_ops():
-        """({(topology, n, op)} already in OUT_PATH, {(topology, op): (n, timeout_s)} of the smallest n each op wedged at)."""
+        """({(topology, n, op)} already in OUT_PATH, {(topology, op): (n, guard_s)} of the smallest n each op wedged at)."""
         done, wedged = set(), {}
         if not os.path.isfile(OUT_PATH):
             return done, wedged
@@ -176,8 +236,47 @@ try:
                 if rec.get("wedged") and not rec.get("not_run"):
                     key = (rec["topology"], rec["op"])
                     if key not in wedged or rec["n"] < wedged[key][0]:
-                        wedged[key] = (rec["n"], rec.get("timeout_s", GUARD_S))
+                        wedged[key] = (rec["n"], rec.get("guard_s", rec.get("timeout_s", OP_TIMEOUT_S)))
         return done, wedged
+
+    def read_baseline(path):
+        """{(op, topology, n): median_ms} of the ok op records in path."""
+        medians = {}
+        if not path:
+            return {}
+        with open(path) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("type") == "op" and rec.get("status") == "ok" and rec.get("median_ms") is not None:
+                    medians.setdefault((rec["op"], rec["topology"], rec["n"]), []).append(float(rec["median_ms"]))
+        return dict((k, statistics.median(v)) for k, v in medians.items())
+
+    BASELINE = read_baseline(BASELINE_PATH)
+
+    def op_timeout_s(name, topology, n):
+        """Per-rep timeout: a multiple of the op's budget for its events or of its baseline median, whichever
+        is larger, clamped; GUI_BENCH_OP_TIMEOUT_S caps it and stands in when there is neither."""
+        budget = OP_BUDGET_MS.get(name)
+        base = BASELINE.get((name, topology, n))
+        if budget is None and base is None:
+            seconds = OP_TIMEOUT_S
+        else:
+            expected_ms = max((budget or 0.0) * OP_EVENTS.get(name, 1), base or 0.0)
+            seconds = min(max(TIMEOUT_FACTOR * expected_ms / 1000.0, TIMEOUT_MIN_S), TIMEOUT_MAX_S)
+        if name == "idle":
+            seconds = max(seconds, IDLE_S + TIMEOUT_MIN_S)
+        return min(seconds, OP_TIMEOUT_S)
+
+    def event_guard_s(timeout_s):
+        return timeout_s + EVENT_GUARD_PAD_S
+
+    def untimed_guard_s(timeout_s):
+        """Setup and cleanup are untimed and can legitimately be slow (restoring 1000 nodes), so they get
+        more room than a timed event."""
+        return max(UNTIMED_GUARD_MIN_S, 2 * timeout_s + 3 * EVENT_GUARD_PAD_S)
 
     DONE, WEDGED = recorded_ops() if RESUME else (set(), {})
     threading.Thread(target=_guard_loop, daemon=True).start()
@@ -212,10 +311,14 @@ try:
             "resumed": RESUME,
             "natron_version": NatronEngine.natron.getNatronVersionString(),
             "stall_log": bool(STALL_LOG),
-            "reps": REPS,
+            "reps": "auto" if AUTO_REPS else REPS,
             "forced_repaint": FORCED_REPAINT,
             "seed": SEED,
             "op_timeout_s": OP_TIMEOUT_S,
+            "graph_cache": bool(GRAPH_CACHE),
+            "baseline": os.path.basename(BASELINE_PATH) or None,
+            "baseline_ops": len(BASELINE),
+            "gen_graph_sha": GEN_GRAPH_SHA,
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
@@ -429,9 +532,23 @@ try:
         w, h = node.getSize()
         return x + 8.0, y + h / 2.0
 
+    _pressed = {}
+
     def mouse(etype, pos, button, buttons, modifiers=Qt.NoModifier):
         graph = root_graph()
         QApplication.sendEvent(graph.viewport(), QMouseEvent(etype, pos, button, buttons, modifiers))
+        if etype == QEvent.MouseButtonPress:
+            _pressed.update({"button": button, "pos": pos})
+        elif etype == QEvent.MouseButtonRelease:
+            _pressed.clear()
+        elif etype == QEvent.MouseMove and _pressed:
+            _pressed["pos"] = pos
+
+    def release_pressed():
+        """Ends a gesture an abandoned rep left with a button down, so later ops see no drag in progress."""
+        if _pressed:
+            mouse(QEvent.MouseButtonRelease, _pressed["pos"], _pressed["button"], Qt.NoButton)
+            QApplication.processEvents()
 
     def wheel(pos, steps):
         graph = root_graph()
@@ -761,56 +878,37 @@ try:
             restore_root(st["before"])
         return {"setup": setup, "before": before, "events": events, "after": after}
 
-    def delete_setup(count):
+    def delete_cycle(count):
+        """One rep deletes count nodes, undoes the delete and redoes it, each step timed as its own op;
+        the cleanup undoes whatever the rep left deleted."""
         def setup(ctx, st):
             st["names"] = middle(ctx.processing, min(count, ctx.n // 2))
             st["record"] = {"count": len(st["names"])}
+            st["prompts"] = 0
             st["before"] = root_names()
-        return setup
 
-    def op_delete(count):
         def before(ctx, st, rep):
             select(st["names"])
 
-        def events(ctx, st, rep):
-            st["record"]["prompts"] = st["record"].get("prompts", 0) + delete_selection()
+        def delete_events(ctx, st, rep):
+            st["prompts"] += delete_selection()
             yield None
 
-        def after(ctx, st, rep):
-            trigger("undo")
-            clear_selection()
-            restore_root(st["before"])
-        return {"setup": delete_setup(count), "before": before, "events": events, "after": after}
-
-    def op_undo(count):
-        def before(ctx, st, rep):
-            select(st["names"])
-            st["record"]["prompts"] = st["record"].get("prompts", 0) + delete_selection()
-
-        def events(ctx, st, rep):
+        def undo_events(ctx, st, rep):
             trigger("undo")
             yield None
 
-        def after(ctx, st, rep):
-            clear_selection()
-            restore_root(st["before"])
-        return {"setup": delete_setup(count), "before": before, "events": events, "after": after}
-
-    def op_redo(count):
-        def before(ctx, st, rep):
-            select(st["names"])
-            st["record"]["prompts"] = st["record"].get("prompts", 0) + delete_selection()
-            trigger("undo")
-
-        def events(ctx, st, rep):
+        def redo_events(ctx, st, rep):
             trigger("redo")
             yield None
 
         def after(ctx, st, rep):
-            trigger("undo")
+            if st["before"] - root_names():
+                trigger("undo")
             clear_selection()
             restore_root(st["before"])
-        return {"setup": delete_setup(count), "before": before, "events": events, "after": after}
+        return {"setup": setup, "before": before, "after": after,
+                "steps": [("delete_1000", delete_events), ("undo", undo_events), ("redo", redo_events)]}
 
     def op_set_expression():
         def setup(ctx, st):
@@ -953,8 +1051,8 @@ try:
     ]
     EDIT_OPS = [
         ("create_one", op_create_one), ("paste_100", lambda: op_paste(100)), ("paste_1000", lambda: op_paste(1000)),
-        ("duplicate_100", lambda: op_duplicate(100)), ("delete_1000", lambda: op_delete(1000)),
-        ("undo", lambda: op_undo(1000)), ("redo", lambda: op_redo(1000)), ("set_expression", op_set_expression),
+        ("duplicate_100", lambda: op_duplicate(100)), ("delete_1000", lambda: delete_cycle(1000)),
+        ("set_expression", op_set_expression),
         ("edit_label", op_edit_label), ("knob_change_fanout", op_knob_change_fanout), ("connect", op_connect),
         ("frame_step", op_frame_step), ("idle", op_idle),
     ]
@@ -964,122 +1062,284 @@ try:
 
     # ---- driver --------------------------------------------------------------------------------
 
-    def p95(values):
+    def percentile(values, q):
         ordered = sorted(values)
-        return ordered[max(0, int(math.ceil(0.95 * len(ordered))) - 1)]
+        return ordered[max(0, int(math.ceil(q * len(ordered))) - 1)]
 
     def short_error():
         return traceback.format_exc().strip().splitlines()[-1]
 
-    def run_op(name, make, ctx, kind):
+    def no_stalls():
+        return {"count": 0, "max_ms": 0.0, "total_ms": 0.0}
+
+    def sample_list(values):
+        """values rounded to 0.1 ms, thinned evenly to at most SAMPLES_CAP entries."""
+        if len(values) > SAMPLES_CAP:
+            values = [values[i * len(values) // SAMPLES_CAP] for i in range(SAMPLES_CAP)]
+        return [round(v, 1) for v in values]
+
+    class Timing(object):
+        """What the timed reps of one op measured."""
+
+        def __init__(self, timeout_s):
+            self.timeout_s = timeout_s
+            self.times, self.windows = [], []
+            self.event_max = 0.0
+            self.step_wall, self.step_cpu, self.loop_pass = [], [], []
+            self.events_per_rep = 0
+            self.status, self.error, self.censored_ms = "ok", None, None
+
+        def fail(self, error):
+            # An op abandoned over budget can fail its cleanup checks; it stays over budget.
+            if self.status == "ok":
+                self.status = "error"
+            self.error = error
+
+    def base_record(name, kind, topology, n, timeout_s):
+        return {"type": "op", "op": name, "kind": kind, "topology": topology, "n": n, "reps": 0,
+                "timeout_s": round(timeout_s, 3), "stalls": no_stalls()}
+
+    def watch(name, kind, topology, n, timing):
+        """Points the guard at name, so a wedge is recorded against it."""
+        _guard["record"] = base_record(name, kind, topology, n, timing.timeout_s)
+
+    def timed_rep(gen, timing):
+        """Runs one rep's events on the event loop; the rep is abandoned as over budget once it passes
+        its timeout, checked before each event."""
+        count = 0
+        t0 = mono_ms()
+        _guard["rep_t0"] = t0
+        deadline = t0 + timing.timeout_s * 1000.0
+        step_end = None
+        over = False
+        while True:
+            e0 = mono_ms()
+            if e0 > deadline:
+                over = True
+                gen.close()
+                release_pressed()
+                break
+            if step_end is not None:
+                timing.loop_pass.append(e0 - step_end)
+            c0 = time.thread_time()
+            arm_guard("events", event_guard_s(timing.timeout_s))
+            try:
+                cmd = next(gen)
+                done = False
+            except StopIteration:
+                done = True
+            step_end = mono_ms()
+            timing.event_max = max(timing.event_max, step_end - e0)
+            if done:
+                break
+            timing.step_wall.append(step_end - e0)
+            timing.step_cpu.append((time.thread_time() - c0) * 1000.0)
+            if cmd and tuple(cmd) != ("sleep", 0):
+                step_end = None
+            count += 1
+            yield cmd if cmd else ("sleep", 0)
+        t1 = mono_ms()
+        _guard["rep_t0"] = None
+        timing.events_per_rep = count
+        timing.windows.append((t0, t1))
+        if over:
+            timing.status, timing.censored_ms = "over_budget", t1 - t0
+        else:
+            timing.times.append(t1 - t0)
+
+    def op_record(name, kind, topology, n, timing, extra=None):
+        record = base_record(name, kind, topology, n, timing.timeout_s)
+        times, step_wall = timing.times, timing.step_wall
+        record.update({"status": timing.status, "reps": len(times), "events_per_rep": timing.events_per_rep,
+                       "per_event_max_ms": round(timing.event_max, 3), "stalls": attribute_stalls(timing.windows)})
+        if times:
+            record.update({"median_ms": round(statistics.median(times), 3), "p95_ms": round(percentile(times, 0.95), 3),
+                           "min_ms": round(min(times), 3), "max_ms": round(max(times), 3)})
+        for field, values in (("step_wall", step_wall), ("step_cpu", timing.step_cpu), ("loop_pass", timing.loop_pass)):
+            if values:
+                record[field + "_median_ms"] = round(statistics.median(values), 3)
+                record[field + "_max_ms"] = round(max(values), 3)
+        if step_wall:
+            for q in (50, 90, 95):
+                record["step_wall_p%d" % q] = round(percentile(step_wall, q / 100.0), 3)
+            record["samples_ms"] = sample_list(step_wall)
+            if len(step_wall) > SAMPLES_CAP:
+                record["samples_total"] = len(step_wall)
+        if timing.censored_ms is not None:
+            record["censored_ms"] = round(timing.censored_ms, 1)
+        if timing.error:
+            record["error"] = timing.error
+        record.update(extra or {})
+        return record
+
+    def not_run_record(name, kind, topology, n, reason, extra=None):
+        record = {"type": "op", "op": name, "kind": kind, "topology": topology, "n": n, "status": "not_run",
+                  "not_run": True, "reps": 0, "stalls": no_stalls(), "reason": reason, "error": "not run: " + reason}
+        record.update(extra or {})
+        return record
+
+    def publish(record):
+        emit(record)
+        report("RESULT " + json.dumps(record, sort_keys=True))
+        name, topology, n, status, error = (record["op"], record["topology"], record["n"], record["status"],
+                                            record.get("error"))
+        if status == "not_run" and not record.get("wedged"):
+            report("NOTE %s %s n=%d: %s" % (name, topology, n, error))
+            return
+        check(status == "ok", "%s %s n=%d: %s%s" % (name, topology, n, status, (" (" + error + ")") if error else ""))
+        if name == "self_check":
+            check(record["stalls"]["count"] == 1 and record["stalls"]["max_ms"] >= 250.0,
+                  "self_check %s n=%d: the 300 ms block is attributed one stall (%s)" % (topology, n, record["stalls"]))
+        if name == "idle":
+            check((record.get("cpu_ms") or 0) > 0, "idle %s n=%d: CPU time is reported (%s ms)" % (topology, n, record.get("cpu_ms")))
+
+    def hold(name, ctx):
+        if not HOLD_FILE:
+            return
+        _guard["until"] = None
+        report("BEGIN %s %s %d" % (name, ctx.topology, ctx.n))
+        yield ("until", lambda: os.path.exists(HOLD_FILE), HOLD_S)
+        if os.path.exists(HOLD_FILE):
+            os.remove(HOLD_FILE)
+        else:
+            report("NOTE wait expired: %s was not released by GUI_BENCH_HOLD_FILE within %.0f s; running without a sampler" % (name, HOLD_S))
+
+    def rep_plan(op, events):
+        """(most reps, whether to stop early once AUTO_MAX_S has passed). In auto mode an op with many
+        events per rep gets its distribution from them in one rep."""
+        if "reps" in op:
+            return op["reps"], False
+        if not AUTO_REPS:
+            return REPS, False
+        if events >= AUTO_ONE_REP_EVENTS:
+            return 1, False
+        return AUTO_MAX_SAMPLES, True
+
+    def run_op(name, make, ctx, kind, wanted=None, runnable=None):
         op = make()
-        reps = op.get("reps", REPS)
+        if "steps" in op:
+            yield from run_cycle(op, ctx, kind, wanted, runnable)
+            return
+        timing = Timing(op_timeout_s(name, ctx.topology, ctx.n))
+        untimed = untimed_guard_s(timing.timeout_s)
+        reps, auto = rep_plan(op, OP_EVENTS.get(name, 1))
         st = {}
-        times, windows = [], []
-        event_max = 0.0
-        step_wall, step_cpu, loop_pass = [], [], []
-        events_per_rep = 0
-        status, error = "ok", None
         del _dialogs[:]
-        _guard["record"] = {"type": "op", "op": name, "kind": kind, "topology": ctx.topology, "n": ctx.n,
-                            "reps": 0, "stalls": {"count": 0, "max_ms": 0.0, "total_ms": 0.0}}
-        arm_guard("setup")
+        watch(name, kind, ctx.topology, ctx.n, timing)
+        arm_guard("setup", untimed)
         try:
             if "setup" in op:
                 op["setup"](ctx, st)
             yield ("sleep", 0)
-            if HOLD_FILE:
-                _guard["until"] = None
-                report("BEGIN %s %s %d" % (name, ctx.topology, ctx.n))
-                yield ("until", lambda: os.path.exists(HOLD_FILE), HOLD_S)
-                if os.path.exists(HOLD_FILE):
-                    os.remove(HOLD_FILE)
-                else:
-                    report("NOTE wait expired: %s was not released by GUI_BENCH_HOLD_FILE within %.0f s; running without a sampler" % (name, HOLD_S))
-            deadline = time.monotonic() + OP_TIMEOUT_S
+            yield from hold(name, ctx)
+            started = time.monotonic()
             for rep in range(reps):
-                arm_guard("before")
+                arm_guard("before", untimed)
                 if "before" in op:
                     op["before"](ctx, st, rep)
                 yield ("sleep", 0)
-                gen = op["events"](ctx, st, rep)
-                count = 0
-                t0 = mono_ms()
-                step_end = None
-                while True:
-                    e0 = mono_ms()
-                    if step_end is not None:
-                        loop_pass.append(e0 - step_end)
-                    c0 = time.thread_time()
-                    arm_guard("events")
-                    try:
-                        cmd = next(gen)
-                        done = False
-                    except StopIteration:
-                        done = True
-                    step_end = mono_ms()
-                    event_max = max(event_max, step_end - e0)
-                    if done:
-                        break
-                    step_wall.append(step_end - e0)
-                    step_cpu.append((time.thread_time() - c0) * 1000.0)
-                    if cmd and tuple(cmd) != ("sleep", 0):
-                        step_end = None
-                    count += 1
-                    if time.monotonic() > deadline:
-                        status = "timeout"
-                        gen.close()
-                        break
-                    yield cmd if cmd else ("sleep", 0)
-                t1 = mono_ms()
-                times.append(t1 - t0)
-                windows.append((t0, t1))
-                events_per_rep = count
-                arm_guard("after")
+                yield from timed_rep(op["events"](ctx, st, rep), timing)
+                arm_guard("after", untimed)
                 if "after" in op:
                     op["after"](ctx, st, rep)
-                if status != "ok":
+                if timing.status != "ok":
+                    break
+                if auto and time.monotonic() - started >= AUTO_MAX_S:
                     break
         except Exception:
-            status, error = "error", short_error()
-        arm_guard("teardown")
+            timing.fail(short_error())
+        arm_guard("teardown", untimed)
         try:
             if "teardown" in op:
                 op["teardown"](ctx, st)
         except Exception:
-            if status == "ok":
-                status, error = "error", "teardown: " + short_error()
-        _guard["until"] = None
-        _guard["phase"] = None
+            if timing.status == "ok":
+                timing.fail("teardown: " + short_error())
+        disarm_guard()
         yield ("sleep", STALL_FLUSH_MS)
-        record = {
-            "type": "op", "op": name, "kind": kind, "topology": ctx.topology, "n": ctx.n,
-            "status": status, "reps": len(times), "events_per_rep": events_per_rep,
-            "per_event_max_ms": round(event_max, 3),
-            "stalls": attribute_stalls(windows),
-        }
-        if times:
-            record.update({"median_ms": round(statistics.median(times), 3), "p95_ms": round(p95(times), 3),
-                           "min_ms": round(min(times), 3), "max_ms": round(max(times), 3)})
-        for field, values in (("step_wall", step_wall), ("step_cpu", step_cpu), ("loop_pass", loop_pass)):
-            if values:
-                record[field + "_median_ms"] = round(statistics.median(values), 3)
-                record[field + "_max_ms"] = round(max(values), 3)
-        if error:
-            record["error"] = error
-        if status == "timeout":
-            record["timeout_s"] = OP_TIMEOUT_S
-        record.update(st.get("record", {}))
+        record = op_record(name, kind, ctx.topology, ctx.n, timing, st.get("record"))
         if _dialogs:
             record["dialogs"] = list(_dialogs)
-        emit(record)
-        report("RESULT " + json.dumps(record, sort_keys=True))
-        check(status == "ok", "%s %s n=%d: %s%s" % (name, ctx.topology, ctx.n, status, (" (" + error + ")") if error else ""))
-        if name == "self_check":
-            check(record["stalls"]["count"] == 1 and record["stalls"]["max_ms"] >= 250.0,
-                  "self_check %s n=%d: the 300 ms block is attributed one stall (%s)" % (ctx.topology, ctx.n, record["stalls"]))
-        if name == "idle":
-            check((record.get("cpu_ms") or 0) > 0, "idle %s n=%d: CPU time is reported (%s ms)" % (ctx.topology, ctx.n, record.get("cpu_ms")))
+        publish(record)
+
+    def run_cycle(op, ctx, kind, wanted, runnable):
+        """Runs the runnable steps of a cycle op once per rep, each timed as its own op, and records the
+        wanted ones. A step that does not finish ok ends the cycle, and the steps after it, which
+        depend on it, are recorded as not run unless an earlier rep measured them."""
+        steps = [s for s in op["steps"] if s[0] in runnable]
+        timings = dict((nm, Timing(op_timeout_s(nm, ctx.topology, ctx.n))) for nm in runnable)
+        untimed = untimed_guard_s(max(t.timeout_s for t in timings.values()))
+        st = {}
+        skipped = {}
+        current = [runnable[0]]
+        del _dialogs[:]
+
+        def extra(nm):
+            rec = dict(st.get("record", {}))
+            if nm == runnable[0]:
+                rec["prompts"] = st.get("prompts", 0)
+                if _dialogs:
+                    rec["dialogs"] = list(_dialogs)
+            return rec
+
+        def finished(nm):
+            if nm in skipped and not timings[nm].times:
+                return not_run_record(nm, kind, ctx.topology, ctx.n, skipped[nm], st.get("record"))
+            return op_record(nm, kind, ctx.topology, ctx.n, timings[nm], extra(nm))
+
+        def skip_after(nm, why):
+            for later in runnable[runnable.index(nm) + 1:]:
+                skipped.setdefault(later, "%s %s" % (nm, why))
+
+        def companions(wedged):
+            i = runnable.index(wedged["op"])
+            wedged.update(extra(wedged["op"]))
+            pre = [finished(nm) for nm in runnable[:i] if nm in wanted]
+            post = [not_run_record(nm, kind, ctx.topology, ctx.n, "%s wedged Natron" % wedged["op"], st.get("record"))
+                    for nm in runnable[i + 1:] if nm in wanted]
+            return pre, post
+
+        def point(nm):
+            current[0] = nm
+            watch(nm, kind, ctx.topology, ctx.n, timings[nm])
+
+        point(runnable[0])
+        _guard["companions"] = companions
+        arm_guard("setup", untimed)
+        reps, auto = (AUTO_MAX_SAMPLES, True) if AUTO_REPS else (REPS, False)
+        try:
+            op["setup"](ctx, st)
+            yield ("sleep", 0)
+            yield from hold(runnable[0], ctx)
+            started = time.monotonic()
+            for rep in range(reps):
+                point(runnable[0])
+                arm_guard("before", untimed)
+                op["before"](ctx, st, rep)
+                yield ("sleep", 0)
+                failed = None
+                for nm, events in steps:
+                    point(nm)
+                    yield from timed_rep(events(ctx, st, rep), timings[nm])
+                    if timings[nm].status != "ok":
+                        failed = nm
+                        break
+                    yield ("sleep", 0)
+                arm_guard("after", untimed)
+                op["after"](ctx, st, rep)
+                if failed:
+                    skip_after(failed, "was " + timings[failed].status.replace("_", " "))
+                    break
+                if auto and time.monotonic() - started >= AUTO_MAX_S:
+                    break
+        except Exception:
+            timings[current[0]].fail(short_error())
+            skip_after(current[0], "failed")
+        disarm_guard()
+        yield ("sleep", STALL_FLUSH_MS)
+        for nm in runnable:
+            if nm in wanted:
+                publish(finished(nm))
 
     def clean_reset(path):
         if path and not app.saveProject(path):
@@ -1088,28 +1348,165 @@ try:
             raise RuntimeError("resetProject failed")
 
     def op_plan(topology, n):
-        """[(name, make, kind)] in run order, less the ops a resumed run has already recorded."""
-        plan = [(name, make, "interaction") for name, make in INTERACTION_OPS if selected(name)]
-        plan += [(name, make, "edit") for name, make in EDIT_OPS if selected(name)]
+        """[(name, make, kind, wanted, runnable)] in run order, less the ops a resumed run has already
+        recorded. For the delete cycle, wanted lists the steps still to record and runnable the steps
+        to run; both are None for a plain op."""
+        plan = [(name, make, "interaction", None, None) for name, make in INTERACTION_OPS if selected(name)]
+        for name, make in EDIT_OPS:
+            if name == DELETE_CYCLE[0]:
+                wanted = [nm for nm in DELETE_CYCLE if selected(nm) and (topology, n, nm) not in DONE]
+                if wanted:
+                    last = max(DELETE_CYCLE.index(nm) for nm in wanted)
+                    plan.append((name, make, "edit", wanted, list(DELETE_CYCLE[:last + 1])))
+            elif selected(name):
+                plan.append((name, make, "edit", None, None))
         if selected("load"):
-            plan.append(("load", op_load, "interaction"))
+            plan.append(("load", op_load, "interaction", None, None))
         if SELF_CHECK:
-            plan.append(("self_check", op_self_check, "check"))
-        return [p for p in plan if (topology, n, p[0]) not in DONE]
+            plan.append(("self_check", op_self_check, "check", None, None))
+        return [p for p in plan if p[3] is not None or (topology, n, p[0]) not in DONE]
 
-    def record_not_run(name, kind, topology, n):
-        """Records name as a timeout without running it when it wedged Natron at a smaller n; True if it did."""
+    def carried_wedge(name, topology, n):
+        """(n, guard_s) of a smaller n at which name wedged Natron, when such ops are to be skipped."""
         hit = WEDGED.get((topology, name)) if SKIP_WEDGED else None
-        if hit is None or hit[0] >= n:
-            return False
-        record = {"type": "op", "op": name, "kind": kind, "topology": topology, "n": n, "status": "timeout",
-                  "reps": 0, "wedged": True, "not_run": True, "wedged_at_n": hit[0], "timeout_s": hit[1],
-                  "stalls": {"count": 0, "max_ms": 0.0, "total_ms": 0.0},
-                  "error": "not run: wedged Natron for over %.0f s at n=%d" % (hit[1], hit[0])}
-        emit(record)
-        report("RESULT " + json.dumps(record, sort_keys=True))
-        check(False, "%s %s n=%d: timeout (%s)" % (name, topology, n, record["error"]))
-        return True
+        return hit if hit is not None and hit[0] < n else None
+
+    def carried_record(name, kind, topology, n, hit):
+        return {"type": "op", "op": name, "kind": kind, "topology": topology, "n": n, "status": "over_budget",
+                "reps": 0, "wedged": True, "not_run": True, "wedged_at_n": hit[0], "guard_s": hit[1],
+                "timeout_s": hit[1], "stalls": no_stalls(),
+                "error": "not run: wedged Natron for over %.0f s at n=%d" % (hit[1], hit[0])}
+
+    def drop_carried(entry, topology, n):
+        """entry less what wedged Natron at a smaller n, which is recorded as not run; None when nothing is left."""
+        name, make, kind, wanted, runnable = entry
+        if wanted is None:
+            hit = carried_wedge(name, topology, n)
+            if hit is None:
+                return entry
+            publish(carried_record(name, kind, topology, n, hit))
+            return None
+        for i, nm in enumerate(runnable):
+            hit = carried_wedge(nm, topology, n)
+            if hit is None:
+                continue
+            if nm in wanted:
+                publish(carried_record(nm, kind, topology, n, hit))
+            for later in runnable[i + 1:]:
+                if later in wanted:
+                    publish(not_run_record(later, kind, topology, n, "%s wedged Natron at n=%d" % (nm, hit[0])))
+            runnable = runnable[:i]
+            wanted = [w for w in wanted if w in runnable]
+            return (name, make, kind, wanted, runnable) if wanted else None
+        return entry
+
+    # ---- graphs --------------------------------------------------------------------------------
+
+    def cache_paths(topology, n):
+        stem = os.path.join(GRAPH_CACHE, "%s-%d-s%d-%s" % (topology, n, SEED, GEN_GRAPH_SHA))
+        return stem + ".ntpz", stem + ".json"
+
+    def read_cache(topology, n):
+        """The cached graph's sidecar, or None when there is no usable entry."""
+        if not GRAPH_CACHE:
+            return None
+        project, sidecar = cache_paths(topology, n)
+        if not (os.path.isfile(project) and os.path.isfile(sidecar)):
+            return None
+        try:
+            with open(sidecar) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            return None
+        summary = meta.get("summary") or {}
+        if summary.get("topology") != topology or summary.get("n") != n or not summary.get("root_nodes"):
+            return None
+        return meta
+
+    def write_cache(topology, n, path, summary, gen_ms):
+        if not GRAPH_CACHE:
+            return
+        if not os.path.isdir(GRAPH_CACHE):
+            os.makedirs(GRAPH_CACHE)
+        project, sidecar = cache_paths(topology, n)
+        # Both land by rename and the sidecar last, so a reader that finds the sidecar finds a whole
+        # project beside it, even with another run writing the same entry.
+        tmp = "%s.%d.tmp" % (project, os.getpid())
+        shutil.copyfile(path, tmp)
+        os.replace(tmp, project)
+        meta = {"summary": summary, "seed": SEED, "gen_graph_sha": GEN_GRAPH_SHA, "gen_ms": round(gen_ms, 3)}
+        tmp = "%s.%d.tmp" % (sidecar, os.getpid())
+        with open(tmp, "w") as f:
+            json.dump(meta, f)
+        os.replace(tmp, sidecar)
+        report("NOTE %s-%d: cached the graph as %s" % (topology, n, project))
+
+    def graph_record(summary, **fields):
+        graph = dict((k, summary[k]) for k in gen_graph.SUMMARY_KEYS)
+        graph.update({"type": "graph", "seed": SEED})
+        graph.update(fields)
+        emit(graph)
+        report("GRAPH " + json.dumps(graph, sort_keys=True))
+        return graph
+
+    def show_graph():
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        front_root_graph()
+
+    def generate(topology, n, path):
+        t0 = mono_ms()
+        summary = gen_graph.build(app, topology, n, SEED)
+        gen_ms = mono_ms() - t0
+        graph_record(summary, gen_ms=round(gen_ms, 3), cached=False)
+        gt.require(summary["nodes"] == n, "%s n=%d: generated %d processing nodes" % (topology, n, summary["nodes"]))
+        yield from show_graph()
+        gt.require(app.saveProjectAs(path), "%s n=%d: saved to %s" % (topology, n, path))
+        write_cache(topology, n, path, summary, gen_ms)
+        return summary
+
+    def load_cached(topology, n, path, meta):
+        """Opens a copy of the cached graph at path, timed as the load op. Returns (summary, timing), or
+        (None, None) when the project did not load or lacks the nodes the cache lists."""
+        summary = meta["summary"]
+        shutil.copyfile(cache_paths(topology, n)[0], path)
+        if root_names() and not app.resetProject():
+            raise RuntimeError("resetProject failed")
+        timing = Timing(op_timeout_s("load", topology, n))
+        opened = {}
+        del _dialogs[:]
+        watch("load", "interaction", topology, n, timing)
+
+        def events():
+            loaded = app.loadProject(path)
+            if loaded is None:
+                raise RuntimeError("loadProject(%s) failed" % path)
+            opened["app_id"] = loaded.getAppID()
+            yield None
+
+        try:
+            yield from timed_rep(events(), timing)
+        except Exception:
+            timing.fail(short_error())
+        disarm_guard()
+        if timing.status == "error":
+            report("NOTE %s-%d: the cached graph did not load (%s); generating it" % (topology, n, timing.error))
+            if not app.resetProject():
+                raise RuntimeError("resetProject failed")
+            return None, None
+        # Opening into a project that is not empty makes a new window, which the ops would not drive.
+        gt.require(opened.get("app_id") == app.getAppID(), "%s n=%d: the cached graph opened in the bench's window" % (topology, n))
+        missing = set(summary["root_nodes"]) - root_names()
+        if missing:
+            report("NOTE %s-%d: the cached graph lacks %d listed node(s), e.g. %s; generating it" % (
+                topology, n, len(missing), sorted(missing)[0]))
+            if not app.resetProject():
+                raise RuntimeError("resetProject failed")
+            return None, None
+        graph_record(summary, cached=True, load_ms=round(timing.windows[0][1] - timing.windows[0][0], 3))
+        gt.require(summary["nodes"] == n, "%s n=%d: the cached graph has %d processing nodes" % (topology, n, summary["nodes"]))
+        yield from show_graph()
+        return summary, timing
 
     def bench_graph(topology, n, workdir, previous_path):
         plan = op_plan(topology, n)
@@ -1117,46 +1514,50 @@ try:
             report("NOTE %s-%d: every op is already recorded" % (topology, n))
             return previous_path
         gt.section("%s-%d" % (topology, n))
-        plan = [p for p in plan if not record_not_run(p[0], p[2], topology, n)]
+        plan = [e for e in (drop_carried(p, topology, n) for p in plan) if e is not None]
         if not plan:
             return previous_path
         if previous_path is not None:
             clean_reset(previous_path)
             yield ("sleep", SETTLE_MS)
-        t0 = mono_ms()
-        summary = gen_graph.build(app, topology, n, SEED)
-        gen_ms = mono_ms() - t0
-        graph = dict((k, summary[k]) for k in gen_graph.SUMMARY_KEYS)
-        graph.update({"type": "graph", "seed": SEED, "gen_ms": round(gen_ms, 3)})
-        emit(graph)
-        report("GRAPH " + json.dumps(graph, sort_keys=True))
-        gt.require(summary["nodes"] == n, "%s n=%d: generated %d processing nodes" % (topology, n, summary["nodes"]))
-        gt.close_all_panels()
-        yield ("sleep", SETTLE_MS)
-        front_root_graph()
         path = os.path.join(workdir, "%s-%d.ntpz" % (topology, n))
-        gt.require(app.saveProjectAs(path), "%s n=%d: saved to %s" % (topology, n, path))
+        meta = read_cache(topology, n)
+        load_wedged = WEDGED.get((topology, "load"))
+        if meta is not None and load_wedged is not None and load_wedged[0] <= n:
+            # Loading it again would wedge again and restart forever.
+            report("NOTE %s-%d: load wedged Natron at n=%d, so the graph is generated, not loaded" % (topology, n, load_wedged[0]))
+            meta = None
+        summary, load_timing = None, None
+        if meta is not None:
+            summary, load_timing = yield from load_cached(topology, n, path, meta)
+        if summary is None:
+            summary = yield from generate(topology, n, path)
         ctx = Ctx(topology, n, summary, path)
         activate()
         fit()
         yield ("sleep", SETTLE_MS)
+        if load_timing is not None:
+            if any(p[0] == "load" for p in plan):
+                yield ("sleep", STALL_FLUSH_MS)
+                record = op_record("load", "interaction", topology, n, load_timing, {"cached": True})
+                if _dialogs:
+                    record["dialogs"] = list(_dialogs)
+                publish(record)
+            plan = [p for p in plan if p[0] != "load"]
         edits = [p for p in plan if p[2] == "edit"]
         first = [p for p in plan if p[2] == "interaction" and p[0] != "load"]
         last = [p for p in plan if p not in edits and p not in first]
-        for name, make, kind in first:
-            for cmd in run_op(name, make, ctx, kind):
-                yield cmd
+        for name, make, kind, wanted, runnable in first:
+            yield from run_op(name, make, ctx, kind, wanted, runnable)
         before = root_names()
-        for name, make, kind in edits:
-            for cmd in run_op(name, make, ctx, kind):
-                yield cmd
+        for name, make, kind, wanted, runnable in edits:
+            yield from run_op(name, make, ctx, kind, wanted, runnable)
         if edits:
             after = root_names()
             check(after == before, "%s n=%d: the edit ops leave the root graph as they found it (%d -> %d nodes)" %
                   (topology, n, len(before), len(after)))
-        for name, make, kind in last:
-            for cmd in run_op(name, make, ctx, kind):
-                yield cmd
+        for name, make, kind, wanted, runnable in last:
+            yield from run_op(name, make, ctx, kind, wanted, runnable)
         return path
 
     def steps():

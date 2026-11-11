@@ -663,8 +663,18 @@ public:
      * both directions: consumers and inputs alike. Everything derived from the kinds of the nodes
      * it reaches is then brought back up to date: their data-kind diagnostic, and the
      * dataKindChanged() signal the GUI redraws its edges from.
+     *
+     * Inside an InputEditBatch on the main thread every cached kind is dropped at once instead,
+     * and the diagnostics and signals are brought up to date at the end of the outermost batch,
+     * once for each node reached from any node invalidated in it.
      **/
     void invalidateEffectiveOutputDataKindCache();
+
+    /**
+     * @brief The number of nodes the walks of invalidateEffectiveOutputDataKindCache() have visited
+     * since startup. For tests.
+     **/
+    static U64 getDataKindInvalidationVisitCount();
 
     /**
      * @brief Recomputes this node's data-kind diagnostic: an eMessageTypeError persistent message
@@ -2527,6 +2537,10 @@ private:
     bool refreshShownInputRelatedData(std::set<Node*>& visited);
     static void refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited);
     static void refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited);
+
+    // Drops the cached kinds of every node reached from starts both ways, then refreshes their
+    // diagnostics and emits their dataKindChanged(), once each.
+    static void invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts);
 
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
 

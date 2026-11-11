@@ -473,6 +473,11 @@ struct Expr
     // has no expression (see KnobHelper::setReadDependencyExpression()).
     std::string readDependencyExpression;
 
+    // The deactivated nodes, with the names they had, that alone made the expression invalid. Its
+    // text, function and listeners were left as they were, so once they are all back under those
+    // names nothing needs to run again.
+    std::vector<std::pair<NodeWPtr, std::string>> missingNodes;
+
     Expr()
         : expression()
         , originalExpression()
@@ -919,7 +924,13 @@ KnobHelper::deleteKnob()
         if (aliasKnob.get() == this) {
             knob->setKnobAsAliasOfThis(aliasKnob, false);
         }
+        KnobHelper* isHelper = dynamic_cast<KnobHelper*>(knob.get());
         for (int i = 0; i < knob->getDimension(); ++i) {
+            if (isHelper) {
+                // Restoring the nodes it was missing would not bring this parameter back.
+                QMutexLocker k(&isHelper->_imp->expressionMutex);
+                isHelper->_imp->expressions[i].missingNodes.clear();
+            }
             knob->setExpressionInvalid( i, false, tr("%1: parameter does not exist").arg( QString::fromUtf8( getName().c_str() ) ).toStdString() );
             knob->unSlave(i, false);
         }
@@ -3820,7 +3831,7 @@ KnobHelper::checkInvalidExpressions()
     bool isInvalid = false;
 
     for (int i = 0; i < ndims; ++i) {
-        if ( !exprToReapply[i].first.empty() ) {
+        if (!exprToReapply[i].first.empty() && !restoreExpressionOfReturnedNodes(i)) {
             setExpressionInternal(i, exprToReapply[i].first, exprToReapply[i].second, true, false);
         }
         std::string err;
@@ -3830,6 +3841,94 @@ KnobHelper::checkInvalidExpressions()
     }
 
     return !isInvalid;
+}
+
+bool
+KnobHelper::restoreExpressionOfReturnedNodes(int dimension)
+{
+#ifdef NATRON_RUN_WITHOUT_PYTHON
+
+    return false;
+#else
+    KnobHolder* holder = getHolder();
+    if (!holder || !holder->getApp()) {
+        return false;
+    }
+    std::vector<std::pair<NodeWPtr, std::string>> missingNodes;
+    std::string original;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        missingNodes = _imp->expressions[dimension].missingNodes;
+        original = _imp->expressions[dimension].originalExpression;
+    }
+    if (missingNodes.empty()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < missingNodes.size(); ++i) {
+        NodePtr node = missingNodes[i].first.lock();
+        if (!node || !node->isActivated() || (node->getFullyQualifiedName() != missingNodes[i].second)) {
+            return false;
+        }
+    }
+
+    PythonGILLocker pgl;
+    PyObjectRef function;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        const Expr& e = _imp->expressions[dimension];
+        if (e.missingNodes.empty() || (e.originalExpression != original) || !e.function) {
+            return false;
+        }
+        Py_INCREF(e.function);
+        function.reset(e.function);
+    }
+    // The parameter's object may have been declared again while the expression was invalid.
+    PyObjectRef parameter;
+    parameter.reset(lookupMainAttributes(splitPythonAttributePath(pythonParameterPath(holder, getName()))));
+    if (!parameter.get() || (PyObject_SetAttrString(parameter.get(), expressionFunctionName(dimension).c_str(), function.get()) != 0)) {
+        PyErr_Clear();
+
+        return false;
+    }
+    clearExpressionsResults(dimension);
+    setExpressionInvalid(dimension, true, std::string());
+
+    return true;
+#endif
+}
+
+void
+KnobHelper::setExpressionMissingNode(int dimension,
+                                     const NodePtr& node,
+                                     const std::string& error)
+{
+    if (!node || (dimension < 0) || (dimension >= getDimension())) {
+        return;
+    }
+    const std::string nodeName = node->getFullyQualifiedName();
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        Expr& e = _imp->expressions[dimension];
+        if (e.originalExpression.empty()) {
+            return;
+        }
+        if (e.exprInvalid.empty()) {
+            e.missingNodes.clear();
+            e.missingNodes.push_back(std::make_pair(NodeWPtr(node), nodeName));
+        } else if (!e.missingNodes.empty()) {
+            bool known = false;
+            for (std::size_t i = 0; i < e.missingNodes.size(); ++i) {
+                if (e.missingNodes[i].first.lock() == node) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                e.missingNodes.push_back(std::make_pair(NodeWPtr(node), nodeName));
+            }
+        }
+    }
+    setExpressionInvalid(dimension, false, error);
 }
 
 bool
@@ -3866,6 +3965,10 @@ KnobHelper::setExpressionInvalid(int dimension,
     // would derive it again with everything upstream of it.
     {
         QMutexLocker k(&_imp->expressionMutex);
+        // A failed evaluation leaves the record: with a node it reads gone, failing is expected.
+        if (valid) {
+            _imp->expressions[dimension].missingNodes.clear();
+        }
         const std::string& current = _imp->expressions[dimension].exprInvalid;
         if ((current == error) && (current.empty() == valid)) {
             return;
@@ -4489,6 +4592,7 @@ KnobHelper::clearExpression(int dimension,
         _imp->expressions[dimension].originalExpression.clear();
         _imp->expressions[dimension].exprInvalid.clear();
         _imp->expressions[dimension].metadataCycle.clear();
+        _imp->expressions[dimension].missingNodes.clear();
         std::swap(function, _imp->expressions[dimension].function);
         _imp->expressions[dimension].functionGeneration = 0;
     }

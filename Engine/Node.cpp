@@ -220,6 +220,63 @@ thread_local int inputRelatedDataRefreshDeferralDepth = 0;
 int inputEditBatchDepth = 0;
 std::vector<NodeWPtr> inputEditBatchEdited;
 
+// A cached data kind or downstream requirement counts only if stored under the current epoch.
+// Moving it drops every cache at once, which an InputEditBatch does instead of walking from each
+// node it invalidates; the walk at its end then reaches each node once.
+std::atomic<U64> dataKindCacheEpoch { 0 };
+std::vector<NodeWPtr> inputEditBatchDataKindInvalidated;
+std::atomic<U64> dataKindInvalidationVisits { 0 };
+
+// Each node whose links changed in the outermost InputEditBatch, with whether it owes linksChanged()
+// rather than knobsLinksChanged() alone. The node graph rebuilds a node's link arrows on either, so
+// an edit restoring many links emits once per node at the batch end instead of once per link.
+std::vector<std::pair<NodeWPtr, bool>> inputEditBatchLinksChanged;
+std::unordered_map<const Node*, std::size_t> inputEditBatchLinksChangedIndex;
+
+bool
+deferLinksChangedToInputEditBatch(Node* node,
+                                  bool allLinks)
+{
+    if ((inputEditBatchDepth == 0) || (QThread::currentThread() != qApp->thread())) {
+        return false;
+    }
+    NodePtr shared = node->weak_from_this().lock();
+    if (!shared) {
+        return false;
+    }
+    std::unordered_map<const Node*, std::size_t>::const_iterator found = inputEditBatchLinksChangedIndex.find(node);
+    // Unless another node took the address since.
+    if ((found != inputEditBatchLinksChangedIndex.end()) && (inputEditBatchLinksChanged[found->second].first.lock() == shared)) {
+        inputEditBatchLinksChanged[found->second].second |= allLinks;
+
+        return true;
+    }
+    inputEditBatchLinksChangedIndex[node] = inputEditBatchLinksChanged.size();
+    inputEditBatchLinksChanged.push_back(std::make_pair(NodeWPtr(shared), allLinks));
+
+    return true;
+}
+
+void
+emitLinksChangedDeferredToInputEditBatch()
+{
+    std::vector<std::pair<NodeWPtr, bool>> pending;
+    pending.swap(inputEditBatchLinksChanged);
+    inputEditBatchLinksChangedIndex.clear();
+    for (const std::pair<NodeWPtr, bool>& entry : pending) {
+        NodePtr node = entry.first.lock();
+        if (!node) {
+            continue;
+        }
+        // linksChanged() reaches every slot knobsLinksChanged() does.
+        if (entry.second) {
+            Q_EMIT node->linksChanged();
+        } else {
+            Q_EMIT node->knobsLinksChanged();
+        }
+    }
+}
+
 int layerTableRefreshHoldDepth = 0;
 ProjectWPtr layerTableRefreshPending;
 
@@ -2656,9 +2713,10 @@ Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
         return declared;
     }
 
+    const U64 epoch = dataKindCacheEpoch.load();
     {
         QMutexLocker l(&_imp->effectiveDataKindMutex);
-        if (_imp->effectiveDataKindCacheSet) {
+        if (_imp->effectiveDataKindCacheSet && (_imp->effectiveDataKindCacheEpoch == epoch)) {
             if (isAmbiguous) {
                 *isAmbiguous = _imp->effectiveDataKindCacheAmbiguous;
             }
@@ -2691,6 +2749,7 @@ Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
         _imp->effectiveDataKindCache = resolved;
         _imp->effectiveDataKindCacheAmbiguous = ambiguous;
         _imp->effectiveDataKindCacheSet = true;
+        _imp->effectiveDataKindCacheEpoch = epoch;
     }
 
     if (isAmbiguous) {
@@ -2828,8 +2887,13 @@ Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
     // adapter test reads that running constraint, so the result is a function of the starting
     // constraint alone unless a loop truncated the walk somewhere below.
     const DataKindConstraint from = *constraint;
+    const U64 epoch = dataKindCacheEpoch.load();
     {
         QMutexLocker l(&_imp->effectiveDataKindMutex);
+        if (_imp->downstreamDataKindRequirementsEpoch != epoch) {
+            _imp->downstreamDataKindRequirements.clear();
+            _imp->downstreamDataKindRequirementsEpoch = epoch;
+        }
         for (const Implementation::DownstreamDataKindRequirement& memo : _imp->downstreamDataKindRequirements) {
             if ((memo.fromKind == from.kind) && (memo.fromAmbiguous == from.ambiguous)) {
                 constraint->kind = memo.kind;
@@ -2895,7 +2959,9 @@ Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
 
     if (dataKindResolutionTruncations == truncationsBefore) {
         QMutexLocker l(&_imp->effectiveDataKindMutex);
-        _imp->downstreamDataKindRequirements.push_back({ from.kind, from.ambiguous, constraint->kind, constraint->ambiguous });
+        if (_imp->downstreamDataKindRequirementsEpoch == epoch) {
+            _imp->downstreamDataKindRequirements.push_back({ from.kind, from.ambiguous, constraint->kind, constraint->ambiguous });
+        }
     }
 } // collectDownstreamDataKindRequirement
 
@@ -3030,19 +3096,49 @@ Node::checkDataKindCompatibility(const NodePtr& input,
 void
 Node::invalidateEffectiveOutputDataKindCache()
 {
-    // Resolution is bidirectional, so a memoized kind may depend on a node on either side of this
-    // one; the walk therefore goes both ways, and the visited set is what keeps it finite.
+    if ((inputEditBatchDepth > 0) && (QThread::currentThread() == qApp->thread())) {
+        NodePtr thisShared = weak_from_this().lock();
+        if (thisShared) {
+            // A walk visits everything connected to this node, so one per call would make a batch
+            // removing or restoring many connected nodes cost the square of their number.
+            dataKindCacheEpoch.fetch_add(1);
+            inputEditBatchDataKindInvalidated.push_back(thisShared);
+
+            return;
+        }
+    }
+    invalidateEffectiveOutputDataKindCaches(std::vector<Node*>(1, this));
+}
+
+U64
+Node::getDataKindInvalidationVisitCount()
+{
+    return dataKindInvalidationVisits.load();
+}
+
+void
+Node::invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts)
+{
+    if (starts.empty()) {
+        return;
+    }
+    // Resolution is bidirectional, so a memoized kind may depend on a node on either side of a
+    // start; the walk therefore goes both ways, and the visited set is what keeps it finite.
     std::set<Node*> visited;
     std::vector<Node*> pending;
     std::vector<Node*> component;
 
-    visited.insert(this);
-    pending.push_back(this);
+    for (Node* start : starts) {
+        if (start && visited.insert(start).second) {
+            pending.push_back(start);
+        }
+    }
 
     while (!pending.empty()) {
         Node* node = pending.back();
         pending.pop_back();
         component.push_back(node);
+        dataKindInvalidationVisits.fetch_add(1);
 
         {
             QMutexLocker l(&node->_imp->effectiveDataKindMutex);
@@ -3094,7 +3190,7 @@ Node::invalidateEffectiveOutputDataKindCache()
         }
     }
 
-    AppInstancePtr app = getApp();
+    AppInstancePtr app = starts.front()->getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     // Mid-restore, half the connections are missing and the answer is meaningless; the whole graph
     // is checked once at the end of the load by Project::reportDataKindConflicts().
@@ -3109,7 +3205,7 @@ Node::invalidateEffectiveOutputDataKindCache()
         }
         Q_EMIT node->dataKindChanged();
     }
-} // invalidateEffectiveOutputDataKindCache
+} // invalidateEffectiveOutputDataKindCaches
 
 void
 Node::refreshDataKindConflictMessage()
@@ -5376,6 +5472,15 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         missingNode << ' ';
         missingNode << tr("in expression.").toStdString();
 
+        // Null when called from the destructor, where nothing will bring this node back.
+        const NodePtr thisNode = weak_from_this().lock();
+        const auto markMissing = [&thisNode, &missingNode](const KnobIPtr& knob, int dim) {
+            if (thisNode) {
+                knob->setExpressionMissingNode(dim, thisNode, missingNode.str());
+            } else {
+                knob->setExpressionInvalid(dim, false, missingNode.str());
+            }
+        };
         KnobsVec  knobs = _imp->effect->getKnobs_mt_safe();
         for (U32 i = 0; i < knobs.size(); ++i) {
             KnobI::ListenerDimsMap listeners;
@@ -5399,7 +5504,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
 
                     std::string hasExpr = listener->getExpression(dim);
                     if ( !hasExpr.empty() ) {
-                        listener->setExpressionInvalid(dim, false, missingNode.str());
+                        markMissing(listener, dim);
                     }
                 }
                 isEffect->endChanges(true);
@@ -5416,7 +5521,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
             }
             isEffect->beginChanges();
             it->first->clearExpressionsResults(it->second);
-            it->first->setExpressionInvalid(it->second, false, missingNode.str());
+            markMissing(it->first, it->second);
             isEffect->endChanges(true);
         }
     }
@@ -7501,7 +7606,7 @@ Node::onKnobSlaved(const KnobIPtr& slave,
             changed = true;
         }
     }
-    if (changed) {
+    if (changed && !deferLinksChangedToInputEditBatch(this, false)) {
         Q_EMIT knobsLinksChanged();
     }
 } // onKnobSlaved
@@ -7728,9 +7833,11 @@ Node::emitLinksChanged(const NodesList& alsoNotify)
     NodesList nodes = alsoNotify;
 
     collectLinkedNodes(false, false, &nodes);
-    Q_EMIT linksChanged();
+    if (!deferLinksChangedToInputEditBatch(this, true)) {
+        Q_EMIT linksChanged();
+    }
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if (it->get() != this) {
+        if ((it->get() != this) && !deferLinksChangedToInputEditBatch(it->get(), true)) {
             Q_EMIT(*it)->linksChanged();
         }
     }
@@ -10133,6 +10240,18 @@ Node::InputEditBatch::~InputEditBatch()
         _app->endInvalidExpressionRecheckBatch();
     }
     if (--inputEditBatchDepth == 0) {
+        std::vector<NodePtr> invalidated;
+        std::vector<Node*> starts;
+        for (const NodeWPtr& weak : inputEditBatchDataKindInvalidated) {
+            NodePtr node = weak.lock();
+            if (node) {
+                starts.push_back(node.get());
+                invalidated.push_back(node);
+            }
+        }
+        inputEditBatchDataKindInvalidated.clear();
+        invalidateEffectiveOutputDataKindCaches(starts);
+
         std::vector<NodePtr> edited;
         std::unordered_set<const Node*> seen;
         for (const NodeWPtr& weak : inputEditBatchEdited) {
@@ -10143,6 +10262,7 @@ Node::InputEditBatch::~InputEditBatch()
         }
         inputEditBatchEdited.clear();
         refreshInputRelatedDataAfterInputChanges(edited);
+        emitLinksChangedDeferredToInputEditBatch();
     }
     releaseLayerTableRefreshHold();
 }

@@ -763,3 +763,144 @@ TEST_F(GraphScalingGuiEdits, ExpressionWrittenInAPasteBatchResolvesAtItsEnd)
     EXPECT_TRUE(offset->isExpressionValid(0, 0));
     EXPECT_DOUBLE_EQ(0.5, readOffset(offset));
 }
+
+TEST_F(GraphScalingGuiEdits, UndoingADeleteOfChainedExpressionsRunsNoValidation)
+{
+    const int kNumNodes = 1000;
+    std::vector<NodePtr> nodes;
+
+    for (int i = 0; i < kNumNodes; ++i) {
+        NodePtr node = createWithMix(getApp(), "Chained" + std::to_string(i), 0.25);
+        ASSERT_TRUE(bool(node));
+        ASSERT_EQ("Chained" + std::to_string(i), node->getScriptName_mt_safe());
+        nodes.push_back(node);
+    }
+    for (int i = 1; i < kNumNodes; ++i) {
+        ASSERT_NO_THROW(doubleKnob(nodes[i], "offset")->setExpression(0, "Chained" + std::to_string(i - 1) + ".mix.get() + frame", false, true));
+    }
+
+    deactivateInBatch(getApp(), nodes);
+    for (int i = 1; i < kNumNodes; ++i) {
+        EXPECT_FALSE(doubleKnob(nodes[i], "offset")->isExpressionValid(0, 0)) << i;
+    }
+
+    const U64 beforeUndo = getInterpretedScriptsCount();
+    const U64 expressionScriptsBeforeUndo = KnobHelper::getExpressionScriptsRunCount();
+    activateInBatch(getApp(), nodes);
+    EXPECT_LE(getInterpretedScriptsCount() - beforeUndo, 2u);
+    EXPECT_EQ(0u, KnobHelper::getExpressionScriptsRunCount() - expressionScriptsBeforeUndo);
+
+    for (int i = 1; i < kNumNodes; ++i) {
+        KnobDoubleBasePtr offset = doubleKnob(nodes[i], "offset");
+        EXPECT_TRUE(offset->isExpressionValid(0, 0)) << i;
+        EXPECT_DOUBLE_EQ(1.25, readOffset(offset)) << i;
+    }
+
+    const std::string appID = getApp()->getAppIDString();
+    std::string error;
+    EXPECT_TRUE(interpretPythonScript("for i in range(1, " + std::to_string(kNumNodes) + "):\n"
+                                                                                         "    assert hasattr(getattr("
+                                          + appID + ", 'Chained%d' % i).offset, 'expression0'), i\n",
+                                      &error, 0))
+        << error;
+
+    doubleKnob(nodes[0], "mix")->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(1.5, readOffset(doubleKnob(nodes[1], "offset")));
+}
+
+TEST_F(GraphScalingGuiEdits, UndoingADeleteKeepsOtherwiseInvalidExpressionsFlagged)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr gone = createWithMix(getApp(), "Gone", 0.5);
+    NodePtr restoredOnly = createNamedNode(getApp(), kGradePluginID, "RestoredOnly");
+    NodePtr alsoGone = createNamedNode(getApp(), kGradePluginID, "AlsoGone");
+    NodePtr alreadyBroken = createNamedNode(getApp(), kGradePluginID, "AlreadyBroken");
+    ASSERT_TRUE(target && gone && restoredOnly && alsoGone && alreadyBroken);
+    KnobDoubleBasePtr restoredOnlyOffset = doubleKnob(restoredOnly, "offset");
+    KnobDoubleBasePtr alsoGoneOffset = doubleKnob(alsoGone, "offset");
+    KnobDoubleBasePtr alreadyBrokenOffset = doubleKnob(alreadyBroken, "offset");
+    ASSERT_TRUE(restoredOnlyOffset && alsoGoneOffset && alreadyBrokenOffset);
+    ASSERT_NO_THROW(restoredOnlyOffset->setExpression(0, "Target.mix.get()", false, true));
+    ASSERT_NO_THROW(alsoGoneOffset->setExpression(0, "Target.mix.get() + Gone.mix.get()", false, true));
+    ASSERT_NO_THROW(alreadyBrokenOffset->setExpression(0, "Target.mix.get() + Missing.mix.get()", false, false));
+    EXPECT_TRUE(restoredOnlyOffset->isExpressionValid(0, 0));
+    EXPECT_TRUE(alsoGoneOffset->isExpressionValid(0, 0));
+    EXPECT_FALSE(alreadyBrokenOffset->isExpressionValid(0, 0));
+
+    deactivateInBatch(getApp(), { target, gone });
+    EXPECT_FALSE(restoredOnlyOffset->isExpressionValid(0, 0));
+    EXPECT_FALSE(alsoGoneOffset->isExpressionValid(0, 0));
+
+    activateInBatch(getApp(), { target });
+    EXPECT_TRUE(restoredOnlyOffset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(restoredOnlyOffset));
+    EXPECT_FALSE(alsoGoneOffset->isExpressionValid(0, 0));
+    EXPECT_FALSE(alreadyBrokenOffset->isExpressionValid(0, 0));
+
+    activateInBatch(getApp(), { gone });
+    EXPECT_TRUE(alsoGoneOffset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.75, readOffset(alsoGoneOffset));
+    EXPECT_FALSE(alreadyBrokenOffset->isExpressionValid(0, 0));
+}
+
+TEST_F(GraphScalingGuiEdits, KnobLinksChangedOncePerNodePerBatch)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(target && reader);
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_GT(offset->getDimension(), 1);
+
+    int emitted = 0;
+    QMetaObject::Connection knobsLinks = QObject::connect(reader.get(), &Node::knobsLinksChanged, reader.get(), [&emitted]() { ++emitted; }, Qt::DirectConnection);
+    QMetaObject::Connection links = QObject::connect(reader.get(), &Node::linksChanged, reader.get(), [&emitted]() { ++emitted; }, Qt::DirectConnection);
+
+    {
+        Node::InputEditBatch batch(getApp());
+        for (int dim = 0; dim < offset->getDimension(); ++dim) {
+            ASSERT_NO_THROW(offset->setExpression(dim, "Target.mix.get()", false, true));
+        }
+        EXPECT_EQ(0, emitted);
+    }
+    EXPECT_EQ(1, emitted);
+    for (int dim = 0; dim < offset->getDimension(); ++dim) {
+        EXPECT_TRUE(offset->isExpressionValid(dim, 0)) << dim;
+    }
+
+    QObject::disconnect(knobsLinks);
+    QObject::disconnect(links);
+}
+
+TEST_F(GraphScalingGuiEdits, BatchedDeleteOfAChainWalksItsDataKindsOnce)
+{
+    const int kNumNodes = 200;
+    std::vector<NodePtr> nodes;
+    std::vector<int> emitted(kNumNodes, 0);
+    std::vector<QMetaObject::Connection> connections;
+
+    for (int i = 0; i < kNumNodes; ++i) {
+        NodePtr node = createNode(QString::fromUtf8(kGradePluginID));
+        ASSERT_TRUE(bool(node));
+        if (!nodes.empty()) {
+            connectNodes(nodes.back(), node, 0, true);
+        }
+        nodes.push_back(node);
+        int* count = &emitted[i];
+        connections.push_back(QObject::connect(node.get(), &Node::dataKindChanged, node.get(), [count]() { ++*count; }, Qt::DirectConnection));
+    }
+
+    const U64 visitsBefore = Node::getDataKindInvalidationVisitCount();
+    std::vector<NodePtr> removed(nodes.begin() + 1, nodes.end() - 1);
+    deactivateInBatch(getApp(), removed);
+    const U64 visits = Node::getDataKindInvalidationVisitCount() - visitsBefore;
+    EXPECT_GT(visits, 0u);
+    EXPECT_LE(visits, static_cast<U64>(2 * kNumNodes));
+    for (int i = 0; i < kNumNodes; ++i) {
+        EXPECT_LE(emitted[i], 1) << i;
+    }
+
+    for (const QMetaObject::Connection& connection : connections) {
+        QObject::disconnect(connection);
+    }
+}

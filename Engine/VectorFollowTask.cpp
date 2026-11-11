@@ -197,8 +197,8 @@ VectorFollowTask::abortFollow(bool wait)
     }
     requestAbort();
     if (wait) {
-        // Not waitForAbortToComplete_enforce_blocking(): it returns at once whatever the thread
-        // does, and a phase queued but not yet begun is not aborted and would start after it.
+        // Not waitForAbortToComplete_enforce_blocking(): it returns once the thread is idle, and a
+        // phase queued but not yet begun is not aborted and would start after it.
         {
             std::lock_guard<std::mutex> waited(_imp->workMutex);
         }

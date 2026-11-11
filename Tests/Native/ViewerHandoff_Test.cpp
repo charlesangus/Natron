@@ -51,6 +51,8 @@
 
 #include "Tests/Native/NativeGpuParity.h"
 
+#include "Gpu/GpuTestSelector.h"
+
 #include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -541,6 +543,7 @@ public:
     {
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
         options.infoLog = [](const std::string& line) { std::printf("[viewer-handoff] %s\n", line.c_str()); };
         context.reset(new GpuContext(options));
         if (!context->waitForInit(std::chrono::seconds(60)) || !context->isAvailable()) {

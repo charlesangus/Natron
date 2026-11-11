@@ -297,7 +297,6 @@ public:
      * This is called when a node is deleted by the user
      */
     void abortAnyProcessing_non_blocking();
-    void abortAnyProcessing_blocking();
 
     /*Never call this yourself. This is needed by OfxEffectInstance so the pointer to the live instance
      * is set earlier.

@@ -3513,32 +3513,6 @@ Node::abortAnyProcessing_non_blocking()
     _imp->abortPreview_non_blocking();
 }
 
-void
-Node::abortAnyProcessing_blocking()
-{
-    QMutexLocker teardownLocker(&_imp->effectTeardownMutex);
-
-    OutputEffectInstance* isOutput = dynamic_cast<OutputEffectInstance*>( getEffectInstance().get() );
-
-    if (isOutput) {
-        RenderEnginePtr engine = isOutput->getRenderEngine();
-        assert(engine);
-        engine->abortRenderingNoRestart();
-        engine->waitForAbortToComplete_enforce_blocking();
-    }
-
-    TrackerContextPtr trackerContext = getTrackerContext();
-    if (trackerContext) {
-        trackerContext->abortTracking_blocking();
-    }
-
-    if (VectorFollowControls* follow = vectorFollowOf(_imp->effect.get())) {
-        follow->abortFollow(true);
-    }
-
-    _imp->abortPreview_blocking(false);
-}
-
 namespace {
 
 // Lets a timeline move revalidate only the nodes owning a channel-selector error instead of

@@ -41,7 +41,7 @@
 
 ## Phase 380.3: M219 workaround
 
-- [ ] M380.P3.T1 — Replace VectorFollowTask's lock-as-wait with the real blocking wait
+- [x] M380.P3.T1 — Replace VectorFollowTask's lock-as-wait with the real blocking wait
   - files: `Engine/VectorFollowTask.cpp` (on `feature/f8-motion-vectors`: a PR into F8, or after F8 merges into main)
   - approach: replace the lock at ~202-204 with `waitForAbortToComplete_enforce_blocking()` and drop the comment at ~200-201. Keep `workMutex` and the generation check: they guard run/sampler/job/generation (written on the main thread while the phase reads them) and queued phases. Record that reason in a comment and under Decisions.
   - verify: F8's `VectorFollow_Test`/`PyVectorFollow_Test` and the `m219_follow_abort.py` GUI check pass.

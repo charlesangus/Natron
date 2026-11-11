@@ -257,7 +257,7 @@ NodeGraph::checkForSpliceHint()
         QRectF r = (*it)->boundingRectWithEdges();
         r.adjust(-kSpliceRectTolerance, -kSpliceRectTolerance, kSpliceRectTolerance, kSpliceRectTolerance);
         selectedRects.push_back(r);
-        selectionBody = selectionBody.united((*it)->mapToScene((*it)->boundingRect()).boundingRect());
+        selectionBody = selectionBody.united((*it)->mapToScene((*it)->bodyRect()).boundingRect());
     }
     const QPointF selectionCentre = selectionBody.center();
 
@@ -504,7 +504,7 @@ NodeGraph::updateKissPreview()
             if ((freeInput >= 0) && !gui->getInputArrow(freeInput)) {
                 freeInput = -1;
             }
-            const QRectF body = gui->mapToScene(gui->boundingRect()).boundingRect();
+            const QRectF body = gui->mapToScene(gui->bodyRect()).boundingRect();
             const KissNodeId id = reinterpret_cast<KissNodeId>(gui);
             nodesById[id] = gui->shared_from_this();
             targetIndices[gui] = targets.size();
@@ -544,7 +544,7 @@ NodeGraph::updateKissPreview()
         }
 
         if (feedingNodes.find(gui.get()) == feedingNodes.end()) {
-            const QRectF body = gui->mapToScene(gui->boundingRect()).boundingRect();
+            const QRectF body = gui->mapToScene(gui->bodyRect()).boundingRect();
             const QPointF output(body.center().x(), body.bottom());
             outputs.push_back(KissOutput(id, output.x(), output.y()));
             outputNear.push_back(targetsNear(output));

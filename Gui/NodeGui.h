@@ -392,6 +392,9 @@ public:
 
     QSize getSize() const;
 
+    // The laid-out body size that resize() takes: no outline pen, no magnify scale.
+    QRectF bodyRect() const;
+
     /*Returns an edge if the node has an edge close to the
        point pt. pt is in scene coord.*/
     Edge* hasEdgeNearbyPoint(const QPointF& pt);

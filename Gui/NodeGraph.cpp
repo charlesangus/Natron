@@ -570,7 +570,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
             ///make the backdrop large enough to contain the selected nodes and position it correctly
             QRectF bbox;
             for (NodesGuiList::iterator it = selectedNodes.begin(); it != selectedNodes.end(); ++it) {
-                QRectF nodeBbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+                QRectF nodeBbox = (*it)->mapToScene((*it)->bodyRect()).boundingRect();
                 bbox = bbox.united(nodeBbox);
             }
 

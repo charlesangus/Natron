@@ -99,12 +99,12 @@ NodeGraph::getNodesWithinBackdrop(const NodeGuiPtr& bd) const
         return NodesGuiList();
     }
 
-    QRectF bbox = bd->mapToScene( bd->boundingRect() ).boundingRect();
+    QRectF bbox = bd->mapToScene(bd->bodyRect()).boundingRect();
     NodesGuiList ret;
     QMutexLocker l(&_imp->_nodesMutex);
 
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-        QRectF nodeBbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+        QRectF nodeBbox = (*it)->mapToScene((*it)->bodyRect()).boundingRect();
         if ( bbox.contains(nodeBbox) ) {
             ret.push_back(*it);
         }

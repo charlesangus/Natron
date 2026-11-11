@@ -48,6 +48,9 @@ MARGIN = 80.0
 MAX_ZOOM = 1.8
 HINT_CHANNEL_TOLERANCE = 40
 DRAG_STEPS = 4
+# kSpliceRectTolerance in Gui/NodeGraph20.cpp: how far outside a dragged node a pipe still splices.
+SPLICE_TOLERANCE = 10.0
+SIZE_ROUND_TRIPS = 10
 
 try:
     import NatronEngine
@@ -116,6 +119,15 @@ try:
     def node_center_scene(effect):
         x, y, w, h = box(effect)
         return (x + w / 2.0, y + h / 2.0)
+
+    def pipe_x_at(src, dst, y):
+        """The scene x of the pipe from src to dst at height y. Edge::initLineNow() runs a
+        connected pipe along the line between the two nodes' centres, so it slants whenever their
+        widths differ even when their left edges line up."""
+        (sx, sy), (dx, dy) = node_center_scene(src), node_center_scene(dst)
+        if dy == sy:
+            return sx
+        return sx + (dx - sx) * (y - sy) / (dy - sy)
 
     def point_in_box(px, py, bx, by, bw, bh, pad=3.0):
         return (bx - pad) <= px <= (bx + bw + pad) and (by - pad) <= py <= (by + bh + pad)
@@ -470,6 +482,24 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 
+        # ---- size-round-trip: getSize() reports the size setSize() takes, so feeding one into
+        # the other leaves a node and a backdrop exactly as they were.
+        gt.section("size-round-trip")
+        sized_node = create("Blur", -4000, 0)
+        sized_backdrop = create("Backdrop", -4000, 300)
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        for label, sized in (("node", sized_node), ("backdrop", sized_backdrop)):
+            start_size = sized.getSize()
+            for _ in range(SIZE_ROUND_TRIPS):
+                w, h = sized.getSize()
+                sized.setSize(w, h)
+            yield ("sleep", SETTLE_MS)
+            end_size = sized.getSize()
+            check(tuple(end_size) == tuple(start_size),
+                  "size-round-trip: %d getSize()->setSize() round trips leave the %s at %s (got %s)"
+                  % (SIZE_ROUND_TRIPS, label, tuple(start_size), tuple(end_size)))
+
         # =====================================================================================
         # Splice into pipe: always on, unconnected nodes/chains only. Holding Ctrl during the
         # drag aims a kiss connection instead and hides the splice hint until it is released.
@@ -495,11 +525,11 @@ try:
             graph_shot(graph_v, "splice-01-hover-vertical")
             check_hint_present(graph_v, pipe_rect_v, "splice-vertical: hover shows the highlight")
 
-        # The highlighted pipe sits below node bodies, so the node is dropped just beside the pipe
-        # (still inside the splice tolerance) to leave the highlight in view.
-        beside_v = box(mover_v)[2] / 2.0 + 9.0
-        target_v = (node_center_scene(src_v)[0] + beside_v,
-                    (node_center_scene(src_v)[1] + node_center_scene(dst_v)[1]) / 2.0)
+        # The highlighted pipe sits below node bodies, so the node is dropped with its left edge
+        # beside the pipe, half the splice tolerance clear of it, to leave the highlight in view.
+        target_y_v = (node_center_scene(src_v)[1] + node_center_scene(dst_v)[1]) / 2.0
+        target_v = (pipe_x_at(src_v, dst_v, target_y_v) + box(mover_v)[2] / 2.0 + SPLICE_TOLERANCE / 2.0,
+                    target_y_v)
         drag_node_to(graph_v, mover_v, target_v, modifiers=Qt.NoModifier, at_each_step=None,
                     release=False)
         mid_check_v(target_v)

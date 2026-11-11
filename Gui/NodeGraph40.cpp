@@ -279,7 +279,7 @@ pasteOntoNode(NodeGraph* graph,
     if (entryGui != exitGui) {
         QRectF pastedRect;
         for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
-            pastedRect |= (*it)->mapToScene((*it)->boundingRect()).boundingRect();
+            pastedRect |= (*it)->mapToScene((*it)->bodyRect()).boundingRect();
         }
         for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
             NodeGuiIPtr outputGuiI = it->first->getNodeGui();
@@ -442,7 +442,7 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
         nodesToCopySet.insert(it->get());
     }
     for (NodesGuiList::iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
-        QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+        QRectF bbox = (*it)->mapToScene((*it)->bodyRect()).boundingRect();
         if ( ( bbox.x() + bbox.width() ) > xmax ) {
             xmax = ( bbox.x() + bbox.width() );
         }

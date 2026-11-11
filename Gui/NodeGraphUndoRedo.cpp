@@ -896,7 +896,7 @@ ResizeBackdropCommand::ResizeBackdropCommand(const NodeGuiPtr& bd,
     , _oldW(0)
     , _oldH(0)
 {
-    QRectF bbox = bd->boundingRect();
+    QRectF bbox = bd->bodyRect();
 
     _oldW = bbox.width();
     _oldH = bbox.height();

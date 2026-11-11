@@ -1140,14 +1140,8 @@ NodeGui::ensurePreviewCreated()
         _previewPixmap->stackBefore(_nameItem);
     } else if (created) {
         // Already big enough for the preview, but a wrapped label still has to grow the node
-        // to stack under it. getSize() carries the outline pen, so resize from the laid-out size.
-        int curW, curH;
-        {
-            QMutexLocker k(&_mtSafeSizeMutex);
-            curW = _mtSafeWidth;
-            curH = _mtSafeHeight;
-        }
-        resize(curW, curH);
+        // to stack under it.
+        resize(size.width(), size.height());
         _previewPixmap->stackBefore(_nameItem);
     }
 }
@@ -1184,7 +1178,7 @@ NodeGui::removeSettingsPanel()
 void
 NodeGui::refreshSize()
 {
-    QRectF bbox = boundingRect();
+    const QRectF bbox = bodyRect();
 
     QString& label = _nodeLabel;
     resize( bbox.width(), bbox.height(), false, !label.isEmpty() );
@@ -1194,9 +1188,9 @@ int
 NodeGui::getFrameNameHeight() const
 {
     if ( mustFrameName() ) {
-        return _nameFrame->boundingRect().height();
+        return _nameFrame->rect().height();
     } else {
-        return boundingRect().height();
+        return bodyRect().height();
     }
 }
 
@@ -2114,6 +2108,12 @@ NodeGui::boundingRect() const
     t.translate( -center.x(), -center.y() );
 
     return t.mapRect(bbox);
+}
+
+QRectF
+NodeGui::bodyRect() const
+{
+    return _boundingBox->rect();
 }
 
 QRectF
@@ -3539,15 +3539,9 @@ NodeGui::destroyGui()
 QSize
 NodeGui::getSize() const
 {
-    if ( QThread::currentThread() == qApp->thread() ) {
-        QRectF bbox = boundingRect();
+    QMutexLocker k(&_mtSafeSizeMutex);
 
-        return QSize( bbox.width(), bbox.height() );
-    } else {
-        QMutexLocker k(&_mtSafeSizeMutex);
-
-        return QSize(_mtSafeWidth, _mtSafeHeight);
-    }
+    return QSize(_mtSafeWidth, _mtSafeHeight);
 }
 
 void
@@ -4310,8 +4304,7 @@ NodeGui::setNameItemHtmlNow(const QString& name,
     }
     _nameItem->adjustSize();
 
-
-    QRectF bbox = boundingRect();
+    const QRectF bbox = bodyRect();
     resize( bbox.width(), bbox.height(), false, !label.isEmpty() );
 } // setNameItemHtml
 

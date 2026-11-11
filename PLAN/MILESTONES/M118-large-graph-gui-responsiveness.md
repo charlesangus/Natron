@@ -296,3 +296,10 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - Delete and redo do per-node deactivate work: edges, links, data-kind invalidation and downstream walks.
   - Mapped to tasks: P6.T8 is the selection indicator (only act on change, one union repaint); P6.T2 gains the recheck and per-link signal coalescing; P6.T3 gains the label-width cache, now in T12. New tasks: T10 (edges out of `_nodeRoot`, z bands), T11 (cached low-detail render), T12 (paste construction).
   - paste_1000 at 100 ms per 1000 nodes needs about 24× less work on the GPU host. Even after T12 it likely needs lazy NodeGui construction or a separate bulk-paste budget; that is for the user to decide when the numbers are in.
+- 2026-11-11 — The Engine half of P6.T2 and the Gui tasks P6.T8, T10, T11 and T12 are implemented (2fcf68420; Engine commit before it), with main merged in at 12f4dd76d.
+  - Undo reattaches an expression without Python when every node it reads returned under the same name and its text is unchanged; anything else takes the full validation path.
+  - Link and data-kind signals are emitted once per node per batch.
+  - Edges and link arrows sit in their own containers, and nodes stack by z serials, raised on the first move of a drag as before. Link arrows now always draw above edges.
+  - The low-detail layers render from a cached pixmap with coalesced dirty rects.
+  - A paste or duplicate batch lays out each node's name and edges once.
+  - Release build with the m55, m45 and m118 GUI scripts: run 43044675942. The GPU-host gate bench follows.

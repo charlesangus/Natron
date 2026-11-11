@@ -320,6 +320,10 @@ NodeGraphPrivate::getNavigatorMapping(QRectF* sceneRect,
 void
 NodeGraphPrivate::renderNavigatorContent()
 {
+    // The low-detail layers do not refile the grid while they paint.
+    if (lowDetail) {
+        refreshItemGrid();
+    }
     QRectF nodesScene = calcNodesBoundingRect();
 
     navigatorContentDirty = false;

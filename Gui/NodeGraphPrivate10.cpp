@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <unordered_map>
@@ -63,6 +64,8 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
                                      std::list<std::pair<std::string, NodeGuiPtr> > *newNodes)
 {
     if ( !clipboard.isEmpty() ) {
+        std::optional<NodeRefreshBatch> refreshBatch;
+        refreshBatch.emplace(_publicInterface);
         double xmax = std::numeric_limits<double>::lowest();
         double xmin = std::numeric_limits<double>::max();
         double ymin = std::numeric_limits<double>::max();
@@ -183,6 +186,9 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         } else if (newNodesList.size() == 1) {
             newNodesList.front()->getNode()->getEffectInstance()->refreshMetadataSideEffects();
         }
+
+        // The data kinds the edges are coloured by are final once the metadata is refreshed.
+        refreshBatch.reset();
 
         // Now that meta-datas are refreshed, compute preview
         for (NodesGuiList::const_iterator it = newNodesList.begin(); it!=newNodesList.end(); ++it) {

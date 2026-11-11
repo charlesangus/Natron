@@ -238,7 +238,7 @@ NodeGraph::viewportEvent(QEvent* e)
                     continue;
                 }
                 QGraphicsItem* top = item;
-                while (top->parentItem() && (top->parentItem() != _imp->_nodeRoot)) {
+                while (top->parentItem() && !_imp->isInGraph(top)) {
                     top = top->parentItem();
                 }
                 if (!NodeGraphLowDetailLayer::isFaded(top)) {

@@ -38,6 +38,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QPaintEvent>
 #include <QPolygonF>
 #include <QScrollBar>
 CLANG_DIAG_ON(deprecated)
@@ -189,6 +190,11 @@ NodeGraph::NodeGraph(Gui* gui,
     // them, as they do when they draw themselves.
     _imp->lowDetailEdgeLayer = new NodeGraphLowDetailLayer(_imp.get(), NodeGraphLowDetailLayer::ePassEdges, _imp->_nodeRoot);
     _imp->lowDetailNodeLayer = new NodeGraphLowDetailLayer(_imp.get(), NodeGraphLowDetailLayer::ePassNodes, _imp->_nodeRoot);
+    // After the edge layer, so that at equal z the nodes' edges draw above the graph's own pipes
+    // and the layer, and the link arrows above the edges.
+    _imp->backdropLinkArrowLayer = new NodeGraphItemLayer(_imp->_nodeRoot, 5);
+    _imp->edgeLayer = new NodeGraphItemLayer(_imp->_nodeRoot, 15);
+    _imp->linkArrowLayer = new NodeGraphItemLayer(_imp->_nodeRoot, 15);
     refreshDetailLevel();
 
     centerOn(0, 0);
@@ -259,6 +265,8 @@ NodeGraph::onSettingsSaved()
         (*it)->refreshEdgesDataKindPen(true);
         (*it)->refreshLinkLinesAppearance();
     }
+    // scene()->update() below repaints everything.
+    _imp->invalidateLowDetailLayers(false);
     if (scene()) {
         scene()->update();
     }
@@ -298,6 +306,18 @@ QGraphicsItem*
 NodeGraph::getRootItem() const
 {
     return _imp->_root;
+}
+
+QGraphicsItem*
+NodeGraph::getEdgeLayer() const
+{
+    return _imp->edgeLayer;
+}
+
+QGraphicsItem*
+NodeGraph::getLinkArrowLayer(bool fromBackdrop) const
+{
+    return fromBackdrop ? _imp->backdropLinkArrowLayer : _imp->linkArrowLayer;
 }
 
 void
@@ -454,6 +474,7 @@ NodeGraph::paintEvent(QPaintEvent* e)
 
     // The zooms refresh it as they happen; this catches any other change to the transform.
     refreshDetailLevel();
+    _imp->flushLowDetailUpdates(&e->region());
 
     QGraphicsView::paintEvent(e);
 

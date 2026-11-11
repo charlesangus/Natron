@@ -536,7 +536,7 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
     // The low-detail layers draw from the grid, so a rebuild can change what they show anywhere;
     // an item-by-item change repaints just the items it touches.
     if (rebuildGrid) {
-        _publicInterface->viewport()->update();
+        invalidateLowDetailLayers();
     }
 }
 

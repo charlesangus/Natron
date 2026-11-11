@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <unordered_map>
@@ -47,6 +48,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPen>
 #include <QPolygon>
 #include <QPolygonF>
+#include <QRegion>
 #include <QStyleOptionGraphicsItem>
 #include <QTransform>
 #include <QVector>
@@ -55,6 +57,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/BackdropGui.h"
 #include "Gui/Edge.h"
+#include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphPrivate.h"
 #include "Gui/NodeGraphRectItem.h"
 #include "Gui/NodeGraphTextItem.h"
@@ -431,14 +434,149 @@ NodeGraphLowDetailLayer::paint(QPainter* painter,
         return;
     }
     const QPainter::RenderHints viewHints = painter->renderHints();
+    if (!paintCached(painter, option->exposedRect, viewHints, widget)) {
+        paintContent(painter, option->exposedRect, viewHints, widget);
+    }
+}
+
+void
+NodeGraphLowDetailLayer::paintContent(QPainter* painter,
+                                      const QRectF& exposed,
+                                      QPainter::RenderHints viewHints,
+                                      QWidget* widget)
+{
     painter->setRenderHint(QPainter::Antialiasing, false);
     if (_pass == ePassEdges) {
-        paintEdges(painter, option->exposedRect);
+        paintEdges(painter, exposed);
     } else {
-        paintNodes(painter, option->exposedRect, viewHints, widget);
+        paintNodes(painter, exposed, viewHints, widget);
     }
     painter->setOpacity(1.);
 }
+
+void
+NodeGraphLowDetailLayer::invalidateCache()
+{
+    _cacheValid = false;
+    _cache = QPixmap();
+    _cacheDirty.clear();
+}
+
+void
+NodeGraphLowDetailLayer::invalidateCache(const QRectF& rect)
+{
+    if (!_cacheValid || rect.isEmpty()) {
+        return;
+    }
+    _cacheDirty.push_back(rect);
+    // Past this many, redrawing each rect costs more than redrawing their union once.
+    if (_cacheDirty.size() > 32) {
+        QRectF all;
+        for (std::vector<QRectF>::const_iterator it = _cacheDirty.begin(); it != _cacheDirty.end(); ++it) {
+            all |= *it;
+        }
+        _cacheDirty.assign(1, all);
+    }
+}
+
+bool
+NodeGraphLowDetailLayer::paintCached(QPainter* painter,
+                                     const QRectF& exposed,
+                                     QPainter::RenderHints viewHints,
+                                     QWidget* widget)
+{
+    // Thumbnails and any other target are rendered at their own transform, once.
+    QWidget* viewport = _graph->_publicInterface->viewport();
+    if ((widget != viewport) || _graph->isDoingPreviewRender) {
+        return false;
+    }
+    const QTransform toView = painter->worldTransform();
+    if (toView.type() > QTransform::TxScale) {
+        return false;
+    }
+    bool invertible = false;
+    const QTransform fromView = toView.inverted(&invertible);
+    if (!invertible) {
+        return false;
+    }
+    const qreal dpr = viewport->devicePixelRatioF();
+    const QRectF viewRect(QPointF(0, 0), QSizeF(viewport->size()));
+    const QSize deviceSize = QRectF(QPointF(0, 0), viewRect.size() * dpr).toAlignedRect().size();
+    if (deviceSize.isEmpty()) {
+        return false;
+    }
+
+    bool reuse = _cacheValid && (_cache.size() == deviceSize) && (_cache.devicePixelRatio() == dpr) && (toView.m11() == _cacheTransform.m11()) && (toView.m22() == _cacheTransform.m22());
+    if (reuse) {
+        const qreal dx = (toView.dx() - _cacheTransform.dx()) * dpr;
+        const qreal dy = (toView.dy() - _cacheTransform.dy()) * dpr;
+        const int idx = (int)std::lround(dx);
+        const int idy = (int)std::lround(dy);
+        // A pan by a fraction of a device pixel would blur or misplace what is kept.
+        if ((std::fabs(dx - idx) > 1e-3) || (std::fabs(dy - idy) > 1e-3) || (std::abs(idx) >= deviceSize.width()) || (std::abs(idy) >= deviceSize.height())) {
+            reuse = false;
+        } else if ((idx != 0) || (idy != 0)) {
+            QRegion uncovered;
+            _cache.scroll(idx, idy, _cache.rect(), &uncovered);
+            for (const QRect& r : uncovered) {
+                const QRectF inView(r.x() / dpr, r.y() / dpr, r.width() / dpr, r.height() / dpr);
+                invalidateCache(fromView.mapRect(inView));
+            }
+        }
+    }
+    if (!reuse) {
+        // Filling the whole cache for a small repaint would cost more than drawing just that
+        // part, and the next view change would drop it anyway.
+        const QRectF exposedInView = toView.mapRect(exposed) & viewRect;
+        if (exposedInView.width() * exposedInView.height() < 0.25 * viewRect.width() * viewRect.height()) {
+            invalidateCache();
+
+            return false;
+        }
+        _cache = QPixmap(deviceSize);
+        _cache.setDevicePixelRatio(dpr);
+        _cache.fill(Qt::transparent);
+        _cacheValid = true;
+        _cacheDirty.assign(1, fromView.mapRect(viewRect));
+    }
+    _cacheTransform = toView;
+
+    if (!_cacheDirty.empty()) {
+        QPainter cachePainter(&_cache);
+        for (std::vector<QRectF>::const_iterator it = _cacheDirty.begin(); it != _cacheDirty.end(); ++it) {
+            const QRectF inView = toView.mapRect(*it) & viewRect;
+            if (inView.isEmpty()) {
+                continue;
+            }
+            const QRect inDevice = QRectF(inView.x() * dpr, inView.y() * dpr, inView.width() * dpr, inView.height() * dpr).toAlignedRect();
+            const QRectF aligned(inDevice.x() / dpr, inDevice.y() / dpr, inDevice.width() / dpr, inDevice.height() / dpr);
+            cachePainter.resetTransform();
+            cachePainter.setClipping(false);
+            cachePainter.setOpacity(1.);
+            cachePainter.setCompositionMode(QPainter::CompositionMode_Source);
+            cachePainter.fillRect(aligned, Qt::transparent);
+            cachePainter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            cachePainter.setClipRect(aligned);
+            cachePainter.setRenderHints(viewHints);
+            cachePainter.setWorldTransform(toView);
+            paintContent(&cachePainter, fromView.mapRect(aligned), viewHints, widget);
+        }
+        _cacheDirty.clear();
+    }
+
+    const QRectF target = toView.mapRect(exposed) & viewRect;
+    if (!target.isEmpty()) {
+        const QRect source = QRectF(target.x() * dpr, target.y() * dpr, target.width() * dpr, target.height() * dpr).toAlignedRect();
+        const QRectF alignedTarget(source.x() / dpr, source.y() / dpr, source.width() / dpr, source.height() / dpr);
+        painter->save();
+        painter->resetTransform();
+        painter->setOpacity(1.);
+        painter->drawPixmap(alignedTarget, _cache, QRectF(source));
+        painter->restore();
+    }
+
+    return true;
+} // NodeGraphLowDetailLayer::paintCached
 
 void
 NodeGraphLowDetailLayer::paintEdges(QPainter* painter,
@@ -449,7 +587,7 @@ NodeGraphLowDetailLayer::paintEdges(QPainter* painter,
         return;
     }
     std::vector<NodeGraphPrivate::GridItem> found;
-    _graph->getGridItems(exposed, &found);
+    _graph->getGridItems(exposed, &found, false);
 
     std::vector<std::pair<QPen, QVector<QLineF>>> groups;
     std::unordered_multimap<std::uint64_t, std::size_t> groupIndex;
@@ -493,7 +631,7 @@ NodeGraphLowDetailLayer::paintNodes(QPainter* painter,
                                     QWidget* widget)
 {
     std::vector<NodeGraphPrivate::GridItem> found;
-    _graph->getGridItems(exposed, &found);
+    _graph->getGridItems(exposed, &found, false);
 
     const bool navigatorRender = _graph->isDoingPreviewRender;
     BucketMap buckets;

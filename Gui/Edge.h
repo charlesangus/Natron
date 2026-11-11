@@ -90,7 +90,10 @@ public:
 
     void dragDest(const QPointF & dst);
 
+    // Left to the end of an open node refresh batch on the graph of the node owning the edge.
     void initLine();
+
+    void initLineNow();
 
     void setAngle(double a);
 
@@ -137,8 +140,11 @@ public:
      * Public because a kind resolves from the whole connected component: an edit anywhere in it can
      * retype nodes whose own edges were not otherwise touched, and NodeGui refreshes those from
      * Node::dataKindChanged().
+     * Like initLine(), left to the end of an open node refresh batch.
      **/
     void refreshDataKindPen(bool force = false);
+
+    void refreshDataKindPenNow(bool force = false);
 
     // The pen the line is stroked with in the current state, dashes included.
     QPen getDrawnPen() const;

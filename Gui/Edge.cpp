@@ -39,6 +39,7 @@
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 #include "Global/Enums.h"
+#include "Gui/EdgeLabelMetrics.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphTextItem.h"
@@ -73,6 +74,7 @@ struct EdgePrivate
     int inputNb;
     double angle;
     NodeGraphSimpleTextItem* label;
+    EdgeLabelMetrics labelMetrics;
     QPolygonF arrowHead;
     NodeGuiWPtr dest;
     NodeGuiWPtr source;
@@ -480,7 +482,18 @@ makeEdges(const QRectF & bbox,
 void
 Edge::initLine()
 {
-    refreshDataKindPen();
+    NodeGuiPtr owner = _imp->isOutputEdge ? _imp->source.lock() : _imp->dest.lock();
+    NodeGraph* graph = owner ? owner->getDagGui() : NULL;
+    if (graph && graph->deferNodeRefresh(owner.get(), NodeGraph::eDeferredRefreshEdgeLines)) {
+        return;
+    }
+    initLineNow();
+}
+
+void
+Edge::initLineNow()
+{
+    refreshDataKindPenNow();
 
     NodeGuiPtr source = _imp->source.lock();
     NodeGuiPtr dest = _imp->dest.lock();
@@ -582,9 +595,9 @@ Edge::initLine()
                 QPointF pos( _imp->middlePoint + QPointF(-5, -10) );
                 //qDebug() << pos;
                 _imp->label->setPos(pos);
-                QFontMetrics fm( _imp->label->font() );
-                int fontHeight = fm.height();
-                double txtWidth = fm.horizontalAdvance( _imp->label->text() );
+                _imp->labelMetrics.update(_imp->label->text(), _imp->label->font());
+                int fontHeight = _imp->labelMetrics.height();
+                double txtWidth = _imp->labelMetrics.width();
 
                 if ( (visibleLength < fontHeight * 2) || (visibleLength < txtWidth) ) {
                     _imp->label->hide();
@@ -621,11 +634,11 @@ Edge::initLine()
             setLine( dst.x(), dst.y(), srcpt.x(), srcpt.y() );
 
             if (_imp->label) {
-                QFontMetrics fm(_imp->label->font(), 0);
+                _imp->labelMetrics.update(_imp->label->text(), _imp->label->font());
                 double cosinus = std::cos(_imp->angle);
                 int yOffset = 0;
                 if (cosinus < 0) {
-                    yOffset = -fm.horizontalAdvance( _imp->label->text() );
+                    yOffset = -_imp->labelMetrics.width();
                 } else if ( (cosinus >= -0.01) && (cosinus <= 0.01) ) {
                     yOffset = +5;
                 } else {
@@ -886,6 +899,17 @@ kindTintColor(DataKindEnum kind,
 
 void
 Edge::refreshDataKindPen(bool force)
+{
+    NodeGuiPtr owner = _imp->isOutputEdge ? _imp->source.lock() : _imp->dest.lock();
+    NodeGraph* graph = owner ? owner->getDagGui() : NULL;
+    if (graph && graph->deferNodeRefresh(owner.get(), force ? NodeGraph::eDeferredRefreshDataKindPenForced : NodeGraph::eDeferredRefreshDataKindPen)) {
+        return;
+    }
+    refreshDataKindPenNow(force);
+}
+
+void
+Edge::refreshDataKindPenNow(bool force)
 {
     NodeGuiPtr src = _imp->source.lock();
     DataKindEnum kind = eDataKindPolymorphic;

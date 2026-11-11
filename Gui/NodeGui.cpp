@@ -114,6 +114,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGraphRectItem.h"
+#include "Gui/NodeGraphStacking.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -427,6 +428,7 @@ NodeGui::initialize(NodeGraph* dag,
     _internalNode = internalNode;
     assert(internalNode);
     _graph = dag;
+    _initializingGui = true;
 
     NodeGuiPtr thisAsShared = shared_from_this();
 
@@ -522,7 +524,7 @@ NodeGui::initialize(NodeGraph* dag,
     EffectInstancePtr iseffect = internalNode->getEffectInstance();
     Backdrop* isBd = dynamic_cast<Backdrop*>( iseffect.get() );
     if ( !isBd && !internalNode->isOutputNode() ) {
-        _outputEdge = new Edge( thisAsShared, parentItem() );
+        _outputEdge = new Edge(thisAsShared, edgeParent());
     }
 
     restoreStateAfterCreation();
@@ -547,6 +549,11 @@ NodeGui::initialize(NodeGraph* dag,
         internalNode->initializeHostOverlays();
     }
     refreshFrameDependency();
+
+    _initializingGui = false;
+    if (_nameItemHtmlDeferred) {
+        setNameItemHtml(_deferredName, _deferredLabel);
+    }
 } // initialize
 
 void
@@ -1431,7 +1438,7 @@ NodeGui::refreshPositionEnd(double x,
     if (_graph) {
         _graph->scheduleLoopBlockRefresh(false);
         if (!_graph->deferNodeStacking(this)) {
-            _graph->stackNodesAboveOverlapping(std::vector<NodeGui*>(1, this));
+            _graph->raiseNodes(std::vector<NodeGui*>(1, this));
         }
     }
     // A project load refreshes every edge once its nodes are restored.
@@ -1626,22 +1633,22 @@ NodeGui::refreshPosition(double x,
     refreshPositionEnd(x, y);
 } // refreshPosition
 
-void
-NodeGui::setAboveItem(QGraphicsItem* item)
+QGraphicsItem*
+NodeGui::edgeParent() const
 {
-    if ( !isVisible() || dynamic_cast<BackdropGui*>(this) || dynamic_cast<BackdropGui*>(item) ) {
+    QGraphicsItem* layer = _graph ? _graph->getEdgeLayer() : NULL;
+
+    return layer ? layer : parentItem();
+}
+
+void
+NodeGui::setStackingSerial(std::uint64_t serial)
+{
+    if (serial == _stackingSerial) {
         return;
     }
-    item->stackBefore(this);
-    for (InputEdges::iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        NodeGuiPtr inputSource = (*it)->getSource();
-        if (inputSource.get() != item) {
-            item->stackBefore( (*it) );
-        }
-    }
-    if (_outputEdge) {
-        item->stackBefore(_outputEdge);
-    }
+    _stackingSerial = serial;
+    setZValue(getBaseDepth() + NodeGraphStacking::offsetOf(serial));
 }
 
 void
@@ -1731,13 +1738,22 @@ NodeGui::onDataKindChanged()
 void
 NodeGui::refreshEdgesDataKindPen(bool force)
 {
+    if (_graph && _graph->deferNodeRefresh(this, force ? NodeGraph::eDeferredRefreshDataKindPenForced : NodeGraph::eDeferredRefreshDataKindPen)) {
+        return;
+    }
+    refreshEdgesDataKindPenNow(force);
+}
+
+void
+NodeGui::refreshEdgesDataKindPenNow(bool force)
+{
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
         if (*it) {
-            (*it)->refreshDataKindPen(force);
+            (*it)->refreshDataKindPenNow(force);
         }
     }
     if (_outputEdge) {
-        _outputEdge->refreshDataKindPen(force);
+        _outputEdge->refreshDataKindPenNow(force);
     }
 }
 
@@ -1990,7 +2006,8 @@ NodeGui::initializeInputs()
     int inputsCount = 0;
     int emptyInputsCount = 0;
     for (U32 i = 0; i < inputs.size(); ++i) {
-        Edge* edge = new Edge( i, 0., thisShared, parentItem() );
+        Edge* edge = new Edge(i, 0., thisShared, edgeParent());
+        edge->setUseSelected(getIsSelected());
         if ( ( node && node->getEffectInstance()->isInputRotoBrush(i) ) || !isVisible() ) {
             edge->setActive(false);
             edge->hide();
@@ -2829,8 +2846,6 @@ NodeGui::refreshStateIndicator()
     if (!_stateIndicator) {
         return;
     }
-    const QBrush oldBrush = _stateIndicator->brush();
-    const bool wasShown = _stateIndicator->isVisible();
     QString message;
     int type;
     NodePtr node = getNode();
@@ -2840,45 +2855,51 @@ NodeGui::refreshStateIndicator()
     node->getPersistentMessage(&message, &type);
 
     bool showIndicator = true;
+    QBrush brush = _stateIndicator->brush();
     int value = node->getIsNodeRenderingCounter();
     bool isSelected = getIsSelected();
     if (value >= 1) {
-        _stateIndicator->setBrush(Qt::yellow);
+        brush = QBrush(Qt::yellow);
     } else if (isSelected) {
-        _stateIndicator->setBrush(Qt::white);
+        brush = QBrush(Qt::white);
     } else if ( !message.isEmpty() && ( (type == 1) || (type == 2) ) ) {
         if (type == 1) {
-            _stateIndicator->setBrush( QColor(128, 0, 0, 255) ); //< error
+            brush = QBrush(QColor(128, 0, 0, 255)); //< error
         } else if (type == 2) {
-            _stateIndicator->setBrush( QColor(80, 180, 0, 255) ); //< warning
+            brush = QBrush(QColor(80, 180, 0, 255)); //< warning
         }
     } else {
         showIndicator = false;
     }
 
-    if (_outputEdge) {
-        _outputEdge->setUseSelected(isSelected);
+    const bool wasShown = _stateIndicator->isVisible();
+    const bool selectionChanged = (isSelected != _stateIndicatorSelected);
+    // Called each time a render starts or ends on the node, mostly with nothing to change, and a
+    // change repaints the node and refiles it in the graph.
+    if ((showIndicator == wasShown) && (!showIndicator || (brush == _stateIndicator->brush())) && !selectionChanged) {
+        return;
     }
-    for (std::vector<Edge*>::iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        if (*it) {
-            (*it)->setUseSelected(isSelected);
+    if (showIndicator) {
+        _stateIndicator->setBrush(brush);
+    }
+    if (selectionChanged) {
+        if (_outputEdge) {
+            _outputEdge->setUseSelected(isSelected);
+        }
+        for (std::vector<Edge*>::iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
+            if (*it) {
+                (*it)->setUseSelected(isSelected);
+            }
         }
     }
-    // The thumbnail shows the indicator and the selected look of the edges.
-    if ((showIndicator != wasShown) || (showIndicator && (_stateIndicator->brush() != oldBrush)) || (isSelected != _stateIndicatorSelected)) {
-        invalidateGraphNavigator();
-    }
     _stateIndicatorSelected = isSelected;
-    if ( showIndicator && !_stateIndicator->isVisible() ) {
-        _stateIndicator->show();
-    } else if ( !showIndicator && _stateIndicator->isVisible() ) {
-        _stateIndicator->hide();
+    if (showIndicator != wasShown) {
+        _stateIndicator->setVisible(showIndicator);
     } else {
         update();
     }
-    if (_graph) {
-        _graph->noteNodeGeometryChanged(this);
-    }
+    // The thumbnail shows the indicator and the selected look of the edges.
+    invalidateGraphNavigator();
 }
 
 void
@@ -3226,7 +3247,11 @@ NodeGui::onKnobsLinksChanged()
             return arrow;
         }
 
-        return new LinkArrow(partnerGui, thisShared, parentItem());
+        if (!_graph) {
+            return new LinkArrow(partnerGui, thisShared, parentItem());
+        }
+
+        return new LinkArrow(partnerGui, thisShared, _graph->getLinkArrowLayer(dynamic_cast<BackdropGui*>(partnerGui.get()) != 0));
     };
     std::map<LineKey, LinkLines::iterator> lineIndex;
     std::map<std::tuple<const LinkLine*, const KnobI*, const KnobI*>, std::list<LinkedKnob>::iterator> knobIndex;
@@ -4119,9 +4144,45 @@ NodeGui::getOutputArrow() const
 }
 
 void
+NodeGui::runDeferredRefreshes(int refreshes)
+{
+    if ((refreshes & NodeGraph::eDeferredRefreshName) && _nameItemHtmlDeferred) {
+        setNameItemHtmlNow(_deferredName, _deferredLabel);
+    }
+    if (refreshes & NodeGraph::eDeferredRefreshEdgeLines) {
+        for (std::vector<Edge*>::iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
+            if (*it) {
+                (*it)->initLineNow();
+            }
+        }
+        if (_outputEdge) {
+            _outputEdge->initLineNow();
+        }
+    }
+    if (refreshes & (NodeGraph::eDeferredRefreshDataKindPen | NodeGraph::eDeferredRefreshDataKindPenForced)) {
+        refreshEdgesDataKindPenNow((refreshes & NodeGraph::eDeferredRefreshDataKindPenForced) != 0);
+    }
+}
+
+void
 NodeGui::setNameItemHtml(const QString & name,
                          const QString & label)
 {
+    if (_initializingGui || (_graph && _graph->deferNodeRefresh(this, NodeGraph::eDeferredRefreshName))) {
+        _deferredName = name;
+        _deferredLabel = label;
+        _nameItemHtmlDeferred = true;
+
+        return;
+    }
+    setNameItemHtmlNow(name, label);
+}
+
+void
+NodeGui::setNameItemHtmlNow(const QString& name,
+                            const QString& label)
+{
+    _nameItemHtmlDeferred = false;
     if ( !_graph->getGui() || !_nameItem) {
         return;
     }

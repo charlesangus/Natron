@@ -38,6 +38,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QMouseEvent>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QRegion>
 #include <QString>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -173,7 +174,7 @@ NodeGraphPrivate::isGridItemValid(const GridItem& gridItem) const
     }
     QGraphicsItem* expected = (gridItem.slot == kGridNodeSlot) ? static_cast<QGraphicsItem*>(gridItem.owner) : static_cast<QGraphicsItem*>(gridItem.owner->getInputArrow(gridItem.slot));
 
-    return expected && (expected == gridItem.item) && (expected->parentItem() == _nodeRoot);
+    return expected && (expected == gridItem.item) && isInGraph(expected);
 }
 
 void
@@ -192,20 +193,20 @@ NodeGraphPrivate::refreshItemGrid()
             gridItem.owner = node;
             gridItem.slot = kGridNodeSlot;
             gridItem.item = node;
-            if (node->parentItem() == _nodeRoot) {
+            if (isInGraph(node)) {
                 itemGrid.insertOrUpdate(gridItem.item, gridItem, gridRectOf(gridItem.item));
             }
             const std::vector<Edge*>& inputs = node->getInputsArrows();
             for (std::size_t i = 0; i < inputs.size(); ++i) {
                 gridItem.slot = (int)i;
                 gridItem.item = inputs[i];
-                if (gridItem.item && (gridItem.item->parentItem() == _nodeRoot)) {
+                if (gridItem.item && isInGraph(gridItem.item)) {
                     itemGrid.insertOrUpdate(gridItem.item, gridItem, gridRectOf(gridItem.item));
                 }
             }
             gridItem.slot = -1;
             gridItem.item = node->getOutputArrow();
-            if (gridItem.item && (gridItem.item->parentItem() == _nodeRoot)) {
+            if (gridItem.item && isInGraph(gridItem.item)) {
                 itemGrid.insertOrUpdate(gridItem.item, gridItem, gridRectOf(gridItem.item));
             }
         }
@@ -225,9 +226,12 @@ NodeGraphPrivate::refreshItemGrid()
 
 void
 NodeGraphPrivate::getGridItems(const QRectF& queryRoot,
-                               std::vector<GridItem>* items)
+                               std::vector<GridItem>* items,
+                               bool refresh)
 {
-    refreshItemGrid();
+    if (refresh) {
+        refreshItemGrid();
+    }
     std::vector<GridItem> found;
     itemGrid.query(queryRoot, &found);
     items->reserve(items->size() + found.size());
@@ -305,6 +309,8 @@ NodeGraphPrivate::applyDetailLevel()
 {
     lowDetailEdgeLayer->setVisible(lowDetail);
     lowDetailNodeLayer->setVisible(lowDetail);
+    // Showing or hiding the layers already repaints them.
+    invalidateLowDetailLayers(false);
     // The trash too: a node restored from it must not come back faded at the full level.
     const IndexedNodeGuiList* lists[] = { &_nodes, &_nodesTrash };
     QMutexLocker l(&_nodesMutex);
@@ -335,7 +341,7 @@ NodeGraph::refreshDetailLevel()
 void
 NodeGraph::repaintLowDetailItem(QGraphicsItem* item)
 {
-    if (!_imp->lowDetail || !NodeGraphLowDetailLayer::isFaded(item) || (item->parentItem() != _imp->_nodeRoot)) {
+    if (!_imp->lowDetail || !NodeGraphLowDetailLayer::isFaded(item) || !_imp->isInGraph(item)) {
         return;
     }
     QRectF dirty = gridRectOf(item);
@@ -343,8 +349,62 @@ NodeGraph::repaintLowDetailItem(QGraphicsItem* item)
     if (_imp->itemGrid.rectOf(item, &filed)) {
         dirty |= filed;
     }
-    _imp->lowDetailEdgeLayer->update(dirty);
-    _imp->lowDetailNodeLayer->update(dirty);
+    _imp->addLowDetailDirty(dirty);
+}
+
+void
+NodeGraphPrivate::addLowDetailDirty(const QRectF& rect)
+{
+    if (!lowDetail || rect.isEmpty()) {
+        return;
+    }
+    lowDetailDirty |= rect;
+    if (!lowDetailFlushPosted) {
+        lowDetailFlushPosted = true;
+        // A posted call rather than a zero timer: it runs before a repaint the change itself
+        // queues, so that repaint already includes the layers.
+        QMetaObject::invokeMethod(_publicInterface, [this]() {
+            lowDetailFlushPosted = false;
+            flushLowDetailUpdates(); }, Qt::QueuedConnection);
+    }
+}
+
+void
+NodeGraphPrivate::invalidateLowDetailLayers(bool repaint)
+{
+    lowDetailDirty = QRectF();
+    lowDetailEdgeLayer->invalidateCache();
+    lowDetailNodeLayer->invalidateCache();
+    if (repaint && lowDetail) {
+        lowDetailEdgeLayer->update();
+        lowDetailNodeLayer->update();
+    }
+}
+
+void
+NodeGraphPrivate::flushLowDetailUpdates(const QRegion* painting)
+{
+    if (!lowDetail) {
+        lowDetailDirty = QRectF();
+
+        return;
+    }
+    refreshItemGrid();
+    if (lowDetailDirty.isEmpty()) {
+        return;
+    }
+    const QRectF dirty = lowDetailDirty;
+    lowDetailDirty = QRectF();
+    lowDetailEdgeLayer->invalidateCache(dirty);
+    lowDetailNodeLayer->invalidateCache(dirty);
+    if (painting) {
+        const QRect dirtyViewport = _publicInterface->mapFromScene(_nodeRoot->mapRectToScene(dirty)).boundingRect().adjusted(-1, -1, 1, 1);
+        if (QRegion(dirtyViewport & _publicInterface->viewport()->rect()).subtracted(*painting).isEmpty()) {
+            return;
+        }
+    }
+    lowDetailEdgeLayer->update(dirty);
+    lowDetailNodeLayer->update(dirty);
 }
 
 void

@@ -139,6 +139,11 @@ public:
     void restoreFromTrash(NodeGui* node);
 
     QGraphicsItem* getRootItem() const;
+
+    // The parents of the nodes' edges and of the link arrows, in the nodes' coordinates. An arrow
+    // from a backdrop goes under the backdrops, every other one above the edges.
+    QGraphicsItem* getEdgeLayer() const;
+    QGraphicsItem* getLinkArrowLayer(bool fromBackdrop) const;
     virtual void notifyGuiClosing() OVERRIDE FINAL;
     void discardScenePointer();
 
@@ -231,9 +236,9 @@ public:
     void refreshDetailLevel();
 
     /**
-     * @brief While a batch is open, a node that moves or resizes does not restack itself above
-     * the nodes it overlaps at once: the outermost endNodeStackingBatch() does it in one pass for
-     * every node that moved meanwhile.
+     * @brief While a batch is open, a node that moves or resizes is not raised above the other
+     * nodes at once: the outermost endNodeStackingBatch() raises every node that moved meanwhile,
+     * in the order they moved.
      **/
     void beginNodeStackingBatch();
     void endNodeStackingBatch();
@@ -241,8 +246,27 @@ public:
     // Returns false when no batch is open, in which case the caller restacks the node itself.
     bool deferNodeStacking(NodeGui* node);
 
-    // Stacks each node above the visible nodes it overlaps, in order.
-    void stackNodesAboveOverlapping(const std::vector<NodeGui*>& nodes);
+    // Stacks the visible nodes above every other node, each above the ones before it. Nodes that
+    // already are the topmost ones, in that order, are left alone.
+    void raiseNodes(const std::vector<NodeGui*>& nodes);
+
+    enum DeferredRefreshEnum {
+        eDeferredRefreshName = 1,
+        eDeferredRefreshEdgeLines = 2,
+        eDeferredRefreshDataKindPen = 4,
+        eDeferredRefreshDataKindPenForced = 8
+    };
+
+    /**
+     * @brief While a batch is open, nodes leave the refreshes above to the outermost
+     * endNodeRefreshBatch(), which runs each one once per node: a paste would otherwise lay out
+     * names and edges again as each node, input and data kind arrives.
+     **/
+    void beginNodeRefreshBatch();
+    void endNodeRefreshBatch();
+
+    // Returns false when no batch is open, in which case the caller refreshes at once.
+    bool deferNodeRefresh(NodeGui* node, int refreshes);
 
     // True while a project load restores nodes: stacking, edges and the navigator wait for
     // onProjectNodesRestored().
@@ -565,6 +589,31 @@ public:
 
     NodeStackingBatch(const NodeStackingBatch&) = delete;
     NodeStackingBatch& operator=(const NodeStackingBatch&) = delete;
+
+private:
+    NodeGraph* _graph;
+};
+
+// Opens a node refresh batch on graph, if any, for the scope.
+class NodeRefreshBatch {
+public:
+    explicit NodeRefreshBatch(NodeGraph* graph)
+        : _graph(graph)
+    {
+        if (_graph) {
+            _graph->beginNodeRefreshBatch();
+        }
+    }
+
+    ~NodeRefreshBatch()
+    {
+        if (_graph) {
+            _graph->endNodeRefreshBatch();
+        }
+    }
+
+    NodeRefreshBatch(const NodeRefreshBatch&) = delete;
+    NodeRefreshBatch& operator=(const NodeRefreshBatch&) = delete;
 
 private:
     NodeGraph* _graph;

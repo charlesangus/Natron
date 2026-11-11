@@ -51,6 +51,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPainter>
 #include <QPen>
 #include <QPointF>
+#include <QRegion>
 #include <QStyleOptionGraphicsItem>
 #include <QTimer>
 CLANG_DIAG_ON(deprecated)
@@ -255,6 +256,34 @@ public:
     }
 };
 
+// An empty item that only parents a kind of item apart from the nodes, at the nodes' origin.
+// Qt keeps an item's children in one list that it renumbers or re-sorts as children come, go or
+// change z, so the edges and arrows of a large graph would make every such change to the nodes
+// cost a walk over all of them.
+class NodeGraphItemLayer
+    : public QGraphicsItem {
+public:
+    NodeGraphItemLayer(QGraphicsItem* parent,
+                       qreal z)
+        : QGraphicsItem(parent)
+    {
+        setFlag(QGraphicsItem::ItemHasNoContents);
+        setAcceptedMouseButtons(Qt::NoButton);
+        setZValue(z);
+    }
+
+    virtual QRectF boundingRect() const OVERRIDE FINAL
+    {
+        return QRectF();
+    }
+
+    virtual void paint(QPainter* /*painter*/,
+                       const QStyleOptionGraphicsItem* /*option*/,
+                       QWidget* /*widget*/) OVERRIDE FINAL
+    {
+    }
+};
+
 class LoopBlockOverlay;
 class NodeGraphLowDetailLayer;
 
@@ -287,6 +316,16 @@ public:
     LoopBlockOverlay* _loopBlocks;
     NodeGraphLowDetailLayer* lowDetailEdgeLayer;
     NodeGraphLowDetailLayer* lowDetailNodeLayer;
+    QGraphicsItem* edgeLayer = nullptr;
+    QGraphicsItem* linkArrowLayer = nullptr;
+    QGraphicsItem* backdropLinkArrowLayer = nullptr;
+    // The highest stacking serial handed out to a node so far.
+    std::uint64_t lastNodeStackSerial = 0;
+    // What the low-detail layers have to draw again, in _nodeRoot coordinates. Changes add to it
+    // and the layers are updated once, when control returns to the event loop or just before the
+    // view paints, so a change to many items is one update rather than one per item.
+    QRectF lowDetailDirty;
+    bool lowDetailFlushPosted = false;
     QGraphicsSimpleTextItem* _cacheSizeText;
     bool cacheSizeHidden;
     QTimer _refreshCacheTextTimer;
@@ -423,6 +462,9 @@ public:
     bool timelineConnected;
     std::vector<NodeGuiWPtr> stackingPending;
     std::unordered_set<NodeGui*> stackingPendingSet;
+    int refreshBatchDepth = 0;
+    std::vector<std::pair<NodeGuiWPtr, int>> refreshPending;
+    std::unordered_map<NodeGui*, std::size_t> refreshPendingIndex;
 
     // Nodes whose rendering counters or persistent message changed since refreshRenderStateTimer
     // last fired, keyed by address so that a node queued twice is refreshed once.
@@ -450,12 +492,33 @@ public:
     // or edges coming or going; it makes the next query refile every item.
     void invalidateNavigator(bool rebuildGrid);
 
+    // Whether item, a node or one of its edges, is where the graph keeps items of its kind.
+    bool isInGraph(const QGraphicsItem* item) const
+    {
+        const QGraphicsItem* parent = item->parentItem();
+
+        return parent && ((parent == _nodeRoot) || (parent == edgeLayer));
+    }
+
     bool isGridItemValid(const GridItem& gridItem) const;
     void refreshItemGrid();
 
     // The grid entries of the nodes and edges whose subtree bounds may meet queryRoot, given in
-    // _nodeRoot coordinates.
-    void getGridItems(const QRectF& queryRoot, std::vector<GridItem>* items);
+    // _nodeRoot coordinates. Paint code passes refresh false: refiling can take _nodesMutex and
+    // walk every node, and flushLowDetailUpdates() already refiled before the view paints.
+    void getGridItems(const QRectF& queryRoot, std::vector<GridItem>* items, bool refresh = true);
+
+    // Adds rect, in _nodeRoot coordinates, to what the low-detail layers draw again.
+    void addLowDetailDirty(const QRectF& rect);
+
+    // Makes everything the low-detail layers draw be drawn again, now when repaint is set and
+    // otherwise at their next paint.
+    void invalidateLowDetailLayers(bool repaint = true);
+
+    // Refiles the items that changed and updates the low-detail layers where they did. painting,
+    // when the view is about to paint it, is the region of the viewport that paint covers: the
+    // layers draw the changes in it then, and an update there would only paint it twice.
+    void flushLowDetailUpdates(const QRegion* painting = nullptr);
 
     // Fades the nodes and their edges in or out for the level of detail lowDetail says.
     void applyDetailLevel();

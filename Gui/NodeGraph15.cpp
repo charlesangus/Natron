@@ -152,7 +152,6 @@ NodeGraph::connectInputArrowToNode(Edge* arrow,
     assert(nodeHoldingEdge);
 
     bool ok = handleConnectionError(nodeHoldingEdge, target, arrow->getInputNumber());
-    arrow->stackBefore(target.get());
     if (ok) {
         pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), target),
                         NodesGuiList { nodeHoldingEdge, arrow->getSource(), target });

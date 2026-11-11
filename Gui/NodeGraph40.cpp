@@ -701,9 +701,9 @@ NodeGraph::centerOnAllNodes()
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     }
 
+    // A new view transform already repaints the viewport.
     refreshDetailLevel();
     refreshOverlays();
-    update();
 } // NodeGraph::centerOnAllNodes
 
 static QString

@@ -32,9 +32,13 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsItem>
 #include <QPainter>
+#include <QPixmap>
 #include <QRectF>
+#include <QTransform>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
+
+#include <vector>
 
 #include "Gui/GuiFwd.h"
 
@@ -88,13 +92,26 @@ public:
         return item->opacity() <= 0.;
     }
 
+    // The layer keeps what it last drew in the view and redraws only the parts these mark, so
+    // anything a faded item shows must be reported through the graph when it changes.
+    void invalidateCache();
+    void invalidateCache(const QRectF& rect);
+
 private:
+    void paintContent(QPainter* painter, const QRectF& exposed, QPainter::RenderHints viewHints, QWidget* widget);
+
+    bool paintCached(QPainter* painter, const QRectF& exposed, QPainter::RenderHints viewHints, QWidget* widget);
+
     void paintEdges(QPainter* painter, const QRectF& exposed);
 
     void paintNodes(QPainter* painter, const QRectF& exposed, QPainter::RenderHints viewHints, QWidget* widget);
 
     NodeGraphPrivate* _graph;
     PassEnum _pass;
+    QPixmap _cache;
+    QTransform _cacheTransform;
+    bool _cacheValid = false;
+    std::vector<QRectF> _cacheDirty;
 };
 
 NATRON_NAMESPACE_EXIT

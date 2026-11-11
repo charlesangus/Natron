@@ -266,3 +266,11 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - At 300: click_select 50 and drag_move_1 50.
   - fit_all is flagged REGRESSED on loop-pass time (about 0.05 → 16 ms; per-event unchanged).
   - P6.T3 (drag) and P6.T2 (batched undo/redo/delete/paste) are not yet effective. P6.T9's rerun is this run.
+- 2026-11-11 — GPU-host gate bench (`results-20261111T082111Z`, RX 7900 XTX, 7800X3D; after build 42dc24668 against base 0553d5c3a; comp, n=300 and 3000). The whole session took 7 min. Step wall p50/p95 at 3000, with the loop pass recorded separately:
+  - Interaction ops pass: hover 0.08/0.65, pan 0.27/0.41, zoom_step 0.17/0.23, rubber_band 0.09/0.14, drag_move_1 0.29/4.3.
+  - Edit ops pass: knob_change_fanout 7.6, set_expression 5.2, connect 25, create_one 8, edit_label 1.5.
+  - Still over: select_all 79/103 (budget 16), drag_move_50 44/49 (16), undo 328/389, redo 107, delete_1000 133, duplicate_100 214, paste_100 210, paste_1000 2362 (100 each).
+  - Minor: fit_all p95 30.5, with its loop pass at 20 ms against 0.05 on the base. click_select p95 30.
+  - Against the base, everything improved except fit_all and click_select. The base wedged on duplicate_100 at 3000 and on undo at 300.
+  - P6.T9's rerun is this run.
+  - P6.T1 profiling of the remaining misses is running on the dev host with the gate harness.

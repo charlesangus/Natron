@@ -16,7 +16,9 @@ over_budget (and the older timeout) are censored: the rep was abandoned at its t
 only a lower bound, printed with censored_ms, how far the rep got. Censored on both sides is "still
 over" and judged neither way; censored only in the baseline is an improvement. An op "not run" because
 the step before it in the delete/undo/redo cycle failed is not a regression of its own; the failed step
-is. "not run here" marks an op carried from a smaller n where it wedged Natron.
+is. "not run here" marks an op carried from a smaller n where it wedged Natron. An op not run because
+an earlier op wedged Natron with no restart left ("Natron wedged on <op>") is "not measured" when the
+baseline has no ok record of it either, and "REGRESSED: missing after wedge" when it does.
 
 A slowdown, or a fall to over_budget without a wedge, that rests on fewer than 5 samples on either side
 is "CONFIRM" rather than a regression: it does not fail the comparison, and the output ends with the
@@ -113,6 +115,13 @@ def fewest(*recs):
     return min(c for c in (samples(rec) for rec in recs) if c is not None)
 
 
+WEDGE_REASON = "Natron wedged on "
+
+
+def after_wedge(rec):
+    return rec.get("status") == "not_run" and (rec.get("reason") or "").startswith(WEDGE_REASON)
+
+
 def excused_not_run(key, rec, run_ops):
     """True when rec is not run because the step it names, at the same topology and n, was not ok."""
     if rec.get("status") != "not_run":
@@ -142,7 +151,13 @@ def compare(base_ops, run_ops, tol, min_ms, long_stall_ms=250.0):
         bst, rst = b.get("status"), r.get("status")
         few = too_few(b, r)
         if rst == "not_run":
-            if excused_not_run(key, r, run_ops):
+            if after_wedge(r):
+                if bst == "ok":
+                    rows.append("%s  REGRESSED: missing after wedge (%s)" % (label, r.get("reason")))
+                    regressions.append(key)
+                else:
+                    rows.append("%s  not measured (%s)" % (label, r.get("reason")))
+            elif excused_not_run(key, r, run_ops):
                 rows.append("%s  not run: %s" % (label, r.get("reason")))
             elif bst == "not_run":
                 rows.append("%s  not run in either" % label)
@@ -414,12 +429,17 @@ def self_test_censored(op):
            k("delete_1000"): timed("delete_1000", 900.0, 1), k("undo"): over("undo", 0, wedged=True),
            k("redo"): dict(op("redo", 300, None, "not_run"), not_run=True, reason="undo wedged Natron"),
            k("gone"): dict(op("gone", 300, None, "not_run"), not_run=True, reason="gone was deselected")}
+    base.update({k("lost"): timed("lost", 50.0, 5), k("unseen"): over("unseen"),
+                 k("twice"): dict(op("twice", 300, None, "not_run"), not_run=True, reason="Natron wedged on hang")})
+    for name in ("lost", "unseen", "twice"):
+        run[k(name)] = dict(op(name, 300, None, "not_run"), not_run=True, reason="Natron wedged on hang")
     rows, regressed, confirms = compare(base, run, 0.2, 5.0)
     text = dict((row.split()[0], row) for row in rows if "per event" not in row)
     # still stays over and fixed came back; slow went over on 5 samples and hang wedged, tail's per-event
     # p95 tripled and gone was dropped for no failed step before it: those fail. blip went over and lone
-    # tripled on one sample each: those want a re-run. redo follows the undo that wedged.
-    assert sorted(k[0] for k in regressed) == ["gone", "hang", "slow", "tail", "undo"], (regressed, rows)
+    # tripled on one sample each: those want a re-run. redo follows the undo that wedged. lost, unseen and
+    # twice were left unrun by hang's wedge: only lost, ok in the baseline, is missing.
+    assert sorted(k[0] for k in regressed) == ["gone", "hang", "lost", "slow", "tail", "undo"], (regressed, rows)
     assert sorted(k[0] for k in confirms) == ["blip", "lone"], (confirms, rows)
     assert "still over: (>12 s, reached 12100 ms) / (>12 s, reached 12100 ms)" in text["still"], text["still"]
     assert "baseline over budget (>12 s, reached 12100 ms) ->" in text["fixed"] and "improved" in text["fixed"]
@@ -427,6 +447,8 @@ def self_test_censored(op):
     assert "CONFIRM median slower on 1 sample(s)" in text["lone"], text["lone"]
     assert "REGRESSED event p95" in text["tail"], text["tail"]
     assert "not run: undo wedged Natron" in text["redo"] and "REGRESSED" not in text["redo"], text["redo"]
+    assert "REGRESSED: missing after wedge (Natron wedged on hang)" in text["lost"], text["lost"]
+    assert "not measured (Natron wedged on hang)" in text["unseen"] and "not measured" in text["twice"], rows
     command = rerun_command(confirms, {"mode": "host", "appimage_name": "N.AppImage"}, "/b.jsonl")
     assert command == ("tools/bench/gui/run.sh --host --rerun blip,lone --reps 5 --topologies mixed --sizes 300 "
                        "--appimage N.AppImage --baseline /b.jsonl"), command

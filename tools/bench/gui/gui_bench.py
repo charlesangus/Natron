@@ -19,8 +19,10 @@ Configured by the environment:
                           op's one rep. Restarts open it from the cache too
     GUI_BENCH_RESUME      1 skips every (topology, n, op) already recorded in GUI_BENCH_OUT, and sizes
                           with nothing left to run
-    GUI_BENCH_SKIP_WEDGED 1 (default) records an op that wedged Natron at a smaller n as a timeout at the
+    GUI_BENCH_SKIP_WEDGED 1 (default) records an op that wedged Natron at a smaller n as over budget at the
                           larger sizes without running it
+    GUI_BENCH_NO_RESTART  1 means no restart follows a wedge, so the wedge also records every op not yet run
+                          at that topology and n as not_run, with the reason "Natron wedged on <op>"
     GUI_BENCH_HOLD_FILE   when set, each op reports "BEGIN op topology n" after its setup and waits up to
                           GUI_BENCH_HOLD_S (default 120) for this file to exist before its reps, so a
                           stack sampler can attach first; the file is removed once seen
@@ -44,7 +46,14 @@ events) and its baseline median, clamped to 2-30 s. A rep past it is abandoned b
 and the op is recorded as "over_budget" with censored_ms, the time the rep had reached. A single timed
 step that does not return within the timeout plus 10 s (untimed setup and cleanup get at least 60 s)
 is recorded as a "wedged" over_budget and the process exits with code 3, which run.sh answers by
-restarting Natron with GUI_BENCH_RESUME=1.
+restarting Natron with GUI_BENCH_RESUME=1 while it has restarts left.
+
+Opening a cached graph is the load op's rep, but its guard is the setup's: the largest of 60 s, 3x the
+slowest load the cache sidecar records and its generation time. Past the op's
+timeout it is still recorded as over_budget.
+
+Ops run read-only interactions first, then cheap edits, then the heavy edits cheapest first, so a wedge
+late in the run costs the fewest measurements.
 
 delete_1000, undo and redo run as one cycle per rep: the delete, its undo and the redo are each timed
 and recorded under their own name. When one is not ok, the ones after it are recorded as "not_run".
@@ -132,7 +141,10 @@ RESUME = os.environ.get("GUI_BENCH_RESUME", "0") == "1"
 SKIP_WEDGED = os.environ.get("GUI_BENCH_SKIP_WEDGED", "1") != "0"
 HOLD_FILE = os.environ.get("GUI_BENCH_HOLD_FILE", "")
 HOLD_S = float(os.environ.get("GUI_BENCH_HOLD_S", "120"))
+NO_RESTART = os.environ.get("GUI_BENCH_NO_RESTART", "0") == "1"
 WEDGED_EXIT = 3
+LOAD_GUARD_MIN_S = 60.0
+LOAD_GUARD_FACTOR = 3.0
 
 try:
     import NatronEngine
@@ -179,6 +191,8 @@ try:
     # op that is slow overall but keeps returning is left to its per-rep timeout instead.
     _guard = {"until": None, "record": None, "phase": None, "guard_s": None, "rep_t0": None, "companions": None}
     _dialogs = []
+    # [(op, kind)] of the current topology and n not yet published, in run order.
+    _pending = []
 
     def arm_guard(phase, seconds):
         _guard["phase"] = phase
@@ -211,19 +225,26 @@ try:
                     pre, post = _guard["companions"](record)
                 except Exception:
                     report("NOTE could not record the ops that share the wedged step's cycle: " + short_error())
-            for rec in pre + [record] + post:
+            written = pre + [record] + post
+            if NO_RESTART:
+                names = set(rec["op"] for rec in written)
+                written += [not_run_record(nm, kind, record["topology"], record["n"], "Natron wedged on " + record["op"])
+                            for nm, kind in _pending if nm not in names]
+            for rec in written:
                 emit(rec)
                 report("RESULT " + json.dumps(rec, sort_keys=True))
             _out.close()
-            report("FAIL [%s-%d] %s wedged Natron in its %s step (> %.0f s); exiting so the run restarts" % (
-                record["topology"], record["n"], record["op"], phase, guard_s))
+            report("FAIL [%s-%d] %s wedged Natron in its %s step (> %.0f s); exiting %s" % (
+                record["topology"], record["n"], record["op"], phase, guard_s,
+                "with the rest of this size recorded as not run" if NO_RESTART else "so the run restarts"))
             os._exit(WEDGED_EXIT)
 
     def recorded_ops():
-        """({(topology, n, op)} already in OUT_PATH, {(topology, op): (n, guard_s)} of the smallest n each op wedged at)."""
-        done, wedged = set(), {}
+        """({(topology, n, op)} already in OUT_PATH, {(topology, op): (n, guard_s)} of the smallest n each op
+        wedged at, {(topology, n, op)} of every op that wedged where it ran)."""
+        done, wedged, wedged_here = set(), {}, set()
         if not os.path.isfile(OUT_PATH):
-            return done, wedged
+            return done, wedged, wedged_here
         with open(OUT_PATH) as f:
             for line in f:
                 try:
@@ -234,10 +255,11 @@ try:
                     continue
                 done.add((rec["topology"], rec["n"], rec["op"]))
                 if rec.get("wedged") and not rec.get("not_run"):
+                    wedged_here.add((rec["topology"], rec["n"], rec["op"]))
                     key = (rec["topology"], rec["op"])
                     if key not in wedged or rec["n"] < wedged[key][0]:
                         wedged[key] = (rec["n"], rec.get("guard_s", rec.get("timeout_s", OP_TIMEOUT_S)))
-        return done, wedged
+        return done, wedged, wedged_here
 
     def read_baseline(path):
         """{(op, topology, n): median_ms} of the ok op records in path."""
@@ -278,7 +300,7 @@ try:
         more room than a timed event."""
         return max(UNTIMED_GUARD_MIN_S, 2 * timeout_s + 3 * EVENT_GUARD_PAD_S)
 
-    DONE, WEDGED = recorded_ops() if RESUME else (set(), {})
+    DONE, WEDGED, WEDGED_HERE = recorded_ops() if RESUME else (set(), {}, set())
     threading.Thread(target=_guard_loop, daemon=True).start()
 
     # ---- host record ---------------------------------------------------------------------------
@@ -1050,11 +1072,11 @@ try:
         ("drag_move_50", lambda: op_drag_move(50)),
     ]
     EDIT_OPS = [
-        ("create_one", op_create_one), ("paste_100", lambda: op_paste(100)), ("paste_1000", lambda: op_paste(1000)),
-        ("duplicate_100", lambda: op_duplicate(100)), ("delete_1000", lambda: delete_cycle(1000)),
-        ("set_expression", op_set_expression),
-        ("edit_label", op_edit_label), ("knob_change_fanout", op_knob_change_fanout), ("connect", op_connect),
+        ("create_one", op_create_one), ("connect", op_connect), ("edit_label", op_edit_label),
+        ("set_expression", op_set_expression), ("knob_change_fanout", op_knob_change_fanout),
         ("frame_step", op_frame_step), ("idle", op_idle),
+        ("duplicate_100", lambda: op_duplicate(100)), ("paste_100", lambda: op_paste(100)),
+        ("delete_1000", lambda: delete_cycle(1000)), ("paste_1000", lambda: op_paste(1000)),
     ]
 
     def selected(name):
@@ -1103,9 +1125,9 @@ try:
         """Points the guard at name, so a wedge is recorded against it."""
         _guard["record"] = base_record(name, kind, topology, n, timing.timeout_s)
 
-    def timed_rep(gen, timing):
+    def timed_rep(gen, timing, guard_s=None):
         """Runs one rep's events on the event loop; the rep is abandoned as over budget once it passes
-        its timeout, checked before each event."""
+        its timeout, checked before each event. guard_s replaces the per-step wedge guard."""
         count = 0
         t0 = mono_ms()
         _guard["rep_t0"] = t0
@@ -1122,7 +1144,7 @@ try:
             if step_end is not None:
                 timing.loop_pass.append(e0 - step_end)
             c0 = time.thread_time()
-            arm_guard("events", event_guard_s(timing.timeout_s))
+            arm_guard("events", guard_s or event_guard_s(timing.timeout_s))
             try:
                 cmd = next(gen)
                 done = False
@@ -1180,6 +1202,7 @@ try:
 
     def publish(record):
         emit(record)
+        _pending[:] = [p for p in _pending if p[0] != record["op"]]
         report("RESULT " + json.dumps(record, sort_keys=True))
         name, topology, n, status, error = (record["op"], record["topology"], record["n"], record["status"],
                                             record.get("error"))
@@ -1367,7 +1390,10 @@ try:
         return [p for p in plan if p[3] is not None or (topology, n, p[0]) not in DONE]
 
     def carried_wedge(name, topology, n):
-        """(n, guard_s) of a smaller n at which name wedged Natron, when such ops are to be skipped."""
+        """(n, guard_s) of a smaller n at which name wedged Natron, when such ops are to be skipped. Never for
+        load from the cache, which opens the graph every other op needs and so runs regardless."""
+        if name == "load" and GRAPH_CACHE:
+            return None
         hit = WEDGED.get((topology, name)) if SKIP_WEDGED else None
         return hit if hit is not None and hit[0] < n else None
 
@@ -1423,6 +1449,12 @@ try:
             return None
         return meta
 
+    def write_sidecar(sidecar, meta):
+        tmp = "%s.%d.tmp" % (sidecar, os.getpid())
+        with open(tmp, "w") as f:
+            json.dump(meta, f)
+        os.replace(tmp, sidecar)
+
     def write_cache(topology, n, path, summary, gen_ms):
         if not GRAPH_CACHE:
             return
@@ -1434,12 +1466,24 @@ try:
         tmp = "%s.%d.tmp" % (project, os.getpid())
         shutil.copyfile(path, tmp)
         os.replace(tmp, project)
-        meta = {"summary": summary, "seed": SEED, "gen_graph_sha": GEN_GRAPH_SHA, "gen_ms": round(gen_ms, 3)}
-        tmp = "%s.%d.tmp" % (sidecar, os.getpid())
-        with open(tmp, "w") as f:
-            json.dump(meta, f)
-        os.replace(tmp, sidecar)
+        write_sidecar(sidecar, {"summary": summary, "seed": SEED, "gen_graph_sha": GEN_GRAPH_SHA, "gen_ms": round(gen_ms, 3)})
         report("NOTE %s-%d: cached the graph as %s" % (topology, n, project))
+
+    def note_load(topology, n, meta, load_ms):
+        """Keeps the slowest load in the sidecar: a slow build must not have its load taken for a wedge
+        because a faster build loaded the graph last."""
+        if load_ms <= (meta.get("load_ms") or 0.0):
+            return
+        meta = dict(meta, load_ms=round(load_ms, 3))
+        try:
+            write_sidecar(cache_paths(topology, n)[1], meta)
+        except OSError as err:
+            report("NOTE %s-%d: could not record the load time in the cache: %s" % (topology, n, err))
+
+    def load_guard_s(meta):
+        # Generation time is a floor: a fast build's quick load must not set a guard a slower build can't meet.
+        load_ms = LOAD_GUARD_FACTOR * (meta.get("load_ms") or 0.0)
+        return max(LOAD_GUARD_MIN_S, load_ms / 1000.0, (meta.get("gen_ms") or 0.0) / 1000.0)
 
     def graph_record(summary, **fields):
         graph = dict((k, summary[k]) for k in gen_graph.SUMMARY_KEYS)
@@ -1473,6 +1517,7 @@ try:
         if root_names() and not app.resetProject():
             raise RuntimeError("resetProject failed")
         timing = Timing(op_timeout_s("load", topology, n))
+        guard_s = load_guard_s(meta)
         opened = {}
         del _dialogs[:]
         watch("load", "interaction", topology, n, timing)
@@ -1484,11 +1529,13 @@ try:
             opened["app_id"] = loaded.getAppID()
             yield None
 
+        report("NOTE %s-%d: opening the cached graph, wedge guard %.0f s" % (topology, n, guard_s))
         try:
-            yield from timed_rep(events(), timing)
+            yield from timed_rep(events(), timing, guard_s)
         except Exception:
             timing.fail(short_error())
         disarm_guard()
+        timing.guard_s = guard_s
         if timing.status == "error":
             report("NOTE %s-%d: the cached graph did not load (%s); generating it" % (topology, n, timing.error))
             if not app.resetProject():
@@ -1503,7 +1550,9 @@ try:
             if not app.resetProject():
                 raise RuntimeError("resetProject failed")
             return None, None
-        graph_record(summary, cached=True, load_ms=round(timing.windows[0][1] - timing.windows[0][0], 3))
+        load_ms = timing.windows[0][1] - timing.windows[0][0]
+        graph_record(summary, cached=True, load_ms=round(load_ms, 3))
+        note_load(topology, n, meta, load_ms)
         gt.require(summary["nodes"] == n, "%s n=%d: the cached graph has %d processing nodes" % (topology, n, summary["nodes"]))
         yield from show_graph()
         return summary, timing
@@ -1517,15 +1566,16 @@ try:
         plan = [e for e in (drop_carried(p, topology, n) for p in plan) if e is not None]
         if not plan:
             return previous_path
+        _pending[:] = [(nm, p[2]) for p in plan for nm in (p[3] if p[3] is not None else [p[0]])]
         if previous_path is not None:
             clean_reset(previous_path)
             yield ("sleep", SETTLE_MS)
         path = os.path.join(workdir, "%s-%d.ntpz" % (topology, n))
         meta = read_cache(topology, n)
-        load_wedged = WEDGED.get((topology, "load"))
-        if meta is not None and load_wedged is not None and load_wedged[0] <= n:
-            # Loading it again would wedge again and restart forever.
-            report("NOTE %s-%d: load wedged Natron at n=%d, so the graph is generated, not loaded" % (topology, n, load_wedged[0]))
+        if meta is not None and (topology, n, "load") in WEDGED_HERE:
+            # Loading it again would wedge again and restart forever. A load that wedged at a smaller n
+            # still gets its guarded try here: generating a large graph unguarded can take longer.
+            report("NOTE %s-%d: load wedged Natron at this size, so the graph is generated, not loaded" % (topology, n))
             meta = None
         summary, load_timing = None, None
         if meta is not None:
@@ -1539,7 +1589,8 @@ try:
         if load_timing is not None:
             if any(p[0] == "load" for p in plan):
                 yield ("sleep", STALL_FLUSH_MS)
-                record = op_record("load", "interaction", topology, n, load_timing, {"cached": True})
+                record = op_record("load", "interaction", topology, n, load_timing,
+                                   {"cached": True, "guard_s": round(load_timing.guard_s, 1)})
                 if _dialogs:
                     record["dialogs"] = list(_dialogs)
                 publish(record)

@@ -18,10 +18,11 @@ interaction: pen-to-pixel latency of brush strokes and the cost of shape edits (
 ## Presets and when to run them
 
 `run.sh --preset gate` (the default) is the milestone gate: `comp` at 300 and 3000 nodes, adaptive
-reps (`--reps auto`), graphs from the cache, per-rep timeouts of 2–30 s. It takes a few minutes on
-a healthy build. `--preset full` covers `chain`, `wide`, `comp` and `mixed` at 300, 1000 and 3000
-with the same settings, in about 15 minutes. `--sizes`, `--topologies` and `--reps` override a
-preset's matrix.
+reps (`--reps auto`), graphs from the cache, per-rep timeouts of 2–30 s, and no restarts after a
+wedge (`--restarts 0`). It takes a few minutes on a healthy build, and stays in minutes on one whose
+ops wedge. `--preset full` covers `chain`, `wide`, `comp` and `mixed` at 300, 1000 and 3000 with the
+same settings but restarts Natron after every wedge (`--restarts unlimited`), in about 15 minutes on
+a healthy build. `--sizes`, `--topologies`, `--reps` and `--restarts` override a preset's choice.
 
 The bench rule: run the gate at every milestone gate of a GUI- or Engine-touching milestone,
 against the committed gate baseline (`--baseline` sets the timeouts from it, and `compare.py`
@@ -79,8 +80,20 @@ seeds stop them asking. Later builds never ask. Each run writes:
 
 The node graph driver runs each topology and size in its own Natron process, so no size runs on a
 project another size reset. An op slower than its timeout is recorded as `over_budget` and the run
-goes on; one that hangs Natron is recorded as a wedged `over_budget` and Natron restarts (see below). Results already written stay in the one `.jsonl`, and the exit code is the last non-zero
-one.
+goes on; one that hangs Natron is recorded as a wedged `over_budget` and Natron restarts or the run
+moves to the next size (see below). Results already written stay in the one `.jsonl`, and the exit
+code is the last non-zero one.
+
+Ops run in an order that keeps the most signal when one wedges: the read-only interactions first
+(`fit_all`, `zoom_step`, `pan`, `hover`, `click_select`, `select_all`, `rubber_band`,
+`drag_move_1`, `drag_move_50`), then the cheap edits (`create_one`, `connect`, `edit_label`,
+`set_expression`, `knob_change_fanout`, `frame_step`, `idle`), then the heavy edits cheapest first
+(`duplicate_100`, `paste_100`, the `delete_1000`/`undo`/`redo` cycle, `paste_1000`).
+
+Opening the cached graph is timed as the `load` op, but it is the setup every other op needs, so its
+wedge guard is the largest of 60 s, 3 times the slowest load the cache's sidecar records and the
+generation time it records, not an op's guard. A load past the op timeout is still
+recorded as `over_budget`; the record carries `guard_s`.
 
 The other options are `--ops` (a subset of ops), `--out` and `--self-check`.
 `--self-check` adds an op that blocks the main thread for 300 ms. It fails unless exactly one
@@ -174,11 +187,15 @@ A single step that doesn't return within its timeout plus 10 s (untimed setup an
 least 60 s) wedges Natron: the bench writes an `over_budget` record with `wedged` and exits 3. With
 no stalls logged over that time, the step is waiting in a nested event loop, not computing.
 
-`run.sh` then restarts Natron for that topology and size (logs under `<topology>-<n>-restart<k>/`) with
+With restarts left (`--restarts N`, the full preset's default is unlimited), `run.sh` then restarts
+Natron for that topology and size (logs under `<topology>-<n>-restart<k>/`) with
 `GUI_BENCH_RESUME=1`, which skips the ops already in the result file and opens the graph from the
-cache. An op that wedged is recorded as a not-run `over_budget` (with `wedged_at_n`) at every larger
-size of the topology instead of being run again; set `GUI_BENCH_SKIP_WEDGED=0` to run it anyway.
-`run.sh` still exits 3 when anything wedged.
+cache. With none left (the gate's default), the wedge also records every op not yet run at that size
+as `not_run` with the reason `Natron wedged on <op>`, and the run goes on to the next size: a
+restart reopens the graph, which on a slow build costs more than the ops it saves. An op that
+wedged is recorded as a not-run `over_budget` (with `wedged_at_n`) at every larger size of the
+topology instead of being run again, except the cached `load`, which every size needs; set
+`GUI_BENCH_SKIP_WEDGED=0` to run them anyway. `run.sh` still exits 3 when anything wedged.
 
 `delete_1000`, `undo` and `redo` run as one cycle per rep, each step timed and recorded under its own
 name. When one is not ok, the ones after it are recorded as `not_run` with a `reason` naming it.
@@ -272,7 +289,9 @@ Comparison flags an op when any of the following holds, and then exits 1:
 `over_budget` (and `timeout`) values are censored. Over on both sides prints as `still over`, with
 each side's `censored_ms`, and is judged neither way; over in the baseline only is an improvement.
 An op `not_run` because the cycle step before it failed prints its reason and is not counted; the
-step that failed is.
+step that failed is. An op `not_run` because another op wedged Natron (`Natron wedged on <op>`) is
+`not measured` when the baseline has no `ok` record of it either, and `REGRESSED: missing after
+wedge` when it does.
 
 A slowdown, or a fall to `over_budget` without a wedge, that rests on fewer than 5 samples on
 either side (per-event samples, else reps) is `CONFIRM`, not a regression, and does not fail the

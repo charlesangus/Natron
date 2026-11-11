@@ -102,7 +102,7 @@ The user (2026-11-10): benches take hours; get them down to minutes. The consult
     - Emit `step_wall_p50/p90/p95` and a rounded sample list.
   - verify: `py_compile`; one Xvfb gate run on the M117 AppImage in natron-dev finishes in minutes and records over_budget instead of 120 s timeouts.
   - size: L
-- [ ] M117.P3.T2 — `run.sh` presets, compare.py censored and confirm handling, run-bench.sh and docs
+- [x] M117.P3.T2 — `run.sh` presets, compare.py censored and confirm handling, run-bench.sh and docs
   - files: `tools/bench/gui/run.sh`, `tools/bench/gui/compare.py`, `tools/bench/gui/README.md`, `tools/bench/gui/BASELINE.md`, `build/appimages/run-bench.sh` (untracked)
   - approach:
     - `run.sh --preset gate|full` (default gate) sets the matrix and the cache, baseline and timeout variables. The fallback op timeout drops to 30 s. Add `--rerun OPS --reps 5`.
@@ -111,7 +111,7 @@ The user (2026-11-10): benches take hours; get them down to minutes. The consult
     - Docs: the bench rule becomes the gate at every milestone gate and the full preset periodically.
   - verify: shellcheck 0.10 clean; `compare.py --self-test`; a gate run's compare prints sensible verdicts.
   - size: M
-- [ ] M117.P3.T3 — Re-record the baselines in gate mode
+- [x] M117.P3.T3 — Re-record the baselines in gate mode
   - files: `tools/bench/gui/baselines/` (archive the old files), `BASELINE.md`
   - approach: one Xvfb gate run in natron-dev, a few minutes on the dev host. One host gate run on the GPU host, about 5 min, by the user. The old jsonl files move to `baselines/archive/`.
   - verify: compare against itself is clean, and BASELINE.md tables are regenerated.
@@ -140,3 +140,4 @@ The user (2026-11-10): benches take hours; get them down to minutes. The consult
 - 2026-11-10 — PR #256 review round 1. The Xvfb baseline predates the current harness (OFX IDs, different graph hashes, older op definitions) and P2.T1's three-run verify was never met, so P2.T1 is unticked and the file is marked stale for regression use. The harness's wedged guard was per op rather than per step, and click_select and drag_move_1 timed their framing work. Both are being fixed, which makes the host baseline's affected rows provisional until a re-run.
 - 2026-11-10 — The user found the benches far too slow: about 3 h per Xvfb run, about 80 min per host run, about 45 min for M118. Two-thirds of that is 120 s timeouts plus restarts that regenerate the graph. Phase 117.3 adds a gate preset expected to take about 2–3 min healthy and 6–10 min on a pre-M118 build, and a full preset of about 15 min. Xvfb stays the gate and the host is only for budget checks (consistent with the no-GPU-host-timing-gates rule). The old baselines are censored and pre-M118, so they are archived rather than gated on.
 - 2026-11-10 — P3.T1: an Xvfb smoke of comp-300 in natron-dev took about 2 min, against about 10 min before. The cached load is 4.8 s, the undo wedge is caught at 12 s, and slow ops are recorded as over_budget. Interaction events take 100–150 ms each on Xvfb, so Xvfb timeouts need the gate baseline.
+- 2026-11-11 — P3.T2, T3 done (21a499e1f, a8651e8bc, 9212a1b76). Gate runs in practice: Xvfb on the dev host about 9 min per side (the 262 s load at 3000 on an N100 dominates); GPU host session for m117+m118 7 min. Baselines are gate recordings of the pre-M118 build: Xvfb dev host N100 and host 7800X3D/RX 7900 XTX; old files archived. Review round 2 (P3 diff) running.

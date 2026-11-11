@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """Compares GUI benchmark runs written by tools/bench/gui/run.sh.
 
-    compare.py BASELINE.jsonl RUN.jsonl [--tol 0.2]   per-op change; exit 1 on a regression
+    compare.py BASELINE.jsonl RUN.jsonl [--tol T]      per-op change; exit 1 on a regression
     compare.py --scaling RUN.jsonl                     how each op grows with graph size
     compare.py --budgets RUN.jsonl                     a host run's per-event times against the budgets
     compare.py --self-test
 
 A regression is an op whose per-event p50, per-event p95 (judged only with 20 or more events on both
 sides) or rep median (judged only with 3 or more reps on both sides, or more than one event per rep)
-grew by more than --tol (a fraction) and by more than --min-ms milliseconds, an op whose status fell
+grew by more than --tol (a fraction; default 0.2, or 3.0 when either run's mode is xvfb) and by more than
+--min-ms milliseconds (default 5, or 200 under xvfb), an op whose status fell
 from ok (newly over budget, timed out or errored) or to an error from over budget, an op missing from
 the run or not run for a reason of its own, or an op with a stall longer than --long-stall-ms (default
-250) where the baseline had none. Values within --min-ms of each other are too close to timer noise to
+250, or 3000 under xvfb) where the baseline had none. Under xvfb two recordings of the same build differ
+by several times, so only a large change counts there. Values within --min-ms of each other are too close to timer noise to
 judge.
 
 over_budget (and the older timeout) are censored: the rep was abandoned at its timeout, so the value is
 only a lower bound, printed with censored_ms, how far the rep got. Censored on both sides is "still
-over" and judged neither way, unless the run newly wedged Natron; censored only in the baseline is an
+over" and judged neither way, unless the run newly wedged Natron after a baseline that got less than half
+way to the wedge guard; censored only in the baseline is an
 improvement. An op that errored in the baseline has no time to judge the run by. An op "not run"
 because the step before it in the delete/undo/redo cycle failed is not a regression of its own; the
 failed step is. "not run here" marks an op carried from a smaller n where it wedged Natron. An op not
@@ -147,6 +150,27 @@ def lower_bound_slower(b, r, tol, min_ms):
     return worse(b.get("median_ms"), r.get("censored_ms"), tol, min_ms)
 
 
+# Xvfb recordings of one build differ by several times in both directions (see BASELINE.md), so its
+# gate only judges changes well outside that.
+XVFB_TOL = 3.0
+XVFB_LONG_STALL_MS = 3000.0
+XVFB_MIN_MS = 200.0
+# A baseline that reached more of the wedge guard than this was already close to wedging, so the run
+# crossing the guard is the same behaviour on the other side of a timing edge.
+NEW_WEDGE_GUARD_FRACTION = 0.5
+
+
+def newly_wedged(b, r):
+    if not r.get("wedged") or b.get("wedged"):
+        return False
+    reached, guard_s = b.get("censored_ms"), r.get("guard_s")
+    return reached is None or not guard_s or reached < NEW_WEDGE_GUARD_FRACTION * guard_s * 1000.0
+
+
+def is_xvfb(*hosts):
+    return any(h and h.get("mode") == "xvfb" for h in hosts)
+
+
 WEDGE_REASON = "Natron wedged on "
 
 
@@ -212,7 +236,7 @@ def compare(base_ops, run_ops, tol, min_ms, long_stall_ms=250.0, run_notes=None)
             rows.append("%s  baseline not run (%s) -> %s" % (label, b.get("reason"), outcome(r)))
             continue
         if censored(b) and censored(r):
-            if r.get("wedged") and not b.get("wedged"):
+            if newly_wedged(b, r):
                 rows.append("%s  REGRESSED still over and now wedged:%s /%s" % (label, timed_out(b), timed_out(r)))
                 regressions.append(key)
             else:
@@ -626,6 +650,16 @@ def self_test():
     rows, regressed, _ = compare({("w", "mixed", 300): op("w", 300, 40.0)}, {("w", "mixed", 300): wedged}, 0.2, 5.0)
     assert regressed and "timeout (>300 s, wedged)" in rows[0], rows
     self_test_censored(op)
+    guarded = dict(op("g", 300, None, "over_budget"), censored_ms=12000.0, guard_s=12.0, wedged=True)
+    assert newly_wedged(dict(op("g", 300, None, "over_budget"), censored_ms=3000.0), guarded)
+    assert newly_wedged(op("g", 300, 40.0), guarded)
+    assert newly_wedged(dict(op("g", 300, None, "over_budget")), guarded)
+    assert not newly_wedged(dict(op("g", 300, None, "over_budget"), censored_ms=8900.0), guarded)
+    assert not newly_wedged(dict(guarded), guarded)
+    rows, regressed, _ = compare({("g", "mixed", 300): dict(op("g", 300, None, "over_budget"), censored_ms=8900.0)},
+                                 {("g", "mixed", 300): guarded}, 0.2, 5.0)
+    assert not regressed and "still over" in rows[0], rows
+    assert is_xvfb({"mode": "host"}, {"mode": "xvfb"}) and not is_xvfb({"mode": "host"}, None)
     mismatched = graph_mismatches({("mixed", 300, 1): {"aa"}, ("mixed", 1000, 1): {"bb"}, ("comp", 300, 1): {"cc"}},
                                   {("mixed", 300, 1): {"aa"}, ("mixed", 1000, 1): {"bx"}, ("wide", 300, 1): {"dd"}})
     assert mismatched == [("mixed", 1000, 1, ["bb"], ["bx"])], mismatched
@@ -639,9 +673,9 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="*")
-    ap.add_argument("--tol", type=float, default=0.2)
-    ap.add_argument("--min-ms", type=float, default=5.0)
-    ap.add_argument("--long-stall-ms", type=float, default=250.0)
+    ap.add_argument("--tol", type=float)
+    ap.add_argument("--min-ms", type=float)
+    ap.add_argument("--long-stall-ms", type=float)
     ap.add_argument("--scaling", action="store_true")
     ap.add_argument("--superlinear", type=float, default=1.2)
     ap.add_argument("--budgets", action="store_true")
@@ -694,7 +728,12 @@ def main():
         print("# warning: %d graph(s) differ from the baseline's; see stderr" % len(mismatched))
     for (topology, n), note in sorted(run_notes.items()):
         print("# setup wedged at %s n=%d: %s" % (topology, n, note.get("note")))
-    rows, regressions, confirms = compare(base_ops, run_ops, args.tol, args.min_ms, args.long_stall_ms, run_notes)
+    xvfb = is_xvfb(base_host, run_host)
+    tol = args.tol if args.tol is not None else XVFB_TOL if xvfb else 0.2
+    long_stall = args.long_stall_ms if args.long_stall_ms is not None else XVFB_LONG_STALL_MS if xvfb else 250.0
+    min_ms = args.min_ms if args.min_ms is not None else XVFB_MIN_MS if xvfb else 5.0
+    print("# tolerance %g, min %g ms, long stall %g ms%s" % (tol, min_ms, long_stall, " (xvfb defaults)" if xvfb else ""))
+    rows, regressions, confirms = compare(base_ops, run_ops, tol, min_ms, long_stall, run_notes)
     for row in rows:
         print(row)
     print("%d regression(s)" % len(regressions))

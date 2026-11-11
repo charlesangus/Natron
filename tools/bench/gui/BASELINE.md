@@ -21,8 +21,26 @@ How the baselines are used:
 ## Xvfb
 
 `baselines/xvfb.jsonl`: single gate run, 2026-11-11. Host: Intel N100, 4 cores, Xvfb with the xcb platform (natron-dev
-container), harness a8651e8bc. Preset gate, comp topology, N = 300 and 3000, seed 1. Run-to-run spread has not been
-measured for this file; judge changes with `CONFIRM` re-runs.
+container), harness a8651e8bc. Preset gate, comp topology, N = 300 and 3000, seed 1.
+
+Noise: this file and two more gate runs of the same AppImage (same day, same host) give the spread below, (max - min) /
+min over the three, for the ops that were `ok` in all three. Wall and per-event CPU (`step_cpu_median_ms`) are equally
+noisy, so wall stays judged. Run 2 was also a quiet period: at N=300 six ops that were over budget in the other two
+were `ok` in it.
+
+| Metric | Spread, N=300 | Spread, N=3000 |
+|---|---|---|
+| rep median | 12-5700% (fit_all, select_all, click_select 260-440%) | 11-150% |
+| per-event p50 | 10-16000% (absolute 5-140 ms) | 19-93% |
+| per-event p95 | 10-24000% (absolute 5-100 ms) | 17-104% |
+| per-event CPU median | 8-14800% (absolute 3-120 ms) | 22-60% |
+| longest stall, `ok` ops | up to 2.0 s (load) | up to 6.2 s (frame_step) |
+
+Tolerance 3.0 (a 4x slowdown), minimum change 200 ms, long stall 3000 ms, chosen by `compare.py` for any `xvfb`
+file: the largest same-build forward comparison was +239% (rubber_band at N=300, 1 rep of 40 events, 1.1 s then 3.8 s),
+and the small ops swing by large ratios over tens of milliseconds, which the 200 ms floor ignores. 1.0 or 2.0 still flags
+rubber_band; 0.5 also flags fit_all at N=3000. Host mode keeps 0.2 / 5 ms / 250 ms. With these, the three same-build
+pairs report 0 regressions.
 
 Median is the per-rep time of the whole event sequence; per-event max is the worst single event. "over (x s)" is a
 censored cell, how far it got before its timeout.

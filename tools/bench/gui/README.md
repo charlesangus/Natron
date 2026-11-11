@@ -277,7 +277,7 @@ through is `null`. Without the variable the probe costs one branch per stage.
 ## Comparing
 
 ```
-tools/bench/gui/compare.py tools/bench/gui/baselines/xvfb.jsonl build/bench/gui/<run>.jsonl --tol 0.2
+tools/bench/gui/compare.py tools/bench/gui/baselines/xvfb.jsonl build/bench/gui/<run>.jsonl
 tools/bench/gui/compare.py --scaling build/bench/gui/<run>.jsonl
 tools/bench/gui/compare.py --budgets build/bench/gui/<host run>.jsonl
 ```
@@ -297,7 +297,17 @@ Comparison flags an op when any of the following holds, and then exits 1:
   and its per-event p50 already judges the same event;
 - its status fell from `ok` (over budget, wedged or an error), or from `over_budget` to an error;
 - it is missing from the run, or `not_run` for a reason of its own;
-- it stalled for more than `--long-stall-ms` (default 250 ms) where the baseline did not.
+- it stalled for more than `--long-stall-ms` (default 250 ms) where the baseline did not;
+- it was `over_budget` on both sides and the run wedged Natron where the baseline did not and had got
+  less than half way to the 12 s wedge guard; a baseline already past half way is the same op on the
+  other side of a timing edge.
+
+The defaults depend on the `mode` in the host records: when either file is an `xvfb` run, `--tol` is 3.0,
+`--min-ms` 200 and `--long-stall-ms` 3000, otherwise 0.2, 5 and 250. Three recordings of one build under
+Xvfb on the 4-core dev host differ by several times, in both directions, in wall time and in per-event
+main-thread CPU alike (`BASELINE.md` has the table), so an Xvfb gate only catches an op that got more
+than four times slower and 200 ms slower, or that stalls for seconds. Passing any of the three flags
+overrides its default in either mode.
 
 `over_budget` (and `timeout`) values are censored. Over on both sides prints as `still over`, with
 each side's `censored_ms`, and is judged neither way unless the run newly wedged Natron, which is a

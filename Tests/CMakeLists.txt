@@ -98,6 +98,7 @@ set(Tests_SOURCES
     GraphOpApply_Test.cpp
     GraphEditRecorder_Test.cpp
     GraphEditReplay_Test.cpp
+    GenericSchedulerAbortWait_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
     PyRotoCreate_Test.cpp
@@ -189,6 +190,7 @@ set(Tests_SOURCES
     RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
+    SchedulerAbortLatency_Test.cpp
     SchedulerEquivalence_Test.cpp
     SchedulerWriters_Test.cpp
     Shuffle_Test.cpp

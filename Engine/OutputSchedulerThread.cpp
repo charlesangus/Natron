@@ -2034,20 +2034,12 @@ OutputSchedulerThread::renderFromCurrentFrame(bool enableRenderStats,
 void
 OutputSchedulerThread::notifyRenderFailure(const std::string& errorMessage)
 {
-    ///Abort all ongoing rendering
-    OutputSchedulerThreadStartArgsPtr args = _imp->runArgs.lock();
-
-    assert(args);
-
+    assert(_imp->runArgs.lock());
 
     ///Handle failure: for viewers we make it black and don't display the error message which is irrelevant
     handleRenderFailure(errorMessage);
 
     _imp->engine->abortRenderingNoRestart();
-
-    if (args->isBlocking) {
-        waitForAbortToComplete_enforce_blocking();
-    }
 }
 
 OutputSchedulerThreadStartArgsPtr
@@ -3576,29 +3568,6 @@ RenderEngine::waitForAbortToComplete_not_main_thread()
 }
 
 void
-RenderEngine::waitForAbortToComplete_enforce_blocking()
-{
-    if (_imp->scheduler) {
-        _imp->scheduler->waitForAbortToComplete_enforce_blocking();
-    }
-
-    if (_imp->currentFrameScheduler) {
-        _imp->currentFrameScheduler->waitForAbortToComplete_enforce_blocking();
-    }
-}
-
-void
-RenderEngine::onWatcherEngineAbortedEmitted()
-{
-    assert(_imp->engineWatcher);
-    if (!_imp->engineWatcher) {
-        return;
-    }
-    _imp->engineWatcher.reset();
-    Q_EMIT engineAborted();
-}
-
-void
 RenderEngine::onWatcherEngineQuitEmitted()
 {
     assert(_imp->engineWatcher);
@@ -3607,16 +3576,6 @@ RenderEngine::onWatcherEngineQuitEmitted()
     }
     _imp->engineWatcher.reset();
     Q_EMIT engineQuit();
-}
-
-void
-RenderEngine::waitForAbortToComplete_main_thread()
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    assert(!_imp->engineWatcher);
-    _imp->engineWatcher.reset( new RenderEngineWatcher(this) );
-    QObject::connect( _imp->engineWatcher.get(), SIGNAL(taskFinished(int,GenericWatcherCallerArgsPtr)), this, SLOT(onWatcherEngineAbortedEmitted()) );
-    _imp->engineWatcher->scheduleBlockingTask(RenderEngineWatcher::eBlockingTaskWaitForAbort);
 }
 
 bool
@@ -4117,9 +4076,7 @@ ViewerCurrentFrameRequestScheduler::ViewerCurrentFrameRequestScheduler(ViewerIns
 ViewerCurrentFrameRequestScheduler::~ViewerCurrentFrameRequestScheduler()
 {
     // Should've been stopped before anyway
-    if (_imp->backupThread.quitThread(false)) {
-        _imp->backupThread.waitForAbortToComplete_enforce_blocking();
-    }
+    _imp->backupThread.quitThread(false);
 }
 
 GenericSchedulerThread::TaskQueueBehaviorEnum

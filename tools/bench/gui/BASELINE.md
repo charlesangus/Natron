@@ -2,6 +2,25 @@
 
 Two baselines: Xvfb on an Intel N100 (below) and a real host ("Real host" section at the end).
 
+Both files below were recorded before the gate preset, with 120 s (Xvfb) or 300 s (host) op
+timeouts, on pre-M118 builds: most slow cells are censored at those timeouts rather than measured.
+They are archived to `baselines/archive/` and replaced by gate-mode re-records (`run.sh --preset
+gate`: comp at 300 and 3000, adaptive reps, per-rep timeouts of 2–30 s); do not gate on them. The
+figures here describe the old harness only.
+
+How the baselines are used:
+
+- At every milestone gate of a GUI- or Engine-touching milestone, one Xvfb gate run is compared
+  with `compare.py` against the Xvfb gate baseline, passed to the run as `--baseline` so its
+  timeouts come from the baseline's medians. `CONFIRM` rows are re-run with the printed
+  `run.sh --rerun ... --reps 5` line before they count.
+- The full preset (four topologies at 300, 1000 and 3000) runs periodically, or when a `--scaling`
+  slope from the gate's two sizes looks suspect.
+- Budgets (16 ms per event for interaction, 100 ms for edits) are judged only on a host run, with
+  `compare.py --budgets`.
+- `over_budget` cells are censored: `censored_ms` is how far the rep got before its timeout, a lower
+  bound. Over on both sides is "still over" and judged neither way.
+
 ## Xvfb
 
 Stale: do not use `baselines/xvfb.jsonl` for regression comparison. It predates the current harness. It was recorded

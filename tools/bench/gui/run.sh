@@ -6,10 +6,19 @@
 #
 # Options:
 #   --driver gui|roto        gui_bench.py (node graph, default) or roto_bench.py (roto/paint)
-#   --sizes N[,N...]         node counts (default 300)
-#   --topologies T[,T...]    chain, wide, comp, mixed (default mixed)
-#   --reps N                 repetitions per op (default 5)
+#   --preset gate|full       the matrix (default gate): gate is comp at 300,3000 nodes; full is chain,
+#                            wide, comp and mixed at 300,1000,3000. Both use --reps auto and the graph cache
+#   --sizes N[,N...]         node counts (overrides the preset)
+#   --topologies T[,T...]    chain, wide, comp, mixed (overrides the preset)
+#   --reps N|auto            repetitions per op (overrides the preset; auto repeats a short op until 5
+#                            samples or 3 s)
 #   --ops OP[,OP...]         run only these ops (default all)
+#   --rerun OP[,OP...]       re-run only these ops to confirm a suspected regression; --reps defaults to 5
+#   --baseline FILE          a result whose medians set each op's timeout (GUI_BENCH_BASELINE); for --xvfb
+#                            it must be inside the checkout, which is all the container sees
+#   --graph-cache DIR        generated graphs kept between runs (default build/bench/gui/graph-cache)
+#   --fresh-graphs           use an empty cache in the run's own dir, so every graph is generated (and
+#                            its generation timed) rather than opened from the shared cache
 #   --out DIR                result directory (default build/bench/gui)
 #   --no-forced-repaint      replace each interaction event's forced viewport repaint with a
 #                            processEvents pass inside the step (gui driver)
@@ -23,10 +32,10 @@
 # writes the exit code to <result>.done when it finishes. --host runs in the foreground.
 #
 # The gui driver runs each topology and size in its own Natron process, appending to the one result
-# file. An op that wedges Natron is recorded as a timeout and Natron is restarted to run the remaining
-# ops (logs of each restart in <topology>-<n>-restart<k>/); at larger sizes that op is recorded as a
-# timeout without running (GUI_BENCH_SKIP_WEDGED=0 runs it). The exit code is the last non-zero
-# one, 3 when an op wedged.
+# file. An op that wedges Natron is recorded as a wedged over_budget and Natron is restarted to run
+# the remaining ops (logs of each restart in <topology>-<n>-restart<k>/); at larger sizes that op is
+# recorded as over_budget without running (GUI_BENCH_SKIP_WEDGED=0 runs it). The exit code is the
+# last non-zero one, 3 when an op wedged.
 #
 # A --appimage run records the AppImage's name, size, mtime and sha256 in the host record, which
 # compare.py prints, so results from different builds cannot pass for one another.
@@ -40,7 +49,7 @@
 #
 # Both modes run Natron under a throwaway HOME seeded with checkForUpdates=false, set
 # NATRON_STALL_LOG so the stall monitor records main-thread stalls beside the result, and pass
-# GUI_BENCH_OP_TIMEOUT_S (default 120) and GUI_BENCH_IDLE_S through. GUI_BENCH_TIMEOUT caps the
+# GUI_BENCH_OP_TIMEOUT_S (default 30, the cap on every per-rep timeout) and GUI_BENCH_IDLE_S through. GUI_BENCH_TIMEOUT caps the
 # whole run in seconds (default 21600), and GUI_BENCH_EXTRACT_S the AppImage extraction (--host, default
 # 300). Natron's start-up and the hold-file wait are bounded in gui_bench.py and report which wait expired.
 set -u
@@ -49,17 +58,22 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 self="$repo/tools/bench/gui/run.sh"
 
 usage() {
-    sed -n '2,24p' "$self" >&2
+    sed -n '2,32p' "$self" >&2
     exit 2
 }
 
 mode=""
 driver=gui
 appimage=""
-sizes=300
-topologies=mixed
-reps=5
+preset=gate
+sizes=""
+topologies=""
+reps=""
 ops=""
+rerun=""
+baseline=${GUI_BENCH_BASELINE:-}
+graph_cache=${GUI_BENCH_GRAPH_CACHE:-}
+fresh_graphs=0
 outdir="$repo/build/bench/gui"
 self_check=0
 forced_repaint=1
@@ -70,10 +84,15 @@ while [ $# -gt 0 ]; do
         --host) mode=host ;;
         --driver) driver=${2:?--driver needs gui or roto}; shift ;;
         --appimage) appimage=${2:?--appimage needs a path}; shift ;;
+        --preset) preset=${2:?--preset needs gate or full}; shift ;;
         --sizes) sizes=${2:?--sizes needs a list}; shift ;;
         --topologies) topologies=${2:?--topologies needs a list}; shift ;;
         --reps) reps=${2:?--reps needs a count}; shift ;;
         --ops) ops=${2:?--ops needs a list}; shift ;;
+        --rerun) rerun=${2:?--rerun needs a list of ops}; shift ;;
+        --baseline) baseline=${2:?--baseline needs a result file}; shift ;;
+        --graph-cache) graph_cache=${2:?--graph-cache needs a directory}; shift ;;
+        --fresh-graphs) fresh_graphs=1 ;;
         --out) outdir=${2:?--out needs a directory}; shift ;;
         --self-check) self_check=1 ;;
         --no-forced-repaint) forced_repaint=0 ;;
@@ -90,6 +109,31 @@ case $driver in
     roto) suffix="-roto" ;;
     *) echo "unknown driver: $driver (gui or roto)" >&2; exit 2 ;;
 esac
+case $preset in
+    gate) preset_sizes=300,3000 preset_topologies=comp ;;
+    full) preset_sizes=300,1000,3000 preset_topologies=chain,wide,comp,mixed ;;
+    *) echo "unknown preset: $preset (gate or full)" >&2; exit 2 ;;
+esac
+if [ -n "$rerun" ]; then
+    if [ -n "$ops" ]; then
+        echo "--rerun and --ops both name the ops to run; give one" >&2
+        exit 2
+    fi
+    ops=$rerun
+    reps=${reps:-5}
+fi
+sizes=${sizes:-$preset_sizes}
+topologies=${topologies:-$preset_topologies}
+reps=${reps:-${GUI_BENCH_REPS:-auto}}
+graph_cache=${graph_cache:-$repo/build/bench/gui/graph-cache}
+case $graph_cache in /*) ;; *) graph_cache=$(pwd)/$graph_cache ;; esac
+if [ -n "$baseline" ]; then
+    case $baseline in /*) ;; *) baseline=$(pwd)/$baseline ;; esac
+    if [ ! -f "$baseline" ]; then
+        echo "no baseline at $baseline" >&2
+        exit 2
+    fi
+fi
 if [ "$detach" -lt 0 ]; then
     if [ "$mode" = xvfb ]; then detach=1; else detach=0; fi
 fi
@@ -106,11 +150,14 @@ if [ "$mode" = host ] && [ -z "$appimage" ]; then
     exit 2
 fi
 # Normalised, so a re-exec (detached or in the container) sees absolute paths.
-args=("--$mode" --driver "$driver" --sizes "$sizes" --topologies "$topologies" --reps "$reps" --out "$outdir")
+args=("--$mode" --driver "$driver" --preset "$preset" --sizes "$sizes" --topologies "$topologies" --reps "$reps"
+      --graph-cache "$graph_cache" --out "$outdir")
 [ "$forced_repaint" = 0 ] && args+=(--no-forced-repaint)
 [ -n "$appimage" ] && args+=(--appimage "$appimage")
 [ -n "$ops" ] && args+=(--ops "$ops")
 [ "$self_check" -eq 1 ] && args+=(--self-check)
+[ -n "$baseline" ] && args+=(--baseline "$baseline")
+[ "$fresh_graphs" -eq 1 ] && args+=(--fresh-graphs)
 
 if [ "$detach" -eq 1 ]; then
     mkdir -p "$outdir"
@@ -132,7 +179,7 @@ if [ "$mode" = xvfb ] && [ "${NATRON_IN_CONTAINER:-}" != 1 ]; then
     done
     # The host name belongs to the machine, not the container.
     exec "$repo/tools/ci/local/devshell.sh" env GUI_BENCH_STAMP="$stamp" GUI_BENCH_HOSTNAME="$(hostname -s)" \
-        GUI_BENCH_OP_TIMEOUT_S="${GUI_BENCH_OP_TIMEOUT_S:-120}" GUI_BENCH_IDLE_S="${GUI_BENCH_IDLE_S:-5}" \
+        GUI_BENCH_OP_TIMEOUT_S="${GUI_BENCH_OP_TIMEOUT_S:-30}" GUI_BENCH_IDLE_S="${GUI_BENCH_IDLE_S:-5}" \
         GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" GUI_BENCH_WATCHDOG_S="${GUI_BENCH_WATCHDOG_S:-21600}" \
         GUI_BENCH_SKIP_WEDGED="${GUI_BENCH_SKIP_WEDGED:-1}" GUI_BENCH_HOLD_FILE="${GUI_BENCH_HOLD_FILE:-}" \
         GUI_BENCH_HOLD_S="${GUI_BENCH_HOLD_S:-120}" GUI_BENCH_PTRACER_ANY="${GUI_BENCH_PTRACER_ANY:-0}" \
@@ -162,7 +209,13 @@ mkdir -p "$home/.config/INRIA" "$home/.cache"
 printf '[General]\ncheckForUpdates=false\nappearanceVersion=1000\nNATRON_SHORTCUTS_DEFAULT_VERSION=1000\n' \
     > "$home/.config/INRIA/Natron.conf"
 
+if [ "$fresh_graphs" -eq 1 ]; then
+    graph_cache=$work/graph-cache
+fi
+mkdir -p "$graph_cache"
 export GUI_BENCH_SIZES=$sizes GUI_BENCH_TOPOLOGIES=$topologies GUI_BENCH_REPS=$reps GUI_BENCH_OPS=$ops
+export GUI_BENCH_GRAPH_CACHE=$graph_cache GUI_BENCH_BASELINE=$baseline
+export GUI_BENCH_OP_TIMEOUT_S=${GUI_BENCH_OP_TIMEOUT_S:-30}
 export GUI_BENCH_FORCED_REPAINT=$forced_repaint
 export GUI_BENCH_SELF_CHECK=$self_check GUI_BENCH_OUT=$result GUI_BENCH_MODE=$mode
 export GUI_BENCH_GIT_SHA GUI_BENCH_APPIMAGE_NAME="" GUI_BENCH_APPIMAGE_BYTES="" GUI_BENCH_APPIMAGE_MTIME="" \
@@ -189,10 +242,10 @@ wedged_exit=3
 
 # Calls run_one with the seconds left of the whole run's cap, once per topology and size. A fresh
 # Natron per size keeps one size's project reset from leaving the next size's nodes unclickable.
-# When an op wedges Natron (exit 3, the op recorded as a timeout), starts a fresh Natron that skips
-# what the result file already holds, so the remaining ops still run; each start gets its own log
-# dir. Every start after the run's first resumes, so an op that wedged at a smaller size is recorded
-# as a timeout at the larger ones without being run.
+# When an op wedges Natron (exit 3, the op recorded as a wedged over_budget), starts a fresh Natron
+# that skips what the result file already holds, so the remaining ops still run; each start gets its
+# own log dir. Every start after the run's first resumes, so an op that wedged at a smaller size is
+# recorded as over_budget at the larger ones without being run.
 run_cases() {
     local deadline=$(( $(date +%s) + timeout_s )) overall=0 topology size rc left attempt lines label started=0
     local -a list size_list
@@ -230,11 +283,11 @@ run_cases() {
                     break
                 fi
                 attempt=$((attempt + 1))
-                echo "$label: an op wedged Natron and is recorded as a timeout; restarting Natron (restart $attempt) to run the rest"
+                echo "$label: an op wedged Natron and is recorded as over budget; restarting Natron (restart $attempt) to run the rest"
             done
             if [ "$attempt" -gt 0 ] && [ "$rc" = 0 ]; then
                 rc=$wedged_exit
-                echo "$label finished after $attempt restart(s); the wedged ops are recorded as timeouts"
+                echo "$label finished after $attempt restart(s); the wedged ops are recorded as over budget"
             elif [ "$rc" -ne 0 ]; then
                 echo "$label ended with exit code $rc"
             fi

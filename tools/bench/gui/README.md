@@ -15,6 +15,27 @@ interaction: pen-to-pixel latency of brush strokes and the cost of shape edits (
 | `merge.py` | Merges repeated runs into a median-of-runs baseline and prints each op's run-to-run spread. |
 | `baselines/` | Committed reference runs. |
 
+## Presets and when to run them
+
+`run.sh --preset gate` (the default) is the milestone gate: `comp` at 300 and 3000 nodes, adaptive
+reps (`--reps auto`), graphs from the cache, per-rep timeouts of 2–30 s. It takes a few minutes on
+a healthy build. `--preset full` covers `chain`, `wide`, `comp` and `mixed` at 300, 1000 and 3000
+with the same settings, in about 15 minutes. `--sizes`, `--topologies` and `--reps` override a
+preset's matrix.
+
+The bench rule: run the gate at every milestone gate of a GUI- or Engine-touching milestone,
+against the committed gate baseline (`--baseline` sets the timeouts from it, and `compare.py`
+judges the result). Run the full preset periodically, or when a `--scaling` slope from the gate's
+two sizes looks suspect.
+
+Generated graphs are kept in `build/bench/gui/graph-cache` (`--graph-cache DIR`), keyed by
+topology, n, seed and `gen_graph.py`'s hash, so a repeat run opens them instead of generating
+them. `--fresh-graphs` uses an empty cache in the run's own directory, so every graph is generated
+again; use it when generation's own scaling is what is being measured.
+
+`--rerun OPS` re-runs only those ops, with `--reps 5` unless `--reps` is given, to confirm a
+suspected regression; `compare.py` prints the exact line when it wants one.
+
 ## The two modes
 
 **`--xvfb`: regressions only.** This runs `build/release/App/Natron`, or `--appimage PATH`, in the
@@ -24,7 +45,7 @@ mean something only next to another `--xvfb` run from the same machine. Use it t
 that makes an op slower or makes it stall, not to judge whether the GUI feels fast.
 
 ```
-tools/bench/gui/run.sh --xvfb --sizes 300,1000,3000 --topologies chain,wide,comp,mixed --reps 5
+tools/bench/gui/run.sh --xvfb --preset gate --baseline tools/bench/gui/baselines/xvfb.jsonl
 ```
 
 It starts detached and prints the result path. When it finishes, the exit code is written to
@@ -38,7 +59,7 @@ These are the numbers to hold against interaction budgets. It needs no Docker an
 the host.
 
 ```
-tools/bench/gui/run.sh --host --appimage Natron-x86_64.AppImage --sizes 300,1000,3000 --topologies mixed,comp
+tools/bench/gui/run.sh --host --appimage Natron-x86_64.AppImage --preset gate
 ```
 
 Natron takes over the screen while it runs. Leave the mouse and keyboard alone. The terminal
@@ -57,15 +78,17 @@ seeds stop them asking. Later builds never ask. Each run writes:
   `stalls.jsonl`.
 
 The node graph driver runs each topology and size in its own Natron process, so no size runs on a
-project another size reset. An op that hangs is recorded as a timeout and the run goes on (see
-below). Results already written stay in the one `.jsonl`, and the exit code is the last non-zero
+project another size reset. An op slower than its timeout is recorded as `over_budget` and the run
+goes on; one that hangs Natron is recorded as a wedged `over_budget` and Natron restarts (see below). Results already written stay in the one `.jsonl`, and the exit code is the last non-zero
 one.
 
-The other options are `--ops` (a subset of ops), `--reps`, `--out` and `--self-check`.
+The other options are `--ops` (a subset of ops), `--out` and `--self-check`.
 `--self-check` adds an op that blocks the main thread for 300 ms. It fails unless exactly one
 stall is attributed to it, which checks the stall monitor and the attribution end to end.
-`GUI_BENCH_OP_TIMEOUT_S` (default 120) is the per-op budget. `GUI_BENCH_TIMEOUT` (default 6 h)
-caps the whole run.
+`GUI_BENCH_OP_TIMEOUT_S` (default 30) caps every per-rep timeout and is the timeout of an op with
+neither a budget nor a baseline. `GUI_BENCH_TIMEOUT` (default 6 h) caps the whole run.
+`GUI_BENCH_GRAPH_CACHE`, `GUI_BENCH_BASELINE` and `GUI_BENCH_REPS` set the cache, the baseline and
+the reps when the matching option is not given; both modes pass them to the driver.
 
 ## What a record holds
 
@@ -79,9 +102,11 @@ per op. An `op` record holds:
 - `per_event_max_ms`, the longest single event;
 - `step_wall_median_ms`/`step_wall_max_ms`, `step_cpu_median_ms`/`step_cpu_max_ms` and
   `loop_pass_median_ms`/`loop_pass_max_ms`, over every event of every rep (see below);
+- `step_wall_p50`/`step_wall_p90`/`step_wall_p95`, the per-event percentiles, and `samples_ms`, the
+  per-event times themselves (0.1 ms, at most 200, thinned evenly; `samples_total` when thinned);
 - `stalls`: the count, max and total of the stalls whose midpoint falls inside a timed rep;
-- `status`: `ok`, `timeout` or `error`; a timeout carries `timeout_s`, and `wedged` when a single
-  step never returned (see below);
+- `status`: `ok`, `over_budget`, `not_run` or `error` (`timeout` in older results), with
+  `timeout_s`, the rep's timeout (see below).
 - `dialogs`, when a modal dialog came up during the op: each one's title, text, the answer the
   bench gave and the op step it came up in.
 
@@ -112,7 +137,7 @@ Qt schedules them (coalesced), which is closer to what a user sees; the host rec
 run of a release build on the `comp` topology at N=3000, one rep, one op:
 
 ```
-tools/bench/gui/run.sh --xvfb --topologies comp --sizes 3000 --reps 1 --ops pan --out build/bench/profile
+tools/bench/gui/run.sh --xvfb --sizes 3000 --reps 1 --ops pan --out build/bench/profile
 ```
 
 That prints the result path and detaches. While the op runs, find the Natron PID and sample it
@@ -138,16 +163,25 @@ A stall is any stretch where the main thread doesn't service a 10 ms heartbeat t
 50 ms (`NATRON_STALL_THRESHOLD_MS`). The stall monitor runs only when `NATRON_STALL_LOG` names a
 file, and `run.sh` sets it.
 
-The per-op timeout is checked between events. A single step that doesn't return within twice that
-plus 60 s (300 s by default) wedges Natron: the bench writes a `timeout` record with `wedged` and
-exits 3. The 300 s clock restarts before every step (setup, each `before`, each event, each `after`,
-teardown), so an op that is slow overall but keeps returning is a plain `timeout`, never `wedged`. With no stalls logged over that time, the step is waiting in a nested event loop, not
-computing.
+Each rep has its own timeout: 5 times the larger of the op's budget (16 ms per event for
+interaction ops, 100 ms for edits, `OP_BUDGET_MS`) and its baseline median, clamped to 2–30 s. It is
+checked before each event. A rep past it is abandoned, and the op is recorded as `over_budget` with
+`censored_ms`, how far the rep got: the value is censored, a lower bound rather than a time.
+Under Xvfb, events cost 100–150 ms each, so without a baseline most interaction ops go over budget;
+the gate baseline is what makes Xvfb timeouts meaningful.
+
+A single step that doesn't return within its timeout plus 10 s (untimed setup and cleanup get at
+least 60 s) wedges Natron: the bench writes an `over_budget` record with `wedged` and exits 3. With
+no stalls logged over that time, the step is waiting in a nested event loop, not computing.
 
 `run.sh` then restarts Natron for that topology and size (logs under `<topology>-<n>-restart<k>/`) with
-`GUI_BENCH_RESUME=1`, which skips the ops already in the result file. An op that wedged is recorded as
-a not-run timeout at every larger size of the topology instead of being run again; set
-`GUI_BENCH_SKIP_WEDGED=0` to run it anyway. `run.sh` still exits 3 when anything wedged.
+`GUI_BENCH_RESUME=1`, which skips the ops already in the result file and opens the graph from the
+cache. An op that wedged is recorded as a not-run `over_budget` (with `wedged_at_n`) at every larger
+size of the topology instead of being run again; set `GUI_BENCH_SKIP_WEDGED=0` to run it anyway.
+`run.sh` still exits 3 when anything wedged.
+
+`delete_1000`, `undo` and `redo` run as one cycle per rep, each step timed and recorded under its own
+name. When one is not ok, the ones after it are recorded as `not_run` with a `reason` naming it.
 
 The bench answers any modal dialog within 100 ms (every 1 ms around a delete): Yes, OK or Continue
 when the dialog offers one, otherwise it rejects it. Each answer is printed as a `NOTE dialog`
@@ -217,27 +251,44 @@ through is `null`. Without the variable the probe costs one branch per stage.
 ```
 tools/bench/gui/compare.py tools/bench/gui/baselines/xvfb.jsonl build/bench/gui/<run>.jsonl --tol 0.2
 tools/bench/gui/compare.py --scaling build/bench/gui/<run>.jsonl
+tools/bench/gui/compare.py --budgets build/bench/gui/<host run>.jsonl
 ```
 
-The committed `baselines/xvfb.jsonl` is stale. It predates the current harness: its graphs and op
-definitions differ from this harness's, so do not use it for regression comparison. It needs
-re-recording, three runs as in "Re-baselining" below. `compare.py` warns on stderr whenever a graph
+Baselines recorded before the gate preset (the per-rep timeouts, the graph cache and the delete
+cycle) are censored at 120 s timeouts and come from pre-M118 builds; they move to
+`baselines/archive/` and are re-recorded in gate mode, so do not gate on them. `compare.py` warns on stderr whenever a graph
 that both files generated for the same topology, n and seed has a different hash, because the rows
 for that size then time different graphs.
 
 Comparison flags an op when any of the following holds, and then exits 1:
 
-- its median grew by more than `--tol` and by more than `--min-ms` (default 5 ms);
-- its status fell from `ok`;
-- it is missing from the run;
+- its rep median, per-event p50 or per-event p95 grew by more than `--tol` and by more than
+  `--min-ms` (default 5 ms); the p95 is judged only with 20 or more events on both sides, since
+  below that it is the slowest event;
+- its status fell from `ok` (over budget, wedged or an error);
+- it is missing from the run, or `not_run` for a reason of its own;
 - it stalled for more than `--long-stall-ms` (default 250 ms) where the baseline did not.
+
+`over_budget` (and `timeout`) values are censored. Over on both sides prints as `still over`, with
+each side's `censored_ms`, and is judged neither way; over in the baseline only is an improvement.
+An op `not_run` because the cycle step before it failed prints its reason and is not counted; the
+step that failed is.
+
+A slowdown, or a fall to `over_budget` without a wedge, that rests on fewer than 5 samples on
+either side (per-event samples, else reps) is `CONFIRM`, not a regression, and does not fail the
+comparison. The output ends with the `run.sh --rerun <ops> --reps 5 ...` line that re-runs those
+ops against the same baseline; `--appimage PATH` puts the AppImage's path in it, otherwise it names
+the run's AppImage file.
+
+`--budgets` judges a host run: each budgeted op at the largest n of each topology, on its
+per-event p50, against 16 ms (interaction) or 100 ms (edit). Over budget, censored or not run
+fails, and it exits 1 on any failure. Xvfb runs are for regressions only, never budgets.
 
 `--scaling` fits the log-log slope of the median against N for each (op, topology) and ranks them
 steepest first. A slope above 1.2 is marked superlinear: that op's cost grows faster than the
 graph does.
 
-A baseline timeout that the run completes prints as `baseline timed out (>N s) -> X ms`, an
-improvement. When the two files name the same AppImage, `compare.py` warns; `merge.py` warns when
+When the two files name the same AppImage, `compare.py` warns; `merge.py` warns when
 the files it merges come from different builds.
 
 `compare.py --self-test` runs as ctest `GuiBenchCompareSelfTest`.
@@ -248,13 +299,12 @@ Re-baseline after a deliberate performance change lands, or when the container i
 machine changes. Don't re-baseline to make a regression go away.
 
 1. Build release at the commit to be the baseline, and leave the machine otherwise idle.
-2. Run the full matrix three times with `--xvfb --wait`.
-3. Check that each run against the others passes `compare.py` at the chosen tolerance. The spread
-   between them sets the tolerance: use at least twice the worst spread for that kind of op.
-   `merge.py --out baselines/xvfb.jsonl --spread run1.jsonl run2.jsonl run3.jsonl` writes the
-   median-of-runs file and the spread table.
-4. Commit the median-of-runs file as `baselines/xvfb.jsonl`. Record the spread, the tolerance and
-   the `--scaling` table in `BASELINE.md`.
+2. Run the gate preset with `--xvfb --wait` and no `--baseline`.
+3. Check the run against itself is clean, and against a second gate run at the chosen tolerance;
+   the spread between them sets the tolerance (at least twice the worst spread for that kind of
+   op). `merge.py --spread` prints the spread table.
+4. Commit the result as `baselines/xvfb.jsonl`, moving the old one to `baselines/archive/`. Record
+   the spread, the tolerance and the `--scaling` table in `BASELINE.md`.
 
 Host baselines are per machine: `baselines/host-<hostname>.jsonl`. Compare them only against
 runs from the same machine.

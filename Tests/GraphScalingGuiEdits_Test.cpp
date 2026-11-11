@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <list>
 #include <memory>
 #include <set>
@@ -36,6 +37,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "DataKindTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -99,12 +101,28 @@ void
 deactivateInBatch(const AppInstancePtr& app,
                   const std::vector<NodePtr>& nodes)
 {
+    std::set<const Node*> removedNodes;
+    for (const NodePtr& node : nodes) {
+        removedNodes.insert(node.get());
+    }
+    std::vector<std::list<NodePtr>> outputsToDisconnect;
+    for (const NodePtr& node : nodes) {
+        std::list<NodePtr> outputs;
+        for (const NodeWPtr& weak : node->getGuiOutputs()) {
+            NodePtr output = weak.lock();
+            if (output && !removedNodes.count(output.get())) {
+                outputs.push_back(output);
+            }
+        }
+        outputsToDisconnect.push_back(outputs);
+    }
+
     Node::RemovalBatch removalBatch;
     Node::InputEditBatch batch(app);
     const Node::PythonDeclarationBatch pythonBatch;
 
-    for (const NodePtr& node : nodes) {
-        node->deactivate(std::list<NodePtr>(), false, false, true, false);
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodes[i]->deactivate(outputsToDisconnect[i], false, nodes.size() == 1, true, false);
     }
 }
 
@@ -116,8 +134,9 @@ activateInBatch(const AppInstancePtr& app,
     Node::InputEditBatch batch(app);
     const Node::PythonDeclarationBatch pythonBatch;
 
+    // deactivateInBatch() disconnected exactly the outputs the node graph restores.
     for (const NodePtr& node : nodes) {
-        node->activate(std::list<NodePtr>(), false, false);
+        node->activate(std::list<NodePtr>(), true, false);
     }
 }
 
@@ -890,9 +909,11 @@ TEST_F(GraphScalingGuiEdits, BatchedDeleteOfAChainWalksItsDataKindsOnce)
         connections.push_back(QObject::connect(node.get(), &Node::dataKindChanged, node.get(), [count]() { ++*count; }, Qt::DirectConnection));
     }
 
+    std::fill(emitted.begin(), emitted.end(), 0);
     const U64 visitsBefore = Node::getDataKindInvalidationVisitCount();
     std::vector<NodePtr> removed(nodes.begin() + 1, nodes.end() - 1);
     deactivateInBatch(getApp(), removed);
+    EXPECT_FALSE(nodes.back()->getInput(0));
     const U64 visits = Node::getDataKindInvalidationVisitCount() - visitsBefore;
     EXPECT_GT(visits, 0u);
     EXPECT_LE(visits, static_cast<U64>(2 * kNumNodes));
@@ -900,7 +921,76 @@ TEST_F(GraphScalingGuiEdits, BatchedDeleteOfAChainWalksItsDataKindsOnce)
         EXPECT_LE(emitted[i], 1) << i;
     }
 
+    std::fill(emitted.begin(), emitted.end(), 0);
+    const U64 visitsBeforeUndo = Node::getDataKindInvalidationVisitCount();
+    activateInBatch(getApp(), removed);
+    EXPECT_EQ(nodes[kNumNodes - 2], nodes.back()->getInput(0));
+    const U64 undoVisits = Node::getDataKindInvalidationVisitCount() - visitsBeforeUndo;
+    EXPECT_GT(undoVisits, 0u);
+    EXPECT_LE(undoVisits, static_cast<U64>(2 * kNumNodes));
+    for (int i = 0; i < kNumNodes; ++i) {
+        EXPECT_LE(emitted[i], 1) << i;
+    }
+
     for (const QMetaObject::Connection& connection : connections) {
         QObject::disconnect(connection);
     }
+}
+
+TEST_F(GraphScalingGuiEdits, DeletingALeafDropsTheKindItsInputTookFromIt)
+{
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(dot && deepSink);
+    connectNodes(dot, deepSink, 0, true);
+    ASSERT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    deepSink->deactivate();
+    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
+    deepSink->activate();
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    deactivateInBatch(getApp(), { deepSink });
+    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
+    activateInBatch(getApp(), { deepSink });
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+}
+
+TEST_F(GraphScalingGuiEdits, BatchedDeleteOfManyLeavesWalksTheirInputOnce)
+{
+    const int kNumLeaves = 200;
+    NodePtr hub = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(hub));
+    int hubEmitted = 0;
+    const QMetaObject::Connection connection = QObject::connect(hub.get(), &Node::dataKindChanged, hub.get(), [&hubEmitted]() { ++hubEmitted; }, Qt::DirectConnection);
+
+    std::vector<NodePtr> leaves;
+    for (int i = 0; i < kNumLeaves; ++i) {
+        NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+        ASSERT_TRUE(bool(leaf));
+        connectNodes(hub, leaf, 0, true);
+        leaves.push_back(leaf);
+    }
+    ASSERT_EQ(eDataKindDeep, hub->getEffectiveOutputDataKind());
+
+    hubEmitted = 0;
+    const U64 visitsBefore = Node::getDataKindInvalidationVisitCount();
+    deactivateInBatch(getApp(), leaves);
+    const U64 visits = Node::getDataKindInvalidationVisitCount() - visitsBefore;
+    EXPECT_GT(visits, 0u);
+    EXPECT_LE(visits, static_cast<U64>(2 * kNumLeaves));
+    EXPECT_LE(hubEmitted, 1);
+    EXPECT_EQ(eDataKindPolymorphic, hub->getEffectiveOutputDataKind());
+
+    hubEmitted = 0;
+    const U64 visitsBeforeUndo = Node::getDataKindInvalidationVisitCount();
+    activateInBatch(getApp(), leaves);
+    const U64 undoVisits = Node::getDataKindInvalidationVisitCount() - visitsBeforeUndo;
+    EXPECT_GT(undoVisits, 0u);
+    EXPECT_LE(undoVisits, static_cast<U64>(2 * kNumLeaves));
+    EXPECT_LE(hubEmitted, 1);
+    EXPECT_EQ(eDataKindDeep, hub->getEffectiveOutputDataKind());
+
+    QObject::disconnect(connection);
 }

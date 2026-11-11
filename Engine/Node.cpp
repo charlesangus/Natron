@@ -5569,7 +5569,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
 
 
     std::vector<NodePtr> inputsQueueCopy;
-
+    std::vector<NodePtr> detachedInputs;
 
     ///For multi-instances, if we deactivate the main instance without hiding the GUI (the default state of the tracker node)
     ///then don't remove it from outputs of the inputs
@@ -5578,6 +5578,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
             NodePtr input = _imp->guiInputs[i].lock();
             if (input) {
                 input->disconnectOutput(false, this);
+                detachedInputs.push_back(input);
             }
         }
     }
@@ -5620,6 +5621,27 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                     ignore_result( output->disconnectInputInternal(this, false) );
                 }
             }
+        }
+    }
+
+    // Disconnecting an output never invalidates the node it leaves, so without this an input would
+    // keep the kind it took from this node's requirement after the node is gone.
+    AppInstancePtr detachedApp = getApp();
+    if (!detachedInputs.empty() && detachedApp && !detachedApp->getProject()->isProjectClosing()) {
+        if ((inputEditBatchDepth > 0) && (QThread::currentThread() == qApp->thread())) {
+            for (const NodePtr& input : detachedInputs) {
+                if (input->isActivated()) {
+                    input->invalidateEffectiveOutputDataKindCache();
+                }
+            }
+        } else {
+            std::vector<Node*> starts;
+            for (const NodePtr& input : detachedInputs) {
+                if (input->isActivated()) {
+                    starts.push_back(input.get());
+                }
+            }
+            invalidateEffectiveOutputDataKindCaches(starts);
         }
     }
 
@@ -5844,6 +5866,9 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
         NodePtr input = _imp->inputs[i].lock();
         if (input) {
             input->connectOutput(false, thisShared);
+            // Reconnecting an output never invalidates the input it rejoins, whose kind may now
+            // follow this node's requirement again. The batch above defers the walk to its end.
+            input->invalidateEffectiveOutputDataKindCache();
         }
     }
 

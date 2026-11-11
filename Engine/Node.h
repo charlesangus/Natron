@@ -297,7 +297,6 @@ public:
      * This is called when a node is deleted by the user
      */
     void abortAnyProcessing_non_blocking();
-    void abortAnyProcessing_blocking();
 
     /*Never call this yourself. This is needed by OfxEffectInstance so the pointer to the live instance
      * is set earlier.
@@ -941,6 +940,19 @@ public:
      * @brief Same as getOutputsWithGroupRedirection(), appended to outputs.
      **/
     void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
+
+    /**
+     * @brief appendOutputsWithGroupRedirection() stopping after one redirection: a group appends
+     * the nodes its GroupInputs feed, a GroupOutput the outputs of its group, a precomp's output
+     * node those of the precomp; any other node its own outputs. The nodes appended may redirect
+     * again.
+     **/
+    void appendOutputsThroughOneRedirection(std::vector<NodePtr>* outputs) const;
+
+    /**
+     * @brief Whether this node is the output node of the precomp it is part of.
+     **/
+    bool isPrecompOutputNode() const;
 
     /**
      * @brief Walks the body of a loop running from begins up to tail, closed by end: the nodes the
@@ -2375,10 +2387,18 @@ private:
     bool findDataKindConflictInsideGroup(int inputNb, const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
     /**
-     * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
-     * the internal nodes of a roto paint tree.
+     * @brief The nodes whose hash folds in this one's: outputs through group redirections, every
+     * group-redirect node passed through on the way, and the internal nodes of a roto paint tree.
+     * leaves receives the nodes that appendHashLeafDependents() adds, from this node's effect and
+     * from the group-redirect nodes passed through.
      **/
-    void getHashDependents(std::vector<NodePtr>* dependents) const;
+    void getHashDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
+
+    /**
+     * @brief What marking this node as a leaf marks too: its metadata readers, and in leaves what
+     * its effect appends through appendHashLeafDependents().
+     **/
+    void getHashLeafDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
 
     struct HashInputs {
         bool isViewer = false;

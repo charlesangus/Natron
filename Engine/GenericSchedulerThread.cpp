@@ -96,8 +96,17 @@ struct GenericSchedulerThreadPrivate
     std::list<GenericThreadStartArgsPtr> enqueuedTasks, queuedTaskWhileProcessingAbort;
     mutable QMutex enqueuedTasksMutex;
 
-    // true when the main-thread is calling executeOnMainThread
+    // true from the moment the scheduler thread posts a main-thread request until it has been
+    // executed; the request fields below are protected by executingOnMainThreadMutex
     bool executingOnMainThread;
+    // true while the main thread is inside executeOnMainThread for the current request
+    bool mainThreadRequestClaimed;
+    std::uint64_t lastMainThreadRequestId;
+    std::uint64_t mainThreadRequestId;
+    GenericThreadExecOnMainThreadArgsPtr mainThreadRequestArgs;
+    // Read by a main-thread abort waiter while it holds abortRequestedMutex, which must not be
+    // nested with executingOnMainThreadMutex, hence an atomic rather than a protected field.
+    std::atomic<bool> mainThreadRequestPending;
     QWaitCondition executingOnMainThreadCond;
     QMutex executingOnMainThreadMutex;
 
@@ -125,6 +134,11 @@ struct GenericSchedulerThreadPrivate
         , queuedTaskWhileProcessingAbort()
         , enqueuedTasksMutex()
         , executingOnMainThread(false)
+        , mainThreadRequestClaimed(false)
+        , lastMainThreadRequestId(0)
+        , mainThreadRequestId(0)
+        , mainThreadRequestArgs()
+        , mainThreadRequestPending(false)
         , executingOnMainThreadCond()
         , executingOnMainThreadMutex()
         , blockingOperationWatcher()
@@ -142,6 +156,17 @@ struct GenericSchedulerThreadPrivate
         threadStateCond.wakeAll();
     }
 
+    bool isAbortSettled() const
+    {
+        QMutexLocker k(&threadStateMutex);
+
+        return (threadState == GenericSchedulerThread::eThreadStateAborted) || (threadState == GenericSchedulerThread::eThreadStateIdle) || (threadState == GenericSchedulerThread::eThreadStateStopped);
+    }
+
+    // Runs the pending main-thread request if it is still outstanding and matches requestId
+    // (0 matches any request). Returns false if there was nothing to run.
+    bool runPendingMainThreadRequest(std::uint64_t requestId);
+
     // Returns the state of the thread
     GenericSchedulerThread::ThreadStateEnum resolveState();
 
@@ -155,7 +180,7 @@ GenericSchedulerThread::GenericSchedulerThread()
     , AbortableThread(this)
     , _imp( new GenericSchedulerThreadPrivate(this) )
 {
-    QObject::connect( this, SIGNAL(executionOnMainThreadRequested(GenericThreadExecOnMainThreadArgsPtr)), this, SLOT(onExecutionOnMainThreadReceived(GenericThreadExecOnMainThreadArgsPtr)) );
+    QObject::connect(this, SIGNAL(executionOnMainThreadRequested(GenericThreadExecOnMainThreadArgsPtr, quint64)), this, SLOT(onExecutionOnMainThreadReceived(GenericThreadExecOnMainThreadArgsPtr, quint64)));
 }
 
 GenericSchedulerThread::~GenericSchedulerThread()
@@ -275,16 +300,6 @@ GenericSchedulerThread::waitForThreadToQuit_enforce_blocking()
 }
 
 void
-GenericSchedulerThread::onWatcherTaskAbortedEmitted()
-{
-    if (!_imp->blockingOperationWatcher) {
-        return;
-    }
-    _imp->blockingOperationWatcher.reset();
-    Q_EMIT taskAborted();
-}
-
-void
 GenericSchedulerThread::onWatcherTaskFinishedEmitted()
 {
     if (!_imp->blockingOperationWatcher) {
@@ -366,15 +381,17 @@ GenericSchedulerThread::abortThreadedTask(bool keepOldestRender)
         return false;
     }
 
-    ThreadStateEnum state = getThreadState();
-    bool shouldRequestAbort = state != eThreadStateAborted && state != eThreadStateIdle;
-    if ( keepOldestRender && !shouldRequestAbort ) {
-        return false;
-    }
-
     {
         QMutexLocker l(&_imp->abortRequestedMutex);
 
+        // The quitting thread sets eThreadStateStopped before it clears abortRequested under this
+        // mutex, so reading the state here keeps a late abort from outliving that clear and
+        // routing the next started task to the post-abort queue.
+        const ThreadStateEnum state = getThreadState();
+        const bool shouldRequestAbort = state != eThreadStateAborted && state != eThreadStateIdle && state != eThreadStateStopped;
+        if (keepOldestRender && !shouldRequestAbort) {
+            return false;
+        }
 
         // We are already aborting
         if (_imp->abortRequested > 0 && keepOldestRender) {
@@ -421,41 +438,40 @@ GenericSchedulerThreadPrivate::waitForAbortToComplete_internal(bool allowBlockin
         return true;
     }
 
-    GenericSchedulerThread::ThreadStateEnum state;
-    {
-        QMutexLocker k(&threadStateMutex);
-        state = threadState;
-    }
-    if ( (state == GenericSchedulerThread::eThreadStateAborted) || GenericSchedulerThread::eThreadStateIdle ) {
+    if (QThread::currentThread() == _p) {
         return false;
     }
 
-    // This function may NOT be called on the main-thread, because we may deadlock if executeOnMainThread is called OR block the UI.
-    if ( !allowBlockingForMainThread && ( QThread::currentThread() == qApp->thread() ) ) {
+    if (isAbortSettled()) {
         return false;
     }
 
+    const bool onMainThread = qApp && (QThread::currentThread() == qApp->thread());
+    // The main-thread wait services pending main-thread requests, so refusing it here only keeps the UI from freezing.
+    if (!allowBlockingForMainThread && onMainThread) {
+        return false;
+    }
 
     {
-        // Flag that we are going to be waiting on the main-thread so that the render thread does not attempt to execute something on the main-thread
         QMutexLocker k(&abortRequestedMutex);
 
-        while (abortRequested > 0) {
+        // An abort requested just as the thread went idle stays set until the next task runs, so
+        // the state is part of the predicate.
+        while ((abortRequested > 0) && !isAbortSettled()) {
+            // The scheduler thread may block on a main-thread request before it notices the
+            // abort; the queued slot that would run it cannot be delivered while we block here.
+            if (onMainThread && mainThreadRequestPending.load()) {
+                k.unlock();
+                runPendingMainThreadRequest(0);
+                k.relock();
+                continue;
+            }
             abortRequestedCond.wait(k.mutex());
         }
     }
     _p->onWaitForAbortCompleted();
 
     return true;
-}
-
-void
-GenericSchedulerThread::waitForAbortToCompleteQueued_main_thread()
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    _imp->blockingOperationWatcher.reset( new GenericSchedulerThreadWatcher(this) );
-    QObject::connect( _imp->blockingOperationWatcher.get(), SIGNAL(taskFinished(int,GenericWatcherCallerArgsPtr)), this, SLOT(onWatcherTaskAbortedEmitted()) );
-    _imp->blockingOperationWatcher->scheduleBlockingTask(GenericSchedulerThreadWatcher::eBlockingTaskWaitForAbort);
 }
 
 bool
@@ -574,6 +590,21 @@ GenericSchedulerThread::run()
             qDebug() << getThreadName().c_str() << ": Quitting thread";
 #endif
 
+            std::list<GenericThreadStartArgsPtr> dropped;
+            {
+                // Waiters must not hang on a thread that has quit, and a restarted thread must not
+                // route its new tasks to the post-abort queue.
+                QMutexLocker tasksLocker(&_imp->enqueuedTasksMutex);
+                QMutexLocker a(&_imp->abortRequestedMutex);
+                // No later abort settles this queue once the thread is gone.
+                dropped.swap(_imp->queuedTaskWhileProcessingAbort);
+                _imp->abortRequested = 0;
+                _imp->abortRequestedCond.wakeAll();
+            }
+            if (!dropped.empty()) {
+                onQueuedTasksDropped(dropped);
+            }
+
             QMutexLocker k(&_imp->mustQuitMutex);
             _imp->mustQuit = false;
             _imp->mustQuitCond.wakeAll();
@@ -634,29 +665,66 @@ GenericSchedulerThread::requestExecutionOnMainThread(const GenericThreadExecOnMa
     assert(QThread::currentThread() == this);
     assert(getThreadState() == eThreadStateActive);
 
-    QMutexLocker processLocker (&_imp->executingOnMainThreadMutex);
-    assert(!_imp->executingOnMainThread);
-    _imp->executingOnMainThread = true;
+    quint64 requestId;
+    {
+        QMutexLocker processLocker(&_imp->executingOnMainThreadMutex);
+        assert(!_imp->executingOnMainThread);
+        _imp->executingOnMainThread = true;
+        requestId = ++_imp->lastMainThreadRequestId;
+        _imp->mainThreadRequestId = requestId;
+        _imp->mainThreadRequestArgs = inArgs;
+        _imp->mainThreadRequestPending.store(true);
+    }
 
-    Q_EMIT executionOnMainThreadRequested(inArgs);
+    {
+        QMutexLocker abortLocker(&_imp->abortRequestedMutex);
+        _imp->abortRequestedCond.wakeAll();
+    }
 
+    Q_EMIT executionOnMainThreadRequested(inArgs, requestId);
+
+    QMutexLocker processLocker(&_imp->executingOnMainThreadMutex);
     while (_imp->executingOnMainThread) {
         _imp->executingOnMainThreadCond.wait(processLocker.mutex());
     }
 }
 
-void
-GenericSchedulerThread::onExecutionOnMainThreadReceived(const GenericThreadExecOnMainThreadArgsPtr& args)
+bool
+GenericSchedulerThreadPrivate::runPendingMainThreadRequest(std::uint64_t requestId)
 {
-    assert( QThread::currentThread() == qApp->thread() );
-    executeOnMainThread(args);
+    assert(QThread::currentThread() == qApp->thread());
 
-    QMutexLocker processLocker (&_imp->executingOnMainThreadMutex);
-    assert(_imp->executingOnMainThread);
-    _imp->executingOnMainThread = false;
+    GenericThreadExecOnMainThreadArgsPtr args;
+    {
+        QMutexLocker processLocker(&executingOnMainThreadMutex);
+        if (!executingOnMainThread || mainThreadRequestClaimed || ((requestId != 0) && (requestId != mainThreadRequestId))) {
+            return false;
+        }
+        mainThreadRequestClaimed = true;
+        mainThreadRequestPending.store(false);
+        args = mainThreadRequestArgs;
+    }
+
+    _p->executeOnMainThread(args);
+
+    QMutexLocker processLocker(&executingOnMainThreadMutex);
+    executingOnMainThread = false;
+    mainThreadRequestClaimed = false;
+    mainThreadRequestArgs.reset();
 
     // There can only be one-thread waiting and this is this the GenericSchedulerThread thread
-    _imp->executingOnMainThreadCond.wakeOne();
+    executingOnMainThreadCond.wakeOne();
+
+    return true;
+}
+
+void
+GenericSchedulerThread::onExecutionOnMainThreadReceived(const GenericThreadExecOnMainThreadArgsPtr& /*args*/,
+                                                        quint64 requestId)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    // A main-thread abort waiter may already have run this request.
+    _imp->runPendingMainThreadRequest(requestId);
 }
 
 NATRON_NAMESPACE_EXIT

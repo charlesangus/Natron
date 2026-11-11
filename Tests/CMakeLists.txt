@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -43,6 +43,7 @@ set(Tests_SOURCES
     CurveHost_Test.cpp
     DataKind_Test.cpp
     DataKindGroup_Test.cpp
+    GroupDirectRender_Test.cpp
     DataKindProjectLoad_Test.cpp
     DeepChannelNodes_Test.cpp
     DeepExpressionEvaluator_Test.cpp
@@ -99,6 +100,7 @@ set(Tests_SOURCES
     GraphOpApply_Test.cpp
     GraphEditRecorder_Test.cpp
     GraphEditReplay_Test.cpp
+    GenericSchedulerAbortWait_Test.cpp
     FileStamp_Test.cpp
     RotoContentHash_Test.cpp
     PyRotoCreate_Test.cpp
@@ -190,6 +192,7 @@ set(Tests_SOURCES
     RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
+    SchedulerAbortLatency_Test.cpp
     SchedulerEquivalence_Test.cpp
     SchedulerWriters_Test.cpp
     Shuffle_Test.cpp

@@ -420,6 +420,14 @@ public:
 
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+    virtual void appendExtraHashSources(std::vector<NodePtr>* sources) const OVERRIDE FINAL;
+    virtual void appendHashLeafDependents(std::vector<NodePtr>* leaves) const OVERRIDE FINAL;
+
+    // What feeds the Output: rendered directly, the group is an identity of it.
+    virtual EffectInstancePtr getInternalIdentitySource() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getRegionOfDefinition(U64 hash, double time, const RenderScale& scale, ViewIdx view, RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
 
     NodePtr getOutputNode(bool useGuiConnexions) const;
 
@@ -458,6 +466,17 @@ public:
 Q_SIGNALS:
 
     void graphEditableChanged(bool);
+
+protected:
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
+    virtual void addProducedPlanes(double time, ViewIdx view, std::list<ImageLayerDesc>* planes) OVERRIDE FINAL;
 
 private:
 

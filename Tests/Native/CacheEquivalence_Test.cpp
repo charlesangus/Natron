@@ -1659,12 +1659,12 @@ protected:
         }
     }
 
-    // A Group or a Precomp renders nothing of its own: what consumes one pulls the node its output
+    // A Precomp renders nothing of its own: what consumes one pulls the node its output
     // redirects to, so a Dot below it stands in for that consumer. Anything else is rendered itself.
     NodePtr consumerOf(const NodePtr& node)
     {
         EffectInstancePtr effect = node->getEffectInstance();
-        if (!std::dynamic_pointer_cast<NodeGroup>(effect) && !std::dynamic_pointer_cast<PrecompNode>(effect)) {
+        if (!std::dynamic_pointer_cast<PrecompNode>(effect)) {
             return NodePtr();
         }
         NodePtr dot = create(PLUGINID_NATRON_DOT);

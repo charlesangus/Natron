@@ -2,7 +2,7 @@
 
 Two gate recordings, both made on 2026-11-11 with `run.sh --preset gate` (comp topology at N = 300 and 3000, adaptive
 reps, per-rep timeouts of 2-30 s), harness commit a8651e8bc, `Natron-m117-gui-perf-harness.AppImage` (sha256
-eb4f4cfb512333ac). This is the pre-M118 build, so its wedges are part of the baseline: undo wedges Natron at N=300 (redo
+eb4f4cfb512333ac). This build predates the large-graph responsiveness fixes, so its wedges are part of the baseline: undo wedges Natron at N=300 (redo
 and paste_1000 are then not run) and duplicate_100 wedges Natron at N=3000 (every later op at that size is not run).
 The pre-gate recordings with 120 s and 300 s censored timeouts are in `baselines/archive/`, kept for reference, not for gating.
 

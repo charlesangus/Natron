@@ -30,12 +30,19 @@ judges the result). Run the full preset periodically, or when a `--scaling` slop
 two sizes looks suspect.
 
 Generated graphs are kept in `build/bench/gui/graph-cache` (`--graph-cache DIR`), keyed by
-topology, n, seed and `gen_graph.py`'s hash, so a repeat run opens them instead of generating
-them. `--fresh-graphs` uses an empty cache in the run's own directory, so every graph is generated
+topology, n, seed, `gen_graph.py`'s hash and the build (the AppImage's sha256, else Natron's version
+and the binary's size and mtime), so a repeat run on the same build opens them instead of generating
+them. A project saved by one build need not load the same in another, and the sidecar's load times
+belong to the build that measured them, so each new build generates its graphs once: about 2 minutes
+at 3000 nodes on the GPU host and about 6 on the N100. Comparing two builds therefore generates once
+per build. Entries for builds no longer in use are safe to delete. `--fresh-graphs` uses an empty cache in the run's own directory, so every graph is generated
 again; use it when generation's own scaling is what is being measured.
 
 `--rerun OPS` re-runs only those ops, with `--reps 5` unless `--reps` is given, to confirm a
-suspected regression; `compare.py` prints the exact line when it wants one.
+suspected regression; `compare.py` prints the exact line when it wants one. With a fixed rep count an
+op that goes over budget still runs every rep, so a re-run gathers 5 samples of it; with `--reps auto`
+it stops at the first rep that goes over. A cycle step that goes over still ends its rep's cycle,
+since the steps after it depend on it, but the next rep starts the cycle again.
 
 ## The two modes
 
@@ -95,7 +102,9 @@ wedge guard is the largest of 60 s, 3 times the slowest load the cache's sidecar
 generation time it records, not an op's guard. A load past the op timeout is still
 recorded as `over_budget`; the record carries `guard_s`.
 
-The other options are `--ops` (a subset of ops), `--out` and `--self-check`.
+The other options are `--ops` (a subset of ops), `--out` and `--self-check`. Under `--xvfb`,
+`--baseline`, `--graph-cache` and `--out` must be inside the checkout, the only directory the
+container mounts; `run.sh` refuses any other path.
 `--self-check` adds an op that blocks the main thread for 300 ms. It fails unless exactly one
 stall is attributed to it, which checks the stall monitor and the attribution end to end.
 `GUI_BENCH_OP_TIMEOUT_S` (default 30) caps every per-rep timeout and is the timeout of an op with
@@ -119,7 +128,7 @@ per op. An `op` record holds:
   per-event times themselves (0.1 ms, at most 200, thinned evenly; `samples_total` when thinned);
 - `stalls`: the count, max and total of the stalls whose midpoint falls inside a timed rep;
 - `status`: `ok`, `over_budget`, `not_run` or `error` (`timeout` in older results), with
-  `timeout_s`, the rep's timeout (see below).
+  `timeout_s`, the rep's timeout (see below), and for `over_budget` `censored_ms` and `over_reps`.
 - `dialogs`, when a modal dialog came up during the op: each one's title, text, the answer the
   bench gave and the op step it came up in.
 
@@ -178,8 +187,10 @@ file, and `run.sh` sets it.
 
 Each rep has its own timeout: 5 times the larger of the op's budget (16 ms per event for
 interaction ops, 100 ms for edits, `OP_BUDGET_MS`) and its baseline median, clamped to 2–30 s. It is
-checked before each event. A rep past it is abandoned, and the op is recorded as `over_budget` with
-`censored_ms`, how far the rep got: the value is censored, a lower bound rather than a time.
+checked before each event and once the last event returns. A rep past it is abandoned, and the op is
+recorded as `over_budget` with `censored_ms`, how far the rep got (the smallest such value when
+several reps went over), and `over_reps`, how many did: the value is censored, a lower bound rather
+than a time.
 Under Xvfb, events cost 100–150 ms each, so without a baseline most interaction ops go over budget;
 the gate baseline is what makes Xvfb timeouts meaningful.
 
@@ -272,30 +283,40 @@ tools/bench/gui/compare.py --budgets build/bench/gui/<host run>.jsonl
 ```
 
 Baselines recorded before the gate preset (the per-rep timeouts, the graph cache and the delete
-cycle) are censored at 120 s timeouts and come from pre-M118 builds; they move to
+cycle) are censored at 120 s timeouts and come from builds before the gate preset; they move to
 `baselines/archive/` and are re-recorded in gate mode, so do not gate on them. `compare.py` warns on stderr whenever a graph
 that both files generated for the same topology, n and seed has a different hash, because the rows
 for that size then time different graphs.
 
 Comparison flags an op when any of the following holds, and then exits 1:
 
-- its rep median, per-event p50 or per-event p95 grew by more than `--tol` and by more than
+- its per-event p50, per-event p95 or rep median grew by more than `--tol` and by more than
   `--min-ms` (default 5 ms); the p95 is judged only with 20 or more events on both sides, since
-  below that it is the slowest event;
-- its status fell from `ok` (over budget, wedged or an error);
+  below that it is the slowest event, and the rep median only with 3 or more reps on both sides or
+  more than one event per rep, since a single-event op's median of one or two reps is a draw or two
+  and its per-event p50 already judges the same event;
+- its status fell from `ok` (over budget, wedged or an error), or from `over_budget` to an error;
 - it is missing from the run, or `not_run` for a reason of its own;
 - it stalled for more than `--long-stall-ms` (default 250 ms) where the baseline did not.
 
 `over_budget` (and `timeout`) values are censored. Over on both sides prints as `still over`, with
-each side's `censored_ms`, and is judged neither way; over in the baseline only is an improvement.
+each side's `censored_ms`, and is judged neither way unless the run newly wedged Natron, which is a
+regression; over in the baseline only is an improvement. An error in the baseline leaves nothing to
+judge the run by, and prints as such.
 An op `not_run` because the cycle step before it failed prints its reason and is not counted; the
 step that failed is. An op `not_run` because another op wedged Natron (`Natron wedged on <op>`) is
 `not measured` when the baseline has no `ok` record of it either, and `REGRESSED: missing after
-wedge` when it does.
+wedge` when it does. When the graph at a size was never set up, the run carries a `note` record with
+`setup_failed`: the bench writes one when opening the cached graph wedges Natron, and `run.sh` writes
+one when a Natron process for a size exits non-zero without recording any op (it died or hung
+generating or loading the graph, or the run's cap ended it). `compare.py` prints the note in the
+header and reports that size's ops as `setup wedged` rather than `missing`.
 
-A slowdown, or a fall to `over_budget` without a wedge, that rests on fewer than 5 samples on
-either side (per-event samples, else reps) is `CONFIRM`, not a regression, and does not fail the
-comparison. The output ends with the `run.sh --rerun <ops> --reps 5 ...` line that re-runs those
+A slowdown that rests on fewer than 5 samples on either side (per-event samples, else reps) is
+`CONFIRM`, not a regression, and does not fail the comparison. A fall from `ok` to `over_budget`
+without a wedge is judged on the baseline's samples only, since the run's value is a lower bound: it
+is a regression when the baseline has 5 or more, and otherwise `CONFIRM` until a re-run goes over on
+5 reps with `censored_ms` past the baseline median by more than `--tol` and `--min-ms`. The output ends with the `run.sh --rerun <ops> --reps 5 ...` line that re-runs those
 ops against the same baseline; `--appimage PATH` puts the AppImage's path in it, otherwise it names
 the run's AppImage file.
 

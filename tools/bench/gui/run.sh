@@ -19,7 +19,8 @@
 #                            that size are recorded as not_run and the run goes on to the next size
 #   --baseline FILE          a result whose medians set each op's timeout (GUI_BENCH_BASELINE); for --xvfb
 #                            it must be inside the checkout, which is all the container sees
-#   --graph-cache DIR        generated graphs kept between runs (default build/bench/gui/graph-cache)
+#   --graph-cache DIR        generated graphs kept between runs (default build/bench/gui/graph-cache); for
+#                            --xvfb it must be inside the checkout, as must --out
 #   --fresh-graphs           use an empty cache in the run's own dir, so every graph is generated (and
 #                            its generation timed) rather than opened from the shared cache
 #   --out DIR                result directory (default build/bench/gui)
@@ -61,7 +62,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 self="$repo/tools/bench/gui/run.sh"
 
 usage() {
-    sed -n '2,35p' "$self" >&2
+    awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$self" >&2
     exit 2
 }
 
@@ -154,6 +155,18 @@ if [ -n "$appimage" ]; then
         echo "no AppImage at $appimage" >&2
         exit 2
     fi
+fi
+# The container mounts only the checkout, so anything --xvfb reads or writes must be inside it.
+if [ "$mode" = xvfb ]; then
+    real_repo=$(realpath -m "$repo")
+    for named in "--baseline=$baseline" "--graph-cache=$graph_cache" "--out=$outdir"; do
+        path=${named#*=}
+        [ -n "$path" ] || continue
+        case $(realpath -m "$path") in
+            "$real_repo"/*) ;;
+            *) echo "${named%%=*} $path is outside the checkout $repo, which is all the --xvfb container sees" >&2; exit 2 ;;
+        esac
+    done
 fi
 if [ "$mode" = host ] && [ -z "$appimage" ]; then
     echo "--host needs --appimage" >&2
@@ -259,7 +272,7 @@ wedged_exit=3
 # resumes, so an op that wedged at a smaller size is recorded as over_budget at the larger ones
 # without being run.
 run_cases() {
-    local deadline=$(( $(date +%s) + timeout_s )) overall=0 topology size rc left attempt lines label started=0
+    local deadline=$(( $(date +%s) + timeout_s )) overall=0 topology size rc left attempt lines label started=0 ops_before
     local -a list size_list
     IFS=, read -r -a list <<< "$topologies"
     IFS=, read -r -a size_list <<< "$sizes"
@@ -267,6 +280,7 @@ run_cases() {
         for size in "${size_list[@]}"; do
             label=$topology-$size
             attempt=0
+            ops_before=$(op_lines)
             while :; do
                 left=$(( deadline - $(date +%s) ))
                 if [ "$left" -le 0 ]; then
@@ -312,11 +326,32 @@ run_cases() {
             elif [ "$rc" -ne 0 ]; then
                 echo "$label ended with exit code $rc"
             fi
+            if [ "$rc" -ne 0 ] && [ "$(op_lines)" = "$ops_before" ]; then
+                note_setup_failed "$topology" "$size" "$rc"
+            fi
             [ "$rc" -ne 0 ] && overall=$rc
             [ "$rc" = 124 ] && break 2
         done
     done
     finish "$overall"
+}
+
+op_lines() {
+    if [ -f "$result" ]; then
+        grep -c '"type": "op"' "$result"
+    else
+        echo 0
+    fi
+}
+
+# A size with no op record at all never got its graph: Natron wedged or died generating or loading it,
+# or the run's cap ended it there. The note lets compare.py say so rather than list each op as missing.
+note_setup_failed() {
+    local why="Natron exited with code $3 before recording any op"
+    [ "$3" = 124 ] && why="the run's ${timeout_s}s cap ended it before any op was recorded"
+    printf '{"exit": %d, "n": %d, "note": "%s", "phase": "setup", "setup_failed": true, "topology": "%s", "type": "note"}\n' \
+        "$3" "$2" "$why" "$1" >> "$result"
+    echo "NOTE $1-$2: $why; recorded as a setup failure" >&2
 }
 
 result_lines() {

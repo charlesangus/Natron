@@ -14,7 +14,8 @@ Configured by the environment:
     GUI_BENCH_OP_TIMEOUT_S  cap on every op's per-rep timeout, and the timeout of an op with neither a
                           budget nor a baseline (default 120)
     GUI_BENCH_BASELINE    a result file whose ok medians, for the same op, topology and n, feed the timeouts
-    GUI_BENCH_GRAPH_CACHE directory of generated graphs keyed by topology, n, seed and gen_graph.py's sha1.
+    GUI_BENCH_GRAPH_CACHE directory of generated graphs keyed by topology, n, seed, gen_graph.py's sha1 and
+                          the build (the AppImage's sha256, else the version and the binary's size and mtime).
                           A miss generates and saves the graph; a hit opens it, and that open is the load
                           op's one rep. Restarts open it from the cache too
     GUI_BENCH_RESUME      1 skips every (topology, n, op) already recorded in GUI_BENCH_OUT, and sizes
@@ -42,15 +43,19 @@ Configured by the environment:
                           window holds their midpoint
 
 Each rep has its own timeout: 5x the larger of the op's budget (OP_BUDGET_MS per event times its
-events) and its baseline median, clamped to 2-30 s. A rep past it is abandoned before its next event
-and the op is recorded as "over_budget" with censored_ms, the time the rep had reached. A single timed
+events) and its baseline median, clamped to 2-30 s. A rep past it, checked before each event and once
+its last event returns, is abandoned and the op is recorded as "over_budget" with censored_ms, the
+smallest time an abandoned rep had reached, and over_reps, how many reps went over. With --reps auto
+the op stops at its first such rep; with a fixed rep count (a --rerun) it runs every rep, so an op
+that goes over still gathers samples. A single timed
 step that does not return within the timeout plus 10 s (untimed setup and cleanup get at least 60 s)
 is recorded as a "wedged" over_budget and the process exits with code 3, which run.sh answers by
 restarting Natron with GUI_BENCH_RESUME=1 while it has restarts left.
 
 Opening a cached graph is the load op's rep, but its guard is the setup's: the largest of 60 s, 3x the
 slowest load the cache sidecar records and its generation time. Past the op's
-timeout it is still recorded as over_budget.
+timeout it is still recorded as over_budget. A wedge while opening it also writes a "note" record with
+setup_failed, which compare.py reports as a setup wedge for that size.
 
 Ops run read-only interactions first, then cheap edits, then the heavy edits cheapest first, so a wedge
 late in the run costs the fewest measurements.
@@ -159,6 +164,22 @@ try:
     with open(os.path.splitext(gen_graph.__file__)[0] + ".py", "rb") as _f:
         GEN_GRAPH_SHA = hashlib.sha1(_f.read()).hexdigest()[:12]
 
+    def build_identity():
+        """The build under test: the AppImage's sha256 when run.sh gave one, else Natron's version with
+        its binary's size and mtime, since the version string alone is the same for every dev build."""
+        if os.environ.get("GUI_BENCH_APPIMAGE_SHA256"):
+            return "appimage " + os.environ["GUI_BENCH_APPIMAGE_SHA256"]
+        binary = QApplication.applicationFilePath()
+        try:
+            st = os.stat(binary)
+            stamp = "%d/%d" % (st.st_size, st.st_mtime_ns)
+        except OSError:
+            stamp = "unknown"
+        return "%s %s %s" % (NatronEngine.natron.getNatronVersionString(), binary, stamp)
+
+    BUILD_ID = build_identity()
+    BUILD_TAG = hashlib.sha1(BUILD_ID.encode("utf-8")).hexdigest()[:12]
+
     if os.environ.get("GUI_BENCH_PTRACER_ANY") == "1":
         # Under kernel.yama.ptrace_scope 1 only an ancestor may attach, and the stack sampler is not one.
         import ctypes
@@ -189,7 +210,8 @@ try:
     # as over budget and ends the process once one step, together with the event loop pass that
     # follows it, has run well past the op's timeout. The guard is re-armed before every step, so an
     # op that is slow overall but keeps returning is left to its per-rep timeout instead.
-    _guard = {"until": None, "record": None, "phase": None, "guard_s": None, "rep_t0": None, "companions": None}
+    _guard = {"until": None, "record": None, "phase": None, "guard_s": None, "rep_t0": None, "companions": None,
+              "setup": None}
     _dialogs = []
     # [(op, kind)] of the current topology and n not yet published, in run order.
     _pending = []
@@ -225,6 +247,11 @@ try:
                     pre, post = _guard["companions"](record)
                 except Exception:
                     report("NOTE could not record the ops that share the wedged step's cycle: " + short_error())
+            if _guard["setup"]:
+                note = setup_note(record["topology"], record["n"], _guard["setup"],
+                                  "Natron wedged in the graph's %s (> %.0f s)" % (_guard["setup"], guard_s))
+                emit(note)
+                sys.stderr.write("NOTE %s-%d: %s\n" % (record["topology"], record["n"], note["note"]))
             written = pre + [record] + post
             if NO_RESTART:
                 names = set(rec["op"] for rec in written)
@@ -238,6 +265,11 @@ try:
                 record["topology"], record["n"], record["op"], phase, guard_s,
                 "with the rest of this size recorded as not run" if NO_RESTART else "so the run restarts"))
             os._exit(WEDGED_EXIT)
+
+    def setup_note(topology, n, phase, text):
+        """A note that the graph every op at this size needs was not set up, so compare.py can tell the
+        size's missing ops from ops dropped on their own."""
+        return {"type": "note", "topology": topology, "n": n, "phase": phase, "setup_failed": True, "note": text}
 
     def recorded_ops():
         """({(topology, n, op)} already in OUT_PATH, {(topology, op): (n, guard_s)} of the smallest n each op
@@ -341,6 +373,7 @@ try:
             "baseline": os.path.basename(BASELINE_PATH) or None,
             "baseline_ops": len(BASELINE),
             "gen_graph_sha": GEN_GRAPH_SHA,
+            "build_id": BUILD_ID,
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
@@ -1110,6 +1143,7 @@ try:
             self.step_wall, self.step_cpu, self.loop_pass = [], [], []
             self.events_per_rep = 0
             self.status, self.error, self.censored_ms = "ok", None, None
+            self.over_reps = 0
 
         def fail(self, error):
             # An op abandoned over budget can fail its cleanup checks; it stays over budget.
@@ -1127,7 +1161,8 @@ try:
 
     def timed_rep(gen, timing, guard_s=None):
         """Runs one rep's events on the event loop; the rep is abandoned as over budget once it passes
-        its timeout, checked before each event. guard_s replaces the per-step wedge guard."""
+        its timeout, checked before each event and after the last. guard_s replaces the per-step wedge
+        guard. Returns whether the rep went over."""
         count = 0
         t0 = mono_ms()
         _guard["rep_t0"] = t0
@@ -1162,12 +1197,17 @@ try:
             yield cmd if cmd else ("sleep", 0)
         t1 = mono_ms()
         _guard["rep_t0"] = None
+        over = over or t1 > deadline
         timing.events_per_rep = count
         timing.windows.append((t0, t1))
         if over:
-            timing.status, timing.censored_ms = "over_budget", t1 - t0
+            timing.status = "over_budget"
+            timing.over_reps += 1
+            # Each abandoned rep is a lower bound on its own time, so the smallest is the one that holds for every rep.
+            timing.censored_ms = t1 - t0 if timing.censored_ms is None else min(timing.censored_ms, t1 - t0)
         else:
             timing.times.append(t1 - t0)
+        return over
 
     def op_record(name, kind, topology, n, timing, extra=None):
         record = base_record(name, kind, topology, n, timing.timeout_s)
@@ -1189,6 +1229,7 @@ try:
                 record["samples_total"] = len(step_wall)
         if timing.censored_ms is not None:
             record["censored_ms"] = round(timing.censored_ms, 1)
+            record["over_reps"] = timing.over_reps
         if timing.error:
             record["error"] = timing.error
         record.update(extra or {})
@@ -1261,11 +1302,13 @@ try:
                 if "before" in op:
                     op["before"](ctx, st, rep)
                 yield ("sleep", 0)
-                yield from timed_rep(op["events"](ctx, st, rep), timing)
+                over = yield from timed_rep(op["events"](ctx, st, rep), timing)
                 arm_guard("after", untimed)
                 if "after" in op:
                     op["after"](ctx, st, rep)
-                if timing.status != "ok":
+                # With a fixed rep count (a --rerun) every rep is recorded, so an op that goes over budget
+                # still gathers the samples a confirmation needs.
+                if over and AUTO_REPS:
                     break
                 if auto and time.monotonic() - started >= AUTO_MAX_S:
                     break
@@ -1343,8 +1386,8 @@ try:
                 failed = None
                 for nm, events in steps:
                     point(nm)
-                    yield from timed_rep(events(ctx, st, rep), timings[nm])
-                    if timings[nm].status != "ok":
+                    over = yield from timed_rep(events(ctx, st, rep), timings[nm])
+                    if over:
                         failed = nm
                         break
                     yield ("sleep", 0)
@@ -1352,7 +1395,8 @@ try:
                 op["after"](ctx, st, rep)
                 if failed:
                     skip_after(failed, "was " + timings[failed].status.replace("_", " "))
-                    break
+                    if AUTO_REPS:
+                        break
                 if auto and time.monotonic() - started >= AUTO_MAX_S:
                     break
         except Exception:
@@ -1429,7 +1473,9 @@ try:
     # ---- graphs --------------------------------------------------------------------------------
 
     def cache_paths(topology, n):
-        stem = os.path.join(GRAPH_CACHE, "%s-%d-s%d-%s" % (topology, n, SEED, GEN_GRAPH_SHA))
+        # Keyed by build too: a project saved by one build need not load the same in another, and the
+        # sidecar's load times belong to the build that measured them.
+        stem = os.path.join(GRAPH_CACHE, "%s-%d-s%d-%s-b%s" % (topology, n, SEED, GEN_GRAPH_SHA, BUILD_TAG))
         return stem + ".ntpz", stem + ".json"
 
     def read_cache(topology, n):
@@ -1446,6 +1492,10 @@ try:
             return None
         summary = meta.get("summary") or {}
         if summary.get("topology") != topology or summary.get("n") != n or not summary.get("root_nodes"):
+            return None
+        if meta.get("build") != BUILD_ID or meta.get("gen_graph_sha") != GEN_GRAPH_SHA:
+            report("NOTE %s-%d: the cached graph was saved by another build or generator (%s, %s); generating "
+                   "it again" % (topology, n, meta.get("build"), meta.get("gen_graph_sha")))
             return None
         return meta
 
@@ -1466,7 +1516,8 @@ try:
         tmp = "%s.%d.tmp" % (project, os.getpid())
         shutil.copyfile(path, tmp)
         os.replace(tmp, project)
-        write_sidecar(sidecar, {"summary": summary, "seed": SEED, "gen_graph_sha": GEN_GRAPH_SHA, "gen_ms": round(gen_ms, 3)})
+        write_sidecar(sidecar, {"summary": summary, "seed": SEED, "gen_graph_sha": GEN_GRAPH_SHA, "build": BUILD_ID,
+                                "gen_ms": round(gen_ms, 3)})
         report("NOTE %s-%d: cached the graph as %s" % (topology, n, project))
 
     def note_load(topology, n, meta, load_ms):
@@ -1579,7 +1630,11 @@ try:
             meta = None
         summary, load_timing = None, None
         if meta is not None:
-            summary, load_timing = yield from load_cached(topology, n, path, meta)
+            _guard["setup"] = "load"
+            try:
+                summary, load_timing = yield from load_cached(topology, n, path, meta)
+            finally:
+                _guard["setup"] = None
         if summary is None:
             summary = yield from generate(topology, n, path)
         ctx = Ctx(topology, n, summary, path)

@@ -87,6 +87,36 @@ Two kinds of numbers, never mixed:
   - verify: a fresh-HOME launch shows no appearance prompt; a host bench run completes without manual clicks.
   - size: M
 
+## Phase 117.3: Minutes-long gate bench
+
+The user (2026-11-10): benches take hours; get them down to minutes. The consultant's design follows. The default **gate** preset runs comp at 300 and 3000 nodes, with cached graphs, 1 rep and adaptive repeats, and per-op timeouts derived from budgets or the baseline, clamped to 2–30 s. Wedged ops are recorded as censored `over_budget` with no long wait. The occasional **full** preset covers four topologies at 300, 1000 and 3000. Xvfb stays the milestone gate; the host is only for M118-style budget checks.
+
+- [ ] M117.P3.T1 — Graph cache, budget-derived timeouts, a timed delete/undo/redo cycle, and per-event stats
+  - files: `tools/bench/gui/gui_bench.py`
+  - approach:
+    - `GUI_BENCH_GRAPH_CACHE` with `.ntpz` files keyed `<topo>-<n>-s<seed>-<gen_graph sha>`, plus a summary sidecar. A miss generates the graph and saves it; a hit loads it. The first load is timed as `load`, and restarts always load.
+    - An `OP_BUDGET_MS` table and `GUI_BENCH_BASELINE`. Each op gets its own timeout and guard: `clamp(5 × max(budget×events, baseline median), 2 s, 30 s)`. Status `over_budget` carries `censored_ms`.
+    - undo/redo go not_run after delete_1000 wedges.
+    - delete, undo and redo merge into one timed cycle per rep, keeping the three op names.
+    - `GUI_BENCH_REPS=auto` repeats single-event ops until 5 samples or 3 s.
+    - Emit `step_wall_p50/p90/p95` and a rounded sample list.
+  - verify: `py_compile`; one Xvfb gate run on the M117 AppImage in natron-dev finishes in minutes and records over_budget instead of 120 s timeouts.
+  - size: L
+- [ ] M117.P3.T2 — `run.sh` presets, compare.py censored and confirm handling, run-bench.sh and docs
+  - files: `tools/bench/gui/run.sh`, `tools/bench/gui/compare.py`, `tools/bench/gui/README.md`, `tools/bench/gui/BASELINE.md`, `build/appimages/run-bench.sh` (untracked)
+  - approach:
+    - `run.sh --preset gate|full` (default gate) sets the matrix and the cache, baseline and timeout variables. The fallback op timeout drops to 30 s. Add `--rerun OPS --reps 5`.
+    - compare.py: censored values; a "confirm" verdict when there are fewer than 5 samples, printing the re-run command; and a `--budgets` host mode at 16/100 ms. Extend the self-test.
+    - run-bench.sh: m117 and m117xvfb run one gate run each, the m118 cap drops to 300 s, and m319xvfb inherits the preset.
+    - Docs: the bench rule becomes the gate at every milestone gate and the full preset periodically.
+  - verify: shellcheck 0.10 clean; `compare.py --self-test`; a gate run's compare prints sensible verdicts.
+  - size: M
+- [ ] M117.P3.T3 — Re-record the baselines in gate mode
+  - files: `tools/bench/gui/baselines/` (archive the old files), `BASELINE.md`
+  - approach: one Xvfb gate run in natron-dev, a few minutes on the dev host. One host gate run on the GPU host, about 5 min, by the user. The old jsonl files move to `baselines/archive/`.
+  - verify: compare against itself is clean, and BASELINE.md tables are regenerated.
+  - size: M
+
 **Verification gate:**
 - One build. Full ctest is green, including `StallMonitor` and `GuiBenchCompareSelfTest`, and CI is green.
 - `test_gen_graph.py` passes under NatronRenderer.
@@ -108,3 +138,4 @@ Two kinds of numbers, never mixed:
 - 2026-11-10 — P2.T3: both upstream startup prompts are removed, the appearance one and the matching shortcuts-reset one, with their settings bookkeeping (9a757f381). The bench keeps its version seeds, because the baseline AppImage predates this removal.
 - 2026-11-10 — P2.T2: the real-host baseline is committed (640bc5efa, `baselines/host-ms-E2087B87C9C8.jsonl`). It is the GPU-host run `results-20261110T160016Z`: AI PRO R9700, 62 GB, a different GPU and RAM from the same hostname's earlier runs. It covers mixed and comp at 300, 1000 and 3000. delete_1000, undo, redo and comp's knob_change_fanout wedge on this pre-M118 build, and paste_1000 and load time out at 3000; all are recorded as not measurable. compare.py --scaling flags 11 superlinear ops. The gate's build is running (run 42849400659).
 - 2026-11-10 — PR #256 review round 1. The Xvfb baseline predates the current harness (OFX IDs, different graph hashes, older op definitions) and P2.T1's three-run verify was never met, so P2.T1 is unticked and the file is marked stale for regression use. The harness's wedged guard was per op rather than per step, and click_select and drag_move_1 timed their framing work. Both are being fixed, which makes the host baseline's affected rows provisional until a re-run.
+- 2026-11-10 — The user found the benches far too slow: about 3 h per Xvfb run, about 80 min per host run, about 45 min for M118. Two-thirds of that is 120 s timeouts plus restarts that regenerate the graph. Phase 117.3 adds a gate preset expected to take about 2–3 min healthy and 6–10 min on a pre-M118 build, and a full preset of about 15 min. Xvfb stays the gate and the host is only for budget checks (consistent with the no-GPU-host-timing-gates rule). The old baselines are censored and pre-M118, so they are archived rather than gated on.

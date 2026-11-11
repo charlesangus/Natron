@@ -398,15 +398,6 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
         }
     }
 
-    if ( nSettings->isDefaultAppearanceOutdated() ) {
-        StandardButtonEnum reply = Dialogs::questionDialog(tr("Appearance").toStdString(),
-                                                           tr("The default appearance of %1 changed since last version.\n"
-                                                              "Would you like to use the new default appearance?").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString(), false);
-        if (reply == eStandardButtonYes) {
-            nSettings->restoreDefaultAppearance();
-        }
-    }
-
     /// Create auto-save dir if it does not exists
     QDir dir = Project::autoSavesDir();
     dir.mkpath( QString::fromUtf8(".") );
@@ -420,20 +411,6 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
         QString missingOpenGLError;
         if ( !appPTR->hasOpenGLForRequirements(eOpenGLRequirementsTypeViewer, &missingOpenGLError) ) {
             throw std::runtime_error( missingOpenGLError.toStdString() );
-        }
-
-        if ( !appPTR->isShorcutVersionUpToDate() ) {
-            StandardButtonEnum reply = questionDialog(tr("Shortcuts").toStdString(),
-                                                      tr("Default shortcuts for %1 have changed, "
-                                                         "would you like to set them to their defaults?\n"
-                                                         "Clicking no will keep the old shortcuts hence if a new shortcut has been "
-                                                         "set to something else than an empty shortcut you will not benefit of it.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString(),
-                                                      false,
-                                                      StandardButtons(eStandardButtonYes | eStandardButtonNo),
-                                                      eStandardButtonNo);
-            if (reply == eStandardButtonYes) {
-                appPTR->restoreDefaultShortcuts();
-            }
         }
     }
 

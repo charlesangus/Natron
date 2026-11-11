@@ -425,11 +425,6 @@ public:
      **/
     std::string getDefaultOCIOConfigSourceForNewProjects() const;
 
-    /**
-     * @brief Returns true if the QSettings existed prior to loading the settings
-     **/
-    bool didSettingsExistOnStartup() const;
-
     bool isAggressiveCachingEnabled() const;
 
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
@@ -512,9 +507,6 @@ public:
 
     bool isCopyInputImageForPluginRenderEnabled() const;
 
-    bool isDefaultAppearanceOutdated() const;
-    void restoreDefaultAppearance();
-
     std::string getUserStyleSheetFilePath() const;
 
 #ifdef NATRON_DOCUMENTATION_ONLINE
@@ -577,8 +569,6 @@ private:
 
     bool tryLoadOpenColorIOConfig();
 
-
-    KnobBoolPtr _natronSettingsExist;
     KnobBoolPtr _saveSettings;
 
 
@@ -750,7 +740,6 @@ private:
     KnobChoicePtr _systemFontChoice;
     KnobIntPtr _fontSize;
     KnobFilePtr _qssFile;
-    KnobIntPtr _defaultAppearanceVersion;
 
     // Appearance/Main Window
     KnobPagePtr _guiColorsTab;
@@ -825,8 +814,6 @@ private:
     KnobColorPtr _expressionLineColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
-    bool _settingsExisted;
-    bool _defaultAppearanceOutdated;
 };
 
 NATRON_NAMESPACE_EXIT

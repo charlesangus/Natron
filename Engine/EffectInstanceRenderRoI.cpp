@@ -156,7 +156,7 @@ optimizeRectsToRender(EffectInstance* self,
                 applyIdentityHopContext(self, identityInputNb, time, view, &walkContext, &walkContextSet);
                 double hopTime = identityInputTime;
                 ViewIdx hopView = inputIdentityView;
-                EffectInstancePtr identityInput = self->getInput(identityInputNb);
+                EffectInstancePtr identityInput = self->getIdentitySource(identityInputNb);
                 if (identityInput) {
                     for (;; ) {
                         double nextTime = hopTime;
@@ -171,7 +171,7 @@ optimizeRectsToRender(EffectInstance* self,
                         if (!identity || (nextInputNb == -2)) {
                             break;
                         }
-                        EffectInstancePtr subIdentityInput = identityInput->getInput(nextInputNb);
+                        EffectInstancePtr subIdentityInput = identityInput->getIdentitySource(nextInputNb);
                         if (subIdentityInput == identityInput) {
                             break;
                         }
@@ -652,7 +652,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             double firstFrame, lastFrame;
             getFrameRange_public(nodeHash, &firstFrame, &lastFrame);
 
-            EffectInstancePtr inputEffectIdentity = getInput(inputNbIdentity);
+            EffectInstancePtr inputEffectIdentity = getIdentitySource(inputNbIdentity);
             if (inputEffectIdentity) {
                 if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
                     frameArgs->stats->setNodeIdentity( getNode(), inputEffectIdentity->getNode() );

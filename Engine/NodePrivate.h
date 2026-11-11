@@ -427,6 +427,8 @@ public:
     std::atomic<bool> hashDirtyQueued { false };
     U64 hashFlushVisit = 0; //< the flush pass that last reached the node; only read and written under the flush mutex
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
+    U64 hashFlushLeafVisit = 0; //< the flush pass that last marked the node as a leaf; same locking
+    U64 hashFlushDeferredVisit = 0; //< the flush pass whose leaf mark of the node left a walk from it owed to a later reach; same locking
     QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
 
     mutable std::mutex contextReadsMutex; //< protects the two below; no other lock is taken under it

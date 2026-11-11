@@ -41,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupInput.h"
@@ -1381,6 +1382,142 @@ NodeGroup::getOutputNode(bool useGuiConnexions) const
     }
 
     return useGuiConnexions ? _imp->guiOutputs.front().lock() : _imp->outputs.front().lock();
+}
+
+void
+NodeGroup::appendExtraHashSources(std::vector<NodePtr>* sources) const
+{
+    const NodePtr fed = getOutputNodeInput(false);
+
+    if (fed) {
+        sources->push_back(fed);
+    }
+}
+
+void
+NodeGroup::appendHashLeafDependents(std::vector<NodePtr>* leaves) const
+{
+    // An enclosing group's Output reads through this group to what feeds this group's Output, so
+    // the enclosing group's hash folds that in, and no walk from it passes the redirection.
+    const NodePtr node = getNode();
+
+    if (!node) {
+        return;
+    }
+    NodesWList outputs;
+    node->getOutputs_mt_safe(outputs);
+    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+        const NodePtr output = it->lock();
+        const EffectInstancePtr effect = output ? output->getEffectInstance() : EffectInstancePtr();
+        if (dynamic_cast<const GroupOutput*>(effect.get())) {
+            effect->appendHashLeafDependents(leaves);
+        }
+    }
+}
+
+void
+NodeGroup::appendNodeContentHash(ContentHasher& h) const
+{
+    // The group renders as what feeds its Output, so its hash keys the cache by that node's.
+    const NodePtr fed = getOutputNodeInput(false);
+
+    h.appendBool(bool(fed));
+    if (fed) {
+        h.appendU64(fed->getStoredContentHash());
+    }
+}
+
+EffectInstancePtr
+NodeGroup::getInternalIdentitySource() const
+{
+    const NodePtr fed = getOutputNodeInput(false);
+
+    return fed ? fed->getEffectInstance() : EffectInstancePtr();
+}
+
+bool
+NodeGroup::isIdentity(double time,
+                      const RenderScale& /*scale*/,
+                      const RectI& /*roi*/,
+                      ViewIdx view,
+                      double* inputTime,
+                      ViewIdx* inputView,
+                      int* inputNb)
+{
+    *inputTime = time;
+    *inputView = view;
+    // With nothing feeding the Output the group outputs nothing, as an unconnected Dot does.
+    *inputNb = getInternalIdentitySource() ? kIdentityInternalSource : -1;
+
+    return true;
+}
+
+StatusEnum
+NodeGroup::getRegionOfDefinition(U64 /*hash*/,
+                                 double time,
+                                 const RenderScale& scale,
+                                 ViewIdx view,
+                                 RectD* rod)
+{
+    const EffectInstancePtr source = getInternalIdentitySource();
+
+    if (!source) {
+        rod->clear();
+
+        return eStatusOK;
+    }
+    bool isProjectFormat = false;
+    const StatusEnum stat = source->getRegionOfDefinition_public(source->getRenderHash(), time, scale, view, rod, &isProjectFormat);
+    // The source reports an empty region as a failure; the group's own empty answer is cached
+    // and reported the same way by getRegionOfDefinition_public().
+    if ((stat == eStatusFailed) && rod->isNull()) {
+        rod->clear();
+
+        return eStatusOK;
+    }
+
+    return stat;
+}
+
+void
+NodeGroup::getFrameRange(double* first,
+                         double* last)
+{
+    const EffectInstancePtr source = getInternalIdentitySource();
+
+    if (!source) {
+        *first = std::numeric_limits<int>::min();
+        *last = std::numeric_limits<int>::max();
+
+        return;
+    }
+    source->getFrameRange_public(source->getRenderHash(), first, last);
+}
+
+void
+NodeGroup::getDeepLayers(double time,
+                         ViewIdx view,
+                         std::list<ImageLayerDesc>* layers)
+{
+    const EffectInstancePtr source = getInternalIdentitySource();
+
+    if (source) {
+        source->getDeepLayers(time, view, layers);
+    }
+}
+
+void
+NodeGroup::addProducedPlanes(double time,
+                             ViewIdx view,
+                             std::list<ImageLayerDesc>* planes)
+{
+    // None of the inputs' layers passes through a group, so every layer of its source is one it
+    // presents itself.
+    const EffectInstancePtr source = getInternalIdentitySource();
+
+    if (source) {
+        source->getPresentLayers(time, view, -1, planes);
+    }
 }
 
 NodePtr

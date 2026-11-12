@@ -26,6 +26,9 @@
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 
 #include <algorithm>
+#include <set>
+
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -573,6 +576,136 @@ SceneDrawStates::wantedLoads() const
     }
 
     return loads;
+}
+
+std::vector<std::pair<std::string, SceneDrawStates::Stored>>
+SceneDrawStates::getSetStates() const
+{
+    return std::vector<std::pair<std::string, Stored>>(_states.begin(), _states.end());
+}
+
+SceneDrawDelta
+SceneDrawStates::replaceSetStates(const std::vector<std::pair<std::string, Stored>>& states)
+{
+    std::size_t visited = 0;
+    const Effects before = effectsUnder("/", &visited);
+    _states = StateMap(states.begin(), states.end());
+
+    return applyEdit("/", std::string(), before, visited);
+}
+
+const char*
+sceneLoadRuleName(SceneLoadRuleEnum rule)
+{
+    switch (rule) {
+    case eSceneLoadRuleAll:
+        return "all";
+    case eSceneLoadRuleOnly:
+        return "only";
+    case eSceneLoadRuleNone:
+        return "none";
+    }
+
+    return "";
+}
+
+bool
+sceneLoadRuleFromName(const std::string& name,
+                      SceneLoadRuleEnum* rule)
+{
+    for (SceneLoadRuleEnum candidate : { eSceneLoadRuleAll, eSceneLoadRuleOnly, eSceneLoadRuleNone }) {
+        if (name == sceneLoadRuleName(candidate)) {
+            *rule = candidate;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::vector<SceneDrawLoadRequest>
+sceneLoadRequestsFor(const SceneLoadRules& rules)
+{
+    std::vector<SceneDrawLoadRequest> requests;
+    // The rules above the current one, each with its request's index, or kNoRequest for none.
+    std::vector<std::pair<std::string, int>> above;
+
+    for (const std::pair<const std::string, SceneLoadRuleEnum>& rule : rules) {
+        while (!above.empty() && !isBelow(rule.first, above.back().first)) {
+            above.pop_back();
+        }
+        if (!above.empty() && (above.back().second != kNoRequest)) {
+            requests[above.back().second].excluded.push_back(rule.first);
+        }
+        int request = kNoRequest;
+        if (rule.second == eSceneLoadRuleAll) {
+            request = int(requests.size());
+            requests.push_back(SceneDrawLoadRequest { rule.first, true, std::vector<std::string>() });
+        } else if (rule.second == eSceneLoadRuleOnly) {
+            requests.push_back(SceneDrawLoadRequest { rule.first, false, std::vector<std::string>() });
+        }
+        above.push_back(std::make_pair(rule.first, request));
+    }
+
+    return requests;
+}
+
+namespace {
+bool
+isAbsolutePath(const std::string& path)
+{
+    if (path == "/") {
+        return true;
+    }
+
+    return (path.size() > 1) && (path[0] == '/') && (path.back() != '/') && (path.find("//") == std::string::npos);
+}
+} // anon namespace
+
+void
+sceneViewToSerialization(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states,
+                         const SceneLoadRules& rules,
+                         Serialization::SceneViewSerialization* serialization)
+{
+    *serialization = Serialization::SceneViewSerialization();
+    for (const std::pair<std::string, SceneDrawStates::Stored>& state : states) {
+        serialization->drawStates[state.first] = sceneDrawStateName(state.second.state);
+        if (!state.second.direct) {
+            serialization->impliedChildren.push_back(state.first);
+        }
+    }
+    for (const std::pair<const std::string, SceneLoadRuleEnum>& rule : rules) {
+        serialization->loadRules[rule.first] = sceneLoadRuleName(rule.second);
+    }
+}
+
+void
+sceneViewFromSerialization(const Serialization::SceneViewSerialization& serialization,
+                           std::vector<std::pair<std::string, SceneDrawStates::Stored>>* states,
+                           SceneLoadRules* rules)
+{
+    states->clear();
+    rules->clear();
+    const std::set<std::string> implied(serialization.impliedChildren.begin(), serialization.impliedChildren.end());
+    SceneDrawStates::PathLess less;
+    for (const std::pair<const std::string, std::string>& saved : serialization.drawStates) {
+        SceneDrawStateEnum state = eSceneDrawStateFull;
+        if (!isAbsolutePath(saved.first) || !sceneDrawStateFromName(saved.second, &state)) {
+            continue;
+        }
+        const bool direct = !((state == eSceneDrawStateChildren) && implied.count(saved.first));
+        states->push_back(std::make_pair(saved.first, SceneDrawStates::Stored { state, direct }));
+    }
+    std::sort(states->begin(), states->end(), [&less](const std::pair<std::string, SceneDrawStates::Stored>& a, const std::pair<std::string, SceneDrawStates::Stored>& b) {
+        return less(a.first, b.first);
+    });
+    for (const std::pair<const std::string, std::string>& saved : serialization.loadRules) {
+        SceneLoadRuleEnum rule = eSceneLoadRuleNone;
+        if (isAbsolutePath(saved.first) && sceneLoadRuleFromName(saved.second, &rule)) {
+            (*rules)[saved.first] = rule;
+        }
+    }
 }
 
 NATRON_NAMESPACE_EXIT

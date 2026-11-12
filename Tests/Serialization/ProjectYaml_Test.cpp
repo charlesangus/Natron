@@ -346,6 +346,9 @@ expectNodesEqual(const NodeSerialization& expected,
     }
     EXPECT_EQ(expected.hasRotoContext, actual.hasRotoContext);
     EXPECT_EQ(expected.hasTrackerContext, actual.hasTrackerContext);
+    EXPECT_EQ(expected.sceneView.drawStates, actual.sceneView.drawStates);
+    EXPECT_EQ(expected.sceneView.impliedChildren, actual.sceneView.impliedChildren);
+    EXPECT_EQ(expected.sceneView.loadRules, actual.sceneView.loadRules);
     EXPECT_EQ(0u, actual.knobsAge);
     EXPECT_TRUE(actual.multiInstanceParentName.empty());
     EXPECT_EQ(expected.cacheID, actual.cacheID);
@@ -674,4 +677,32 @@ TEST(ProjectYaml, RotoAndTrackerBlobsAreNamedAfterTheFullyQualifiedNode)
     ASSERT_EQ(1u, decodedRoto->rotoContext.baseLayer.children.size());
     expectCurvesBitIdentical(child.stroke.strokes.back().yCurve, decodedRoto->rotoContext.baseLayer.children.front().stroke.strokes.back().yCurve);
     EXPECT_TRUE((*std::next(decodedGroup->children.begin(), 4))->hasTrackerContext);
+}
+
+TEST(ProjectYaml, ViewerSceneViewRoundTripsAndIsLeftOutWhenEmpty)
+{
+    ProjectSerialization project = exampleProject();
+    Serialization::MemoryBlobStore emptyBlobs;
+    EXPECT_EQ(std::string::npos, Serialization::encodeProjectYaml(project, emptyBlobs).find("sceneView"));
+
+    NodeSerializationPtr viewer = project.nodes.nodes.back();
+    ASSERT_EQ("Viewer1", viewer->scriptName);
+    viewer->sceneView.drawStates["/World"] = "children";
+    viewer->sceneView.drawStates["/World/a"] = "full";
+    viewer->sceneView.drawStates["/World/gone/from/the/scene"] = "hidden";
+    viewer->sceneView.drawStates["/World/b"] = "loadAll";
+    viewer->sceneView.impliedChildren.push_back("/World");
+    viewer->sceneView.loadRules["/World/b"] = "all";
+    viewer->sceneView.loadRules["/World/b/c"] = "none";
+    viewer->sceneView.loadRules["/World/missing"] = "only";
+
+    Serialization::MemoryBlobStore blobs;
+    const std::string text = Serialization::encodeProjectYaml(project, blobs);
+    EXPECT_NE(std::string::npos, text.find("sceneView:")) << text;
+
+    YamlWarnings warnings;
+    const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    expectProjectsEqual(project, decoded);
+    EXPECT_EQ(text, Serialization::encodeProjectYaml(decoded, blobs));
 }

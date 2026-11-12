@@ -57,6 +57,7 @@
 #include "Engine/ProjectPrivate.h"
 #include "Engine/RotoContext.h"
 #include "Engine/TrackerContext.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -274,6 +275,10 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     if (tracker) {
         serialization->hasTrackerContext = true;
         tracker->toSerialization(&serialization->trackerContext);
+    }
+
+    if (const ViewerInstance* viewer = dynamic_cast<const ViewerInstance*>(effect.get())) {
+        viewer->sceneViewToSerialization(&serialization->sceneView);
     }
 
     NodeGroup* isGroupNode = isEffectGroup();

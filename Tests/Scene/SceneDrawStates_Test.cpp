@@ -25,12 +25,15 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_USING
 
@@ -654,4 +657,161 @@ TEST(SceneDrawStates, OneDeltaOverAHundredThousandStoredStatesLooksOnlyAtItsSubt
     const SceneDrawDelta blockedBelow = states.setState("/World/b50/r1", eSceneDrawStateHidden);
     EXPECT_TRUE(blockedBelow.isEmpty());
     EXPECT_EQ(0u, blockedBelow.visited);
+}
+
+namespace {
+using SetStates = std::vector<std::pair<std::string, SceneDrawStates::Stored>>;
+
+void
+expectSameSetStates(const SetStates& expected,
+                    const SetStates& actual)
+{
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i].first, actual[i].first);
+        EXPECT_EQ(expected[i].second.state, actual[i].second.state) << expected[i].first;
+        EXPECT_EQ(expected[i].second.direct, actual[i].second.direct) << expected[i].first;
+    }
+}
+} // anon namespace
+
+TEST(SceneDrawStates, SavedViewRestoresEveryStateIncludingMissingAndSwitchedRows)
+{
+    SceneDrawStates states;
+    states.setState("/World", eSceneDrawStateBBox);
+    states.setState("/World/a/b", eSceneDrawStateFull);
+    states.setState("/World/c", eSceneDrawStateLoadAll);
+    states.setState("/World/c/d", eSceneDrawStateHidden);
+    states.setState("/World/e", eSceneDrawStateChildren);
+    states.setState("/not/in/this/scene", eSceneDrawStateHidden);
+    const SetStates saved = states.getSetStates();
+    SceneLoadRules rules;
+    rules["/World/c"] = eSceneLoadRuleAll;
+    rules["/World/e"] = eSceneLoadRuleOnly;
+    rules["/World/missing"] = eSceneLoadRuleOnly;
+
+    Serialization::SceneViewSerialization serialization;
+    sceneViewToSerialization(saved, rules, &serialization);
+    EXPECT_EQ("children", serialization.drawStates["/World"]);
+    EXPECT_EQ((std::list<std::string> { "/World", "/World/a" }), serialization.impliedChildren);
+    EXPECT_EQ("hidden", serialization.drawStates["/not/in/this/scene"]);
+
+    SetStates readStates;
+    SceneLoadRules readRules;
+    sceneViewFromSerialization(serialization, &readStates, &readRules);
+    expectSameSetStates(saved, readStates);
+    EXPECT_EQ(rules, readRules);
+
+    SceneDrawStates restored;
+    restored.replaceSetStates(readStates);
+    expectSameSetStates(saved, restored.getSetStates());
+    for (const std::string& path : { "/World/sibling", "/World/a/b/x", "/World/a/y", "/World/c/d/z", "/World/e/f", "/not/in/this/scene/x" }) {
+        const SceneDrawResolved expected = states.resolve(path);
+        const SceneDrawResolved actual = restored.resolve(path);
+        EXPECT_EQ(expected.state, actual.state) << path;
+        EXPECT_EQ(expected.origin, actual.origin) << path;
+        EXPECT_EQ(expected.blocked, actual.blocked) << path;
+    }
+}
+
+TEST(SceneDrawStates, RestoringAsksForTheLoadsTheStatesWantAsOneDelta)
+{
+    SceneDrawStates states;
+    states.setState("/World", eSceneDrawStateBBox);
+    states.setState("/World/a/b", eSceneDrawStateFull);
+    states.setState("/World/c", eSceneDrawStateLoadAll);
+    states.setState("/World/c/d", eSceneDrawStateHidden);
+    states.setState("/World/e", eSceneDrawStateChildren);
+
+    SceneDrawStates restored;
+    const SceneDrawDelta delta = restored.replaceSetStates(states.getSetStates());
+
+    ASSERT_EQ(2u, delta.loads.size());
+    EXPECT_EQ("/World/c", delta.loads[0].path);
+    EXPECT_TRUE(delta.loads[0].withDescendants);
+    EXPECT_EQ(Paths { "/World/c/d" }, delta.loads[0].excluded);
+    EXPECT_EQ("/World/e", delta.loads[1].path);
+    EXPECT_FALSE(delta.loads[1].withDescendants);
+    EXPECT_EQ(Paths { "/World/c/d" }, delta.hidden);
+}
+
+TEST(SceneDrawStates, RestoringOverOtherStatesClearsThem)
+{
+    SceneDrawStates states;
+    states.setState("/old", eSceneDrawStateBBox);
+    states.setState("/kept", eSceneDrawStateHidden);
+    const SetStates saved { { "/kept", SceneDrawStates::Stored { eSceneDrawStateHidden, true } },
+                            { "/new", SceneDrawStates::Stored { eSceneDrawStateBBox, true } } };
+
+    const SceneDrawDelta delta = states.replaceSetStates(saved);
+
+    expectSameSetStates(saved, states.getSetStates());
+    expectState(states, "/old", eSceneDrawStateFull, eSceneDrawOriginDefault);
+    EXPECT_EQ(Paths { "/new" }, delta.boxed);
+    EXPECT_TRUE(delta.hidden.empty()) << "a state restored as it was changes nothing";
+    EXPECT_TRUE(delta.loads.empty());
+}
+
+TEST(SceneDrawStates, SavedViewLeavesOutWhatIsNotAPathOrAName)
+{
+    Serialization::SceneViewSerialization serialization;
+    serialization.drawStates["/ok"] = "bbox";
+    serialization.drawStates["relative/path"] = "bbox";
+    serialization.drawStates["/trailing/"] = "full";
+    serialization.drawStates["/double//slash"] = "full";
+    serialization.drawStates["/unknown"] = "open";
+    serialization.loadRules["/ok"] = "all";
+    serialization.loadRules["/bad"] = "some";
+    serialization.loadRules["nope"] = "only";
+    serialization.impliedChildren.push_back("/ok");
+
+    SetStates states;
+    SceneLoadRules rules;
+    sceneViewFromSerialization(serialization, &states, &rules);
+
+    ASSERT_EQ(1u, states.size());
+    EXPECT_EQ("/ok", states[0].first);
+    EXPECT_EQ(eSceneDrawStateBBox, states[0].second.state);
+    EXPECT_TRUE(states[0].second.direct) << "only a Children row can have been switched for a row below";
+    ASSERT_EQ(1u, rules.size());
+    EXPECT_EQ(eSceneLoadRuleAll, rules["/ok"]);
+}
+
+TEST(SceneDrawStates, LoadRulesBecomeRequestsThatLeaveOutTheRulesBelow)
+{
+    SceneLoadRules rules;
+    rules["/World"] = eSceneLoadRuleAll;
+    rules["/World/a"] = eSceneLoadRuleOnly;
+    rules["/World/b"] = eSceneLoadRuleNone;
+    rules["/World/b/c"] = eSceneLoadRuleAll;
+    rules["/World/b/c/d"] = eSceneLoadRuleNone;
+    rules["/Other"] = eSceneLoadRuleOnly;
+    rules["/Other/x"] = eSceneLoadRuleOnly;
+
+    const std::vector<SceneDrawLoadRequest> requests = sceneLoadRequestsFor(rules);
+
+    ASSERT_EQ(5u, requests.size());
+    EXPECT_EQ("/Other", requests[0].path);
+    EXPECT_FALSE(requests[0].withDescendants);
+    EXPECT_EQ("/Other/x", requests[1].path);
+    EXPECT_FALSE(requests[1].withDescendants);
+    EXPECT_EQ("/World", requests[2].path);
+    EXPECT_TRUE(requests[2].withDescendants);
+    EXPECT_EQ((Paths { "/World/a", "/World/b" }), requests[2].excluded);
+    EXPECT_EQ("/World/a", requests[3].path);
+    EXPECT_FALSE(requests[3].withDescendants);
+    EXPECT_EQ("/World/b/c", requests[4].path);
+    EXPECT_TRUE(requests[4].withDescendants);
+    EXPECT_EQ(Paths { "/World/b/c/d" }, requests[4].excluded);
+}
+
+TEST(SceneDrawStates, LoadRuleNamesReadBack)
+{
+    for (SceneLoadRuleEnum rule : { eSceneLoadRuleAll, eSceneLoadRuleOnly, eSceneLoadRuleNone }) {
+        SceneLoadRuleEnum parsed = eSceneLoadRuleNone;
+        ASSERT_TRUE(sceneLoadRuleFromName(sceneLoadRuleName(rule), &parsed));
+        EXPECT_EQ(rule, parsed);
+    }
+    SceneLoadRuleEnum parsed = eSceneLoadRuleAll;
+    EXPECT_FALSE(sceneLoadRuleFromName("All", &parsed));
 }

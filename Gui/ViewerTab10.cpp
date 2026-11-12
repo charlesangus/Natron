@@ -64,6 +64,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/TabWidget.h"
 #include "Gui/TimeLineGui.h"
 #include "Gui/ViewerGL.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -577,6 +578,12 @@ ViewerTab::centerViewer()
 
 ViewerTab::~ViewerTab()
 {
+    if (_imp->viewerNode && _imp->sceneViewport) {
+        // The node may outlive this tab and its 3D view, and saves the view as it was last.
+        Serialization::SceneViewSerialization last;
+        _imp->sceneViewport->saveSceneView(&last);
+        _imp->viewerNode->setSceneViewSaver([last](Serialization::SceneViewSerialization* serialization) { *serialization = last; });
+    }
     Gui* gui = getGui();
     if (gui) {
         NodeGraph* graph = nullptr;

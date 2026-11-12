@@ -21,9 +21,12 @@
 #             and what the viewer draw states have to pass:
 #               draw flat pruned   populate_pruned
 #               draw flat          populate_full, prune_restore, sibling_state, noedit, reveal_cancel,
-#                                  reveal, sibling_shot, orbit10k, boxes_shot, draw_budget
+#                                  reveal, sibling_shot, orbit10k, boxes_shot, draw_budget,
+#                                  reveal_wide, reveal_cancel_paced
 #               draw city pruned   populate_pruned, then load_all under the pruned root
 #               draw city          populate_full, load_all, then the flat run's scenarios
+#               draw city reveal   populate_full, then reveal_load_all at the root of the unloaded
+#                                  stage, the loads joining the paced reveal as they land
 #               draw lobby         as draw city, on Lobby's own rows
 #               draw island        populate_full, prune_restore, noedit, draw_budget, under island's
 #                                  RAM guard
@@ -342,11 +345,12 @@ launch gate-city-twirl city "$CITY" open,twirl
 
 # The gate's draw runs carry draw_budget and the timing records the time to picture is judged on, so
 # the budget runs need not repeat them.
-DRAW_SCENARIOS="prune_restore,sibling_state,noedit,reveal_cancel,reveal,sibling_shot,orbit10k,boxes_shot,draw_budget"
+DRAW_SCENARIOS="prune_restore,sibling_state,noedit,reveal_cancel,reveal,sibling_shot,orbit10k,boxes_shot,draw_budget,reveal_wide,reveal_cancel_paced"
 launch gate-draw-flat-pruned flat "$FIXTURE_DIR/heavy_flat.usdc" populate_pruned
 launch gate-draw-flat flat "$FIXTURE_DIR/heavy_flat.usdc" "populate_full,$DRAW_SCENARIOS" NATRON_DRAW_STATE_TIMING=1
 launch gate-draw-city-pruned city "$CITY" populate_pruned,load_all BENCH_LOAD_ALL=1
 launch gate-draw-city city "$CITY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
+launch gate-draw-city-reveal city "$CITY" populate_full,reveal_load_all
 
 if [ -f "$LOBBY" ]; then
     launch gate-lobby-building scene "$LOBBY" open,load

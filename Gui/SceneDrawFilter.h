@@ -136,16 +136,31 @@ public:
     /**
      * @brief Hides at once what the delta hides. What it shows goes out now if revealBatch is 0, and
      * otherwise through stepReveal(). A reveal under way carries on under the new rules: what they
-     * hide goes at once, and what it announced and they still show stays.
+     * hide goes at once, what it announced and they still show stays, and the rest of it stops.
+     *
+     * With a non-zero revealBatch, what the delta's loads bring in joins a reveal as it arrives
+     * instead of reaching Hydra all at once, until a delta with revealBatch 0 comes.
      */
     void applyDelta(const SceneDrawDelta& delta, std::size_t revealBatch = 0);
 
     /** @brief As applyDelta() on each in turn, with the notices of all of them sent at once. */
     void applyDeltas(const std::vector<const SceneDrawDelta*>& deltas, std::size_t revealBatch = 0);
 
-    /** @brief Announces up to maxPrims more prims of the reveal under way. */
-    std::size_t stepReveal(std::size_t maxPrims);
+    /**
+     * @brief Announces up to maxPrims more prims of the reveal under way, the most recent change
+     * first and each subtree depth first in the input's order. It stops early at the deadline, which
+     * bounds the prims it looks at where it finds few to show.
+     */
+    std::size_t stepReveal(std::size_t maxPrims, Clock::time_point deadline = (Clock::time_point::max)());
     bool isRevealing() const { return _revealing; }
+    // Whether the last stepReveal() stopped at its deadline before its prim count.
+    bool wasStepCut() const { return _stepCut; }
+
+    /**
+     * @brief Marks a render's end. A prim the input takes away and adds again within one render, as a
+     * resync does, is one Hydra held, and it comes back as it was rather than joining a reveal.
+     */
+    void endRender();
 
     using LightPredicate = std::function<bool(const PXR_NS::SdfPath&)>;
 
@@ -204,6 +219,7 @@ private:
         bool hideable = false;
         bool light = false;
         bool pending = false;
+        bool arriving = false;
     };
 
     // now and was are the rules governing node in _rules and _revealFrom; belowNow and belowWas say
@@ -245,22 +261,35 @@ private:
     Frame rootFrame(Node* node, bool structural) const;
     Frame childFrame(const Frame& parent, Node* child) const;
     bool descends(const Frame& frame, unsigned mode) const;
+    bool hasLightBelow(const PXR_NS::SdfPath& path) const;
     std::size_t visit(const Frame& frame, unsigned mode);
-    std::size_t walk(std::vector<Frame>* stack, unsigned mode, std::size_t maxShown);
+    std::size_t walk(std::vector<Frame>* stack, unsigned mode, std::size_t maxShown, Clock::time_point deadline);
+    void updateRevealRoots(const std::vector<const SceneDrawDelta*>& deltas, const std::vector<PXR_NS::SdfPath>& changed, std::size_t revealBatch);
+    bool defersArrival(const Node& node, bool known, OutputEnum before) const;
     void finishRevealIfDone();
     void sendChanges();
 
     Rules _rules;
     // The rules before the last change, while its reveal runs.
     bool _revealing = false;
+    bool _stepCut = false;
     Rules _revealFrom;
+    // Frontiers, each a path down from where a reveal started, so the reveal keeps no record of the
+    // prims it has shown.
     std::vector<Frame> _revealStack;
+
+    // Where what loads in is revealed rather than sent at once.
+    std::set<PXR_NS::SdfPath> _arrivalRoots;
+    // Prims Hydra held when the input took them away during this render.
+    std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _removedHeld;
 
     std::unordered_map<PXR_NS::SdfPath, Node, PXR_NS::SdfPath::Hash> _nodes;
     Node* _root = nullptr;
 
-    // Every light the input has announced, whether drawn or not.
+    // Every light the input has announced, whether drawn or not. The paths are sorted so that a walk
+    // under a boxed row, which leaves lights, goes only where one is.
     std::unordered_set<const Node*> _lights;
+    std::set<PXR_NS::SdfPath> _lightPaths;
 
     std::size_t _invisibleCount = 0;
 
@@ -281,6 +310,43 @@ private:
     unsigned long long _shownSent = 0;
     unsigned long long _visibilitySent = 0;
     Clock::time_point _lastInputAdded;
+};
+
+/**
+ * @brief Sizes a reveal's batches from what the frames that showed them cost, so a modest machine and
+ * a many-core one both keep near the frame time they aim for.
+ *
+ * A frame costs a fixed part and a part per prim shown. The fixed part is large in Storm, which
+ * gathers every draw item again when an rprim comes or goes (hd/changeTracker.h
+ * GetRprimIndexVersion), and it grows as the reveal does. The pacer fits both to its last few
+ * frames. Where the fixed part alone nearly fills the target, no batch keeps the target, and a batch
+ * costing about the fixed part again keeps half of each frame for progress.
+ */
+class SceneRevealPacer {
+public:
+    explicit SceneRevealPacer(double targetMs = 33., std::size_t firstBatch = 1024);
+
+    std::size_t nextBatch() const { return _batch; }
+    // How long a frame showing prims took, from the step to the end of its render.
+    void observe(std::size_t prims, double ms);
+    double getFixedMs() const { return _fixedMs; }
+    double getPerPrimMs() const { return _perPrimMs; }
+
+private:
+    struct Sample {
+        double prims;
+        double ms;
+    };
+
+    static constexpr std::size_t kSamples = 8;
+
+    double _targetMs;
+    std::size_t _batch;
+    Sample _samples[kSamples];
+    std::size_t _sampleCount = 0;
+    std::size_t _nextSample = 0;
+    double _fixedMs = 0.;
+    double _perPrimMs = 0.;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -31,7 +31,10 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -133,6 +136,11 @@ public:
         bool direct;
     };
 
+    /** @brief Every state set by the viewer, effective or remembered, in path order. */
+    std::vector<std::pair<std::string, Stored>> getSetStates() const;
+    /** @brief Puts states in place of every state set by the viewer, as one edit. */
+    SceneDrawDelta replaceSetStates(const std::vector<std::pair<std::string, Stored>>& states);
+
     enum RuleEnum {
         eRuleNone,
         eRuleDrawn,
@@ -169,6 +177,39 @@ private:
     std::map<std::string, Stored, PathLess> _states;
     std::map<std::string, SceneDrawStateEnum, PathLess> _policy;
 };
+
+// A stage's payload load rule on a path, as UsdStageLoadRules has them.
+enum SceneLoadRuleEnum {
+    eSceneLoadRuleAll,
+    eSceneLoadRuleOnly,
+    eSceneLoadRuleNone
+};
+
+typedef std::map<std::string, SceneLoadRuleEnum, SceneDrawStates::PathLess> SceneLoadRules;
+
+/** @brief "all", "only" or "none". */
+const char* sceneLoadRuleName(SceneLoadRuleEnum rule);
+bool sceneLoadRuleFromName(const std::string& name, SceneLoadRuleEnum* rule);
+
+/**
+ * @brief The requests that bring a stage loading nothing to rules: a load with descendants for each
+ * "all" rule, leaving out the subtrees of the rules nearest below it, and an own load for each "only"
+ * rule. A "none" rule asks for nothing.
+ */
+std::vector<SceneDrawLoadRequest> sceneLoadRequestsFor(const SceneLoadRules& rules);
+
+/** @brief The viewer's set states and its stage's load rules, as a project saves them. */
+void sceneViewToSerialization(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states,
+                              const SceneLoadRules& rules,
+                              Serialization::SceneViewSerialization* serialization);
+
+/**
+ * @brief Reads back what sceneViewToSerialization() wrote. A path that is not an absolute path, or
+ * a state or rule name that is not one, is left out.
+ */
+void sceneViewFromSerialization(const Serialization::SceneViewSerialization& serialization,
+                                std::vector<std::pair<std::string, SceneDrawStates::Stored>>* states,
+                                SceneLoadRules* rules);
 
 NATRON_NAMESPACE_EXIT
 

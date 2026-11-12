@@ -93,6 +93,7 @@
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
+#include "Serialization/NodeSerialization.h"
 
 // See UsdIncludes.h: oneTBB, which these include too, declares members named emit().
 #ifdef emit
@@ -123,6 +124,8 @@
 #include <pxr/imaging/hgi/texture.h>
 #include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usd/stageLoadRules.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/xformCache.h>
@@ -166,6 +169,14 @@ const int kMaxRenderPasses = 8;
 // A stage change usually reaches the screen sooner than this, and a status flashing over the old
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
+
+// A paced reveal aims for 30 frames a second, the rate a viewer still tumbles smoothly at.
+const double kRevealTargetMs = 33.;
+// A step looking at prims it finds nothing to show in, such as those of a subtree shown already,
+// stops here, so the frame it is part of still keeps to the target.
+const int kRevealStepDeadlineMs = 16;
+// Long enough to span the gaps between the moves of one drag.
+const int kRevealCameraYieldMs = 250;
 
 SdfPathVector
 toSdfPaths(const std::vector<std::string>& paths)
@@ -674,6 +685,10 @@ struct SceneViewportRenderer::Implementation {
     std::unique_ptr<SceneStage> sceneStage;
     // The same object, readable without the lock by those who only queue load requests.
     std::atomic<SceneStage*> loadStage { nullptr };
+    // Load requests made before the first sync made the stage, handed to it then. The mutex also
+    // orders them against loadStage being set, so that none falls between.
+    std::mutex earlyLoadsMutex;
+    std::vector<SceneDrawLoadRequest> earlyLoads;
     SceneWriteBarrier::ParticipantId participant = 0;
 
     // Written by sync on whichever thread runs it, read by the main thread.
@@ -704,6 +719,17 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> drawRevealing { false };
     std::atomic<bool> drawRevealStepDue { true };
     std::size_t drawRevealBatch = 0;
+    // A paced step is timed from its start to the end of the render that sent it to Hydra, which is
+    // where its cost lands.
+    SceneRevealPacer drawRevealPacer { kRevealTargetMs };
+    bool drawRevealStepTimed = false;
+    std::size_t drawRevealStepPrims = 0;
+    std::chrono::steady_clock::time_point drawRevealStepStart;
+    unsigned long long drawRevealSteps = 0;
+    // When the user last moved the camera, as steady clock ticks.
+    std::atomic<long long> cameraMovedAt { 0 };
+    // Background frames take the reveal steps then, so a render the main thread waits for takes none.
+    std::atomic<bool> backgroundFramesUsed { false };
     SceneDrawFilter::Rules drawRules;
     SceneDrawFilter::WeakPtr drawFilter;
     // The list the box buffer holds, and how many of its boxes the last frame drew.
@@ -1639,6 +1665,10 @@ struct SceneViewportRenderer::Implementation {
         std::lock_guard<std::mutex> lock(drawMutex);
         drawStats.filterBound = (filter != nullptr);
         drawStats.revealing = drawRevealing;
+        drawStats.revealBatch = drawRevealPacer.nextBatch();
+        drawStats.revealFixedMs = drawRevealPacer.getFixedMs();
+        drawStats.revealPerPrimUs = drawRevealPacer.getPerPrimMs() * 1000.;
+        drawStats.revealSteps = drawRevealSteps;
         drawStats.ruleCount = drawRules.size();
         if (!filter) {
             return;
@@ -1659,9 +1689,24 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
+    void noteCameraMoved()
+    {
+        cameraMovedAt = std::chrono::steady_clock::now().time_since_epoch().count();
+    }
+
+    bool yieldsToCamera() const
+    {
+        const long long movedAt = cameraMovedAt;
+
+        return (movedAt != 0)
+            && ((std::chrono::steady_clock::now().time_since_epoch().count() - movedAt)
+                < std::chrono::steady_clock::duration(std::chrono::milliseconds(kRevealCameraYieldMs)).count());
+    }
+
     // Needs stageMutex, the GL context current and an engine, between renders: the notices reach the
-    // render index directly.
-    void serviceDrawFilter()
+    // render index directly. A reveal step goes only into a frame, which is what shows it and what
+    // its cost is timed by.
+    void serviceDrawFilter(bool mayStep)
     {
         std::vector<QueuedDrawDelta> queued;
         U64 posted = 0;
@@ -1675,7 +1720,7 @@ struct SceneViewportRenderer::Implementation {
         const U64 appliedBefore = drawApplied;
         unsigned long long hiddenBefore = 0;
         unsigned long long shownBefore = 0;
-        if (timing && (!queued.empty() || (filter && filter->isRevealing() && drawRevealStepDue))) {
+        if (timing && (!queued.empty() || (mayStep && filter && filter->isRevealing() && drawRevealStepDue))) {
             timing->applyStarting();
             if (filter) {
                 hiddenBefore = filter->getHiddenSentCount();
@@ -1705,8 +1750,17 @@ struct SceneViewportRenderer::Implementation {
             drawRevealStepDue = true;
         }
         std::size_t stepped = 0;
-        if (filter && filter->isRevealing() && drawRevealStepDue.exchange(false)) {
-            stepped = filter->stepReveal(drawRevealBatch);
+        drawRevealStepTimed = false;
+        if (mayStep && filter && filter->isRevealing() && !yieldsToCamera() && drawRevealStepDue.exchange(false)) {
+            const bool paced = (drawRevealBatch == SceneViewportRenderer::kRevealPaced);
+            const std::chrono::steady_clock::time_point stepStart = std::chrono::steady_clock::now();
+            stepped = filter->stepReveal(paced ? drawRevealPacer.nextBatch() : drawRevealBatch,
+                                         stepStart + std::chrono::milliseconds(kRevealStepDeadlineMs));
+            ++drawRevealSteps;
+            // A step the deadline cut short says nothing of what its prims cost.
+            drawRevealStepTimed = paced && (stepped != 0) && !filter->wasStepCut();
+            drawRevealStepPrims = stepped;
+            drawRevealStepStart = stepStart;
         }
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
         const double ms = std::chrono::duration<double, std::milli>(end - start).count();
@@ -1727,6 +1781,21 @@ struct SceneViewportRenderer::Implementation {
         }
         refreshLightsHidden();
         refreshDrawStats();
+    }
+
+    // Needs stageMutex. After the renders of a frame: a load landing in one starts a reveal there.
+    void noteDrawFilterRendered(bool rendered)
+    {
+        SceneDrawFilter* filter = get_pointer(drawFilter);
+        if (!filter) {
+            return;
+        }
+        filter->endRender();
+        if (drawRevealStepTimed && rendered) {
+            drawRevealPacer.observe(drawRevealStepPrims, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawRevealStepStart).count());
+        }
+        drawRevealStepTimed = false;
+        drawRevealing = filter->isRevealing();
     }
 
     // The GL state both kinds of frame start from.
@@ -2764,7 +2833,12 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         if (!_imp->sceneStage) {
             // The viewer shows what was asked for: nothing loads until a load is requested.
             _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
+            std::lock_guard<std::mutex> earlyLock(_imp->earlyLoadsMutex);
             _imp->loadStage = _imp->sceneStage.get();
+            for (const SceneDrawLoadRequest& load : _imp->earlyLoads) {
+                _imp->sceneStage->requestLoad(toSdfPaths(std::vector<std::string>(1, load.path)), load.withDescendants, toSdfPaths(load.excluded));
+            }
+            _imp->earlyLoads.clear();
         }
         if (!_imp->sceneStage->isValid()) {
             _imp->shown = false;
@@ -2936,7 +3010,7 @@ SceneViewportRenderer::needsBackgroundFrame() const
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
         || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
-        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue);
+        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue && !_imp->yieldsToCamera());
 }
 
 void
@@ -2964,7 +3038,7 @@ SceneViewportRenderer::applyPendingDrawDeltas()
             StormGLStateGuard guard;
             StormGLSection section;
             section.collectWith(_imp->engine->GetHgi());
-            _imp->serviceDrawFilter();
+            _imp->serviceDrawFilter(false);
         }
     }
     if (_imp->exclusiveOwed.exchange(false) && _imp->readEnded) {
@@ -2977,7 +3051,9 @@ SceneViewportRenderer::postDrawChange(const SceneDrawChange& change,
                                       std::size_t revealBatch)
 {
     const SceneDrawDelta& delta = change.delta;
-    const bool posted = !delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty();
+    // Loads alone go to the filter too when revealed, for it to know where what they bring in goes.
+    const bool posted = !delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()
+        || ((revealBatch != 0) && !delta.loads.empty());
 
     if (posted) {
         postDrawDelta(delta, revealBatch, change.startedAt);
@@ -3002,6 +3078,19 @@ void
 SceneViewportRenderer::noteDrawRevealPresented()
 {
     _imp->drawRevealStepDue = true;
+}
+
+int
+SceneViewportRenderer::getRevealYieldMs() const
+{
+    const long long movedAt = _imp->cameraMovedAt;
+    if (movedAt == 0) {
+        return 0;
+    }
+    const std::chrono::steady_clock::duration since(std::chrono::steady_clock::now().time_since_epoch().count() - movedAt);
+    const long long left = kRevealCameraYieldMs - std::chrono::duration_cast<std::chrono::milliseconds>(since).count();
+
+    return (left > 0) ? int(left) : 0;
 }
 
 int
@@ -3054,6 +3143,7 @@ bool
 SceneViewportRenderer::prepareBackgroundFrame(int width,
                                               int height)
 {
+    _imp->backgroundFramesUsed = true;
     if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded() || !needsBackgroundFrame()) {
         return false;
     }
@@ -3123,7 +3213,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         return;
     }
     section.collectWith(_imp->engine->GetHgi());
-    _imp->serviceDrawFilter();
+    _imp->serviceDrawFilter(true);
     frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
 
@@ -3163,6 +3253,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 
         return;
     }
+    _imp->noteDrawFilterRendered(passes != 0);
     if (passes == 0) {
         return;
     }
@@ -3190,9 +3281,18 @@ SceneViewportRenderer::requestStageLoad(const std::vector<std::string>& paths,
 {
     SceneStage* stage = _imp->loadStage;
 
-    if (stage) {
-        stage->requestLoad(toSdfPaths(paths), withDescendants, toSdfPaths(excluded));
+    if (!stage) {
+        std::lock_guard<std::mutex> lock(_imp->earlyLoadsMutex);
+        stage = _imp->loadStage;
+        if (!stage) {
+            for (const std::string& path : paths) {
+                _imp->earlyLoads.push_back(SceneDrawLoadRequest { path, withDescendants, excluded });
+            }
+
+            return;
+        }
     }
+    stage->requestLoad(toSdfPaths(paths), withDescendants, toSdfPaths(excluded));
 }
 
 void
@@ -3210,9 +3310,16 @@ SceneViewportRenderer::cancelStageLoads()
 {
     SceneStage* stage = _imp->loadStage;
 
-    if (stage) {
-        stage->cancelPendingLoads();
+    if (!stage) {
+        std::lock_guard<std::mutex> lock(_imp->earlyLoadsMutex);
+        stage = _imp->loadStage;
+        if (!stage) {
+            _imp->earlyLoads.clear();
+
+            return;
+        }
     }
+    stage->cancelPendingLoads();
 }
 
 void
@@ -3220,9 +3327,18 @@ SceneViewportRenderer::cancelStageLoads(const std::vector<std::string>& paths)
 {
     SceneStage* stage = _imp->loadStage;
 
-    if (stage) {
-        stage->cancelPendingLoads(toSdfPaths(paths));
+    if (!stage) {
+        std::lock_guard<std::mutex> lock(_imp->earlyLoadsMutex);
+        stage = _imp->loadStage;
+        if (!stage) {
+            const std::set<std::string> cancelled(paths.begin(), paths.end());
+            std::vector<SceneDrawLoadRequest>& early = _imp->earlyLoads;
+            early.erase(std::remove_if(early.begin(), early.end(), [&cancelled](const SceneDrawLoadRequest& load) { return cancelled.count(load.path) != 0; }), early.end());
+
+            return;
+        }
     }
+    stage->cancelPendingLoads(toSdfPaths(paths));
 }
 
 bool
@@ -3300,6 +3416,37 @@ SceneViewportRenderer::getStageLoadFailures() const
     }
 
     return result;
+}
+
+bool
+SceneViewportRenderer::getStageLoadRules(SceneLoadRules* rules) const
+{
+    rules->clear();
+    bool made = false;
+    {
+        // readStage() reads only a shown stage; the rules outlive the scene shown.
+        SceneWriteBarrier::ReadScope readScope;
+        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        if (_imp->sceneStage && _imp->sceneStage->isValid()) {
+            made = true;
+            for (const std::pair<SdfPath, UsdStageLoadRules::Rule>& rule : _imp->sceneStage->getStage()->GetLoadRules().GetRules()) {
+                SceneLoadRuleEnum saved = eSceneLoadRuleNone;
+                if (rule.second == UsdStageLoadRules::AllRule) {
+                    saved = eSceneLoadRuleAll;
+                } else if (rule.second == UsdStageLoadRules::OnlyRule) {
+                    saved = eSceneLoadRuleOnly;
+                } else if (rule.first.IsAbsoluteRootPath()) {
+                    continue;
+                }
+                (*rules)[rule.first.GetString()] = saved;
+            }
+        }
+    }
+    if (_imp->exclusiveOwed.exchange(false) && _imp->readEnded) {
+        _imp->readEnded();
+    }
+
+    return made;
 }
 
 U64
@@ -3724,6 +3871,7 @@ void
 SceneViewportRenderer::tumble(double azimuthDegrees,
                               double elevationDegrees)
 {
+    _imp->noteCameraMoved();
     _imp->lookThrough.clear();
     // Tumbling an orthographic view leaves its axis.
     _imp->freeCamera.viewMode = eViewModePerspective;
@@ -3736,6 +3884,7 @@ SceneViewportRenderer::pan(double dxPixels,
                            double dyPixels,
                            int viewHeight)
 {
+    _imp->noteCameraMoved();
     _imp->lookThrough.clear();
     GfVec3d back, viewUp;
     _imp->viewBasis(&back, &viewUp);
@@ -3753,6 +3902,7 @@ SceneViewportRenderer::pan(double dxPixels,
 void
 SceneViewportRenderer::dolly(double factor)
 {
+    _imp->noteCameraMoved();
     _imp->lookThrough.clear();
     if (factor > 0.) {
         _imp->freeCamera.distance = std::max(_imp->freeCamera.distance * factor, 1e-9);
@@ -4243,7 +4393,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         return eRenderStatusDone;
     }
     section.collectWith(_imp->engine->GetHgi());
-    _imp->serviceDrawFilter();
+    _imp->serviceDrawFilter(!_imp->backgroundFramesUsed);
     {
         std::string what;
         bool failed = false;
@@ -4314,6 +4464,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         // A kept image was graded by the frame that left it.
         _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
     }
+    _imp->noteDrawFilterRendered(!kept);
     _imp->noteStageAbsorbed(params);
 
     _imp->drawnGuides.clear();
@@ -5243,7 +5394,10 @@ struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
     // Made by the widget, which its deliveries run on.
     std::unique_ptr<SceneDrawStateQueue> drawStates;
-    std::size_t drawRevealBatch = 0;
+    std::size_t drawRevealBatch = SceneViewportRenderer::kRevealPaced;
+    // A restore's load set until the stage has taken its loads, which a save reads meanwhile.
+    mutable std::mutex restoredLoadsMutex;
+    SceneLoadRules restoredLoads;
     QString error;
     bool glInitialized = false;
     // The delegate rendering as of the last rendererChanged().
@@ -5937,6 +6091,7 @@ SceneViewport::onSynced(U64 serial,
                         const SceneViewportRenderer::FrameBounds& bounds)
 {
     _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
+    wakeLoadsAskedBeforeStage();
     // The synced stage may name another renderer for Scene Default.
     followSceneRenderer();
     if (_imp->previewAwaitsSync && (serial > _imp->previewSerial)) {
@@ -6066,6 +6221,9 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
                                     U64 loadEditCount)
 {
     _imp->takenLoadEditCount = std::max(_imp->takenLoadEditCount, loadEditCount);
+    if (!_imp->renderer.hasPendingStageLoads()) {
+        forgetRestoredLoads();
+    }
     if (!bounds.empty && !_imp->renderer.isFramed()) {
         _imp->renderer.applyFrameBounds(bounds);
         endLockOutsideLookThrough();
@@ -6249,6 +6407,10 @@ SceneViewport::publishDrawStats()
     QVariantMap published;
     published[QString::fromUtf8("filterBound")] = stats.filterBound;
     published[QString::fromUtf8("revealing")] = stats.revealing;
+    published[QString::fromUtf8("revealBatch")] = QVariant::fromValue<qulonglong>(stats.revealBatch);
+    published[QString::fromUtf8("revealFixedMs")] = stats.revealFixedMs;
+    published[QString::fromUtf8("revealPerPrimUs")] = stats.revealPerPrimUs;
+    published[QString::fromUtf8("revealSteps")] = QVariant::fromValue<qulonglong>(stats.revealSteps);
     published[QString::fromUtf8("lastApplyMs")] = stats.lastApplyMs;
     published[QString::fromUtf8("ruleCount")] = QVariant::fromValue<qulonglong>(stats.ruleCount);
     published[QString::fromUtf8("posted")] = QVariant::fromValue<qulonglong>(stats.posted);
@@ -6460,7 +6622,7 @@ SceneViewport::tryReadDrawStates(const std::function<void(const SceneDrawStates&
 void
 SceneViewport::setDrawRevealBatch(int prims)
 {
-    _imp->drawRevealBatch = std::size_t((std::max)(prims, 0));
+    _imp->drawRevealBatch = (prims < 0) ? SceneViewportRenderer::kRevealPaced : std::size_t(prims);
 }
 
 void
@@ -6474,6 +6636,7 @@ SceneViewport::setDrawTimingTrace(bool trace)
 void
 SceneViewport::requestUnload(const QStringList& paths)
 {
+    forgetRestoredLoads();
     _imp->renderer.requestStageUnload(toStdPaths(paths));
     {
         std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
@@ -6483,8 +6646,77 @@ SceneViewport::requestUnload(const QStringList& paths)
 }
 
 void
+SceneViewport::wakeLoadsAskedBeforeStage()
+{
+    // The first sync's stage took the loads asked for before it, which woke no load thread.
+    if (!_imp->renderer.hasPendingStageLoads()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+    }
+    _imp->loadWake.notify_one();
+}
+
+void
+SceneViewport::forgetRestoredLoads()
+{
+    std::lock_guard<std::mutex> lock(_imp->restoredLoadsMutex);
+    _imp->restoredLoads.clear();
+}
+
+void
+SceneViewport::saveSceneView(Serialization::SceneViewSerialization* serialization) const
+{
+    std::vector<std::pair<std::string, SceneDrawStates::Stored>> states;
+    if (_imp->drawStates) {
+        _imp->drawStates->read([&states](const SceneDrawStates& read) { states = read.getSetStates(); });
+    }
+    SceneLoadRules rules;
+    _imp->renderer.getStageLoadRules(&rules);
+    {
+        std::lock_guard<std::mutex> lock(_imp->restoredLoadsMutex);
+        rules.insert(_imp->restoredLoads.begin(), _imp->restoredLoads.end());
+    }
+    for (const std::pair<std::string, std::string>& failure : _imp->renderer.getStageLoadFailures()) {
+        // Under an "all" rule the stage still asks for it; anywhere else the rules have lost it.
+        SceneLoadRuleEnum governing = eSceneLoadRuleNone;
+        for (SdfPath prefix(failure.first); !prefix.IsEmpty(); prefix = prefix.GetParentPath()) {
+            const SceneLoadRules::const_iterator found = rules.find(prefix.GetString());
+            if (found != rules.end()) {
+                governing = (found->first == failure.first) ? eSceneLoadRuleOnly : found->second;
+                break;
+            }
+        }
+        if (governing == eSceneLoadRuleNone) {
+            rules[failure.first] = eSceneLoadRuleOnly;
+        }
+    }
+    sceneViewToSerialization(states, rules, serialization);
+}
+
+void
+SceneViewport::restoreSceneView(const Serialization::SceneViewSerialization& serialization)
+{
+    std::vector<std::pair<std::string, SceneDrawStates::Stored>> states;
+    SceneLoadRules rules;
+    sceneViewFromSerialization(serialization, &states, &rules);
+    editDrawStates([states](SceneDrawStates* drawStates) { return drawStates->replaceSetStates(states); });
+    {
+        std::lock_guard<std::mutex> lock(_imp->restoredLoadsMutex);
+        _imp->restoredLoads = rules;
+    }
+    for (const SceneDrawLoadRequest& load : sceneLoadRequestsFor(rules)) {
+        _imp->renderer.requestStageLoad(std::vector<std::string>(1, load.path), load.withDescendants, load.excluded);
+    }
+    wakeLoadsAskedBeforeStage();
+    publishState();
+}
+
+void
 SceneViewport::cancelPendingLoads()
 {
+    forgetRestoredLoads();
     _imp->renderer.cancelStageLoads();
     publishState();
     Q_EMIT stageLoadsChanged();
@@ -7609,7 +7841,13 @@ SceneViewport::paintGL()
     _imp->presentedScene = _imp->renderer.hasScene();
     if (_imp->renderer.isDrawRevealing()) {
         _imp->renderer.noteDrawRevealPresented();
-        update();
+        const int yieldMs = _imp->renderer.getRevealYieldMs();
+        if (yieldMs > 0) {
+            // The camera's own moves ask for the paints meanwhile.
+            QTimer::singleShot(yieldMs, this, [this]() { update(); });
+        } else {
+            update();
+        }
     }
     if (_imp->renderer.hasPendingRendererSwitch()) {
         // A sync landed between the last one followed and this paint.

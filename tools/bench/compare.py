@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare two graph_bench.py result files and flag regressions.
+"""Compare two graph_bench.py result files, or two edit_latency.sh result files, and flag regressions.
 
 usage: compare.py BEFORE.jsonl AFTER.jsonl [--threshold 1.5] [--pair-settings BEFORE_SETTINGS AFTER_SETTINGS]
                   [--pair-field FIELD BEFORE_VALUE AFTER_VALUE]
@@ -7,7 +7,13 @@ usage: compare.py BEFORE.jsonl AFTER.jsonl [--threshold 1.5] [--pair-settings BE
 --pair-field FIELD A B pairs rows by topo/n/res where FIELD equals A in the first file against rows
 where it equals B in the second (the same file may be given twice) and prints B/A ratios. Ratios from
 rows of one interleaved run are comparable; the printed load/PSI shows how contended each side was.
+
+Files whose records carry upstream_executed are edit-latency results (edit_latency.sh). They are paired per
+(scenario, case, zoom, panel, gpu, autoproxy, ram_percent, policy), repetitions pooled, and print median and p95 latency_ms and median upstream_executed before
+and after; --threshold applies to the latency ratio and the upstream ratio. Timed-out edits are counted and
+left out of the statistics; a side with no completed edit, or more timeouts after than before, is flagged.
 """
+import math
 import argparse
 import json
 import statistics
@@ -111,6 +117,89 @@ def compare_metric(before, after, higher_is_worse, threshold):
     return ratio, ratio < 1.0 / threshold
 
 
+EDIT_KEY_FIELDS = ("scenario", "case", "zoom", "panel", "gpu", "autoproxy", "ram_percent", "policy")
+# Records written before these fields existed ran the defaults.
+EDIT_KEY_DEFAULTS = {"scenario": "chain", "ram_percent": "default", "policy": "default"}
+
+
+def is_edit_latency(path):
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                return "upstream_executed" in json.loads(line)
+    return False
+
+
+def load_edit_latency(path):
+    groups = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                rec = json.loads(line)
+                groups.setdefault(tuple(rec.get(f, EDIT_KEY_DEFAULTS.get(f)) for f in EDIT_KEY_FIELDS), []).append(rec)
+    return groups
+
+
+def percentile95(values):
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
+
+
+def edit_stats(records):
+    done = [r for r in records if not r.get("timed_out")]
+    lat = [r["latency_ms"] for r in done if isinstance(r.get("latency_ms"), (int, float))]
+    return {
+        "n": len(records),
+        "timed_out": len(records) - len(done),
+        "med": statistics.median(lat) if lat else None,
+        "p95": percentile95(lat) if lat else None,
+        "up": median_of(done, "upstream_executed"),
+    }
+
+
+def compare_edit_latency(args):
+    before = load_edit_latency(args.before)
+    after = load_edit_latency(args.after)
+    common = sorted(set(before) & set(after), key=lambda k: tuple(str(x) for x in k))
+    flagged_any = False
+    print("%-34s %-22s %-22s %-18s %s" % ("scenario case zoom panel gpu proxy ram policy", "median ms", "p95 ms", "upstream med", "timed out"))
+    for key in common:
+        b = edit_stats(before[key])
+        a = edit_stats(after[key])
+        flags = []
+        if a["med"] is None or a["p95"] is None:
+            flags.append("no completed edit after")
+        else:
+            for name in ("med", "p95", "up"):
+                if b[name] and a[name] is not None and a[name] / b[name] > args.threshold:
+                    flags.append(name)
+        if a["timed_out"] > b["timed_out"]:
+            flags.append("timeouts")
+        flagged_any = flagged_any or bool(flags)
+
+        def pair(field, delta=True):
+            bv, av = b[field], a[field]
+            text = "%s->%s" % (fmt(bv), fmt(av))
+            if delta and bv is not None and av is not None:
+                text += " (%+.4g)" % (av - bv)
+            return text
+
+        print("%-34s %-22s %-22s %-18s %d->%d of %d->%d%s" % (
+            " ".join(str(k) for k in key), pair("med"), pair("p95"), pair("up"),
+            b["timed_out"], a["timed_out"], b["n"], a["n"],
+            "  FLAGGED " + ",".join(flags) if flags else ""))
+    for key in sorted(set(before) - set(after), key=lambda k: tuple(str(x) for x in k)):
+        print("FLAGGED missing from after: %s" % " ".join(str(k) for k in key))
+        flagged_any = True
+    for key in sorted(set(after) - set(before), key=lambda k: tuple(str(x) for x in k)):
+        print("note: only in after: %s" % " ".join(str(k) for k in key))
+    if not common:
+        print("FLAGGED: no matching records")
+        return 1
+    return 1 if flagged_any else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("before")
@@ -136,6 +225,10 @@ def main():
         "file against rows whose FIELD equals AFTER_VALUE in the second",
     )
     args = ap.parse_args()
+    if is_edit_latency(args.before) or is_edit_latency(args.after):
+        if args.pair_field or args.pair_settings:
+            ap.error("--pair-field and --pair-settings do not apply to edit-latency files")
+        return compare_edit_latency(args)
     if args.pair_field and args.pair_settings:
         ap.error("--pair-field and --pair-settings are exclusive")
 

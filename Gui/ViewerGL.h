@@ -36,6 +36,7 @@
 #include "Global/GLIncludes.h" //!<must be included before QGlWidget because of gl.h and glew.h
 
 #include <QSize>
+#include <QVariantList>
 
 #include <QOpenGLWidget>
 
@@ -61,9 +62,12 @@ class ViewerGL
 GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
+// GUI test scripts map canonical coordinates to widget pixels with this: widget origin of the
+// canonical origin, then widget pixels per canonical unit in x and y (negative y: y points up).
+Q_PROPERTY(QVariantList natronCanonicalToWidget READ canonicalToWidget)
 
 public:
-
+    QVariantList canonicalToWidget() const;
 
     /*3 different constructors, that all take a different parameter related to OpenGL or Qt widget parenting.
        When constructing a viewer for the 1st time in the app, you must pass a NULL shareWidget. Otherwise,you
@@ -358,6 +362,8 @@ public:
 #ifdef OFX_EXTENSIONS_NATRON
     virtual double getScreenPixelRatio() const OVERRIDE FINAL;
 #endif
+
+    virtual void drawOverlayDrawList(const OverlayDrawList& list, const OverlayDrawState& state) OVERRIDE FINAL;
 
     /**
      * @brief Returns the colour of the background (i.e: clear color) of the viewport.

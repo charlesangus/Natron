@@ -13,7 +13,8 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `sample_states.sh` | Counts running threads from `/proc` without stopping the process; use it for concurrency. |
 | `lib.sh` | Sourced by `run_matrix.sh` and `profile_run.sh`: cooldown, CPU frequency logging, and writing the clock into the result record. |
 | `analyze_stacks.py` | Summarises eu-stack samples: busy/blocked/idle, activity, self and inclusive functions. |
-| `compare.py` | Compares two result files per (topology, n, resolution, named); exits non-zero on a regression past `--threshold`. |
+| `compare.py` | Compares two result files per (topology, n, resolution, named), or two edit-latency files per configuration; exits non-zero on a regression past `--threshold`. |
+| `baselines/edit-latency.jsonl` | The edit-latency baseline: all 32 configurations, 10 edits each, on the user's host. |
 | `stream_bench.c` | Node-at-a-time vs tiled vs fused cost of a chain of point ops on this machine. |
 | `page_fault_bench.c` | First-touch cost, huge-page coverage and THP counters of a fresh buffer allocated like `HostImageMemory`, with optional competing memcpy load. |
 | `make_plates.py` | Writes the synthetic EXR plates and the deep sequence the plate-fed families read. |
@@ -21,6 +22,10 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `gpu_region_summary.py` | Splits the GPU region records of those profiles into per-phase times per region and per node. |
 | `gpu-region-profile-sample.jsonl` | Region records in the current format, used by `gpu_region_summary.py --self-test`. |
 | `raw_large_bench.sh`, `raw_large_bench.py` | Renders a camera raw file through the whole Develop RAW chain from a Natron AppImage at 1, 2 and 4 render threads (`BENCH_THREADS`) and prints time, speedup and peak RSS per count. |
+| `cache_probe_bench.py` | Probe, miss and sampling cost of a disk tier holding 300,000 files, through the worker mode of `Tests`; see Disk tier probe bench. |
+| `cache_hash_pair.sh` | Whether a release's `Natron` and `NatronRenderer` compute the same content hash, from an AppImage or bundle directory. |
+| `edit_latency.sh`, `edit_latency_bench.py` | Edit-to-viewer latency of Read(raw) -> Develop RAW chain -> Grade or HSVKeyer -> Viewer from a Natron AppImage, with each node's cache state and device per edit; see Edit latency. |
+| `admission_bench.sh` | Both cache admission policies over `edit_latency.sh`, alternating run by run, with peak RSS and disk writes; see Admission policy bench. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 | `bezier_keying_bench.py` | Keys Roto Beziers at 1..K frames in NatronRenderer and prints the keying time per K, the median per-edit cost and the log-log slope against K. |
 
@@ -237,6 +242,17 @@ transfer time placement's transfer model predicts for the region's `uploadBytes`
 compare with `uploadMs + downloadMs`; it reads `n/a` when the model knows no bandwidth (`null`).
 `--self-test` checks the breakdown, the floor and the labelling on `gpu-region-profile-sample.jsonl`.
 
+## Disk tier probe bench
+
+`cache_probe_bench.py` needs a built `Tests` and nothing else; it runs by hand, not in ctest.
+
+```
+python3 tools/bench/cache_probe_bench.py --tests build/release/Tests/Tests --dir <directory on the disk under test>
+```
+
+`docs/cache/tiered-cache.md` (Assumed costs) says what each number means and what it decides. Results are appended to
+`build/bench/cache-probe.jsonl`; the exit code is non-zero when `miss_per_frame_ms` passes the 30 ms estimate.
+
 ## Page-fault bench
 
 `page_fault_bench.c` faults a fresh anonymous buffer and reports what the kernel did, with no Natron
@@ -310,6 +326,100 @@ nothing about the machine: note the host with the numbers.
 
 The USDRender half of the gate (edit to rendered frame on a USDRender node) needs USDRender's
 per-node long-lived stage and is not covered here yet.
+
+## Edit latency
+
+`edit_latency.sh <Natron.AppImage> [out-dir]` (default `build/bench/edit-latency`) runs
+`edit_latency_bench.py` in the GUI through `Tests/gui/run-gui-test.sh`, once per configuration:
+edited node (`grade` or `hsv`), viewer zoom (`fit` or `100`), edited node's panel (`closed` or `open`),
+`NATRON_GPU` (`off` or `auto`) and the auto-proxy preference (`off` or `on`). Each run builds the Canon
+fixture -> RawPrepare -> RawTemperature -> RawHighlights -> RawDemosaic -> RawInputColor -> edited node
+-> Viewer, makes a few untimed edits, then changes one knob of the edited node `BENCH_EDITS` times
+(default 20). It needs the render profile, so it sets `NATRON_RENDER_PROFILE` and
+`NATRON_RENDER_SCHEDULER=taskgraph`.
+
+`<out-dir>/edit_latency.jsonl` gets one line per edit: `latency_ms` (knob set to the profile file
+being written with the first completed viewer frame; the file's modification time, so a few
+milliseconds of granularity), `detect_ms` (the same as seen by a 50 ms poll, an upper bound), the root
+node and mip level, `upstream_executed` and `nodes` (per node: device, cache state, executed, GPU
+region, wall time), `hashes_before` and `hashes` (each node's content hash across the edit) and `loadavg`.
+A summary table prints at the end, then the attribution table from
+`python3 -I tools/bench/edit_latency_bench.py --classify <out-dir>`, which reads the JSON lines and each
+configuration's render profile, gives every upstream execution a cause and exits 1 if any stays
+unclassified (causes and code paths: `docs/perf/interactive-edit-attribution.md`). Use a fresh out-dir per
+run: the JSON lines append, and the classifier expects one render profile per configuration. Edits are set
+programmatically, so the draft switch auto-proxy makes at the start of a pointer drag is not exercised.
+
+Further dimensions, each a space-separated list: `BENCH_SCENARIOS` (`chain`, the default, or `offbranch`, see
+Admission policy bench), `BENCH_RAMS` (the `maxRAMPercent` preference; `default` leaves it alone),
+`BENCH_POLICIES` (`NATRON_CACHE_ADMISSION`; `default` leaves it unset) and `BENCH_REPS` (repetitions of the
+whole matrix). Runs land in `<out-dir>/<scenario>-<case>-<zoom>-panel-<panel>-gpu-<gpu>-proxy-<proxy>-ram-<ram>-adm-<policy>-rep-<rep>/`.
+Every line also carries `scenario`, `policy`, `ram_percent`, `rep`, `vm_hwm_mb` and `vm_rss_mb` (`/proc/self/status`),
+`io_write_bytes` (`write_bytes` of `/proc/self/io` since just before the first render) and `io_write_bytes_edit`
+(across this edit), and `tier_bytes`, `tier_files` and `tier_fs` (allocated bytes, file count and filesystem
+type of the disk tier's directory), all read once the edit has settled.
+
+```
+tools/bench/edit_latency.sh build/appimages/Natron.AppImage build/bench/edit-latency
+BENCH_CASES=grade BENCH_ZOOMS=fit BENCH_PANELS=closed BENCH_GPUS=off BENCH_AUTOPROXYS=off BENCH_EDITS=5 \
+    tools/bench/edit_latency.sh build/appimages/Natron.AppImage build/bench/edit-latency-smoke
+```
+
+Under Xvfb the GPU is unused, so `NATRON_GPU=auto` only means something against a real display:
+set `GUI_TEST_HOST_DISPLAY=:0` (and `XAUTHORITY`) to run on the host's display. `BENCH_GPUS=force` also
+accepts lavapipe, a CPU Vulkan device; its region counts are usable and its timings are not.
+
+### Baseline and comparison
+
+`tools/bench/baselines/edit-latency.jsonl` is the `edit_latency.jsonl` of a full 32-configuration run with
+`BENCH_EDITS=10`, taken on a host with a Radeon RX 7900 XTX. To compare a fresh run, which needs the same
+hardware to mean anything:
+
+```
+python3 -I tools/bench/compare.py tools/bench/baselines/edit-latency.jsonl build/bench/edit-latency/edit_latency.jsonl
+```
+
+`compare.py` detects edit-latency files by their `upstream_executed` field. Per (case, zoom, panel, gpu,
+autoproxy) it prints median and p95 `latency_ms` and median `upstream_executed`, each as before->after with the
+delta, and the timed-out edits as before->after of the edits recorded. Timed-out edits are left out of the
+statistics. `--threshold` (default 1.5) flags a median, p95 or upstream ratio beyond it, and a configuration
+that has more timeouts after than before, no completed edit after, or is missing from the new file; any flag
+makes the exit status 1.
+
+## Admission policy bench
+
+```
+tools/bench/admission_bench.sh build/appimages/Natron.AppImage build/bench/admission
+```
+
+runs `edit_latency.sh` over 3 repetitions x scenarios `chain` and `offbranch` x cases `grade` and `hsv` x
+`maxRAMPercent` as shipped and at 1 x policies `all` and `priorityFloor`, 48 runs with the policy loop
+innermost, at fit zoom, panel closed, `NATRON_GPU=off`, auto-proxy off and 10 recorded edits. Every list can
+be overridden through its `BENCH_*` variable. The out-dir must be new. It extracts the AppImage under
+`<out-dir>/tmp`, so the throwaway HOME and its disk tier sit on the out-dir's disk instead of a `/tmp` that
+may be tmpfs, and every run starts with an empty tier. `<out-dir>/host.txt` records the machine and the matrix,
+`<out-dir>/edit_latency.jsonl` gets one line per edit, and the end of the run prints a table per configuration,
+repetitions pooled: median and p95 latency, median upstream executions, off-branch executions and latency, and the
+median over runs of peak RSS, bytes written and tier size, followed by the attribution table.
+
+The `chain` scenario cannot separate the policies: every node of it is on the active viewer's branch, which
+admits under both (`docs/cache/tiered-cache.md`, Admission). `offbranch` adds RawInputColor -> 8
+(`BENCH_OFFBRANCH_NODES`) Grades, each with an animated multiply, -> Merge A, with the edited node on Merge B,
+viewed by a second Viewer in a pane of its own. A middle-button press in Viewer1 makes it the active viewer, so
+only the chain and the edited node carry the branch signal. Every edit renders both viewers. The off-branch
+Grades keep their hashes, and being animated they have no static-output reason, so under `priorityFloor` a Grade
+whose remembered cost stays under `admissionCostMs` (16 ms) is not stored and runs again on every edit, while `all`
+stores it. Its line holds an `offbranch` object for the second viewer's frame: `latency_ms`, `upstream_executed`,
+`offbranch_executed` (of the K Grades) and per-node `nodes` with their wall times, which show which side of 16 ms
+each Grade fell. At `maxRAMPercent` 1 the cache is under pressure, which is where demotions write to the
+disk tier. A `tier_bytes` of 0 there means 1% of the host's RAM still held everything; the preference has no
+step below 1, so add load instead, for example `BENCH_OFFBRANCH_NODES=32`.
+
+`io_write_bytes` counts every write of the Natron process, the render profile included; `tier_bytes` is the
+disk tier alone. Neither `cache_probe_bench.py` nor `cache_hash_pair.sh` is part of this matrix: the first
+measures probe and miss cost of a full tier from a build tree's `Tests` and does not depend on the policy, and the
+second checks that an AppImage's `Natron` and `NatronRenderer` share tier files. Run `cache_hash_pair.sh` once on
+the AppImage under test if the numbers are meant to cover a renderer reusing the GUI's tier.
 
 ## Bezier keying cost
 

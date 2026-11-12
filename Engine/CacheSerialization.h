@@ -81,19 +81,20 @@ Cache<EntryType>::save(CacheTOC* tableOfContents)
         QMutexLocker l(&_lock);     // must be locked
 
         for (ConstCacheIterator it = _diskCache.begin(); it != _diskCache.end(); ++it) {
-            const std::list<EntryTypePtr> & listOfValues  = getValueFromIterator(it);
-            for (typename std::list<EntryTypePtr>::const_iterator it2 = listOfValues.begin(); it2 != listOfValues.end(); ++it2) {
-                if ( (*it2)->isStoredOnDisk() ) {
+            const std::list<StoredEntryPtr>& listOfValues = getValueFromIterator(it);
+            for (typename std::list<StoredEntryPtr>::const_iterator it2 = listOfValues.begin(); it2 != listOfValues.end(); ++it2) {
+                const EntryTypePtr typed = std::dynamic_pointer_cast<EntryType>(*it2);
+                if (typed && typed->isStoredOnDisk()) {
                     SerializedEntry serialization;
-                    serialization.hash = (*it2)->getHashKey();
-                    serialization.params = (*it2)->getParams();
-                    serialization.key = (*it2)->getKey();
-                    serialization.size = (*it2)->dataSize();
-                    serialization.filePath = (*it2)->getFilePath();
-                    serialization.dataOffsetInFile = (*it2)->getOffsetInFile();
+                    serialization.hash = typed->getHashKey();
+                    serialization.params = typed->getParams();
+                    serialization.key = typed->getKey();
+                    serialization.size = typed->dataSize();
+                    serialization.filePath = typed->getFilePath();
+                    serialization.dataOffsetInFile = typed->getOffsetInFile();
 
-                    (*it2)->syncBackingFile();
-                    
+                    typed->syncBackingFile();
+
                     tableOfContents->push_back(serialization);
 #ifdef DEBUG
                     if ( !_isTiled && !CacheAPI::checkFileNameMatchesHash(serialization.filePath, serialization.hash) ) {

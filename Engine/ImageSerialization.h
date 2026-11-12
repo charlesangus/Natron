@@ -66,6 +66,10 @@ ImageKey::serialize(Archive & ar,
     ar & ::boost::serialization::make_nvp("View", _view);
     ar & ::boost::serialization::make_nvp("PixelAspect", _pixelAspect);
     ar & ::boost::serialization::make_nvp("Draft", _draftMode);
+    ar& ::boost::serialization::make_nvp("FullScaleWithDownscaleInputs", _fullScaleWithDownscaleInputs);
+    ar& ::boost::serialization::make_nvp("MipmapLevel", _mipmapLevel);
+    ar& ::boost::serialization::make_nvp("Layer", _layer);
+    ar& ::boost::serialization::make_nvp("BitDepth", _bitDepth);
 }
 
 NATRON_NAMESPACE_EXIT

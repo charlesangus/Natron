@@ -135,3 +135,35 @@ TEST(ContentHasher, MoveKeepsState)
     ContentHasher b(std::move(a));
     EXPECT_EQ(expected, b.finalize());
 }
+
+TEST(ContentHasherSaltTest, TheFlagTravelsWithTheValueAndIsNeverZero)
+{
+    const U64 topBit = 1ULL << 63;
+
+    EXPECT_TRUE(ContentHasher::isSalted(ContentHasher::withSaltFlag(5, true)));
+    EXPECT_FALSE(ContentHasher::isSalted(ContentHasher::withSaltFlag(5, false)));
+    EXPECT_FALSE(ContentHasher::isSalted(ContentHasher::withSaltFlag(topBit | 5, false)));
+    EXPECT_NE(0U, ContentHasher::withSaltFlag(topBit, false));
+    EXPECT_NE(0U, ContentHasher::withSaltFlag(0, false));
+}
+
+TEST(ContentHasherSaltTest, ScopeSeesTheSaltAndKeepsItFromItsOuterScope)
+{
+    ContentHasher::SaltScope outer;
+    EXPECT_FALSE(outer.salted());
+    {
+        ContentHasher::SaltScope inner;
+        ContentHasher h;
+        h.appendSessionSalt();
+        EXPECT_TRUE(inner.salted());
+    }
+    EXPECT_FALSE(outer.salted());
+
+    ContentHasher::noteSalted();
+    EXPECT_TRUE(outer.salted());
+    {
+        ContentHasher::SaltScope inner;
+        EXPECT_FALSE(inner.salted());
+    }
+    EXPECT_TRUE(outer.salted());
+}

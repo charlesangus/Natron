@@ -128,6 +128,7 @@ class BlockingBackgroundRender;
 class BufferableObject;
 class CLArgs;
 class CacheEntryHolder;
+class CacheRetentionSignals;
 class CacheSignalEmitter;
 class ContextReadSource;
 class CreateNodeArgs;
@@ -231,6 +232,12 @@ class OpenGLRendererInfo;
 class OpenGLViewerI;
 class OutputEffectInstance;
 class OutputSchedulerThreadStartArgs;
+struct OverlayColor;
+class OverlayDrawList;
+struct OverlayDrawState;
+struct OverlayImageFrame;
+class OverlayImagePass;
+struct OverlayImageRequest;
 class OverlaySupport;
 class ParallelRenderArgs;
 class ParallelRenderArgsSetter;
@@ -344,6 +351,7 @@ NATRON_PYTHON_NAMESPACE_EXIT
 
 
 typedef std::shared_ptr<AbortableRenderInfo> AbortableRenderInfoPtr;
+typedef std::shared_ptr<CacheRetentionSignals> CacheRetentionSignalsPtr;
 typedef std::shared_ptr<AbstractOfxEffectInstance> AbstractOfxEffectInstancePtr;
 typedef std::shared_ptr<ActionsCache> ActionsCachePtr;
 typedef std::shared_ptr<AppInstance> AppInstancePtr;
@@ -419,6 +427,8 @@ typedef std::shared_ptr<OfxEffectInstance> OfxEffectInstancePtr;
 typedef std::shared_ptr<OfxParamOverlayInteract> OfxParamOverlayInteractPtr;
 typedef std::shared_ptr<OutputEffectInstance> OutputEffectInstancePtr;
 typedef std::shared_ptr<OutputSchedulerThreadStartArgs> OutputSchedulerThreadStartArgsPtr;
+typedef std::shared_ptr<const OverlayImageFrame> OverlayImageFrameConstPtr;
+typedef std::shared_ptr<OverlayImagePass> OverlayImagePassPtr;
 typedef std::shared_ptr<ParallelRenderArgs> ParallelRenderArgsPtr;
 typedef std::shared_ptr<ParallelRenderArgsSetter> ParallelRenderArgsSetterPtr;
 typedef std::shared_ptr<PluginGroupNode> PluginGroupNodePtr;

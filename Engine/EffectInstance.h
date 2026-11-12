@@ -840,6 +840,19 @@ public:
     RenderRoIRetCode renderRoI(const RenderRoIArgs& args,
                                std::map<ImageLayerDesc, ImagePtr>* outputLayers) WARN_UNUSED_RETURN;
 
+    enum RenderCacheStateEnum {
+        eRenderCacheStateBypass = 0, // rendered with no entry involved: byPassCache, an unadmitted output nothing was stored for, or nothing to render
+        eRenderCacheStateMiss, // the whole RoI was rendered
+        eRenderCacheStatePartial, // part of the RoI was already in the cache
+        eRenderCacheStateHit // the cache held the whole RoI
+    };
+
+    /**
+     * @brief The cache state of the last renderRoI that finished on the calling thread, which is reset to
+     * eRenderCacheStateBypass. A nested renderRoI finishes before its caller, so the outermost call wins.
+     **/
+    static RenderCacheStateEnum takeLastRenderCacheState();
+
     /**
      * @brief Whether what this effect puts on its output is deep data, as the graph around it
      * resolves it: eDataKindDeep and unambiguously so. This is the predicate that decides which
@@ -1842,6 +1855,71 @@ public:
     virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
     /**
+     * @brief Whether this frame stores the effect's output in the cache. The one question renderRoI and the scheduler ask,
+     * so that a planned reuse never assumes an entry that renderRoI would not store. caller is the effect pulling this one,
+     * and may be null where nothing pulls it yet. Says nothing of a lookup: an entry stored earlier serves regardless.
+     **/
+    bool admitsOutputToCache(const RenderContextPtr& context,
+                             const ParallelRenderArgs& frameArgs,
+                             bool isFrameVaryingOrAnimated,
+                             double time,
+                             ViewIdx view,
+                             const EffectInstance* caller) const;
+
+    enum class OutputCacheCoverage {
+        // Nothing can be counted on, including a region another render is working on right now.
+        None,
+        Partial,
+        Full
+    };
+
+    /**
+     * @brief What the cache holds of this effect's output for region, in pixels at mipmapLevel, asking what renderRoI's
+     * lookup would: the same keys in the same order and the same bitmap and being-rendered state. Nothing is counted as a
+     * use, so a plan can ask without changing the eviction order.
+     *
+     * The answer is only a forecast, since the entries found aren't held: a later renderRoI may find less and renders
+     * what is then missing.
+     *
+     * @param rendersFullScale Whether renderRoI renders at level 0 and downscales: an entry at mipmapLevel then only
+     * counts in full, as there.
+     * @param probesDraft Whether renderRoI would also accept a draft entry.
+     * @param acceptsPartial Whether the effect can render a part of its output.
+     * @param missing Set for OutputCacheCoverage::Partial: an enclosing rectangle of what is missing, in canonical
+     * coordinates.
+     **/
+    OutputCacheCoverage probeOutputInCache(U64 nodeHash,
+                                           bool isFrameVaryingOrAnimated,
+                                           double time,
+                                           ViewIdx view,
+                                           unsigned int mipmapLevel,
+                                           bool rendersFullScale,
+                                           bool probesDraft,
+                                           bool acceptsPartial,
+                                           const RectI& region,
+                                           const RectD& rod,
+                                           double par,
+                                           const std::list<ImageLayerDesc>& layers,
+                                           ImageBitDepthEnum bitdepth,
+                                           RectD* missing);
+
+    /**
+     * @brief Whether renderRoI pulls this effect's inputs at level 0 whatever level it is asked for.
+     **/
+    bool pullsInputsAtScaleOne() const;
+
+    /**
+     * @brief The key renderRoI caches this effect's output under when it renders at renderMappedMipmapLevel, before
+     * layer, depth and level are bound by ImageKey::forEachServingKey.
+     **/
+    ImageKey outputCacheKey(U64 nodeHash,
+                            bool isFrameVaryingOrAnimated,
+                            double time,
+                            ViewIdx view,
+                            bool draft,
+                            unsigned int renderMappedMipmapLevel) const;
+
+    /**
      * @brief Can be derived to get the region that the plugin is capable of filling.
      * This is meaningful for plugins that generate images or transform images.
      * By default it returns in rod the union of all inputs RoD and eStatusReplyDefault is returned.
@@ -2596,6 +2674,79 @@ public:
     bool onOverlayFocusLost_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
 
     /**
+     * @brief Rebuilds the overlay draw list with buildOverlay() and returns it. The list is kept
+     * for the pen's handle hit-tests until the next rebuild. Main thread only.
+     **/
+    const OverlayDrawList& buildOverlay_public(double time, const RenderScale& renderScale, ViewIdx view);
+
+    const OverlayDrawList& getOverlayDrawList() const;
+
+    /**
+     * @brief The hovered and pressed handles and the node's overlay colour, as the viewer draws
+     * the list with them.
+     **/
+    OverlayDrawState getOverlayDrawState() const;
+
+    /**
+     * @brief True when the viewer should show this node's overlay images: its view knob is on and
+     * its panel is open.
+     **/
+    bool isOverlayImageRequested() const;
+
+    /**
+     * @brief True while the render running on this thread is the node's overlay image pass, the
+     * only render in which addOverlayImageTile() does anything. Whatever the answer, the render
+     * must write the same pixels to its output: the pass can fill the cache.
+     **/
+    bool isOverlayImageRender() const;
+
+    /**
+     * @brief True while the render running on this thread is an overlay image pass that
+     * refreshOverlayImages() has overtaken: nothing it adds will be published.
+     **/
+    bool isOverlayImagePassSuperseded() const;
+
+    /**
+     * @brief Publishes values, a byte of coverage per pixel of bounds (see
+     * overlayImageCoverageByte()) and row by row from y1, as part of the named overlay plane. bounds
+     * is in pixels at mipmapLevel. Render threads may call it concurrently. The tint of the first
+     * tile added to a plane is the plane's.
+     **/
+    void addOverlayImageTile(const std::string& plane,
+                             const OverlayColor& tint,
+                             const RectI& bounds,
+                             unsigned int mipmapLevel,
+                             std::vector<unsigned char>&& values);
+
+    /**
+     * @brief True if a pass is needed for the viewer to have what request asks for.
+     **/
+    bool overlayImagesStale(const OverlayImageRequest& request) const;
+
+    /**
+     * @brief Runs the node's render action over the part of request.visibleCanonical in its region
+     * of definition and publishes the tiles it adds, all at once, on success. A failed pass publishes
+     * an empty frame, so that the node's last mask does not pass for this state and the failure is not
+     * retried until the state changes. An aborted pass publishes nothing, nor does one that
+     * refreshOverlayImages() overtook while it ran: it may have rendered the view before. Returns
+     * whether the pass published what it rendered. Must not be called under another render's frame
+     * args.
+     **/
+    bool renderOverlayImages(const OverlayImageRequest& request, const AbortableRenderInfoPtr& abortInfo);
+
+    /**
+     * @brief What the viewer should draw for this node at time and view: null when no overlay image
+     * is requested or the last pass is not of this state of the node, time and view.
+     **/
+    OverlayImageFrameConstPtr getOverlayImages(double time, ViewIdx view) const;
+
+    /**
+     * @brief Brings the viewers up to date after the view knob or the panel changed: neither moves
+     * the node's hash, so nothing else would. Main thread only.
+     **/
+    void refreshOverlayImages();
+
+    /**
      * @brief Ends the undo step a Viewer gesture opened when its press was taken, if one is open.
      * Every Viewer release calls it, so a release that does not reach the owner of the step, or
      * reaches no overlay at all, still ends it. Main thread only.
@@ -2626,6 +2777,33 @@ public:
      * respectively the width and height of the frame.)
      */
     virtual bool hasOverlay() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Returns the value of the knob that turns the node's overlay images on. That knob must
+     * stay out of the node's hash (Knob::setHashExempt) and its knobChanged must call
+     * refreshOverlayImages().
+     **/
+    virtual bool isOverlayImageViewOn() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Called by refreshOverlayImages() when the viewer no longer wants the node's overlay
+     * images, to free what the node keeps only to produce them. A pass already running can still be
+     * computing: check isOverlayImagePassSuperseded() before keeping anything.
+     **/
+    virtual void releaseOverlayImageResources()
+    {
+    }
+
+    /**
+     * @brief Return true to have the viewer draw the list buildOverlay() fills.
+     **/
+    virtual bool hasOverlayDrawList() const
     {
         return false;
     }
@@ -3196,6 +3374,49 @@ protected:
     {
     }
 
+    /**
+     * @brief Fills list, which arrives empty, with what to draw over the viewer. Called on the
+     * main thread for each viewer redraw while the overlay shows; it must not render or change
+     * knobs. Only called when hasOverlayDrawList() returns true.
+     **/
+    virtual void buildOverlay(double /*time*/,
+                              const RenderScale& /*renderScale*/,
+                              ViewIdx /*view*/,
+                              OverlayDrawList* /*list*/)
+    {
+    }
+
+    /**
+     * @brief The pen went down on the handle id. Return false to let the press through to what is
+     * under it. Knob edits made from these three callbacks with eValueChangedReasonPluginEdited
+     * go on the undo stack, merged as the host interacts' edits are.
+     **/
+    virtual bool onOverlayHandlePressed(int /*id*/,
+                                        double /*time*/,
+                                        ViewIdx /*view*/,
+                                        const QPointF& /*pos*/)
+    {
+        return false;
+    }
+
+    /**
+     * @brief The pen moved while holding the handle id, to pos, delta from where it was.
+     **/
+    virtual void onOverlayHandleDragged(int /*id*/,
+                                        double /*time*/,
+                                        ViewIdx /*view*/,
+                                        const QPointF& /*pos*/,
+                                        const QPointF& /*delta*/)
+    {
+    }
+
+    virtual void onOverlayHandleReleased(int /*id*/,
+                                         double /*time*/,
+                                         ViewIdx /*view*/,
+                                         const QPointF& /*pos*/)
+    {
+    }
+
     virtual bool onOverlayPenDown(double /*time*/,
                                   const RenderScale & /*renderScale*/,
                                   ViewIdx /*view*/,
@@ -3298,6 +3519,11 @@ protected:
     NodeWPtr _node; //< the node holding this effect
 
 private:
+    bool hasAnyOverlay() const;
+
+    bool onOverlayDrawListPenDown(double time, ViewIdx view, const QPointF& pos);
+    bool onOverlayDrawListPenMotion(double time, ViewIdx view, const QPointF& pos);
+    bool onOverlayDrawListPenUp(double time, ViewIdx view, const QPointF& pos);
 
     class Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details
@@ -3363,16 +3589,17 @@ private:
                                              StorageModeEnum renderStorageMode,
                                              double time,
                                              ViewIdx view,
-                                             const RectD & rod,
-                                             const RectD & canonicalRenderWindow,
-                                             const InputMatrixMapPtr & transformMatrix,
+                                             const RectD& rod,
+                                             const RectD& canonicalRenderWindow,
+                                             const InputMatrixMapPtr& transformMatrix,
                                              unsigned int mipmapLevel,
-                                             const RenderScale & renderMappedScale,
+                                             const RenderScale& renderMappedScale,
                                              bool useScaleOneInputImages,
                                              bool byPassCache,
-                                             const FramesNeededMap & framesNeeded,
-                                             const EffectInstance::ComponentsNeededMap & compsNeeded,
-                                             EffectInstance::InputImagesMap *inputImages,
+                                             bool renderWindowIsPartOfRoI,
+                                             const FramesNeededMap& framesNeeded,
+                                             const EffectInstance::ComponentsNeededMap& compsNeeded,
+                                             EffectInstance::InputImagesMap* inputImages,
                                              RoIMap* inputsRoI);
 
     static ImagePtr convertLayersFormatsIfNeeded(const ImagePtr& inputImage,

@@ -41,7 +41,6 @@
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
-#include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -1018,48 +1017,8 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         GpuTransferModel::session().setTransferRates(rates);
     }
 
-    // Looks the cache up as renderRoI's first, non-draft, lookup does. Not knowing which full-scale flag renderRoI
-    // will key with, either counts; a false hit only keeps a task on the CPU.
-    inputs.isCached = [](const FrameGraph::Task& task) -> bool {
-        if (!task.sharesCachedOutput || !task.key.node || !appPTR || task.components.empty()) {
-            return false;
-        }
-        for (int fullScaleWithDownscaleInputs = 0; fullScaleWithDownscaleInputs < 2; ++fullScaleWithDownscaleInputs) {
-            ImageKey key(task.key.node.get(), task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, 1., false,
-                         fullScaleWithDownscaleInputs != 0);
-            std::list<ImagePtr> images;
-            if (!appPTR->getImage(key, &images)) {
-                continue;
-            }
-            bool allLayers = true;
-            for (const ImageLayerDesc& layer : task.components) {
-                bool covered = false;
-                for (const ImagePtr& image : images) {
-                    if (!image || (image->getMipmapLevel() != task.cacheMipmapLevel)) {
-                        continue;
-                    }
-                    const ImageLayerDesc& cached = image->getComponents();
-                    if (!((cached == layer) || (cached.isColorLayer() && layer.isColorLayer()))) {
-                        continue;
-                    }
-                    std::list<RectI> rest;
-                    image->getRestToRender(task.renderedRoI, rest);
-                    if (rest.empty()) {
-                        covered = true;
-                        break;
-                    }
-                }
-                if (!covered) {
-                    allLayers = false;
-                    break;
-                }
-            }
-            if (allLayers) {
-                return true;
-            }
-        }
-
-        return false;
+    inputs.isCached = [](const FrameGraph::Task& task) {
+        return task.servedFromCache;
     };
 
     return inputs;

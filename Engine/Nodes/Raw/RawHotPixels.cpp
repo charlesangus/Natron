@@ -32,14 +32,22 @@
 #include "RawHotPixels.h"
 
 #include <algorithm>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayImage.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -117,6 +125,55 @@ xtransNeighbours(const RawLayout& layout)
     return n;
 }
 
+// darktable's test of one photosite: read(dx, dy) gives the value at that offset.
+template <typename Read>
+inline bool
+replacementFor(const RawHotPixelsOp::Params& params,
+               int period,
+               float value,
+               int x,
+               int y,
+               const Read& read,
+               float* replacement)
+{
+    if (!(value > params.threshold)) {
+        return false;
+    }
+    const float mid = value * params.multiplier;
+    int count = 0;
+    float maxin = 0.0f;
+    const auto test = [&](float other) {
+        if (mid > other) {
+            ++count;
+            if (other > maxin) {
+                maxin = other;
+            }
+        }
+    };
+    if (period == 2) {
+        test(read(-2, 0));
+        test(read(0, -2));
+        test(read(2, 0));
+        test(read(0, 2));
+    } else if (period == 6) {
+        const int cell = xtransCell(params.layout, x, y);
+        for (int n = 0; n < params.xtrans.count[cell]; ++n) {
+            test(read(params.xtrans.offsets[cell][n][0], params.xtrans.offsets[cell][n][1]));
+        }
+    } else {
+        test(read(-1, 0));
+        test(read(0, -1));
+        test(read(1, 0));
+        test(read(0, 1));
+    }
+    if (count < params.minNeighbours) {
+        return false;
+    }
+    *replacement = maxin;
+
+    return true;
+}
+
 // One row of one plane: slot 0 copied to slot 1, then each hot photosite in slot 1 replaced.
 std::function<PassRowFn(const PassScratch&)>
 hotPixelsWorker(const RawHotPixelsOp::Params& params)
@@ -146,46 +203,81 @@ hotPixelsWorker(const RawHotPixelsOp::Params& params)
             const int y = rect.y1 + row;
             for (int i = border; i < width - border; ++i) {
                 const std::size_t index = base + (std::size_t)i;
-                const float value = in[index];
-                if (!(value > params.threshold)) {
-                    continue;
-                }
-                const float mid = value * params.multiplier;
-                int count = 0;
-                float maxin = 0.0f;
-                const auto test = [&](float other) {
-                    if (mid > other) {
-                        ++count;
-                        if (other > maxin) {
-                            maxin = other;
-                        }
-                    }
+                const auto read = [in, index, stride](int dx, int dy) {
+                    return in[(std::ptrdiff_t)index + (std::ptrdiff_t)dy * (std::ptrdiff_t)stride + dx];
                 };
-                if (period == 2) {
-                    test(in[index - 2]);
-                    test(in[index - 2 * stride]);
-                    test(in[index + 2]);
-                    test(in[index + 2 * stride]);
-                } else if (period == 6) {
-                    const int cell = xtransCell(params.layout, rect.x1 + i, y);
-                    for (int n = 0; n < params.xtrans.count[cell]; ++n) {
-                        const int dx = params.xtrans.offsets[cell][n][0];
-                        const int dy = params.xtrans.offsets[cell][n][1];
-                        test(in[(std::size_t)(row + dy) * stride + (std::size_t)(i + dx)]);
-                    }
-                } else {
-                    test(in[index - 1]);
-                    test(in[index - stride]);
-                    test(in[index + 1]);
-                    test(in[index + stride]);
-                }
-                if (count >= params.minNeighbours) {
-                    out[index] = maxin;
+                float replacement;
+                if (replacementFor(params, period, in[index], rect.x1 + i, y, read, &replacement)) {
+                    out[index] = replacement;
                 }
             }
         };
     };
 } // hotPixelsWorker
+
+// How far darktable's marks reach along the row of a fixed pixel.
+const int kMarkReach = 10;
+
+// A photosite counts once however many of its channels are fixed.
+std::vector<std::vector<int>>
+fixedColumnsPerRow(const RawHotPixelsOp::Params& params,
+                   const RawNodeSupport::LockedSource& source,
+                   const std::vector<int>& channels,
+                   const RectI& candidates,
+                   const RectI& window,
+                   const RawKernels::ParallelFor& parallel)
+{
+    std::vector<std::vector<int>> rows((std::size_t)window.height());
+    const int period = params.layout.period();
+    const Image::ReadAccess& access = *source.access;
+
+    parallel(window.height(), [&](int r) {
+        const int y = window.y1 + r;
+        if ((y < candidates.y1) || (y >= candidates.y2)) {
+            return;
+        }
+        for (int x = candidates.x1; x < candidates.x2; ++x) {
+            const float* const pixel = (const float*)access.pixelAt(x, y);
+            if (!pixel) {
+                continue;
+            }
+            for (const int c : channels) {
+                const auto read = [&access, x, y, c](int dx, int dy) {
+                    const float* const other = (const float*)access.pixelAt(x + dx, y + dy);
+
+                    return other ? other[c] : 0.f;
+                };
+                float replacement;
+                if (replacementFor(params, period, pixel[c], x, y, read, &replacement)) {
+                    rows[(std::size_t)r].push_back(x);
+                    break;
+                }
+            }
+        }
+    });
+
+    return rows;
+}
+
+// darktable marks a fixed pixel with same-coloured photosites along its row: every second one on
+// a Bayer mosaic, those from 2 away on an X-Trans one, and every pixel without a CFA.
+inline bool
+isMarkOffset(const RawLayout& layout,
+             int x,
+             int y,
+             int offset)
+{
+    const int period = layout.period();
+
+    if (period == 2) {
+        return (offset % 2) == 0;
+    }
+    if (period == 6) {
+        return (std::abs(offset) >= 2) && (layout.colourAt(x + offset, y) == layout.colourAt(x, y));
+    }
+
+    return true;
+}
 
 #ifdef NATRON_HAVE_GPU
 // The float index of pixel (x, y) of image, or false when the image exceeds the kernels' 32-bit
@@ -316,6 +408,20 @@ RawHotPixelsOp::createKnobs(KnobHolder* holder,
     permissiveKnob->setAnimationEnabled(false);
     page->addKnob(permissiveKnob);
     permissive = permissiveKnob;
+
+    KnobBoolPtr markFixedKnob = AppManager::createKnob<KnobBool>(holder, EffectInstance::tr("Mark Fixed").toStdString());
+    markFixedKnob->setName(kRawHotPixelsParamMarkFixed);
+    markFixedKnob->setHintToolTip(EffectInstance::tr("While the node's panel is open, marks each fixed pixel on the viewer with a short "
+                                                     "horizontal line and shows how many pixels the view holds. The marks are drawn over the "
+                                                     "image and never enter the render. The setting is not saved.")
+                                      .toStdString());
+    markFixedKnob->setDefaultValue(false);
+    markFixedKnob->setAnimationEnabled(false);
+    markFixedKnob->setHashExempt(true);
+    markFixedKnob->setEvaluateOnChange(false);
+    markFixedKnob->setIsPersistent(false);
+    page->addKnob(markFixedKnob);
+    markFixed = markFixedKnob;
 }
 
 RawHotPixelsOp::Params
@@ -373,5 +479,209 @@ RawHotPixels::RawHotPixels(NodePtr node)
 RawHotPixels::~RawHotPixels()
 {
 }
+
+std::size_t
+RawHotPixels::fixedPixelCount(const OverlayImageFrame& frame)
+{
+    std::size_t count = 0;
+
+    for (const OverlayImagePlane& plane : frame.planes) {
+        if (plane.name != kRawHotPixelsMarkPlaneFixed) {
+            continue;
+        }
+        for (const std::shared_ptr<const OverlayImageTile>& tile : plane.tiles) {
+            count += tile->coveredPixels;
+        }
+    }
+
+    return count;
+}
+
+std::string
+RawHotPixels::fixedPixelsLabel(std::size_t count)
+{
+    return (count == 1) ? std::string("fixed 1 pixel") : ("fixed " + std::to_string(count) + " pixels");
+}
+
+void
+RawHotPixels::getRegionsOfInterest(double time,
+                                   const RenderScale& scale,
+                                   const RectD& outputRoD,
+                                   const RectD& renderWindow,
+                                   ViewIdx view,
+                                   RoIMap* ret)
+{
+    ImageNode<RawHotPixelsOp>::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+
+    if (!isOverlayImageRender() || !isOverlayImageViewOn()) {
+        return;
+    }
+    const EffectInstancePtr input = getInput(getSourceInput());
+    if (!input) {
+        return;
+    }
+    const double par = getRenderMetadata(time, view)->getPixelAspectRatio(getSourceInput());
+    RectI need = PassExec::toPixelEnclosing(renderWindow, scale, par);
+    const int halo = 2;
+    need.x1 -= kMarkReach + halo;
+    need.x2 += kMarkReach + halo;
+    need.y1 -= halo;
+    need.y2 += halo;
+    (*ret)[input] = PassExec::toCanonical(need, scale, par);
+}
+
+bool
+RawHotPixels::isOverlayImageViewOn() const
+{
+    const KnobBoolPtr knob = op().markFixed.lock();
+
+    return knob && knob->getValue();
+}
+
+bool
+RawHotPixels::hasOverlayDrawList() const
+{
+    return true;
+}
+
+void
+RawHotPixels::buildOverlay(double time,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx view,
+                           OverlayDrawList* list)
+{
+    const OverlayImageFrameConstPtr frame = getOverlayImages(time, view);
+
+    if (!frame) {
+        return;
+    }
+    if (frame != _countedFrame.lock()) {
+        _countedFrame = frame;
+        _fixedCount = fixedPixelCount(*frame);
+    }
+    const RectI& visible = frame->request.visibleCanonical;
+    list->addText(visible.x1, visible.y2, fixedPixelsLabel(_fixedCount), OverlayColor::fromRGBA(1.f, 1.f, 0.f), 10., -24.);
+}
+
+bool
+RawHotPixels::knobChanged(KnobI* k,
+                          ValueChangedReasonEnum /*reason*/,
+                          ViewSpec /*view*/,
+                          double /*time*/,
+                          bool /*originatedFromMainThread*/)
+{
+    if (!k || (k != op().markFixed.lock().get())) {
+        return false;
+    }
+    refreshOverlayImages();
+
+    return true;
+}
+
+StatusEnum
+RawHotPixels::renderOp(const RenderActionArgs& args,
+                       const StagePlan& plan)
+{
+    const StatusEnum status = ImageNode<RawHotPixelsOp>::renderOp(args, plan);
+
+    if ((status == eStatusOK) && isOverlayImageRender() && isOverlayImageViewOn()) {
+        return publishMarks(args, plan);
+    }
+
+    return status;
+}
+
+StatusEnum
+RawHotPixels::publishMarks(const RenderActionArgs& args,
+                           const StagePlan& plan)
+{
+    if (args.outputLayers.empty() || !args.outputLayers.front().second) {
+        return eStatusFailed;
+    }
+    RectD rodCanonical;
+    bool isProjectFormat = false;
+    if (getRegionOfDefinition_public(getRenderHash(), args.time, args.mappedScale, args.view, &rodCanonical, &isProjectFormat) == eStatusFailed) {
+        return eStatusFailed;
+    }
+    const RectI rod = PassExec::toPixelEnclosing(rodCanonical, args.mappedScale, getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1));
+    RectI window;
+    if (!PassExec::intersectRects(args.roi, rod, &window)) {
+        return eStatusOK;
+    }
+
+    RawNodeSupport::LockedSource source;
+    ImageLayerDesc sourceLayer;
+    if ((plan.sourceInput < 0) || !getInput(plan.sourceInput)) {
+        return eStatusOK;
+    }
+    if (!resolveInputPlaneForRender(plan.sourceInput, args.time, args.view, &sourceLayer, NULL)) {
+        return eStatusFailed;
+    }
+    RectI sourceRoI;
+    source.image = getImage(plan.sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
+    if (!source.image || !PassExec::isFloatImage(source.image)) {
+        return eStatusFailed;
+    }
+    source.lock();
+
+    const auto& [plane, dst] = args.outputLayers.front();
+    const std::bitset<4> bits = PassExec::processedBitsForImage(plane, (int)dst->getComponentsCount(), args.processChannels);
+    std::vector<int> channels;
+    for (int bit = 0; bit < 4; ++bit) {
+        const int channel = PassExec::channelIndexForBit(source.nComps, bit);
+        if (bits[bit] && (channel >= 0)) {
+            channels.push_back(channel);
+        }
+    }
+
+    const RawHotPixelsOp::Params params = bakeParams(op(), args.time, args.view, getSourceMetadata(args.time, args.view));
+    const int border = (params.layout.period() > 0) ? 2 : 1;
+    const RectI candidates(std::max(window.x1 - kMarkReach, rod.x1 + border),
+                           rod.y1 + border,
+                           std::min(window.x2 + kMarkReach, rod.x2 - border),
+                           rod.y2 - border);
+    if ((candidates.x1 >= candidates.x2) || (candidates.y1 >= candidates.y2)) {
+        return eStatusOK;
+    }
+
+    RenderCancellation cancel(this);
+    const RawKernels::ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, appPTR->getNCPUsAvailableForEffect());
+    const std::vector<std::vector<int>> rows = fixedColumnsPerRow(params, source, channels, candidates, window, parallel);
+    if (cancel.check()) {
+        return eStatusFailed;
+    }
+
+    const std::size_t width = (std::size_t)window.width();
+    const std::size_t pixelCount = width * (std::size_t)window.height();
+    std::vector<unsigned char> fixed;
+    std::vector<unsigned char> arms;
+    for (std::size_t r = 0; r < rows.size(); ++r) {
+        const int y = window.y1 + (int)r;
+        for (const int x : rows[r]) {
+            if ((x >= window.x1) && (x < window.x2)) {
+                fixed.resize(pixelCount, 0);
+                fixed[r * width + (std::size_t)(x - window.x1)] = 255;
+            }
+            for (int offset = -kMarkReach; offset <= kMarkReach; ++offset) {
+                const int markX = x + offset;
+                if ((offset != 0) && (markX >= window.x1) && (markX < window.x2) && isMarkOffset(params.layout, x, y, offset)) {
+                    arms.resize(pixelCount, 0);
+                    arms[r * width + (std::size_t)(markX - window.x1)] = 255;
+                }
+            }
+        }
+    }
+
+    const OverlayColor yellow = OverlayColor::fromRGBA(1.f, 1.f, 0.f);
+    const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
+    if (!fixed.empty()) {
+        addOverlayImageTile(kRawHotPixelsMarkPlaneFixed, yellow, window, mipmapLevel, std::move(fixed));
+    }
+    if (!arms.empty()) {
+        addOverlayImageTile(kRawHotPixelsMarkPlaneArms, yellow, window, mipmapLevel, std::move(arms));
+    }
+
+    return eStatusOK;
+} // RawHotPixels::publishMarks
 
 NATRON_NAMESPACE_EXIT

@@ -49,6 +49,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/Cache.h"
+#include "Engine/CacheTier.h"
 #include "Engine/DiskCacheNode.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
@@ -80,6 +81,117 @@
 //#define NATRON_ALWAYS_ALLOCATE_FULL_IMAGE_BOUNDS
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+
+// A bypassed render must not find the entry it replaces, nor leave one of its other levels to answer
+// a later request of the layer. An image no wider than 32768 is a single pixel at the last level.
+void
+removeLayerFromCache(const ImageKey& key,
+                     const ImageLayerDesc& layer)
+{
+    const unsigned int coarsestLevel = 15;
+
+    key.forEachServingKey(coarsestLevel, 0, layer, eImageBitDepthByte, [](const ImageKey& candidate) {
+        appPTR->removeFromNodeCache(candidate);
+
+        return false;
+    });
+}
+
+thread_local EffectInstance::RenderCacheStateEnum s_lastRenderCacheState = EffectInstance::eRenderCacheStateBypass;
+
+// Publishes its state when renderRoI returns, so that renders nested in the same call cannot overwrite it.
+class RenderCacheStateRecorder {
+public:
+    RenderCacheStateRecorder()
+        : _state(EffectInstance::eRenderCacheStateBypass)
+    {
+    }
+
+    ~RenderCacheStateRecorder()
+    {
+        s_lastRenderCacheState = _state;
+    }
+
+    void set(EffectInstance::RenderCacheStateEnum state)
+    {
+        _state = state;
+    }
+
+private:
+    EffectInstance::RenderCacheStateEnum _state;
+};
+
+// Rerendering any plane of an action runs the whole action, so each image is charged all of it.
+template <typename LayersToRender>
+void
+recordRecomputeCost(const LayersToRender& layersToRender,
+                    double ownNs,
+                    const CacheRetentionSignalsPtr& retention,
+                    std::uint64_t renderSequence)
+{
+    double renderedPixels = 0.;
+    for (const auto& rect : layersToRender.rectsToRender) {
+        if (!rect.isIdentity) {
+            renderedPixels += (double)rect.rect.area();
+        }
+    }
+    if (renderedPixels <= 0.) {
+        return;
+    }
+
+    // The rectangles are in the coordinates of the image the action wrote, which a downscaled output is not.
+    const auto first = layersToRender.layers.begin();
+    if ((first == layersToRender.layers.end()) || !first->second.renderMappedImage) {
+        return;
+    }
+    const double wholePixels = (double)first->second.renderMappedImage->getBounds().area();
+
+    std::set<ImagePtr> rendered;
+    for (const auto& layer : layersToRender.layers) {
+        rendered.insert(layer.second.fullscaleImage);
+        rendered.insert(layer.second.downscaleImage);
+    }
+    for (const ImagePtr& image : rendered) {
+        if (image) {
+            CacheEntryHeader& header = *image->getEntryHeader();
+            const float cost = CacheEviction::costAfterRender(header.recomputeCostNs.load(), ownNs, wholePixels, renderedPixels);
+            header.recomputeCostNs.store(cost);
+            // Kept on an uncached private image too: it is the only measurement a node that admits nothing leaves behind.
+            retention->rememberCost(cost);
+            CacheRetention::noteStored(header, retention, renderSequence);
+        }
+    }
+}
+
+template <typename LayersToRender>
+void
+noteImagesServed(const LayersToRender& layersToRender,
+                 const CacheRetentionSignalsPtr& retention,
+                 std::uint64_t renderSequence)
+{
+    for (const auto& layer : layersToRender.layers) {
+        if (layer.second.fullscaleImage) {
+            CacheRetention::noteHit(*layer.second.fullscaleImage->getEntryHeader(), retention, renderSequence);
+        }
+        if (layer.second.downscaleImage && (layer.second.downscaleImage != layer.second.fullscaleImage)) {
+            CacheRetention::noteHit(*layer.second.downscaleImage->getEntryHeader(), retention, renderSequence);
+        }
+    }
+}
+
+} // namespace
+
+EffectInstance::RenderCacheStateEnum
+EffectInstance::takeLastRenderCacheState()
+{
+    const RenderCacheStateEnum state = s_lastRenderCacheState;
+
+    s_lastRenderCacheState = eRenderCacheStateBypass;
+
+    return state;
+}
 
 /*
  * @brief Moves context one identity hop upstream: to the single context effect requests input
@@ -379,6 +491,8 @@ EffectInstance::RenderRoIRetCode
 EffectInstance::renderRoI(const RenderRoIArgs& args,
                           std::map<ImageLayerDesc, ImagePtr>* outputLayers)
 {
+    CacheRecomputeStopwatch wholeCall;
+
     //Do nothing if no components were requested
     if ( args.components.empty() ) {
         qDebug() << getScriptName_mt_safe().c_str() << "renderRoi: Early bail-out components requested empty";
@@ -396,6 +510,8 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     if (_imp->mainInstance) {
         return _imp->mainInstance->renderRoI(args, outputLayers);
     }
+
+    RenderCacheStateRecorder cacheStateRecorder;
 
     {
         const AppInstancePtr app = getApp();
@@ -797,9 +913,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     OSGLContextAttacherPtr glContextLocker;
 
     bool wantsOpenGLRender = false;
-    if ( dynamic_cast<DiskCacheNode*>(this) ) {
-        storage = eStorageModeDisk;
-    } else if (abortInfo && ((openGLSupport == ePluginOpenGLRenderSupportNeeded) || ((openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering))) {
+    if (abortInfo && ((openGLSupport == ePluginOpenGLRenderSupportNeeded) || ((openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering))) {
         wantsOpenGLRender = true;
         // If the plug-in knows how to render on CPU, check if we actually should not render on CPU instead.
         if (openGLSupport == ePluginOpenGLRenderSupportYes) {
@@ -884,37 +998,39 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
     const bool draftModeSupported = getNode()->isDraftModeUsed();
     const bool isFrameVaryingOrAnimated = frameArgs->frameVaryingComputed ? frameArgs->isFrameVaryingOrAnimated : isFrameVaryingOrAnimated_Recursive();
-    bool createInCache;
+    const CacheRetentionSignalsPtr retention = getNode()->getRetentionSignals();
+    const std::uint64_t renderSequence = abortInfo ? abortInfo->getRenderSequence() : 0;
+    retention->noteStaticOutput(!isFrameVaryingOrAnimated);
     // Do not use the cache for OpenGL rendering
-    if (useOpenGL || renderContextHasLoopVariables(frameArgs->context)) {
-        createInCache = false;
-    } else {
-        // in Analysis, the node upstream of the analysis node should always cache
-        createInCache = (frameArgs->isAnalysis && frameArgs->treeRoot->getEffectInstance().get() == args.caller) ? true : shouldCacheOutput(isFrameVaryingOrAnimated, args.time, args.view, frameArgs->visitsCount);
-    }
+    bool createInCache = !useOpenGL && admitsOutputToCache(frameArgs->context, *frameArgs, isFrameVaryingOrAnimated, args.time, args.view, args.caller);
     ///Do we want to render the graph upstream at scale 1 or at the requested render scale ? (user setting)
-    bool renderScaleOneUpstreamIfRenderScaleSupportDisabled = getNode()->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
-    ///For multi-resolution we want input images with exactly the same size as the output image
-    if ( !renderScaleOneUpstreamIfRenderScaleSupportDisabled && !supportsMultiResolution() ) {
-        renderScaleOneUpstreamIfRenderScaleSupportDisabled = true;
-    }
+    const bool renderScaleOneUpstreamIfRenderScaleSupportDisabled = pullsInputsAtScaleOne();
 
-    std::unique_ptr<ImageKey> key( new ImageKey(getNode().get(),
-                                                  nodeHash,
-                                                  isFrameVaryingOrAnimated,
-                                                  args.time,
-                                                  args.view,
-                                                  1.,
-                                                  draftModeSupported && frameArgs->draftMode,
-                                                  renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
-    std::unique_ptr<ImageKey> nonDraftKey( new ImageKey(getNode().get(),
-                                                          nodeHash,
-                                                          isFrameVaryingOrAnimated,
-                                                          args.time,
-                                                          args.view,
-                                                          1.,
-                                                          false,
-                                                          renderMappedMipmapLevel == 0 && !renderScaleOneUpstreamIfRenderScaleSupportDisabled) );
+    std::unique_ptr<ImageKey> key(new ImageKey(outputCacheKey(nodeHash, isFrameVaryingOrAnimated, args.time, args.view, draftModeSupported && frameArgs->draftMode, renderMappedMipmapLevel)));
+    std::unique_ptr<ImageKey> nonDraftKey(new ImageKey(outputCacheKey(nodeHash, isFrameVaryingOrAnimated, args.time, args.view, false, renderMappedMipmapLevel)));
+
+    // Overlay images only exist as a side effect of the render action, so a cached image can't
+    // answer this render. byPassCache would reach the action too but deletes the entry, and an
+    // overlay must leave the cache as it found it: render next to the entry instead. With no entry
+    // the render fills the cache as usual, which spares the viewer's render the same work.
+    bool renderBesideCachedImage = false;
+    if (frameArgs->overlayImagePass) {
+        const auto hasEntry = [](const ImageKey& candidate) {
+            std::list<ImagePtr> entries;
+
+            return appPTR->getImage(candidate, &entries);
+        };
+        for (const ImageLayerDesc& requested : requestedComponents) {
+            const ImageLayerDesc* cachedLayer = ImageKey::cachedLayerForRequest(requested, outputComponents);
+            if (cachedLayer && (key->forEachServingKey(mipmapLevel, 0, *cachedLayer, args.bitdepth, hasEntry) || nonDraftKey->forEachServingKey(mipmapLevel, 0, *cachedLayer, args.bitdepth, hasEntry))) {
+                renderBesideCachedImage = true;
+                break;
+            }
+        }
+        if (renderBesideCachedImage) {
+            createInCache = false;
+        }
+    }
 
     bool isDuringPaintStroke = isDuringPaintStrokeCreationThreadLocal();
     // A frame hash the node has already left would key the new image to a state the graph is
@@ -951,24 +1067,14 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
              * try to find in the cache the "preferred" components of this node for the color layer.
              * For all other layers, just consider this set of components, we do not allow conversion.
              */
-            const ImageLayerDesc* components = 0;
-            if (!it->isColorLayer()) {
-                components = &(*it);
-            } else {
-                for (std::list<ImageLayerDesc>::const_iterator it2 = outputComponents.begin(); it2 != outputComponents.end(); ++it2) {
-                    if (it2->isColorLayer()) {
-                        components = &(*it2);
-                        break;
-                    }
-                }
-            }
+            const ImageLayerDesc* components = ImageKey::cachedLayerForRequest(*it, outputComponents);
             assert(components);
             if (!components) {
                 continue;
             }
             // A writer's render to disk must call the render action, which writes the file; a pull
             // through a writer, and every node upstream, may still use the cache.
-            bool doCacheLookup = !isWriter() || !isRenderingOwnSequence();
+            bool doCacheLookup = !renderBesideCachedImage && (!isWriter() || !isRenderingOwnSequence());
             if (doCacheLookup) {
                 int nLookups = draftModeSupported && frameArgs->draftMode ? 2 : 1;
 
@@ -979,7 +1085,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                     getImageFromCacheAndConvertIfNeeded(createInCache, storage, args.returnStorage, n == 0 ? *nonDraftKey : *key, lookupMipmapLevel,
                                                         &downscaledImageBounds,
                                                         &rod, args.roi,
-                                                        args.bitdepth, *it,
+                                                        args.bitdepth, *components,
                                                         args.inputImagesList,
                                                         frameArgs->stats,
                                                         glContextLocker,
@@ -987,7 +1093,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                     if (layer.fullscaleImage) {
                         if (byPassCache) {
                             if (layer.fullscaleImage) {
-                                appPTR->removeFromNodeCache( key->getHash() );
+                                removeLayerFromCache(*key, *components);
                                 layer.fullscaleImage.reset();
                             }
                         } else if (renderMappedMipmapLevel != mipmapLevel) {
@@ -1011,7 +1117,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         getImageFromCacheAndConvertIfNeeded(createInCache, storage, args.returnStorage, n == 0 ? *nonDraftKey : *key, renderMappedMipmapLevel,
                                                             &upscaledImageBounds,
                                                             &rod, roi,
-                                                            args.bitdepth, *it,
+                                                            args.bitdepth, *components,
                                                             args.inputImagesList,
                                                             frameArgs->stats,
                                                             glContextLocker,
@@ -1019,7 +1125,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         if (layer.fullscaleImage) {
                             if (byPassCache) {
                                 if (layer.fullscaleImage) {
-                                    appPTR->removeFromNodeCache( key->getHash() );
+                                    removeLayerFromCache(*key, *components);
                                     layer.fullscaleImage.reset();
                                 }
                             }
@@ -1092,6 +1198,15 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         }
     }
 
+    bool partlyCachedBeforeWidening = false;
+    const auto leftToRenderArea = [](const std::list<RectI>& rects) {
+        U64 area = 0;
+        for (std::list<RectI>::const_iterator it = rects.begin(); it != rects.end(); ++it) {
+            area += static_cast<U64>(it->area());
+        }
+
+        return area;
+    };
 
     ///In the event where we had the image from the cache, but it wasn't completely rendered over the RoI but the cache was almost full,
     ///we don't hold a pointer to it, allowing the cache to free it.
@@ -1197,7 +1312,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         ///Note that it should NEVER happen because if it doesn't support tiles in the first place, it would
         ///have rendered the rod already.
         if (!frameArgs->tilesSupported && !rectsLeftToRender.empty() && isLayerCached) {
-            ///if the effect doesn't support tiles, just render the whole rod again even though
+            /// if the effect doesn't support tiles, just render the whole rod again even though
+            // The widening below makes every partial hit cover the whole RoI, so the state has to be read before it.
+            partlyCachedBeforeWidening = leftToRenderArea(rectsLeftToRender) < static_cast<U64>(roi.area());
             rectsLeftToRender.clear();
             rectsLeftToRender.push_back(renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds);
         }
@@ -1305,6 +1422,27 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     }
 
     bool hasSomethingToRender = !layersToRender->rectsToRender.empty();
+    bool allIdentity = hasSomethingToRender;
+    for (std::list<RectToRender>::const_iterator it = layersToRender->rectsToRender.begin(); it != layersToRender->rectsToRender.end(); ++it) {
+        allIdentity = allIdentity && it->isIdentity;
+    }
+
+    const bool cacheCanServe = !byPassCache && !allIdentity;
+    // A miss allocates an image with an empty bitmap, so the image alone does not tell a partial hit from a miss.
+    const bool partial = cacheCanServe && hasSomethingToRender && (partlyCachedBeforeWidening || leftToRenderArea(rectsLeftToRender) < static_cast<U64>(roi.area()));
+    // A hit and a partial come before admission: a node that no longer admits can still be served an entry stored earlier.
+    if (!cacheCanServe) {
+        cacheStateRecorder.set(eRenderCacheStateBypass);
+    } else if (!hasSomethingToRender) {
+        cacheStateRecorder.set(eRenderCacheStateHit);
+    } else if (partial) {
+        cacheStateRecorder.set(eRenderCacheStatePartial);
+    } else {
+        cacheStateRecorder.set(createInCache ? eRenderCacheStateMiss : eRenderCacheStateBypass);
+    }
+    if (cacheCanServe && (!hasSomethingToRender || partial)) {
+        noteImagesServed(*layersToRender, retention, renderSequence);
+    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// End Determine rectangles left to render /////////////////////////////////////////////////
@@ -1334,6 +1472,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                 renderMappedScale,
                                                 renderScaleOneUpstreamIfRenderScaleSupportDisabled,
                                                 byPassCache,
+                                                !it->rect.contains(roi),
                                                 *framesNeeded,
                                                 *neededComps,
                                                 &it->imgs,
@@ -1573,6 +1712,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             }
         }
         if (attachGLOK) {
+            CacheRecomputeStopwatch renderWatch;
             renderRetCode = renderRoIInternal(renderInstance.get(),
                                               args.time,
                                               frameArgs,
@@ -1591,6 +1731,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                               outputClipPrefComps,
                                               neededComps,
                                               processChannels);
+            if ((renderRetCode == eRenderRoIStatusImageRendered) && !aborted()) {
+                recordRecomputeCost(*layersToRender, renderWatch.ownNs(), retention, renderSequence);
+            }
             if (useOpenGL) {
                 // If the plug-in doesn't support concurrent OpenGL renders, release the lock that was taken in the call to attachOpenGLContext_public() above.
                 // For safe plug-ins, we call dettachOpenGLContext_public when the effect is destroyed in Node::deactivate() with the function EffectInstance::dettachAllOpenGLContexts().
@@ -1655,6 +1798,21 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         return renderRoI(args, outputLayers);
     }
 #endif
+
+    if (renderSucceeded && keepRenderedInCache && !renderAborted && !isDuringPaintStroke && dynamic_cast<DiskCacheNode*>(this)) {
+        const std::string holderID = getNode()->getCacheID();
+        std::set<ImagePtr> rendered;
+        for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
+            rendered.insert(it->second.fullscaleImage);
+            rendered.insert(it->second.downscaleImage);
+        }
+        for (const ImagePtr& image : rendered) {
+            // Two nodes of equal content share a RAM entry, and each still needs its own pin.
+            if (image && (hasSomethingToRender || !image->isPinnedBy(holderID))) {
+                appPTR->pinRenderedImage(holderID, image);
+            }
+        }
+    }
 
     if ( renderAborted && (renderRetCode != eRenderRoIStatusImageAlreadyRendered) ) {
         ///Return a NULL image
@@ -1976,7 +2134,9 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
                 rects.push_back(&*it);
             }
             std::vector<EffectInstance::RenderingFunctorRetEnum> ret(rects.size(), EffectInstance::eRenderingFunctorRetFailed);
+            CacheRecomputeStopwatch* const renderWatch = CacheRecomputeStopwatch::current();
             const std::function<void(int)> render = [&](int i) {
+                CacheRecomputeWorkerScope workerScope(renderWatch);
                 ret[i] = self->_imp->tiledRenderingFunctor(*tiledArgs, *rects[i], currentThread);
             };
             parallelForOnGlobalPool((int)rects.size(), appPTR->getNCPUsAvailableForEffect(), render);

@@ -410,6 +410,22 @@ ViewerTab::onSetDownPlaybackButtonsTimeout()
                 (*it)->_imp->play_Backward_Button->setChecked(false);
             }
         }
+
+        // Playback renders no overlay images and its end renders nothing, so a mask would stay away
+        // until the next edit. With auto-restart on, a render here would restart playback instead.
+        if (!_imp->viewerNode->getRenderEngine()->isPlaybackAutoRestartEnabled()) {
+            const double time = _imp->viewerNode->getTimeline()->currentFrame();
+            const ViewIdx view = _imp->viewer->getCurrentView();
+            NodesList nodes;
+            getGui()->getNodesEntitledForOverlayImages(nodes);
+            for (const NodePtr& node : nodes) {
+                const EffectInstancePtr effect = node->getEffectInstance();
+                if (effect && effect->isOverlayImageRequested() && !effect->getOverlayImages(time, view)) {
+                    _imp->viewerNode->renderCurrentFrame(true);
+                    break;
+                }
+            }
+        }
     }
 }
 

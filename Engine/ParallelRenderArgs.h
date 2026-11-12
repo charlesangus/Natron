@@ -54,6 +54,24 @@
 NATRON_NAMESPACE_ENTER
 
 typedef std::map<EffectInstancePtr, RectD> RoIMap; // RoIs are in canonical coordinates
+
+/**
+ * @brief Whether rois names input and says none of inputRod is read. An input it doesn't name stays read, as does any
+ * input whose region of definition isn't known.
+ **/
+inline bool
+inputRoIMissesRoD(const RoIMap& rois,
+                  const EffectInstancePtr& input,
+                  const RectD& inputRod)
+{
+    const RoIMap::const_iterator found = rois.find(input);
+    if (found == rois.end()) {
+        return false;
+    }
+
+    return found->second.isNull() || (!inputRod.isNull() && !found->second.intersects(inputRod));
+}
+
 typedef std::map<ViewIdx, std::vector<RangeD> > FrameRangesMap;
 typedef std::map<int, FrameRangesMap> FramesNeededMap;
 typedef std::shared_ptr<FramesNeededMap> FramesNeededMapPtr;
@@ -208,6 +226,10 @@ public:
 
     ///A pointer to the node that requested the current render.
     NodePtr treeRoot;
+
+    /// Set only on the args of the node whose overlay images are being rendered, so that the nodes
+    /// upstream of it render and cache as they always do.
+    OverlayImagePassPtr overlayImagePass;
 
     ///In the tree originating from the root treeRoot, how many times this node is visited ? this is used to determine
     ///if we should cache the output and whether we should do GPU rendering or not

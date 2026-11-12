@@ -366,7 +366,8 @@ protected:
                       double time,
                       bool canAbort,
                       FrameRun* run,
-                      std::string* error)
+                      std::string* error,
+                      bool pruneBehindCacheHits = false)
     {
         run->abortInfo = AbortableRenderInfo::create(canAbort, 0);
         run->stats = std::make_shared<RenderStats>(false);
@@ -406,6 +407,9 @@ protected:
                                                   run->stats);
         run->context->setRequest(request);
         run->graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), 0 /*mipmapLevel*/);
+        if (pruneBehindCacheHits) {
+            RenderScheduler::pruneBehindCacheHits(run->graph, run->context);
+        }
         run->numTasks = run->graph.tasks.size();
         if (run->graph.tasks.empty()) {
             *error = "empty graph";
@@ -414,6 +418,119 @@ protected:
         }
 
         return true;
+    }
+
+    void renderFrame(const NodePtr& root,
+                     FrameRun* run,
+                     bool pruneBehindCacheHits)
+    {
+        std::string error;
+        ASSERT_TRUE(prepareFrame(root, 1., false, run, &error, pruneBehindCacheHits)) << error;
+        submit(run);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run->future->wait());
+    }
+
+    float rootPixel(const FrameRun& run,
+                    int x,
+                    int y)
+    {
+        const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+        if (planes.empty() || !planes.begin()->second) {
+            ADD_FAILURE() << "the root has no image";
+
+            return -1.f;
+        }
+        Image::ReadAccess access = planes.begin()->second->getReadRights();
+        const float* pixel = (const float*)access.pixelAt(x, y);
+        if (!pixel) {
+            ADD_FAILURE() << "the root's image has no pixel at " << x << "," << y;
+
+            return -1.f;
+        }
+
+        return pixel[0];
+    }
+
+    void setValue(const NodePtr& node,
+                  double value)
+    {
+        KnobDouble* knob = dynamic_cast<KnobDouble*>(node->getKnobByName("value").get());
+
+        ASSERT_TRUE(knob != NULL);
+        knob->setValue(value);
+    }
+
+    const FrameGraph::Task* findTask(const FrameGraph& graph,
+                                     const NodePtr& node)
+    {
+        for (const FrameGraph::Task& task : graph.tasks) {
+            if (task.key.node == node) {
+                return &task;
+            }
+        }
+
+        return nullptr;
+    }
+
+    // The key renderRoI uses for node in a frame planned without pruning.
+    ImageKey outputKey(const NodePtr& node,
+                       const FrameRun& plan)
+    {
+        const FrameRequestMap& requests = *plan.context->getRequest();
+        const FrameRequestMap::const_iterator request = requests.find(NodeCtxKey(node, 0));
+        const FrameGraph::Task* task = findTask(plan.graph, node);
+        if ((request == requests.end()) || !task) {
+            ADD_FAILURE() << "the plan doesn't reach the node";
+
+            return ImageKey();
+        }
+
+        return node->getEffectInstance()->outputCacheKey(request->second->nodeHash, task->cacheKeyHasTime, task->key.time, task->key.view, false, 0);
+    }
+
+    ImagePtr peekOutput(const NodePtr& node,
+                        const FrameRun& plan)
+    {
+        ImagePtr found;
+        outputKey(node, plan).forEachServingKey(0, 0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, [&found](const ImageKey& candidate) {
+            std::list<ImagePtr> images;
+            if (!appPTR->peekImage(candidate, &images)) {
+                return false;
+            }
+            found = images.front();
+
+            return true;
+        });
+
+        return found;
+    }
+
+    // An entry as an earlier render would leave it for node, its bitmap left to the caller.
+    ImagePtr storeOutput(const NodePtr& node,
+                         const FrameRun& plan,
+                         float value)
+    {
+        const ImageParamsPtr params = Image::makeParams(RectD(0., 0., kCountingTestSize, kCountingTestSize), 1., 0, false, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, eImageFieldingOrderNone);
+        ImagePtr image;
+        appPTR->getImageOrCreate(outputKey(node, plan), params, &image);
+        if (!image) {
+            ADD_FAILURE() << "the cache made no image";
+
+            return image;
+        }
+        image->allocateMemory();
+        Image::WriteAccess access(image.get());
+        const int numChannels = (int)image->getComponentsCount();
+        for (int y = 0; y < kCountingTestSize; ++y) {
+            for (int x = 0; x < kCountingTestSize; ++x) {
+                float* pixel = (float*)access.pixelAt(x, y);
+                for (int c = 0; c < numChannels; ++c) {
+                    pixel[c] = value;
+                }
+            }
+        }
+
+        return image;
     }
 
     void submit(FrameRun* run)
@@ -1016,6 +1133,232 @@ TEST_F(RenderSchedulerTest, FailedTaskStopsSiblings)
         EXPECT_GE(run.stats->getTasksPurged(), leaves - poolSize);
         expectRunnablesDrained();
     }
+}
+
+// The edit reaches the last node only, so the second-last node's entry answers for everything above it.
+TEST_F(RenderSchedulerTest, EditingTheLastNodeRunsNothingBehindTheCachedOutputBeforeIt)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(4, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[2], "cacheOutput", true));
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+    EXPECT_EQ(4u, first.numTasks);
+    EXPECT_FLOAT_EQ(4.f, rootPixel(first, 0, 0));
+
+    ASSERT_NO_FATAL_FAILURE(setValue(nodes.back(), 10.));
+    CountingTestRegistry::reset();
+
+    FrameRun second;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &second, true));
+    EXPECT_EQ(2u, second.numTasks);
+    EXPECT_EQ(2, second.stats->getTasksRun());
+    EXPECT_EQ(0, second.stats->getUnplannedPulls());
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[0]));
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[1]));
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[2]));
+    EXPECT_EQ(1, CountingTestRegistry::renders(nodes[3]));
+    EXPECT_FLOAT_EQ(13.f, rootPixel(second, 0, 0));
+}
+
+TEST_F(RenderSchedulerTest, APartialHitKeepsOnlyTheDependencyItsMissingPartReads)
+{
+    appPTR->clearAllCaches();
+    NodePtr left = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr right = createCounting(kTestPluginIDCounting, 2.);
+    NodePtr split = createNode(QString::fromUtf8(kTestPluginIDSplitInputs));
+    ASSERT_TRUE(left && right && split);
+    connectNodes(left, split, 0, true);
+    connectNodes(right, split, 1, true);
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(split, &first, true));
+    EXPECT_EQ(3u, first.numTasks);
+
+    FrameRun probe;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(split, 1., false, &probe, &error)) << error;
+    const ImagePtr entry = peekOutput(split, probe);
+    ASSERT_TRUE(bool(entry));
+    entry->clearBitmap(RectI(kCountingTestSize / 2, 0, kCountingTestSize, kCountingTestSize));
+    CountingTestRegistry::reset();
+
+    FrameRun second;
+    ASSERT_TRUE(prepareFrame(split, 1., false, &second, &error, true)) << error;
+    EXPECT_EQ(2u, second.numTasks);
+    EXPECT_TRUE(findTask(second.graph, right) != nullptr);
+    EXPECT_TRUE(findTask(second.graph, left) == nullptr);
+    submit(&second);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second.future->wait());
+
+    EXPECT_EQ(0, second.stats->getUnplannedPulls());
+    EXPECT_EQ(0, CountingTestRegistry::renders(left));
+    EXPECT_EQ(1, CountingTestRegistry::renders(right));
+    EXPECT_EQ(1, CountingTestRegistry::renders(split));
+    EXPECT_FLOAT_EQ(1.f, rootPixel(second, 0, 0));
+    EXPECT_FLOAT_EQ(2.f, rootPixel(second, kCountingTestSize - 1, 0));
+}
+
+// A plan counts on an entry it doesn't hold, so the render has to make up for losing it.
+TEST_F(RenderSchedulerTest, AnEntryEvictedBetweenPlanAndUseRendersByRecursion)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[1], "cacheOutput", true));
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+    ASSERT_NO_FATAL_FAILURE(setValue(nodes.back(), 10.));
+    CountingTestRegistry::reset();
+
+    FrameRun second;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &second, &error, true)) << error;
+    ASSERT_EQ(2u, second.numTasks);
+
+    nodes[1]->removeAllImagesFromCache(true);
+
+    submit(&second);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second.future->wait());
+    EXPECT_GE(second.stats->getUnplannedPulls(), 1);
+    EXPECT_EQ(1, CountingTestRegistry::renders(nodes[0]));
+    EXPECT_EQ(1, CountingTestRegistry::renders(nodes[1]));
+    EXPECT_FLOAT_EQ(12.f, rootPixel(second, 0, 0));
+}
+
+TEST_F(RenderSchedulerTest, ADependencySharedWithAnUncachedBranchStaysPlanned)
+{
+    appPTR->clearAllCaches();
+    NodePtr source = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr cached = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr uncached = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr merge = createCounting(kTestPluginIDCountingMerge, 1.);
+    ASSERT_TRUE(source && cached && uncached && merge);
+    ASSERT_NO_FATAL_FAILURE(setBool(cached, "cacheOutput", true));
+    connectNodes(source, cached, 0, true);
+    connectNodes(source, uncached, 0, true);
+    connectNodes(cached, merge, 0, true);
+    connectNodes(uncached, merge, 1, true);
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(merge, &first, true));
+    ASSERT_NO_FATAL_FAILURE(setValue(merge, 10.));
+    CountingTestRegistry::reset();
+
+    FrameRun second;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(merge, 1., false, &second, &error, true)) << error;
+    EXPECT_EQ(4u, second.numTasks);
+    const FrameGraph::Task* cachedTask = findTask(second.graph, cached);
+    const FrameGraph::Task* sourceTask = findTask(second.graph, source);
+    ASSERT_TRUE(cachedTask && sourceTask);
+    EXPECT_TRUE(cachedTask->dependencies.empty());
+    EXPECT_TRUE(cachedTask->servedFromCache);
+    EXPECT_EQ(1, sourceTask->consumers);
+    EXPECT_EQ(0, second.graph.tasks.front().consumers);
+    EXPECT_EQ(merge, second.graph.tasks.front().key.node);
+
+    submit(&second);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second.future->wait());
+    EXPECT_EQ(0, second.stats->getUnplannedPulls());
+    EXPECT_EQ(1, CountingTestRegistry::renders(source));
+    EXPECT_EQ(0, CountingTestRegistry::renders(cached));
+    EXPECT_EQ(1, CountingTestRegistry::renders(uncached));
+    EXPECT_FLOAT_EQ(14.f, rootPixel(second, 0, 0));
+}
+
+// Whether a node stores its output now says nothing of an entry already there, which renderRoI takes anyway.
+TEST_F(RenderSchedulerTest, AnEarlierEntryServesATaskThatWouldNotStoreOne)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    CountingTestRegistry::reset();
+
+    FrameRun plan;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &plan, &error)) << error;
+    const ImagePtr entry = storeOutput(nodes[1], plan, 5.f);
+    ASSERT_TRUE(bool(entry));
+    entry->markForRendered(RectI(0, 0, kCountingTestSize, kCountingTestSize));
+
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error, true)) << error;
+    ASSERT_EQ(2u, run.numTasks);
+    const FrameGraph::Task* task = findTask(run.graph, nodes[1]);
+    ASSERT_TRUE(task != nullptr);
+    EXPECT_FALSE(task->sharesCachedOutput);
+    EXPECT_TRUE(task->servedFromCache);
+
+    submit(&run);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[0]));
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[1]));
+    EXPECT_FLOAT_EQ(6.f, rootPixel(run, 0, 0));
+}
+
+#if NATRON_ENABLE_TRIMAP
+// Another render's marker isn't a cached image: that render can still abort and leave the region to this one.
+TEST_F(RenderSchedulerTest, ARegionBeingRenderedElsewhereKeepsItsDependencies)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+
+    FrameRun plan;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &plan, &error)) << error;
+    const ImagePtr entry = storeOutput(nodes[1], plan, 5.f);
+    ASSERT_TRUE(bool(entry));
+    entry->markForRendered(RectI(0, 0, kCountingTestSize, kCountingTestSize / 2));
+    entry->markForRendering(RectI(0, kCountingTestSize / 2, kCountingTestSize, kCountingTestSize));
+
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error, true)) << error;
+    EXPECT_EQ(3u, run.numTasks);
+    const FrameGraph::Task* task = findTask(run.graph, nodes[1]);
+    ASSERT_TRUE(task != nullptr);
+    EXPECT_FALSE(task->servedFromCache);
+
+    appPTR->removeFromNodeCache(entry);
+}
+#endif
+
+// Eviction scores read lastUse; a plan that bumped it would keep alive what it only looked at.
+TEST_F(RenderSchedulerTest, ProbingAnEntryDoesNotCountAsUsingIt)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[1], "cacheOutput", true));
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+
+    FrameRun plan;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &plan, &error)) << error;
+    const ImagePtr entry = peekOutput(nodes[1], plan);
+    ASSERT_TRUE(bool(entry));
+    const CacheEntryHeader* header = entry->evictionHeader();
+    ASSERT_TRUE(header != nullptr);
+    const U64 lastUse = header->lastUse.load();
+    const std::uint32_t reuseCount = header->reuseCount.load();
+
+    QThread::msleep(2);
+    FrameRun probed;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &probed, &error, true)) << error;
+    ASSERT_EQ(2u, probed.numTasks);
+    EXPECT_EQ(lastUse, header->lastUse.load());
+    EXPECT_EQ(reuseCount, header->reuseCount.load());
+
+    // Without this the checks above would also pass on a cache that records no use at all.
+    std::list<ImagePtr> images;
+    ASSERT_TRUE(appPTR->getImage(entry->getKey(), &images));
+    EXPECT_NE(lastUse, header->lastUse.load());
 }
 
 // Nothing varies with time, so the task of each caching node in the second frame renders the same cached image as the

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <cstdint>
 #include <functional>
 #include <list>
 #include <map>
@@ -962,6 +963,8 @@ public:
 
     bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
+    const CacheRetentionSignalsPtr& getRetentionSignals() const;
+
     /**
      * @brief Set the position of the node on the nodegraph. It is stored on the node and, in a
      * GUI session, forwarded to the node's GUI. getPosition() returns the stored value.
@@ -1841,6 +1844,39 @@ public:
 
     bool hasHostOverlayForParam(const KnobI* knob) const;
 
+    /**
+     * @brief The overlay images of the node's last finished pass. Held on the node because a render
+     * clone produces them and the viewer reads them from the main instance.
+     **/
+    OverlayImageFrameConstPtr getOverlayImageFrame() const;
+
+    /**
+     * @brief What a pass captures before it reads the node's view knobs, to hand back to
+     * setOverlayImageFrame().
+     **/
+    std::uint64_t getOverlayImageGeneration() const;
+
+    /**
+     * @brief Publishes frame unless clearOverlayImageFrame() ran since generation was captured,
+     * and returns whether it did. Checked under the frame's lock, so a frame on the node is always
+     * of the current generation.
+     **/
+    bool setOverlayImageFrame(const OverlayImageFrameConstPtr& frame, std::uint64_t generation);
+
+    /**
+     * @brief Drops the overlay images and refuses the frames of passes already running. Returns
+     * whether there were any.
+     **/
+    bool clearOverlayImageFrame();
+
+    /**
+     * @brief Marks a pass as owed to the node until the returned token dies. While one is, the viewer
+     * keeps drawing the node's previous images.
+     **/
+    std::shared_ptr<void> markOverlayImagePassPending();
+
+    bool isOverlayImagePassPending() const;
+
     void setPluginIDAndVersionForGui(const std::list<std::string>& grouping,
                                      const std::string& pluginLabel,
                                      const std::string& pluginID,
@@ -2207,6 +2243,8 @@ private:
     void markHashDirtyInternal(bool includeGroupContents,
                                const char* reason,
                                const KnobI* knob);
+
+    unsigned computeRetentionReasons(bool isFrameVaryingOrAnimated, double time, ViewIdx view) const;
 
     /**
      * @brief Marks the dependents of every node marked since the last flush. Any hash read

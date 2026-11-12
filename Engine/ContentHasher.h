@@ -76,6 +76,48 @@ public:
      **/
     static U64 sessionSalt();
 
+    /**
+     * @brief Appends the session salt and marks whatever SaltScope encloses this thread as salted.
+     **/
+    void appendSessionSalt();
+
+    /**
+     * @brief Marks the enclosing SaltScope as salted, for a value that was salted further up.
+     **/
+    static void noteSalted();
+
+    /**
+     * @brief Notices whether the session salt reached a hash computed on this thread, directly or
+     * through a salted value that was read. A nested scope tells its outer one nothing: a hash read
+     * by the outer computation says so through its flag, and one merely refreshed along the way
+     * does not concern it.
+     **/
+    class SaltScope {
+    public:
+        SaltScope();
+        ~SaltScope();
+
+        SaltScope(const SaltScope&) = delete;
+        SaltScope& operator=(const SaltScope&) = delete;
+
+        bool salted() const;
+
+    private:
+        const bool _outer;
+    };
+
+    /**
+     * @brief The digest with its top bit saying whether it is salted, so that the answer travels
+     * with the value through every memo and key without a table to keep in step. Never 0.
+     **/
+    static U64 withSaltFlag(U64 digest, bool salted);
+
+    /**
+     * @brief Whether a value that went through withSaltFlag is salted. Meaningless for any other
+     * hash, whose top bit is as random as the rest.
+     **/
+    static bool isSalted(U64 flaggedDigest);
+
     // Large enough and aligned for XXH3_state_t; ContentHasher.cpp static_asserts both.
     static constexpr std::size_t kStateSize = 640;
     static constexpr std::size_t kStateAlign = 64;

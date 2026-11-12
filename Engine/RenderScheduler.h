@@ -109,6 +109,18 @@ struct FrameGraph {
         // The level renderRoI renders at: 0 for an effect without render scale support.
         unsigned int cacheMipmapLevel = 0;
 
+        // renderRoI would look its output up in the cache. An entry can serve a task that wouldn't store its own, an
+        // earlier render having stored it, so this is no question of sharesCachedOutput.
+        bool probesCachedOutput = false;
+
+        // The planned cache hit let its dependencies go, all of them or those only the cached part of its output read.
+        // Such a task can't join a GPU region, which renders the whole RoI from the region's inputs.
+        bool servedFromCache = false;
+
+        // Empty when the request doesn't know the region of definition.
+        RectI pixelRoD;
+        double pixelAspectRatio = 1.;
+
         Device device = Device::Cpu;
 
         // Where renderRoI allocates the task's images when it runs on its own.
@@ -328,6 +340,10 @@ public:
         // Why the members were rendered on the CPU rather than the GPU; empty when they were not.
         std::string cpuFallback;
 
+        // The cache state each CPU-fallback member rendered with, in Region::members order; shorter than the
+        // members when a member failed or the frame aborted, and empty when the GPU ran them.
+        std::vector<EffectInstance::RenderCacheStateEnum> memberCache;
+
         // How many times the region was run again on the GPU after running out of device memory.
         int retries = 0;
     };
@@ -371,6 +387,20 @@ public:
                                  double time,
                                  ViewIdx view,
                                  unsigned int mipmapLevel);
+
+    /**
+     * @brief Removes from a graph buildGraph returned the tasks only a cache hit's render would have read: a task whose
+     * output is cached in full loses its dependencies, one cached in part those its missing part doesn't read, and tasks
+     * left without a consumer go with them. Must run before placeRenderGraph, on the thread buildGraph ran on, and after
+     * the caller has settled the root's region, layers and depth.
+     *
+     * At most one probe per task, none on a task behind a hit, and the cache lock is only held per key. Nothing is pinned:
+     * an entry evicted before its task runs is rendered again, its inputs then being pulled as unplanned reads, which is
+     * correct but slower. A plan-wide pin would keep what memory pressure has to evict and bypass the admission of tasks
+     * by bytes in flight.
+     **/
+    static void pruneBehindCacheHits(FrameGraph& graph,
+                                     const FrameRenderContextPtr& context);
 
     /**
      * @brief Renders graph.tasks[task] with renderRoI as the scheduler runs a task outside every region, its images

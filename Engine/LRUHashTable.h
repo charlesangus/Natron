@@ -160,6 +160,12 @@ public:
         return _key_to_value.end();
     }
 
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename key_to_value_type::iterator peek(const key_type& k)
+    {
+        return _key_to_value.find(k);
+    }
+
     typename key_to_value_type::iterator begin()
     {
         return _key_to_value.begin();
@@ -279,6 +285,12 @@ public:
     }
 
     // return begin of the iterator
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename container_type::left_iterator peek(const key_type& k)
+    {
+        return _container.left.find(k);
+    }
+
     typename container_type::left_iterator begin()
     {
         return _container.left.begin();
@@ -392,6 +404,12 @@ public:
     typename key_to_value_type::iterator end()
     {
         return _key_to_value.end();
+    }
+
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename key_to_value_type::iterator peek(const key_type& k)
+    {
+        return _key_to_value.find(k);
     }
 
     typename key_to_value_type::iterator begin()
@@ -509,6 +527,12 @@ public:
     }
 
     // return begin of the iterator
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename container_type::left_iterator peek(const key_type& k)
+    {
+        return _container.left.find(k);
+    }
+
     typename container_type::left_iterator begin()
     {
         return _container.left.begin();
@@ -563,6 +587,74 @@ public:
         return std::make_pair( key_type(), V() );
     }
 
+    // Removes the first value of k's bucket that matches, leaving recency alone: looking at an entry to judge it is
+    // not a use of it.
+    template <typename Predicate>
+    V takeIf(const key_type& k,
+             Predicate matches)
+    {
+        typename container_type::left_iterator found = _container.left.find(k);
+        if (found == _container.left.end()) {
+            return V();
+        }
+        for (typename std::list<V>::iterator it = found->second.begin(); it != found->second.end(); ++it) {
+            if (matches(*it)) {
+                V ret = *it;
+                if (found->second.size() == 1) {
+                    _container.left.erase(found);
+                } else {
+                    found->second.erase(it);
+                }
+
+                return ret;
+            }
+        }
+
+        return V();
+    }
+
+    // Calls visit(key, value) for at most maxVisits values, without touching recency, starting where the last scan
+    // stopped so that successive scans go round the whole table. The cursor is a key rather than an iterator, so
+    // erasing anything or copying the table cannot leave it dangling. A bucket that does not fit in what is left of
+    // this scan waits for the next one, unless it alone exceeds maxVisits.
+    template <typename Visitor>
+    std::size_t scan(std::size_t maxVisits,
+                     Visitor visit)
+    {
+        std::size_t bucketsLeft = _container.size();
+        if (bucketsLeft == 0) {
+            return 0;
+        }
+
+        typename container_type::right_iterator it = _container.right.begin();
+        if (_hasScanCursor) {
+            typename container_type::left_iterator cursor = _container.left.find(_scanCursor);
+            if (cursor != _container.left.end()) {
+                it = _container.project_right(cursor);
+            }
+        }
+
+        std::size_t visited = 0;
+        while (bucketsLeft > 0 && visited < maxVisits) {
+            if (visited > 0 && it->first.size() > maxVisits - visited) {
+                break;
+            }
+            for (typename std::list<V>::iterator it2 = it->first.begin(); it2 != it->first.end() && visited < maxVisits; ++it2) {
+                visit(it->second, *it2);
+                ++visited;
+            }
+            --bucketsLeft;
+            ++it;
+            if (it == _container.right.end()) {
+                it = _container.right.begin();
+            }
+        }
+        _scanCursor = it->second;
+        _hasScanCursor = true;
+
+        return visited;
+    }
+
     unsigned int size()
     {
         return _container.size();
@@ -570,6 +662,8 @@ public:
 
 private:
     container_type _container;
+    key_type _scanCursor = key_type();
+    bool _hasScanCursor = false;
 };
 
 #    else // !NATRON_CACHE_USE_HASH
@@ -611,6 +705,12 @@ public:
     }
 
     // return begin of the iterator
+    // Finds the record without moving it in the replacement order, as operator() does.
+    typename container_type::left_iterator peek(const key_type& k)
+    {
+        return _container.left.find(k);
+    }
+
     typename container_type::left_iterator begin()
     {
         return _container.left.begin();

@@ -27,6 +27,10 @@ set(Tests_SOURCES
     AddLayers_Test.cpp
     AddLayersRender_Test.cpp
     BaseTest.cpp
+    CacheDiskTier_Test.cpp
+    CacheDiskTierProcess_Test.cpp
+    CacheHostTier_Test.cpp
+    CacheRetention_Test.cpp
     CacheStress.cpp
     CacheStress_Test.cpp
     CacheStressConcurrent_Test.cpp
@@ -195,6 +199,8 @@ set(Tests_SOURCES
     OfxMetadataBridge_Test.cpp
     OfxRetired_Test.cpp
     OfxTestPlugin_Test.cpp
+    OverlayDrawList_Test.cpp
+    OverlayImage_Test.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on
@@ -315,6 +321,7 @@ set(GuiTests_SOURCES
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
+    OverlayImageRenderer_Test.cpp
     RenderDialogRange_Test.cpp
     RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp

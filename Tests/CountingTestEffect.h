@@ -56,6 +56,7 @@
 #define kTestPluginIDCounting "test.natron.built-in.Counting"
 #define kTestPluginIDCountingMerge "test.natron.built-in.CountingMerge"
 #define kTestPluginIDTiledIdentity "test.natron.built-in.TiledIdentity"
+#define kTestPluginIDSplitInputs "test.natron.built-in.SplitInputs"
 
 NATRON_NAMESPACE_ENTER
 
@@ -670,6 +671,162 @@ private:
     static constexpr NodeSpec kNodeSpec = {
         .id = kTestPluginIDTiledIdentity,
         .label = "Test Tiled Identity",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+};
+
+/**
+ * @brief Over the kCountingTestSize square, each pixel takes the value of input A left of the middle and of input B
+ * right of it, and the region of interest of each input says so. Always caches its output, and always asks for both
+ * inputs, so a render of one side alone also shows what it gets for the input it has no use for.
+ **/
+class SplitInputsTestEffect
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new SplitInputsTestEffect(n);
+    }
+
+    explicit SplitInputsTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual RenderSafetyEnum renderThreadSafety() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return eRenderSafetyFullySafe;
+    }
+
+    virtual bool shouldCacheOutput(bool /*isFrameVaryingOrAnimated*/,
+                                   double /*time*/,
+                                   ViewIdx /*view*/,
+                                   int /*visitsCount*/) const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double /*time*/,
+                                             const RenderScale& /*scale*/,
+                                             ViewIdx /*view*/,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        rod->x1 = 0.;
+        rod->y1 = 0.;
+        rod->x2 = kCountingTestSize;
+        rod->y2 = kCountingTestSize;
+
+        return eStatusOK;
+    }
+
+    virtual void getRegionsOfInterest(double /*time*/,
+                                      const RenderScale& /*scale*/,
+                                      const RectD& /*outputRoD*/,
+                                      const RectD& renderWindow,
+                                      ViewIdx /*view*/,
+                                      RoIMap* ret) OVERRIDE FINAL
+    {
+        const double middle = kCountingTestSize / 2;
+        const auto side = [&](int inputNb, double x1, double x2) {
+            const EffectInstancePtr input = getInput(inputNb);
+            if (!input) {
+                return;
+            }
+            (*ret)[input] = renderWindow.intersect(RectD(x1, 0., x2, kCountingTestSize));
+        };
+        side(0, 0., middle);
+        side(1, middle, kCountingTestSize);
+    }
+
+    virtual void addAcceptedComponents(int /*inputNb*/,
+                                       std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
+    {
+        comps->push_back(ImageLayerDesc::getRGBAComponents());
+    }
+
+    virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL
+    {
+        depths->push_back(eImageBitDepthFloat);
+    }
+
+private:
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+    }
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        CountingTestRegistry::noteRender(getNode().get());
+
+        const int middle = kCountingTestSize / 2;
+        float values[2] = { 0.f, 0.f };
+        for (int i = 0; i < 2; ++i) {
+            RectI inputRoI;
+            const ImagePtr input = getImage(i, args.time, args.mappedScale, args.view, NULL, &ImageLayerDesc::getRGBAComponents(),
+                                            false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
+            const bool needed = (i == 0) ? (args.roi.x1 < middle) : (args.roi.x2 > middle);
+            if (!needed) {
+                continue;
+            }
+            if (!input) {
+                return eStatusFailed;
+            }
+            Image::ReadAccess access = input->getReadRights();
+            const float* pixel = (const float*)access.pixelAt((i == 0) ? 0 : middle, 0);
+            if (!pixel) {
+                return eStatusFailed;
+            }
+            values[i] = pixel[0];
+        }
+
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+            const ImagePtr& image = it->second;
+            if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
+                return eStatusFailed;
+            }
+            const int numChannels = (int)image->getComponentsCount();
+            Image::WriteAccess access(image.get());
+            for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+                for (int x = args.roi.x1; x < args.roi.x2; ++x) {
+                    float* pixel = (float*)access.pixelAt(x, y);
+                    if (!pixel) {
+                        return eStatusFailed;
+                    }
+                    for (int c = 0; c < numChannels; ++c) {
+                        pixel[c] = values[(x < middle) ? 0 : 1];
+                    }
+                }
+            }
+        }
+
+        return eStatusOK;
+    }
+
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "A", .kind = eDataKindImage, .optional = true },
+        InputSpec { .label = "B", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDSplitInputs,
+        .label = "Test Split Inputs",
         .outputKind = eDataKindImage,
         .inputs = kInputs,
     };

@@ -182,7 +182,11 @@ renderMembersOnCpu(const FrameRenderContextPtr& context,
         }
         const FrameGraph::Task& task = graph.tasks[m];
         std::map<ImageLayerDesc, ImagePtr> planes;
+        EffectInstance::takeLastRenderCacheState();
         const EffectInstance::RenderRoIRetCode code = RenderScheduler::renderTaskOnCpu(graph, m, eStorageModeRAM, &planes);
+        if (report) {
+            report->memberCache.push_back(EffectInstance::takeLastRenderCacheState());
+        }
         if (code != EffectInstance::eRenderRoIRetCodeOk) {
             return code;
         }

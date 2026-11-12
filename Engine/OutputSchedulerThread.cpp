@@ -2595,6 +2595,7 @@ private:
                             if (graph.tasks.empty()) {
                                 fallbackReason = "request does not reach the writer";
                             } else {
+                                RenderScheduler::pruneBehindCacheHits(graph, context);
                                 placeRenderGraph(graph, context);
                                 future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
                             }

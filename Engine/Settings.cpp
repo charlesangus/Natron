@@ -33,6 +33,7 @@
 #include <stdexcept>
 
 #include <QDebug>
+#include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -54,6 +55,7 @@
 #include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/GpuDeviceList.h"
 #include "Engine/KnobFactory.h"
@@ -1501,23 +1503,34 @@ Settings::initializeKnobsCaching()
     /////////// Caching tab
     _cachingTab = AppManager::createKnob<KnobPage>( this, tr("Caching") );
 
-    _aggressiveCaching = AppManager::createKnob<KnobBool>( this, tr("Aggressive caching") );
-    _aggressiveCaching->setName("aggressiveCaching");
-    _aggressiveCaching->setHintToolTip( tr("When checked, %1 will cache the output of all images "
-                                           "rendered by all nodes, regardless of their \"Force caching\" parameter. When enabling this option "
-                                           "you need to have at least 8GiB of RAM, and 16GiB is recommended.\n"
-                                           "If not checked, %1 will only cache the  nodes "
-                                           "which have multiple outputs, or their parameter \"Force caching\" checked or if one of its "
-                                           "output has its settings panel opened.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ) );
-    _cachingTab->addKnob(_aggressiveCaching);
+    _cacheAdmissionPolicy = AppManager::createKnob<KnobChoice>(this, tr("Cache Admission Policy"));
+    _cacheAdmissionPolicy->setName("cacheAdmissionPolicy");
+    {
+        std::vector<ChoiceOption> entries;
+        assert(entries.size() == (int)CacheRetention::eAdmissionPolicyAll);
+        entries.push_back(ChoiceOption("all",
+                                       tr("All").toStdString(),
+                                       tr("Store the output of every node. Nothing is evicted until the cache needs room.").toStdString()));
+        assert(entries.size() == (int)CacheRetention::eAdmissionPolicyPriorityFloor);
+        entries.push_back(ChoiceOption("priorityFloor",
+                                       tr("Priority Floor").toStdString(),
+                                       tr("Store an output only when something asks for it: the node is on the active viewer's branch, feeds a recently edited node or an open panel, "
+                                          "was slow to render, has \"Force caching\" checked, or its output is read more than once.")
+                                           .toStdString()));
+        _cacheAdmissionPolicy->populateChoices(entries);
+    }
+    _cacheAdmissionPolicy->setHintToolTip(tr("Advanced. Which node outputs may enter the cache; the default is All. An output stored earlier serves a render under either policy. "
+                                             "The NATRON_CACHE_ADMISSION environment variable (all or priorityFloor) takes precedence over this setting."));
+    _cachingTab->addKnob(_cacheAdmissionPolicy);
 
     _maxRAMPercent = AppManager::createKnob<KnobInt>( this, tr("Maximum amount of RAM memory used for caching (% of total RAM)") );
     _maxRAMPercent->setName("maxRAMPercent");
     _maxRAMPercent->disableSlider();
     _maxRAMPercent->setMinimum(0);
     _maxRAMPercent->setMaximum(100);
-    QString ramHint( tr("This setting indicates the percentage of the total RAM which can be used by the memory caches. "
-                        "This system has %1 of RAM.").arg( printAsRAM( getSystemTotalRAM() ) ) );
+    QString ramHint(tr("This setting indicates the percentage of the total RAM which can be used by the memory caches, images and deep images alike. "
+                       "This system has %1 of RAM.")
+                        .arg(printAsRAM(getSystemTotalRAM())));
     if ( isApplication32Bits() && (getSystemTotalRAM() > 4ULL * 1024ULL * 1024ULL * 1024ULL) ) {
         ramHint.append( QString::fromUtf8("\n") );
         ramHint.append( tr("The version of %1 you are running is 32 bits, which means the available RAM "
@@ -1570,18 +1583,9 @@ Settings::initializeKnobsCaching()
     _maxDiskCacheNodeGB->disableSlider();
     _maxDiskCacheNodeGB->setMinimum(0);
     _maxDiskCacheNodeGB->setMaximum(100);
-    _maxDiskCacheNodeGB->setHintToolTip( tr("The maximum size that may be used by the DiskCache node on disk (in GiB)") );
+    _maxDiskCacheNodeGB->setHintToolTip(tr("The space that the outputs of DiskCache nodes may take in the disk tier (in GiB), apart from the disk tier's own size. "
+                                           "Past it, an output is not kept on disk and a warning is logged once."));
     _cachingTab->addKnob(_maxDiskCacheNodeGB);
-
-    _maxDeepImageCacheGB = AppManager::createKnob<KnobInt>(this, tr("Maximum deep image cache RAM usage (GiB)"));
-    _maxDeepImageCacheGB->setName("maxDeepImageCache");
-    _maxDeepImageCacheGB->disableSlider();
-    _maxDeepImageCacheGB->setMinimum(0);
-    _maxDeepImageCacheGB->setMaximum(100);
-    _maxDeepImageCacheGB->setHintToolTip(tr("The maximum size that may be used in RAM by the deep image cache (in GiB). "
-                                            "This is a separate budget from the regular image cache above, "
-                                            "so that large deep renders cannot evict it entirely."));
-    _cachingTab->addKnob(_maxDeepImageCacheGB);
 
     _diskCachePath = AppManager::createKnob<KnobPath>( this, tr("Disk cache path") );
     _diskCachePath->setName("diskCachePath");
@@ -1598,6 +1602,27 @@ Settings::initializeKnobsCaching()
 
     _diskCachePath->setHintToolTip( diskCacheTt + QLatin1Char('\n') + diskCacheTt2 );
     _cachingTab->addKnob(_diskCachePath);
+
+    _diskTierLocation = AppManager::createKnob<KnobPath>(this, tr("Disk Tier Location"));
+    _diskTierLocation->setName("diskTierLocation");
+    _diskTierLocation->setMultiPath(false);
+    _diskTierLocation->setHintToolTip(tr("WARNING: Changing this parameter requires a restart of the application.\n"
+                                         "The directory holding rendered images that left RAM, shared with every "
+                                         "other %1 session pointing at it, on this machine or on a network filesystem. "
+                                         "If the parameter is left empty or the location cannot be used, the default "
+                                         "location is used: %2")
+                                          .arg(QString::fromUtf8(NATRON_APPLICATION_NAME))
+                                          .arg(QString::fromUtf8(defaultDiskTierLocation().c_str())));
+    _cachingTab->addKnob(_diskTierLocation);
+
+    _diskTierSize = AppManager::createKnob<KnobInt>(this, tr("Disk Tier Size"));
+    _diskTierSize->setName("diskTierSize");
+    _diskTierSize->disableSlider();
+    _diskTierSize->setMinimum(0);
+    _diskTierSize->setHintToolTip(tr("The maximum size of the disk tier, in GiB. It never takes more than a quarter of "
+                                     "the free space of its filesystem. Setting 0 turns the tier off; turning it back "
+                                     "on requires a restart of the application."));
+    _cachingTab->addKnob(_diskTierSize);
 
     _wipeDiskCache = AppManager::createKnob<KnobButton>( this, tr("Wipe Disk Cache") );
     _wipeDiskCache->setHintToolTip( tr("Cleans-up all caches, deleting all folders that may contain cached data. "
@@ -1801,12 +1826,12 @@ Settings::setDefaultValues()
 #endif
 
     // Caching
-    _aggressiveCaching->setDefaultValue(false);
+    _cacheAdmissionPolicy->setDefaultValue((int)CacheRetention::kDefaultAdmissionPolicy);
     _maxRAMPercent->setDefaultValue(50, 0);
     _unreachableRAMPercent->setDefaultValue(20); // see https://github.com/NatronGitHub/Natron/issues/486
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
     _maxDiskCacheNodeGB->setDefaultValue(10, 0);
-    _maxDeepImageCacheGB->setDefaultValue(2, 0);
+    _diskTierSize->setDefaultValue(20, 0);
     //_diskCachePath
     setCachingLabels();
 
@@ -2405,6 +2430,7 @@ Settings::restoreSettings(bool useDefault)
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
         appPTR->setNThreadsToRender( getNumberOfThreads() );
         appPTR->setUseThreadPool( _useThreadPool->getValue() );
+        CacheRetention::setAdmissionPolicySetting((CacheRetention::AdmissionPolicyEnum)_cacheAdmissionPolicy->getValue());
         appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
     } catch (std::logic_error&) {
         // ignore
@@ -2515,11 +2541,11 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if ( k == _maxDiskCacheNodeGB.get() ) {
         if (!_restoringSettings) {
-            appPTR->setApplicationsCachesMaximumDiskSpace( getMaximumDiskCacheNodeSize() );
+            appPTR->setNodeCachePinBudget(getMaximumDiskCacheNodeSize());
         }
-    } else if (k == _maxDeepImageCacheGB.get()) {
+    } else if (k == _diskTierSize.get()) {
         if (!_restoringSettings) {
-            appPTR->setApplicationsCachesMaximumDeepImageCacheSize(getMaximumDeepImageCacheSize());
+            appPTR->setNodeCacheDiskTierSize(getDiskTierSizeBytes());
         }
     } else if (k == _maxRAMPercent.get()) {
         if (!_restoringSettings) {
@@ -2565,6 +2591,8 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _renderSchedulerMode.get()) {
         appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
+    } else if (k == _cacheAdmissionPolicy.get()) {
+        CacheRetention::setAdmissionPolicySetting((CacheRetention::AdmissionPolicyEnum)_cacheAdmissionPolicy->getValue());
     } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {
         if (!_restoringSettings) {
             tryLoadOpenColorIOConfig();
@@ -2780,12 +2808,6 @@ Settings::getRenderSchedulerMode() const
 
 // "Caching" pane
 
-bool
-Settings::isAggressiveCachingEnabled() const
-{
-    return _aggressiveCaching->getValue();
-}
-
 double
 Settings::getRamMaximumPercent() const
 {
@@ -2805,9 +2827,23 @@ Settings::getMaximumDiskCacheNodeSize() const
 }
 
 U64
-Settings::getMaximumDeepImageCacheSize() const
+Settings::getDiskTierSizeBytes() const
 {
-    return (U64)(_maxDeepImageCacheGB->getValue()) * 1024 * 1024 * 1024;
+    return (U64)(_diskTierSize->getValue()) * 1024 * 1024 * 1024;
+}
+
+std::string
+Settings::getDiskTierLocation() const
+{
+    const std::string location = _diskTierLocation->getValue();
+
+    return location.empty() ? defaultDiskTierLocation() : location;
+}
+
+std::string
+Settings::defaultDiskTierLocation()
+{
+    return (QDir::homePath() + QString::fromUtf8("/.cache/Natron/tier")).toStdString();
 }
 
 ///////////////////////////////////////////////////

@@ -37,18 +37,20 @@
 #include <vector>
 
 #include <QCoreApplication>
-#include <QWaitCondition>
 #include <QMutex>
+#include <QPointF>
 #include <QRecursiveMutex>
+#include <QWaitCondition>
 
 #include "Global/GlobalDefines.h"
 
+#include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
-#include "Engine/TLSHolder.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OSGLContext.h"
+#include "Engine/OverlayDrawList.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -382,32 +384,8 @@ public:
     ActionsCachePtr actionsCache;
 
 #if NATRON_ENABLE_TRIMAP
-    ///Store all images being rendered to avoid 2 threads rendering the same portion of an image
-    struct ImageBeingRendered
-    {
-        QWaitCondition cond;
-        QMutex lock;
-        int refCount;
-        bool failed;
-        bool retracted; //< failed because the image left the cache, not because its render failed
-
-        ImageBeingRendered()
-            : cond()
-            , lock()
-            , refCount(0)
-            , failed(false)
-            , retracted(false)
-        {
-        }
-    };
-
-    typedef std::shared_ptr<ImageBeingRendered> ImageBeingRenderedPtr;
-    typedef std::map<ImagePtr, ImageBeingRenderedPtr> ImageBeingRenderedMap;
-
-    // The images being rendered are tracked process-wide rather than per effect (see EffectInstancePrivate.cpp): a
-    // cached image is shared by every node whose content hash matches, not only by the clones of one node.
-    struct ImagesBeingRenderedRegistry;
-    static ImagesBeingRenderedRegistry& imagesBeingRenderedRegistry();
+    struct ImageReservationStripes;
+    static ImageReservationStripes& imageReservationStripes();
     static ImageBeingRenderedPtr acquireImageBeingRendered(const ImagePtr& img);
 #endif
 
@@ -420,6 +398,11 @@ public:
     // set during interact actions on main-thread
     OverlaySupport* overlaysViewport;
     bool drawingPassiveOverlay; // only used on main thread
+    // The draw list and the pen's hold on its handles; main thread only, never copied to clones.
+    OverlayDrawList overlayDrawList;
+    int overlayHoveredHandle = OverlayDrawList::kNoHandle;
+    int overlayPressedHandle = OverlayDrawList::kNoHandle;
+    QPointF overlayLastPenPos;
     mutable QRecursiveMutex attachedContextsMutex;
 
     // A list of context that are currently attached (i.e attachOpenGLContext() has been called on them but not yet dettachOpenGLContext).

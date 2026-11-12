@@ -115,15 +115,20 @@ public:
     /**
      * @brief Asks for the payloads of paths to load, each prim's own or also those below it, on the
      * next serviceLoads(). Never touches the stage. A later request for a path replaces an earlier
-     * one not yet serviced.
+     * one not yet serviced. A load with descendants leaves out the subtrees at excluded: a payload
+     * above one of them loads on its own, and its descendants are asked for again once it has.
      **/
     void requestLoad(const PXR_NS::SdfPathVector& paths,
-                     bool withDescendants);
+                     bool withDescendants,
+                     const PXR_NS::SdfPathVector& excluded = PXR_NS::SdfPathVector());
 
     void requestUnload(const PXR_NS::SdfPathVector& paths);
 
     // Drops the requests no serviceLoads() has taken yet.
     void cancelPendingLoads();
+
+    // Drops the load requests at paths no serviceLoads() has taken yet; unloads stay.
+    void cancelPendingLoads(const PXR_NS::SdfPathVector& paths);
 
     bool hasPendingLoads() const;
 
@@ -201,6 +206,10 @@ private:
     // Guards the pending requests and the failures, and is never held across a stage operation.
     mutable std::mutex _loadMutex;
     std::map<PXR_NS::SdfPath, PendingLoadEnum> _pendingLoads;
+    // The excluded subtrees of the pending loads with descendants that have any.
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector> _pendingExclusions;
+    // Moves on every cancel, so a batch does not ask again for what was cancelled while it ran.
+    U64 _cancelGeneration = 0;
     std::map<PXR_NS::SdfPath, std::string> _loadFailures;
     bool _servicingLoads = false;
     std::atomic<U64> _loadEditCount { 0 };

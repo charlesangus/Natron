@@ -120,6 +120,8 @@ public:
     bool getSetState(const std::string& path, SceneDrawStateEnum* state) const;
     SceneDrawResolved resolve(const std::string& path) const;
     std::size_t storedCount() const;
+    // Every load the rows ask for as they stand, in path order; visits every stored row.
+    std::vector<SceneDrawLoadRequest> wantedLoads() const;
 
     struct PathLess {
         bool operator()(const std::string& a, const std::string& b) const;

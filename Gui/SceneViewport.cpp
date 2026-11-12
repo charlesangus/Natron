@@ -34,6 +34,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -140,6 +141,7 @@
 #include "Gui/Menu.h"
 #include "Gui/SceneDrawBoxes.h"
 #include "Gui/SceneDrawFilter.h"
+#include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGuides.h"
@@ -2971,6 +2973,26 @@ SceneViewportRenderer::applyPendingDrawDeltas()
 }
 
 bool
+SceneViewportRenderer::postDrawChange(const SceneDrawChange& change,
+                                      std::size_t revealBatch)
+{
+    const SceneDrawDelta& delta = change.delta;
+    const bool posted = !delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty();
+
+    if (posted) {
+        postDrawDelta(delta, revealBatch, change.startedAt);
+    }
+    if (!change.cancelledLoads.empty()) {
+        cancelStageLoads(change.cancelledLoads);
+    }
+    for (const SceneDrawLoadRequest& load : delta.loads) {
+        requestStageLoad(std::vector<std::string>(1, load.path), load.withDescendants, load.excluded);
+    }
+
+    return posted;
+}
+
+bool
 SceneViewportRenderer::isDrawRevealing() const
 {
     return _imp->drawRevealing;
@@ -3163,12 +3185,13 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 
 void
 SceneViewportRenderer::requestStageLoad(const std::vector<std::string>& paths,
-                                        bool withDescendants)
+                                        bool withDescendants,
+                                        const std::vector<std::string>& excluded)
 {
     SceneStage* stage = _imp->loadStage;
 
     if (stage) {
-        stage->requestLoad(toSdfPaths(paths), withDescendants);
+        stage->requestLoad(toSdfPaths(paths), withDescendants, toSdfPaths(excluded));
     }
 }
 
@@ -3189,6 +3212,16 @@ SceneViewportRenderer::cancelStageLoads()
 
     if (stage) {
         stage->cancelPendingLoads();
+    }
+}
+
+void
+SceneViewportRenderer::cancelStageLoads(const std::vector<std::string>& paths)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (stage) {
+        stage->cancelPendingLoads(toSdfPaths(paths));
     }
 }
 
@@ -5208,7 +5241,8 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
-    SceneDrawStates drawStates;
+    // Made by the widget, which its deliveries run on.
+    std::unique_ptr<SceneDrawStateQueue> drawStates;
     std::size_t drawRevealBatch = 0;
     QString error;
     bool glInitialized = false;
@@ -5697,6 +5731,8 @@ SceneViewport::SceneViewport(QWidget* parent)
         };
         timing->setTraceReadCallback([this, republish]() { QMetaObject::invokeMethod(this, republish, Qt::QueuedConnection); });
     }
+    _imp->drawStates.reset(new SceneDrawStateQueue([this](const std::function<void()>& run) { QMetaObject::invokeMethod(this, run, Qt::QueuedConnection); },
+                                                   [this](const SceneDrawChange& change) { deliverDrawChange(change); }));
 
     _imp->wheelMoveTimer = new QTimer(this);
     _imp->wheelMoveTimer->setSingleShot(true);
@@ -5838,6 +5874,7 @@ SceneViewport::SceneViewport(QWidget* parent)
 SceneViewport::~SceneViewport()
 {
     Q_EMIT closing();
+    _imp->drawStates.reset();
     _imp->renderer.setRefineListener(std::function<void()>());
     // Every thread is told before any is waited for: the worker's sync may wait for a frame, and
     // the load batch gives up on the files it is opening.
@@ -6240,34 +6277,124 @@ SceneViewport::publishDrawStats()
 }
 
 void
-SceneViewport::sendDrawDelta(const SceneDrawDelta& delta,
-                             std::chrono::steady_clock::time_point startedAt)
+SceneViewport::deliverDrawChange(const SceneDrawChange& change)
 {
-    if (!delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()) {
-        _imp->renderer.postDrawDelta(delta, _imp->drawRevealBatch, startedAt);
-        if (_imp->usesRenderThread) {
-            Implementation* imp = _imp.get();
-            _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
-        }
+    if (_imp->renderer.postDrawChange(change, _imp->drawRevealBatch) && _imp->usesRenderThread) {
+        Implementation* imp = _imp.get();
+        _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
     }
-    for (const SceneDrawLoadRequest& load : delta.loads) {
-        requestLoad(QStringList(QString::fromStdString(load.path)), load.withDescendants);
+    if (!change.delta.loads.empty()) {
+        // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
+        {
+            std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+        }
+        _imp->loadWake.notify_one();
     }
     publishState();
     update();
+    if (!change.cancelledLoads.empty()) {
+        Q_EMIT stageLoadsChanged();
+    }
+    Q_EMIT drawStatesChanged();
+}
+
+namespace {
+bool
+isDrawStatePath(const std::string& path)
+{
+    return SdfPath::IsValidPathString(path) && SdfPath(path).IsAbsoluteRootOrPrimPath();
+}
+
+struct DrawKey {
+    const char* actionID;
+    SceneDrawStateEnum state;
+    // Whether the state goes on the parents of the rows rather than on the rows.
+    bool toParent;
+};
+
+const DrawKey kDrawKeys[] = {
+    { kShortcutIDActionViewer3DDrawChildren, eSceneDrawStateChildren, false },
+    { kShortcutIDActionViewer3DDrawFull, eSceneDrawStateFull, false },
+    { kShortcutIDActionViewer3DDrawLoadAll, eSceneDrawStateLoadAll, false },
+    { kShortcutIDActionViewer3DDrawParentBBox, eSceneDrawStateBBox, true },
+};
+
+const DrawKey*
+drawKeyFor(Qt::KeyboardModifiers modifiers,
+           int key)
+{
+    for (const DrawKey& drawKey : kDrawKeys) {
+        if (matchesKeyBinding(drawKey.actionID, modifiers, key)) {
+            return &drawKey;
+        }
+    }
+
+    return nullptr;
+}
+
+/**
+ * @brief The rows a draw state key acts on: for each selected prim, the row whose box stands for
+ * it when the prim or an ancestor is boxed or hidden, the prim otherwise; with toParent, the
+ * parents of those rows. So the down keys open the picked box, and the up key boxes the row above
+ * it, again on each press.
+ **/
+std::vector<std::string>
+drawKeyRows(const SceneDrawStates& states,
+            const QStringList& selection,
+            bool toParent)
+{
+    std::set<std::string> rows;
+
+    for (const QString& selected : selection) {
+        const std::string path = selected.toStdString();
+        if (!SdfPath::IsValidPathString(path) || !SdfPath(path).IsPrimPath()) {
+            continue;
+        }
+        SdfPath row(path);
+        for (const SdfPath& prefix : row.GetPrefixes()) {
+            const SceneDrawResolved resolved = states.resolve(prefix.GetString());
+            if (!resolved.blocked && ((resolved.state == eSceneDrawStateBBox) || (resolved.state == eSceneDrawStateHidden))) {
+                row = prefix;
+                break;
+            }
+        }
+        if (toParent) {
+            row = row.GetParentPath();
+            if (!row.IsPrimPath()) {
+                continue;
+            }
+        }
+        rows.insert(row.GetString());
+    }
+
+    return std::vector<std::string>(rows.begin(), rows.end());
+}
+} // anonymous namespace
+
+void
+SceneViewport::editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit)
+{
+    if (!_imp->drawStates) {
+        return;
+    }
+    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
+    // Nothing the stage still waits on came from an earlier change, so no change can cancel it.
+    if (!_imp->renderer.hasPendingStageLoads()) {
+        _imp->drawStates->forgetIssuedLoads();
+    }
+    _imp->drawStates->edit(edit, startedAt);
 }
 
 bool
 SceneViewport::setDrawState(const QString& path,
                             const QString& state)
 {
-    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
     const std::string pathString = path.toStdString();
     SceneDrawStateEnum parsed = eSceneDrawStateFull;
-    if (!sceneDrawStateFromName(state.toStdString(), &parsed) || !SdfPath::IsValidPathString(pathString) || !SdfPath(pathString).IsAbsoluteRootOrPrimPath()) {
+    if (!sceneDrawStateFromName(state.toStdString(), &parsed) || !isDrawStatePath(pathString)) {
         return false;
     }
-    sendDrawDelta(_imp->drawStates.setState(pathString, parsed), startedAt);
+    editDrawStates([pathString, parsed](SceneDrawStates* states) { return states->setState(pathString, parsed); });
 
     return true;
 }
@@ -6275,21 +6402,59 @@ SceneViewport::setDrawState(const QString& path,
 void
 SceneViewport::clearDrawState(const QString& path)
 {
-    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
-    sendDrawDelta(_imp->drawStates.clearState(path.toStdString()), startedAt);
+    const std::string pathString = path.toStdString();
+    if (isDrawStatePath(pathString)) {
+        editDrawStates([pathString](SceneDrawStates* states) { return states->clearState(pathString); });
+    }
+}
+
+void
+SceneViewport::clearDrawStatesBelow(const QString& path)
+{
+    const std::string pathString = path.toStdString();
+    if (isDrawStatePath(pathString)) {
+        editDrawStates([pathString](SceneDrawStates* states) { return states->clearStatesBelow(pathString); });
+    }
+}
+
+void
+SceneViewport::resetDrawStatesToGraph(const QString& path)
+{
+    const std::string pathString = path.toStdString();
+    if (!isDrawStatePath(pathString)) {
+        return;
+    }
+    if (pathString == "/") {
+        clearDrawStates();
+
+        return;
+    }
+    editDrawStates([pathString](SceneDrawStates* states) { return states->clearStatesBelow(pathString); });
+    editDrawStates([pathString](SceneDrawStates* states) { return states->clearState(pathString); });
 }
 
 void
 SceneViewport::clearDrawStates()
 {
-    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
-    sendDrawDelta(_imp->drawStates.clearAllStates(), startedAt);
+    editDrawStates([](SceneDrawStates* states) { return states->clearAllStates(); });
 }
 
 QString
 SceneViewport::resolvedDrawState(const QString& path) const
 {
-    return QString::fromUtf8(sceneDrawStateName(_imp->drawStates.resolve(path.toStdString()).state));
+    SceneDrawResolved resolved { eSceneDrawStateFull, eSceneDrawOriginDefault, false };
+    if (_imp->drawStates) {
+        const std::string pathString = path.toStdString();
+        _imp->drawStates->read([&resolved, &pathString](const SceneDrawStates& states) { resolved = states.resolve(pathString); });
+    }
+
+    return QString::fromUtf8(sceneDrawStateName(resolved.state));
+}
+
+bool
+SceneViewport::tryReadDrawStates(const std::function<void(const SceneDrawStates&)>& read) const
+{
+    return _imp->drawStates && _imp->drawStates->tryRead(read);
 }
 
 void
@@ -8028,7 +8193,7 @@ SceneViewport::event(QEvent* e)
             || (drawModeForKey(k->modifiers(), k->key()) >= 0) || matchesKeyBinding(kShortcutIDActionViewer3DShowGrid, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
-            || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key())
+            || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key()) || drawKeyFor(k->modifiers(), k->key())
             || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
 
@@ -8075,6 +8240,20 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DCycleTool, e->modifiers(), e->key())) {
         cycleTransformTool();
+        e->accept();
+
+        return;
+    }
+    if (const DrawKey* drawKey = drawKeyFor(e->modifiers(), e->key())) {
+        if (_imp->drawStates) {
+            const QStringList selection = getSelection();
+            std::vector<std::string> rows;
+            _imp->drawStates->read([&](const SceneDrawStates& states) { rows = drawKeyRows(states, selection, drawKey->toParent); });
+            const SceneDrawStateEnum state = drawKey->state;
+            for (const std::string& row : rows) {
+                editDrawStates([row, state](SceneDrawStates* states) { return states->setState(row, state); });
+            }
+        }
         e->accept();
 
         return;

@@ -59,6 +59,8 @@ NATRON_NAMESPACE_ENTER
 
 class SceneStage;
 struct SceneDrawDelta;
+struct SceneDrawChange;
+class SceneDrawStates;
 class SceneDrawTiming;
 class UndoHistory;
 class SceneTransformTarget;
@@ -264,6 +266,14 @@ public:
     /** @brief Render thread. Sends what postDrawDelta() queued to the engine's filter. */
     void applyPendingDrawDeltas();
 
+    /**
+     * @brief Takes in one change of the viewer's draw states: posts its delta as postDrawDelta()
+     * does, drops the stage's queued loads at the change's cancelled paths and asks the stage for
+     * its loads, which serviceStageLoads() then takes. Never edits the stage. True if a delta was
+     * posted, for applyPendingDrawDeltas() to send. Main thread.
+     **/
+    bool postDrawChange(const SceneDrawChange& change, std::size_t revealBatch);
+
     bool isDrawRevealing() const;
 
     /** @brief The image of the last reveal step is on screen, so the next step may go. */
@@ -354,11 +364,16 @@ public:
      * @brief Passes load requests on to the stage, which takes them when serviceStageLoads() next
      * runs. Ignored before the first sync has made the stage. See SceneStage::requestLoad().
      **/
-    void requestStageLoad(const std::vector<std::string>& paths, bool withDescendants);
+    void requestStageLoad(const std::vector<std::string>& paths,
+                          bool withDescendants,
+                          const std::vector<std::string>& excluded = std::vector<std::string>());
 
     void requestStageUnload(const std::vector<std::string>& paths);
 
     void cancelStageLoads();
+
+    // Drops the load requests at paths that no batch has taken yet.
+    void cancelStageLoads(const std::vector<std::string>& paths);
 
     bool hasPendingStageLoads() const;
 
@@ -959,6 +974,12 @@ public:
      **/
     void releaseEngine();
 
+    /**
+     * @brief Calls read with this viewer's draw states, unless an edit of many rows holds them,
+     * which returns false at once. Main thread.
+     **/
+    bool tryReadDrawStates(const std::function<void(const SceneDrawStates&)>& read) const;
+
 public Q_SLOTS:
     // Prim paths. A slot, so that scripts reach it through the meta object.
     void requestLoad(const QStringList& paths, bool withDescendants);
@@ -974,8 +995,12 @@ public Q_SLOTS:
      **/
     bool setDrawState(const QString& path, const QString& state);
     void clearDrawState(const QString& path);
+    // Clears the rows below path; its own state stays.
+    void clearDrawStatesBelow(const QString& path);
+    // Clears path and the rows below it, which then follow the graph's policy or the default.
+    void resetDrawStatesToGraph(const QString& path);
     void clearDrawStates();
-    // The state a path resolves to, effective or inherited.
+    // The state a path resolves to, effective or inherited. Waits for an edit under way.
     QString resolvedDrawState(const QString& path) const;
     // What a change shows goes out this many prims per frame; 0 shows it at once.
     void setDrawRevealBatch(int prims);
@@ -1001,6 +1026,9 @@ Q_SIGNALS:
     // Emitted on the main thread after a batch of payload requests is serviced or the waiting ones
     // are cancelled.
     void stageLoadsChanged();
+
+    // A draw state edit has reached the renderer (main thread).
+    void drawStatesChanged();
 
     // First thing in the destructor, with the renderer still whole (main thread).
     void closing();
@@ -1091,7 +1119,8 @@ private:
 
     // Main thread: starts the frame that takes in a stage change, if one is due and can start.
     void startBackgroundFrame();
-    void sendDrawDelta(const SceneDrawDelta& delta, std::chrono::steady_clock::time_point startedAt);
+    void editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit);
+    void deliverDrawChange(const SceneDrawChange& change);
     void publishDrawStats();
 
     void onBackgroundFrameDone();

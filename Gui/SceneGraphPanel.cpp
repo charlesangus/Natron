@@ -68,6 +68,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -342,6 +343,67 @@ public:
     }
 };
 
+// Edits the draw state column with a list of the states that opens with the editor. A state the
+// row inherits is drawn dimmed and in italics, so that the rows set stand out.
+class DrawStateDelegate
+    : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QWidget* createEditor(QWidget* parent,
+                          const QStyleOptionViewItem& /*option*/,
+                          const QModelIndex& /*index*/) const override
+    {
+        QComboBox* editor = new QComboBox(parent);
+        editor->setObjectName(QString::fromUtf8("sceneGraphDrawStateEditor"));
+        for (int state = (int)eSceneDrawStateBBox; state <= (int)eSceneDrawStateHidden; ++state) {
+            editor->addItem(SceneGraphModel::drawStateLabel(state), state);
+        }
+        editor->addItem(SceneGraphPanel::tr("Reset to Graph"), -1);
+        editor->setItemData(editor->count() - 1, SceneGraphPanel::tr("Clears the state of the row and of every row below it."), Qt::ToolTipRole);
+        DrawStateDelegate* self = const_cast<DrawStateDelegate*>(this);
+        QObject::connect(editor, qOverload<int>(&QComboBox::activated), self, [self, editor]() {
+            Q_EMIT self->commitData(editor);
+            Q_EMIT self->closeEditor(editor);
+        });
+        QTimer::singleShot(0, editor, [editor]() {
+            if (editor->isVisible()) {
+                editor->showPopup();
+            }
+        });
+
+        return editor;
+    }
+
+    void setEditorData(QWidget* editor,
+                       const QModelIndex& index) const override
+    {
+        QComboBox* combo = static_cast<QComboBox*>(editor);
+        combo->setCurrentIndex(combo->findData(index.data(Qt::EditRole)));
+    }
+
+    void setModelData(QWidget* editor,
+                      QAbstractItemModel* model,
+                      const QModelIndex& index) const override
+    {
+        QComboBox* combo = static_cast<QComboBox*>(editor);
+        if (combo->currentIndex() >= 0) {
+            model->setData(index, combo->currentData(), Qt::EditRole);
+        }
+    }
+
+protected:
+    void initStyleOption(QStyleOptionViewItem* option,
+                         const QModelIndex& index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        if (index.data(SceneGraphModel::eDrawStateInheritedRole).toBool()) {
+            option->palette.setColor(QPalette::Text, option->palette.color(QPalette::Disabled, QPalette::Text));
+            option->palette.setColor(QPalette::HighlightedText, option->palette.color(QPalette::Disabled, QPalette::HighlightedText));
+        }
+    }
+};
+
 } // anon namespace
 
 struct SceneGraphPanel::Implementation {
@@ -416,6 +478,7 @@ struct SceneGraphPanel::Implementation {
     };
 
     QToolButton* changedHereButton = nullptr;
+    QToolButton* resetDrawStatesButton = nullptr;
     QTreeView* changedHereTree = nullptr;
     SceneChangedHereModel* changedHereModel = nullptr;
     SceneGraphStageSourcePtr changedHereSource;
@@ -696,9 +759,34 @@ struct SceneGraphPanel::Implementation {
             QObject::connect(viewport, &SceneViewport::sceneSynced, panel, &SceneGraphPanel::onSceneSynced);
             QObject::connect(viewport, &SceneViewport::stageLoadsChanged, panel, &SceneGraphPanel::onStageLoadsChanged);
             QObject::connect(viewport, &SceneViewport::selectionChanged, panel, &SceneGraphPanel::onViewportSelectionChanged);
+            QObject::connect(viewport, &SceneViewport::drawStatesChanged, panel, [this]() { model->refreshDrawStates(); });
         }
+        linkDrawStates();
         viewerSource = viewport ? std::make_shared<ViewerStageSource>(viewport) : SceneGraphStageSourcePtr();
         applySource();
+    }
+
+    // The draw state column reads and edits the linked viewer, whatever node the panel shows.
+    void linkDrawStates()
+    {
+        if (resetDrawStatesButton) {
+            resetDrawStatesButton->setEnabled(!viewport.isNull());
+        }
+        if (!viewport) {
+            model->setDrawStateAccess(SceneGraphModel::DrawStatesReader(), SceneGraphModel::DrawStateWriter());
+
+            return;
+        }
+        const QPointer<SceneViewport> linked = viewport.data();
+        model->setDrawStateAccess([linked](const std::function<void(const SceneDrawStates&)>& read) { return linked && linked->tryReadDrawStates(read); }, [linked](const QString& path, int state) {
+            if (!linked) {
+                return;
+            }
+            if (state < 0) {
+                linked->resetDrawStatesToGraph(path);
+            } else {
+                linked->setDrawState(path, QString::fromUtf8(sceneDrawStateName((SceneDrawStateEnum)state)));
+            } });
     }
 
     void followViewer()
@@ -1318,6 +1406,12 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     filterLayout->setSpacing(4);
     filterLayout->addWidget(_imp->filter, 1);
     filterLayout->addWidget(_imp->changedHereButton);
+    _imp->resetDrawStatesButton = new QToolButton(this);
+    _imp->resetDrawStatesButton->setObjectName(QString::fromUtf8("sceneGraphResetDrawStates"));
+    _imp->resetDrawStatesButton->setText(tr("Reset to Graph"));
+    _imp->resetDrawStatesButton->setToolTip(tr("Clears every draw state set in the linked viewer, so that every prim is drawn as the graph says."));
+    _imp->resetDrawStatesButton->setEnabled(false);
+    filterLayout->addWidget(_imp->resetDrawStatesButton);
     layout->addLayout(filterLayout);
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, this);
@@ -1340,6 +1434,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     _imp->tree->setUniformRowHeights(true);
     _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnName, new PayloadBadgeDelegate(_imp->tree));
+    _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnDrawState, new DrawStateDelegate(_imp->tree));
     _imp->tree->setDragEnabled(true);
     _imp->tree->setDragDropMode(QAbstractItemView::DragOnly);
     _imp->tree->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1347,6 +1442,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnType, QHeaderView::ResizeToContents);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnKind, QHeaderView::ResizeToContents);
+    _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnDrawState, QHeaderView::ResizeToContents);
     _imp->stack->addWidget(_imp->tree);
 
     _imp->changedHereModel = new SceneChangedHereModel(this);
@@ -1361,6 +1457,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->changedHereTree->setContextMenuPolicy(Qt::CustomContextMenu);
     _imp->changedHereTree->header()->setStretchLastSection(false);
     _imp->changedHereTree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
+    // Its rows hold no draw state.
+    _imp->changedHereTree->setColumnHidden(SceneGraphModel::eColumnDrawState, true);
     _imp->stack->addWidget(_imp->changedHereTree);
 
     _imp->resultsModel = new FilterResultsModel(this);
@@ -1407,6 +1505,11 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(&_imp->filterDebounce, &QTimer::timeout, this, &SceneGraphPanel::onFilterEdited);
     QObject::connect(&_imp->filterStep, &QTimer::timeout, this, &SceneGraphPanel::onFilterStep);
     QObject::connect(&_imp->inspectorRefresh, &QTimer::timeout, this, &SceneGraphPanel::refreshInspector);
+    QObject::connect(_imp->resetDrawStatesButton, &QToolButton::clicked, this, [this]() {
+        if (_imp->viewport) {
+            _imp->viewport->clearDrawStates();
+        }
+    });
     QObject::connect(_imp->changedHereButton, &QToolButton::toggled, this, [this]() {
         _imp->updateChangedHere();
         _imp->updateStatus();
@@ -1645,6 +1748,48 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
     create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
     create->setShortcut(Implementation::keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
     create->setEnabled(_imp->canCreateFromSelection());
+    menu.addSeparator();
+    // The linked viewer's, whatever node the panel shows.
+    const QPointer<SceneViewport> drawViewer = _imp->viewport.data();
+    QMenu* drawMenu = menu.addMenu(tr("Draw State"));
+    drawMenu->setObjectName(QString::fromUtf8("sceneGraphDrawStateMenu"));
+    drawMenu->setEnabled(!drawViewer.isNull() && !selection.isEmpty());
+    const QVariant shownState = (selection.size() == 1) ? _imp->model->indexOfPath(selection.front(), false).data(SceneGraphModel::eDrawStateRole) : QVariant();
+    for (int state = (int)eSceneDrawStateBBox; state <= (int)eSceneDrawStateHidden; ++state) {
+        const QString name = QString::fromUtf8(sceneDrawStateName((SceneDrawStateEnum)state));
+        QAction* action = drawMenu->addAction(SceneGraphModel::drawStateLabel(state));
+        action->setObjectName(QString::fromUtf8("sceneGraphDrawState_") + name);
+        action->setCheckable(true);
+        action->setChecked(shownState.isValid() && (shownState.toInt() == state));
+        QObject::connect(action, &QAction::triggered, this, [drawViewer, selection, name]() {
+            for (const QString& path : selection) {
+                if (drawViewer) {
+                    drawViewer->setDrawState(path, name);
+                }
+            }
+        });
+    }
+    drawMenu->addSeparator();
+    QAction* clearBelow = drawMenu->addAction(tr("Clear Below"));
+    clearBelow->setObjectName(QString::fromUtf8("sceneGraphDrawStateClearBelow"));
+    clearBelow->setToolTip(tr("Clears the states of the rows below; the row keeps its own."));
+    QObject::connect(clearBelow, &QAction::triggered, this, [drawViewer, selection]() {
+        for (const QString& path : selection) {
+            if (drawViewer) {
+                drawViewer->clearDrawStatesBelow(path);
+            }
+        }
+    });
+    QAction* resetRow = drawMenu->addAction(tr("Reset to Graph"));
+    resetRow->setObjectName(QString::fromUtf8("sceneGraphDrawStateReset"));
+    resetRow->setToolTip(tr("Clears the state of the row and of every row below it."));
+    QObject::connect(resetRow, &QAction::triggered, this, [drawViewer, selection]() {
+        for (const QString& path : selection) {
+            if (drawViewer) {
+                drawViewer->resetDrawStatesToGraph(path);
+            }
+        }
+    });
     QAction* chosen = menu.exec(view->viewport()->mapToGlobal(pos));
     if (chosen == setOnNode) {
         _imp->runSelectionAction(1, selection);

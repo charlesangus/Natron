@@ -40,6 +40,7 @@
 #include <QtGui/QFont>
 #include <QtGui/QIcon>
 
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -181,6 +182,8 @@ columnHeader(int section,
         return SceneGraphModel::tr("Type");
     case SceneGraphModel::eColumnKind:
         return SceneGraphModel::tr("Kind");
+    case SceneGraphModel::eColumnDrawState:
+        return SceneGraphModel::tr("Draw State");
     default:
         return QVariant();
     }
@@ -393,6 +396,14 @@ struct SceneGraphModel::Implementation {
         }
     };
     std::vector<RetiredListener> retiredListeners;
+    DrawStatesReader drawStatesReader;
+    DrawStateWriter drawStateWriter;
+    struct DrawCell {
+        int state = 0;
+        bool inherited = false;
+    };
+    // By path, what the viewer's draw states resolved to since they last changed.
+    mutable QHash<QString, DrawCell> drawCells;
     // Set while the model changes rows: a slot connected to the change signals must not fetch,
     // since children are not yet a prefix of childNames and a nested insert would land inside
     // the change in flight.
@@ -430,6 +441,46 @@ struct SceneGraphModel::Implementation {
         for (const std::unique_ptr<Item>& child : item->children) {
             emitChangedHere(child.get());
         }
+    }
+
+    void emitDrawStates(Item* item)
+    {
+        if (item->children.empty()) {
+            return;
+        }
+        Q_EMIT model->dataChanged(model->createIndex(0, eColumnDrawState, item->children.front().get()),
+                                  model->createIndex((int)item->children.size() - 1, eColumnDrawState, item->children.back().get()));
+        for (const std::unique_ptr<Item>& child : item->children) {
+            emitDrawStates(child.get());
+        }
+    }
+
+    // False without a viewer to read, and while an edit holds its draw states: the change that
+    // edit makes is followed by a refreshDrawStates().
+    bool drawCellOf(const Item* item,
+                    DrawCell* cell) const
+    {
+        if (!drawStatesReader || item->path.IsEmpty()) {
+            return false;
+        }
+        const QHash<QString, DrawCell>::const_iterator found = drawCells.constFind(item->pathString);
+        if (found != drawCells.constEnd()) {
+            *cell = found.value();
+
+            return true;
+        }
+        const std::string path = item->pathString.toStdString();
+        const bool free = drawStatesReader([&](const SceneDrawStates& states) {
+            const SceneDrawResolved resolved = states.resolve(path);
+            cell->state = (int)resolved.state;
+            cell->inherited = (resolved.origin == eSceneDrawOriginInherited) || (resolved.origin == eSceneDrawOriginDefault);
+        });
+        if (!free) {
+            return false;
+        }
+        drawCells.insert(item->pathString, *cell);
+
+        return true;
     }
 
     Item* itemOf(const QModelIndex& index) const
@@ -1285,6 +1336,41 @@ SceneGraphModel::setChangedHere(const QSet<QString>& paths)
     _imp->emitChangedHere(&_imp->root);
 }
 
+QString
+SceneGraphModel::drawStateLabel(int state)
+{
+    switch (state) {
+    case eSceneDrawStateBBox:
+        return tr("BBox");
+    case eSceneDrawStateChildren:
+        return tr("Children");
+    case eSceneDrawStateFull:
+        return tr("Full");
+    case eSceneDrawStateLoadAll:
+        return tr("Load All");
+    case eSceneDrawStateHidden:
+        return tr("Hidden");
+    default:
+        return QString();
+    }
+}
+
+void
+SceneGraphModel::setDrawStateAccess(const DrawStatesReader& reader,
+                                    const DrawStateWriter& writer)
+{
+    _imp->drawStatesReader = reader;
+    _imp->drawStateWriter = writer;
+    refreshDrawStates();
+}
+
+void
+SceneGraphModel::refreshDrawStates()
+{
+    _imp->drawCells.clear();
+    _imp->emitDrawStates(&_imp->root);
+}
+
 bool
 SceneGraphModel::isChangedHere(const QString& path) const
 {
@@ -1387,9 +1473,32 @@ SceneGraphModel::data(const QModelIndex& index,
             return item->data.type;
         case eColumnKind:
             return item->data.kind;
+        case eColumnDrawState: {
+            Implementation::DrawCell cell;
+
+            return _imp->drawCellOf(item, &cell) ? QVariant(drawStateLabel(cell.state)) : QVariant();
+        }
         default:
             return QVariant();
         }
+    case Qt::EditRole: {
+        Implementation::DrawCell cell;
+        if ((index.column() == eColumnDrawState) && _imp->drawCellOf(item, &cell)) {
+            return cell.state;
+        }
+
+        return QVariant();
+    }
+    case eDrawStateRole: {
+        Implementation::DrawCell cell;
+
+        return _imp->drawCellOf(item, &cell) ? QVariant(cell.state) : QVariant();
+    }
+    case eDrawStateInheritedRole: {
+        Implementation::DrawCell cell;
+
+        return _imp->drawCellOf(item, &cell) ? QVariant(cell.inherited) : QVariant();
+    }
     case Qt::ToolTipRole: {
         if (item->path.IsEmpty()) {
             return QVariant();
@@ -1438,6 +1547,15 @@ SceneGraphModel::data(const QModelIndex& index,
 
             return font;
         }
+        if (index.column() == eColumnDrawState) {
+            Implementation::DrawCell cell;
+            if (_imp->drawCellOf(item, &cell) && cell.inherited) {
+                QFont font;
+                font.setItalic(true);
+
+                return font;
+            }
+        }
 
         return QVariant();
     default:
@@ -1459,8 +1577,28 @@ SceneGraphModel::flags(const QModelIndex& index) const
     if (!index.isValid() || _imp->itemOf(index)->path.IsEmpty()) {
         return Qt::NoItemFlags;
     }
+    const Qt::ItemFlags flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled;
 
-    return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled;
+    return ((index.column() == eColumnDrawState) && _imp->drawStatesReader && _imp->drawStateWriter) ? (flags | Qt::ItemIsEditable) : flags;
+}
+
+bool
+SceneGraphModel::setData(const QModelIndex& index,
+                         const QVariant& value,
+                         int role)
+{
+    if ((role != Qt::EditRole) || (index.column() != eColumnDrawState) || !(flags(index) & Qt::ItemIsEditable)) {
+        return false;
+    }
+    bool isInt = false;
+    const int state = value.toInt(&isInt);
+    if (!isInt || (state < -1) || (state > (int)eSceneDrawStateHidden)) {
+        return false;
+    }
+    // The viewer's change comes back through refreshDrawStates().
+    _imp->drawStateWriter(_imp->itemOf(index)->pathString, state);
+
+    return true;
 }
 
 bool

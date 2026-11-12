@@ -559,4 +559,20 @@ SceneDrawStates::storedCount() const
     return _states.size();
 }
 
+std::vector<SceneDrawLoadRequest>
+SceneDrawStates::wantedLoads() const
+{
+    std::size_t visited = 0;
+    const Effects effects = effectsUnder("/", &visited);
+    std::vector<SceneDrawLoadRequest> loads;
+
+    for (const Effect& effect : effects.rows) {
+        if (effect.load != eLoadNone) {
+            loads.push_back(SceneDrawLoadRequest { effect.path, effect.load == eLoadWithDescendants, effect.excluded });
+        }
+    }
+
+    return loads;
+}
+
 NATRON_NAMESPACE_EXIT

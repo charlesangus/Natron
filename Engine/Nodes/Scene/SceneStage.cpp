@@ -25,6 +25,7 @@
 
 #include "SceneStage.h"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <list>
@@ -485,13 +486,19 @@ SceneStage::getPreviewGeneration() const
 
 void
 SceneStage::requestLoad(const PXR_NS::SdfPathVector& paths,
-                        bool withDescendants)
+                        bool withDescendants,
+                        const PXR_NS::SdfPathVector& excluded)
 {
     std::lock_guard<std::mutex> lock(_loadMutex);
 
     for (const PXR_NS::SdfPath& path : paths) {
         if (path.IsAbsoluteRootOrPrimPath()) {
             _pendingLoads[path] = withDescendants ? ePendingLoadWithDescendants : ePendingLoadOwn;
+            if (withDescendants && !excluded.empty()) {
+                _pendingExclusions[path] = excluded;
+            } else {
+                _pendingExclusions.erase(path);
+            }
             _loadFailures.erase(path);
         }
     }
@@ -505,6 +512,7 @@ SceneStage::requestUnload(const PXR_NS::SdfPathVector& paths)
     for (const PXR_NS::SdfPath& path : paths) {
         if (path.IsAbsoluteRootOrPrimPath()) {
             _pendingLoads[path] = ePendingUnload;
+            _pendingExclusions.erase(path);
             _loadFailures.erase(path);
         }
     }
@@ -516,6 +524,23 @@ SceneStage::cancelPendingLoads()
     std::lock_guard<std::mutex> lock(_loadMutex);
 
     _pendingLoads.clear();
+    _pendingExclusions.clear();
+    ++_cancelGeneration;
+}
+
+void
+SceneStage::cancelPendingLoads(const PXR_NS::SdfPathVector& paths)
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    for (const PXR_NS::SdfPath& path : paths) {
+        const std::map<PXR_NS::SdfPath, PendingLoadEnum>::iterator found = _pendingLoads.find(path);
+        if ((found != _pendingLoads.end()) && (found->second != ePendingUnload)) {
+            _pendingLoads.erase(found);
+            _pendingExclusions.erase(path);
+        }
+    }
+    ++_cancelGeneration;
 }
 
 bool
@@ -540,12 +565,16 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                          const std::function<bool()>& cancelled)
 {
     std::map<PXR_NS::SdfPath, PendingLoadEnum> batch;
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector> exclusions;
+    U64 generation = 0;
     {
         std::lock_guard<std::mutex> lock(_loadMutex);
         if (_pendingLoads.empty()) {
             return false;
         }
         batch.swap(_pendingLoads);
+        exclusions.swap(_pendingExclusions);
+        generation = _cancelGeneration;
         _servicingLoads = true;
     }
     struct ServicingScope {
@@ -568,6 +597,9 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     // The payloads a descendant load names are the unloaded ones found below its path, not the path
     // itself: it is how one whose file does not open stays out of the batch.
     PXR_NS::SdfPathSet unloads;
+    // The payloads loaded on their own for having an excluded subtree, with the exclusions below
+    // each, which a request for their descendants takes once they are loaded.
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector> splitLoads;
     U64 composition = 0;
     bool walkCancelled = false;
     readLocked([&]() {
@@ -588,6 +620,9 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                 }
                 break;
             case ePendingLoadWithDescendants: {
+                const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector>::const_iterator excludedFound = exclusions.find(request.first);
+                const PXR_NS::SdfPathVector noExclusions;
+                const PXR_NS::SdfPathVector& excluded = (excludedFound != exclusions.end()) ? excludedFound->second : noExclusions;
                 // The predicate leaves IsLoaded out, or the walk would not see what it looks for.
                 const PXR_NS::UsdPrimRange range(prim, PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
                 for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
@@ -596,8 +631,25 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
 
                         return;
                     }
+                    const PXR_NS::SdfPath& path = it->GetPath();
+                    if (std::find(excluded.begin(), excluded.end(), path) != excluded.end()) {
+                        it.PruneChildren();
+                        continue;
+                    }
                     if (isUnloadedPayload(*it)) {
-                        opened.descendantLoads[it->GetPath()] = getPayloadAssets(*it);
+                        PXR_NS::SdfPathVector below;
+                        for (const PXR_NS::SdfPath& candidate : excluded) {
+                            if ((candidate != path) && candidate.HasPrefix(path)) {
+                                below.push_back(candidate);
+                            }
+                        }
+                        if (below.empty()) {
+                            opened.descendantLoads[path] = getPayloadAssets(*it);
+                        } else {
+                            // Loading its nested payloads would load the excluded ones too.
+                            opened.ownLoads[path] = getPayloadAssets(*it);
+                            splitLoads[path] = below;
+                        }
                         // Its children do not compose until it is loaded.
                         it.PruneChildren();
                     }
@@ -676,6 +728,19 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
         }
         _lastLoadHoldMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     });
+    if (!splitLoads.empty()) {
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        if (_cancelGeneration == generation) {
+            for (const std::pair<const PXR_NS::SdfPath, PXR_NS::SdfPathVector>& split : splitLoads) {
+                // A newer request for the path, or a load that failed or went, says otherwise.
+                if ((ownPaths.count(split.first) == 0) || (_pendingLoads.count(split.first) != 0)) {
+                    continue;
+                }
+                _pendingLoads[split.first] = ePendingLoadWithDescendants;
+                _pendingExclusions[split.first] = split.second;
+            }
+        }
+    }
 
     return true;
 } // SceneStage::serviceLoads

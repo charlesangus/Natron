@@ -187,7 +187,14 @@ try:
         require(QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", row), Q_ARG("QString", state)),
                 "%s %s: the scene view has setDrawState" % (state, row))
         posted = int(draw_stats().get("posted", 0))
-        check(posted > before, "%s %s: the draw state changed something" % (state, row))
+        if state == "loadAll":
+            # Load All under Full rows draws what Full draws, so with the reveal off it posts no draw
+            # change: what it changes is the loads of the payloads below it.
+            below = [p for p in BUILDINGS if p.startswith(row + "/")]
+            ok = yield ("until", lambda: all(payload_state(p) in (STATE_LOADING, STATE_LOADED) for p in below), LOAD_TIMEOUT_S)
+            check(bool(below) and ok, "%s %s: the draw state asks for the payloads below it" % (state, row))
+        else:
+            check(posted > before, "%s %s: the draw state changed something" % (state, row))
         ok = yield ("until", lambda: presented() >= posted, POLL_TIMEOUT_S)
         check(ok, "%s %s: reached the screen" % (state, row))
 

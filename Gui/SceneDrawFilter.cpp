@@ -331,7 +331,8 @@ SceneDrawFilter::SceneDrawFilter(const HdSceneIndexBaseRefPtr& input)
         return;
     }
     // The filter hears only of what the input adds from now on.
-    SdfPathVector stack = input->GetChildPrimPaths(SdfPath::AbsoluteRootPath());
+    const SdfPathVector tops = input->GetChildPrimPaths(SdfPath::AbsoluteRootPath());
+    SdfPathVector stack(tops.rbegin(), tops.rend());
     while (!stack.empty()) {
         const SdfPath path = stack.back();
         stack.pop_back();

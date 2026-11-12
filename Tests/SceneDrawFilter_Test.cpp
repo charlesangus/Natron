@@ -1367,6 +1367,31 @@ addPayload(const HdRetainedSceneIndexRefPtr& scene)
                       { SdfPath("/World/a/payload/p2"), HdPrimTypeTokens->mesh, someData() },
                       { SdfPath("/World/a/payload/lamp"), HdPrimTypeTokens->sphereLight, someData() } });
 }
+
+void
+appendInputOrder(const HdSceneIndexBase& scene,
+                 const SdfPath& path,
+                 std::vector<std::string>* order)
+{
+    if (kAllGeometry.count(path.GetString()) != 0) {
+        order->push_back(path.GetString());
+    }
+    for (const SdfPath& child : scene.GetChildPrimPaths(path)) {
+        appendInputOrder(scene, child, order);
+    }
+}
+
+// The geometry below root, depth first in the order the input lists children. A retained scene
+// index lists them newest first, not in the order they were added.
+std::vector<std::string>
+inputOrder(const HdSceneIndexBase& scene,
+           const char* root)
+{
+    std::vector<std::string> order;
+    appendInputOrder(scene, SdfPath(root), &order);
+
+    return order;
+}
 } // anon namespace
 
 TEST_F(SceneDrawFilterTest, ARevealGoesDepthFirstInTheInputsOrder)
@@ -1378,7 +1403,9 @@ TEST_F(SceneDrawFilterTest, ARevealGoesDepthFirstInTheInputsOrder)
     filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
     revealAll(*filter, 1);
 
-    EXPECT_EQ((std::vector<std::string> { "/World/a/m1", "/World/a/deep/m2", "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), order.shown);
+    const std::vector<std::string> expected = inputOrder(*scene, "/World");
+    EXPECT_EQ(kAllGeometry.size(), expected.size());
+    EXPECT_EQ(expected, order.shown);
     filter->RemoveObserver(HdSceneIndexObserverPtr(&order));
 }
 
@@ -1395,7 +1422,13 @@ TEST_F(SceneDrawFilterTest, ARevealOfSeveralRowsFinishesOneBeforeTheNextAndTheLa
     filter->applyDeltas({ &fullA, &fullB }, 1);
     revealAll(*filter, 1);
 
-    EXPECT_EQ((std::vector<std::string> { "/World/a/m1", "/World/a/deep/m2", "/World/b/m3", "/World/b/ball" }), order.shown);
+    const std::vector<std::string> rowA = inputOrder(*scene, "/World/a");
+    const std::vector<std::string> rowB = inputOrder(*scene, "/World/b");
+    ASSERT_EQ(2u, rowA.size());
+    ASSERT_EQ(2u, rowB.size());
+    std::vector<std::string> expected = rowA;
+    expected.insert(expected.end(), rowB.begin(), rowB.end());
+    EXPECT_EQ(expected, order.shown);
     order.shown.clear();
 
     filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
@@ -1405,7 +1438,10 @@ TEST_F(SceneDrawFilterTest, ARevealOfSeveralRowsFinishesOneBeforeTheNextAndTheLa
     filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull), 1);
     revealAll(*filter, 1);
 
-    EXPECT_EQ((std::vector<std::string> { "/World/b/m3", "/World/a/m1", "/World/a/deep/m2", "/World/b/ball" }), order.shown);
+    expected = { rowB.front() };
+    expected.insert(expected.end(), rowA.begin(), rowA.end());
+    expected.insert(expected.end(), rowB.begin() + 1, rowB.end());
+    EXPECT_EQ(expected, order.shown);
     filter->RemoveObserver(HdSceneIndexObserverPtr(&order));
 }
 

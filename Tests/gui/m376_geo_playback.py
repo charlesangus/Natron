@@ -124,13 +124,15 @@ try:
         if timer is not None:
             timer.stop()
 
-    def summarise(samples):
+    def write_samples(samples):
         out = os.environ.get("NATRON_GUI_TEST_OUT", "")
         if out:
             with open(os.path.join(out, "samples.tsv"), "w") as f:
                 f.write("t\ttimeline\trefreshes\tsyncedAtMs\tlastPaintMs\tgeoFrame\tsyncRequests\n")
                 for s in samples:
                     f.write("\t".join(str(x) for x in s) + "\n")
+
+    def summarise(samples):
         frame_changes = []
         refresh_events = []
         last_frame = None
@@ -158,7 +160,6 @@ try:
         for run_index in range(2):
             pv().seek(FIRST)
             yield ("sleep", SETTLE_MS)
-            refreshes0 = int(prop("natronGeoRefreshes", 0))
             resyncs0 = int(prop("natronGeoRefreshResyncs", 0))
             samples = []
             started = time.time()
@@ -170,18 +171,21 @@ try:
                 return wrapped or (frames and frames[-1] >= LAST) or time.time() - started > PLAY_TIMEOUT_S
 
             yield ("until", at_end, PLAY_TIMEOUT_S + 5)
+            window = list(samples)
             pv().pause()
             yield ("sleep", SETTLE_MS)
             stop_sampling()
+            write_samples(samples)
             elapsed = samples[-1][0] if samples else 0.
-            frame_changes, refresh_events = summarise(samples)
-            refreshes = int(prop("natronGeoRefreshes", 0)) - refreshes0
+            frame_changes, refresh_events = summarise(window)
+            # Frames and refreshes are both counted between the first and last playback sample, so neither
+            # includes the settle after pause(), where the view catches up to the stopped frame.
+            refreshes = window[-1][2] - window[0][2] if window else 0
             played = len(frame_changes) - 1
-            play_s = (frame_changes[-1][0] - frame_changes[0][0]) if len(frame_changes) > 1 else 0.
-            refresh_s = (refresh_events[-1][0] - refresh_events[0][0]) if len(refresh_events) > 1 else 0.
+            play_s = window[-1][0] - window[0][0] if window else 0.
             report("NOTE run %d: %d timeline frames in %.2fs (%.1f fps), %d refreshes (%.1f /s), %.2f refreshes per frame, %d samples over %.1fs"
                    % (run_index, played, play_s, played / play_s if play_s > 0 else 0., refreshes,
-                      (len(refresh_events) - 1) / refresh_s if refresh_s > 0 else 0., refreshes / float(max(played, 1)),
+                      refreshes / play_s if play_s > 0 else 0., refreshes / float(max(played, 1)),
                       len(samples), elapsed))
             # Delay from each timeline frame to the first refresh after it.
             delays = []

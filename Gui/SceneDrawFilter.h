@@ -80,6 +80,11 @@ NATRON_NAMESPACE_ENTER
  * Lights stop only under a Hidden row. A BBox row, or a row boxed by a Children parent, hides
  * geometry and leaves its lights, so drilling into a scene never darkens it.
  *
+ * A native instance draws through an instancer far from its row, under /UsdNiPropagatedPrototypes
+ * (usdImaging/niPrototypePropagatingSceneIndex.h), which names the instance among its
+ * instanceLocations. So a row over an instance turns that instance off in the instancer's mask
+ * (hd/instancerTopologySchema.h), and the instancer and its prototypes stay in Hydra, Hidden or not.
+ *
  * The notices of one call go out together, once per prim, and a prim that ends where it started
  * sends none. They reach the render index directly, so callers hold the viewer lock and the GL
  * context, between renders. Hydra reads GetPrim() from its sync threads, which is safe only because
@@ -162,6 +167,8 @@ public:
     // The hides and shows that went as a visibility change, with the prim kept in Hydra.
     unsigned long long getVisibilitySentCount() const { return _visibilitySent; }
     std::size_t getHeldInvisibleCount() const { return _invisibleCount; }
+    // Native instances the rules turn off in their instancer's mask.
+    std::size_t getMaskedInstanceCount() const { return _maskedCount; }
     Clock::time_point getLastInputAddedTime() const { return _lastInputAdded; }
 
 protected:
@@ -211,7 +218,21 @@ private:
         bool structural;
     };
 
+    // An instancer that names the prims it draws. hidden is indexed as its instanceLocations.
+    struct Instancer {
+        std::vector<PXR_NS::SdfPath> locations;
+        std::vector<bool> hidden;
+        std::size_t hiddenCount = 0;
+        bool pending = false;
+    };
+
     explicit SceneDrawFilter(const PXR_NS::HdSceneIndexBaseRefPtr& input);
+
+    void readInstancer(const PXR_NS::SdfPath& path, const PXR_NS::HdSceneIndexPrim& prim);
+    void forgetInstancer(const PXR_NS::SdfPath& path);
+    PXR_NS::HdSceneIndexPrim withMask(const PXR_NS::SdfPath& primPath, PXR_NS::HdSceneIndexPrim prim) const;
+    bool setInstanceHidden(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool hidden);
+    void updateInstances(const std::vector<PXR_NS::SdfPath>& roots);
 
     Node& nodeAt(const PXR_NS::SdfPath& path);
     Node* indexPrim(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType);
@@ -240,8 +261,15 @@ private:
 
     std::size_t _invisibleCount = 0;
 
+    std::unordered_map<PXR_NS::SdfPath, Instancer, PXR_NS::SdfPath::Hash> _instancers;
+    // Each instance location to its instancer and its index there, sorted so that a changed row finds
+    // the instances below it without looking at the others.
+    std::multimap<PXR_NS::SdfPath, std::pair<PXR_NS::SdfPath, std::size_t>> _locations;
+    std::size_t _maskedCount = 0;
+
     // What a call has changed so far, sent by sendChanges().
     std::vector<Node*> _changes;
+    std::vector<PXR_NS::SdfPath> _maskChanges;
 
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;

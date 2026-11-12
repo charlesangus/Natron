@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <string>
@@ -39,6 +40,7 @@
 #undef emit
 #endif
 #include <pxr/imaging/hd/changeTracker.h>
+#include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
@@ -196,6 +198,64 @@ addLights(const HdRetainedSceneIndexRefPtr& scene)
     add("/World/rig/subrig", TfToken("xform"));
     add("/World/rig/subrig/spot", HdPrimTypeTokens->sphereLight);
     add("/World/rig/mesh", HdPrimTypeTokens->mesh);
+}
+
+// A native instancer as usdImaging propagates it, away from the instances it names.
+HdContainerDataSourceHandle
+instancerData(const std::vector<std::string>& locations,
+              const std::vector<bool>& mask = std::vector<bool>())
+{
+    VtArray<SdfPath> paths;
+    for (const std::string& location : locations) {
+        paths.push_back(SdfPath(location));
+    }
+    HdInstancerTopologySchema::Builder builder;
+    builder.SetInstanceLocations(HdRetainedTypedSampledDataSource<VtArray<SdfPath>>::New(paths));
+    if (!mask.empty()) {
+        builder.SetMask(HdRetainedTypedSampledDataSource<VtArray<bool>>::New(VtArray<bool>(mask.begin(), mask.end())));
+    }
+
+    return HdRetainedContainerDataSource::New(HdInstancerTopologySchema::GetSchemaToken(), builder.Build());
+}
+
+const char* const kNativeInstancer = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer";
+
+// /World/a/i1, /World/a/i2 and /World/b/i3, drawn by kNativeInstancer.
+void
+addInstances(const HdRetainedSceneIndexRefPtr& scene,
+             const std::vector<bool>& mask = std::vector<bool>())
+{
+    const auto add = [&scene](const char* path, const TfToken& type, const HdContainerDataSourceHandle& data) {
+        scene->AddPrims({ { SdfPath(path), type, data } });
+    };
+    add("/World/a/i1", TfToken(), someData());
+    add("/World/a/i2", TfToken(), someData());
+    add("/World/b/i3", TfToken(), someData());
+    add("/UsdNiPropagatedPrototypes", TfToken(), someData());
+    add("/UsdNiPropagatedPrototypes/Bindings", TfToken(), someData());
+    add("/UsdNiPropagatedPrototypes/Bindings/__Prototype_1", TfToken(), someData());
+    add(kNativeInstancer, HdPrimTypeTokens->instancer, instancerData({ "/World/a/i1", "/World/a/i2", "/World/b/i3" }, mask));
+    add("/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype", TfToken("xform"), someData());
+    add("/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype/m", HdPrimTypeTokens->mesh, someData());
+}
+
+// Empty when the instancer draws every instance.
+std::vector<bool>
+maskOf(const HdSceneIndexBase& index,
+       const char* path)
+{
+    const HdSceneIndexPrim prim = index.GetPrim(SdfPath(path));
+    const HdBoolArrayDataSourceHandle mask = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetMask();
+    if (!mask) {
+        return std::vector<bool>();
+    }
+    const VtArray<bool> values = mask->GetTypedValue(0.f);
+    std::vector<bool> result(values.cbegin(), values.cend());
+    if (std::find(result.begin(), result.end(), false) == result.end()) {
+        result.clear();
+    }
+
+    return result;
 }
 
 class NullLight
@@ -1151,4 +1211,94 @@ TEST_F(SceneDrawFilterTest, RegisteringTwiceIsHarmless)
 
     EXPECT_TRUE(SceneDrawFilter::takeAppendedInstanceId().empty());
     EXPECT_FALSE(get_pointer(SceneDrawFilter::find("no such engine")));
+}
+
+TEST_F(SceneDrawFilterTest, ABoxedRowMasksTheNativeInstancesBelowItAndKeepsTheirInstancer)
+{
+    addInstances(scene);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+
+    EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+    EXPECT_EQ(2u, filter->getMaskedInstanceCount());
+    EXPECT_EQ(1u, recorder.dirtied.count(kNativeInstancer));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
+    EXPECT_TRUE(drawn("/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype/m"));
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull));
+
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+    EXPECT_EQ(0u, filter->getMaskedInstanceCount());
+    EXPECT_EQ(1u, recorder.dirtied.count(kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, AHiddenRowMasksItsInstancesAndARowOnOneInstanceMasksOnlyIt)
+{
+    addInstances(scene);
+
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateHidden));
+
+    EXPECT_EQ((std::vector<bool> { true, true, false }), maskOf(*filter, kNativeInstancer));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
+
+    filter->applyDelta(states.setState("/World/a/i2", eSceneDrawStateChildren));
+
+    EXPECT_EQ((std::vector<bool> { true, false, false }), maskOf(*filter, kNativeInstancer));
+
+    filter->applyDelta(states.clearAllStates());
+
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+}
+
+TEST_F(SceneDrawFilterTest, RowsOutsideTheInstancesLeaveTheirMaskAlone)
+{
+    addInstances(scene);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/c", eSceneDrawStateBBox));
+
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+    EXPECT_EQ(0u, recorder.dirtied.count(kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, TheMaskKeepsWhatTheInputMasks)
+{
+    addInstances(scene, { true, false, true });
+
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+
+    EXPECT_EQ((std::vector<bool> { true, false, false }), maskOf(*filter, kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, AnInstancerAddedOrSeededUnderRulesStartsMasked)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    addInstances(scene);
+
+    EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+
+    SceneDrawFilter::Rules rules;
+    SceneDrawFilter::applyToRules(states.setState("/World/b", eSceneDrawStateBBox), &rules);
+    TfRefPtr<SceneDrawFilter> fresh = SceneDrawFilter::New(scene);
+    fresh->seedRules(rules);
+
+    EXPECT_EQ((std::vector<bool> { true, true, false }), maskOf(*fresh, kNativeInstancer));
+    EXPECT_EQ(1u, fresh->getMaskedInstanceCount());
+}
+
+TEST_F(SceneDrawFilterTest, ANewInstanceListIsReadWhenTheInputAddsItAgain)
+{
+    addInstances(scene);
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+
+    scene->AddPrims({ { SdfPath(kNativeInstancer), HdPrimTypeTokens->instancer, instancerData({ "/World/b/i3", "/World/a/i1" }) } });
+
+    EXPECT_EQ((std::vector<bool> { false, true }), maskOf(*filter, kNativeInstancer));
+    EXPECT_EQ(1u, filter->getMaskedInstanceCount());
+
+    scene->RemovePrims({ SdfPath("/UsdNiPropagatedPrototypes") });
+
+    EXPECT_EQ(0u, filter->getMaskedInstanceCount());
 }

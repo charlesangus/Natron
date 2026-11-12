@@ -281,8 +281,9 @@ private:
     Gui* _gui;
 };
 
-// Paints a row's payload state at the end of its name. The state is a role, not a decoration, so
-// that the name keeps its type's icon and is elided before it reaches the mark.
+// Paints a row's payload state at the end of its name, and before it a dashed square when the viewer
+// can box the row only by loading it. The states are roles, not decorations, so that the name keeps
+// its type's icon and is elided before it reaches the marks.
 class PayloadBadgeDelegate
     : public QStyledItemDelegate {
 public:
@@ -293,6 +294,7 @@ public:
                const QModelIndex& index) const override
     {
         const int state = index.data(SceneGraphModel::ePayloadStateRole).toInt();
+        const bool unknownBounds = index.data(SceneGraphModel::eUnknownBoundsRole).toBool();
 
         if (state == SceneGraphModel::ePayloadStateNone) {
             QStyledItemDelegate::paint(painter, option, index);
@@ -301,8 +303,9 @@ public:
         }
         const int kBadgeSize = 8;
         const int kBadgeMargin = 4;
+        const int badges = unknownBounds ? 2 : 1;
         QStyleOptionViewItem nameOption(option);
-        nameOption.rect.setRight(option.rect.right() - kBadgeSize - 2 * kBadgeMargin);
+        nameOption.rect.setRight(option.rect.right() - badges * (kBadgeSize + kBadgeMargin) - kBadgeMargin);
         QStyle* style = option.widget ? option.widget->style() : QApplication::style();
         style->drawPrimitive(QStyle::PE_PanelItemViewItem, &option, painter, option.widget);
         QStyledItemDelegate::paint(painter, nameOption, index);
@@ -330,6 +333,11 @@ public:
             break;
         }
         painter->drawEllipse(badge);
+        if (unknownBounds) {
+            painter->setPen(QPen(QColor(230, 170, 50), 1., Qt::DotLine));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRect(QRectF(badge.translated(-(kBadgeSize + kBadgeMargin), 0)).adjusted(0.5, 0.5, -0.5, -0.5));
+        }
         painter->restore();
     }
 };

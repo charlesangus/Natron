@@ -90,7 +90,8 @@ from total_ms and is not_valid.
 sibling_shot compares screen grabs around one state change on sibling_row, branch and root; the root, which the viewer frames, is the control: if it changes no pixels the state does
 nothing, and if it does, a row that did not is out of frame or ineffective (shot_reading says which,
 from its coverage). It needs geometry on screen, so it skips with payloads unloaded. orbit10k and
-boxes_shot need a viewer that publishes natronSceneDrawBoxes, and skip without one.
+boxes_shot need a viewer that publishes natronSceneDrawBoxes, and skip without one; boxes_shot's
+first_boxes_ms runs from the change to the paint that first drew a box (natronSceneFirstBoxesMs).
 
 Budgets: main-thread stall under 100 ms; time from a draw state change to the image that shows it under
 100 ms (time_to_picture_ms, worst untraced change of prune_restore, sibling_state and draw_budget, with
@@ -816,9 +817,14 @@ try:
 
     def action_boxes_shot(m):
         yield from clear_draw_states()
+        ok = yield ("until", lambda: boxes_drawn() == 0, TIMEOUT_S)
+        check(ok, "boxes_shot: no box is drawn before the change")
+        sent_ms = time.time() * 1000.0
         yield from set_draw_state(rows["root"], "bbox")
         ok = yield ("until", lambda: boxes_drawn() > 0, TIMEOUT_S)
         check(ok, "boxes_shot: boxes were drawn")
+        # Stamped by the paint that first drew a box, so the poll's interval is not in it.
+        m.values["first_boxes_ms"] = round(prop("natronSceneFirstBoxesMs", 0) - sent_ms, 1) if ok else None
         yield ("sleep", 500)
         m.values["boxes_drawn"] = boxes_drawn()
         m.values["screenshot"] = shot("boxes_%s.png" % fixture)

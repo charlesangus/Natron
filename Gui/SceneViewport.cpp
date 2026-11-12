@@ -136,6 +136,7 @@
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
+#include "Gui/SceneDrawBoxes.h"
 #include "Gui/SceneDrawFilter.h"
 #include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
@@ -568,6 +569,39 @@ private:
 
     TfNotice::Key _key;
 };
+
+// One instance per box: corner picks between its min and max, a 0 or 1 per axis. A marker is a
+// cross of fixed size on screen around boxMin, corner its arm in pixels over markerScale.
+const char* const kBoxVertexShader = "#version 330 core\n"
+                                     "uniform mat4 viewProjection;\n"
+                                     "uniform int markers;\n"
+                                     "uniform vec2 markerScale;\n"
+                                     "layout(location = 0) in vec3 corner;\n"
+                                     "layout(location = 1) in vec3 boxMin;\n"
+                                     "layout(location = 2) in vec3 boxMax;\n"
+                                     "layout(location = 3) in vec3 boxColour;\n"
+                                     "out vec3 edgeColour;\n"
+                                     "void main() {\n"
+                                     "    edgeColour = boxColour;\n"
+                                     "    if (markers != 0) {\n"
+                                     "        vec4 centre = viewProjection * vec4(boxMin, 1.0);\n"
+                                     "        gl_Position = centre + vec4(corner.xy * markerScale * centre.w, 0.0, 0.0);\n"
+                                     "    } else {\n"
+                                     "        gl_Position = viewProjection * vec4(mix(boxMin, boxMax, corner), 1.0);\n"
+                                     "    }\n"
+                                     "}\n";
+const char* const kBoxFragmentShader = "#version 330 core\n"
+                                       "in vec3 edgeColour;\n"
+                                       "out vec4 colour;\n"
+                                       "void main() { colour = vec4(edgeColour, 1.0); }\n";
+const GLfloat kBoxEdges[] = {
+    0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0,
+    0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 0, 1,
+    0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1
+};
+const GLfloat kMarkerArms[] = { -1, 0, 0, 1, 0, 0, 0, -1, 0, 0, 1, 0 };
+const int kBoxFloats = 9;
+const float kMarkerPixels = 6.f;
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -666,6 +700,19 @@ struct SceneViewportRenderer::Implementation {
     std::size_t drawRevealBatch = 0;
     SceneDrawFilter::Rules drawRules;
     SceneDrawFilter::WeakPtr drawFilter;
+    // The list the box buffer holds, and how many of its boxes the last frame drew.
+    SceneDrawBoxes::ListPtr uploadedBoxes;
+    GLuint boxProgram = 0;
+    GLuint boxVao = 0;
+    GLuint boxEdgeBuffer = 0;
+    GLuint boxInstanceBuffer = 0;
+    GLsizei boxInstances = 0;
+    GLuint markerVao = 0;
+    GLuint markerArmBuffer = 0;
+    GLuint markerInstanceBuffer = 0;
+    GLsizei markerInstances = 0;
+    std::atomic<int> boxesDrawn { 0 };
+    std::atomic<int> markersDrawn { 0 };
     std::atomic<bool> everyLightHidden { false };
     StageNoticeCounter stageNotices;
     bool stageNoticesRegistered = false;
@@ -1574,6 +1621,7 @@ struct SceneViewportRenderer::Implementation {
         drawStats.shownSent = filter->getShownSentCount();
         drawStats.visibilitySent = filter->getVisibilitySentCount();
         drawStats.heldInvisible = filter->getHeldInvisibleCount();
+        drawStats.maskedInstances = filter->getMaskedInstanceCount();
         if (drawStats.inputAdded != 0) {
             // The harness compares this with its own wall clock, and the filter keeps a steady one.
             const auto sinceAdded = SceneDrawFilter::Clock::now() - filter->getLastInputAddedTime();
@@ -1614,6 +1662,9 @@ struct SceneViewportRenderer::Implementation {
             SceneDrawFilter::applyToRules(entry.delta, &drawRules);
             drawRevealBatch = entry.revealBatch;
             deltas.push_back(&entry.delta);
+        }
+        if (!queued.empty() && boxes) {
+            boxes->setRules(drawRules);
         }
         if (!queued.empty()) {
             if (filter) {
@@ -2330,6 +2381,162 @@ struct SceneViewportRenderer::Implementation {
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
     } // drawGuides
+
+    // Tells the box worker the frame's time and the stage's version. Needs stageMutex.
+    void feedBoxes()
+    {
+        if (boxes) {
+            boxes->setTime(timeCode());
+            boxes->setStageVersion(stageEditCount + stageLoadEditCount);
+        }
+    }
+
+    bool hasBoxes() const
+    {
+        const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
+
+        return list && !list->boxes.empty();
+    }
+
+    bool ensureBoxProgram()
+    {
+        if (boxProgram) {
+            return true;
+        }
+        const GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+        const GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(vertex, 1, &kBoxVertexShader, nullptr);
+        glShaderSource(fragment, 1, &kBoxFragmentShader, nullptr);
+        glCompileShader(vertex);
+        glCompileShader(fragment);
+        const GLuint program = glCreateProgram();
+        glAttachShader(program, vertex);
+        glAttachShader(program, fragment);
+        glLinkProgram(program);
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        GLint linked = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            glDeleteProgram(program);
+
+            return false;
+        }
+        boxProgram = program;
+        const auto makeVao = [](GLuint* vao, GLuint* shape, GLuint* instances, const GLfloat* vertices, GLsizeiptr size) {
+            glGenVertexArrays(1, vao);
+            glGenBuffers(1, shape);
+            glGenBuffers(1, instances);
+            glBindVertexArray(*vao);
+            glBindBuffer(GL_ARRAY_BUFFER, *shape);
+            glBufferData(GL_ARRAY_BUFFER, size, vertices, GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+            glBindBuffer(GL_ARRAY_BUFFER, *instances);
+            for (GLuint attribute = 1; attribute <= 3; ++attribute) {
+                glEnableVertexAttribArray(attribute);
+                glVertexAttribPointer(attribute, 3, GL_FLOAT, GL_FALSE, kBoxFloats * sizeof(GLfloat), reinterpret_cast<const void*>((attribute - 1) * 3 * sizeof(GLfloat)));
+                glVertexAttribDivisor(attribute, 1);
+            }
+        };
+        makeVao(&boxVao, &boxEdgeBuffer, &boxInstanceBuffer, kBoxEdges, sizeof(kBoxEdges));
+        makeVao(&markerVao, &markerArmBuffer, &markerInstanceBuffer, kMarkerArms, sizeof(kMarkerArms));
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        uploadedBoxes.reset();
+
+        return true;
+    } // ensureBoxProgram
+
+    // One draw call for the boxes and one for the markers, however many, depth-tested against the
+    // frame's depth like the guides. Unloaded rows are tinted; a pending row's marker is grey.
+    void drawBoxes(const GfFrustum& frustum,
+                   int width,
+                   int height)
+    {
+        const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
+
+        boxesDrawn = 0;
+        markersDrawn = 0;
+        if (!list || list->boxes.empty() || !ensureBoxProgram()) {
+            return;
+        }
+        if (list != uploadedBoxes) {
+            std::vector<GLfloat> boxData;
+            std::vector<GLfloat> markerData;
+            for (const SceneDrawBoxes::Box& box : list->boxes) {
+                GfVec3f colour(0.55f, 0.75f, 0.95f);
+                if ((box.kind == SceneDrawBoxes::eKindUnloaded) || (box.kind == SceneDrawBoxes::eKindMarker)) {
+                    colour = GfVec3f(0.95f, 0.7f, 0.35f);
+                } else if (box.kind == SceneDrawBoxes::eKindPending) {
+                    colour = GfVec3f(0.6f, 0.6f, 0.6f);
+                }
+                std::vector<GLfloat>& data = ((box.kind == SceneDrawBoxes::eKindMarker) || (box.kind == SceneDrawBoxes::eKindPending)) ? markerData : boxData;
+                data.insert(data.end(), { box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2], colour[0], colour[1], colour[2] });
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, boxInstanceBuffer);
+            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(boxData.size() * sizeof(GLfloat)), boxData.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, markerInstanceBuffer);
+            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(markerData.size() * sizeof(GLfloat)), markerData.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            boxInstances = GLsizei(boxData.size() / kBoxFloats);
+            markerInstances = GLsizei(markerData.size() / kBoxFloats);
+            uploadedBoxes = list;
+        }
+        if ((boxInstances == 0) && (markerInstances == 0)) {
+            return;
+        }
+        // GfMatrix4d is row-major with row vectors, so its memory is what GL reads as column-major
+        // with column vectors, and view * projection here is projection * view there.
+        const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
+        glUseProgram(boxProgram);
+        glUniformMatrix4fv(glGetUniformLocation(boxProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
+        glLineWidth(1.f);
+        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 0);
+        glBindVertexArray(boxVao);
+        glDrawArraysInstanced(GL_LINES, 0, 24, boxInstances);
+        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 1);
+        glUniform2f(glGetUniformLocation(boxProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
+        glBindVertexArray(markerVao);
+        glDrawArraysInstanced(GL_LINES, 0, 4, markerInstances);
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_DEPTH_TEST);
+        boxesDrawn = int(boxInstances);
+        markersDrawn = int(markerInstances);
+    } // drawBoxes
+
+    void releaseBoxesGL()
+    {
+        if (boxProgram) {
+            glDeleteProgram(boxProgram);
+            glDeleteVertexArrays(1, &boxVao);
+            glDeleteBuffers(1, &boxEdgeBuffer);
+            glDeleteBuffers(1, &boxInstanceBuffer);
+            glDeleteVertexArrays(1, &markerVao);
+            glDeleteBuffers(1, &markerArmBuffer);
+            glDeleteBuffers(1, &markerInstanceBuffer);
+            boxProgram = 0;
+            boxVao = 0;
+            boxEdgeBuffer = 0;
+            boxInstanceBuffer = 0;
+            markerVao = 0;
+            markerArmBuffer = 0;
+            markerInstanceBuffer = 0;
+        }
+        uploadedBoxes.reset();
+        boxInstances = 0;
+        markerInstances = 0;
+    }
+
+    // Last, so that it goes first: its worker reads the members above.
+    std::unique_ptr<SceneDrawBoxes> boxes;
 };
 
 SceneViewportRenderer::SceneViewportRenderer()
@@ -2361,6 +2568,26 @@ SceneViewportRenderer::SceneViewportRenderer()
             listener();
         } }, kBackgroundLinear));
     _imp->progressive->setThreads(&refineThreads);
+    // Like any other reader, the box worker lets a failed try to edit know when it lets go, and
+    // ends its pass for a waiting edit.
+    _imp->boxes.reset(new SceneDrawBoxes([imp](const SceneDrawBoxes::StageRead& read) {
+        SceneWriteBarrier::ReadScope readScope;
+        {
+            std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+            const bool shown = imp->shown && imp->sceneStage && imp->sceneStage->isValid();
+            read(shown ? imp->sceneStage->getStage() : UsdStageRefPtr(), imp->stageEditCount + imp->stageLoadEditCount);
+        }
+        if (imp->exclusiveOwed.exchange(false) && imp->readEnded) {
+            imp->readEnded();
+        } }, [imp]() { return (imp->exclusiveWaiting > 0) || imp->exclusiveOwed; }, [imp]() {
+        std::function<void()> listener;
+        {
+            std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
+            listener = imp->refineListener;
+        }
+        if (listener) {
+            listener();
+        } }));
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
@@ -2368,6 +2595,7 @@ SceneViewportRenderer::~SceneViewportRenderer()
     // Its worker reads the stage's layers under stageMutex: joined while the barrier still holds
     // writes back for it.
     _imp->progressive.reset();
+    _imp->boxes.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
     if (_imp->refineTexture || _imp->refineDepthBuffer) {
@@ -2634,6 +2862,18 @@ void
 SceneViewportRenderer::noteDrawRevealPresented()
 {
     _imp->drawRevealStepDue = true;
+}
+
+int
+SceneViewportRenderer::getDrawnBoxCount() const
+{
+    return _imp->boxesDrawn;
+}
+
+int
+SceneViewportRenderer::getDrawnMarkerCount() const
+{
+    return _imp->markersDrawn;
 }
 
 SceneViewportRenderer::DrawFilterStats
@@ -3913,7 +4153,10 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     _imp->noteStageAbsorbed(params);
 
     _imp->drawnGuides.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
+    _imp->feedBoxes();
+    _imp->boxesDrawn = 0;
+    _imp->markersDrawn = 0;
+    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
         glUseProgram(0);
@@ -3923,6 +4166,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         if (_imp->showGrid) {
             _imp->drawGrid(frustum);
         }
+        _imp->drawBoxes(frustum, width, height);
         if (_imp->showGuides) {
             _imp->drawGuides(frustum, width, height);
         }
@@ -4030,7 +4274,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glDeleteFramebuffers(1, &readFramebuffer);
-        if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles) && (frameWidth == width) && (frameHeight == height)) {
+        if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && (frameWidth == width) && (frameHeight == height)) {
             // The frame's depth, so that the grid and guides hide behind what it shows.
             glUseProgram(0);
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -4051,7 +4295,10 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     }
 
     _imp->drawnGuides.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
+    _imp->feedBoxes();
+    _imp->boxesDrawn = 0;
+    _imp->markersDrawn = 0;
+    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
         glUseProgram(0);
@@ -4060,6 +4307,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         if (_imp->showGrid) {
             _imp->drawGrid(frustum);
         }
+        _imp->drawBoxes(frustum, width, height);
         if (_imp->showGuides) {
             _imp->drawGuides(frustum, width, height);
         }
@@ -4241,6 +4489,7 @@ SceneViewportRenderer::releaseGL()
 
     _imp->dropEngine();
     _imp->releaseGrade();
+    _imp->releaseBoxesGL();
     if (_imp->refineTexture) {
         glDeleteTextures(1, &_imp->refineTexture);
         glDeleteBuffers(1, &_imp->refineDepthBuffer);
@@ -5815,6 +6064,7 @@ SceneViewport::publishDrawStats()
     published[QString::fromUtf8("shownSent")] = QVariant::fromValue<qulonglong>(stats.shownSent);
     published[QString::fromUtf8("visibilitySent")] = QVariant::fromValue<qulonglong>(stats.visibilitySent);
     published[QString::fromUtf8("heldInvisible")] = QVariant::fromValue<qulonglong>(stats.heldInvisible);
+    published[QString::fromUtf8("maskedInstances")] = QVariant::fromValue<qulonglong>(stats.maskedInstances);
     published[QString::fromUtf8("lastInputAddedEpochMs")] = QVariant::fromValue<qlonglong>(stats.lastInputAddedEpochMs);
     published[QString::fromUtf8("stageEdits")] = QVariant::fromValue<qulonglong>(stats.stageEdits);
     published[QString::fromUtf8("stageLoadEdits")] = QVariant::fromValue<qulonglong>(stats.stageLoadEdits);
@@ -5822,6 +6072,12 @@ SceneViewport::publishDrawStats()
     published[QString::fromUtf8("resyncedPaths")] = QVariant::fromValue<qulonglong>(stats.resyncedPaths);
     published[QString::fromUtf8("infoOnlyPaths")] = QVariant::fromValue<qulonglong>(stats.infoOnlyPaths);
     setProperty("natronSceneDrawStats", published);
+    const int boxes = _imp->renderer.getDrawnBoxCount();
+    if ((boxes > 0) && (property("natronSceneDrawBoxes").toInt() == 0)) {
+        setProperty("natronSceneFirstBoxesMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
+    }
+    setProperty("natronSceneDrawBoxes", boxes);
+    setProperty("natronSceneDrawMarkers", _imp->renderer.getDrawnMarkerCount());
 }
 
 void

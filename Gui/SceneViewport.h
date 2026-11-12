@@ -284,6 +284,8 @@ public:
         // Of hiddenSent and shownSent, those sent as a visibility change.
         unsigned long long visibilitySent = 0;
         unsigned long long heldInvisible = 0;
+        // Native instances turned off in their instancer's mask.
+        unsigned long long maskedInstances = 0;
         long long lastInputAddedEpochMs = 0;
         unsigned long long stageEdits = 0;
         unsigned long long stageLoadEdits = 0;
@@ -292,6 +294,10 @@ public:
         unsigned long long infoOnlyPaths = 0;
     };
     DrawFilterStats getDrawFilterStats() const;
+
+    // The boxes and the markers of boxed rows the last frame drew.
+    int getDrawnBoxCount() const;
+    int getDrawnMarkerCount() const;
 
     // Null unless NATRON_DRAW_STATE_TIMING is 1.
     SceneDrawTiming* drawTiming() const;

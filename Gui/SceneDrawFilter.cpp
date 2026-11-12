@@ -26,6 +26,7 @@
 #include "Gui/SceneDrawFilter.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <set>
@@ -35,6 +36,7 @@
 #define NATRON_SCENEDRAWFILTER_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/overlayContainerDataSource.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
@@ -233,6 +235,21 @@ visibilityLocators()
 
     return locators;
 }
+
+const HdDataSourceLocatorSet&
+maskLocators()
+{
+    static const HdDataSourceLocatorSet locators { HdInstancerTopologySchema::GetDefaultLocator().Append(HdInstancerTopologySchemaTokens->mask) };
+
+    return locators;
+}
+
+// Under a Children row too: an instance draws only what lies below it.
+bool
+instanceHiddenBy(RulePtr rule)
+{
+    return geometryHiddenBelow(rule);
+}
 } // anon namespace
 
 void
@@ -311,7 +328,9 @@ SceneDrawFilter::SceneDrawFilter(const HdSceneIndexBaseRefPtr& input)
     while (!stack.empty()) {
         const SdfPath path = stack.back();
         stack.pop_back();
-        indexPrim(path, input->GetPrim(path).primType);
+        const HdSceneIndexPrim prim = input->GetPrim(path);
+        indexPrim(path, prim.primType);
+        readInstancer(path, prim);
         const SdfPathVector children = input->GetChildPrimPaths(path);
         stack.insert(stack.end(), children.rbegin(), children.rend());
     }
@@ -405,6 +424,9 @@ SceneDrawFilter::forget(Node* top)
         }
     }
     for (Node* node : doomed) {
+        if (node->type == HdPrimTypeTokens->instancer) {
+            forgetInstancer(*node->path);
+        }
         if (node->light) {
             _lights.erase(node);
         }
@@ -426,6 +448,94 @@ SceneDrawFilter::setOutput(Node& node,
         ++_invisibleCount;
     }
     node.output = output;
+}
+
+// Instancers are few, so reading one through the input is cheap enough; its instances may be many.
+void
+SceneDrawFilter::readInstancer(const SdfPath& path,
+                               const HdSceneIndexPrim& prim)
+{
+    forgetInstancer(path);
+    if (prim.primType != HdPrimTypeTokens->instancer) {
+        return;
+    }
+    const HdPathArrayDataSourceHandle source = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetInstanceLocations();
+    if (!source) {
+        return;
+    }
+    const VtArray<SdfPath> locations = source->GetTypedValue(0.f);
+    if (locations.empty()) {
+        return;
+    }
+    Instancer& record = _instancers[path];
+    record.locations.assign(locations.cbegin(), locations.cend());
+    record.hidden.assign(record.locations.size(), false);
+    // The notice this came with carries the mask, so none is queued.
+    record.pending = true;
+    for (std::size_t i = 0; i < record.locations.size(); ++i) {
+        const SdfPath& location = record.locations[i];
+        _locations.emplace(location, std::make_pair(path, i));
+        if (!_rules.empty()) {
+            setInstanceHidden(path, record, i, instanceHiddenBy(governing(_rules, location)));
+        }
+    }
+    record.pending = false;
+}
+
+void
+SceneDrawFilter::forgetInstancer(const SdfPath& path)
+{
+    const auto found = _instancers.find(path);
+    if (found == _instancers.end()) {
+        return;
+    }
+    for (const SdfPath& location : found->second.locations) {
+        const auto range = _locations.equal_range(location);
+        for (auto it = range.first; it != range.second;) {
+            it = (it->second.first == path) ? _locations.erase(it) : std::next(it);
+        }
+    }
+    _maskedCount -= found->second.hiddenCount;
+    _instancers.erase(found);
+}
+
+bool
+SceneDrawFilter::setInstanceHidden(const SdfPath& instancer,
+                                   Instancer& record,
+                                   std::size_t index,
+                                   bool hidden)
+{
+    if (record.hidden[index] == hidden) {
+        return false;
+    }
+    record.hidden[index] = hidden;
+    if (hidden) {
+        ++record.hiddenCount;
+        ++_maskedCount;
+    } else {
+        --record.hiddenCount;
+        --_maskedCount;
+    }
+    if (!record.pending) {
+        record.pending = true;
+        _maskChanges.push_back(instancer);
+    }
+
+    return true;
+}
+
+// The instances at or below the changed rows, as no other instance's governing rule has changed.
+void
+SceneDrawFilter::updateInstances(const std::vector<SdfPath>& roots)
+{
+    for (const SdfPath& root : roots) {
+        for (auto it = _locations.lower_bound(root); (it != _locations.end()) && it->first.HasPrefix(root); ++it) {
+            const auto record = _instancers.find(it->second.first);
+            if (record != _instancers.end()) {
+                setInstanceHidden(it->second.first, record->second, it->second.second, instanceHiddenBy(governing(_rules, it->first)));
+            }
+        }
+    }
 }
 
 bool
@@ -472,7 +582,7 @@ SceneDrawFilter::GetPrim(const SdfPath& primPath) const
     }
     switch (output) {
     case eOutputShown:
-        return prim;
+        return withMask(primPath, prim);
     case eOutputInvisible:
         prim.dataSource = HdOverlayContainerDataSource::OverlayedContainerDataSources(invisibleData(), prim.dataSource);
 
@@ -482,6 +592,39 @@ SceneDrawFilter::GetPrim(const SdfPath& primPath) const
     }
 
     return HdSceneIndexPrim();
+}
+
+// Over the mask the input authors, such as a point instancer's invisibleIds.
+HdSceneIndexPrim
+SceneDrawFilter::withMask(const SdfPath& primPath,
+                          HdSceneIndexPrim prim) const
+{
+    if (prim.primType != HdPrimTypeTokens->instancer) {
+        return prim;
+    }
+    const auto found = _instancers.find(primPath);
+    if ((found == _instancers.end()) || (found->second.hiddenCount == 0)) {
+        return prim;
+    }
+    const std::vector<bool>& hidden = found->second.hidden;
+    VtArray<bool> mask;
+    if (const HdBoolArrayDataSourceHandle authored = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetMask()) {
+        mask = authored->GetTypedValue(0.f);
+    }
+    if (mask.size() < hidden.size()) {
+        mask.resize(hidden.size(), true);
+    }
+    for (std::size_t i = 0; i < hidden.size(); ++i) {
+        if (hidden[i]) {
+            mask[i] = false;
+        }
+    }
+    const HdContainerDataSourceHandle overlay = HdRetainedContainerDataSource::New(
+        HdInstancerTopologySchema::GetSchemaToken(),
+        HdInstancerTopologySchema::Builder().SetMask(HdRetainedTypedSampledDataSource<VtArray<bool>>::New(mask)).Build());
+    prim.dataSource = HdOverlayContainerDataSource::OverlayedContainerDataSources(overlay, prim.dataSource);
+
+    return prim;
 }
 
 SdfPathVector
@@ -498,6 +641,11 @@ SceneDrawFilter::seedRules(const Rules& rules)
     finishRevealIfDone();
     std::vector<Frame> stack { rootFrame(_root, true) };
     walk(&stack, eWalkSeed, (std::numeric_limits<std::size_t>::max)());
+    updateInstances({ SdfPath::AbsoluteRootPath() });
+    for (const SdfPath& path : _maskChanges) {
+        _instancers[path].pending = false;
+    }
+    _maskChanges.clear();
 }
 
 SceneDrawFilter::Frame
@@ -680,8 +828,24 @@ SceneDrawFilter::sendChanges()
     if (!dirtied.empty()) {
         _visibilitySent += dirtied.size();
         _SendPrimsDirtied(dirtied);
+        dirtied.clear();
     }
     _changes.clear();
+
+    for (const SdfPath& path : _maskChanges) {
+        const auto record = _instancers.find(path);
+        if (record != _instancers.end()) {
+            record->second.pending = false;
+        }
+        const auto node = _nodes.find(path);
+        if ((node == _nodes.end()) || (node->second.output != eOutputAbsent)) {
+            dirtied.emplace_back(path, maskLocators());
+        }
+    }
+    _maskChanges.clear();
+    if (!dirtied.empty()) {
+        _SendPrimsDirtied(dirtied);
+    }
 }
 
 void
@@ -737,6 +901,8 @@ SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
         walk(&hiding, eWalkHide, all);
         _revealStack.insert(_revealStack.end(), changed.begin(), changed.end());
     }
+    // Masks change at once, reveal or not: an instance costs Hydra nothing to show.
+    updateInstances(tops);
     _revealing = true;
     finishRevealIfDone();
     sendChanges();
@@ -774,6 +940,11 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
         Node* node = indexPrim(entry.primPath, entry.primType);
         if (!node) {
             continue;
+        }
+        if (entry.primType == HdPrimTypeTokens->instancer) {
+            readInstancer(entry.primPath, _GetInputSceneIndex()->GetPrim(entry.primPath));
+        } else if (!_instancers.empty()) {
+            forgetInstancer(entry.primPath);
         }
         OutputEnum output = eOutputShown;
         if (node->hideable && !_rules.empty()) {
@@ -822,6 +993,14 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
                                const HdSceneIndexObserver::DirtiedPrimEntries& entries)
 {
     _inputDirtied += entries.size();
+    for (const HdSceneIndexObserver::DirtiedPrimEntry& entry : entries) {
+        if (entry.dirtyLocators.Intersects(HdInstancerTopologySchema::GetDefaultLocator())) {
+            const auto node = _nodes.find(entry.primPath);
+            if ((node != _nodes.end()) && (node->second.type == HdPrimTypeTokens->instancer)) {
+                readInstancer(entry.primPath, _GetInputSceneIndex()->GetPrim(entry.primPath));
+            }
+        }
+    }
     if (_rules.empty() && !_revealing) {
         _SendPrimsDirtied(entries);
 

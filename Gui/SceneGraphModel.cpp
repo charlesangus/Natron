@@ -43,6 +43,16 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#ifdef emit
+#define NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
+#undef emit
+#endif
+#include <pxr/usd/usdGeom/modelAPI.h>
+#ifdef NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
+#undef NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
+#define emit
+#endif
+
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
@@ -93,10 +103,11 @@ struct PrimData {
     bool hasChildren = false;
     // None, Unloaded or Loaded: the other states belong to the model's requests, not the prim.
     SceneGraphModel::PayloadStateEnum payload = SceneGraphModel::ePayloadStateNone;
+    bool unknownBounds = false;
 
     bool operator==(const PrimData& other) const
     {
-        return (name == other.name) && (type == other.type) && (kind == other.kind) && (hasChildren == other.hasChildren) && (payload == other.payload);
+        return (name == other.name) && (type == other.type) && (kind == other.kind) && (hasChildren == other.hasChildren) && (payload == other.payload) && (unknownBounds == other.unknownBounds);
     }
 };
 
@@ -116,6 +127,11 @@ readPrimData(const UsdPrim& prim)
     }
     if (prim.HasAuthoredPayloads()) {
         data.payload = prim.IsLoaded() ? SceneGraphModel::ePayloadStateLoaded : SceneGraphModel::ePayloadStateUnloaded;
+    }
+    if (data.payload == SceneGraphModel::ePayloadStateUnloaded) {
+        // UsdGeomBBoxCache reads the hint of a model alone.
+        const UsdAttribute hint = prim.IsModel() ? UsdGeomModelAPI(prim).GetExtentsHintAttr() : UsdAttribute();
+        data.unknownBounds = !(hint && hint.HasAuthoredValue());
     }
     data.hasChildren = !prim.GetFilteredChildren(childPredicate()).empty() || (data.payload == SceneGraphModel::ePayloadStateUnloaded);
 
@@ -1413,6 +1429,8 @@ SceneGraphModel::data(const QModelIndex& index,
         return _imp->changedHere.contains(item->pathString);
     case ePayloadStateRole:
         return (int)_imp->payloadStateOf(item);
+    case eUnknownBoundsRole:
+        return item->data.unknownBounds;
     case Qt::FontRole:
         if ((index.column() == eColumnName) && _imp->changedHere.contains(item->pathString)) {
             QFont font;

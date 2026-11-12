@@ -149,6 +149,9 @@ public:
         eChangedHereRole,
         // The row's payload, a PayloadStateEnum.
         ePayloadStateRole,
+        // Whether the viewer can box the row only by loading it: its payload is unloaded and no
+        // extentsHint on a model bounds it, a bool.
+        eUnknownBoundsRole,
     };
 
     enum PayloadStateEnum {

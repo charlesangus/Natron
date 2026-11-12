@@ -141,5 +141,5 @@ Context:
   - nucleon-quadrants (Opus) is promising; variations of it.
   - A vertically mirrored pyramid-key-stack, and a few variations of pyramid-key-diagonal.
   - Trefoil: a few variations with one complete rectangular orange piece and oval/elliptical grey pieces interlocked with it.
-  - Round 9: quadrants variations to an Opus agent; pyramid and trefoil work to a Fable agent. Quadrants variations at 2649bec28: equal, gap, pinwheel, inward, triangle, tilt, counter.
+  - Round 9: quadrants variations to an Opus agent; pyramid and trefoil work to a Fable agent. Quadrants variations at 2649bec28: equal, gap, pinwheel, inward, triangle, tilt, counter. Pyramid and trefoil variants at 3db200607: pyramid-key-stack-mirror (stack is symmetric top to bottom, so no flip), pyramid-key-diagonal-heavy, -tight, -deep, -shear; trefoil-rect-chain, -knot, -round, -square.
 - 2026-11-12 — Round 9 quadrants feedback (user): pinwheel and inward have potential but aren't quite right; try variations. Suggestions: pinwheel with the orange piece as a circle centred on the intersection point; inward likewise, with the orange as a circle in the middle, maybe keyed into the grey pieces. Round 10 quadrants work goes to an Opus agent.

@@ -240,6 +240,7 @@ future core work has solid ground to build on.
 | M396 | Release 1.0 Cut | todo | M391, M392, M393, M394, M395 |  | E21 | | | [M396-release-1-0-cut.md](PLAN/MILESTONES/M396-release-1-0-cut.md) |
 | M397 | Label Resize Keeps Node Top-Centre | todo | - |  | E10 | | | [M397-label-resize-keeps-node-top-centre.md](PLAN/MILESTONES/M397-label-resize-keeps-node-top-centre.md) |
 | M398 | Cycles Offline Render After Scene Edits | doing | - | bosley-native-nodes | E9 | | | [M398-cycles-offline-render-after-scene-edits.md](PLAN/MILESTONES/M398-cycles-offline-render-after-scene-edits.md) |
+| M399 | Node Creation Keys And Speed | todo | M118 |  | E10 | | | [M399-node-creation-keys-and-speed.md](PLAN/MILESTONES/M399-node-creation-keys-and-speed.md) |
 | M21 | Deep Tier-2 And Bridges | todo |  |  | E8 | | | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  |  | E8 | | | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  |  | E8 | | | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |

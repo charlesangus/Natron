@@ -66,7 +66,6 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _nodesMutex()
     , _nodes()
     , _nodesTrash()
-    , _nodeCreationShortcutEnabled(false)
     , _root(NULL)
     , _nodeRoot(NULL)
     , _loopBlocks(NULL)

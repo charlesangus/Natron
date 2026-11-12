@@ -305,9 +305,6 @@ public:
     IndexedNodeGuiList _nodes;
     IndexedNodeGuiList _nodesTrash;
 
-    /// Enables the create-node shortcut that opens the tab menu.
-    /// This is set to true on enterEvent and set back to false on leaveEvent
-    bool _nodeCreationShortcutEnabled;
     // The parent of all items in the graph. It stays at the scene origin: the view pans by
     // scrolling, so root, node-root and scene coordinates are all the same.
     QGraphicsItem* _root;

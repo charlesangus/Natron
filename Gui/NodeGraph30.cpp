@@ -59,40 +59,102 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Histogram.h"
 #include "Gui/NodeGraphDeleteLinks.h"
 #include "Gui/NodeGui.h"
+#include "Gui/TabWidget.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
 #include "Global/QtCompat.h"
 
 NATRON_NAMESPACE_ENTER
+namespace {
+bool
+paneHoldsTab(TabWidget* pane,
+             PanelWidget* tab)
+{
+    if (!pane) {
+        return false;
+    }
+    for (int i = 0; i < pane->count(); ++i) {
+        if (pane->tabAt(i) == tab) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anon namespace
+
+bool
+NodeGraph::isUsableViewerTab(ViewerTab* tab) const
+{
+    if (!tab) {
+        return false;
+    }
+    ViewerInstance* viewer = tab->getInternalNode();
+    NodePtr node = viewer ? viewer->getNode() : NodePtr();
+    if (!node || !node->isActivated()) {
+        return false;
+    }
+    NodeCollectionPtr collection = node->getGroup();
+
+    return collection && collection->getNodeGraph() == this;
+}
+
+InspectorNodePtr
+NodeGraph::findViewerInGroup()
+{
+    Gui* gui = getGui();
+    ViewerTab* found = 0;
+    if (isUsableViewerTab(getLastSelectedViewer())) {
+        found = getLastSelectedViewer();
+    } else if (isUsableViewerTab(gui->getActiveViewer())) {
+        found = gui->getActiveViewer();
+    }
+
+    InspectorNodePtr viewerNode;
+    if (found) {
+        viewerNode = std::dynamic_pointer_cast<InspectorNode>(found->getInternalNode()->getNode());
+    } else {
+        NodeCollectionPtr group = getGroup();
+        const NodesList nodes = group ? group->getNodes() : NodesList();
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            ViewerInstance* isViewer = (*it)->isEffectViewer();
+            if (!isViewer || !(*it)->isActivated()) {
+                continue;
+            }
+            viewerNode = std::dynamic_pointer_cast<InspectorNode>(*it);
+            if (viewerNode) {
+                found = gui->getViewerTabForInstance(isViewer);
+                break;
+            }
+        }
+    }
+    if (!viewerNode) {
+        return viewerNode;
+    }
+
+    if (found) {
+        // A tab taken out of its pane keeps that pane as its Qt parent, so the parent alone
+        // does not say whether the tab is still shown there.
+        TabWidget* pane = found->getParentPane();
+        if (paneHoldsTab(pane, found)) {
+            pane->setCurrentWidget(found);
+        } else {
+            gui->activateViewerTab(found->getInternalNode());
+        }
+        setLastSelectedViewer(found);
+    }
+
+    return viewerNode;
+} // findViewerInGroup
+
 void
 NodeGraph::connectCurrentViewerToSelection(int inputNB,
                                            bool isASide)
 {
-    ViewerTab* lastUsedViewer =  getLastSelectedViewer();
+    InspectorNodePtr v = findViewerInGroup();
 
-    if (lastUsedViewer) {
-        NodeCollectionPtr collection = lastUsedViewer->getInternalNode()->getNode()->getGroup();
-        if ( collection && (collection->getNodeGraph() != this) ) {
-            //somehow the group doesn't belong to this nodegraph , pick another one
-            const std::list<ViewerTab*>& tabs = getGui()->getViewersList();
-            lastUsedViewer = 0;
-            for (std::list<ViewerTab*>::const_iterator it = tabs.begin(); it != tabs.end(); ++it) {
-                NodeCollectionPtr otherCollection = (*it)->getInternalNode()->getNode()->getGroup();
-                if ( otherCollection && (otherCollection->getNodeGraph() == this) ) {
-                    lastUsedViewer = *it;
-                    break;
-                }
-            }
-        }
-    }
-
-
-    InspectorNodePtr v;
-    if (lastUsedViewer) {
-        v = std::dynamic_pointer_cast<InspectorNode>( lastUsedViewer->
-                                                        getInternalNode()->getNode() );
-    } else {
+    if (!v) {
         CreateNodeArgs args( PLUGINID_NATRON_VIEWER,
                              getGroup() );
         NodePtr viewerNode = getGui()->getApp()->createNode(args);
@@ -148,7 +210,6 @@ NodeGraph::enterEvent(QEnterEvent* e)
 {
     enterEventBase();
     QGraphicsView::enterEvent(e);
-    _imp->_nodeCreationShortcutEnabled = true;
 }
 
 void
@@ -156,8 +217,6 @@ NodeGraph::leaveEvent(QEvent* e)
 {
     leaveEventBase();
     QGraphicsView::leaveEvent(e);
-
-    _imp->_nodeCreationShortcutEnabled = false;
     // setFocus();
 }
 

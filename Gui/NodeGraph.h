@@ -388,6 +388,16 @@ private:
 
     NodeGraph& operator=(const NodeGraph&) = delete;
 
+    bool isUsableViewerTab(ViewerTab* tab) const;
+
+    // An activated Viewer of this graph's group, its tab shown and recorded as the last selected
+    // viewer; null when the group has none.
+    InspectorNodePtr findViewerInGroup();
+
+    // Whether the create-node key opens the tab menu here: the pointer is over the viewport or
+    // the graph has keyboard focus.
+    bool isNodeCreationShortcutTarget() const;
+
     void showNodePanel(bool casIsCtrl, bool casIsShift, NodeGui* nearbyNode);
 
     void checkForSpliceHint();

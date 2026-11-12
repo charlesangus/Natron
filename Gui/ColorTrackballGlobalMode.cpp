@@ -962,25 +962,33 @@ ColorTrackballGlobalMode::exit()
         return;
     }
     endStroke();
-    releaseStrokeGrab();
-    _heldButtons = Qt::NoButton;
     _engaged = false;
+    clearTarget();
+    tearDown();
+    Q_EMIT engagedChanged(false);
+    Q_EMIT stateChanged();
+}
+
+// Gives back everything the mode holds on the application, so no way out of it can leave the
+// pointer grabbed, the app-wide filter eating keys or an override cursor pushed. A right-click
+// exit keeps the filter until its release and menu request are eaten.
+void
+ColorTrackballGlobalMode::tearDown()
+{
+    _heldButtons = Qt::NoButton;
+    releaseStrokeGrab();
 
     // The touched knob is left open and unfolded, exactly as the user left it; only the hints
     // go away.
     if (_hudBlock) {
         _hudBlock->hide();
     }
-
-    QCoreApplication* app = QCoreApplication::instance();
-
-    if (app) {
-        app->removeEventFilter(this);
+    if (!_rightClickTail.isArmed()) {
+        if (QCoreApplication* app = QCoreApplication::instance()) {
+            app->removeEventFilter(this);
+        }
     }
-    clearTarget();
     applyFeedback();
-    Q_EMIT engagedChanged(false);
-    Q_EMIT stateChanged();
 }
 
 bool
@@ -1173,8 +1181,8 @@ ColorTrackballGlobalMode::endStroke()
     Q_EMIT stateChanged();
 }
 
-// For a stroke whose release will never arrive: the grab was taken away, the application lost
-// focus, or a modal dialog took over. The stroke so far is kept as its own undo step.
+// For a stroke whose release went somewhere this filter never saw. The stroke so far is kept as
+// its own undo step and the mode stays engaged.
 void
 ColorTrackballGlobalMode::endStrokeWithoutRelease()
 {
@@ -1288,7 +1296,6 @@ ColorTrackballGlobalMode::leaveForModalWidget()
     if (!QApplication::activeModalWidget()) {
         return false;
     }
-    endStrokeWithoutRelease();
     exit();
 
     return true;
@@ -1318,10 +1325,6 @@ ColorTrackballGlobalMode::handleMousePress(QObject* watched,
     if (first && (e->button() == Qt::RightButton)) {
         _rightClickTail.arm();
         exit();
-        // exit() removed the filter; it stays until the click's release and menu request are eaten.
-        if (QCoreApplication* app = QCoreApplication::instance()) {
-            app->installEventFilter(this);
-        }
 
         return true;
     }
@@ -1602,19 +1605,21 @@ ColorTrackballGlobalMode::eventFilter(QObject* watched,
     case QEvent::MouseButtonDblClick:
         return handleMousePress(watched, static_cast<QMouseEvent*>(event));
 
+    // Losing the stroke's grab or the application's focus ends the mode, not only the stroke: the
+    // user is elsewhere, and keys pressed on return must reach the widget under the pointer.
     case QEvent::UngrabMouse:
         if (watched == _grabbed.data()) {
-            endStrokeWithoutRelease();
+            exit();
         }
         break;
 
     case QEvent::ApplicationDeactivate:
-        endStrokeWithoutRelease();
+        exit();
         break;
 
     case QEvent::ApplicationStateChange:
         if (static_cast<QApplicationStateChangeEvent*>(event)->applicationState() != Qt::ApplicationActive) {
-            endStrokeWithoutRelease();
+            exit();
         }
         break;
 

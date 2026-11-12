@@ -248,8 +248,7 @@ NodeGraph::~NodeGraph()
     delete _imp->_kissCommand;
     _imp->_kissCommand = nullptr;
 
-    QObject::disconnect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );
-    _imp->_nodeCreationShortcutEnabled = false;
+    QObject::disconnect(&_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()));
 }
 
 void

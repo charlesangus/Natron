@@ -34,8 +34,9 @@ Configured by the environment:
     GUI_BENCH_FORCED_REPAINT  0 replaces each interaction event's forced viewport repaint with a
                           processEvents pass (default 1)
     GUI_BENCH_OPS         also selects the node-creation ops (create_by_shortcut, tab_menu_open,
-                          tab_menu_create), which run only when named: 20 reps each, timed from the key
-                          event to the end of the event-loop pass that painted the result
+                          tab_menu_create, create_then_key), which run only when named: 20 reps each,
+                          timed from the key event to the end of the event-loop pass that painted the
+                          result
     NATRON_NODE_CREATION_STAGE_LOG  a file Natron appends engine and GUI stage spans of node creation to
                           (see README.md); the node-creation ops then also report a per-stage split
     GUI_BENCH_SELF_CHECK  1 adds an op that blocks the main thread for 300 ms once and checks
@@ -1117,7 +1118,11 @@ try:
 
     CREATE_REPS = 20
     CREATE_PAINT_TIMEOUT_S = 2.0
-    CREATE_BUDGET_MS = {"create_by_shortcut": 50.0, "tab_menu_open": 33.0, "tab_menu_create": 50.0}
+    CREATE_BUDGET_MS = {"create_by_shortcut": 50.0, "tab_menu_open": 33.0, "tab_menu_create": 50.0,
+                        "create_then_key": 50.0}
+    DRAIN_IDLE_PASS_MS = 1.0
+    DRAIN_QUIET_MS = 20.0
+    DRAIN_LIMIT_MS = 2000.0
     STAGE_LOG = os.environ.get("NATRON_NODE_CREATION_STAGE_LOG", "")
     BLUR_ID = "Blur"
     # The session's first Tab, which the ops measure on their own: the popup is built on it.
@@ -1149,15 +1154,39 @@ try:
             raise RuntimeError("the node-creation ops need PySide6.QtTest, which only the --xvfb run bundles")
         return QTest
 
-    def measure_paint(host, accepts, send):
-        """(t0, t1) in ms: just before send() posts the key event, and the end of the event-loop pass that
-        delivered the first accepted paint to host, or to the whole application when host is None. A
-        paint taken during send() does not count. Raises when none arrives in CREATE_PAINT_TIMEOUT_S."""
-        for _ in range(3):
+    def drain_events():
+        """Runs posted events, deferred deletes and due timers until the event loop has stayed idle (passes
+        under DRAIN_IDLE_PASS_MS) for DRAIN_QUIET_MS, or for at most DRAIN_LIMIT_MS. processEvents() alone
+        never runs a deleteLater posted from the bench's own loop level, which an undone node's teardown
+        uses."""
+        start = mono_ms()
+        quiet_since = None
+        while True:
+            pass_start = mono_ms()
+            QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             QApplication.processEvents()
+            now = mono_ms()
+            if now - pass_start >= DRAIN_IDLE_PASS_MS:
+                quiet_since = None
+            elif quiet_since is None:
+                quiet_since = now
+            elif now - quiet_since >= DRAIN_QUIET_MS:
+                return
+            if now - start >= DRAIN_LIMIT_MS:
+                return
+            time.sleep(0.001)
+
+    def measure_paint(hosts, accepts, send, drain=True):
+        """(t0, t1) in ms: just before send() posts the key event, and the end of the event-loop pass that
+        delivered the first accepted paint to one of hosts, or to the whole application when hosts is
+        None. With drain, the work earlier reps left queued runs first. A paint taken during send() does
+        not count. Raises when none arrives in CREATE_PAINT_TIMEOUT_S."""
+        if drain:
+            drain_events()
         watch = PaintWatch(accepts)
-        target = host if host is not None else QApplication.instance()
-        target.installEventFilter(watch)
+        targets = list(hosts) if hosts is not None else [QApplication.instance()]
+        for target in targets:
+            target.installEventFilter(watch)
         t0 = mono_ms()
         try:
             send()
@@ -1167,7 +1196,11 @@ try:
                 QApplication.processEvents()
             t1 = mono_ms()
         finally:
-            target.removeEventFilter(watch)
+            for target in targets:
+                try:
+                    target.removeEventFilter(watch)
+                except RuntimeError:
+                    pass
         if not watch.fired:
             raise RuntimeError("no paint showed the result within %.0f s" % CREATE_PAINT_TIMEOUT_S)
         return t0, t1
@@ -1205,6 +1238,18 @@ try:
         import tabtabtab_nuke_core
         popup = tabtabtab_nuke_core._tabtabtab_instance
         return popup if popup is not None and popup.isVisible() else None
+
+    def menu_paint_hosts():
+        """The tab menu's popup and the children its paint reaches, built or not yet shown, so the paint
+        filter sees nothing else; None, the whole application, before the popup exists."""
+        import tabtabtab_nuke_core
+        popup = tabtabtab_nuke_core._tabtabtab_instance
+        if popup is None:
+            return None
+        try:
+            return [popup, popup.input, popup.things, popup.things.viewport()]
+        except RuntimeError:
+            return None
 
     def popup_painted(obj):
         """A paint of the open tab menu while its list holds rows."""
@@ -1346,7 +1391,7 @@ try:
         QTest = key_tester()
         graph = root_graph()
         offset = stage_offset()
-        t0, t1 = measure_paint(None, popup_painted, lambda: QTest.keyPress(graph, Qt.Key_Tab))
+        t0, t1 = measure_paint(menu_paint_hosts(), popup_painted, lambda: QTest.keyPress(graph, Qt.Key_Tab))
         QTest.keyRelease(graph, Qt.Key_Tab)
         first = not session_open["done"]
         session_open["done"] = True
@@ -1370,7 +1415,7 @@ try:
             QTest = key_tester()
             graph = root_graph()
             st["offset"] = stage_offset()
-            t0, t1 = measure_paint(graph.viewport(), created_ready(st), lambda: QTest.keyPress(graph, Qt.Key_B))
+            t0, t1 = measure_paint([graph.viewport()], created_ready(st), lambda: QTest.keyPress(graph, Qt.Key_B))
             QTest.keyRelease(graph, Qt.Key_B)
             st["lat"].append(t1 - t0)
             st["window"] = (t0, t1)
@@ -1436,7 +1481,7 @@ try:
             line_edit = popup.input
             graph = root_graph()
             st["offset"] = stage_offset()
-            t0, t1 = measure_paint(graph.viewport(), created_ready(st),
+            t0, t1 = measure_paint([graph.viewport()], created_ready(st),
                                    lambda: QTest.keyPress(line_edit, Qt.Key_Return))
             st["lat"].append(t1 - t0)
             st["window"] = (t0, t1)
@@ -1450,8 +1495,47 @@ try:
         return {"setup": create_setup(True), "before": before, "events": events, "after": after,
                 "teardown": create_teardown("tab_menu_create"), "reps": CREATE_REPS}
 
+    def op_create_then_key():
+        def events(ctx, st, rep):
+            QTest = key_tester()
+            graph = root_graph()
+            st["offset"] = stage_offset()
+            t0, t_node = measure_paint([graph.viewport()], created_ready(st), lambda: QTest.keyPress(graph, Qt.Key_B))
+            QTest.keyRelease(graph, Qt.Key_B)
+            # No drain: the Tab waits on whatever the creation left queued, as a person's next key does.
+            _, t1 = measure_paint(menu_paint_hosts(), popup_painted, lambda: QTest.keyPress(graph, Qt.Key_Tab),
+                                  drain=False)
+            QTest.keyRelease(graph, Qt.Key_Tab)
+            st["first"] = not session_open["done"]
+            session_open["done"] = True
+            if st["first"]:
+                st["first_open_ms"] = t1 - t0
+            else:
+                st["lat"].append(t1 - t0)
+                st.setdefault("node_paint", []).append(t_node - t0)
+            st["window"] = (t0, t1)
+            yield None
+
+        def after(ctx, st, rep):
+            if st["first"]:
+                QApplication.processEvents()
+            else:
+                note_stages(st, st["offset"], *st["window"])
+            close_menu()
+            check_created_and_undo(st)
+
+        def teardown(ctx, st):
+            create_teardown("create_then_key")(ctx, st)
+            node_paint = st.get("node_paint")
+            if node_paint:
+                st["record"]["node_paint_ms"] = {"median": round(statistics.median(node_paint), 3),
+                                                 "max": round(max(node_paint), 3)}
+        reps = CREATE_REPS + (0 if session_open["done"] else 1)
+        return {"setup": create_setup(True), "before": prepare_keys, "events": events, "after": after,
+                "teardown": teardown, "reps": reps}
+
     CREATE_OPS = [("create_by_shortcut", op_create_by_shortcut), ("tab_menu_open", op_tab_menu_open),
-                  ("tab_menu_create", op_tab_menu_create)]
+                  ("tab_menu_create", op_tab_menu_create), ("create_then_key", op_create_then_key)]
 
     INTERACTION_OPS = [
         ("fit_all", op_fit_all), ("zoom_step", op_zoom_step), ("pan", op_pan),

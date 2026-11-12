@@ -48,7 +48,7 @@ since the steps after it depend on it, but the next rep starts the cycle again.
 
 ## Node-creation latency
 
-`run.sh --preset create` runs three ops on `mixed` at 0, 300 and 3000 nodes (the empty graph is
+`run.sh --preset create` runs four ops on `mixed` at 0, 300 and 3000 nodes (the empty graph is
 the generator's single `Source`) and nothing else:
 
 ```
@@ -63,25 +63,32 @@ include them.
 | `create_by_shortcut` | With a node selected, sends Blur's plugin shortcut (`B`) to the graph. |
 | `tab_menu_open` | Sends Tab to the graph with a node selected and waits for the menu to be painted with items in its list. |
 | `tab_menu_create` | With the menu open and `blur` typed (setup, untimed), sends Enter on the Blur row. |
+| `create_then_key` | Sends `B` as `create_by_shortcut` does, then Tab as soon as the new node has painted, and waits for the menu's paint. The sample runs from the `B` to the menu's paint, so the work creation defers past the node's first paint (the properties panel's build), which the next key waits on, is counted. |
 
 Each rep brings the project's tab forward, activates the window, focuses the graph and puts the
 pointer over its viewport, because the graph only takes the create-node key when it has focus or
 the pointer (`NodeGraph::isNodeCreationShortcutTarget`). The sample runs from just before the key
 event is posted to the end of the event-loop pass that delivered the first `QEvent::Paint` that
-shows the result, caught by a one-shot event filter: the graph viewport for the two creating ops,
-once the new node is selected or exists, and any paint of the tab menu while its list holds rows
-for `tab_menu_open`. The pass can include other queued events, so the figure is an upper bound on
-the paint's own end. A paint taken inside the key call does not count, and no paint within 2 s
-fails the run. A creating rep checks that exactly one new Blur appeared, then undoes it through
+shows the result, caught by a one-shot event filter: on the graph viewport for the creating ops,
+once the new node is selected or exists, and on the tab menu's popup, its input, list and list
+viewport for `tab_menu_open` and the Tab of `create_then_key`, while its list holds rows. The
+filter sits on the whole application only for a Tab that comes before the popup is built.
+Before the key, each rep drains what earlier reps left queued: posted events, deferred deletes
+(the undone node's teardown) and due timers, until the loop has been idle for 20 ms, 2 s at most.
+`create_then_key` does not drain between its two keys. The pass can include other queued events,
+so the figure is an upper bound on the paint's own end. A paint taken inside the key call does not
+count, and no paint within 2 s fails the run. A creating rep checks that exactly one new Blur appeared, then undoes it through
 the Edit menu and checks the root is as it was.
 
 The records are in the usual format, with 20 reps each and `median_ms`, `p95_ms`, `min_ms` and
 `max_ms` taken from the latencies (the key-to-paint time, not the rep's wall time), plus
-`headline: "latency"`, `budget_ms` (50, 33 and 50), `latency_ms` (every sample) and
-`latency_reps`. `--reps` does not apply. The session's first-ever Tab is a sample of its own:
+`headline: "latency"`, `budget_ms` (50, 33, 50 and 50), `latency_ms` (every sample) and
+`latency_reps`. `create_then_key` adds `node_paint_ms`, the median and max of its `B`-to-node-paint
+part. `--reps` does not apply. The session's first-ever Tab is a sample of its own:
 `tab_menu_open` runs one extra rep when it is the process's first Tab, keeps it out of the 20 and
 records it as `first_open_ms`; `tab_menu_create` records it the same way when it is the one that
-opened the menu first. The run opens a Natron process per size, so each size has its own first
+opened the menu first, and `create_then_key`, when its Tab is the first, runs one extra rep and records that rep's whole
+span as `first_open_ms`. The run opens a Natron process per size, so each size has its own first
 open.
 
 ### The stage split
@@ -89,7 +96,8 @@ open.
 `--stages` (or `NATRON_NODE_CREATION_STAGE_LOG=FILE` for a run by hand) makes Natron append one
 line per stage span to FILE, and adds three fields to each record: `latency_stages_ms`, the median
 and max over reps of each stage's time between the key and the paint, `deferred_stages_ms`, the
-same for stages that started in that span and ended after the paint, and `first_open_stages_ms`
+same for stages that started in that span and ended after the paint (for `create_then_key`, the
+span runs to the menu's paint, so `panelBuild` lands in `latency_stages_ms`), and `first_open_stages_ms`
 (`tab_menu_open`, first open only). A stage a rep never ran counts as 0 in that rep. Stages nest, so
 their times overlap and do not add up to the latency.
 

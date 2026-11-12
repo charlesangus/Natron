@@ -99,6 +99,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -1250,8 +1251,17 @@ Project::registerNodeId(const NodePtr& node)
         return;
     }
     const std::string id = node->getNodeId();
-    QMutexLocker k(&_imp->nodesByIdMutex);
-    _imp->nodesById[id] = node;
+    {
+        QMutexLocker k(&_imp->nodesByIdMutex);
+        _imp->nodesById[id] = node;
+    }
+    // A node may have counted its layer selections before it joined the graph.
+    const bool onMainThread = qApp && (QThread::currentThread() == qApp->thread());
+    if (!onMainThread) {
+        invalidateLayerUsers();
+    } else if (updateLayerUsersOf(node) && !isLoadingProject() && !isProjectClosing()) {
+        queueLayersKnobRefresh();
+    }
 }
 
 void
@@ -1261,15 +1271,17 @@ Project::unregisterNodeId(const Node* node)
         return;
     }
     const std::string id = node->getNodeId();
-    QMutexLocker k(&_imp->nodesByIdMutex);
-    std::unordered_map<std::string, NodeWPtr>::iterator found = _imp->nodesById.find(id);
-    if (found == _imp->nodesById.end()) {
-        return;
+    {
+        QMutexLocker k(&_imp->nodesByIdMutex);
+        std::unordered_map<std::string, NodeWPtr>::iterator found = _imp->nodesById.find(id);
+        if (found != _imp->nodesById.end()) {
+            NodePtr indexed = found->second.lock();
+            if (!indexed || (indexed.get() == node)) {
+                _imp->nodesById.erase(found);
+            }
+        }
     }
-    NodePtr indexed = found->second.lock();
-    if (!indexed || (indexed.get() == node)) {
-        _imp->nodesById.erase(found);
-    }
+    forgetLayerUser(node);
 }
 
 void
@@ -2751,19 +2763,186 @@ Project::getLayerUsers(const std::string& id, std::list<NodePtr>* users) const
     }
 }
 
+bool
+Project::countsAsLayerUser(const NodePtr& node) const
+{
+    if (!node || !node->isActivated()) {
+        return false;
+    }
+    NodePtr current = node;
+    for (;;) {
+        if (findNodeHoldingId(current->getNodeId()) != current) {
+            return false;
+        }
+        NodeCollectionPtr collection = current->getGroup();
+        if (!collection) {
+            return false;
+        }
+        NodeGroup* group = dynamic_cast<NodeGroup*>(collection.get());
+        if (!group) {
+            return collection.get() == static_cast<const NodeCollection*>(this);
+        }
+        NodePtr groupNode = group->getNode();
+        if (!groupNode || !groupNode->isActivated()) {
+            return false;
+        }
+        current = groupNode;
+    }
+}
+
+void
+Project::invalidateLayerUsers() const
+{
+    QMutexLocker k(&_imp->layerUsersMutex);
+
+    _imp->layerUsersValid = false;
+    _imp->layerUsersByNode.clear();
+    _imp->layerUsersCount.clear();
+}
+
+bool
+Project::updateLayerUsersOf(const NodePtr& node)
+{
+    if (!node) {
+        return false;
+    }
+    if (isLoadingProject() || isProjectClosing()) {
+        invalidateLayerUsers();
+
+        return true;
+    }
+    {
+        QMutexLocker k(&_imp->layerUsersMutex);
+        if (!_imp->layerUsersValid) {
+            return true;
+        }
+    }
+
+    // Read outside the counts' lock: both take the node's and its knobs' locks.
+    const bool counted = countsAsLayerUser(node);
+    const bool isGroup = node->isEffectGroup() != nullptr;
+    std::set<std::string> ids;
+    if (counted) {
+        node->getReferencedLayerIDs(&ids);
+    }
+
+    QMutexLocker k(&_imp->layerUsersMutex);
+    if (!_imp->layerUsersValid) {
+        return true;
+    }
+    std::unordered_map<const Node*, ProjectPrivate::LayerUser>::iterator found = _imp->layerUsersByNode.find(node.get());
+    const bool wasCounted = found != _imp->layerUsersByNode.end();
+    // An entry under a reused address belongs to a node that left without forgetLayerUser(), and
+    // a group counted or no longer counted adds or takes away every node inside it.
+    if ((wasCounted && (found->second.node.lock() != node)) || (isGroup && (wasCounted != counted))) {
+        _imp->layerUsersValid = false;
+        _imp->layerUsersByNode.clear();
+        _imp->layerUsersCount.clear();
+
+        return true;
+    }
+    const bool keep = counted && (isGroup || !ids.empty());
+    if (!wasCounted && !keep) {
+        return false;
+    }
+    if (wasCounted && keep && (found->second.ids == ids)) {
+        return false;
+    }
+    if (wasCounted) {
+        for (std::set<std::string>::const_iterator id = found->second.ids.begin(); id != found->second.ids.end(); ++id) {
+            std::map<std::string, int>::iterator count = _imp->layerUsersCount.find(*id);
+            if ((count != _imp->layerUsersCount.end()) && (--count->second <= 0)) {
+                _imp->layerUsersCount.erase(count);
+            }
+        }
+    }
+    if (keep) {
+        for (std::set<std::string>::const_iterator id = ids.begin(); id != ids.end(); ++id) {
+            ++_imp->layerUsersCount[*id];
+        }
+        ProjectPrivate::LayerUser& entry = _imp->layerUsersByNode[node.get()];
+        entry.node = node;
+        entry.ids.swap(ids);
+        entry.isGroup = isGroup;
+    } else {
+        _imp->layerUsersByNode.erase(found);
+    }
+
+    return true;
+} // Project::updateLayerUsersOf
+
+void
+Project::forgetLayerUser(const Node* node)
+{
+    bool changed = false;
+    {
+        QMutexLocker k(&_imp->layerUsersMutex);
+        if (!_imp->layerUsersValid) {
+            return;
+        }
+        std::unordered_map<const Node*, ProjectPrivate::LayerUser>::iterator found = _imp->layerUsersByNode.find(node);
+        if (found == _imp->layerUsersByNode.end()) {
+            return;
+        }
+        if (found->second.isGroup) {
+            _imp->layerUsersValid = false;
+            _imp->layerUsersByNode.clear();
+            _imp->layerUsersCount.clear();
+        } else {
+            for (std::set<std::string>::const_iterator id = found->second.ids.begin(); id != found->second.ids.end(); ++id) {
+                std::map<std::string, int>::iterator count = _imp->layerUsersCount.find(*id);
+                if ((count != _imp->layerUsersCount.end()) && (--count->second <= 0)) {
+                    _imp->layerUsersCount.erase(count);
+                }
+            }
+            _imp->layerUsersByNode.erase(found);
+        }
+        changed = true;
+    }
+    const bool onMainThread = qApp && (QThread::currentThread() == qApp->thread());
+    if (changed && onMainThread && !isLoadingProject() && !isProjectClosing()) {
+        queueLayersKnobRefresh();
+    }
+}
+
 std::string
 Project::encodeLayersKnobTable() const
 {
     std::map<std::string, int> usersCount;
+    bool valid;
     {
+        QMutexLocker k(&_imp->layerUsersMutex);
+        valid = _imp->layerUsersValid;
+        if (valid) {
+            usersCount = _imp->layerUsersCount;
+        }
+    }
+    if (!valid) {
+        std::unordered_map<const Node*, ProjectPrivate::LayerUser> byNode;
         NodesList nodes;
         getNodes_recursive(nodes, true);
         for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
             std::set<std::string> ids;
             (*it)->getReferencedLayerIDs(&ids);
+            const bool isGroup = (*it)->isEffectGroup() != nullptr;
+            if (ids.empty() && !isGroup) {
+                continue;
+            }
             for (std::set<std::string>::const_iterator id = ids.begin(); id != ids.end(); ++id) {
                 ++usersCount[*id];
             }
+            ProjectPrivate::LayerUser& entry = byNode[it->get()];
+            entry.node = *it;
+            entry.ids.swap(ids);
+            entry.isGroup = isGroup;
+        }
+        // Mid-load or mid-close the graph is still changing under the walk, so its counts are
+        // not kept: every node's change would have to be seen for them to stay exact.
+        if (!isLoadingProject() && !isProjectClosing()) {
+            QMutexLocker k(&_imp->layerUsersMutex);
+            _imp->layerUsersByNode.swap(byNode);
+            _imp->layerUsersCount = usersCount;
+            _imp->layerUsersValid = true;
         }
     }
 
@@ -2814,6 +2993,8 @@ Project::queueLayersKnobRefresh()
 void
 Project::emitProjectLayersChangedSignal()
 {
+    // Loaded nodes were not counted one by one.
+    invalidateLayerUsers();
     refreshLayersKnob();
     Q_EMIT projectLayersChanged();
 }
@@ -2827,7 +3008,9 @@ Project::notifyLayersChanged()
         (*it)->refreshChannelSelectors();
     }
 
-    // After the selectors: a selector that loses its layer changes "Used by".
+    // After the selectors: a selector that loses its layer changes "Used by", and a selector
+    // refreshed here is not recounted on its own.
+    invalidateLayerUsers();
     refreshLayersKnob();
     Q_EMIT projectLayersChanged();
 }
@@ -3142,6 +3325,13 @@ Project::refreshOpenGLRenderingFlagOnNodes()
 void
 Project::onKnobContentChanged(const KnobI* knob)
 {
+    // The layers table only shows the registry and its user counts. The registry's own edits
+    // invalidate every hash, and getContentDigest() folds in the registry, not this knob. A
+    // created or deleted node changes a count, and re-hashing the whole graph for that would
+    // make every connect after it recompute everything upstream.
+    if (knob && (knob == _imp->defaultLayersList.get())) {
+        return;
+    }
     Node::invalidateAllHashes("a project knob changed", knob);
 }
 
@@ -3438,6 +3628,7 @@ Project::doResetEnd(bool aboutToQuit)
     } else {
         clearNodesNonBlocking();
     }
+    invalidateLayerUsers();
     // Idle query stages compose the closed project's layers and keep the files they read open, so
     // a file changed on disk since is read again by the next project.
     SceneCaches::releaseIdleQueryStages();

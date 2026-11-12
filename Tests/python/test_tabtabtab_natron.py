@@ -700,6 +700,70 @@ class NatronAdapterTests(unittest.TestCase):
 
         self.assertEqual(action.trigger_calls, 0)
 
+    def test_plain_node_opens_no_window(self):
+        h = self._load_adapter()
+        plugin = h.module.NatronPlugin()
+
+        self.assertFalse(plugin.invoke_opens_window({"menuobj": _plugin_action("Blur", "BlurOFX")}))
+
+    def test_read_and_write_open_a_file_dialog(self):
+        h = self._load_adapter()
+        plugin = h.module.NatronPlugin()
+
+        self.assertTrue(plugin.invoke_opens_window({"menuobj": _plugin_action("Read", "Read")}))
+        self.assertTrue(plugin.invoke_opens_window({"menuobj": _plugin_action("Write", "Write")}))
+
+    def test_commands_and_script_actions_may_open_a_window(self):
+        h = self._load_adapter()
+        plugin = h.module.NatronPlugin()
+
+        self.assertTrue(plugin.invoke_opens_window({"menuobj": _FakeAction(text="Preferences...")}))
+        self.assertTrue(plugin.invoke_opens_window({"menuobj": None}))
+
+    def test_deleted_action_counts_as_opening_a_window(self):
+        h = self._load_adapter()
+        plugin = h.module.NatronPlugin()
+        action = _plugin_action("Blur", "BlurOFX")
+
+        def _deleted(name):
+            raise RuntimeError("wrapped C++ object destroyed")
+
+        action.property = _deleted
+
+        self.assertTrue(plugin.invoke_opens_window({"menuobj": action}))
+
+    # --- warm-up -------------------------------------------------------------
+
+    def test_warm_up_prepares_the_popup_without_showing_it(self):
+        h = self._load_adapter()
+        window = types.SimpleNamespace(isVisible=lambda: True)
+        h.module._find_natron_main_window = lambda: window
+        popup = MagicMock()
+
+        def _preload(plugin, space_mode_order=None, scroll_enabled=False):
+            h.core._tabtabtab_instance = popup
+
+        h.core.preload = _preload
+
+        h.module._warm_up(1)
+
+        popup.layout.return_value.activate.assert_called_once_with()
+        popup.winId.assert_called_once_with()
+        popup.grab.assert_called_once_with()
+        popup.show.assert_not_called()
+        popup.setFocus.assert_not_called()
+        popup.activateWindow.assert_not_called()
+
+    def test_warm_up_waits_for_the_main_window(self):
+        h = self._load_adapter()
+        h.module._find_natron_main_window = lambda: None
+        h.core.preload = MagicMock()
+
+        h.module._warm_up(2)
+
+        h.core.preload.assert_not_called()
+        self.assertEqual(len(h.scheduled), 1)
+
     # --- icon hook -----------------------------------------------------------
 
     def test_get_icon_comes_from_the_node_action(self):

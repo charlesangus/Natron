@@ -142,6 +142,11 @@ NodeGraph::NodeGraph(Gui* gui,
     setTransformationAnchor(QGraphicsView::AnchorViewCenter);
     // Fixed, so that items never grow or shrink the scrollable area and panning is a scroll.
     setSceneRect(QRectF(NATRON_SCENE_MIN, NATRON_SCENE_MIN, NATRON_SCENE_MAX - NATRON_SCENE_MIN, NATRON_SCENE_MAX - NATRON_SCENE_MIN));
+    // The same rect on the scene: without one, every added or moved item makes it rescan all
+    // items for their bounding rect.
+    if (scene) {
+        scene->setSceneRect(sceneRect());
+    }
     scale(0.8, 0.8);
 
     _imp->_root = new NodeGraphTextItem(this, 0, false);

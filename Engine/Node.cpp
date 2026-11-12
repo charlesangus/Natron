@@ -9051,6 +9051,7 @@ Node::retargetLayerKnob(const std::string& layerID)
             layerSelect->setLayer(layerID);
         }
     }
+    _imp->notifyLayerReferencesChanged();
 }
 
 void
@@ -9090,6 +9091,7 @@ Node::setLayerKnobDrivenByContainer(const KnobIPtr& knob)
         return;
     }
     found->second.drivenByContainer = true;
+    _imp->notifyLayerReferencesChanged();
 }
 
 void
@@ -9178,6 +9180,10 @@ Node::Implementation::notifyLayerReferencesChanged()
     }
     ProjectPtr project = app->getProject();
     if (!project || project->isLoadingProject() || project->isProjectClosing()) {
+        return;
+    }
+    NodePtr self = _publicInterface->weak_from_this().lock();
+    if (self && !project->updateLayerUsersOf(self)) {
         return;
     }
     if (layerTableRefreshHoldDepth > 0) {

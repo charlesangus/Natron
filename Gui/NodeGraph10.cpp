@@ -344,12 +344,13 @@ NodeGraph::repaintLowDetailItem(QGraphicsItem* item)
     if (!_imp->lowDetail || !NodeGraphLowDetailLayer::isFaded(item) || !_imp->isInGraph(item)) {
         return;
     }
-    QRectF dirty = gridRectOf(item);
+    _imp->addLowDetailDirty(gridRectOf(item));
+    // Where it was filed, a separate rect: a node created at one place and placed at another, far
+    // away, would otherwise repaint everything between the two.
     QRectF filed;
     if (_imp->itemGrid.rectOf(item, &filed)) {
-        dirty |= filed;
+        _imp->addLowDetailDirty(filed);
     }
-    _imp->addLowDetailDirty(dirty);
 }
 
 void
@@ -358,7 +359,7 @@ NodeGraphPrivate::addLowDetailDirty(const QRectF& rect)
     if (!lowDetail || rect.isEmpty()) {
         return;
     }
-    lowDetailDirty |= rect;
+    NodeGraphLowDetailLayer::addDirtyRect(&lowDetailDirty, rect);
     if (!lowDetailFlushPosted) {
         lowDetailFlushPosted = true;
         // A posted call rather than a zero timer: it runs before a repaint the change itself
@@ -372,7 +373,7 @@ NodeGraphPrivate::addLowDetailDirty(const QRectF& rect)
 void
 NodeGraphPrivate::invalidateLowDetailLayers(bool repaint)
 {
-    lowDetailDirty = QRectF();
+    lowDetailDirty.clear();
     lowDetailEdgeLayer->invalidateCache();
     lowDetailNodeLayer->invalidateCache();
     if (repaint && lowDetail) {
@@ -385,26 +386,30 @@ void
 NodeGraphPrivate::flushLowDetailUpdates(const QRegion* painting)
 {
     if (!lowDetail) {
-        lowDetailDirty = QRectF();
+        lowDetailDirty.clear();
 
         return;
     }
     refreshItemGrid();
-    if (lowDetailDirty.isEmpty()) {
+    if (lowDetailDirty.empty()) {
         return;
     }
-    const QRectF dirty = lowDetailDirty;
-    lowDetailDirty = QRectF();
-    lowDetailEdgeLayer->invalidateCache(dirty);
-    lowDetailNodeLayer->invalidateCache(dirty);
-    if (painting) {
-        const QRect dirtyViewport = _publicInterface->mapFromScene(_nodeRoot->mapRectToScene(dirty)).boundingRect().adjusted(-1, -1, 1, 1);
-        if (QRegion(dirtyViewport & _publicInterface->viewport()->rect()).subtracted(*painting).isEmpty()) {
-            return;
+    std::vector<QRectF> dirtyRects;
+    dirtyRects.swap(lowDetailDirty);
+    const QRect viewportRect = _publicInterface->viewport()->rect();
+    for (std::vector<QRectF>::const_iterator it = dirtyRects.begin(); it != dirtyRects.end(); ++it) {
+        const QRectF& dirty = *it;
+        lowDetailEdgeLayer->invalidateCache(dirty);
+        lowDetailNodeLayer->invalidateCache(dirty);
+        if (painting) {
+            const QRect dirtyViewport = _publicInterface->mapFromScene(_nodeRoot->mapRectToScene(dirty)).boundingRect().adjusted(-1, -1, 1, 1);
+            if (QRegion(dirtyViewport & viewportRect).subtracted(*painting).isEmpty()) {
+                continue;
+            }
         }
+        lowDetailEdgeLayer->update(dirty);
+        lowDetailNodeLayer->update(dirty);
     }
-    lowDetailEdgeLayer->update(dirty);
-    lowDetailNodeLayer->update(dirty);
 }
 
 void

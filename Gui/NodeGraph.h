@@ -114,6 +114,13 @@ public:
     void invalidateNavigatorContent();
 
     /**
+     * @brief Like invalidateNavigatorContent(), for nodes that came or went through the trash and
+     * whose other changes were reported one by one: every item is refiled, but the nodes' bounds
+     * are updated from just the reported nodes.
+     **/
+    void invalidateNavigatorItems();
+
+    /**
      * @brief Like invalidateNavigatorContent(), for a change to items that are, or are about to
      * be, reported one by one: only the thumbnail and the nodes' bounds are refreshed.
      **/

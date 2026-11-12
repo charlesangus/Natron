@@ -767,11 +767,21 @@ DockablePanel::onLineEditNameEditingFinished()
 }
 
 void
+DockablePanel::onKnobBuildStarted()
+{
+    // Pages are filled while the panel is shown, so the tab widget must already be laid out.
+    if (_imp->_tabWidget && (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0)) {
+        _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
+    }
+}
+
+void
 DockablePanel::onKnobsInitialized()
 {
     assert(_imp->_tabWidget);
-    _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
-
+    if (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0) {
+        _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
+    }
 
     RotoPanel* roto = initializeRotoPanel();
     if (roto) {
@@ -993,6 +1003,23 @@ DockablePanel::setClosedInternal(bool c)
 {
     if (!_imp->_gui) {
         return;
+    }
+
+    {
+        QMutexLocker l(&_imp->_isClosedMutex);
+        if (c == _imp->_isClosed) {
+            return;
+        }
+    }
+
+    // Opening and closing add and remove the node from the editors, which a panel still being built
+    // has yet to do.
+    NodeSettingsPanel* isBuildingNodePanel = dynamic_cast<NodeSettingsPanel*>(this);
+    if (isBuildingNodePanel) {
+        NodeGuiPtr nodeGui = isBuildingNodePanel->getNode();
+        if (nodeGui) {
+            nodeGui->ensurePanelCreated();
+        }
     }
 
     {

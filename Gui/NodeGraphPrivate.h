@@ -319,8 +319,9 @@ public:
     std::uint64_t lastNodeStackSerial = 0;
     // What the low-detail layers have to draw again, in _nodeRoot coordinates. Changes add to it
     // and the layers are updated once, when control returns to the event loop or just before the
-    // view paints, so a change to many items is one update rather than one per item.
-    QRectF lowDetailDirty;
+    // view paints, so a change to many items is one update rather than one per item. Changes far
+    // apart stay separate rects.
+    std::vector<QRectF> lowDetailDirty;
     bool lowDetailFlushPosted = false;
     QGraphicsSimpleTextItem* _cacheSizeText;
     bool cacheSizeHidden;
@@ -488,7 +489,8 @@ public:
     void resetAllClipboards();
 
     // In scene coordinates. Kept up to date per node reported to noteNodeGeometryChanged() or
-    // noteEdgeGeometryChanged(), and recomputed from every node after nodes come or go.
+    // noteEdgeGeometryChanged(), or moved to or from the trash, and recomputed from every node
+    // after other changes to which nodes there are.
     QRectF calcNodesBoundingRect();
     void applyPendingNodesBounds();
 
@@ -501,8 +503,10 @@ public:
     void endNavigatorDragDeferral();
 
     // rebuildGrid is for changes the hit-test grid is not told about item by item, such as nodes
-    // or edges coming or going; it makes the next query refile every item.
-    void invalidateNavigator(bool rebuildGrid);
+    // or edges coming or going; it makes the next query refile every item. Unless boundsReported,
+    // because every node that came, went or changed is in nodesBoundsPending, it also makes the
+    // nodes' bounds be recomputed from every node.
+    void invalidateNavigator(bool rebuildGrid, bool boundsReported = false);
 
     // Whether item, a node or one of its edges, is where the graph keeps items of its kind.
     bool isInGraph(const QGraphicsItem* item) const

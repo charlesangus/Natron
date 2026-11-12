@@ -150,6 +150,17 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
 
     ///default
     QPointF position;
+    // Placed before any connection is made, so that its new edges are laid out once, at the
+    // place it ends at, rather than from where it was created.
+    bool placed = false;
+    auto placeNode = [&node, &position, &placed]() {
+        if (placed) {
+            return;
+        }
+        placed = true;
+        QPointF inParent = node->mapToParent(node->mapFromScene(position));
+        node->setPosition(inParent.x(), inParent.y());
+    };
     if (behavior == 0) {
         position.setX( ( viewPos.bottomRight().x() + viewPos.topLeft().x() ) / 2. );
         position.setY( ( viewPos.topLeft().y() + viewPos.bottomRight().y() ) / 2. );
@@ -193,6 +204,7 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
                 }
             }
 
+            placeNode();
             int selectedInput = selectedNodeInternal->getPreferredInputForConnection();
             if (selectedInput != -1) {
                 bool ok = proj->connectNodes(selectedInput, createdNodeInternal, selectedNodeInternal, true);
@@ -215,6 +227,7 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
             position.setX(x  - createdNodeSize.width() / 2.);
             position.setY(y);
 
+            placeNode();
             int index = selectedNodeInternal->getPreferredInputForConnection();
             if (index != -1) {
                 bool ok = proj->connectNodes(index, createdNodeInternal, selectedNodeInternal, true);
@@ -255,6 +268,7 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
                 }
             }
 
+            placeNode();
             ///Connect the created node to the selected node
             ///finally we connect the created node to the selected node
             int createdInput = createdNodeInternal->getPreferredInputForConnection();
@@ -304,14 +318,13 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
 
             //Don't pop a dot, it will most likely annoy the user, just fallback on behavior 0
 
+            placeNode();
             int index = createdNodeInternal->getPreferredInputForConnection();
             bool ok = proj->connectNodes(index, selectedNodeInternal, createdNodeInternal, true);
             Q_UNUSED(ok);
         }
     }
-    position = node->mapFromScene(position);
-    position = node->mapToParent(position);
-    node->setPosition( position.x(), position.y() );
+    placeNode();
 } // moveNodesForIdealPosition
 
 NATRON_NAMESPACE_EXIT

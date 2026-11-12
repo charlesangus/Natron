@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 
 CLANG_DIAG_OFF(deprecated)
@@ -129,6 +130,22 @@ public:
      * Once created once, if knob changes (deletion, creation...) happen you should instead call refreshGuiForKnobsChanges() to refresh knob changes.
      **/
     void initializeKnobs();
+
+    /**
+     * @brief Same as initializeKnobs(), but the widgets are built over several passes of the event loop,
+     * the current page first, and onDone is called once every knob has its gui. Until then, making a page
+     * current builds that page at once, and getKnobGui() for a knob that has no gui yet, getKnobsMapping()
+     * and the knob refresh functions build the rest at once.
+     **/
+    void initializeKnobsIncrementally(const std::function<void()>& onDone);
+
+    /**
+     * @brief Finishes a build started by initializeKnobsIncrementally(). Does nothing while one of its
+     * passes is running.
+     **/
+    void ensureKnobGuisCreated();
+
+    bool isKnobBuildPending() const;
 
     /**
      * @brief Returns all the pages inside this container
@@ -253,6 +270,11 @@ protected:
     virtual void onKnobsInitialized() {}
 
     /**
+     * @brief Called by initializeKnobsIncrementally() once the pages exist, before any knob gui is built.
+     **/
+    virtual void onKnobBuildStarted() { }
+
+    /**
      * @brief This is called when a page is made current externally, e.g: not by the user changing it from the tab-widget
      **/
     virtual void onPageActivated(const KnobPageGuiPtr& page) = 0;
@@ -330,6 +352,14 @@ private:
                                    const KnobsVec& knobsOnSameLine);
 
     void initializeKnobVectorInternal(const KnobsVec& siblingsVec, KnobsVec* regularKnobsVec);
+
+    void initializeKnobVectorItem(const KnobsVec& siblingsVec, std::size_t index, QWidget** lastRowWidget);
+
+    void runKnobBuildStep();
+
+    void buildPendingPage(const KnobPageGuiPtr& page);
+
+    void finishKnobBuild();
 
     void recreateKnobsInternal(const KnobPageGuiPtr& curPage, bool restorePageIndex);
 

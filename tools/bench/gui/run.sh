@@ -9,8 +9,8 @@
 #   --preset gate|full|create  the matrix (default gate): gate is comp at 300,3000 nodes; full is chain,
 #                            wide, comp and mixed at 300,1000,3000. Both use --reps auto and the graph cache.
 #                            create is mixed at 0,300,3000 nodes running only the node-creation ops
-#                            create_by_shortcut, tab_menu_open and tab_menu_create (20 reps each; --reps does
-#                            not apply); --ops, --sizes and --topologies still override it
+#                            create_by_shortcut, tab_menu_open, tab_menu_create and create_then_key (20 reps
+#                            each; --reps does not apply); --ops, --sizes and --topologies still override it
 #   --stages                 write NATRON_NODE_CREATION_STAGE_LOG beside the result, so the node-creation
 #                            ops also record a per-stage split of the creation and the tab menu
 #   --sizes N[,N...]         node counts (overrides the preset)
@@ -126,7 +126,7 @@ case $preset in
     gate) preset_sizes=300,3000 preset_topologies=comp preset_restarts=0 preset_ops="" ;;
     full) preset_sizes=300,1000,3000 preset_topologies=chain,wide,comp,mixed preset_restarts=unlimited preset_ops="" ;;
     create) preset_sizes=0,300,3000 preset_topologies=mixed preset_restarts=0
-            preset_ops=create_by_shortcut,tab_menu_open,tab_menu_create ;;
+            preset_ops=create_by_shortcut,tab_menu_open,tab_menu_create,create_then_key ;;
     *) echo "unknown preset: $preset (gate, full or create)" >&2; exit 2 ;;
 esac
 if [ -n "$rerun" ]; then

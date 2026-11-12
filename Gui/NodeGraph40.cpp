@@ -625,7 +625,9 @@ NodeGraph::deleteNodePermanantly(const NodeGuiPtr& n)
         QMutexLocker l(&_imp->_nodesMutex);
         _imp->_nodes.remove(n.get());
     }
-    invalidateNavigatorContent();
+    // Only compared, never followed, once n is destroyed.
+    _imp->nodesBoundsPending.insert(n.get());
+    invalidateNavigatorItems();
 
     if (_imp->_selection.remove(n.get())) {
         n->setUserSelected(false);

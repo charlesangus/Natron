@@ -465,19 +465,74 @@ NodeGraphLowDetailLayer::invalidateCache()
 void
 NodeGraphLowDetailLayer::invalidateCache(const QRectF& rect)
 {
-    if (!_cacheValid || rect.isEmpty()) {
+    if (!_cacheValid) {
         return;
     }
-    _cacheDirty.push_back(rect);
-    // Past this many, redrawing each rect costs more than redrawing their union once.
-    if (_cacheDirty.size() > 32) {
-        QRectF all;
-        for (std::vector<QRectF>::const_iterator it = _cacheDirty.begin(); it != _cacheDirty.end(); ++it) {
-            all |= *it;
-        }
-        _cacheDirty.assign(1, all);
-    }
+    addDirtyRect(&_cacheDirty, rect);
 }
+
+namespace {
+
+qreal
+rectArea(const QRectF& rect)
+{
+    return rect.width() * rect.height();
+}
+
+// Two rects are drawn as their union when it covers little more than the two do: overlapping
+// rects, or neighbours such as a node and its short edges.
+const qreal kDirtyMergeSlack = 1.25;
+
+// Each rect costs a grid query and a clip of its own, so past this many the cheapest merge is
+// taken even when it grows the area.
+const std::size_t kMaxDirtyRects = 64;
+
+} // anon namespace
+
+void
+NodeGraphLowDetailLayer::addDirtyRect(std::vector<QRectF>* rects,
+                                      const QRectF& rect)
+{
+    if (rect.isEmpty()) {
+        return;
+    }
+    QRectF added = rect;
+    bool merged = true;
+    // A merge grows the rect, which can then meet others it missed before.
+    while (merged) {
+        merged = false;
+        for (std::size_t i = 0; i < rects->size(); ++i) {
+            const QRectF& other = (*rects)[i];
+            const QRectF both = other | added;
+            if (rectArea(both) <= kDirtyMergeSlack * (rectArea(other) + rectArea(added))) {
+                added = both;
+                (*rects)[i] = rects->back();
+                rects->pop_back();
+                merged = true;
+                break;
+            }
+        }
+    }
+    if (rects->size() < kMaxDirtyRects) {
+        rects->push_back(added);
+
+        return;
+    }
+    std::size_t best = 0;
+    qreal bestGrowth = 0.;
+    for (std::size_t i = 0; i < rects->size(); ++i) {
+        const QRectF& other = (*rects)[i];
+        const qreal growth = rectArea(other | added) - rectArea(other) - rectArea(added);
+        if ((i == 0) || (growth < bestGrowth)) {
+            best = i;
+            bestGrowth = growth;
+        }
+    }
+    added |= (*rects)[best];
+    (*rects)[best] = rects->back();
+    rects->pop_back();
+    addDirtyRect(rects, added);
+} // NodeGraphLowDetailLayer::addDirtyRect
 
 bool
 NodeGraphLowDetailLayer::paintCached(QPainter* painter,

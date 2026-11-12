@@ -57,6 +57,13 @@ class TabTabTabPlugin:
         """Trigger the selected menu item."""
         raise NotImplementedError
 
+    def invoke_opens_window(self, thing):
+        """Return False when invoking thing opens no window, dialog or
+        menu, so the popup can stay up until the choice has run and close
+        in the same event-loop pass. The default, True, closes the popup
+        first, so whatever the choice opens comes up over the host."""
+        return True
+
     def get_icon(self, menuobj):
         """Return a QIcon for menuobj, or None.
         Default works for any Qt object whose .icon() returns a QIcon."""
@@ -400,8 +407,10 @@ class NodeModel(QtCore.QAbstractListModel):
         self._filtertext = filtertext
         self.update()
 
-    def refresh_items(self, mlist):
+    def refresh_items(self, mlist, filtertext=None):
         self._all = mlist
+        if filtertext is not None:
+            self._filtertext = filtertext
         self.update()
 
     def set_scroll_enabled(self, enabled):
@@ -850,6 +859,8 @@ class TabTabTabWidget(QtWidgets.QDialog):
         # differs leaves the model alone.
         self._shown_items = items
         self._shown_weights_version = self.weights.version
+        # The query the next show pre-fills, set by a choice.
+        self._pending_text = None
 
         # List of stuff, and associated model
         self.things_model = NodeModel(items, weights=self.weights, icon_fn=plugin.get_icon, color_fn=plugin.get_color,
@@ -1001,8 +1012,9 @@ class TabTabTabWidget(QtWidgets.QDialog):
         self.input.setFocus()
 
     def _refresh_before_show(self):
-        """Bring the rows up to date with the plugin's items and the
-        weights file, touching the model only when either changed.
+        """Bring the rows up to date with the plugin's items, the weights
+        file and the query the last choice left, touching the model only
+        when one of them changed, and filtering at most once.
 
         NodeModel emits row ops rather than modelReset, so a refresh that
         does run is visually quiet: only rows that genuinely differ get
@@ -1011,16 +1023,34 @@ class TabTabTabWidget(QtWidgets.QDialog):
         host's colour edits can have landed.
         """
         self.weights.reload_if_changed()
+        query = self._take_pending_text()
         items = self.plugin.get_items()
         if items is not self._shown_items or self.weights.version != self._shown_weights_version:
             self._shown_items = items
             self._shown_weights_version = self.weights.version
             self.plugin.invalidate_color_cache()
-            self.things_model.refresh_items(items)
+            self.things_model.refresh_items(items, filtertext=query)
             self.things_model.invalidate_color_cache()
+        elif query is not None:
+            self.things_model.set_filter(query)
 
         # Row ops keep the selection, but the selected row may be gone.
         self.move_selection(where="first")
+
+    def _take_pending_text(self):
+        """Put the query the last choice left into the input without
+        filtering, and return it, or None when the input already holds it."""
+        text = self._pending_text
+        self._pending_text = None
+        if text is None or text == self.input.text():
+            return None
+        # textChanged would filter once here and again in the refresh.
+        self.input.blockSignals(True)
+        try:
+            self.input.setText(text)
+        finally:
+            self.input.blockSignals(False)
+        return text
 
     def set_weights_file(self, fname):
         """Keep the weights in fname from now on; pending increments go to
@@ -1089,16 +1119,22 @@ class TabTabTabWidget(QtWidgets.QDialog):
         else:
             prev_string = " %s" % thing['text']
 
-        # Weigh the choice before re-filtering on prev_string, so the rows
-        # the next open shows are already sorted by it.
+        # The next show filters on prev_string with this weight counted;
+        # filtering now would hold up the choice.
         self.weights.increment(thing['menupath'])
-        self.input.setText(prev_string)
+        self._pending_text = prev_string
 
-        # Close before invoking, so the choice can run now: windows it opens
-        # (a file dialog, a properties panel) come up over the host rather
-        # than under the popup.
-        self.close()
-        self.plugin.invoke(thing)
+        if self.plugin.invoke_opens_window(thing):
+            # Windows the choice opens (a file dialog, a menu) come up over
+            # the host rather than under the popup.
+            self.close()
+            self.plugin.invoke(thing)
+        else:
+            # Hiding after the choice has run lets the host's repaint of
+            # what the popup covered and of the choice's result happen in
+            # one paint.
+            self.plugin.invoke(thing)
+            self.close()
 
 
 _tabtabtab_instance = None

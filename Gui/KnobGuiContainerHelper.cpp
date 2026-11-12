@@ -25,21 +25,27 @@
 
 #include "KnobGuiContainerHelper.h"
 
+#include <list>
+#include <unordered_set>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QScrollArea>
+#include <QApplication>
+#include <QElapsedTimer>
 #include <QGridLayout>
-#include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QPixmap>
-#include <QApplication>
-#include <QUndoStack>
+#include <QScrollArea>
+#include <QTimer>
 #include <QUndoCommand>
+#include <QUndoStack>
+#include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/KnobTypes.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Gui/ClickableLabel.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDensity.h"
@@ -50,6 +56,24 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/UndoHistory.h"
 
 NATRON_NAMESPACE_ENTER
+
+// Each pass of an incremental build stops after the first knob that ends past this, so that the event
+// loop keeps up with a 60 Hz repaint.
+static const qint64 kKnobBuildPassBudgetMs = 8;
+
+struct PendingKnobPage {
+    KnobPageGuiPtr page;
+    KnobsVec children;
+    std::size_t next;
+    QWidget* lastRowWidget;
+};
+
+struct PendingKnobBuild {
+    std::list<PendingKnobPage> pages;
+    // The knobs that are not the direct child of a page, built after every page as initializeKnobVector() does.
+    KnobsVec regularKnobs;
+    std::function<void()> onDone;
+};
 
 struct KnobGuiContainerHelperPrivate
 {
@@ -65,6 +89,9 @@ struct KnobGuiContainerHelperPrivate
     // Only without a history.
     std::unique_ptr<QUndoStack> undoStack;
     std::unique_ptr<KnobGuiContainerSignalsHandler> signals;
+    std::unique_ptr<PendingKnobBuild> pendingBuild;
+    // Set while knob guis are being built: a lookup made by the gui being built must not start another build.
+    bool buildingKnobs;
 
     KnobGuiContainerHelperPrivate(KnobGuiContainerHelper* p,
                                   KnobHolder* holder,
@@ -79,6 +106,8 @@ struct KnobGuiContainerHelperPrivate
         , undoOwner(undoOwner)
         , undoStack()
         , signals(new KnobGuiContainerSignalsHandler(p))
+        , pendingBuild()
+        , buildingKnobs(false)
     {
         if (history) {
             signals->connectUndoHistory(history);
@@ -128,6 +157,11 @@ KnobGuiContainerHelper::getKnobGui(const KnobIPtr& knob) const
         if (it->first.lock() == knob) {
             return it->second;
         }
+    }
+    if (knob && isKnobBuildPending() && !_imp->buildingKnobs) {
+        const_cast<KnobGuiContainerHelper*>(this)->ensureKnobGuisCreated();
+
+        return getKnobGui(knob);
     }
 
     return KnobGuiPtr();
@@ -212,6 +246,7 @@ void
 KnobGuiContainerHelper::setCurrentPage(const KnobPageGuiPtr& curPage)
 {
     _imp->currentPage = curPage;
+    buildPendingPage(curPage);
     _imp->refreshPagesEnabledness();
 }
 
@@ -372,6 +407,10 @@ KnobGuiContainerHelper::getInternalKnobs() const
 const KnobsGuiMapping&
 KnobGuiContainerHelper::getKnobsMapping() const
 {
+    if (isKnobBuildPending() && !_imp->buildingKnobs) {
+        const_cast<KnobGuiContainerHelper*>(this)->ensureKnobGuisCreated();
+    }
+
     return _imp->knobsMap;
 }
 
@@ -386,69 +425,239 @@ KnobGuiContainerHelper::initializeKnobs()
 }
 
 void
+KnobGuiContainerHelper::initializeKnobsIncrementally(const std::function<void()>& onDone)
+{
+    std::unique_ptr<PendingKnobBuild> build(new PendingKnobBuild);
+    build->onDone = onDone;
+
+    const KnobsVec& knobs = _imp->holder->getKnobs();
+    std::list<KnobPagePtr> pages;
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(knobs[i]);
+        if (!isPage) {
+            continue;
+        }
+        if (!isPage->getIsToolBar()) {
+            pages.push_back(isPage);
+        }
+    }
+
+    // Every tab is created now, in the order initializeKnobs() creates them, so that building a page
+    // early does not reorder the tabs.
+    std::unordered_set<KnobI*> pageChildren;
+    _imp->buildingKnobs = true;
+    for (std::list<KnobPagePtr>::iterator it = pages.begin(); it != pages.end(); ++it) {
+        KnobsVec children = (*it)->getChildren();
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            pageChildren.insert(children[i].get());
+        }
+        if (children.empty()) {
+            continue;
+        }
+        KnobPageGuiPtr page = getOrCreatePage(*it);
+        if (!page) {
+            continue;
+        }
+        PendingKnobPage pending;
+        pending.page = page;
+        pending.children = children;
+        pending.next = 0;
+        pending.lastRowWidget = 0;
+        build->pages.push_back(pending);
+    }
+    _imp->buildingKnobs = false;
+
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        if (!std::dynamic_pointer_cast<KnobPage>(knobs[i]) && !pageChildren.count(knobs[i].get())) {
+            build->regularKnobs.push_back(knobs[i]);
+        }
+    }
+
+    _imp->pendingBuild = std::move(build);
+    onKnobBuildStarted();
+    runKnobBuildStep();
+}
+
+bool
+KnobGuiContainerHelper::isKnobBuildPending() const
+{
+    return (bool)_imp->pendingBuild;
+}
+
+void
+KnobGuiContainerHelper::runKnobBuildStep()
+{
+    PendingKnobBuild* build = _imp->pendingBuild.get();
+    if (!build || _imp->buildingKnobs) {
+        return;
+    }
+    {
+        NodeCreationStageLog::Scope stage("panelBuildPass");
+        QElapsedTimer timer;
+        timer.start();
+        _imp->buildingKnobs = true;
+        while (!build->pages.empty() && (timer.elapsed() < kKnobBuildPassBudgetMs)) {
+            // Pages share one layout when paging is off, so they are then built in order.
+            std::list<PendingKnobPage>::iterator page = build->pages.begin();
+            KnobPageGuiPtr current = getCurrentPage();
+            if (current && isPagingEnabled()) {
+                for (std::list<PendingKnobPage>::iterator it = build->pages.begin(); it != build->pages.end(); ++it) {
+                    if (it->page == current) {
+                        page = it;
+                        break;
+                    }
+                }
+            }
+            if (page->next < page->children.size()) {
+                std::size_t index = page->next++;
+                initializeKnobVectorItem(page->children, index, &page->lastRowWidget);
+            }
+            if (page->next >= page->children.size()) {
+                build->pages.erase(page);
+            }
+        }
+        _imp->buildingKnobs = false;
+    }
+    if (build->pages.empty()) {
+        finishKnobBuild();
+
+        return;
+    }
+    QTimer::singleShot(0, _imp->signals.get(), [this]() {
+        runKnobBuildStep();
+    });
+}
+
+void
+KnobGuiContainerHelper::buildPendingPage(const KnobPageGuiPtr& page)
+{
+    PendingKnobBuild* build = _imp->pendingBuild.get();
+    if (!build || !page || _imp->buildingKnobs) {
+        return;
+    }
+    // With paging off every page maps to the same gui, which builds them all, in order.
+    _imp->buildingKnobs = true;
+    for (std::list<PendingKnobPage>::iterator it = build->pages.begin(); it != build->pages.end();) {
+        if (it->page != page) {
+            ++it;
+            continue;
+        }
+        while (it->next < it->children.size()) {
+            std::size_t index = it->next++;
+            initializeKnobVectorItem(it->children, index, &it->lastRowWidget);
+        }
+        it = build->pages.erase(it);
+    }
+    _imp->buildingKnobs = false;
+}
+
+void
+KnobGuiContainerHelper::ensureKnobGuisCreated()
+{
+    PendingKnobBuild* build = _imp->pendingBuild.get();
+    if (!build || _imp->buildingKnobs) {
+        return;
+    }
+    {
+        NodeCreationStageLog::Scope stage("panelBuildPass");
+        _imp->buildingKnobs = true;
+        for (std::list<PendingKnobPage>::iterator it = build->pages.begin(); it != build->pages.end(); ++it) {
+            while (it->next < it->children.size()) {
+                std::size_t index = it->next++;
+                initializeKnobVectorItem(it->children, index, &it->lastRowWidget);
+            }
+        }
+        build->pages.clear();
+        _imp->buildingKnobs = false;
+    }
+    finishKnobBuild();
+}
+
+void
+KnobGuiContainerHelper::finishKnobBuild()
+{
+    std::unique_ptr<PendingKnobBuild> build = std::move(_imp->pendingBuild);
+    if (!build) {
+        return;
+    }
+    _imp->buildingKnobs = true;
+    initializeKnobVectorInternal(build->regularKnobs, 0);
+    _imp->buildingKnobs = false;
+    refreshTabWidgetMaxHeight();
+
+    _imp->refreshPagesEnabledness();
+    refreshCurrentPage();
+    onKnobsInitialized();
+    if (build->onDone) {
+        build->onDone();
+    }
+}
+
+void
 KnobGuiContainerHelper::initializeKnobVectorInternal(const KnobsVec& siblingsVec,
                                                      KnobsVec* regularKnobsVec)
 {
     // A pointer to the container of the last knob created on the same row
     QWidget* lastRowWidget = 0;
 
-    // Hold a pointer to the previous child if the previous child did not want to create a new line
-    KnobsVec::const_iterator prev = siblingsVec.end();
-
-    for (KnobsVec::const_iterator it2 = siblingsVec.begin(); it2 != siblingsVec.end(); ++it2) {
-        bool makeNewLine = true;
-        int lastKnobSpacing = 0;
-        KnobGroup *isGroup = dynamic_cast<KnobGroup*>( it2->get() );
-
-        // A vector of all other knobs on the same line
-        KnobsVec knobsOnSameLine;
-
-        // If the knob is dynamic (i:e created after the initial creation of knobs)
-        // it can be added as part of a group defined earlier hence we have to insert it at the proper index.
-        KnobIPtr parentKnob = (*it2)->getParentKnob();
-        KnobGroup* isParentGroup = dynamic_cast<KnobGroup*>( parentKnob.get() );
-
-        // Determine if we should create this knob on a new line or use the one created before
-        if (!isGroup) {
-            if ( ( prev != siblingsVec.end() ) && !(*prev)->isNewLineActivated() ) {
-                makeNewLine = false;
-                lastKnobSpacing = (*prev)->getSpacingBetweenitems();
-            }
-            if (isParentGroup) {
-                // If the parent knob is a group, knobs on the same line have to be found in the children
-                // of the parent
-                KnobsVec groupsiblings = isParentGroup->getChildren();
-                findKnobsOnSameLine(groupsiblings, *it2, knobsOnSameLine);
-            } else {
-                // Parent is a page, find the siblings in the children of the page
-                findKnobsOnSameLine(siblingsVec, *it2, knobsOnSameLine);
-            }
-        }
-
-        // Create this knob
-        KnobGuiPtr newGui = findKnobGuiOrCreate(*it2, makeNewLine, lastKnobSpacing, lastRowWidget, knobsOnSameLine);
-
-        // Childrens cannot be on the same row than their parent
-        if (!isGroup && newGui) {
-            lastRowWidget = newGui->getFieldContainer();
-        }
-
-
-        if ( prev == siblingsVec.end() ) {
-            prev = siblingsVec.begin();
-        } else {
-            ++prev;
-        }
+    for (std::size_t i = 0; i < siblingsVec.size(); ++i) {
+        initializeKnobVectorItem(siblingsVec, i, &lastRowWidget);
 
         // Remove it from the "regularKnobs" to mark it as created as we will use them later
         if (regularKnobsVec) {
-            std::vector<KnobIPtr>::iterator foundRegular = std::find(regularKnobsVec->begin(), regularKnobsVec->end(), *it2);
+            std::vector<KnobIPtr>::iterator foundRegular = std::find(regularKnobsVec->begin(), regularKnobsVec->end(), siblingsVec[i]);
             if ( foundRegular != regularKnobsVec->end() ) {
                 regularKnobsVec->erase(foundRegular);
             }
         }
     }
 } // KnobGuiContainerHelper::initializeKnobVectorInternal
+
+void
+KnobGuiContainerHelper::initializeKnobVectorItem(const KnobsVec& siblingsVec,
+                                                 std::size_t index,
+                                                 QWidget** lastRowWidget)
+{
+    KnobsVec::const_iterator it2 = siblingsVec.begin() + index;
+    // The previous child, if the previous child did not want to create a new line
+    KnobsVec::const_iterator prev = (index == 0) ? siblingsVec.end() : (it2 - 1);
+    bool makeNewLine = true;
+    int lastKnobSpacing = 0;
+    KnobGroup* isGroup = dynamic_cast<KnobGroup*>(it2->get());
+
+    // A vector of all other knobs on the same line
+    KnobsVec knobsOnSameLine;
+
+    // If the knob is dynamic (i:e created after the initial creation of knobs)
+    // it can be added as part of a group defined earlier hence we have to insert it at the proper index.
+    KnobIPtr parentKnob = (*it2)->getParentKnob();
+    KnobGroup* isParentGroup = dynamic_cast<KnobGroup*>(parentKnob.get());
+
+    // Determine if we should create this knob on a new line or use the one created before
+    if (!isGroup) {
+        if ((prev != siblingsVec.end()) && !(*prev)->isNewLineActivated()) {
+            makeNewLine = false;
+            lastKnobSpacing = (*prev)->getSpacingBetweenitems();
+        }
+        if (isParentGroup) {
+            // If the parent knob is a group, knobs on the same line have to be found in the children
+            // of the parent
+            KnobsVec groupsiblings = isParentGroup->getChildren();
+            findKnobsOnSameLine(groupsiblings, *it2, knobsOnSameLine);
+        } else {
+            // Parent is a page, find the siblings in the children of the page
+            findKnobsOnSameLine(siblingsVec, *it2, knobsOnSameLine);
+        }
+    }
+
+    // Create this knob
+    KnobGuiPtr newGui = findKnobGuiOrCreate(*it2, makeNewLine, lastKnobSpacing, *lastRowWidget, knobsOnSameLine);
+
+    // Childrens cannot be on the same row than their parent
+    if (!isGroup && newGui) {
+        *lastRowWidget = newGui->getFieldContainer();
+    }
+} // KnobGuiContainerHelper::initializeKnobVectorItem
 
 void
 KnobGuiContainerHelper::initializeKnobVector(const KnobsVec& knobs)
@@ -930,6 +1139,7 @@ KnobGuiContainerHelper::createKnobHorizontalFieldContainer(QWidget* parent) cons
 void
 KnobGuiContainerHelper::deleteKnobGui(const KnobIPtr& knob)
 {
+    ensureKnobGuisCreated();
     KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(knob);
 
     if ( isPage && isPagingEnabled() ) {
@@ -1008,6 +1218,7 @@ KnobGuiContainerHelper::deleteKnobGui(const KnobIPtr& knob)
 void
 KnobGuiContainerHelper::refreshGuiForKnobsChanges(bool restorePageIndex)
 {
+    ensureKnobGuisCreated();
     KnobPageGuiPtr curPage;
 
     if ( isPagingEnabled() ) {
@@ -1115,6 +1326,7 @@ KnobGuiContainerHelper::recreateKnobsInternal(const KnobPageGuiPtr& curPage,
 void
 KnobGuiContainerHelper::recreateUserKnobs(bool restorePageIndex)
 {
+    ensureKnobGuisCreated();
     const KnobsVec& knobs = getInternalKnobs();
     std::list<KnobPage*> userPages;
 
@@ -1152,6 +1364,7 @@ KnobGuiContainerHelper::setPageActiveIndex(const KnobPagePtr& page)
     if ( foundPage == _imp->pages.end() ) {
         return;
     }
+    buildPendingPage(foundPage->second);
     _imp->refreshPagesEnabledness();
 
     onPageActivated(foundPage->second);

@@ -98,6 +98,10 @@ _INPUT_KIND_PROPERTY = "natronInputKind"
 _PRIM_PATH_KNOB_PROPERTY = "natronPrimPathKnob"
 _INPUT_KINDS_PROPERTY = "natronInputKinds"
 
+# PLUGINID_NATRON_READ and PLUGINID_NATRON_WRITE, whose interactive creation
+# asks for a file first.
+_FILE_DIALOG_PLUGIN_IDS = frozenset(("Read", "Write"))
+
 # An input of this kind takes any kind.
 _ANY_KIND = "polymorphic"
 
@@ -513,10 +517,14 @@ class NatronPlugin(TabTabTabPlugin):
         return os.path.join(os.path.expanduser(_DEFAULT_STORAGE_DIR), _WEIGHTS_FILENAME)
 
     def invoke(self, thing):
-        # The core hides the popup before it invokes, so the choice's windows
-        # (a Read's file dialog, the Preferences) come up over the graph.
         self._chosen = True
         _trigger_action(self._app, thing['menuobj'])
+
+    def invoke_opens_window(self, thing):
+        """False for a node the nodes menu creates without a dialog; menu
+        commands and script actions may open anything."""
+        plugin_id = _string_property(thing.get('menuobj'), _PLUGIN_ID_PROPERTY)
+        return not plugin_id or plugin_id in _FILE_DIALOG_PLUGIN_IDS
 
     def closed(self):
         """The popup closed: a filtered launch closed with no choice tells
@@ -630,7 +638,7 @@ _watched_popup = None
 
 def _watch_popup_close(popup):
     # The core hides its popup on every close path (a choice, Escape, a
-    # click outside), and on a choice invokes it right after.
+    # click outside), and on a choice invokes it just before or just after.
     global _close_watcher, _watched_popup
     if not _is_alive(popup) or popup is _watched_popup:
         return
@@ -638,7 +646,7 @@ def _watch_popup_close(popup):
         class _CloseWatcher(QtCore.QObject):
             def eventFilter(self, watched, event):
                 if event.type() == QtCore.QEvent.Hide:
-                    # After the choice the core invokes once hidden, if any.
+                    # After a choice the core invokes once hidden, if any.
                     QtCore.QTimer.singleShot(0, _plugin.closed)
                 return False
 
@@ -713,9 +721,15 @@ def _warm_up(attempts):
     _watch_popup_close(popup)
     try:
         popup.ensurePolished()
-        popup.things.ensurePolished()
-        popup.input.ensurePolished()
-        # The native window, which the first show would otherwise create.
+        layout = popup.layout()
+        if layout is not None:
+            layout.activate()
+        # The native window and its backing store, which the first show
+        # would otherwise create.
         popup.winId()
+        # Painting the hidden popup into a pixmap runs the list's deferred
+        # item layout, the delegate, the row colours and the glyph caches
+        # once, off screen and without taking focus.
+        popup.grab()
     except RuntimeError:
         pass

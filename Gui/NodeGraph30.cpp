@@ -568,13 +568,20 @@ NodeGraph::invalidateNavigatorContent()
 }
 
 void
+NodeGraph::invalidateNavigatorItems()
+{
+    _imp->invalidateNavigator(true, true);
+}
+
+void
 NodeGraph::invalidateNavigatorImage()
 {
     _imp->invalidateNavigator(false);
 }
 
 void
-NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
+NodeGraphPrivate::invalidateNavigator(bool rebuildGrid,
+                                      bool boundsReported)
 {
     navigatorContentDirty = true;
     if (_evtState == eEventStateDraggingNode) {
@@ -589,6 +596,9 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
 
         return;
     }
+    if (rebuildGrid && !boundsReported) {
+        nodesBoundsDirty = true;
+    }
     if (navigatorBatchDepth > 0) {
         navigatorBatchPending = true;
         navigatorDeferredRebuildsGrid = navigatorDeferredRebuildsGrid || rebuildGrid;
@@ -597,10 +607,13 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
     }
     rebuildGrid = rebuildGrid || navigatorDeferredRebuildsGrid;
     navigatorDeferredRebuildsGrid = false;
-    navigatorDeferredByDrag = false;
+    if (navigatorDeferredByDrag) {
+        // The drag only grew the bounds, as endNavigatorDragDeferral() knows.
+        navigatorDeferredByDrag = false;
+        nodesBoundsDirty = true;
+    }
     if (rebuildGrid) {
         itemGridDirty = true;
-        nodesBoundsDirty = true;
     }
     if (_publicInterface->isLoadingProjectNodes()) {
         // onProjectNodesRestored() invalidates once more.

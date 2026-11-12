@@ -18,8 +18,15 @@ USDRender with the Cycles delegate often renders black geometry after a scene ch
   - verify: new test renders, edits the stage (move or recolour a prim), renders again on the same engine, and gets non-black pixels matching a fresh-engine render; existing USDRender Cycles tests green.
   - size: S
 
+- [ ] M398.P1.T2 — Forward every Cycles render setting, and a transparent background
+  - files: the Cycles fork (`charlesangus/cycles` natron/deep-5.2, `src/hydra/render_delegate.cpp`, `src/hydra/session.cpp`), `tools/ci/local/Dockerfile` (pin and sha256), `Engine/Nodes/Scene/RenderSettingsPrim.*`, `Engine/Nodes/Scene/USDRenderSettings.*`, `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Gui/SceneViewport.cpp`
+  - approach: the delegate forwards `cycles:<node>:<socket>` generically for every scene-level node with sockets, not only the integrator. An explicitly set `cycles:background:transparent` wins over the dome-driven default; unset keeps today's behaviour. Natron forwards every `cycles:` attribute on the active RenderSettings prim. USDRenderSettings gets a way to set arbitrary renderer settings, plus a "Transparent Background" toggle that also drives Storm's `domeLightCameraVisibility`. The fork commit is pushed and pinned.
+  - verify: gtest that a `cycles:*` attribute reaches the delegate; a Cycles render with a dome and Transparent Background on has alpha 0 in the background and the same lit geometry.
+  - size: M
+
 **Verification gate:** CI green; the user's repro (scene change → render) no longer renders black.
 
 ## Decisions
 
 - 2026-11-12 — Split from M376 UAT round 1 (user agreed): the cause is in the shared Hydra render path, not geometry.
+- 2026-11-12 — Scope widened (user): "we should be able to set/forward all renderer settings". It is OK to patch the Cycles delegate; a background-visibility knob on the renderer side is fine where that is idiomatic, which for Cycles it is (transparent film or background). It goes on USDRenderSettings, not USDRender (user). The delegate patch is on top of main's pin, b0d961e3e.

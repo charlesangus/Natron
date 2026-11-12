@@ -159,6 +159,7 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: builds; M399.P2.T1's script passes on every path; the `Tests/gui/` global-mode
     and tab-menu scripts still pass.
   - size: M
+- 2026-11-12 — **Round 3 bench** (8489ce70f, run 20261112T231959Z, Xvfb, relative only). The harness now counts trailing repaints (T22), so wall and CPU per event are not comparable with earlier rounds: per-event CPU at 3000 is about 220 ms for create and tab create, where the old window cut off the second repaint. T17 holds: `tab_menu_create` CPU at 3000 is 226 ms against `create_by_shortcut` 222. T22 holds. Still missing: T18, where individual `panelBuildPass` runs have a median of 9.4 ms, p90 15.4, p99 25 and max 36, and 8% exceed 16 ms (p90 target 10). T19, where positioning at 3000 is 9.3 ms for shortcut, 9.7 for tab and 4.6 for create_then_key (target 2). T20, where createNodeGui at 3000 is 13.6, 14.3 and 7.7 ms (target 5). At 0 and 300, engine plus GUI plus positioning comes to 5-9 ms; the rest of each latency is Xvfb compositing. Tab open at 0/300/3000 is 5.5-6 ms for launch and show, and 24-29 ms end to end. T21 has not been measured.
 
 ## Phase 399.3: Measure creation and tab-menu latency
 
@@ -308,7 +309,7 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: the bench runs the new op; `compare.py` accepts the file.
   - size: M
 
-- [ ] M399.P4.T17 — Remove the second whole-widget graph repaint after a creation
+- [x] M399.P4.T17 — Remove the second whole-widget graph repaint after a creation
   - files: `Gui/NodeGraph30.cpp`, `Gui/NodeGraph10.cpp`, `Gui/NodeGraphLowDetailLayer.cpp`, `Gui/NodeGui.cpp`
   - approach: every creation queues a second, whole-widget graph repaint (frame included) about 60 ms after the first, which refills the low-detail cache; find what queues it (focus, activation or palette change, or `invalidateNavigator(rebuildGrid)` at `NodeGraph30.cpp:594,629`) and keep the cache valid, invalidating only dirty rects.
   - verify: one graph paint per creation; `tab_menu_create` CPU at 3000 within 20 ms of `create_by_shortcut`.
@@ -338,7 +339,7 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: a full graph paint ≤ 15 ms CPU at 3000.
   - size: M
 
-- [ ] M399.P4.T22 — Bench counts trailing paints and drains undo teardown
+- [x] M399.P4.T22 — Bench counts trailing paints and drains undo teardown
   - files: `tools/bench/gui/gui_bench.py`
   - approach: drain until idle after undo before t0, and extend each step to the next idle so trailing repaints count.
   - verify: the shortcut step includes the trailing paint; no `~NodeSettingsPanel` samples in the tab window.

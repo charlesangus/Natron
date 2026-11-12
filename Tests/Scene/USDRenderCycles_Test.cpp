@@ -87,6 +87,8 @@ const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles.usda";
 // Cycles 5.2's delegate does not make.
 const char* const kUnsupportedFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-unsupported.usda";
 const char* const kMdlOnlyFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-mdl-only.usda";
+// The cubes of kFixture under a blue dome light without a texture.
+const char* const kDomeFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-dome.usda";
 const float kCardDistance = 10.f;
 const char* const kCamera = "/World/Cam";
 const int kSize = 64;
@@ -1046,6 +1048,37 @@ cyclesScriptNames()
     return names;
 }
 
+// The script name of each film and background socket's knob, which no table lays out.
+const std::map<std::string, std::string>&
+cyclesOtherScriptNames()
+{
+    static const std::map<std::string, std::string> names = {
+        { "cycles:background:lightgroup", "cyclesLightgroup" },
+        { "cycles:background:transparent", "cyclesTransparent" },
+        { "cycles:background:transparent_glass", "cyclesTransparentGlass" },
+        { "cycles:background:transparent_roughness_threshold", "cyclesTransparentRoughnessThreshold" },
+        { "cycles:background:use_shader", "cyclesUseShader" },
+        { "cycles:background:visibility", "cyclesVisibility" },
+        { "cycles:film:cryptomatte_depth", "cyclesCryptomatteDepth" },
+        { "cycles:film:cryptomatte_passes", "cyclesCryptomattePasses" },
+        { "cycles:film:denoising_pass_follow_reflections", "cyclesDenoisingPassFollowReflections" },
+        { "cycles:film:denoising_pass_use_albedo_roughness_weighting", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" },
+        { "cycles:film:display_pass", "cyclesDisplayPass" },
+        { "cycles:film:exposure", "cyclesExposure" },
+        { "cycles:film:filter_type", "cyclesFilterType" },
+        { "cycles:film:filter_width", "cyclesFilterWidth" },
+        { "cycles:film:mist_depth", "cyclesMistDepth" },
+        { "cycles:film:mist_falloff", "cyclesMistFalloff" },
+        { "cycles:film:mist_start", "cyclesMistStart" },
+        { "cycles:film:pass_alpha_threshold", "cyclesPassAlphaThreshold" },
+        { "cycles:film:show_active_pixels", "cyclesShowActivePixels" },
+        { "cycles:film:use_approximate_shadow_catcher", "cyclesUseApproximateShadowCatcher" },
+        { "cycles:film:use_sample_count", "cyclesUseSampleCount" },
+    };
+
+    return names;
+}
+
 struct CyclesGroupLayout {
     const char* group;
     const char* parent;
@@ -1330,5 +1363,77 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
         }
         reached[reach.first] = reach.second;
     }
-    EXPECT_EQ(cyclesScriptNames(), reached);
+    std::map<std::string, std::string> expected = cyclesScriptNames();
+    expected.insert(cyclesOtherScriptNames().begin(), cyclesOtherScriptNames().end());
+    EXPECT_EQ(expected, reached);
+}
+
+// A film or background setting the Cycles page has no table entry for still reaches the delegate,
+// which reports it back from the socket it names.
+TEST_F(USDRenderCyclesTest, FilmAndBackgroundSettingsReachTheDelegate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    const std::vector<std::string> keys = {
+        "cycles:film:exposure",
+        "cycles:film:filter_width",
+        "cycles:background:transparent_roughness_threshold",
+    };
+    for (const std::string& key : keys) {
+        KnobIPtr k = settings->knob(kRenderDelegateCyclesId, key);
+        ASSERT_TRUE(bool(k)) << key;
+        ASSERT_TRUE(nudgeCyclesKnob(k.get())) << key;
+    }
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes, true));
+    RenderSettingsKnobs::Values sent = settings->values(kRenderDelegateCyclesId);
+    for (const std::string& key : keys) {
+        ASSERT_EQ(1u, sent.count(key)) << key << " is not sent";
+        EXPECT_EQ(sent[key], cyclesReported(node, key)) << key << " sent " << RenderSettingsKnobs::valueText(sent[key]);
+    }
+}
+
+// Under a dome light Cycles renders the dome behind the scene; Transparent Background makes those
+// pixels transparent while the dome still lights the cubes as before.
+TEST_F(USDRenderCyclesTest, TransparentBackgroundHidesTheDomeOnly)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr node = createGraph(nullptr, kDomeFixture);
+    ASSERT_TRUE(bool(node));
+    USDRenderSettings* settingsNode = RenderSettingsTestUtils::settingsOf(node);
+    ASSERT_TRUE(settingsNode != nullptr);
+    KnobBool* transparent = dynamic_cast<KnobBool*>(settingsNode->getKnobByName(kUSDRenderSettingsParamTransparentBackground).get());
+    ASSERT_TRUE(transparent != nullptr);
+    EXPECT_FALSE(transparent->getValue());
+
+    std::vector<RenderedPlane> opaque;
+    ASSERT_TRUE(renderAll(node, &opaque, true));
+    const std::size_t corner = pixelIndex(0, 0);
+    EXPECT_NEAR(1.f, opaque[0].pixels[corner * 4 + 3], 1e-3f);
+    EXPECT_GT(opaque[0].pixels[corner * 4 + 2], 0.05f) << "the dome is not behind the scene";
+
+    transparent->setValue(true);
+    std::vector<RenderedPlane> hidden;
+    ASSERT_TRUE(renderAll(node, &hidden, true));
+    EXPECT_EQ(PXR_NS::VtValue(true), cyclesReported(node, "cycles:background:transparent"));
+    EXPECT_EQ(0.f, hidden[0].pixels[corner * 4 + 3]);
+    EXPECT_EQ(0.f, hidden[0].pixels[pixelIndex(kSize - 1, kSize - 1) * 4 + 3]);
+
+    // The near cube's front face, two units wide, covers the middle eight pixels each way.
+    for (int y = kNearY - 4; y < kNearY + 4; ++y) {
+        for (int x = kNearX - 4; x < kNearX + 4; ++x) {
+            const std::size_t p = pixelIndex(x, y);
+            EXPECT_NEAR(1.f, hidden[0].pixels[p * 4 + 3], 1e-3f) << x << ", " << y;
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_NEAR(opaque[0].pixels[p * 4 + c], hidden[0].pixels[p * 4 + c], kChannelTolerance) << x << ", " << y << " channel " << c;
+            }
+        }
+    }
 }

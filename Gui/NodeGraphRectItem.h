@@ -64,10 +64,24 @@ public:
         _cornerRadiusPx = cornerRadiusPx;
     }
 
+    int getCornerRadiusPx() const
+    {
+        return _cornerRadiusPx;
+    }
+
     // A stroke whose outer edge lies on rect(), so none of it falls outside the item's footprint.
     void setInsetBorder(const QColor& color, double width);
 
     void clearInsetBorder();
+
+    bool getInsetBorder(QColor* color,
+                        double* width) const
+    {
+        *color = _insetBorderColor;
+        *width = _insetBorderWidth;
+
+        return _hasInsetBorder && (_insetBorderWidth > 0.);
+    }
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) OVERRIDE FINAL;
 };

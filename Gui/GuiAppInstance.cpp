@@ -547,7 +547,13 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
         throw std::logic_error("");
     }
 
-    NodesGuiList selectedNodes = graph->getSelectedNodes();
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    // Only a node placed next to the selection reads it; copying it for each node of a paste
+    // costs the selection's size per pasted node.
+    NodesGuiList selectedNodes;
+    if (!serialization) {
+        selectedNodes = graph->getSelectedNodes();
+    }
     NodeGuiPtr nodegui = _imp->_gui->createNodeGUI(node, args);
     assert(nodegui);
 
@@ -592,7 +598,6 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
         }
     }
 
-    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
     if ( !serialization && !isViewer ) {
         ///we make sure we can have a clean preview.
         node->computePreviewImage( getTimeLine()->currentFrame() );
@@ -885,6 +890,7 @@ GuiAppInstance::onProjectNodesRestored()
     if (!_imp->_gui) {
         return;
     }
+    _imp->_gui->onProjectNodesRestoredInNodeGraphs();
     // Every node of every sub-graph, so a Group's own pipes are repainted right after load too.
     NodesList allNodes;
     getProject()->getNodes_recursive(allNodes, true);

@@ -581,6 +581,8 @@ public:
 
     void notifyFrameProduced(const BufferableObjectPtrList& frames, const RenderStatsPtr& stats, const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request);
 
+    bool isBackupThreadRunning() const;
+
 private:
 
     virtual void onWaitForAbortCompleted() OVERRIDE FINAL;

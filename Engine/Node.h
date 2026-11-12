@@ -558,6 +558,12 @@ public:
     /*Returns in viewers the list of all the viewers connected to this node*/
     void hasViewersConnected(std::list<ViewerInstance* >* viewers) const;
 
+    /**
+     * @brief The viewers hasViewersConnected() finds from any of the nodes, each once, in one walk
+     * of what is downstream of them all.
+     **/
+    static void getViewersDownstreamOf(const std::list<NodePtr>& nodes, std::list<ViewerInstance*>* viewers);
+
     void hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const;
 
     /**
@@ -657,8 +663,18 @@ public:
      * both directions: consumers and inputs alike. Everything derived from the kinds of the nodes
      * it reaches is then brought back up to date: their data-kind diagnostic, and the
      * dataKindChanged() signal the GUI redraws its edges from.
+     *
+     * Inside an InputEditBatch on the main thread every cached kind is dropped at once instead,
+     * and the diagnostics and signals are brought up to date at the end of the outermost batch,
+     * once for each node reached from any node invalidated in it.
      **/
     void invalidateEffectiveOutputDataKindCache();
+
+    /**
+     * @brief The number of nodes the walks of invalidateEffectiveOutputDataKindCache() have visited
+     * since startup. For tests.
+     **/
+    static U64 getDataKindInvalidationVisitCount();
 
     /**
      * @brief Recomputes this node's data-kind diagnostic: an eMessageTypeError persistent message
@@ -2093,6 +2109,96 @@ public:
         InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
     };
 
+    /**
+     * @brief While one lives on the main thread, activating, deactivating and reconnecting nodes
+     * leaves invalid-expression rechecks, input-related refreshes and the project's layer table to
+     * the end of the outermost one, which does each once. An edit of many nodes would otherwise
+     * walk everything downstream of each, reading expressions that name nodes it has not restored
+     * yet.
+     **/
+    class InputEditBatch {
+    public:
+        explicit InputEditBatch(const AppInstancePtr& app);
+        ~InputEditBatch();
+
+        InputEditBatch(const InputEditBatch&) = delete;
+        InputEditBatch& operator=(const InputEditBatch&) = delete;
+
+    private:
+        AppInstancePtr _app;
+    };
+
+    /**
+     * @brief While one lives on the main thread, the walks downstream of the nodes a value change
+     * reaches (aborting viewer renders, refreshing the shown input-related data, rendering or
+     * redrawing the viewers and refreshing previews) wait for the end of the outermost one, which
+     * does each once from all of those nodes. A change with many expression dependents would
+     * otherwise walk everything below each dependent. KnobHolder::endChanges() opens one. Off the
+     * main thread it does nothing.
+     **/
+    class ValueChangeCascade {
+    public:
+        ValueChangeCascade();
+        ~ValueChangeCascade();
+
+        ValueChangeCascade(const ValueChangeCascade&) = delete;
+        ValueChangeCascade& operator=(const ValueChangeCascade&) = delete;
+
+    private:
+        bool _active;
+    };
+
+    /**
+     * @brief If a ValueChangeCascade lives on the calling thread, keeps the abort of the viewer
+     * renders reading `node` for its end and returns true.
+     **/
+    static bool deferViewerAbortToCascade(const NodePtr& node);
+
+    /**
+     * @brief If a ValueChangeCascade lives on the calling thread, keeps the render (`isSignificant`)
+     * or redraw of the viewers downstream of `node`, and the refresh of the previews downstream of
+     * it at `time` when significant, for its end and returns true.
+     **/
+    static bool deferEvaluationToCascade(const NodePtr& node, bool isSignificant, double time);
+
+    /**
+     * @brief The number of nodes visited by the walks downstream of an edit since startup. For
+     * tests.
+     **/
+    static U64 getDownstreamWalkVisitCount();
+
+    /**
+     * @brief While one lives on this thread, the walks finding the outputs whose renders to abort
+     * share what they visited, so deactivating many nodes walks what is downstream of them once.
+     * Open one only around removing nodes: connecting a node inside it would hide the new output.
+     **/
+    class RemovalBatch {
+    public:
+        RemovalBatch();
+        ~RemovalBatch();
+
+        RemovalBatch(const RemovalBatch&) = delete;
+        RemovalBatch& operator=(const RemovalBatch&) = delete;
+    };
+
+    /**
+     * @brief While one lives on the main thread, activate(), deactivate() and the creation of a
+     * node outside a PyPlug leave declaring or deleting the nodes' Python variables, restoring
+     * their expression functions and running their creation callbacks to the end of the outermost
+     * one. It runs one script declaring every
+     * activated node, one declaring all their parameters and one deleting every deactivated node,
+     * without echoing them per node in the Script Editor. Open it inside the InputEditBatch of the
+     * edit, whose rechecks and refreshes read the declarations.
+     **/
+    class PythonDeclarationBatch {
+    public:
+        PythonDeclarationBatch();
+        ~PythonDeclarationBatch();
+
+        PythonDeclarationBatch(const PythonDeclarationBatch&) = delete;
+        PythonDeclarationBatch& operator=(const PythonDeclarationBatch&) = delete;
+    };
+
     void markAllInputRelatedDataDirty();
 
     /**
@@ -2429,6 +2535,12 @@ private:
     // Like refreshInputRelatedDataInternal(), except that a viewer only refreshes the inputs it
     // shows: its hash folds in only those, so the others are not read through it.
     bool refreshShownInputRelatedData(std::set<Node*>& visited);
+    static void refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited);
+    static void refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited);
+
+    // Drops the cached kinds of every node reached from starts both ways, then refreshes their
+    // diagnostics and emits their dataKindChanged(), once each.
+    static void invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts);
 
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
 
@@ -2610,6 +2722,47 @@ private:
     void declareNodeVariableToPython(const std::string& nodeName);
     void setNodeVariableToPython(const std::string& oldName, const std::string& newName);
     void deleteNodeVariableToPython(const std::string& nodeName);
+
+    /**
+     * @brief The scripts the functions above run, empty when there is nothing to run.
+     **/
+    std::string makeNodeVariableDeclarationScript(const std::string& nodeName);
+    std::string makePythonFieldsScript();
+    std::string makeNodeVariableDeletionScript(const std::string& nodeName);
+
+    void restoreKnobsExpressionFunctions();
+
+    /**
+     * @brief Leaves deleting this node's Python variable to the end of the PythonDeclarationBatch.
+     **/
+    void queueNodeVariableDeletion();
+
+    /**
+     * @brief Keeps a reference to this node's Python object, about to be deleted from its parent,
+     * so that activate() can put it back with its parameters and expression functions.
+     **/
+    void stashPythonObject();
+
+    /**
+     * @brief Puts the stashed object back under this node's name unless the name has changed or
+     * something else holds it, then lets go of the stash.
+     **/
+    void restoreStashedPythonObject();
+    void releaseStashedPythonObject();
+
+    /**
+     * @brief While a PythonDeclarationBatch is open, leaves declaring the Python variable and
+     * parameters of this node being created to its end and returns true.
+     **/
+    bool deferPythonDeclarationToBatch();
+
+    /**
+     * @brief Leaves the creation callback and the recheck of expressions naming this node to the
+     * end of the batch when its declaration was left to it, returning whether it was.
+     **/
+    bool finishCreationInPythonDeclarationBatch(bool userEdited);
+
+    static void runPendingPythonDeclarations();
 
     std::unique_ptr<Implementation> _imp;
 };

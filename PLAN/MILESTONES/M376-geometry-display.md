@@ -47,32 +47,32 @@ User feedback on the 0ab97da4e AppImage (2026-11-12); investigation in Decisions
   - approach: profile first with the `natronGeoRefreshes`/`natronSceneSyncedAtMs` properties and stack samples on a GeoScatter → GeoCopyToPoints → GeoWrangle (animated P) chain. The user sees about 1 fps that does not improve on repeat playback and is uneven, so the display path is the suspect, not the cook. Likely fixes: key `GeoViewerLayer`'s slot by frame and refresh for the displayed frame rather than the latest cook; convert outside the exclusive stage lock; when topology is unchanged, author only the changed point columns; recompute guides, labels and bounds only when a toggle needs them.
   - verify: playback of that chain in the Viewer's 3D view runs at or near the project rate on the GPU host, repeatably; refresh count per played frame is 1; scrubbing still dirties points without a resync.
   - size: M
-- [ ] M376.P2.T2 — Point widths from pscale, with a default
+- [x] M376.P2.T2 — Point widths from pscale, with a default
   - files: `Engine/Nodes/Geometry/GeoUsdConvert.cpp`, `Engine/Nodes/Geometry/GeoScatter.cpp`, `Engine/Nodes/Geometry/GeoToUSD.cpp`
   - approach: GeoScatter gets a `pscale` knob that writes a float point attribute. Float64 `pscale` maps to `widths` like float32 (check Solaris docs in `.local/docs` for whether widths = 2 × pscale). With no `pscale`, UsdGeomPoints get a default width, a GeoToUSD "Default Point Width" knob, instead of USD's fallback 1.0.
   - verify: points scattered on a 1×1 card draw small by default and follow pscale; gtest on the conversion of float32, float64 and missing pscale.
   - size: S
-- [ ] M376.P2.T3 — Time-sampled GeoToUSD without a GUI freeze
+- [x] M376.P2.T3 — Time-sampled GeoToUSD without a GUI freeze
   - files: `Engine/Nodes/Scene/USDRender.cpp`, `Engine/Nodes/Scene/USDRenderSettings.cpp`, `Engine/Nodes/Scene/USDVariant.cpp`, `Engine/Nodes/Geometry/GeoToUSD.cpp`
   - approach: menus that list prims of the input scene (USDRender, USDRenderSettings, USDVariant, USDProject nodes) fill from a worker or from the last evaluated scene, never by evaluating the input on the main thread. GeoToUSD's "Copy Into Layer" + "Author Time Samples" cooks the frame range in parallel with cancellation.
   - verify: turning both on with a 100-frame animated chain leaves the GUI responsive (no main-thread stall over 100 ms in the stall monitor); the authored layer has every time sample.
   - size: M
-- [ ] M376.P2.T4 — Wrangle noise from FastNoise2
+- [x] M376.P2.T4 — Wrangle noise from FastNoise2
   - files: `Engine/Kernel/KernelTypes.h`, `Engine/Kernel/KernelParser.cpp`, `Engine/Kernel/KernelRunner.cpp`, `Engine/Nodes/Geometry/docs/GeoWrangle.md`
   - approach: implement the reserved names on `libs/noise/Noise4D.h`: `pnoise`, `onoise` (fBm with octaves, lacunarity, gain), `anoise`, `curlnoise`, a cellular noise, plus simplex/value variants. Inputs are float, vector or vector4; the fourth component is whatever the user passes (user: never hardcode time). Keep `noise()` as it is.
   - verify: gtests for each function's range, determinism and 4D input; GeoWrangle.md lists them.
   - size: M
-- [ ] M376.P2.T5 — Attributes feed USDMaterial colours, multiplied
+- [x] M376.P2.T5 — Attributes feed USDMaterial colours, multiplied
   - files: `Engine/Nodes/Scene/USDMaterial.cpp`, `Engine/Nodes/Scene/CyclesAovs.cpp` if needed
   - approach: USDMaterial colour inputs get a "Multiply By Primvar" option with a primvar name (default `displayColor`, which Cd exports to). The authored network multiplies a `UsdPrimvarReader_float3` by the knob colour or the texture (user: multiply, not replace). Check Storm and Cycles both render it.
   - verify: a GeoPrimitive with Cd through GeoToUSD and a USDMaterial with a texture renders tinted by Cd in Storm and Cycles; gtest on the authored network.
   - size: S/M
-- [ ] M376.P2.T6 — Render visibility on USDLight
+- [x] M376.P2.T6 — Render visibility on USDLight
   - files: `Engine/Nodes/Scene/USDLight.cpp`
   - approach: a "Visible In Render" (camera visibility) knob on USDLight for every light type (user: on the light node, not the render node). For a dome it authors `domeLightCameraVisibility` / the light's camera visibility; check the USD and Cycles docs for the attribute each light type takes.
   - verify: a dome with the knob off lights the scene but is not seen in the background in Storm and Cycles.
   - size: S
-- [ ] M376.P2.T7 — GeoWrangle and GeoPython reference in node help
+- [x] M376.P2.T7 — GeoWrangle and GeoPython reference in node help
   - files: `Engine/Nodes/Geometry/docs/GeoWrangle.md`, new `Engine/Nodes/Geometry/docs/GeoPython.md`, the node-help plumbing
   - approach: the node help shows the docs/*.md reference. Write GeoPython.md: `geo.points/vertices/prims/detail`, groups, topology calls, numpy buffers, `frame`, errors. GeoWrangle.md lists reserved but unimplemented names until T4 lands.
   - verify: both nodes' help shows the reference (Xvfb shot).
@@ -88,4 +88,4 @@ User feedback on the 0ab97da4e AppImage (2026-11-12); investigation in Decisions
 - 2026-11-10 — Both tasks done (adb329912, 3e6b2228a, 01435f99e, 0ab97da4e). Release gate green with `m376_geometry_display.py` and the scene viewer scripts (run 42791093755). Per the user's merge rule, the PR into F15 waits until F4 - Heavy Scene Viewer lands on main and main is merged into F15; until then a PR diff would include all of F4. Gate screenshots go to the F15 UAT.
 - 2026-11-12 — UAT round 1 on the 0ab97da4e AppImage. Consultant findings: playback goes through a single shared `GeoViewerLayer` slot and a full `GeoUsdConvert` rebuild under the exclusive stage lock each frame; GeoScatter writes no `pscale`, so USD's fallback width 1.0 applies; GeoToUSD authors every time sample eagerly and USDRender/USDRenderSettings evaluate their input on the main thread to fill menus; Cd exports to `primvars:displayColor` but USDMaterial reads only `st`; `noise()` is one Perlin octave while FastNoise2 is ported in `libs/noise/Noise4D.h`. `@Frame` and `@Time` (seconds) already work in wrangles. The Cycles black frames are not geometry work and are M398. Phase 376.2 holds the fixes; the user agreed the recommendations, with these calls (user): playback does not improve on repeat and is uneven; render visibility belongs on USDLight for every light; primvar colour multiplies the material colour or texture; noise's fourth dimension is user input, never hardcoded time.
 - 2026-11-12 — P2.T5: the primvar multiply is authored as a `cycles` render-context surface (a `cycles_mix` multiply node), so only Cycles renders it; Storm shows the unmultiplied colour. Cycles-only is accepted for now (user); the Storm route (a MaterialX network on `outputs:mtlx:surface`) is a task in M363 - Geometry Display Extras.
-- 2026-11-12 — P2.T2–P2.T7 implemented (56e84a57f), review-free test fixes in 8b1135d8f (time-sampled authoring reused no existing property spec; the Cycles-surface test counted the universal fallback). Release gate green (run 43168704534). P2.T1 profiling next.
+- 2026-11-12 — P2.T2–P2.T7 implemented (56e84a57f), test fixes in 8b1135d8f (time-sampled authoring reused no existing property spec; the Cycles-surface test counted the universal fallback). Release gate green (run 43168704534). P2.T1 profiling next.

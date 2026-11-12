@@ -740,9 +740,8 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
     query->draftMode = frameArgs && frameArgs->draftMode;
 #ifdef NATRON_HAVE_GPU
     GpuContext* gpuContext = appPTR ? appPTR->getGpuContext() : nullptr;
-    gpu::GpuRuntime* runtime = gpuContext ? gpuContext->runtime() : nullptr;
-    if (runtime) {
-        query->maxScratchBytes = gpu::GpuRecordContext::maxScratchBytesFor(runtime->device().info().maxStorageBufferRange);
+    if (gpuContext && gpuContext->runtime()) {
+        query->maxScratchBytes = gpu::GpuRecordContext::maxScratchBytesFor(gpuContext->maxStorageBufferRange());
     }
 #endif
 
@@ -1057,10 +1056,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
     if (gpu && gpu->isAvailable()) {
         GpuTransferRates rates = GpuTransferRates::fromCalibration(gpu->calibration());
 #ifdef NATRON_HAVE_GPU
-        if (gpu::GpuRuntime* runtime = gpu->runtime()) {
-            const gpu::GpuDeviceInfo& info = runtime->device().info();
-            rates.pipelinedStrips = gpuStripPipeliningAllowed(info.pushDescriptor, info.transferSharesComputeQueue);
-        }
+        rates.pipelinedStrips = gpuStripPipeliningAllowed(gpu->pushDescriptor(), gpu->transferSharesComputeQueue());
 #endif
         GpuTransferModel::session().setTransferRates(rates);
     }

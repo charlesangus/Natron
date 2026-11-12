@@ -96,6 +96,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
+#include "Global/FloatingPointExceptions.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -182,6 +183,9 @@ applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& proc
         }
     }
     if (processor.cpu) {
+        // OCIO's CPU kernels call libm on NaN and Inf pixels, which raises FP exceptions that
+        // debug builds trap.
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
         try {
             // Any other gamma would amplify the approximation's error past a code value.
             if ((output == eViewerDisplayOutputEightBit) && (gamma == 1.)) {

@@ -378,6 +378,34 @@ planQueues(std::span<const VkQueueFamilyProperties> families)
     return plan;
 }
 
+std::vector<VkPhysicalDeviceType>
+enumeratePhysicalDeviceTypes()
+{
+    std::vector<VkPhysicalDeviceType> types;
+    VkApplicationInfo app {};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici {};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    // The loader and Mesa's drivers do float work of their own here, which debug builds trap.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+    if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) {
+        return types;
+    }
+    std::vector<VkPhysicalDevice> pds;
+    if (enumeratePhysical(instance, pds)) {
+        for (VkPhysicalDevice pd : pds) {
+            VkPhysicalDeviceProperties props {};
+            vkGetPhysicalDeviceProperties(pd, &props);
+            types.push_back(props.deviceType);
+        }
+    }
+    vkDestroyInstance(instance, nullptr);
+    return types;
+}
+
 GpuStatus
 GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
 {
@@ -460,18 +488,42 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         }
     } else {
         std::vector<GpuDeviceCandidate> candidates(pds.size());
+        std::string skippedCpu;
+        std::string skippedFeatures;
         for (size_t i = 0; i < pds.size(); ++i) {
             candidates[i].index = static_cast<uint32_t>(i);
             candidates[i].type = props[i].deviceType;
             candidates[i].deviceLocalHeapSize = largestDeviceLocalHeap(pds[i]);
             candidates[i].name = props[i].deviceName;
             candidates[i].meetsRequirements = meetsRequirements(pds[i], props[i]);
+            if (!candidates[i].meetsRequirements && props[i].deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                skippedFeatures += (skippedFeatures.empty() ? "" : ", ") + candidates[i].name;
+            }
+            if (props[i].deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                // A software rasteriser is only ever used when the user names it.
+                if (candidates[i].meetsRequirements) {
+                    skippedCpu += (skippedCpu.empty() ? "" : ", ") + candidates[i].name;
+                }
+                candidates[i].meetsRequirements = false;
+            }
         }
         if (const std::optional<GpuAutoPick> best = pickAutoDevice(candidates)) {
             pick = static_cast<int>(candidates[best->candidate].index);
             selectionReason = best->reason;
         }
         if (pick < 0) {
+            if (!skippedFeatures.empty()) {
+                std::string message = "no GPU meets the required features (" + skippedFeatures + ")";
+                if (!skippedCpu.empty()) {
+                    message += "; CPU devices (" + skippedCpu + ") need NATRON_GPU_DEVICE";
+                }
+                return fail(VK_ERROR_FEATURE_NOT_PRESENT, message);
+            }
+            if (!skippedCpu.empty()) {
+                return fail(VK_ERROR_FEATURE_NOT_PRESENT,
+                            "only CPU Vulkan devices (" + skippedCpu
+                                + ") are present; set NATRON_GPU_DEVICE to use one");
+            }
             return fail(VK_ERROR_FEATURE_NOT_PRESENT, "no device meets the required features");
         }
     }

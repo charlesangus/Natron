@@ -97,9 +97,6 @@ public:
  * Note that this is not blocking either, to actually ensure that the thread is not running anymore, call:
  *      thread.waitForThreadToQuit_not_main_thread();
  *
- * To abort (blocking) ongoing work FROM THE MAIN-THREAD connect to the signal taskAborted() to be notified when done and call:
- *      thread.waitForAbortToCompleteQueued_main_thread();
- *
  * To stop the thread from running FROM THE MAIN-THREAD connect to the signal threadFinished() to be notified when done and call:
  *      waitForThreadToQuitQueued_main_thread();
  *
@@ -215,26 +212,20 @@ public:
     bool startTask(const GenericThreadStartArgsPtr& inArgs);
 
     /**
-     * @brief Blocks the calling thread until
-     * the thread state is now eThreadStateIdle (i.e. the thread is waiting). This function will return true if the thread is idling. It also returns true if the thread has not been started yet.
-     * This function may NOT be called on the main-thread, because we may deadlock if executeOnMainThread is called OR block the UI. If called on the main-thread, false will be returned.
-     * Rather, if you are on the main-thread, call waitForAbortToCompleteQueued_main_thread or use a GenericSchedulerThreadWatcher to perform the wait and connect to the signal taskAborted()
-     * to be notified when the task is really done.
+     * @brief Blocks the calling thread until a pending abort has been processed, i.e. until the
+     * thread state is eThreadStateAborted, eThreadStateIdle or eThreadStateStopped.
+     * Returns true once the wait completed, or if the thread is not running. Returns false without
+     * waiting if the thread was already aborted, idle or stopped, if called from this scheduler's
+     * own thread, or if called on the main-thread: blocking there would freeze the UI.
      **/
     bool waitForAbortToComplete_not_main_thread();
 
     /**
-     * @brief Should be used as last resort, or if we necessarily wants an abort operation to be blocking.
+     * @brief Same as waitForAbortToComplete_not_main_thread() but also blocks on the main-thread.
+     * While it blocks there it runs any executeOnMainThread request the scheduler thread makes, so
+     * the scheduler cannot deadlock waiting on the main-thread.
      **/
     bool waitForAbortToComplete_enforce_blocking();
-
-    /**
-     * @brief Same as waitForAbortToComplete_not_main_thread() but can be safely called on the main-thread (and should be only called on the main-thread).
-     * The task may NOT yet be aborted when returning from this function.
-     * Connect to the signal taskAborted() to be notified when the task is really done.
-     **/
-    void waitForAbortToCompleteQueued_main_thread();
-
 
     /**
      * @brief Returns true if the thread is being aborted but it has not yet been processed
@@ -250,9 +241,7 @@ Q_SIGNALS:
     void stateChanged(int state);
 
     // Emitted by requestExecutionOnMainThread
-    void executionOnMainThreadRequested(GenericThreadExecOnMainThreadArgsPtr args);
-
-    void taskAborted();
+    void executionOnMainThreadRequested(GenericThreadExecOnMainThreadArgsPtr args, quint64 requestId);
 
     void threadFinished();
 
@@ -265,13 +254,11 @@ public Q_SLOTS:
      **/
     bool abortThreadedTask(bool keepOldestRender = true);
 
-    void onWatcherTaskAbortedEmitted();
-
     void onWatcherTaskFinishedEmitted();
 
 private Q_SLOTS:
 
-    void onExecutionOnMainThreadReceived(const GenericThreadExecOnMainThreadArgsPtr& args);
+    void onExecutionOnMainThreadReceived(const GenericThreadExecOnMainThreadArgsPtr& args, quint64 requestId);
 
 protected:
 

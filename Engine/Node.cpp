@@ -1520,7 +1520,8 @@ Node::dependsOnProjectFrameRange() const
 }
 
 void
-Node::getHashDependents(std::vector<NodePtr>* dependents) const
+Node::getHashDependents(std::vector<NodePtr>* dependents,
+                        std::vector<NodePtr>* leaves) const
 {
     if (!_imp->effect) {
         return;
@@ -1529,7 +1530,7 @@ Node::getHashDependents(std::vector<NodePtr>* dependents) const
     // The appended range doubles as the queue of outputs still to look at; entries it drops are
     // compacted away behind the read position.
     std::size_t write = dependents->size();
-    appendOutputsWithGroupRedirection(dependents);
+    appendOutputsThroughOneRedirection(dependents);
     std::vector<const Node*> passedThrough;
     for (std::size_t read = write; read < dependents->size(); ++read) {
         NodePtr output = (*dependents)[read];
@@ -1544,9 +1545,16 @@ Node::getHashDependents(std::vector<NodePtr>* dependents) const
         // Inputs read through a group, its GroupInput and GroupOutput nodes and a precomp, so no
         // hash folds these in and they can stay dirty while the nodes below them are recomputed.
         // A dirty mark walk stops at a dirty node, so the nodes past them are listed here too.
-        if (isSkippedByHashInputs(*output) && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
+        // Each is stepped through one redirection at a time, so that a group the redirection
+        // crosses, such as a pass-through one, is listed too: its hash folds in what it reads
+        // through, but a full redirection jumps past it.
+        const bool redirects = isSkippedByHashInputs(*output) || output->isPrecompOutputNode();
+        if (redirects && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
             passedThrough.push_back(output.get());
-            output->appendOutputsWithGroupRedirection(dependents);
+            output->appendOutputsThroughOneRedirection(dependents);
+            if (output->_imp->effect) {
+                output->_imp->effect->appendHashLeafDependents(leaves);
+            }
         }
         (*dependents)[write++] = std::move(output);
     }
@@ -1558,6 +1566,17 @@ Node::getHashDependents(std::vector<NodePtr>* dependents) const
         dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
     }
     _imp->effect->appendExtraHashDependents(dependents);
+    getHashLeafDependents(dependents, leaves);
+}
+
+void
+Node::getHashLeafDependents(std::vector<NodePtr>* dependents,
+                            std::vector<NodePtr>* leaves) const
+{
+    if (!_imp->effect) {
+        return;
+    }
+    _imp->effect->appendHashLeafDependents(leaves);
 
     std::list<std::pair<KnobIPtr, int>> readers;
     getMetadataReaders(&readers);
@@ -1996,6 +2015,8 @@ Node::flushHashDirtyMarks()
     std::vector<NodePtr>& toExpand = queue.toExpand;
     std::vector<NodePtr>& dependents = queue.dependents;
     std::vector<NodePtr> stopped;
+    std::vector<NodePtr> leaves;
+    std::vector<NodePtr> leafDependents;
     for (;;) {
         batch.clear();
         {
@@ -2020,9 +2041,10 @@ Node::flushHashDirtyMarks()
         // Feedback mode or Cross Frame has its LoopBegins fold in its body or its knobs.
         const bool feedbackLoops = LoopEnd::anyFeedbackExists();
         std::optional<LoopEnd::FeedbackBeginsLookup> feedbackBegins;
-        auto reach = [&visit, &toExpand, &stopped, feedbackLoops](const NodePtr& node) {
-            if (!node || !visit(node)) {
-                return;
+        // Answers whether the walk goes past a node reached for the first time this pass.
+        auto mark = [&visit, &stopped, feedbackLoops](const NodePtr& node) {
+            if (!visit(node)) {
+                return false;
             }
             const U64 previous = node->_imp->hashDirtyGeneration.fetch_add(1);
             traceHashMark(node.get(), "reached by a mark upstream", 0);
@@ -2030,10 +2052,37 @@ Node::flushHashDirtyMarks()
             // Whatever folds in a dirty node is dirty too, except below a node whose own mark is
             // still pending, so the walk stops at dirty nodes that are not pending.
             if (!wasDirty || node->_imp->hashDirtyQueued.load()) {
-                toExpand.push_back(node);
-            } else if (feedbackLoops) {
+                return true;
+            }
+            if (feedbackLoops) {
                 stopped.push_back(node);
             }
+
+            return false;
+        };
+        auto reach = [&mark, &toExpand, pass](const NodePtr& node) {
+            if (!node) {
+                return;
+            }
+            const bool owed = (node->_imp->hashFlushDeferredVisit == pass);
+            if (owed) {
+                node->_imp->hashFlushDeferredVisit = 0;
+            }
+            if ((mark(node) || owed) && (node->_imp->hashFlushRootVisit != pass)) {
+                toExpand.push_back(node);
+            }
+        };
+        // A leaf's dependents are walked even when the leaf is already dirty: the dirty-stop rule
+        // assumes whatever folds in a dirty node is dirty too, and nothing folds in a leaf's hash.
+        auto reachLeaf = [&mark, &leaves, pass](const NodePtr& node) {
+            if (!node || (node->_imp->hashFlushLeafVisit == pass)) {
+                return;
+            }
+            node->_imp->hashFlushLeafVisit = pass;
+            if (mark(node) && (node->_imp->hashFlushRootVisit != pass)) {
+                node->_imp->hashFlushDeferredVisit = pass;
+            }
+            leaves.push_back(node);
         };
         for (std::size_t i = 0; i < batch.size(); ++i) {
             NodePtr root = batch[i].node.lock();
@@ -2043,9 +2092,12 @@ Node::flushHashDirtyMarks()
             root->_imp->hashDirtyQueued.store(false);
             // Walking from a root does not count as reaching it: a read of the only node marked
             // recomputes it with its mark still queued, so a root may be clean, and another root
-            // of the batch it folds in must still mark it. A root reached already was walked from.
-            if ((root->_imp->hashFlushVisit != pass) && (root->_imp->hashFlushRootVisit != pass)) {
+            // of the batch it folds in must still mark it. A root reached already was walked from, unless
+            // it was reached as a leaf only.
+            const bool owed = (root->_imp->hashFlushDeferredVisit == pass);
+            if (((root->_imp->hashFlushVisit != pass) || owed) && (root->_imp->hashFlushRootVisit != pass)) {
                 root->_imp->hashFlushRootVisit = pass;
+                root->_imp->hashFlushDeferredVisit = 0;
                 toExpand.push_back(root);
             }
             if (batch[i].includeGroupContents) {
@@ -2058,9 +2110,18 @@ Node::flushHashDirtyMarks()
                     }
                 }
             }
-            while (!toExpand.empty() || !stopped.empty()) {
+            while (!toExpand.empty() || !leaves.empty() || !stopped.empty()) {
                 dependents.clear();
-                if (toExpand.empty()) {
+                leafDependents.clear();
+                if (!toExpand.empty()) {
+                    NodePtr node = std::move(toExpand.back());
+                    toExpand.pop_back();
+                    node->getHashDependents(&dependents, &leafDependents);
+                } else if (!leaves.empty()) {
+                    NodePtr node = std::move(leaves.back());
+                    leaves.pop_back();
+                    node->getHashLeafDependents(&dependents, &leafDependents);
+                } else {
                     NodePtr node = std::move(stopped.back());
                     stopped.pop_back();
                     if (!feedbackBegins) {
@@ -2071,13 +2132,12 @@ Node::flushHashDirtyMarks()
                     if (node->_imp->effect) {
                         node->_imp->effect->appendExtraHashDependents(&dependents);
                     }
-                } else {
-                    NodePtr node = std::move(toExpand.back());
-                    toExpand.pop_back();
-                    node->getHashDependents(&dependents);
                 }
                 for (std::size_t d = 0; d < dependents.size(); ++d) {
                     reach(dependents[d]);
+                }
+                for (std::size_t d = 0; d < leafDependents.size(); ++d) {
+                    reachLeaf(leafDependents[d]);
                 }
             }
         }
@@ -2085,6 +2145,7 @@ Node::flushHashDirtyMarks()
         // Nodes are not kept alive past the flush by the reused containers.
         batch.clear();
         dependents.clear();
+        leafDependents.clear();
         queue.pending.fetch_sub(walked);
     }
 } // Node::flushHashDirtyMarks
@@ -3514,28 +3575,6 @@ Node::abortAnyProcessing_non_blocking()
     }
 
     _imp->abortPreview_non_blocking();
-}
-
-void
-Node::abortAnyProcessing_blocking()
-{
-    QMutexLocker teardownLocker(&_imp->effectTeardownMutex);
-
-    OutputEffectInstance* isOutput = dynamic_cast<OutputEffectInstance*>( getEffectInstance().get() );
-
-    if (isOutput) {
-        RenderEnginePtr engine = isOutput->getRenderEngine();
-        assert(engine);
-        engine->abortRenderingNoRestart();
-        engine->waitForAbortToComplete_enforce_blocking();
-    }
-
-    TrackerContextPtr trackerContext = getTrackerContext();
-    if (trackerContext) {
-        trackerContext->abortTracking_blocking();
-    }
-
-    _imp->abortPreview_blocking(false);
 }
 
 namespace {

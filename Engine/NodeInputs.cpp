@@ -235,6 +235,53 @@ Node::appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const
     outputs->insert(outputs->end(), redirected.begin(), redirected.end());
 }
 
+void
+Node::appendOutputsThroughOneRedirection(std::vector<NodePtr>* outputs) const
+{
+    auto appendOutputsOf = [outputs](const Node& node) {
+        NodesWList list;
+        node.getOutputs_mt_safe(list);
+        for (NodesWList::const_iterator it = list.begin(); it != list.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output) {
+                outputs->push_back(std::move(output));
+            }
+        }
+    };
+    const std::size_t start = outputs->size();
+
+    if (NodeGroup* isGrp = isEffectGroup()) {
+        NodesList inputsOutputs;
+        isGrp->getInputsOutputs(&inputsOutputs, false);
+        outputs->insert(outputs->end(), inputsOutputs.begin(), inputsOutputs.end());
+    } else if (dynamic_cast<const GroupOutput*>(_imp->effect.get())) {
+        NodeGroup* group = dynamic_cast<NodeGroup*>(getGroup().get());
+        NodePtr groupNode = group ? group->getNode() : NodePtr();
+        if (groupNode) {
+            appendOutputsOf(*groupNode);
+        }
+    } else if (isPrecompOutputNode()) {
+        PrecompNodePtr precomp = _imp->precomp.lock();
+        NodePtr precompNode = precomp ? precomp->getNode() : NodePtr();
+        if (precompNode) {
+            appendOutputsOf(*precompNode);
+        }
+    }
+    // As getOutputsWithGroupRedirection(): a redirection leading nowhere falls back to the node's
+    // own outputs.
+    if (outputs->size() == start) {
+        appendOutputsOf(*this);
+    }
+}
+
+bool
+Node::isPrecompOutputNode() const
+{
+    PrecompNodePtr precomp = _imp->precomp.lock();
+
+    return precomp && (precomp->getOutputNode().get() == this);
+}
+
 NodePtr
 Node::getInput(int index) const
 {

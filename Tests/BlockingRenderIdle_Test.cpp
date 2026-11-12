@@ -39,6 +39,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
@@ -337,4 +338,24 @@ TEST_F(BlockingRenderIdleTest, WaitingForAQuitJoinsAThreadThatHasYetToRun)
 
     EXPECT_TRUE(thread.waitForThreadToQuit_enforce_blocking());
     EXPECT_FALSE(thread.isRunning());
+}
+
+// The failure report runs on the scheduler and render threads, so it must not wait for the abort
+// it requests: the blocking render returns once the scheduler has wound down by itself.
+TEST_F(BlockingRenderIdleTest, ABlockingRenderWhoseEffectFailsPartwayReturns)
+{
+    OutputEffectInstance* effect = writerEffect();
+    ASSERT_TRUE(effect != NULL);
+
+    // A directory standing at frame 3's path makes only that frame's write fail, after the
+    // earlier frames could be written.
+    ASSERT_TRUE(QDir(_dir.path()).mkpath(QString::fromUtf8("frame.0003.exr/blocker")));
+    _writer->setOutputFilesForWriter((_dir.path() + QString::fromUtf8("/frame.####.exr")).toStdString());
+
+    IdleTransitionDelay delay(kIdleDelayMs);
+    std::list<AppInstance::RenderWork> works;
+    works.push_back(AppInstance::RenderWork(effect, 1, 5, 1, false));
+    renderBlocking(works);
+
+    EXPECT_FALSE(effect->isDoingSequentialRender());
 }

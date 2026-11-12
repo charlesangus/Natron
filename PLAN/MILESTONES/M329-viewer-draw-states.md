@@ -106,19 +106,19 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Phase 329.4: Column, keys and reset
 
-- [ ] M329.P4.T1 — Connect states to filter, boxes and loads.
+- [x] M329.P4.T1 — Connect states to filter, boxes and loads.
   - files: `Gui/SceneViewport.{h,cpp}`, `Gui/ViewerTab.cpp`, `Tests/SceneViewport_Test.cpp`.
   - approach: each `SceneViewport` owns one `SceneDrawStates`; an edit resolves off main when large, then posts the delta and calls `requestStageLoad`, cancelling queued loads when a state changes. The stage is never edited for a state.
   - verify: gtest — delta reaches filter and loads, stage edit count unchanged, no unrequested layer opened.
   - size: M
 
-- [ ] M329.P4.T2 — The Draw State column and Reset to Graph.
+- [x] M329.P4.T2 — The Draw State column and Reset to Graph.
   - files: `Gui/SceneGraphModel.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Tests/SceneGraphModel_Test.cpp`, `Tests/gui/scene_draw_column.py` (new).
   - approach: `eColumnDrawState` (`SceneGraphModel.h:138-142`) with state and inherited roles, read from the linked viewer by path, never from the stage. A delegate and menu edit it, inherited values look visibly different, and it edits the linked viewer when the panel shows another node. Reset to Graph on a row and on the panel clears set states; M330 - Graph Draw Policy adds origin.
   - verify: `QAbstractItemModelTester` gtest; GUI script — all five states, inherited look, deep Full switches ancestors with siblings boxed, twirl changes nothing; one screenshot per state.
   - size: M
 
-- [ ] M329.P4.T3 — Viewer keys.
+- [x] M329.P4.T3 — Viewer keys.
   - files: `Gui/ActionShortcuts.{h,cpp}`, `Gui/SceneViewport.cpp`, `Tests/gui/scene_draw_keys.py` (new).
   - approach: add four actions to `getViewer3DDefaultKeyBindings` (`ActionShortcuts.cpp:475`), matched in `keyPressEvent` (`SceneViewport.cpp:6097`): ↓ Children, Shift+↓ Full, Ctrl+Shift+↓ Full + Load, ↑ BBox on the parent; neither file binds these arrows today. They act on the picked box or selection.
   - verify: GUI script with real key events, including one rebound in settings.
@@ -195,3 +195,4 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 - 2026-11-12 — Phase 4 implemented (82418bcfa): SceneDrawStateQueue (edits off main above 2000 rows, queued loads cancelled on a state change), Draw State column with italic dimmed inherited cells, row Draw State submenu with Clear Below and Reset to Graph, panel Reset to Graph, keys Draw Children ↓ / Draw Full Shift+↓ / Load All Ctrl+Shift+↓ / Box Parent ↑ in the 3DViewer group, claimed on ShortcutOverride. Build run 43199749063. Open: twirling an unloaded payload row on the viewer-shared stage loads it, against "twirling changes nothing in the viewer"; loads requested before the viewer's first sync are dropped.
 - 2026-11-12 — **Twirling a payload row loads it (user).** M328's behaviour wins: twirling an unloaded payload row in a panel that follows the viewer loads it, and the viewer shows it. "Twirling changes nothing in the viewer" holds for rows with nothing to load; no separate panel stage.
 - 2026-11-12 — Phase 4 gate green at e51c7b558 (run 43228764173) after test fixes: the shortcut test counts the four draw keys, and the column script finds each cell's own editor (it had grabbed a closed one). Column and key screenshots sent to the user for sign-off.
+- 2026-11-12 — Phase 4 screenshots approved (user); P4.T1-T3 done.

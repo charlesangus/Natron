@@ -2090,9 +2090,13 @@ GeoUsdConvert::authorSpec(const SdfLayerHandle& layer,
     if (field(path, SdfFieldKeys->Variability, &v) && v.IsHolding<SdfVariability>()) {
         variability = v.UncheckedGet<SdfVariability>();
     }
+    // A time-sampled copy authors every frame into one layer, so each frame after the first
+    // finds the property specs already there. Sdf refuses to create a property spec twice.
     bool created = false;
     if (type == SdfSpecTypePrim) {
         created = SdfJustCreatePrimInLayer(layer, path);
+    } else if (layer->GetSpecType(path) == type) {
+        created = true;
     } else if (type == SdfSpecTypeAttribute) {
         VtValue typeName;
         field(path, SdfFieldKeys->TypeName, &typeName);

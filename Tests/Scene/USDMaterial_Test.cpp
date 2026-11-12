@@ -321,12 +321,20 @@ TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
     EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
 }
 
-// The shader the "cycles" render context's surface of the material at materialPath comes from.
+// The shader the "cycles" render context's surface of the material at materialPath comes from,
+// or none when the material authors no such surface.
 static PXR_NS::UsdShadeShader
 cyclesSurfaceOf(const PXR_NS::UsdStageRefPtr& stage,
                 const char* materialPath)
 {
-    return PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath))).ComputeSurfaceSource(PXR_NS::TfToken("cycles"));
+    const PXR_NS::UsdShadeMaterial material(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath)));
+    const PXR_NS::TfToken cycles("cycles");
+    // ComputeSurfaceSource falls back to the universal surface when the context has none.
+    if (!material || !material.GetSurfaceOutput(cycles)) {
+        return PXR_NS::UsdShadeShader();
+    }
+
+    return material.ComputeSurfaceSource(cycles);
 }
 
 static void
@@ -353,6 +361,17 @@ TEST_F(USDMaterialTest, WithoutMultiplyByPrimvarTheNetworkHasNoCyclesSurface)
     const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
     ASSERT_TRUE(bool(surface));
     EXPECT_FALSE(surface.GetInput(PXR_NS::TfToken("diffuseColor")).HasConnectedSource());
+
+    // Turned on and off again, the Cycles surface goes with it.
+    setBool(material, kUSDMaterialParamDiffuseMultiplyByPrimvar, true);
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    ASSERT_TRUE(bool(cyclesSurfaceOf(stage, "/Material1")));
+    setBool(material, kUSDMaterialParamDiffuseMultiplyByPrimvar, false);
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(bool(cyclesSurfaceOf(stage, "/Material1")));
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/CyclesSurface")).IsValid());
 }
 
 TEST_F(USDMaterialTest, MultiplyByPrimvarMultipliesTheDiffuseKnobColorInTheCyclesSurface)

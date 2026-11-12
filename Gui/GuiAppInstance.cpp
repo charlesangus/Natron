@@ -564,7 +564,11 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
     if (!serialization && !node->isBackdropNode()) {
         refreshBatch.emplace(graph);
     }
-    NodeGuiPtr nodegui = _imp->_gui->createNodeGUI(node, args);
+    NodeGuiPtr nodegui;
+    {
+        NodeCreationStageLog::Scope stage("nodeGraphItem");
+        nodegui = _imp->_gui->createNodeGUI(node, args);
+    }
     assert(nodegui);
 
     followTrackingInModal(node);

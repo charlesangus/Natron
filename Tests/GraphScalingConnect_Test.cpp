@@ -253,3 +253,50 @@ TEST_F(GraphScalingConnectTest, InputRelatedRefreshVisitsOnlyWhatIsBelowTheEdit)
     EXPECT_LE(visits, belowEdit + 1);
     EXPECT_EQ(inserted, chain[mid + 1]->getInput(0));
 }
+
+TEST_F(GraphScalingConnectTest, ReconnectingAFanOutInOneBatchRefreshesWhatIsBelowOnce)
+{
+    const AppInstancePtr app = getApp();
+    std::vector<NodePtr> chain;
+    buildChain(app, &chain);
+    ASSERT_EQ(kChainLength, (int)chain.size());
+    ASSERT_FALSE(ViewerInstance::isAnyViewerConnected());
+
+    // The selected node feeds the chain and a side node that rejoins the chain just below it, as
+    // a node inserted after a branching node reconnects both of its outputs.
+    const int mid = kChainLength / 2;
+    const NodePtr selected = chain[mid];
+    const NodePtr below = chain[mid + 1];
+    NodePtr side = createNamedNode(app, PLUGINID_NATRON_GRADE, "Side");
+    ASSERT_TRUE(bool(side));
+    ASSERT_TRUE(side->connectInput(selected, 0));
+    int rejoin = -1;
+    for (int i = 1; i < below->getNInputs(); ++i) {
+        if (below->connectInput(side, i)) {
+            rejoin = i;
+            break;
+        }
+    }
+    ASSERT_NE(-1, rejoin);
+
+    NodePtr inserted = createNamedNode(app, PLUGINID_NATRON_GRADE, "Inserted");
+    ASSERT_TRUE(bool(inserted));
+    ASSERT_TRUE(inserted->connectInput(selected, 0));
+
+    // below, then chain[mid + 2] to the end of the chain.
+    const U64 belowEdit = 1 + (kChainLength - mid - 2);
+    const U64 before = Node::getDownstreamWalkVisitCount();
+    {
+        Node::InputEditBatch batch(app);
+        ASSERT_TRUE(below->replaceInput(inserted, 0));
+        ASSERT_TRUE(side->replaceInput(inserted, 0));
+    }
+    const U64 visits = Node::getDownstreamWalkVisitCount() - before;
+
+    EXPECT_EQ(inserted, below->getInput(0));
+    EXPECT_EQ(side, below->getInput(rejoin));
+    EXPECT_EQ(inserted, side->getInput(0));
+    EXPECT_EQ(selected, inserted->getInput(0));
+    EXPECT_GE(visits, belowEdit - 1);
+    EXPECT_LE(visits, belowEdit + 1);
+}

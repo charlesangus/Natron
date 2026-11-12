@@ -57,8 +57,8 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-// Each pass of an incremental build stops after the first knob that ends past this, so that the event
-// loop keeps up with a 60 Hz repaint. It leaves room for that last knob and for the end of the build.
+// Each pass of an incremental build stops before a knob expected to end past this, so that the event
+// loop keeps up with a 60 Hz repaint. It leaves room for a knob dearer than expected.
 static const qint64 kKnobBuildPassBudgetNs = 7000000;
 
 struct PendingKnobFrame {
@@ -80,6 +80,9 @@ struct PendingKnobBuild {
     // The knobs that are not the direct child of a page, built after every page as initializeKnobVector() does.
     KnobsVec regularKnobs;
     std::function<void()> onDone;
+    // What the next knob is expected to cost: the last knob's cost, or half the previous estimate when
+    // that is more, so that one dear knob makes the following passes careful for a few knobs only.
+    qint64 knobCostEstimateNs = 0;
 };
 
 struct KnobGuiContainerHelperPrivate
@@ -568,14 +571,31 @@ KnobGuiContainerHelper::runKnobBuildStep()
     if (!build || _imp->buildingKnobs) {
         return;
     }
+    if (!build->pagesCreated) {
+        // Creating the tabs costs as much as a few knobs, so it gets a pass of its own.
+        {
+            NodeCreationStageLog::Scope stage("panelBuildPages");
+            createPendingPages();
+        }
+        QTimer::singleShot(0, _imp->signals.get(), [this]() {
+            runKnobBuildStep();
+        });
+
+        return;
+    }
     bool finishNow = true;
     {
         NodeCreationStageLog::Scope stage("panelBuildPass");
         QElapsedTimer timer;
         timer.start();
-        createPendingPages();
         _imp->buildingKnobs = true;
-        while (!build->pages.empty() && (timer.nsecsElapsed() < kKnobBuildPassBudgetNs)) {
+        qint64 elapsed = 0;
+        bool builtOne = false;
+        while (!build->pages.empty()) {
+            // Checked before the knob rather than after it, as a single knob can take most of the budget.
+            if (builtOne && (elapsed + build->knobCostEstimateNs >= kKnobBuildPassBudgetNs)) {
+                break;
+            }
             // Pages share one layout when paging is off, so they are then built in order.
             std::list<PendingKnobPage>::iterator page = build->pages.begin();
             KnobPageGuiPtr current = getCurrentPage();
@@ -591,11 +611,16 @@ KnobGuiContainerHelper::runKnobBuildStep()
             if (isPendingPageDone(*page)) {
                 build->pages.erase(page);
             }
+            const qint64 now = timer.nsecsElapsed();
+            build->knobCostEstimateNs = std::max(now - elapsed, build->knobCostEstimateNs / 2);
+            elapsed = now;
+            builtOne = true;
         }
         _imp->buildingKnobs = false;
-        finishNow = timer.nsecsElapsed() < kKnobBuildPassBudgetNs / 2;
+        finishNow = !builtOne || (elapsed < kKnobBuildPassBudgetNs / 2);
     }
     if (build->pages.empty() && finishNow) {
+        NodeCreationStageLog::Scope stage("panelBuildFinish");
         finishKnobBuild();
 
         return;
@@ -635,7 +660,7 @@ KnobGuiContainerHelper::ensureKnobGuisCreated()
         return;
     }
     {
-        NodeCreationStageLog::Scope stage("panelBuildPass");
+        NodeCreationStageLog::Scope stage("panelBuildSync");
         createPendingPages();
         _imp->buildingKnobs = true;
         for (std::list<PendingKnobPage>::iterator it = build->pages.begin(); it != build->pages.end(); ++it) {

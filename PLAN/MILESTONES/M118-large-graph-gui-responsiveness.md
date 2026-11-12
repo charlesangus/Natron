@@ -191,7 +191,7 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - approach: undo of a 1000-node delete runs two Python scripts per node (`declareAllPythonAttributes`, Node.cpp ~9933–10068) plus expression restore and recheck per node; delete/redo run a `del` script per node and O(k·N) CurveEditor/DopeSheet removals. Batch: one script for all nodes declared/deleted in an undo/redo/delete (no per-node Script Editor echo, one expression-generation bump); expression restore and recheck once per batch; indexed CurveEditor/DopeSheet removal, `centerOn` once.
   - verify: gtest — undoing a 1000-node delete runs ≤ 2 scripts (counter), expressions and `.expression0` survive; Xvfb `undo`/`redo`/`delete_1000` at 3000 drop sharply; `m55_node_graph.py` 0 failures.
   - size: M
-- [ ] M118.P6.T3 — Drag: no O(N) work per move
+- [x] M118.P6.T3 — Drag: no O(N) work per move
   - files: `Gui/NodeGraph20.cpp`, `Gui/NodeGui.cpp`, `Gui/NodeGraph30.cpp`, `Gui/NodeGraphPrivate.cpp`
   - approach: splice-hint candidates from the selection rect plus tolerance only, rect-tested before any shape test; during a drag gesture grow the node bounds incrementally and render the navigator thumbnail once on release; invalidate the moved rects, not the whole viewport.
   - verify: Xvfb `drag_move_1`/`_50` at 3000 drop, no stalls; splice hint and navigator checks in `m55_node_graph.py` pass.
@@ -221,12 +221,12 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - approach: `setUserSelected` only acts on change; `replaceSelection` invalidates the navigator once and skips per-node edge/indicator updates whose state didn't change.
   - verify: Xvfb `select_all` at 3000 improves and stays linear 1000→3000; selection shots match.
   - size: S
-- [ ] M118.P6.T10 — Edges and link arrows out of `_nodeRoot`; z bands instead of `stackBefore`
+- [x] M118.P6.T10 — Edges and link arrows out of `_nodeRoot`; z bands instead of `stackBefore`
   - files: `Gui/NodeGui.cpp`, `Gui/Edge.cpp`, `Gui/NodeGraph35.cpp`, `Gui/NodeGraph.cpp`, `Gui/NodeGraphPrivate.*`
   - approach: Qt's sibling-order work under `_nodeRoot` (~9000 children) is O(siblings) per `stackBefore`/`setParentItem`. Edges and LinkArrows go in their own container items. Node stacking uses z bands, with no per-node `stackBefore`; a restack only happens on drag release.
   - verify: Xvfb gate `drag_move_50` and `undo` at 3000 drop sharply; node stacking and overlap shots match; `m55_node_graph.py` passes.
   - size: M
-- [ ] M118.P6.T11 — Cached low-detail layer render with partial invalidation
+- [x] M118.P6.T11 — Cached low-detail layer render with partial invalidation
   - files: `Gui/NodeGraphLowDetailLayer.{h,cpp}`, `Gui/NodeGraph10.cpp`, `Gui/NodeGraph40.cpp`
   - approach: the layers render to a cached pixmap invalidated by changed rects. Item changes coalesce into one layer update per event-loop pass. `getGridItems` never refiles the grid inside paint. `centerOnAllNodes` doesn't queue a second full paint.
   - verify: Xvfb gate `select_all`, `fit_all` loop pass and `click_select` p95 at 3000 drop; the three-zoom shots match.
@@ -304,3 +304,4 @@ Added 2026-11-08 after the GPU-host bench (user: keep M118 open for budget work)
   - A paste or duplicate batch lays out each node's name and edges once.
   - Release build with the m55, m45 and m118 GUI scripts: run 43044675942. The GPU-host gate bench follows.
 - 2026-11-11 — Release gate green at 4aebea572 (run 43077380152, after a re-run for a GitHub artifact-upload outage): ctest on both schedulers plus m55_node_graph (with the new size round-trip section), m55_input_pipes, m45_tab_menu and m118_click_after_reset. Since 2fcf68420: the batched-delete tests now drive the GUI delete path; deleting or restoring a node invalidates its inputs' data kinds; node and backdrop size is the unpenned body everywhere (label refreshes, save/load and getSize/setSize round trips no longer grow nodes, and backdrop resize undo no longer grows the backdrop); the vertical splice check drops beside the pipe's real path. The AppImage is staged for the GPU-host gate bench.
+- 2026-11-12 — GPU-host gate bench on 4aebea572 (`results-20261112T015323Z`, 9800X3D, xcb; before 0553d5c3a in the same sitting, 7 min). `compare.py --budgets` at comp 3000, per-event p50: 15 of 20 pass, including drag_move_50 2.4, delete_1000 83, redo 62, click_select 4.9, fit_all 5.2 and pan 0.15, so P6.T3, T10 and T11 are checked off. Still over: select_all 68.6 (16), undo 108 (100), duplicate_100 142, paste_100 140 and paste_1000 1545 (100). Against the 42dc24668 run: undo 328→108, paste_1000 2362→1545, duplicate_100 214→142, select_all 79→69. The base wedged at 3000 on duplicate_100. The 300-node REGRESSED lines (click_select, fit_all, set_expression) are step-wall frame quantisation (8→16 ms); their per-event CPU dropped. P6.T2, T8 and T12 stay open, as does P6.T9's budget verdict.

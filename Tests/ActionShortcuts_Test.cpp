@@ -329,10 +329,11 @@ TEST(Viewer3DNavigationPresetTest, ResetGivesTheCurrentPresetsBinding)
 TEST(Viewer3DNavigationPresetTest, DefaultKeyBindingsAreUnambiguous)
 {
     const std::vector<Viewer3DKeyBinding>& keys = getViewer3DDefaultKeyBindings();
-    ASSERT_EQ(std::size_t(24), keys.size());
+    ASSERT_EQ(std::size_t(28), keys.size());
     std::vector<std::pair<std::string, std::pair<int, int>>> bound;
     for (std::size_t i = 0; i < keys.size(); ++i) {
-        EXPECT_NE(nullptr, keys[i].description) << keys[i].actionID;
+        ASSERT_NE(nullptr, keys[i].description) << keys[i].actionID;
+        EXPECT_NE(std::string(), std::string(keys[i].description)) << keys[i].actionID;
         for (std::size_t j = i + 1; j < keys.size(); ++j) {
             EXPECT_NE(std::string(keys[i].actionID), std::string(keys[j].actionID));
         }
@@ -355,4 +356,44 @@ TEST(Viewer3DNavigationPresetTest, DefaultKeyBindingsAreUnambiguous)
         }
     }
     EXPECT_TRUE(lockView);
+
+    struct DrawKey {
+        const char* actionID;
+        Qt::KeyboardModifiers modifiers;
+        Qt::Key key;
+    };
+    const DrawKey drawKeys[] = {
+        { kShortcutIDActionViewer3DDrawChildren, Qt::NoModifier, Qt::Key_Down },
+        { kShortcutIDActionViewer3DDrawFull, Qt::ShiftModifier, Qt::Key_Down },
+        { kShortcutIDActionViewer3DDrawLoadAll, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down },
+        { kShortcutIDActionViewer3DDrawParentBBox, Qt::NoModifier, Qt::Key_Up },
+    };
+    for (const DrawKey& drawKey : drawKeys) {
+        int found = 0;
+        for (const Viewer3DKeyBinding& k : keys) {
+            if (std::string(k.actionID) != drawKey.actionID) {
+                continue;
+            }
+            ++found;
+            EXPECT_EQ(int(drawKey.modifiers), int(k.modifiers)) << drawKey.actionID;
+            EXPECT_EQ(int(drawKey.key), int(k.key)) << drawKey.actionID;
+            EXPECT_EQ(0, int(k.altKey)) << drawKey.actionID;
+        }
+        EXPECT_EQ(1, found) << drawKey.actionID;
+    }
+    // Only the draw keys take the vertical arrows in the 3D viewer.
+    for (const Viewer3DKeyBinding& k : keys) {
+        const std::string id(k.actionID);
+        bool isDrawKey = false;
+        for (const DrawKey& drawKey : drawKeys) {
+            isDrawKey = isDrawKey || (id == drawKey.actionID);
+        }
+        if (isDrawKey) {
+            continue;
+        }
+        EXPECT_NE(int(Qt::Key_Up), int(k.key)) << id;
+        EXPECT_NE(int(Qt::Key_Down), int(k.key)) << id;
+        EXPECT_NE(int(Qt::Key_Up), int(k.altKey)) << id;
+        EXPECT_NE(int(Qt::Key_Down), int(k.altKey)) << id;
+    }
 }

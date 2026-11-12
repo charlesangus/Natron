@@ -7,7 +7,8 @@ each an Xform holding a Cube. No row has a payload, so twirling one loads nothin
 The column is found by its header, "Draw State". The script checks:
   - with nothing set every row reads Full, inherited: italic and dimmed;
   - each of the five states, picked in the cell's editor on /World/B, reads back in the cell as
-    set, reaches the viewer, and a BBox row is boxed there;
+    set, reaches the viewer, and a BBox row is boxed there; Load All, picked after Full, draws
+    the same and posts nothing;
   - a row that inherits BBox looks unlike a row set to BBox;
   - with /World boxed, Full on /World/A/Deep/Leaf from the row menu switches /World, /World/A and
     /World/A/Deep to Children, and leaves /World/B and /World/C boxed;
@@ -240,6 +241,22 @@ try:
         t.scrollTo(index)
         QApplication.processEvents()
 
+    def editor_of(c):
+        """The editor open on cell c, or None.
+
+        Found through the view rather than by name: a closed editor lingers as a hidden child until
+        its deferred delete runs, and findChild would return it."""
+        t = tree()
+        w = t.indexWidget(c)
+        if w is None:
+            return None
+        if isinstance(w, QComboBox):
+            return w
+        for combo in t.findChildren(QComboBox, "sceneGraphDrawStateEditor"):
+            if combo.isVisible() and combo.geometry() == w.geometry():
+                return combo
+        return None
+
     def pick_in_editor(path, label):
         """Opens path's cell editor and picks label in it. False when no editor or no such entry opened."""
         reveal(path)
@@ -250,17 +267,21 @@ try:
         t.edit(c)
         QApplication.processEvents()
         QApplication.processEvents()
-        combo = t.findChild(QComboBox, "sceneGraphDrawStateEditor")
+        combo = editor_of(c)
         if combo is None:
             return False
         check(combo.view().isVisible(), "the editor of %s opens with its list shown" % path)
         entry = combo.findText(label)
         if entry < 0:
+            combo = None
+            t.closePersistentEditor(c)
             return False
         combo.hidePopup()
         combo.setCurrentIndex(entry)
         combo.activated.emit(entry)
+        combo = None
         QApplication.processEvents()
+        check(editor_of(cell(path)) is None, "the editor of %s closes after picking %s" % (path, label))
         return True
 
     def pick_in_menu(path, action_name):
@@ -340,8 +361,14 @@ try:
         for name, label in STATES:
             before = posted()
             check(pick_in_editor(B, label), "the editor of /World/B offers %s" % label)
-            ok = yield from reached(before)
-            check(ok, "%s on /World/B reaches the viewer" % label)
+            if name == "loadAll":
+                # It follows Full, and with no payload to load both draw alike, so the viewer has
+                # nothing to post; the column below reads the state back from the viewer itself.
+                yield ("sleep", SETTLE_MS)
+                check(posted() == before, "Load All after Full on /World/B posts nothing (%d, was %d)" % (posted(), before))
+            else:
+                ok = yield from reached(before)
+                check(ok, "%s on /World/B reaches the viewer" % label)
             got, inherited, italic = shown(B)
             check(got == label and not inherited and not italic, "/World/B reads %s, set (%r)" % (label, shown(B)))
             check(int(cell(B).data(DRAW_STATE_ROLE)) == STATES.index((name, label)), "the state role of /World/B is %s" % name)

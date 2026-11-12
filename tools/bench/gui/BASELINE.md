@@ -1,71 +1,114 @@
-# GUI benchmark baseline (Xvfb)
+# GUI benchmark baseline
 
-Provisional. The file is built from two runs, not three, and most cells have one sample. See "Samples".
+Two gate recordings, both made on 2026-11-11 with `run.sh --preset gate` (comp topology at N = 300 and 3000, adaptive
+reps, per-rep timeouts of 2-30 s), harness commit a8651e8bc, `Natron-m117-gui-perf-harness.AppImage` (sha256
+eb4f4cfb512333ac). This build predates the large-graph responsiveness fixes, so its wedges are part of the baseline: undo wedges Natron at N=300 (redo
+and paste_1000 are then not run) and duplicate_100 wedges Natron at N=3000 (every later op at that size is not run).
+The pre-gate recordings with 120 s and 300 s censored timeouts are in `baselines/archive/`, kept for reference, not for gating.
 
-Host: Intel N100, 4 cores, Xvfb :79 with the xcb platform, release AppImage at git 4abfe234a. Other agents
-share the container, so some cells carry contention noise.
+How the baselines are used:
 
-## Samples
+- Milestones touching the bench-rule paths (GUI or Engine) compare one Xvfb gate run against `baselines/xvfb.jsonl`:
+  `tools/bench/gui/run.sh --xvfb --preset gate --baseline tools/bench/gui/baselines/xvfb.jsonl`, then
+  `compare.py baselines/xvfb.jsonl RUN.jsonl`. `--baseline` takes each op's timeout from the baseline's medians.
+  `CONFIRM` rows are re-run with the printed `run.sh --rerun ... --reps 5` line before they count.
+- The full preset (four topologies at 300, 1000 and 3000) runs periodically, or when a `--scaling` slope from the
+  gate's two sizes looks suspect.
+- Budgets (16 ms per event for interaction, 100 ms for edits) are judged only on a host run, with `compare.py --budgets`.
+- `over_budget` cells are censored: `censored_ms` is how far the rep got before its timeout, a lower bound. Over on both
+  sides is "still over" and judged neither way.
 
-Each run is the full matrix of four topologies at N = 300, 1000, 2000 and 3000, 3 reps per op. `baselines/xvfb.jsonl`
-is `merge.py` over run 1 (all 16 cells) and run 2 (chain, wide, comp, mixed at N=300 and chain at N=1000: 5 cells).
-Cells outside run 2 are single samples. A full baseline needs run 2 finished and a run 3: about 11 more cell runs for
-run 2 (about 2 h) and a full run 3 (about 4 h), in a quiet window. Runs that overlapped another agent's Natron or
-NatronRenderer process were discarded and redone; cc1plus syntax checks from other agents were not discarded.
+## Xvfb
 
-Ops left out of the matrix: delete_1000, undo and redo hang from about 60 nodes (20 deletes pass, 30 hang), so they are
-not in the baseline. paste_1000 is also left out. Both are for M118.
+`baselines/xvfb.jsonl`: single gate run, 2026-11-11. Host: Intel N100, 4 cores, Xvfb with the xcb platform (natron-dev
+container), harness a8651e8bc. Preset gate, comp topology, N = 300 and 3000, seed 1.
 
-## Run-to-run spread
+Noise: this file and two more gate runs of the same AppImage (same day, same host) give the spread below, (max - min) /
+min over the three, for the ops that were `ok` in all three. Wall and per-event CPU (`step_cpu_median_ms`) are equally
+noisy, so wall stays judged. Run 2 was also a quiet period: at N=300 six ops that were over budget in the other two
+were `ok` in it.
 
-Spread is (max - min) / median of the per-run medians, over the 5 cells with two samples (95 op rows).
+| Metric | Spread, N=300 | Spread, N=3000 |
+|---|---|---|
+| rep median | 12-5700% (fit_all, select_all, click_select 260-440%) | 11-150% |
+| per-event p50 | 10-16000% (absolute 5-140 ms) | 19-93% |
+| per-event p95 | 10-24000% (absolute 5-100 ms) | 17-104% |
+| per-event CPU median | 8-14800% (absolute 3-120 ms) | 22-60% |
+| longest stall, `ok` ops | up to 2.0 s (load) | up to 6.2 s (frame_step) |
 
-| Class | Median spread | 90th percentile | Worst |
-|---|---|---|---|
-| interaction | 5.5% | 49% | 98% (fit_all chain 300) |
-| edit | 6.2% | 37% | 115% (create_one chain 300) |
+Tolerance 3.0 (a 4x slowdown), minimum change 200 ms, long stall 3000 ms, chosen by `compare.py` for any `xvfb`
+file: the largest same-build forward comparison was +239% (rubber_band at N=300, 1 rep of 40 events, 1.1 s then 3.8 s),
+and the small ops swing by large ratios over tens of milliseconds, which the 200 ms floor ignores. 1.0 or 2.0 still flags
+rubber_band; 0.5 also flags fit_all at N=3000. Host mode keeps 0.2 / 5 ms / 250 ms. With these, the three same-build
+pairs report 0 regressions.
 
-Outliers (above 50%) are all in run 2 chain-300 or mixed-300 paste_100, which ran while another agent's jobs were active.
-The typical op is within about 6%. With two samples the 90th percentile is itself noisy.
+Median is the per-rep time of the whole event sequence; per-event max is the worst single event. "over (x s)" is a
+censored cell, how far it got before its timeout.
 
-## Compare tolerance
+| Op | median 300 / 3000 (ms) | per-event max 300 / 3000 (ms) | Reps 300 / 3000 | Status 300 / 3000 |
+|---|---|---|---|---|
+| click_select | 112.7 / 535.2 | 63.1 / 293.5 | 5 / 2 | ok / ok |
+| connect | 73.7 / 489.1 | 24.8 / 189.6 | 5 / 4 | ok / ok |
+| create_one | 127.1 / 584.0 | 25.4 / 97.2 | 5 / 5 | ok / ok |
+| delete_1000 | 1648.0 / not run | 1548.6 / not run | 1 / - | ok / not_run |
+| drag_move_1 | over (3.3 s) / over (3.9 s) | over (3.3 s) / over (3.9 s) | - / - | over_budget / over_budget |
+| drag_move_50 | over (3.3 s) / over (4.3 s) | over (3.3 s) / over (4.3 s) | - / - | over_budget / over_budget |
+| duplicate_100 | over (3.8 s) / over (12.1 s) | over (3.8 s) / over (12.1 s) | - / - | over_budget / over_budget |
+| edit_label | 37.0 / 364.4 | 8.5 / 17.7 | 5 / 5 | ok / ok |
+| fit_all | 94.4 / 402.1 | 94.2 / 470.3 | 5 / 5 | ok / ok |
+| frame_step | 1238.9 / 27753.5 | 104.6 / 3050.3 | 1 / 1 | ok / ok |
+| hover | over (16.0 s) / over (16.1 s) | over (16.0 s) / over (16.1 s) | - / - | over_budget / over_budget |
+| idle | 4995.9 / 5511.3 | 0.0 / 0.0 | 1 / 1 | ok / ok |
+| knob_change_fanout | 93.1 / 1058.0 | 50.6 / 669.4 | 5 / 3 | ok / ok |
+| load | 4648.8 / over (262.0 s) | 4647.8 / over (262.0 s) | 1 / - | ok / over_budget |
+| pan | over (3.4 s) / over (4.4 s) | over (3.4 s) / over (4.4 s) | - / - | over_budget / over_budget |
+| paste_100 | over (3.5 s) / not run | over (3.5 s) / not run | - / - | over_budget / not_run |
+| paste_1000 | not run / not run | not run / not run | - / - | not_run / not_run |
+| redo | not run / not run | not run / not run | - / - | not_run / not_run |
+| rubber_band | 1123.1 / over (3.7 s) | 50.7 / over (3.7 s) | 1 / - | ok / over_budget |
+| select_all | 144.7 / 714.8 | 98.4 / 396.9 | 5 / 3 | ok / ok |
+| set_expression | 42.5 / 581.2 | 20.8 / 250.4 | 5 / 4 | ok / ok |
+| undo | over (12.1 s) / over | over (12.1 s) / over | - / - | over_budget / over_budget |
+| zoom_step | over (2.1 s) / over (2.6 s) | over (2.1 s) / over (2.6 s) | - / - | over_budget / over_budget |
 
-`compare.py baselines/xvfb.jsonl RUN --tol 1.0 --min-ms 5`. This is a 100% change, which is under the 2x-worst-spread rule
-(that would be over 200%, and meaningless). It is the smallest round value at which both runs pass against the merged
-baseline. Treat it as catching only gross regressions (2x) until a third run tightens it. Verified: run 1 against the
-baseline exits 0; run 2 against the baseline restricted to its 5 cells exits 0 (tol 0.5 gives 1 regression; compare.py
-reports cells absent from a partial run as regressions, so run 2 cannot be compared against the full file).
+Scaling (`compare.py --scaling baselines/xvfb.jsonl`, N=300 and 3000; only ops that completed at both sizes): frame_step
+1.35 (superlinear), set_expression 1.14, knob_change_fanout 1.06, edit_label 0.99, connect 0.82, select_all 0.69,
+click_select 0.68, create_one 0.66, fit_all 0.63, idle 0.04.
 
-## Timeouts
+## Real host
 
-Per-op timeout is 120 s. Ops that timed out are recorded with status timeout and so are excluded from the slopes:
+`baselines/host-ms-E2087B87C9C8.jsonl`: single gate run, 2026-11-11, same preset and harness as above.
 
-- load: every topology at N=2000 and 3000
-- hover: wide, comp, mixed at N=2000 and 3000; chain at 3000
-- paste_100: chain, comp, mixed at N=2000 and 3000; wide at 3000
-- duplicate_100: chain, comp, mixed at N=2000 and 3000
+- Host: ms-E2087B87C9C8, AMD Ryzen 7 7800X3D (16 threads), AMD Radeon RX 7900 XTX, real display, xcb.
+- Per-host baseline: compare it only against runs from the same machine.
 
-## Scaling: superlinear ops (slope above 1.2, M118 targets), steepest first
+| Op | median 300 / 3000 (ms) | per-event max 300 / 3000 (ms) | Reps 300 / 3000 | Status 300 / 3000 |
+|---|---|---|---|---|
+| click_select | 8.1 / 62.5 | 8.3 / 54.8 | 5 / 5 | ok / ok |
+| connect | 16.7 / 152.7 | 2.8 / 55.7 | 5 / 5 | ok / ok |
+| create_one | 20.8 / 205.6 | 3.9 / 20.5 | 5 / 5 | ok / ok |
+| delete_1000 | 277.9 / not run | 260.3 / not run | 1 / - | ok / not_run |
+| drag_move_1 | 641.8 / over (3.3 s) | 3.3 / over (3.3 s) | 1 / - | ok / over_budget |
+| drag_move_50 | 872.7 / over (3.3 s) | 17.2 / over (3.3 s) | 1 / - | ok / over_budget |
+| duplicate_100 | 815.6 / over (12.2 s) | 857.9 / over (12.2 s) | 3 / - | ok / over_budget |
+| edit_label | 16.7 / 29.3 | 1.3 / 2.4 | 5 / 5 | ok / ok |
+| fit_all | 0.6 / 109.2 | 9.5 / 109.1 | 5 / 5 | ok / ok |
+| frame_step | 216.6 / 5776.4 | 24.0 / 522.6 | 1 / 1 | ok / ok |
+| hover | 915.0 / over (16.1 s) | 7.2 / over (16.1 s) | 1 / - | ok / over_budget |
+| idle | 5024.3 / 4964.7 | 0.0 / 0.0 | 1 / 1 | ok / ok |
+| knob_change_fanout | 18.4 / 197.5 | 7.8 / 120.5 | 5 / 5 | ok / ok |
+| load | 1256.3 / not run | 1249.2 / not run | 1 / - | ok / not_run |
+| pan | 688.9 / over (3.4 s) | 7.4 / over (3.4 s) | 1 / - | ok / over_budget |
+| paste_100 | 808.7 / not run | 789.8 / not run | 3 / - | ok / not_run |
+| paste_1000 | 1157.6 / not run | 1230.0 / not run | 3 / - | ok / not_run |
+| redo | not run / not run | not run / not run | - / - | not_run / not_run |
+| rubber_band | 179.8 / 1355.9 | 6.5 / 61.6 | 1 / 1 | ok / ok |
+| select_all | 8.3 / 149.6 | 6.8 / 77.6 | 5 / 5 | ok / ok |
+| set_expression | 8.1 / 98.1 | 6.1 / 67.3 | 5 / 5 | ok / ok |
+| undo | over (3.9 s) / not run | over (3.9 s) / not run | - / - | over_budget / not_run |
+| zoom_step | 216.6 / over (2.2 s) | 13.5 / over (2.2 s) | 1 / - | ok / over_budget |
 
-Slope of log(median) on log(N). Entries with only N=300,1000 lost their 2000 and 3000 points to timeouts, so their real slope is at least this.
-
-| Op | Topology | N points | Slope |
-|---|---|---|---|
-| load | wide | 300,1000 | 1.80 |
-| load | chain | 300,1000 | 1.76 |
-| load | mixed | 300,1000 | 1.71 |
-| duplicate_100 | comp | 300,1000 | 1.71 |
-| paste_100 | comp | 300,1000 | 1.69 |
-| load | comp | 300,1000 | 1.66 |
-| duplicate_100 | chain | 300,1000 | 1.60 |
-| edit_label | mixed | 300,1000,2000,3000 | 1.55 |
-| duplicate_100 | mixed | 300,1000 | 1.52 |
-| set_expression | mixed | 300,1000,2000,3000 | 1.47 |
-| paste_100 | mixed | 300,1000 | 1.38 |
-| duplicate_100 | wide | 300,1000,2000,3000 | 1.36 |
-| knob_change_fanout | mixed | 300,1000,2000,3000 | 1.26 |
-| set_expression | comp | 300,1000,2000,3000 | 1.24 |
-
-The full table: `compare.py --scaling baselines/xvfb.jsonl`.
-
-Hover is the slowest interaction at 1000 nodes (24 s median on chain).
+Scaling (`compare.py --scaling baselines/host-ms-E2087B87C9C8.jsonl`, N=300 and 3000): fit_all 2.26 (superlinear),
+frame_step 1.43 (superlinear), select_all 1.25 (superlinear), set_expression 1.09, knob_change_fanout 1.03,
+create_one 1.00, connect 0.96, click_select 0.89, rubber_band 0.88, edit_label 0.24, idle -0.01.
+fit_all's 300 median (0.6 ms) is near timer resolution, which inflates its slope.

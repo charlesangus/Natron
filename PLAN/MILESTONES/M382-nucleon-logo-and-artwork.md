@@ -130,4 +130,4 @@ Context:
   - Trefoil (rings-trefoil): good. Try alternatives that make it less generic and more Bauhaus. Also try its inverse, three U shapes meeting in the middle.
   - Pyramid (baryon-pyramid): promising conceptually, weak visually. Keep working on it.
   - Refer to the references, and generate a few new ideas from them.
-  - Round 7 goes to a Fable agent.
+  - Round 7 goes to a Fable agent. Round 7 concepts at 627243479: trefoil-weights, -ruler, -square; utrefoil-fan, -link, -staple; pyramid-lens, -step, -key; ref-crescents, -bars, -planes.

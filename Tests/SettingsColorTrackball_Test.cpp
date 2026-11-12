@@ -23,6 +23,7 @@
 
 #include "Global/Macros.h"
 
+#include <string>
 #include <vector>
 
 #include <QObject>
@@ -56,7 +57,7 @@ TEST_F(BaseTest, ColorTrackballSettingsDefaultToCrosshairRevealAndAThird)
     ASSERT_TRUE(bool(size));
     EXPECT_EQ(0, feedback->getDefaultValue(0));
     EXPECT_EQ((int)Settings::eColorTrackballWheelWidthThird, size->getDefaultValue(0));
-    EXPECT_EQ(2u, feedback->getEntries_mt_safe().size());
+    EXPECT_EQ(3u, feedback->getEntries_mt_safe().size());
     EXPECT_EQ(4u, size->getEntries_mt_safe().size());
     EXPECT_EQ(Settings::eColorTrackballFeedbackCrosshairReveal, settings->getColorTrackballFeedback());
     EXPECT_EQ(Settings::eColorTrackballWheelWidthThird, settings->getColorTrackballWheelWidth());
@@ -140,6 +141,37 @@ TEST_F(BaseTest, ColorTrackballSettingsRoundTripThroughSaveAndRestore)
 
     feedback->setValue(Settings::eColorTrackballFeedbackCrosshairReveal);
     size->setValue(Settings::eColorTrackballWheelWidthThird);
+    settings->saveSettings(knobs, false, false);
+    saveEnabled->setValue(savedEnabled);
+}
+
+TEST_F(BaseTest, ColorTrackballCrosshairOnlyIsOffByDefaultAndPersists)
+{
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    KnobChoicePtr feedback = settings->getKnobByNameAndType<KnobChoice>("colorTrackballFeedback");
+    KnobBoolPtr saveEnabled = settings->getKnobByNameAndType<KnobBool>("saveSettings");
+    ASSERT_TRUE(bool(feedback));
+    ASSERT_TRUE(bool(saveEnabled));
+
+    const std::vector<ChoiceOption> entries = feedback->getEntries_mt_safe();
+    ASSERT_EQ(3u, entries.size());
+    EXPECT_EQ(std::string("crosshairOnly"), entries[Settings::eColorTrackballFeedbackCrosshairOnly].id);
+    EXPECT_EQ(std::string("Crosshair only"), entries[Settings::eColorTrackballFeedbackCrosshairOnly].label);
+    EXPECT_NE((int)Settings::eColorTrackballFeedbackCrosshairOnly, feedback->getDefaultValue(0));
+
+    const bool savedEnabled = saveEnabled->getValue();
+    saveEnabled->setValue(true);
+
+    feedback->setValue(Settings::eColorTrackballFeedbackCrosshairOnly);
+    std::vector<KnobI*> knobs;
+    knobs.push_back(feedback.get());
+    settings->saveSettings(knobs, false, false);
+
+    feedback->setValue(Settings::eColorTrackballFeedbackCrosshairReveal);
+    settings->restoreKnobsFromSettings(knobs);
+    EXPECT_EQ(Settings::eColorTrackballFeedbackCrosshairOnly, settings->getColorTrackballFeedback());
+
+    feedback->setValue(Settings::eColorTrackballFeedbackCrosshairReveal);
     settings->saveSettings(knobs, false, false);
     saveEnabled->setValue(savedEnabled);
 }

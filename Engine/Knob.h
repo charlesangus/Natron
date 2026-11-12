@@ -755,8 +755,22 @@ public:
      * @brief Tries to re-apply invalid expressions, returns true if they are all valid
      **/
     virtual bool checkInvalidExpressions() = 0;
+
+    /**
+     * @brief Puts this knob's expression functions back on its Python parameter, which is a new
+     * object once the node's Python attributes have been declared again.
+     **/
+    virtual void restoreExpressionFunctions() = 0;
     virtual bool isExpressionValid(int dimension, std::string* error) const = 0;
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) = 0;
+
+    /**
+     * @brief Flags the expression of dimension invalid with error because node, which it reads, was
+     * deactivated. If it was valid, or only invalid because of other deactivated nodes, a recheck
+     * once they are all active again under the names they had then makes it valid again without
+     * running Python.
+     **/
+    virtual void setExpressionMissingNode(int dimension, const NodePtr& node, const std::string& error) = 0;
 
     /**
      * @brief Replaces the node name "oldName" by "newName" in the expression of dimension, if set,
@@ -1381,6 +1395,16 @@ public:
         return ret;
     }
 
+    /**
+     * @brief Forgets the links and link groups stored and not restored yet, so that storing a
+     * newer serialization replaces them rather than adding to them.
+     **/
+    void clearStoredLinks()
+    {
+        _links.clear();
+        _storedLinkGroups.clear();
+    }
+
 private:
     struct Link {
         int slaveDimension;
@@ -1600,6 +1624,17 @@ public:
      **/
     virtual void setHashExempt(bool exempt) = 0;
     virtual bool isHashExempt() const = 0;
+
+    /**
+     * @brief Puts a render-hashed knob in a hash namespace, such as the attribute namespace of a
+     * render delegate ("cycles"): the node keeps its content out of the node hash and digests it
+     * per namespace instead (Node::getHashNamespaces()). Every node downstream folds every
+     * namespace, but one that reads only some, such as USDRender
+     * (EffectInstance::consumesHashNamespaces()). Empty, the default, is no namespace. Set once
+     * at creation.
+     **/
+    virtual void setHashNamespace(const std::string& hashNamespace) = 0;
+    virtual std::string getHashNamespace() const = 0;
 
     /**
      * @brief True if this knob's content belongs in the node hash: it holds data (not a page,
@@ -1888,8 +1923,15 @@ public:
     virtual bool isAnimated( int dimension, ViewSpec view = ViewSpec::current() ) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool hasAnimation() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool checkInvalidExpressions() OVERRIDE FINAL;
+    virtual void restoreExpressionFunctions() OVERRIDE FINAL;
     virtual bool isExpressionValid(int dimension, std::string* error) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) OVERRIDE FINAL;
+    virtual void setExpressionMissingNode(int dimension, const NodePtr& node, const std::string& error) OVERRIDE FINAL;
+
+private:
+    // Makes the expression of dimension valid again if only the deactivation of nodes now back
+    // made it invalid, returning false if it must be set again instead.
+    bool restoreExpressionOfReturnedNodes(int dimension);
 
 protected:
 public:
@@ -1901,6 +1943,13 @@ public:
     virtual std::string validateExpression(const std::string& expression, int dimension, bool hasRetVariable,
                                            std::string* resultAsString) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+private:
+    // As validateExpression, also handing back in *function (a new reference, or null) the
+    // function the expression is evaluated by.
+    std::string validateExpressionInternal(const std::string& expression, int dimension, bool hasRetVariable,
+                                           std::string* resultAsString, PyObject** function);
+
+public:
 protected:
 
     template <typename T>
@@ -1936,6 +1985,24 @@ public:
      **/
     static U64 getHashedMetadataSourcesGeneration();
     static void moveHashedMetadataSourcesGeneration();
+
+    /**
+     * @brief Moved whenever a Python name an expression's function is reached by may stop
+     * leading to it, so that functions kept for evaluation are looked up again.
+     **/
+    static void moveExpressionFunctionsGeneration();
+
+    /**
+     * @brief For tests: how many times an expression's function was looked up by its Python
+     * name, and how many evaluations ran the expression as a script instead of calling it.
+     **/
+    static U64 getExpressionFunctionsResolvedCount();
+    static U64 getExpressionScriptsRunCount();
+
+    /**
+     * @brief For tests: how many listener refreshes refreshListenersAfterValueChange() made.
+     **/
+    static U64 getListenerRefreshCount();
     virtual std::string getExpression(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const std::vector<std::shared_ptr<Curve>  > & getCurves() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setAnimationEnabled(bool val) OVERRIDE FINAL;
@@ -2103,6 +2170,8 @@ public:
     virtual void invalidateContentHash() OVERRIDE FINAL;
     virtual void setHashExempt(bool exempt) OVERRIDE FINAL;
     virtual bool isHashExempt() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setHashNamespace(const std::string& hashNamespace) OVERRIDE FINAL;
+    virtual std::string getHashNamespace() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isRenderHashed() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getContentHashDependencies(bool* hasExpression, bool* readsOutsideKnob) const OVERRIDE FINAL;
     virtual void addContextReadSource(const ContextReadSourcePtr& source) OVERRIDE FINAL;
@@ -3800,6 +3869,12 @@ KnobIPtr createDetachedKnobFromSerialization(const Serialization::KnobSerializat
  * otherwise. Needed before createDetachedKnobFromSerialization() for such a knob.
  **/
 Serialization::KnobSerialization completeKnobSerializationForKnob(const KnobI& liveKnob, const Serialization::KnobSerialization& serialization);
+
+/**
+ * @brief Drops knob's alias master, its one-way links and the two-way links it can leave. The
+ * knobs that are aliases of it stay so.
+ **/
+void removeKnobLinks(const KnobIPtr& knob);
 
 NATRON_NAMESPACE_EXIT
 

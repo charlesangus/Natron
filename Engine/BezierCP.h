@@ -37,8 +37,9 @@
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/RippleEditKeys.h"
+#include "Engine/ViewIdx.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -107,11 +108,11 @@ public:
     void removeAnimation(bool useGuiCurves, double currentTime);
 
     ///returns true if a keyframe was set
-    bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, bool rippleEdit, const std::pair<double, double>& pixelScale);
+    bool cuspPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const std::pair<double, double>& pixelScale);
 
-    ///returns true if a keyframe was set
-    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, bool rippleEdit, const std::pair<double, double>& pixelScale);
-
+    /// returns true if a keyframe was set. transform is the curve's at time: the caller reads it
+    /// before taking itemMutex, because composing it may lock that mutex.
+    bool smoothPoint(bool useGuiCurves, double time, ViewIdx view, bool autoKeying, const RippleEditKeys& ripple, const Transform::Matrix3x3& transform, const std::pair<double, double>& pixelScale);
 
     virtual bool isFeatherPoint() const
     {
@@ -172,6 +173,13 @@ public:
     void cloneGuiCurvesToInternalCurves();
 
     /**
+     * @brief Copies the GUI curves, static positions, broken flag, track link and offsets of other,
+     * which are never behind its internal ones, onto this point's GUI copy, and onto its internal
+     * state too when alsoInternal is true.
+     **/
+    void cloneGuiState(const BezierCP& other, bool alsoInternal);
+
+    /**
      * @brief Mirrors the internal keyframe at time, or its absence, and its neighbours onto the
      * GUI curves (see Curve::copyKeyFrameFrom()), along with the static positions. The GUI
      * curves must otherwise equal the internal ones.
@@ -193,15 +201,17 @@ public:
     /**
      * @brief Whether the point follows a track. A linked point evaluates to the track's centre
      * plus the offsets taken at the link time, for the point and both tangents; its own
-     * animation is kept but ignored until it is unlinked.
+     * animation is kept but ignored until it is unlinked. Renders follow the internal link: a
+     * link or unlink made during one changes the GUI copy's alone until it is written back. The
+     * other track-link getters read the GUI copy's.
      **/
-    bool isLinkedToTrack() const;
+    bool isLinkedToTrack(bool useGuiCurves = true) const;
 
     /**
      * @brief The linked track when it can be followed: it still exists, belongs to its tracker
      * and the tracker node is active. Null otherwise.
      **/
-    TrackMarkerPtr getResolvedTrack() const;
+    TrackMarkerPtr getResolvedTrack(bool useGuiCurves = true) const;
 
     /**
      * @brief The linked track object while it is alive, resolvable or not. Null otherwise.
@@ -244,16 +254,17 @@ public:
 
 private:
     /**
-     * @brief Links the point to marker, taking the offsets of its internal and GUI values from
-     * the track's centre at time. Bezier::linkPointToTrack() calls it for both the point and its
-     * feather point.
+     * @brief Links the point to marker, taking the offsets of its values from the track's
+     * centre at time: of the GUI copy's alone when useGuiCurves, else of both sides.
+     * Bezier::linkPointToTrack() calls it for both the point and its feather point.
      **/
-    void linkToTrack(const TrackMarkerPtr& marker, double time);
+    void linkToTrack(const TrackMarkerPtr& marker, double time, bool useGuiCurves);
 
     /**
-     * @brief Drops the link; the point evaluates from its own animation again.
+     * @brief Drops the link, of the GUI copy alone when useGuiCurves; the point evaluates from
+     * its own animation again.
      **/
-    void unlinkFromTrack();
+    void unlinkFromTrack(bool useGuiCurves);
 
     // The point's own value, ignoring any link. which: 0 position, 1 left, 2 right.
     bool getStoredPointAtTime(bool useGuiCurves, int which, double time, double* x, double* y) const;

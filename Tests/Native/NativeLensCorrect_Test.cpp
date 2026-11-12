@@ -26,10 +26,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <list>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -40,6 +43,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "Native/FilterKnobRenderChecks.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
 #include "RenderBothWays.h"
@@ -51,14 +55,18 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Noise.h"
+#include "Engine/Nodes/Generator/NoiseCore.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/LensCorrect.h"
 #include "Engine/Nodes/Transform/LensCorrectProfile.h"
 #include "Engine/Nodes/Transform/LensfunRuntime.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
@@ -342,9 +350,9 @@ setMetadata(const NodePtr& modify,
     KnobString* valueKnob = knobOf<KnobString>(modify, "stringValue" + suffix);
 
     ASSERT_TRUE(op && keyKnob && type && valueKnob);
-    op->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+    op->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
     keyKnob->setValue(key, ViewSpec::all(), 0);
-    type->setValue((int)ModifyMetadata::eValueTypeString, ViewSpec::all(), 0);
+    type->setValue((int)MetadataModify::eValueTypeString, ViewSpec::all(), 0);
     valueKnob->setValue(value, ViewSpec::all(), 0);
 }
 
@@ -361,10 +369,98 @@ setMetadata(const NodePtr& modify,
     KnobDouble* valueKnob = knobOf<KnobDouble>(modify, "doubleValue" + suffix);
 
     ASSERT_TRUE(op && keyKnob && type && valueKnob);
-    op->setValue((int)ModifyMetadata::eOperationSet, ViewSpec::all(), 0);
+    op->setValue((int)MetadataModify::eOperationSet, ViewSpec::all(), 0);
     keyKnob->setValue(key, ViewSpec::all(), 0);
-    type->setValue((int)ModifyMetadata::eValueTypeDouble, ViewSpec::all(), 0);
+    type->setValue((int)MetadataModify::eValueTypeDouble, ViewSpec::all(), 0);
     valueKnob->setValue(value, ViewSpec::all(), 0);
+}
+
+struct LensCase {
+    const char* what;
+    const char* camera;
+    const char* lens;
+    double focal;
+    const char* mode;
+    const char* geometry;
+    // 0 for the automatic scale.
+    double scale;
+};
+
+// Every distortion model and projection lensfun has, both directions, zoomed in and out, and a fisheye
+// target scaled down until its corners lie past 90 degrees, where lensfun has no answer.
+const LensCase kLensCases[] = {
+    { "ptlens correct", kCanon5D3, kCanon70200, 100., kLensCorrectModeCorrect, kLensCorrectGeometryLens, 0. },
+    { "ptlens distort", kCanon5D3, kCanon70200, 100., kLensCorrectModeDistort, kLensCorrectGeometryLens, 0. },
+    { "ptlens correct scale 1.5", kCanon5D3, kCanon70200, 100., kLensCorrectModeCorrect, kLensCorrectGeometryLens, 1.5 },
+    { "ptlens distort scale 0.7", kCanon5D3, kCanon70200, 100., kLensCorrectModeDistort, kLensCorrectGeometryLens, 0.7 },
+    { "poly3", "X-Pro2", "XF50mmF2 R WR", 50., kLensCorrectModeCorrect, kLensCorrectGeometryLens, 0. },
+    { "poly5 fixed lens", "Canon PowerShot G12", "", 0., kLensCorrectModeCorrect, kLensCorrectGeometryLens, 0. },
+    { "fisheye to rectilinear", "Canon EOS 7D", "Zenitar MC 16mm f/2.8", 16., kLensCorrectModeCorrect, kLensCorrectGeometryRectilinear, 0. },
+    { "fisheye to equisolid distort", "Canon EOS 7D", "Zenitar MC 16mm f/2.8", 16., kLensCorrectModeDistort, kLensCorrectGeometryEquisolid, 0. },
+    { "fisheye to thoby", "Canon EOS 7D", "Zenitar MC 16mm f/2.8", 16., kLensCorrectModeCorrect, kLensCorrectGeometryThoby, 0. },
+    { "ptlens to fisheye scale 0.1", kCanon5D3, kCanon70200, 100., kLensCorrectModeCorrect, kLensCorrectGeometryFisheye, 0.1 },
+};
+
+std::uint32_t
+bitsOf(float v)
+{
+    std::uint32_t bits = 0;
+
+    std::memcpy(&bits, &v, sizeof(bits));
+
+    return bits;
+}
+
+// Renders window whole, then as uneven tiles, each asking the Source for its own region of
+// interest, and expects every tile's values to be the whole render's, bit for bit.
+void
+expectTilesMatchTheWhole(const NodePtr& node,
+                         const RectI& window,
+                         const std::string& what,
+                         unsigned mipmapLevel = 0)
+{
+    RenderedPlane whole;
+    ASSERT_TRUE(renderRGBA(node, window, &whole, mipmapLevel)) << what;
+    const double cutsX[] = { 0., 0.21, 0.47, 0.74, 1. };
+    const double cutsY[] = { 0., 0.23, 0.58, 1. };
+    for (int j = 0; j + 1 < 4; ++j) {
+        for (int i = 0; i + 1 < 5; ++i) {
+            const RectI tile(window.x1 + (int)(cutsX[i] * window.width()), window.y1 + (int)(cutsY[j] * window.height()),
+                             window.x1 + (int)(cutsX[i + 1] * window.width()), window.y1 + (int)(cutsY[j + 1] * window.height()));
+            if (tile.isNull()) {
+                continue;
+            }
+            RenderedPlane part;
+            ASSERT_TRUE(renderRGBA(node, tile, &part, mipmapLevel)) << what;
+            for (int y = tile.y1; y < tile.y2; ++y) {
+                for (int x = tile.x1; x < tile.x2; ++x) {
+                    for (int c = 0; c < 4; ++c) {
+                        const float want = pixelAt(whole, x, y)[c];
+                        const float got = pixelAt(part, x, y)[c];
+                        ASSERT_EQ(bitsOf(want), bitsOf(got)) << what << " mip " << mipmapLevel << " tile [" << tile.x1 << "," << tile.y1 << "," << tile.x2 << ","
+                                                             << tile.y2 << ") at " << x << ", " << y << " channel " << c << ": whole " << want << ", tile " << got;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The region node asks of source for window, in pixels at mipmapLevel.
+RectI
+sourceRoIOf(const NodePtr& node,
+            const NodePtr& source,
+            const RectI& window,
+            unsigned mipmapLevel = 0)
+{
+    const EffectInstancePtr effect = node->getEffectInstance();
+    RoIMap rois;
+
+    effect->getRegionsOfInterest_public(kTime, RenderScale::fromMipmapLevel(mipmapLevel), regionOf(node, mipmapLevel), window.toCanonical_noClipping(mipmapLevel, 1.), ViewIdx(0), &rois);
+    const RoIMap::const_iterator found = rois.find(source->getEffectInstance());
+    EXPECT_TRUE(found != rois.end());
+
+    return (found == rois.end()) ? RectI() : found->second.toPixelEnclosing(mipmapLevel, 1.);
 }
 } // namespace
 
@@ -415,6 +511,8 @@ protected:
     // A Source reaching 16 pixels past a 32 x 24 format on the left and right, 12 below and above.
     NodePtr makeOverscanSource()
     {
+        // resetProject's format used up the one-shot auto-set; without re-arming it the format is only added.
+        getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
         getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth / 2, kParitySourceHeight / 2, "nativeLensCorrect32x24", 1.));
         NodePtr source = makeSource();
         if (source) {
@@ -432,6 +530,73 @@ protected:
         EXPECT_TRUE(setKnobValues(node, kLensCorrectParamAutoScale, { 0. }));
         EXPECT_TRUE(setKnobValues(node, kLensCorrectParamScale, { scale }));
     }
+
+    void configure(const NodePtr& node,
+                   const LensCase& c)
+    {
+        EXPECT_TRUE(setKnobValue(node, kLensCorrectParamCamera, std::string(c.camera)));
+        EXPECT_TRUE(setKnobValue(node, kLensCorrectParamLens, std::string(c.lens)));
+        EXPECT_TRUE(setKnobValues(node, kLensCorrectParamFocalLength, { c.focal }));
+        EXPECT_TRUE(setKnobValues(node, kLensCorrectParamAperture, { 2.8 }));
+        EXPECT_TRUE(setKnobValue(node, kLensCorrectParamMode, std::string(c.mode)));
+        EXPECT_TRUE(setKnobValue(node, kLensCorrectParamTargetGeometry, std::string(c.geometry)));
+        if (c.scale > 0.) {
+            setManualScale(node, c.mode, c.scale);
+        }
+    }
+
+    // A flat Source the size of a 3000 x 2000 format, so that a window is small beside it.
+    NodePtr makeLargeSource()
+    {
+        // resetProject's format used up the one-shot auto-set; without re-arming it the format is only added.
+        getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
+        getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, kLargeWidth, kLargeHeight, "nativeLensCorrect3000x2000", 1.));
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+        EXPECT_TRUE(bool(constant));
+        if (constant) {
+            EXPECT_TRUE(setKnobValues(constant, kConstantParamColor, { 0.5, 0.5, 0.5, 1. }));
+            const RectD rod = regionOf(constant);
+            EXPECT_EQ(RectD(0, 0, kLargeWidth, kLargeHeight), rod) << rod.x1 << "," << rod.y1 << "," << rod.x2 << "," << rod.y2;
+        }
+
+        return constant;
+    }
+
+    // Decorrelated white noise over a width x height format of the given pixel aspect, reaching
+    // overscanX and overscanY pixels past it on every side, so that every Source pixel differs from
+    // its neighbours.
+    NodePtr makeNoiseSource(int width,
+                            int height,
+                            double par,
+                            int overscanX = 0,
+                            int overscanY = 0)
+    {
+        // resetProject's format used up the one-shot auto-set; without re-arming it the format is only added.
+        getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
+        std::ostringstream name;
+        name << "nativeLensCorrectNoise" << width << "x" << height << "par" << par;
+        getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, width, height, name.str(), par));
+        NodePtr noise = createNode(QString::fromUtf8(PLUGINID_NATRON_NOISE), PLUGIN_MAJOR_NATRON_NOISE);
+        EXPECT_TRUE(bool(noise));
+        if (!noise) {
+            return noise;
+        }
+        EXPECT_TRUE(setKnobValues(noise, kNoiseParamType, { (double)NoiseCore::kNoiseTypeWhite }));
+        EXPECT_TRUE(setKnobValues(noise, kNoiseParamDecorrelate, { 1. }));
+        if ((overscanX != 0) || (overscanY != 0)) {
+            EXPECT_TRUE(setKnobValue(noise, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+            EXPECT_TRUE(setKnobValues(noise, kNativeGeneratorParamBottomLeft, { -overscanX * par, (double)-overscanY }));
+            EXPECT_TRUE(setKnobValues(noise, kNativeGeneratorParamSize, { (width + 2 * overscanX) * par, (double)(height + 2 * overscanY) }));
+        }
+        const RectD rod = regionOf(noise);
+        EXPECT_EQ(RectD(-overscanX * par, -overscanY, (width + overscanX) * par, height + overscanY), rod)
+            << rod.x1 << "," << rod.y1 << "," << rod.x2 << "," << rod.y2;
+
+        return noise;
+    }
+
+    static constexpr int kLargeWidth = 3000;
+    static constexpr int kLargeHeight = 2000;
 };
 
 TEST_F(NativeLensCorrectTest, RegisteredIdentity)
@@ -468,6 +633,9 @@ TEST_F(NativeLensCorrectTest, EveryControlHasAKnob)
         kLensCorrectParamShowVignetteMask,
         kLensCorrectParamInfo,
         kResamplerParamFilterType,
+        kResamplerParamLobes,
+        kResamplerParamBicubicB,
+        kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
         kResamplerParamFilterBlackOutside,
     };
@@ -645,7 +813,7 @@ TEST_F(NativeLensCorrectTest, HugePositionsRenderFinite)
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamTargetGeometry, std::string(kLensCorrectGeometryFisheye)));
     setManualScale(node, kLensCorrectModeCorrect, 0.1);
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     for (double blackOutside : { 1., 0. }) {
         ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside }));
         RenderedPlane out;
@@ -889,7 +1057,7 @@ TEST_F(NativeLensCorrectTest, ClearedWarningReturnsOnTheNextRender)
     // The manual vignette keeps the node rendering: a pass-through can be answered from the action caches.
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamVignetteStrength, { 0.5 }));
 
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane out;
     ASSERT_TRUE(renderRGBA(node, window, &out));
     const std::string warning = persistentMessage(node);
@@ -920,7 +1088,7 @@ TEST_F(NativeLensCorrectTest, NoApplicableCalibrationWarnsAndPassesThrough)
     ASSERT_TRUE(bool(source));
     NodePtr node = makeCanon(source);
     ASSERT_TRUE(bool(node));
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane before, after;
     ASSERT_TRUE(renderRGBA(source, window, &before));
 
@@ -951,7 +1119,7 @@ TEST_F(NativeLensCorrectTest, PartlyCalibratedLensNamesTheSkippedInInfo)
     ASSERT_TRUE(bool(source));
     NodePtr node = makeCanon(source);
     ASSERT_TRUE(bool(node));
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane out;
 
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamTCAOverride, { 1. }));
@@ -976,7 +1144,7 @@ TEST_F(NativeLensCorrectTest, UnknownLensPassesThroughWithAMessage)
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamCamera, std::string(kCanon5D3)));
     ASSERT_TRUE(setKnobValue(node, kLensCorrectParamLens, std::string("No Such Lens 13mm f/9")));
 
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane before, after;
     ASSERT_TRUE(renderRGBA(source, window, &before));
     ASSERT_TRUE(renderRGBA(node, window, &after));
@@ -992,6 +1160,20 @@ TEST_F(NativeLensCorrectTest, UnknownLensPassesThroughWithAMessage)
     EXPECT_FALSE(before.pixels == after.pixels);
 }
 
+TEST_F(NativeLensCorrectTest, HonoursTheNewFiltersAndTheirParameters)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr node = makeCanon(source);
+    ASSERT_TRUE(bool(node));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    EXPECT_TRUE(filterChoiceChangesTheRender(node, window, kTime, Resampler::eFilterCubic, Resampler::eFilterLanczos3));
+    EXPECT_TRUE(sincLobesChangeTheRender(node, window, kTime));
+    EXPECT_TRUE(bicubicParametersChangeTheRender(node, window, kTime));
+}
+
 TEST_F(NativeLensCorrectTest, TilesMatchTheWholeFrame)
 {
     resetProject();
@@ -1001,7 +1183,7 @@ TEST_F(NativeLensCorrectTest, TilesMatchTheWholeFrame)
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValues(node, kLensCorrectParamVignetteStrength, { 0.5 }));
 
-    const RectI window = paritySourceWindow(source, kTime, 0);
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
     RenderedPlane whole;
     ASSERT_TRUE(renderRGBA(node, window, &whole));
     const int midX = (window.x1 + window.x2) / 2 + 3;
@@ -1025,12 +1207,345 @@ TEST_F(NativeLensCorrectTest, TilesMatchTheWholeFrame)
     }
 }
 
+// Each tile asks the Source for only the region its pixels map from, and still renders exactly what
+// the whole frame does: every filter tap, edge clamp and outside test lands as it would on the whole
+// Source.
+TEST_F(NativeLensCorrectTest, TilesAreBitIdenticalToTheWholeFrame)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    for (const LensCase& c : kLensCases) {
+        NodePtr node = makeLensCorrect(source);
+        ASSERT_TRUE(bool(node)) << c.what;
+        configure(node, c);
+        // A partial mix renders the whole region, past the Source where it has grown.
+        ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.75 }));
+        expectTilesMatchTheWhole(node, regionOf(node).toPixelEnclosing(0u, 1.), c.what);
+    }
+
+    NodePtr node = makeLensCorrect(source);
+    ASSERT_TRUE(bool(node));
+    configure(node, kLensCases[6]);
+    const RectI window = regionOf(node).toPixelEnclosing(0u, 1.);
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(Resampler::filterOptions()[(std::size_t)Resampler::eFilterLanczos3].id)));
+    expectTilesMatchTheWhole(node, window, "fisheye to rectilinear, lanczos3");
+    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+    expectTilesMatchTheWhole(node, window, "fisheye to rectilinear, lanczos3, edges clamped");
+    ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(Resampler::filterOptions()[(std::size_t)Resampler::eFilterImpulse].id)));
+    expectTilesMatchTheWhole(node, window, "fisheye to rectilinear, impulse, edges clamped");
+
+    NodePtr scaled = makeLensCorrect(source);
+    ASSERT_TRUE(bool(scaled));
+    configure(scaled, kLensCases[3]);
+    ASSERT_TRUE(setKnobValues(scaled, kResamplerParamFilterBlackOutside, { 0. }));
+    expectTilesMatchTheWhole(scaled, regionOf(scaled, 1).toPixelEnclosing(1u, 1.), "ptlens distort scale 0.7, edges clamped", 1);
+}
+
+// Every Source pixel the default cubic filter can read for a window, mapped pixel by pixel through lensfun's
+// model, lies in the region the node asks for: the footprint around each red, green and blue position,
+// widened by the kernel scale the Jacobian gives there. With black outside, taps past the Source read
+// nothing; with edges clamped, the Resampler moves them onto the Source's edge.
+TEST_F(NativeLensCorrectTest, RegionOfInterestHoldsEveryRead)
+{
+    resetProject();
+    NodePtr source = makeLargeSource();
+    ASSERT_TRUE(bool(source));
+    for (const LensCase& c : kLensCases) {
+        NodePtr node = makeLensCorrect(source);
+        ASSERT_TRUE(bool(node)) << c.what;
+        configure(node, c);
+        LensCorrect* effect = lensCorrectOf(node);
+        ASSERT_TRUE(effect != nullptr);
+        const LensCorrect::Lookup found = effect->lookup(kTime, ViewIdx(0));
+        ASSERT_TRUE(bool(found.lens)) << c.what << ": " << found.warning;
+        KnobChoice* geometry = knobOf<KnobChoice>(node, kLensCorrectParamTargetGeometry);
+        ASSERT_TRUE(geometry != nullptr);
+
+        LensCorrectProfile::Request r;
+        r.width = kLargeWidth;
+        r.height = kLargeHeight;
+        r.focal = found.focal;
+        r.crop = found.crop;
+        r.aperture = found.aperture;
+        r.distance = found.distance;
+        r.reverse = (std::string(c.mode) == kLensCorrectModeDistort);
+        r.tca = !found.monochrome;
+        r.targetGeometry = geometry->getValueAtTime(kTime, 0, ViewIdx(0));
+        r.scale = (float)c.scale;
+        const LensCorrectProfile::Profile profile = LensCorrectProfile::build(*found.lens, r);
+
+        for (const bool blackOutside : { true, false }) {
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+            for (unsigned mip : { 0u, 3u }) {
+                const double scale = 1. / (1 << mip);
+                const int width = (int)(kLargeWidth * scale);
+                const int height = (int)(kLargeHeight * scale);
+                const RectI rod(0, 0, width, height);
+                const auto map = [&](int px, int py, float s[6]) {
+                    const float xu = (float)((px + 0.5) / scale - 0.5);
+                    const float yu = (float)(kLargeHeight - 0.5 - (py + 0.5) / scale);
+                    float lf[6];
+                    profile.map(xu, yu, lf);
+                    for (int k = 0; k < 3; ++k) {
+                        s[2 * k] = (float)((lf[2 * k] + 0.5) * scale);
+                        s[2 * k + 1] = (float)((kLargeHeight - 0.5 - lf[2 * k + 1]) * scale);
+                    }
+                };
+                std::vector<RectI> windows = {
+                    RectI(0, 0, 160, 120),
+                    RectI(width - 160, height - 120, width, height),
+                    RectI(width / 2 - 80, height / 2 - 60, width / 2 + 80, height / 2 + 60),
+                    RectI(0, height / 2 - 60, 160, height / 2 + 60),
+                    RectI(0, height / 3, width, height / 3 + 3),
+                    RectI(2 * width / 3, 0, 2 * width / 3 + 3, height),
+                };
+                if (mip != 0) {
+                    windows.push_back(rod);
+                }
+                for (const RectI& window : windows) {
+                    const RectI roi = sourceRoIOf(node, source, window, mip).intersect(rod);
+                    std::size_t misses = 0;
+                    std::string first;
+                    for (int y = window.y1; y < window.y2; ++y) {
+                        for (int x = window.x1; x < window.x2; ++x) {
+                            float s[6], left[6], right[6], below[6], above[6];
+                            map(x, y, s);
+                            map(x - 1, y, left);
+                            map(x + 1, y, right);
+                            map(x, y - 1, below);
+                            map(x, y + 1, above);
+                            // The Resampler takes a derivative with no answer as 0.
+                            const auto derivative = [](float a, float b) {
+                                const double d = 0.5 * ((double)a - (double)b);
+
+                                return std::isfinite(d) ? d : 0.;
+                            };
+                            const double kernelX = std::min(1073741824., std::max(1., std::hypot(derivative(right[2], left[2]), derivative(above[2], below[2]))));
+                            const double kernelY = std::min(1073741824., std::max(1., std::hypot(derivative(right[3], left[3]), derivative(above[3], below[3]))));
+                            for (int k = 0; k < 3; ++k) {
+                                const double sx = s[2 * k];
+                                const double sy = s[2 * k + 1];
+                                if (!std::isfinite(sx) || !std::isfinite(sy)) {
+                                    continue;
+                                }
+                                // A cubic's taps around the pixel centre sx - 0.5, and the bilinear read
+                                // one past them that a footprint too wide to tap takes.
+                                double fx1 = std::floor(sx - 0.5 - kernelX);
+                                double fx2 = std::floor(sx - 0.5 + kernelX) + 1.;
+                                double fy1 = std::floor(sy - 0.5 - kernelY);
+                                double fy2 = std::floor(sy - 0.5 + kernelY) + 1.;
+                                if (blackOutside) {
+                                    fx1 = std::max<double>(fx1, rod.x1);
+                                    fx2 = std::min<double>(fx2, rod.x2 - 1);
+                                    fy1 = std::max<double>(fy1, rod.y1);
+                                    fy2 = std::min<double>(fy2, rod.y2 - 1);
+                                    if ((fx1 > fx2) || (fy1 > fy2)) {
+                                        continue;
+                                    }
+                                }
+                                const auto onRoD = [](double v, int lo, int hi) {
+                                    return (int)std::min<double>(std::max<double>(v, lo), hi - 1);
+                                };
+                                const int x1 = onRoD(fx1, rod.x1, rod.x2);
+                                const int x2 = onRoD(fx2, rod.x1, rod.x2);
+                                const int y1 = onRoD(fy1, rod.y1, rod.y2);
+                                const int y2 = onRoD(fy2, rod.y1, rod.y2);
+                                if ((x1 < roi.x1) || (x2 >= roi.x2) || (y1 < roi.y1) || (y2 >= roi.y2)) {
+                                    if (misses++ == 0) {
+                                        std::ostringstream text;
+                                        text << "pixel " << x << ", " << y << " channel " << k << " reads [" << x1 << "," << y1 << " - " << x2 << "," << y2 << "] outside ["
+                                             << roi.x1 << "," << roi.y1 << "," << roi.x2 << "," << roi.y2 << ")";
+                                        first = text.str();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    EXPECT_EQ(0u, misses) << c.what << (blackOutside ? "" : ", edges clamped") << " mip " << mip << " window [" << window.x1 << "," << window.y1 << ","
+                                          << window.x2 << "," << window.y2 << "): " << first;
+                }
+            }
+        }
+    }
+}
+
+// A window a fraction of a large Source asks for a fraction of it, at full and reduced scale, even
+// through a fisheye and where lensfun has no answer.
+TEST_F(NativeLensCorrectTest, SmallWindowAsksForLittleOfTheSource)
+{
+    resetProject();
+    NodePtr source = makeLargeSource();
+    ASSERT_TRUE(bool(source));
+    for (int index : { 0, 1, 3, 4, 5, 6, 7 }) {
+        const LensCase& c = kLensCases[index];
+        NodePtr node = makeLensCorrect(source);
+        ASSERT_TRUE(bool(node)) << c.what;
+        configure(node, c);
+        for (unsigned mip : { 0u, 2u }) {
+            const int width = kLargeWidth >> mip;
+            const int height = kLargeHeight >> mip;
+            const RectI rod(0, 0, width, height);
+            for (const RectI& window : { RectI(width / 2 - 32, height / 2 - 32, width / 2 + 32, height / 2 + 32),
+                                         RectI(width / 3, height / 4, width / 3 + 64, height / 4 + 64) }) {
+                const RectI roi = sourceRoIOf(node, source, window, mip).intersect(rod);
+                EXPECT_TRUE(roi.contains(window)) << c.what << " mip " << mip;
+                EXPECT_LT(roi.area(), rod.area() / 20) << c.what << " mip " << mip << ": [" << roi.x1 << "," << roi.y1 << "," << roi.x2 << "," << roi.y2 << ")";
+            }
+        }
+    }
+
+    // Past 90 degrees off the axis a fisheye has no answer, so with black outside a window there
+    // reads nothing beyond what the mix and mask need.
+    NodePtr node = makeLensCorrect(source);
+    ASSERT_TRUE(bool(node));
+    configure(node, kLensCases[9]);
+    const RectI rod(0, 0, kLargeWidth, kLargeHeight);
+    const RectI corner(0, 0, 64, 64);
+    const RectI roi = sourceRoIOf(node, source, corner).intersect(rod);
+    EXPECT_TRUE(roi.contains(corner));
+    EXPECT_LT(roi.area(), rod.area() / 20) << "[" << roi.x1 << "," << roi.y1 << "," << roi.x2 << "," << roi.y2 << ")";
+}
+
+namespace {
+// The pixels of node's region of definition at mipmapLevel, cut to a quarter of the format past
+// each side, so that a lens throwing its image far out still renders in a test's time.
+RectI
+tileTestWindow(const NodePtr& node,
+               unsigned mipmapLevel,
+               double par,
+               int width,
+               int height)
+{
+    const int quarterX = (width / 4) >> mipmapLevel;
+    const int quarterY = (height / 4) >> mipmapLevel;
+    const RectI format(0, 0, width >> mipmapLevel, height >> mipmapLevel);
+
+    return regionOf(node, mipmapLevel).toPixelEnclosing(mipmapLevel, par).intersect(RectI(format.x1 - quarterX, format.y1 - quarterY, format.x2 + quarterX, format.y2 + quarterY));
+}
+
+const char*
+filterId(Resampler::FilterEnum filter)
+{
+    return Resampler::filterOptions()[(std::size_t)filter].id;
+}
+} // namespace
+
+// Each of the three noise tile comparisons is a suite of its own, so it is its own ctest entry and
+// runs under its own timeout; together they outlast one entry's timeout in a debug build.
+class NativeLensCorrectNoiseTilesTest
+    : public NativeLensCorrectTest {
+};
+
+class NativeLensCorrectNoiseProjectionTilesTest
+    : public NativeLensCorrectTest {
+};
+
+class NativeLensCorrectNoiseAspectTilesTest
+    : public NativeLensCorrectTest {
+};
+
+// On a noise Source, where a pixel read from the wrong place or not read at all shows, tiles match
+// the whole window bit for bit at reduced scale, with edges clamped and through a wide filter.
+TEST_F(NativeLensCorrectNoiseTilesTest, MatchTheWholeFrame)
+{
+    const int width = 480;
+    const int height = 320;
+    resetProject();
+    NodePtr source = makeNoiseSource(width, height, 1.);
+    ASSERT_TRUE(bool(source));
+    for (int index : { 0, 3, 6, 9 }) {
+        const LensCase& c = kLensCases[index];
+        NodePtr node = makeLensCorrect(source);
+        ASSERT_TRUE(bool(node)) << c.what;
+        configure(node, c);
+        for (unsigned mip : { 0u, 1u, 2u }) {
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+            expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), c.what, mip);
+            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+            expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), std::string(c.what) + ", edges clamped", mip);
+        }
+    }
+
+    NodePtr node = makeLensCorrect(source);
+    ASSERT_TRUE(bool(node));
+    configure(node, kLensCases[6]);
+    for (Resampler::FilterEnum filter : { Resampler::eFilterImpulse, Resampler::eFilterBox, Resampler::eFilterLanczos3 }) {
+        ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filterId(filter))));
+        for (unsigned mip : { 0u, 1u }) {
+            expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), std::string("fisheye to rectilinear, ") + filterId(filter), mip);
+        }
+    }
+}
+
+// Each projection lensfun reprojects a fisheye to, both ways, with black outside and with edges clamped.
+TEST_F(NativeLensCorrectNoiseProjectionTilesTest, MatchTheWholeFrame)
+{
+    const int width = 480;
+    const int height = 320;
+    resetProject();
+    NodePtr source = makeNoiseSource(width, height, 1.);
+    ASSERT_TRUE(bool(source));
+    for (const char* geometry : { kLensCorrectGeometryPanoramic, kLensCorrectGeometryEquirectangular, kLensCorrectGeometryOrthographic,
+                                  kLensCorrectGeometryStereographic }) {
+        for (const char* mode : { kLensCorrectModeCorrect, kLensCorrectModeDistort }) {
+            const LensCase c = { geometry, "Canon EOS 7D", "Zenitar MC 16mm f/2.8", 16., mode, geometry, 0. };
+            NodePtr node = makeLensCorrect(source);
+            ASSERT_TRUE(bool(node)) << geometry;
+            configure(node, c);
+            const std::string what = std::string("fisheye to ") + geometry + " " + mode;
+            for (unsigned mip : { 0u, 1u }) {
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+                expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), what, mip);
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+                expectTilesMatchTheWhole(node, tileTestWindow(node, mip, 1., width, height), what + ", edges clamped", mip);
+            }
+        }
+    }
+}
+
+// Non-square pixels and a Source reaching past its format: the region asked for is in the Source's
+// own pixels, overscan included.
+TEST_F(NativeLensCorrectNoiseAspectTilesTest, MatchTheWholeFrame)
+{
+    struct SourceCase {
+        const char* what;
+        int width;
+        int height;
+        double par;
+        int overscanX;
+        int overscanY;
+    };
+    const SourceCase sources[] = {
+        { "pixel aspect 2", 240, 320, 2., 0, 0 },
+        { "overscan", 480, 320, 1., 64, 48 },
+    };
+    for (const SourceCase& s : sources) {
+        resetProject();
+        NodePtr source = makeNoiseSource(s.width, s.height, s.par, s.overscanX, s.overscanY);
+        ASSERT_TRUE(bool(source)) << s.what;
+        for (int index : { 0, 3, 6 }) {
+            const LensCase& c = kLensCases[index];
+            NodePtr node = makeLensCorrect(source);
+            ASSERT_TRUE(bool(node)) << s.what << ", " << c.what;
+            configure(node, c);
+            const std::string what = std::string(s.what) + ", " + c.what;
+            for (unsigned mip : { 0u, 1u }) {
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+                expectTilesMatchTheWhole(node, tileTestWindow(node, mip, s.par, s.width, s.height), what, mip);
+                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+                expectTilesMatchTheWhole(node, tileTestWindow(node, mip, s.par, s.width, s.height), what + ", edges clamped", mip);
+            }
+        }
+    }
+}
+
 TEST_F(NativeLensCorrectTest, MetadataFillsTheLookup)
 {
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
     ASSERT_NO_FATAL_FAILURE(setMetadata(modify, 1, kExifMetadataMake, std::string("Canon")));
@@ -1091,7 +1606,7 @@ TEST_F(NativeLensCorrectTest, FixedLensFallbackIsForMetadataNames)
     resetProject();
     NodePtr source = makeSource();
     ASSERT_TRUE(bool(source));
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
     ASSERT_NO_FATAL_FAILURE(setMetadata(modify, 1, kExifMetadataLensModel, unknown));

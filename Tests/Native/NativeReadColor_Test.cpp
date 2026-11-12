@@ -872,6 +872,60 @@ TEST_F(NativeReadColorTest, ResettingTheInputColourspaceOfAReadWithoutAFileConve
     EXPECT_EQ(std::string(), fileSpace(node));
 }
 
+// A render can hold a Read's effect past the reset that destroys its node; the project's colour
+// management refresh must then leave the orphaned effect alone.
+TEST_F(NativeReadColorTest, AnEffectOutlivingItsResetNodeIgnoresTheColourManagementRefresh)
+{
+    // The PNG fixtures are tagged sRGB, which outranks the project default, so the Read takes an
+    // untagged float file. The float default is not the reset's, so the reset moves the space the
+    // Read resolves and a refresh reaching the orphaned effect would repopulate its menu.
+    setProjectSpace("colorSpaceFloat", kLinearRec709Space);
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = writeImage(dir, "plate.tif", OIIO::TypeDesc::FLOAT, 0, false);
+    ASSERT_FALSE(path.empty());
+    NodePtr node = createRead();
+    ASSERT_TRUE(bool(node));
+    setFile(node, path);
+    ASSERT_EQ(std::string(kLinearRec709Space), fileSpace(node));
+    EffectInstancePtr effect = node->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+    NativeRead* read = dynamic_cast<NativeRead*>(effect.get());
+    ASSERT_TRUE(read != NULL);
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(effect->getKnobByName(kInputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    const std::string defaultLabel = menu->getEntry(0).label;
+    NodeWPtr weakNode = node;
+    node.reset();
+
+    project()->reset(false, true);
+
+    ASSERT_NE(std::string(kLinearRec709Space), project()->getFileColorSpace(eFileColorCategoryFloat));
+    EXPECT_TRUE(weakNode.expired());
+    EXPECT_FALSE(bool(effect->getNode()));
+    EXPECT_TRUE(effect->canSetValue());
+    Q_EMIT project()->fileColorSpacesChanged();
+    EXPECT_EQ(std::string(kLinearRec709Space), read->colorspace());
+    EXPECT_EQ(defaultLabel, menu->getEntry(0).label);
+    project()->reset(false, true);
+}
+
+// destroyNode() drops the node's effect but the node itself can live on, held elsewhere.
+TEST_F(NativeReadColorTest, AnEffectDroppedByItsDestroyedNodeIgnoresTheColourManagementRefresh)
+{
+    NodePtr node = createRead();
+    ASSERT_TRUE(bool(node));
+    setFile(node, fixture("png-8bit.png"));
+    EffectInstancePtr effect = node->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+
+    node->destroyNode(true, false);
+
+    EXPECT_FALSE(bool(node->getEffectInstance()));
+    Q_EMIT project()->fileColorSpacesChanged();
+    project()->reset(false, true);
+}
+
 // A config whose "shot" colourspace applies the LUT file named by the $LUT context variable.
 class NativeReadContextTest
     : public NativeReadColorTest {

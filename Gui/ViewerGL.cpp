@@ -65,6 +65,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/Project.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/Settings.h"
 #include "Engine/Texture.h"
 #include "Engine/Timer.h" // for gettimeofday
@@ -531,6 +532,10 @@ ViewerGL::paintGL()
         }
         glCheckErrorAssert();
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
+
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteFramePainted();
+    }
 } // paintGL
 
 QVariantList
@@ -1358,14 +1363,13 @@ ViewerGL::getImageRectangleDisplayed(const RectI & imageRoDPixel, // in pixel co
 
     ///to clip against the user roi however clip it against the mipmaplevel of the zoomFactor+proxy
 
-    RectD userRoI;
-    bool userRoiEnabled;
-    {
-        QMutexLocker l(&_imp->userRoIMutex);
-        userRoiEnabled = _imp->userRoIEnabled;
-        userRoI = _imp->userRoI;
-    }
-    if (userRoiEnabled) {
+    // The knobs, not the drawn RoI: a knob edit renders before the drawn RoI follows it.
+    if (isUserRegionOfInterestEnabled()) {
+        const RectD userRoI = getUserRegionOfInterest();
+        // A zero-width RoI off the pixel grid would enclose a one-pixel strip.
+        if (userRoI.isNull()) {
+            return RectI();
+        }
         ///If the user roi is enabled, we want to render the smallest enclosing rectangle in order to avoid black borders.
         const RectI userRoIpixel = userRoI.toPixelEnclosing(mipmapLevel, par);
 
@@ -2145,6 +2149,9 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     if ( !_imp->viewerTab->getGui() ) {
         return;
     }
@@ -2209,10 +2216,13 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
         mustRedraw = true;
     }
 
-    if ( !overlaysCaught &&
-         ( buttonDownIsMiddle(e) ||
-           ( ( (e)->buttons() == Qt::RightButton ) && ( buttonMetaAlt(e) == Qt::AltModifier) ) ) &&
-         !modifierHasControl(e) ) {
+    if (_imp->overlay) {
+        _imp->viewerTab->notifyOverlaysPenDownModifiers(e->modifiers());
+    }
+
+    // Alt + left pans unless an overlay claims the press for one of its own Alt drags.
+    const bool altLeftForOverlay = !overlaysCaught && (e->buttons() == Qt::LeftButton) && (buttonMetaAlt(e) == Qt::AltModifier) && !modifierHasControl(e) && _imp->overlay && _imp->viewerTab->overlaysClaimAltPenDown(zoomPos, currentTimeForEvent(e));
+    if (!overlaysCaught && !altLeftForOverlay && (buttonDownIsMiddle(e) || (((e)->buttons() == Qt::RightButton) && (buttonMetaAlt(e) == Qt::AltModifier))) && !modifierHasControl(e)) {
         // middle (or Alt + left) or Alt + right = pan
         _imp->ms = eMouseStateDraggingImage;
         overlaysCaught = true;
@@ -2265,6 +2275,10 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
         if (overlaysCaught) {
             mustRedraw = true;
         }
+    }
+    if (!overlaysCaught && altLeftForOverlay) {
+        _imp->ms = eMouseStateDraggingImage;
+        overlaysCaught = true;
     }
 
     if ( !overlaysCaught &&
@@ -2522,6 +2536,9 @@ ViewerGL::mouseReleaseEvent(QMouseEvent* e)
 void
 ViewerGL::mouseMoveEvent(QMouseEvent* e)
 {
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     if ( !penMotionInternal(e->position().x(), e->position().y(), /*pressure=*/ 1., currentTimeForEvent(e), e) ) {
         QOpenGLWidget::mouseMoveEvent(e);
     }
@@ -2530,6 +2547,9 @@ ViewerGL::mouseMoveEvent(QMouseEvent* e)
 void
 ViewerGL::tabletEvent(QTabletEvent* e)
 {
+    if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
+        probe->noteInputEvent();
+    }
     qreal pressure = e->pressure();
     if (pressure <= 0.) {
         // Some tablets seem to return pressure between -0.5 and 0.5
@@ -3579,6 +3599,9 @@ ViewerGL::enterEvent(QEnterEvent* e)
 bool
 ViewerGL::event(QEvent* e)
 {
+    if ((e->type() == QEvent::ShortcutOverride) && _imp->viewerTab && _imp->viewerTab->claimShortcutOverride(static_cast<QKeyEvent*>(e))) {
+        return true;
+    }
     if (e->type() == QEvent::ToolTip) {
         // The deep sample list lives in the info bar label's tooltip, which can never be
         // hovered while probing: pop the same list up over the pixel being probed instead.
@@ -4005,16 +4028,11 @@ ViewerGL::getUserRegionOfInterest() const
     KnobDoublePtr bottomLeft = node ? node->getKnobByNameAndType<KnobDouble>(kViewerParamUserRoIBottomLeft) : KnobDoublePtr();
     KnobDoublePtr size = node ? node->getKnobByNameAndType<KnobDouble>(kViewerParamUserRoISize) : KnobDoublePtr();
     if (bottomLeft && size) {
-        const double width = size->getValue(0);
-        const double height = size->getValue(1);
-        if ((width > 0.) && (height > 0.)) {
-            const double x1 = bottomLeft->getValue(0);
-            const double y1 = bottomLeft->getValue(1);
+        const double x1 = bottomLeft->getValue(0);
+        const double y1 = bottomLeft->getValue(1);
 
-            return RectD(x1, y1, x1 + width, y1 + height);
-        }
+        return RectD(x1, y1, x1 + size->getValue(0), y1 + size->getValue(1));
     }
-    // An empty knob RoI was never set: the drawn one is the default made from the format.
     QMutexLocker l(&_imp->userRoIMutex);
 
     return _imp->userRoI;

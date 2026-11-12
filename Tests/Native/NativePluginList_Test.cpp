@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <list>
 #include <map>
 #include <set>
 #include <string>
@@ -48,10 +50,13 @@
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Merge.h"
-#include "Engine/Nodes/Metadata/CopyMetadata.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
-#include "Engine/Nodes/Metadata/RemoveMetadata.h"
-#include "Engine/Nodes/Metadata/ViewMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataCompare.h"
+#include "Engine/Nodes/Metadata/MetadataContribute.h"
+#include "Engine/Nodes/Metadata/MetadataCopy.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
+#include "Engine/Nodes/Metadata/MetadataRemove.h"
+#include "Engine/Nodes/Metadata/MetadataTimeCode.h"
+#include "Engine/Nodes/Metadata/MetadataView.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/RFV/RFVRead.h"
 #include "Engine/Nodes/RFV/RFVSet.h"
@@ -259,10 +264,13 @@ TEST_F(NativePluginListTest, CreatedNodesAreNative)
 TEST_F(NativePluginListTest, MetadataNodesAreGroupedAndDescribed)
 {
     const char* const ids[] = {
-        PLUGINID_NATRON_MODIFYMETADATA,
-        PLUGINID_NATRON_COPYMETADATA,
-        PLUGINID_NATRON_REMOVEMETADATA,
-        PLUGINID_NATRON_VIEWMETADATA,
+        PLUGINID_NATRON_METADATAMODIFY,
+        PLUGINID_NATRON_METADATACOPY,
+        PLUGINID_NATRON_METADATAREMOVE,
+        PLUGINID_NATRON_METADATAVIEW,
+        PLUGINID_NATRON_METADATACOMPARE,
+        PLUGINID_NATRON_METADATACONTRIBUTE,
+        PLUGINID_NATRON_METADATATIMECODE,
     };
     const PluginsMap& plugins = appPTR->getPluginsList();
 
@@ -305,25 +313,18 @@ TEST_F(NativePluginListTest, RFVNodesShareTheReverseFlowVariableGroup)
     EXPECT_TRUE(plugins.find("ReverseFlowVariableSet") == plugins.end());
 }
 
-TEST_F(NativePluginListTest, OfxMetadataNodesAreGroupedWithTheNativeOnes)
+// A second registration under the same label would show twice in the node menu.
+TEST_F(NativePluginListTest, ReplacedOfxMetadataExamplesAreNotRegistered)
 {
     const char* const ids[] = {
         "org.openfx.examples.metadataCompare",
         "org.openfx.examples.metadataContribute",
         "org.openfx.examples.metadataTimeCode",
     };
-    const PluginsMap& plugins = appPTR->getPluginsList();
+    const std::list<std::string> registered = appPTR->getPluginIDs();
 
     for (const char* id : ids) {
-        const PluginsMap::const_iterator it = plugins.find(id);
-        if (it == plugins.end()) {
-            ADD_FAILURE() << id << " is not loaded; it is bundled in build/assets/Plugins";
-            continue;
-        }
-        ASSERT_FALSE(it->second.empty()) << id;
-        const QStringList grouping = (*it->second.begin())->getGrouping();
-        ASSERT_EQ(1, grouping.size()) << id;
-        EXPECT_EQ(QString::fromUtf8(PLUGIN_GROUP_METADATA), grouping.front()) << id;
+        EXPECT_TRUE(std::find(registered.begin(), registered.end(), std::string(id)) == registered.end()) << id;
     }
 }
 

@@ -33,6 +33,7 @@
 #include <gtest/gtest.h>
 
 CLANG_DIAG_OFF(deprecated)
+#include <QCoreApplication>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -58,9 +59,12 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -438,6 +442,70 @@ TEST_F(RotoLayerTest, RotoPaintBezierGetsItsRenderNodes)
     project->reset(false, true);
 }
 
+// Past one Merge's 64 A inputs the shapes continue in a second global Merge chained through its
+// B input; the RotoPaint output reads the end of that chain, and adding a shape leaves the
+// connections of the full Merge alone.
+TEST_F(RotoLayerTest, RotoPaintOutputReachesEveryShapePastOneMerge)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoContextPtr paint = roto->getRotoContext();
+    ASSERT_TRUE(bool(paint));
+
+    const int nShapes = kNativeMergeMaxAInputs + 6;
+    std::vector<NodePtr> effects;
+    for (int i = 0; i < nShapes; ++i) {
+        BezierPtr square = addSquare(roto);
+        ASSERT_TRUE(bool(square));
+        ASSERT_TRUE(bool(square->getEffectNode()));
+        effects.push_back(square->getEffectNode());
+    }
+
+    const auto reachedEffects = [&]() {
+        std::vector<NodePtr> reached;
+        NodePtr merge = paint->getRotoPaintBottomMergeNode();
+        int merges = 0;
+        while (merge && (merges < 8) && (merge->getPluginID() == PLUGINID_NATRON_NATIVE_MERGE)) {
+            for (int i = 1; i < merge->getNInputs(); ++i) {
+                NodePtr input = merge->getInput(i);
+                if (input && (i != 2)) {
+                    reached.push_back(input);
+                }
+            }
+            merge = merge->getInput(0);
+            ++merges;
+        }
+
+        return reached;
+    };
+
+    std::vector<NodePtr> reached = reachedEffects();
+    EXPECT_EQ(effects.size(), reached.size());
+    for (std::size_t i = 0; i < effects.size(); ++i) {
+        EXPECT_NE(reached.end(), std::find(reached.begin(), reached.end(), effects[i])) << "shape " << i;
+    }
+
+    NodePtr bottom = paint->getRotoPaintBottomMergeNode();
+    ASSERT_TRUE(bool(bottom));
+    NodePtr full = bottom->getInput(0);
+    ASSERT_TRUE(bool(full));
+    int fullChanges = 0;
+    QMetaObject::Connection counting = QObject::connect(full.get(), &Node::inputChanged, [&fullChanges](int) { ++fullChanges; });
+    BezierPtr extra = addSquare(roto);
+    QObject::disconnect(counting);
+    ASSERT_TRUE(bool(extra));
+    EXPECT_EQ(0, fullChanges);
+    reached = reachedEffects();
+    EXPECT_EQ(effects.size() + 1, reached.size());
+    EXPECT_NE(reached.end(), std::find(reached.begin(), reached.end(), extra->getEffectNode()));
+
+    project->reset(false, true);
+}
+
 namespace {
 
 // Each tool group of the viewer toolbar page, followed by its actions, as "Group" and "Group/Action".
@@ -690,6 +758,237 @@ TEST_F(RotoLayerTest, ObjectSelectPutDownLeavesNoSelection)
     RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(roto->getEffectInstance().get());
     ASSERT_TRUE(rotoPaint != NULL);
     EXPECT_FALSE(rotoPaint->isObjectSelectEncoding()) << "no encoding holds the node";
+
+    project->reset(false, true);
+}
+
+namespace {
+
+std::string
+activeOperatorOf(const KnobIPtr& knob)
+{
+    KnobChoice* choice = dynamic_cast<KnobChoice*>(knob.get());
+
+    return choice ? choice->getActiveEntry().id : std::string();
+}
+
+std::string
+strokeOperator(const RotoStrokeItemPtr& stroke)
+{
+    return activeOperatorOf(stroke->getOperatorKnob());
+}
+
+std::string
+strokeMergeOperator(const RotoStrokeItemPtr& stroke)
+{
+    return activeOperatorOf(stroke->getMergeNode()->getKnobByName(kNativeMergeParamOperation));
+}
+
+// These are the calls the action bar's knob notifications end in.
+void
+pickPaintTool(const RotoPaintInteractPtr& interact,
+              const KnobButtonPtr& tool,
+              const KnobGroupPtr& role)
+{
+    interact->setCurrentTool(tool);
+    interact->onRoleChangedInternal(role);
+    interact->onToolChangedInternal(tool);
+}
+
+RotoStrokeItemPtr
+paintStrokeWith(const RotoPaintInteractPtr& interact,
+                const KnobButtonPtr& tool,
+                const KnobGroupPtr& role)
+{
+    pickPaintTool(interact, tool, role);
+    interact->makeStroke(false, RotoPoint(10., 10., 1., 0.));
+
+    return interact->strokeBeingPaint;
+}
+
+} // namespace
+
+// A stroke begun while the previous one's neat render runs waits to reach the engine; the toolbar
+// can change meanwhile, and the stroke still has to commit what its preview showed.
+TEST_F(RotoLayerTest, QueuedStrokesCommitTheSettingsOfTheirPenDown)
+{
+    for (int multiStroke = 0; multiStroke < 2; ++multiStroke) {
+        ProjectPtr project = getApp()->getProject();
+        project->reset(false, true);
+
+        NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+        ASSERT_TRUE(bool(roto));
+        RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(roto->getEffectInstance().get());
+        ASSERT_TRUE(rotoPaint != NULL);
+        RotoPaintInteractPtr interact = rotoPaint->getInteract();
+        ASSERT_TRUE(bool(interact));
+        RotoContextPtr context = roto->getRotoContext();
+        const double time = context->getTimelineCurrentTime();
+
+        const KnobButtonPtr burn = interact->burnAction.lock();
+        const KnobButtonPtr brush = interact->brushAction.lock();
+        const KnobButtonPtr dodge = interact->dodgeAction.lock();
+        const KnobGroupPtr paintRole = interact->paintBrushToolGroup.lock();
+        const KnobGroupPtr mergeRole = interact->mergeBrushToolGroup.lock();
+        const KnobDoublePtr size = interact->sizeSpinbox.lock();
+        const KnobColorPtr color = interact->colorWheelButton.lock();
+        const KnobBoolPtr multiStrokeKnob = interact->multiStrokeEnabled.lock();
+        ASSERT_TRUE(burn && brush && dodge && paintRole && mergeRole && size && color && multiStrokeKnob);
+        multiStrokeKnob->setValue(multiStroke != 0);
+
+        double timestamp = 0.;
+        const auto paint = [&](double x) {
+            interact->onOverlayPenDown(time, QPointF(x, 10.), 1., ++timestamp, ePenTypeLMB);
+            interact->onOverlayPenMotion(time, QPointF(x + 5., 12.), 1., ++timestamp);
+            interact->onOverlayPenUp();
+        };
+        const auto paintedStrokes = [&]() {
+            std::vector<RotoStrokeItemPtr> strokes;
+            const std::list<RotoItemPtr> items = context->getOrCreateBaseLayer()->getItems_mt_safe();
+            for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
+                RotoStrokeItemPtr stroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
+                if (stroke && !stroke->isEmpty()) {
+                    strokes.push_back(stroke);
+                }
+            }
+
+            return strokes;
+        };
+
+        pickPaintTool(interact, burn, mergeRole);
+        size->setValue(11.);
+        paint(10.);
+        ASSERT_EQ(1u, paintedStrokes().size()) << "the first stroke reaches the engine at once";
+
+        size->setValue(22.);
+        paint(20.);
+
+        pickPaintTool(interact, brush, paintRole);
+        size->setValue(33.);
+        color->setValues(0.25, 0.5, 0.75, ViewSpec::all(), eValueChangedReasonNatronGuiEdited);
+        paint(30.);
+        paint(40.);
+        ASSERT_EQ(1u, paintedStrokes().size()) << "the later strokes wait for the neat render";
+
+        pickPaintTool(interact, dodge, mergeRole);
+        size->setValue(44.);
+        color->setValues(1., 0., 0., ViewSpec::all(), eValueChangedReasonNatronGuiEdited);
+
+        for (int i = 0; i < 50; ++i) {
+            QCoreApplication::processEvents();
+        }
+
+        const std::vector<RotoStrokeItemPtr> strokes = paintedStrokes();
+        int burn11 = 0, burn22 = 0, solid33 = 0;
+        for (const RotoStrokeItemPtr& stroke : strokes) {
+            const double strokeSize = stroke->getBrushSizeKnob()->getValue();
+            EXPECT_NE(44., strokeSize) << "multi-stroke " << multiStroke;
+            if (strokeSize == 33.) {
+                ++solid33;
+                EXPECT_EQ(eRotoStrokeTypeSolid, stroke->getBrushType());
+                EXPECT_EQ(Merge::getOperatorString(eMergeOver), strokeOperator(stroke));
+                EXPECT_DOUBLE_EQ(0.25, stroke->getColorKnob()->getValue(0));
+                EXPECT_DOUBLE_EQ(0.5, stroke->getColorKnob()->getValue(1));
+                EXPECT_DOUBLE_EQ(0.75, stroke->getColorKnob()->getValue(2));
+            } else {
+                (strokeSize == 11. ? burn11 : burn22) += 1;
+                EXPECT_EQ(eRotoStrokeTypeBurn, stroke->getBrushType());
+                EXPECT_EQ(Merge::getOperatorString(eMergeColorBurn), strokeOperator(stroke));
+            }
+        }
+        EXPECT_EQ(1, burn11) << "multi-stroke " << multiStroke;
+        EXPECT_EQ(1, burn22) << "multi-stroke " << multiStroke;
+        EXPECT_EQ(multiStroke ? 1 : 2, solid33) << "queued strokes with one configuration share a multi-stroke item";
+
+        project->reset(false, true);
+    }
+}
+
+TEST_F(RotoLayerTest, NewCloneAndRevealStrokesCompositeOverWithoutChangingOtherTools)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(roto));
+    RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(roto->getEffectInstance().get());
+    ASSERT_TRUE(rotoPaint != NULL);
+    RotoPaintInteractPtr interact = rotoPaint->getInteract();
+    ASSERT_TRUE(bool(interact));
+
+    const KnobButtonPtr clone = interact->cloneAction.lock();
+    const KnobButtonPtr reveal = interact->revealAction.lock();
+    const KnobButtonPtr brush = interact->brushAction.lock();
+    const KnobButtonPtr dodge = interact->dodgeAction.lock();
+    const KnobGroupPtr cloneRole = interact->cloneBrushToolGroup.lock();
+    const KnobGroupPtr paintRole = interact->paintBrushToolGroup.lock();
+    const KnobGroupPtr mergeRole = interact->mergeBrushToolGroup.lock();
+    const KnobChoicePtr toolbarOperator = interact->compositingOperatorChoice.lock();
+    ASSERT_TRUE(clone && reveal && brush && dodge && cloneRole && paintRole && mergeRole && toolbarOperator);
+
+    const std::string over = Merge::getOperatorString(eMergeOver);
+    const std::string copy = Merge::getOperatorString(eMergeCopy);
+
+    RotoStrokeItemPtr first = paintStrokeWith(interact, clone, cloneRole);
+    ASSERT_TRUE(bool(first));
+    EXPECT_EQ(eRotoStrokeTypeClone, first->getBrushType());
+    EXPECT_EQ((int)eMergeOver, toolbarOperator->getValue()) << "first use";
+    EXPECT_EQ(over, strokeOperator(first));
+    EXPECT_EQ(over, strokeMergeOperator(first)) << "what the stroke actually renders with";
+
+    RotoStrokeItemPtr brushStroke = paintStrokeWith(interact, brush, paintRole);
+    EXPECT_EQ(over, strokeOperator(brushStroke));
+
+    RotoStrokeItemPtr revealStroke = paintStrokeWith(interact, reveal, cloneRole);
+    EXPECT_EQ(eRotoStrokeTypeReveal, revealStroke->getBrushType());
+    EXPECT_EQ((int)eMergeOver, toolbarOperator->getValue()) << "Reveal first use";
+    EXPECT_EQ(over, strokeOperator(revealStroke));
+    EXPECT_EQ(over, strokeMergeOperator(revealStroke));
+
+    RotoStrokeItemPtr dodgeStroke = paintStrokeWith(interact, dodge, mergeRole);
+    EXPECT_EQ(Merge::getOperatorString(eMergeColorDodge), strokeOperator(dodgeStroke));
+
+    RotoStrokeItemPtr afterSwitches = paintStrokeWith(interact, clone, cloneRole);
+    EXPECT_NE(first, afterSwitches);
+    EXPECT_EQ(over, strokeOperator(afterSwitches)) << "back from another tool";
+    EXPECT_EQ(over, strokeMergeOperator(afterSwitches));
+
+    // The tool only picks the default: the toolbar's choice still reaches the stroke.
+    // Leaving the tool first: re-picking Clone would keep the empty stroke, already in the layer.
+    pickPaintTool(interact, brush, paintRole);
+    pickPaintTool(interact, clone, cloneRole);
+    toolbarOperator->setValue((int)eMergeCopy);
+    interact->makeStroke(false, RotoPoint(20., 20., 1., 0.));
+    EXPECT_NE(afterSwitches, interact->strokeBeingPaint);
+    EXPECT_EQ(copy, strokeOperator(interact->strokeBeingPaint));
+    EXPECT_EQ(copy, strokeMergeOperator(interact->strokeBeingPaint));
+
+    RotoStrokeItemPtr revealAfterSwitches = paintStrokeWith(interact, reveal, cloneRole);
+    EXPECT_NE(revealStroke, revealAfterSwitches);
+    EXPECT_EQ(eRotoStrokeTypeReveal, revealAfterSwitches->getBrushType());
+    EXPECT_EQ(over, strokeOperator(revealAfterSwitches)) << "Reveal back from another tool";
+    EXPECT_EQ(over, strokeMergeOperator(revealAfterSwitches));
+
+    pickPaintTool(interact, brush, paintRole);
+    pickPaintTool(interact, reveal, cloneRole);
+    toolbarOperator->setValue((int)eMergeCopy);
+    interact->makeStroke(false, RotoPoint(30., 30., 1., 0.));
+    EXPECT_NE(revealAfterSwitches, interact->strokeBeingPaint);
+    EXPECT_EQ(copy, strokeOperator(interact->strokeBeingPaint));
+    EXPECT_EQ(copy, strokeMergeOperator(interact->strokeBeingPaint));
+
+    // A stroke the toolbar never touches keeps the type's own default.
+    RotoContextPtr context = roto->getRotoContext();
+    RotoStrokeItemPtr unpainted(new RotoStrokeItem(eRotoStrokeTypeClone, context, "UnpaintedClone", RotoLayerPtr()));
+    unpainted->createNodes(false);
+    EXPECT_EQ(over, strokeOperator(unpainted));
+    EXPECT_EQ(over, strokeMergeOperator(unpainted));
+
+    RotoStrokeItemPtr unpaintedReveal(new RotoStrokeItem(eRotoStrokeTypeReveal, context, "UnpaintedReveal", RotoLayerPtr()));
+    unpaintedReveal->createNodes(false);
+    EXPECT_EQ(over, strokeOperator(unpaintedReveal));
+    EXPECT_EQ(over, strokeMergeOperator(unpaintedReveal));
 
     project->reset(false, true);
 }

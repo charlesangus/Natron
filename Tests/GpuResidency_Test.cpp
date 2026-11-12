@@ -62,6 +62,8 @@
 #include "OfxTestPlugins/natronTest/NatronTestPluginIDs.h"
 #include "RenderBothWays.h"
 
+#include "Gpu/GpuTestSelector.h"
+
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -373,6 +375,7 @@ protected:
         }
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
         // The context outlives SetUp() and logs again when it recovers from a device loss.
         std::shared_ptr<std::string> unavailable = std::make_shared<std::string>();
         options.infoLog = [unavailable](const std::string& line) {
@@ -416,6 +419,7 @@ protected:
         }
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
         options.memoryBudgetMB = memoryBudgetMB;
         options.infoLog = [](const std::string&) { };
         std::unique_ptr<GpuContext> own(new GpuContext(options));
@@ -439,6 +443,7 @@ protected:
     {
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
         options.infoLog = [](const std::string&) { };
         options.beforeInit = [gate] {
             gate.wait();

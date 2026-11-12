@@ -6,8 +6,9 @@
 # Do not bump the base image tag without checking the package notes below.
 #
 # Everything the build needs (bar one documented exception below) is already
-# present in aswf/ci-vfxall:2027-clang21.1. This file adds the Mesa relink and
-# the Slang and glslang toolchains at the bottom, so no build downloads them.
+# present in aswf/ci-vfxall:2027-clang21.1. This file adds the Cycles Hydra
+# render delegate, MoonRay and its Hydra render delegate, the Mesa relink and
+# the Slang and glslang toolchains, so no build downloads them.
 #
 # Why ci-vfxall and not ci-baseqt (which this used through M7): ci-baseqt
 # ships Qt/PySide and the base libraries but no OpenColorIO, OpenImageIO, or
@@ -27,6 +28,52 @@
 # cmake/NatronUsd.cmake redirects them and checks the Python version. Re-check
 # all of that when bumping the base tag.
 FROM aswf/ci-vfxall:2027-clang21.1
+
+# --- Cycles: the Hydra render delegate, CPU devices only ------------------
+# Built from the project's Cycles fork (charlesangus/cycles natron/deep-5.2:
+# upstream v5.2.0 plus the deep EXR commits from Niik-l/cycles) against this
+# image's USD,
+# OpenImageIO, OpenEXR, TBB, Embree and OpenImageDenoise, and installed into
+# USD's plug-in directory as /usr/local/plugin/usd/hdCycles.so, where USD
+# finds it with no PXR_PLUGINPATH_NAME and tools/release/stage-bundle.sh
+# bundles it with the rest of plugin/usd. First after FROM because it is one
+# of the two slowest layers (the CPU kernels) and the least often changed.
+# NATRON_CYCLES_OIDN=OFF drops the OpenImageDenoise denoiser and the ~45 MB
+# compressed it adds to the AppImage.
+# NATRON_CYCLES_SHA256 is of <NATRON_CYCLES_REPO>/archive/<commit>.tar.gz.
+ARG NATRON_CYCLES_REPO=https://github.com/charlesangus/cycles
+ARG NATRON_CYCLES_COMMIT=b0d961e3e373dd062921c3701b450ee7f12268d7
+ARG NATRON_CYCLES_SHA256=ec267f4a8e3687c2b4d4ab5155b9b33202801aa0bf96ccf65a75fc1e4b15ab2b
+ARG NATRON_CYCLES_OIDN=ON
+COPY build-cycles.sh /tmp/build-cycles.sh
+RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
+    NATRON_CYCLES_COMMIT="$NATRON_CYCLES_COMMIT" \
+    NATRON_CYCLES_SHA256="$NATRON_CYCLES_SHA256" \
+    NATRON_CYCLES_OIDN="$NATRON_CYCLES_OIDN" \
+    bash /tmp/build-cycles.sh && rm -f /tmp/build-cycles.sh
+
+# --- MoonRay: renderer and Hydra render delegate, CPU only ----------------
+# Built from DreamWorks' openmoonray super-repository against this image's
+# USD, TBB, Boost, Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise,
+# and installed relocatably into /opt/moonray: hdMoonray's plug-ins under
+# plugin/, the rdl2 scene-object DSOs in rdl2dso/, MoonRay's own libraries in
+# lib64/ and the execComp render process in bin/. Natron finds it there at
+# start-up (Engine/AppManager.cpp) and tools/release/stage-bundle.sh copies it
+# into the bundle as moonray/. The tag is pinned to its commit, and that commit
+# pins every submodule; ISPC (the upstream-pinned release binary, checksummed)
+# is fetched for the build only. Right after Cycles: the other slow layer,
+# changed more often than Cycles, so its rebuilds leave the Cycles layer cached.
+ARG NATRON_MOONRAY_VERSION=v2026.29.1
+ARG NATRON_MOONRAY_COMMIT=d96c6e30a8c280d4b5eb3bafa5e54efc445d7ea8
+ARG NATRON_MOONRAY_ISPC_VERSION=v1.21.0
+ARG NATRON_MOONRAY_ISPC_SHA256=fe658893799af46c9cac0153f0bdc9a2ff93541fff9b17cf6b09ffc7576cfdcc
+COPY build-moonray.sh /tmp/build-moonray.sh
+RUN NATRON_MOONRAY_VERSION="$NATRON_MOONRAY_VERSION" \
+    NATRON_MOONRAY_COMMIT="$NATRON_MOONRAY_COMMIT" \
+    NATRON_MOONRAY_ISPC_VERSION="$NATRON_MOONRAY_ISPC_VERSION" \
+    NATRON_MOONRAY_ISPC_SHA256="$NATRON_MOONRAY_ISPC_SHA256" \
+    NATRON_MOONRAY_PREFIX=/opt/moonray \
+    bash /tmp/build-moonray.sh && rm -f /tmp/build-moonray.sh
 
 # --- CI package list, for drift-checking against ci.yml -------------------
 #

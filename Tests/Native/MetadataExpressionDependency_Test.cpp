@@ -46,7 +46,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
-#include "Engine/Nodes/Metadata/ModifyMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ViewIdx.h"
 
@@ -148,7 +148,7 @@ TEST_F(MetadataExpressionDependencyTest, ScanResolvesAppQualifiedMetadataKeys)
 
 TEST_F(MetadataExpressionDependencyTest, OwnNodeReadFollowsUpstreamWithoutRegisteringAReader)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
 
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
@@ -199,7 +199,7 @@ TEST_F(MetadataExpressionDependencyTest, ReaderContentHashFollowsTheSource)
 
 TEST_F(MetadataExpressionDependencyTest, UpstreamEditReachesTheReader)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
 
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
@@ -241,7 +241,7 @@ TEST_F(MetadataExpressionDependencyTest, ReplacingTheExpressionRemovesTheEdge)
 
 TEST_F(MetadataExpressionDependencyTest, NextFrameReadFollowsTheEvaluationFrame)
 {
-    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame', frame + 1)"));
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('natron/frame', frame + 1)"));
 
     EXPECT_EQ(4, readerTag->getValueAtTime(3, 0));
     EXPECT_EQ(9, readerTag->getValueAtTime(8, 0));
@@ -251,7 +251,7 @@ TEST_F(MetadataExpressionDependencyTest, NextFrameReadFollowsTheEvaluationFrame)
 
 TEST_F(MetadataExpressionDependencyTest, NextFrameReadStaysCorrectAfterTheSourceChanges)
 {
-    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame', frame + 1) + " + source->getScriptName() + ".metadata('exr/tag', frame)"));
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('natron/frame', frame + 1) + " + source->getScriptName() + ".metadata('exr/tag', frame)"));
 
     EXPECT_EQ(5, readerTag->getValueAtTime(3, 0));
     EXPECT_EQ(7, readerTag->getValueAtTime(5, 0));
@@ -265,7 +265,7 @@ TEST_F(MetadataExpressionDependencyTest, NextFrameReadStaysCorrectAfterTheSource
 
 TEST_F(MetadataExpressionDependencyTest, DefaultFrameIsTheEvaluationFrame)
 {
-    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('ofx/frame')"));
+    ASSERT_NO_FATAL_FAILURE(setReaderExpression(source->getScriptName() + ".metadata('natron/frame')"));
 
     const int current = (int)reader->getEffectInstance()->getCurrentTime();
 
@@ -320,7 +320,7 @@ TEST_F(MetadataExpressionDependencyTest, OwnNodeReadMovesItsNodeHashWhenTheMetad
 {
     MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
     ASSERT_TRUE(sourceEffect != NULL);
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
 
@@ -345,8 +345,8 @@ TEST_F(MetadataExpressionDependencyTest, MetadataChangedUnderTheSameHashReachesT
 {
     MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
     ASSERT_TRUE(sourceEffect != NULL);
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
-    NodePtr downstream = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
+    NodePtr downstream = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(modify && downstream);
     connectNodes(source, modify, 0, true);
     connectNodes(modify, downstream, 0, true);
@@ -414,7 +414,7 @@ TEST_F(MetadataExpressionDependencyTest, ScalarReadResultComputedAcrossAnInvalid
 
 TEST_F(MetadataExpressionDependencyTest, HashExemptOwnNodeReadFollowsTheNode)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
 
@@ -470,7 +470,7 @@ TEST_F(MetadataExpressionDependencyTest, MetadataCycleLoadedLeniently)
 
 TEST_F(MetadataExpressionDependencyTest, MetadataReadOfADownstreamNodeIsRefused)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
 
@@ -480,7 +480,7 @@ TEST_F(MetadataExpressionDependencyTest, MetadataReadOfADownstreamNodeIsRefused)
 
 TEST_F(MetadataExpressionDependencyTest, ConnectionClosingAMetadataCycleIsRefused)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     ASSERT_NO_FATAL_FAILURE(setReaderExpression(modify->getScriptName() + ".metadata('exr/tag', 1)"));
 
@@ -512,7 +512,7 @@ TEST_F(MetadataExpressionDependencyTest, ExpressionClosingAMetadataCycleIsRefuse
 
 TEST_F(MetadataExpressionDependencyTest, ConnectionClosingACycleThroughAnExpressionIsRefused)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     ASSERT_NO_FATAL_FAILURE(setReaderExpression(modify->getScriptName() + ".metadata('exr/tag', 1)"));
     ASSERT_NO_THROW(sourceTag->setExpression(0, reader->getScriptName() + ".tag.getValue(0)", false, true));
@@ -546,7 +546,7 @@ TEST_F(MetadataExpressionDependencyTest, LinkClosingAMetadataCycleIsRefused)
 
 TEST_F(MetadataExpressionDependencyTest, ConnectionCheckFollowsExpressionAndLinkEdits)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     ASSERT_NO_FATAL_FAILURE(setReaderExpression(modify->getScriptName() + ".metadata('exr/tag', 1)"));
     EXPECT_TRUE(modify->checkIfConnectingInputIsOk(source.get()));
@@ -574,8 +574,8 @@ TEST_F(MetadataExpressionDependencyTest, ConnectionCheckFollowsExpressionAndLink
 
 TEST_F(MetadataExpressionDependencyTest, HashExemptReadOfADownstreamNodeIsAllowed)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
-    NodePtr downstream = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
+    NodePtr downstream = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(modify && downstream);
     connectNodes(source, modify, 0, true);
     connectNodes(modify, downstream, 0, true);
@@ -752,7 +752,7 @@ TEST_F(MetadataExpressionDependencyTest, RenamingASourceLookedUpByPathRewritesTh
 
 TEST_F(MetadataExpressionDependencyTest, RenamingANodeRewritesItsOwnKnobReadingItByName)
 {
-    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_MODIFYMETADATA));
+    NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
     ASSERT_TRUE(bool(modify));
     connectNodes(source, modify, 0, true);
 

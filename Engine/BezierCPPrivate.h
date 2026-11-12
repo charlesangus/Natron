@@ -31,6 +31,7 @@
 #include <QMutex>
 #include <QReadWriteLock>
 
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -91,7 +92,8 @@ struct BezierCPPrivate
     CurvePtr guiCurveX, guiCurveY;
     double x, y; //< used when there is no keyframe
     double guiX, guiY;
-    bool broken; //< true if both tangents are independent
+    // Atomic because the mesh and Coons paths of a render read it without any lock.
+    std::atomic<bool> broken; //< true if both tangents are independent
 
     ///the animation curves for the derivatives
     ///They do not need to be protected as Curve is a thread-safe class.
@@ -102,7 +104,8 @@ struct BezierCPPrivate
     double guiLeftX, guiRightX, guiLeftY, guiRightY; //< used when there is no keyframe
 
     // Null when the point follows no track. Protected by staticPositionMutex, like the offsets.
-    BezierCPTrackLinkConstPtr trackLink;
+    // Renders follow trackLink; a link change made during a render reaches it on write-back.
+    BezierCPTrackLinkConstPtr trackLink, guiTrackLink;
     BezierCPTrackOffsets trackOffsets, guiTrackOffsets;
 
     BezierCPPrivate(const BezierPtr& curve)
@@ -134,6 +137,7 @@ struct BezierCPPrivate
         , guiLeftY(0)
         , guiRightY(0)
         , trackLink()
+        , guiTrackLink()
         , trackOffsets()
         , guiTrackOffsets()
     {

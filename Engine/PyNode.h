@@ -317,6 +317,12 @@ public:
     QString getScriptName() const;
 
     /**
+     * @brief Returns the node's persistent ID, 32 lowercase hex characters. It survives saving
+     * and loading the project and renaming the node; a copy of the node gets a new one.
+     **/
+    QString getNodeId() const;
+
+    /**
      * @brief Set the internal script name of the effect
      * @returns False upon failure, True upon success.
      **/

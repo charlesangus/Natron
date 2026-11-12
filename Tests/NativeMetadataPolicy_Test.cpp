@@ -34,8 +34,6 @@
 
 #include <gtest/gtest.h>
 
-#include <ofxMetadata.h>
-
 #include "BaseTest.h"
 #include "NativeMetadataTestEffect.h"
 
@@ -195,7 +193,7 @@ TEST_F(BaseTest, MergeMetadataIsCachedPerFrame)
     EXPECT_EQ(afterFirst, sourceEffect->derivationCount());
 
     const ImageMetadata otherFrame = mergeEffect->getOutputMetadata(2., ViewIdx(0));
-    EXPECT_EQ(std::optional<int>(2), otherFrame.getInt(kOfxMetadataKeySourceFrame));
+    EXPECT_EQ(std::optional<int>(2), otherFrame.getInt(kNatronMetadataKeySourceFrame));
     EXPECT_EQ(afterFirst + 1, sourceEffect->derivationCount());
 
     setTag(source, 3);
@@ -217,14 +215,14 @@ TEST_F(BaseTest, GeneratorMetadataIsTheMinimalKeySet)
         ASSERT_TRUE(effect != NULL) << id;
 
         const ImageMetadata result = effect->getOutputMetadata(12., ViewIdx(0));
-        const std::vector<std::string> expectedKeys = { kOfxMetadataKeyFrameRate, kOfxMetadataKeyPixelAspect };
+        const std::vector<std::string> expectedKeys = { kNatronMetadataKeyFrameRate, kNatronMetadataKeyPixelAspect };
 
         std::vector<std::string> sortedExpected = expectedKeys;
         std::sort(sortedExpected.begin(), sortedExpected.end());
 
         EXPECT_EQ(sortedExpected, keysOf(result)) << id;
-        EXPECT_FALSE(result.contains(kOfxMetadataKeySourceFrame)) << id;
-        EXPECT_EQ(std::optional<double>(getApp()->getProjectFrameRate()), result.getDouble(kOfxMetadataKeyFrameRate)) << id;
-        EXPECT_EQ(std::optional<double>(effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1)), result.getDouble(kOfxMetadataKeyPixelAspect)) << id;
+        EXPECT_FALSE(result.contains(kNatronMetadataKeySourceFrame)) << id;
+        EXPECT_EQ(std::optional<double>(getApp()->getProjectFrameRate()), result.getDouble(kNatronMetadataKeyFrameRate)) << id;
+        EXPECT_EQ(std::optional<double>(effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1)), result.getDouble(kNatronMetadataKeyPixelAspect)) << id;
     }
 }

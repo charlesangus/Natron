@@ -1074,7 +1074,7 @@ visitRequestPassItem(bool useTransforms,
         //Should fail on the assert above
         return eStatusFailed;
     } else if (fvRequest->globalData.identityInputNb != -1) {
-        EffectInstancePtr inputEffectIdentity = effect->getInput(fvRequest->globalData.identityInputNb);
+        EffectInstancePtr inputEffectIdentity = effect->getIdentitySource(fvRequest->globalData.identityInputNb);
         if (inputEffectIdentity) {
             NodePtr inputIdentityNode = inputEffectIdentity->getNode();
             // A node setting context variables may pass its input through: the input is visited
@@ -2038,6 +2038,13 @@ getAllUpstreamNodesRecursiveWithDependencies_internal(const NodePtr& node,
         if (inputNode) {
             getAllUpstreamNodesRecursiveWithDependencies_internal(inputNode, finalNodes);
         }
+    }
+
+    // An identity of an internal source renders it in place of any input, so the source needs
+    // the frame args its inputs get.
+    const EffectInstancePtr internalSource = node->getEffectInstance()->getInternalIdentitySource();
+    if (internalSource) {
+        getAllUpstreamNodesRecursiveWithDependencies_internal(internalSource->getNode(), finalNodes);
     }
 } // getAllUpstreamNodesRecursiveWithDependencies_internal
 

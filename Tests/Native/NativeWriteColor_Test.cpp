@@ -30,6 +30,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -37,6 +38,7 @@
 #include <OpenColorIO/OpenColorIO.h>
 #include <OpenImageIO/imageio.h>
 
+#include <QCoreApplication>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -56,6 +58,7 @@
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/OutputEffectInstance.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/ViewIdx.h"
@@ -313,6 +316,62 @@ protected:
     NodePtr _writer;
     QTemporaryDir _dir;
 };
+
+// A render can hold a Write's effect past the reset that destroys its node; the project's colour
+// management and views refreshes must then leave the orphaned effect alone.
+TEST_F(NativeWriteColorTest, AnEffectOutlivingItsResetNodeIgnoresTheProjectRefreshes)
+{
+    // Not the reset's default, so the reset moves the space the Write resolves and a refresh
+    // reaching the orphaned effect would repopulate its menu.
+    setProjectSpace("colorSpace8Bit", kGamma22Space);
+    setFile(_writer, pathOf("out.png"));
+    ASSERT_EQ(std::string(kGamma22Space), fileSpace(_writer));
+    EffectInstancePtr effect = _writer->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+    NativeWrite* write = dynamic_cast<NativeWrite*>(effect.get());
+    ASSERT_TRUE(write != NULL);
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(effect->getKnobByName(kOutputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    const std::string defaultLabel = menu->getEntry(0).label;
+    NodeWPtr weakNode = _writer;
+    _writer.reset();
+    _checker.reset();
+
+    project()->reset(false, true);
+
+    ASSERT_NE(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
+    EXPECT_TRUE(weakNode.expired());
+    EXPECT_FALSE(bool(effect->getNode()));
+    EXPECT_TRUE(effect->canSetValue());
+    Q_EMIT project()->fileColorSpacesChanged();
+    Q_EMIT project()->projectViewsChanged();
+    EXPECT_EQ(std::string(kGamma22Space), write->colorspace());
+    EXPECT_EQ(defaultLabel, menu->getEntry(0).label);
+    project()->reset(false, true);
+}
+
+// The scheduler thread emits the render's completion, so it reaches the main thread queued, and a
+// render can hold the Write's effect past the reset that destroys its node before it is handled.
+TEST_F(NativeWriteColorTest, ARenderCompletionHandledAfterAResetLeavesTheOrphanedEffectAlone)
+{
+    setFile(_writer, pathOf("out.png"));
+    EffectInstancePtr effect = _writer->getEffectInstance();
+    OutputEffectInstance* output = dynamic_cast<OutputEffectInstance*>(effect.get());
+    ASSERT_TRUE(output != NULL);
+    RenderEnginePtr engine = output->getRenderEngine();
+    ASSERT_TRUE(bool(engine));
+    NodeWPtr weakNode = _writer;
+    _writer.reset();
+    _checker.reset();
+
+    std::thread([engine]() { Q_EMIT engine->renderFinished(0); }).join();
+    project()->reset(false, true);
+    ASSERT_TRUE(weakNode.expired());
+    std::thread([engine]() { Q_EMIT engine->renderFinished(0); }).join();
+    QCoreApplication::sendPostedEvents();
+
+    EXPECT_FALSE(bool(effect->getNode()));
+}
 
 TEST_F(NativeWriteColorTest, AnEightBitPngTakesTheProjectEightBitDefault)
 {

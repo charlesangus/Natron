@@ -25,10 +25,19 @@ RWStructuredBuffer<uint> levelBuf;
 RWStructuredBuffer<float> uBuf;
 RWStructuredBuffer<float> pBuf;
 // Every level's right-hand side, correction and scratch; on the finest level the residual r, the
-// preconditioned residual z and A p.
+// preconditioned residual z and A p. heal_tail alone reads, within a dispatch, what other invocations
+// of its group wrote, and a barrier reaches such writes only on Coherent memory: without it RADV
+// reads through a cache its other waves do not update, and the result changes from run to run. The
+// other kernels read across dispatch barriers, so they keep the cache.
+#ifdef HEAL_READS_WITHIN_DISPATCH
+globallycoherent RWStructuredBuffer<float> bBuf;
+globallycoherent RWStructuredBuffer<float> eBuf;
+globallycoherent RWStructuredBuffer<float> tBuf;
+#else
 RWStructuredBuffer<float> bBuf;
 RWStructuredBuffer<float> eBuf;
 RWStructuredBuffer<float> tBuf;
+#endif
 // Each group's sums, 8 floats a group.
 RWStructuredBuffer<float> partialBuf;
 // The solve's scalars: see the kState constants.
@@ -128,18 +137,46 @@ uint listCount(uint l, uint list)
     return levelBuf[l * kLevelWords + kLevelListCount + list];
 }
 
-float4 load4(RWStructuredBuffer<float> buf, uint g)
-{
-    return float4(buf[4 * g], buf[4 * g + 1], buf[4 * g + 2], buf[4 * g + 3]);
-}
+// Slang rejects a globallycoherent buffer as an argument and a globallycoherent parameter, so each
+// buffer gets its own accessors. They stay functions because store4's value must arrive by value:
+// copied through a plain local in a macro, a precise local loses NoContraction on what fed it.
+#define load4(buf, g) load4_##buf(g)
+#define store4(buf, g, v) store4_##buf(g, v)
+#define applyAt(buf, level, g) applyAt_##buf(level, g)
 
-void store4(RWStructuredBuffer<float> buf, uint g, float4 v)
-{
-    buf[4 * g] = v.x;
-    buf[4 * g + 1] = v.y;
-    buf[4 * g + 2] = v.z;
-    buf[4 * g + 3] = v.w;
-}
+#define HEAL_ACCESSORS(buf)                                                            \
+    float4 load4_##buf(uint g)                                                         \
+    {                                                                                  \
+        return float4(buf[4 * g], buf[4 * g + 1], buf[4 * g + 2], buf[4 * g + 3]);     \
+    }                                                                                  \
+    void store4_##buf(uint g, float4 v)                                                \
+    {                                                                                  \
+        buf[4 * g] = v.x;                                                              \
+        buf[4 * g + 1] = v.y;                                                          \
+        buf[4 * g + 2] = v.z;                                                          \
+        buf[4 * g + 3] = v.w;                                                          \
+    }                                                                                  \
+    float4 applyAt_##buf(Level level, uint g)                                          \
+    {                                                                                  \
+        const uint s = level.stride;                                                   \
+        const float cw = coefBuf[4 * (g - 1) + 2];                                     \
+        const float ce = coefBuf[4 * g + 2];                                           \
+        const float cn = coefBuf[4 * (g - s) + 3];                                     \
+        const float cs = coefBuf[4 * g + 3];                                           \
+        const float d = coefBuf[4 * g];                                                \
+        precise float4 around = cw * load4(buf, g - 1) + ce * load4(buf, g + 1)        \
+                                + cn * load4(buf, g - s) + cs * load4(buf, g + s);     \
+        precise float4 out = d * load4(buf, g) - around;                               \
+        return out;                                                                    \
+    }
+
+HEAL_ACCESSORS(uBuf)
+HEAL_ACCESSORS(pBuf)
+HEAL_ACCESSORS(bBuf)
+HEAL_ACCESSORS(eBuf)
+HEAL_ACCESSORS(tBuf)
+HEAL_ACCESSORS(partialBuf)
+HEAL_ACCESSORS(stateBuf)
 
 uint itemIndex(uint3 tid)
 {
@@ -178,19 +215,6 @@ void writePartials(uint index, uint group, float4 a, float4 b)
         store4(partialBuf, 2 * group, sumsA[0]);
         store4(partialBuf, 2 * group + 1, sumsB[0]);
     }
-}
-
-float4 applyAt(RWStructuredBuffer<float> v, Level level, uint g)
-{
-    const uint s = level.stride;
-    const float cw = coefBuf[4 * (g - 1) + 2];
-    const float ce = coefBuf[4 * g + 2];
-    const float cn = coefBuf[4 * (g - s) + 3];
-    const float cs = coefBuf[4 * g + 3];
-    const float d = coefBuf[4 * g];
-    precise float4 around = cw * load4(v, g - 1) + ce * load4(v, g + 1) + cn * load4(v, g - s) + cs * load4(v, g + s);
-    precise float4 out = d * load4(v, g) - around;
-    return out;
 }
 
 void relaxAt(Level level, uint g)

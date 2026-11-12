@@ -36,6 +36,7 @@ docker build -q -t "$IMAGE" "$SCRIPT_DIR/container" >/dev/null
 
 echo "==> Running check-startup.sh inside $IMAGE against $STAGE_DIR"
 exec docker run --rm \
+    -e NATRON_RELEASE_WITHOUT_MOONRAY \
     -v "$SCRIPT_DIR:/opt/release:ro" \
     -v "$STAGE_DIR:/bundle:ro" \
     "$IMAGE" \

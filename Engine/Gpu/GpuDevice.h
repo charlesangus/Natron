@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace gpu {
@@ -56,7 +57,8 @@ struct GpuFaultPlan {
 };
 
 struct GpuDeviceOptions {
-    // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick.
+    // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick, which never chooses a CPU-type
+    // device (lavapipe, llvmpipe); naming one here or in NATRON_GPU_DEVICE is the only way to get it.
     std::string deviceSelector;
     // NATRON_GPU_VALIDATION=1 also enables it. Silently off when the Khronos layer is not installed.
     bool enableValidation = false;
@@ -136,9 +138,39 @@ struct GpuAutoPick {
 
 // The automatic choice: best type (discrete, integrated, virtual, cpu, other), then the larger device-local heap, then
 // the lower index, so it does not depend on the loader's enumeration order. Candidates that fail the requirements are
-// never picked. A CPU-type device is picked when nothing better qualifies; refusing it in auto mode is the caller's
-// policy. Empty when no candidate qualifies.
+// never picked. A CPU-type device is picked when nothing better qualifies; GpuDevice::create excludes them
+// before calling this. Empty when no candidate qualifies.
 std::optional<GpuAutoPick> pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates);
+
+// The queues a device opens and the one each QueueKind submits to; the fields match GpuDeviceInfo's.
+struct GpuQueuePlan {
+    uint32_t computeFamily = 0;
+    uint32_t transferFamily = 0;
+    uint32_t computeQueueIndex = 0;
+    uint32_t uploadQueueIndex = 0;
+    uint32_t downloadQueueIndex = 0;
+    // Queues to open in each family. transferQueues is 0 when transferFamily is computeFamily.
+    uint32_t computeQueues = 0;
+    uint32_t transferQueues = 0;
+    bool transferSharesComputeQueue = false;
+};
+
+// Routes uploads and downloads to the first transfer-only family when there is one, else to extra queues of the
+// compute family, which itself is the first one without graphics, else the first with compute. Empty when no family
+// has compute.
+std::optional<GpuQueuePlan> planQueues(std::span<const VkQueueFamilyProperties> families);
+
+// A RADV_PERFTEST-style list (current may be null) with token appended, unless it already holds token.
+std::string withPerftestToken(const char* current, std::string_view token);
+
+// Adds the transfer_queue token to RADV_PERFTEST, once per process. It edits the environment, so call it from the
+// main thread before any thread that reads the environment is started; GpuDevice::create calls it too for programs
+// without that early call.
+void requestTransferOnlyFamily();
+
+// The type of each Vulkan physical device, in the order GpuDevice's numeric selector indexes them, read through a
+// throwaway instance. Empty when there is no loader or no device.
+std::vector<VkPhysicalDeviceType> enumeratePhysicalDeviceTypes();
 
 class GpuDevice {
 public:

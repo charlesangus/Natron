@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <functional>
 #include <limits>
 #include <list>
 #include <map>
@@ -57,15 +58,17 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/BezierCP.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
+#include "Engine/RippleEditKeys.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoFeatherRaster.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
 
 #define ROTO_DEFAULT_OPACITY 1.
 #define ROTO_DEFAULT_FEATHER 1.5
@@ -390,6 +393,8 @@ struct RotoTriangles
     std::list<Point> vertices;
 };
 
+struct BezierOverlayPolygons;
+
 struct BezierPrivate
 {
     BezierCPs points; //< the control points of the curve
@@ -412,6 +417,16 @@ struct BezierPrivate
     bool guiDirtyAll;
     std::set<double> guiDirtyTimes;
     std::set<BezierCPPtr> guiDirtyPoints;
+    // Advanced by each edit of the GUI copy alone, which leaves the content hash as it was.
+    std::atomic<U64> guiEditGeneration;
+
+    // The last Bezier::getOverlayPolygons() result and what it was evaluated from.
+    mutable std::shared_ptr<const BezierOverlayPolygons> overlayPolygons;
+    mutable double overlayTime;
+    mutable U64 overlayGeometryGeneration;
+    mutable U64 overlayGuiEditGeneration;
+    mutable U64 overlayTrackLinkHash;
+    mutable Transform::Matrix3x3 overlayTransform;
 
     BezierPrivate(bool isOpenBezier)
         : points()
@@ -429,6 +444,13 @@ struct BezierPrivate
         , guiDirtyAll(false)
         , guiDirtyTimes()
         , guiDirtyPoints()
+        , guiEditGeneration(0)
+        , overlayPolygons()
+        , overlayTime(0.)
+        , overlayGeometryGeneration(0)
+        , overlayGuiEditGeneration(0)
+        , overlayTrackLinkHash(0)
+        , overlayTransform()
     {
     }
 
@@ -436,6 +458,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         guiDirtyAll = true;
     }
 
@@ -443,6 +466,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         if (!guiDirtyAll) {
             guiDirtyTimes.insert(time);
         }
@@ -452,6 +476,7 @@ struct BezierPrivate
     {
         QMutexLocker k(&guiCopyMutex);
 
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
         if (!guiDirtyAll && point) {
             guiDirtyPoints.insert(point);
         }
@@ -1423,6 +1448,8 @@ public:
     std::list<RotoLayerPtr> layers;
     bool autoKeying;
     bool rippleEdit;
+    RippleEditModeEnum rippleEditMode;
+    double rippleEditRangeFirst, rippleEditRangeLast;
     bool featherLink;
     bool isCurrentlyLoading;
     NodeWPtr node;
@@ -1498,9 +1525,16 @@ public:
     RotoItemPtr lastInsertedItem;
     RotoItemPtr lastLockedItem;
     mutable QMutex doingNeatRenderMutex;
-    QWaitCondition doingNeatRenderCond;
     bool doingNeatRender;
     bool mustDoNeatRender;
+    // The neat render's frame is on its way to a viewer; the render has landed once that frame is uploaded.
+    bool awaitingNeatDisplay;
+    unsigned int neatDisplayGeneration;
+
+    // Main thread only.
+    std::list<std::function<void()>> neatRenderLandedCallbacks;
+    RotoStrokeItemWPtr displayedStroke;
+    std::vector<int> displayedStrokeAges;
 
     /*
      * A merge node (or more if there are more than 64 items) used when all items share the same compositing operator to make the rotopaint tree shallow
@@ -1512,6 +1546,11 @@ public:
     std::list<QMetaObject::Connection> trackLinkConnections;
     bool trackLinkWarningPosted;
 
+    // How many edits of a point the ripple check refused and let through, for an undo step to
+    // tell an edit that changed nothing from one that did.
+    quint64 rippleEditsRefused;
+    quint64 rippleEditsAllowed;
+
     RotoContextPrivate(const NodePtr& n,
                        bool paintNode)
         : rotoContextMutex()
@@ -1519,15 +1558,25 @@ public:
         , layers()
         , autoKeying(true)
         , rippleEdit(false)
+        , rippleEditMode(eRippleEditModeAll)
+        , rippleEditRangeFirst(1.)
+        , rippleEditRangeLast(100.)
         , featherLink(true)
         , isCurrentlyLoading(false)
         , node(n)
         , age(0)
         , doingNeatRender(false)
         , mustDoNeatRender(false)
+        , awaitingNeatDisplay(false)
+        , neatDisplayGeneration(0)
+        , neatRenderLandedCallbacks()
+        , displayedStroke()
+        , displayedStrokeAges()
         , globalMergeNodes()
         , trackLinkConnections()
         , trackLinkWarningPosted(false)
+        , rippleEditsRefused(0)
+        , rippleEditsAllowed(0)
     {
         assert( n && n->getEffectInstance() );
         EffectInstancePtr effect = n->getEffectInstance();
@@ -2357,8 +2406,20 @@ public:
                                double opacity,
                                double time,
                                unsigned int mipmapLevel);
-    static void renderBezier(cairo_t* cr, const Bezier* bezier, double opacity, double time, double startTime, double endTime, double mbFrameStep, unsigned int mipmapLevel);
-    static void renderFeather(const Bezier * bezier, double time, unsigned int mipmapLevel, double shapeColor[3], double opacity, double featherDist, double fallOff, cairo_pattern_t * mesh);
+    typedef std::function<void(const RectI& tile, const float* alpha)> AlphaTileSink;
+
+    /**
+     * @brief Renders the closed shape with its feather over roi, each motion blur sample over the
+     * previous ones, and hands the result to sink one tile at a time: alpha is tile.width() x
+     * tile.height(), row 0 at tile.y1, and the tiles cover roi once, in rows of roi's full width.
+     * The shape is drawn in its coordinates at mipmapLevel, scaled by scaleX and scaleY into the
+     * pixels roi is in. A shape that draws nothing still hands over zeros.
+     *
+     * Memory for the render is bounded by a tile, not by roi. Returns false, possibly after
+     * handing over some tiles, when that memory could not be had.
+     **/
+    static bool renderBezier(const Bezier* bezier, double time, double startTime, double endTime, double mbFrameStep, unsigned int mipmapLevel, double scaleX, double scaleY, const RectI& roi, const AlphaTileSink& sink);
+    static void computeFeatherQuads(const Bezier* bezier, double time, unsigned int mipmapLevel, double featherDist, std::vector<RotoFeatherQuad>* quads);
     static void renderFeather_cairo(const std::list<RotoFeatherVertex>& vertices, double shapeColor[3],  double fallOff, cairo_pattern_t * mesh);
     static void renderInternalShape_cairo(const std::list<RotoTriangles>& triangles,
                                           const std::list<RotoTriangleFans>& fans,
@@ -2367,7 +2428,6 @@ public:
     static void computeTriangles(const Bezier * bezier, double time, unsigned int mipmapLevel,  double featherDist, std::list<RotoFeatherVertex>* featherMesh, std::list<RotoTriangleFans>* internalFans, std::list<RotoTriangles>* internalTriangles,std::list<RotoTriangleStrips>* internalStrips);
     static void renderInternalShape(double time, unsigned int mipmapLevel, double shapeColor[3], double opacity, const Transform::Matrix3x3 & transform, cairo_t * cr, cairo_pattern_t * mesh, const BezierCPs &cps);
     static void bezulate(double time, const BezierCPs& cps, std::list<BezierCPs>* patches);
-    static void applyAndDestroyMask(cairo_t* cr, cairo_pattern_t* mesh);
 };
 
 NATRON_NAMESPACE_EXIT

@@ -59,7 +59,8 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 public:
     enum ColorTrackballFeedbackEnum {
         eColorTrackballFeedbackCrosshairReveal = 0,
-        eColorTrackballFeedbackWidgetCursor
+        eColorTrackballFeedbackWidgetCursor,
+        eColorTrackballFeedbackCrosshairOnly
     };
 
     enum ColorTrackballWheelWidthEnum {
@@ -67,6 +68,12 @@ public:
         eColorTrackballWheelWidthThird,
         eColorTrackballWheelWidthQuarter,
         eColorTrackballWheelWidthFifth
+    };
+
+    enum RotoShapeDragRenderEnum {
+        eRotoShapeDragRenderAdaptive = 0,
+        eRotoShapeDragRenderAlwaysLive,
+        eRotoShapeDragRenderOnRelease
     };
 
     // The mouse bindings of the 3D viewer's navigation and selection, named after the
@@ -319,6 +326,8 @@ public:
     // Whether creating a Read of a camera raw file in the interface adds the Develop RAW chain.
     bool isDevelopRawOnReadEnabled() const;
 
+    // Whether the Develop RAW chain demosaics with RawNeuralDenoise instead of RawDemosaic.
+    bool isDevelopRawNeuralDemosaic() const;
     // Whether the Develop RAW chain has DenoiseProfiled between RawDemosaic and RawInputColor.
     bool isDevelopRawDenoiseEnabled() const;
 
@@ -381,6 +390,8 @@ public:
     bool viewerNumberKeys() const;
     bool viewerOverlaysPath() const;
 
+    RotoShapeDragRenderEnum getRotoShapeDragRender() const;
+
     // What lights the viewer's 3D views, shared by all of them.
     Viewer3DLightingEnum getViewer3DLighting() const;
 
@@ -417,11 +428,6 @@ public:
      * config URI when neither is set.
      **/
     std::string getDefaultOCIOConfigSourceForNewProjects() const;
-
-    /**
-     * @brief Returns true if the QSettings existed prior to loading the settings
-     **/
-    bool didSettingsExistOnStartup() const;
 
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
@@ -503,9 +509,6 @@ public:
 
     bool isCopyInputImageForPluginRenderEnabled() const;
 
-    bool isDefaultAppearanceOutdated() const;
-    void restoreDefaultAppearance();
-
     std::string getUserStyleSheetFilePath() const;
 
 #ifdef NATRON_DOCUMENTATION_ONLINE
@@ -568,8 +571,6 @@ private:
 
     bool tryLoadOpenColorIOConfig();
 
-
-    KnobBoolPtr _natronSettingsExist;
     KnobBoolPtr _saveSettings;
 
 
@@ -621,6 +622,7 @@ private:
     KnobPagePtr _projectsPage;
     KnobBoolPtr _firstReadSetProjectFormat;
     KnobBoolPtr _developRawOnRead;
+    KnobChoicePtr _developRawDemosaic;
     KnobBoolPtr _developRawDenoise;
     KnobBoolPtr _autoPreviewEnabledForNewProjects;
     KnobBoolPtr _fixPathsOnProjectPathChanged;
@@ -695,6 +697,7 @@ private:
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
+    KnobChoicePtr _rotoShapeDragRender;
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;
     KnobChoicePtr _viewer3DTransformTarget;
@@ -740,7 +743,6 @@ private:
     KnobChoicePtr _systemFontChoice;
     KnobIntPtr _fontSize;
     KnobFilePtr _qssFile;
-    KnobIntPtr _defaultAppearanceVersion;
 
     // Appearance/Main Window
     KnobPagePtr _guiColorsTab;
@@ -815,8 +817,6 @@ private:
     KnobColorPtr _expressionLineColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
-    bool _settingsExisted;
-    bool _defaultAppearanceOutdated;
 };
 
 NATRON_NAMESPACE_EXIT

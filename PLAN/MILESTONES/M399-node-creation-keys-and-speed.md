@@ -195,7 +195,7 @@ Graph GUI Responsiveness merges, so re-grep them.
 
 ## Phase 399.4: Make both paths instant
 
-- [ ] M399.P4.T1 — Take preview, autosave and panel build off node creation's critical path
+- [x] M399.P4.T1 — Take preview, autosave and panel build off node creation's critical path
   - files: `Gui/GuiAppInstance.cpp`, `Gui/NodeGui.cpp`, `Gui/NodeSettingsPanel.cpp`,
     `Gui/DockablePanel*.cpp` as the profile directs
   - approach: Interactive single-node creation (not project load, paste or Python batch
@@ -210,7 +210,7 @@ Graph GUI Responsiveness merges, so re-grep them.
     `tab_menu_create` show the deferred stages gone from the press-to-paint span.
   - size: L
 
-- [ ] M399.P4.T2 — Open the tab menu without per-open Python work
+- [x] M399.P4.T2 — Open the tab menu without per-open Python work
   - files: `Gui/TabMenuBridge.cpp`, `Gui/TabMenuBridge.h`,
     `Gui/Resources/TabTabTab/tabtabtab_natron.py`,
     `Gui/Resources/TabTabTab/tabtabtab_nuke_core.py`
@@ -230,25 +230,25 @@ Graph GUI Responsiveness merges, so re-grep them.
     `tab_menu_open` meets 33 ms in M399.P3.T1's bench.
   - size: M
 
-- [ ] M399.P4.T4 — Scope data-kind invalidation and make positioning O(1)
+- [x] M399.P4.T4 — Scope data-kind invalidation and make positioning O(1)
   - files: `Engine/Node.cpp` (~:3120 `invalidateEffectiveOutputDataKindCaches`), `Gui/NodeGraph05.cpp` (~:242-256 `moveNodesForIdealPosition`)
   - approach: A connect from creation's positioning walks the whole connected component both ways to invalidate data-kind caches. Invalidate downstream only, or lazily by a generation counter checked on read. Move the nodes below the new one without the recursive walk.
   - verify: builds; ctest passes; the stage log's positioning median is under 2 ms at 3000 nodes.
   - size: M
 
-- [ ] M399.P4.T5 — Update the item grid and navigator incrementally after a creation
+- [x] M399.P4.T5 — Update the item grid and navigator incrementally after a creation
   - files: `Gui/NodeGraph30.cpp` (~:565, ~:634), `Gui/NodeGraph10.cpp` (~:181), `Gui/NodeGraphLowDetailLayer.cpp` as needed
   - approach: Creation sets `itemGridDirty` through `invalidateNavigator`, so the next paint rebuilds the whole grid, and `areAllNodesVisible` recomputes every node's bounds on the navigator timer. Insert or update only the new node and its edges in the grid, and cache the nodes' bounding rect, updated per change.
   - verify: builds; ctest and `m55_node_graph.py` pass; the post-create loop pass at 3000 nodes is within 10% of its value on an empty graph.
   - size: M
 
-- [ ] M399.P4.T6 — Remove the smaller creation costs
+- [x] M399.P4.T6 — Remove the smaller creation costs
   - files: `Gui/TabMenuBridge.cpp` (~:200-237), `Engine/Project.cpp` (~:2782), `Gui/NodeGraphUndoRedo.cpp` (~:296)
   - approach: `triggerInContext` diffs the node list before and after (O(N²)); use the created node it returns. Make `Project::refreshLayersKnob` incremental instead of walking every node. Drop the duplicate autosave in `AddMultipleNodesCommand::redo`.
   - verify: builds; ctest and the tab-menu `Tests/gui/` scripts pass; none of the three shows in a creation sample at 3000 nodes.
   - size: M
 
-- [ ] M399.P4.T7 — Bound the graph walks each connect runs
+- [x] M399.P4.T7 — Bound the graph walks each connect runs
   - files: `Engine/Node*.cpp`, `Engine/NodeInputs.cpp`, `Gui/NodeGraph05.cpp` as the callers direct
   - approach: P4.T4's agent found positioning's remaining cost is not `moveBelowPositionRecursively` but four full-graph walks per connect: two `hasViewersConnected`, `abortViewerRendersForEdit` → `getDownstreamOutputs`, and the cycle check (`isNodeUpstream` → `hashDependsOn`). Bound each to the nodes the edit affects, with a visited set, and drop duplicate walks per connect. Behaviour stays the same.
   - verify: builds; ctest passes, with visit-count tests on a 3000-node graph; the stage log's positioning median is under 2 ms at 3000 nodes.
@@ -287,3 +287,4 @@ global-mode exit, and creation and tab-menu feel on this host.
   - Tab open: launch 8, show 7, refreshAfterShow 26-34 (getItems 23-28 inside), then a second getItems of 23-27 after the paint; about 25 ms unattributed.
   - Suspects: inline preview and autosave ruled out (about 0). Confirmed: panel build (the largest fixed cost); Python on every open (`TabMenuBridge.cpp:106-125`, `_read_preferences` at `tabtabtab_natron.py:358`); the menu walk, twice per open with no cache (`tabtabtab_nuke_core.py:967`, `:1033`), weights loaded on show and saved on close; `singleShot(0)` hops, 2 per open and 1 per create. `preload` is never called, so the first open costs about 200 ms more. `triggerInContext` diffs nodes in O(N²) (`TabMenuBridge.cpp:200-237`). The growth with N is positioning, the data-kind walk, and the post-create grid and paint work.
   - Ranked: (1) defer the panel build, 150-250 ms, P4.T1; (2) scoped data-kind invalidation and O(1) positioning, about 140 ms at 3000, new P4.T4; (3) incremental grid and navigator, about 170 ms at 3000, new P4.T5; (4) the tab menu's cached items, preload, compiled callable, no hops, cached prefs and weights, 30-60 ms per open and about 200 ms on the first, P4.T2; (5) `triggerInContext`, `refreshLayersKnob` and the duplicate autosave, 10-40 ms, new P4.T6; (6) NodeGui::initialize's name HTML and edge labels, 20-40 ms, folded into P4.T1. If P4.T3 still misses, check Shiboken lazy class loading (about 15 samples, probably the bench's own Python) before product code.
+- 2026-11-12 — P4.T1, T2, T4-T7 landed (63325826e, 6c1316059: the tab-menu walk cache kept submenu wrappers PySide invalidates; the m158 test lacked Loop and Reverse Flow Variable); gate green (run 43242648575). Create bench on it (host loaded, load ~13 on 4 cores), median/max ms at 0/300/3000: `create_by_shortcut` 117/182, 154/222, 345/454; `tab_menu_open` 22/49, 23/59, 26/76; `tab_menu_create` 200/367, 245/421, 565/720. All still miss at max; P4.T3 profiling what is left.

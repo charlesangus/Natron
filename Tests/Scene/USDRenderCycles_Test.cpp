@@ -953,7 +953,7 @@ cyclesReported(const NodePtr& node,
     return value;
 }
 
-// Moves an enabled int, float, bool or menu knob off its default.
+// Moves an enabled int, float, bool, menu or string knob off its default.
 bool
 nudgeCyclesKnob(KnobI* k)
 {
@@ -965,6 +965,8 @@ nudgeCyclesKnob(KnobI* k)
         i->setValue(i->getDefaultValue(0) + 1);
     } else if (KnobDouble* d = dynamic_cast<KnobDouble*>(k)) {
         d->setValue(d->getDefaultValue(0) + 0.5);
+    } else if (KnobString* s = dynamic_cast<KnobString*>(k)) {
+        s->setValue(s->getDefaultValue(0) + "nudged");
     } else {
         return false;
     }
@@ -1200,6 +1202,7 @@ TEST_F(USDRenderCyclesTest, MenusStartOnTheDeclaredDefault)
         { "cycles:integrator:sampling_pattern", { 0, 1, 2, 4, 3 } },
         { "cycles:integrator:guiding_distribution_type", { 0, 1, 2 } },
         { "cycles:integrator:guiding_directional_sampling_type", { 0, 1, 2 } },
+        { "cycles:film:filter_type", { 0, 1, 2 } },
     };
 
     for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
@@ -1288,8 +1291,8 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
         "cycles:integrator:use_sample_subset",
         "cycles:integrator:sample_subset_offset",
         "cycles:integrator:sample_subset_length",
-        // A text knob, which the nudge does not move. The empty sample with both jitter switches
-        // nudged on is the case Cycles must survive.
+        // A text knob holding numbers, which the nudge would fill with words. The empty sample with
+        // both jitter switches nudged on is the case Cycles must survive.
         "cycles:integrator:custom_pixel_jitter_sample",
         // Its default is FLT_MAX, which adding 0.5 does not change, so it would never be sent.
         "cycles:integrator:ao_distance",

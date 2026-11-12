@@ -64,6 +64,12 @@ and says so when the control has no effect in this build.
   have no effect.
 - Light Contributions: switches for kinds of light, to break down or debug an
   image.
+- Film: exposure, the pixel filter and its width, a transparent background
+  and the approximate shadow catcher.
+- Passes: mist, Cryptomatte, the alpha threshold for data passes, the pass
+  shown, and the active-pixel and sample-count views.
+- World: whether the world shader is used, which rays see the background,
+  and its light group.
 - Advanced: sampling pattern, minimum bounces, motion blur and pixel jitter.
   - Sample Subset: rendering part of the sample sequence. Only Sample Offset
     has an effect.

@@ -32,6 +32,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -39,6 +40,9 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+
+#include <pxr/base/tf/weakBase.h>
+#include <pxr/base/tf/weakPtr.h>
 
 #include "BaseTest.h"
 
@@ -138,6 +142,44 @@ getMessage(const NodePtr& node,
 
     return message;
 }
+
+// Records whether a stage ever sent a notice while one prim was on it and active.
+class ActivePrimWatch
+    : public PXR_NS::TfWeakBase {
+public:
+    ActivePrimWatch(const PXR_NS::UsdStageRefPtr& stage,
+                    const std::string& path)
+        : _stage(stage)
+        , _path(path)
+    {
+        _key = PXR_NS::TfNotice::Register(PXR_NS::TfCreateWeakPtr(this), &ActivePrimWatch::onObjectsChanged,
+                                          PXR_NS::UsdStagePtr(stage));
+    }
+
+    ~ActivePrimWatch()
+    {
+        PXR_NS::TfNotice::Revoke(_key);
+    }
+
+    void onObjectsChanged(const PXR_NS::UsdNotice::ObjectsChanged&)
+    {
+        ++notices;
+        const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(_path);
+        if (prim && prim.IsActive()) {
+            everActive = true;
+        }
+    }
+
+    int notices = 0;
+    bool everActive = false;
+
+private:
+    PXR_NS::UsdStageRefPtr _stage;
+    PXR_NS::SdfPath _path;
+    PXR_NS::TfNotice::Key _key;
+};
+
+const SceneStage::LockedSection kUnlocked = [](const std::function<void()>& section) { section(); };
 } // anonymous namespace
 
 class ScenePatternContextTest
@@ -393,6 +435,55 @@ TEST_F(ScenePatternContextTest, NoMatchSaysHowManyUnloadedBranchesWereNotSearche
     EXPECT_EQ((int)eMessageTypeError, type);
 }
 
+TEST_F(ScenePatternContextTest, APrunedPrimInsideAPayloadNeverShowsDuringItsLoad)
+{
+    CarCity city(1, 2);
+    NodePtr source = reader(city);
+    NodePtr node = prune(source, "/World/Block_0//car*");
+    ASSERT_TRUE(source && node);
+    const U64 viewer = SceneEvaluationContext::makeId();
+    const PXR_NS::SdfPath building("/World/Block_0/B_0");
+    const PXR_NS::SdfPath pruned(car(0, 0));
+    ScenePayload shown;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, loading({})), &shown));
+
+    // Loaded without the scene the load makes the pattern match, the car shows: the watch can see it.
+    {
+        SceneStage stage(PXR_NS::UsdStage::LoadNone);
+        ASSERT_TRUE(stage.sync(shown));
+        ActivePrimWatch watch(stage.getStage(), pruned.GetString());
+        stage.requestLoad(PXR_NS::SdfPathVector(1, building), false);
+        EXPECT_TRUE(stage.serviceLoads(kUnlocked, kUnlocked));
+        EXPECT_TRUE(watch.everActive);
+    }
+
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(shown));
+    ActivePrimWatch watch(stage.getStage(), pruned.GetString());
+    int evaluations = 0;
+    const SceneStage::LoadPreparer prepare = [&](const SceneLoadSetPtr& loadSet) -> std::function<void()> {
+        ScenePayload payload;
+        if (evaluate(node, SceneEvaluationContext(viewer, loadSet), &payload) != EffectInstance::eRenderRoIRetCodeOk) {
+            ADD_FAILURE() << "the prune did not evaluate for the load";
+
+            return std::function<void()>();
+        }
+        ++evaluations;
+
+        return [&stage, payload]() { EXPECT_TRUE(stage.sync(payload)); };
+    };
+    stage.requestLoad(PXR_NS::SdfPathVector(1, building), false);
+    EXPECT_TRUE(stage.serviceLoads(kUnlocked, kUnlocked, std::function<bool()>(), prepare));
+
+    EXPECT_EQ(1, evaluations);
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building).IsLoaded());
+    const PXR_NS::UsdPrim prim = stage.getStage()->GetPrimAtPath(pruned);
+    ASSERT_TRUE(bool(prim));
+    EXPECT_FALSE(prim.IsActive());
+    EXPECT_GT(watch.notices, 0);
+    EXPECT_FALSE(watch.everActive);
+}
+
 TEST_F(ScenePatternContextTest, AnUnloadedSearchFindsMatchesInsidePayloadsWithoutLoadingTheViewers)
 {
     CarCity city(2, 2);
@@ -414,6 +505,40 @@ TEST_F(ScenePatternContextTest, AnUnloadedSearchFindsMatchesInsidePayloadsWithou
     ASSERT_TRUE(viewerLoads && viewerStage.getLoadSet());
     EXPECT_EQ(*viewerLoads, *viewerStage.getLoadSet());
     EXPECT_FALSE(viewerStage.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/World/Block_0/B_0")).IsLoaded());
+
+    // Over a pattern node's input, beside a viewer that loads only another block.
+    NodePtr node = prune(source, "/World/Block_0//car*");
+    ASSERT_TRUE(bool(node));
+    const U64 viewer = SceneEvaluationContext::makeId();
+    const SceneLoadSetPtr otherBlock = loading({ "/World/Block_1" });
+    ScenePayload shown;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, otherBlock), &shown));
+    EXPECT_TRUE(activeWhenLoaded(shown, car(0, 0)));
+    SceneStage shownStage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(shownStage.sync(shown));
+    shownStage.applyLoadSet(otherBlock);
+    const SceneLoadSetPtr shownLoads = shownStage.getLoadSet();
+    const U64 shownLoadEdits = shownStage.getLoadEditCount();
+    const U64 shownEdits = shownStage.getEditCount();
+    const U64 queriesBefore = queries(node);
+
+    const std::shared_ptr<SceneOps::UnloadedSearch> inputSearch = SceneOps::UnloadedSearch::start(node->getEffectInstance(), 0, "/World/Block_0//car*");
+    ASSERT_TRUE(bool(inputSearch));
+    ASSERT_TRUE(inputSearch->wait(60000.));
+    EXPECT_EQ(SceneOps::UnloadedSearch::eStatusDone, inputSearch->getStatus()) << inputSearch->getError();
+    EXPECT_EQ(inputSearch->getMatches(), std::vector<std::string>({ car(0, 0), car(0, 1) }));
+
+    ASSERT_TRUE(shownLoads && shownStage.getLoadSet());
+    EXPECT_EQ(*shownLoads, *shownStage.getLoadSet());
+    EXPECT_EQ(shownLoadEdits, shownStage.getLoadEditCount());
+    EXPECT_EQ(shownEdits, shownStage.getEditCount());
+    EXPECT_FALSE(shownStage.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/World/Block_0/B_0")).IsLoaded());
+
+    // What the search found is not what the viewer's evaluation matches: its layer stays as it was.
+    ScenePayload again;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, SceneEvaluationContext(viewer, otherBlock), &again));
+    EXPECT_EQ(queriesBefore, queries(node));
+    EXPECT_TRUE(activeWhenLoaded(again, car(0, 0)));
 }
 
 TEST_F(ScenePatternContextTest, AnUnloadedSearchStopsWhenAsked)

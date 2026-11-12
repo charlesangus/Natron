@@ -141,6 +141,7 @@ Graph GUI Responsiveness merges, so re-grep them.
     `main`.
   - verify: the script runs to completion and fails on `main` for at least the path the user
     hit. Record the failing paths in this milestone's `## Decisions`. If nothing fails,
+- 2026-11-12 — P3.T1 landed at 1ac1e1d02 (gate run 43197694625). First create-preset run (Xvfb, dev host, stripped release AppImage, 20 reps, mixed): `create_by_shortcut` median/p95/max 407/594/681 ms at 0, 454/671/765 at 300, 724/1054/1158 at 3000; `tab_menu_create` 311/556/652, 347/575/637, 891/1097/1142; `tab_menu_open` 72/127/157, 76/93/106, 66/99/125. Every op misses its budget (50 ms create, 33 ms open) at every size. Results: `build/bench/gui/20261112T113121Z-*` in the M399 worktree, stage split in `node-creation-stages.jsonl`.
     report that to the PM, because the reproduction must be widened before any fix.
   - size: M
 
@@ -162,7 +163,7 @@ Graph GUI Responsiveness merges, so re-grep them.
 
 ## Phase 399.3: Measure creation and tab-menu latency
 
-- [ ] M399.P3.T1 — GUI bench ops for node creation and tab-menu latency
+- [x] M399.P3.T1 — GUI bench ops for node creation and tab-menu latency
   - files: `tools/bench/gui/gui_bench.py`, `tools/bench/gui/README.md`
   - approach: Add three ops. `create_by_shortcut` sends the Blur shortcut key event to the
     graph with a node selected. `tab_menu_open` sends Tab. `tab_menu_create` types `blur` in

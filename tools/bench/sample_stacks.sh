@@ -12,6 +12,7 @@ out=$4
 : > "$out"
 : > "$out.err"
 # shellcheck source=ptrace_remedy.sh
+# shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/ptrace_remedy.sh"
 if ! command -v eu-stack > /dev/null 2>&1; then
     echo "sample_stacks.sh: eu-stack is not installed (sudo apt install elfutils)" | tee -a "$out.err" >&2

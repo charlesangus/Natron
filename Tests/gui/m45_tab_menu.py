@@ -6,11 +6,10 @@ Usage: Tests/gui/run-gui-test.sh Tests/gui/m45_tab_menu.py
 Conventions:
   - the popup is Gui/Resources/TabTabTab's TabTabTabWidget, found through gt.widgets_of(), with a
     QLineEdit (the filter/line-edit) and a QListView (the results) among its children;
-  - a QEnterEvent is sent to a NodeGraph viewport before QTest.keyClick(view, Qt.Key_Tab), because
-    Xvfb has no real pointer to hover the graph with;
-  - events are sent straight to specific widgets with QApplication.sendEvent()/QTest.keyClick()
-    rather than relying on real window-manager focus, so a check still drives the right widget
-    even when another graph tab (e.g. a Group's) is the one currently on screen;
+  - before QTest.keyClick(view, Qt.Key_Tab), open_menu() makes the graph's tab current in its
+    pane, activates the main window, focuses the viewport and moves the cursor over it, because
+    NodeGraph::isNodeCreationShortcutTarget() only accepts the key for a visible graph that has
+    focus or the pointer; a cursor already over the viewport is left where a check put it;
   - never call parentItem() on a node-graph item from Python: PySide deletes it and Natron
     crashes.
 
@@ -41,8 +40,8 @@ REMAPPED_SEARCH_MODES = "consecutive,anchored_fuzzy,non_anchored_fuzzy"
 try:
     import NatronEngine
     import NatronGui
-    from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt
-    from PySide6.QtGui import QColor, QCursor, QEnterEvent
+    from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+    from PySide6.QtGui import QColor, QCursor
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (QApplication, QLabel, QLineEdit, QListView, QMainWindow, QPushButton,
                                    QScrollArea, QTreeWidget)
@@ -130,12 +129,51 @@ try:
                 return a
         return None
 
-    def enter_graph(view):
-        centre = QPointF(view.rect().center())
-        QApplication.sendEvent(view, QEnterEvent(centre, centre, QPointF(view.mapToGlobal(view.rect().center()))))
+    def show_graph_tab(view):
+        """Makes the pane tab holding the graph current, as clicking its tab would."""
+        if view.isVisible():
+            return True
+        chain = []
+        node = view.parentWidget()
+        while node is not None:
+            chain.append(node)
+            if gt.class_name(node) == "TabWidget":
+                break
+            node = node.parentWidget()
+        pane = chain[-1] if chain and gt.class_name(chain[-1]) == "TabWidget" else None
+        tw = app.getTabWidget(pane.objectName()) if pane is not None else None
+        if tw is None:
+            return False
+        for i in range(tw.count()):
+            tw.setCurrentIndex(i)
+            QApplication.processEvents()
+            if view.isVisible():
+                return True
+        return False
+
+    def focus_graph(view):
+        """Leaves the graph where a real user's key would reach it. Returns False if that failed."""
+        if not show_graph_tab(view):
+            return False
+        win = main_window()
+        if win is not None:
+            win.activateWindow()
+            win.raise_()
+            win = None
+            ok = yield ("until", lambda: main_window() is not None and main_window().isActiveWindow(), 10.0)
+            if not ok:
+                return False
+        view.setFocus()
+        viewport = view.viewport()
+        if not viewport.rect().contains(viewport.mapFromGlobal(QCursor.pos())):
+            QCursor.setPos(viewport.mapToGlobal(viewport.rect().center()))
+        QApplication.processEvents()
+        return True
 
     def open_menu(view):
-        enter_graph(view)
+        focused = yield from focus_graph(view)
+        if not focused:
+            return None, None, None
         QTest.keyClick(view, Qt.Key_Tab)
         ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         if not ok:
@@ -718,7 +756,7 @@ try:
         still_closed = not any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget"))
         check(still_closed, "rebind: Tab is no longer the create-node shortcut")
 
-        enter_graph(main_graph)
+        yield from focus_graph(main_graph)
         QTest.keyClick(main_graph, Qt.Key_F2)
         ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         check(ok, "rebind: the rebound key (F2) opens the menu")
@@ -741,7 +779,7 @@ try:
         panel.close()
         QApplication.processEvents()
 
-        enter_graph(main_graph)
+        yield from focus_graph(main_graph)
         QTest.keyClick(main_graph, Qt.Key_Tab)
         ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         check(ok, "rebind: Tab opens the menu again after Reset")

@@ -28,13 +28,13 @@ composed on a worker, and recent stages stay cached. Design:
 
 ## Phase 332.1: Stages for any graph point
 
-- [ ] M332.P1.T1 — Open non-viewed stages unloaded with a small cache
+- [x] M332.P1.T1 — Open non-viewed stages unloaded with a small cache
   - files: `Gui/SceneNodeStageSource.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Tests/gui/scene_graph_points.py`
   - approach: panel sources for non-viewed nodes open `LoadNone` on a worker and sit in a small least-recently-used cache keyed by node, syncing when reused. Share the load path from M328 - Deferred Viewer Stage. Remove `loadNothing` special-casing that this supersedes (`SceneGraphPanel.cpp:258-260`).
   - verify: GUI script on the city — pinning two nodes in two panels shows each one's tree, returning to a cached node composes nothing, and neither panel opens a building layer until a twirl.
   - size: L
 
-- [ ] M332.P1.T2 — Non-blocking switch with a greyed tree
+- [x] M332.P1.T2 — Non-blocking switch with a greyed tree
   - files: `Gui/SceneGraphPanel.cpp`, `Tests/gui/scene_graph_points.py`
   - approach: on a source change, grey the current tree and label the pending node, then swap models when the worker finishes. Debounce Follow Node Selection. A newer request cancels an older one. Replace the 250 ms polling (`SceneGraphPanel.cpp:102-104`) with node-selection and viewer signals.
   - verify: harness — no main-thread gap over 100 ms switching between nodes on the flat file; GUI script — clicking through four nodes quickly composes only the last and no timer polls while idle.
@@ -42,10 +42,14 @@ composed on a worker, and recent stages stay cached. Design:
 
 ## Phase 332.2: State across nodes
 
-- [ ] M332.P2.T1 — Keep twirl state and scroll across nodes
+- [x] M332.P2.T1 — Keep twirl state and scroll across nodes
   - files: `Gui/SceneGraphPanel.{h,cpp}`, `Gui/SceneGraphModel.{h,cpp}`, `Tests/gui/scene_graph_points.py`
   - approach: each panel holds its open paths and restores them lazily on the new model, without forcing loads: a payload row that isn't loaded on this stage stays closed until the user twirls it. Scroll restores to the top visible path, or its nearest ancestor. Twirl state stays unsaved.
   - verify: GUI script — open rows and scroll survive a viewer switch to a downstream node and back; a row whose path is missing reappears open on return; nothing loads as a result of restoring.
   - size: M
 
 **Verification gate:** release gate green; `scene_graph_points.py` passes under Xvfb; harness budgets pass for node switching on the GPU host; accepted from the UAT AppImage.
+
+## Decisions
+
+- 2026-11-12 — Audit: all three tasks were already implemented (436afd897, 30fa6db80, 3e7fb51c1) but never checked off. The last release gates failed only on `USDRenderCyclesTest` aborting under the taskgraph scheduler (run 42757353797). F4 and M331 were merged in at d8391e71d, and the gate with `scene_graph_points.py` is re-running (run 43155051418).

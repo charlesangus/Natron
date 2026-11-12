@@ -69,3 +69,4 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
   - size: M
 
 **Verification gate:** unit suites pass. GUI scripts under Xvfb show the border after the delay and clearing on completion, and device-coloured dots only on executing nodes. The user approves the screenshots.
+- 2026-11-12 — P2.T2 and P2.T3 need M276's `takeLastRenderCacheState()` (F6) and M118's `scheduleNodeRenderStateRefresh` path, per the 2026-11-06 decisions. F6 was merged in at 13bb96bf3. Both tasks start once M118 (PR #259) reaches main and then F6.

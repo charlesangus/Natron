@@ -136,3 +136,9 @@ Context:
   - None of the reference-led ideas (ref-crescents, -bars, -planes) work. The user asked for Codex to study the references and draft a few Bauhaus-style designs inspired by a three-quark baryon/nucleon; Codex was at 98% of its weekly quota, so a fresh Opus agent that never sees earlier rounds does it instead (user).
   - From round 8 on, sheets show the mark only, no wordmark or lockup.
   - Round 8 variations go to a Fable agent; mark-only variants at f0948bb6e: trefoil-square-chamfer, -compass, -tilt, -bracket; pyramid-key-sunk, -stack, -diagonal, -offset. Opus fresh-eye marks at c3a896e85: nucleon-albers, -quadrants, -slabs, -balance, -lozenge.
+- 2026-11-12 — Round 8 feedback (user):
+  - Short list: pyramid-key-sunk, pyramid-key-stack.
+  - nucleon-quadrants (Opus) is promising; variations of it.
+  - A vertically mirrored pyramid-key-stack, and a few variations of pyramid-key-diagonal.
+  - Trefoil: a few variations with one complete rectangular orange piece and oval/elliptical grey pieces interlocked with it.
+  - Round 9: quadrants variations to an Opus agent; pyramid and trefoil work to a Fable agent.

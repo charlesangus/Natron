@@ -91,7 +91,7 @@ Graph GUI Responsiveness merges, so re-grep them.
 
 ## Phase 399.1: Viewer number keys
 
-- [ ] M399.P1.T1 — Reuse any Viewer already in the selection's group before creating one
+- [x] M399.P1.T1 — Reuse any Viewer already in the selection's group before creating one
   - files: `Gui/NodeGraph30.cpp`, `Gui/NodeGraph.h`, `Gui/Gui30.cpp`
   - approach: In `connectCurrentViewerToSelection`, keep `getLastSelectedViewer()` as the
     first choice when its node is activated and its group's graph is `this`. Otherwise
@@ -108,7 +108,7 @@ Graph GUI Responsiveness merges, so re-grep them.
     when `1` is pressed with another node selected, and the group's Viewer count stays at one.
   - size: M
 
-- [ ] M399.P1.T2 — GUI script test for viewer reuse on number keys
+- [x] M399.P1.T2 — GUI script test for viewer reuse on number keys
   - files: `Tests/gui/m399_viewer_number_keys.py` (new), registered beside the existing
     `Tests/gui/` scripts the way `Tests/gui/m55_node_graph.py` is
   - approach: Under Xvfb (the `build/deeprepro/run-gui.sh` recipe locally, or
@@ -128,7 +128,7 @@ Graph GUI Responsiveness merges, so re-grep them.
 
 ## Phase 399.2: Tab menu after global mode
 
-- [ ] M399.P2.T1 — GUI script that reproduces the dead tab menu after global mode
+- [x] M399.P2.T1 — GUI script that reproduces the dead tab menu after global mode
   - files: `Tests/gui/m399_tab_after_global_mode.py` (new), registered like M399.P1.T2's
   - approach: Under Xvfb, open a node's properties. Engage global mode on a value knob, then
     on the colour trackball and on a transform group (the three targets). Make a stroke edit
@@ -144,7 +144,7 @@ Graph GUI Responsiveness merges, so re-grep them.
     report that to the PM, because the reproduction must be widened before any fix.
   - size: M
 
-- [ ] M399.P2.T2 — Make Tab work after every global-mode exit
+- [x] M399.P2.T2 — Make Tab work after every global-mode exit
   - files: `Gui/NodeGraph30.cpp`, `Gui/NodeGraph25.cpp`, `Gui/NodeGraphPrivate.h`,
     `Gui/ColorTrackballGlobalMode.cpp`; the two `*GlobalModeTarget.cpp` files only if
     M399.P2.T1 shows a leak there
@@ -252,3 +252,4 @@ global-mode exit, and creation and tab-menu feel on this host.
 ## Decisions
 
 - 2026-11-12 — Claimed at the user's request while M118 (PR #259) is in review. The branch starts from M118's tip (acbf9300d), so the node-graph code it edits matches what lands on main. Phases 1 and 2 start now. Phases 3 and 4 measure after M118 is on main, and main is merged in before the PR.
+- 2026-11-12 — Phases 1 and 2 implemented (2879f2e56), build pending. Reproduction on the pre-fix AppImage: number keys case (a), a remembered viewer lost, and (b), a closed tab, fail; (c), a project reload, passes because loading sets the remembered viewer, so the user's reload case may be a new process or a recent-files open, still unreproduced. Global mode: only application deactivation (X focus loss) leaves the mode engaged, for all three targets, with the filter eating Tab and the crosshair cursor stuck. Esc, Enter and right-click exits already work. Ctrl+E does not engage the mode under Xvfb, so the script triggers the action. Extra fix: `Gui::removeViewerTab`'s shadowed `collection` cleared the remembered viewer even when another existed.

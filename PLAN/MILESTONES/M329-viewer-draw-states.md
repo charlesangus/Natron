@@ -128,19 +128,19 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Phase 329.5: Reveal, saving and acceptance
 
-- [ ] M329.P5.T1 — Adaptive progressive reveal.
+- [x] M329.P5.T1 — Adaptive progressive reveal.
   - files: `Gui/SceneDrawFilter.{h,cpp}`, `Gui/SceneViewport.{h,cpp}`, `Tests/SceneDrawFilter_Test.cpp`, `tools/bench/heavy_scene_bench.py`.
   - approach: replace the spike's one root and fixed batch with any number of roots and batches sized from measured commit time, so modest and many-core machines both hold the frame target; no prim-count cap. Keep frontiers instead of the spike's O(revealed) set, walk iteratively so depth is safe, and yield to camera input between batches. Full + Load reveals as loads land. A state change stops the rest within one batch.
   - verify: gtest — order, cancel, overlapping roots; `gate` — Full + Load at the city root and the flat 1M wide row finish with no stall over 100 ms (spike: 2 fps, unfinished at 120 s), and cancel takes one batch (spike: 120-1207 ms).
   - size: L
 
-- [ ] M329.P5.T2 — Save and restore.
+- [x] M329.P5.T2 — Save and restore.
   - files: `Serialization/NodeSerialization.{h,cpp}`, `Gui/ViewerTab.cpp`, `Gui/SceneViewport.{h,cpp}`, `Tests/Scene/SceneDrawStates_Test.cpp`, `Tests/gui/scene_draw_save.py` (new).
   - approach: `Serialization/` has no viewer structure, so settle the home at claim, most likely the viewer node's serialization, and record it in Decisions. Save set states and load set with the viewer; reopening restores them through P5.T1, cancellable. Missing files give badge and USD error, and the rest restores.
   - verify: gtest round trip with missing paths; GUI script — reopen restores progressively, cancel stops it, missing payload is badged.
   - size: M
 
-- [ ] M329.P5.T3 — Viewer states stay out of output.
+- [x] M329.P5.T3 — Viewer states stay out of output.
   - files: `Tests/Scene/SceneDrawStates_Output_Test.cpp` (new), `Tests/CMakeLists.txt`.
   - approach: compare the node's output scene, USDWrite's bytes and USDRender's stage with and without states and with a viewer load set applied.
   - verify: gtest — identical in every case, and no layer dirtied.
@@ -197,3 +197,4 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 - 2026-11-12 — Phase 4 gate green at e51c7b558 (run 43228764173) after test fixes: the shortcut test counts the four draw keys, and the column script finds each cell's own editor (it had grabbed a closed one). Column and key screenshots sent to the user for sign-off.
 - 2026-11-12 — Phase 4 screenshots approved (user); P4.T1-T3 done.
 - 2026-11-12 — Phase 5 implemented (f35e3b22b), build run 43249921593. P5.T2 home: the viewer node's serialization (`sceneView`: drawStates, impliedChildren, loadRules), held by ViewerInstance so a never-opened viewer tab still saves; restore goes through P4's `replaceSetStates` and stage load requests, and loads asked before the stage exists are now held and passed on at creation (fixes the dropped-early-loads issue). P5.T1: frontiers per root, iterative walks, a 16 ms step deadline, `SceneRevealPacer` sizing batches to a 33 ms frame from fixed plus per-prim cost (no cap), 250 ms pause on camera input; the viewer reveals paced by default (PM call, the milestone's intent). `reveal_load_all` runs in its own fresh-process gate run (`gate-draw-city-reveal`) since it waits for new loads.
+- 2026-11-12 — Phase 5 gate green at 97016938d (run 43283980654): the reveal-order tests expected insertion order but the fixture's SdfPathTable lists children newest first, and the first walk indexed top-level children in reverse (fixed); the save script now waits for Load All's payloads. Save/restore screenshots sent. P5.T4: UAT AppImage `Natron-m329-viewer-draw-states` out; the GPU-host gate (`heavy_scene_gpu_host.sh gate`) still to run on the GPU host.

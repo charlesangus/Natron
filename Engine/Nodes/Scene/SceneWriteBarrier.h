@@ -70,6 +70,25 @@ public:
         bool _outermost;
     };
 
+    /**
+     * @brief Counts the calling thread as reading under a ReadScope another thread holds for
+     * longer than this one lives, without waiting for a writer. For a helper that holder waits
+     * for: a writer pending would hold the helper's own outermost scope off, while waiting for
+     * the holder's scope to end. Does nothing when held is false.
+     **/
+    class SharedReadScope {
+    public:
+        explicit SharedReadScope(bool held);
+
+        ~SharedReadScope();
+
+    private:
+        SharedReadScope(const SharedReadScope&) = delete;
+        SharedReadScope& operator=(const SharedReadScope&) = delete;
+
+        bool _held;
+    };
+
     typedef U64 ParticipantId;
 
     /**

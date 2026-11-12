@@ -711,6 +711,7 @@ struct SceneViewportRenderer::Implementation {
     bool scenePrimValid = false;
     U64 scenePrimEditCount = 0;
     SdfPath scenePrimPath;
+    SdfPathVector sceneDomeLights;
     std::string sceneRenderer = kRenderDelegateStormId;
     bool sceneSettingsValid = false;
     U64 sceneSettingsEditCount = 0;
@@ -869,6 +870,7 @@ struct SceneViewportRenderer::Implementation {
         scenePrimValid = true;
         scenePrimEditCount = editCount;
         scenePrimPath = SdfPath();
+        sceneDomeLights = RenderSettingsPrim::domeLights(stage);
         sceneRenderer = kRenderDelegateStormId;
         const UsdRenderSettings prim = stage ? RenderSettingsPrim::activePrim(stage, std::string(), nullptr) : UsdRenderSettings();
         if (!prim) {
@@ -918,6 +920,7 @@ struct SceneViewportRenderer::Implementation {
         if (stage && !scenePrimPath.IsEmpty()) {
             sceneSettings = RenderSettingsPrim::settings(stage->GetPrimAtPath(scenePrimPath), renderer, UsdTimeCode(time));
         }
+        RenderSettingsPrim::addDomeLightCameraVisibility(stage, sceneDomeLights, UsdTimeCode(time), &sceneSettings);
 
         return sceneSettings;
     }

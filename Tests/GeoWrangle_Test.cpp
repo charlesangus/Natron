@@ -172,6 +172,17 @@ TEST_F(GeoWrangleTest, Identity)
     expectNativeIdentity(PLUGINID_NATRON_GEOWRANGLE, 1, "GeoWrangle");
 }
 
+TEST_F(GeoWrangleTest, TheHelpPageCarriesTheBundledReference)
+{
+    NodePtr node = wrangle(_cube, "");
+    ASSERT_TRUE(node != NULL);
+
+    const QString page = node->makeDocumentation(false);
+    EXPECT_TRUE(page.contains(QString::fromUtf8("## The language"))) << page.toStdString();
+    EXPECT_TRUE(page.contains(QString::fromUtf8("valuenoise(p)")));
+    EXPECT_FALSE(page.contains(QString::fromUtf8("Tolerance:")));
+}
+
 TEST_F(GeoWrangleTest, DoublingPZDoublesZ)
 {
     NodePtr node = wrangle(_cube, "@P.z *= 2;");

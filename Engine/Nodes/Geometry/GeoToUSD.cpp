@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -43,6 +44,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/GeoDetail.h"
@@ -68,6 +70,41 @@ namespace {
 const std::size_t kMaxTimeKeyedLayers = 8;
 
 std::atomic<U64> nextInstanceId { 1 };
+
+std::mutex frameGatheredHookMutex;
+std::function<void(double)> frameGatheredHookStorage;
+
+std::function<void(double)>
+frameGatheredHook()
+{
+    std::lock_guard<std::mutex> lock(frameGatheredHookMutex);
+
+    return frameGatheredHookStorage;
+}
+
+class PythonUnlockedWhileWaiting {
+public:
+    explicit PythonUnlockedWhileWaiting(bool unlock)
+        : _state(nullptr)
+    {
+        if (unlock && Py_IsInitialized() && PyGILState_Check()) {
+            _state = PyEval_SaveThread();
+        }
+    }
+
+    ~PythonUnlockedWhileWaiting()
+    {
+        if (_state) {
+            PyEval_RestoreThread(_state);
+        }
+    }
+
+    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
+    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
+
+private:
+    PyThreadState* _state;
+};
 
 const char*
 packedModeArgument(GeoUsdPackedModeEnum mode)
@@ -221,13 +258,15 @@ struct GeoToUSD::Implementation {
     /**
      * The detail at frame and the Scene input captured where the detail names prims. inputScene,
      * when given, is the Scene input's payload, evaluated by a caller already reading scenes;
-     * otherwise the input is evaluated here, under a ReadScope released on return.
+     * otherwise the input is evaluated here, under a ReadScope released on return. Any thread
+     * of the render cancel was built for.
      **/
     RenderRoIRetCode gather(GeoToUSD* node,
                             double frame,
                             ViewIdx view,
                             const ScenePayload* inputScene,
                             const GeoUsdConvertOptions& options,
+                            RenderCancellation& cancel,
                             Gathered* out,
                             std::string* errorMessage) const;
 
@@ -325,6 +364,18 @@ GeoToUSD::initializeKnobs()
     page->addKnob(packed);
     _packedPrimitives = packed;
 
+    KnobDoublePtr pointWidth = createKnob<KnobDouble>(tr("Default Point Width"));
+    pointWidth->setName(kGeoToUSDParamDefaultPointWidth);
+    pointWidth->setHintToolTip(tr("The width of points that have no pscale attribute. USD's own fallback is 1.0, "
+                                  "which draws each point a unit wide.")
+                                   .toStdString());
+    pointWidth->setDefaultValue(0.01);
+    pointWidth->setDisplayMinimum(0.);
+    pointWidth->setDisplayMaximum(1.);
+    pointWidth->setAnimationEnabled(false);
+    page->addKnob(pointWidth);
+    _defaultPointWidth = pointWidth;
+
     KnobBoolPtr copy = createKnob<KnobBool>(tr("Copy Into Layer"));
     copy->setName(kGeoToUSDParamCopyIntoLayer);
     copy->setHintToolTip(tr("Off, the geometry is served to the scene as it is, converted only where the scene "
@@ -412,6 +463,11 @@ GeoToUSD::Implementation::readSettings(GeoToUSD* node,
         break;
     }
 
+    const KnobDoublePtr width = node->_defaultPointWidth.lock();
+    if (width) {
+        settings->options.defaultPointWidth = width->getValue();
+    }
+
     const KnobBoolPtr copy = node->_copyIntoLayer.lock();
     settings->copy = copy && copy->getValue();
     const KnobBoolPtr samples = node->_authorTimeSamples.lock();
@@ -426,6 +482,7 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
                                  ViewIdx view,
                                  const ScenePayload* inputScene,
                                  const GeoUsdConvertOptions& options,
+                                 RenderCancellation& cancel,
                                  Gathered* out,
                                  std::string* errorMessage) const
 {
@@ -440,7 +497,7 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
     if (!out->detail) {
         out->detail = std::make_shared<const GeoDetail>();
     }
-    if (node->aborted()) {
+    if (cancel.check()) {
         return eRenderRoIRetCodeAborted;
     }
 
@@ -479,7 +536,7 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
     }
     out->missing = missingSources(paths, options, out->inputScene, &out->collisions);
 
-    return node->aborted() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
+    return cancel.check() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
 } // GeoToUSD::Implementation::gather
 
 std::string
@@ -491,6 +548,7 @@ GeoToUSD::Implementation::layerKey(const GeoUsdConvertOptions& options,
     ContentHasher h;
     h.appendString(options.rootPath.GetString());
     h.appendI64((std::int64_t)options.packedMode);
+    h.appendDouble(options.defaultPointWidth);
     std::string key = instanceKey + "-" + hexKey(h.finalize());
     if (timeKeyed) {
         key += "-f" + frameKey(frame);
@@ -616,7 +674,8 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
     }
 
     Gathered gathered;
-    const RenderRoIRetCode code = _imp->gather(this, args.time, args.view, nullptr, settings.options, &gathered, &error);
+    RenderCancellation cancel(this);
+    const RenderRoIRetCode code = _imp->gather(this, args.time, args.view, nullptr, settings.options, cancel, &gathered, &error);
     if (code == eRenderRoIRetCodeAborted) {
         return code;
     }
@@ -630,6 +689,13 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
     (void)_imp->serve(_imp->layerKey(settings.options, timeKeyed, args.time, layerView(*this, args.view)), settings.options, timeKeyed, gathered, true, &layer, &current, &error);
 
     return aborted() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
+}
+
+void
+GeoToUSD::setFrameGatheredHookForTests(const std::function<void(double frame)>& hook)
+{
+    std::lock_guard<std::mutex> lock(frameGatheredHookMutex);
+    frameGatheredHookStorage = hook;
 }
 
 StatusEnum
@@ -662,14 +728,42 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
     }
 
     std::vector<Gathered> gathered(frames.size());
+    std::vector<RenderRoIRetCode> codes(frames.size(), eRenderRoIRetCodeOk);
+    std::vector<std::string> errors(frames.size());
+    RenderCancellation cancel(this);
+    std::atomic<bool> failed(false);
+    // This render's evaluation holds a ReadScope that the helpers read under.
+    const bool reading = SceneWriteBarrier::isReadingOnThisThread();
+    const std::function<void(double)> hook = frameGatheredHook();
+    const auto gatherFrame = [&](int i) {
+        if (failed.load(std::memory_order_relaxed)) {
+            return;
+        }
+        SceneWriteBarrier::SharedReadScope shared(reading);
+        // The Scene input's payload is evaluated at args.time; other frames evaluate their own.
+        const ScenePayload* given = (frames[i] == args.time) ? &upstream : nullptr;
+        codes[i] = _imp->gather(this, frames[i], args.view, given, settings.options, cancel, &gathered[i], &errors[i]);
+        if (codes[i] != eRenderRoIRetCodeOk) {
+            failed = true;
+        } else if (hook) {
+            hook(frames[i]);
+        }
+    };
+    {
+        // An upstream expression a helper evaluates needs the GIL, which a script evaluating this
+        // node may hold while it waits for the helpers.
+        PythonUnlockedWhileWaiting unlocked(frames.size() > 1);
+        parallelForCancellable((int)frames.size(), appPTR ? appPTR->getNCPUsAvailableForEffect() : 1, cancel, gatherFrame);
+    }
+    if (cancel.check()) {
+        return eStatusFailed;
+    }
     std::vector<std::string> missing;
     std::vector<std::string> collisions;
     for (std::size_t i = 0; i < frames.size(); ++i) {
-        // The Scene input's payload is evaluated at args.time; other frames evaluate their own.
-        const ScenePayload* given = (frames[i] == args.time) ? &upstream : nullptr;
-        const RenderRoIRetCode code = _imp->gather(this, frames[i], args.view, given, settings.options, &gathered[i], errorMessage);
-        if (code != eRenderRoIRetCodeOk) {
-            if (code == eRenderRoIRetCodeFailed) {
+        if (codes[i] != eRenderRoIRetCodeOk) {
+            if (codes[i] == eRenderRoIRetCodeFailed) {
+                *errorMessage = errors[i];
                 if (errorMessage->empty()) {
                     *errorMessage = tr("The geometry could not be evaluated.").toStdString();
                 }
@@ -678,6 +772,8 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
 
             return eStatusFailed;
         }
+    }
+    for (std::size_t i = 0; i < frames.size(); ++i) {
         for (const std::string& path : gathered[i].missing) {
             if (std::find(missing.begin(), missing.end(), path) == missing.end()) {
                 missing.push_back(path);
@@ -723,14 +819,21 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
     };
     if (copy) {
         converts.resize(gathered.size());
-        for (std::size_t i = 0; i < gathered.size(); ++i) {
+        parallelForCancellable((int)gathered.size(), appPTR ? appPTR->getNCPUsAvailableForEffect() : 1, cancel, [&](int i) {
             if (isEmptyDetail(gathered[i].detail)) {
-                continue;
+                return;
             }
             GeoUsdConvertOptions options = settings.options;
             options.inputScene = gathered[i].inputScene;
             converts[i].reset(new GeoUsdConvert(gathered[i].detail, options));
-            noteSheared(*converts[i]);
+        });
+        if (cancel.check()) {
+            return eStatusFailed;
+        }
+        for (const std::unique_ptr<const GeoUsdConvert>& convert : converts) {
+            if (convert) {
+                noteSheared(*convert);
+            }
         }
     } else if (const std::shared_ptr<const GeoUsdConvert> served = geoLayer ? geoLayerConvert(geoLayer) : std::shared_ptr<const GeoUsdConvert>()) {
         noteSheared(*served);

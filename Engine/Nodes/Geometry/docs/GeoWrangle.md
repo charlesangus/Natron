@@ -109,12 +109,28 @@ Integer, float, colour, checkbox and choice parameters are numbers.
 - **Matrices and rotations:**
   - `ident`, `invert`, `transpose` and `determinant`;
   - `quaternion`, `qmultiply` and `qrotate`.
-- **Random values:** `rand` and `noise`, which return a float or a vector depending on what the context expects.
+- **Random values:** `rand` and `noise`, which return a float or a vector depending on what the context expects. `noise` is in [0, 1]. The other noise functions are listed under [Noise functions](#noise-functions).
 - **Strings:**
   - `strlen`, `concat`, `sprintf`, `startswith`, `endswith`;
   - conversions: `atoi`, `atof`, `itoa`.
 - **Arrays:**
   - `array`, `len`, `resize`, `push`, `append` and `set`.
+
+## Noise functions
+
+These are four-dimensional noises. The position `p` can be a float, a `vector2`, a `vector` or a `vector4`. Components it lacks are 0, so `pnoise(@P)` samples the slice w = 0. The fourth component is never filled in for you. To animate a noise through its fourth dimension, pass it yourself: `pnoise(set(@P.x, @P.y, @P.z, @Time))`.
+
+One unit of `p` is one lattice cell, so scale the position to change the size of the features: `pnoise(@P * 4)` has features a quarter the size of `pnoise(@P)`.
+
+Each function except `curlnoise` returns a float or a vector, depending on what the context expects, the way `noise` does. A vector result is three separate noise fields, one for each component. Its first component is the float result. The same position always gives the same value.
+
+- **`float pnoise(p)`** is Perlin noise, in [-1, 1]. Example: `@P.y += 0.2 * pnoise(@P * 3);`
+- **`float xnoise(p)`** is simplex noise, in [-1, 1]. Its features are rounder and less aligned to the axes than Perlin noise. Example: `f@density = xnoise(@P * 2);`
+- **`float valuenoise(p)`** is value noise, in [-1, 1]. It blends random values set at the lattice points and looks blockier than Perlin noise. Example: `v@Cd = valuenoise(@P * 5);` gives each colour channel its own field.
+- **`float wnoise(p)`** is cellular (Worley) noise: the distance from `p` to the nearest of a set of random feature points, one per cell, in [0, 1]. It is 0 at a feature point. Example: `f@cells = wnoise(@P * 6);`
+- **`float onoise(p[, octaves, lacunarity, gain])`** is fractal Perlin noise (fBm), in [-1, 1]. It sums `octaves` layers of Perlin noise. Each layer has `lacunarity` times the frequency of the one before it and `gain` times its strength. The defaults are 4 octaves, a lacunarity of 2 and a gain of 0.5. `octaves` is an int from 1 to 16, and other values are clamped. With one octave, `onoise` equals `pnoise`. Example: `@P += @N * 0.1 * onoise(@P * 2, 6, 2.0, 0.55);`
+- **`float anoise(p[, octaves, lacunarity, gain])`** is turbulence, in [0, 1]. It is the same sum as `onoise`, but over the absolute value of each layer, which gives sharp creases where the noise crosses zero. The defaults are the same as for `onoise`. With one octave, `anoise` is the absolute value of `pnoise`. Example: `f@marble = sin(@P.x * 4 + 6 * anoise(@P));`
+- **`vector curlnoise(p[, octaves, lacunarity, gain])`** is curl noise, the curl of three fractal Perlin fields over x, y and z. The w component of `p` selects the slice but is not differentiated. The result has no divergence, so moving points along it swirls them without bunching them up or spreading them out. With one octave, each component is within about [-4, 4], and more octaves keep about the same scale. The defaults are the same as for `onoise`. Example: `vector q = @P * 2; @P += 0.05 * curlnoise(set(q.x, q.y, q.z, @Time));`
 
 ## Example
 

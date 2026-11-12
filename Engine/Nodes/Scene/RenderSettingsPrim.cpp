@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <set>
 
+#include <pxr/imaging/hd/tokens.h>
+
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -272,6 +274,54 @@ rendererFor(const UsdPrim& prim,
     *rendererId = id.GetString();
 
     return true;
+}
+
+SdfPathVector
+domeLights(const UsdStageRefPtr& stage)
+{
+    SdfPathVector domes;
+
+    if (!stage) {
+        return domes;
+    }
+    static const TfToken domeLight1("DomeLight_1");
+    for (const UsdPrim& prim : stage->Traverse()) {
+        if (prim.IsA<UsdLuxDomeLight>() || (prim.GetTypeName() == domeLight1)) {
+            domes.push_back(prim.GetPath());
+        }
+    }
+
+    return domes;
+}
+
+bool
+domeLightCameraVisibility(const UsdStageRefPtr& stage,
+                          const SdfPathVector& domes,
+                          UsdTimeCode time)
+{
+    if (!stage) {
+        return true;
+    }
+    static const TfToken attributeName(kLightVisibleInPrimaryRayAttribute);
+    for (const SdfPath& path : domes) {
+        const UsdPrim prim = stage->GetPrimAtPath(path);
+        const UsdAttribute attribute = prim ? prim.GetAttribute(attributeName) : UsdAttribute();
+        bool visible = true;
+        if (attribute && attribute.Get(&visible, time) && !visible) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void
+addDomeLightCameraVisibility(const UsdStageRefPtr& stage,
+                             const SdfPathVector& domes,
+                             UsdTimeCode time,
+                             Values* settings)
+{
+    (*settings)[HdRenderSettingsTokens->domeLightCameraVisibility.GetString()] = VtValue(domeLightCameraVisibility(stage, domes, time));
 }
 } // namespace RenderSettingsPrim
 

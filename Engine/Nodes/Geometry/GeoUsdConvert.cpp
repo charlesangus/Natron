@@ -654,6 +654,7 @@ struct GeoUsdConvert::PropertyPlan {
     std::string attribute;
     const GeoUsdType* type = nullptr;
     bool toTexCoord2 = false;
+    bool toFloat32 = false;
     VtValue staticDefault;
     bool relationship = false;
     SdfPathVector targets;
@@ -1237,10 +1238,12 @@ GeoUsdConvert::planProperties(Partition& p)
                 plan.name = TfToken("primvars:displayColor");
                 plan.typeName = n->Color3fArray;
                 plan.type = findExportType(eGeoStorageFloat32, 3, eGeoTypeInfoColour);
-            } else if (name == "pscale" && f32 && a.tupleSize() == 1 && widthsAllowed) {
+            } else if (name == "pscale" && (f32 || a.storage() == eGeoStorageFloat64) && a.tupleSize() == 1 && widthsAllowed) {
+                // The Solaris SOP Import docs convert width, widths and pscale straight into widths, so there is no factor of two.
                 plan.name = UsdGeomTokens->widths;
                 plan.typeName = n->FloatArray;
                 plan.type = findExportType(eGeoStorageFloat32, 1, eGeoTypeInfoNone);
+                plan.toFloat32 = !f32;
             } else {
                 plan.name = TfToken("primvars:" + TfMakeValidIdentifier(name));
                 if (a.storage() == eGeoStorageString) {
@@ -1268,6 +1271,18 @@ GeoUsdConvert::planProperties(Partition& p)
             }
             p.properties.push_back(std::move(plan));
         }
+    }
+
+    if (p.kind == eGeoUsdPrimPoints && !used.count(UsdGeomTokens->widths)) {
+        // USD's fallback width of 1.0 would draw each point a unit wide.
+        PropertyPlan width;
+        width.name = UsdGeomTokens->widths;
+        width.typeName = n->FloatArray;
+        width.interpolation = UsdGeomTokens->constant;
+        width.source = eGeoUsdSourceStatic;
+        width.staticDefault = VtValue(VtFloatArray(1, float(_options.defaultPointWidth)));
+        used.insert(width.name);
+        p.properties.push_back(std::move(width));
     }
 
     auto groupPlans = [&](GeoAttribClassEnum cls, const TfToken& interpolation) {
@@ -1859,6 +1874,15 @@ GeoUsdConvert::buildValues(const Partition& p,
         }
         std::vector<std::uint64_t> flat = gatherComponents(*a, elems);
         const std::size_t tuple = std::size_t(a->tupleSize());
+        if (plan.toFloat32) {
+            const double* src = reinterpret_cast<const double*>(flat.data());
+            VtFloatArray narrowed(elems.size());
+            for (std::size_t i = 0; i < elems.size(); ++i) {
+                narrowed[i] = float(src[i]);
+            }
+            values[path] = VtValue(narrowed);
+            continue;
+        }
         if (plan.toTexCoord2) {
             float* f = reinterpret_cast<float*>(flat.data());
             for (std::size_t i = 0; i < elems.size(); ++i) {

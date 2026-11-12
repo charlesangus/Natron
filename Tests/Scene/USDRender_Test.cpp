@@ -46,6 +46,8 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -65,6 +67,7 @@
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -559,6 +562,29 @@ TEST_F(USDRenderNodeTest, TheSettingsPrimMenuListsTheScenesRenderSettingsPrims)
     EXPECT_EQ(std::string(kUSDRenderSettingsPrimStageDefault), entries[0].id);
     EXPECT_EQ(std::string(kUSDRenderSettingsDefaultPrimPath), entries[1].id);
     EXPECT_EQ(std::string(kUSDRenderSettingsPrimStageDefault), settingsPrim->getActiveEntry().id);
+}
+
+// Connecting the input fills the menu through the event loop, from a read off the main thread.
+TEST_F(USDRenderNodeTest, ConnectingTheInputFillsTheSettingsPrimMenuInTheBackground)
+{
+    NodePtr node = createRender();
+    ASSERT_TRUE(node != nullptr);
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
+    ASSERT_TRUE(settingsPrim);
+    const SceneMenuRefresh& refresh = effect->getSettingsPrimMenuRefresh();
+    QElapsedTimer timer;
+    timer.start();
+    while ((refresh.getApplyCount() == 0) || refresh.isBusy() || (settingsPrim->getEntries_mt_safe().size() < 2u)) {
+        ASSERT_LT(timer.elapsed(), 10000) << "the menu was never filled";
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        usleep(1000);
+    }
+    const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
+    ASSERT_EQ(2u, entries.size());
+    EXPECT_EQ(std::string(kUSDRenderSettingsPrimStageDefault), entries[0].id);
+    EXPECT_EQ(std::string(kUSDRenderSettingsDefaultPrimPath), entries[1].id);
 }
 
 // The prim's resolution and pixel aspect ratio are the node's format.

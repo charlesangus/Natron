@@ -211,6 +211,16 @@ Node::makeDocumentation(bool genHTML) const
             pluginMarkdownFile.close();
         }
     }
+    if (extraMarkdown.isEmpty()) {
+        // A native node without an icon file can ship its reference as :/Docs/Nodes/<PluginID>.md.
+        QFile bundledMarkdownFile(QString::fromUtf8(":/Docs/Nodes/") + pluginID + QString::fromUtf8(".md"));
+        if (bundledMarkdownFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            extraMarkdown = QString::fromUtf8(bundledMarkdownFile.readAll());
+            // The title and the Tolerance line head the file for developers; the page has its own title.
+            static const QRegularExpression developerHeader(QString::fromUtf8("^(# [^\\n]*\\n+)?(Tolerance:[^\\n]*\\n+)?"));
+            extraMarkdown.remove(developerHeader);
+        }
+    }
 
     // generate knobs info
     KnobsVec knobs = getEffectInstance()->getKnobs_mt_safe();

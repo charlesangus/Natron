@@ -34,6 +34,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -138,10 +139,17 @@ public:
 
     /**
      * @brief Fills the camera menu with every camera of the Camera input's scene at the current
-     * frame, then Camera Path when none of them has it. Main thread only; the
-     * node calls it itself, queued, whenever an input or anything upstream changes.
+     * frame, then Camera Path when none of them has it. Main thread only, and it evaluates the
+     * input there: the node itself refreshes the menu from a pool thread whenever an input or
+     * anything upstream changes.
      **/
     void refreshCameraMenu();
+
+    // What the node's own refreshes of the menu run through. Main thread.
+    const SceneMenuRefresh& getCameraMenuRefresh() const
+    {
+        return _cameraMenuRefresh;
+    }
 
     /**
      * @brief The installed natronProject3D.glslfx the material's surface names, absolute; empty
@@ -167,6 +175,9 @@ private:
 
     void scheduleCameraMenuRefresh();
 
+    // The input the camera menu lists the cameras of.
+    EffectInstancePtr getCameraMenuInput() const;
+
     // The Image input's format as a width over height in square pixels, the project's without one.
     double getPlateAspect(double time) const;
 
@@ -186,6 +197,7 @@ private:
     KnobBoolWPtr _useFrameHold;
     KnobDoubleWPtr _frameHold;
     std::atomic<bool> _cameraMenuRefreshPending;
+    SceneMenuRefresh _cameraMenuRefresh;
 };
 
 NATRON_NAMESPACE_EXIT

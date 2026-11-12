@@ -35,6 +35,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -212,46 +213,80 @@ USDVariant::scheduleMenuRefresh()
     // The hooks that call this fire mid-recompute of a hash, before the upstream scene settled.
     QMetaObject::invokeMethod(this, [this]() {
         _menuRefreshPending = false;
-        refreshVariantMenus(); }, Qt::QueuedConnection);
+        _menuRefresh.request(this, [this]() -> SceneMenuRefresh::Read {
+            KnobStringPtr variantSet = _variantSet.lock();
+            const EffectInstanceWPtr input = getInput(0);
+            const std::string pattern = _primPattern.getExpression();
+            const std::string setName = variantSet ? variantSet->getValue() : std::string();
+            const double time = getCurrentTime();
+            std::string error;
+            const bool selects = !PrimSelector::isBlank(pattern) && PrimSelector::validate(pattern, &error);
+
+            return [this, input, pattern, setName, time, selects]() -> SceneMenuRefresh::Apply {
+                const VariantNames names = selects ? variantNames(SceneMenuRefresh::evaluateInput(input.lock(), time), pattern, setName) : VariantNames();
+
+                return [this, names, setName]() { applyVariantMenus(names, setName); };
+            };
+        }); }, Qt::QueuedConnection);
+}
+
+USDVariant::VariantNames
+USDVariant::variantNames(const ScenePayload& scene,
+                         const std::string& pattern,
+                         const std::string& setName)
+{
+    VariantNames names;
+    if (scene.isEmpty()) {
+        return names;
+    }
+    std::string error;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+    std::vector<PXR_NS::SdfPath> matches;
+    if (lease.isValid() && SceneOps::selectPrims(lease.getStage(), pattern, &matches, &error) && !matches.empty()) {
+        PXR_NS::UsdPrim prim = lease.getStage()->GetPrimAtPath(matches.front());
+        if (prim) {
+            PXR_NS::UsdVariantSets sets = prim.GetVariantSets();
+            names.sets = sets.GetNames();
+            if (!setName.empty() && sets.HasVariantSet(setName)) {
+                names.variants = sets.GetVariantSet(setName).GetVariantNames();
+            }
+        }
+    }
+
+    return names;
+}
+
+void
+USDVariant::applyVariantMenus(const VariantNames& names,
+                              const std::string& setName)
+{
+    KnobChoicePtr variantSets = _variantSets.lock();
+    KnobStringPtr variant = _variant.lock();
+    KnobChoicePtr variants = _variants.lock();
+
+    if (!variantSets || !variant || !variants) {
+        return;
+    }
+    _syncingMenus = true;
+    syncMenu(variantSets, makeOptions(names.sets), setName);
+    syncMenu(variants, makeOptions(names.variants), variant->getValue());
+    _syncingMenus = false;
 }
 
 void
 USDVariant::refreshVariantMenus()
 {
     KnobStringPtr variantSet = _variantSet.lock();
-    KnobChoicePtr variantSets = _variantSets.lock();
-    KnobStringPtr variant = _variant.lock();
-    KnobChoicePtr variants = _variants.lock();
 
-    if (!variantSet || !variantSets || !variant || !variants) {
+    if (!variantSet) {
         return;
     }
     const std::string setName = variantSet->getValue();
-    std::vector<std::string> setNames;
-    std::vector<std::string> variantNames;
-    EffectInstancePtr input = getInput(0);
     const std::string pattern = _primPattern.getExpression();
-    ScenePayload scene;
     std::string error;
-    if (input && !PrimSelector::isBlank(pattern) && PrimSelector::validate(pattern, &error) && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        std::vector<PXR_NS::SdfPath> matches;
-        if (lease.isValid() && SceneOps::selectPrims(lease.getStage(), pattern, &matches, &error) && !matches.empty()) {
-            PXR_NS::UsdPrim prim = lease.getStage()->GetPrimAtPath(matches.front());
-            if (prim) {
-                PXR_NS::UsdVariantSets sets = prim.GetVariantSets();
-                setNames = sets.GetNames();
-                if (!setName.empty() && sets.HasVariantSet(setName)) {
-                    variantNames = sets.GetVariantSet(setName).GetVariantNames();
-                }
-            }
-        }
-    }
-    _syncingMenus = true;
-    syncMenu(variantSets, makeOptions(setNames), setName);
-    syncMenu(variants, makeOptions(variantNames), variant->getValue());
-    _syncingMenus = false;
-} // USDVariant::refreshVariantMenus
+    const bool selects = !PrimSelector::isBlank(pattern) && PrimSelector::validate(pattern, &error);
+    applyVariantMenus(selects ? variantNames(SceneMenuRefresh::evaluateInput(getInput(0), getCurrentTime()), pattern, setName) : VariantNames(), setName);
+}
 
 StatusEnum
 USDVariant::renderScene(const SceneRenderActionArgs& args,

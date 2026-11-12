@@ -27,6 +27,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
@@ -44,6 +45,7 @@ namespace {
 // The names of the prims the node authors under the material.
 const char* const kSurfaceName = "PreviewSurface";
 const char* const kReaderName = "TexCoordReader";
+const char* const kCyclesSurfaceName = "CyclesSurface";
 // The layer of an image input a live texture reads.
 const char* const kLiveTextureLayer = "rgba";
 
@@ -168,6 +170,103 @@ getLiveTexture(const LiveTextureSourceList& liveTextures,
 
     return &liveTextures[inputNb];
 }
+
+// A colour input whose authored colour a primvar multiplies.
+struct PrimvarMultiply {
+    std::string inputName;
+    std::string primvar;
+    bool animated;
+    std::function<PXR_NS::GfVec3f(double)> colorAt;
+};
+
+// Copies input, its value, time samples and connection, onto a same-named input of target.
+bool
+copyInput(const PXR_NS::UsdShadeInput& input,
+          PXR_NS::UsdShadeShader& target)
+{
+    PXR_NS::UsdShadeInput copy = target.CreateInput(input.GetBaseName(), input.GetTypeName());
+    PXR_NS::UsdShadeConnectableAPI source;
+    PXR_NS::TfToken sourceName;
+    PXR_NS::UsdShadeAttributeType sourceType;
+
+    if (!copy) {
+        return false;
+    }
+    if (input.GetConnectedSource(&source, &sourceName, &sourceType)) {
+        return copy.ConnectToSource(source, sourceName, sourceType);
+    }
+    std::vector<double> times;
+    PXR_NS::VtValue value;
+    if (input.GetAttr().GetTimeSamples(&times)) {
+        for (double time : times) {
+            if (input.GetAttr().Get(&value, time) && !copy.GetAttr().Set(value, time)) {
+                return false;
+            }
+        }
+    }
+
+    return !input.GetAttr().Get(&value) || copy.GetAttr().Set(value);
+}
+
+// The surface the Cycles delegate reads in place of the universal one: a copy of surface whose
+// colour inputs of multiplies go through a Cycles mix node in multiply mode of the primvar's
+// colour and what the input had. hdCycles reads the "cycles" render context network before the
+// universal one and builds a "cycles_"-prefixed id as the Cycles node it names, so Cycles
+// multiplies there; UsdPreviewSurface has no multiply shader, and Storm reads the universal
+// network, which stays as it is.
+bool
+authorCyclesSurface(const PXR_NS::UsdStageRefPtr& stage,
+                    const PXR_NS::UsdShadeMaterial& material,
+                    const PXR_NS::UsdShadeShader& surface,
+                    const PXR_NS::SdfPath& materialPath,
+                    const SceneLayerEdit& edit,
+                    const std::vector<PrimvarMultiply>& multiplies)
+{
+    PXR_NS::UsdShadeShader cycles = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken(kCyclesSurfaceName)));
+    const PXR_NS::UsdShadeOutput output = cycles ? cycles.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeOutput();
+
+    if (!output || !cycles.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")))
+        || !material.CreateSurfaceOutput(PXR_NS::TfToken("cycles")).ConnectToSource(output)) {
+        return false;
+    }
+    for (const PXR_NS::UsdShadeInput& input : surface.GetInputs(false)) {
+        if (!copyInput(input, cycles)) {
+            return false;
+        }
+    }
+    for (const PrimvarMultiply& m : multiplies) {
+        const PXR_NS::TfToken inputToken(m.inputName);
+        PXR_NS::UsdShadeShader reader = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken(m.inputName + "Primvar")));
+        PXR_NS::UsdShadeShader mix = PXR_NS::UsdShadeShader::Define(stage, materialPath.AppendChild(PXR_NS::TfToken(m.inputName + "Multiply")));
+        if (!reader || !mix) {
+            return false;
+        }
+        const PXR_NS::UsdShadeInput varname = reader.CreateInput(PXR_NS::TfToken("varname"), PXR_NS::SdfValueTypeNames->String);
+        const PXR_NS::UsdShadeOutput readerOutput = reader.CreateOutput(PXR_NS::TfToken("result"), PXR_NS::SdfValueTypeNames->Float3);
+        const PXR_NS::UsdShadeInput type = mix.CreateInput(PXR_NS::TfToken("mix_type"), PXR_NS::SdfValueTypeNames->String);
+        const PXR_NS::UsdShadeInput fac = mix.CreateInput(PXR_NS::TfToken("fac"), PXR_NS::SdfValueTypeNames->Float);
+        const PXR_NS::UsdShadeInput color1 = mix.CreateInput(PXR_NS::TfToken("color1"), PXR_NS::SdfValueTypeNames->Color3f);
+        PXR_NS::UsdShadeInput color2 = mix.CreateInput(PXR_NS::TfToken("color2"), PXR_NS::SdfValueTypeNames->Color3f);
+        const PXR_NS::UsdShadeOutput mixOutput = mix.CreateOutput(PXR_NS::TfToken("color"), PXR_NS::SdfValueTypeNames->Color3f);
+        PXR_NS::UsdShadeInput cyclesInput = cycles.GetInput(inputToken);
+        PXR_NS::UsdShadeConnectableAPI source;
+        PXR_NS::TfToken sourceName;
+        PXR_NS::UsdShadeAttributeType sourceType;
+        if (!reader.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPrimvarReader_float3"))) || !varname || !varname.Set(m.primvar) || !readerOutput
+            || !mix.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("cycles_mix"))) || !type || !type.Set(std::string("multiply")) || !fac || !fac.Set(1.f)
+            || !color1 || !color1.ConnectToSource(readerOutput) || !color2 || !mixOutput || !cyclesInput) {
+            return false;
+        }
+        const bool wired = cyclesInput.GetConnectedSource(&source, &sourceName, &sourceType)
+            ? color2.ConnectToSource(source, sourceName, sourceType)
+            : SceneNodeAuthoring::authorValue(color2.GetAttr(), edit, m.animated, m.colorAt);
+        if (!wired || !cyclesInput.ConnectToSource(mixOutput)) {
+            return false;
+        }
+    }
+
+    return true;
+}
 } // anonymous namespace
 
 USDMaterial::USDMaterial(NodePtr node)
@@ -223,6 +322,29 @@ USDMaterial::initializeKnobs()
     _emissiveTexture = makeTextureKnob(this, page, tr("Emissive Texture"), kUSDMaterialParamEmissiveTexture,
                                        tr("An image file whose colour replaces Emissive Color, read at the prims' st texture "
                                           "coordinates. Authored even when it does not resolve."));
+
+    auto makeMultiplyKnobs = [this, &page](const char* toggleName, const char* primvarName, const QString& colorLabel, KnobBoolWPtr* toggleOut, KnobStringWPtr* primvarOut) {
+        KnobBoolPtr toggle = createKnob<KnobBool>(tr("%1 Multiply By Primvar").arg(colorLabel));
+        toggle->setName(toggleName);
+        toggle->setHintToolTip(tr("When on, the %1 is multiplied by the colour of the primvar named by the knob below, so a prim's "
+                                  "per-point colour (Cd is exported as displayColor) tints the knob colour or the texture "
+                                  "instead of being ignored. Rendered by the Cycles delegate; Storm shows the unmultiplied "
+                                  "%1.")
+                                   .arg(colorLabel.toLower()));
+        toggle->setDefaultValue(false);
+        toggle->setAnimationEnabled(false);
+        page->addKnob(toggle);
+        KnobStringPtr primvar = createKnob<KnobString>(tr("%1 Primvar").arg(colorLabel));
+        primvar->setName(primvarName);
+        primvar->setHintToolTip(tr("The colour primvar to multiply by, without its primvars: prefix. displayColor is where Cd is exported."));
+        primvar->setDefaultValue("displayColor");
+        primvar->setAnimationEnabled(false);
+        page->addKnob(primvar);
+        *toggleOut = toggle;
+        *primvarOut = primvar;
+    };
+    makeMultiplyKnobs(kUSDMaterialParamDiffuseMultiplyByPrimvar, kUSDMaterialParamDiffusePrimvar, tr("Diffuse"), &_diffuseMultiplyByPrimvar, &_diffusePrimvar);
+    makeMultiplyKnobs(kUSDMaterialParamEmissiveMultiplyByPrimvar, kUSDMaterialParamEmissivePrimvar, tr("Emissive"), &_emissiveMultiplyByPrimvar, &_emissivePrimvar);
 
     KnobBoolPtr useAlpha = createKnob<KnobBool>(tr("Use Alpha"));
     useAlpha->setName(kUSDMaterialParamUseAlpha);
@@ -383,6 +505,25 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
 
             return false;
         }
+    }
+
+    std::vector<PrimvarMultiply> multiplies;
+    const std::pair<KnobBoolPtr, KnobStringPtr> primvarKnobs[] = {
+        { _diffuseMultiplyByPrimvar.lock(), _diffusePrimvar.lock() },
+        { _emissiveMultiplyByPrimvar.lock(), _emissivePrimvar.lock() },
+    };
+    const char* const primvarInputs[] = { "diffuseColor", "emissiveColor" };
+    const KnobColorPtr primvarColors[] = { diffuseColor, emissiveColor };
+    for (int i = 0; i < 2; ++i) {
+        if (primvarKnobs[i].first && primvarKnobs[i].second && primvarKnobs[i].first->getValue() && !primvarKnobs[i].second->getValue().empty()) {
+            const KnobColorPtr color = primvarColors[i];
+            multiplies.push_back(PrimvarMultiply { primvarInputs[i], primvarKnobs[i].second->getValue(), isAnimated(color), colorAt(color) });
+        }
+    }
+    if (!multiplies.empty() && !authorCyclesSurface(stage, material, surface, path, edit, multiplies)) {
+        *errorMessage = tr("USD could not author the primvar multiply of the material at %1.").arg(pathString).toStdString();
+
+        return false;
     }
 
     return true;

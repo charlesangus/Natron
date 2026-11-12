@@ -25,7 +25,9 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -270,4 +272,174 @@ TEST(GeoKernelRunnerTest, WritingAnotherClassAttributeFails)
     const GeoKernelRunResult result = run(input, "f@global = 1;");
     EXPECT_EQ(KernelRunStatus::eFailed, result.status);
     EXPECT_NE(std::string::npos, result.error.find("detail attribute")) << result.error;
+}
+
+namespace {
+
+std::vector<float>
+floatAttribute(const GeoDetail& detail, const char* name, int component = 0)
+{
+    std::vector<float> out;
+    const GeoAttribute* a = detail.findAttribute(eGeoAttribClassPoint, name);
+    if (!a) {
+        ADD_FAILURE() << "no point attribute '" << name << "'";
+        return out;
+    }
+    for (GeoIndex i = 0; i < detail.pointCount(); ++i) {
+        out.push_back(a->get<float>(std::size_t(i), component));
+    }
+    return out;
+}
+
+} // namespace
+
+TEST(GeoKernelRunnerTest, Noise4FunctionsStayInTheirRanges)
+{
+    const GeoDetail input = makePoints(4 * kPage);
+    const GeoKernelRunResult result = run(input,
+                                          "vector p = @P * 0.37 + set(0.1, 0.2, 0.3);\n"
+                                          "f@p = pnoise(p); f@x = xnoise(p); f@v = valuenoise(p); f@w = wnoise(p);\n"
+                                          "f@o = onoise(p, 6); f@a = anoise(p, 6);\n",
+                                          4);
+    ASSERT_EQ(KernelRunStatus::eDone, result.status) << result.error;
+    const struct {
+        const char* name;
+        float lo;
+        float hi;
+    } ranges[] = {
+        { "p", -1.f, 1.f },
+        { "x", -1.f, 1.f },
+        { "v", -1.f, 1.f },
+        { "w", 0.f, 1.f },
+        { "o", -1.f, 1.f },
+        { "a", 0.f, 1.f },
+    };
+    for (const auto& r : ranges) {
+        const std::vector<float> values = floatAttribute(result.detail, r.name);
+        ASSERT_FALSE(values.empty()) << r.name;
+        float lo = values[0];
+        float hi = values[0];
+        for (float v : values) {
+            ASSERT_TRUE(std::isfinite(v)) << r.name;
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+        EXPECT_GE(lo, r.lo) << r.name;
+        EXPECT_LE(hi, r.hi) << r.name;
+        EXPECT_GT(hi - lo, 0.25f) << r.name << " barely varies";
+    }
+}
+
+TEST(GeoKernelRunnerTest, Noise4FunctionsAreDeterministic)
+{
+    const GeoDetail input = makePoints(3 * kPage + 77);
+    const char* source = "vector p = @P * 0.21;\n"
+                         "f@p = pnoise(p); f@x = xnoise(p); f@v = valuenoise(p); f@w = wnoise(p);\n"
+                         "f@o = onoise(p); f@a = anoise(p); v@c = curlnoise(p); v@pv = pnoise(p);\n";
+    const GeoKernelRunResult one = run(input, source, 1);
+    ASSERT_EQ(KernelRunStatus::eDone, one.status) << one.error;
+    for (int threads : { 1, 3, 8 }) {
+        const GeoKernelRunResult again = run(input, source, threads);
+        ASSERT_EQ(KernelRunStatus::eDone, again.status) << again.error;
+        for (const char* name : { "p", "x", "v", "w", "o", "a", "c", "pv" }) {
+            const GeoAttribute* a = one.detail.findAttribute(eGeoAttribClassPoint, name);
+            const GeoAttribute* b = again.detail.findAttribute(eGeoAttribClassPoint, name);
+            ASSERT_TRUE(a && b) << name;
+            EXPECT_EQ(a->contentHash(), b->contentHash()) << name << " at " << threads << " threads";
+        }
+    }
+    EXPECT_EQ(floatAttribute(one.detail, "p"), floatAttribute(one.detail, "pv", 0));
+}
+
+TEST(GeoKernelRunnerTest, Noise4FourthComponentChangesTheResult)
+{
+    const GeoDetail input = makePoints(kPage);
+    for (const char* fn : { "pnoise", "xnoise", "valuenoise", "wnoise", "onoise", "anoise", "curlnoise" }) {
+        const std::string f(fn);
+        const std::string source = "vector p = @P * 0.29 + set(0.1, 0.2, 0.3);\n"
+                                   "v@three = "
+            + f + "(p);\n"
+                  "v@zero = "
+            + f + "(set(p.x, p.y, p.z, 0));\n"
+                  "v@moved = "
+            + f + "(set(p.x, p.y, p.z, 0.45));\n";
+        const GeoKernelRunResult result = run(input, source.c_str(), 2);
+        ASSERT_EQ(KernelRunStatus::eDone, result.status) << fn << ": " << result.error;
+        const std::vector<float> three = floatAttribute(result.detail, "three");
+        const std::vector<float> zero = floatAttribute(result.detail, "zero");
+        const std::vector<float> moved = floatAttribute(result.detail, "moved");
+        EXPECT_EQ(three, zero) << fn << ": a vector position is w = 0";
+        ASSERT_EQ(zero.size(), moved.size());
+        std::size_t changed = 0;
+        for (std::size_t i = 0; i < zero.size(); ++i) {
+            changed += zero[i] != moved[i];
+        }
+        EXPECT_GT(changed, zero.size() * 9 / 10) << fn;
+    }
+}
+
+TEST(GeoKernelRunnerTest, FractalNoiseWithOneOctaveIsTheBaseNoise)
+{
+    const GeoDetail input = makePoints(2 * kPage);
+    const GeoKernelRunResult result = run(input,
+                                          "vector4 p = set(@P.x * 0.33, @P.y * 0.33, @P.z * 0.33, @P.x * 0.05);\n"
+                                          "f@base = pnoise(p); f@o1 = onoise(p, 1); f@a1 = anoise(p, 1, 3, 0.7);\n"
+                                          "f@o4 = onoise(p);\n",
+                                          2);
+    ASSERT_EQ(KernelRunStatus::eDone, result.status) << result.error;
+    const std::vector<float> base = floatAttribute(result.detail, "base");
+    const std::vector<float> o1 = floatAttribute(result.detail, "o1");
+    const std::vector<float> a1 = floatAttribute(result.detail, "a1");
+    const std::vector<float> o4 = floatAttribute(result.detail, "o4");
+    EXPECT_EQ(base, o1);
+    ASSERT_EQ(base.size(), a1.size());
+    std::size_t differs = 0;
+    for (std::size_t i = 0; i < base.size(); ++i) {
+        EXPECT_NEAR(std::abs(base[i]), a1[i], 1e-6f) << "point " << i;
+        differs += o4[i] != base[i];
+    }
+    EXPECT_GT(differs, base.size() / 2) << "the default octaves add detail";
+}
+
+TEST(GeoKernelRunnerTest, CurlNoiseReturnsADivergenceFreeVector)
+{
+    const GeoDetail input = makePoints(kPage / 2);
+    const GeoKernelRunResult result = run(input,
+                                          "vector p = @P * 0.3 + set(0.1, 0.2, 0.3);\n"
+                                          "float h = 0.01;\n"
+                                          "v@c = curlnoise(p);\n"
+                                          "vector xh = curlnoise(p + set(h, 0, 0)); vector xl = curlnoise(p - set(h, 0, 0));\n"
+                                          "vector yh = curlnoise(p + set(0, h, 0)); vector yl = curlnoise(p - set(0, h, 0));\n"
+                                          "vector zh = curlnoise(p + set(0, 0, h)); vector zl = curlnoise(p - set(0, 0, h));\n"
+                                          "float dx = xh.x - xl.x; float dy = yh.y - yl.y; float dz = zh.z - zl.z;\n"
+                                          "f@div = abs(dx + dy + dz) / (2 * h);\n"
+                                          "f@dxx = abs(dx) / (2 * h);\n",
+                                          2);
+    ASSERT_EQ(KernelRunStatus::eDone, result.status) << result.error;
+    const GeoAttribute* c = result.detail.findAttribute(eGeoAttribClassPoint, "c");
+    ASSERT_TRUE(c);
+    EXPECT_EQ(3, c->tupleSize());
+    double magnitude = 0.;
+    for (int k = 0; k < 3; ++k) {
+        const std::vector<float> values = floatAttribute(result.detail, "c", k);
+        float lo = values[0];
+        float hi = values[0];
+        for (float v : values) {
+            ASSERT_TRUE(std::isfinite(v));
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+            magnitude += std::abs(v);
+        }
+        EXPECT_GT(hi - lo, 0.5f) << "component " << k << " barely varies";
+    }
+    EXPECT_GT(magnitude, 0.);
+    const std::vector<float> div = floatAttribute(result.detail, "div");
+    const std::vector<float> dxx = floatAttribute(result.detail, "dxx");
+    double divSum = 0.;
+    double dxxSum = 0.;
+    for (std::size_t i = 0; i < div.size(); ++i) {
+        divSum += div[i];
+        dxxSum += dxx[i];
+    }
+    EXPECT_LT(divSum, 0.05 * dxxSum);
 }

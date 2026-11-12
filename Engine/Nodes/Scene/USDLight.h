@@ -44,6 +44,7 @@
 #define kUSDLightParamIntensity "intensity"
 #define kUSDLightParamExposure "exposure"
 #define kUSDLightParamNormalize "normalize"
+#define kUSDLightParamVisibleInRender "visibleInRender"
 #define kUSDLightParamAngle "angle"
 #define kUSDLightParamRadius "radius"
 #define kUSDLightParamWidth "width"
@@ -68,6 +69,12 @@ public:
         eLightTypeSphere,
         eLightTypeRect,
         eLightTypeDome
+    };
+
+    enum VisibleInRenderEnum {
+        eVisibleInRenderDefault = 0,
+        eVisibleInRenderOn,
+        eVisibleInRenderOff
     };
 
     static constexpr NodeSpec kNodeSpec = {
@@ -129,6 +136,7 @@ private:
     KnobDoubleWPtr _intensity;
     KnobDoubleWPtr _exposure;
     KnobBoolWPtr _normalize;
+    KnobChoiceWPtr _visibleInRender;
     KnobDoubleWPtr _angle;
     KnobDoubleWPtr _radius;
     KnobDoubleWPtr _width;

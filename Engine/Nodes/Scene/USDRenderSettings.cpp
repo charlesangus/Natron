@@ -39,6 +39,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -273,11 +274,40 @@ USDRenderSettings::scheduleCameraMenuRefresh()
     // The hooks that call this fire mid-recompute of a hash, before the upstream scene settled.
     QMetaObject::invokeMethod(this, [this]() {
         _cameraMenuRefreshPending = false;
-        refreshCameraMenu(); }, Qt::QueuedConnection);
+        _cameraMenuRefresh.request(this, [this]() -> SceneMenuRefresh::Read {
+            const EffectInstanceWPtr input = getInput(0);
+            const double time = getCurrentTime();
+
+            return [this, input, time]() -> SceneMenuRefresh::Apply {
+                const std::vector<std::string> paths = cameraPaths(SceneMenuRefresh::evaluateInput(input.lock(), time));
+
+                return [this, paths]() { applyCameraMenu(paths); };
+            };
+        }); }, Qt::QueuedConnection);
+}
+
+std::vector<std::string>
+USDRenderSettings::cameraPaths(const ScenePayload& scene)
+{
+    std::vector<std::string> paths;
+    if (scene.isEmpty()) {
+        return paths;
+    }
+    std::string error;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+    if (lease.isValid()) {
+        for (const PXR_NS::UsdPrim& prim : lease.getStage()->Traverse()) {
+            if (prim.IsA<PXR_NS::UsdGeomCamera>()) {
+                paths.push_back(prim.GetPath().GetString());
+            }
+        }
+    }
+
+    return paths;
 }
 
 void
-USDRenderSettings::refreshCameraMenu()
+USDRenderSettings::applyCameraMenu(const std::vector<std::string>& paths)
 {
     KnobChoicePtr camera = _camera.lock();
 
@@ -285,18 +315,8 @@ USDRenderSettings::refreshCameraMenu()
         return;
     }
     std::vector<ChoiceOption> options;
-    EffectInstancePtr input = getInput(0);
-    ScenePayload scene;
-    std::string error;
-    if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        if (lease.isValid()) {
-            for (const PXR_NS::UsdPrim& prim : lease.getStage()->Traverse()) {
-                if (prim.IsA<PXR_NS::UsdGeomCamera>()) {
-                    options.push_back(ChoiceOption(prim.GetPath().GetString(), prim.GetPath().GetString(), ""));
-                }
-            }
-        }
+    for (const std::string& path : paths) {
+        options.push_back(ChoiceOption(path, path, ""));
     }
     // Repopulating an unchanged menu would move the hash and come back here.
     const std::vector<ChoiceOption> current = camera->getEntries_mt_safe();
@@ -307,6 +327,12 @@ USDRenderSettings::refreshCameraMenu()
     if (!same) {
         camera->populateChoices(options);
     }
+}
+
+void
+USDRenderSettings::refreshCameraMenu()
+{
+    applyCameraMenu(cameraPaths(SceneMenuRefresh::evaluateInput(getInput(0), getCurrentTime())));
 }
 
 bool

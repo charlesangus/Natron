@@ -35,6 +35,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -128,10 +129,16 @@ public:
     /**
      * @brief Fills the camera menu with every camera of the camera scene (the Camera input's, else
      * the Scene input's) at the current frame, then Camera Path when none of them has it. Main
-     * thread only; the node calls it itself, queued, whenever an input or
-     * anything upstream changes.
+     * thread only, and it evaluates the input there: the node itself refreshes the menu from a
+     * pool thread whenever an input or anything upstream changes.
      **/
     void refreshCameraMenu();
+
+    // What the node's own refreshes of the menu run through. Main thread.
+    const SceneMenuRefresh& getCameraMenuRefresh() const
+    {
+        return _cameraMenuRefresh;
+    }
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -149,6 +156,9 @@ private:
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void scheduleCameraMenuRefresh();
+
+    // The input the camera menu lists the cameras of.
+    EffectInstancePtr getCameraMenuInput() const;
 
     // Greys out the knobs the chosen projection does not read.
     void refreshProjectionKnobs();
@@ -180,6 +190,7 @@ private:
     KnobBoolWPtr _useFrameHold;
     KnobDoubleWPtr _frameHold;
     std::atomic<bool> _cameraMenuRefreshPending;
+    SceneMenuRefresh _cameraMenuRefresh;
 };
 
 NATRON_NAMESPACE_EXIT

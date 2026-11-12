@@ -135,6 +135,21 @@ SceneWriteBarrier::ReadScope::~ReadScope()
     s.changed.notify_all();
 }
 
+SceneWriteBarrier::SharedReadScope::SharedReadScope(bool held)
+    : _held(held)
+{
+    if (_held) {
+        ++readDepth;
+    }
+}
+
+SceneWriteBarrier::SharedReadScope::~SharedReadScope()
+{
+    if (_held) {
+        --readDepth;
+    }
+}
+
 SceneWriteBarrier::ParticipantId
 SceneWriteBarrier::registerParticipant(const std::function<void()>& quiesce,
                                        const std::function<void()>& resume)

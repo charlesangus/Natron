@@ -30,10 +30,12 @@
 
 #include <atomic>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 
 // Free of USD, like every node header.
 
@@ -86,10 +88,17 @@ public:
     /**
      * @brief Fills the Variant Sets menu with the variant sets of the first prim the pattern
      * matches in the input scene at the current frame, and the Variants menu with the variants of
-     * the set named in Variant Set. Main thread only; the node calls it itself, queued, whenever
-     * its input, its pattern or anything upstream changes.
+     * the set named in Variant Set. Main thread only, and it evaluates the input there: the node
+     * itself refreshes the menus from a pool thread whenever its input, its pattern or anything
+     * upstream changes.
      **/
     void refreshVariantMenus();
+
+    // What the node's own refreshes of the menus run through. Main thread.
+    const SceneMenuRefresh& getMenuRefresh() const
+    {
+        return _menuRefresh;
+    }
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -108,12 +117,26 @@ private:
 
     void scheduleMenuRefresh();
 
+    struct VariantNames {
+        std::vector<std::string> sets;
+        // Of the set named setName.
+        std::vector<std::string> variants;
+    };
+
+    // Of the first prim pattern matches in scene. Any thread.
+    static VariantNames variantNames(const ScenePayload& scene,
+                                     const std::string& pattern,
+                                     const std::string& setName);
+
+    void applyVariantMenus(const VariantNames& names, const std::string& setName);
+
     PrimSelector _primPattern;
     KnobStringWPtr _variantSet;
     KnobChoiceWPtr _variantSets;
     KnobStringWPtr _variant;
     KnobChoiceWPtr _variants;
     std::atomic<bool> _menuRefreshPending;
+    SceneMenuRefresh _menuRefresh;
     // Set while the node itself moves a menu, which must not write the menu's entry back.
     bool _syncingMenus;
 };

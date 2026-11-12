@@ -105,6 +105,8 @@ struct GeoUsdConvertOptions {
     // Unpathed primitives and relative path values go under this prim.
     PXR_NS::SdfPath rootPath { "/geo" };
     GeoUsdPackedModeEnum packedMode = eGeoUsdPackedPointInstancer;
+    // The width authored on UsdGeomPoints that carry no pscale; USD's own fallback is 1.0.
+    double defaultPointWidth = 0.01;
     // When set, prims the input already holds are authored as overs and transforms are written
     // relative to the input's parents, so that the composed result lands where the detail puts it.
     GeoUsdInputSceneConstPtr inputScene;

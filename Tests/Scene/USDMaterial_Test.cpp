@@ -321,6 +321,129 @@ TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
     EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
 }
 
+// The shader the "cycles" render context's surface of the material at materialPath comes from.
+static PXR_NS::UsdShadeShader
+cyclesSurfaceOf(const PXR_NS::UsdStageRefPtr& stage,
+                const char* materialPath)
+{
+    return PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath))).ComputeSurfaceSource(PXR_NS::TfToken("cycles"));
+}
+
+static void
+setBool(const NodePtr& node,
+        const char* name,
+        bool value)
+{
+    KnobBool* knob = dynamic_cast<KnobBool*>(node->getKnobByName(name).get());
+
+    ASSERT_TRUE(knob != NULL) << name;
+    knob->setValue(value);
+}
+
+TEST_F(USDMaterialTest, WithoutMultiplyByPrimvarTheNetworkHasNoCyclesSurface)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/CyclesSurface")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/diffuseColorPrimvar")).IsValid());
+    EXPECT_FALSE(bool(cyclesSurfaceOf(stage, "/Material1")));
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface));
+    EXPECT_FALSE(surface.GetInput(PXR_NS::TfToken("diffuseColor")).HasConnectedSource());
+}
+
+TEST_F(USDMaterialTest, MultiplyByPrimvarMultipliesTheDiffuseKnobColorInTheCyclesSurface)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
+    setBool(material, kUSDMaterialParamDiffuseMultiplyByPrimvar, true);
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    // The universal network, which Storm reads, is unchanged.
+    const PXR_NS::UsdShadeShader universal = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(universal));
+    EXPECT_FALSE(universal.GetInput(PXR_NS::TfToken("diffuseColor")).HasConnectedSource());
+
+    const PXR_NS::UsdShadeShader cycles = cyclesSurfaceOf(stage, "/Material1");
+    ASSERT_TRUE(bool(cycles));
+    PXR_NS::TfToken id;
+    ASSERT_TRUE(cycles.GetShaderId(&id));
+    EXPECT_EQ(PXR_NS::TfToken("UsdPreviewSurface"), id);
+    PXR_NS::UsdShadeConnectableAPI source;
+    PXR_NS::TfToken sourceName;
+    PXR_NS::UsdShadeAttributeType sourceType;
+    ASSERT_TRUE(cycles.GetInput(PXR_NS::TfToken("diffuseColor")).GetConnectedSource(&source, &sourceName, &sourceType));
+    EXPECT_EQ(PXR_NS::TfToken("color"), sourceName);
+    const PXR_NS::UsdShadeShader mix(source.GetPrim());
+    ASSERT_TRUE(mix.GetShaderId(&id));
+    EXPECT_EQ(PXR_NS::TfToken("cycles_mix"), id);
+    std::string mixType;
+    ASSERT_TRUE(mix.GetInput(PXR_NS::TfToken("mix_type")).Get(&mixType));
+    EXPECT_EQ(std::string("multiply"), mixType);
+    float fac = 0.f;
+    ASSERT_TRUE(mix.GetInput(PXR_NS::TfToken("fac")).Get(&fac));
+    EXPECT_EQ(1.f, fac);
+    // The primvar's colour is one factor, the knob colour the other.
+    ASSERT_TRUE(mix.GetInput(PXR_NS::TfToken("color1")).GetConnectedSource(&source, &sourceName, &sourceType));
+    const PXR_NS::UsdShadeShader reader(source.GetPrim());
+    ASSERT_TRUE(reader.GetShaderId(&id));
+    EXPECT_EQ(PXR_NS::TfToken("UsdPrimvarReader_float3"), id);
+    std::string varname;
+    ASSERT_TRUE(reader.GetInput(PXR_NS::TfToken("varname")).Get(&varname));
+    EXPECT_EQ(std::string("displayColor"), varname);
+    EXPECT_FALSE(mix.GetInput(PXR_NS::TfToken("color2")).HasConnectedSource());
+    PXR_NS::GfVec3f knobColor;
+    ASSERT_TRUE(mix.GetInput(PXR_NS::TfToken("color2")).Get(&knobColor));
+    EXPECT_FLOAT_EQ(0.18f, knobColor[0]);
+    // The other inputs are copied and the emissive one is not multiplied.
+    EXPECT_FALSE(cycles.GetInput(PXR_NS::TfToken("emissiveColor")).HasConnectedSource());
+    float roughness = 0.f;
+    ASSERT_TRUE(cycles.GetInput(PXR_NS::TfToken("roughness")).Get(&roughness));
+    EXPECT_FLOAT_EQ(0.5f, roughness);
+}
+
+TEST_F(USDMaterialTest, MultiplyByPrimvarMultipliesTheDiffuseTextureAndTheNamedPrimvar)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(bool(material));
+    setString(material, kUSDMaterialParamDiffuseTexture, std::string("/nonexistent/albedo.exr"));
+    setBool(material, kUSDMaterialParamDiffuseMultiplyByPrimvar, true);
+    setString(material, kUSDMaterialParamDiffusePrimvar, std::string("tint"));
+    setBool(material, kUSDMaterialParamEmissiveMultiplyByPrimvar, true);
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdShadeShader cycles = cyclesSurfaceOf(stage, "/Material1");
+    ASSERT_TRUE(bool(cycles));
+    PXR_NS::UsdShadeConnectableAPI source;
+    PXR_NS::TfToken sourceName;
+    PXR_NS::UsdShadeAttributeType sourceType;
+    ASSERT_TRUE(cycles.GetInput(PXR_NS::TfToken("diffuseColor")).GetConnectedSource(&source, &sourceName, &sourceType));
+    const PXR_NS::UsdShadeShader mix(source.GetPrim());
+    PXR_NS::TfToken id;
+    ASSERT_TRUE(mix.GetShaderId(&id));
+    EXPECT_EQ(PXR_NS::TfToken("cycles_mix"), id);
+    // The texture feeds the second factor, and is still what the universal surface reads.
+    ASSERT_TRUE(mix.GetInput(PXR_NS::TfToken("color2")).GetConnectedSource(&source, &sourceName, &sourceType));
+    EXPECT_EQ(PXR_NS::TfToken("rgb"), sourceName);
+    const PXR_NS::UsdShadeShader texture(source.GetPrim());
+    ASSERT_TRUE(texture.GetShaderId(&id));
+    EXPECT_EQ(PXR_NS::TfToken("UsdUVTexture"), id);
+    EXPECT_EQ(textureOf(stage, "/Material1", "diffuseColor").GetPath(), texture.GetPath());
+    ASSERT_TRUE(mix.GetInput(PXR_NS::TfToken("color1")).GetConnectedSource(&source, &sourceName, &sourceType));
+    std::string varname;
+    ASSERT_TRUE(PXR_NS::UsdShadeShader(source.GetPrim()).GetInput(PXR_NS::TfToken("varname")).Get(&varname));
+    EXPECT_EQ(std::string("tint"), varname);
+    // The emissive colour gets its own multiply, of the default primvar.
+    ASSERT_TRUE(cycles.GetInput(PXR_NS::TfToken("emissiveColor")).GetConnectedSource(&source, &sourceName, &sourceType));
+    ASSERT_TRUE(PXR_NS::UsdShadeShader(source.GetPrim()).GetShaderId(&id));
+    EXPECT_EQ(PXR_NS::TfToken("cycles_mix"), id);
+}
+
 TEST_F(USDMaterialTest, ThePathFollowsARename)
 {
     NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");

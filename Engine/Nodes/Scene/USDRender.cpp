@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -254,11 +255,42 @@ USDRender::scheduleSettingsPrimMenuRefresh()
     // The hooks that call this fire mid-recompute of a hash, before the upstream scene settled.
     QMetaObject::invokeMethod(this, [this]() {
         _settingsPrimMenuRefreshPending = false;
-        refreshSettingsPrimMenu(); }, Qt::QueuedConnection);
+        _settingsPrimMenuRefresh.request(this, [this]() -> SceneMenuRefresh::Read {
+            const EffectInstanceWPtr input = getInput(0);
+            const double time = getCurrentTime();
+
+            return [this, input, time]() -> SceneMenuRefresh::Apply {
+                const std::vector<std::string> paths = settingsPrimPaths(SceneMenuRefresh::evaluateInput(input.lock(), time));
+
+                return [this, paths]() { applySettingsPrimMenu(paths); };
+            };
+        }); }, Qt::QueuedConnection);
+}
+
+std::vector<std::string>
+USDRender::settingsPrimPaths(const ScenePayload& scene)
+{
+    std::vector<std::string> paths;
+    if (scene.isEmpty()) {
+        return paths;
+    }
+    std::string error;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    const PXR_NS::UsdPrim render = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/Render")) : PXR_NS::UsdPrim();
+    if (render) {
+        for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(render)) {
+            if (prim.IsA<PXR_NS::UsdRenderSettings>()) {
+                paths.push_back(prim.GetPath().GetString());
+            }
+        }
+    }
+
+    return paths;
 }
 
 void
-USDRender::refreshSettingsPrimMenu()
+USDRender::applySettingsPrimMenu(const std::vector<std::string>& paths)
 {
     KnobChoicePtr settingsPrim = _settingsPrim.lock();
 
@@ -266,21 +298,8 @@ USDRender::refreshSettingsPrimMenu()
         return;
     }
     std::vector<ChoiceOption> options(1, ChoiceOption(kUSDRenderSettingsPrimStageDefault, tr("Stage Default").toStdString(), ""));
-    EffectInstancePtr input = getInput(0);
-    ScenePayload scene;
-    std::string error;
-    if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        const PXR_NS::UsdPrim render = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/Render")) : PXR_NS::UsdPrim();
-        if (render) {
-            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(render)) {
-                if (prim.IsA<PXR_NS::UsdRenderSettings>()) {
-                    const std::string path = prim.GetPath().GetString();
-                    options.push_back(ChoiceOption(path, path, ""));
-                }
-            }
-        }
+    for (const std::string& path : paths) {
+        options.push_back(ChoiceOption(path, path, ""));
     }
     // Repopulating an unchanged menu would move the hash and come back here.
     const std::vector<ChoiceOption> current = settingsPrim->getEntries_mt_safe();
@@ -291,6 +310,12 @@ USDRender::refreshSettingsPrimMenu()
     if (!same) {
         settingsPrim->populateChoices(options);
     }
+}
+
+void
+USDRender::refreshSettingsPrimMenu()
+{
+    applySettingsPrimMenu(settingsPrimPaths(SceneMenuRefresh::evaluateInput(getInput(0), getCurrentTime())));
 }
 
 struct USDRender::ActiveSettings {
@@ -701,6 +726,7 @@ USDRender::prepareRender(double time,
     if (active.prim) {
         setup->request.settings = RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time);
     }
+    RenderSettingsPrim::addDomeLightCameraVisibility(stage, RenderSettingsPrim::domeLights(stage), active.time, &setup->request.settings);
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;

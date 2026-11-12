@@ -41,6 +41,7 @@
 #define kGeoScatterParamCount "count"
 #define kGeoScatterParamDensity "density"
 #define kGeoScatterParamSeed "seed"
+#define kGeoScatterParamPscale "pscale"
 #define kGeoScatterParamRelaxPoints "relaxPoints"
 #define kGeoScatterParamRelaxIterations "relaxIterations"
 #define kGeoScatterParamTransferN "transferN"
@@ -62,6 +63,8 @@ struct GeoScatterParams {
     int count = 1000;
     double density = 10.;
     int seed = 0;
+    // Written to every point as pscale, so the points draw as small as the geometry they sit on.
+    double pscale = 0.01;
     bool relaxPoints = false;
     int relaxIterations = 10;
     bool transferN = false;
@@ -143,6 +146,7 @@ private:
     KnobIntWPtr _count;
     KnobDoubleWPtr _density;
     KnobIntWPtr _seed;
+    KnobDoubleWPtr _pscale;
     KnobBoolWPtr _relaxPoints;
     KnobIntWPtr _relaxIterations;
     KnobBoolWPtr _transferN;

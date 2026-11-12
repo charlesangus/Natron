@@ -32,9 +32,11 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -145,10 +147,16 @@ public:
     /**
      * @brief Fills the Settings Prim menu with Stage Default and every RenderSettings prim under
      * /Render of the input scene at the current frame, keeping the chosen one even when the scene
-     * no longer has it. Main thread only; the node calls it itself, queued, whenever its input or
-     * anything upstream changes.
+     * no longer has it. Main thread only, and it evaluates the input there: the node itself
+     * refreshes the menu from a pool thread whenever its input or anything upstream changes.
      **/
     void refreshSettingsPrimMenu();
+
+    // What the node's own refreshes of the menu run through. Main thread.
+    const SceneMenuRefresh& getSettingsPrimMenuRefresh() const
+    {
+        return _settingsPrimMenuRefresh;
+    }
 
     /**
      * @brief The renderer a render at time and view uses: the Renderer knob's, else the one the
@@ -181,6 +189,11 @@ private:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void scheduleSettingsPrimMenuRefresh();
+
+    // The RenderSettings prims under /Render of scene. Any thread.
+    static std::vector<std::string> settingsPrimPaths(const ScenePayload& scene);
+
+    void applySettingsPrimMenu(const std::vector<std::string>& paths);
 
     // Keeps a loaded renderer that is not installed as an entry of its own, so the project keeps it.
     void keepLoadedRenderer();
@@ -220,6 +233,7 @@ private:
     KnobBoolWPtr _headlight;
     KnobChoiceWPtr _renderer;
     std::atomic<bool> _settingsPrimMenuRefreshPending;
+    SceneMenuRefresh _settingsPrimMenuRefresh;
 };
 
 NATRON_NAMESPACE_EXIT

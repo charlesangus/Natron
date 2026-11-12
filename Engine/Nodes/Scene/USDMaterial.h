@@ -49,6 +49,10 @@
 #define kUSDMaterialParamEmissiveColor "emissiveColor"
 #define kUSDMaterialParamEmissiveTexture "emissiveTexture"
 #define kUSDMaterialParamUseAlpha "useAlpha"
+#define kUSDMaterialParamDiffuseMultiplyByPrimvar "diffuseMultiplyByPrimvar"
+#define kUSDMaterialParamDiffusePrimvar "diffusePrimvar"
+#define kUSDMaterialParamEmissiveMultiplyByPrimvar "emissiveMultiplyByPrimvar"
+#define kUSDMaterialParamEmissivePrimvar "emissivePrimvar"
 
 // The optional image inputs, each driving the surface input of the same name through a live texture.
 #define kUSDMaterialInputDiffuseColor 0
@@ -149,6 +153,10 @@ private:
     KnobColorWPtr _emissiveColor;
     KnobFileWPtr _emissiveTexture;
     KnobBoolWPtr _useAlpha;
+    KnobBoolWPtr _diffuseMultiplyByPrimvar;
+    KnobStringWPtr _diffusePrimvar;
+    KnobBoolWPtr _emissiveMultiplyByPrimvar;
+    KnobStringWPtr _emissivePrimvar;
 };
 
 NATRON_NAMESPACE_EXIT

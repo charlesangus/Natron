@@ -39,6 +39,11 @@
 // never sent to a delegate.
 #define kRenderSettingsPrimRendererAttribute "natron:renderer"
 
+// The light attribute saying whether camera rays see the light. Un-namespaced: usdImaging hands a
+// light data source the prim attribute of the name a delegate asks for, mapping only UsdLux's own
+// inputs to their "inputs:" names, and Cycles asks for visibleInPrimaryRay.
+#define kLightVisibleInPrimaryRayAttribute "visibleInPrimaryRay"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -112,6 +117,31 @@ StandardAttributes standardAttributes(const PXR_NS::UsdRenderSettings& settings)
 bool rendererFor(const PXR_NS::UsdPrim& prim,
                  std::string* rendererId,
                  std::string* errorMessage);
+
+/**
+ * @brief The paths of the stage's active dome lights (DomeLight and DomeLight_1), outside
+ * instance prototypes. It visits every prim, so a caller keeps the result until the stage is edited.
+ **/
+PXR_NS::SdfPathVector domeLights(const PXR_NS::UsdStageRefPtr& stage);
+
+/**
+ * @brief The domeLightCameraVisibility render setting the domes call for: false when any of them
+ * authors kLightVisibleInPrimaryRayAttribute false at time, else true. A dome's own attribute
+ * hides it from no delegate: Storm draws its sky by this setting, and UsdImagingGLEngine writes the
+ * setting into each dome's light data source as cameraVisibility.
+ **/
+bool domeLightCameraVisibility(const PXR_NS::UsdStageRefPtr& stage,
+                               const PXR_NS::SdfPathVector& domes,
+                               PXR_NS::UsdTimeCode time);
+
+/**
+ * @brief Sets domeLightCameraVisibility in *settings to domeLightCameraVisibility(). Always set,
+ * true included, so that an engine kept across edits shows a dome again once none hides it.
+ **/
+void addDomeLightCameraVisibility(const PXR_NS::UsdStageRefPtr& stage,
+                                  const PXR_NS::SdfPathVector& domes,
+                                  PXR_NS::UsdTimeCode time,
+                                  Values* settings);
 } // namespace RenderSettingsPrim
 
 NATRON_NAMESPACE_EXIT

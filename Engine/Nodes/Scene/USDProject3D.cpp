@@ -39,9 +39,11 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Scene/GeoCameraProjection.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -303,24 +305,28 @@ USDProject3D::scheduleCameraMenuRefresh()
     // The hooks that call this fire mid-recompute of a hash, before the upstream scene settled.
     QMetaObject::invokeMethod(this, [this]() {
         _cameraMenuRefreshPending = false;
-        refreshCameraMenu(); }, Qt::QueuedConnection);
+        _cameraMenuRefresh.request(this, [this]() -> SceneMenuRefresh::Read {
+            const EffectInstanceWPtr input = getCameraMenuInput();
+            const double time = getCurrentTime();
+
+            return [this, input, time]() -> SceneMenuRefresh::Apply {
+                const std::vector<std::string> cameras = GeoCameraProjection::cameraPaths(SceneMenuRefresh::evaluateInput(input.lock(), time));
+
+                return [this, cameras]() { _camera.refreshMenu(cameras, true); };
+            };
+        }); }, Qt::QueuedConnection);
+}
+
+EffectInstancePtr
+USDProject3D::getCameraMenuInput() const
+{
+    return getInput(kUSDProject3DInputCamera);
 }
 
 void
 USDProject3D::refreshCameraMenu()
 {
-    std::vector<std::string> cameras;
-    EffectInstancePtr input = getInput(kUSDProject3DInputCamera);
-    ScenePayload scene;
-    std::string error;
-    if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        if (lease.isValid()) {
-            for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
-                cameras.push_back(path.GetString());
-            }
-        }
-    }
+    const std::vector<std::string> cameras = GeoCameraProjection::cameraPaths(SceneMenuRefresh::evaluateInput(getCameraMenuInput(), getCurrentTime()));
     _camera.refreshMenu(cameras, true);
 }
 

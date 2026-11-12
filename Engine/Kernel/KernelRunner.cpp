@@ -39,6 +39,7 @@
 
 #include <QThreadPool>
 
+#include "Engine/Nodes/Generator/NoiseCore.h"
 #include "Engine/Noise.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/TLSHolder.h"
@@ -470,6 +471,170 @@ fop(Machine& m, std::span<const KernelOperand> ops, std::size_t k)
     return m.regs.f(ops[k].reg);
 }
 
+// The seed step between the fields of a vector result. The fractals step the seed by one per octave,
+// so fields this far apart never share an octave's seed.
+constexpr noise4d::uint kNoiseFieldSeed = 0x632BE5ABu;
+
+// A power of two, so the offsets added to a lattice fraction near 0 are exact.
+constexpr float kCurlStep = 1.f / 1024.f;
+
+struct Noise4Kind {
+    int type = NoiseCore::kNoiseTypePerlin;
+    int fractal = NoiseCore::kNoiseFractalNone;
+    bool toVector = false;
+    // Map [-1, 1] to [0, 1].
+    bool unit = false;
+};
+
+Noise4Kind
+noise4Kind(KernelCoreFunction id)
+{
+    using F = KernelCoreFunction;
+    Noise4Kind k;
+    switch (id) {
+    case F::ePerlinNoise4ToVector:
+        k.toVector = true;
+        break;
+    case F::eSimplexNoise4ToVector:
+        k.toVector = true;
+        [[fallthrough]];
+    case F::eSimplexNoise4:
+        k.type = NoiseCore::kNoiseTypeSimplex;
+        break;
+    case F::eValueNoise4ToVector:
+        k.toVector = true;
+        [[fallthrough]];
+    case F::eValueNoise4:
+        k.type = NoiseCore::kNoiseTypeValue;
+        break;
+    case F::eWorleyNoise4ToVector:
+        k.toVector = true;
+        [[fallthrough]];
+    case F::eWorleyNoise4:
+        k.type = NoiseCore::kNoiseTypeCellular;
+        k.unit = true;
+        break;
+    case F::eFbmNoise4ToVector:
+        k.toVector = true;
+        [[fallthrough]];
+    case F::eFbmNoise4:
+        k.fractal = NoiseCore::kNoiseFractalFBm;
+        break;
+    case F::eTurbulenceNoise4ToVector:
+        k.toVector = true;
+        [[fallthrough]];
+    case F::eTurbulenceNoise4:
+        k.fractal = NoiseCore::kNoiseFractalBillow;
+        k.unit = true;
+        break;
+    default:
+        break;
+    }
+    return k;
+}
+
+bool
+finiteCoord(const float* const p[4], int l)
+{
+    return std::isfinite(p[0][l]) && std::isfinite(p[1][l]) && std::isfinite(p[2][l]) && std::isfinite(p[3][l]);
+}
+
+void
+callNoise4(Machine& m, const Noise4Kind& kind, std::span<const KernelOperand> res, std::span<const KernelOperand> args,
+           const std::vector<int>& lanes)
+{
+    const bool fractal = kind.fractal != NoiseCore::kNoiseFractalNone;
+    const float* const p[4] = { fop(m, args, 0), fop(m, args, 1), fop(m, args, 2), fop(m, args, 3) };
+    const std::int32_t* octaves = fractal ? m.regs.i(args[4].reg) : nullptr;
+    const float* lacunarity = fractal ? fop(m, args, 5) : nullptr;
+    const float* gain = fractal ? fop(m, args, 6) : nullptr;
+    const std::size_t outs = kind.toVector ? 3 : 1;
+    NoiseCore::NoiseParams prm = NoiseCore::defaultNoiseParams();
+    prm.type = kind.type;
+    prm.fractal = kind.fractal;
+    for (int l : lanes) {
+        // A non-finite coordinate has no lattice cell.
+        if (!finiteCoord(p, l)) {
+            for (std::size_t c = 0; c < outs; ++c) {
+                fop(m, res, c)[l] = 0.f;
+            }
+            continue;
+        }
+        if (fractal) {
+            prm.octaves = octaves[l];
+            prm.lacunarity = lacunarity[l];
+            prm.gain = gain[l];
+        }
+        const noise4d::NoiseCoord q = noise4d::coordFromFloats(p[0][l], p[1][l], p[2][l], p[3][l]);
+        for (std::size_t c = 0; c < outs; ++c) {
+            prm.seed = kNoiseFieldSeed * noise4d::uint(c);
+            const float v = NoiseCore::noise4(prm, q);
+            fop(m, res, c)[l] = kind.unit ? (v + 1.f) * 0.5f : v;
+        }
+    }
+}
+
+// The curl of three fBm Perlin potentials. Each octave is differentiated by central differences in
+// its own lattice space, so the step stays the same fraction of a cell at every frequency, and is
+// scaled by its frequency for the chain rule.
+void
+callCurlNoise4(Machine& m, std::span<const KernelOperand> res, std::span<const KernelOperand> args,
+               const std::vector<int>& lanes)
+{
+    using noise4d::vabs;
+    const float* const p[4] = { fop(m, args, 0), fop(m, args, 1), fop(m, args, 2), fop(m, args, 3) };
+    const std::int32_t* octavesIn = m.regs.i(args[4].reg);
+    const float* lacunarity = fop(m, args, 5);
+    const float* gain = fop(m, args, 6);
+    for (int l : lanes) {
+        if (!finiteCoord(p, l)) {
+            for (std::size_t c = 0; c < 3; ++c) {
+                fop(m, res, c)[l] = 0.f;
+            }
+            continue;
+        }
+        const noise4d::NoiseCoord base = noise4d::coordFromFloats(p[0][l], p[1][l], p[2][l], p[3][l]);
+        const int octaves = std::clamp<std::int32_t>(octavesIn[l], 1, NoiseCore::kNoiseMaxOctaves);
+        const float gainBound = vabs(gain[l]);
+        // d[c][a] is the derivative of potential c along axis a.
+        float d[3][3] = {};
+        noise4d::uint seed = 0u;
+        float frequency = 1.f;
+        float amp = 1.f;
+        float bound = 0.f;
+        float boundAmp = 1.f;
+        for (int k = 0; k < octaves; ++k) {
+            const noise4d::NoiseCoord q = k > 0 ? noise4d::coordScale(base, frequency) : base;
+            const float scale = amp * frequency * (0.5f / kCurlStep);
+            for (int c = 0; c < 3; ++c) {
+                const noise4d::uint s = kNoiseFieldSeed * noise4d::uint(c) + seed;
+                for (int a = 0; a < 3; ++a) {
+                    if (a == c) {
+                        continue;
+                    }
+                    float o[3] = { 0.f, 0.f, 0.f };
+                    o[a] = kCurlStep;
+                    const float hi = noise4d::perlin4(s, noise4d::coordOffset(q, o[0], o[1], o[2], 0.f));
+                    const float lo = noise4d::perlin4(s, noise4d::coordOffset(q, -o[0], -o[1], -o[2], 0.f));
+                    d[c][a] += (hi - lo) * scale;
+                }
+            }
+            bound += boundAmp;
+            boundAmp *= gainBound;
+            seed += 1u;
+            frequency *= lacunarity[l];
+            amp *= gain[l];
+            if (!(vabs(frequency) <= NoiseCore::kNoiseMaxFrequency) || !(boundAmp <= NoiseCore::kNoiseMaxAmplitude)
+                || !(vabs(amp * frequency) <= NoiseCore::kNoiseMaxAmplitude)) {
+                break;
+            }
+        }
+        fop(m, res, 0)[l] = (d[2][1] - d[1][2]) / bound;
+        fop(m, res, 1)[l] = (d[0][2] - d[2][0]) / bound;
+        fop(m, res, 2)[l] = (d[1][0] - d[0][1]) / bound;
+    }
+}
+
 void
 callCore(Machine& m, const KernelInstruction& in, const KernelProgramFunction& fn, int n)
 {
@@ -695,6 +860,28 @@ callCore(Machine& m, const KernelInstruction& in, const KernelProgramFunction& f
             fop(m, res, 1)[l] = float(vy + qw * ty + (qz * tx - qx * tz));
             fop(m, res, 2)[l] = float(vz + qw * tz + (qx * ty - qy * tx));
         }
+        break;
+    }
+    case KernelCoreFunction::ePerlinNoise4:
+    case KernelCoreFunction::ePerlinNoise4ToVector:
+    case KernelCoreFunction::eSimplexNoise4:
+    case KernelCoreFunction::eSimplexNoise4ToVector:
+    case KernelCoreFunction::eValueNoise4:
+    case KernelCoreFunction::eValueNoise4ToVector:
+    case KernelCoreFunction::eWorleyNoise4:
+    case KernelCoreFunction::eWorleyNoise4ToVector:
+    case KernelCoreFunction::eFbmNoise4:
+    case KernelCoreFunction::eFbmNoise4ToVector:
+    case KernelCoreFunction::eTurbulenceNoise4:
+    case KernelCoreFunction::eTurbulenceNoise4ToVector: {
+        const Noise4Kind kind = noise4Kind(KernelCoreFunction(fn.signature.id));
+        need(kind.toVector ? 3 : 1, kind.fractal != NoiseCore::kNoiseFractalNone ? 7 : 4);
+        callNoise4(m, kind, res, args, lanes);
+        break;
+    }
+    case KernelCoreFunction::eCurlNoise4: {
+        need(3, 7);
+        callCurlNoise4(m, res, args, lanes);
         break;
     }
     default:

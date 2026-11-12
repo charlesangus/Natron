@@ -210,6 +210,21 @@ qt_add_resources(NatronEngine AiModelManifest
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data"
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data/ai_models.json"
 )
+# The nodes whose docs/<PluginID>.md is a user-facing reference rather than a developer note
+# are bundled as :/Docs/Nodes/<PluginID>.md; Node::makeDocumentation appends it to the node's
+# Help page.
+set(NatronEngine_NODE_DOCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoWrangle.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoPython.md
+)
+foreach(nodeDoc IN LISTS NatronEngine_NODE_DOCS)
+    get_filename_component(nodeDocName ${nodeDoc} NAME)
+    set_source_files_properties(${nodeDoc} PROPERTIES QT_RESOURCE_ALIAS ${nodeDocName})
+endforeach()
+qt_add_resources(NatronEngine NodeDocs
+    PREFIX "/Docs/Nodes"
+    FILES ${NatronEngine_NODE_DOCS}
+)
 # GeoSubdivide refines through OpenSubdiv's Far library, the one USD's own subdivision uses;
 # pxr's package config usually brings the target in already.
 if(NOT TARGET OpenSubdiv::osdCPU)

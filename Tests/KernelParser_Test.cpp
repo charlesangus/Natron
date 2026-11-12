@@ -409,6 +409,29 @@ TEST(KernelParserTest, ErrorsCarryLineAndColumn)
     expectError("vector v = 1;\nv = v + \"s\";", 2, "+", "cannot be applied");
 }
 
+TEST(KernelParserTest, Noise4FunctionsTakeAnyPositionAndOptionalFractalArguments)
+{
+    const char* const corpus[] = {
+        "f@a = pnoise(@P.x) + xnoise(@uv.xy) + valuenoise(@P) + wnoise(@orient);",
+        "v@Cd = pnoise(@P); vector c = wnoise(set(@P.x, @P.y, @P.z, @Time));",
+        "f@a = onoise(@P) + onoise(@P, 3) + onoise(@P, 3, 2.5) + onoise(@P, 3.7, 2, 0.4);",
+        "f@a = anoise(@P, @ptnum % 4, 2, 0.5); v@b = anoise(@P);",
+        "@v = curlnoise(@P) + curlnoise(@P, 2) + curlnoise(set(1, 2, 3, @Time), 3, 2, 0.5);",
+    };
+    for (const char* source : corpus) {
+        Compiled c;
+        compile(source, c);
+        EXPECT_TRUE(c.ok) << source << "\n"
+                          << c.error.line << ":" << c.error.column << " " << c.error.message;
+    }
+
+    expectError("f@a = pnoise(@P, 2);", 1, "pnoise", "'pnoise' takes 1 argument, not 2");
+    expectError("f@a = onoise(@P, 1, 2, 3, 4);", 1, "onoise", "'onoise' takes 1 to 4 arguments, not 5");
+    expectError("f@a = xnoise(\"P\");", 1, "\"P\"", "'xnoise' takes a float or a vector");
+    expectError("f@a = onoise(@P, {1, 2, 3});", 1, "{1", "expected an int");
+    expectError("f@a = snoise(@P);", 1, "snoise", "function 'snoise' is not supported");
+}
+
 TEST(KernelParserTest, KernelDirectoryIncludesNoGeometryHeaders)
 {
     const std::filesystem::path kernel = std::filesystem::path(NATRON_TESTS_ENGINE_DIR) / "Kernel";

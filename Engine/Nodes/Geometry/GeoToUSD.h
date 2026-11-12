@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -42,6 +43,7 @@
 #define kGeoToUSDParamAuthorTimeSamples "authorTimeSamples"
 #define kGeoToUSDParamPackedPrimitives "packedPrimitives"
 #define kGeoToUSDParamCopyIntoLayer "copyIntoLayer"
+#define kGeoToUSDParamDefaultPointWidth "defaultPointWidth"
 #define kGeoToUSDInputGeometry 0
 #define kGeoToUSDInputScene 1
 
@@ -100,6 +102,12 @@ public:
 
     virtual ~GeoToUSD();
 
+    /**
+     * @brief hook is called with each frame a scene render has gathered the geometry of, on the
+     * thread that gathered it, until this is called again with an empty one.
+     **/
+    static void setFrameGatheredHookForTests(const std::function<void(double frame)>& hook);
+
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -121,6 +129,7 @@ private:
     KnobBoolWPtr _authorTimeSamples;
     KnobChoiceWPtr _packedPrimitives;
     KnobBoolWPtr _copyIntoLayer;
+    KnobDoubleWPtr _defaultPointWidth;
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

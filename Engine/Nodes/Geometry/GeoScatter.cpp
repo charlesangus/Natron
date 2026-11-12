@@ -446,6 +446,10 @@ scatterGeometry(const GeoDetail& input,
         desc.typeInfo = eGeoTypeInfoNormal;
         normals = &output.addAttribute(eGeoAttribClassPoint, desc);
     }
+    GeoAttributeDesc pscaleDesc;
+    pscaleDesc.name = "pscale";
+    pscaleDesc.storage = eGeoStorageFloat32;
+    GeoAttribute& pscale = output.addAttribute(eGeoAttribClassPoint, pscaleDesc);
     GeoAttribute* sourcePrim = nullptr;
     if (params.outputSourcePrim) {
         GeoAttributeDesc desc;
@@ -485,6 +489,7 @@ scatterGeometry(const GeoDetail& input,
             const float out[3] = { (float)(n[0] / l), (float)(n[1] / l), (float)(n[2] / l) };
             normals->setTuple<float>(point, std::span<const float>(out, 3));
         }
+        pscale.set<float>(point, (float)params.pscale);
         if (sourcePrim) {
             sourcePrim->set<std::int32_t>(point, (std::int32_t)t.primitiveIndex);
         }
@@ -580,6 +585,17 @@ GeoScatter::initializeKnobs()
     seed->setDefaultValue(0);
     page->addKnob(seed);
     _seed = seed;
+
+    KnobDoublePtr pscale = createKnob<KnobDouble>(tr("Pscale").toStdString());
+    pscale->setName(kGeoScatterParamPscale);
+    pscale->setHintToolTip(tr("Written to every point as pscale, which GeoToUSD and the viewer draw as the point's width. "
+                              "The default suits points on geometry about a unit across.")
+                               .toStdString());
+    pscale->setDefaultValue(0.01);
+    pscale->setDisplayMinimum(0.);
+    pscale->setDisplayMaximum(1.);
+    page->addKnob(pscale);
+    _pscale = pscale;
 
     KnobBoolPtr relaxPoints = createKnob<KnobBool>(tr("Relax Points").toStdString());
     relaxPoints->setName(kGeoScatterParamRelaxPoints);
@@ -699,6 +715,9 @@ GeoScatter::readParams(double time,
     }
     if (const KnobIntPtr seed = _seed.lock()) {
         p.seed = seed->getValueAtTime(time, 0, view);
+    }
+    if (const KnobDoublePtr pscale = _pscale.lock()) {
+        p.pscale = pscale->getValueAtTime(time, 0, view);
     }
     if (const KnobBoolPtr relaxPoints = _relaxPoints.lock()) {
         p.relaxPoints = relaxPoints->getValueAtTime(time, 0, view);

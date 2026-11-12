@@ -309,6 +309,21 @@ enum class KernelCoreFunction : std::int32_t {
     eQuaternionAxisAngle, // quaternion(float angle, vector axis) -> vector4
     eQuaternionMultiply, // qmultiply(vector4, vector4) -> vector4
     eQuaternionRotate, // qrotate(vector4, vector) -> vector
+    // The FastNoise2 family over a vector4 position. A vector result is three fields with their own
+    // seeds. The fractal forms also take int octaves, float lacunarity and float gain.
+    ePerlinNoise4, // pnoise(vector4) -> float
+    ePerlinNoise4ToVector, // pnoise(vector4) -> vector
+    eSimplexNoise4, // xnoise(vector4) -> float
+    eSimplexNoise4ToVector, // xnoise(vector4) -> vector
+    eValueNoise4, // valuenoise(vector4) -> float
+    eValueNoise4ToVector, // valuenoise(vector4) -> vector
+    eWorleyNoise4, // wnoise(vector4) -> float
+    eWorleyNoise4ToVector, // wnoise(vector4) -> vector
+    eFbmNoise4, // onoise(vector4, int, float, float) -> float
+    eFbmNoise4ToVector, // onoise(vector4, int, float, float) -> vector
+    eTurbulenceNoise4, // anoise(vector4, int, float, float) -> float
+    eTurbulenceNoise4ToVector, // anoise(vector4, int, float, float) -> vector
+    eCurlNoise4, // curlnoise(vector4, int, float, float) -> vector
 };
 
 struct KernelOperand {

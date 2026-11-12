@@ -32,9 +32,11 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/SceneMenuRefresh.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -99,10 +101,17 @@ public:
 
     /**
      * @brief Fills the camera menu with every camera of the input scene at the current frame,
-     * keeping the chosen one even when the scene no longer has it. Main thread only; the node
-     * calls it itself, queued, whenever its input or anything upstream changes.
+     * keeping the chosen one even when the scene no longer has it. Main thread only, and it
+     * evaluates the input there: the node itself refreshes the menu from a pool thread whenever
+     * its input or anything upstream changes.
      **/
     void refreshCameraMenu();
+
+    // What the node's own refreshes of the menu run through. Main thread.
+    const SceneMenuRefresh& getCameraMenuRefresh() const
+    {
+        return _cameraMenuRefresh;
+    }
 
     // Adds to serialization, as Node::toSerialization() ends, the saved knobs this node has no knob for.
     void appendUnmatchedKnobs(Serialization::NodeSerialization* serialization) const;
@@ -134,6 +143,9 @@ private:
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void scheduleCameraMenuRefresh();
+    // The cameras of scene. Any thread.
+    static std::vector<std::string> cameraPaths(const ScenePayload& scene);
+    void applyCameraMenu(const std::vector<std::string>& paths);
     // Keeps a loaded default renderer that is not installed as an entry of its own, so the project keeps it.
     void keepLoadedRenderer();
     // Authors the prim at primPath on edit's layer from the knobs.
@@ -153,6 +165,7 @@ private:
     KnobBoolWPtr _makeActive;
     KnobChoiceWPtr _defaultRenderer;
     std::atomic<bool> _cameraMenuRefreshPending;
+    SceneMenuRefresh _cameraMenuRefresh;
     std::unique_ptr<RenderSettingsKnobs> _settings;
 };
 

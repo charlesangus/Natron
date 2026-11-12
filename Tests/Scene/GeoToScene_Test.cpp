@@ -27,8 +27,14 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -37,6 +43,7 @@
 
 #include "BaseTest.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/GeoDetail.h"
@@ -47,8 +54,10 @@
 #include "Engine/Nodes/Geometry/GeoToUSD.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -80,6 +89,7 @@ protected:
             }
         }
         _nodes.clear();
+        GeoToUSD::setFrameGatheredHookForTests(std::function<void(double)>());
         SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
@@ -174,6 +184,56 @@ protected:
         EXPECT_TRUE(lease->isValid()) << error;
 
         return lease->getStage();
+    }
+
+    // A 9x9-segment grid, its size keyed from 1 at frame first to last at frame last, into a
+    // GeoToUSD that copies every frame of the project range into its layer.
+    void buildTimeSampledGrid(double first,
+                              double last)
+    {
+        _grid = make(PLUGINID_NATRON_GEOPRIMITIVE);
+        _toUSD = make(PLUGINID_NATRON_GEOTOUSD);
+        ASSERT_TRUE(_grid && _toUSD);
+        KnobChoice* type = knob<KnobChoice>(_grid, kGeoPrimitiveParamType);
+        ASSERT_TRUE(type != NULL);
+        type->setValueFromID("grid", 0);
+        KnobDouble* size = knob<KnobDouble>(_grid, kGeoPrimitiveParamGridSize);
+        ASSERT_TRUE(size != NULL);
+        size->setValueAtTime(first, 1., ViewSpec::all(), 0);
+        size->setValueAtTime(last, last, ViewSpec::all(), 0);
+        KnobBool* copy = knob<KnobBool>(_toUSD, kGeoToUSDParamCopyIntoLayer);
+        KnobBool* samples = knob<KnobBool>(_toUSD, kGeoToUSDParamAuthorTimeSamples);
+        ASSERT_TRUE(copy && samples);
+        copy->setValue(true);
+        samples->setValue(true);
+        KnobInt* range = dynamic_cast<KnobInt*>(getApp()->getProject()->getKnobByName("frameRange").get());
+        ASSERT_TRUE(range != NULL);
+        range->setValue((int)first, ViewSpec::all(), 0);
+        range->setValue((int)last, ViewSpec::all(), 1);
+        connectNodes(_grid, _toUSD, kGeoToUSDInputGeometry, true);
+    }
+
+    // Evaluates node at frame 1 inside a render that abortInfo aborts.
+    EffectInstance::RenderRoIRetCode evaluateInRender(const NodePtr& node,
+                                                      const AbortableRenderInfoPtr& abortInfo,
+                                                      ScenePayload* payload,
+                                                      std::string* error)
+    {
+        const double time = 1.;
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+
+        return node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0)), payload, error);
     }
 
     NodePtr _card;
@@ -392,4 +452,74 @@ TEST_F(GeoToSceneTest, CloseSubframesOfAnimatedGeometryGetLayersOfTheirOwn)
     ASSERT_FALSE(second.empty());
     EXPECT_NE(first, second);
     EXPECT_EQ(first, layerIdentifier(_toUSD, a));
+}
+
+TEST_F(GeoToSceneTest, ATimeSampledCopyHasEverySampleInOrder)
+{
+    const double first = 1.;
+    const double last = 24.;
+    buildTimeSampledGrid(first, last);
+    std::atomic<int> gathered(0);
+    GeoToUSD::setFrameGatheredHookForTests([&gathered](double) { ++gathered; });
+
+    const ScenePayload payload = evaluate(_toUSD);
+    EXPECT_EQ((int)(last - first) + 1, gathered.load());
+    SceneQueryPool::Lease lease;
+    const PXR_NS::UsdStageRefPtr stage = stageOf(payload, &lease);
+    ASSERT_TRUE(stage);
+    PXR_NS::UsdGeomMesh mesh;
+    for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
+        if (prim.IsA<PXR_NS::UsdGeomMesh>()) {
+            mesh = PXR_NS::UsdGeomMesh(prim);
+            break;
+        }
+    }
+    ASSERT_TRUE(static_cast<bool>(mesh));
+    std::vector<double> times;
+    ASSERT_TRUE(mesh.GetPointsAttr().GetTimeSamples(&times));
+    ASSERT_EQ((std::size_t)(last - first) + 1, times.size());
+
+    // Each sample is its own frame's grid: the keyed size grows frame after frame.
+    double previousTime = -std::numeric_limits<double>::infinity();
+    double previousWidth = 0.;
+    for (double time : times) {
+        EXPECT_LT(previousTime, time);
+        PXR_NS::VtVec3fArray points;
+        ASSERT_TRUE(mesh.GetPointsAttr().Get(&points, time));
+        ASSERT_FALSE(points.empty());
+        float low = points[0][0];
+        float high = points[0][0];
+        for (const PXR_NS::GfVec3f& point : points) {
+            low = std::min(low, point[0]);
+            high = std::max(high, point[0]);
+        }
+        const double width = high - low;
+        EXPECT_LT(previousWidth, width) << "at time " << time;
+        previousTime = time;
+        previousWidth = width;
+    }
+}
+
+TEST_F(GeoToSceneTest, AnAbortStopsTheTimeSampleGatherEarly)
+{
+    const double frames = 1000.;
+    buildTimeSampledGrid(1., frames);
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    std::atomic<int> gathered(0);
+    GeoToUSD::setFrameGatheredHookForTests([&gathered, abortInfo](double) {
+        if (++gathered == 1) {
+            abortInfo->setAborted();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    });
+
+    ScenePayload payload;
+    std::string error;
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, evaluateInRender(_toUSD, abortInfo, &payload, &error));
+    EXPECT_LT(gathered.load(), (int)frames / 2);
+    GeoToUSD::setFrameGatheredHookForTests(std::function<void(double)>());
+
+    ScenePayload complete;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluateInRender(_toUSD, AbortableRenderInfo::create(true, 0), &complete, &error)) << error;
+    EXPECT_FALSE(complete.isEmpty());
 }

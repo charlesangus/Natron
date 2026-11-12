@@ -141,4 +141,4 @@ Context:
   - nucleon-quadrants (Opus) is promising; variations of it.
   - A vertically mirrored pyramid-key-stack, and a few variations of pyramid-key-diagonal.
   - Trefoil: a few variations with one complete rectangular orange piece and oval/elliptical grey pieces interlocked with it.
-  - Round 9: quadrants variations to an Opus agent; pyramid and trefoil work to a Fable agent.
+  - Round 9: quadrants variations to an Opus agent; pyramid and trefoil work to a Fable agent. Quadrants variations at 2649bec28: equal, gap, pinwheel, inward, triangle, tilt, counter.

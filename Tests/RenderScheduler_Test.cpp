@@ -1205,7 +1205,7 @@ TEST_F(RenderSchedulerTest, AnInputLightsOnlyWhenItsUpstreamRan)
     }
 }
 
-// The evicted entry makes the root pull its input inline, through a disabled node reading a cached one.
+// The evicted entry makes the root pull its input inline, through an identity node reading a cached one.
 TEST_F(RenderSchedulerTest, AnIdentityPassingCachedPixelsInlineNeitherRunsNorLightsAnEdge)
 {
     appPTR->clearAllCaches();
@@ -1213,7 +1213,7 @@ TEST_F(RenderSchedulerTest, AnIdentityPassingCachedPixelsInlineNeitherRunsNorLig
     ASSERT_TRUE(buildChain(4, &nodes));
     ASSERT_NO_FATAL_FAILURE(setBool(nodes[0], "cacheOutput", true));
     ASSERT_NO_FATAL_FAILURE(setBool(nodes[2], "cacheOutput", true));
-    nodes[1]->setNodeDisabled(true);
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[1], "identity", true));
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
         nodes[i]->takeInputExecutionCount(0);

@@ -10,9 +10,9 @@ throughout (it is lit for one refresh interval after each execution).
 
 CPU half: the Grade's halo is yellow on both sides and never the GPU colour; the cached
 CheckerBoard above it stays unlit because the cache served it.
-GPU half: the Blur's halo is the GPU colour on both sides. It runs only when GPU compute can
-use a device: NATRON_GPU=force with a Vulkan device listed (lavapipe counts), or a hardware
-device under Auto. Otherwise it is skipped with a SKIP line in results.txt. A halo split
+GPU half: the Blur's halo is the GPU colour on both sides. It runs only when natron.log says
+GPU compute is ready on a device: under NATRON_GPU=force any Vulkan device does (lavapipe counts),
+under Auto only a hardware one. Otherwise it is skipped with a SKIP line in results.txt. A halo split
 yellow/GPU (left/right), when a node ran on both devices within one refresh, is reported as
 a NOTE: this graph has no node that does so deterministically.
 
@@ -36,7 +36,8 @@ ZOOM = 2.0
 # Scene distances out from a node's box at which the halo is sampled; the halo's inner edge moves
 # out by the user colour border's width when that border is shown.
 HALO_OFFSETS = (1.5, 3.0, 4.5, 6.0, 7.5, 9.0)
-SOFTWARE_DEVICES = ("llvmpipe", "lavapipe")
+GPU_READY = "GPU compute ready on "
+GPU_UNAVAILABLE = "GPU compute is unavailable: "
 
 try:
     import NatronEngine
@@ -75,28 +76,32 @@ try:
                 continue
         return False
 
+    def gpu_log_line():
+        """The line of natron.log saying whether GPU compute came up, or None before it is written.
+        The device menu cannot tell: its options are device UUIDs, not names."""
+        path = os.path.join(gt.OUT, "natron.log")
+        if not os.path.isfile(path):
+            return None
+        with open(path, errors="replace") as f:
+            for line in f:
+                if GPU_READY in line or GPU_UNAVAILABLE in line:
+                    return line.strip()
+        return None
+
     def gpu_expected():
-        """(whether GPU compute can use a device, why), from NATRON_GPU and the device menu."""
-        env = os.environ.get("NATRON_GPU", "").strip().lower()
-        if env == "off":
+        """(whether GPU compute can use a device, why), from NATRON_GPU, the compute preference and
+        what natron.log says GPU compute did at startup."""
+        if os.environ.get("NATRON_GPU", "").strip().lower() == "off":
             return False, "NATRON_GPU=off"
         settings = NatronEngine.natron.getSettings()
-        device = settings.getParam("gpuDevice")
-        if device is None:
-            return False, "Settings has no gpuDevice parameter"
-        names = [device.getOption(i) for i in range(device.getNumOptions())][1:]
-        if not names:
-            return False, "the GPU device menu lists no Vulkan device"
-        hardware = [n for n in names if not any(s in n.lower() for s in SOFTWARE_DEVICES)]
-        if env == "force":
-            return True, "NATRON_GPU=force with devices %r" % (names,)
         mode = settings.getParam("gpuComputeMode")
         mode_label = mode.getOption(mode.get()).lower() if mode is not None else ""
         if "off" in mode_label:
             return False, "the GPU compute preference is %r" % mode_label
-        if hardware:
-            return True, "hardware devices %r" % (hardware,)
-        return False, "only software devices %r, which Auto does not use (set NATRON_GPU=force)" % (names,)
+        line = gpu_log_line()
+        if line is None:
+            return False, "natron.log says neither %r nor %r" % (GPU_READY.strip(), GPU_UNAVAILABLE.strip())
+        return GPU_READY in line, line
 
     def graph_view():
         views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
@@ -220,6 +225,7 @@ try:
         require(ok, "the viewer is visible")
         all_nodes = [cpu_src, grade, gpu_src, blur]
         require(frame_nodes(all_nodes), "the node graph is visible")
+        yield ("until", lambda: gpu_log_line() is not None, STARTUP_TIMEOUT_S)
         gpu_on, why = gpu_expected()
         report("NOTE GPU half %s: %s" % ("runs" if gpu_on else "skipped", why))
 
@@ -248,6 +254,7 @@ try:
             report("SKIP GPU half: %s. The CPU dot and the cache-hit check above still ran." % why)
             faulthandler.cancel_dump_traceback_later()
             return
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, blur), "the Viewer shows the Blur")
         yield ("sleep", SETTLE_MS)
         app.clearSelection()

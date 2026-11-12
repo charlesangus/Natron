@@ -308,6 +308,42 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: the bench runs the new op; `compare.py` accepts the file.
   - size: M
 
+- [ ] M399.P4.T17 — Remove the second whole-widget graph repaint after a creation
+  - files: `Gui/NodeGraph30.cpp`, `Gui/NodeGraph10.cpp`, `Gui/NodeGraphLowDetailLayer.cpp`, `Gui/NodeGui.cpp`
+  - approach: every creation queues a second, whole-widget graph repaint (frame included) about 60 ms after the first, which refills the low-detail cache; find what queues it (focus, activation or palette change, or `invalidateNavigator(rebuildGrid)` at `NodeGraph30.cpp:594,629`) and keep the cache valid, invalidating only dirty rects.
+  - verify: one graph paint per creation; `tab_menu_create` CPU at 3000 within 20 ms of `create_by_shortcut`.
+  - size: M
+
+- [ ] M399.P4.T18 — Make the panel build passes hold their budget
+  - files: `Gui/KnobGuiContainerHelper.cpp` (~:478, :488-574, :1142), `Gui/NodeGui.cpp` (~:731-860)
+  - approach: move the first pass out of `startPanelBuild`, split `createPanel`, check the budget inside vector-knob init, and on undo or deactivate drop an unbuilt panel instead of building it.
+  - verify: `panelBuildPass` p90 ≤ 10 ms; no `ensureKnobGuisCreated` in undo samples.
+  - size: M
+
+- [ ] M399.P4.T19 — Positioning and connect cost at 3000
+  - files: `Gui/GuiAppInstance.cpp` (~:631-653), the Engine `replaceInput` path
+  - approach: skip the viewer abort and the upstream refresh when no viewer depends on the node; bound `moveNodesForIdealPosition`.
+  - verify: positioning median ≤ 2 ms at 3000.
+  - size: M
+
+- [ ] M399.P4.T20 — createNodeGui growth from 2 to 20 ms
+  - files: `Gui/GuiAppInstance.cpp` (~:537-614), `Gui/NodeGui.cpp`
+  - approach: find what scans all nodes during node GUI creation and bound it.
+  - verify: createNodeGui ≤ 5 ms at 3000.
+  - size: M
+
+- [ ] M399.P4.T21 — Per-item cost in the graph paint at 3000
+  - files: `Gui/NodeGraph*.cpp`
+  - approach: cull to the exposed rect and avoid `isVisible` walks in `getGridItems`.
+  - verify: a full graph paint ≤ 15 ms CPU at 3000.
+  - size: M
+
+- [ ] M399.P4.T22 — Bench counts trailing paints and drains undo teardown
+  - files: `tools/bench/gui/gui_bench.py`
+  - approach: drain until idle after undo before t0, and extend each step to the next idle so trailing repaints count.
+  - verify: the shortcut step includes the trailing paint; no `~NodeSettingsPanel` samples in the tab window.
+  - size: S
+
 - [ ] M399.P4.T3 — Re-measure on the dev host and close the remaining misses
   - files: `tools/bench/gui/baselines/xvfb.jsonl`; code as the misses direct
   - approach: Re-run M399.P3.T1's ops on the dev host's release AppImage. For any op over
@@ -345,3 +381,4 @@ global-mode exit, and creation and tab-menu feel on this host.
 - 2026-11-12 — **P4.T3 measurement** (host loaded, load 10-13 on 4 cores; main-thread CPU agrees within 5% across runs). p95/max ms at 0/300/3000: `create_by_shortcut` 165/182, 214/222, 416/454 (CPU median/max 33/39, 50/70, 225/285); `tab_menu_open` 43/49, 52/59, 49/76 (CPU 17-20 median, max 50-70; first open 59-90); `tab_menu_create` 265/367, 332/421, 679/720 (CPU 47/60, 80/105, 365/420). P4.T4/T7's 2 ms positioning target missed (25-30 ms at 3000, in connect-time `buildArgsMap`, `getContentHash` and recursive metadata) and P4.T5's loop-pass target missed (229-255 ms at 3000 vs 75-79 at 0). At 0 nodes, 12 of 14 samples wait in `glXSwapBuffers` — Qt 6 composites the whole window through GL because of the viewer's QOpenGLWidget, which on Xvfb is llvmpipe. At 3000: low-detail `paintCached` re-render, `QGraphicsScene::itemsBoundingRect` (no sceneRect), navigator bounds, identity hash, layers refresh. Tab create's extra cost is one more paint and flush (popup closes before creating) and a `setText` re-filter. The deferred panel build is a 117-195 ms stall the next key waits on, which the bench never measures (it pumps events before t0); at 3000, 14 of its 62 samples are in `DopeSheetPrivate::getNearestTimeFromOutputs_recursive`. Tasks P4.T8-T16 filed from this. Samples: `build/m399-prof/p4-*.txt` in the worktree.
 - 2026-11-12 — **Budgets are judged on a real display (user).** Under Xvfb the viewer's QOpenGLWidget makes Qt 6 composite the whole window through llvmpipe each frame, a floor of roughly 50-100 ms that a real GPU display doesn't have. Xvfb runs stay as relative measurements; the 50 ms and 33 ms budgets are judged on the dev host's real display or the GPU host. No move to QOpenGLWindow.
 - 2026-11-12 — P4.T8-T16 landed (345369cac), gate green (run 43273477412). Xvfb create bench (load ~13-15, relative only), median/max ms and main-thread CPU median at 0/300/3000: `create_by_shortcut` 109/165 (33), 124/156 (42), 235/278 (112); `tab_menu_open` 19/26, 20/49, 19/37 (CPU 17; first open 37, 30, 39); `tab_menu_create` 200/267 (45), 238/316 (69), 413/505 (232); `create_then_key` 233/309 (73), 255/520 (98), 498/579 (275). At 0 and 300 the CPU is within the create budget, so the Xvfb wall time is mostly the window composite (user: judge on a real display); at 3000, creation still costs ~110 ms of CPU and tab create ~230. Round 2 UAT AppImage out for the real-display judgement.
+- 2026-11-12 — **Profile at 3000 after P4.T8-T16** (runs 203258Z, 204545Z sampled, 205718Z with an event probe; load 12-16; CPU figures repeat). Stages grow 0→3000 by about 34 ms (createNodeGui 2→20, positioning 0.3→11, engine 2→6.5); the rest of the 33→112 ms CPU is graph painting. Every creation queues a second whole-widget graph repaint about 60 ms after the first, refilling the low-detail cache; the shortcut step ends before it, the tab Enter step (which waits for the popup to hide) and \`create_then_key\` pay it, which is the tab path's extra ~120 ms CPU. Deferred panel passes run 11-12 ms median, p90 35-45, max 87-120 (budget checked only between knobs), and undo forces a full synchronous build. The composite wait is 40-45% of latency at 3000, excluded under the real-display decision. Tasks P4.T17-T22 filed. Data in \`build/m399-prof/p5*\`, \`p6-probe.jsonl\`.

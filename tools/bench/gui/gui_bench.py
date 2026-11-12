@@ -1122,7 +1122,13 @@ try:
                         "create_then_key": 50.0}
     DRAIN_IDLE_PASS_MS = 1.0
     DRAIN_QUIET_MS = 20.0
+    # Longer than the gap (about 60 ms) between a creation's first graph paint and the whole-widget
+    # repaint it queues after it.
+    DRAIN_PAINT_QUIET_MS = 150.0
     DRAIN_LIMIT_MS = 2000.0
+    SETTLE_QUIET_MS = 150.0
+    SETTLE_LIMIT_MS = 1000.0
+    FLUSH_UNDO_LABEL = "Bench Drain"
     STAGE_LOG = os.environ.get("NATRON_NODE_CREATION_STAGE_LOG", "")
     BLUR_ID = "Blur"
     # The session's first Tab, which the ops measure on their own: the popup is built on it.
@@ -1130,21 +1136,25 @@ try:
     python_spans = []
 
     class PaintWatch(QObject):
-        """Fires once, on the first QEvent.Paint that accepts() takes after arming."""
+        """Fires once, on the first QEvent.Paint that accepts() takes after arming, and counts every
+        paint it sees, armed or not."""
 
         def __init__(self, accepts):
             super(PaintWatch, self).__init__()
             self.accepts = accepts
             self.armed = False
             self.fired = False
+            self.paints = 0
 
         def eventFilter(self, obj, event):
-            if self.armed and not self.fired and event.type() == QEvent.Paint:
-                try:
-                    if self.accepts(obj):
-                        self.fired = True
-                except RuntimeError:
-                    pass
+            if event.type() == QEvent.Paint:
+                self.paints += 1
+                if self.armed and not self.fired:
+                    try:
+                        if self.accepts(obj):
+                            self.fired = True
+                    except RuntimeError:
+                        pass
             return False
 
     def key_tester():
@@ -1156,31 +1166,44 @@ try:
 
     def drain_events():
         """Runs posted events, deferred deletes and due timers until the event loop has stayed idle (passes
-        under DRAIN_IDLE_PASS_MS) for DRAIN_QUIET_MS, or for at most DRAIN_LIMIT_MS. processEvents() alone
-        never runs a deleteLater posted from the bench's own loop level, which an undone node's teardown
-        uses."""
-        start = mono_ms()
-        quiet_since = None
-        while True:
-            pass_start = mono_ms()
-            QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-            QApplication.processEvents()
-            now = mono_ms()
-            if now - pass_start >= DRAIN_IDLE_PASS_MS:
-                quiet_since = None
-            elif quiet_since is None:
-                quiet_since = now
-            elif now - quiet_since >= DRAIN_QUIET_MS:
-                return
-            if now - start >= DRAIN_LIMIT_MS:
-                return
-            time.sleep(0.001)
+        under DRAIN_IDLE_PASS_MS) for DRAIN_QUIET_MS and no widget has painted for DRAIN_PAINT_QUIET_MS, or
+        for at most DRAIN_LIMIT_MS. processEvents() alone never runs a deleteLater posted from the bench's
+        own loop level, which an undone node's teardown uses."""
+        watch = PaintWatch(lambda obj: False)
+        qapp = QApplication.instance()
+        qapp.installEventFilter(watch)
+        try:
+            start = mono_ms()
+            quiet_since = None
+            painted_at = start
+            while True:
+                pass_start = mono_ms()
+                paints = watch.paints
+                QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+                QApplication.processEvents()
+                now = mono_ms()
+                if watch.paints != paints:
+                    painted_at = now
+                if now - pass_start >= DRAIN_IDLE_PASS_MS:
+                    quiet_since = None
+                elif quiet_since is None:
+                    quiet_since = now
+                elif now - quiet_since >= DRAIN_QUIET_MS and now - painted_at >= DRAIN_PAINT_QUIET_MS:
+                    return
+                if now - start >= DRAIN_LIMIT_MS:
+                    return
+                time.sleep(0.001)
+        finally:
+            qapp.removeEventFilter(watch)
 
-    def measure_paint(hosts, accepts, send, drain=True):
+    def measure_paint(hosts, accepts, send, drain=True, settle=True):
         """(t0, t1) in ms: just before send() posts the key event, and the end of the event-loop pass that
         delivered the first accepted paint to one of hosts, or to the whole application when hosts is
-        None. With drain, the work earlier reps left queued runs first. A paint taken during send() does
-        not count. Raises when none arrives in CREATE_PAINT_TIMEOUT_S."""
+        None. With settle, t1 is instead the end of the last pass that painted one of them before
+        SETTLE_QUIET_MS went by without a paint, so the repaints a step queues behind its first one
+        count; settling stops SETTLE_LIMIT_MS after the first paint. With drain, the work earlier reps
+        left queued runs first. A paint taken during send() does not count. Raises when none arrives in
+        CREATE_PAINT_TIMEOUT_S."""
         if drain:
             drain_events()
         watch = PaintWatch(accepts)
@@ -1195,6 +1218,17 @@ try:
             while not watch.fired and mono_ms() < deadline:
                 QApplication.processEvents()
             t1 = mono_ms()
+            if watch.fired and settle:
+                settle_end = t1 + SETTLE_LIMIT_MS
+                while True:
+                    paints = watch.paints
+                    QApplication.processEvents()
+                    now = mono_ms()
+                    if watch.paints != paints:
+                        t1 = now
+                    if now - t1 >= SETTLE_QUIET_MS or now >= settle_end:
+                        break
+                    time.sleep(0.001)
         finally:
             for target in targets:
                 try:
@@ -1361,6 +1395,28 @@ try:
         trigger("undo")
         QApplication.processEvents()
         restore_root(st["before"])
+        flush_undone(st)
+        drain_events()
+
+    def flush_undone(st):
+        """Pushes and undoes a label edit on the target, so the undone creation, which the history keeps
+        until the next push and destroys then, is torn down here instead of inside the next rep's
+        window."""
+        target = app.getNode(st["target"])
+        label = target.getParam("userTextArea") if target is not None else None
+        if label is None:
+            raise RuntimeError("the target %s has no label knob to flush the undo history with" % st["target"])
+        old = label.getValue()
+        with app.newUndoStep(FLUSH_UNDO_LABEL):
+            label.setValue(old + " ")
+        undo = edit_action("undo")
+        text = undo.text().replace("&", "") if undo is not None and undo.isEnabled() else ""
+        if text != "Undo " + FLUSH_UNDO_LABEL:
+            raise RuntimeError("the label edit left no undo entry of its own (the Edit menu offers %r)" % text)
+        trigger("undo")
+        QApplication.processEvents()
+        if label.getValue() != old:
+            raise RuntimeError("undoing the label edit left the target's label at %r" % label.getValue())
 
     def create_setup(needs_menu):
         def setup(ctx, st):
@@ -1500,7 +1556,8 @@ try:
             QTest = key_tester()
             graph = root_graph()
             st["offset"] = stage_offset()
-            t0, t_node = measure_paint([graph.viewport()], created_ready(st), lambda: QTest.keyPress(graph, Qt.Key_B))
+            t0, t_node = measure_paint([graph.viewport()], created_ready(st), lambda: QTest.keyPress(graph, Qt.Key_B),
+                                       settle=False)
             QTest.keyRelease(graph, Qt.Key_B)
             # No drain: the Tab waits on whatever the creation left queued, as a person's next key does.
             _, t1 = measure_paint(menu_paint_hosts(), popup_painted, lambda: QTest.keyPress(graph, Qt.Key_Tab),

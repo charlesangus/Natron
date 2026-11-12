@@ -642,14 +642,11 @@ NodeGraphLowDetailLayer::paintEdges(QPainter* painter,
         return;
     }
     std::vector<NodeGraphPrivate::GridItem> found;
-    _graph->getGridItems(exposed, &found, false);
+    _graph->getGridItems(exposed, &found, false, NodeGraphPrivate::eGridKindEdges);
 
     std::vector<std::pair<QPen, QVector<QLineF>>> groups;
     std::unordered_multimap<std::uint64_t, std::size_t> groupIndex;
     for (std::vector<NodeGraphPrivate::GridItem>::const_iterator it = found.begin(); it != found.end(); ++it) {
-        if (it->slot == NodeGraphPrivate::kGridNodeSlot) {
-            continue;
-        }
         const Edge* edge = static_cast<const Edge*>(it->item);
         if (!edge->isVisible() || !isFaded(edge)) {
             continue;
@@ -686,14 +683,11 @@ NodeGraphLowDetailLayer::paintNodes(QPainter* painter,
                                     QWidget* widget)
 {
     std::vector<NodeGraphPrivate::GridItem> found;
-    _graph->getGridItems(exposed, &found, false);
+    _graph->getGridItems(exposed, &found, false, NodeGraphPrivate::eGridKindNodes);
 
     const bool navigatorRender = _graph->isDoingPreviewRender;
     BucketMap buckets;
     for (std::vector<NodeGraphPrivate::GridItem>::const_iterator it = found.begin(); it != found.end(); ++it) {
-        if (it->slot != NodeGraphPrivate::kGridNodeSlot) {
-            continue;
-        }
         const QGraphicsItem* node = it->item;
         if (!node->isVisible() || !isFaded(node)) {
             continue;

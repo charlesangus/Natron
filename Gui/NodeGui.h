@@ -407,7 +407,7 @@ public:
 
     void changePosition(double dx, double dy);
 
-    void removeSettingsPanel();
+    void removeSettingsPanel(NodeSettingsPanel* panel);
 
     void discardGraphPointer();
     /**
@@ -776,10 +776,13 @@ Q_SIGNALS:
 protected:
 
     virtual void createGui();
-    virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr & thisAsShared);
+    // An open panel is added to the properties bin only if dock is set.
+    virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr& thisAsShared, bool dock);
 
 private:
     void startPanelBuild(bool incremental);
+    void dockPendingPanel();
+    bool dropUnbuiltPanel();
     void connectSettingsPanel();
     void schedulePanelTail();
     void runPanelTail(bool all);
@@ -941,6 +944,7 @@ private:
     bool _panelCreated;
     // Set from the creation of the panel until it has been added to the viewer and the editors.
     bool _panelTailPending = false;
+    bool _panelDockPending = false;
     bool _panelTailRunning = false;
     int _panelTailStep = 0;
     bool _panelTailReselect = false;

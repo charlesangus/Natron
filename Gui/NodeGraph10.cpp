@@ -227,7 +227,8 @@ NodeGraphPrivate::refreshItemGrid()
 void
 NodeGraphPrivate::getGridItems(const QRectF& queryRoot,
                                std::vector<GridItem>* items,
-                               bool refresh)
+                               bool refresh,
+                               GridKindEnum kind)
 {
     if (refresh) {
         refreshItemGrid();
@@ -236,6 +237,10 @@ NodeGraphPrivate::getGridItems(const QRectF& queryRoot,
     itemGrid.query(queryRoot, &found);
     items->reserve(items->size() + found.size());
     for (std::vector<GridItem>::const_iterator it = found.begin(); it != found.end(); ++it) {
+        const bool isNode = (it->slot == kGridNodeSlot);
+        if (((kind == eGridKindNodes) && !isNode) || ((kind == eGridKindEdges) && isNode)) {
+            continue;
+        }
         if (isGridItemValid(*it)) {
             items->push_back(*it);
         } else {
@@ -465,6 +470,34 @@ NodeGraph::noteNodeAdded(NodeGui* node)
         noteEdgeGeometryChanged(node, (int)i, inputs[i]);
     }
     noteEdgeGeometryChanged(node, -1, node->getOutputArrow());
+    invalidateNavigatorImage();
+}
+
+void
+NodeGraph::noteNodeRemoved(NodeGui* node)
+{
+    if (!node) {
+        return;
+    }
+    std::vector<QGraphicsItem*> items;
+    items.push_back(node);
+    const std::vector<Edge*>& inputs = node->getInputsArrows();
+    items.insert(items.end(), inputs.begin(), inputs.end());
+    items.push_back(node->getOutputArrow());
+    for (std::vector<QGraphicsItem*>::const_iterator it = items.begin(); it != items.end(); ++it) {
+        if (!*it) {
+            continue;
+        }
+        QRectF filed;
+        if (_imp->itemGrid.rectOf(*it, &filed)) {
+            _imp->addLowDetailDirty(filed);
+        }
+        // Dropped now rather than left to the next refresh: a node being destroyed takes its
+        // edges with it, and the grid would then hold their addresses.
+        _imp->itemGrid.remove(*it);
+        _imp->itemGridStale.erase(*it);
+    }
+    _imp->nodesBoundsPending.insert(node);
     invalidateNavigatorImage();
 }
 

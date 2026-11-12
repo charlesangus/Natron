@@ -559,6 +559,12 @@ public:
     void hasViewersConnected(std::list<ViewerInstance* >* viewers) const;
 
     /**
+     * @brief False when no walk downstream of this node can reach a viewer: it is not one, and no
+     * viewer of the process has an input.
+     **/
+    bool couldReachConnectedViewer() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief The viewers hasViewersConnected() finds from any of the nodes, each once, in one walk
      * of what is downstream of them all.
      **/
@@ -853,6 +859,12 @@ public:
     bool hasOutputConnected() const;
 
     bool hasInputConnected() const;
+
+    /**
+     * @brief Like hasInputConnected(), also counting an input queued to connect while the node
+     * renders. False before the inputs are initialized.
+     **/
+    bool hasInputOrQueuedInputConnected() const;
 
     bool hasOverlay() const;
 

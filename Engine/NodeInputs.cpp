@@ -670,6 +670,23 @@ Node::hasInputConnected() const
     return false;
 }
 
+bool
+Node::hasInputOrQueuedInputConnected() const
+{
+    QMutexLocker l(&_imp->inputsMutex);
+    for (const NodeWPtr& input : _imp->inputs) {
+        if (input.lock()) {
+            return true;
+        }
+    }
+    for (const NodeWPtr& input : _imp->guiInputs) {
+        if (input.lock()) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 bool
 Node::hasMandatoryInputDisconnected() const

@@ -68,17 +68,29 @@ include them.
 Each rep brings the project's tab forward, activates the window, focuses the graph and puts the
 pointer over its viewport, because the graph only takes the create-node key when it has focus or
 the pointer (`NodeGraph::isNodeCreationShortcutTarget`). The sample runs from just before the key
-event is posted to the end of the event-loop pass that delivered the first `QEvent::Paint` that
-shows the result, caught by a one-shot event filter: on the graph viewport for the creating ops,
-once the new node is selected or exists, and on the tab menu's popup, its input, list and list
-viewport for `tab_menu_open` and the Tab of `create_then_key`, while its list holds rows. The
-filter sits on the whole application only for a Tab that comes before the popup is built.
-Before the key, each rep drains what earlier reps left queued: posted events, deferred deletes
-(the undone node's teardown) and due timers, until the loop has been idle for 20 ms, 2 s at most.
-`create_then_key` does not drain between its two keys. The pass can include other queued events,
-so the figure is an upper bound on the paint's own end. A paint taken inside the key call does not
-count, and no paint within 2 s fails the run. A creating rep checks that exactly one new Blur appeared, then undoes it through
-the Edit menu and checks the root is as it was.
+event is posted to the first `QEvent::Paint` that shows the result, caught by an event filter: on
+the graph viewport for the creating ops, once the new node is selected or exists, and on the tab
+menu's popup, its input, list and list viewport for `tab_menu_open` and the Tab of
+`create_then_key`, while its list holds rows. The filter sits on the whole application only for a
+Tab that comes before the popup is built. The sample then runs on to the next idle: it ends at the
+end of the event-loop pass that delivered the last paint to those widgets before 150 ms went by
+without one, so a repaint a creation queues behind its first paint (the whole-widget one about
+60 ms later) counts in `create_by_shortcut` as it does in `tab_menu_create`. Settling stops 1 s
+after the first paint. The `B` of `create_then_key` does not settle: its Tab follows the node's
+first paint, as a person's next key does, and the Tab's sample settles instead. A pass can include
+other queued events, so the figure is an upper bound on the last paint's own end. A paint taken
+inside the key call does not count, and no first paint within 2 s fails the run.
+
+A creating rep checks that exactly one new Blur appeared, then undoes it through the Edit menu and
+checks the root is as it was. The undo history keeps an undone entry until the next push and
+destroys its node then, which would put the node's teardown (its properties panel among it) inside
+the next rep's sample. So the rep then pushes a label edit on the selected node as an undo step of
+its own ("Bench Drain"), which drops the undone creation, and undoes that edit through the Edit
+menu, checking that the label is back. The undone label edit is what the next creation drops, at
+the cost of one knob-value command. Before each key, and after each creating rep's undo, the bench
+drains what is left queued: posted events, deferred deletes and due timers, until the loop has
+been idle for 20 ms and nothing in the application has painted for 150 ms, 2 s at most.
+`create_then_key` does not drain between its two keys.
 
 The records are in the usual format, with 20 reps each and `median_ms`, `p95_ms`, `min_ms` and
 `max_ms` taken from the latencies (the key-to-paint time, not the rep's wall time), plus

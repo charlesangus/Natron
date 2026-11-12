@@ -385,8 +385,9 @@ NodeGraph::addNodesToCreationOf(const NodePtr& created,
 void
 NodeGraph::resizeEvent(QResizeEvent* e)
 {
-    // The thumbnail is rendered at the navigator's size, which follows the view's.
-    invalidateNavigatorContent();
+    // The thumbnail is rendered at the navigator's size, which follows the view's. The grid is in
+    // scene coordinates and the low-detail caches drop themselves on a size change.
+    invalidateNavigatorImage();
     QGraphicsView::resizeEvent(e);
     refreshOverlays();
 }

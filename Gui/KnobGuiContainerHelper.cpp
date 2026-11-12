@@ -58,17 +58,24 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 // Each pass of an incremental build stops after the first knob that ends past this, so that the event
-// loop keeps up with a 60 Hz repaint.
-static const qint64 kKnobBuildPassBudgetMs = 8;
+// loop keeps up with a 60 Hz repaint. It leaves room for that last knob and for the end of the build.
+static const qint64 kKnobBuildPassBudgetNs = 7000000;
 
-struct PendingKnobPage {
-    KnobPageGuiPtr page;
+struct PendingKnobFrame {
     KnobsVec children;
     std::size_t next;
     QWidget* lastRowWidget;
 };
 
+struct PendingKnobPage {
+    KnobPageGuiPtr page;
+    // The page's children first, then one frame per group being filled, innermost last: a group's children
+    // are built before the knobs that follow it, as the recursive build does.
+    std::vector<PendingKnobFrame> frames;
+};
+
 struct PendingKnobBuild {
+    bool pagesCreated = false;
     std::list<PendingKnobPage> pages;
     // The knobs that are not the direct child of a page, built after every page as initializeKnobVector() does.
     KnobsVec regularKnobs;
@@ -92,6 +99,10 @@ struct KnobGuiContainerHelperPrivate
     std::unique_ptr<PendingKnobBuild> pendingBuild;
     // Set while knob guis are being built: a lookup made by the gui being built must not start another build.
     bool buildingKnobs;
+    // The group a pending build is creating the gui of. Its children are handed back in deferredChildren
+    // rather than built with it, so that a pass can stop between any two knobs.
+    KnobGroup* deferChildrenOf;
+    KnobsVec deferredChildren;
 
     KnobGuiContainerHelperPrivate(KnobGuiContainerHelper* p,
                                   KnobHolder* holder,
@@ -108,6 +119,8 @@ struct KnobGuiContainerHelperPrivate
         , signals(new KnobGuiContainerSignalsHandler(p))
         , pendingBuild()
         , buildingKnobs(false)
+        , deferChildrenOf(0)
+        , deferredChildren()
     {
         if (history) {
             signals->connectUndoHistory(history);
@@ -121,6 +134,8 @@ struct KnobGuiContainerHelperPrivate
     KnobsGuiMapping::iterator findKnobGui(const KnobIPtr& knob);
 
     void refreshPagesEnabledness();
+
+    void dropPendingKnob(const KnobIPtr& knob);
 };
 
 KnobGuiContainerHelper::KnobGuiContainerHelper(KnobHolder* holder,
@@ -429,6 +444,23 @@ KnobGuiContainerHelper::initializeKnobsIncrementally(const std::function<void()>
 {
     std::unique_ptr<PendingKnobBuild> build(new PendingKnobBuild);
     build->onDone = onDone;
+    _imp->pendingBuild = std::move(build);
+    // Two hops: what the caller queued for the next pass, docking the panel say, gets that pass to itself.
+    QTimer::singleShot(0, _imp->signals.get(), [this]() {
+        QTimer::singleShot(0, _imp->signals.get(), [this]() {
+            runKnobBuildStep();
+        });
+    });
+}
+
+void
+KnobGuiContainerHelper::createPendingPages()
+{
+    PendingKnobBuild* build = _imp->pendingBuild.get();
+    if (!build || build->pagesCreated) {
+        return;
+    }
+    build->pagesCreated = true;
 
     const KnobsVec& knobs = _imp->holder->getKnobs();
     std::list<KnobPagePtr> pages;
@@ -445,6 +477,7 @@ KnobGuiContainerHelper::initializeKnobsIncrementally(const std::function<void()>
     // Every tab is created now, in the order initializeKnobs() creates them, so that building a page
     // early does not reorder the tabs.
     std::unordered_set<KnobI*> pageChildren;
+    const bool wasBuilding = _imp->buildingKnobs;
     _imp->buildingKnobs = true;
     for (std::list<KnobPagePtr>::iterator it = pages.begin(); it != pages.end(); ++it) {
         KnobsVec children = (*it)->getChildren();
@@ -460,12 +493,14 @@ KnobGuiContainerHelper::initializeKnobsIncrementally(const std::function<void()>
         }
         PendingKnobPage pending;
         pending.page = page;
-        pending.children = children;
-        pending.next = 0;
-        pending.lastRowWidget = 0;
+        PendingKnobFrame frame;
+        frame.children = children;
+        frame.next = 0;
+        frame.lastRowWidget = 0;
+        pending.frames.push_back(frame);
         build->pages.push_back(pending);
     }
-    _imp->buildingKnobs = false;
+    _imp->buildingKnobs = wasBuilding;
 
     for (std::size_t i = 0; i < knobs.size(); ++i) {
         if (!std::dynamic_pointer_cast<KnobPage>(knobs[i]) && !pageChildren.count(knobs[i].get())) {
@@ -473,9 +508,45 @@ KnobGuiContainerHelper::initializeKnobsIncrementally(const std::function<void()>
         }
     }
 
-    _imp->pendingBuild = std::move(build);
     onKnobBuildStarted();
-    runKnobBuildStep();
+}
+
+static bool
+isPendingPageDone(PendingKnobPage& page)
+{
+    while (!page.frames.empty() && (page.frames.back().next >= page.frames.back().children.size())) {
+        page.frames.pop_back();
+    }
+
+    return page.frames.empty();
+}
+
+bool
+KnobGuiContainerHelper::buildNextPendingKnob(PendingKnobPage& page)
+{
+    if (isPendingPageDone(page)) {
+        return false;
+    }
+    {
+        PendingKnobFrame& frame = page.frames.back();
+        std::size_t index = frame.next++;
+        _imp->deferChildrenOf = dynamic_cast<KnobGroup*>(frame.children[index].get());
+        _imp->deferredChildren.clear();
+        initializeKnobVectorItem(frame.children, index, &frame.lastRowWidget);
+        _imp->deferChildrenOf = 0;
+    }
+    KnobsVec children;
+    children.swap(_imp->deferredChildren);
+    isPendingPageDone(page);
+    if (!children.empty()) {
+        PendingKnobFrame frame;
+        frame.children.swap(children);
+        frame.next = 0;
+        frame.lastRowWidget = 0;
+        page.frames.push_back(frame);
+    }
+
+    return true;
 }
 
 bool
@@ -485,18 +556,26 @@ KnobGuiContainerHelper::isKnobBuildPending() const
 }
 
 void
+KnobGuiContainerHelper::cancelKnobBuild()
+{
+    _imp->pendingBuild.reset();
+}
+
+void
 KnobGuiContainerHelper::runKnobBuildStep()
 {
     PendingKnobBuild* build = _imp->pendingBuild.get();
     if (!build || _imp->buildingKnobs) {
         return;
     }
+    bool finishNow = true;
     {
         NodeCreationStageLog::Scope stage("panelBuildPass");
         QElapsedTimer timer;
         timer.start();
+        createPendingPages();
         _imp->buildingKnobs = true;
-        while (!build->pages.empty() && (timer.elapsed() < kKnobBuildPassBudgetMs)) {
+        while (!build->pages.empty() && (timer.nsecsElapsed() < kKnobBuildPassBudgetNs)) {
             // Pages share one layout when paging is off, so they are then built in order.
             std::list<PendingKnobPage>::iterator page = build->pages.begin();
             KnobPageGuiPtr current = getCurrentPage();
@@ -508,17 +587,15 @@ KnobGuiContainerHelper::runKnobBuildStep()
                     }
                 }
             }
-            if (page->next < page->children.size()) {
-                std::size_t index = page->next++;
-                initializeKnobVectorItem(page->children, index, &page->lastRowWidget);
-            }
-            if (page->next >= page->children.size()) {
+            buildNextPendingKnob(*page);
+            if (isPendingPageDone(*page)) {
                 build->pages.erase(page);
             }
         }
         _imp->buildingKnobs = false;
+        finishNow = timer.nsecsElapsed() < kKnobBuildPassBudgetNs / 2;
     }
-    if (build->pages.empty()) {
+    if (build->pages.empty() && finishNow) {
         finishKnobBuild();
 
         return;
@@ -535,6 +612,7 @@ KnobGuiContainerHelper::buildPendingPage(const KnobPageGuiPtr& page)
     if (!build || !page || _imp->buildingKnobs) {
         return;
     }
+    createPendingPages();
     // With paging off every page maps to the same gui, which builds them all, in order.
     _imp->buildingKnobs = true;
     for (std::list<PendingKnobPage>::iterator it = build->pages.begin(); it != build->pages.end();) {
@@ -542,9 +620,7 @@ KnobGuiContainerHelper::buildPendingPage(const KnobPageGuiPtr& page)
             ++it;
             continue;
         }
-        while (it->next < it->children.size()) {
-            std::size_t index = it->next++;
-            initializeKnobVectorItem(it->children, index, &it->lastRowWidget);
+        while (buildNextPendingKnob(*it)) {
         }
         it = build->pages.erase(it);
     }
@@ -560,17 +636,43 @@ KnobGuiContainerHelper::ensureKnobGuisCreated()
     }
     {
         NodeCreationStageLog::Scope stage("panelBuildPass");
+        createPendingPages();
         _imp->buildingKnobs = true;
         for (std::list<PendingKnobPage>::iterator it = build->pages.begin(); it != build->pages.end(); ++it) {
-            while (it->next < it->children.size()) {
-                std::size_t index = it->next++;
-                initializeKnobVectorItem(it->children, index, &it->lastRowWidget);
+            while (buildNextPendingKnob(*it)) {
             }
         }
         build->pages.clear();
         _imp->buildingKnobs = false;
     }
     finishKnobBuild();
+}
+
+void
+KnobGuiContainerHelperPrivate::dropPendingKnob(const KnobIPtr& knob)
+{
+    PendingKnobBuild* build = pendingBuild.get();
+    if (!build || !knob) {
+        return;
+    }
+    for (std::list<PendingKnobPage>::iterator page = build->pages.begin(); page != build->pages.end();) {
+        if (page->page && (page->page->pageKnob.lock() == knob)) {
+            page = build->pages.erase(page);
+            continue;
+        }
+        for (std::size_t f = 0; f < page->frames.size(); ++f) {
+            PendingKnobFrame& frame = page->frames[f];
+            KnobsVec::iterator found = std::find(frame.children.begin() + frame.next, frame.children.end(), knob);
+            if (found != frame.children.end()) {
+                frame.children.erase(found);
+            }
+        }
+        ++page;
+    }
+    KnobsVec::iterator regular = std::find(build->regularKnobs.begin(), build->regularKnobs.end(), knob);
+    if (regular != build->regularKnobs.end()) {
+        build->regularKnobs.erase(regular);
+    }
 }
 
 void
@@ -1124,7 +1226,16 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
     // If the knob is a group, create all the children
     if (isGroup) {
         KnobsVec children = isGroup->getChildren();
-        initializeKnobVector(children);
+        bool defer = (isGroup.get() == _imp->deferChildrenOf);
+        for (std::size_t i = 0; defer && i < children.size(); ++i) {
+            defer = !std::dynamic_pointer_cast<KnobPage>(children[i]);
+        }
+        if (defer) {
+            _imp->deferChildrenOf = 0;
+            _imp->deferredChildren = children;
+        } else {
+            initializeKnobVector(children);
+        }
     }
 
     return ret;
@@ -1139,8 +1250,23 @@ KnobGuiContainerHelper::createKnobHorizontalFieldContainer(QWidget* parent) cons
 void
 KnobGuiContainerHelper::deleteKnobGui(const KnobIPtr& knob)
 {
-    ensureKnobGuisCreated();
     KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(knob);
+
+    // A knob deleted before a pending build reached it is taken out of the build, which is not forced.
+    if (isKnobBuildPending() && !_imp->buildingKnobs) {
+        _imp->dropPendingKnob(knob);
+        if (!isPage && (_imp->findKnobGui(knob) == _imp->knobsMap.end())) {
+            KnobGroup* isGrp = dynamic_cast<KnobGroup*>(knob.get());
+            if (isGrp) {
+                KnobsVec children = isGrp->getChildren();
+                for (U32 i = 0; i < children.size(); ++i) {
+                    deleteKnobGui(children[i]);
+                }
+            }
+
+            return;
+        }
+    }
 
     if ( isPage && isPagingEnabled() ) {
         // Remove the page and all its children

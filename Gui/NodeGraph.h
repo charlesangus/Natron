@@ -114,13 +114,6 @@ public:
     void invalidateNavigatorContent();
 
     /**
-     * @brief Like invalidateNavigatorContent(), for nodes that came or went through the trash and
-     * whose other changes were reported one by one: every item is refiled, but the nodes' bounds
-     * are updated from just the reported nodes.
-     **/
-    void invalidateNavigatorItems();
-
-    /**
      * @brief Like invalidateNavigatorContent(), for a change to items that are, or are about to
      * be, reported one by one: only the thumbnail and the nodes' bounds are refreshed.
      **/
@@ -140,6 +133,12 @@ public:
      * invalidateNavigatorContent() would refile every item.
      **/
     void noteNodeAdded(NodeGui* node);
+
+    /**
+     * @brief Call once node has left this graph's node list, to the trash or for good: drops it
+     * and its edges from the hit-test grid and repaints just where the low-detail layers drew them.
+     **/
+    void noteNodeRemoved(NodeGui* node);
 
     // Repaints what the low-detail layers draw of item, a node or an edge, both where its grid
     // entry still has it and where it is now: a faded item ignores its own update().

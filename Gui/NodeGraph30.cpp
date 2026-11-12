@@ -568,20 +568,13 @@ NodeGraph::invalidateNavigatorContent()
 }
 
 void
-NodeGraph::invalidateNavigatorItems()
-{
-    _imp->invalidateNavigator(true, true);
-}
-
-void
 NodeGraph::invalidateNavigatorImage()
 {
     _imp->invalidateNavigator(false);
 }
 
 void
-NodeGraphPrivate::invalidateNavigator(bool rebuildGrid,
-                                      bool boundsReported)
+NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
 {
     navigatorContentDirty = true;
     if (_evtState == eEventStateDraggingNode) {
@@ -596,7 +589,7 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid,
 
         return;
     }
-    if (rebuildGrid && !boundsReported) {
+    if (rebuildGrid) {
         nodesBoundsDirty = true;
     }
     if (navigatorBatchDepth > 0) {

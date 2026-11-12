@@ -5345,9 +5345,19 @@ Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
     });
 }
 
+bool
+Node::couldReachConnectedViewer() const
+{
+    // A walk downstream of any other node reaches a viewer only through that viewer's inputs.
+    return dynamic_cast<ViewerInstance*>(getEffectInstance().get()) || ViewerInstance::isAnyViewerConnected();
+}
+
 void
 Node::hasViewersConnected(std::list<ViewerInstance* >* viewers) const
 {
+    if (!couldReachConnectedViewer()) {
+        return;
+    }
     std::unordered_set<const Node*> visited;
 
     walkDownstreamUntil(this, &visited, [viewers](const Node* node) {
@@ -5367,6 +5377,9 @@ Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstre
     }
     if (deferViewerAbortToCascade(shared_from_this())) {
         return false;
+    }
+    if (!couldReachConnectedViewer()) {
+        return true;
     }
 
     // The renders to abort are those of the viewers hasOutputNodesConnected() reaches, which stops
@@ -5416,6 +5429,9 @@ Node::getViewersDownstreamOf(const std::list<NodePtr>& nodes,
     std::unordered_set<const Node*> visited;
 
     for (const NodePtr& start : nodes) {
+        if (!start->couldReachConnectedViewer()) {
+            continue;
+        }
         walkDownstreamUntil(start.get(), &visited, [viewers](const Node* node) {
             return collectViewer(viewers, node);
         });
@@ -7592,11 +7608,17 @@ Node::ValueChangeCascade::~ValueChangeCascade()
     std::list<ViewerInstance*> toRedraw;
     std::unordered_set<const Node*> visited;
     for (const std::pair<NodePtr, double>& entry : significant) {
+        if (!entry.first->couldReachConnectedViewer()) {
+            continue;
+        }
         walkDownstreamUntil(entry.first.get(), &visited, [&toRender](const Node* node) {
             return collectViewer(&toRender, node);
         });
     }
     for (const NodePtr& node : insignificant) {
+        if (!node->couldReachConnectedViewer()) {
+            continue;
+        }
         walkDownstreamUntil(node.get(), &visited, [&toRedraw](const Node* reached) {
             return collectViewer(&toRedraw, reached);
         });

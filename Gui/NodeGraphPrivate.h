@@ -502,11 +502,9 @@ public:
     void growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved);
     void endNavigatorDragDeferral();
 
-    // rebuildGrid is for changes the hit-test grid is not told about item by item, such as nodes
-    // or edges coming or going; it makes the next query refile every item. Unless boundsReported,
-    // because every node that came, went or changed is in nodesBoundsPending, it also makes the
-    // nodes' bounds be recomputed from every node.
-    void invalidateNavigator(bool rebuildGrid, bool boundsReported = false);
+    // rebuildGrid is for changes the hit-test grid is not told about item by item; it makes the
+    // next query refile every item and the nodes' bounds be recomputed from every node.
+    void invalidateNavigator(bool rebuildGrid);
 
     // Whether item, a node or one of its edges, is where the graph keeps items of its kind.
     bool isInGraph(const QGraphicsItem* item) const
@@ -522,7 +520,13 @@ public:
     // The grid entries of the nodes and edges whose subtree bounds may meet queryRoot, given in
     // _nodeRoot coordinates. Paint code passes refresh false: refiling can take _nodesMutex and
     // walk every node, and flushLowDetailUpdates() already refiled before the view paints.
-    void getGridItems(const QRectF& queryRoot, std::vector<GridItem>* items, bool refresh = true);
+    // Entries of the other kind are skipped before they are checked, which touches the item.
+    enum GridKindEnum {
+        eGridKindAll,
+        eGridKindNodes,
+        eGridKindEdges
+    };
+    void getGridItems(const QRectF& queryRoot, std::vector<GridItem>* items, bool refresh = true, GridKindEnum kind = eGridKindAll);
 
     // Adds rect, in _nodeRoot coordinates, to what the low-detail layers draw again.
     void addLowDetailDirty(const QRectF& rect);

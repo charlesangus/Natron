@@ -135,6 +135,12 @@ public:
 
     virtual ~ViewerInstance();
 
+    /**
+     * @brief Whether any viewer of the process has an input connected, or one queued to connect.
+     * When none has, no walk downstream of a node other than a viewer can reach a viewer.
+     **/
+    static bool isAnyViewerConnected() WARN_UNUSED_RETURN;
+
     OpenGLViewerI* getUiContext() const WARN_UNUSED_RETURN;
 
     /**

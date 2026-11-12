@@ -110,6 +110,7 @@ private:
  * must indicate how pages are selected and which one is active at a time. @see DockablePanel for an implementation.
  **/
 struct KnobGuiContainerHelperPrivate;
+struct PendingKnobPage;
 class KnobGuiContainerHelper
     : public KnobGuiContainerI, public DockablePanelI
 
@@ -132,8 +133,8 @@ public:
     void initializeKnobs();
 
     /**
-     * @brief Same as initializeKnobs(), but the widgets are built over several passes of the event loop,
-     * the current page first, and onDone is called once every knob has its gui. Until then, making a page
+     * @brief Same as initializeKnobs(), but nothing is built before the event loop runs again, and the
+     * pages and widgets are then built over several of its passes, the current page first, and onDone is called once every knob has its gui. Until then, making a page
      * current builds that page at once, and getKnobGui() for a knob that has no gui yet, getKnobsMapping()
      * and the knob refresh functions build the rest at once.
      **/
@@ -146,6 +147,11 @@ public:
     void ensureKnobGuisCreated();
 
     bool isKnobBuildPending() const;
+
+    /**
+     * @brief Stops a build started by initializeKnobsIncrementally() where it is, without calling its onDone.
+     **/
+    void cancelKnobBuild();
 
     /**
      * @brief Returns all the pages inside this container
@@ -356,6 +362,10 @@ private:
     void initializeKnobVectorItem(const KnobsVec& siblingsVec, std::size_t index, QWidget** lastRowWidget);
 
     void runKnobBuildStep();
+
+    void createPendingPages();
+
+    bool buildNextPendingKnob(PendingKnobPage& page);
 
     void buildPendingPage(const KnobPageGuiPtr& page);
 

@@ -38,6 +38,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -104,6 +105,9 @@ using std::make_pair;
 using std::shared_ptr;
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+QMutex liveViewersMutex;
+std::unordered_set<ViewerInstance*> liveViewers;
 
 struct MinMaxVal {
     MinMaxVal(double min_, double max_)
@@ -240,6 +244,8 @@ ViewerInstance::ViewerInstance(NodePtr node)
             QObject::connect(node.get(), SIGNAL(activeInputsChanged()), this, SLOT(onInspectorActiveInputsChanged()));
         }
     }
+    QMutexLocker l(&liveViewersMutex);
+    liveViewers.insert(this);
 }
 
 ViewerInstance::~ViewerInstance()
@@ -247,6 +253,10 @@ ViewerInstance::~ViewerInstance()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
+    {
+        QMutexLocker l(&liveViewersMutex);
+        liveViewers.erase(this);
+    }
 
     // If _imp->updateViewerRunning is true, that means that the next updateViewer call was
     // not yet processed. Since we're in the main thread and it is processed in the main thread,
@@ -262,6 +272,31 @@ ViewerInstance::~ViewerInstance()
     if (_imp->uiContext) {
         _imp->uiContext->removeGUI();
     }
+}
+
+bool
+ViewerInstance::isAnyViewerConnected()
+{
+    // The nodes are checked, and released, outside the lock: dropping the last reference to one
+    // destroys its viewer, which takes the lock.
+    std::vector<NodePtr> nodes;
+    {
+        QMutexLocker l(&liveViewersMutex);
+        nodes.reserve(liveViewers.size());
+        for (ViewerInstance* viewer : liveViewers) {
+            NodePtr node = viewer->getNode();
+            if (node) {
+                nodes.push_back(std::move(node));
+            }
+        }
+    }
+    for (const NodePtr& node : nodes) {
+        if (node->hasInputOrQueuedInputConnected()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 RenderEngine*

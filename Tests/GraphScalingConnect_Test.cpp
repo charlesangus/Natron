@@ -41,6 +41,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Project.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_USING
 
@@ -191,4 +192,64 @@ TEST_F(GraphScalingConnectTest, InsertingAboveAViewerWalksWhatIsBelowOnceToAbort
     // One walk finds the viewers both to abort and to render, and one refreshes the input-related
     // data below the edit.
     EXPECT_LE(visits, 2 * belowEdit);
+}
+
+TEST_F(GraphScalingConnectTest, WithNoViewerConnectedNoWalkLooksForViewers)
+{
+    const AppInstancePtr app = getApp();
+    std::vector<NodePtr> chain;
+    buildChain(app, &chain);
+    ASSERT_EQ(kChainLength, (int)chain.size());
+    ASSERT_FALSE(ViewerInstance::isAnyViewerConnected());
+
+    std::list<ViewerInstance*> viewers;
+    const U64 before = Node::getDownstreamWalkVisitCount();
+    chain[0]->hasViewersConnected(&viewers);
+    Node::getViewersDownstreamOf(std::list<NodePtr>(1, chain[0]), &viewers);
+    EXPECT_EQ((U64)0, Node::getDownstreamWalkVisitCount() - before);
+    EXPECT_TRUE(viewers.empty());
+
+    NodePtr viewer = createNamedNode(app, PLUGINID_NATRON_VIEWER, "UnconnectedViewer");
+    ASSERT_TRUE(bool(viewer));
+    EXPECT_FALSE(ViewerInstance::isAnyViewerConnected());
+    ASSERT_TRUE(viewer->connectInput(chain.back(), 0));
+    EXPECT_TRUE(ViewerInstance::isAnyViewerConnected());
+    chain[0]->hasViewersConnected(&viewers);
+    EXPECT_EQ((std::size_t)1, viewers.size());
+
+    viewer->disconnectInput(0);
+    EXPECT_FALSE(ViewerInstance::isAnyViewerConnected());
+}
+
+TEST_F(GraphScalingConnectTest, InputRelatedRefreshVisitsOnlyWhatIsBelowTheEdit)
+{
+    const AppInstancePtr app = getApp();
+    std::vector<NodePtr> chain;
+    buildChain(app, &chain);
+    ASSERT_EQ(kChainLength, (int)chain.size());
+    ASSERT_FALSE(ViewerInstance::isAnyViewerConnected());
+
+    // With no viewer, the only downstream walk of a connection is the input-related refresh, which
+    // starts at the outputs of the node whose input changed.
+    NodePtr leaf = createNamedNode(app, PLUGINID_NATRON_GRADE, "Leaf");
+    ASSERT_TRUE(bool(leaf));
+    U64 before = Node::getDownstreamWalkVisitCount();
+    ASSERT_TRUE(leaf->connectInput(chain.back(), 0));
+    EXPECT_EQ((U64)0, Node::getDownstreamWalkVisitCount() - before);
+
+    const int mid = kChainLength / 2;
+    NodePtr inserted = createNamedNode(app, PLUGINID_NATRON_GRADE, "Inserted");
+    ASSERT_TRUE(bool(inserted));
+    before = Node::getDownstreamWalkVisitCount();
+    ASSERT_TRUE(inserted->connectInput(chain[mid], 0));
+    EXPECT_EQ((U64)0, Node::getDownstreamWalkVisitCount() - before);
+
+    // chain[mid + 2] to the end of the chain, then the leaf.
+    const U64 belowEdit = kChainLength - mid - 2 + 1;
+    before = Node::getDownstreamWalkVisitCount();
+    ASSERT_TRUE(chain[mid + 1]->replaceInput(inserted, 0));
+    const U64 visits = Node::getDownstreamWalkVisitCount() - before;
+    EXPECT_GE(visits, belowEdit);
+    EXPECT_LE(visits, belowEdit + 1);
+    EXPECT_EQ(inserted, chain[mid + 1]->getInput(0));
 }

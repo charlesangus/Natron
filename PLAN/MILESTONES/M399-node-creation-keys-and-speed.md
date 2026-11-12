@@ -248,3 +248,7 @@ included. The standard GUI bench shows no regression against `baselines/xvfb.jso
 in `## Decisions`. The user accepts a UAT AppImage with its steps `.md`, covering the number
 keys reusing an existing Viewer (including after a reload and inside a Group), Tab after each
 global-mode exit, and creation and tab-menu feel on this host.
+
+## Decisions
+
+- 2026-11-12 — Claimed at the user's request while M118 (PR #259) is in review. The branch starts from M118's tip (acbf9300d), so the node-graph code it edits matches what lands on main. Phases 1 and 2 start now. Phases 3 and 4 measure after M118 is on main, and main is merged in before the PR.

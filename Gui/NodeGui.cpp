@@ -45,6 +45,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsPathItem>
 #include <QGridLayout>
 #include <QLayout>
+#include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRadialGradient>
@@ -188,6 +189,19 @@ static QColor
 persistentErrorColor()
 {
     return QColor(128, 0, 0, 255);
+}
+
+static QColor
+cpuExecutionColor()
+{
+    return QColor(Qt::yellow);
+}
+
+// Apart from the teal of the GPU region overlay's outlines as well as from the CPU yellow.
+static QColor
+gpuExecutionColor()
+{
+    return QColor(70, 150, 255);
 }
 
 // A wide stroke ending on the box's corners would stick out of the box: pull each end in along
@@ -450,6 +464,8 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect(internalNode.get(), SIGNAL(renderingEnded()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect(internalNode.get(), SIGNAL(inputNIsRendering(int)), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect(internalNode.get(), SIGNAL(inputNIsFinishedRendering(int)), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
+    QObject::connect(internalNode.get(), SIGNAL(executionCountChanged()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
+    QObject::connect(internalNode.get(), SIGNAL(inputExecutionCountChanged()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect( internalNode.get(), SIGNAL(knobsLinksChanged()), this, SLOT(onKnobsLinksChanged()) );
     QObject::connect(internalNode.get(), SIGNAL(linksChanged()), this, SLOT(onKnobsLinksChanged()));
     QObject::connect( internalNode.get(), SIGNAL(outputsChanged()), this, SLOT(refreshOutputEdgeVisibility()) );
@@ -2858,13 +2874,24 @@ NodeGui::refreshStateIndicator()
 
     bool showIndicator = true;
     QBrush brush = _stateIndicator->brush();
-    int value = node->getIsNodeRenderingCounter();
+    const bool cpu = _ranOnCpu || (node->getIsNodeRenderingCounter() >= 1);
+    const bool gpu = _ranOnGpu;
     bool isSelected = getIsSelected();
-    if (value >= 1) {
-        brush = QBrush(Qt::yellow);
+    if (cpu && gpu) {
+        QLinearGradient split(0., 0., 1., 0.);
+        split.setCoordinateMode(QGradient::ObjectBoundingMode);
+        split.setColorAt(0., cpuExecutionColor());
+        split.setColorAt(0.4999, cpuExecutionColor());
+        split.setColorAt(0.5, gpuExecutionColor());
+        split.setColorAt(1., gpuExecutionColor());
+        brush = QBrush(split);
+    } else if (cpu) {
+        brush = QBrush(cpuExecutionColor());
+    } else if (gpu) {
+        brush = QBrush(gpuExecutionColor());
     } else if (isSelected) {
         brush = QBrush(Qt::white);
-    } else if ( !message.isEmpty() && ( (type == 1) || (type == 2) ) ) {
+    } else if (!message.isEmpty() && ((type == 1) || (type == 2))) {
         if (type == 1) {
             brush = QBrush(QColor(128, 0, 0, 255)); //< error
         } else if (type == 2) {
@@ -2924,14 +2951,22 @@ NodeGui::refreshRenderingIndicator()
     if (!effect) {
         return;
     }
+    _ranOnCpu = node->takeExecutionCount(Node::eExecutionDeviceCpu) > 0;
+    _ranOnGpu = node->takeExecutionCount(Node::eExecutionDeviceGpu) > 0;
+    bool latched = _ranOnCpu || _ranOnGpu;
     refreshStateIndicator();
     for (std::size_t i = 0; i < _inputEdges.size(); ++i) {
-        int value = node->getIsInputNRenderingCounter(i);
-        if (value >= 1) {
+        const bool executed = node->takeInputExecutionCount(i) > 0;
+        latched = latched || executed;
+        if (executed || (node->getIsInputNRenderingCounter(i) >= 1)) {
             _inputEdges[i]->turnOnRenderingColor();
         } else {
             _inputEdges[i]->turnOffRenderingColor();
         }
+    }
+    // Nothing else may come to clear what a finished execution lit, so the next refresh is queued now.
+    if (latched && _graph) {
+        _graph->scheduleNodeRenderStateRefresh(this);
     }
     ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>( effect.get() );
     if (isViewer) {

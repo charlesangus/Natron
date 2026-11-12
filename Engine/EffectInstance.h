@@ -919,6 +919,20 @@ public:
     static RenderCacheStateEnum takeLastRenderCacheState();
 
     /**
+     * @brief Whether the last renderRoI that finished on the calling thread ran the effect's render action on pixels
+     * neither a cache nor an identity served, which is reset to false. Published like takeLastRenderCacheState(): an
+     * identity or a pass-through computes nothing and leaves it false, whatever its input did.
+     **/
+    static bool takeLastRenderExecuted();
+
+    /**
+     * @brief Whether the output of the last renderRoI(), renderDeepRoI() or evaluateScene() that finished on the
+     * calling thread was computed during it, by the effect or by the nodes an identity passed through, rather than
+     * taken from a cache or from layers authored earlier; reset to false. Published like takeLastRenderCacheState().
+     **/
+    static bool takeLastPullFresh();
+
+    /**
      * @brief Whether what this effect puts on its output is deep data, as the graph around it
      * resolves it: eDataKindDeep and unambiguously so. This is the predicate that decides which
      * of renderRoI() and renderDeepRoI() may be asked of it.
@@ -1239,13 +1253,17 @@ public:
      * renderRoI() in args->inputImagesList under inputNb, where it finds them by key.
      * The input renders under the context consumer pulls it under (see InputContextArgs), which
      * inputContext gives when the caller already resolved it.
+     * A render the cache did not serve counts as an execution of the input's node on the CPU and as a fresh output of
+     * the frame (see FrameRenderContext::noteFreshOutput()). When freshInput is given, it says whether the pixels
+     * returned were computed for this frame rather than taken from a cache.
      **/
     static RenderRoIRetCode renderInputOrTakeFromStore(const EffectInstancePtr& input,
                                                        int inputNb,
                                                        RenderRoIArgs* args,
                                                        std::map<ImageLayerDesc, ImagePtr>* layers,
                                                        const EffectInstance* consumer,
-                                                       InputContextArgs* inputContext = 0);
+                                                       InputContextArgs* inputContext = 0,
+                                                       bool* freshInput = 0);
 
     /**
      * @brief Count, in the stats of the frame installed on this thread, an input taken from the store or one rendered

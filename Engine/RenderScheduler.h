@@ -413,6 +413,18 @@ public:
                                                             std::map<ImageLayerDesc, ImagePtr>* planes);
 
     /**
+     * @brief Records what renderTaskOnCpu() did for graph.tasks[task], which left cacheState and executed (see
+     * EffectInstance::takeLastRenderExecuted()): when the effect executed, a CPU execution of its node and a fresh
+     * output in context. A task the cache did not serve but that executed nothing, an identity one among them, has a
+     * fresh output when one of its dependencies has.
+     **/
+    static void noteTaskRanOnCpu(const FrameRenderContext& context,
+                                 const FrameGraph& graph,
+                                 int task,
+                                 EffectInstance::RenderCacheStateEnum cacheState,
+                                 bool executed);
+
+    /**
      * @brief Queues the tasks of graph. The context must stay unchanged until the future finished. An empty graph
      * finishes at once with eRenderRoIRetCodeFailed.
      **/

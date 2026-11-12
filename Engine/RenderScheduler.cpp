@@ -1359,6 +1359,31 @@ RenderScheduler::renderTaskOnCpu(const FrameGraph& graph,
 }
 
 void
+RenderScheduler::noteTaskRanOnCpu(const FrameRenderContext& context,
+                                  const FrameGraph& graph,
+                                  int taskIndex,
+                                  EffectInstance::RenderCacheStateEnum cacheState,
+                                  bool executed)
+{
+    const FrameGraph::Task& task = graph.tasks[taskIndex];
+    if (!task.key.node || (cacheState == EffectInstance::eRenderCacheStateHit)) {
+        return;
+    }
+    if (task.isIdentity || !executed) {
+        for (int d : task.dependencies) {
+            if (context.hasFreshOutput(graph.tasks[d].key.node.get())) {
+                context.noteFreshOutput(task.key.node.get());
+                break;
+            }
+        }
+
+        return;
+    }
+    task.key.node->noteExecution(Node::eExecutionDeviceCpu);
+    context.noteFreshOutput(task.key.node.get());
+}
+
+void
 RenderScheduler::executeTask(const FramePtr& frame,
                              int taskIndex,
                              int budget,
@@ -1386,8 +1411,13 @@ RenderScheduler::executeTask(const FramePtr& frame,
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
         EffectInstance::takeLastRenderCacheState();
+        EffectInstance::takeLastRenderExecuted();
         retCode = renderTaskOnCpu(frame->graph, taskIndex, task.storage, &planes);
         const EffectInstance::RenderCacheStateEnum cacheState = EffectInstance::takeLastRenderCacheState();
+        const bool executed = EffectInstance::takeLastRenderExecuted();
+        if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
+            noteTaskRanOnCpu(*frame->context, frame->graph, taskIndex, cacheState, executed);
+        }
         --_tasksRendering;
         if (profiling) {
             const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count();
@@ -1536,10 +1566,23 @@ RenderScheduler::executeRegion(const FramePtr& frame,
         if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost && report.cpuFallback.empty()) {
             const std::vector<int>& members = frame->graph.regions[region].members;
             // memberNs is 0 for a member that recorded no device work, an identity one or one served from a store.
+            std::vector<Node*> ran;
             for (std::size_t i = 0; (i < members.size()) && (i < report.memberNs.size()); ++i) {
                 const NodePtr& memberNode = frame->graph.tasks[members[i]].key.node;
                 if (memberNode && (report.memberNs[i] > 0)) {
                     memberNode->noteExecution(Node::eExecutionDeviceGpu);
+                    frame->context->noteFreshOutput(memberNode.get());
+                    ran.push_back(memberNode.get());
+                }
+            }
+            // Members read one another on the device, where no pull lights their edges.
+            for (Node* member : ran) {
+                const int inputs = member->getNInputs();
+                for (int i = 0; i < inputs; ++i) {
+                    const NodePtr input = member->getInput(i);
+                    if (input && frame->context->hasFreshOutput(input.get())) {
+                        member->noteInputExecution(i);
+                    }
                 }
             }
         }

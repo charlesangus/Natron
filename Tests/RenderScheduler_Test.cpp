@@ -1163,6 +1163,99 @@ TEST_F(RenderSchedulerTest, EditingTheLastNodeRunsNothingBehindTheCachedOutputBe
     EXPECT_FLOAT_EQ(13.f, rootPixel(second, 0, 0));
 }
 
+TEST_F(RenderSchedulerTest, AnInputLightsOnlyWhenItsUpstreamRan)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[1], "cacheOutput", true));
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
+        nodes[i]->takeInputExecutionCount(0);
+    }
+
+    {
+        SCOPED_TRACE("nothing cached");
+        FrameRun first;
+        ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+        EXPECT_FLOAT_EQ(3.f, rootPixel(first, 0, 0));
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            EXPECT_EQ(1, nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "node " << i;
+            EXPECT_EQ(0, nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu)) << "node " << i;
+        }
+        EXPECT_GT(nodes[1]->takeInputExecutionCount(0), 0) << "the first node ran";
+        EXPECT_GT(nodes[2]->takeInputExecutionCount(0), 0) << "the second node missed the cache and ran";
+    }
+
+    ASSERT_NO_FATAL_FAILURE(setValue(nodes.back(), 10.));
+    CountingTestRegistry::reset();
+
+    {
+        SCOPED_TRACE("the second node cached");
+        FrameRun second;
+        ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &second, true));
+        EXPECT_FLOAT_EQ(12.f, rootPixel(second, 0, 0));
+        EXPECT_EQ(0, CountingTestRegistry::renders(nodes[1]));
+        EXPECT_EQ(1, CountingTestRegistry::renders(nodes[2]));
+        EXPECT_EQ(0, nodes[0]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(0, nodes[1]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "a cache hit is no execution";
+        EXPECT_EQ(1, nodes[2]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(0, nodes[1]->takeInputExecutionCount(0)) << "the cached node read nothing";
+        EXPECT_EQ(0, nodes[2]->takeInputExecutionCount(0)) << "the input came from the cache";
+    }
+}
+
+// The evicted entry makes the root pull its input inline, through a disabled node reading a cached one.
+TEST_F(RenderSchedulerTest, AnIdentityPassingCachedPixelsInlineNeitherRunsNorLightsAnEdge)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(4, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[0], "cacheOutput", true));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[2], "cacheOutput", true));
+    nodes[1]->setNodeDisabled(true);
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
+        nodes[i]->takeInputExecutionCount(0);
+    }
+
+    {
+        SCOPED_TRACE("nothing cached");
+        FrameRun first;
+        ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+        EXPECT_FLOAT_EQ(3.f, rootPixel(first, 0, 0));
+        EXPECT_EQ(0, nodes[1]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "an identity computes nothing";
+        EXPECT_GT(nodes[2]->takeInputExecutionCount(0), 0) << "the identity passed through what the first node ran";
+    }
+
+    ASSERT_NO_FATAL_FAILURE(setValue(nodes.back(), 10.));
+    CountingTestRegistry::reset();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
+        nodes[i]->takeInputExecutionCount(0);
+    }
+
+    {
+        SCOPED_TRACE("the third node evicted after planning");
+        FrameRun second;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &second, &error, true)) << error;
+        nodes[2]->removeAllImagesFromCache(true);
+        submit(&second);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second.future->wait());
+        EXPECT_FLOAT_EQ(12.f, rootPixel(second, 0, 0));
+        EXPECT_EQ(0, CountingTestRegistry::renders(nodes[0]));
+        EXPECT_EQ(1, CountingTestRegistry::renders(nodes[2]));
+        EXPECT_EQ(0, nodes[0]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(0, nodes[1]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "an inline identity is no execution";
+        EXPECT_EQ(1, nodes[2]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(1, nodes[3]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(0, nodes[1]->takeInputExecutionCount(0)) << "the identity read a cached image";
+        EXPECT_EQ(0, nodes[2]->takeInputExecutionCount(0)) << "the identity passed cached pixels through";
+        EXPECT_GT(nodes[3]->takeInputExecutionCount(0), 0) << "the third node ran inline";
+    }
+}
+
 TEST_F(RenderSchedulerTest, APartialHitKeepsOnlyTheDependencyItsMissingPartReads)
 {
     appPTR->clearAllCaches();
@@ -1553,7 +1646,7 @@ TEST_F(RenderSchedulerTest, RegionRunsBetweenItsInputsAndItsConsumers)
     }
 }
 
-// A region whose output another region reads beside a CPU task: A alone, then D on the CPU, then B merging A and D.
+// The members B, C and M run on the device and the others on the CPU; an input lights when the node feeding it ran.
 TEST_F(RenderSchedulerTest, RegionMembersThatRunCountOneGpuExecutionEach)
 {
     std::vector<NodePtr> nodes;
@@ -1561,8 +1654,13 @@ TEST_F(RenderSchedulerTest, RegionMembersThatRunCountOneGpuExecutionEach)
 
     for (int served = 0; served < 2; ++served) {
         SCOPED_TRACE(served ? "one member served from a store" : "every member runs");
+        appPTR->clearAllCaches();
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu);
+            nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
+            for (int input = 0; input < nodes[i]->getNInputs(); ++input) {
+                nodes[i]->takeInputExecutionCount(input);
+            }
         }
         std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
         if (served) {
@@ -1574,12 +1672,23 @@ TEST_F(RenderSchedulerTest, RegionMembersThatRunCountOneGpuExecutionEach)
             const bool member = (i >= 1) && (i <= 3);
             const int expected = (member && !(served && (i == 3))) ? 1 : 0;
             EXPECT_EQ(expected, nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu)) << "node " << i;
-            EXPECT_EQ(0, nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "node " << i;
+            EXPECT_EQ(member ? 0 : 1, nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "node " << i;
             EXPECT_EQ(0, nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu)) << "latched counts are taken once, node " << i;
         }
+        // M feeds X and Y and reads B and C; the served M ran nothing, so none of those four inputs lights.
+        const bool mRan = !served;
+        EXPECT_GT(nodes[1]->takeInputExecutionCount(0), 0) << "B reads A";
+        EXPECT_GT(nodes[2]->takeInputExecutionCount(0), 0) << "C reads A";
+        EXPECT_EQ(mRan, nodes[3]->takeInputExecutionCount(0) > 0) << "M reads B";
+        EXPECT_EQ(mRan, nodes[3]->takeInputExecutionCount(1) > 0) << "M reads C";
+        EXPECT_EQ(mRan, nodes[4]->takeInputExecutionCount(0) > 0) << "X reads M";
+        EXPECT_EQ(mRan, nodes[5]->takeInputExecutionCount(0) > 0) << "Y reads M";
+        EXPECT_GT(nodes[6]->takeInputExecutionCount(0), 0) << "the root reads X";
+        EXPECT_GT(nodes[6]->takeInputExecutionCount(1), 0) << "the root reads Y";
     }
 }
 
+// A region whose output another region reads beside a CPU task: A alone, then D on the CPU, then B merging A and D.
 TEST_F(RenderSchedulerTest, RegionFeedsAnotherRegion)
 {
     NodePtr a = createCounting(kTestPluginIDCounting, 1.);

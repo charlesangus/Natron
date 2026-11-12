@@ -525,6 +525,7 @@ Node::initializeInputs()
     {
         QMutexLocker l(&_imp->lastRenderStartedMutex);
         _imp->inputIsRenderingCounter.resize(inputCount);
+        _imp->inputExecutionCounts.resize(inputCount);
     }
     {
         QMutexLocker l(&_imp->inputsMutex);

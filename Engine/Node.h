@@ -1451,7 +1451,7 @@ public:
 
     /**
      * @brief Records that this node's effect really ran count times on the device, whatever the render took from a
-     * store or a cache. Safe from any render thread; emits executionCountChanged().
+     * store or a cache. Safe from any render thread; emits executionCountChanged() when the count leaves zero.
      **/
     void noteExecution(ExecutionDeviceEnum device, int count = 1);
 
@@ -1460,6 +1460,18 @@ public:
      * than a reader's interval is still seen once. Whoever reads the counts owns them: two readers share the executions.
      **/
     int takeExecutionCount(ExecutionDeviceEnum device);
+
+    /**
+     * @brief Records that this node read input inputNb's output while the input's pixels were computed for the render
+     * rather than taken from a cache. Safe from any render thread; emits inputExecutionCountChanged() when the count of
+     * the input leaves zero.
+     **/
+    void noteInputExecution(int inputNb);
+
+    /**
+     * @brief Like takeExecutionCount(), for the reads noteInputExecution() recorded on input inputNb.
+     **/
+    int takeInputExecutionCount(int inputNb);
 
     /**
      * @brief forwarded to the live instance
@@ -2685,6 +2697,8 @@ Q_SIGNALS:
     void renderingStarted();
 
     void executionCountChanged();
+
+    void inputExecutionCountChanged();
 
     void renderingEnded();
 

@@ -1345,8 +1345,12 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
                                            RenderRoIArgs* args,
                                            std::map<ImageLayerDesc, ImagePtr>* layers,
                                            const EffectInstance* consumer,
-                                           InputContextArgs* inputContext)
+                                           InputContextArgs* inputContext,
+                                           bool* freshInput)
 {
+    if (freshInput) {
+        *freshInput = false;
+    }
     std::unique_ptr<InputContextArgs> ownInputContext;
     if (!inputContext) {
         ownInputContext.reset(new InputContextArgs(consumer, input));
@@ -1359,10 +1363,15 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     } else if (!args->roi.isNull() && !isRotoPaintTreePull(input)) {
         noteUnplannedPull();
     }
+    const FrameRenderContext* frameContext = AppTLS::currentFrameContext();
+    const NodePtr inputNode = input ? input->getNode() : NodePtr();
     if (fromStore && frameStoreImagesMatch(stored, args->bitdepth, args->returnStorage)) {
         std::list<ImagePtr>::const_iterator image = stored.begin();
         for (std::list<ImageLayerDesc>::const_iterator comp = args->components.begin(); comp != args->components.end(); ++comp, ++image) {
             layers->insert(std::make_pair(*comp, *image));
+        }
+        if (freshInput) {
+            *freshInput = frameContext && frameContext->hasFreshOutput(inputNode.get());
         }
 
         return eRenderRoIRetCodeOk;
@@ -1373,7 +1382,31 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     }
     inputContext->install();
 
-    return input->renderRoI(*args, layers);
+    // A renderRoI returning before it records anything leaves what an earlier one published.
+    takeLastRenderExecuted();
+    takeLastPullFresh();
+    const std::size_t layersBefore = layers->size();
+    const RenderRoIRetCode code = input->renderRoI(*args, layers);
+    const bool executed = takeLastRenderExecuted();
+    const bool passedFresh = takeLastPullFresh();
+    if (code != eRenderRoIRetCodeOk) {
+        return code;
+    }
+    bool fresh = (frameContext && frameContext->hasFreshOutput(inputNode.get())) || (!fromStore && passedFresh);
+    if (!fromStore && executed && (layers->size() > layersBefore)) {
+        fresh = true;
+        if (inputNode) {
+            inputNode->noteExecution(Node::eExecutionDeviceCpu);
+        }
+        if (frameContext) {
+            frameContext->noteFreshOutput(inputNode.get());
+        }
+    }
+    if (freshInput) {
+        *freshInput = fresh;
+    }
+
+    return code;
 }
 
 bool

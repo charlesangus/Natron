@@ -247,6 +247,7 @@ public:
         , renderStartedCounter(0)
         , executionCounts()
         , inputIsRenderingCounter(0)
+        , inputExecutionCounts()
         , lastInputNRenderStartedSlotCallTime()
         , nodeIsDequeuing(false)
         , actionsQueued(false)
@@ -535,6 +536,7 @@ public:
     int renderStartedCounter;
     std::atomic<int> executionCounts[2];
     std::vector<int> inputIsRenderingCounter;
+    std::vector<int> inputExecutionCounts;
     timeval lastInputNRenderStartedSlotCallTime;
 
     ///True when the node is dequeuing the connectionQueue and no render should be started 'til it is empty

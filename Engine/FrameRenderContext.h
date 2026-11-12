@@ -285,6 +285,17 @@ public:
      **/
     bool isRotoPaintTreeNode(const Node* node) const;
 
+    /**
+     * @brief Records that node's output in this frame holds pixels computed for it, by its own effect or by the nodes
+     * an identity one passes through, rather than taken from a cache. Thread safe.
+     **/
+    void noteFreshOutput(const Node* node) const;
+
+    /**
+     * @brief Whether noteFreshOutput() was called for node. Thread safe.
+     **/
+    bool hasFreshOutput(const Node* node) const;
+
     const AbortableRenderInfoPtr& getAbortInfo() const
     {
         return _abortInfo;
@@ -347,6 +358,8 @@ private:
     // Effects share the holder of their render clones, so a clone finds the args of its node.
     std::unordered_map<const TLSHolderBase*, ParallelRenderArgsPtr> _argsByHolder;
     std::unordered_set<const Node*> _rotoPaintTreeNodes;
+    mutable std::mutex _freshOutputsMutex;
+    mutable std::unordered_set<const Node*> _freshOutputs;
     std::shared_ptr<FrameRequestMap> _request;
     AbortableRenderInfoPtr _abortInfo;
     RenderStatsPtr _stats;

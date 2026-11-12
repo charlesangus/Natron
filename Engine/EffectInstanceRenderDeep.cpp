@@ -197,7 +197,29 @@ findFlattenedLayerInCache(const ImageKey& key,
     return ImagePtr();
 }
 
+thread_local bool s_lastPullFresh = false;
+
 } // anonymous namespace
+
+PullFreshRecorder::PullFreshRecorder()
+    : _fresh(false)
+{
+}
+
+PullFreshRecorder::~PullFreshRecorder()
+{
+    s_lastPullFresh = _fresh;
+}
+
+bool
+EffectInstance::takeLastPullFresh()
+{
+    const bool fresh = s_lastPullFresh;
+
+    s_lastPullFresh = false;
+
+    return fresh;
+}
 
 bool
 EffectInstance::producesDeepData() const
@@ -234,6 +256,8 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     if (_imp->mainInstance) {
         return _imp->mainInstance->renderDeepRoI(args, outputDeepImage);
     }
+
+    PullFreshRecorder freshRecorder;
 
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
@@ -328,7 +352,11 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                 selfArgs.view = identityView;
                 selfArgs.preComputedRoD.clear();
 
-                return renderDeepRoI(selfArgs, outputDeepImage);
+                takeLastPullFresh();
+                const RenderRoIRetCode selfCode = renderDeepRoI(selfArgs, outputDeepImage);
+                freshRecorder.setFresh(takeLastPullFresh());
+
+                return selfCode;
             }
 
             EffectInstancePtr identityInput = getIdentitySource(identityInputNb);
@@ -350,7 +378,14 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
             InputContextArgs identityContext(this, identityInput, identityInputNb, args.time, args.view);
             identityContext.install();
 
-            return identityInput->renderDeepRoI(identityArgs, outputDeepImage);
+            takeLastPullFresh();
+            const RenderRoIRetCode identityCode = identityInput->renderDeepRoI(identityArgs, outputDeepImage);
+            if (takeLastPullFresh()) {
+                freshRecorder.setFresh(true);
+                getNode()->noteInputExecution(identityInputNb);
+            }
+
+            return identityCode;
         }
     }
 
@@ -441,8 +476,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         std::set<double> inputTimes;
         collectFramesNeededForInput(framesNeeded, i, args.view, args.time, &inputTimes);
 
-        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), i);
-
+        bool inputFresh = false;
         for (std::set<double>::const_iterator it = inputTimes.begin(); it != inputTimes.end(); ++it) {
             RenderDeepRoIArgs inputArgs(*it,
                                         args.scale,
@@ -454,7 +488,9 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                                         this,
                                         args.time);
             DeepImagePtr inputImage;
+            takeLastPullFresh();
             RenderRoIRetCode inputCode = input->renderDeepRoI(inputArgs, &inputImage);
+            inputFresh = takeLastPullFresh() || inputFresh;
 
             if (inputCode != eRenderRoIRetCodeOk) {
                 return inputCode;
@@ -462,6 +498,10 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
             if (inputImage) {
                 inputDeepImages[i][*it] = inputImage;
             }
+        }
+        // An input the cache served lights no edge: nothing ran upstream for this render.
+        if (inputFresh) {
+            getNode()->noteInputExecution(i);
         }
     }
 
@@ -584,6 +624,8 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     } else {
         *outputDeepImage = renderedImage;
     }
+    getNode()->noteExecution(Node::eExecutionDeviceCpu);
+    freshRecorder.setFresh(true);
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::renderDeepRoI

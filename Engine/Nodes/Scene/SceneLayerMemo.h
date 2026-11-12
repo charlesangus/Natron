@@ -135,6 +135,9 @@ public:
     // How many layers produce() has authored.
     U64 getAuthorCount() const;
 
+    // How many layers produce() and SceneOps::reparentRoots() have authored on the calling thread, with any memo.
+    static U64 getLayersAuthoredOnThread();
+
 private:
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

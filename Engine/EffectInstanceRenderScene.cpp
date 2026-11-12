@@ -31,6 +31,7 @@
 #include <string>
 
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/ParallelRenderArgs.h"
 
@@ -110,6 +111,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return _imp->mainInstance->evaluateScene(args, outputScene, errorMessage);
     }
 
+    PullFreshRecorder freshRecorder;
+
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
     ParallelRenderArgsPtr frameArgs;
@@ -174,7 +177,11 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                     return eRenderRoIRetCodeFailed;
                 }
 
-                return evaluateScene(EvaluateSceneArgs(identityTime, identityView), outputScene, errorMessage);
+                takeLastPullFresh();
+                const RenderRoIRetCode selfCode = evaluateScene(EvaluateSceneArgs(identityTime, identityView), outputScene, errorMessage);
+                freshRecorder.setFresh(takeLastPullFresh());
+
+                return selfCode;
             }
 
             EffectInstancePtr identityInput = getIdentitySource(identityInputNb);
@@ -182,7 +189,14 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                 return eRenderRoIRetCodeOk;
             }
 
-            return identityInput->evaluateScene(EvaluateSceneArgs(identityTime, identityView), outputScene, errorMessage);
+            takeLastPullFresh();
+            const RenderRoIRetCode identityCode = identityInput->evaluateScene(EvaluateSceneArgs(identityTime, identityView), outputScene, errorMessage);
+            if (takeLastPullFresh()) {
+                freshRecorder.setFresh(true);
+                getNode()->noteInputExecution(identityInputNb);
+            }
+
+            return identityCode;
         }
     }
 
@@ -194,6 +208,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     actionArgs.view = args.view;
     actionArgs.isRenderResponseToUserInteraction = frameArgs->isRenderResponseToUserInteraction;
 
+    // The output stacks this node's layer on its inputs' layers, so it is fresh when one of them is.
+    bool anyInputFresh = false;
     const int nInputs = getNInputs();
     for (int i = 0; i < nInputs; ++i) {
         EffectInstancePtr input = getInput(i);
@@ -202,12 +218,17 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
             continue;
         }
 
-        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), i);
-
         ScenePayload inputScene;
+        takeLastPullFresh();
         RenderRoIRetCode inputCode = input->evaluateScene(args, &inputScene, errorMessage);
+        const bool inputFresh = takeLastPullFresh();
         if (inputCode != eRenderRoIRetCodeOk) {
             return inputCode;
+        }
+        // An input that re-emitted the layers it authored before lights no edge.
+        if (inputFresh) {
+            getNode()->noteInputExecution(i);
+            anyInputFresh = true;
         }
         actionArgs.inputScenes[i] = inputScene;
     }
@@ -222,6 +243,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     ScenePayload renderedScene;
     std::string renderError;
     StatusEnum st;
+    // The inputs were evaluated above, so the layers authored from here on are this node's.
+    const U64 authoredBefore = SceneLayerMemo::getLayersAuthoredOnThread();
     try {
         st = renderScene(actionArgs, &renderedScene, &renderError);
     } catch (const std::exception& e) {
@@ -248,6 +271,11 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     }
 
     *outputScene = renderedScene;
+    const bool authored = SceneLayerMemo::getLayersAuthoredOnThread() != authoredBefore;
+    if (authored) {
+        getNode()->noteExecution(Node::eExecutionDeviceCpu);
+    }
+    freshRecorder.setFresh(authored || anyInputFresh);
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::evaluateScene

@@ -183,13 +183,17 @@ renderMembersOnCpu(const FrameRenderContextPtr& context,
         const FrameGraph::Task& task = graph.tasks[m];
         std::map<ImageLayerDesc, ImagePtr> planes;
         EffectInstance::takeLastRenderCacheState();
+        EffectInstance::takeLastRenderExecuted();
         const EffectInstance::RenderRoIRetCode code = RenderScheduler::renderTaskOnCpu(graph, m, eStorageModeRAM, &planes);
+        const EffectInstance::RenderCacheStateEnum cacheState = EffectInstance::takeLastRenderCacheState();
+        const bool executed = EffectInstance::takeLastRenderExecuted();
         if (report) {
-            report->memberCache.push_back(EffectInstance::takeLastRenderCacheState());
+            report->memberCache.push_back(cacheState);
         }
         if (code != EffectInstance::eRenderRoIRetCodeOk) {
             return code;
         }
+        RenderScheduler::noteTaskRanOnCpu(*context, graph, m, cacheState, executed);
         for (int d : task.dependencies) {
             if (graph.tasks[d].regionId == regionIndex) {
                 store.release(graph.tasks[d].key);

@@ -51,6 +51,7 @@
 #include "Engine/Cache.h"
 #include "Engine/CacheTier.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
@@ -100,18 +101,21 @@ removeLayerFromCache(const ImageKey& key,
 }
 
 thread_local EffectInstance::RenderCacheStateEnum s_lastRenderCacheState = EffectInstance::eRenderCacheStateBypass;
+thread_local bool s_lastRenderExecuted = false;
 
 // Publishes its state when renderRoI returns, so that renders nested in the same call cannot overwrite it.
 class RenderCacheStateRecorder {
 public:
     RenderCacheStateRecorder()
         : _state(EffectInstance::eRenderCacheStateBypass)
+        , _executed(false)
     {
     }
 
     ~RenderCacheStateRecorder()
     {
         s_lastRenderCacheState = _state;
+        s_lastRenderExecuted = _executed;
     }
 
     void set(EffectInstance::RenderCacheStateEnum state)
@@ -119,8 +123,22 @@ public:
         _state = state;
     }
 
+    void setExecuted()
+    {
+        _executed = true;
+        _fresh.setFresh(true);
+    }
+
+    // The output holds pixels an upstream node computed for this render and this one passed through.
+    void setPassedFreshPixels()
+    {
+        _fresh.setFresh(true);
+    }
+
 private:
     EffectInstance::RenderCacheStateEnum _state;
+    bool _executed;
+    PullFreshRecorder _fresh;
 };
 
 // Rerendering any plane of an action runs the whole action, so each image is charged all of it.
@@ -191,6 +209,16 @@ EffectInstance::takeLastRenderCacheState()
     s_lastRenderCacheState = eRenderCacheStateBypass;
 
     return state;
+}
+
+bool
+EffectInstance::takeLastRenderExecuted()
+{
+    const bool executed = s_lastRenderExecuted;
+
+    s_lastRenderExecuted = false;
+
+    return executed;
 }
 
 /*
@@ -687,10 +715,15 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         // A pass-through plane is pulled under the context this node requests the
                         // input under, as the identity input is.
                         InputContextArgs passThroughContext(this, passThroughInput, ptInputNb, args.time, args.view);
-                        RenderRoIRetCode inputRetCode = renderInputOrTakeFromStore(passThroughInput, ptInputNb, inArgs.get(), &inputLayers, this, &passThroughContext);
+                        bool freshInput = false;
+                        RenderRoIRetCode inputRetCode = renderInputOrTakeFromStore(passThroughInput, ptInputNb, inArgs.get(), &inputLayers, this, &passThroughContext, &freshInput);
                         assert(inputLayers.size() == 1 || inputLayers.empty());
                         if ((inputRetCode == eRenderRoIRetCodeAborted) || (inputRetCode == eRenderRoIRetCodeFailed) || inputLayers.empty()) {
                             return inputRetCode;
+                        }
+                        if (freshInput) {
+                            getNode()->noteInputExecution(ptInputNb);
+                            cacheStateRecorder.setPassedFreshPixels();
                         }
                         outputLayers->insert(std::make_pair(*it, inputLayers.begin()->second));
                     }
@@ -761,7 +794,17 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
                     argCpy->preComputedRoD.clear(); //< clear as the RoD of the identity input might not be the same (reproducible with Blur)
 
-                    return renderRoI(*argCpy, outputLayers);
+                    takeLastRenderExecuted();
+                    takeLastPullFresh();
+                    const RenderRoIRetCode selfCode = renderRoI(*argCpy, outputLayers);
+                    const bool selfFresh = takeLastPullFresh();
+                    if (takeLastRenderExecuted()) {
+                        cacheStateRecorder.setExecuted();
+                    } else if (selfFresh) {
+                        cacheStateRecorder.setPassedFreshPixels();
+                    }
+
+                    return selfCode;
                 }
             }
 
@@ -791,9 +834,20 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 // input through.
                 InputContextArgs identityContext(this, inputEffectIdentity, inputNbIdentity, args.time, args.view);
                 std::map<ImageLayerDesc, ImagePtr> identityLayers;
-                RenderRoIRetCode ret = renderInputOrTakeFromStore(inputEffectIdentity, inputNbIdentity, inputArgs.get(), &identityLayers, this, &identityContext);
+                bool freshInput = false;
+                RenderRoIRetCode ret = renderInputOrTakeFromStore(inputEffectIdentity, inputNbIdentity, inputArgs.get(), &identityLayers, this, &identityContext, &freshInput);
                 if (ret != eRenderRoIRetCodeOk) {
                     return ret;
+                }
+                if (freshInput) {
+                    cacheStateRecorder.setPassedFreshPixels();
+                    const NodePtr thisNode = getNode();
+                    thisNode->noteInputExecution(inputNbIdentity);
+                    // What a consumer takes from this node then flows from the input that ran.
+                    const FrameRenderContext* frameContext = AppTLS::currentFrameContext();
+                    if (frameContext) {
+                        frameContext->noteFreshOutput(thisNode.get());
+                    }
                 }
                 outputLayers->insert(identityLayers.begin(), identityLayers.end());
             } else {
@@ -1733,6 +1787,10 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                               processChannels);
             if ((renderRetCode == eRenderRoIStatusImageRendered) && !aborted()) {
                 recordRecomputeCost(*layersToRender, renderWatch.ownNs(), retention, renderSequence);
+                // Rectangles that are all identities only copy the input's pixels.
+                if (!allIdentity) {
+                    cacheStateRecorder.setExecuted();
+                }
             }
             if (useOpenGL) {
                 // If the plug-in doesn't support concurrent OpenGL renders, release the lock that was taken in the call to attachOpenGLContext_public() above.

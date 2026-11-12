@@ -7382,14 +7382,44 @@ Node::noteExecution(ExecutionDeviceEnum device,
     if (count <= 0) {
         return;
     }
-    _imp->executionCounts[device].fetch_add(count);
-    Q_EMIT executionCountChanged();
+    if (_imp->executionCounts[device].fetch_add(count) == 0) {
+        Q_EMIT executionCountChanged();
+    }
 }
 
 int
 Node::takeExecutionCount(ExecutionDeviceEnum device)
 {
     return _imp->executionCounts[device].exchange(0);
+}
+
+void
+Node::noteInputExecution(int inputNb)
+{
+    bool leftZero = false;
+    {
+        QMutexLocker l(&_imp->lastRenderStartedMutex);
+        if ((inputNb < 0) || (inputNb >= (int)_imp->inputExecutionCounts.size())) {
+            return;
+        }
+        leftZero = (_imp->inputExecutionCounts[inputNb]++ == 0);
+    }
+    if (leftZero) {
+        Q_EMIT inputExecutionCountChanged();
+    }
+}
+
+int
+Node::takeInputExecutionCount(int inputNb)
+{
+    QMutexLocker l(&_imp->lastRenderStartedMutex);
+    if ((inputNb < 0) || (inputNb >= (int)_imp->inputExecutionCounts.size())) {
+        return 0;
+    }
+    const int count = _imp->inputExecutionCounts[inputNb];
+    _imp->inputExecutionCounts[inputNb] = 0;
+
+    return count;
 }
 
 void

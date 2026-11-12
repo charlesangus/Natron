@@ -411,6 +411,8 @@ FrameRenderContext::FrameRenderContext()
     : _argsMap()
     , _argsByHolder()
     , _rotoPaintTreeNodes()
+    , _freshOutputsMutex()
+    , _freshOutputs()
     , _request()
     , _abortInfo()
     , _stats()
@@ -575,6 +577,24 @@ bool
 FrameRenderContext::isRotoPaintTreeNode(const Node* node) const
 {
     return node && (_rotoPaintTreeNodes.find(node) != _rotoPaintTreeNodes.end());
+}
+
+void
+FrameRenderContext::noteFreshOutput(const Node* node) const
+{
+    if (!node) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_freshOutputsMutex);
+    _freshOutputs.insert(node);
+}
+
+bool
+FrameRenderContext::hasFreshOutput(const Node* node) const
+{
+    std::lock_guard<std::mutex> lock(_freshOutputsMutex);
+
+    return node && (_freshOutputs.find(node) != _freshOutputs.end());
 }
 
 NATRON_NAMESPACE_EXIT

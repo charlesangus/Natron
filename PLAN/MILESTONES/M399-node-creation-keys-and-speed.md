@@ -254,55 +254,55 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: builds; ctest passes, with visit-count tests on a 3000-node graph; the stage log's positioning median is under 2 ms at 3000 nodes.
   - size: M
 
-- [ ] M399.P4.T8 — Bound the low-detail repaint after a creation
+- [x] M399.P4.T8 — Bound the low-detail repaint after a creation
   - files: `Gui/NodeGraphLowDetailLayer.cpp` (~:466-579), `Gui/NodeGraph05.cpp`
   - approach: dirty only the new node, its edges and the nodes that actually moved; stop more than 32 dirty rects collapsing into one union (~:473).
   - verify: `create_by_shortcut` graph-paint samples at 3000 within 2× of the 0-node count; `m55_node_graph.py` passes.
   - size: M
 
-- [ ] M399.P4.T9 — Give the node-graph scene a fixed sceneRect
+- [x] M399.P4.T9 — Give the node-graph scene a fixed sceneRect
   - files: `Gui/NodeGraph.cpp` (~:144)
   - approach: Qt rescans every item for `itemsBoundingRect` on each add because the scene has no sceneRect; set one on the scene, kept in step with the view's.
   - verify: no `itemsBoundingRect` in a 3000-node creation sample; `m55_node_graph.py` passes.
   - size: S
 
-- [ ] M399.P4.T10 — Bound connect-time upstream work
+- [x] M399.P4.T10 — Bound connect-time upstream work
   - files: `Engine/Node.cpp` (`onInputChanged`, `ParallelRenderArgsSetter`), `Engine/NodeInputs.cpp`
   - approach: a GUI connect runs `buildArgsMap`, `getContentHash` and a recursive `getTimeInvariantMetadata` upstream; skip them or make them lazy until a render needs them.
   - verify: positioning median under 2 ms at 3000; ctest passes.
   - size: M
 
-- [ ] M399.P4.T11 — Tab-menu Enter invokes before closing and re-filters later
+- [x] M399.P4.T11 — Tab-menu Enter invokes before closing and re-filters later
   - files: `Gui/Resources/TabTabTab/tabtabtab_nuke_core.py` (~:1076-1101)
   - approach: invoke, then close, for actions that open no window; apply `prev_string` on the next show instead of `setText` on the critical path.
   - verify: `tab_menu_create` within 10% of `create_by_shortcut`; `m45_tab_menu.py` passes.
   - size: M
 
-- [ ] M399.P4.T12 — Dope-sheet insert without the downstream walk
+- [x] M399.P4.T12 — Dope-sheet insert without the downstream walk
   - files: `Gui/DopeSheet.cpp` (~:321-380), `Gui/DopeSheetHierarchyView.cpp` (~:969)
   - approach: `getNearestTimeFromOutputs_recursive` does a `std::list` find per visited node; use a hash set, or defer the insert until the dope sheet is shown.
   - verify: the walk is absent from panel-build samples at 3000; ctest passes.
   - size: S
 
-- [ ] M399.P4.T13 — Build only the visible panel page
+- [x] M399.P4.T13 — Build only the visible panel page
   - files: `Gui/KnobGuiContainerHelper.cpp`, `Gui/NodeGui.cpp` (~:711)
   - approach: the deferred panel build (117-195 ms, one stall the next key waits on) builds every page's knob widgets; build the visible page, the rest on first show, and split the build across loop passes.
   - verify: the new `create_then_key` op (P4.T16) meets 50 ms; GUI scripts pass.
   - size: L
 
-- [ ] M399.P4.T14 — Make the layers refresh and navigator bounds incremental
+- [x] M399.P4.T14 — Make the layers refresh and navigator bounds incremental
   - files: `Engine/Project.cpp` (~:2782), `Engine/Node.cpp` (~:9188), `Gui/NodeGraphPrivate.cpp` (~:250-310)
   - approach: cache each node's layer ids and diff them; handle removals in the pending bounds instead of marking all bounds dirty.
   - verify: neither shows in a 3000-node creation sample.
   - size: M
 
-- [ ] M399.P4.T15 — Warm the popup's native window at startup
+- [x] M399.P4.T15 — Warm the popup's native window at startup
   - files: `Gui/Resources/TabTabTab/tabtabtab_natron.py` (~:687 warm-up)
   - approach: create the window (`winId`), polish and lay it out during warm-up.
   - verify: the session's first `tab_menu_open` ≤ 33 ms.
   - size: S
 
-- [ ] M399.P4.T16 — Bench validity
+- [x] M399.P4.T16 — Bench validity
   - files: `tools/bench/gui/gui_bench.py`, `tools/bench/gui/README.md`
   - approach: put the paint filter on the popup only, not the whole application; drain the previous rep's destroy before t0; add a `create_then_key` op (create, then Tab as soon as the node paints, timed to the menu's paint) so the deferred panel stall is counted.
   - verify: the bench runs the new op; `compare.py` accepts the file.
@@ -344,3 +344,4 @@ global-mode exit, and creation and tab-menu feel on this host.
 - 2026-11-12 — P4.T1, T2, T4-T7 landed (63325826e, 6c1316059: the tab-menu walk cache kept submenu wrappers PySide invalidates; the m158 test lacked Loop and Reverse Flow Variable); gate green (run 43242648575). Create bench on it (host loaded, load ~13 on 4 cores), median/max ms at 0/300/3000: `create_by_shortcut` 117/182, 154/222, 345/454; `tab_menu_open` 22/49, 23/59, 26/76; `tab_menu_create` 200/367, 245/421, 565/720. All still miss at max; P4.T3 profiling what is left.
 - 2026-11-12 — **P4.T3 measurement** (host loaded, load 10-13 on 4 cores; main-thread CPU agrees within 5% across runs). p95/max ms at 0/300/3000: `create_by_shortcut` 165/182, 214/222, 416/454 (CPU median/max 33/39, 50/70, 225/285); `tab_menu_open` 43/49, 52/59, 49/76 (CPU 17-20 median, max 50-70; first open 59-90); `tab_menu_create` 265/367, 332/421, 679/720 (CPU 47/60, 80/105, 365/420). P4.T4/T7's 2 ms positioning target missed (25-30 ms at 3000, in connect-time `buildArgsMap`, `getContentHash` and recursive metadata) and P4.T5's loop-pass target missed (229-255 ms at 3000 vs 75-79 at 0). At 0 nodes, 12 of 14 samples wait in `glXSwapBuffers` — Qt 6 composites the whole window through GL because of the viewer's QOpenGLWidget, which on Xvfb is llvmpipe. At 3000: low-detail `paintCached` re-render, `QGraphicsScene::itemsBoundingRect` (no sceneRect), navigator bounds, identity hash, layers refresh. Tab create's extra cost is one more paint and flush (popup closes before creating) and a `setText` re-filter. The deferred panel build is a 117-195 ms stall the next key waits on, which the bench never measures (it pumps events before t0); at 3000, 14 of its 62 samples are in `DopeSheetPrivate::getNearestTimeFromOutputs_recursive`. Tasks P4.T8-T16 filed from this. Samples: `build/m399-prof/p4-*.txt` in the worktree.
 - 2026-11-12 — **Budgets are judged on a real display (user).** Under Xvfb the viewer's QOpenGLWidget makes Qt 6 composite the whole window through llvmpipe each frame, a floor of roughly 50-100 ms that a real GPU display doesn't have. Xvfb runs stay as relative measurements; the 50 ms and 33 ms budgets are judged on the dev host's real display or the GPU host. No move to QOpenGLWindow.
+- 2026-11-12 — P4.T8-T16 landed (345369cac), gate green (run 43273477412). Xvfb create bench (load ~13-15, relative only), median/max ms and main-thread CPU median at 0/300/3000: `create_by_shortcut` 109/165 (33), 124/156 (42), 235/278 (112); `tab_menu_open` 19/26, 20/49, 19/37 (CPU 17; first open 37, 30, 39); `tab_menu_create` 200/267 (45), 238/316 (69), 413/505 (232); `create_then_key` 233/309 (73), 255/520 (98), 498/579 (275). At 0 and 300 the CPU is within the create budget, so the Xvfb wall time is mostly the window composite (user: judge on a real display); at 3000, creation still costs ~110 ms of CPU and tab create ~230. Round 2 UAT AppImage out for the real-display judgement.

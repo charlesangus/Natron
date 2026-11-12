@@ -469,7 +469,7 @@ Gui::removeViewerTab(ViewerTab* tab,
     NodeGroup* isGrp = 0;
     NodeCollectionPtr collection;
     if ( tab->getInternalNode() && tab->getInternalNode()->getNode() ) {
-        NodeCollectionPtr collection = tab->getInternalNode()->getNode()->getGroup();
+        collection = tab->getInternalNode()->getNode()->getGroup();
         isGrp = dynamic_cast<NodeGroup*>( collection.get() );
     }
 

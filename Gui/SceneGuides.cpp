@@ -447,7 +447,8 @@ hitTest(const SceneGizmo::View& view,
         const std::vector<Guide>& guides,
         const GfVec2d& pixel,
         const std::string& skipPath,
-        GfVec3d* world)
+        GfVec3d* world,
+        double maxDepth)
 {
     int best = -1;
     double bestDistance = kHitTolerancePixels;
@@ -469,14 +470,18 @@ hitTest(const SceneGizmo::View& view,
             if (distance > bestDistance) {
                 continue;
             }
+            // t runs evenly on screen; undo the perspective divide to find it along the line.
+            const double inverseA = 1. / clipW(view, wa);
+            const double inverseB = 1. / clipW(view, wb);
+            const double s = t * inverseB / ((1. - t) * inverseA + t * inverseB);
+            const GfVec3d at = wa + (wb - wa) * s;
+            if (view.viewProjection.Transform(at)[2] > maxDepth) {
+                continue;
+            }
             bestDistance = distance;
             best = (int)g;
             if (world) {
-                // t runs evenly on screen; undo the perspective divide to find it along the line.
-                const double inverseA = 1. / clipW(view, wa);
-                const double inverseB = 1. / clipW(view, wb);
-                const double s = t * inverseB / ((1. - t) * inverseA + t * inverseB);
-                *world = wa + (wb - wa) * s;
+                *world = at;
             }
         }
     }

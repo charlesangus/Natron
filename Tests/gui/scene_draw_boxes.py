@@ -1,7 +1,7 @@
 """Boxed rows of the payload city draw as tinted boxes, or as markers where no hint bounds them.
 
-Graph: USDRead of heavy_city.usda (tools/bench/heavy_scene_make.py) into Viewer1, every payload
-unloaded. Nine in ten buildings author an extentsHint, so a boxed building draws a box from it; the
+Graph: USDRead of a ten-block heavy_city.usda (tools/bench/heavy_scene_make.py) into Viewer1, every
+payload unloaded. Nine in ten buildings author an extentsHint, so a boxed building draws a box from it; the
 tenth, index % 10 == 0, has none and draws a marker at its transform. The script checks:
   - Children on /World/Block0 .. Block9 boxes their 120 buildings: 108 boxes and 12 markers
     (natronSceneDrawBoxes, natronSceneDrawMarkers), and the image changes;
@@ -10,7 +10,7 @@ tenth, index % 10 == 0, has none and draws a marker at its transform. The script
   - no payload file is opened at any point;
   - clearing every row gives back the first image, with nothing drawn.
 
-File: $NATRON_CITY_FILE (default build/bench/heavy_city.usda).
+File: $NATRON_CITY_FILE, by default a city of ten blocks the script writes under $NATRON_GUI_TEST_OUT.
 
 Screenshots for sign-off: scene-boxes-none, scene-boxes-and-markers, scene-boxes-one-box,
 scene-boxes-one-marker, scene-boxes-badges.
@@ -31,6 +31,9 @@ STARTUP_TIMEOUT_S = 60.0
 SETTLE_MS = 1000
 BLOCKS = ["/World/Block%d" % b for b in range(10)]
 BUILDINGS_PER_BLOCK = 12
+CITY_FLOORS = 16
+# Twenty prims to a building, the fewest that still fill sixteen floors.
+CITY_PRIMS = len(BLOCKS) * BUILDINGS_PER_BLOCK * 20 + len(BLOCKS) + 1
 HINTED = "/World/Block0/B1"
 UNHINTED = "/World/Block0/B0"
 PAYLOAD_MARK = "heavy_city_payloads"
@@ -47,8 +50,16 @@ try:
     PATH_ROLE = Qt.UserRole + 1
     UNKNOWN_BOUNDS_ROLE = Qt.UserRole + 4
 
-    city_path = os.environ.get("NATRON_CITY_FILE", os.path.join(ROOT, "build", "bench", "heavy_city.usda"))
-    require(os.path.isfile(city_path), "fixture exists: %s (python3 tools/bench/heavy_scene_make.py)" % city_path)
+    city_path = os.environ.get("NATRON_CITY_FILE")
+    if not city_path:
+        sys.path.insert(0, os.path.join(ROOT, "tools", "bench"))
+        import heavy_scene_make
+
+        fixture_dir = os.path.realpath(os.path.join(OUT, "scene_draw_boxes"))
+        os.makedirs(fixture_dir, exist_ok=True)
+        heavy_scene_make.make_city(fixture_dir, CITY_PRIMS, len(BLOCKS), BUILDINGS_PER_BLOCK, CITY_FLOORS)
+        city_path = os.path.join(fixture_dir, "heavy_city.usda")
+    require(os.path.isfile(city_path), "fixture exists: %s" % city_path)
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))

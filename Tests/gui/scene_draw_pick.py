@@ -64,37 +64,55 @@ def Xform "World"
     {
         double3 xformOp:translate = (0, 0, 3)
         uniform token[] xformOpOrder = ["xformOp:translate"]
-        def Cube "Cube" { double size = 1 }
+        def Cube "Cube"
+        {
+            double size = 1
+        }
     }
     def Xform "Far"
     {
         double3 xformOp:translate = (0, 0, -3)
         uniform token[] xformOpOrder = ["xformOp:translate"]
-        def Cube "Cube" { double size = 3 }
+        def Cube "Cube"
+        {
+            double size = 3
+        }
     }
     def Xform "Shield"
     {
         double3 xformOp:translate = (-4, 0, 3)
         uniform token[] xformOpOrder = ["xformOp:translate"]
-        def Cube "Cube" { double size = 1 }
+        def Cube "Cube"
+        {
+            double size = 1
+        }
     }
     def Xform "Behind"
     {
         double3 xformOp:translate = (-4, 0, -3)
         uniform token[] xformOpOrder = ["xformOp:translate"]
-        def Cube "Cube" { double size = 2 }
+        def Cube "Cube"
+        {
+            double size = 2
+        }
     }
     def Xform "Crate"
     {
         double3 xformOp:translate = (4, 0, 3)
         uniform token[] xformOpOrder = ["xformOp:translate"]
-        def Cube "Cube" { double size = 1 }
+        def Cube "Cube"
+        {
+            double size = 1
+        }
     }
     def Xform "Wall"
     {
         double3 xformOp:translate = (4, 0, -3)
         uniform token[] xformOpOrder = ["xformOp:translate"]
-        def Cube "Cube" { double size = 2 }
+        def Cube "Cube"
+        {
+            double size = 2
+        }
     }
     def Xform "Spot"
     {
@@ -107,7 +125,10 @@ def Xform "World"
         uniform token[] xformOpOrder = ["xformOp:translate"]
         def Xform "Inner"
         {
-            def Cube "Leaf" { double size = 1 }
+            def Cube "Leaf"
+            {
+                double size = 1
+            }
         }
     }
     def Xform "Lamps"
@@ -225,6 +246,10 @@ try:
         v = view()
         return (v is not None and bool(v.property("natronSceneSynced")) and bool(v.property("natronSceneShown"))
                 and not v.property("natronSceneError"))
+
+    def scene_error():
+        v = view()
+        return str(v.property("natronSceneError") or "") if v is not None else ""
 
     def draw_stats():
         v = view()
@@ -367,7 +392,7 @@ try:
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
         ok = yield ("until", scene_drawn, LOAD_TIMEOUT_S)
-        require(ok, "the scene view shows the stage")
+        require(ok, "the scene view shows the stage", scene_error())
         require(panel() is not None, "the Scene Graph panel exists")
         home = ancestor_of_class(view(), "TabWidget")
         require(home is not None, "the scene view is in a pane")

@@ -327,6 +327,7 @@ TEST(SceneDrawBoxes, AListFromRulesThatChangedDuringItsPassIsDropped)
     bool entered = false;
     bool released = false;
     std::mutex publishedMutex;
+    std::condition_variable publishedChanged;
     std::vector<U64> published;
     SceneDrawBoxes* self = nullptr;
     SceneDrawBoxes boxes(
@@ -341,8 +342,11 @@ TEST(SceneDrawBoxes, AListFromRulesThatChangedDuringItsPassIsDropped)
         },
         std::function<bool()>(),
         [&]() {
-            std::lock_guard<std::mutex> lock(publishedMutex);
-            published.push_back(self->getList()->generation);
+            {
+                std::lock_guard<std::mutex> lock(publishedMutex);
+                published.push_back(self->getList()->generation);
+            }
+            publishedChanged.notify_all();
         });
     self = &boxes;
 
@@ -363,7 +367,9 @@ TEST(SceneDrawBoxes, AListFromRulesThatChangedDuringItsPassIsDropped)
     const SceneDrawBoxes::ListPtr list = boxes.getList();
     ASSERT_EQ(list->boxes.size(), 1u);
     expectBox(list, "/World/B", GfVec3f(-2, -2, -2), GfVec3f(2, 2, 2));
-    std::lock_guard<std::mutex> lock(publishedMutex);
+    // The list is out before the callback runs, so the wait above can end ahead of it.
+    std::unique_lock<std::mutex> lock(publishedMutex);
+    ASSERT_TRUE(publishedChanged.wait_for(lock, kWait, [&]() { return !published.empty(); }));
     EXPECT_EQ(published, std::vector<U64>({ fresh }));
     EXPECT_NE(stale, fresh);
 }
@@ -375,6 +381,7 @@ TEST(SceneDrawBoxes, AWaitingWriterEndsTheHoldAfterEachRowAndTheRowsToComeShowAs
     // A writer arrives during every hold and is gone once the hold lets go.
     std::atomic<bool> writerWaiting { false };
     std::mutex publishedMutex;
+    std::condition_variable publishedChanged;
     std::vector<SceneDrawBoxes::ListPtr> published;
     SceneDrawBoxes* self = nullptr;
     SceneDrawBoxes boxes(
@@ -385,8 +392,11 @@ TEST(SceneDrawBoxes, AWaitingWriterEndsTheHoldAfterEachRowAndTheRowsToComeShowAs
         },
         [&]() { return writerWaiting.exchange(false); },
         [&]() {
-            std::lock_guard<std::mutex> lock(publishedMutex);
-            published.push_back(self->getList());
+            {
+                std::lock_guard<std::mutex> lock(publishedMutex);
+                published.push_back(self->getList());
+            }
+            publishedChanged.notify_all();
         });
     self = &boxes;
 
@@ -397,7 +407,8 @@ TEST(SceneDrawBoxes, AWaitingWriterEndsTheHoldAfterEachRowAndTheRowsToComeShowAs
     // Four rows' transforms, then four rows' bounds.
     EXPECT_EQ(reads.load(), 8);
 
-    std::lock_guard<std::mutex> lock(publishedMutex);
+    std::unique_lock<std::mutex> lock(publishedMutex);
+    ASSERT_TRUE(publishedChanged.wait_for(lock, kWait, [&]() { return published.size() >= 2u; }));
     ASSERT_EQ(published.size(), 2u);
     const SceneDrawBoxes::ListPtr& early = published.front();
     EXPECT_FALSE(early->complete);

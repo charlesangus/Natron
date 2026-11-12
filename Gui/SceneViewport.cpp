@@ -31,6 +31,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
@@ -4464,55 +4465,51 @@ SceneViewportRenderer::pick(int x,
         return std::string();
     }
     if (_imp->rendererId != kRenderDelegateStormId) {
-        // The guide or box nearer the eye, and its window depth.
-        std::string overlayPath;
-        double overlayDepth = 1.;
-        {
-            std::unique_lock<std::shared_mutex> lock;
-            if (!_imp->tryLockExclusive(&lock)) {
-                setBusy(busy);
-
-                return std::string();
-            }
-            const GfFrustum frustum = _imp->computeFrustum(width, height);
-            const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
-            const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
-            if (_imp->showGuides) {
-                const SceneGizmo::View view(viewMatrix, projection, width, height);
-                GfVec3d guidePoint;
-                const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
-                if (guide >= 0) {
-                    overlayPath = _imp->guides[guide].path;
-                    overlayDepth = ((viewMatrix * projection).Transform(guidePoint)[2] + 1.) * 0.5;
-                }
-            }
-            GfVec3d boxPoint;
-            const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
-            if (box >= 0) {
-                const double boxDepth = ((viewMatrix * projection).Transform(boxPoint)[2] + 1.) * 0.5;
-                if (overlayPath.empty() || (boxDepth < overlayDepth)) {
-                    overlayPath = _imp->drawnBoxList->boxes[box].path.GetString();
-                    overlayDepth = boxDepth;
-                }
-            }
-        }
         // From the AOVs of the last pass, of the size of the view when it rendered; it takes the
-        // viewer lock itself.
+        // viewer lock itself, so it is read before ours is taken.
         const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
-        if (!frame || (frame->width <= 0) || (frame->height <= 0)) {
-            return overlayPath;
-        }
-        const int fx = (int)((x + 0.5) * frame->width / width);
-        const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
-        const std::string prim = _imp->progressive->pick(*frame, fx, fy);
-        if (!overlayPath.empty() && !prim.empty()) {
+        // What is under the pixel and its window depth; a prim without one is behind everything.
+        std::string path;
+        double nearest = std::numeric_limits<double>::infinity();
+        if (frame && (frame->width > 0) && (frame->height > 0)) {
+            const int fx = (int)((x + 0.5) * frame->width / width);
+            const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
+            path = _imp->progressive->pick(*frame, fx, fy);
             const std::size_t pixel = (std::size_t)fy * (std::size_t)frame->width + (std::size_t)fx;
-            if ((pixel < frame->depth.size()) && (frame->depth[pixel] < overlayDepth)) {
-                return prim;
+            if (!path.empty() && (pixel < frame->depth.size())) {
+                nearest = frame->depth[pixel];
+            }
+        }
+        std::unique_lock<std::shared_mutex> lock;
+        if (!_imp->tryLockExclusive(&lock)) {
+            setBusy(busy);
+
+            return std::string();
+        }
+        const GfFrustum frustum = _imp->computeFrustum(width, height);
+        const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+        const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
+        // A box wins a tie with a prim, and a guide a tie with either.
+        GfVec3d boxPoint;
+        const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+        if (box >= 0) {
+            const double boxDepth = ((viewMatrix * projection).Transform(boxPoint)[2] + 1.) * 0.5;
+            if (path.empty() || (boxDepth <= nearest)) {
+                path = _imp->drawnBoxList->boxes[box].path.GetString();
+                nearest = boxDepth;
+            }
+        }
+        if (_imp->showGuides) {
+            const SceneGizmo::View view(viewMatrix, projection, width, height);
+            const double maxDepth = path.empty() ? std::numeric_limits<double>::infinity() : 2. * nearest - 1.;
+            GfVec3d guidePoint;
+            const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint, maxDepth);
+            if (guide >= 0) {
+                path = _imp->guides[guide].path;
             }
         }
 
-        return overlayPath.empty() ? prim : overlayPath;
+        return path;
     }
     std::unique_lock<std::shared_mutex> lock;
     if (!_imp->tryLockExclusive(&lock)) {
@@ -4543,11 +4540,14 @@ SceneViewportRenderer::pick(int x,
     // The nearer wins: depth is -z in the camera's space, for either projection. A guide wins a
     // tie, then a box.
     const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+    const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
     std::string path;
     double nearest = 0.;
+    GfVec3d nearestPoint;
     if (hitPrim) {
         path = results.front().hitPrimPath.GetString();
-        nearest = viewMatrix.Transform(results.front().hitPoint)[2];
+        nearestPoint = results.front().hitPoint;
+        nearest = viewMatrix.Transform(nearestPoint)[2];
     }
     GfVec3d boxPoint;
     const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
@@ -4556,13 +4556,15 @@ SceneViewportRenderer::pick(int x,
         if (path.empty() || (z >= nearest)) {
             path = _imp->drawnBoxList->boxes[box].path.GetString();
             nearest = z;
+            nearestPoint = boxPoint;
         }
     }
     if (_imp->showGuides) {
-        const SceneGizmo::View view(viewMatrix, frustum.ComputeProjectionMatrix(), width, height);
+        const SceneGizmo::View view(viewMatrix, projection, width, height);
+        const double maxDepth = path.empty() ? std::numeric_limits<double>::infinity() : view.viewProjection.Transform(nearestPoint)[2];
         GfVec3d guidePoint;
-        const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
-        if ((guide >= 0) && (path.empty() || (viewMatrix.Transform(guidePoint)[2] >= nearest))) {
+        const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint, maxDepth);
+        if (guide >= 0) {
             path = _imp->guides[guide].path;
         }
     }

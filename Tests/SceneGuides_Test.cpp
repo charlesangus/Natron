@@ -303,3 +303,30 @@ TEST(SceneGuides, HitTestAndRect)
     EXPECT_EQ(inRect[0], 0);
     EXPECT_TRUE(SceneGuides::guidesInRect(view, guides, GfVec2d(0., 150.), GfVec2d(50., 199.), "").empty());
 }
+
+TEST(SceneGuides, HitTestSkipsSegmentsBehindWhatWasDrawn)
+{
+    PXR_NS::GfFrustum frustum;
+    frustum.SetPerspective(60., 1., 0.1, 100.);
+    const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), 200, 200);
+
+    // The back line crosses the pixel; the front one passes a pixel or two from it.
+    SceneGuides::Guide back;
+    back.path = "/Back";
+    back.segments = { GfVec3d(-1., 0., -10.), GfVec3d(1., 0., -10.) };
+    SceneGuides::Guide front;
+    front.path = "/Front";
+    front.segments = { GfVec3d(-1., -0.05, -5.), GfVec3d(1., -0.05, -5.) };
+    const std::vector<SceneGuides::Guide> guides = { back, front };
+    const GfVec2d pixel(100., 100.);
+
+    GfVec3d world;
+    EXPECT_EQ(SceneGuides::hitTest(view, guides, pixel, "", &world), 0);
+    // A surface at z = -7 hides the back line there.
+    const double surface = view.viewProjection.Transform(GfVec3d(0., 0., -7.))[2];
+    EXPECT_EQ(SceneGuides::hitTest(view, guides, pixel, "", &world, surface), 1);
+    EXPECT_LT((world - GfVec3d(0., -0.05, -5.)).GetLength(), 0.1);
+    // One at z = -3 hides both.
+    const double nearer = view.viewProjection.Transform(GfVec3d(0., 0., -3.))[2];
+    EXPECT_EQ(SceneGuides::hitTest(view, guides, pixel, "", &world, nearer), -1);
+}

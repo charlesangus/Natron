@@ -14,8 +14,8 @@ each image is compared with the one before the change. The script checks:
     shell, so from the framed view it covers no pixel. With the base building Hidden, BBox on
     Geometry changes pixels, and clearing it gives back the image before.
 
-Files: $NATRON_INSTANCES_FILE (default build/bench/heavy_instances.usda) and $LOBBY_FILE (default
-.local/World_Lobby.usd); the Lobby section is skipped, and says so, when the Lobby is absent.
+Files: $NATRON_INSTANCES_FILE (by default the script writes it under $NATRON_GUI_TEST_OUT) and
+$LOBBY_FILE (default .local/World_Lobby.usd); the Lobby section is skipped, and says so, when the Lobby is absent.
 
 Screenshots for sign-off: scene-instances-shown, scene-instances-one-boxed,
 scene-instances-row-boxed, scene-instances-row-hidden, scene-instances-scatter-boxed,
@@ -50,9 +50,16 @@ try:
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
-    instances_path = os.environ.get("NATRON_INSTANCES_FILE", os.path.join(ROOT, "build", "bench", "heavy_instances.usda"))
-    require(os.path.isfile(instances_path),
-            "fixture exists: %s (python3 tools/bench/heavy_scene_make.py --instances-only)" % instances_path)
+    instances_path = os.environ.get("NATRON_INSTANCES_FILE")
+    if not instances_path:
+        sys.path.insert(0, os.path.join(ROOT, "tools", "bench"))
+        import heavy_scene_make
+
+        fixture_dir = os.path.realpath(os.path.join(OUT, "scene_draw_instances"))
+        os.makedirs(fixture_dir, exist_ok=True)
+        heavy_scene_make.make_instances(fixture_dir, INSTANCE_COUNT)
+        instances_path = os.path.join(fixture_dir, "heavy_instances.usda")
+    require(os.path.isfile(instances_path), "fixture exists: %s" % instances_path)
     lobby_path = os.environ.get("LOBBY_FILE", os.path.join(ROOT, ".local", "World_Lobby.usd"))
 
     usd = app.createNode("USDRead")

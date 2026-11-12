@@ -26,14 +26,18 @@
 #include "Global/Macros.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include "Gpu/GpuTestSelector.h"
 
 #include "Engine/GpuContext.h"
 
@@ -93,6 +97,9 @@ makeOptions(GpuResolvedMode mode,
     GpuContextOptions o;
     o.mode = mode;
     o.infoLog = log.sink();
+    if (mode == GpuResolvedMode::Force) {
+        o.device = gputest::cpuFallbackSelector();
+    }
 
     return o;
 }
@@ -244,6 +251,98 @@ TEST(GpuContextTest, LostRuntimeIsRecreatedOnceNothingHoldsIt)
     EXPECT_EQ(rt->state(), gpu::GpuRuntimeState::Ready);
     EXPECT_TRUE(rt->acquire(1 << 20, handle).ok());
     EXPECT_EQ(log.lines.size(), 1u);
+}
+
+namespace {
+// Parks the initialization thread right after the context became available, until release().
+class ReadyGate {
+public:
+    ReadyGate()
+    {
+        GpuContext::setReadyHookForTesting([this] {
+            std::unique_lock<std::mutex> k(_mutex);
+            _entered = true;
+            _cond.notify_all();
+            _cond.wait(k, [this] { return _released; });
+        });
+    }
+
+    ~ReadyGate()
+    {
+        GpuContext::setReadyHookForTesting(GpuContext::ReadyHook());
+    }
+
+    bool waitEntered(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> k(_mutex);
+
+        return _cond.wait_for(k, timeout, [this] { return _entered; });
+    }
+
+    void release()
+    {
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            _released = true;
+        }
+        _cond.notify_all();
+    }
+
+private:
+    std::mutex _mutex;
+    std::condition_variable _cond;
+    bool _entered = false;
+    bool _released = false;
+};
+
+// Declared after the context, so that an early return releases the gate before the context joins its thread.
+struct ReleaseOnExit {
+    ReadyGate& gate;
+    ~ReleaseOnExit() { gate.release(); }
+};
+}
+
+TEST(GpuContextTest, DeviceLossRightAfterInitDoesNotRaceTheReadyLog)
+{
+    ReadyGate gate;
+    LogCapture log;
+    // The device is chosen through NATRON_GPU_DEVICE rather than an explicit option, because recreation
+    // reuses the context's options and only the environment can still be made to match nothing afterwards.
+    const std::string cpuSelector = gputest::cpuFallbackSelector();
+    std::optional<ScopedEnv> initDevice;
+    if (!cpuSelector.empty()) {
+        initDevice.emplace("NATRON_GPU_DEVICE", cpuSelector.c_str());
+    }
+    GpuContextOptions options = makeOptions(GpuResolvedMode::Force, log);
+    options.device.clear();
+    GpuContext ctx(options);
+    ReleaseOnExit releaseOnExit { gate };
+
+    ASSERT_TRUE(ctx.waitForInit(std::chrono::seconds(60)));
+    if (!ctx.isAvailable()) {
+        if (std::getenv("NATRON_TEST_REQUIRE_GPU")) {
+            ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU is set but no Vulkan device is available";
+        } else {
+            std::fprintf(stderr, "no Vulkan device, skipping\n");
+        }
+        return;
+    }
+    ASSERT_TRUE(gate.waitEntered(std::chrono::seconds(60)));
+    gpu::GpuRuntime* rt = ctx.runtime();
+    rt->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+    {
+        gpu::GpuBufferHandle handle;
+        EXPECT_EQ(rt->acquire(1 << 20, handle).result, VK_ERROR_DEVICE_LOST);
+    }
+    {
+        // A failed recreation leaves the runtime with no device at all, so the ready log that follows would
+        // dereference a null device if it still read the runtime.
+        ScopedEnv noDevice("NATRON_GPU_DEVICE", "no-such-device");
+        EXPECT_FALSE(ctx.recoverIfLost());
+    }
+    gate.release();
+    ASSERT_EQ(log.lines.size(), 1u);
+    EXPECT_NE(log.lines[0].find("could not recover"), std::string::npos) << log.lines[0];
 }
 
 TEST(GpuContextTest, InjectedFaultAtStartupDegradesSilently)

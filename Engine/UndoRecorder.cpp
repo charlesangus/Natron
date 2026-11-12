@@ -37,6 +37,9 @@ UndoRecorderI::UndoRecorderI()
     : _suppressDepth(0)
     , _claimSerial(0)
     , _claimedKnobs()
+    , _watchSerial(0)
+    , _watchers()
+    , _suppressedWatchers()
 {
 }
 
@@ -45,17 +48,59 @@ UndoRecorderI::~UndoRecorderI()
 }
 
 void
+UndoRecorderI::openLabelledStep(const std::string& text)
+{
+    openStep(text);
+}
+
+void
 UndoRecorderI::suppress()
 {
     ++_suppressDepth;
+    if ((_suppressDepth != 1) || !isCapturing() || (getCaptureSerial() != _watchSerial)) {
+        return;
+    }
+    for (std::list<std::weak_ptr<UndoSuppressionListenerI>>::const_iterator it = _watchers.begin(); it != _watchers.end(); ++it) {
+        std::shared_ptr<UndoSuppressionListenerI> watcher = it->lock();
+        if (watcher) {
+            _suppressedWatchers.push_back(watcher);
+            watcher->suppressionBegins();
+        }
+    }
 }
 
 void
 UndoRecorderI::unsuppress()
 {
-    if (_suppressDepth > 0) {
-        --_suppressDepth;
+    if (_suppressDepth <= 0) {
+        return;
     }
+    --_suppressDepth;
+    if (_suppressDepth > 0) {
+        return;
+    }
+    std::list<std::weak_ptr<UndoSuppressionListenerI>> watchers;
+    watchers.swap(_suppressedWatchers);
+    for (std::list<std::weak_ptr<UndoSuppressionListenerI>>::const_iterator it = watchers.begin(); it != watchers.end(); ++it) {
+        std::shared_ptr<UndoSuppressionListenerI> watcher = it->lock();
+        if (watcher) {
+            watcher->suppressionEnds();
+        }
+    }
+}
+
+void
+UndoRecorderI::watchSuppression(const std::shared_ptr<UndoSuppressionListenerI>& listener)
+{
+    if (!listener) {
+        return;
+    }
+    std::uint64_t serial = getCaptureSerial();
+    if (serial != _watchSerial) {
+        _watchSerial = serial;
+        _watchers.clear();
+    }
+    _watchers.push_back(listener);
 }
 
 bool
@@ -98,13 +143,19 @@ onMainThread()
 }
 
 UndoStepGuard::UndoStepGuard(const AppInstancePtr& app,
-                             const std::string& text)
+                             const std::string& text,
+                             bool keepsText)
     : _recorder()
 {
     if (app && onMainThread()) {
         _recorder = app->getUndoRecorder();
     }
-    if (_recorder) {
+    if (!_recorder) {
+        return;
+    }
+    if (keepsText) {
+        _recorder->openLabelledStep(text);
+    } else {
         _recorder->openStep(text);
     }
 }

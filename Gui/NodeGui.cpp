@@ -28,7 +28,11 @@
 #include <algorithm> // min, max
 #include <cassert>
 #include <cmath>
+#include <map>
+#include <set>
 #include <stdexcept>
+#include <tuple>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -41,10 +45,13 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsPathItem>
 #include <QGridLayout>
 #include <QLayout>
+#include <QPainter>
 #include <QPainterPath>
+#include <QRadialGradient>
 #include <QTextBlockFormat>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QThread>
 #include <QTimer>
 #include <QTransform>
@@ -105,7 +112,9 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NearestMemberLines.h"
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGraphRectItem.h"
+#include "Gui/NodeGraphStacking.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -368,9 +377,10 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _previewH(NATRON_PREVIEW_HEIGHT)
     , _persistentMessage(NULL)
     , _stateIndicator(NULL)
+    , _stateIndicatorSelected(false)
     , _streamIssuesWarning()
-    , _disabledTopLeftBtmRight(NULL)
-    , _disabledBtmLeftTopRight(NULL)
+    , _disabledCross(NULL)
+    , _indicatorLayer(NULL)
     , _inputEdges()
     , _outputEdge(NULL)
     , _settingsPanel(NULL)
@@ -381,6 +391,8 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _hasUserColor(false)
     , _userColor()
     , _nameItemHasUserFontColor(false)
+    , _nameItemInputsSet(false)
+    , _nameItemInputs()
     , _wasBeginEditCalled(false)
     , positionMutex()
     , _linkLines()
@@ -416,6 +428,7 @@ NodeGui::initialize(NodeGraph* dag,
     _internalNode = internalNode;
     assert(internalNode);
     _graph = dag;
+    _initializingGui = true;
 
     NodeGuiPtr thisAsShared = shared_from_this();
 
@@ -432,12 +445,28 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(inputChanged(int)), this, SLOT(connectEdge(int)) );
     QObject::connect(internalNode.get(), SIGNAL(connectionsCommitted()), this, SLOT(onConnectionsCommitted()));
     QObject::connect(internalNode.get(), SIGNAL(persistentMessageChanged()), this, SLOT(onPersistentMessageChanged()));
+    // Emitted from render threads; the indicators are refreshed in batches on the graph's timer.
+    QObject::connect(internalNode.get(), SIGNAL(renderingStarted()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
+    QObject::connect(internalNode.get(), SIGNAL(renderingEnded()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
+    QObject::connect(internalNode.get(), SIGNAL(inputNIsRendering(int)), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
+    QObject::connect(internalNode.get(), SIGNAL(inputNIsFinishedRendering(int)), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect( internalNode.get(), SIGNAL(knobsLinksChanged()), this, SLOT(onKnobsLinksChanged()) );
     QObject::connect(internalNode.get(), SIGNAL(linksChanged()), this, SLOT(onKnobsLinksChanged()));
     QObject::connect( internalNode.get(), SIGNAL(outputsChanged()), this, SLOT(refreshOutputEdgeVisibility()) );
     QObject::connect( internalNode.get(), SIGNAL(previewKnobToggled()), this, SLOT(onPreviewKnobToggled()) );
     QObject::connect( internalNode.get(), SIGNAL(disabledKnobToggled(bool)), this, SLOT(onDisabledKnobToggled(bool)) );
-    QObject::connect(internalNode->getApp()->getTimeLine().get(), SIGNAL(frameChanged(SequenceTime, int)), this, SLOT(onTimelineTimeChanged(SequenceTime, int)));
+    // Whatever can key the Disable knob or give it an expression makes the node follow the timeline.
+    KnobBoolPtr disabledKnob = internalNode->getDisabledKnob();
+    KnobSignalSlotHandler* disabledHandler = disabledKnob ? disabledKnob->getSignalSlotHandler().get() : 0;
+    if (disabledHandler) {
+        QObject::connect(disabledHandler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(multipleKeyFramesSet(std::list<double>, ViewSpec, int, int)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(expressionChanged(int)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(knobSlaved(int, bool)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(linkChanged()), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(refreshFrameDependency()));
+        QObject::connect(disabledHandler, SIGNAL(animationLevelChanged(ViewSpec, int)), this, SLOT(refreshFrameDependency()));
+    }
     QObject::connect( internalNode.get(), SIGNAL(streamWarningsChanged()), this, SLOT(onStreamWarningsChanged()) );
     QObject::connect( internalNode.get(), SIGNAL(nodeExtraLabelChanged(QString)), this, SLOT(refreshNodeText(QString)) );
     QObject::connect(internalNode.get(), SIGNAL(layerSelectionChanged()), this, SLOT(onLayerSelectionChanged()));
@@ -448,7 +477,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(inputVisibilityChanged(int)), this, SLOT(onInputVisibilityChanged(int)) );
     QObject::connect(internalNode.get(), SIGNAL(dataKindChanged()), this, SLOT(onDataKindChanged()));
     QObject::connect( this, SIGNAL(previewImageComputed()), this, SLOT(onPreviewImageComputed()) );
-    setCacheMode(DeviceCoordinateCache);
+    setCacheMode(kNodeCacheModeFullDetail);
 
     OutputEffectInstance* isOutput = dynamic_cast<OutputEffectInstance*>( internalNode->getEffectInstance().get() );
     if (isOutput) {
@@ -495,7 +524,7 @@ NodeGui::initialize(NodeGraph* dag,
     EffectInstancePtr iseffect = internalNode->getEffectInstance();
     Backdrop* isBd = dynamic_cast<Backdrop*>( iseffect.get() );
     if ( !isBd && !internalNode->isOutputNode() ) {
-        _outputEdge = new Edge( thisAsShared, parentItem() );
+        _outputEdge = new Edge(thisAsShared, edgeParent());
     }
 
     restoreStateAfterCreation();
@@ -518,6 +547,12 @@ NodeGui::initialize(NodeGraph* dag,
 
     if (internalNode) {
         internalNode->initializeHostOverlays();
+    }
+    refreshFrameDependency();
+
+    _initializingGui = false;
+    if (_nameItemHtmlDeferred) {
+        setNameItemHtml(_deferredName, _deferredLabel);
     }
 } // initialize
 
@@ -590,8 +625,23 @@ NodeGui::itemChange(GraphicsItemChange change,
             node->setLayoutFromGuiPosition(p.x(), p.y());
         }
     }
+    if ((change == QGraphicsItem::ItemPositionHasChanged) || (change == QGraphicsItem::ItemVisibleHasChanged) || (change == QGraphicsItem::ItemScaleHasChanged)) {
+        if (_graph) {
+            _graph->noteNodeGeometryChanged(this);
+        }
+        invalidateGraphNavigator();
+    }
 
     return QGraphicsItem::itemChange(change, value);
+}
+
+void
+NodeGui::invalidateGraphNavigator()
+{
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
+        _graph->invalidateNavigatorImage();
+    }
 }
 
 bool
@@ -885,6 +935,7 @@ NodeGui::createGui()
 
     if ( !isBd && !iconFilePath.isEmpty() && appPTR->getCurrentSettings()->isPluginIconActivatedOnNodeGraph() ) {
         _pluginIcon = new NodeGraphPixmapItem(getDagGui(), this);
+        _pluginIcon->setHiddenAtLowDetail(true);
         _pluginIcon->setZValue(depth + 1);
         _pluginIconFrame = new QGraphicsRectItem(this);
         _pluginIconFrame->setZValue(depth);
@@ -917,7 +968,9 @@ NodeGui::createGui()
         }
     }
 
-    _presetIcon = new NodeGraphPixmapItem(getDagGui(), this);
+    NodeGraphPixmapItem* presetIcon = new NodeGraphPixmapItem(getDagGui(), this);
+    presetIcon->setHiddenAtLowDetail(true);
+    _presetIcon = presetIcon;
     _presetIcon->setZValue(depth + 1);
     _presetIcon->hide();
 
@@ -931,7 +984,9 @@ NodeGui::createGui()
     //_nameItem->setFont( QFont(appFont,appFontSize) );
     _nameItem->setZValue(depth + 1);
 
-    _persistentMessage = new NodeGraphSimpleTextItem(getDagGui(), this, false);
+    NodeGraphSimpleTextItem* persistentMessage = new NodeGraphSimpleTextItem(getDagGui(), this, false);
+    persistentMessage->setHiddenAtLowDetail(true);
+    _persistentMessage = persistentMessage;
     _persistentMessage->setZValue(depth + 3);
     QFont f = _persistentMessage->font();
     f.setPointSize(25);
@@ -954,9 +1009,12 @@ NodeGui::createGui()
 
     double ellipseDiam = TO_DPIX(NATRON_ELLIPSE_WARN_DIAMETER);
 
-    _streamIssuesWarning.reset( new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("C"), QPointF( bbox.x() + bbox.width() / 2, bbox.y() ),
-                                                     ellipseDiam, ellipseDiam,
-                                                     bitDepthGrad, QColor(0, 0, 0, 255), this) );
+    _indicatorLayer = new NodeGuiDecorations(getDagGui(), this);
+    _indicatorLayer->setZValue(depth + 2);
+
+    _streamIssuesWarning.reset(new NodeGuiIndicator(_indicatorLayer, QString::fromUtf8("C"), QPointF(bbox.x() + bbox.width() / 2, bbox.y()),
+                                                    ellipseDiam, ellipseDiam,
+                                                    bitDepthGrad, QColor(0, 0, 0, 255)));
     _streamIssuesWarning->setActive(false);
 
 
@@ -964,12 +1022,12 @@ NodeGui::createGui()
     exprGrad.push_back( qMakePair( 0., QColor(Qt::white) ) );
     exprGrad.push_back( qMakePair( 0.3, QColor(Qt::green) ) );
     exprGrad.push_back( qMakePair( 1., QColor(69, 96, 63) ) );
-    _expressionIndicator.reset( new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("E"), bbox.topRight(), ellipseDiam, ellipseDiam, exprGrad, QColor(255, 255, 255), this) );
+    _expressionIndicator.reset(new NodeGuiIndicator(_indicatorLayer, QString::fromUtf8("E"), bbox.topRight(), ellipseDiam, ellipseDiam, exprGrad, QColor(255, 255, 255)));
     _expressionIndicator->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("This node has one or several expression(s) involving values of parameters of other "
                                                                         "nodes in the project. Hover the mouse on the green connections to see what are the effective links."), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _expressionIndicator->setActive(false);
 
-    _availableViewsIndicator.reset( new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("V"), bbox.topLeft(), ellipseDiam, ellipseDiam, exprGrad, QColor(255, 255, 255), this) );
+    _availableViewsIndicator.reset(new NodeGuiIndicator(_indicatorLayer, QString::fromUtf8("V"), bbox.topLeft(), ellipseDiam, ellipseDiam, exprGrad, QColor(255, 255, 255)));
     _availableViewsIndicator->setActive(false);
 
     // Shown whatever the line preferences, so a Linked Node stays recognisable when its partners are
@@ -977,8 +1035,8 @@ NodeGui::createGui()
     // A vector chain link rather than a letter: small text is hinted and scaled with the graph and
     // smears at the corner, while a path is rasterised at the view's zoom and device pixel ratio.
     const double linkDiam = TO_DPIX(NATRON_LINK_BADGE_DIAMETER);
-    _linkedNodeIndicator.reset(new NodeGuiIndicator(depth + 2, makeChainLinkIcon(linkDiam), bbox.bottomLeft(), linkDiam,
-                                                    QColor(40, 95, 205), QColor(255, 255, 255), this));
+    _linkedNodeIndicator.reset(new NodeGuiIndicator(_indicatorLayer, makeChainLinkIcon(linkDiam), bbox.bottomLeft(), linkDiam,
+                                                    QColor(40, 95, 205), QColor(255, 255, 255)));
     _linkedNodeIndicator->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("This node is a Linked Node: its parameters are linked to those of "
                                                                                "one or more nodes of the same kind. Use Unlink Node to make it independent."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
@@ -994,23 +1052,16 @@ NodeGui::createGui()
         ptGrad.push_back( qMakePair( 0., QColor(0, 0, 255) ) );
         ptGrad.push_back( qMakePair( 0.5, QColor(0, 50, 200) ) );
         ptGrad.push_back( qMakePair( 1., QColor(0, 100, 150) ) );
-        _passThroughIndicator.reset( new NodeGuiIndicator(getDagGui(), depth + 2, QString::fromUtf8("P"), bbox.topRight(), ellipseDiam, ellipseDiam, ptGrad, QColor(255, 255, 255), this) );
+        _passThroughIndicator.reset(new NodeGuiIndicator(_indicatorLayer, QString::fromUtf8("P"), bbox.topRight(), ellipseDiam, ellipseDiam, ptGrad, QColor(255, 255, 255)));
         _passThroughIndicator->setActive(false);
     }
 
-    _disabledBtmLeftTopRight = new QGraphicsLineItem(this);
-    _disabledBtmLeftTopRight->setZValue(depth + 1);
-    _disabledBtmLeftTopRight->hide();
-    _disabledTopLeftBtmRight = new QGraphicsLineItem(this);
-    _disabledTopLeftBtmRight->hide();
-    _disabledTopLeftBtmRight->setZValue(depth + 1);
-    QGraphicsLineItem* const disabledCross[2] = { _disabledBtmLeftTopRight, _disabledTopLeftBtmRight };
-    for (QGraphicsLineItem* line : disabledCross) {
-        QPen pen = line->pen();
-        pen.setWidthF(kDisabledCrossPenWidth);
-        pen.setCapStyle(Qt::FlatCap);
-        line->setPen(pen);
-    }
+    QPen crossPen;
+    crossPen.setWidthF(kDisabledCrossPenWidth);
+    crossPen.setCapStyle(Qt::FlatCap);
+    _disabledCross = new NodeGuiDisabledCross(getDagGui(), this, crossPen);
+    _disabledCross->setZValue(depth + 1);
+    _disabledCross->hide();
 } // NodeGui::createGui
 
 void
@@ -1089,14 +1140,8 @@ NodeGui::ensurePreviewCreated()
         _previewPixmap->stackBefore(_nameItem);
     } else if (created) {
         // Already big enough for the preview, but a wrapped label still has to grow the node
-        // to stack under it. getSize() carries the outline pen, so resize from the laid-out size.
-        int curW, curH;
-        {
-            QMutexLocker k(&_mtSafeSizeMutex);
-            curW = _mtSafeWidth;
-            curH = _mtSafeHeight;
-        }
-        resize(curW, curH);
+        // to stack under it.
+        resize(size.width(), size.height());
         _previewPixmap->stackBefore(_nameItem);
     }
 }
@@ -1133,7 +1178,7 @@ NodeGui::removeSettingsPanel()
 void
 NodeGui::refreshSize()
 {
-    QRectF bbox = boundingRect();
+    const QRectF bbox = bodyRect();
 
     QString& label = _nodeLabel;
     resize( bbox.width(), bbox.height(), false, !label.isEmpty() );
@@ -1143,9 +1188,9 @@ int
 NodeGui::getFrameNameHeight() const
 {
     if ( mustFrameName() ) {
-        return _nameFrame->boundingRect().height();
+        return _nameFrame->rect().height();
     } else {
-        return boundingRect().height();
+        return bodyRect().height();
     }
 }
 
@@ -1366,12 +1411,15 @@ NodeGui::resize(int width,
     _persistentMessage->setPos(midNodeX - (pMWidth / 2), topLeft.y() + height / 2 - metrics.height() / 2);
     refreshUserColorBorderGeometry();
 
-    _disabledBtmLeftTopRight->setLine(insetDiagonal(bbox.bottomLeft(), bbox.topRight(), kDisabledCrossPenWidth));
-    _disabledTopLeftBtmRight->setLine(insetDiagonal(bbox.topLeft(), bbox.bottomRight(), kDisabledCrossPenWidth));
+    _disabledCross->setLines(insetDiagonal(bbox.bottomLeft(), bbox.topRight(), kDisabledCrossPenWidth),
+                             insetDiagonal(bbox.topLeft(), bbox.bottomRight(), kDisabledCrossPenWidth));
 
     resizeExtraContent(width, height, forceSize);
 
     refreshPosition( pos().x(), pos().y(), true );
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
+    }
 } // NodeGui::resize
 
 void
@@ -1379,26 +1427,26 @@ NodeGui::refreshPositionEnd(double x,
                             double y)
 {
     setPos(x, y);
+    // A resize leaves the position, and so itemChange(), untouched.
+    invalidateGraphNavigator();
     if (_graph) {
         _graph->scheduleLoopBlockRefresh(false);
-        QRectF bbox = mapRectToScene( boundingRect() );
-        const NodesGuiList & allNodes = _graph->getAllActiveNodes();
-
-        for (NodesGuiList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
-            if ( (*it)->isVisible() && (it->get() != this) && (*it)->intersects(bbox) ) {
-                setAboveItem( it->get() );
-            }
+        if (!_graph->deferNodeStacking(this)) {
+            _graph->raiseNodes(std::vector<NodeGui*>(1, this));
         }
     }
-    refreshAttachedEdgesAndLinks();
+    // A project load refreshes every edge once its nodes are restored.
+    refreshAttachedEdgesAndLinks(!_graph || !_graph->isLoadingProjectNodes());
 }
 
 void
-NodeGui::refreshAttachedEdgesAndLinks()
+NodeGui::refreshAttachedEdgesAndLinks(bool refreshEdgesNow)
 {
-    refreshEdges();
     NodePtr node = getNode();
-    if (node) {
+    if (refreshEdgesNow) {
+        refreshEdges();
+    }
+    if (node && refreshEdgesNow) {
         const NodesWList & outputs = node->getGuiOutputs();
 
         for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
@@ -1579,22 +1627,22 @@ NodeGui::refreshPosition(double x,
     refreshPositionEnd(x, y);
 } // refreshPosition
 
-void
-NodeGui::setAboveItem(QGraphicsItem* item)
+QGraphicsItem*
+NodeGui::edgeParent() const
 {
-    if ( !isVisible() || dynamic_cast<BackdropGui*>(this) || dynamic_cast<BackdropGui*>(item) ) {
+    QGraphicsItem* layer = _graph ? _graph->getEdgeLayer() : NULL;
+
+    return layer ? layer : parentItem();
+}
+
+void
+NodeGui::setStackingSerial(std::uint64_t serial)
+{
+    if (serial == _stackingSerial) {
         return;
     }
-    item->stackBefore(this);
-    for (InputEdges::iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        NodeGuiPtr inputSource = (*it)->getSource();
-        if (inputSource.get() != item) {
-            item->stackBefore( (*it) );
-        }
-    }
-    if (_outputEdge) {
-        item->stackBefore(_outputEdge);
-    }
+    _stackingSerial = serial;
+    setZValue(getBaseDepth() + NodeGraphStacking::offsetOf(serial));
 }
 
 void
@@ -1684,13 +1732,22 @@ NodeGui::onDataKindChanged()
 void
 NodeGui::refreshEdgesDataKindPen(bool force)
 {
+    if (_graph && _graph->deferNodeRefresh(this, force ? NodeGraph::eDeferredRefreshDataKindPenForced : NodeGraph::eDeferredRefreshDataKindPen)) {
+        return;
+    }
+    refreshEdgesDataKindPenNow(force);
+}
+
+void
+NodeGui::refreshEdgesDataKindPenNow(bool force)
+{
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
         if (*it) {
-            (*it)->refreshDataKindPen(force);
+            (*it)->refreshDataKindPenNow(force);
         }
     }
     if (_outputEdge) {
-        _outputEdge->refreshDataKindPen(force);
+        _outputEdge->refreshDataKindPenNow(force);
     }
 }
 
@@ -1782,6 +1839,9 @@ NodeGui::onPreviewImageComputed()
     } else {
         QRectF bbox(topLeft.x(), topLeft.y(), width, height);
         refreshPreviewAndLabelPosition(bbox);
+    }
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
     }
 }
 
@@ -1940,7 +2000,8 @@ NodeGui::initializeInputs()
     int inputsCount = 0;
     int emptyInputsCount = 0;
     for (U32 i = 0; i < inputs.size(); ++i) {
-        Edge* edge = new Edge( i, 0., thisShared, parentItem() );
+        Edge* edge = new Edge(i, 0., thisShared, edgeParent());
+        edge->setUseSelected(getIsSelected());
         if ( ( node && node->getEffectInstance()->isInputRotoBrush(i) ) || !isVisible() ) {
             edge->setActive(false);
             edge->hide();
@@ -2047,6 +2108,12 @@ NodeGui::boundingRect() const
     t.translate( -center.x(), -center.y() );
 
     return t.mapRect(bbox);
+}
+
+QRectF
+NodeGui::bodyRect() const
+{
+    return _boundingBox->rect();
 }
 
 QRectF
@@ -2190,9 +2257,13 @@ NodeGui::refreshCurrentBrush()
 {
     QColor drawnBodyColor = getDrawnBodyColor();
     applyBrush(drawnBodyColor);
+    invalidateGraphNavigator();
     refreshUserColorBorder();
     refreshNameItemTextColor();
     refreshExtraLabelColor();
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
+    }
 }
 
 void
@@ -2240,6 +2311,9 @@ NodeGui::refreshUserColorBorder()
     if (_userColorBorder->rect() != ringBefore) {
         refreshAttachedEdgesAndLinks();
     }
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
+    }
 }
 
 void
@@ -2286,13 +2360,16 @@ NodeGui::isSelectedInParentMultiInstance(const Node* node) const
 void
 NodeGui::setUserSelected(bool b)
 {
+    bool changed;
     {
         QMutexLocker l(&_selectedMutex);
+        changed = (_selected != b);
         _selected = b;
     }
-    if (_graph) {
+    if (changed && _graph) {
         _graph->scheduleLoopBlockRefresh(false);
     }
+    // Selecting a node again still brings its open panel's viewer interface forward.
     if (_settingsPanel) {
         _settingsPanel->setSelected(b);
         _settingsPanel->update();
@@ -2302,8 +2379,10 @@ NodeGui::setUserSelected(bool b)
         }
     }
 
-    refreshEdgesVisility();
-    refreshStateIndicator();
+    if (changed) {
+        refreshEdgesVisility();
+        refreshStateIndicator();
+    }
 }
 
 bool
@@ -2428,17 +2507,14 @@ NodeGui::showGui()
         return;
     }
     for (U32 i = 0; i < _inputEdges.size(); ++i) {
-        _graph->scene()->addItem(_inputEdges[i]);
-        _inputEdges[i]->setParentItem( parentItem() );
         if ( !node->getEffectInstance()->isInputRotoBrush(i) ) {
             _inputEdges[i]->setActive(true);
         }
     }
     if (_outputEdge) {
-        _graph->scene()->addItem(_outputEdge);
-        _outputEdge->setParentItem( parentItem() );
         _outputEdge->setActive(true);
     }
+    refreshOutputEdgeVisibility();
     refreshEdges();
     // An edge created while this node was hidden was force-hidden regardless of its real
     // connection state (see initializeInputs()); now that the node is shown again, recompute
@@ -2510,18 +2586,16 @@ NodeGui::hideGui()
     }
     hide();
     setActive(false);
+    // The edges stay in the scene, hidden: removing an item costs as much as the scene is large,
+    // which a removal of many nodes would pay for each of their edges.
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        if ( (*it)->scene() ) {
-            (*it)->scene()->removeItem( (*it) );
-        }
         (*it)->setActive(false);
         (*it)->setSource( NodeGuiPtr() );
+        (*it)->hide();
     }
     if (_outputEdge) {
-        if ( _outputEdge->scene() ) {
-            _outputEdge->scene()->removeItem(_outputEdge);
-        }
         _outputEdge->setActive(false);
+        _outputEdge->hide();
     }
 
     for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
@@ -2669,6 +2743,11 @@ NodeGui::onPersistentMessageChanged()
     for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
         (*it)->getViewer()->updatePersistentMessage();
     }
+
+    // The message text can reach past the body, and hiding it does not go through resize().
+    _graph->noteNodeGeometryChanged(this);
+    // Covers the message kinds handled above without a refresh of the indicator.
+    _graph->scheduleNodeRenderStateRefresh(this);
 }
 
 QVBoxLayout*
@@ -2778,36 +2857,58 @@ NodeGui::refreshStateIndicator()
     node->getPersistentMessage(&message, &type);
 
     bool showIndicator = true;
+    QBrush brush = _stateIndicator->brush();
     int value = node->getIsNodeRenderingCounter();
     bool isSelected = getIsSelected();
     if (value >= 1) {
-        _stateIndicator->setBrush(Qt::yellow);
+        brush = QBrush(Qt::yellow);
     } else if (isSelected) {
-        _stateIndicator->setBrush(Qt::white);
+        brush = QBrush(Qt::white);
     } else if ( !message.isEmpty() && ( (type == 1) || (type == 2) ) ) {
         if (type == 1) {
-            _stateIndicator->setBrush( QColor(128, 0, 0, 255) ); //< error
+            brush = QBrush(QColor(128, 0, 0, 255)); //< error
         } else if (type == 2) {
-            _stateIndicator->setBrush( QColor(80, 180, 0, 255) ); //< warning
+            brush = QBrush(QColor(80, 180, 0, 255)); //< warning
         }
     } else {
         showIndicator = false;
     }
 
-    if (_outputEdge) {
-        _outputEdge->setUseSelected(isSelected);
+    const bool wasShown = _stateIndicator->isVisible();
+    const bool selectionChanged = (isSelected != _stateIndicatorSelected);
+    // Called each time a render starts or ends on the node, mostly with nothing to change, and a
+    // change repaints the node and refiles it in the graph.
+    if ((showIndicator == wasShown) && (!showIndicator || (brush == _stateIndicator->brush())) && !selectionChanged) {
+        return;
     }
-    for (std::vector<Edge*>::iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        if (*it) {
-            (*it)->setUseSelected(isSelected);
+    if (showIndicator) {
+        _stateIndicator->setBrush(brush);
+    }
+    if (selectionChanged) {
+        if (_outputEdge) {
+            _outputEdge->setUseSelected(isSelected);
+        }
+        for (std::vector<Edge*>::iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
+            if (*it) {
+                (*it)->setUseSelected(isSelected);
+            }
         }
     }
-    if ( showIndicator && !_stateIndicator->isVisible() ) {
-        _stateIndicator->show();
-    } else if ( !showIndicator && _stateIndicator->isVisible() ) {
-        _stateIndicator->hide();
+    _stateIndicatorSelected = isSelected;
+    if (showIndicator != wasShown) {
+        _stateIndicator->setVisible(showIndicator);
     } else {
         update();
+    }
+    // The thumbnail shows the indicator and the selected look of the edges.
+    invalidateGraphNavigator();
+}
+
+void
+NodeGui::onRenderingStateChanged()
+{
+    if (_graph) {
+        _graph->scheduleNodeRenderStateRefresh(this);
     }
 }
 
@@ -3129,19 +3230,33 @@ NodeGui::onKnobsLinksChanged()
     // so rebuilding as a node moves leaves the lines whose ends stay alone.
     LinkLines oldLines;
     oldLines.swap(_linkLines);
+    // Keyed by (kind, partner), in list order, so that a node with many links rebuilds in linear time.
+    typedef std::pair<int, const Node*> LineKey;
+    std::multimap<LineKey, LinkLines::iterator> oldArrows;
+    for (LinkLines::iterator it = oldLines.begin(); it != oldLines.end(); ++it) {
+        if (it->arrow) {
+            oldArrows.insert(std::make_pair(LineKey(it->kind, it->partner.lock().get()), it));
+        }
+    }
     NodeGuiPtr thisShared;
-    const auto takeArrow = [&oldLines, &thisShared, this](LinkLineKindEnum kind, const NodePtr& partner, const NodeGuiPtr& partnerGui) {
-        for (LinkLines::iterator it = oldLines.begin(); it != oldLines.end(); ++it) {
-            if (it->arrow && (it->kind == kind) && (it->partner.lock() == partner)) {
-                LinkArrow* arrow = it->arrow;
-                it->arrow = 0;
+    const auto takeArrow = [&oldArrows, &thisShared, this](LinkLineKindEnum kind, const NodePtr& partner, const NodeGuiPtr& partnerGui) {
+        std::multimap<LineKey, LinkLines::iterator>::iterator found = oldArrows.find(LineKey(kind, partner.get()));
+        if (found != oldArrows.end()) {
+            LinkArrow* arrow = found->second->arrow;
+            found->second->arrow = 0;
+            oldArrows.erase(found);
 
-                return arrow;
-            }
+            return arrow;
         }
 
-        return new LinkArrow(partnerGui, thisShared, parentItem());
+        if (!_graph) {
+            return new LinkArrow(partnerGui, thisShared, parentItem());
+        }
+
+        return new LinkArrow(partnerGui, thisShared, _graph->getLinkArrowLayer(dynamic_cast<BackdropGui*>(partnerGui.get()) != 0));
     };
+    std::map<LineKey, LinkLines::iterator> lineIndex;
+    std::map<std::tuple<const LinkLine*, const KnobI*, const KnobI*>, std::list<LinkedKnob>::iterator> knobIndex;
 
     typedef std::list<Node::KnobLink> InternalLinks;
     InternalLinks links;
@@ -3161,6 +3276,10 @@ NodeGui::onKnobsLinksChanged()
         thisShared = shared_from_this();
         NodesList linkedNodes;
         node->getLinkedNodes(&linkedNodes);
+        std::set<const Node*> linkedNodeSet;
+        for (NodesList::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
+            linkedNodeSet.insert(it->get());
+        }
 
         const NodesList linkedNodeLines = higherNeighbours(node, nearestMemberNeighbours(node, linkedNodes));
         for (NodesList::const_iterator it = linkedNodeLines.begin(); it != linkedNodeLines.end(); ++it) {
@@ -3179,10 +3298,11 @@ NodeGui::onKnobsLinksChanged()
             line.arrow->setDashed(false);
             line.arrow->setToolTip(tr("<p>%1 and %2 are Linked Nodes</p>").arg(QString::fromUtf8(node->getLabel().c_str())).arg(QString::fromUtf8(partner->getLabel().c_str())));
             _linkLines.push_back(line);
+            lineIndex.insert(std::make_pair(LineKey(line.kind, partner.get()), --_linkLines.end()));
         }
 
         // The nodes this node draws a knob-link line to, per link group.
-        std::map<KnobLinkGroup*, NodesList> knobLinkLines;
+        std::map<KnobLinkGroup*, std::set<const Node*>> knobLinkLines;
         for (InternalLinks::iterator it = links.begin(); it != links.end(); ++it) {
             // Knobs slaved by a node's own internals (Roto, Tracker...) draw no line.
             if (it->kind == Node::eKnobLinkKindSlave) {
@@ -3195,7 +3315,7 @@ NodeGui::onKnobsLinksChanged()
             LinkLineKindEnum kind = eLinkLineKindExpression;
             if (it->kind == Node::eKnobLinkKindLinkGroup) {
                 // The partner draws the line, or the pair are Linked Nodes, whose own lines stand for it.
-                if ((partner.get() < node.get()) || (std::find(linkedNodes.begin(), linkedNodes.end(), partner) != linkedNodes.end())) {
+                if ((partner.get() < node.get()) || linkedNodeSet.count(partner.get())) {
                     continue;
                 }
                 KnobIPtr slave = it->slave.lock();
@@ -3203,22 +3323,25 @@ NodeGui::onKnobsLinksChanged()
                 if (!group) {
                     continue;
                 }
-                std::map<KnobLinkGroup*, NodesList>::iterator lines = knobLinkLines.find(group.get());
+                std::map<KnobLinkGroup*, std::set<const Node*>>::iterator lines = knobLinkLines.find(group.get());
                 if (lines == knobLinkLines.end()) {
-                    lines = knobLinkLines.insert(std::make_pair(group.get(), higherNeighbours(node, nearestMemberNeighbours(node, linkGroupMemberNodes(*group))))).first;
+                    const NodesList members = higherNeighbours(node, nearestMemberNeighbours(node, linkGroupMemberNodes(*group)));
+                    std::set<const Node*> memberSet;
+                    for (NodesList::const_iterator m = members.begin(); m != members.end(); ++m) {
+                        memberSet.insert(m->get());
+                    }
+                    lines = knobLinkLines.insert(std::make_pair(group.get(), memberSet)).first;
                 }
-                if (std::find(lines->second.begin(), lines->second.end(), partner) == lines->second.end()) {
+                if (!lines->second.count(partner.get())) {
                     continue;
                 }
                 kind = eLinkLineKindKnobLink;
             }
 
             LinkLines::iterator found = _linkLines.end();
-            for (LinkLines::iterator it2 = _linkLines.begin(); it2 != _linkLines.end(); ++it2) {
-                if ((it2->kind == kind) && (it2->partner.lock() == partner)) {
-                    found = it2;
-                    break;
-                }
+            std::map<LineKey, LinkLines::iterator>::const_iterator indexed = lineIndex.find(LineKey(kind, partner.get()));
+            if (indexed != lineIndex.end()) {
+                found = indexed->second;
             }
             if (found == _linkLines.end()) {
                 NodeGuiPtr partnerGui = std::dynamic_pointer_cast<NodeGui>(partner->getNodeGui());
@@ -3236,18 +3359,17 @@ NodeGui::onKnobsLinksChanged()
                 _linkLines.push_back(line);
                 found = _linkLines.end();
                 --found;
+                lineIndex.insert(std::make_pair(LineKey(kind, partner.get()), found));
             }
 
             KnobIPtr slave = it->slave.lock();
             KnobIPtr master = it->master.lock();
-            std::list<LinkedKnob>::iterator foundKnob = found->knobs.end();
-            for (std::list<LinkedKnob>::iterator it2 = found->knobs.begin(); it2 != found->knobs.end(); ++it2) {
-                if ((it2->slave.lock() == slave) && (it2->master.lock() == master)) {
-                    foundKnob = it2;
-                    break;
-                }
-            }
-            if (foundKnob == found->knobs.end()) {
+            const std::tuple<const LinkLine*, const KnobI*, const KnobI*> knobKey(&*found, slave.get(), master.get());
+            std::list<LinkedKnob>::iterator foundKnob;
+            std::map<std::tuple<const LinkLine*, const KnobI*, const KnobI*>, std::list<LinkedKnob>::iterator>::const_iterator indexedKnob = knobIndex.find(knobKey);
+            if (indexedKnob != knobIndex.end()) {
+                foundKnob = indexedKnob->second;
+            } else {
                 LinkedKnob k;
                 k.slave = slave;
                 k.master = master;
@@ -3255,6 +3377,7 @@ NodeGui::onKnobsLinksChanged()
                 found->knobs.push_back(k);
                 foundKnob = found->knobs.end();
                 --foundKnob;
+                knobIndex.insert(std::make_pair(knobKey, foundKnob));
             }
             foundKnob->dimensions.insert(it->dimension);
         }
@@ -3306,7 +3429,7 @@ NodeGui::refreshOutputEdgeVisibility()
 {
     if (_outputEdge) {
         NodePtr node = getNode();
-        if ( node && node->getGuiOutputs().empty() ) {
+        if (node && node->getGuiOutputs().empty() && isVisibleTo(parentItem())) {
             if ( !_outputEdge->isVisible() ) {
                 _outputEdge->setActive(true);
                 _outputEdge->show();
@@ -3418,15 +3541,9 @@ NodeGui::destroyGui()
 QSize
 NodeGui::getSize() const
 {
-    if ( QThread::currentThread() == qApp->thread() ) {
-        QRectF bbox = boundingRect();
+    QMutexLocker k(&_mtSafeSizeMutex);
 
-        return QSize( bbox.width(), bbox.height() );
-    } else {
-        QMutexLocker k(&_mtSafeSizeMutex);
-
-        return QSize(_mtSafeWidth, _mtSafeHeight);
-    }
+    return QSize(_mtSafeWidth, _mtSafeHeight);
 }
 
 void
@@ -3455,17 +3572,36 @@ NodeGui::onDisabledKnobToggled(bool disabled)
     bool enabled = ( !lifetimeEnabled || (curFrame >= firstFrame && curFrame <= lastFrame) ) && !disabled;
 
     applyDisabledState(!enabled);
+    invalidateGraphNavigator();
     update();
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(this);
+    }
 }
 
 void
 NodeGui::applyDisabledState(bool disabled)
 {
-    if (!_disabledTopLeftBtmRight || !_disabledBtmLeftTopRight) {
+    if (!_disabledCross) {
         return;
     }
-    _disabledTopLeftBtmRight->setVisible(disabled);
-    _disabledBtmLeftTopRight->setVisible(disabled);
+    _disabledCross->setVisible(disabled);
+}
+
+void
+NodeGui::refreshFrameDependency()
+{
+    if (!_graph) {
+        return;
+    }
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    KnobBoolPtr disabledKnob = node->getDisabledKnob();
+    if (disabledKnob && disabledKnob->hasAnimation()) {
+        _graph->registerFrameDependentNode(this);
+    }
 }
 
 void
@@ -3518,110 +3654,109 @@ NodeGui::onStreamWarningsChanged()
 
 ////////////////////////////////////////// NodeGuiIndicator ////////////////////////////////////////////////////////
 
-struct NodeGuiIndicatorPrivate
+// Height in device pixels below which badge letters are not drawn, as for the graph's other
+// non-essential text.
+#define NODEGUI_BADGE_TEXT_MIN_HEIGHT_PX 6
+#define NODEGUI_BADGE_TEXT_SCALE 0.8
+
+// The area a shape item with this outline and pen covers, as QGraphicsItem computes it.
+static QPainterPath
+strokedShape(const QPainterPath& path,
+             const QPen& pen)
 {
-    QGraphicsEllipseItem* ellipse;
-    QGraphicsSimpleTextItem* textItem;
-    QGraphicsPathItem* iconItem;
-    QGradientStops gradStops;
-
-    NodeGuiIndicatorPrivate(int depth,
-                            const QPainterPath& icon,
-                            const QPointF& center,
-                            double diameter,
-                            const QColor& fill,
-                            const QColor& iconColor,
-                            QGraphicsItem* parent)
-        : ellipse(NULL)
-        , textItem(NULL)
-        , iconItem(NULL)
-        , gradStops()
-    {
-        // A flat fill with a dark rim: a gradient with a light centre washes out a white glyph.
-        const double rad = diameter / 2.;
-        ellipse = new QGraphicsEllipseItem(parent);
-        ellipse->setRect(QRectF(center.x() - rad, center.y() - rad, diameter, diameter));
-        ellipse->setBrush(fill);
-        ellipse->setPen(QPen(fill.darker(250), std::max(1., diameter / 16.)));
-        ellipse->setZValue(depth);
-
-        iconItem = new QGraphicsPathItem(icon, parent);
-        QPen iconPen(iconColor, std::max(1.25, diameter / 11.));
-        iconPen.setCapStyle(Qt::RoundCap);
-        iconPen.setJoinStyle(Qt::RoundJoin);
-        iconItem->setPen(iconPen);
-        iconItem->setBrush(Qt::NoBrush);
-        iconItem->setPos(center);
-        iconItem->setZValue(depth);
+    if ((path == QPainterPath()) || (pen.style() == Qt::NoPen)) {
+        return path;
     }
+    QPainterPathStroker ps;
+    ps.setCapStyle(pen.capStyle());
+    ps.setWidth(pen.widthF() <= 0. ? qreal(0.00000001) : pen.widthF());
+    ps.setJoinStyle(pen.joinStyle());
+    ps.setMiterLimit(pen.miterLimit());
+    QPainterPath p = ps.createStroke(path);
+    p.addPath(path);
 
-    NodeGuiIndicatorPrivate(NodeGraph* graph,
-                            int depth,
-                            const QString& text,
-                            const QPointF& topLeft,
-                            int width,
-                            int height,
-                            const QGradientStops& gradient,
-                            const QColor& textColor,
-                            QGraphicsItem* parent)
-        : ellipse(NULL)
-        , textItem(NULL)
-        , iconItem(NULL)
-        , gradStops(gradient)
-    {
-        ellipse = new QGraphicsEllipseItem(parent);
-        int ellipseRad = width / 2;
-        QPoint ellipsePos(topLeft.x() + (width / 2) - ellipseRad, -ellipseRad);
-        QRectF ellipseRect(ellipsePos.x(), ellipsePos.y(), width, height);
-        ellipse->setRect(ellipseRect);
-        ellipse->setZValue(depth);
-
-        QPointF ellipseCenter = ellipseRect.center();
-        QRadialGradient radialGrad(ellipseCenter, ellipseRad);
-        radialGrad.setStops(gradStops);
-        ellipse->setBrush(radialGrad);
-
-
-        textItem = new NodeGraphSimpleTextItem(graph, parent, false);
-        textItem->setText(text);
-
-
-        QPointF sceneCenter = ellipse->mapToScene( ellipse->mapFromParent(ellipseCenter) );
-        QRectF textBr = textItem->mapToScene( textItem->boundingRect() ).boundingRect();
-        sceneCenter.ry() -= (textBr.height() / 2.);
-        sceneCenter.rx() -= (textBr.width() / 2.);
-        QPointF textPos = textItem->mapToParent( textItem->mapFromScene(sceneCenter) );
-        textItem->setPos(textPos);
-
-
-        textItem->setBrush(textColor);
-        textItem->setZValue(depth);
-        textItem->setScale(0.8);
-    }
-};
-
-NodeGuiIndicator::NodeGuiIndicator(NodeGraph* graph,
-                                   int depth,
-                                   const QString & text,
-                                   const QPointF & topLeft,
-                                   int width,
-                                   int height,
-                                   const QGradientStops & gradient,
-                                   const QColor & textColor,
-                                   QGraphicsItem* parent)
-    : _imp( new NodeGuiIndicatorPrivate(graph, depth, text, topLeft, width, height, gradient, textColor, parent) )
-{
+    return p;
 }
 
-NodeGuiIndicator::NodeGuiIndicator(int depth,
+static QRectF
+layoutBadgeText(QTextLayout* layout)
+{
+    layout->setCacheEnabled(true);
+    layout->beginLayout();
+    while (layout->createLine().isValid()) {
+    }
+    layout->endLayout();
+    qreal maxWidth = 0;
+    qreal y = 0;
+    for (int i = 0; i < layout->lineCount(); ++i) {
+        QTextLine line = layout->lineAt(i);
+        maxWidth = std::max(maxWidth, line.naturalTextWidth());
+        line.setPosition(QPointF(0, y));
+        y += line.height();
+    }
+
+    return QRectF(0, 0, maxWidth, y);
+}
+
+static QString
+badgeLayoutText(const QString& text)
+{
+    QString tmp = text;
+    tmp.replace(QLatin1Char('\n'), QChar::LineSeparator);
+
+    return tmp;
+}
+
+NodeGuiIndicator::NodeGuiIndicator(NodeGuiDecorations* layer,
+                                   const QString& text,
+                                   const QPointF& topLeft,
+                                   int width,
+                                   int height,
+                                   const QGradientStops& gradient,
+                                   const QColor& textColor)
+    : _layer(layer)
+    , _index(0)
+{
+    NodeGuiDecorations::Badge b;
+    int ellipseRad = width / 2;
+    QPoint ellipsePos(topLeft.x() + (width / 2) - ellipseRad, -ellipseRad);
+    b.ellipseRect = QRectF(ellipsePos.x(), ellipsePos.y(), width, height);
+    b.gradStops = gradient;
+    QRadialGradient radialGrad(b.ellipseRect.center(), ellipseRad);
+    radialGrad.setStops(gradient);
+    b.ellipseBrush = QBrush(radialGrad);
+    b.hasText = true;
+    b.text = text;
+    b.textBrush = QBrush(textColor);
+    QTextLayout layout(badgeLayoutText(text), layer->textFont());
+    b.textRect = layoutBadgeText(&layout);
+    // Centred at full size, then drawn scaled: refreshPosition() centres it at the drawn size.
+    b.textPos = b.ellipseRect.center() - QPointF(b.textRect.width() / 2., b.textRect.height() / 2.);
+    _index = layer->addBadge(b);
+}
+
+NodeGuiIndicator::NodeGuiIndicator(NodeGuiDecorations* layer,
                                    const QPainterPath& icon,
                                    const QPointF& center,
                                    double diameter,
                                    const QColor& fill,
-                                   const QColor& iconColor,
-                                   QGraphicsItem* parent)
-    : _imp(new NodeGuiIndicatorPrivate(depth, icon, center, diameter, fill, iconColor, parent))
+                                   const QColor& iconColor)
+    : _layer(layer)
+    , _index(0)
 {
+    // A flat fill with a dark rim: a gradient with a light centre washes out a white glyph.
+    NodeGuiDecorations::Badge b;
+    const double rad = diameter / 2.;
+    b.ellipseRect = QRectF(center.x() - rad, center.y() - rad, diameter, diameter);
+    b.ellipseBrush = QBrush(fill);
+    b.ellipsePen = QPen(fill.darker(250), std::max(1., diameter / 16.));
+    b.hasIcon = true;
+    b.icon = icon;
+    b.iconPen = QPen(iconColor, std::max(1.25, diameter / 11.));
+    b.iconPen.setCapStyle(Qt::RoundCap);
+    b.iconPen.setJoinStyle(Qt::RoundJoin);
+    b.iconPos = center;
+    _index = layer->addBadge(b);
 }
 
 NodeGuiIndicator::~NodeGuiIndicator()
@@ -3631,57 +3766,317 @@ NodeGuiIndicator::~NodeGuiIndicator()
 void
 NodeGuiIndicator::setToolTip(const QString & tooltip)
 {
-    _imp->ellipse->setToolTip(tooltip);
+    _layer->badge(_index).toolTip = tooltip;
 }
 
 void
 NodeGuiIndicator::setActive(bool active)
 {
-    _imp->ellipse->setActive(active);
-    _imp->ellipse->setVisible(active);
-    if (_imp->textItem) {
-        _imp->textItem->setActive(active);
-        _imp->textItem->setVisible(active);
+    NodeGuiDecorations::Badge& b = _layer->badge(_index);
+    if (b.active == active) {
+        return;
     }
-    if (_imp->iconItem) {
-        _imp->iconItem->setActive(active);
-        _imp->iconItem->setVisible(active);
-    }
+    b.active = active;
+    _layer->badgeGeometryChanged();
 }
 
 bool
 NodeGuiIndicator::isActive() const
 {
-    return _imp->ellipse->isVisible();
+    return _layer->badge(_index).active;
 }
 
 void
 NodeGuiIndicator::refreshPosition(const QPointF & center)
 {
-    QRectF r = _imp->ellipse->rect();
-    if (_imp->iconItem) {
+    NodeGuiDecorations::Badge& b = _layer->badge(_index);
+    QRectF r = b.ellipseRect;
+    if (b.hasIcon) {
         const double rad = r.width() / 2.;
-        _imp->ellipse->setRect(QRectF(center.x() - rad, center.y() - rad, r.width(), r.height()));
-        _imp->iconItem->setPos(center);
+        b.ellipseRect = QRectF(center.x() - rad, center.y() - rad, r.width(), r.height());
+        b.iconPos = center;
+        _layer->badgeGeometryChanged();
 
         return;
     }
     int ellipseRad = r.width() / 2;
     QPoint ellipsePos(center.x() - ellipseRad, center.y() - ellipseRad);
-    QRectF ellipseRect( ellipsePos.x(), ellipsePos.y(), r.width(), r.height() );
+    b.ellipseRect = QRectF(ellipsePos.x(), ellipsePos.y(), r.width(), r.height());
 
-    _imp->ellipse->setRect(ellipseRect);
+    QRadialGradient radialGrad(b.ellipseRect.center(), ellipseRad);
+    radialGrad.setStops(b.gradStops);
+    b.ellipseBrush = QBrush(radialGrad);
+    b.textPos = b.ellipseRect.center() - QPointF(b.textRect.width() * NODEGUI_BADGE_TEXT_SCALE / 2., b.textRect.height() * NODEGUI_BADGE_TEXT_SCALE / 2.);
+    _layer->badgeGeometryChanged();
+}
 
-    QRadialGradient radialGrad(ellipseRect.center(), ellipseRad);
-    radialGrad.setStops(_imp->gradStops);
-    _imp->ellipse->setBrush(radialGrad);
-    QPointF ellipseCenter = ellipseRect.center();
-    QPointF sceneCenter = _imp->ellipse->mapToScene( _imp->ellipse->mapFromParent(ellipseCenter) );
-    QRectF textBr = _imp->textItem->mapToScene( _imp->textItem->boundingRect() ).boundingRect();
-    sceneCenter.ry() -= (textBr.height() / 2.);
-    sceneCenter.rx() -= (textBr.width() / 2.);
-    QPointF textPos = _imp->textItem->mapToParent( _imp->textItem->mapFromScene(sceneCenter) );
-    _imp->textItem->setPos(textPos);
+////////////////////////////////////////// NodeGuiDecorations ////////////////////////////////////////////////////////
+
+NodeGuiDecorations::NodeGuiDecorations(NodeGraph* graph,
+                                       QGraphicsItem* parent)
+    : QGraphicsItem(parent)
+    , _graph(graph)
+    , _badges()
+    , _textFont()
+    , _textFontHeight(0)
+    , _boundingRect()
+    , _parts()
+    , _partsWithoutText()
+{
+    if (!appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled()) {
+        _textFont.setStyleStrategy(QFont::NoAntialias);
+    }
+    _textFontHeight = QFontMetrics(_textFont).height();
+    setVisible(false);
+}
+
+NodeGuiDecorations::~NodeGuiDecorations()
+{
+}
+
+std::size_t
+NodeGuiDecorations::addBadge(const Badge& badge)
+{
+    _badges.push_back(badge);
+    badgeGeometryChanged();
+
+    return _badges.size() - 1;
+}
+
+void
+NodeGuiDecorations::badgeGeometryChanged()
+{
+    prepareGeometryChange();
+    _parts.clear();
+    _partsWithoutText.clear();
+    _boundingRect = QRectF();
+    bool anyActive = false;
+    for (std::vector<Badge>::const_iterator it = _badges.begin(); it != _badges.end(); ++it) {
+        if (!it->active) {
+            continue;
+        }
+        anyActive = true;
+        QPainterPath ellipsePath;
+        ellipsePath.addEllipse(it->ellipseRect);
+        QPainterPath ellipseShape = strokedShape(ellipsePath, it->ellipsePen);
+        _parts.push_back(ellipseShape);
+        _partsWithoutText.push_back(ellipseShape);
+        if (it->hasText && !it->text.isEmpty()) {
+            QPainterPath textShape;
+            textShape.addRect(QRectF(it->textPos, it->textRect.size() * NODEGUI_BADGE_TEXT_SCALE));
+            _parts.push_back(textShape);
+        }
+        if (it->hasIcon) {
+            QPainterPath iconShape = strokedShape(it->icon, it->iconPen).translated(it->iconPos);
+            _parts.push_back(iconShape);
+            _partsWithoutText.push_back(iconShape);
+        }
+    }
+    for (std::vector<QPainterPath>::const_iterator it = _parts.begin(); it != _parts.end(); ++it) {
+        _boundingRect |= it->controlPointRect();
+    }
+    if (isVisible() != anyActive) {
+        setVisible(anyActive);
+    } else {
+        update();
+    }
+    if (_graph) {
+        _graph->noteNodeGeometryChanged(dynamic_cast<NodeGui*>(parentItem()));
+        _graph->invalidateNavigatorImage();
+    }
+}
+
+void
+NodeGuiDecorations::refreshToolTipAt(const QPainterPath& pathLocal)
+{
+    QString tip;
+    // Last added is topmost, as the separate items were.
+    for (std::vector<Badge>::const_reverse_iterator it = _badges.rbegin(); it != _badges.rend(); ++it) {
+        if (!it->active || it->toolTip.isEmpty()) {
+            continue;
+        }
+        QPainterPath ellipsePath;
+        ellipsePath.addEllipse(it->ellipseRect);
+        if (pathLocal.intersects(strokedShape(ellipsePath, it->ellipsePen))) {
+            tip = it->toolTip;
+            break;
+        }
+    }
+    if (toolTip() != tip) {
+        setToolTip(tip);
+    }
+}
+
+bool
+NodeGuiDecorations::collidesWithPathIgnoringText(const QPainterPath& path) const
+{
+    for (std::vector<QPainterPath>::const_iterator it = _partsWithoutText.begin(); it != _partsWithoutText.end(); ++it) {
+        if (path.intersects(*it)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+NodeGuiDecorations::collidesWithPath(const QPainterPath& path,
+                                     Qt::ItemSelectionMode mode) const
+{
+    if ((mode != Qt::IntersectsItemShape) || path.isEmpty()) {
+        return QGraphicsItem::collidesWithPath(path, mode);
+    }
+    // Each badge part on its own, as each was a separate item: the parts overlap, and a single
+    // path made of them would leave holes where they do.
+    for (std::vector<QPainterPath>::const_iterator it = _parts.begin(); it != _parts.end(); ++it) {
+        if (path.intersects(*it)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+QRectF
+NodeGuiDecorations::boundingRect() const
+{
+    return _boundingRect;
+}
+
+QPainterPath
+NodeGuiDecorations::shape() const
+{
+    QPainterPath ret;
+    for (std::vector<QPainterPath>::const_iterator it = _parts.begin(); it != _parts.end(); ++it) {
+        ret = ret.united(*it);
+    }
+
+    return ret;
+}
+
+void
+NodeGuiDecorations::paint(QPainter* painter,
+                          const QStyleOptionGraphicsItem* /*option*/,
+                          QWidget* /*widget*/)
+{
+    const bool navigatorRender = _graph && _graph->isDoingNavigatorRender();
+    if (!navigatorRender && _graph && _graph->isLowDetail()) {
+        return;
+    }
+    // Drawn in the order and with the state the ellipse, letter and icon items had.
+    for (std::vector<Badge>::const_iterator it = _badges.begin(); it != _badges.end(); ++it) {
+        if (!it->active) {
+            continue;
+        }
+        painter->setPen(it->ellipsePen);
+        painter->setBrush(it->ellipseBrush);
+        painter->drawEllipse(it->ellipseRect);
+
+        if (it->hasText && !it->text.isEmpty() && !navigatorRender) {
+            painter->save();
+            painter->translate(it->textPos);
+            painter->scale(NODEGUI_BADGE_TEXT_SCALE, NODEGUI_BADGE_TEXT_SCALE);
+            const QTransform& t = painter->worldTransform();
+            QPoint top = t.map(QPointF(0, 0)).toPoint();
+            QPoint btm = t.map(QPointF(0, _textFontHeight)).toPoint();
+            if (std::abs(btm.y() - top.y()) >= NODEGUI_BADGE_TEXT_MIN_HEIGHT_PX) {
+                QTextLayout layout(badgeLayoutText(it->text), _textFont);
+                QPen p;
+                p.setBrush(it->textBrush);
+                painter->setPen(p);
+                painter->setBrush(Qt::NoBrush);
+                layoutBadgeText(&layout);
+                layout.draw(painter, QPointF(0, 0));
+            }
+            painter->restore();
+        }
+
+        if (it->hasIcon) {
+            painter->save();
+            painter->translate(it->iconPos);
+            painter->setPen(it->iconPen);
+            painter->setBrush(Qt::NoBrush);
+            painter->drawPath(it->icon);
+            painter->restore();
+        }
+    }
+}
+
+////////////////////////////////////////// NodeGuiDisabledCross ////////////////////////////////////////////////////////
+
+NodeGuiDisabledCross::NodeGuiDisabledCross(NodeGraph* graph,
+                                           QGraphicsItem* parent,
+                                           const QPen& pen)
+    : QGraphicsItem(parent)
+    , _graph(graph)
+    , _pen(pen)
+    , _shape()
+{
+}
+
+NodeGuiDisabledCross::~NodeGuiDisabledCross()
+{
+}
+
+void
+NodeGuiDisabledCross::setLines(const QLineF& first,
+                               const QLineF& second)
+{
+    if ((_lines[0] == first) && (_lines[1] == second)) {
+        return;
+    }
+    prepareGeometryChange();
+    _lines[0] = first;
+    _lines[1] = second;
+    _parts[0] = QPainterPath();
+    _parts[1] = QPainterPath();
+    _boundingRect = QRectF();
+    for (int i = 0; i < 2; ++i) {
+        QPainterPath line;
+        if (_lines[i] != QLineF()) {
+            line.moveTo(_lines[i].p1());
+            line.lineTo(_lines[i].p2());
+        }
+        _parts[i] = strokedShape(line, _pen);
+        _boundingRect |= _parts[i].controlPointRect();
+    }
+    _shape = _parts[0].united(_parts[1]);
+}
+
+bool
+NodeGuiDisabledCross::collidesWithPath(const QPainterPath& path,
+                                       Qt::ItemSelectionMode mode) const
+{
+    if ((mode != Qt::IntersectsItemShape) || path.isEmpty()) {
+        return QGraphicsItem::collidesWithPath(path, mode);
+    }
+
+    return path.intersects(_parts[0]) || path.intersects(_parts[1]);
+}
+
+QRectF
+NodeGuiDisabledCross::boundingRect() const
+{
+    return _boundingRect;
+}
+
+QPainterPath
+NodeGuiDisabledCross::shape() const
+{
+    return _shape;
+}
+
+void
+NodeGuiDisabledCross::paint(QPainter* painter,
+                            const QStyleOptionGraphicsItem* /*option*/,
+                            QWidget* /*widget*/)
+{
+    if (_graph && !_graph->isDoingNavigatorRender() && _graph->isLowDetail()) {
+        return;
+    }
+    painter->setPen(_pen);
+    painter->drawLine(_lines[0]);
+    painter->drawLine(_lines[1]);
 }
 
 ///////////////////
@@ -3745,12 +4140,68 @@ NodeGui::getOutputArrow() const
 }
 
 void
+NodeGui::runDeferredRefreshes(int refreshes)
+{
+    if ((refreshes & NodeGraph::eDeferredRefreshName) && _nameItemHtmlDeferred) {
+        setNameItemHtmlNow(_deferredName, _deferredLabel);
+    }
+    if (refreshes & NodeGraph::eDeferredRefreshEdgeLines) {
+        for (std::vector<Edge*>::iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
+            if (*it) {
+                (*it)->initLineNow();
+            }
+        }
+        if (_outputEdge) {
+            _outputEdge->initLineNow();
+        }
+    }
+    if (refreshes & (NodeGraph::eDeferredRefreshDataKindPen | NodeGraph::eDeferredRefreshDataKindPenForced)) {
+        refreshEdgesDataKindPenNow((refreshes & NodeGraph::eDeferredRefreshDataKindPenForced) != 0);
+    }
+}
+
+void
 NodeGui::setNameItemHtml(const QString & name,
                          const QString & label)
 {
+    if (_initializingGui || (_graph && _graph->deferNodeRefresh(this, NodeGraph::eDeferredRefreshName))) {
+        _deferredName = name;
+        _deferredLabel = label;
+        _nameItemHtmlDeferred = true;
+
+        return;
+    }
+    setNameItemHtmlNow(name, label);
+}
+
+void
+NodeGui::setNameItemHtmlNow(const QString& name,
+                            const QString& label)
+{
+    _nameItemHtmlDeferred = false;
     if ( !_graph->getGui() || !_nameItem) {
         return;
     }
+
+    NameItemInputs inputs;
+    inputs.name = name;
+    inputs.label = label;
+    inputs.channelsExtraLabel = _channelsExtraLabel;
+    inputs.framed = mustFrameName();
+    inputs.antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
+    inputs.applicationFont = QApplication::font();
+    if (_nameItemInputsSet && (inputs == _nameItemInputs)) {
+        // Same text, font and layout: only the body colour the text contrasts with may have moved.
+        const QColor color = _nameItemHasUserFontColor ? _nameItemInputs.userFontColor : contrastingLabelTextColor(getDrawnBodyColor());
+        if (_nameItem->defaultTextColor() != color) {
+            _nameItem->setDefaultTextColor(color);
+            // A faded node's label ignores its own update().
+            _graph->repaintLowDetailItem(this);
+        }
+
+        return;
+    }
+
     QString textLabel;
 
     if ( !label.isEmpty() ) {
@@ -3832,11 +4283,9 @@ NodeGui::setNameItemHtml(const QString & name,
     _nameItemHasUserFontColor = takeUserLabelFontColor(&finalText, &userFontColor);
     const bool hasFontTag = finalText.indexOf(QString::fromUtf8(kFontSizeTag)) != -1;
 
-    QString oldText = _nameItem->toHtml();
-    if (finalText == oldText) {
-        // Nothing changed
-        return;
-    }
+    inputs.userFontColor = userFontColor;
+    _nameItemInputs = inputs;
+    _nameItemInputsSet = true;
 
     QFont f;
     QColor color = _nameItemHasUserFontColor ? userFontColor : contrastingLabelTextColor(getDrawnBodyColor());
@@ -3846,8 +4295,7 @@ NodeGui::setNameItemHtml(const QString & name,
     } else {
         f = QApplication::font();
     }
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
-    if (!antialias) {
+    if (!inputs.antialias) {
         f.setStyleStrategy(QFont::NoAntialias);
     }
     _nameItem->setDefaultTextColor(color);
@@ -3858,8 +4306,7 @@ NodeGui::setNameItemHtml(const QString & name,
     }
     _nameItem->adjustSize();
 
-
-    QRectF bbox = boundingRect();
+    const QRectF bbox = bodyRect();
     resize( bbox.width(), bbox.height(), false, !label.isEmpty() );
 } // setNameItemHtml
 
@@ -4658,6 +5105,7 @@ NodeGui::setPluginIDAndVersion(const std::list<std::string>& /*grouping*/,
 
     if (!_pluginIcon) {
         _pluginIcon = new NodeGraphPixmapItem(getDagGui(), this);
+        _pluginIcon->setHiddenAtLowDetail(true);
         _pluginIcon->setZValue(getBaseDepth() + 1);
         _pluginIconFrame = new QGraphicsRectItem(this);
         _pluginIconFrame->setZValue( getBaseDepth() );
@@ -4755,20 +5203,9 @@ NodeGui::onIdentityStateChanged(int inputNb)
     bool lifetimeEnabled = node->isLifetimeActivated(&firstFrame, &lastFrame);
     int curFrame = node->getApp()->getTimeLine()->currentFrame();
     bool enabled = ( !lifetimeEnabled || (curFrame >= firstFrame && curFrame <= lastFrame) ) && !disabled;
-    if (enabled) {
-        if ( _disabledBtmLeftTopRight->isVisible() ) {
-            _disabledBtmLeftTopRight->setVisible(false);
-        }
-        if ( _disabledTopLeftBtmRight->isVisible() ) {
-            _disabledTopLeftBtmRight->setVisible(false);
-        }
-    } else {
-        if ( !_disabledBtmLeftTopRight->isVisible() ) {
-            _disabledBtmLeftTopRight->setVisible(true);
-        }
-        if ( !_disabledTopLeftBtmRight->isVisible() ) {
-            _disabledTopLeftBtmRight->setVisible(true);
-        }
+    if (_disabledCross->isVisible() != !enabled) {
+        _disabledCross->setVisible(!enabled);
+        invalidateGraphNavigator();
     }
 
     if (inputNb >= 0) {
@@ -4830,6 +5267,9 @@ public:
     virtual void redo() OVERRIDE FINAL
     {
         _command->redo();
+        if (_command->isObsolete()) {
+            setObsolete(true);
+        }
     }
 
     virtual void undo() OVERRIDE FINAL

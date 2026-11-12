@@ -42,6 +42,7 @@
 #include "Engine/CoonsRegularization.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Hash64.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
@@ -566,6 +567,12 @@ RotoItem::getPreviousItemInLayer() const
     return getPreviousInLayer( layer, shared_from_this() );
 }
 
+U64
+RotoItem::getGeometryGeneration() const
+{
+    return _imp->contentGeneration.load(std::memory_order_acquire);
+}
+
 void
 RotoItem::invalidateContentHash()
 {
@@ -576,6 +583,9 @@ RotoItem::invalidateContentHash()
     NodePtr node = context ? context->getNode() : NodePtr();
     if (node) {
         node->markHashDirty();
+        if (GraphEditRecorder::isActive()) {
+            GraphEditRecorder::onRotoChanged(node);
+        }
     }
 }
 

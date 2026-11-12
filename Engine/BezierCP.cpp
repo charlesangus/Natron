@@ -298,7 +298,7 @@ BezierCP::setLinkedPointAtTime(bool useGuiCurves,
     BezierCPTrackLinkConstPtr link;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = useGuiCurves ? _imp->guiTrackLink : _imp->trackLink;
     }
     if (!link) {
         return;
@@ -330,7 +330,7 @@ BezierCP::setLinkedStaticPoint(bool useGuiCurves,
     BezierCPTrackLinkConstPtr link;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = useGuiCurves ? _imp->guiTrackLink : _imp->trackLink;
     }
     if (!link) {
         return;
@@ -366,7 +366,7 @@ BezierCP::getPositionAtTime(bool useGuiCurves,
     double ox = 0., oy = 0.;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = useGuiCurves ? _imp->guiTrackLink : _imp->trackLink;
         offsetOf(useGuiCurves ? _imp->guiTrackOffsets : _imp->trackOffsets, 0, &ox, &oy);
     }
     if (link) {
@@ -385,7 +385,7 @@ BezierCP::setPositionAtTime(bool useGuiCurves,
                             double x,
                             double y)
 {
-    if (isLinkedToTrack()) {
+    if (isLinkedToTrack(useGuiCurves)) {
         setLinkedPointAtTime(useGuiCurves, 0, time, x, y);
 
         return;
@@ -398,7 +398,7 @@ BezierCP::setStaticPosition(bool useGuiCurves,
                             double x,
                             double y)
 {
-    if (isLinkedToTrack()) {
+    if (isLinkedToTrack(useGuiCurves)) {
         setLinkedStaticPoint(useGuiCurves, 0, x, y);
 
         return;
@@ -418,7 +418,7 @@ BezierCP::setLeftBezierStaticPosition(bool useGuiCurves,
                                       double x,
                                       double y)
 {
-    if (isLinkedToTrack()) {
+    if (isLinkedToTrack(useGuiCurves)) {
         setLinkedStaticPoint(useGuiCurves, 1, x, y);
 
         return;
@@ -438,7 +438,7 @@ BezierCP::setRightBezierStaticPosition(bool useGuiCurves,
                                        double x,
                                        double y)
 {
-    if (isLinkedToTrack()) {
+    if (isLinkedToTrack(useGuiCurves)) {
         setLinkedStaticPoint(useGuiCurves, 2, x, y);
 
         return;
@@ -467,7 +467,7 @@ BezierCP::getLeftBezierPointAtTime(bool useGuiCurves,
     double ox = 0., oy = 0.;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = useGuiCurves ? _imp->guiTrackLink : _imp->trackLink;
         offsetOf(useGuiCurves ? _imp->guiTrackOffsets : _imp->trackOffsets, 1, &ox, &oy);
     }
     if (link) {
@@ -519,7 +519,7 @@ BezierCP::getRightBezierPointAtTime(bool useGuiCurves,
     double ox = 0., oy = 0.;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = useGuiCurves ? _imp->guiTrackLink : _imp->trackLink;
         offsetOf(useGuiCurves ? _imp->guiTrackOffsets : _imp->trackOffsets, 2, &ox, &oy);
     }
     if (link) {
@@ -563,7 +563,7 @@ BezierCP::setLeftBezierPointAtTime(bool useGuiCurves,
                                    double x,
                                    double y)
 {
-    if (isLinkedToTrack()) {
+    if (isLinkedToTrack(useGuiCurves)) {
         setLinkedPointAtTime(useGuiCurves, 1, time, x, y);
 
         return;
@@ -577,7 +577,7 @@ BezierCP::setRightBezierPointAtTime(bool useGuiCurves,
                                     double x,
                                     double y)
 {
-    if (isLinkedToTrack()) {
+    if (isLinkedToTrack(useGuiCurves)) {
         setLinkedPointAtTime(useGuiCurves, 2, time, x, y);
 
         return;
@@ -604,7 +604,9 @@ BezierCP::removeAnimation(bool useGuiCurves,
     {
         QMutexLocker k(&_imp->staticPositionMutex);
         try {
-            if (!useGuiCurves) {
+            // An unkeyed curve reads as 0 and would put the point at the origin; its static
+            // values already hold the pose.
+            if (!useGuiCurves && _imp->curveX->isAnimated()) {
                 _imp->x = _imp->curveX->getValueAt(currentTime);
                 _imp->y = _imp->curveY->getValueAt(currentTime);
                 _imp->leftX = _imp->curveLeftBezierX->getValueAt(currentTime);
@@ -612,12 +614,14 @@ BezierCP::removeAnimation(bool useGuiCurves,
                 _imp->rightX = _imp->curveRightBezierX->getValueAt(currentTime);
                 _imp->rightY = _imp->curveRightBezierY->getValueAt(currentTime);
             }
-            _imp->guiX = _imp->guiCurveX->getValueAt(currentTime);
-            _imp->guiY = _imp->guiCurveY->getValueAt(currentTime);
-            _imp->guiLeftX = _imp->guiCurveLeftBezierX->getValueAt(currentTime);
-            _imp->guiLeftY = _imp->guiCurveLeftBezierY->getValueAt(currentTime);
-            _imp->guiRightX = _imp->guiCurveRightBezierX->getValueAt(currentTime);
-            _imp->guiRightY = _imp->guiCurveRightBezierY->getValueAt(currentTime);
+            if (_imp->guiCurveX->isAnimated()) {
+                _imp->guiX = _imp->guiCurveX->getValueAt(currentTime);
+                _imp->guiY = _imp->guiCurveY->getValueAt(currentTime);
+                _imp->guiLeftX = _imp->guiCurveLeftBezierX->getValueAt(currentTime);
+                _imp->guiLeftY = _imp->guiCurveLeftBezierY->getValueAt(currentTime);
+                _imp->guiRightX = _imp->guiCurveRightBezierX->getValueAt(currentTime);
+                _imp->guiRightY = _imp->guiCurveRightBezierY->getValueAt(currentTime);
+            }
         } catch (const std::exception & e) {
             //
         }
@@ -647,7 +651,8 @@ BezierCP::removeKeyframe(bool useGuiCurves,
     assert( QThread::currentThread() == qApp->thread() );
 
     ///if the keyframe count reaches 0 update the "static" values which may be fetched
-    if (_imp->curveX->getKeyFramesCount() == 1) {
+    const CurvePtr& keyedCurve = useGuiCurves ? _imp->guiCurveX : _imp->curveX;
+    if (keyedCurve->getKeyFramesCount() == 1) {
         QMutexLocker l(&_imp->staticPositionMutex);
         if (!useGuiCurves) {
             _imp->x = _imp->curveX->getValueAt(time);
@@ -986,13 +991,12 @@ smoothTangents(bool useGuiCurves,
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
-
 bool
 BezierCP::cuspPoint(bool useGuiCurves,
                     double time,
                     ViewIdx view,
                     bool autoKeying,
-                    bool rippleEdit,
+                    const RippleEditKeys& ripple,
                     const std::pair<double, double>& pixelScale)
 {
     ///only called on the main-thread
@@ -1018,10 +1022,13 @@ BezierCP::cuspPoint(bool useGuiCurves,
     }
 
     // The offsets of a linked point already hold at every time.
-    if (rippleEdit && !isLinkedToTrack()) {
+    if (ripple.enabled && !isLinkedToTrack(useGuiCurves)) {
         std::set<double> times;
         getKeyframeTimes(useGuiCurves, &times);
         for (std::set<double>::iterator it = times.begin(); it != times.end(); ++it) {
+            if (!ripple.includes(*it, time)) {
+                continue;
+            }
             setLeftBezierPointAtTime(useGuiCurves, *it, newLeftX, newLeftY);
             setRightBezierPointAtTime(useGuiCurves, *it, newRightX, newRightY);
         }
@@ -1035,14 +1042,12 @@ BezierCP::smoothPoint(bool useGuiCurves,
                       double time,
                       ViewIdx view,
                       bool autoKeying,
-                      bool rippleEdit,
+                      const RippleEditKeys& ripple,
+                      const Transform::Matrix3x3& transform,
                       const std::pair<double, double>& pixelScale)
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
-
-    Transform::Matrix3x3 transform;
-    getBezier()->getTransformAtTime(time, &transform);
 
     Transform::Point3D pos, left, right;
     pos.z = left.z = right.z = 1.;
@@ -1075,10 +1080,13 @@ BezierCP::smoothPoint(bool useGuiCurves,
     }
 
     // The offsets of a linked point already hold at every time.
-    if (rippleEdit && !isLinkedToTrack()) {
+    if (ripple.enabled && !isLinkedToTrack(useGuiCurves)) {
         std::set<double> times;
         getKeyframeTimes(useGuiCurves, &times);
         for (std::set<double>::iterator it = times.begin(); it != times.end(); ++it) {
+            if (!ripple.includes(*it, time)) {
+                continue;
+            }
             setLeftBezierPointAtTime(useGuiCurves, *it, left.x, left.y);
             setRightBezierPointAtTime(useGuiCurves, *it, right.x, right.y);
         }
@@ -1155,9 +1163,10 @@ BezierCP::clone(const BezierCP & other)
         _imp->guiLeftY = other._imp->leftY;
         _imp->guiRightX = other._imp->rightX;
         _imp->guiRightY = other._imp->rightY;
-        _imp->broken = other._imp->broken;
+        _imp->broken = other._imp->broken.load();
 
         _imp->trackLink = other._imp->trackLink;
+        _imp->guiTrackLink = other._imp->trackLink;
         _imp->trackOffsets = other._imp->trackOffsets;
         _imp->guiTrackOffsets = other._imp->trackOffsets;
     }
@@ -1222,20 +1231,20 @@ BezierCP::equalsAtTime(bool useGuiCurves,
 }
 
 bool
-BezierCP::isLinkedToTrack() const
+BezierCP::isLinkedToTrack(bool useGuiCurves) const
 {
     QMutexLocker l(&_imp->staticPositionMutex);
 
-    return bool(_imp->trackLink);
+    return bool(useGuiCurves ? _imp->guiTrackLink : _imp->trackLink);
 }
 
 TrackMarkerPtr
-BezierCP::getResolvedTrack() const
+BezierCP::getResolvedTrack(bool useGuiCurves) const
 {
     BezierCPTrackLinkConstPtr link;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = useGuiCurves ? _imp->guiTrackLink : _imp->trackLink;
     }
 
     return link ? resolveLinkedMarker(*link) : TrackMarkerPtr();
@@ -1246,7 +1255,7 @@ BezierCP::getLinkedTrack() const
 {
     QMutexLocker l(&_imp->staticPositionMutex);
 
-    return _imp->trackLink ? _imp->trackLink->marker.lock() : TrackMarkerPtr();
+    return _imp->guiTrackLink ? _imp->guiTrackLink->marker.lock() : TrackMarkerPtr();
 }
 
 std::string
@@ -1255,7 +1264,7 @@ BezierCP::getTrackLinkTrackerName() const
     BezierCPTrackLinkConstPtr link;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = _imp->guiTrackLink;
     }
     if (!link) {
         return std::string();
@@ -1273,7 +1282,7 @@ BezierCP::getTrackLinkTrackName() const
     BezierCPTrackLinkConstPtr link;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = _imp->guiTrackLink;
     }
     if (!link) {
         return std::string();
@@ -1291,7 +1300,7 @@ BezierCP::getTrackLinkCentre(double time,
     BezierCPTrackLinkConstPtr link;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = _imp->guiTrackLink;
     }
     if (!link) {
         return false;
@@ -1307,7 +1316,7 @@ BezierCP::updateTrackLinkState(double time)
     BezierCPTrackLinkConstPtr link;
     {
         QMutexLocker l(&_imp->staticPositionMutex);
-        link = _imp->trackLink;
+        link = _imp->guiTrackLink;
     }
     if (!link) {
         return false;
@@ -1332,10 +1341,15 @@ BezierCP::updateTrackLinkState(double time)
     }
 
     QMutexLocker l(&_imp->staticPositionMutex);
-    if (_imp->trackLink != link) {
+    if (_imp->guiTrackLink != link) {
         return false;
     }
-    _imp->trackLink = updated;
+    // The track's state is not an edit: renders take it at once, unless a link change made
+    // during one is still waiting to be written back.
+    if (_imp->trackLink == link) {
+        _imp->trackLink = updated;
+    }
+    _imp->guiTrackLink = updated;
 
     return true;
 }
@@ -1345,17 +1359,25 @@ BezierCP::resolveTrackLink(const TrackMarkerPtr& marker)
 {
     QMutexLocker l(&_imp->staticPositionMutex);
 
-    if (!_imp->trackLink) {
-        return;
+    const bool shared = _imp->trackLink == _imp->guiTrackLink;
+    BezierCPTrackLinkConstPtr* sides[] = { &_imp->trackLink, &_imp->guiTrackLink };
+    for (int i = 0; i < (shared ? 1 : 2); ++i) {
+        if (!*sides[i]) {
+            continue;
+        }
+        std::shared_ptr<BezierCPTrackLink> link = std::make_shared<BezierCPTrackLink>(**sides[i]);
+        link->marker = marker;
+        *sides[i] = link;
     }
-    std::shared_ptr<BezierCPTrackLink> link = std::make_shared<BezierCPTrackLink>(*_imp->trackLink);
-    link->marker = marker;
-    _imp->trackLink = link;
+    if (shared) {
+        _imp->guiTrackLink = _imp->trackLink;
+    }
 }
 
 void
 BezierCP::linkToTrack(const TrackMarkerPtr& marker,
-                      double time)
+                      double time,
+                      bool useGuiCurves)
 {
     assert(marker);
     double cx, cy;
@@ -1390,17 +1412,23 @@ BezierCP::linkToTrack(const TrackMarkerPtr& marker,
     link->frozenY = cy;
 
     QMutexLocker l(&_imp->staticPositionMutex);
-    _imp->trackLink = link;
-    _imp->trackOffsets = offsets[0];
+    if (!useGuiCurves) {
+        _imp->trackLink = link;
+        _imp->trackOffsets = offsets[0];
+    }
+    _imp->guiTrackLink = link;
     _imp->guiTrackOffsets = offsets[1];
 }
 
 void
-BezierCP::unlinkFromTrack()
+BezierCP::unlinkFromTrack(bool useGuiCurves)
 {
     QMutexLocker l(&_imp->staticPositionMutex);
 
-    _imp->trackLink.reset();
+    if (!useGuiCurves) {
+        _imp->trackLink.reset();
+    }
+    _imp->guiTrackLink.reset();
 }
 
 void
@@ -1422,6 +1450,7 @@ BezierCP::cloneInternalCurvesToGuiCurves()
     _imp->guiLeftY = _imp->leftY;
     _imp->guiRightX = _imp->rightX;
     _imp->guiRightY = _imp->rightY;
+    _imp->guiTrackLink = _imp->trackLink;
     _imp->guiTrackOffsets = _imp->trackOffsets;
 }
 
@@ -1444,7 +1473,66 @@ BezierCP::cloneGuiCurvesToInternalCurves()
     _imp->leftY = _imp->guiLeftY;
     _imp->rightX = _imp->guiRightX;
     _imp->rightY = _imp->guiRightY;
+    _imp->trackLink = _imp->guiTrackLink;
     _imp->trackOffsets = _imp->guiTrackOffsets;
+}
+
+void
+BezierCP::cloneGuiState(const BezierCP& other,
+                        bool alsoInternal)
+{
+    if (alsoInternal) {
+        _imp->curveX->clone(*other._imp->guiCurveX);
+        _imp->curveY->clone(*other._imp->guiCurveY);
+        _imp->curveLeftBezierX->clone(*other._imp->guiCurveLeftBezierX);
+        _imp->curveLeftBezierY->clone(*other._imp->guiCurveLeftBezierY);
+        _imp->curveRightBezierX->clone(*other._imp->guiCurveRightBezierX);
+        _imp->curveRightBezierY->clone(*other._imp->guiCurveRightBezierY);
+    }
+    _imp->guiCurveX->clone(*other._imp->guiCurveX);
+    _imp->guiCurveY->clone(*other._imp->guiCurveY);
+    _imp->guiCurveLeftBezierX->clone(*other._imp->guiCurveLeftBezierX);
+    _imp->guiCurveLeftBezierY->clone(*other._imp->guiCurveLeftBezierY);
+    _imp->guiCurveRightBezierX->clone(*other._imp->guiCurveRightBezierX);
+    _imp->guiCurveRightBezierY->clone(*other._imp->guiCurveRightBezierY);
+
+    double guiX, guiY, guiLeftX, guiLeftY, guiRightX, guiRightY;
+    bool broken;
+    BezierCPTrackLinkConstPtr trackLink;
+    BezierCPTrackOffsets guiTrackOffsets;
+    {
+        QMutexLocker l(&other._imp->staticPositionMutex);
+        trackLink = other._imp->guiTrackLink;
+        guiTrackOffsets = other._imp->guiTrackOffsets;
+        guiX = other._imp->guiX;
+        guiY = other._imp->guiY;
+        guiLeftX = other._imp->guiLeftX;
+        guiLeftY = other._imp->guiLeftY;
+        guiRightX = other._imp->guiRightX;
+        guiRightY = other._imp->guiRightY;
+        broken = other._imp->broken;
+    }
+
+    QMutexLocker k(&_imp->staticPositionMutex);
+    if (alsoInternal) {
+        _imp->x = guiX;
+        _imp->y = guiY;
+        _imp->leftX = guiLeftX;
+        _imp->leftY = guiLeftY;
+        _imp->rightX = guiRightX;
+        _imp->rightY = guiRightY;
+        _imp->trackLink = trackLink;
+        _imp->trackOffsets = guiTrackOffsets;
+    }
+    _imp->guiX = guiX;
+    _imp->guiY = guiY;
+    _imp->guiLeftX = guiLeftX;
+    _imp->guiLeftY = guiLeftY;
+    _imp->guiRightX = guiRightX;
+    _imp->guiRightY = guiRightY;
+    _imp->broken = broken;
+    _imp->guiTrackLink = trackLink;
+    _imp->guiTrackOffsets = guiTrackOffsets;
 }
 
 void
@@ -1464,6 +1552,7 @@ BezierCP::cloneInternalCurvesToGuiCurvesAtTime(double time)
     _imp->guiLeftY = _imp->leftY;
     _imp->guiRightX = _imp->rightX;
     _imp->guiRightY = _imp->rightY;
+    _imp->guiTrackLink = _imp->trackLink;
     _imp->guiTrackOffsets = _imp->trackOffsets;
 }
 
@@ -1484,6 +1573,7 @@ BezierCP::cloneGuiCurvesToInternalCurvesAtTime(double time)
     _imp->leftY = _imp->guiLeftY;
     _imp->rightX = _imp->guiRightX;
     _imp->rightY = _imp->guiRightY;
+    _imp->trackLink = _imp->guiTrackLink;
     _imp->trackOffsets = _imp->guiTrackOffsets;
 }
 

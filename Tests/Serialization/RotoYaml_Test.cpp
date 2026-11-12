@@ -297,6 +297,9 @@ expectRotoEqual(const RotoContextSerialization& e,
 {
     EXPECT_EQ(e.autoKeying, a.autoKeying);
     EXPECT_EQ(e.rippleEdit, a.rippleEdit);
+    EXPECT_EQ(e.rippleEditMode, a.rippleEditMode);
+    EXPECT_EQ(e.rippleEditRangeFirst, a.rippleEditRangeFirst);
+    EXPECT_EQ(e.rippleEditRangeLast, a.rippleEditRangeLast);
     EXPECT_EQ(e.featherLink, a.featherLink);
     EXPECT_EQ(e.selectedItems, a.selectedItems);
     expectLayersEqual(e.baseLayer, a.baseLayer);
@@ -457,6 +460,9 @@ TEST(RotoYaml, NestedLayersSmallStrokesAndFallbacks)
     RotoContextSerialization roto = contextWith({ inner, asChild(makeBezier("Empty1", "Layer1", 0, 0)) });
     roto.selectedItems = { "Small1", "Empty1" };
     roto.rippleEdit = true;
+    roto.rippleEditMode = 3;
+    roto.rippleEditRangeFirst = 12.;
+    roto.rippleEditRangeLast = 40.;
 
     Serialization::MemoryBlobStore blobs;
     std::string text;
@@ -467,6 +473,8 @@ TEST(RotoYaml, NestedLayersSmallStrokesAndFallbacks)
     EXPECT_NE(std::string::npos, text.find("rows: 15, columns: [x:f64, y:f64, pressure:f64, time:f64], values: [")) << text;
     EXPECT_NE(std::string::npos, text.find("rows: 80, columns: [x:f64, y:f64, pressure:f64, time:f64, interp:u8]}")) << text;
     EXPECT_NE(std::string::npos, text.find("parent: \"Elsewhere\"")) << text;
+    EXPECT_NE(std::string::npos, text.find("rippleEditMode: range\n")) << text;
+    EXPECT_NE(std::string::npos, text.find("rippleEditRange: [12, 40]\n")) << text;
     expectRotoEqual(roto, decoded);
 }
 

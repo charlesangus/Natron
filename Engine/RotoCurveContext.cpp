@@ -42,6 +42,7 @@
 #include "Engine/BezierCP.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/RotoDrawableItem.h"
@@ -355,8 +356,13 @@ RotoCurveContext::setRippleEditEnabled(bool enabled)
     /// MT-safe: only called on the main-thread
     assert(QThread::currentThread() == qApp->thread());
 
-    QMutexLocker l(&_imp->rotoContextMutex);
-    _imp->rippleEdit = enabled;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->rippleEdit = enabled;
+    }
+    if (_imp->trackLinkWarningPosted) {
+        updateTrackLinks(false);
+    }
 }
 
 bool
@@ -368,6 +374,48 @@ RotoCurveContext::isRippleEditEnabled() const
     QMutexLocker l(&_imp->rotoContextMutex);
 
     return _imp->rippleEdit;
+}
+
+void
+RotoCurveContext::setRippleEditMode(RippleEditModeEnum mode)
+{
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->rippleEditMode = mode;
+    }
+    if (_imp->trackLinkWarningPosted) {
+        updateTrackLinks(false);
+    }
+}
+
+RippleEditModeEnum
+RotoCurveContext::getRippleEditMode() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+
+    return _imp->rippleEditMode;
+}
+
+void
+RotoCurveContext::setRippleEditRange(double first,
+                                     double last)
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    _imp->rippleEditRangeFirst = first;
+    _imp->rippleEditRangeLast = last;
+}
+
+RippleEditKeys
+RotoCurveContext::getRippleEditKeys() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+    RippleEditKeys keys;
+    keys.enabled = _imp->rippleEdit;
+    keys.mode = _imp->rippleEditMode;
+    keys.rangeFirst = _imp->rippleEditRangeFirst;
+    keys.rangeLast = _imp->rippleEditRangeLast;
+
+    return keys;
 }
 
 NodePtr
@@ -570,6 +618,9 @@ RotoCurveContext::removeItem(const RotoItemPtr& item,
     if (!_imp->trackLinkConnections.empty() || _imp->trackLinkWarningPosted) {
         refreshTrackLinkListeners();
     }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
 
     Q_EMIT selectionChanged((int)reason);
 }
@@ -599,6 +650,9 @@ RotoCurveContext::addItem(const RotoLayerPtr& layer,
     }
     if (itemHasTrackLinks(item)) {
         refreshTrackLinkListeners();
+    }
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
     }
     Q_EMIT itemInserted(indexInLayer, reason);
 }
@@ -1858,12 +1912,18 @@ void
 RotoCurveContext::incrementAge()
 {
     _imp->incrementRotoAge();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
 }
 
 void
 RotoCurveContext::evaluateChange()
 {
     _imp->incrementRotoAge();
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     getNode()->getEffectInstance()->incrHashAndEvaluate(true, false);
 }
 
@@ -1942,24 +2002,36 @@ RotoCurveContext::onItemLockedChanged(const RotoItemPtr& item,
         knob->setAllDimensionsEnabled(enabled);
     }
     _imp->lastLockedItem = item;
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemLockedChanged((int)reason);
 }
 
 void
 RotoCurveContext::onItemGloballyActivatedChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemGloballyActivatedChanged(item);
 }
 
 void
 RotoCurveContext::onItemScriptNameChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemScriptNameChanged(item);
 }
 
 void
 RotoCurveContext::onItemLabelChanged(const RotoItemPtr& item)
 {
+    if (GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onRotoChanged(getNode());
+    }
     Q_EMIT itemLabelChanged(item);
 }
 
@@ -1989,6 +2061,35 @@ RotoCurveContext::getTrackLinkedCurves() const
     }
 
     return ret;
+}
+
+void
+RotoCurveContext::warnBoundedRippleOnLinkedPoint()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    node->setPersistentMessage(eMessageTypeWarning, tr("A point that follows a track has one offset for all frames, so ripple edit cannot limit an edit of it to some keyframes. The point was left unchanged: set ripple edit to All, or turn it off, to edit it.").toStdString());
+    _imp->trackLinkWarningPosted = true;
+}
+
+void
+RotoCurveContext::noteRippleEditCheck(bool refused)
+{
+    if (refused) {
+        ++_imp->rippleEditsRefused;
+    } else {
+        ++_imp->rippleEditsAllowed;
+    }
+}
+
+void
+RotoCurveContext::getRippleEditCheckCounts(quint64* refused,
+                                           quint64* allowed) const
+{
+    *refused = _imp->rippleEditsRefused;
+    *allowed = _imp->rippleEditsAllowed;
 }
 
 void

@@ -902,6 +902,17 @@ Gui::centerAllNodeGraphsWithTimer()
 }
 
 void
+Gui::onProjectNodesRestoredInNodeGraphs()
+{
+    if (_imp->_nodeGraphArea) {
+        _imp->_nodeGraphArea->onProjectNodesRestored();
+    }
+    for (std::list<NodeGraph*>::iterator it = _imp->_groups.begin(); it != _imp->_groups.end(); ++it) {
+        (*it)->onProjectNodesRestored();
+    }
+}
+
+void
 Gui::setLastEnteredTabWidget(TabWidget* tab)
 {
     _imp->_lastEnteredTabWidget = tab;
@@ -966,10 +977,18 @@ Gui::onColorTrackballActionTriggered()
         return;
     }
 
-    KnobGuiColor* target = resolveColorTrackballTarget(this);
+    KnobGui* target = resolveGlobalModeKnob(this, QApplication::widgetAt(QCursor::pos()));
 
-    if (target) {
-        target->engageGlobalMode();
+    if (!target) {
+        return;
+    }
+    if (KnobGuiColor* color = dynamic_cast<KnobGuiColor*>(target)) {
+        color->engageGlobalMode();
+
+        return;
+    }
+    if (mode) {
+        mode->engage(makeGlobalModeTarget(target));
     }
 }
 

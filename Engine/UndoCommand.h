@@ -69,6 +69,15 @@ public:
     virtual void undo() = 0;
 
     /**
+     * @brief Whether redo() left nothing to undo, so the history drops the step. Asked right
+     * after the first redo().
+     **/
+    virtual bool isObsolete() const
+    {
+        return false;
+    }
+
+    /**
      * @brief Called to merge the other action in this action (other is the newest action)
      **/
     virtual bool mergeWith(const UndoCommandPtr& /*other*/)

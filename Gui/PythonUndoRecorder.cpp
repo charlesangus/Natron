@@ -76,6 +76,9 @@ public:
     {
         UndoReplayGuard replaying(_app.lock());
         _command->redo();
+        if (_command->isObsolete()) {
+            setObsolete(true);
+        }
     }
 
 private:
@@ -102,6 +105,14 @@ PythonUndoRecorder::openStep(const std::string& text)
 {
     if (_history) {
         _history->openStep(QString::fromUtf8(text.c_str()));
+    }
+}
+
+void
+PythonUndoRecorder::openLabelledStep(const std::string& text)
+{
+    if (_history) {
+        _history->openStep(QString::fromUtf8(text.c_str()), true);
     }
 }
 

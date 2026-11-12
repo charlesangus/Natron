@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <functional>
+#include <map>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
@@ -81,7 +82,7 @@ public:
     }
 
     virtual ImageMetadata deriveOutputMetadata(double time,
-                                               ViewIdx /*view*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+                                               ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         ++_derivations;
 
@@ -99,8 +100,12 @@ public:
             hook(true);
         }
         m.setString("exr/origin", "source");
-        m.setInt("ofx/frame", static_cast<int>(time));
+        m.setInt("natron/frame", static_cast<int>(time));
         m.merge(_extra, ImageMetadata::eMergePreferOther);
+        const std::map<int, ImageMetadata>::const_iterator viewExtra = _viewExtra.find(view.value());
+        if (viewExtra != _viewExtra.end()) {
+            m.merge(viewExtra->second, ImageMetadata::eMergePreferOther);
+        }
 
         return m;
     }
@@ -110,6 +115,13 @@ public:
     void setExtraMetadata(const ImageMetadata& extra)
     {
         _extra = extra;
+    }
+
+    // Added to the metadata of that view only, with the same threading rules as setExtraMetadata().
+    void setViewExtraMetadata(ViewIdx view,
+                              const ImageMetadata& extra)
+    {
+        _viewExtra[view.value()] = extra;
     }
 
     int derivationCount() const
@@ -275,6 +287,7 @@ private:
     std::atomic<int> _derivations;
     std::function<void(bool)> _tagReadHook;
     ImageMetadata _extra;
+    std::map<int, ImageMetadata> _viewExtra;
     KnobIntWPtr _nComps;
     KnobIntWPtr _bitDepth;
     KnobDoubleWPtr _par;

@@ -413,12 +413,15 @@ NoiseOp::createKnobs(KnobHolder* holder,
                                                 "Translation of the pattern along x and y in pixels.", 2, 0., -DBL_MAX, DBL_MAX, -10000., 10000.);
     translateKnob->setSpatial(true);
     translateKnob->disableSlider();
+    translateKnob->setValueRole(eValueRoleTranslate);
     translate = translateKnob;
     rotate = addDoubleKnob(holder, page, kNoiseParamRotate, "Rotate",
                            "Rotation of the pattern in degrees around the Center.", 1, 0., -DBL_MAX, DBL_MAX, -180., 180.);
+    rotate.lock()->setValueRole(eValueRoleRotate);
     KnobDoublePtr scaleKnob = addDoubleKnob(holder, page, kNoiseParamScale, "Scale",
                                             "Scale of the pattern along x and y around the Center.", 2, 1., -DBL_MAX, DBL_MAX, 0.1, 10.);
     scaleKnob->setCanAutoFoldDimensions(true);
+    scaleKnob->setValueRole(eValueRoleScale);
     scale = scaleKnob;
     KnobDoublePtr centerKnob = addDoubleKnob(holder, page, kNoiseParamCenter, "Center",
                                              "Centre of rotation and scale.", 2, 0.5, -DBL_MAX, DBL_MAX, -10000., 10000.);

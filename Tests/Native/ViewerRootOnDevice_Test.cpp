@@ -59,6 +59,8 @@
 #include "BaseTest.h"
 #include "NativeParity.h"
 
+#include "Gpu/GpuTestSelector.h"
+
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -297,6 +299,7 @@ protected:
         }
         GpuContextOptions options;
         options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
         std::shared_ptr<std::string> unavailable = std::make_shared<std::string>();
         options.infoLog = [unavailable](const std::string& line) {
             *unavailable = line;

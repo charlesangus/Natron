@@ -52,11 +52,11 @@ CI publishes the image to GitHub Container Registry as
 `ghcr.io/charlesangus/natron-dev:<content hash>`. The package is public, so
 pulling needs no login. The tag is the first 16 hex characters of a SHA-256
 over `tools/ci/local/Dockerfile`, `cmake/FetchSlang.cmake`,
-`cmake/FetchGlslang.cmake` and `tools/ci/local/install-git-lfs.sh`, the files
-that decide the image's contents, so
-an unchanged image is published once and every checkout with the same files
-resolves to the same tag. `tools/ci/local/dev-image-tag.sh` is the single
-definition of that tag; `devshell.sh` and the workflows all call it:
+`cmake/FetchGlslang.cmake`, `tools/ci/local/install-git-lfs.sh`,
+`tools/ci/local/build-cycles.sh` and `tools/ci/local/build-moonray.sh`, the files
+that decide the image's contents, so an unchanged image is published once and
+every checkout with the same files resolves to the same tag.
+`tools/ci/local/dev-image-tag.sh` is the single definition of that tag; `devshell.sh` and the workflows all call it:
 
 ```
 tools/ci/local/dev-image-tag.sh
@@ -88,6 +88,30 @@ After a Dockerfile change (or a pull of a newer tag), run
 `tools/ci/local/devshell.sh --recreate` to pick the new image up, and only
 when no build is running in that container (see "Checking syntax before a
 build" for why). The `.ccache` dir and `HOME` volume survive that.
+
+### MoonRay layer
+
+`tools/ci/local/build-moonray.sh` builds DreamWorks' MoonRay and its Hydra
+render delegate, hdMoonray, CPU only, against the image's own USD, TBB, Boost,
+Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise, and installs them
+into `/opt/moonray`. The openmoonray tag is pinned to its commit
+(`NATRON_MOONRAY_VERSION` / `NATRON_MOONRAY_COMMIT` in the `Dockerfile`), and
+that commit pins every submodule; the ISPC compiler is a checksummed release
+binary used for the build only. It is one of the image's two slowest layers and
+sits right after the Cycles layer, which changes less often, so a MoonRay change
+leaves the Cycles layer cached.
+
+The prefix is relocatable and is never put on the loader path: MoonRay's
+libraries carry `$ORIGIN` RUNPATHs and link the image's `/usr/local/lib`
+copies, which the script checks (no unresolved library, no library in two
+versions, nothing in `/opt/moonray/lib64` shadowing an image library). Natron
+finds the prefix at start-up (`Engine/AppManager.cpp`, the CMake cache variable
+`NATRON_MOONRAY_PREFIX`) and points `PXR_PLUGINPATH_NAME`, `RDL2_DSO_PATH`,
+`ARRAS_SESSION_PATH` and `PATH` (for `execComp`) at it;
+`tools/release/stage-bundle.sh` copies it into the bundle as `moonray/`.
+MoonRay's plug-ins keep upstream's priority 99. USD defaults to the delegate
+with the lowest priority, so Storm (0) stays the default and MoonRay is only
+used when asked for by id.
 
 ### Slang and glslang layers
 
@@ -122,6 +146,41 @@ It runs as the "Slang and glslang pins match local image" step of
 that bumps one side without the other fails. Bump both together; the
 content-hash tag then changes and the next CI run publishes a new image.
 
+### Cycles layer
+
+The image carries the Cycles Hydra render delegate, CPU devices only.
+`tools/ci/local/build-cycles.sh` fetches the project's Cycles fork,
+`charlesangus/cycles` branch `natron/deep-5.2` (upstream `blender/cycles`
+v5.2.0 plus the deep EXR output and traced-lens camera commits first published
+at `Niik-l/cycles`), at the repository, commit and SHA-256 of the
+`Dockerfile`'s `ARG NATRON_CYCLES_REPO` / `NATRON_CYCLES_COMMIT` /
+`NATRON_CYCLES_SHA256` pin, builds only the
+`hdCycles` target against the image's own USD, OpenImageIO, OpenEXR, TBB,
+Embree and OpenImageDenoise, and installs it into USD's plug-in directory:
+
+- `/usr/local/plugin/usd/hdCycles.so`
+- `/usr/local/plugin/usd/hdCycles/resources/plugInfo.json`
+- `/usr/local/plugin/usd/hdCycles/LICENSE`
+- `/usr/local/plugin/usd/hdCycles/SOURCE` (repository, commit and licences)
+
+Cycles is Apache-2.0. The branch's two deep-sample headers from Blender
+(`src/session/IMB_deep_sample*.hh`) are GPL-2.0-or-later. `SOURCE` records both.
+
+USD discovers it there like `hdStorm`, so neither Natron nor its tests set
+`PXR_PLUGINPATH_NAME`, and `tools/release/stage-bundle.sh` ships it with the
+rest of `plugin/usd`. The script fails the image build when the delegate links
+a library from outside the image's prefixes, links epoxy, or pulls in two
+versions of one library. It is one of the image's two slowest layers (the CPU
+kernels), so it sits first after `FROM`; a change to any later layer reuses it from a local
+layer cache, but a CI runner without that cache rebuilds it with every image.
+
+`NATRON_CYCLES_OIDN=OFF` builds without the OpenImageDenoise denoiser, which
+removes OpenImageDenoise (about 45 MB compressed) from the AppImage.
+
+To bump Cycles, push the new commit to the fork's branch, set it as
+`NATRON_CYCLES_COMMIT`, then set the SHA-256 of
+`<NATRON_CYCLES_REPO>/archive/<commit>.tar.gz`.
+
 ### If the pull fails partway through
 
 In network-restricted environments, Docker Hub's blob CDN
@@ -144,14 +203,11 @@ and `Arena.ofx` -- along with the dependency libraries (lcms2, libzip,
 ImageMagick) `Arena.ofx` needs. Idempotent -- a second run is instant, it
 skips anything already present and matching the pins.
 
-It also builds OpenFX metadata example plug-ins. `metadataCompare`,
-`metadataContribute` and `metadataTimeCode` have no native equivalent and
-ship in `build/assets/Plugins/`. `metadataPrint` is a test fixture only: it
-goes to `build/assets/TestPlugins/`, which `test.sh ctest` appends to
-`OFX_PLUGIN_PATH`, while `test.sh smoke` and the release bundle see
-`build/assets/Plugins/` alone. Running a test binary by hand with
-`OFX_PLUGIN_PATH=build/assets/Plugins` leaves the Print-based metadata cases
-without their fixture; append `:build/assets/TestPlugins`.
+The OFX plug-ins the metadata tests drive are built with Natron itself, into
+`Tests/TestPlugins` under the build directory, which the test binaries add to
+`OFX_PLUGIN_PATH` on their own. The script deletes the OpenFX metadata example
+bundles, and the `build/assets/TestPlugins/` directory, that older assets
+directories and caches still hold.
 
 ```
 tools/ci/local/fetch-assets.sh
@@ -216,9 +272,21 @@ Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 This is also what re-execs you into the dev container (see "Getting a
 shell" below) -- you don't need to start one yourself first.
 
-`ninja` parallelism defaults to `-j3`, overridable via `NATRON_BUILD_JOBS`,
-e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
+`ninja` parallelism defaults to the smaller of `nproc - 1` and the memory
+available where the compiler runs divided by 2 GiB, at least 1. That memory is
+the smaller of `MemAvailable` and the container's cgroup limit (the cap
+`memcap.sh` applies, including `NATRON_DEV_MEMORY`). The build banner names the
+source. It is overridable via `NATRON_BUILD_JOBS`, e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
 core count shouldn't dictate memory pressure.
+
+Concurrent links are limited by a ninja pool, since the large test executables
+(Tests, GuiTests) link at about 1 GB each in debug and several at once get
+OOM-killed. Its default is total memory (the smaller of `MemTotal` and the cgroup
+limit, so it does not drift with `MemAvailable`) divided by 6 GiB, at least 1
+and at most the compile job count; the banner prints it next to the compile
+jobs. Override it with `NATRON_LINK_JOBS=<n>`. The depth is baked into the
+generated build files, so a changed value (including a changed derived one)
+reconfigures the tree.
 
 Edits to `Global/Enums.h` or `Global/GlobalDefines.h` recompile essentially
 every translation unit (~380 objects); batch such changes rather than
@@ -282,7 +350,7 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
 ```
 [NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
   [GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n> GTEST_REPEAT=<n>] \
-  tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+  tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
 ```
 
 - `ctest` runs against the build dir. By default (`NATRON_CTEST_JOBS` unset)
@@ -295,6 +363,14 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on
   `RB-2.6`, and `test.sh` will tell you plainly and exit if it's missing on
   your checkout.
+- `startup` starts the built `App/Natron` under a GLX-capable Xvfb on software
+  GL (`Tests/gui/run-gui-test.sh Tests/gui/debug_startup.py`) and fails unless
+  the main window is exposed. Run it against `debug`: that build arms the
+  floating-point traps for the whole process, which Mesa's llvmpipe trips
+  while compiling its shaders unless the GL init path disarms them around the
+  driver calls, and no ctest case ever starts the GUI. A SIGFPE shows up as
+  exit status 136. `check-startup.sh` cannot take this role, as it needs a
+  staged bundle and a debug build is not packaged in the container.
 - `NATRON_RENDER_SCHEDULER` selects the render scheduler for `ctest` and
   `smoke`; unset leaves Natron's default. It is forwarded into the container
   when set.

@@ -542,9 +542,10 @@ public:
         KnobDoubleWPtr gamma;
         KnobBoolWPtr autoContrast;
         KnobBoolWPtr checkerboard;
-        KnobStringWPtr display; // empty: the project's default display and view
-        KnobStringWPtr view;
-        KnobStringWPtr look; // empty: no look
+        // First entries: Project default for the display and view, None for the look.
+        KnobChoiceWPtr display;
+        KnobChoiceWPtr view;
+        KnobChoiceWPtr look;
 
         KnobChoiceWPtr displayChannels[2];
         KnobLayerSelectWPtr layer;
@@ -567,6 +568,8 @@ public:
         KnobBoolWPtr fullFrame;
         KnobBoolWPtr enableDownscale;
         KnobChoiceWPtr downscaleLevel;
+        KnobIntWPtr maxSamples; // 0: the render delegate's own count
+        KnobBoolWPtr refinementPaused;
     };
     Knobs knobs;
 

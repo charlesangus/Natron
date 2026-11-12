@@ -33,6 +33,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -88,6 +89,53 @@ CLANG_DIAG_ON(deprecated)
 #define kWriteParamViews "views"
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The content of the knobs given a hash namespace (KnobI::setHashNamespace()), on a node
+ * and everything upstream of it. Those knobs stay out of the knobs' digest; the content hash folds
+ * the whole table instead, except on an effect that consumes it
+ * (EffectInstance::consumesHashNamespaces()), as USDRender folds only the namespaces of the
+ * renderer it renders with. An edit to one then re-keys every node but those.
+ *
+ * Scopes are render settings prims, by path. An entry merges the digests of every node that
+ * authors the namespace on that prim, from upstream down.
+ **/
+struct HashNamespaces {
+    struct Scope {
+        std::map<std::string, U64> digests; //< by namespace
+        std::string defaultRenderer; //< the renderer the strongest node names, empty if none
+        bool settled = false; //< when uncertain, whether a node over all of it named the renderer
+    };
+
+    std::map<std::string, Scope> scopes; //< by path
+    std::string active; //< the scope the strongest node makes the stage's active one, empty if none
+    // The stage may hold render settings the table does not track (a file's), or inputs disagree
+    // on a renderer or the active prim: only the settled scopes and active prim are known.
+    bool uncertain = false;
+    bool activeSettled = false; //< when uncertain, whether a node over all of it made active the active prim
+
+    // Every scope, namespace and renderer.
+    void appendAll(ContentHasher& h) const;
+    // Marks the table uncertain and nothing in it settled.
+    void unsettle();
+};
+
+typedef std::shared_ptr<const HashNamespaces> HashNamespacesConstPtr;
+
+/**
+ * @brief The knobs one transform interact drives, each null where the node passed none.
+ **/
+struct TransformInteractKnobs {
+    KnobDoublePtr translate;
+    KnobDoublePtr rotate;
+    KnobDoublePtr scale;
+    KnobDoublePtr skewX;
+    KnobDoublePtr skewY;
+    KnobDoublePtr center;
+
+    bool isEmpty() const;
+    bool contains(const KnobI* knob) const;
+};
 
 class Node
     : public QObject
@@ -249,7 +297,6 @@ public:
      * This is called when a node is deleted by the user
      */
     void abortAnyProcessing_non_blocking();
-    void abortAnyProcessing_blocking();
 
     /*Never call this yourself. This is needed by OfxEffectInstance so the pointer to the live instance
      * is set earlier.
@@ -291,12 +338,32 @@ public:
     U64 getStoredContentHash() const;
 
     /**
+     * @brief The stored content hash without the HashNamespaces folded in, which is what a
+     * downstream node folds of its inputs: their namespaces reach it through its own table instead,
+     * so an effect consuming them sees only the ones it folds itself.
+     **/
+    U64 getStoredBaseContentHash() const;
+
+    /**
      * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
      * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
      * Scene nodes key their memoized layer on it (SceneLayerMemo): unlike the content hash, it
      * does not move when an input changes.
      **/
     U64 getKnobsContentDigest(bool* hasExpression) const;
+
+    /**
+     * @brief Digest of the knobs with a hash namespace, which getKnobsContentDigest() leaves out,
+     * by namespace. Empty when the node has none.
+     **/
+    std::map<std::string, U64> getKnobsNamespaceDigests() const;
+
+    /**
+     * @brief The node's and its inputs' namespaced knobs as of the last content hash computation
+     * (see HashNamespaces). Null before the first, when neither has any, or when the effect
+     * consumes them (EffectInstance::consumesHashNamespaces()).
+     **/
+    HashNamespacesConstPtr getHashNamespaces() const;
 
     /**
      * @brief Sets hash to the content hash and returns true if it is up to date, and returns false
@@ -441,6 +508,29 @@ public:
      **/
     void adoptSerializedCacheID(const std::string& cacheID);
 
+    /**
+     * @brief The node's persistent ID: 32 lowercase hex characters, made when the node is created
+     * and kept by saving and loading its project. A paste, a duplicate or an import makes a new
+     * node, with a new ID. Unlike the cache ID it is unique within one project only, and
+     * opening a project twice gives both copies the same IDs.
+     **/
+    std::string getNodeId() const;
+
+    static bool isValidNodeId(const std::string& id);
+
+    /**
+     * @brief While its project loads, gives the node the ID saved with it. An ID that another
+     * node of the project holds, or a malformed one, is not taken: the node keeps the ID it was
+     * created with and the project gets a load warning. Does nothing outside a project load.
+     **/
+    void restoreSerializedNodeId(const std::string& id);
+
+    /**
+     * @brief Gives the node the ID id, at any time. Refused, leaving the node's ID as it was and
+     * saying why in refusal, when id is malformed or another node of the project holds it.
+     **/
+    bool adoptNodeId(const std::string& id, QString* refusal);
+
 private:
     static bool claimCacheID(const std::string& cacheID);
     static void releaseCacheID(const std::string& cacheID);
@@ -467,6 +557,12 @@ public:
 
     /*Returns in viewers the list of all the viewers connected to this node*/
     void hasViewersConnected(std::list<ViewerInstance* >* viewers) const;
+
+    /**
+     * @brief The viewers hasViewersConnected() finds from any of the nodes, each once, in one walk
+     * of what is downstream of them all.
+     **/
+    static void getViewersDownstreamOf(const std::list<NodePtr>& nodes, std::list<ViewerInstance*>* viewers);
 
     void hasOutputNodesConnected(std::list<OutputEffectInstance* >* writers) const;
 
@@ -567,8 +663,18 @@ public:
      * both directions: consumers and inputs alike. Everything derived from the kinds of the nodes
      * it reaches is then brought back up to date: their data-kind diagnostic, and the
      * dataKindChanged() signal the GUI redraws its edges from.
+     *
+     * Inside an InputEditBatch on the main thread every cached kind is dropped at once instead,
+     * and the diagnostics and signals are brought up to date at the end of the outermost batch,
+     * once for each node reached from any node invalidated in it.
      **/
     void invalidateEffectiveOutputDataKindCache();
+
+    /**
+     * @brief The number of nodes the walks of invalidateEffectiveOutputDataKindCache() have visited
+     * since startup. For tests.
+     **/
+    static U64 getDataKindInvalidationVisitCount();
 
     /**
      * @brief Recomputes this node's data-kind diagnostic: an eMessageTypeError persistent message
@@ -846,6 +952,19 @@ public:
     void appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const;
 
     /**
+     * @brief appendOutputsWithGroupRedirection() stopping after one redirection: a group appends
+     * the nodes its GroupInputs feed, a GroupOutput the outputs of its group, a precomp's output
+     * node those of the precomp; any other node its own outputs. The nodes appended may redirect
+     * again.
+     **/
+    void appendOutputsThroughOneRedirection(std::vector<NodePtr>* outputs) const;
+
+    /**
+     * @brief Whether this node is the output node of the precomp it is part of.
+     **/
+    bool isPrecompOutputNode() const;
+
+    /**
      * @brief Walks the body of a loop running from begins up to tail, closed by end: the nodes the
      * inputs of tail reach going up that the outputs of any of begins reach going down without
      * passing end. With digest, sets it to tail's hash with each of begins standing for one fixed
@@ -980,6 +1099,12 @@ public:
      * layout size to save.
      **/
     bool hasSize() const;
+
+    /**
+     * @brief Forgets the size set on the node, so that it has none to save again. A GUI keeps the
+     * size it shows.
+     **/
+    void clearSize();
 
     /**
      * @brief Get the colour of the node as it appears on the nodegraph: the user colour
@@ -1637,6 +1762,15 @@ public:
     bool isNodeRendering() const;
 
     /**
+     * @brief For a main-thread edit of the state renders read, made only while no render holds
+     * the node. Returns false when one does. Otherwise renders starting on other threads wait
+     * until releaseRenderStartsForEdit(), so none can start between the edit's check and its
+     * writes. Render starts on the main thread do not wait.
+     **/
+    bool holdRenderStartsForEdit();
+    void releaseRenderStartsForEdit();
+
+    /**
      * @brief Records that an edit was queued because the node was rendering, so a dequeue
      * deferred by a render that still holds the node aborts the viewer renders instead of waiting
      * for them to end on their own.
@@ -1819,6 +1953,13 @@ public:
                               const KnobDoublePtr& center,
                               const KnobBoolPtr& invert);
 
+    /**
+     * @brief The knobs of the transform interact that drives member, or of the first one the
+     * node registered when member is null; empty when there is no such interact. A node may
+     * register more than one (Roto has its own and its clone transform's).
+     **/
+    TransformInteractKnobs getTransformInteractKnobs(const KnobI* member = NULL) const;
+
     void addCornerPinInteract(const KnobDoublePtr& from1,
                               const KnobDoublePtr& from2,
                               const KnobDoublePtr& from3,
@@ -1985,6 +2126,96 @@ public:
     private:
         InputRelatedDataRefreshDeferral(const InputRelatedDataRefreshDeferral&);
         InputRelatedDataRefreshDeferral& operator=(const InputRelatedDataRefreshDeferral&);
+    };
+
+    /**
+     * @brief While one lives on the main thread, activating, deactivating and reconnecting nodes
+     * leaves invalid-expression rechecks, input-related refreshes and the project's layer table to
+     * the end of the outermost one, which does each once. An edit of many nodes would otherwise
+     * walk everything downstream of each, reading expressions that name nodes it has not restored
+     * yet.
+     **/
+    class InputEditBatch {
+    public:
+        explicit InputEditBatch(const AppInstancePtr& app);
+        ~InputEditBatch();
+
+        InputEditBatch(const InputEditBatch&) = delete;
+        InputEditBatch& operator=(const InputEditBatch&) = delete;
+
+    private:
+        AppInstancePtr _app;
+    };
+
+    /**
+     * @brief While one lives on the main thread, the walks downstream of the nodes a value change
+     * reaches (aborting viewer renders, refreshing the shown input-related data, rendering or
+     * redrawing the viewers and refreshing previews) wait for the end of the outermost one, which
+     * does each once from all of those nodes. A change with many expression dependents would
+     * otherwise walk everything below each dependent. KnobHolder::endChanges() opens one. Off the
+     * main thread it does nothing.
+     **/
+    class ValueChangeCascade {
+    public:
+        ValueChangeCascade();
+        ~ValueChangeCascade();
+
+        ValueChangeCascade(const ValueChangeCascade&) = delete;
+        ValueChangeCascade& operator=(const ValueChangeCascade&) = delete;
+
+    private:
+        bool _active;
+    };
+
+    /**
+     * @brief If a ValueChangeCascade lives on the calling thread, keeps the abort of the viewer
+     * renders reading `node` for its end and returns true.
+     **/
+    static bool deferViewerAbortToCascade(const NodePtr& node);
+
+    /**
+     * @brief If a ValueChangeCascade lives on the calling thread, keeps the render (`isSignificant`)
+     * or redraw of the viewers downstream of `node`, and the refresh of the previews downstream of
+     * it at `time` when significant, for its end and returns true.
+     **/
+    static bool deferEvaluationToCascade(const NodePtr& node, bool isSignificant, double time);
+
+    /**
+     * @brief The number of nodes visited by the walks downstream of an edit since startup. For
+     * tests.
+     **/
+    static U64 getDownstreamWalkVisitCount();
+
+    /**
+     * @brief While one lives on this thread, the walks finding the outputs whose renders to abort
+     * share what they visited, so deactivating many nodes walks what is downstream of them once.
+     * Open one only around removing nodes: connecting a node inside it would hide the new output.
+     **/
+    class RemovalBatch {
+    public:
+        RemovalBatch();
+        ~RemovalBatch();
+
+        RemovalBatch(const RemovalBatch&) = delete;
+        RemovalBatch& operator=(const RemovalBatch&) = delete;
+    };
+
+    /**
+     * @brief While one lives on the main thread, activate(), deactivate() and the creation of a
+     * node outside a PyPlug leave declaring or deleting the nodes' Python variables, restoring
+     * their expression functions and running their creation callbacks to the end of the outermost
+     * one. It runs one script declaring every
+     * activated node, one declaring all their parameters and one deleting every deactivated node,
+     * without echoing them per node in the Script Editor. Open it inside the InputEditBatch of the
+     * edit, whose rechecks and refreshes read the declarations.
+     **/
+    class PythonDeclarationBatch {
+    public:
+        PythonDeclarationBatch();
+        ~PythonDeclarationBatch();
+
+        PythonDeclarationBatch(const PythonDeclarationBatch&) = delete;
+        PythonDeclarationBatch& operator=(const PythonDeclarationBatch&) = delete;
     };
 
     void markAllInputRelatedDataDirty();
@@ -2185,10 +2416,18 @@ private:
     bool findDataKindConflictInsideGroup(int inputNb, const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
     /**
-     * @brief The nodes whose hash folds in this one's: outputs through group redirections, and
-     * the internal nodes of a roto paint tree.
+     * @brief The nodes whose hash folds in this one's: outputs through group redirections, every
+     * group-redirect node passed through on the way, and the internal nodes of a roto paint tree.
+     * leaves receives the nodes that appendHashLeafDependents() adds, from this node's effect and
+     * from the group-redirect nodes passed through.
      **/
-    void getHashDependents(std::vector<NodePtr>* dependents) const;
+    void getHashDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
+
+    /**
+     * @brief What marking this node as a leaf marks too: its metadata readers, and in leaves what
+     * its effect appends through appendHashLeafDependents().
+     **/
+    void getHashLeafDependents(std::vector<NodePtr>* dependents, std::vector<NodePtr>* leaves) const;
 
     struct HashInputs {
         bool isViewer = false;
@@ -2283,12 +2522,18 @@ private:
     bool computeHashInternal(U64 projectDigest, const HashInputs& inputs, U64* contentHash) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The content hash, folding in each input's hash as inputHash gives it, the stored one
-     * when it is null.
+     * @brief The content hash, folding in each input's hash as inputHash gives it, the stored base
+     * hash when it is null. namespaces, when not null, is set to the node's HashNamespaces, and
+     * baseHash to the hash without them.
      **/
     U64 computeContentHash(U64 projectDigest,
                            const HashInputs& inputs,
-                           const std::function<U64(const Node&)>* inputHash = 0) const;
+                           const std::function<U64(const Node&)>* inputHash = nullptr,
+                           HashNamespacesConstPtr* namespaces = nullptr,
+                           U64* baseHash = nullptr) const;
+
+    // The inputs' HashNamespaces with the node's own on top.
+    HashNamespacesConstPtr mergeHashNamespaces(const HashInputs& inputs) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 
@@ -2311,6 +2556,12 @@ private:
     // Like refreshInputRelatedDataInternal(), except that a viewer only refreshes the inputs it
     // shows: its hash folds in only those, so the others are not read through it.
     bool refreshShownInputRelatedData(std::set<Node*>& visited);
+    static void refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited);
+    static void refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited);
+
+    // Drops the cached kinds of every node reached from starts both ways, then refreshes their
+    // diagnostics and emits their dataKindChanged(), once each.
+    static void invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts);
 
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
 
@@ -2494,6 +2745,47 @@ private:
     void declareNodeVariableToPython(const std::string& nodeName);
     void setNodeVariableToPython(const std::string& oldName, const std::string& newName);
     void deleteNodeVariableToPython(const std::string& nodeName);
+
+    /**
+     * @brief The scripts the functions above run, empty when there is nothing to run.
+     **/
+    std::string makeNodeVariableDeclarationScript(const std::string& nodeName);
+    std::string makePythonFieldsScript();
+    std::string makeNodeVariableDeletionScript(const std::string& nodeName);
+
+    void restoreKnobsExpressionFunctions();
+
+    /**
+     * @brief Leaves deleting this node's Python variable to the end of the PythonDeclarationBatch.
+     **/
+    void queueNodeVariableDeletion();
+
+    /**
+     * @brief Keeps a reference to this node's Python object, about to be deleted from its parent,
+     * so that activate() can put it back with its parameters and expression functions.
+     **/
+    void stashPythonObject();
+
+    /**
+     * @brief Puts the stashed object back under this node's name unless the name has changed or
+     * something else holds it, then lets go of the stash.
+     **/
+    void restoreStashedPythonObject();
+    void releaseStashedPythonObject();
+
+    /**
+     * @brief While a PythonDeclarationBatch is open, leaves declaring the Python variable and
+     * parameters of this node being created to its end and returns true.
+     **/
+    bool deferPythonDeclarationToBatch();
+
+    /**
+     * @brief Leaves the creation callback and the recheck of expressions naming this node to the
+     * end of the batch when its declaration was left to it, returning whether it was.
+     **/
+    bool finishCreationInPythonDeclarationBatch(bool userEdited);
+
+    static void runPendingPythonDeclarations();
 
     std::unique_ptr<Implementation> _imp;
 };

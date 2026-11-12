@@ -331,7 +331,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                 return renderDeepRoI(selfArgs, outputDeepImage);
             }
 
-            EffectInstancePtr identityInput = getInput(identityInputNb);
+            EffectInstancePtr identityInput = getIdentitySource(identityInputNb);
             if (!identityInput) {
                 *outputDeepImage = std::make_shared<DeepImage>(RectI(), args.scale, args.view);
 

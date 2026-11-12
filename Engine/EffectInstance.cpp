@@ -1048,6 +1048,19 @@ EffectInstance::getInput(int n) const
     return EffectInstancePtr();
 }
 
+EffectInstancePtr
+EffectInstance::getIdentitySource(int identityInputNb) const
+{
+    if (identityInputNb >= 0) {
+        return getInput(identityInputNb);
+    }
+    if (identityInputNb == kIdentityInternalSource) {
+        return getInternalIdentitySource();
+    }
+
+    return EffectInstancePtr();
+}
+
 std::string
 EffectInstance::getInputLabel(int inputNb) const
 {
@@ -1134,9 +1147,9 @@ EffectInstance::retrieveGetImageDataUponFailure(const double time,
         ViewIdx identityView;
         *isIdentity_p = isIdentity_public(true, nodeHash, time, scale, pixelRod, view, &identityTime, &identityView, &identityInputNb);
         if (*isIdentity_p) {
-            if (identityInputNb >= 0) {
-                *identityInput_p = getInput(identityInputNb);
-            } else if (identityInputNb == -2) {
+            if (identityInputNb != -2) {
+                *identityInput_p = getIdentitySource(identityInputNb);
+            } else {
                 *identityInput_p = shared_from_this();
             }
         }
@@ -1766,11 +1779,11 @@ EffectInstance::getImage(int inputNb,
             tls->currentRenderArgs.inputImages[inputNb].push_back(inputImg);
         }
 
-        if ( returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex) ) {
+        if (inputImg && returnStorage == eStorageModeGLTex && (inputImg->getStorageMode() != eStorageModeGLTex)) {
             inputImg = convertRAMImageToOpenGLTexture(inputImg);
         }
 
-        if (mapToClipPrefs) {
+        if (inputImg && mapToClipPrefs) {
             inputImg = convertLayersFormatsIfNeeded(inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
         }
 
@@ -3966,6 +3979,9 @@ EffectInstance::evaluate(bool isSignificant,
 
 
     double time = getCurrentTime();
+    if (Node::deferEvaluationToCascade(node, isSignificant, time)) {
+        return;
+    }
     std::list<ViewerInstance* > viewers;
     node->hasViewersConnected(&viewers);
     for (std::list<ViewerInstance* >::iterator it = viewers.begin();
@@ -4328,10 +4344,14 @@ EffectInstance::overlayImagesStale(const OverlayImageRequest& request) const
     if (request.visibleCanonical.isNull()) {
         return false;
     }
-    const OverlayImageFrameConstPtr frame = getNode()->getOverlayImageFrame();
+    const NodePtr node = getNode();
+    if (!node) {
+        return false;
+    }
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
     U64 hash = 0;
 
-    return !frame || !getNode()->getHashValueIfUpToDate(&hash) || !frame->satisfies(hash, request);
+    return !frame || !node->getHashValueIfUpToDate(&hash) || !frame->satisfies(hash, request);
 }
 
 bool
@@ -4339,6 +4359,9 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
                                     const AbortableRenderInfoPtr& abortInfo)
 {
     const NodePtr node = getNode();
+    if (!node) {
+        return false;
+    }
     ParallelRenderArgsSetter frameArgs(request.time,
                                        request.view,
                                        true /*isRenderUserInteraction*/,
@@ -5732,6 +5755,10 @@ EffectInstance::getLayersPassThroughInput(double time,
         if (isIdentity) {
             *isIdentity = true;
         }
+    } else if (identity && (identityInputNb == kIdentityInternalSource)) {
+        // The output is none of the inputs' layers, so none of them passes through; the effect
+        // presents its internal source's layers itself.
+        *inputNb = -1;
     }
 }
 
@@ -6962,10 +6989,7 @@ EffectInstance::getNearestNonIdentity(double time)
     if (!isIdentity_public(false, hash, time, RenderScale::identity, frmt, ViewIdx(0), &inputTimeIdentity, &inputView, &inputNbIdentity)) {
         return shared_from_this();
     } else {
-        if (inputNbIdentity < 0) {
-            return shared_from_this();
-        }
-        EffectInstancePtr effect = getInput(inputNbIdentity);
+        EffectInstancePtr effect = getIdentitySource(inputNbIdentity);
 
         return effect ? effect->getNearestNonIdentity(time) : shared_from_this();
     }
@@ -7002,7 +7026,10 @@ EffectInstance::onNodeHashChanged(U64 hash)
 bool
 EffectInstance::canSetValue() const
 {
-    return !getNode()->isNodeRendering() || appPTR->isBackground();
+    // A render can keep the effect alive after its node is destroyed; nothing renders the node then.
+    NodePtr node = getNode();
+
+    return !node || !node->isNodeRendering() || appPTR->isBackground();
 }
 
 void
@@ -7039,6 +7066,9 @@ EffectInstance::getDownstreamOutputs(std::list<OutputEffectInstance*>* outputNod
 void
 EffectInstance::abortViewerRendersForEdit()
 {
+    if (Node::deferViewerAbortToCascade(getNode())) {
+        return;
+    }
     std::list<OutputEffectInstance*> outputNodes;
     getDownstreamOutputs(&outputNodes);
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
@@ -7705,12 +7735,17 @@ EffectInstance::applyIdentityRule(U64 hash,
     } catch (...) {
         identity = false;
     }
-    if (!identity || (inputNb < 0)) {
+    if (!identity) {
         return own;
     }
-    EffectInstancePtr input = getInput(inputNb);
+    EffectInstancePtr input = getIdentitySource(inputNb);
     if (!input) {
         return own;
+    }
+    // The defaults are what the inputs give, and an internal source is none of them, so every
+    // output field is taken from the source.
+    if (inputNb == kIdentityInternalSource) {
+        defaults = NULL;
     }
     NodeMetadataConstPtr inputMetadata;
     {

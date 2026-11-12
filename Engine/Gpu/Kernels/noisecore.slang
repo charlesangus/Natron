@@ -6,11 +6,13 @@
 // Compile with -fp-mode precise so nothing is contracted or reassociated: the C++ uses no fused
 // multiply-add either. Integer, compare, select, add, sub and mul are then bit-equal to the CPU
 // (denormals aside, which a device may flush); sqrt and division are not required to be correctly
-// rounded in Vulkan, so the cellular distances and the fractal normalisation can differ by a few
-// ulps. Float constants are spelled as bit patterns; Noise4D.h static_asserts the same values.
+// rounded in Vulkan, so the cellular distances can differ by a few ulps, and the fractal
+// normalisation divides through divideRounded to stay exact. Float constants are spelled as bit patterns; Noise4D.h static_asserts the same values.
 //
 // A module: the noise kernel and the test entry (noisecore_test.slang) import it, and it declares
 // no bindings of its own.
+
+import exactdivide;
 
 // ---- libs/noise/Noise4D.h ----
 
@@ -1100,7 +1102,7 @@ float noise4(NoiseParams prm,
         }
     }
 
-    float v = sum / bound;
+    float v = divideRounded(sum, bound);
     if (prm.fractal == kNoiseFractalHybrid) {
         v = v * 2.0f - 1.0f;
     }

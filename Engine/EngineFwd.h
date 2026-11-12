@@ -161,6 +161,7 @@ class GenericSchedulerThreadWatcher;
 class GenericThreadExecOnMainThreadArgs;
 class GenericThreadStartArgs;
 class GenericWatcherCallerArgs;
+class GraphEditRecorder;
 class Hash64;
 class HostOverlayKnobs;
 class HostOverlayKnobsCornerPin;

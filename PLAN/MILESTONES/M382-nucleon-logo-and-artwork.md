@@ -131,3 +131,8 @@ Context:
   - Pyramid (baryon-pyramid): promising conceptually, weak visually. Keep working on it.
   - Refer to the references, and generate a few new ideas from them.
   - Round 7 goes to a Fable agent. Round 7 concepts at 627243479: trefoil-weights, -ruler, -square; utrefoil-fan, -link, -staple; pyramid-lens, -step, -key; ref-crescents, -bars, -planes.
+- 2026-11-12 — Round 7 feedback (user):
+  - trefoil-square and pyramid-key are promising; a couple more versions of each.
+  - None of the reference-led ideas (ref-crescents, -bars, -planes) work. Codex is to study the references and draft a few Bauhaus-style designs inspired by a three-quark baryon/nucleon.
+  - From round 8 on, sheets show the mark only, no wordmark or lockup.
+  - Round 8 variations go to a Fable agent.

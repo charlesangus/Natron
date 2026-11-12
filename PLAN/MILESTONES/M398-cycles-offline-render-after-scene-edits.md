@@ -12,13 +12,13 @@ USDRender with the Cycles delegate often renders black geometry after a scene ch
 
 ## Phase 398.1: Fix
 
-- [ ] M398.P1.T1 — Don't trust convergence until the render has restarted after an edit
+- [x] M398.P1.T1 — Don't trust convergence until the render has restarted after an edit
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Tests/Scene/USDRenderCycles_Test.cpp`
   - approach: after a stage edit, the offline loop waits until the sample count moves (as the progressive path's `restartSeen` does) before accepting `IsConverged()`; if that is not reliable across delegates, rebuild the engine on edit. Share the guard with the progressive path rather than duplicating it.
   - verify: new test renders, edits the stage (move or recolour a prim), renders again on the same engine, and gets non-black pixels matching a fresh-engine render; existing USDRender Cycles tests green.
   - size: S
 
-- [ ] M398.P1.T2 — Forward every Cycles render setting, and a transparent background
+- [x] M398.P1.T2 — Forward every Cycles render setting, and a transparent background
   - files: the Cycles fork (`charlesangus/cycles` natron/deep-5.2, `src/hydra/render_delegate.cpp`, `src/hydra/session.cpp`), `tools/ci/local/Dockerfile` (pin and sha256), `Engine/Nodes/Scene/RenderSettingsPrim.*`, `Engine/Nodes/Scene/USDRenderSettings.*`, `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Gui/SceneViewport.cpp`
   - approach: the delegate forwards `cycles:<node>:<socket>` generically for every scene-level node with sockets, not only the integrator. An explicitly set `cycles:background:transparent` wins over the dome-driven default; unset keeps today's behaviour. Natron forwards every `cycles:` attribute on the active RenderSettings prim. USDRenderSettings gets a way to set arbitrary renderer settings, plus a "Transparent Background" toggle that also drives Storm's `domeLightCameraVisibility`. The fork commit is pushed and pinned.
   - verify: gtest that a `cycles:*` attribute reaches the delegate; a Cycles render with a dome and Transparent Background on has alpha 0 in the background and the same lit geometry.
@@ -30,3 +30,4 @@ USDRender with the Cycles delegate often renders black geometry after a scene ch
 
 - 2026-11-12 — Split from M376 UAT round 1 (user agreed): the cause is in the shared Hydra render path, not geometry.
 - 2026-11-12 — Scope widened (user): "we should be able to set/forward all renderer settings". It is OK to patch the Cycles delegate; a background-visibility knob on the renderer side is fine where that is idiomatic, which for Cycles it is (transparent film or background). It goes on USDRenderSettings, not USDRender (user). The delegate patch is on top of main's pin, b0d961e3e.
+- 2026-11-12 — T1 (a91d2aa87) and T2 (2fadc616c) done. The fork patch b602afeb0 (pushed to natron/deep-5.2) forwards every integrator, film and background socket. Session params, the background shader, film deep sockets, camera and scene time are not forwardable. Arbitrary settings were already authorable with USDSetAttribute, and each declared socket has an auto knob. The Dockerfile pin was bumped, so CI rebuilds the dev image. Gate: run 43157056360. Unverified: whether Storm reads `domeLightCameraVisibility` from the renderer settings; check it in the GUI at UAT.

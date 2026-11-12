@@ -119,6 +119,9 @@ public:
 
     static void applyToRules(const SceneDrawDelta& delta, Rules* rules);
 
+    // Whether the rule governing path, its own or its nearest ancestor's, is Hidden.
+    static bool isUnderHiddenRow(const Rules& rules, const PXR_NS::SdfPath& path);
+
     ~SceneDrawFilter() override;
 
     PXR_NS::HdSceneIndexPrim GetPrim(const PXR_NS::SdfPath& primPath) const override;

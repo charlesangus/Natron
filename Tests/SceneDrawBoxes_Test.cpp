@@ -42,6 +42,8 @@
 #ifdef emit
 #undef emit
 #endif
+#include <pxr/base/gf/frustum.h>
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/stage.h>
@@ -165,7 +167,91 @@ rules(std::initializer_list<std::pair<const char*, SceneDrawFilter::RuleEnum>> e
 
     return result;
 }
+// A 100 x 100 view from z = 10 down -Z, 60 degrees across.
+GfMatrix4d
+viewProjection()
+{
+    GfFrustum frustum;
+
+    frustum.SetPosition(GfVec3d(0, 0, 10));
+    frustum.SetPerspective(60., 1., 1., 100.);
+
+    return frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix();
+}
+
+SceneDrawBoxes::Box
+makeBox(const char* path,
+        const GfVec3f& min,
+        const GfVec3f& max,
+        SceneDrawBoxes::KindEnum kind = SceneDrawBoxes::eKindBox)
+{
+    SceneDrawBoxes::Box box;
+
+    box.path = SdfPath(path);
+    box.min = min;
+    box.max = max;
+    box.kind = kind;
+
+    return box;
+}
+
+int
+pickAt(const SceneDrawBoxes::List& list,
+       double x,
+       double y,
+       GfVec3d* point = nullptr)
+{
+    GfVec3d hit;
+    const int index = SceneDrawBoxes::pick(list, viewProjection(), 100, 100, GfVec2d(x, y), 6., &hit);
+
+    if (point) {
+        *point = hit;
+    }
+
+    return index;
+}
 } // anon namespace
+
+TEST(SceneDrawBoxes, APickTakesTheNearestBoxOnTheRayAtItsNearFace)
+{
+    SceneDrawBoxes::List list;
+    list.boxes.push_back(makeBox("/Far", GfVec3f(-5, -5, -4), GfVec3f(5, 5, -2)));
+    list.boxes.push_back(makeBox("/Near", GfVec3f(-1, -1, 2), GfVec3f(1, 1, 4)));
+
+    GfVec3d point;
+    EXPECT_EQ(pickAt(list, 50, 50, &point), 1);
+    EXPECT_NEAR(point[2], 4., 1e-6);
+    // Past /Near's side, still inside /Far.
+    EXPECT_EQ(pickAt(list, 67.5, 50, &point), 0);
+    EXPECT_NEAR(point[2], -2., 1e-6);
+    EXPECT_EQ(pickAt(list, 99, 1), -1);
+}
+
+TEST(SceneDrawBoxes, ABoxAroundTheEyeIsNeverPicked)
+{
+    SceneDrawBoxes::List list;
+    list.boxes.push_back(makeBox("/Around", GfVec3f(-50, -50, -50), GfVec3f(50, 50, 50)));
+
+    EXPECT_EQ(pickAt(list, 50, 50), -1);
+    list.boxes.push_back(makeBox("/Near", GfVec3f(-1, -1, 2), GfVec3f(1, 1, 4)));
+    EXPECT_EQ(pickAt(list, 50, 50), 1);
+}
+
+TEST(SceneDrawBoxes, AMarkerIsPickedNearItsCentreOnScreenAndByDepthAgainstBoxes)
+{
+    SceneDrawBoxes::List list;
+    list.boxes.push_back(makeBox("/Marker", GfVec3f(0, 0, 0), GfVec3f(0, 0, 0), SceneDrawBoxes::eKindMarker));
+
+    GfVec3d point;
+    EXPECT_EQ(pickAt(list, 53, 47, &point), 0);
+    EXPECT_EQ(point, GfVec3d(0, 0, 0));
+    EXPECT_EQ(pickAt(list, 60, 50), -1);
+
+    list.boxes.push_back(makeBox("/Near", GfVec3f(-1, -1, 2), GfVec3f(1, 1, 4)));
+    EXPECT_EQ(pickAt(list, 50, 50), 1);
+    list.boxes.push_back(makeBox("/Pending", GfVec3f(0, 0, 6), GfVec3f(0, 0, 6), SceneDrawBoxes::eKindPending));
+    EXPECT_EQ(pickAt(list, 50, 50), 2);
+}
 
 TEST(SceneDrawBoxes, ABBoxRowAndAChildrenRowsUnruledChildrenGetTheirWorldBounds)
 {

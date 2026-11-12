@@ -293,6 +293,13 @@ SceneDrawFilter::New(const HdSceneIndexBaseRefPtr& input)
     return TfCreateRefPtr(new SceneDrawFilter(input));
 }
 
+bool
+SceneDrawFilter::isUnderHiddenRow(const Rules& rules,
+                                  const SdfPath& path)
+{
+    return underHiddenRow(governing(rules, path));
+}
+
 void
 SceneDrawFilter::applyToRules(const SceneDrawDelta& delta,
                               Rules* rules)

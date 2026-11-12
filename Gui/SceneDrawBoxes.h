@@ -45,6 +45,9 @@
 #define NATRON_SCENEDRAWBOXES_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/vec2d.h>
+#include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/usd/stage.h>
@@ -125,6 +128,21 @@ public:
     // Whether a complete list answering generation or a later request was published within timeout.
     bool waitForList(U64 generation,
                      std::chrono::milliseconds timeout) const;
+
+    /**
+     * @brief The index in list of the box or marker nearest the eye under pixel, -1 for none, and
+     * the point hit. viewProjection maps world space to clip space as GfMatrix4d does, row vectors
+     * on the left; pixel counts from the top left of a width x height view. A box is hit through its
+     * volume, at its near face; one around the eye is never hit, or it would take every click that
+     * hits nothing nearer. A marker is hit within markerPixels of its centre on screen, there.
+     */
+    static int pick(const List& list,
+                    const PXR_NS::GfMatrix4d& viewProjection,
+                    int width,
+                    int height,
+                    const PXR_NS::GfVec2d& pixel,
+                    double markerPixels,
+                    PXR_NS::GfVec3d* point);
 
     // By path. A row the stage lacks, or one under a row that hides it, is left out.
     static std::vector<PXR_NS::SdfPath> boxedRows(const PXR_NS::UsdStageRefPtr& stage,

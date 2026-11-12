@@ -25,6 +25,8 @@
 
 #include "Gui/SceneDrawBoxes.h"
 
+#include <cmath>
+#include <limits>
 #include <utility>
 
 #ifdef emit
@@ -33,6 +35,7 @@
 #endif
 #include <pxr/base/gf/bbox3d.h>
 #include <pxr/base/gf/range3d.h>
+#include <pxr/base/gf/vec4d.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/boundable.h>
 #include <pxr/usd/usdGeom/imageable.h>
@@ -246,6 +249,89 @@ SceneDrawBoxes::waitForList(U64 generation,
 
     return _changed.wait_for(lock, timeout, [&]() { return _list && _list->complete && (_list->generation >= generation); });
 }
+
+int
+SceneDrawBoxes::pick(const List& list,
+                     const GfMatrix4d& viewProjection,
+                     int width,
+                     int height,
+                     const GfVec2d& pixel,
+                     double markerPixels,
+                     GfVec3d* point)
+{
+    if ((width <= 0) || (height <= 0) || list.boxes.empty()) {
+        return -1;
+    }
+    const GfMatrix4d inverse = viewProjection.GetInverse();
+    const double nx = 2. * pixel[0] / width - 1.;
+    const double ny = 1. - 2. * pixel[1] / height;
+    // The ray from the near plane, at t = 0, to the far plane, at t = 1.
+    const GfVec3d origin = inverse.Transform(GfVec3d(nx, ny, -1.));
+    const GfVec3d direction = inverse.Transform(GfVec3d(nx, ny, 1.)) - origin;
+    int best = -1;
+    // Normalized device depth, which grows away from the eye along any ray in either projection.
+    double bestDepth = std::numeric_limits<double>::infinity();
+    GfVec3d bestPoint;
+
+    for (std::size_t index = 0; index < list.boxes.size(); ++index) {
+        const Box& box = list.boxes[index];
+        GfVec3d hit;
+        double depth = 0.;
+        if ((box.kind == eKindMarker) || (box.kind == eKindPending)) {
+            const GfVec3d centre(box.min);
+            const GfVec4d clip = GfVec4d(centre[0], centre[1], centre[2], 1.) * viewProjection;
+            if (clip[3] <= 0.) {
+                continue;
+            }
+            const GfVec3d ndc(clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]);
+            if ((ndc[2] < -1.) || (ndc[2] > 1.)) {
+                continue;
+            }
+            const double sx = (ndc[0] + 1.) * 0.5 * width;
+            const double sy = (1. - ndc[1]) * 0.5 * height;
+            if ((std::abs(sx - pixel[0]) > markerPixels) || (std::abs(sy - pixel[1]) > markerPixels)) {
+                continue;
+            }
+            hit = centre;
+            depth = ndc[2];
+        } else {
+            double enter = -std::numeric_limits<double>::infinity();
+            double leave = std::numeric_limits<double>::infinity();
+            bool missed = false;
+            for (int axis = 0; (axis < 3) && !missed; ++axis) {
+                const double low = box.min[axis];
+                const double high = box.max[axis];
+                if (direction[axis] == 0.) {
+                    missed = (origin[axis] < low) || (origin[axis] > high);
+                    continue;
+                }
+                double t0 = (low - origin[axis]) / direction[axis];
+                double t1 = (high - origin[axis]) / direction[axis];
+                if (t0 > t1) {
+                    std::swap(t0, t1);
+                }
+                enter = std::max(enter, t0);
+                leave = std::min(leave, t1);
+                missed = enter > leave;
+            }
+            if (missed || (enter < 0.) || (enter > 1.)) {
+                continue;
+            }
+            hit = origin + direction * enter;
+            depth = viewProjection.Transform(hit)[2];
+        }
+        if (depth < bestDepth) {
+            best = int(index);
+            bestDepth = depth;
+            bestPoint = hit;
+        }
+    }
+    if ((best >= 0) && point) {
+        *point = bestPoint;
+    }
+
+    return best;
+} // SceneDrawBoxes::pick
 
 std::vector<SdfPath>
 SceneDrawBoxes::boxedRows(const UsdStageRefPtr& stage,

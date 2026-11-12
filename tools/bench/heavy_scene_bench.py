@@ -805,7 +805,8 @@ try:
 
     def action_orbit10k(m):
         yield from clear_draw_states()
-        yield from set_draw_state(rows["root"], "bbox")
+        # Children rather than BBox, which would draw the root as a single box.
+        yield from set_draw_state(rows["root"], "children")
         sent_ms = time.time() * 1000.0
         ok = yield ("until", lambda: boxes_drawn() > 0, TIMEOUT_S)
         check(ok, "orbit10k: boxes were drawn")

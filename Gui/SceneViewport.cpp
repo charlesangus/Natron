@@ -37,6 +37,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include <QActionGroup>
@@ -602,6 +603,8 @@ const GLfloat kBoxEdges[] = {
 const GLfloat kMarkerArms[] = { -1, 0, 0, 1, 0, 0, 0, -1, 0, 0, 1, 0 };
 const int kBoxFloats = 9;
 const float kMarkerPixels = 6.f;
+// Beyond a marker's arms, so a click need not land on its one-pixel lines.
+const float kMarkerPickSlack = 2.f;
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -702,6 +705,16 @@ struct SceneViewportRenderer::Implementation {
     SceneDrawFilter::WeakPtr drawFilter;
     // The list the box buffer holds, and how many of its boxes the last frame drew.
     SceneDrawBoxes::ListPtr uploadedBoxes;
+    // What the last frame drew, which is what a click picks from.
+    SceneDrawBoxes::ListPtr drawnBoxList;
+    // Cleared by the main thread when the selection changes, as the buffer colours the boxes
+    // holding a selected prim.
+    std::atomic<bool> boxColoursValid { false };
+    std::vector<bool> boxHighlighted;
+    bool recordDrawnBoxes = false;
+    std::vector<DrawnBox> drawnBoxes;
+    // Bumped with each change of drawRules, so the guides follow them.
+    U64 drawRulesVersion = 0;
     GLuint boxProgram = 0;
     GLuint boxVao = 0;
     GLuint boxEdgeBuffer = 0;
@@ -827,6 +840,7 @@ struct SceneViewportRenderer::Implementation {
     std::shared_ptr<const StageSummary> guidesSummary;
     std::vector<SceneGuides::Guide> guides;
     bool guidesValid = false;
+    U64 guidesRulesVersion = 0;
     double guidesTimeCode = 0.;
     double guidesLength = 0.;
     std::atomic<double> guideSize { 1. };
@@ -1096,9 +1110,21 @@ struct SceneViewportRenderer::Implementation {
         const std::shared_ptr<const StageSummary> summary = getStageSummary();
         const double time = timeCode();
         const double length = guideLength();
-        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length)) {
+        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length) || (guidesRulesVersion != drawRulesVersion)) {
             const UsdStageRefPtr stage = currentStage();
-            guides = (stage && summary) ? SceneGuides::buildGuides(stage, summary->guidePrims, UsdTimeCode(time), length) : std::vector<SceneGuides::Guide>();
+            guides.clear();
+            if (stage && summary) {
+                // A Hidden row takes its cameras' and lights' guides with it.
+                std::vector<SceneGuides::GuidePrim> shown;
+                shown.reserve(summary->guidePrims.size());
+                for (const SceneGuides::GuidePrim& prim : summary->guidePrims) {
+                    if (!SceneDrawFilter::isUnderHiddenRow(drawRules, prim.path)) {
+                        shown.push_back(prim);
+                    }
+                }
+                guides = SceneGuides::buildGuides(stage, shown, UsdTimeCode(time), length);
+            }
+            guidesRulesVersion = drawRulesVersion;
             guidesSummary = summary;
             guidesTimeCode = time;
             guidesLength = length;
@@ -1662,6 +1688,9 @@ struct SceneViewportRenderer::Implementation {
             SceneDrawFilter::applyToRules(entry.delta, &drawRules);
             drawRevealBatch = entry.revealBatch;
             deltas.push_back(&entry.delta);
+        }
+        if (!queued.empty()) {
+            ++drawRulesVersion;
         }
         if (!queued.empty() && boxes) {
             boxes->setRules(drawRules);
@@ -2448,8 +2477,64 @@ struct SceneViewportRenderer::Implementation {
         return true;
     } // ensureBoxProgram
 
+    // Which boxes hold a selected prim. Boxed rows never nest, so a selected prim deep in a boxed
+    // branch lights the one box drawn for its nearest boxed ancestor.
+    void findHighlightedBoxes(const SceneDrawBoxes::List& list)
+    {
+        boxHighlighted.assign(list.boxes.size(), false);
+        if (selected.empty()) {
+            return;
+        }
+        std::unordered_set<SdfPath, SdfPath::Hash> lit;
+        for (const std::string& path : selected) {
+            if (!SdfPath::IsValidPathString(path)) {
+                continue;
+            }
+            for (SdfPath at(path); !at.IsEmpty() && !at.IsAbsoluteRootPath(); at = at.GetParentPath()) {
+                if (!lit.insert(at).second) {
+                    break;
+                }
+            }
+        }
+        for (std::size_t index = 0; index < list.boxes.size(); ++index) {
+            boxHighlighted[index] = (lit.count(list.boxes[index].path) != 0);
+        }
+    }
+
+    // The box's projected centre and screen rectangle, if its centre is in front of the eye.
+    void recordDrawnBox(const SceneGizmo::View& view,
+                        const SceneDrawBoxes::Box& box,
+                        bool highlighted)
+    {
+        static const char* const kKindNames[] = { "box", "unloaded", "marker", "pending" };
+        DrawnBox drawn;
+        GfVec2d centre;
+        if (!SceneGizmo::project(view, (GfVec3d(box.min) + GfVec3d(box.max)) * 0.5, &centre)) {
+            return;
+        }
+        drawn.path = box.path.GetString();
+        drawn.kind = kKindNames[box.kind];
+        drawn.highlighted = highlighted;
+        drawn.x = centre[0];
+        drawn.y = centre[1];
+        drawn.left = drawn.right = centre[0];
+        drawn.top = drawn.bottom = centre[1];
+        for (int corner = 0; corner < 8; ++corner) {
+            const GfVec3d at((corner & 1) ? box.max[0] : box.min[0], (corner & 2) ? box.max[1] : box.min[1], (corner & 4) ? box.max[2] : box.min[2]);
+            GfVec2d p;
+            if (SceneGizmo::project(view, at, &p)) {
+                drawn.left = std::min(drawn.left, p[0]);
+                drawn.right = std::max(drawn.right, p[0]);
+                drawn.top = std::min(drawn.top, p[1]);
+                drawn.bottom = std::max(drawn.bottom, p[1]);
+            }
+        }
+        drawnBoxes.push_back(drawn);
+    }
+
     // One draw call for the boxes and one for the markers, however many, depth-tested against the
-    // frame's depth like the guides. Unloaded rows are tinted; a pending row's marker is grey.
+    // frame's depth like the guides. Unloaded rows are tinted; a pending row's marker is grey; a
+    // box holding a selected prim takes the guides' selection colour.
     void drawBoxes(const GfFrustum& frustum,
                    int width,
                    int height)
@@ -2458,15 +2543,22 @@ struct SceneViewportRenderer::Implementation {
 
         boxesDrawn = 0;
         markersDrawn = 0;
+        drawnBoxList.reset();
+        drawnBoxes.clear();
         if (!list || list->boxes.empty() || !ensureBoxProgram()) {
             return;
         }
-        if (list != uploadedBoxes) {
+        const bool coloursValid = boxColoursValid.exchange(true);
+        if ((list != uploadedBoxes) || !coloursValid) {
+            findHighlightedBoxes(*list);
             std::vector<GLfloat> boxData;
             std::vector<GLfloat> markerData;
-            for (const SceneDrawBoxes::Box& box : list->boxes) {
+            for (std::size_t index = 0; index < list->boxes.size(); ++index) {
+                const SceneDrawBoxes::Box& box = list->boxes[index];
                 GfVec3f colour(0.55f, 0.75f, 0.95f);
-                if ((box.kind == SceneDrawBoxes::eKindUnloaded) || (box.kind == SceneDrawBoxes::eKindMarker)) {
+                if (boxHighlighted[index]) {
+                    colour = GfVec3f(1.f, 0.8f, 0.1f);
+                } else if ((box.kind == SceneDrawBoxes::eKindUnloaded) || (box.kind == SceneDrawBoxes::eKindMarker)) {
                     colour = GfVec3f(0.95f, 0.7f, 0.35f);
                 } else if (box.kind == SceneDrawBoxes::eKindPending) {
                     colour = GfVec3f(0.6f, 0.6f, 0.6f);
@@ -2485,6 +2577,13 @@ struct SceneViewportRenderer::Implementation {
         }
         if ((boxInstances == 0) && (markerInstances == 0)) {
             return;
+        }
+        drawnBoxList = list;
+        if (recordDrawnBoxes) {
+            const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+            for (std::size_t index = 0; index < list->boxes.size(); ++index) {
+                recordDrawnBox(view, list->boxes[index], boxHighlighted[index]);
+            }
         }
         // GfMatrix4d is row-major with row vectors, so its memory is what GL reads as column-major
         // with column vectors, and view * projection here is projection * view there.
@@ -2531,8 +2630,26 @@ struct SceneViewportRenderer::Implementation {
             markerInstanceBuffer = 0;
         }
         uploadedBoxes.reset();
+        drawnBoxList.reset();
         boxInstances = 0;
         markerInstances = 0;
+    }
+
+    // The drawn box or marker under the pixel (x, y) of the frustum's width x height view, -1 for
+    // none. Needs stageMutex.
+    int pickBox(const GfFrustum& frustum,
+                int width,
+                int height,
+                int x,
+                int y,
+                GfVec3d* point) const
+    {
+        if (!drawnBoxList) {
+            return -1;
+        }
+
+        return SceneDrawBoxes::pick(*drawnBoxList, frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix(), width, height,
+                                    GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack, point);
     }
 
     // Last, so that it goes first: its worker reads the members above.
@@ -2874,6 +2991,18 @@ int
 SceneViewportRenderer::getDrawnMarkerCount() const
 {
     return _imp->markersDrawn;
+}
+
+void
+SceneViewportRenderer::setRecordDrawnBoxes(bool record)
+{
+    _imp->recordDrawnBoxes = record;
+}
+
+const std::vector<SceneViewportRenderer::DrawnBox>&
+SceneViewportRenderer::getDrawnBoxes() const
+{
+    return _imp->drawnBoxes;
 }
 
 SceneViewportRenderer::DrawFilterStats
@@ -3642,6 +3771,7 @@ SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
 {
     _imp->selected = paths;
     _imp->guideBatchesValid = false;
+    _imp->boxColoursValid = false;
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
     _imp->engineSelection = paths;
     _imp->engineSelectionDirty = true;
@@ -4156,6 +4286,8 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     _imp->feedBoxes();
     _imp->boxesDrawn = 0;
     _imp->markersDrawn = 0;
+    _imp->drawnBoxList.reset();
+    _imp->drawnBoxes.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
@@ -4298,6 +4430,8 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     _imp->feedBoxes();
     _imp->boxesDrawn = 0;
     _imp->markersDrawn = 0;
+    _imp->drawnBoxList.reset();
+    _imp->drawnBoxes.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
@@ -4330,8 +4464,9 @@ SceneViewportRenderer::pick(int x,
         return std::string();
     }
     if (_imp->rendererId != kRenderDelegateStormId) {
-        std::string guidePath;
-        double guideDepth = 1.;
+        // The guide or box nearer the eye, and its window depth.
+        std::string overlayPath;
+        double overlayDepth = 1.;
         {
             std::unique_lock<std::shared_mutex> lock;
             if (!_imp->tryLockExclusive(&lock)) {
@@ -4339,16 +4474,25 @@ SceneViewportRenderer::pick(int x,
 
                 return std::string();
             }
+            const GfFrustum frustum = _imp->computeFrustum(width, height);
+            const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+            const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
             if (_imp->showGuides) {
-                const GfFrustum frustum = _imp->computeFrustum(width, height);
-                const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
-                const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
                 const SceneGizmo::View view(viewMatrix, projection, width, height);
                 GfVec3d guidePoint;
                 const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
                 if (guide >= 0) {
-                    guidePath = _imp->guides[guide].path;
-                    guideDepth = ((viewMatrix * projection).Transform(guidePoint)[2] + 1.) * 0.5;
+                    overlayPath = _imp->guides[guide].path;
+                    overlayDepth = ((viewMatrix * projection).Transform(guidePoint)[2] + 1.) * 0.5;
+                }
+            }
+            GfVec3d boxPoint;
+            const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+            if (box >= 0) {
+                const double boxDepth = ((viewMatrix * projection).Transform(boxPoint)[2] + 1.) * 0.5;
+                if (overlayPath.empty() || (boxDepth < overlayDepth)) {
+                    overlayPath = _imp->drawnBoxList->boxes[box].path.GetString();
+                    overlayDepth = boxDepth;
                 }
             }
         }
@@ -4356,19 +4500,19 @@ SceneViewportRenderer::pick(int x,
         // viewer lock itself.
         const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
         if (!frame || (frame->width <= 0) || (frame->height <= 0)) {
-            return guidePath;
+            return overlayPath;
         }
         const int fx = (int)((x + 0.5) * frame->width / width);
         const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
         const std::string prim = _imp->progressive->pick(*frame, fx, fy);
-        if (!guidePath.empty() && !prim.empty()) {
+        if (!overlayPath.empty() && !prim.empty()) {
             const std::size_t pixel = (std::size_t)fy * (std::size_t)frame->width + (std::size_t)fx;
-            if ((pixel < frame->depth.size()) && (frame->depth[pixel] < guideDepth)) {
+            if ((pixel < frame->depth.size()) && (frame->depth[pixel] < overlayDepth)) {
                 return prim;
             }
         }
 
-        return guidePath.empty() ? prim : guidePath;
+        return overlayPath.empty() ? prim : overlayPath;
     }
     std::unique_lock<std::shared_mutex> lock;
     if (!_imp->tryLockExclusive(&lock)) {
@@ -4396,21 +4540,34 @@ SceneViewportRenderer::pick(int x,
                                                         stage->GetPseudoRoot(), _imp->renderParams(), &results)
         && !results.empty();
 
-    int guide = -1;
-    GfVec3d guidePoint;
-    if (_imp->showGuides) {
-        const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
-        guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
+    // The nearer wins: depth is -z in the camera's space, for either projection. A guide wins a
+    // tie, then a box.
+    const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+    std::string path;
+    double nearest = 0.;
+    if (hitPrim) {
+        path = results.front().hitPrimPath.GetString();
+        nearest = viewMatrix.Transform(results.front().hitPoint)[2];
     }
-    if (guide >= 0) {
-        // The nearer wins: depth is -z in the camera's space, for either projection.
-        const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
-        if (!hitPrim || (viewMatrix.Transform(guidePoint)[2] >= viewMatrix.Transform(results.front().hitPoint)[2])) {
-            return _imp->guides[guide].path;
+    GfVec3d boxPoint;
+    const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+    if (box >= 0) {
+        const double z = viewMatrix.Transform(boxPoint)[2];
+        if (path.empty() || (z >= nearest)) {
+            path = _imp->drawnBoxList->boxes[box].path.GetString();
+            nearest = z;
+        }
+    }
+    if (_imp->showGuides) {
+        const SceneGizmo::View view(viewMatrix, frustum.ComputeProjectionMatrix(), width, height);
+        GfVec3d guidePoint;
+        const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
+        if ((guide >= 0) && (path.empty() || (viewMatrix.Transform(guidePoint)[2] >= nearest))) {
+            path = _imp->guides[guide].path;
         }
     }
 
-    return hitPrim ? results.front().hitPrimPath.GetString() : std::string();
+    return path;
 }
 
 std::vector<std::string>
@@ -7243,6 +7400,7 @@ SceneViewport::paintGL()
         setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     }
     _imp->renderer.setRecordDrawnGuides(property("natronSceneRecordGuides").toBool());
+    _imp->renderer.setRecordDrawnBoxes(property("natronSceneRecordBoxes").toBool());
     SceneViewportRenderer::RenderStatusEnum status = SceneViewportRenderer::eRenderStatusBusy;
     if (_imp->usesRenderThread && (_imp->renderer.getActiveRendererId() != kRenderDelegateStormId)) {
         // The delegate's frames are made on the refinement's thread, and drawing one needs no
@@ -7327,6 +7485,12 @@ SceneViewport::paintGL()
             guides.push_back(QVariantList { QString::fromStdString(guide.path), QString::fromStdString(guide.kind), guide.x / dpr, guide.y / dpr });
         }
         setProperty("natronSceneGuides", guides);
+        QVariantList drawnBoxes;
+        for (const SceneViewportRenderer::DrawnBox& box : _imp->renderer.getDrawnBoxes()) {
+            drawnBoxes.push_back(QVariantList { QString::fromStdString(box.path), QString::fromStdString(box.kind), box.highlighted,
+                                                box.x / dpr, box.y / dpr, box.left / dpr, box.top / dpr, box.right / dpr, box.bottom / dpr });
+        }
+        setProperty("natronSceneBoxes", drawnBoxes);
     }
 
     QPainter painter(this);

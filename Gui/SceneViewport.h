@@ -299,6 +299,26 @@ public:
     int getDrawnBoxCount() const;
     int getDrawnMarkerCount() const;
 
+    // A box or marker the last render drew: its row, kind (box, unloaded, marker or pending),
+    // whether it holds a selected prim, its projected centre and the screen rectangle of its
+    // corners, in pixels counted from the top left, for scripts to aim at.
+    struct DrawnBox {
+        std::string path;
+        std::string kind;
+        bool highlighted = false;
+        double x = 0.;
+        double y = 0.;
+        double left = 0.;
+        double top = 0.;
+        double right = 0.;
+        double bottom = 0.;
+    };
+
+    // Off by default: building the records costs nine projections per box.
+    void setRecordDrawnBoxes(bool record);
+
+    const std::vector<DrawnBox>& getDrawnBoxes() const;
+
     // Null unless NATRON_DRAW_STATE_TIMING is 1.
     SceneDrawTiming* drawTiming() const;
 
@@ -676,8 +696,8 @@ public:
 
     /**
      * @brief The path of the prim drawn nearest to the pixel (x, y), counted from the top left of
-     * a width x height view, or empty if none is: a guide within a few pixels wins over a prim
-     * behind it. Needs the context of render() current.
+     * a width x height view, or empty if none is: a guide within a few pixels, or a boxed row's box
+     * or marker, wins over a prim behind it. Needs the context of render() current.
      **/
     std::string pick(int x, int y, int width, int height, bool* busy = nullptr);
 

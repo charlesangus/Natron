@@ -399,7 +399,7 @@ whose engine lost the filter fails rather than reporting a cheap nothing.
 | `reveal_cancel` | Starts a reveal at 50 prims per frame, then `bbox` after three frames' worth | `cancel_total_ms`, `cancel_was_active`, `cancel_stopped` |
 | `noedit` | Sets, clears, reveals and cancels on the branch | `stage_edits`, budget 0, counting stage change notices and edit counts |
 | `sibling_shot` | Screen grabs around one change on the sibling row, the branch and the root as control | `*_shot_changed_*`, `*_shot_frame_coverage`, `shot_reading`; `control_changed_pixels` at least 1 |
-| `orbit10k`, `boxes_shot` | `bbox` on the root, then an orbit or a grab with only boxes drawn | `orbit_fps`, `boxes_first_drawn_ms`; skipped until the viewer publishes `natronSceneDrawBoxes` |
+| `orbit10k`, `boxes_shot` | `children` (orbit10k) or `bbox` (boxes_shot) on the root, then an orbit or a grab with only boxes drawn | `orbit_fps`, `boxes_first_drawn_ms`; skipped until the viewer publishes `natronSceneDrawBoxes` |
 | `draw_budget` | `bbox` then clear on the sibling row and on the widest row, `BENCH_BUDGET_REPEATS` times (default 2), then once more each with a trace | `draw_changes`, one entry per change; `sibling_picture_ms_max`, `wide_picture_ms_max`; `traced_stall_ms` |
 
 `frame_ms` is `total_ms` less `apply_ms`: from the call to the image that shows the change, without the

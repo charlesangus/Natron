@@ -1040,19 +1040,6 @@ cyclesScriptNames()
         { "cycles:integrator:volume_max_steps", "cyclesVolumeMaxSteps" },
         { "cycles:integrator:volume_ray_marching", "cyclesVolumeRayMarching" },
         { "cycles:integrator:volume_step_rate", "cyclesVolumeStepRate" },
-        { "cycles:sample_offset", "cyclesSampleOffset" },
-        { "cycles:samples", "cyclesSamples" },
-        { "cycles:time_limit", "cyclesTimeLimit" },
-    };
-
-    return names;
-}
-
-// The script name of each film and background socket's knob, which no table lays out.
-const std::map<std::string, std::string>&
-cyclesOtherScriptNames()
-{
-    static const std::map<std::string, std::string> names = {
         { "cycles:background:lightgroup", "cyclesLightgroup" },
         { "cycles:background:transparent", "cyclesTransparent" },
         { "cycles:background:transparent_glass", "cyclesTransparentGlass" },
@@ -1074,6 +1061,9 @@ cyclesOtherScriptNames()
         { "cycles:film:show_active_pixels", "cyclesShowActivePixels" },
         { "cycles:film:use_approximate_shadow_catcher", "cyclesUseApproximateShadowCatcher" },
         { "cycles:film:use_sample_count", "cyclesUseSampleCount" },
+        { "cycles:sample_offset", "cyclesSampleOffset" },
+        { "cycles:samples", "cyclesSamples" },
+        { "cycles:time_limit", "cyclesTimeLimit" },
     };
 
     return names;
@@ -1091,7 +1081,7 @@ cyclesLayout()
 {
     static const std::vector<CyclesGroupLayout> layout = {
         { "cyclesSampling", "cycles", true, { "cyclesSamples", "cyclesUseAdaptiveSampling", "cyclesAdaptiveThreshold", "cyclesAdaptiveMinSamples", "cyclesTimeLimit", "cyclesSeed" } },
-        { "cyclesDenoise", "cycles", true, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu" } },
+        { "cyclesDenoise", "cycles", true, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu", "cyclesDenoisingPassFollowReflections", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" } },
         { "cyclesLightPaths", "cycles", true, { "cyclesBounces", "cyclesClamping", "cyclesCaustics", "cyclesFastGi" } },
         { "cyclesBounces", "cyclesLightPaths", false, { "cyclesMaxBounce", "cyclesMaxDiffuseBounce", "cyclesMaxGlossyBounce", "cyclesMaxTransmissionBounce", "cyclesMaxVolumeBounce", "cyclesTransparentMaxBounce" } },
         { "cyclesClamping", "cyclesLightPaths", false, { "cyclesSampleClampDirect", "cyclesSampleClampIndirect" } },
@@ -1101,6 +1091,9 @@ cyclesLayout()
         { "cyclesVolumes", "cycles", false, { "cyclesVolumeRayMarching", "cyclesVolumeMaxSteps", "cyclesVolumeStepRate" } },
         { "cyclesPathGuiding", "cycles", false, { "cyclesUseGuiding", "cyclesDeterministicGuiding", "cyclesUseSurfaceGuiding", "cyclesSurfaceGuidingProbability", "cyclesUseVolumeGuiding", "cyclesVolumeGuidingProbability", "cyclesGuidingTrainingSamples", "cyclesUseGuidingDirectLight", "cyclesUseGuidingMisWeights", "cyclesGuidingDistributionType", "cyclesGuidingDirectionalSamplingType", "cyclesGuidingRoughnessThreshold" } },
         { "cyclesLightContributions", "cycles", false, { "cyclesUseDirectLight", "cyclesUseIndirectLight", "cyclesUseDiffuse", "cyclesUseGlossy", "cyclesUseTransmission", "cyclesUseEmission" } },
+        { "cyclesFilm", "cycles", false, { "cyclesExposure", "cyclesFilterType", "cyclesFilterWidth", "cyclesTransparent", "cyclesTransparentGlass", "cyclesTransparentRoughnessThreshold", "cyclesUseApproximateShadowCatcher" } },
+        { "cyclesPasses", "cycles", false, { "cyclesMistStart", "cyclesMistDepth", "cyclesMistFalloff", "cyclesCryptomattePasses", "cyclesCryptomatteDepth", "cyclesPassAlphaThreshold", "cyclesDisplayPass", "cyclesShowActivePixels", "cyclesUseSampleCount" } },
+        { "cyclesWorld", "cycles", false, { "cyclesUseShader", "cyclesVisibility", "cyclesLightgroup" } },
         { "cyclesAdvanced", "cycles", false, { "cyclesSamplingPattern", "cyclesScramblingDistance", "cyclesAaSamples", "cyclesMinBounce", "cyclesTransparentMinBounce", "cyclesMotionBlur", "cyclesUsePixelJitter", "cyclesUseCustomPixelJitterSample", "cyclesCustomPixelJitterSample", "cyclesSampleSubset" } },
         { "cyclesSampleSubset", "cyclesAdvanced", false, { "cyclesSampleOffset", "cyclesUseSampleSubset", "cyclesSampleSubsetOffset", "cyclesSampleSubsetLength" } },
     };
@@ -1363,13 +1356,11 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
         }
         reached[reach.first] = reach.second;
     }
-    std::map<std::string, std::string> expected = cyclesScriptNames();
-    expected.insert(cyclesOtherScriptNames().begin(), cyclesOtherScriptNames().end());
-    EXPECT_EQ(expected, reached);
+    EXPECT_EQ(cyclesScriptNames(), reached);
 }
 
-// A film or background setting the Cycles page has no table entry for still reaches the delegate,
-// which reports it back from the socket it names.
+// Film and background settings reach the delegate like the integrator ones, and it reports them back
+// from the socket they name.
 TEST_F(USDRenderCyclesTest, FilmAndBackgroundSettingsReachTheDelegate)
 {
     if (!cyclesOrSkip()) {

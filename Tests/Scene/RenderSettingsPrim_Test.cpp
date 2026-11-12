@@ -239,6 +239,8 @@ TEST_F(RenderSettingsPrimTest, CyclesAttributesAndDomeVisibilityAreSent)
     EXPECT_EQ(1u, storm.size());
     EXPECT_EQ(VtValue(false), storm["domeLightCameraVisibility"]);
     EXPECT_EQ(std::string("storm:domeLightCameraVisibility"), RenderSettingsPrim::attributeName(kRenderDelegateStormId, "domeLightCameraVisibility"));
+    // Only Storm reads the bare key: another delegate's attribute of that name keeps its namespace.
+    EXPECT_EQ(std::string("cycles:domeLightCameraVisibility"), RenderSettingsPrim::keyFromAttribute("HdCyclesPlugin", "cycles:domeLightCameraVisibility"));
 }
 
 // An override path beats the stage's renderSettingsPrimPath; with neither there is no prim, and a

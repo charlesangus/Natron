@@ -47,15 +47,17 @@ startsWithNamespace(const std::string& name,
     return (name.size() > ns.size() + 1) && (name.compare(0, ns.size(), ns) == 0) && (name[ns.size()] == ':');
 }
 
-// The keys the delegate declares and the curated groups bind, and the Hydra keys any delegate may
-// read without declaring them, with the type each is sent as.
+// The keys the delegate declares and the curated groups bind, and the Hydra keys it reads without
+// declaring them, with the type each is sent as.
 std::map<std::string, VtValue>
 knownKeys(const std::string& rendererId)
 {
     std::map<std::string, VtValue> keys;
 
     // Storm's skydome reads it from the delegate's settings, though Storm declares no such setting.
-    keys[HdRenderSettingsTokens->domeLightCameraVisibility.GetString()] = VtValue(true);
+    if (RenderDelegates::isStorm(rendererId)) {
+        keys[HdRenderSettingsTokens->domeLightCameraVisibility.GetString()] = VtValue(true);
+    }
     if (const RenderSettingsKnobs::Curated* curated = RenderSettingsKnobs::curatedFor(rendererId)) {
         for (const RenderSettingsKnobs::CuratedSetting& c : curated->settings) {
             keys[c.key] = c.defaultValue;

@@ -720,14 +720,22 @@ TEST_F(USDRenderCyclesTest, EditedStageRendersAsWithAFreshEngine)
     ASSERT_TRUE(cyclesRequest(transform, &reused, &request));
     HydraRender::Result before;
     std::string error;
+    const std::chrono::steady_clock::time_point firstStart = std::chrono::steady_clock::now();
     ASSERT_TRUE(HydraRender::render(request, &before, &error)) << error;
+    const double firstWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - firstStart).count();
 
     // The near cube's front face, two units wide and nine from the camera, moves from the centre
     // to centre on x = -1: (16, 32) was off it and is now on it, (40, 32) the other way round.
     translate->setValue(-1., ViewSpec::all(), 0);
     ASSERT_TRUE(cyclesRequest(transform, &reused, &request));
     HydraRender::Result edited;
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    const std::chrono::steady_clock::time_point editedStart = std::chrono::steady_clock::now();
     ASSERT_TRUE(HydraRender::render(request, &edited, &error)) << error;
+    const double editedWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - editedStart).count();
+    // A restart that went unseen would have waited two seconds and made the engine again.
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_LT(editedWall, firstWall + 1.) << "the edited render took " << editedWall << " s, the first " << firstWall << " s";
     request.owner = &fresh;
     HydraRender::Result reference;
     ASSERT_TRUE(HydraRender::render(request, &reference, &error)) << error;
@@ -746,6 +754,47 @@ TEST_F(USDRenderCyclesTest, EditedStageRendersAsWithAFreshEngine)
     EXPECT_EQ(0.f, edited.rgba[movedOff * 4 + 3]);
     const std::size_t differing = differingPixels(edited.rgba, reference.rgba);
     EXPECT_LE((double)differing, kDifferingFraction * (double)pixels) << differing << " of " << pixels << " pixels differ from a fresh engine's render";
+}
+
+// A stage with nothing authored in time, rendered again at another time and then as it was, shows
+// the delegate nothing new: the engine renders on, with no wait for a restart that never comes.
+TEST_F(USDRenderCyclesTest, UnchangedStageRendersAgainWithoutARestartWait)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    HydraRender::releaseAllCpuEngines();
+    NodePtr reader;
+    NodePtr node = createGraph(&reader);
+    ASSERT_TRUE(bool(node));
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(cyclesRequest(reader, &owner, &request));
+    HydraRender::Result first;
+    std::string error;
+    ASSERT_TRUE(HydraRender::render(request, &first, &error)) << error;
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    ASSERT_EQ(pixels * 4, first.rgba.size());
+
+    request.time = PXR_NS::UsdTimeCode(2.);
+    HydraRender::Result later;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(HydraRender::render(request, &later, &error)) << error;
+    const double laterWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_LT(laterWall, 1.) << "the render at another time took " << laterWall << " s";
+    ASSERT_EQ(pixels * 4, later.rgba.size());
+    EXPECT_EQ(0u, differingPixels(first.rgba, later.rgba));
+
+    HydraRender::Result again;
+    start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(HydraRender::render(request, &again, &error)) << error;
+    const double againWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_LT(againWall, 1.) << "the unchanged render took " << againWall << " s";
+    ASSERT_EQ(pixels * 4, again.rgba.size());
+    EXPECT_EQ(0u, differingPixels(later.rgba, again.rgba));
 }
 
 // Records rgba as the golden case when NATRON_GOLDEN_RECORD_DIR is set, otherwise compares it to the
@@ -1052,7 +1101,6 @@ cyclesScriptNames()
         { "cycles:film:cryptomatte_passes", "cyclesCryptomattePasses" },
         { "cycles:film:denoising_pass_follow_reflections", "cyclesDenoisingPassFollowReflections" },
         { "cycles:film:denoising_pass_use_albedo_roughness_weighting", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" },
-        { "cycles:film:display_pass", "cyclesDisplayPass" },
         { "cycles:film:exposure", "cyclesExposure" },
         { "cycles:film:filter_type", "cyclesFilterType" },
         { "cycles:film:filter_width", "cyclesFilterWidth" },
@@ -1060,7 +1108,6 @@ cyclesScriptNames()
         { "cycles:film:mist_falloff", "cyclesMistFalloff" },
         { "cycles:film:mist_start", "cyclesMistStart" },
         { "cycles:film:pass_alpha_threshold", "cyclesPassAlphaThreshold" },
-        { "cycles:film:show_active_pixels", "cyclesShowActivePixels" },
         { "cycles:film:use_approximate_shadow_catcher", "cyclesUseApproximateShadowCatcher" },
         { "cycles:sample_offset", "cyclesSampleOffset" },
         { "cycles:samples", "cyclesSamples" },
@@ -1093,7 +1140,7 @@ cyclesLayout()
         { "cyclesPathGuiding", "cycles", false, { "cyclesUseGuiding", "cyclesDeterministicGuiding", "cyclesUseSurfaceGuiding", "cyclesSurfaceGuidingProbability", "cyclesUseVolumeGuiding", "cyclesVolumeGuidingProbability", "cyclesGuidingTrainingSamples", "cyclesUseGuidingDirectLight", "cyclesUseGuidingMisWeights", "cyclesGuidingDistributionType", "cyclesGuidingDirectionalSamplingType", "cyclesGuidingRoughnessThreshold" } },
         { "cyclesLightContributions", "cycles", false, { "cyclesUseDirectLight", "cyclesUseIndirectLight", "cyclesUseDiffuse", "cyclesUseGlossy", "cyclesUseTransmission", "cyclesUseEmission" } },
         { "cyclesFilm", "cycles", false, { "cyclesExposure", "cyclesFilterType", "cyclesFilterWidth", "cyclesTransparent", "cyclesTransparentGlass", "cyclesTransparentRoughnessThreshold", "cyclesUseApproximateShadowCatcher" } },
-        { "cyclesPasses", "cycles", false, { "cyclesMistStart", "cyclesMistDepth", "cyclesMistFalloff", "cyclesCryptomattePasses", "cyclesCryptomatteDepth", "cyclesPassAlphaThreshold", "cyclesDisplayPass", "cyclesShowActivePixels" } },
+        { "cyclesPasses", "cycles", false, { "cyclesMistStart", "cyclesMistDepth", "cyclesMistFalloff", "cyclesCryptomattePasses", "cyclesCryptomatteDepth", "cyclesPassAlphaThreshold" } },
         { "cyclesWorld", "cycles", false, { "cyclesUseShader", "cyclesVisibility", "cyclesLightgroup" } },
         { "cyclesAdvanced", "cycles", false, { "cyclesSamplingPattern", "cyclesScramblingDistance", "cyclesAaSamples", "cyclesMinBounce", "cyclesTransparentMinBounce", "cyclesMotionBlur", "cyclesUsePixelJitter", "cyclesUseCustomPixelJitterSample", "cyclesCustomPixelJitterSample", "cyclesSampleSubset" } },
         { "cyclesSampleSubset", "cyclesAdvanced", false, { "cyclesSampleOffset", "cyclesUseSampleSubset", "cyclesSampleSubsetOffset", "cyclesSampleSubsetLength" } },
@@ -1361,7 +1408,7 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
         EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
         reached[reach.first] = reach.second;
     }
-    EXPECT_EQ(std::set<std::string>({ "cycles:film:use_sample_count" }), setByNatron);
+    EXPECT_EQ(std::set<std::string>({ "cycles:film:display_pass", "cycles:film:show_active_pixels", "cycles:film:use_sample_count" }), setByNatron);
     EXPECT_EQ(cyclesScriptNames(), reached);
 }
 

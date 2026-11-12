@@ -62,6 +62,18 @@ ranged(RenderSettingsKnobs::CuratedSetting s,
 }
 
 RenderSettingsKnobs::CuratedSetting
+bounded(RenderSettingsKnobs::CuratedSetting s,
+        double minimum,
+        double maximum)
+{
+    s = ranged(s, minimum, maximum);
+    s.hasMaximum = true;
+    s.maximum = maximum;
+
+    return s;
+}
+
+RenderSettingsKnobs::CuratedSetting
 menu(RenderSettingsKnobs::CuratedSetting s,
      const std::vector<RenderSettingsKnobs::Choice>& choices)
 {
@@ -104,7 +116,7 @@ make()
     c.groups.push_back(groupSpec("pathGuiding", "", false, "Learns where light comes from and steers rays towards it. This build of Cycles has no path guiding, so nothing in this group has any effect."));
     c.groups.push_back(groupSpec("lightContributions", "", false, "Switches kinds of light on and off to break down or debug an image. Leave them all on for a correct render."));
     c.groups.push_back(groupSpec("film", "", false, "How the image is exposed and filtered, and whether the background is transparent."));
-    c.groups.push_back(groupSpec("passes", "", false, "Extra render passes and the pass shown: mist depth, Cryptomatte, and alpha handling."));
+    c.groups.push_back(groupSpec("passes", "", false, "Extra render passes: mist depth, Cryptomatte, and alpha handling."));
     c.groups.push_back(groupSpec("world", "", false, "How the world background takes part in the render: whether it shines, which rays see it, and its light group."));
     c.groups.push_back(groupSpec("advanced", "", false, "Rarely needed controls of the sampling pattern, path lengths and camera rays. The defaults suit most renders."));
     c.groups.push_back(groupSpec("sampleSubset", "advanced", false, "Renders only part of the sample sequence, for example to split a render across runs. Only Sample Offset has any effect."));
@@ -204,7 +216,7 @@ make()
     add("film", setting("cycles:film:exposure", "exposure", "Scales the brightness of the whole image before it is written. 1 leaves it unchanged, 2 is twice as bright.", VtValue(1.0f)));
     add("film", menu(setting("cycles:film:filter_type", "filterType", "The shape of the filter that blends samples across neighbouring pixels. Box is sharpest and noisiest, Gaussian is softer, and Blackman-Harris is in between.", VtValue(0)), { { "box", "Box", VtValue(0) }, { "gaussian", "Gaussian", VtValue(1) }, { "blackman_harris", "Blackman-Harris", VtValue(2) } }));
     add("film", setting("cycles:film:filter_width", "filterWidth", "The width of the pixel filter in pixels. Wider is softer and less noisy; 1.5 is a common choice.", VtValue(1.0f)));
-    add("film", setting("cycles:background:transparent", "transparent", "Hides the world background from the camera so those pixels are transparent, while it still lights the scene. USD Render Settings' Transparent Background authors the same setting and wins when it is on.", VtValue(false)));
+    add("film", setting("cycles:background:transparent", "transparent", "Hides the world background from the camera so those pixels are transparent, while it still lights the scene. USD Render Settings' Transparent Background authors the same setting and wins when it is on. Off keeps the default Cycles picks from the scene's lights: a dome light shows behind the scene, and a scene without one, lightless scenes included, renders transparent.", VtValue(false)));
     add("film", setting("cycles:background:transparent_glass", "transparentGlass", "Makes glass show as transparent in the alpha channel where the background is visible through it. It needs Transparent.", VtValue(false)));
     add("film", setting("cycles:background:transparent_roughness_threshold", "transparentRoughnessThreshold", "Glass rougher than this shows the background through it as opaque rather than transparent. It needs Transparent Glass; 0 treats all glass as transparent.", VtValue(0.0f)));
     add("film", setting("cycles:film:use_approximate_shadow_catcher", "useApproximateShadowCatcher", "Estimates shadow catcher shadows from the lighting rather than tracing them exactly. It is faster and noisier than the default.", VtValue(false)));
@@ -212,11 +224,9 @@ make()
     add("passes", setting("cycles:film:mist_start", "mistStart", "The distance from the camera at which the mist pass starts to fade in, in scene units.", VtValue(0.0f)));
     add("passes", setting("cycles:film:mist_depth", "mistDepth", "The distance over which the mist pass goes from clear to full, in scene units.", VtValue(100.0f)));
     add("passes", setting("cycles:film:mist_falloff", "mistFalloff", "How the mist pass grows with distance. 1 is linear, higher stays clear for longer, and lower fills in sooner.", VtValue(1.0f)));
-    add("passes", setting("cycles:film:cryptomatte_passes", "cryptomattePasses", "Which Cryptomatte ID passes are rendered, as the sum of Object 1, Material 2, Asset 4 and Accurate 8, for picking out objects, materials or assets afterwards. 0 renders none.", VtValue(0)));
+    add("passes", bounded(setting("cycles:film:cryptomatte_passes", "cryptomattePasses", "Which Cryptomatte ID passes are rendered, as the sum of Object 1, Material 2, Asset 4 and Accurate 8, for picking out objects, materials or assets afterwards. 0 renders none.", VtValue(0)), 0, 15));
     add("passes", setting("cycles:film:cryptomatte_depth", "cryptomatteDepth", "How many overlapping IDs a Cryptomatte pixel can hold. Each level adds one ID per pixel.", VtValue(0)));
     add("passes", setting("cycles:film:pass_alpha_threshold", "passAlphaThreshold", "The alpha above which a pixel counts as covered in the data passes, such as depth and normals. Lower includes more soft edges.", VtValue(0.5f)));
-    add("passes", setting("cycles:film:display_pass", "displayPass", "The number of the pass the render shows instead of the combined image, as Cycles numbers its pass types. 1 is Combined.", VtValue(1)));
-    add("passes", setting("cycles:film:show_active_pixels", "showActivePixels", "Marks the pixels adaptive sampling is still working on. It is for checking Adaptive Threshold, not for final frames.", VtValue(false)));
 
     add("world", setting("cycles:background:use_shader", "useShader", "Lets the world shader light the scene and show behind it. Off gives a black world.", VtValue(true)));
     add("world", setting("cycles:background:visibility", "visibility", "Which kinds of ray can see the world, as the sum of Camera 1, Transmission 2, Diffuse 4, Glossy 8, Volume Scatter 16 and Shadow 96. The default of 127 shows it to all of them.", VtValue(127u)));
@@ -275,6 +285,10 @@ make()
 
     // Cycles sets this from its tile count on every sync, so a value sent here is overwritten.
     c.excludedKeys.push_back("cycles:film:use_sample_count");
+    // Only Cycles' display driver reads these, and it runs on Windows only: Natron reads every
+    // pass through the output driver, by name, as these leave it.
+    c.excludedKeys.push_back("cycles:film:display_pass");
+    c.excludedKeys.push_back("cycles:film:show_active_pixels");
 
     return c;
 } // make

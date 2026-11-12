@@ -74,7 +74,10 @@
 #include <pxr/imaging/hgi/texture.h>
 #include <pxr/imaging/hgi/tokens.h>
 #include <pxr/imaging/hgiGL/texture.h>
+#include <pxr/usd/sdf/layer.h>
+#include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/tokens.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
 #ifdef NATRON_HYDRARENDER_RESTORE_EMIT
@@ -177,6 +180,30 @@ clockOf(const VtDictionary& stats)
     return -1.;
 }
 
+// Whether a layer the stage composes authors time samples, splines or value clips. Read from the
+// layers, without composing: a stage with none shows the delegate nothing new at another time.
+bool
+mayVaryInTime(const UsdStageRefPtr& stage)
+{
+    for (const SdfLayerHandle& layer : stage->GetUsedLayers()) {
+        if (!layer) {
+            continue;
+        }
+        if (!layer->ListAllTimeSamples().empty()) {
+            return true;
+        }
+        bool varies = false;
+        layer->Traverse(SdfPath::AbsoluteRootPath(), [&](const SdfPath& path) {
+            varies = varies || layer->HasField(path, SdfFieldKeys->Spline) || layer->HasField(path, UsdTokens->clips) || layer->HasField(path, UsdTokens->clipSets);
+        });
+        if (varies) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /**
  * Whether a delegate whose render restarted has shown since, in its progress, that it began
  * rendering again. Until it does its buffers may hold the pixels of before, and its word that it
@@ -185,10 +212,11 @@ clockOf(const VtDictionary& stats)
  **/
 class RestartWatch {
 public:
-    // An engine that has not rendered has no pixels to mistake for the new render's.
-    void restart(bool freshEngine)
+    // Seen from the start when nothing could be mistaken for the new render's: an engine that has
+    // not rendered has no pixels from before, and a delegate that is not watched is trusted.
+    void restart(bool seen)
     {
-        _seen = freshEngine;
+        _seen = seen;
         _samplesAtRestart = -1;
         _clockAtRestart = -1.;
         _clockFallen = false;
@@ -228,6 +256,22 @@ public:
     bool seen() const
     {
         return _seen;
+    }
+
+    // Whether the delegate's clock fell since the restart: its session took the restart, and may
+    // spend long syncing a heavy stage before its first sample; making it again would only begin
+    // that sync over.
+    bool restarting() const
+    {
+        return _clockFallen;
+    }
+
+    // Whether a delegate's progress is known to show its restarts: Cycles' samples and clock start
+    // over. MoonRay's progress carries no sample count, and a watch waiting on a clock that does
+    // not fall would make its engine again for nothing.
+    static bool watches(const std::string& renderer)
+    {
+        return CyclesAovs::isCycles(renderer);
     }
 
 private:
@@ -428,6 +472,12 @@ struct EngineEntry {
     // found since the stage or the delegate last changed.
     std::string supportWarning;
     bool supportChecked = false;
+    // Whether the stage authors values that change in time, found at the stage edit and write
+    // counts beside it; unknown until a render at another time asks.
+    bool timeVarying = false;
+    bool timeVaryingKnown = false;
+    U64 timeVaryingEdits = 0;
+    U64 timeVaryingWrites = 0;
     // When the entry last rendered, by the thread's render serial, for the LRU.
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
@@ -1339,6 +1389,22 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
         return &entry;
     }
+    // Cycles shows a restart in its progress only once a change reaches it: a request changing
+    // nothing it sees would wait out kRestartUnseen for one, then make the engine again.
+    bool watchRestart = false;
+    if (!freshEngine && RestartWatch::watches(renderer)) {
+        watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height);
+        if (!watchRestart && (entry.time != request.time)) {
+            const U64 edits = entry.stage->getEditCount();
+            if (!entry.timeVaryingKnown || (entry.timeVaryingEdits != edits) || (entry.timeVaryingWrites != writeCount)) {
+                entry.timeVarying = mayVaryInTime(stage);
+                entry.timeVaryingKnown = true;
+                entry.timeVaryingEdits = edits;
+                entry.timeVaryingWrites = writeCount;
+            }
+            watchRestart = entry.timeVarying;
+        }
+    }
     entry.rendered = false;
     entry.idsDecoded = false;
     entry.primId.clear();
@@ -1384,8 +1450,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
         std::chrono::steady_clock::time_point restarted = started;
         RestartWatch restartWatch;
-        restartWatch.restart(freshEngine);
-        if (!freshEngine) {
+        restartWatch.restart(!watchRestart);
+        if (watchRestart) {
             restartWatch.before(engine->GetRenderStats(), 0);
         }
         for (;;) {
@@ -1430,7 +1496,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 return nullptr;
             }
             const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-            if (!restartSeen && (now - restarted >= kRestartUnseen)) {
+            if (!restartSeen && !restartWatch.restarting() && (now - restarted >= kRestartUnseen)) {
                 // A new engine has no pixels from before to mistake for this render's.
                 if (!makeEngine(entry, request, renderer, settings, cancel, error)) {
                     return nullptr;
@@ -3180,7 +3246,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         const Clock::time_point now = Clock::now();
         const bool restartSeen = restartWatch.after(samples, clock);
         if (!restartSeen) {
-            if (now - restartTime >= kRestartUnseen) {
+            if (!restartWatch.restarting() && (now - restartTime >= kRestartUnseen)) {
                 // A new engine has no pixels from before to mistake for the restart's.
                 lock.unlock();
                 dropEngine();

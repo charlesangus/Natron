@@ -493,6 +493,7 @@ public:
     ImageLayerDesc viewerParamsAlphaLayer;
     std::string viewerParamsAlphaChannelName;
 
+    std::mutex gpuPlacementPublishMutex;
     mutable std::mutex gpuPlacementSnapshotMutex;
     GpuPlacementSnapshotPtr gpuPlacementSnapshot;
     GpuPlacementStamp gpuPlacementSnapshotStamp;
@@ -504,6 +505,10 @@ public:
     GpuPlacementStamp gpuPlacementRunStamp;
     std::atomic<U64> gpuPlacementGraphEdits { 0 };
     std::shared_ptr<GpuPlacementPlanner> gpuPlacementPlanner;
+
+    // Held by the planner while it reads uiContext and by the main thread while it writes it, so that closing the
+    // viewer waits only for such a read rather than for a whole dry run.
+    mutable std::mutex gpuPlacementUiContextMutex;
 
     // Main thread only. Non-zero while a ViewerInstance setter writes knobs: the setter applies the
     // change itself, so knobChanged() must not apply it a second time.

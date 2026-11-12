@@ -414,6 +414,9 @@ NodeGraph::noteNodeGeometryChanged(NodeGui* node)
         return;
     }
     NodeGraphLowDetailLayer::applyDetailLevel(node, true, _imp->lowDetail);
+    if (_imp->_gpuRegions) {
+        _imp->_gpuRegions->noteNodeChanged(node);
+    }
     repaintLowDetailItem(node);
     if (_imp->itemGridDirty) {
         return;
@@ -434,6 +437,12 @@ NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
         return;
     }
     NodeGraphLowDetailLayer::applyDetailLevel(edge, false, _imp->lowDetail);
+    if (_imp->_gpuRegions) {
+        _imp->_gpuRegions->noteNodeChanged(owner);
+        if (edge->hasSource()) {
+            _imp->_gpuRegions->noteNodeChanged(edge->getSource().get());
+        }
+    }
     repaintLowDetailItem(edge);
     if (_imp->itemGridDirty) {
         return;

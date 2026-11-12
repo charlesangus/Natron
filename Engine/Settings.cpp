@@ -1483,7 +1483,8 @@ Settings::initializeKnobsNodeGraph()
     _showGpuRegions->setName("showGpuRegions");
     _showGpuRegions->setHintToolTip(tr("When checked, the node graph outlines the regions of the active viewer's last render "
                                        "that stay resident on the GPU, marks each pipe where a region ends with a red X and "
-                                       "the reason, and fades nodes whose output came from the cache. With GPU compute off "
+                                       "the reason, and fades nodes that computed no pixels in that render because their "
+                                       "image came from the cache or they passed their input through. With GPU compute off "
                                        "or no GPU, it draws nothing. The \"Show GPU Regions\" action of the node graph "
                                        "toggles the same setting."));
     _nodegraphTab->addKnob(_showGpuRegions);

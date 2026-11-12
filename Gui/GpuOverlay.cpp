@@ -193,9 +193,7 @@ GpuRegionItem::GpuRegionItem(NodeGraph* graph,
     : QGraphicsObject(parent)
     , _graph(graph)
     , _layer(layer)
-    , _outlines()
-    , _markers()
-    , _tags()
+    , _slots()
     , _bounds()
 {
     setZValue(layer == eLayerOutlines ? kOutlineDepth : kMarkerDepth);
@@ -205,42 +203,81 @@ GpuRegionItem::GpuRegionItem(NodeGraph* graph,
 }
 
 void
-GpuRegionItem::setShapes(const std::vector<Outline>& outlines,
-                         const std::vector<Marker>& markers,
-                         const std::vector<Tag>& tags)
+GpuRegionItem::place(Slot* slot)
 {
-    // Panning moves the parent, so the shapes are kept in the item's own coordinates, which move with the nodes.
     QRectF bounds;
 
-    _outlines = outlines;
-    for (Outline& outline : _outlines) {
+    for (Outline& outline : slot->shapes.outlines) {
         outline.path = mapFromScene(outline.path);
         outline.bounds = outline.path.boundingRect().adjusted(-2., -2., 2., 2.);
         if (!outline.label.isEmpty()) {
-            outline.bounds = outline.bounds.united(labelRect(outline.label, outline.bounds.topLeft(), true));
+            outline.labelRect = labelRect(outline.label, outline.bounds.topLeft(), true);
+            outline.bounds = outline.bounds.united(outline.labelRect);
         }
         bounds = bounds.united(outline.bounds);
     }
-    _markers = markers;
-    for (Marker& marker : _markers) {
+    for (Marker& marker : slot->shapes.markers) {
         marker.pipe = QLineF(mapFromScene(marker.pipe.p1()), mapFromScene(marker.pipe.p2()));
         marker.at = mapFromScene(marker.at);
         const double reach = kMarkerHalfSize + 2.;
         marker.bounds = QRectF(marker.at.x() - reach, marker.at.y() - reach, 2 * reach, 2 * reach);
         if (!marker.label.isEmpty()) {
-            marker.bounds = marker.bounds.united(labelRect(marker.label, QPointF(marker.at.x() + reach + kLabelGap, marker.at.y()), false));
+            marker.labelRect = labelRect(marker.label, QPointF(marker.at.x() + reach + kLabelGap, marker.at.y()), false);
+            marker.bounds = marker.bounds.united(marker.labelRect);
         }
         bounds = bounds.united(marker.bounds);
     }
-    _tags = tags;
-    for (Tag& tag : _tags) {
+    for (Tag& tag : slot->shapes.tags) {
         tag.at = mapFromScene(tag.at);
         tag.bounds = labelRect(tag.text, tag.at, true);
         bounds = bounds.united(tag.bounds);
     }
-    prepareGeometryChange();
-    _bounds = bounds;
-    update();
+    slot->bounds = bounds;
+}
+
+void
+GpuRegionItem::refreshBounds()
+{
+    QRectF bounds;
+
+    for (const Slot& slot : _slots) {
+        bounds = bounds.united(slot.bounds);
+    }
+    if (bounds != _bounds) {
+        prepareGeometryChange();
+        _bounds = bounds;
+    }
+}
+
+void
+GpuRegionItem::setAllShapes(std::vector<Shapes> regions)
+{
+    const QRectF before = _bounds;
+
+    _slots.clear();
+    _slots.resize(regions.size());
+    for (std::size_t i = 0; i < regions.size(); ++i) {
+        _slots[i].shapes = std::move(regions[i]);
+        place(&_slots[i]);
+    }
+    refreshBounds();
+    update(before.united(_bounds));
+}
+
+void
+GpuRegionItem::setShapes(std::size_t region,
+                         Shapes shapes)
+{
+    if (region >= _slots.size()) {
+        return;
+    }
+    Slot& slot = _slots[region];
+    const QRectF before = slot.bounds;
+    slot.shapes = std::move(shapes);
+    place(&slot);
+    const QRectF after = slot.bounds;
+    refreshBounds();
+    update(before.united(after));
 }
 
 QRectF
@@ -263,52 +300,55 @@ GpuRegionItem::paint(QPainter* painter,
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, _graph->isAntiAliasingEnabled());
     painter->setFont(labelFont());
-    for (const Outline& outline : _outlines) {
-        if (!outline.bounds.intersects(exposed)) {
+    for (const Slot& slot : _slots) {
+        if (!slot.bounds.intersects(exposed)) {
             continue;
         }
-        const QColor color = outline.fellBack ? kFallbackColor : kRegionColor;
-        QColor fill = color;
-        fill.setAlpha(outline.fellBack ? 30 : 24);
-        QPen pen(color, outline.fellBack ? 2. : 1.5, outline.fellBack ? Qt::DashLine : Qt::SolidLine);
-        // Cosmetic, so the outline stays visible when the graph is zoomed far out.
-        pen.setCosmetic(true);
-        painter->setPen(pen);
-        painter->setBrush(fill);
-        painter->drawPath(outline.path);
-        if (!lowDetail && !outline.label.isEmpty()) {
-            drawLabel(painter, labelRect(outline.label, outline.path.boundingRect().adjusted(-2., -2., 2., 2.).topLeft(), true),
-                      outline.label, color);
-        }
-    }
-    for (const Marker& marker : _markers) {
-        if (!marker.bounds.intersects(exposed)) {
-            continue;
-        }
-        if (marker.exit) {
-            QPen pen(kExitColor, 2.5);
-            pen.setCapStyle(Qt::RoundCap);
-            painter->setPen(pen);
-            const QPointF& c = marker.at;
-            painter->drawLine(QPointF(c.x() - kMarkerHalfSize, c.y() - kMarkerHalfSize), QPointF(c.x() + kMarkerHalfSize, c.y() + kMarkerHalfSize));
-            painter->drawLine(QPointF(c.x() - kMarkerHalfSize, c.y() + kMarkerHalfSize), QPointF(c.x() + kMarkerHalfSize, c.y() - kMarkerHalfSize));
-            if (!lowDetail && !marker.label.isEmpty()) {
-                const double reach = kMarkerHalfSize + 2.;
-                drawLabel(painter, labelRect(marker.label, QPointF(c.x() + reach + kLabelGap, c.y()), false), marker.label, kExitColor.lighter(130));
+        for (const Outline& outline : slot.shapes.outlines) {
+            if (!outline.bounds.intersects(exposed)) {
+                continue;
             }
-        } else {
-            QLineF normal = marker.pipe.normalVector().unitVector();
-            const QPointF offset = (normal.p2() - normal.p1()) * kMarkerHalfSize;
-            QPen pen(kEntryColor, 2.);
-            pen.setCapStyle(Qt::RoundCap);
+            const QColor color = outline.fellBack ? kFallbackColor : kRegionColor;
+            QColor fill = color;
+            fill.setAlpha(outline.fellBack ? 30 : 24);
+            QPen pen(color, outline.fellBack ? 2. : 1.5, outline.fellBack ? Qt::DashLine : Qt::SolidLine);
+            // Cosmetic, so the outline stays visible when the graph is zoomed far out.
+            pen.setCosmetic(true);
             painter->setPen(pen);
-            painter->drawLine(marker.at - offset, marker.at + offset);
+            painter->setBrush(fill);
+            painter->drawPath(outline.path);
+            if (!lowDetail && !outline.label.isEmpty() && outline.labelRect.intersects(exposed)) {
+                drawLabel(painter, outline.labelRect, outline.label, color);
+            }
         }
-    }
-    if (!lowDetail) {
-        for (const Tag& tag : _tags) {
-            if (tag.bounds.intersects(exposed)) {
-                drawLabel(painter, tag.bounds, tag.text, kRegionColor.lighter(120));
+        for (const Marker& marker : slot.shapes.markers) {
+            if (!marker.bounds.intersects(exposed)) {
+                continue;
+            }
+            if (marker.exit) {
+                QPen pen(kExitColor, 2.5);
+                pen.setCapStyle(Qt::RoundCap);
+                painter->setPen(pen);
+                const QPointF& c = marker.at;
+                painter->drawLine(QPointF(c.x() - kMarkerHalfSize, c.y() - kMarkerHalfSize), QPointF(c.x() + kMarkerHalfSize, c.y() + kMarkerHalfSize));
+                painter->drawLine(QPointF(c.x() - kMarkerHalfSize, c.y() + kMarkerHalfSize), QPointF(c.x() + kMarkerHalfSize, c.y() - kMarkerHalfSize));
+                if (!lowDetail && !marker.label.isEmpty() && marker.labelRect.intersects(exposed)) {
+                    drawLabel(painter, marker.labelRect, marker.label, kExitColor.lighter(130));
+                }
+            } else {
+                QLineF normal = marker.pipe.normalVector().unitVector();
+                const QPointF offset = (normal.p2() - normal.p1()) * kMarkerHalfSize;
+                QPen pen(kEntryColor, 2.);
+                pen.setCapStyle(Qt::RoundCap);
+                painter->setPen(pen);
+                painter->drawLine(marker.at - offset, marker.at + offset);
+            }
+        }
+        if (!lowDetail) {
+            for (const Tag& tag : slot.shapes.tags) {
+                if (tag.bounds.intersects(exposed)) {
+                    drawLabel(painter, tag.bounds, tag.text, kRegionColor.lighter(120));
+                }
             }
         }
     }
@@ -327,8 +367,14 @@ GpuRegionOverlay::GpuRegionOverlay(NodeGraph* graph,
     , _snapshot()
     , _regions()
     , _faded()
+    , _fadedSet()
+    , _fadedNames()
+    , _draws()
+    , _regionsOfNode()
+    , _changedRegions()
     , _pending(false)
     , _remapPending(true)
+    , _changesPending(false)
 {
     _outlines->setObjectName(QString::fromUtf8("GpuRegionOutlineItem"));
     _markers->setObjectName(QString::fromUtf8("GpuRegionMarkerItem"));
@@ -364,6 +410,51 @@ GpuRegionOverlay::schedule(bool topology)
     }
     _pending = true;
     QMetaObject::invokeMethod(this, "refresh", Qt::QueuedConnection);
+}
+
+void
+GpuRegionOverlay::noteNodeChanged(NodeGui* node)
+{
+    if (!node || (_regionsOfNode.empty() && _fadedSet.empty())) {
+        return;
+    }
+    if (_fadedSet.count(node)) {
+        QGraphicsRectItem* scrim = scrimOf(node);
+        if (scrim && (scrim->rect() != node->boundingRect())) {
+            scrim->setRect(node->boundingRect());
+        }
+    }
+    const std::unordered_map<NodeGui*, std::vector<std::size_t>>::const_iterator found = _regionsOfNode.find(node);
+    if (found == _regionsOfNode.end()) {
+        return;
+    }
+    _changedRegions.insert(found->second.begin(), found->second.end());
+    if (!_changesPending) {
+        _changesPending = true;
+        QMetaObject::invokeMethod(this, "refreshChangedRegions", Qt::QueuedConnection);
+    }
+}
+
+void
+GpuRegionOverlay::refreshChangedRegions()
+{
+    _changesPending = false;
+    if (_pending || !_outlines || !_markers || !isEnabled()) {
+        // A full refresh is on its way, or the overlay is off and draws nothing.
+        _changedRegions.clear();
+
+        return;
+    }
+    for (std::size_t region : _changedRegions) {
+        if (region >= _regions.size()) {
+            continue;
+        }
+        _draws[region] = drawRegion(_regions[region]);
+        _outlines->setShapes(region, _draws[region].outlines);
+        _markers->setShapes(region, _draws[region].markers);
+    }
+    _changedRegions.clear();
+    publishCounts();
 }
 
 void
@@ -646,7 +737,11 @@ GpuRegionOverlay::remap()
 void
 GpuRegionOverlay::setFaded(const std::vector<NodeGuiWPtr>& faded)
 {
-    std::set<NodeGui*> keep;
+    std::unordered_set<NodeGui*> keep;
+    std::vector<NodeGui*> changed;
+    QColor shade = _graph->viewport()->palette().color(_graph->viewport()->backgroundRole());
+    shade.setAlphaF(kFadeAmount);
+
     for (const NodeGuiWPtr& weak : faded) {
         const NodeGuiPtr gui = weak.lock();
         if (!gui) {
@@ -654,12 +749,14 @@ GpuRegionOverlay::setFaded(const std::vector<NodeGuiWPtr>& faded)
         }
         keep.insert(gui.get());
         QGraphicsRectItem* scrim = scrimOf(gui.get());
+        bool isNew = false;
         if (!scrim) {
             scrim = new QGraphicsRectItem(gui.get());
             scrim->setData(kScrimKey, QString::fromUtf8(kScrimName));
             scrim->setPen(Qt::NoPen);
             scrim->setAcceptedMouseButtons(Qt::NoButton);
             scrim->setAcceptHoverEvents(false);
+            isNew = true;
         }
         qreal top = 0.;
         for (QGraphicsItem* child : gui->childItems()) {
@@ -667,19 +764,39 @@ GpuRegionOverlay::setFaded(const std::vector<NodeGuiWPtr>& faded)
                 top = std::max(top, child->zValue());
             }
         }
-        scrim->setZValue(top + 1.);
-        scrim->setRect(gui->boundingRect());
-        QColor shade = _graph->viewport()->palette().color(_graph->viewport()->backgroundRole());
-        shade.setAlphaF(kFadeAmount);
-        scrim->setBrush(shade);
+        const QRectF rect = gui->boundingRect();
+        if (isNew || (scrim->zValue() != top + 1.) || (scrim->rect() != rect) || (scrim->brush().color() != shade)) {
+            scrim->setZValue(top + 1.);
+            scrim->setRect(rect);
+            scrim->setBrush(shade);
+            changed.push_back(gui.get());
+        }
     }
-    for (const NodeGuiWPtr& weak : _faded) {
-        const NodeGuiPtr gui = weak.lock();
-        if (gui && !keep.count(gui.get())) {
-            delete scrimOf(gui.get());
+    for (NodeGui* gui : _fadedSet) {
+        if (keep.count(gui)) {
+            continue;
+        }
+        // The set holds raw pointers, so a node is looked up through the weak pointers before it is touched.
+        for (const NodeGuiWPtr& weak : _faded) {
+            const NodeGuiPtr live = weak.lock();
+            if (live.get() == gui) {
+                delete scrimOf(gui);
+                changed.push_back(gui);
+                break;
+            }
         }
     }
     _faded = faded;
+    _fadedSet = std::move(keep);
+
+    // At low detail the nodes are drawn by the graph's low-detail layer, from a cache that no change to a child
+    // invalidates, and the navigator draws them from a thumbnail.
+    for (NodeGui* gui : changed) {
+        _graph->repaintLowDetailItem(gui);
+    }
+    if (!changed.empty()) {
+        _graph->invalidateNavigatorImage();
+    }
 }
 
 void
@@ -689,12 +806,162 @@ GpuRegionOverlay::clear()
     _snapshot.reset();
     _regions.clear();
     _runs.clear();
+    _draws.clear();
+    _regionsOfNode.clear();
+    _changedRegions.clear();
+    _fadedNames.clear();
     _remapPending = true;
     setFaded(std::vector<NodeGuiWPtr>());
-    _outlines->setShapes(std::vector<GpuRegionItem::Outline>(), std::vector<GpuRegionItem::Marker>(), std::vector<GpuRegionItem::Tag>());
-    _markers->setShapes(std::vector<GpuRegionItem::Outline>(), std::vector<GpuRegionItem::Marker>(), std::vector<GpuRegionItem::Tag>());
+    _outlines->setAllShapes(std::vector<GpuRegionItem::Shapes>());
+    _markers->setAllShapes(std::vector<GpuRegionItem::Shapes>());
     _outlines->hide();
     _markers->hide();
+}
+
+void
+GpuRegionOverlay::indexRegions()
+{
+    _regionsOfNode.clear();
+    const auto add = [this](const NodeGuiPtr& gui, std::size_t region) {
+        if (!gui) {
+            return;
+        }
+        std::vector<std::size_t>& regions = _regionsOfNode[gui.get()];
+        if (regions.empty() || (regions.back() != region)) {
+            regions.push_back(region);
+        }
+    };
+    for (std::size_t r = 0; r < _regions.size(); ++r) {
+        const MappedRegion& region = _regions[r];
+        for (const MappedMember& member : region.members) {
+            add(member.gui.lock(), r);
+        }
+        for (int kind = 0; kind < 2; ++kind) {
+            for (const MappedPipe& pipe : (kind == 0) ? region.exits : region.entries) {
+                const NodeGuiPtr gui = pipe.dest.lock();
+                add(gui, r);
+                Edge* edge = gui ? gui->getInputArrow(pipe.inputNb) : 0;
+                if (edge && edge->hasSource()) {
+                    add(edge->getSource(), r);
+                }
+            }
+        }
+    }
+}
+
+GpuRegionOverlay::RegionDraw
+GpuRegionOverlay::drawRegion(const MappedRegion& region) const
+{
+    RegionDraw draw;
+    std::unordered_set<NodeGui*> members;
+    QPainterPath path;
+    path.setFillRule(Qt::WindingFill);
+
+    for (const MappedMember& member : region.members) {
+        const NodeGuiPtr gui = member.gui.lock();
+        if (!gui || !gui->isVisible()) {
+            continue;
+        }
+        members.insert(gui.get());
+        const QRectF rect = sceneRectOf(gui);
+        path.addRoundedRect(rect.adjusted(-kOutlinePadding, -kOutlinePadding, kOutlinePadding, kOutlinePadding),
+                            kOutlinePadding, kOutlinePadding);
+        if (member.mixed) {
+            GpuRegionItem::Tag tag;
+            tag.at = rect.topRight() + QPointF(-kOutlinePadding, -kLabelGap);
+            tag.text = tr("mixed");
+            draw.markers.tags.push_back(tag);
+            ++draw.mixedCount;
+        }
+    }
+    if (!members.empty()) {
+        QPainterPathStroker stroker;
+        stroker.setWidth(2 * kOutlinePadding);
+        stroker.setCapStyle(Qt::RoundCap);
+        stroker.setJoinStyle(Qt::RoundJoin);
+        for (NodeGui* gui : members) {
+            for (Edge* edge : gui->getInputsArrows()) {
+                if (!edge || !edge->isVisible() || !edge->hasSource() || !members.count(edge->getSource().get())) {
+                    continue;
+                }
+                QPainterPath pipe;
+                pipe.moveTo(edge->mapToScene(edge->line().p1()));
+                pipe.lineTo(edge->mapToScene(edge->line().p2()));
+                path.addPath(stroker.createStroke(pipe));
+            }
+        }
+        GpuRegionItem::Outline outline;
+        // The fill rule would fill the union, but the pen would still trace every rounded rect and pipe inside it.
+        outline.path = path.simplified();
+        outline.fellBack = region.fellBack;
+        outline.label = region.fallbackLabel;
+        draw.outlines.outlines.push_back(outline);
+        draw.outlined = true;
+    }
+
+    for (int kind = 0; kind < 2; ++kind) {
+        const bool exit = (kind == 0);
+        for (const MappedPipe& pipe : exit ? region.exits : region.entries) {
+            const NodeGuiPtr gui = pipe.dest.lock();
+            Edge* edge = gui && gui->isVisible() ? gui->getInputArrow(pipe.inputNb) : 0;
+            if (!edge || !edge->isVisible() || !edge->hasSource()) {
+                continue;
+            }
+            // p1 is the end at the destination node.
+            const QLineF line(edge->mapToScene(edge->line().p1()), edge->mapToScene(edge->line().p2()));
+            const double length = line.length();
+            if (length < 1.) {
+                continue;
+            }
+            GpuRegionItem::Marker marker;
+            marker.pipe = line;
+            marker.at = line.pointAt(std::min(kMarkerDistance, length * 0.4) / length);
+            marker.exit = exit;
+            marker.label = pipe.label;
+            draw.markers.markers.push_back(marker);
+            if (exit) {
+                ++draw.exitCount;
+                draw.exitLabels.push_back(pipe.label);
+            } else {
+                ++draw.entryCount;
+            }
+        }
+    }
+
+    return draw;
+} // GpuRegionOverlay::drawRegion
+
+void
+GpuRegionOverlay::publishCounts()
+{
+    int regionCount = 0;
+    int exitCount = 0;
+    int entryCount = 0;
+    int fallbackCount = 0;
+    int mixedCount = 0;
+    QStringList exitLabels;
+
+    for (std::size_t r = 0; r < _draws.size(); ++r) {
+        const RegionDraw& draw = _draws[r];
+        if (draw.outlined) {
+            ++regionCount;
+            if (_regions[r].fellBack) {
+                ++fallbackCount;
+            }
+        }
+        exitCount += draw.exitCount;
+        entryCount += draw.entryCount;
+        mixedCount += draw.mixedCount;
+        exitLabels += draw.exitLabels;
+    }
+    _outlines->setProperty("regionCount", regionCount);
+    _outlines->setProperty("exitCount", exitCount);
+    _outlines->setProperty("entryCount", entryCount);
+    _outlines->setProperty("fallbackCount", fallbackCount);
+    _outlines->setProperty("fadedCount", (int)_faded.size());
+    _outlines->setProperty("fadedNodes", _fadedNames);
+    _outlines->setProperty("mixedCount", mixedCount);
+    _outlines->setProperty("exitLabels", exitLabels);
 }
 
 void
@@ -704,15 +971,6 @@ GpuRegionOverlay::refresh()
     if (!_outlines || !_markers) {
         return;
     }
-
-    int regionCount = 0;
-    int exitCount = 0;
-    int entryCount = 0;
-    int fallbackCount = 0;
-    int mixedCount = 0;
-    QStringList exitLabels;
-    QStringList fadedNames;
-    std::vector<NodeGuiWPtr> faded;
 
     if (!isEnabled()) {
         clear();
@@ -726,112 +984,38 @@ GpuRegionOverlay::refresh()
             _remapPending = false;
             remap();
         }
+        indexRegions();
+        _changedRegions.clear();
 
+        std::vector<NodeGuiWPtr> faded;
+        _fadedNames.clear();
         for (const MappedRun& run : _runs) {
             const NodeGuiPtr gui = run.gui.lock();
             const NodePtr node = gui ? gui->getNode() : NodePtr();
             if (node && !run.ran) {
                 faded.push_back(gui);
-                fadedNames.push_back(QString::fromUtf8(node->getScriptName_mt_safe().c_str()));
+                _fadedNames.push_back(QString::fromUtf8(node->getScriptName_mt_safe().c_str()));
             }
         }
 
-        std::vector<GpuRegionItem::Outline> outlines;
-        std::vector<GpuRegionItem::Marker> markers;
-        std::vector<GpuRegionItem::Tag> tags;
-        QPainterPathStroker stroker;
-        stroker.setWidth(2 * kOutlinePadding);
-        stroker.setCapStyle(Qt::RoundCap);
-        stroker.setJoinStyle(Qt::RoundJoin);
-
+        _draws.clear();
+        _draws.reserve(_regions.size());
+        std::vector<GpuRegionItem::Shapes> outlines;
+        std::vector<GpuRegionItem::Shapes> markers;
+        outlines.reserve(_regions.size());
+        markers.reserve(_regions.size());
         for (const MappedRegion& region : _regions) {
-            std::set<NodeGui*> members;
-            QPainterPath path;
-            path.setFillRule(Qt::WindingFill);
-            for (const MappedMember& member : region.members) {
-                const NodeGuiPtr gui = member.gui.lock();
-                if (!gui || !gui->isVisible()) {
-                    continue;
-                }
-                members.insert(gui.get());
-                const QRectF rect = sceneRectOf(gui);
-                path.addRoundedRect(rect.adjusted(-kOutlinePadding, -kOutlinePadding, kOutlinePadding, kOutlinePadding),
-                                    kOutlinePadding, kOutlinePadding);
-                if (member.mixed) {
-                    GpuRegionItem::Tag tag;
-                    tag.at = rect.topRight() + QPointF(-kOutlinePadding, -kLabelGap);
-                    tag.text = tr("mixed");
-                    tags.push_back(tag);
-                    ++mixedCount;
-                }
-            }
-            if (!members.empty()) {
-                for (NodeGui* gui : members) {
-                    for (Edge* edge : gui->getInputsArrows()) {
-                        if (!edge || !edge->isVisible() || !edge->hasSource() || !members.count(edge->getSource().get())) {
-                            continue;
-                        }
-                        QPainterPath pipe;
-                        pipe.moveTo(edge->mapToScene(edge->line().p1()));
-                        pipe.lineTo(edge->mapToScene(edge->line().p2()));
-                        path.addPath(stroker.createStroke(pipe));
-                    }
-                }
-                GpuRegionItem::Outline outline;
-                outline.path = path.simplified();
-                outline.fellBack = region.fellBack;
-                outline.label = region.fallbackLabel;
-                outlines.push_back(outline);
-                ++regionCount;
-                if (region.fellBack) {
-                    ++fallbackCount;
-                }
-            }
-
-            for (int kind = 0; kind < 2; ++kind) {
-                const bool exit = (kind == 0);
-                for (const MappedPipe& pipe : exit ? region.exits : region.entries) {
-                    const NodeGuiPtr gui = pipe.dest.lock();
-                    Edge* edge = gui && gui->isVisible() ? gui->getInputArrow(pipe.inputNb) : 0;
-                    if (!edge || !edge->isVisible() || !edge->hasSource()) {
-                        continue;
-                    }
-                    // p1 is the end at the destination node.
-                    const QLineF line(edge->mapToScene(edge->line().p1()), edge->mapToScene(edge->line().p2()));
-                    const double length = line.length();
-                    if (length < 1.) {
-                        continue;
-                    }
-                    GpuRegionItem::Marker marker;
-                    marker.pipe = line;
-                    marker.at = line.pointAt(std::min(kMarkerDistance, length * 0.4) / length);
-                    marker.exit = exit;
-                    marker.label = pipe.label;
-                    markers.push_back(marker);
-                    if (exit) {
-                        ++exitCount;
-                        exitLabels.push_back(pipe.label);
-                    } else {
-                        ++entryCount;
-                    }
-                }
-            }
+            _draws.push_back(drawRegion(region));
+            outlines.push_back(_draws.back().outlines);
+            markers.push_back(_draws.back().markers);
         }
-        _outlines->setShapes(outlines, std::vector<GpuRegionItem::Marker>(), std::vector<GpuRegionItem::Tag>());
-        _markers->setShapes(std::vector<GpuRegionItem::Outline>(), markers, tags);
+        _outlines->setAllShapes(std::move(outlines));
+        _markers->setAllShapes(std::move(markers));
         _outlines->show();
         _markers->show();
         setFaded(faded);
     }
-
-    _outlines->setProperty("regionCount", regionCount);
-    _outlines->setProperty("exitCount", exitCount);
-    _outlines->setProperty("entryCount", entryCount);
-    _outlines->setProperty("fallbackCount", fallbackCount);
-    _outlines->setProperty("fadedCount", (int)_faded.size());
-    _outlines->setProperty("fadedNodes", fadedNames);
-    _outlines->setProperty("mixedCount", mixedCount);
-    _outlines->setProperty("exitLabels", exitLabels);
+    publishCounts();
 } // GpuRegionOverlay::refresh
 
 NATRON_NAMESPACE_EXIT

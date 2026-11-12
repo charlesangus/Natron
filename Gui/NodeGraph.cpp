@@ -330,10 +330,11 @@ NodeGraph::scheduleLoopBlockRefresh(bool topology)
     if (_imp->_loopBlocks) {
         _imp->_loopBlocks->schedule(topology);
     }
-    if (_imp->_gpuRegions) {
-        _imp->_gpuRegions->schedule(topology);
-    }
     if (topology) {
+        // Moves and resizes reach the GPU overlay through the geometry notes, region by region.
+        if (_imp->_gpuRegions) {
+            _imp->_gpuRegions->schedule(true);
+        }
         Q_EMIT topologyChanged();
     }
 }

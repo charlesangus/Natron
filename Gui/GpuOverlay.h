@@ -29,6 +29,8 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -38,6 +40,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QLineF>
 #include <QPainterPath>
 #include <QString>
+#include <QStringList>
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 CLANG_DIAG_ON(deprecated)
@@ -66,6 +69,7 @@ public:
         QPainterPath path;
         bool fellBack = false;
         QString label;
+        QRectF labelRect;
         QRectF bounds;
     };
 
@@ -74,6 +78,7 @@ public:
         QPointF at;
         bool exit = false;
         QString label;
+        QRectF labelRect;
         QRectF bounds;
     };
 
@@ -83,16 +88,21 @@ public:
         QRectF bounds;
     };
 
+    // What the item draws of one region, in scene coordinates.
+    struct Shapes {
+        std::vector<Outline> outlines;
+        std::vector<Marker> markers;
+        std::vector<Tag> tags;
+    };
+
     GpuRegionItem(NodeGraph* graph,
                   LayerEnum layer,
                   QGraphicsItem* parent);
 
-    /**
-     * @brief Takes the shapes in scene coordinates.
-     **/
-    void setShapes(const std::vector<Outline>& outlines,
-                   const std::vector<Marker>& markers,
-                   const std::vector<Tag>& tags);
+    void setAllShapes(std::vector<Shapes> regions);
+
+    // Replaces the shapes of one region of the last setAllShapes(), repainting only where they were and are.
+    void setShapes(std::size_t region, Shapes shapes);
 
     virtual QRectF boundingRect() const OVERRIDE FINAL;
     virtual void paint(QPainter* painter,
@@ -100,11 +110,17 @@ public:
                        QWidget* widget) OVERRIDE FINAL;
 
 private:
+    struct Slot {
+        Shapes shapes;
+        QRectF bounds;
+    };
+
+    void place(Slot* slot);
+    void refreshBounds();
+
     NodeGraph* _graph;
     LayerEnum _layer;
-    std::vector<Outline> _outlines;
-    std::vector<Marker> _markers;
-    std::vector<Tag> _tags;
+    std::vector<Slot> _slots;
     QRectF _bounds;
 };
 
@@ -127,6 +143,12 @@ public:
      * @brief Schedules a redraw; topology also maps the snapshot onto the graph's nodes again. Does nothing while off.
      **/
     void schedule(bool topology);
+
+    /**
+     * @brief Call when node, or one of its edges, may have moved, changed shape or been shown or hidden: the regions
+     * drawn near it are redrawn once control returns to the event loop.
+     **/
+    void noteNodeChanged(NodeGui* node);
 
     /**
      * @brief The node of collection that shows node: node itself, the Group node of collection enclosing it, or null when
@@ -156,6 +178,7 @@ private Q_SLOTS:
     void onSettingChanged(KnobI* knob);
     void onViewersChanged();
     void onSnapshotChanged();
+    void refreshChangedRegions();
 
 private:
     struct MappedPipe {
@@ -182,10 +205,24 @@ private:
         QString fallbackLabel;
     };
 
+    // What one region draws, and how much of it, for the counts the outline item publishes.
+    struct RegionDraw {
+        GpuRegionItem::Shapes outlines;
+        GpuRegionItem::Shapes markers;
+        bool outlined = false;
+        int exitCount = 0;
+        int entryCount = 0;
+        int mixedCount = 0;
+        QStringList exitLabels;
+    };
+
     bool isEnabled() const;
     ViewerInstance* currentViewer() const;
     void watchViewer(ViewerInstance* viewer);
     void remap();
+    void indexRegions();
+    RegionDraw drawRegion(const MappedRegion& region) const;
+    void publishCounts();
     void clear();
     void setFaded(const std::vector<NodeGuiWPtr>& faded);
 
@@ -197,8 +234,16 @@ private:
     std::vector<MappedRegion> _regions;
     std::vector<MappedRun> _runs;
     std::vector<NodeGuiWPtr> _faded;
+    std::unordered_set<NodeGui*> _fadedSet;
+    QStringList _fadedNames;
+    std::vector<RegionDraw> _draws;
+
+    // The regions each node is drawn in or next to, as a member or an end of a marked pipe.
+    std::unordered_map<NodeGui*, std::vector<std::size_t>> _regionsOfNode;
+    std::unordered_set<std::size_t> _changedRegions;
     bool _pending;
     bool _remapPending;
+    bool _changesPending;
 };
 
 NATRON_NAMESPACE_EXIT

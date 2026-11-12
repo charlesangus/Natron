@@ -893,7 +893,6 @@ TEST_F(ViewerRootOnDevice, ASnapshotListsTheExitsEntriesAndReasonsOfAGraph)
     ASSERT_TRUE(upstream != nullptr);
     ASSERT_EQ(1u, upstream->members.size());
     EXPECT_FALSE(upstream->members[0].mixed);
-    EXPECT_FALSE(upstream->members[0].cached);
     ASSERT_EQ(1u, upstream->exits.size());
     EXPECT_TRUE(isPipe(upstream->exits[0].pipe, _blur, 0));
     EXPECT_EQ(FrameGraph::PlacementReason::NoGpuPath, upstream->exits[0].reason);
@@ -1005,8 +1004,7 @@ TEST_F(ViewerRootOnDevice, AFallbackMapsOntoTheShadowRegionWithItsCachedMembers)
     ASSERT_EQ(1u, snapshot->regions.size());
     const GpuPlacementSnapshot::Region& region = snapshot->regions[0];
     ASSERT_EQ(3u, region.members.size());
-    EXPECT_TRUE(findMember(region, _grade)->cached);
-    EXPECT_FALSE(findMember(region, _blur)->cached);
+    EXPECT_TRUE(findMember(region, _grade) != nullptr);
     EXPECT_TRUE(region.fellBack);
     EXPECT_EQ(fallback.reason, region.fallbackReason);
     EXPECT_EQ(2, region.retries);

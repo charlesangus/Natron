@@ -107,9 +107,6 @@ struct GpuPlacementSnapshot {
     struct Member {
         NodeWPtr node;
 
-        // Every task of the node in the shadow plan's regions was served from the cache in the real render.
-        bool cached = false;
-
         // Some task of the node stayed out of every region in the shadow plan.
         bool mixed = false;
     };
@@ -195,7 +192,6 @@ private:
         NodeWPtr node;
         int region = -1;
         int realRegion = -1;
-        bool cached = false;
         bool ran = false;
         FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
         std::string detail;
@@ -758,13 +754,23 @@ private:
     bool isGpuPlacementFrozen() const;
     bool isGpuPlacementDryRunHeld() const;
     void runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo);
+
+    struct GpuPlacementUiState;
+
+    // What a dry run reads of the UI context, false once it is gone.
+    bool readGpuPlacementUiState(GpuPlacementUiState* state) const;
+    bool getGpuPlacementRoI(int textureIndex,
+                            const RectD& rod,
+                            double par,
+                            unsigned int mipmapLevel,
+                            bool exact,
+                            RectI* roi) const;
     void planGpuPlacementOfInput(int textureIndex,
                                  SequenceTime time,
-                                 ViewIdx view,
-                                 OpenGLViewerI* uiContext,
+                                 const GpuPlacementUiState& ui,
                                  const AbortableRenderInfoPtr& abortInfo,
                                  GpuPlacementSnapshotBuilder* builder);
-    void computeMipmapLevels(OpenGLViewerI* uiContext, ViewerArgs* outArgs) const;
+    void computeMipmapLevels(double zoomFactor, ViewerArgs* outArgs) const;
 
     /*******************************************
      ******OVERRIDDEN FROM EFFECT INSTANCE******

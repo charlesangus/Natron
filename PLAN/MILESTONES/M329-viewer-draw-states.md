@@ -96,7 +96,7 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
   - verify: GUI script on the city — boxes and markers both drawn, badge on the 10% without hints, no layers opened; one screenshot file per state.
   - size: M
 
-- [ ] M329.P3.T3 — Pick boxes and hide guides with their row.
+- [x] M329.P3.T3 — Pick boxes and hide guides with their row. (715abf5c1; marquee picking of boxes is out of scope)
   - files: `Gui/SceneViewport.{h,cpp}`, `Gui/SceneDrawBoxes.{h,cpp}`, `Tests/gui/scene_draw_pick.py` (new).
   - approach: CPU ray against the published list, no stage read, merged with `pick` and the guide hit (`SceneViewport.cpp:3089`) by depth. Selection inside a boxed branch selects in the tree and highlights the nearest drawn ancestor's box. Guides follow the resolved state of their row.
   - verify: GUI script — pick box and marker, nearest wins, tree selects, ancestor highlights, guides under a Hidden row go; Lobby screenshot before and after.
@@ -190,3 +190,4 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 - 2026-11-10 — **Scope of P2.T4 (user):** "it may be time to accept these numbers and move on". Take only obvious wins from the Island populate and wide-apply profile, then accept the measured numbers. A profile showing an obvious design error with a clear path to a superior redesign is also acceptable (user); report it with evidence rather than implementing it.
 - 2026-11-12 — P2.T5, P3.T1 and P3.T2 are implemented (5aee285c7), not yet built. P3.T3 is in progress. PM call: the bench's 10k-prim orbit uses Children on the root, not BBox, so it measures per-prim boxes. Known limits: one row's bounds are computed in a single read hold; any stage edit clears the box cache; during playback, boxes can lag by one list. Open for the user: whether Hidden on native instances should drop their prototypes from Hydra (it only masks them today), and whether boxes inside opaque geometry should draw through it.
 - 2026-11-12 — (user) Hidden native instances only mask; their prototypes stay in Hydra. Boxes are depth-tested like geometry, so a box inside opaque geometry stays hidden.
+- 2026-11-12 — P3.T3 implemented (715abf5c1): box picking, ancestor highlight, guides hidden under Hidden rows. Build run 43160438802 pending. User: Hidden only masks native instances, and boxes inside geometry stay hidden ("so be it").

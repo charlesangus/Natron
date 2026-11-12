@@ -223,7 +223,7 @@ future core work has solid ground to build on.
 | M379 | GpuContext Test Segfault | done | - | bosley-native-nodes | E5 | | | [M379-gpucontext-test-segfault.md](PLAN/MILESTONES/M379-gpucontext-test-segfault.md) |
 | M380 | Blocking Scheduler Aborts | done | - | bosley-native-nodes | E14 | | | [M380-blocking-scheduler-aborts.md](PLAN/MILESTONES/M380-blocking-scheduler-aborts.md) |
 | M381 | Deferred Matching Coverage | todo | M331 |  | E9 | F4 | | [M381-deferred-matching-coverage.md](PLAN/MILESTONES/M381-deferred-matching-coverage.md) |
-| M382 | Nucleon Logo And Artwork | doing | - | bosley-native-nodes | E20 | F17 | response | [M382-nucleon-logo-and-artwork.md](PLAN/MILESTONES/M382-nucleon-logo-and-artwork.md) |
+| M382 | Nucleon Logo And Artwork | doing | - | bosley-nucleon-art-design | E20 | F17 | response | [M382-nucleon-logo-and-artwork.md](PLAN/MILESTONES/M382-nucleon-logo-and-artwork.md) |
 | M383 | Rename Script And Guard | todo | - |  | E20 | F17 | | [M383-rename-script-and-guard.md](PLAN/MILESTONES/M383-rename-script-and-guard.md) |
 | M384 | Plugin Forks Rename | todo | M383 |  | E20 | F17 | | [M384-plugin-forks-rename.md](PLAN/MILESTONES/M384-plugin-forks-rename.md) |
 | M385 | OpenNucleon Code Rename | todo | M157, M383, M384 |  | E20 | F17 | | [M385-opennucleon-code-rename.md](PLAN/MILESTONES/M385-opennucleon-code-rename.md) |

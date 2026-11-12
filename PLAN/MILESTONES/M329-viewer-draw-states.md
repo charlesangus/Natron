@@ -74,7 +74,7 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
   - verify: `gate` on the GPU host — main stall within 100 ms at every size, change to committed frame within 100 ms on loaded city and flat; a shortfall goes to the user with numbers, no silent revision.
   - size: L
 
-- [ ] M329.P2.T5 — Lobby's Geometry row and native instances.
+- [x] M329.P2.T5 — Lobby's Geometry row and native instances.
   - files: `tools/bench/heavy_scene_make.py`, `Tests/gui/scene_draw_instances.py` (new), `Gui/SceneDrawFilter.cpp`.
   - approach: Lobby has no instances, so find why `/World/assembly_Lobby/max_Lobby/Geometry` changed no pixels by checking its Hydra prims and depth against the grab. Separately, make a small native-instance fixture: the filter sits downstream of `UsdImagingNiPrototypePropagatingSceneIndex`, so pruning an instance path may leave propagated instancers drawing. Fix what this finds.
   - verify: GUI script — pruning changes pixels on the Geometry row, an instance and a whole instancer's row, and restoring returns the original image.
@@ -84,13 +84,13 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 
 ## Phase 329.3: Boxes, markers and picking
 
-- [ ] M329.P3.T1 — Box worker and overlay.
+- [x] M329.P3.T1 — Box worker and overlay.
   - files: `Gui/SceneDrawBoxes.{h,cpp}` (new), `Gui/SceneViewport.{h,cpp}`, `Gui/CMakeLists.txt`, `Tests/SceneDrawBoxes_Test.cpp` (new), `tools/bench/heavy_scene_bench.py`.
   - approach: from the spike's `startBoxes`, drawing instanced GL lines beside `drawGuides` (`SceneViewport.cpp:3041`). The worker uses `UsdGeomBBoxCache` with `useExtentsHint` for current boxed rows only, off main, without holding the commit lock long. Publish whole lists atomically. A frame change recomputes animated subtrees while old boxes stand. Add `first_boxes_ms`, a real drawn-boxes signal beside `first_frame_ms`.
   - verify: gtest — box values on a small stage, stale results dropped; harness — no stall, first boxes within 2 s on the city, orbit at 10k boxes at or above 30 fps on the GPU host.
   - size: L
 
-- [ ] M329.P3.T2 — Unloaded tints, markers and the unknown-bounds badge.
+- [x] M329.P3.T2 — Unloaded tints, markers and the unknown-bounds badge.
   - files: `Gui/SceneDrawBoxes.{h,cpp}`, `Gui/SceneGraphModel.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Tests/gui/scene_draw_boxes.py` (new).
   - approach: authored bounds on an unloaded payload draw a tinted box, none draws a tinted marker at its transform, never measured. A model role drives the badge. Pending boxes draw as markers. Boxless rows stay in the list, unlike the spike, which dropped 360.
   - verify: GUI script on the city — boxes and markers both drawn, badge on the 10% without hints, no layers opened; one screenshot file per state.
@@ -188,3 +188,4 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
   - **Populate stall:** flat 102.7 ms (limit 100); Island 1714 ms with first frame 2.74 s (limit 2 s), Island run for the first time; city 41 ms, Lobby 43 ms.
   - **unrequested_payloads:** 0 everywhere.
 - 2026-11-10 — **Scope of P2.T4 (user):** "it may be time to accept these numbers and move on". Take only obvious wins from the Island populate and wide-apply profile, then accept the measured numbers. A profile showing an obvious design error with a clear path to a superior redesign is also acceptable (user); report it with evidence rather than implementing it.
+- 2026-11-12 — P2.T5, P3.T1 and P3.T2 are implemented (5aee285c7), not yet built. P3.T3 is in progress. PM call: the bench's 10k-prim orbit uses Children on the root, not BBox, so it measures per-prim boxes. Known limits: one row's bounds are computed in a single read hold; any stage edit clears the box cache; during playback, boxes can lag by one list. Open for the user: whether Hidden on native instances should drop their prototypes from Hydra (it only masks them today), and whether boxes inside opaque geometry should draw through it.

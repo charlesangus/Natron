@@ -125,4 +125,4 @@ Context:
 - 2026-11-11 — Round 5 feedback (user):
   - Interlocking rings (quarks-knot): cool, but the motif is common. Try variations, and check they are not too similar to an existing design.
   - Circle/square/triangle (quarks-bauhaus): worth pursuing, but as a baryon with two quark flavours, so only two shapes (two of one, one of the other). Try some kind of connection between them. The arrangement need not be L-shaped. Try variations.
-  - Round 6 goes to a Fable agent.
+  - Round 6 goes to a Fable agent; the user also asked for Bauhaus design references. Round 6 concepts at 2f2a63ddf: rings-heavy, -squares, -trefoil, -bars; baryon-string, -hub, -bridge, -pyramid, -loop. Reference images could not be downloaded (no network to Wikimedia from this host); build/branding/round6/refs/REFERENCES.md lists them with unverified URLs.

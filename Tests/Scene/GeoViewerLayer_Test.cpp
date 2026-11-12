@@ -256,6 +256,48 @@ TEST(GeoViewerLayer, TimeVaryingUpstreamUpdatesTheCopyEachFrame)
     EXPECT_TRUE(log.resynced.empty());
 }
 
+TEST(GeoViewerLayer, PlayedFramesWaitForTheTimeline)
+{
+    GeoViewerLayer viewer("viewer-test-held");
+    const std::string identifier = viewer.getIdentifier();
+    const GeoDetailConstPtr first = makeDetail(1.), second = makeDetail(2.), third = makeDetail(3.);
+    ScenePayload payload;
+    std::string error;
+    ASSERT_TRUE(viewer.serveFrame(first, 1, false, &payload, &error)) << error;
+    // The layer opens on the first detail served, before any frame is shown.
+    EXPECT_EQ(viewer.getDetail(), first);
+    int frame = 0;
+    EXPECT_FALSE(GeoViewerLayer::getServedFrame(identifier, &frame));
+    EXPECT_TRUE(viewer.showFrame(1));
+    EXPECT_FALSE(viewer.showFrame(1));
+
+    SceneStage stage;
+    stage.sync(payload);
+    const UsdStageRefPtr& usd = stage.getStage();
+    NoticeLog log(usd);
+
+    // Playback evaluates frames ahead: they change nothing until the timeline reaches them.
+    ASSERT_TRUE(viewer.serveFrame(second, 2, true, &payload, &error)) << error;
+    ASSERT_TRUE(viewer.serveFrame(third, 3, true, &payload, &error)) << error;
+    EXPECT_EQ(viewer.getDetail(), first);
+    EXPECT_FALSE(viewer.showFrame(4));
+    EXPECT_TRUE(viewer.showFrame(2));
+    EXPECT_EQ(viewer.getDetail(), second);
+    bool edited = false;
+    ASSERT_TRUE(GeoViewerLayer::refreshLayers(payload, &edited, &error)) << error;
+    EXPECT_TRUE(edited);
+    EXPECT_EQ(meshPoints(usd, "/geo/a")[0], GfVec3f(0.f, 0.f, 2.f));
+    ASSERT_TRUE(GeoViewerLayer::getServedFrame(identifier, &frame));
+    EXPECT_EQ(frame, 2);
+    EXPECT_TRUE(log.resynced.empty());
+
+    // An evaluation outside playback drops the frames held before it.
+    ASSERT_TRUE(viewer.serveFrame(first, 5, false, &payload, &error)) << error;
+    EXPECT_FALSE(viewer.showFrame(3));
+    EXPECT_TRUE(viewer.showFrame(5));
+    EXPECT_EQ(viewer.getDetail(), first);
+}
+
 TEST(GeoViewerLayer, PicksMapPrimsToPrimitiveNumbers)
 {
     GeoViewerLayer viewer("viewer-test-pick");

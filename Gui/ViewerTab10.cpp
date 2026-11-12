@@ -551,6 +551,10 @@ ViewerTab::onTimeLineTimeChanged(SequenceTime time,
 
     if (isShowingScene()) {
         _imp->sceneViewport->setFrame(time, app->getProjectFrameRate());
+        // Playback evaluated this frame's geometry ahead of the timeline.
+        if (_imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry)) {
+            showEvaluatedScene(time, true);
+        }
     }
 
     if ( _imp->timeLineGui->getTimeline() != app->getTimeLine() ) {

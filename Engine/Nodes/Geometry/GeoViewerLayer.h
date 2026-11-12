@@ -45,9 +45,9 @@ class GeoUsdConvert;
  * as its consumer, with no time in its key, so it is the same layer at every frame and for every
  * geometry node viewed.
  *
- * serve() only swaps the detail the layer is served from. The layer itself is edited when its
- * owner calls refreshLayers() on the payload, with the lock it holds over the stage composing the
- * layer taken exclusively. No other stage composes the layer, so that lock is all a refresh needs:
+ * serve() and showFrame() only swap the detail the layer is served from. The layer itself is
+ * edited when its owner calls refreshLayers() on the payload, with the lock it holds over the
+ * stage composing the layer taken exclusively. No other stage composes the layer, so that lock is all a refresh needs:
  * the layers GeoToUSD serves to scene nodes are separate layers and never see these edits.
  **/
 class GeoViewerLayer {
@@ -68,13 +68,41 @@ public:
      * @brief Makes @p detail the one the layer is served from, and returns in *payload the stack
      * holding the layer alone. The first call opens the layer on @p detail; later calls return the
      * same stack, so syncing a stage to it edits nothing and the refresh applies the new detail in
-     * place. Any thread.
+     * place. Drops the frames serveFrame() holds. Any thread.
      **/
     bool serve(const GeoDetailConstPtr& detail,
                ScenePayload* payload,
                std::string* errorMessage);
 
+    /**
+     * @brief Holds @p detail, evaluated at @p frame, until showFrame() picks it, and returns the
+     * stack as serve() does. Playback evaluates frames ahead of the one shown, so a frame waits here
+     * until the timeline reaches it. An evaluation outside playback (@p sequential false) drops
+     * the frames held before it, which an edit may have outdated. Any thread.
+     **/
+    bool serveFrame(const GeoDetailConstPtr& detail,
+                    int frame,
+                    bool sequential,
+                    ScenePayload* payload,
+                    std::string* errorMessage);
+
+    /**
+     * @brief Serves the detail held for @p frame from now on, letting go of it. True when that
+     * changed the detail served, so the layer needs a refresh; false when no detail is held for
+     * @p frame. Any thread.
+     **/
+    bool showFrame(int frame);
+
+    // The detail the layer is served from.
     GeoDetailConstPtr getDetail() const;
+
+    /**
+     * @brief The frame the detail last read from the viewer geometry layer @p identifier was
+     * evaluated at, by the opening of the layer or a refresh. False before showFrame() picked any,
+     * or for another layer.
+     **/
+    static bool getServedFrame(const std::string& identifier,
+                               int* frame);
 
     /**
      * @brief Brings every viewer geometry layer of @p payload to the detail it is now served from.
@@ -109,11 +137,16 @@ public:
                                const std::string& primPath,
                                Pick* pick);
 
+    // What the layer is served from, shared with its provider.
+    struct Slot;
+
 private:
     const std::string _key;
     const std::string _consumer;
     const std::string _identifier;
-    struct Slot;
+
+    bool openPayload(ScenePayload* payload,
+                     std::string* errorMessage);
 
     const std::shared_ptr<Slot> _slot;
     mutable std::mutex _mutex;

@@ -387,6 +387,8 @@ struct GeoDisplay::Implementation {
     std::atomic<bool> staged { false };
     std::atomic<U64> refreshes { 0 };
     std::atomic<U64> refreshResyncs { 0 };
+    std::atomic<int> refreshFrame { 0 };
+    std::atomic<bool> hasRefreshFrame { false };
 
     // The syncing thread's, under the stage lock it holds.
     SdfLayerRefPtr guideLayer;
@@ -465,10 +467,16 @@ GeoDisplay::editStage(SceneStage& stage)
             _imp->refreshResyncs += counter.resyncs;
         }
     }
+    const std::vector<std::string> identifiers = GeoViewerLayer::findLayers(_imp->stagedSource);
+    int frame = 0;
+    if (!identifiers.empty() && GeoViewerLayer::getServedFrame(identifiers.front(), &frame)) {
+        _imp->refreshFrame = frame;
+        _imp->hasRefreshFrame = true;
+    }
 
     std::vector<std::shared_ptr<const GeoUsdConvert>> converts;
     std::vector<const GeoDetail*> details;
-    for (const std::string& identifier : GeoViewerLayer::findLayers(_imp->stagedSource)) {
+    for (const std::string& identifier : identifiers) {
         std::shared_ptr<const GeoUsdConvert> convert = GeoViewerLayer::layerConvert(identifier);
         if (convert && convert->detail()) {
             details.push_back(convert->detail().get());
@@ -488,7 +496,12 @@ GeoDisplay::editStage(SceneStage& stage)
         const GeoDetail& detail = *convert->detail();
         collectGuides(detail, options, &guides);
         collectLabels(detail, options, &pointLabels, &primitiveLabels);
-        if (detail.pointCount() > 0) {
+    }
+    // The bounds only size guides: playing a frame with none draws no pass over its points.
+    const bool anyGuide = !guides.markers.empty() || !guides.normals.empty() || !guides.highlightPoints.empty() || !guides.highlightEdges.empty() || !guides.packedBounds.empty();
+    for (const std::shared_ptr<const GeoUsdConvert>& convert : converts) {
+        const GeoDetail& detail = *convert->detail();
+        if (anyGuide && (detail.pointCount() > 0)) {
             const GeoBounds b = geoDetailBounds(detail);
             bounds = hasBounds ? geoUnionBounds(bounds, b) : b;
             hasBounds = true;
@@ -564,6 +577,16 @@ U64
 GeoDisplay::getRefreshResyncCount() const
 {
     return _imp->refreshResyncs;
+}
+
+bool
+GeoDisplay::getRefreshFrame(int* frame) const
+{
+    if (frame) {
+        *frame = _imp->refreshFrame;
+    }
+
+    return _imp->hasRefreshFrame;
 }
 
 int

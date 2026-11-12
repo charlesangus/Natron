@@ -1572,7 +1572,7 @@ ViewerTab::onActiveInputDataKindChanged()
     if (scene) {
         _imp->viewer->hide();
         _imp->sceneViewport->show();
-        onSceneEvaluated(0);
+        showEvaluatedScene(getTimeLine()->currentFrame(), false);
     } else {
         _imp->sceneViewport->hide();
         // Lets go of the scene's layers; the viewport keeps its stage and engine for the next one.
@@ -1624,7 +1624,16 @@ void
 ViewerTab::onSceneEvaluated(int textureIndex)
 {
     // Only A is shown in the scene view.
-    if ((textureIndex != 0) || !_imp->viewerNode || !isShowingScene()) {
+    if (textureIndex == 0) {
+        showEvaluatedScene(getTimeLine()->currentFrame(), true);
+    }
+}
+
+void
+ViewerTab::showEvaluatedScene(int frame,
+                              bool onlyNewGeometry)
+{
+    if (!_imp->viewerNode || !isShowingScene()) {
         return;
     }
     ScenePayload scene;
@@ -1639,6 +1648,12 @@ ViewerTab::onSceneEvaluated(int textureIndex)
 
         return;
     }
+    if (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry) {
+        const bool changed = _imp->viewerNode->showGeometryFrame(0, frame);
+        if (!changed && onlyNewGeometry) {
+            return;
+        }
+    }
     double fps = 24.;
     if (getGui() && getGui()->getApp()) {
         fps = getGui()->getApp()->getProjectFrameRate();
@@ -1648,7 +1663,7 @@ ViewerTab::onSceneEvaluated(int textureIndex)
         _imp->sceneLoadsNode = viewedNode;
         _imp->sceneViewport->cancelPendingLoads();
     }
-    _imp->sceneViewport->setScene(scene, getTimeLine()->currentFrame(), fps);
+    _imp->sceneViewport->setScene(scene, frame, fps);
 }
 
 void

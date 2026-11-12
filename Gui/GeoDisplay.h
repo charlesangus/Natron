@@ -97,6 +97,9 @@ public:
     // The prims those in-place edits resynced in the stage, which a point edit never does.
     U64 getRefreshResyncCount() const;
 
+    // The frame the viewed geometry last synced was evaluated at; false before any.
+    bool getRefreshFrame(int* frame) const;
+
     // The primitives the prim at @p primPath of the geometry last synced was made from.
     bool pickPrimitives(const std::string& primPath,
                         GeoViewerLayer::Pick* pick) const;

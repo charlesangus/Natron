@@ -6761,8 +6761,8 @@ SceneViewport::paintGL()
     QPainter painter(this);
     painter.setRenderHint(QPainter::TextAntialiasing);
     {
-        // For scripts: the numbers painted, and the in-place refreshes of the viewed geometry with
-        // the resyncs they caused.
+        // For scripts: the numbers painted, the in-place refreshes of the viewed geometry with the
+        // resyncs they caused, and the frame the geometry shown was evaluated at.
         int labels = 0;
         double viewProjection[16];
         if (_imp->error.isEmpty() && rendererError.isEmpty() && !isComposing() && _imp->renderer.hasScene() && _imp->renderer.getDrawnView(viewProjection, nullptr, nullptr)) {
@@ -6771,6 +6771,8 @@ SceneViewport::paintGL()
         setProperty("natronGeoLabels", labels);
         setProperty("natronGeoRefreshes", QVariant::fromValue<qulonglong>(_imp->geoDisplay->getRefreshCount()));
         setProperty("natronGeoRefreshResyncs", QVariant::fromValue<qulonglong>(_imp->geoDisplay->getRefreshResyncCount()));
+        int geoFrame = 0;
+        setProperty("natronGeoFrame", _imp->geoDisplay->getRefreshFrame(&geoFrame) ? QVariant(geoFrame) : QVariant());
     }
     if (!_imp->error.isEmpty() || !rendererError.isEmpty()) {
         painter.setPen(QColor(230, 90, 80));

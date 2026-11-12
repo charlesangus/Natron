@@ -466,6 +466,14 @@ public:
     bool getLastEvaluatedScene(int textureIndex, ScenePayload* scene, std::string* error) const;
 
     /**
+     * @brief Shows in the 3D view the geometry the given texture's input evaluated at @p frame, as
+     * evaluated. Playback evaluates frames ahead of the timeline, so each waits until the timeline
+     * reaches it. True when the geometry shown changed; false when the input is not geometry or
+     * nothing was evaluated at @p frame since it was last shown. MT-safe.
+     **/
+    bool showGeometryFrame(int textureIndex, int frame);
+
+    /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
      * first (see Node::getNodesWithPersistentMessageUpstream()).
      **/

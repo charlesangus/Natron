@@ -2461,7 +2461,7 @@ ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
         layer = _imp->geometryLayers[textureIndex];
     }
 
-    return layer->serve(detail, scene, error);
+    return layer->serveFrame(detail, inArgs.params->time, inArgs.params->isSequential, scene, error);
 } // ViewerInstance::evaluateGeometryInput
 
 ViewerInstance::ViewerRenderRetCode
@@ -5249,6 +5249,22 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
     }
 
     return _imp->lastSceneOk[textureIndex];
+}
+
+bool
+ViewerInstance::showGeometryFrame(int textureIndex,
+                                  int frame)
+{
+    if ((textureIndex != 0) && (textureIndex != 1)) {
+        return false;
+    }
+    std::shared_ptr<GeoViewerLayer> layer;
+    {
+        std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+        layer = _imp->geometryLayers[textureIndex];
+    }
+
+    return layer && layer->showFrame(frame);
 }
 
 void

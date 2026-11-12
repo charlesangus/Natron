@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <functional>
+#include <map>
 #include <utility>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -46,12 +47,36 @@ namespace {
 
 std::atomic<U64> nextViewerLayerId(1);
 
+// Past this many, the frames held longest go first: playback evaluates no further ahead.
+const std::size_t kMaxHeldFrames = 64;
+
 } // namespace
 
 struct GeoViewerLayer::Slot {
+    struct Held {
+        GeoDetailConstPtr detail;
+        U64 order = 0;
+    };
+
     std::mutex mutex;
-    GeoDetailConstPtr detail;
+    // Under mutex.
+    GeoDetailConstPtr detail = std::make_shared<const GeoDetail>();
+    int frame = 0;
+    bool hasFrame = false;
+    std::map<int, Held> held;
+    U64 nextOrder = 0;
+    // What the layer last read: the provider sets them.
+    int providedFrame = 0;
+    bool hasProvidedFrame = false;
 };
+
+namespace {
+
+std::mutex slotsMutex;
+// Under slotsMutex.
+std::map<std::string, std::weak_ptr<GeoViewerLayer::Slot>> slots;
+
+} // namespace
 
 GeoViewerLayer::GeoViewerLayer(const std::string& consumer)
     : _key("geoviewer" + std::to_string(nextViewerLayerId.fetch_add(1)))
@@ -59,6 +84,10 @@ GeoViewerLayer::GeoViewerLayer(const std::string& consumer)
     , _identifier(GeoLayers::identifier(_key, std::string(), std::string(), _consumer))
     , _slot(std::make_shared<Slot>())
 {
+    {
+        std::lock_guard<std::mutex> lock(slotsMutex);
+        slots[_identifier] = _slot;
+    }
     const std::weak_ptr<Slot> weakSlot = _slot;
     GeoLayers::setProvider(_key, [weakSlot]() {
         const std::shared_ptr<Slot> slot = weakSlot.lock();
@@ -66,6 +95,8 @@ GeoViewerLayer::GeoViewerLayer(const std::string& consumer)
             return GeoDetailConstPtr();
         }
         std::lock_guard<std::mutex> lock(slot->mutex);
+        slot->providedFrame = slot->frame;
+        slot->hasProvidedFrame = slot->hasFrame;
 
         return slot->detail; }, _consumer);
 }
@@ -73,6 +104,8 @@ GeoViewerLayer::GeoViewerLayer(const std::string& consumer)
 GeoViewerLayer::~GeoViewerLayer()
 {
     GeoLayers::removeProvider(_key, _consumer);
+    std::lock_guard<std::mutex> lock(slotsMutex);
+    slots.erase(_identifier);
 }
 
 const std::string&
@@ -89,7 +122,74 @@ GeoViewerLayer::serve(const GeoDetailConstPtr& detail,
     {
         std::lock_guard<std::mutex> lock(_slot->mutex);
         _slot->detail = detail ? detail : std::make_shared<const GeoDetail>();
+        _slot->hasFrame = false;
+        _slot->held.clear();
     }
+
+    return openPayload(payload, errorMessage);
+}
+
+bool
+GeoViewerLayer::serveFrame(const GeoDetailConstPtr& detail,
+                           int frame,
+                           bool sequential,
+                           ScenePayload* payload,
+                           std::string* errorMessage)
+{
+    bool opened;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        opened = !_payload.isEmpty();
+    }
+    {
+        std::lock_guard<std::mutex> lock(_slot->mutex);
+        if (!sequential) {
+            _slot->held.clear();
+        }
+        Slot::Held& held = _slot->held[frame];
+        held.detail = detail ? detail : std::make_shared<const GeoDetail>();
+        if (!opened) {
+            // The layer opens on the first detail, so showing it later edits nothing, and a stage
+            // composing it sees its prims appear as it is synced rather than as a resync.
+            _slot->detail = held.detail;
+        }
+        held.order = _slot->nextOrder++;
+        while (_slot->held.size() > kMaxHeldFrames) {
+            auto oldest = _slot->held.begin();
+            for (auto it = _slot->held.begin(); it != _slot->held.end(); ++it) {
+                if (it->second.order < oldest->second.order) {
+                    oldest = it;
+                }
+            }
+            _slot->held.erase(oldest);
+        }
+    }
+
+    return openPayload(payload, errorMessage);
+}
+
+bool
+GeoViewerLayer::showFrame(int frame)
+{
+    std::lock_guard<std::mutex> lock(_slot->mutex);
+    const auto found = _slot->held.find(frame);
+    if (found == _slot->held.end()) {
+        return false;
+    }
+    const GeoDetailConstPtr detail = found->second.detail;
+    _slot->held.erase(found);
+    const bool changed = (detail != _slot->detail) || !_slot->hasFrame || (_slot->frame != frame);
+    _slot->detail = detail;
+    _slot->frame = frame;
+    _slot->hasFrame = true;
+
+    return changed;
+}
+
+bool
+GeoViewerLayer::openPayload(ScenePayload* payload,
+                            std::string* errorMessage)
+{
     std::lock_guard<std::mutex> lock(_mutex);
     if (_payload.isEmpty()) {
         if (!GeoLayers::registerPlugin(errorMessage)) {
@@ -123,6 +223,29 @@ GeoViewerLayer::getDetail() const
     std::lock_guard<std::mutex> lock(_slot->mutex);
 
     return _slot->detail;
+}
+
+bool
+GeoViewerLayer::getServedFrame(const std::string& identifier,
+                               int* frame)
+{
+    std::shared_ptr<Slot> slot;
+    {
+        std::lock_guard<std::mutex> lock(slotsMutex);
+        const auto found = slots.find(identifier);
+        if (found != slots.end()) {
+            slot = found->second.lock();
+        }
+    }
+    if (!slot) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(slot->mutex);
+    if (frame) {
+        *frame = slot->providedFrame;
+    }
+
+    return slot->hasProvidedFrame;
 }
 
 std::vector<std::string>

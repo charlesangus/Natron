@@ -39,6 +39,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QMouseEvent>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QToolTip>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -57,6 +58,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // isKeyBind
 #include "Gui/GuiMacros.h"
+#include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/TabMenuBridge.h"
@@ -220,6 +222,42 @@ NodeGraph::viewportEvent(QEvent* e)
                 if ((*it)->type() == NodeGuiDecorations::Type) {
                     static_cast<NodeGuiDecorations*>(*it)->refreshToolTipAt((*it)->mapFromScene(pathScene));
                 }
+            }
+        }
+        if (isLowDetail()) {
+            // The scene looks only at items it can see, and the nodes are faded out at this level,
+            // so the topmost item with a tooltip in a faded subtree is found here. A node's children
+            // all stack above it.
+            QGraphicsItem* best = NULL;
+            qreal bestTopZ = 0.;
+            bool bestIsChild = false;
+            qreal bestZ = 0.;
+            for (std::vector<QGraphicsItem*>::iterator it = hits.begin(); it != hits.end(); ++it) {
+                QGraphicsItem* item = *it;
+                if (item->toolTip().isEmpty()) {
+                    continue;
+                }
+                QGraphicsItem* top = item;
+                while (top->parentItem() && !_imp->isInGraph(top)) {
+                    top = top->parentItem();
+                }
+                if (!NodeGraphLowDetailLayer::isFaded(top)) {
+                    continue;
+                }
+                const bool isChild = (item != top);
+                const qreal topZ = top->zValue();
+                const qreal z = item->zValue();
+                if (!best || (topZ > bestTopZ) || ((topZ == bestTopZ) && ((isChild && !bestIsChild) || ((isChild == bestIsChild) && (z > bestZ))))) {
+                    best = item;
+                    bestTopZ = topZ;
+                    bestIsChild = isChild;
+                    bestZ = z;
+                }
+            }
+            if (best) {
+                QToolTip::showText(he->globalPos(), best->toolTip(), viewport());
+
+                return true;
             }
         }
     }

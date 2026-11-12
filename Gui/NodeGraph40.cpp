@@ -107,7 +107,6 @@ NodeGraph::switchInputs1and2ForSelectedNodes()
 void
 NodeGraph::centerOnItem(QGraphicsItem* item)
 {
-    _imp->_refreshOverlays = true;
     centerOn(item);
 }
 
@@ -280,7 +279,7 @@ pasteOntoNode(NodeGraph* graph,
     if (entryGui != exitGui) {
         QRectF pastedRect;
         for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
-            pastedRect |= (*it)->mapToScene((*it)->boundingRect()).boundingRect();
+            pastedRect |= (*it)->mapToScene((*it)->bodyRect()).boundingRect();
         }
         for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
             NodeGuiIPtr outputGuiI = it->first->getNodeGui();
@@ -322,7 +321,7 @@ void
 NodeGraph::pasteCliboard(const NodeClipBoard& clipboard,
                          std::list<std::pair<std::string, NodeGuiPtr> >* newNodes)
 {
-    QPointF position = _imp->_root->mapFromScene( mapToScene( mapFromGlobal( QCursor::pos() ) ) );
+    QPointF position = mapToScene(mapFromGlobal(QCursor::pos()));
 
     _imp->pasteNodesInternal(clipboard, position, false, newNodes);
 }
@@ -371,12 +370,12 @@ NodeGraph::pasteNodeClipBoards(const QPointF& pos)
 
     const NodesGuiList selectionBeforePaste = _imp->_selection;
     if (selectionBeforePaste.empty()) {
-        _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), true, &newNodes);
+        _imp->pasteNodesInternal(cb, pos, true, &newNodes);
 
         return true;
     }
 
-    _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), false, &newNodes);
+    _imp->pasteNodesInternal(cb, pos, false, &newNodes);
     if (newNodes.empty() || (newNodes.size() != cb.nodes.size())) {
         return true;
     }
@@ -413,7 +412,7 @@ NodeGraph::duplicateSelectedNodes(const QPointF& pos)
     NodeClipBoard tmpClipboard;
     _imp->copyNodesInternal(_imp->_selection, tmpClipboard);
     std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
-    _imp->pasteNodesInternal(tmpClipboard, _imp->_root->mapFromScene(pos), true, &newNodes);
+    _imp->pasteNodesInternal(tmpClipboard, pos, true, &newNodes);
 }
 
 void
@@ -443,7 +442,7 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
         nodesToCopySet.insert(it->get());
     }
     for (NodesGuiList::iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
-        QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+        QRectF bbox = (*it)->mapToScene((*it)->bodyRect()).boundingRect();
         if ( ( bbox.x() + bbox.width() ) > xmax ) {
             xmax = ( bbox.x() + bbox.width() );
         }
@@ -660,7 +659,6 @@ NodeGraph::centerOnAllNodes()
     double xmax = std::numeric_limits<int>::min();
     double ymin = std::numeric_limits<int>::max();
     double ymax = std::numeric_limits<int>::min();
-    //_imp->_root->setPos(0,0);
 
     if ( _imp->_selection.empty() ) {
         QMutexLocker l(&_imp->_nodesMutex);
@@ -687,11 +685,10 @@ NodeGraph::centerOnAllNodes()
             }
         }
     }
-    // Move the scene so that topleft of the viewing area is at 0,0, and avoid issues
-    // when topleft has negative coords.
-    moveRootInternal(-xmin, -ymin);
-    QRectF bbox( 0, 0, (xmax - xmin), (ymax - ymin) );
-    setAlignment(Qt::AlignRight|Qt::AlignVCenter);
+    if (xmin > xmax) {
+        return;
+    }
+    QRectF bbox(xmin, ymin, (xmax - xmin), (ymax - ymin));
     fitInView(bbox, Qt::KeepAspectRatio);
 
     double currentZoomFactor = transform().mapRect( QRectF(0, 0, 1, 1) ).width();
@@ -699,13 +696,12 @@ NodeGraph::centerOnAllNodes()
     //we want to fit at scale 1 at most
     if (currentZoomFactor > 1.) {
         double scaleFactor = 1. / currentZoomFactor;
-        setTransformationAnchor(QGraphicsView::AnchorViewCenter);
         scale(scaleFactor, scaleFactor);
-        setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     }
 
-    _imp->_refreshOverlays = true;
-    update();
+    // A new view transform already repaints the viewport.
+    refreshDetailLevel();
+    refreshOverlays();
 } // NodeGraph::centerOnAllNodes
 
 static QString

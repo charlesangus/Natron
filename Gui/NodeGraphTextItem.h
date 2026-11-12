@@ -106,6 +106,14 @@ public:
         _hiddenAtLowDetail = hidden;
     }
 
+    bool isHiddenAtLowDetail() const
+    {
+        return _hiddenAtLowDetail;
+    }
+
+    // Below this height in device pixels the pixmap is not drawn at all.
+    static int minimumPaintedHeightPx();
+
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *widget) OVERRIDE FINAL;
 };
 

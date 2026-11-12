@@ -1,1 +1,2 @@
 Pre-gate recordings with 120 s (Xvfb) and 300 s (host) censored timeouts, kept for reference, not for gating.
+`gate-pre-m118-xvfb.jsonl` and `gate-pre-m118-host-ms-E2087B87C9C8.jsonl` are the gate recordings of 2026-11-11 (harness a8651e8bc, AppImage m117-gui-perf-harness) that preceded M118 - Large Graph GUI Responsiveness; the host one was recorded on a Ryzen 7 7800X3D, so it is only comparable to older runs of that CPU.

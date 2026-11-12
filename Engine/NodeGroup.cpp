@@ -239,7 +239,7 @@ struct NodeCollectionPrivate
     void freeName(NodeNameKindEnum kind,
                   const std::string& name)
     {
-        if ( name.empty() ) {
+        if (name.empty()) {
             return;
         }
         for (int p = 0; p < eNodeNamePatternCount; ++p) {
@@ -278,7 +278,7 @@ struct NodeCollectionPrivate
                     candidates.pop_back();
                     continue;
                 }
-                if ( (node.get() != caller) && node->isActivated() ) {
+                if ((node.get() != caller) && node->isActivated()) {
                     taken = true;
                 }
                 ++i;
@@ -292,7 +292,7 @@ struct NodeCollectionPrivate
 
         ++gNodeNameScans;
         for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-            if ( (it->get() != caller) && (*it)->isActivated() && (getNodeName(it->get(), kind) == name) ) {
+            if ((it->get() != caller) && (*it)->isActivated() && (getNodeName(it->get(), kind) == name)) {
                 return true;
             }
         }

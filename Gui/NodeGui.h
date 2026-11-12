@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <list>
 #include <map>
 #include <set>
@@ -315,8 +316,9 @@ public:
     /*Returns true if the bounding box of the node intersects the given rectangle in scene coordinates.*/
     bool intersects(const QRectF & rect) const;
 
-    // Stacks this node, and its edges, above item, unless either is a backdrop or this node is hidden.
-    void setAboveItem(QGraphicsItem* item);
+    // The node's place among the nodes of its depth, as NodeGraphStacking hands them out.
+    std::uint64_t getStackingSerial() const { return _stackingSerial; }
+    void setStackingSerial(std::uint64_t serial);
 
     /*returns a QPainterPath indicating the global shape of the node.
        This must be provided so the QGraphicsView framework recognises the
@@ -389,6 +391,9 @@ public:
 
 
     QSize getSize() const;
+
+    // The laid-out body size that resize() takes: no outline pen, no magnify scale.
+    QRectF bodyRect() const;
 
     /*Returns an edge if the node has an edge close to the
        point pt. pt is in scene coord.*/
@@ -587,6 +592,10 @@ public:
      * recomputes it even when the kind itself is unchanged, e.g. after its colour preference changed.
      **/
     void refreshEdgesDataKindPen(bool force);
+
+    // Runs the refreshes, NodeGraph::DeferredRefreshEnum flags, this node left to a node refresh
+    // batch.
+    void runDeferredRefreshes(int refreshes);
 
 protected:
 
@@ -817,6 +826,8 @@ private:
 
     void setNameItemHtml(const QString & name, const QString & label);
 
+    void setNameItemHtmlNow(const QString& name, const QString& label);
+
     void togglePreview_internal(bool refreshPreview = true);
 
     void ensurePreviewCreated();
@@ -891,6 +902,17 @@ private:
     QGraphicsSimpleTextItem* _persistentMessage;
     NodeGraphRectItem* _stateIndicator;
     bool _stateIndicatorSelected; //< the selection refreshStateIndicator() last showed
+    std::uint64_t _stackingSerial = 0;
+
+    QGraphicsItem* edgeParent() const;
+
+    void refreshEdgesDataKindPenNow(bool force);
+
+    // While initialize() runs or a node refresh batch is open, the name item is laid out once, at
+    // their end, from the last name and label it was given.
+    bool _initializingGui = false;
+    bool _nameItemHtmlDeferred = false;
+    QString _deferredName, _deferredLabel;
     NodeGuiIndicatorPtr _streamIssuesWarning;
     NodeGuiDisabledCross* _disabledCross;
     NodeGuiDecorations* _indicatorLayer;

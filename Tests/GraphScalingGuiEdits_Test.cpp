@@ -25,7 +25,10 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <list>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -35,6 +38,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "DataKindTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -45,6 +49,8 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_USING
 NATRON_PYTHON_NAMESPACE_USING
@@ -89,6 +95,67 @@ double
 readOffset(const KnobDoubleBasePtr& offset)
 {
     return offset->getValueAtTime(1., 0, ViewSpec::current(), false);
+}
+
+// As the node graph's multi-node delete does.
+void
+deactivateInBatch(const AppInstancePtr& app,
+                  const std::vector<NodePtr>& nodes)
+{
+    std::set<const Node*> removedNodes;
+    for (const NodePtr& node : nodes) {
+        removedNodes.insert(node.get());
+    }
+    std::vector<std::list<NodePtr>> outputsToDisconnect;
+    for (const NodePtr& node : nodes) {
+        std::list<NodePtr> outputs;
+        for (const NodeWPtr& weak : node->getGuiOutputs()) {
+            NodePtr output = weak.lock();
+            if (output && !removedNodes.count(output.get())) {
+                outputs.push_back(output);
+            }
+        }
+        outputsToDisconnect.push_back(outputs);
+    }
+
+    std::optional<Node::RemovalBatch> removalBatch;
+    if (nodes.size() > 1) {
+        removalBatch.emplace();
+    }
+    Node::InputEditBatch batch(app);
+    const Node::PythonDeclarationBatch pythonBatch;
+
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodes[i]->deactivate(outputsToDisconnect[i], false, nodes.size() == 1, true, false);
+    }
+}
+
+// As undoing the node graph's multi-node delete does.
+void
+activateInBatch(const AppInstancePtr& app,
+                const std::vector<NodePtr>& nodes)
+{
+    Node::InputEditBatch batch(app);
+    const Node::PythonDeclarationBatch pythonBatch;
+
+    // deactivateInBatch() disconnected exactly the outputs the node graph restores.
+    for (const NodePtr& node : nodes) {
+        node->activate(std::list<NodePtr>(), true, false);
+    }
+}
+
+// As pasting in the node graph does.
+NodePtr
+pasteSerialization(const AppInstancePtr& app,
+                   const Serialization::NodeSerializationPtr& serialization)
+{
+    CreateNodeArgs args(serialization->pluginID, app->getProject());
+
+    args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, serialization);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+
+    return app->createNode(args);
 }
 
 } // namespace
@@ -517,4 +584,465 @@ TEST_F(GraphScalingGuiEdits, UndefinedSiblingStaysInvalidAmongOthers)
     EXPECT_FALSE(offset->isExpressionValid(0, 0));
     ASSERT_NO_THROW(offset->setExpression(0, "Other.mix.get() + Missing.mix.get()", false, false));
     EXPECT_FALSE(offset->isExpressionValid(0, 0));
+}
+
+TEST_F(GraphScalingGuiEdits, BatchedDeleteAndUndoRunTwoScripts)
+{
+    const int kNumNodes = 1000;
+    std::vector<NodePtr> nodes;
+
+    for (int i = 0; i < kNumNodes; ++i) {
+        NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+        ASSERT_TRUE(bool(grade));
+        nodes.push_back(grade);
+    }
+    KnobDoubleBasePtr offset = doubleKnob(nodes.back(), "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "frame * 2", false, true));
+
+    const U64 beforeDelete = getInterpretedScriptsCount();
+    deactivateInBatch(getApp(), nodes);
+    EXPECT_LE(getInterpretedScriptsCount() - beforeDelete, 1u);
+
+    const std::string appID = getApp()->getAppIDString();
+    std::string names;
+    for (const NodePtr& node : nodes) {
+        names += "'" + node->getScriptName_mt_safe() + "',";
+    }
+    std::string error;
+    EXPECT_TRUE(interpretPythonScript("for name in [" + names + "]:\n    assert not hasattr(" + appID + ", name), name\n", &error, 0)) << error;
+
+    const U64 beforeUndo = getInterpretedScriptsCount();
+    activateInBatch(getApp(), nodes);
+    EXPECT_LE(getInterpretedScriptsCount() - beforeUndo, 2u);
+
+    EXPECT_TRUE(interpretPythonScript("for name in [" + names + "]:\n    assert hasattr(getattr(" + appID + ", name), 'mix'), name\n", &error, 0)) << error;
+    const std::string offsetPath = appID + "." + nodes.back()->getScriptName_mt_safe() + ".offset";
+    EXPECT_TRUE(interpretPythonScript("assert hasattr(" + offsetPath + ", 'expression0')\n", &error, 0)) << error;
+
+    const U64 expressionScriptsBefore = KnobHelper::getExpressionScriptsRunCount();
+    EXPECT_DOUBLE_EQ(14., offset->getValueAtTime(7., 0, ViewSpec::current(), false));
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_EQ(0u, KnobHelper::getExpressionScriptsRunCount() - expressionScriptsBefore);
+}
+
+TEST_F(GraphScalingGuiEdits, ExpressionsSurviveBatchedDeleteAndUndo)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr inner = createWithMix(getApp(), "Inner", 1.);
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(target && inner && reader);
+    KnobDoubleBasePtr innerOffset = doubleKnob(inner, "offset");
+    KnobDoubleBasePtr readerOffset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(innerOffset && readerOffset);
+    ASSERT_NO_THROW(innerOffset->setExpression(0, "Target.mix.get() + frame", false, true));
+    ASSERT_NO_THROW(readerOffset->setExpression(0, "Target.mix.get() + Inner.mix.get()", false, true));
+    EXPECT_DOUBLE_EQ(1.25, readOffset(innerOffset));
+    EXPECT_DOUBLE_EQ(1.25, readOffset(readerOffset));
+
+    const std::vector<NodePtr> removed = { target, inner };
+    deactivateInBatch(getApp(), removed);
+    EXPECT_FALSE(readerOffset->isExpressionValid(0, 0));
+
+    activateInBatch(getApp(), removed);
+    EXPECT_TRUE(readerOffset->isExpressionValid(0, 0));
+    EXPECT_TRUE(innerOffset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(1.25, readOffset(innerOffset));
+    EXPECT_DOUBLE_EQ(1.25, readOffset(readerOffset));
+
+    doubleKnob(target, "mix")->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(1.5, readOffset(innerOffset));
+    EXPECT_DOUBLE_EQ(1.5, readOffset(readerOffset));
+
+    const std::string appID = getApp()->getAppIDString();
+    std::string error;
+    EXPECT_TRUE(interpretPythonScript("assert hasattr(" + appID + ".Target, 'mix')\n"
+                                                                  "assert hasattr("
+                                          + appID + ".Inner.offset, 'expression0')\n",
+                                      &error, 0))
+        << error;
+}
+
+TEST_F(GraphScalingGuiEdits, UndoKeepsTheNodesPythonObjects)
+{
+    NodePtr loose = createWithMix(getApp(), "Loose", 0.25);
+    NodePtr single = createWithMix(getApp(), "Single", 0.5);
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    groupArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "Holder");
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr holder = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(loose && single && holder);
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(holder->getEffectInstance());
+    ASSERT_TRUE(bool(collection));
+    CreateNodeArgs innerArgs(kGradePluginID, collection);
+    innerArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "Inside");
+    NodePtr inside = getApp()->createNode(innerArgs);
+    ASSERT_TRUE(bool(inside));
+    ASSERT_NO_THROW(doubleKnob(inside, "offset")->setExpression(0, "frame * 3", false, true));
+
+    const std::string a = getApp()->getAppIDString();
+    std::string error;
+    ASSERT_TRUE(interpretPythonScript("keptLoose = " + a + ".Loose\n"
+                                                           "keptLoose.userTag = 7\n"
+                                                           "keptMix = "
+                                          + a + ".Loose.mix\n"
+                                                "keptInside = "
+                                          + a + ".Holder.Inside\n"
+                                                "keptSingle = "
+                                          + a + ".Single\n",
+                                      &error, 0))
+        << error;
+
+    const std::vector<NodePtr> removed = { loose, holder };
+    deactivateInBatch(getApp(), removed);
+    single->deactivate(std::list<NodePtr>(), false, false, true, false);
+    EXPECT_TRUE(interpretPythonScript("assert not hasattr(" + a + ", 'Loose')\n"
+                                                                  "assert not hasattr("
+                                          + a + ", 'Holder')\n"
+                                                "assert not hasattr("
+                                          + a + ", 'Single')\n",
+                                      &error, 0))
+        << error;
+
+    activateInBatch(getApp(), removed);
+    single->activate(std::list<NodePtr>(), false, false);
+    EXPECT_TRUE(interpretPythonScript("assert " + a + ".Loose is keptLoose\n"
+                                                      "assert "
+                                          + a + ".Loose.userTag == 7\n"
+                                                "assert "
+                                          + a + ".Loose.mix is keptMix\n"
+                                                "assert "
+                                          + a + ".Holder.Inside is keptInside\n"
+                                                "assert hasattr("
+                                          + a + ".Holder.Inside.offset, 'expression0')\n"
+                                                "assert "
+                                          + a + ".Single is keptSingle\n"
+                                                "assert "
+                                          + a + ".Single.mix.get() == 0.5\n",
+                                      &error, 0))
+        << error;
+    EXPECT_DOUBLE_EQ(21., doubleKnob(inside, "offset")->getValueAtTime(7., 0, ViewSpec::current(), false));
+}
+
+TEST_F(GraphScalingGuiEdits, BatchedPasteRunsTwoScripts)
+{
+    const int kNumNodes = 100;
+    NodePtr source = createWithMix(getApp(), "Source", 0.75);
+    ASSERT_TRUE(bool(source));
+    Serialization::NodeSerializationPtr serialization = std::make_shared<Serialization::NodeSerialization>();
+    source->toSerialization(serialization.get(), false);
+
+    std::vector<NodePtr> pasted;
+    const U64 beforePaste = getInterpretedScriptsCount();
+    {
+        const Node::PythonDeclarationBatch pythonBatch;
+        for (int i = 0; i < kNumNodes; ++i) {
+            NodePtr node = pasteSerialization(getApp(), serialization);
+            ASSERT_TRUE(bool(node));
+            pasted.push_back(node);
+        }
+    }
+    EXPECT_LE(getInterpretedScriptsCount() - beforePaste, 2u);
+
+    const std::string a = getApp()->getAppIDString();
+    std::string names;
+    std::set<std::string> distinct;
+    for (const NodePtr& node : pasted) {
+        names += "'" + node->getScriptName_mt_safe() + "',";
+        distinct.insert(node->getScriptName_mt_safe());
+    }
+    EXPECT_EQ(static_cast<std::size_t>(kNumNodes), distinct.size());
+    std::string error;
+    EXPECT_TRUE(interpretPythonScript("for name in [" + names + "]:\n"
+                                                                "    node = getattr("
+                                          + a + ", name)\n"
+                                                "    assert node.getScriptName() == name, name\n"
+                                                "    assert node.mix.get() == 0.75, name\n",
+                                      &error, 0))
+        << error;
+
+    KnobDoubleBasePtr offset = doubleKnob(pasted.front(), "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, pasted.back()->getScriptName_mt_safe() + ".mix.get()", false, true));
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.75, readOffset(offset));
+}
+
+TEST_F(GraphScalingGuiEdits, ExpressionWrittenInAPasteBatchResolvesAtItsEnd)
+{
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(bool(reader));
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_NO_THROW(offset->setExpression(0, "Pasted.mix.get()", false, false));
+    ASSERT_FALSE(offset->isExpressionValid(0, 0));
+
+    {
+        const Node::PythonDeclarationBatch pythonBatch;
+        NodePtr pasted = createWithMix(getApp(), "Pasted", 0.5);
+        ASSERT_TRUE(bool(pasted));
+        EXPECT_FALSE(offset->isExpressionValid(0, 0));
+    }
+    EXPECT_TRUE(offset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.5, readOffset(offset));
+}
+
+TEST_F(GraphScalingGuiEdits, UndoingADeleteOfChainedExpressionsRunsNoValidation)
+{
+    const int kNumNodes = 1000;
+    std::vector<NodePtr> nodes;
+
+    for (int i = 0; i < kNumNodes; ++i) {
+        NodePtr node = createWithMix(getApp(), "Chained" + std::to_string(i), 0.25);
+        ASSERT_TRUE(bool(node));
+        ASSERT_EQ("Chained" + std::to_string(i), node->getScriptName_mt_safe());
+        nodes.push_back(node);
+    }
+    for (int i = 1; i < kNumNodes; ++i) {
+        ASSERT_NO_THROW(doubleKnob(nodes[i], "offset")->setExpression(0, "Chained" + std::to_string(i - 1) + ".mix.get() + frame", false, true));
+    }
+
+    deactivateInBatch(getApp(), nodes);
+    for (int i = 1; i < kNumNodes; ++i) {
+        EXPECT_FALSE(doubleKnob(nodes[i], "offset")->isExpressionValid(0, 0)) << i;
+    }
+
+    const U64 beforeUndo = getInterpretedScriptsCount();
+    const U64 expressionScriptsBeforeUndo = KnobHelper::getExpressionScriptsRunCount();
+    activateInBatch(getApp(), nodes);
+    EXPECT_LE(getInterpretedScriptsCount() - beforeUndo, 2u);
+    EXPECT_EQ(0u, KnobHelper::getExpressionScriptsRunCount() - expressionScriptsBeforeUndo);
+
+    for (int i = 1; i < kNumNodes; ++i) {
+        KnobDoubleBasePtr offset = doubleKnob(nodes[i], "offset");
+        EXPECT_TRUE(offset->isExpressionValid(0, 0)) << i;
+        EXPECT_DOUBLE_EQ(1.25, readOffset(offset)) << i;
+    }
+
+    const std::string appID = getApp()->getAppIDString();
+    std::string error;
+    EXPECT_TRUE(interpretPythonScript("for i in range(1, " + std::to_string(kNumNodes) + "):\n"
+                                                                                         "    assert hasattr(getattr("
+                                          + appID + ", 'Chained%d' % i).offset, 'expression0'), i\n",
+                                      &error, 0))
+        << error;
+
+    doubleKnob(nodes[0], "mix")->setValue(0.5, ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(1.5, readOffset(doubleKnob(nodes[1], "offset")));
+}
+
+TEST_F(GraphScalingGuiEdits, UndoingADeleteKeepsOtherwiseInvalidExpressionsFlagged)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr gone = createWithMix(getApp(), "Gone", 0.5);
+    NodePtr restoredOnly = createNamedNode(getApp(), kGradePluginID, "RestoredOnly");
+    NodePtr alsoGone = createNamedNode(getApp(), kGradePluginID, "AlsoGone");
+    NodePtr alreadyBroken = createNamedNode(getApp(), kGradePluginID, "AlreadyBroken");
+    ASSERT_TRUE(target && gone && restoredOnly && alsoGone && alreadyBroken);
+    KnobDoubleBasePtr restoredOnlyOffset = doubleKnob(restoredOnly, "offset");
+    KnobDoubleBasePtr alsoGoneOffset = doubleKnob(alsoGone, "offset");
+    KnobDoubleBasePtr alreadyBrokenOffset = doubleKnob(alreadyBroken, "offset");
+    ASSERT_TRUE(restoredOnlyOffset && alsoGoneOffset && alreadyBrokenOffset);
+    ASSERT_NO_THROW(restoredOnlyOffset->setExpression(0, "Target.mix.get()", false, true));
+    ASSERT_NO_THROW(alsoGoneOffset->setExpression(0, "Target.mix.get() + Gone.mix.get()", false, true));
+    ASSERT_NO_THROW(alreadyBrokenOffset->setExpression(0, "Target.mix.get() + Missing.mix.get()", false, false));
+    EXPECT_TRUE(restoredOnlyOffset->isExpressionValid(0, 0));
+    EXPECT_TRUE(alsoGoneOffset->isExpressionValid(0, 0));
+    EXPECT_FALSE(alreadyBrokenOffset->isExpressionValid(0, 0));
+
+    deactivateInBatch(getApp(), { target, gone });
+    EXPECT_FALSE(restoredOnlyOffset->isExpressionValid(0, 0));
+    EXPECT_FALSE(alsoGoneOffset->isExpressionValid(0, 0));
+
+    activateInBatch(getApp(), { target });
+    EXPECT_TRUE(restoredOnlyOffset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(restoredOnlyOffset));
+    EXPECT_FALSE(alsoGoneOffset->isExpressionValid(0, 0));
+    EXPECT_FALSE(alreadyBrokenOffset->isExpressionValid(0, 0));
+
+    activateInBatch(getApp(), { gone });
+    EXPECT_TRUE(alsoGoneOffset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.75, readOffset(alsoGoneOffset));
+    EXPECT_FALSE(alreadyBrokenOffset->isExpressionValid(0, 0));
+}
+
+TEST_F(GraphScalingGuiEdits, KnobLinksChangedOncePerNodePerBatch)
+{
+    NodePtr target = createWithMix(getApp(), "Target", 0.25);
+    NodePtr reader = createNamedNode(getApp(), kGradePluginID, "Reader");
+    ASSERT_TRUE(target && reader);
+    KnobDoubleBasePtr offset = doubleKnob(reader, "offset");
+    ASSERT_TRUE(bool(offset));
+    ASSERT_GT(offset->getDimension(), 1);
+
+    int emitted = 0;
+    QMetaObject::Connection knobsLinks = QObject::connect(reader.get(), &Node::knobsLinksChanged, reader.get(), [&emitted]() { ++emitted; }, Qt::DirectConnection);
+    QMetaObject::Connection links = QObject::connect(reader.get(), &Node::linksChanged, reader.get(), [&emitted]() { ++emitted; }, Qt::DirectConnection);
+
+    {
+        Node::InputEditBatch batch(getApp());
+        for (int dim = 0; dim < offset->getDimension(); ++dim) {
+            ASSERT_NO_THROW(offset->setExpression(dim, "Target.mix.get()", false, true));
+        }
+        EXPECT_EQ(0, emitted);
+    }
+    EXPECT_EQ(1, emitted);
+    for (int dim = 0; dim < offset->getDimension(); ++dim) {
+        EXPECT_TRUE(offset->isExpressionValid(dim, 0)) << dim;
+    }
+
+    QObject::disconnect(knobsLinks);
+    QObject::disconnect(links);
+}
+
+TEST_F(GraphScalingGuiEdits, BatchedDeleteOfAChainWalksItsDataKindsOnce)
+{
+    const int kNumNodes = 200;
+    std::vector<NodePtr> nodes;
+    std::vector<int> emitted(kNumNodes, 0);
+    std::vector<QMetaObject::Connection> connections;
+
+    for (int i = 0; i < kNumNodes; ++i) {
+        NodePtr node = createNode(QString::fromUtf8(kGradePluginID));
+        ASSERT_TRUE(bool(node));
+        if (!nodes.empty()) {
+            connectNodes(nodes.back(), node, 0, true);
+        }
+        nodes.push_back(node);
+        int* count = &emitted[i];
+        connections.push_back(QObject::connect(node.get(), &Node::dataKindChanged, node.get(), [count]() { ++*count; }, Qt::DirectConnection));
+    }
+
+    std::fill(emitted.begin(), emitted.end(), 0);
+    const U64 visitsBefore = Node::getDataKindInvalidationVisitCount();
+    std::vector<NodePtr> removed(nodes.begin() + 1, nodes.end() - 1);
+    deactivateInBatch(getApp(), removed);
+    EXPECT_FALSE(nodes.back()->getInput(0));
+    const U64 visits = Node::getDataKindInvalidationVisitCount() - visitsBefore;
+    EXPECT_GT(visits, 0u);
+    EXPECT_LE(visits, static_cast<U64>(2 * kNumNodes));
+    for (int i = 0; i < kNumNodes; ++i) {
+        EXPECT_LE(emitted[i], 1) << i;
+    }
+
+    std::fill(emitted.begin(), emitted.end(), 0);
+    const U64 visitsBeforeUndo = Node::getDataKindInvalidationVisitCount();
+    activateInBatch(getApp(), removed);
+    EXPECT_EQ(nodes[kNumNodes - 2], nodes.back()->getInput(0));
+    const U64 undoVisits = Node::getDataKindInvalidationVisitCount() - visitsBeforeUndo;
+    EXPECT_GT(undoVisits, 0u);
+    EXPECT_LE(undoVisits, static_cast<U64>(2 * kNumNodes));
+    for (int i = 0; i < kNumNodes; ++i) {
+        EXPECT_LE(emitted[i], 1) << i;
+    }
+
+    for (const QMetaObject::Connection& connection : connections) {
+        QObject::disconnect(connection);
+    }
+}
+
+TEST_F(GraphScalingGuiEdits, DeletingALeafDropsTheKindItsInputTookFromIt)
+{
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(dot && deepSink);
+    connectNodes(dot, deepSink, 0, true);
+    ASSERT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    deepSink->deactivate();
+    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
+    deepSink->activate();
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    deactivateInBatch(getApp(), { deepSink });
+    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
+    activateInBatch(getApp(), { deepSink });
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+}
+
+TEST_F(GraphScalingGuiEdits, BatchedDeleteOfManyLeavesWalksTheirInputOnce)
+{
+    const int kNumLeaves = 200;
+    NodePtr hub = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(hub));
+    int hubEmitted = 0;
+    const QMetaObject::Connection connection = QObject::connect(hub.get(), &Node::dataKindChanged, hub.get(), [&hubEmitted]() { ++hubEmitted; }, Qt::DirectConnection);
+
+    std::vector<NodePtr> leaves;
+    for (int i = 0; i < kNumLeaves; ++i) {
+        NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+        ASSERT_TRUE(bool(leaf));
+        connectNodes(hub, leaf, 0, true);
+        leaves.push_back(leaf);
+    }
+    ASSERT_EQ(eDataKindDeep, hub->getEffectiveOutputDataKind());
+
+    hubEmitted = 0;
+    const U64 visitsBefore = Node::getDataKindInvalidationVisitCount();
+    deactivateInBatch(getApp(), leaves);
+    const U64 visits = Node::getDataKindInvalidationVisitCount() - visitsBefore;
+    EXPECT_GT(visits, 0u);
+    EXPECT_LE(visits, static_cast<U64>(2 * kNumLeaves));
+    EXPECT_LE(hubEmitted, 1);
+    EXPECT_EQ(eDataKindPolymorphic, hub->getEffectiveOutputDataKind());
+
+    hubEmitted = 0;
+    const U64 visitsBeforeUndo = Node::getDataKindInvalidationVisitCount();
+    activateInBatch(getApp(), leaves);
+    const U64 undoVisits = Node::getDataKindInvalidationVisitCount() - visitsBeforeUndo;
+    EXPECT_GT(undoVisits, 0u);
+    EXPECT_LE(undoVisits, static_cast<U64>(2 * kNumLeaves));
+    EXPECT_LE(hubEmitted, 1);
+    EXPECT_EQ(eDataKindDeep, hub->getEffectiveOutputDataKind());
+
+    QObject::disconnect(connection);
+}
+
+// As undoing a delete in the node graph does: the rechecks by name of the activation, then one
+// over every invalid expression, which also finds an expression naming the node through an alias.
+TEST_F(GraphScalingGuiEdits, UndoneDeleteRevalidatesQualifiedAndAliasedExpressions)
+{
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    groupArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "Holder");
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr holder = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(holder));
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(holder->getEffectInstance());
+    ASSERT_TRUE(bool(collection));
+    CreateNodeArgs targetArgs(kGradePluginID, collection);
+    targetArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "Target");
+    NodePtr target = getApp()->createNode(targetArgs);
+    ASSERT_TRUE(bool(target));
+    ASSERT_EQ(std::string("Target"), target->getScriptName_mt_safe());
+    doubleKnob(target, "mix")->setValue(0.25, ViewSpec::all(), 0);
+
+    NodePtr qualified = createNamedNode(getApp(), kGradePluginID, "Qualified");
+    NodePtr aliased = createNamedNode(getApp(), kGradePluginID, "Aliased");
+    ASSERT_TRUE(qualified && aliased);
+    KnobDoubleBasePtr qualifiedOffset = doubleKnob(qualified, "offset");
+    KnobDoubleBasePtr aliasedOffset = doubleKnob(aliased, "offset");
+    ASSERT_TRUE(qualifiedOffset && aliasedOffset);
+
+    const std::string appID = getApp()->getAppIDString();
+    std::string error;
+    ASSERT_TRUE(interpretPythonScript("targetAlias = " + appID + ".Holder.Target\n", &error, 0)) << error;
+    ASSERT_NO_THROW(qualifiedOffset->setExpression(0, "Holder.Target.mix.get()", false, true));
+    ASSERT_NO_THROW(aliasedOffset->setExpression(0, "targetAlias.mix.get()", false, true));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(qualifiedOffset));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(aliasedOffset));
+
+    const std::vector<NodePtr> removed = { target };
+    deactivateInBatch(getApp(), removed);
+    EXPECT_FALSE(qualifiedOffset->isExpressionValid(0, 0));
+    EXPECT_FALSE(aliasedOffset->isExpressionValid(0, 0));
+
+    activateInBatch(getApp(), removed);
+    getApp()->recheckInvalidExpressions();
+    EXPECT_TRUE(qualifiedOffset->isExpressionValid(0, 0));
+    EXPECT_TRUE(aliasedOffset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(qualifiedOffset));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(aliasedOffset));
+
+    EXPECT_TRUE(interpretPythonScript("del targetAlias\n", &error, 0)) << error;
 }

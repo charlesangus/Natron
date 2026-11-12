@@ -28,6 +28,7 @@
 #include <algorithm> // min, max
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -46,6 +47,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Gui/CurveEditor.h"
 #include "Gui/Edge.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -209,6 +211,12 @@ AddMultipleNodesCommand::undo()
 
     {
         Node::InputEditBatch batch(_graph->getGui()->getApp());
+        std::optional<Node::PythonDeclarationBatch> pythonBatch;
+        std::optional<CurveEditor::RemovalBatch> curveEditorBatch;
+        if (_nodes.size() > 1) {
+            pythonBatch.emplace();
+            curveEditorBatch.emplace(_graph->getGui()->getCurveEditor());
+        }
         for (std::list<NodeGuiWPtr>::const_iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
             NodeGuiPtr node = it->lock();
             if (!node) {
@@ -259,6 +267,10 @@ AddMultipleNodesCommand::redo()
     }
     if (_firstRedoCalled) {
         Node::InputEditBatch batch(_graph->getGui()->getApp());
+        std::optional<Node::PythonDeclarationBatch> pythonBatch;
+        if (nodes.size() > 1) {
+            pythonBatch.emplace();
+        }
         for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
             (*it)->getNode()->activate(NodesList(), //inputs to restore
                                        true, //restore all inputs ?
@@ -271,7 +283,11 @@ AddMultipleNodesCommand::redo()
         _graph->setSelection(nodes);
     }
 
-    {
+    if (_firstRedoCalled) {
+        // The rechecks by name at activation miss an expression reaching a node other than by
+        // its script name in the text, through a Python alias for instance.
+        _graph->getGui()->getApp()->recheckInvalidExpressions();
+    } else {
         std::set<std::string> names;
         for (std::list<NodeGuiPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
             names.insert((*it)->getNode()->getScriptName_mt_safe());
@@ -361,36 +377,46 @@ RemoveMultipleNodesCommand::undo()
     {
         // The rechecks at the end of the edit batch compile expressions, naming siblings by name.
         const NodeCollection::NamingBatch namingBatch(_graph->getGroup());
-        Node::InputEditBatch batch(_graph->getGui()->getApp());
-        for (std::list<NodeToRemove>::iterator it = _nodes.begin();
-             it != _nodes.end();
-             ++it) {
-            NodeGuiPtr node = it->node.lock();
-            if (!node) {
+        {
+            Node::InputEditBatch batch(_graph->getGui()->getApp());
+            std::optional<Node::PythonDeclarationBatch> pythonBatch;
+            if (_nodes.size() > 1) {
+                pythonBatch.emplace();
+            }
+            for (std::list<NodeToRemove>::iterator it = _nodes.begin();
+                 it != _nodes.end();
+                 ++it) {
+                NodeGuiPtr node = it->node.lock();
+                if (!node) {
+                    if (next != _nodes.end()) {
+                        ++next;
+                    }
+                    continue;
+                }
+                NodesList outputsToRestore;
+                for (NodesWList::const_iterator it2 = it->outputsToRestore.begin(); it2 != it->outputsToRestore.end(); ++it2) {
+                    NodePtr output = it2->lock();
+                    if (output) {
+                        outputsToRestore.push_back(output);
+                    }
+                }
+
+                node->getNode()->activate(outputsToRestore, false, false);
+                if (node->isSettingsPanelVisible()) {
+                    node->getNode()->showKeyframesOnTimeline(next == _nodes.end());
+                }
+                restored.push_back(node->getNode());
+
+                // increment for next iteration
                 if (next != _nodes.end()) {
                     ++next;
                 }
-                continue;
-            }
-            NodesList outputsToRestore;
-            for (NodesWList::const_iterator it2 = it->outputsToRestore.begin(); it2 != it->outputsToRestore.end(); ++it2) {
-                NodePtr output = it2->lock();
-                if (output) {
-                    outputsToRestore.push_back(output);
-                }
-            }
-
-            node->getNode()->activate(outputsToRestore, false, false);
-            if (node->isSettingsPanelVisible()) {
-                node->getNode()->showKeyframesOnTimeline(next == _nodes.end());
-            }
-            restored.push_back(node->getNode());
-
-            // increment for next iteration
-            if (next != _nodes.end()) {
-                ++next;
-            }
-        } // for(it)
+            } // for(it)
+        }
+        // The rechecks by name at the end of the edit batch miss an expression reaching a
+        // restored node other than by its script name in the text, through a Python alias for
+        // instance.
+        _graph->getGui()->getApp()->recheckInvalidExpressions();
     }
     Node::getViewersDownstreamOf(restored, &viewersToRefresh);
     for (std::list<ViewerInstance* >::iterator it = viewersToRefresh.begin(); it != viewersToRefresh.end(); ++it) {
@@ -425,8 +451,19 @@ RemoveMultipleNodesCommand::redo()
         }
         Node::getViewersDownstreamOf(removed, &viewersToRefresh);
 
-        Node::RemovalBatch removalBatch;
+        // Not around a single node: its delete reconnects its outputs to its inputs, which a
+        // removal batch would hide from the walks for outputs.
+        std::optional<Node::RemovalBatch> removalBatch;
+        if (_nodes.size() > 1) {
+            removalBatch.emplace();
+        }
         Node::InputEditBatch batch(_graph->getGui()->getApp());
+        std::optional<Node::PythonDeclarationBatch> pythonBatch;
+        std::optional<CurveEditor::RemovalBatch> curveEditorBatch;
+        if (_nodes.size() > 1) {
+            pythonBatch.emplace();
+            curveEditorBatch.emplace(_graph->getGui()->getCurveEditor());
+        }
         for (std::list<NodeToRemove>::iterator it = _nodes.begin();
              it != _nodes.end();
              ++it) {
@@ -874,7 +911,7 @@ ResizeBackdropCommand::ResizeBackdropCommand(const NodeGuiPtr& bd,
     , _oldW(0)
     , _oldH(0)
 {
-    QRectF bbox = bd->boundingRect();
+    QRectF bbox = bd->bodyRect();
 
     _oldW = bbox.width();
     _oldH = bbox.height();

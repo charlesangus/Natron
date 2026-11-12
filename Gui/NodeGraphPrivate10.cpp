@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <unordered_map>
@@ -63,6 +64,8 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
                                      std::list<std::pair<std::string, NodeGuiPtr> > *newNodes)
 {
     if ( !clipboard.isEmpty() ) {
+        std::optional<NodeRefreshBatch> refreshBatch;
+        refreshBatch.emplace(_publicInterface);
         double xmax = std::numeric_limits<double>::lowest();
         double xmin = std::numeric_limits<double>::max();
         double ymin = std::numeric_limits<double>::max();
@@ -105,25 +108,30 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             const std::list<Serialization::NodeSerializationPtr>& internalNodesClipBoard = clipboard.nodes;
             std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = internalNodesClipBoard.begin();
             std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
-            for (; itOther != internalNodesClipBoard.end(); ++itOther) {
-                NodePtr sourceNode;
-                if (itSource != clipboard.sourceNodes.end()) {
-                    sourceNode = *itSource;
-                    ++itSource;
-                }
-                const std::string& oldScriptName = (*itOther)->scriptName;
-                NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), 0, &oldNewScriptNamesMapping);
+            {
+                // Closed before the connections and links below, which read the pasted nodes' Python
+                // variables.
+                const Node::PythonDeclarationBatch pythonDeclarationBatch;
+                for (; itOther != internalNodesClipBoard.end(); ++itOther) {
+                    NodePtr sourceNode;
+                    if (itSource != clipboard.sourceNodes.end()) {
+                        sourceNode = *itSource;
+                        ++itSource;
+                    }
+                    const std::string& oldScriptName = (*itOther)->scriptName;
+                    NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), 0, &oldNewScriptNamesMapping);
 
-                if (!node) {
-                    missingNodePlugins.insert((*itOther)->pluginID);
-                    continue;
-                }
-                newNodes->push_back( std::make_pair(oldScriptName, node) );
-                newNodesList.push_back(node);
-                newNodesMap.push_back( std::make_pair( *itOther, node->getNode() ) );
+                    if (!node) {
+                        missingNodePlugins.insert((*itOther)->pluginID);
+                        continue;
+                    }
+                    newNodes->push_back(std::make_pair(oldScriptName, node));
+                    newNodesList.push_back(node);
+                    newNodesMap.push_back(std::make_pair(*itOther, node->getNode()));
 
-                const std::string& newScriptName = node->getNode()->getScriptName();
-                oldNewScriptNamesMapping[oldScriptName] = newScriptName;
+                    const std::string& newScriptName = node->getNode()->getScriptName();
+                    oldNewScriptNamesMapping[oldScriptName] = newScriptName;
+                }
             }
             if (internalNodesClipBoard.size() != newNodes->size()) {
                 std::ostringstream message;
@@ -178,6 +186,9 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         } else if (newNodesList.size() == 1) {
             newNodesList.front()->getNode()->getEffectInstance()->refreshMetadataSideEffects();
         }
+
+        // The data kinds the edges are coloured by are final once the metadata is refreshed.
+        refreshBatch.reset();
 
         // Now that meta-datas are refreshed, compute preview
         for (NodesGuiList::const_iterator it = newNodesList.begin(); it!=newNodesList.end(); ++it) {

@@ -3805,6 +3805,9 @@ EffectInstance::evaluate(bool isSignificant,
 
 
     double time = getCurrentTime();
+    if (Node::deferEvaluationToCascade(node, isSignificant, time)) {
+        return;
+    }
     std::list<ViewerInstance* > viewers;
     node->hasViewersConnected(&viewers);
     for (std::list<ViewerInstance* >::iterator it = viewers.begin();
@@ -6889,6 +6892,9 @@ EffectInstance::getDownstreamOutputs(std::list<OutputEffectInstance*>* outputNod
 void
 EffectInstance::abortViewerRendersForEdit()
 {
+    if (Node::deferViewerAbortToCascade(getNode())) {
+        return;
+    }
     std::list<OutputEffectInstance*> outputNodes;
     getDownstreamOutputs(&outputNodes);
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {

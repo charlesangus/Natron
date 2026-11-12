@@ -765,6 +765,14 @@ public:
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) = 0;
 
     /**
+     * @brief Flags the expression of dimension invalid with error because node, which it reads, was
+     * deactivated. If it was valid, or only invalid because of other deactivated nodes, a recheck
+     * once they are all active again under the names they had then makes it valid again without
+     * running Python.
+     **/
+    virtual void setExpressionMissingNode(int dimension, const NodePtr& node, const std::string& error) = 0;
+
+    /**
      * @brief Replaces the node name "oldName" by "newName" in the expression of dimension, if set,
      * where the expression names it in code: whole identifiers and node paths, outside string
      * literals and comments.
@@ -1918,6 +1926,12 @@ public:
     virtual void restoreExpressionFunctions() OVERRIDE FINAL;
     virtual bool isExpressionValid(int dimension, std::string* error) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) OVERRIDE FINAL;
+    virtual void setExpressionMissingNode(int dimension, const NodePtr& node, const std::string& error) OVERRIDE FINAL;
+
+private:
+    // Makes the expression of dimension valid again if only the deactivation of nodes now back
+    // made it invalid, returning false if it must be set again instead.
+    bool restoreExpressionOfReturnedNodes(int dimension);
 
 protected:
 public:

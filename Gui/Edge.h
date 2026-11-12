@@ -34,6 +34,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsLineItem>
 #include <QLineF>
+#include <QPen>
 #include <QPointF>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -89,7 +90,10 @@ public:
 
     void dragDest(const QPointF & dst);
 
+    // Left to the end of an open node refresh batch on the graph of the node owning the edge.
     void initLine();
+
+    void initLineNow();
 
     void setAngle(double a);
 
@@ -136,14 +140,24 @@ public:
      * Public because a kind resolves from the whole connected component: an edit anywhere in it can
      * retype nodes whose own edges were not otherwise touched, and NodeGui refreshes those from
      * Node::dataKindChanged().
+     * Like initLine(), left to the end of an open node refresh batch.
      **/
     void refreshDataKindPen(bool force = false);
+
+    void refreshDataKindPenNow(bool force = false);
+
+    // The pen the line is stroked with in the current state, dashes included.
+    QPen getDrawnPen() const;
 
 private:
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *options, QWidget *parent = 0) OVERRIDE FINAL;
 
+    virtual QVariant itemChange(GraphicsItemChange change, const QVariant& value) OVERRIDE;
+
     void invalidateGraphNavigator();
+
+    void appearanceChanged();
 
     std::unique_ptr<EdgePrivate> _imp;
 };

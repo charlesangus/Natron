@@ -532,11 +532,21 @@ try:
         clear_selection()
         invoke("centerOnAllNodes")
         repaint()
-        # Framing moves the graph's root item so the top-left node sits at the scene origin.
-        positions = [c.getPosition() for c in app.getChildren()]
-        if positions:
-            root_offset[0] = -min(p[0] for p in positions)
-            root_offset[1] = -min(p[1] for p in positions)
+        # Builds whose framing moves the graph's root item put the top-left node at the scene origin;
+        # builds that pan by scrolling keep node positions in scene coordinates. Framing centres the
+        # view on the nodes' bounding box, so the view centre tells the two apart.
+        boxes = [(c.getPosition(), c.getSize()) for c in app.getChildren()]
+        if not boxes:
+            return
+        x0 = min(p[0] for p, _s in boxes)
+        y0 = min(p[1] for p, _s in boxes)
+        mid_x = (x0 + max(p[0] + s[0] for p, s in boxes)) / 2.0
+        mid_y = (y0 + max(p[1] + s[1] for p, s in boxes)) / 2.0
+        graph = root_graph()
+        c = graph.mapToScene(graph.viewport().rect().center())
+        moved = (c.x() - mid_x + x0) ** 2 + (c.y() - mid_y + y0) ** 2
+        fixed = (c.x() - mid_x) ** 2 + (c.y() - mid_y) ** 2
+        root_offset[0], root_offset[1] = (-x0, -y0) if moved < fixed else (0.0, 0.0)
 
     def to_view(x, y):
         graph = root_graph()

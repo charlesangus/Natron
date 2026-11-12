@@ -155,6 +155,13 @@ Qt schedules them (coalesced), which is closer to what a user sees; the host rec
 
 ## Profiling one op
 
+`profile_ops.sh` does all of this for a list of ops, in the container or with `--host` on an
+AppImage (sampling with `eu-stack`, or `sample_stacks_gdb.sh` when only gdb is installed), and
+prints why the sampler could not attach (missing tool, `kernel.yama.ptrace_scope`) before the first
+op. It prints `== profile <op> start|end` around each op. Run it with `--help` for its options. Each
+rep is still cut at its per-rep timeout, so a long op is sampled only up to that point. The steps
+below are the manual path.
+
 `perf` is not available in the container, so profile with wall-clock stack samples. Use an Xvfb
 run of a release build on the `comp` topology at N=3000, one rep, one op:
 
@@ -179,7 +186,8 @@ mostly wall time is waiting, not computing.
 `GUI_BENCH_HOLD_FILE=PATH` makes each op report `BEGIN op topology n` after its setup and wait (up to
 `GUI_BENCH_HOLD_S`, default 120 s) until PATH exists, so a sampler can attach before a short op
 starts. On a host with `kernel.yama.ptrace_scope` 1, only an ancestor may attach to Natron;
-`GUI_BENCH_PTRACER_ANY=1` makes the bench allow any process of the same user to attach.
+`GUI_BENCH_PTRACER_ANY=1` makes the bench allow any process of the same user to attach. The samplers
+exit non-zero with the attach error and the remedy when their first sample gets no stacks.
 
 A stall is any stretch where the main thread doesn't service a 10 ms heartbeat timer for over
 50 ms (`NATRON_STALL_THRESHOLD_MS`). The stall monitor runs only when `NATRON_STALL_LOG` names a

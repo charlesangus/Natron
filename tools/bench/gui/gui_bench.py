@@ -1214,8 +1214,8 @@ try:
         return popup is not None and obj.window() is popup and popup.things.model().rowCount() > 0
 
     def install_menu_spans():
-        """Times the Python launch, the widget's show and the deferred refresh, and get_items inside them,
-        into python_spans by wrapping them in place."""
+        """Times the Python launch, the widget's show and its refresh before showing, and get_items inside
+        them, into python_spans by wrapping them in place."""
         import tabtabtab_natron
         import tabtabtab_nuke_core
 
@@ -1234,7 +1234,7 @@ try:
         tabtabtab_natron._plugin.get_items = wrapped("tabMenuGetItems", tabtabtab_natron._plugin.get_items)
         widget = tabtabtab_nuke_core.TabTabTabWidget
         widget.show = wrapped("tabMenuShow", widget.show)
-        widget._refresh_after_show = wrapped("tabMenuRefreshAfterShow", widget._refresh_after_show)
+        widget._refresh_before_show = wrapped("tabMenuRefresh", widget._refresh_before_show)
 
     def read_stage_spans(offset):
         """[(stage, start_ms, end_ms)] Natron's stage log gained past offset, then python_spans."""

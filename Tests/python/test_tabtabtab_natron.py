@@ -118,6 +118,20 @@ class _FakeMenu(object):
         return self._enabled
 
 
+class _WatchableMenu(_FakeMenu):
+    def __init__(self, actions=None, enabled=True):
+        super(_WatchableMenu, self).__init__(actions, enabled)
+        self.filters = []
+
+    def installEventFilter(self, event_filter):
+        self.filters.append(event_filter)
+
+    def send(self, event_type):
+        event = types.SimpleNamespace(type=lambda: event_type)
+        for event_filter in self.filters:
+            event_filter.eventFilter(self, event)
+
+
 def _submenu(title, actions, owned=True):
     properties = {"natronPluginOwned": True, "natronGrouping": title} if owned else {}
     return _FakeAction(text=title, menu=_FakeMenu(actions), properties=properties)
@@ -443,7 +457,6 @@ class NatronAdapterTests(unittest.TestCase):
         items = [i for i in plugin.get_items() if i["menupath"] == "Merge/My Merge Tool"]
         self.assertEqual(len(items), 1)
         plugin.invoke(items[0])
-        h.scheduled[0][1]()
 
         self.assertEqual(app.triggered, [mine])
         self.assertEqual(mine.trigger_calls, 1)
@@ -546,9 +559,9 @@ class NatronAdapterTests(unittest.TestCase):
 
         self.assertEqual(plugin.get_color(action), (None, None))
 
-    # --- deferred invoke ----------------------------------------------------
+    # --- invoke --------------------------------------------------------------
 
-    def test_invoke_node_defers_the_trigger_through_the_app_one_tick(self):
+    def test_invoke_node_triggers_through_the_app_at_once(self):
         h = self._load_adapter()
         app = _FakeApp()
         plugin = h.module.NatronPlugin()
@@ -557,28 +570,18 @@ class NatronAdapterTests(unittest.TestCase):
 
         plugin.invoke({"menuobj": blur})
 
-        self.assertEqual(len(h.scheduled), 1)
-        self.assertEqual(app.triggered, [])
-        delay, callback = h.scheduled[0]
-        self.assertEqual(delay, 0)
-
-        callback()
-
+        self.assertEqual(h.scheduled, [])
         self.assertEqual(app.triggered, [blur])
         self.assertEqual(blur.trigger_calls, 1)
 
-    def test_invoke_action_defers_trigger_one_tick(self):
+    def test_invoke_action_triggers_at_once(self):
         h = self._load_adapter()
         plugin = h.module.NatronPlugin()
         action = _FakeAction()
 
         plugin.invoke({"menuobj": action})
 
-        self.assertEqual(len(h.scheduled), 1)
-        self.assertEqual(action.trigger_calls, 0)
-
-        h.scheduled[0][1]()
-
+        self.assertEqual(h.scheduled, [])
         self.assertEqual(action.trigger_calls, 1)
 
     def test_invoke_action_skipped_when_shiboken_invalid(self):
@@ -588,7 +591,6 @@ class NatronAdapterTests(unittest.TestCase):
         action = _FakeAction()
 
         plugin.invoke({"menuobj": action})
-        h.scheduled[0][1]()
 
         self.assertEqual(action.trigger_calls, 0)
 
@@ -603,7 +605,6 @@ class NatronAdapterTests(unittest.TestCase):
         action = _FakeAction()
 
         plugin.invoke({"menuobj": action})
-        h.scheduled[0][1]()
 
         self.assertEqual(action.trigger_calls, 0)
 
@@ -969,6 +970,96 @@ class NatronAdapterTests(unittest.TestCase):
         self.assertIn("Constant", labels)
         self.assertIn("USDCamera", labels)
         self.assertIn("Preferences", labels)
+
+    # --- cached items ---------------------------------------------------------
+
+    def _watchable_nodes_menu(self, h, actions):
+        h.qtcore.QEvent.ActionAdded = "ActionAdded"
+        h.qtcore.QEvent.ActionRemoved = "ActionRemoved"
+        h.qtcore.QEvent.ActionChanged = "ActionChanged"
+        h.qtcore.QEvent.EnabledChange = "EnabledChange"
+        menu = _WatchableMenu(actions)
+        h.natron_ns.nodesMenu = lambda: menu
+        return menu
+
+    def test_items_are_the_same_list_until_a_watched_menu_changes(self):
+        h = self._load_adapter()
+        filter_menu = _WatchableMenu([_plugin_action("Blur", "BlurOFX")])
+        nodes = self._watchable_nodes_menu(
+            h, [_FakeAction(text="Filter", menu=filter_menu)])
+        plugin = h.module.NatronPlugin()
+
+        first = plugin.get_items()
+        self.assertIs(plugin.get_items(), first)
+        self.assertEqual(len(filter_menu.filters), 1)
+        self.assertEqual(len(nodes.filters), 1)
+
+        filter_menu._actions.append(_plugin_action("Defocus", "DefocusOFX"))
+        filter_menu.send("ActionAdded")
+
+        second = plugin.get_items()
+        self.assertIsNot(second, first)
+        self.assertEqual([i["menupath"] for i in second], ["Filter/Blur", "Filter/Defocus"])
+        self.assertIs(plugin.get_items(), second)
+
+    def test_invalidate_items_picks_up_a_new_shortcut_property(self):
+        h = self._load_adapter()
+        blur = _plugin_action("Blur", "BlurOFX")
+        self._watchable_nodes_menu(h, [blur])
+        plugin = h.module.NatronPlugin()
+
+        first = plugin.get_items()
+        self.assertNotIn("shortcut", first[0])
+        blur.setProperty("natronShortcut", "B")
+        self.assertIs(plugin.get_items(), first)
+
+        h.module.invalidate_items()
+
+        self.assertEqual(plugin.get_items()[0]["shortcut"], "B")
+
+    def test_filtered_items_follow_the_context(self):
+        h = self._load_adapter()
+        blur = _plugin_action("Blur", "BlurOFX")
+        blur.setProperty("natronInputKind", "image")
+        camera = _plugin_action("Camera", "USDCamera")
+        camera.setProperty("natronInputKind", "scene")
+        self._watchable_nodes_menu(h, [blur, camera])
+        plugin = h.module.NatronPlugin()
+
+        plugin.set_context({"inputKind": "scene"})
+        scene = plugin.get_items()
+        plugin.set_context({"inputKind": "image"})
+        image = plugin.get_items()
+
+        self.assertEqual([i["menupath"] for i in scene], ["Camera"])
+        self.assertEqual([i["menupath"] for i in image], ["Blur"])
+        self.assertIs(plugin.get_items(), image)
+
+    def test_duplicate_menupaths_do_not_rename_the_cached_items(self):
+        h = self._load_adapter()
+        self._watchable_nodes_menu(h, [_plugin_action("Plus"), _FakeAction(text="Plus")])
+        plugin = h.module.NatronPlugin()
+
+        plugin.get_items()
+        plugin.set_context({"selectedKind": "image"})
+        items = plugin.get_items()
+
+        self.assertEqual([i["menupath"] for i in items], ["Plus", "Plus (2)"])
+
+    def test_preferences_are_read_again_after_invalidate_preferences(self):
+        h = self._load_adapter()
+        params = {"tabMenuScroll": _FakeBoolParam(False)}
+        h.natron_ns.getSettings = lambda: _FakeSettings(params)
+
+        h.module.launch(_FakeApp())
+        params["tabMenuScroll"] = _FakeBoolParam(True)
+        h.module.launch(_FakeApp())
+        self.assertFalse(h.core.launch.call_args[1]["scroll_enabled"])
+
+        h.module.invalidate_preferences()
+        h.module.launch(_FakeApp())
+
+        self.assertTrue(h.core.launch.call_args[1]["scroll_enabled"])
 
     # --- launch ---------------------------------------------------------------
 

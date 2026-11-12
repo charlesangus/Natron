@@ -2781,7 +2781,12 @@ Project::encodeLayersKnobTable() const
 void
 Project::refreshLayersKnob()
 {
-    _imp->defaultLayersList->setValue(encodeLayersKnobTable());
+    // Most refreshes, such as one for a created node that references no layer, leave the table as
+    // it was, and setting it anyway rebuilds its widget.
+    const std::string table = encodeLayersKnobTable();
+    if (table != _imp->defaultLayersList->getValue()) {
+        _imp->defaultLayersList->setValue(table);
+    }
 }
 
 void

@@ -110,6 +110,12 @@ public:
      **/
     void setCreatedFor(const NodeGuiPtr& owner);
 
+    /**
+     * @brief Marks this command as pushed by a creation that triggers its own autosave, so the
+     * first redo does not trigger another.
+     **/
+    void setCreationAutoSaves();
+
     virtual int id() const;
     virtual bool mergeWith(const QUndoCommand* other);
 
@@ -119,6 +125,7 @@ private:
     NodeGraph* _graph;
     bool _firstRedoCalled;
     bool _isUndone;
+    bool _creationAutoSaves;
     NodeGuiWPtr _createdFor;
 };
 

@@ -415,6 +415,7 @@ NodeGraph::noteNodeGeometryChanged(NodeGui* node)
     }
     NodeGraphLowDetailLayer::applyDetailLevel(node, true, _imp->lowDetail);
     repaintLowDetailItem(node);
+    _imp->nodesBoundsPending.insert(node);
     if (_imp->itemGridDirty) {
         return;
     }
@@ -435,6 +436,8 @@ NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
     }
     NodeGraphLowDetailLayer::applyDetailLevel(edge, false, _imp->lowDetail);
     repaintLowDetailItem(edge);
+    // An input without a source counts in its owner's bounds.
+    _imp->nodesBoundsPending.insert(owner);
     if (_imp->itemGridDirty) {
         return;
     }
@@ -443,6 +446,21 @@ NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
     gridItem.owner = owner;
     gridItem.slot = slot;
     _imp->itemGridStale[gridItem.item] = gridItem;
+}
+
+void
+NodeGraph::noteNodeAdded(NodeGui* node)
+{
+    if (!node) {
+        return;
+    }
+    noteNodeGeometryChanged(node);
+    const std::vector<Edge*>& inputs = node->getInputsArrows();
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        noteEdgeGeometryChanged(node, (int)i, inputs[i]);
+    }
+    noteEdgeGeometryChanged(node, -1, node->getOutputArrow());
+    invalidateNavigatorImage();
 }
 
 void

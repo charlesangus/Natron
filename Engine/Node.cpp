@@ -3124,6 +3124,12 @@ Node::invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts)
     }
     // Resolution is bidirectional, so a memoized kind may depend on a node on either side of a
     // start; the walk therefore goes both ways, and the visited set is what keeps it finite.
+    //
+    // It stops at a node declaring a concrete output kind, which it still visits: that node's kind
+    // is a constant, an upstream constraint reads it without looking past it, and a downstream
+    // requirement does not reach back through it, so nothing beyond it can have changed. Only its
+    // diagnostic, which reads the kinds of its inputs, needs refreshing. A start is always walked
+    // past, since its own edges are what changed.
     std::set<Node*> visited;
     std::vector<Node*> pending;
     std::vector<Node*> component;
@@ -3133,6 +3139,7 @@ Node::invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts)
             pending.push_back(start);
         }
     }
+    const std::set<Node*> startSet(visited);
 
     while (!pending.empty()) {
         Node* node = pending.back();
@@ -3144,6 +3151,11 @@ Node::invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts)
             QMutexLocker l(&node->_imp->effectiveDataKindMutex);
             node->_imp->effectiveDataKindCacheSet = false;
             node->_imp->downstreamDataKindRequirements.clear();
+        }
+
+        const EffectInstance* effect = node->_imp->effect.get();
+        if (effect && (effect->getOutputDataKind() != eDataKindPolymorphic) && !startSet.count(node)) {
+            continue;
         }
 
         // Group nodes and their GroupInput and GroupOutput nodes each resolve a kind of their own,
@@ -3167,7 +3179,6 @@ Node::invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts)
         if (precomp && (precomp->getOutputNode().get() == node)) {
             node->getOutputsWithGroupRedirection(neighbours);
         }
-        const EffectInstance* effect = node->_imp->effect.get();
         if (dynamic_cast<const GroupInput*>(effect) || dynamic_cast<const GroupOutput*>(effect)) {
             NodeGroup* enclosing = dynamic_cast<NodeGroup*>(node->getGroup().get());
             if (enclosing) {
@@ -5342,6 +5353,60 @@ Node::hasViewersConnected(std::list<ViewerInstance* >* viewers) const
     walkDownstreamUntil(this, &visited, [viewers](const Node* node) {
         return collectViewer(viewers, node);
     });
+}
+
+bool
+Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstream)
+{
+    // A group or a paint tree's node aborts from other nodes than its viewers are found from, and
+    // the walks of a removal batch share what they visited.
+    if ((removalBatchDepth > 0) || isEffectGroup() || getAttachedRotoItem()) {
+        _imp->effect->abortViewerRendersForEdit();
+
+        return false;
+    }
+    if (deferViewerAbortToCascade(shared_from_this())) {
+        return false;
+    }
+
+    // The renders to abort are those of the viewers hasOutputNodesConnected() reaches, which stops
+    // at every output node; hasViewersConnected() also goes on past the other output nodes, so
+    // carrying on from them under the same visited set completes it.
+    std::unordered_set<const Node*> visited;
+    std::list<ViewerInstance*> toAbort;
+    std::vector<const Node*> otherOutputs;
+    walkDownstreamUntil(this, &visited, [&toAbort, &otherOutputs](const Node* node) {
+        OutputEffectInstance* output = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
+        if (!output || !output->isOutput() || dynamic_cast<GroupOutput*>(output)) {
+            return false;
+        }
+        ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(output);
+        if (viewer) {
+            toAbort.push_back(viewer);
+        } else {
+            otherOutputs.push_back(node);
+        }
+
+        return true;
+    });
+    viewersDownstream->insert(viewersDownstream->end(), toAbort.begin(), toAbort.end());
+    std::vector<NodePtr> below;
+    for (const Node* output : otherOutputs) {
+        below.clear();
+        output->appendOutputsWithGroupRedirection(&below);
+        for (const NodePtr& node : below) {
+            walkDownstreamUntil(node.get(), &visited, [viewersDownstream](const Node* reached) {
+                return collectViewer(viewersDownstream, reached);
+            });
+        }
+    }
+
+    for (ViewerInstance* viewer : toAbort) {
+        // Does not wait, as EffectInstance::abortViewerRendersForEdit().
+        viewer->getRenderEngine()->abortRenderingAutoRestart();
+    }
+
+    return true;
 }
 
 void
@@ -9100,6 +9165,11 @@ void
 Node::Implementation::notifyLayerReferencesChanged()
 {
     if (QThread::currentThread() != qApp->thread()) {
+        return;
+    }
+    // The table counts only the references of declared layer knobs, which are never undeclared, so
+    // a node without one has never changed it. A group still refreshes it for the nodes inside.
+    if (layerKnobSources.empty() && !_publicInterface->isEffectGroup()) {
         return;
     }
     AppInstancePtr app = _publicInterface->getApp();

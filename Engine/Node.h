@@ -1072,6 +1072,13 @@ private:
     // queueWhileRendering false applies the edit to the real inputs even while a render holds the node.
     bool replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhileRendering);
 
+    /**
+     * @brief Does what abortViewerRendersForEdit() does on the effect. Returns true with
+     * viewersDownstream holding what hasViewersConnected() would, found in the same walk, or false
+     * when that walk could not be shared and viewersDownstream is untouched.
+     **/
+    bool abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstream);
+
     int disconnectInputInternal(Node* input, bool queueWhileRendering);
 
     bool isSettingsPanelVisibleInternal(std::set<const Node*>& recursionList) const;
@@ -2168,6 +2175,12 @@ public:
     static U64 getDownstreamWalkVisitCount();
 
     /**
+     * @brief The number of nodes the cycle checks of connections have walked since startup. For
+     * tests.
+     **/
+    static U64 getCycleCheckVisitCount();
+
+    /**
      * @brief While one lives on this thread, the walks finding the outputs whose renders to abort
      * share what they visited, so deactivating many nodes walks what is downstream of them once.
      * Open one only around removing nodes: connecting a node inside it would hide the new output.
@@ -2538,8 +2551,9 @@ private:
     static void refreshInputRelatedDataAfterInputChanges(const std::vector<NodePtr>& edited);
     static void refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited);
 
-    // Drops the cached kinds of every node reached from starts both ways, then refreshes their
-    // diagnostics and emits their dataKindChanged(), once each.
+    // Drops the cached kinds of every node reached from starts both ways, without walking past a
+    // node of concrete declared kind, then refreshes their diagnostics and emits their
+    // dataKindChanged(), once each.
     static void invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts);
 
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
@@ -2712,10 +2726,9 @@ private:
 
     void setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes);
 
-
     /**
-     * @brief If the node is an input of this node, set ok to true, otherwise
-     * calls this function recursively on all inputs.
+     * @brief Sets ok to whether this node's hash depends on input's, as hashDependsOn() with no
+     * knob does.
      **/
     void isNodeUpstream(const Node* input, bool* ok) const;
 

@@ -27,6 +27,7 @@
 
 #include <exception>
 #include <memory>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <string>
@@ -556,6 +557,13 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
     if (!serialization) {
         selectedNodes = graph->getSelectedNodes();
     }
+    // Lays out the name and edges once, after every input, label and selection change below has
+    // arrived, and before positioning, which reads the laid-out size. A backdrop's own creation
+    // reads its name's height.
+    std::optional<NodeRefreshBatch> refreshBatch;
+    if (!serialization && !node->isBackdropNode()) {
+        refreshBatch.emplace(graph);
+    }
     NodeGuiPtr nodegui = _imp->_gui->createNodeGUI(node, args);
     assert(nodegui);
 
@@ -610,6 +618,11 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
             NodeCreationStageLog::Scope stage("autosave");
             triggerAutoSave();
         }
+    }
+
+    if (refreshBatch) {
+        NodeCreationStageLog::Scope stage("nameAndEdges");
+        refreshBatch.reset();
     }
 
     // NodeGui::initialize already placed a node whose serialization holds a position.

@@ -104,19 +104,20 @@ The stamps are milliseconds on `steady_clock`, the clock of the stall log and of
 |---|---|
 | `engineCreateNode` | `Node::load`, in `AppInstance::createNodeInternal`; includes `pythonCallbacks`. |
 | `createNodeGui` | `GuiAppInstance::createNodeGui`, which holds the stages up to `positioning`. |
-| `panelBuild` | `NodeGui::ensurePanelCreated`, the properties panel. |
+| `panelBuild` | `NodeGui::ensurePanelCreated`, the properties panel. A node made from the nodes menu, a plug-in shortcut or the tab menu builds it after the graph's first paint, so it lands in `deferred_stages_ms`. |
+| `nameAndEdges` | Laying out the new node's name and edges, which creation collects and runs once before `positioning`. |
 | `preview` | `computePreviewImage` for the new node. |
 | `autosave` | `triggerAutoSave` for the new node. |
 | `positioning` | Placing the node: auto-connect and `moveNodesForIdealPosition`. |
 | `pythonCallbacks` | The `onNodeCreated` callbacks and the node's Python variable declaration. |
 | `tabMenuLaunch` | `tabtabtab_natron.launch`, the whole Python side of Tab. |
 | `tabMenuShow` | The popup's `show()`. |
-| `tabMenuGetItems` | `get_items()`, wherever it is called from (inside `tabMenuRefreshAfterShow`). |
-| `tabMenuRefreshAfterShow` | The refresh the popup defers by one event-loop turn after `show()`. |
+| `tabMenuGetItems` | `get_items()`, wherever it is called from (inside `tabMenuRefresh`). |
+| `tabMenuRefresh` | The popup's refresh of its items, inside `tabMenuShow`. |
 
 The `tabMenu*` stages are timed by wrapping the Python functions from the bench itself, so they
 need no Natron support and only exist while the op's setup has run. `launch`'s time does not
-include the C++ side of `TabMenuBridge::launch`: building the script and running it.
+include the C++ side of `TabMenuBridge::launch`: building the context and calling it.
 
 ## The two modes
 

@@ -489,13 +489,64 @@ try:
         if not check(blur_item is not None, "weights: resolved Blur's nodes-menu action"):
             return
         menupath = blur_item[0]
-        ok = yield ("until", lambda: os.path.isfile(WEIGHTS_PATH), 5.0)
-        if not check(ok, "weights: tabtabtab_weights.json was written to the scratch folder"):
+
+        def saved_weights():
+            try:
+                with open(WEIGHTS_PATH) as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                return {}
+
+        # The popup saves its weights a moment after it closes, not as it closes.
+        ok = yield ("until", lambda: saved_weights().get(menupath, 0) > 0, 5.0)
+        check(os.path.isfile(WEIGHTS_PATH), "weights: tabtabtab_weights.json was written to the scratch folder")
+        check(ok, "weights: %r has a positive entry (got %r)" % (menupath, saved_weights().get(menupath)))
+
+    def late_changes_section(main_graph):
+        """The menu keeps its items between opens: what changes in the menus after startup must
+        still show in the next open."""
+        gt.section("late menu changes")
+        nodes_menu = NatronGui.natron.nodesMenu()
+        edit_menu = next((gt.menu_of(a) for a in main_window().menuBar().actions()
+                          if gt.menu_of(a) is not None and "edit" in a.text().lower()), None)
+        if not check(nodes_menu is not None and edit_menu is not None,
+                     "late changes: found the nodes menu and the Edit menu"):
             return
-        with open(WEIGHTS_PATH) as f:
-            weights = json.load(f)
-        check(weights.get(menupath, 0) > 0,
-             "weights: %r has a positive entry (got %r)" % (menupath, weights.get(menupath)))
+
+        late_node = nodes_menu.addAction("M399 Late Tool")
+        late_command = edit_menu.addAction("M399 Late Command")
+        try:
+            popup, line_edit, view = yield from open_menu(main_graph)
+            if not check(popup is not None, "late changes: the tab menu opens"):
+                return
+            names = [row_name(e) for e in listed(line_edit, view, "m399 late")]
+            check(any("M399 Late Tool" in n for n in names),
+                  "late changes: an action added to the nodes menu is listed (got %r)" % names)
+            check(any("M399 Late Command" in n for n in names),
+                  "late changes: an action added to the Edit menu is listed (got %r)" % names)
+            close_menu(popup)
+
+            late_command.setShortcut("Ctrl+Alt+Shift+F9")
+            popup, line_edit, view = yield from open_menu(main_graph)
+            if not check(popup is not None, "late changes: the tab menu reopens"):
+                return
+            entries = listed(line_edit, view, "m399 late command")
+            check(any("F9" in e for e in entries),
+                  "late changes: a shortcut set after startup shows on the command's row (got %r)" % entries)
+            close_menu(popup)
+
+            nodes_menu.removeAction(late_node)
+            popup, line_edit, view = yield from open_menu(main_graph)
+            if not check(popup is not None, "late changes: the tab menu reopens"):
+                return
+            names = [row_name(e) for e in listed(line_edit, view, "m399 late")]
+            check(not any("M399 Late Tool" in n for n in names),
+                  "late changes: an action removed from the nodes menu is gone (got %r)" % names)
+            close_menu(popup)
+        finally:
+            nodes_menu.removeAction(late_node)
+            edit_menu.removeAction(late_command)
+            QApplication.processEvents()
 
     def python_merge_action_section(main_graph):
         gt.section("python action")
@@ -824,6 +875,7 @@ try:
         yield from group_section(main_graph)
         yield from commands_section(main_graph)
         yield from weights_section(blur_item)
+        yield from late_changes_section(main_graph)
         yield from python_merge_action_section(main_graph)
         yield from preferences_section(main_graph)
         yield from nodegraph_page_section()

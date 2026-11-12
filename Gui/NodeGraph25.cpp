@@ -568,6 +568,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                         CreateNodeArgs args( plugin->getPluginID().toStdString(), getGroup() );
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.x(), 0);
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.y(), 1);
+                        args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
                         getGui()->getApp()->createNode(args);
 
                         intercepted = true;

@@ -792,6 +792,23 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
 } // NodeGui::ensurePanelCreated
 
 void
+NodeGui::buildDeferredPanel()
+{
+    if (_panelCreated) {
+        return;
+    }
+    NodePtr node = getNode();
+    if (!node || !node->isActivated()) {
+        return;
+    }
+    ensurePanelCreated();
+    // The selection reached this node before its panel existed.
+    if (_settingsPanel && getIsSelected()) {
+        setUserSelected(true);
+    }
+}
+
+void
 NodeGui::onSettingsPanelClosed(bool closed)
 {
     if (closed) {

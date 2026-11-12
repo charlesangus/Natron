@@ -420,8 +420,15 @@ public:
     QRectF navigatorContentRect;
     bool navigatorContentDirty;
     QTimer navigatorRenderTimer;
+    // nodesBounds is the union of nodesBoundsParts, each node's boundingRectWithEdges() when it
+    // was last read. A node reporting a geometry change is queued in nodesBoundsPending and its
+    // part re-read on the next query: the union only grows, unless the part it replaces reached
+    // an edge of the union, which then takes the walk over every node nodesBoundsDirty asks for.
+    // Pointers in both are compared, never followed, until found in _nodes.
     QRectF nodesBounds;
     bool nodesBoundsDirty;
+    std::unordered_map<const NodeGui*, QRectF> nodesBoundsParts;
+    std::unordered_set<NodeGui*> nodesBoundsPending;
     // While a node drag is under way the navigator keeps the thumbnail it had, and the bounds
     // only grow, so that no move pays for walking every node; the drag's end renders it once.
     bool navigatorDeferredByDrag;
@@ -462,6 +469,13 @@ public:
     std::vector<std::pair<NodeGuiWPtr, int>> refreshPending;
     std::unordered_map<NodeGui*, std::size_t> refreshPendingIndex;
 
+    // Panels waiting for the graph's next paint, then those whose build is already queued.
+    std::vector<NodeGuiWPtr> panelBuildsPending;
+    std::vector<NodeGuiWPtr> panelBuildsPosted;
+    bool panelBuildFlushPosted = false;
+    // Bumped to cancel a pending wait for a paint.
+    unsigned panelBuildGeneration = 0;
+
     // Nodes whose rendering counters or persistent message changed since refreshRenderStateTimer
     // last fired, keyed by address so that a node queued twice is refreshed once.
     std::map<NodeGui*, NodeGuiWPtr> renderStateDirty;
@@ -473,8 +487,10 @@ public:
 
     void resetAllClipboards();
 
-    // In scene coordinates. Cached until a node moves, resizes, shows, hides, or an edge changes.
+    // In scene coordinates. Kept up to date per node reported to noteNodeGeometryChanged() or
+    // noteEdgeGeometryChanged(), and recomputed from every node after nodes come or go.
     QRectF calcNodesBoundingRect();
+    void applyPendingNodesBounds();
 
     // The scene rectangle the navigator maps onto its widget-sized image, and the scale it uses.
     void getNavigatorMapping(QRectF* sceneRect, double* scale, QPointF* offset) const;

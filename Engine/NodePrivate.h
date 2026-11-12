@@ -373,6 +373,9 @@ public:
     bool inputsInitialized;
     mutable QMutex outputsMutex;
     NodesWList outputs, guiOutputs;
+    // Under outputsMutex. Never cleared, so that a node still listing this one as an input after
+    // the edges were dropped (a queued disconnect, a deactivated output) is not missed.
+    bool everConnectedAsInput = false;
     mutable QMutex inputsMutex; //< protects guiInputs so the serialization thread can access them
 
     ///The  inputs are the ones used while rendering and guiInputs the ones used by the gui whenever

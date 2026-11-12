@@ -598,9 +598,9 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
     rebuildGrid = rebuildGrid || navigatorDeferredRebuildsGrid;
     navigatorDeferredRebuildsGrid = false;
     navigatorDeferredByDrag = false;
-    nodesBoundsDirty = true;
     if (rebuildGrid) {
         itemGridDirty = true;
+        nodesBoundsDirty = true;
     }
     if (_publicInterface->isLoadingProjectNodes()) {
         // onProjectNodesRestored() invalidates once more.

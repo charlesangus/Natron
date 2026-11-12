@@ -1656,6 +1656,8 @@ GuiApplicationManager::refreshNodesMenuPluginProperties(const QString& pluginID)
 {
     if (_imp->nodesMenu) {
         refreshPluginActionsProperties(_imp->nodesMenu, pluginID);
+        // The shortcut and colour properties just set send the menu no change event.
+        TabMenuBridge::invalidateItems();
     }
 }
 
@@ -1707,6 +1709,7 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     CreateNodeArgs args(pluginID.toStdString(), group);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
+    args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
     if (nodesMenuArgsDecorator) {
         nodesMenuArgsDecorator(args);
     }

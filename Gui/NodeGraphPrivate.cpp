@@ -249,14 +249,22 @@ NodeGraphPrivate::setNodesBendPointsVisible(bool visible)
 QRectF
 NodeGraphPrivate::calcNodesBoundingRect()
 {
+    if (!nodesBoundsDirty) {
+        applyPendingNodesBounds();
+    }
     if (nodesBoundsDirty) {
         QRectF ret;
+        nodesBoundsParts.clear();
+        nodesBoundsPending.clear();
         {
             QMutexLocker l(&_nodesMutex);
 
+            nodesBoundsParts.reserve(_nodes.size());
             for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
                 if ((*it)->isVisible()) {
-                    ret = ret.united((*it)->boundingRectWithEdges());
+                    const QRectF part = (*it)->boundingRectWithEdges();
+                    nodesBoundsParts[it->get()] = part;
+                    ret = ret.united(part);
                 }
             }
         }
@@ -268,20 +276,59 @@ NodeGraphPrivate::calcNodesBoundingRect()
 }
 
 void
+NodeGraphPrivate::applyPendingNodesBounds()
+{
+    if (nodesBoundsPending.empty()) {
+        return;
+    }
+    QRectF grown = nodesBounds;
+    QMutexLocker l(&_nodesMutex);
+    for (std::unordered_set<NodeGui*>::const_iterator it = nodesBoundsPending.begin(); it != nodesBoundsPending.end(); ++it) {
+        NodeGui* node = *it;
+        const bool inGraph = _nodes.contains(node);
+        const QRectF part = (inGraph && node->isVisible()) ? node->boundingRectWithEdges() : QRectF();
+        std::unordered_map<const NodeGui*, QRectF>::iterator found = nodesBoundsParts.find(node);
+        const QRectF previous = (found != nodesBoundsParts.end()) ? found->second : QRectF();
+        // A drag only grows the bounds, and its end recomputes them from every node.
+        if (!navigatorDeferredByDrag && !previous.isNull()) {
+            const bool gone = part.isNull();
+            bool mayShrink = (previous.left() <= nodesBounds.left()) && (gone || (part.left() > previous.left()));
+            mayShrink = mayShrink || ((previous.top() <= nodesBounds.top()) && (gone || (part.top() > previous.top())));
+            mayShrink = mayShrink || ((previous.right() >= nodesBounds.right()) && (gone || (part.right() < previous.right())));
+            mayShrink = mayShrink || ((previous.bottom() >= nodesBounds.bottom()) && (gone || (part.bottom() < previous.bottom())));
+            if (mayShrink) {
+                nodesBoundsDirty = true;
+                nodesBoundsPending.clear();
+
+                return;
+            }
+        }
+        if (part.isNull()) {
+            if (found != nodesBoundsParts.end()) {
+                nodesBoundsParts.erase(found);
+            }
+            continue;
+        }
+        nodesBoundsParts[node] = part;
+        grown = grown.united(part);
+    }
+    nodesBoundsPending.clear();
+    nodesBounds = grown;
+}
+
+void
 NodeGraphPrivate::growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved)
 {
     if (nodesBoundsDirty) {
         // The next calcNodesBoundingRect() walks every node anyway.
         return;
     }
-    QRectF grown = nodesBounds;
     for (std::set<NodeGuiPtr>::const_iterator it = moved.begin(); it != moved.end(); ++it) {
-        if ((*it)->isVisible()) {
-            grown = grown.united((*it)->boundingRectWithEdges());
-        }
+        nodesBoundsPending.insert(it->get());
     }
-    if (grown != nodesBounds) {
-        nodesBounds = grown;
+    const QRectF before = nodesBounds;
+    applyPendingNodesBounds();
+    if (nodesBounds != before) {
         _publicInterface->scheduleOverlayRefresh();
     }
 }
@@ -293,6 +340,7 @@ NodeGraphPrivate::endNavigatorDragDeferral()
         return;
     }
     navigatorDeferredByDrag = false;
+    nodesBoundsDirty = true;
     invalidateNavigator(false);
 }
 

@@ -41,6 +41,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPaintEvent>
 #include <QPolygonF>
 #include <QScrollBar>
+#include <QTimer>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -528,7 +529,87 @@ NodeGraph::paintEvent(QPaintEvent* e)
         }
         p.drawPolyline(line);
     }
+
+    if (!_imp->panelBuildsPending.empty()) {
+        postPanelBuildFlush();
+    }
 } // NodeGraph::paintEvent
+
+void
+NodeGraph::schedulePanelBuild(const NodeGuiPtr& node)
+{
+    if (!node) {
+        return;
+    }
+    for (const std::vector<NodeGuiWPtr>* list : { &_imp->panelBuildsPending, &_imp->panelBuildsPosted }) {
+        for (const NodeGuiWPtr& queued : *list) {
+            if (queued.lock() == node) {
+                return;
+            }
+        }
+    }
+    _imp->panelBuildsPending.push_back(node);
+    if (_imp->panelBuildsPending.size() == 1) {
+        armPanelBuildWait();
+    }
+}
+
+static const int kPanelBuildPaintWaitMs = 250;
+
+void
+NodeGraph::armPanelBuildWait()
+{
+    if (!viewport()->isVisible()) {
+        postPanelBuildFlush();
+
+        return;
+    }
+    // A node created off-screen may never cause a paint. The wait starts once the creation has
+    // returned to the event loop, so that a long creation cannot use it up before its own paint.
+    const unsigned generation = ++_imp->panelBuildGeneration;
+    QTimer::singleShot(0, this, [this, generation]() {
+        QTimer::singleShot(kPanelBuildPaintWaitMs, this, [this, generation]() {
+            if (generation == _imp->panelBuildGeneration) {
+                postPanelBuildFlush();
+            }
+        });
+    });
+}
+
+void
+NodeGraph::postPanelBuildFlush()
+{
+    if (_imp->panelBuildFlushPosted || _imp->panelBuildsPending.empty()) {
+        return;
+    }
+    _imp->panelBuildFlushPosted = true;
+    ++_imp->panelBuildGeneration;
+    _imp->panelBuildsPosted.swap(_imp->panelBuildsPending);
+    // Two hops: a paint delivered outside the posted-event dispatch, from an expose say, would
+    // otherwise see its first hop run in the same event-loop pass, before the frame is shown.
+    QMetaObject::invokeMethod(this, [this]() { QMetaObject::invokeMethod(this, [this]() { flushPanelBuilds(); }, Qt::QueuedConnection); }, Qt::QueuedConnection);
+}
+
+void
+NodeGraph::flushPanelBuilds()
+{
+    _imp->panelBuildFlushPosted = false;
+    std::vector<NodeGuiWPtr> posted;
+    posted.swap(_imp->panelBuildsPosted);
+    GuiAppInstancePtr app = getGui() ? getGui()->getApp() : GuiAppInstancePtr();
+    if (app && !app->isClosing()) {
+        for (const NodeGuiWPtr& weak : posted) {
+            NodeGuiPtr node = weak.lock();
+            if (node) {
+                node->buildDeferredPanel();
+            }
+        }
+    }
+    // Created while this flush was queued: those wait for a paint of their own.
+    if (!_imp->panelBuildsPending.empty()) {
+        armPanelBuildWait();
+    }
+}
 
 QRectF
 NodeGraph::visibleSceneRect() const
@@ -590,7 +671,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
         QMutexLocker l(&_imp->_nodesMutex);
         _imp->_nodes.push_back(node_ui);
     }
-    invalidateNavigatorContent();
+    noteNodeAdded(node_ui.get());
     scheduleLoopBlockRefresh(true);
 
     //NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>(node->getGroup().get());;
@@ -607,12 +688,21 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     bool isViewer = node->isEffectViewer() != 0;
     bool panelOpened = args.getProperty<bool>(kCreateNodeArgsPropSettingsOpened) && !isDot && !isViewer;
     if ( !serialization && panelOpened && isTopLevelNodeBeingCreated ) {
-        node_ui->ensurePanelCreated();
+        if (args.getProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel)) {
+            schedulePanelBuild(node_ui);
+        } else {
+            node_ui->ensurePanelCreated();
+        }
     }
 
     bool addUndoRedo = args.getProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand);
     if (addUndoRedo) {
-        pushUndoCommand(new AddMultipleNodesCommand(this, node_ui), NodesGuiList(1, node_ui));
+        AddMultipleNodesCommand* command = new AddMultipleNodesCommand(this, node_ui);
+        // GuiAppInstance::createNode() triggers the autosave for such a node once it is set up.
+        if (!serialization && !isViewer) {
+            command->setCreationAutoSaves();
+        }
+        pushUndoCommand(command, NodesGuiList(1, node_ui));
     } else if ( !serialization && !isGrp ) {
         selectNode(node_ui, false);
     }

@@ -281,6 +281,8 @@ public:
     //Creates panel if needed, might be expensive
     void ensurePanelCreated(bool minimized = false, bool hideUnmodified = false);
 
+    // NodeGraph::schedulePanelBuild()'s build: skipped once the node is deleted or undone.
+    void buildDeferredPanel();
 
     virtual void destroyGui() OVERRIDE FINAL;
 

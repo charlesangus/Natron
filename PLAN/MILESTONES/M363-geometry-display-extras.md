@@ -14,3 +14,4 @@ mechanism, which these extend.
 Acceptance sketch:
 - Flagging a node as template shows its geometry in wireframe behind the displayed node's.
 - An attribute visualiser colours points by a float attribute with a ramp, and draws a vector attribute as lines.
+- Storm renders USDMaterial's "Multiply By Primvar" (deferred from M376.P2.T5, user 2026-11-12): M376 authors it only in the `cycles` render context; Storm needs a MaterialX duplicate on `outputs:mtlx:surface` (`ND_UsdPreviewSurface_surfaceshader`, `ND_geompropvalue_color3`, `ND_multiply_color3`, `ND_image_color3`) covering every input and texture.

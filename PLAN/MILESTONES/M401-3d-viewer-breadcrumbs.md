@@ -35,10 +35,10 @@ Viewer Stage's lazy loading and M332 - Scene Graph Points' multiple panels.
 - Children and siblings are listed with the Scene Graph panel's `childPredicate()` (active, defined, non-abstract, instance proxies included), so the bar and panel always agree.
 - No stage yet, or a sync in progress: the bar shows the path text, and popups open once `readStage` yields a stage.
 - Pickwalk with several prims selected: every prim walks and duplicates merge. Alt+Right returns to the child last walked up from, else the first child. Siblings wrap at the ends. Parent of a top-level prim and child of a leaf leave that prim where it is.
-- Show In Scene Graph reveals the prim in a panel following this viewer. If every panel is pinned elsewhere, it opens a new panel following this viewer and never changes a pin.
+- Show In Scene Graph reveals the prim in a panel following this viewer. If every panel is pinned elsewhere, it opens a new panel following this viewer and never changes a pin. If M332 - Scene Graph Points ends up without multiple panels, it instead asks whether to unpin the panel, and does nothing on No.
 
 **Assumptions:**
-- M332 - Scene Graph Points gives several Scene Graph panels, each following the viewer, the node selection or a pin, with a way to open a new one that follows the viewer.
+- M332 - Scene Graph Points gives several Scene Graph panels, each following the viewer, the node selection or a pin, with a way to open a new one that follows the viewer. If it doesn't, the ask-to-unpin fallback applies (see Edge cases).
 - `SceneViewport::requestLoad` (on F4 - Heavy Scene Viewer's branch, from M328 - Deferred Viewer Stage) keeps its `(paths, withDescendants)` shape.
 
 ## Decisions
@@ -48,6 +48,7 @@ Viewer Stage's lazy loading and M332 - Scene Graph Points' multiple panels.
 - 2026-11-12 — Multi-selection shows the current path plus a "+N" dropdown of rows with a Level grouping spinner. Clicking selects that one prim (user).
 - 2026-11-12 — Extras: Show In Scene Graph, pickwalk, Copy Path, tooltips, double-click to frame (user).
 - 2026-11-12 — Joins F4 - Heavy Scene Viewer and depends on M332 - Scene Graph Points. Show In Scene Graph never touches a pin, and main has only one panel until M332 lands (user; this reverses an earlier "ship on its own").
+- 2026-11-12 — If M332 - Scene Graph Points' multiple panels don't pan out, Show In Scene Graph may ask to unpin the single panel (user).
 - 2026-11-12 — Pickwalk keys follow the bar's left-to-right layout: Left/Right for parent/child, Up/Down for siblings. All selected prims walk, Down/Right remembers the last child, siblings wrap (user).
 - 2026-11-12 — Unloaded payloads show "Not loaded" plus Load in the chevron popup (user).
 - 2026-11-12 — Missing segments are greyed, not trimmed; long paths elide the middle; an empty selection keeps the bar with a `/` crumb, and clicking `/` clears the selection (user).
@@ -82,8 +83,8 @@ Viewer Stage's lazy loading and M332 - Scene Graph Points' multiple panels.
 
 - [ ] M401.P1.T5 — Show In Scene Graph
   - files: `Gui/SceneBreadcrumbBar.cpp`, `Gui/SceneGraphPanel.{h,cpp}`, `Gui/Gui40.cpp` (panel lookup and creation), `Tests/gui/scene_breadcrumbs_show_in_graph.py`
-  - approach: add `SceneGraphPanel::revealPaths(paths)`, which expands the ancestors (lazy, and without forcing payload loads), selects and scrolls to the prim. Add Show In Scene Graph to the segment menu. It picks the first panel following this viewer, otherwise opens a new panel following this viewer through M332 - Scene Graph Points' panel creation. It raises the panel and calls `revealPaths`. It never changes a panel's pin.
-  - verify: GUI script — with the panel closed, the action opens a panel showing the prim selected and visible; with the only panel pinned to another node, a second viewer-following panel opens and the pinned one keeps its pin and node.
+  - approach: add `SceneGraphPanel::revealPaths(paths)`, which expands the ancestors (lazy, and without forcing payload loads), selects and scrolls to the prim. Add Show In Scene Graph to the segment menu. It picks the first panel following this viewer, otherwise opens a new panel following this viewer through M332 - Scene Graph Points' panel creation. It raises the panel and calls `revealPaths`. It never changes a pin silently: if multiple panels aren't available, it asks "Unpin the Scene Graph from <node> to show this prim?" and unpins only on Yes.
+  - verify: GUI script — with the panel closed, the action opens a panel showing the prim selected and visible; with the only panel pinned to another node, a second viewer-following panel opens and the pinned one keeps its pin and node (or, without multiple panels, the unpin question appears and No leaves the pin unchanged).
   - size: M
 
 ## Phase 401.2: Multi-selection and pickwalk

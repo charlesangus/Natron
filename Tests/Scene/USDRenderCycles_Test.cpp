@@ -1349,15 +1349,19 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
     const std::vector<std::pair<std::string, std::string>> audit = settings->audit(kRenderDelegateCyclesId);
     EXPECT_FALSE(audit.empty());
     std::set<std::string> names;
+    std::set<std::string> setByNatron;
     std::map<std::string, std::string> reached;
     for (const std::pair<std::string, std::string>& reach : audit) {
         std::printf("[  AUDIT   ] Cycles %s -> %s\n", reach.first.c_str(), reach.second.empty() ? "UNREACHABLE" : reach.second.c_str());
         EXPECT_FALSE(reach.second.empty()) << reach.first;
-        if (reach.second != "(set by Natron)") {
-            EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
+        if (reach.second == "(set by Natron)") {
+            setByNatron.insert(reach.first);
+            continue;
         }
+        EXPECT_TRUE(names.insert(reach.second).second) << reach.second << " reaches two settings";
         reached[reach.first] = reach.second;
     }
+    EXPECT_EQ(std::set<std::string>({ "cycles:film:use_sample_count" }), setByNatron);
     EXPECT_EQ(cyclesScriptNames(), reached);
 }
 

@@ -412,6 +412,20 @@ readFileInfoAt(const std::string& path,
     return readFileInfo(fd.get(), info);
 }
 
+bool
+readFileInfoAt(int dirFd,
+               const std::string& relativePath,
+               CacheDiskFileInfo* info)
+{
+    ScopedFd fd(::openat(dirFd, relativePath.c_str(), O_RDONLY | O_CLOEXEC));
+
+    if (fd.get() < 0) {
+        return false;
+    }
+
+    return readFileInfo(fd.get(), info);
+}
+
 void
 writeStatsAt(const std::string& path,
              const CacheDiskStats& stats)
@@ -940,9 +954,14 @@ struct CacheDiskTier::Imp {
 
     std::vector<std::thread> threads;
 
+    static std::string shardOf(std::uint64_t base)
+    {
+        return hexOf(base).substr(0, kShardDigits);
+    }
+
     std::string shardDirOf(std::uint64_t base) const
     {
-        return autoDir + '/' + hexOf(base).substr(0, kShardDigits);
+        return autoDir + '/' + shardOf(base);
     }
 
     std::string pathOf(const CacheDiskIdentity& identity) const
@@ -1126,10 +1145,17 @@ struct CacheDiskTier::Imp {
     void removeFile(const std::string& path,
                     std::uint64_t base)
     {
-        struct stat st;
-        const bool sized = ::stat(path.c_str(), &st) == 0;
+        removeFileAt(AT_FDCWD, path, base);
+    }
 
-        if ((::unlink(path.c_str()) == 0) && sized) {
+    void removeFileAt(int dirFd,
+                      const std::string& path,
+                      std::uint64_t base)
+    {
+        struct stat st;
+        const bool sized = ::fstatat(dirFd, path.c_str(), &st, 0) == 0;
+
+        if ((::unlinkat(dirFd, path.c_str(), 0) == 0) && sized) {
             ledgerDelta.fetch_sub((std::int64_t)st.st_size);
         }
         forgetBase(base);
@@ -1247,7 +1273,9 @@ struct CacheDiskTier::Imp {
                                const WriteItem& item,
                                const CacheDiskSnapshot& snapshot,
                                const CacheDiskStats& stats,
-                               const std::string& dir,
+                               int baseFd,
+                               const std::string& baseDir,
+                               const std::string& subdir,
                                const std::string& name,
                                std::int64_t* addedBytes);
     WriteOutcomeEnum writeEntry(const AbstractCacheEntryBase& entry,
@@ -1313,8 +1341,9 @@ CacheDiskTier::Imp::writeEntry(const AbstractCacheEntryBase& entry,
     }
 
     const std::string name = entryName(snapshot.identity);
-    const std::string shardDir = shardDirOf(snapshot.identity.base);
-    const std::string finalPath = shardDir + '/' + name;
+    const std::string shard = shardOf(snapshot.identity.base);
+    const std::string relativePath = shard + '/' + name;
+    const std::string finalPath = autoDir + '/' + relativePath;
     const CacheDiskStats stats = statsOf(*header);
 
     CacheDiskFileInfo existing;
@@ -1328,8 +1357,21 @@ CacheDiskTier::Imp::writeEntry(const AbstractCacheEntryBase& entry,
         return eWriteOutcomeAlreadyThere;
     }
 
+    // Opened before the write checks for a cancellation, and the file is published and retracted
+    // through it. A clear cancels and then moves this directory aside, so a write past the check
+    // when the clear comes lands among the cleared files, never in the directory that replaces it.
+    const ScopedFd autoFd(::open(autoDir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (autoFd.get() < 0) {
+        if (item.cancelled.load()) {
+            return eWriteOutcomeAbandoned;
+        }
+        warnOnce(std::string("cannot open the cache directory: ") + std::strerror(errno));
+
+        return eWriteOutcomeFailed;
+    }
+
     std::int64_t addedBytes = 0;
-    const WriteOutcomeEnum outcome = writeFile(entry, item, snapshot, stats, shardDir, name, &addedBytes);
+    const WriteOutcomeEnum outcome = writeFile(entry, item, snapshot, stats, autoFd.get(), autoDir, shard, name, &addedBytes);
     if (outcome == eWriteOutcomeAlreadyThere) {
         header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
         forgetBase(snapshot.identity.base);
@@ -1348,7 +1390,7 @@ CacheDiskTier::Imp::writeEntry(const AbstractCacheEntryBase& entry,
     // store, so a retraction racing the rename cannot leave the file behind.
     header->residency.fetch_or(CacheEntryHeader::eResidencyDisk);
     if (item.cancelled.load()) {
-        removeFile(finalPath, snapshot.identity.base);
+        removeFileAt(autoFd.get(), relativePath, snapshot.identity.base);
 
         return eWriteOutcomeAbandoned;
     }
@@ -1361,11 +1403,14 @@ CacheDiskTier::Imp::writeFile(const AbstractCacheEntryBase& entry,
                               const WriteItem& item,
                               const CacheDiskSnapshot& snapshot,
                               const CacheDiskStats& stats,
-                              const std::string& dir,
+                              int baseFd,
+                              const std::string& baseDir,
+                              const std::string& subdir,
                               const std::string& name,
                               std::int64_t* addedBytes)
 {
-    const std::string finalPath = dir + '/' + name;
+    const std::string relativePath = subdir + '/' + name;
+    const std::string finalPath = baseDir + '/' + relativePath;
     const std::string tempPath = tmpDir + '/' + name + '.' + std::to_string(tempCounter.fetch_add(1));
     struct RemoveTemp {
         const std::string& path;
@@ -1451,7 +1496,7 @@ CacheDiskTier::Imp::writeFile(const AbstractCacheEntryBase& entry,
 
     // A peer may have published while this file was being written.
     CacheDiskFileInfo latest;
-    const bool hasLatest = readFileInfoAt(finalPath, &latest);
+    const bool hasLatest = readFileInfoAt(baseFd, relativePath, &latest);
     if (hasLatest && (latest.renderedPixels >= snapshot.renderedPixels)) {
         return eWriteOutcomeAlreadyThere;
     }
@@ -1459,10 +1504,18 @@ CacheDiskTier::Imp::writeFile(const AbstractCacheEntryBase& entry,
         config.renameStarts();
     }
 
-    std::error_code ignored;
-    fs::create_directories(dir, ignored);
-    if (::rename(tempPath.c_str(), finalPath.c_str()) != 0) {
-        warnOnce(std::string("cannot publish a file: ") + std::strerror(errno));
+    (void)::mkdirat(baseFd, subdir.c_str(), 0777);
+    const bool renamed = ::renameat(AT_FDCWD, tempPath.c_str(), baseFd, relativePath.c_str()) == 0;
+    const int renameError = errno;
+    if (config.renameEnds) {
+        config.renameEnds();
+    }
+    if (!renamed) {
+        // The scanner may already have deleted the directory a clear moved aside.
+        if (item.cancelled.load()) {
+            return eWriteOutcomeAbandoned;
+        }
+        warnOnce(std::string("cannot publish a file: ") + std::strerror(renameError));
 
         return eWriteOutcomeFailed;
     }
@@ -2788,9 +2841,17 @@ CacheDiskTier::publishPin(const std::string& holderID,
         imp.pinReserved += fileBytes;
     }
 
+    std::error_code ignored;
+    fs::create_directories(imp.pinsDir, ignored);
+    const ScopedFd pinsFd(::open(imp.pinsDir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     const WriteItem item;
     std::int64_t addedBytes = 0;
-    const WriteOutcomeEnum outcome = imp.writeFile(*entry, item, snapshot, Imp::statsOf(*header), dir, name, &addedBytes);
+    WriteOutcomeEnum outcome = eWriteOutcomeFailed;
+    if (pinsFd.get() >= 0) {
+        outcome = imp.writeFile(*entry, item, snapshot, Imp::statsOf(*header), pinsFd.get(), imp.pinsDir, pinDirName(holderID), name, &addedBytes);
+    } else {
+        imp.warnOnce(std::string("cannot open the pins directory: ") + std::strerror(errno));
+    }
     {
         std::lock_guard<std::mutex> lock(imp.pinMutex);
         imp.pinReserved -= fileBytes;

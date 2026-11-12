@@ -224,6 +224,9 @@ public:
         // Runs on any writer holding its file's publish lock, after its last look at the file in place
         // and before its rename, so that a test can hold a writer there.
         std::function<void()> renameStarts;
+        // Runs on the same writer just after its rename, whether or not it succeeded, and before
+        // the writer looks again at whether its write was cancelled.
+        std::function<void()> renameEnds;
     };
 
     // Null if the location cannot be created or fails the rename self-test.

@@ -192,7 +192,8 @@ public:
                      int heartbeatStaleMs = 60000,
                      std::function<void()> demotionWriteStarts = std::function<void()>(),
                      std::function<void()> publishWriteStarts = std::function<void()>(),
-                     std::function<void()> renameStarts = std::function<void()>())
+                     std::function<void()> renameStarts = std::function<void()>(),
+                     std::function<void()> renameEnds = std::function<void()>())
         : cache(name, 1, 64ULL * 1024 * 1024, 1.)
     {
         CacheDiskTier::Config config;
@@ -207,6 +208,7 @@ public:
         config.demotionWriteStarts = demotionWriteStarts;
         config.publishWriteStarts = publishWriteStarts;
         config.renameStarts = renameStarts;
+        config.renameEnds = renameEnds;
         tier = CacheDiskTier::open(config);
         cache.useEvictionScore();
         cache.setDiskTier(tier);
@@ -776,6 +778,44 @@ TEST(CacheDiskTierTest, ClearDuringADemotionLeavesNothingToReclaim)
     CacheDiskFileInfo info;
     EXPECT_FALSE(session.fileOf(hash, &info));
     EXPECT_FALSE(session.lookup(hash) != nullptr);
+}
+
+// A writer that found its write still wanted and is about to rename when the clear comes must not
+// put its file where the clear's lookups and promotions look, not even until it sees the
+// cancellation: a promotion in between would bring the cleared result back into RAM.
+TEST(CacheDiskTierTest, ClearBetweenTheCancellationCheckAndTheRenameShowsNoFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    WriteGate beforeRename;
+    WriteGate afterRename;
+    Session session(dir.path(), "CacheDiskTierTest_ClearAtRename", false, kBuildId, 60000, std::function<void()>(), std::function<void()>(), [&beforeRename] { beforeRename.enter(); }, [&afterRename] { afterRename.enter(); });
+    const OpenOnExit openAfter(afterRename);
+    const OpenOnExit openBefore(beforeRename);
+    ASSERT_TRUE(session.tier != nullptr);
+
+    const U64 hash = 11;
+    ASSERT_TRUE(session.createEntry(hash, kExpensiveNs, 5.f) != nullptr);
+    session.cache.setMaximumCacheSize(1024);
+    session.cache.setMaximumInMemorySize(1.);
+    session.cache.clearExceedingEntries();
+    session.cache.setMaximumCacheSize(64ULL * 1024 * 1024);
+    session.cache.setMaximumInMemorySize(1.);
+    ASSERT_TRUE(beforeRename.waitEntered());
+
+    session.cache.clear();
+    beforeRename.release();
+    ASSERT_TRUE(afterRename.waitEntered());
+
+    CacheDiskFileInfo info;
+    EXPECT_FALSE(session.fileOf(hash, &info));
+    EXPECT_FALSE(session.lookup(hash) != nullptr);
+
+    afterRename.release();
+    ASSERT_TRUE(session.tier->waitIdle(30000));
+    EXPECT_FALSE(session.fileOf(hash, &info));
+    EXPECT_FALSE(session.lookup(hash) != nullptr);
+    EXPECT_EQ(0U, session.tier->writeFailures());
 }
 
 namespace {

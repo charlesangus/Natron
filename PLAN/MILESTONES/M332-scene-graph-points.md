@@ -53,3 +53,4 @@ composed on a worker, and recent stages stay cached. Design:
 ## Decisions
 
 - 2026-11-12 — Audit: all three tasks were already implemented (436afd897, 30fa6db80, 3e7fb51c1) but never checked off. The last release gates failed only on `USDRenderCyclesTest` aborting under the taskgraph scheduler (run 42757353797). F4 and M331 were merged in at d8391e71d, and the gate with `scene_graph_points.py` is re-running (run 43155051418).
+- 2026-11-12 — Release gate green with `scene_graph_points.py` (run 43155051418). The GPU-host node-switch timing line is dropped (no GPU-host timing gates). PR #260 into F4 is open and under review; UAT AppImage `Natron-m332-scene-graph-points.AppImage` with steps.

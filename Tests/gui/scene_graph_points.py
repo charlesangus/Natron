@@ -13,7 +13,10 @@ list of props under $NATRON_GUI_TEST_OUT, docks the panel beside the viewer, and
     tree is greyed while it is read, and no timer runs once the panel is idle;
   - open rows and the row at the top of the tree survive a viewer switch to a downstream USDPrune
     and back, the row the prune removes reopens on return, and restoring loads nothing;
-  - a pinned node that puts out no scene keeps the pin, and deleting it unpins.
+  - a pinned node that puts out no scene keeps the pin, and deleting it unpins;
+  - a second panel opened from the pane menu follows the viewer; pinned to another node than the
+    first, each tree is its own node's, a payload twirled in one loads in neither the other nor the
+    viewer, and closing the second panel destroys it.
 
 Screenshots of each state go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off.
 Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
@@ -81,7 +84,7 @@ def write_city(directory):
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QModelIndex, QObject, QPoint, Qt
+    from PySide6.QtCore import QEvent, QMetaObject, QModelIndex, QObject, QPoint, Qt
     from PySide6.QtWidgets import QAbstractItemView, QComboBox, QLabel, QTreeView
     from pxr import Sdf
 
@@ -136,9 +139,25 @@ try:
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
         return hold(views[0]) if views else None
 
+    FIRST = "sceneGraph"
+    SECOND = "sceneGraph2"
+    on = [FIRST]
+
+    def panel_named(name):
+        for w in widgets_of("SceneGraphPanel"):
+            try:
+                if w.objectName() == name:
+                    return hold(w)
+            except RuntimeError:
+                continue
+        return None
+
     def panel():
-        panels = widgets_of("SceneGraphPanel")
-        return hold(panels[0]) if panels else None
+        """The panel the helpers below act on, the one use() last named."""
+        return panel_named(on[0])
+
+    def use(name):
+        on[0] = name
 
     def child(cls, name):
         p = panel()
@@ -479,6 +498,79 @@ try:
         ok = yield ("until", lambda: not bool(prop("natronSceneGraphTimersActive", True)), POLL_TIMEOUT_S)
         check(ok, "no timer runs once the panel is idle again")
         report("NOTE composed %d times, %r stages kept" % (compose_count(), prop("natronSceneGraphCachedStages")))
+
+        # A second panel on another node.
+        panel().removeEventFilter(switch_watch)
+        home = ancestor_of_class(panel(), "TabWidget")
+        require(home is not None, "the first panel is in a pane")
+        lower = app.getTabWidget(home.objectName()).splitVertically()
+        home = None
+        require(lower is not None, "split the first panel's pane")
+        lower_name = str(lower.getScriptName())
+        lower = None
+        panes = [w for w in widgets_of("TabWidget") if w.objectName() == lower_name]
+        require(len(panes) == 1, "the new pane is found (%d named %s)" % (len(panes), lower_name))
+        require(QMetaObject.invokeMethod(panes[0], "newSceneGraphHere"), "choose New Scene Graph in the new pane")
+        panes = None
+        ok = yield ("until", lambda: panel_named(SECOND) is not None and panel_named(SECOND).isVisible(), POLL_TIMEOUT_S)
+        require(ok, "New Scene Graph opens a panel named %s" % (SECOND,))
+        check(len(widgets_of("SceneGraphPanel")) == 2, "there are two Scene Graph panels (got %d)" % (len(widgets_of("SceneGraphPanel")),))
+        use(SECOND)
+        ok = yield ("until", lambda: str(prop("natronSceneGraphFollow", "")) == "viewer" and shows(usd, all_blocks)(), POLL_TIMEOUT_S)
+        check(ok, "the new panel follows the viewer and shows its USDRead (got %r)" % (shown_node(),))
+        check(not bool(prop("natronSceneGraphPinned", True)), "the new panel starts unpinned")
+
+        use(FIRST)
+        yield from pin_to(prune)
+        ok = yield ("until", shows(prune, pruned), POLL_TIMEOUT_S)
+        check(ok, "the first panel pinned to the USDPrune shows its tree (got %r)" % (world_children(),))
+        use(SECOND)
+        yield from pin_to(look)
+        ok = yield ("until", shows(look, all_blocks), POLL_TIMEOUT_S)
+        check(ok, "the second panel pinned to the viewed USDEditTransform shows its tree (got %r)" % (world_children(),))
+        check(compose_count() >= 1, "the second panel reads its node into a stage of its own (%d)" % (compose_count(),))
+        use(FIRST)
+        check(shows(prune, pruned)(), "pinning the second panel leaves the first on the USDPrune (got %r, %r)"
+              % (shown_node(), world_children()))
+        check(state(BLOCK0 + "/B1") == STATE_UNLOADED, "Block0/B1 is unloaded on the first panel's stage")
+
+        edits = viewer_load_edits()
+        composed_first = compose_count()
+        use(SECOND)
+        tree().expand(find(WORLD))
+        tree().expand(find(BLOCK0))
+        tree().expand(find(BLOCK0 + "/B1"))
+        ok = yield ("until", lambda: state(BLOCK0 + "/B1") == STATE_LOADED, POLL_TIMEOUT_S)
+        check(ok, "twirling Block0/B1 loads it on the second panel's stage (state %r)" % (state(BLOCK0 + "/B1"),))
+        yield ("sleep", SETTLE_MS)
+        use(FIRST)
+        check(state(BLOCK0 + "/B1") == STATE_UNLOADED and not expanded(BLOCK0 + "/B1"),
+              "the twirl in the second panel loads nothing on the first's stage (state %r)" % (state(BLOCK0 + "/B1"),))
+        check(compose_count() == composed_first, "the twirl in the second panel composes nothing in the first (%d, then %d)"
+              % (composed_first, compose_count()))
+        check(viewer_load_edits() == edits, "the twirl in the second panel loads nothing on the viewer's stage (%d, then %d)"
+              % (edits, viewer_load_edits()))
+        check(shows(prune, pruned)(), "the first panel still shows the USDPrune")
+        shot("scene-graph-points-two-panels.png")
+
+        lower = app.getTabWidget(lower_name)
+        require(lower is not None, "the second panel's pane is found")
+        index = -1
+        for i in range(lower.count()):
+            if str(lower.getTabLabel(i)) == "Scene Graph 2":
+                index = i
+        require(index >= 0, "the second panel's pane has its tab")
+        del _held[:]
+        lower.closeTab(index)
+        lower = None
+        ok = yield ("until", lambda: panel_named(SECOND) is None and len(widgets_of("SceneGraphPanel")) == 1, POLL_TIMEOUT_S)
+        check(ok, "closing the second panel destroys it (%d panels)" % (len(widgets_of("SceneGraphPanel")),))
+        check(shows(prune, pruned)() and bool(prop("natronSceneGraphPinned", False)),
+              "the first panel keeps its pin once the second is gone (got %r)" % (shown_node(),))
+        yield ("sleep", SETTLE_MS)
+        check(scene_drawn(), "the viewer still shows the scene once the second panel is gone")
+        ok = yield ("until", lambda: not bool(prop("natronSceneGraphTimersActive", True)), POLL_TIMEOUT_S)
+        check(ok, "no timer runs in the first panel once the second is gone")
 
     run(steps())
 except Exception:

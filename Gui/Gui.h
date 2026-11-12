@@ -350,7 +350,28 @@ public:
     ScriptEditor* getScriptEditor() const;
     ProgressPanel* getProgressPanel() const;
 
+    // The first Scene Graph panel, "sceneGraph", which closing only hides.
     SceneGraphPanel* getSceneGraphPanel() const;
+
+    // A further Scene Graph panel following the active viewer, not yet in a pane. scriptName, a
+    // layout's sceneGraph<N> with N >= 2, is used when no tab has it; otherwise the lowest free N is.
+    SceneGraphPanel* addNewSceneGraphPanel(const std::string& scriptName = std::string());
+
+    // Destroys a panel addNewSceneGraphPanel made; the first panel is never destroyed.
+    void removeSceneGraphPanel(SceneGraphPanel* panel);
+
+    // Whether name is a script name addNewSceneGraphPanel can give, sceneGraph<N> with N >= 2.
+    static bool isExtraSceneGraphScriptName(const std::string& name);
+
+    // Whether panel is one addNewSceneGraphPanel made.
+    bool isExtraSceneGraphPanel(const PanelWidget* panel) const;
+
+    // Every Scene Graph panel, the first one first.
+    std::list<SceneGraphPanel*> getSceneGraphPanels() const;
+
+    // Destroys the panels addNewSceneGraphPanel made that are in no pane.
+    void removeSceneGraphPanelsOutsidePanes();
+
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;
     const RegisteredTabs & getRegisteredTabs() const;

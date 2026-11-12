@@ -25,13 +25,14 @@
 
 #include "Gui.h"
 
-#include <cassert>
-#include <sstream> // stringstream
 #include <algorithm> // min, max
-#include <map>
+#include <cassert>
 #include <list>
-#include <utility>
+#include <map>
+#include <set>
+#include <sstream> // stringstream
 #include <stdexcept>
+#include <utility>
 
 #include <QTextStream>
 #include <QSettings>
@@ -61,6 +62,7 @@
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/ProjectGui.h"
+#include "Gui/SceneGraphPanel.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/Splitter.h"
@@ -587,6 +589,109 @@ Gui::removeHistogram(Histogram* h)
     assert( it != _imp->_histograms.end() );
     delete *it;
     _imp->_histograms.erase(it);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+const char sceneGraphScriptName[] = "sceneGraph";
+
+// N of a further Scene Graph panel's script name sceneGraph<N>, else 0.
+int
+extraSceneGraphIndex(const std::string& name)
+{
+    const std::string base(sceneGraphScriptName);
+    if ((name.size() <= base.size()) || (name.compare(0, base.size(), base) != 0) || (name[base.size()] == '0')) {
+        return 0;
+    }
+    int index = 0;
+    for (std::size_t i = base.size(); i < name.size(); ++i) {
+        if ((name[i] < '0') || (name[i] > '9') || (index > 100000)) {
+            return 0;
+        }
+        index = index * 10 + (name[i] - '0');
+    }
+    return (index >= 2) ? index : 0;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+SceneGraphPanel*
+Gui::addNewSceneGraphPanel(const std::string& scriptName)
+{
+    int index = extraSceneGraphIndex(scriptName);
+    if (!index || findExistingTab(scriptName)) {
+        index = 2;
+        while (findExistingTab(sceneGraphScriptName + std::to_string(index))) {
+            ++index;
+        }
+    }
+    const std::string name = sceneGraphScriptName + std::to_string(index);
+    SceneGraphPanel* panel = new SceneGraphPanel(this);
+    panel->setObjectName(QString::fromStdString(name));
+    panel->setScriptName(name);
+    panel->setLabel(tr("Scene Graph %1").arg(index).toStdString());
+    panel->setVisible(false);
+    registerTab(panel, panel);
+    _imp->_extraSceneGraphPanels.push_back(panel);
+
+    return panel;
+}
+
+void
+Gui::removeSceneGraphPanel(SceneGraphPanel* panel)
+{
+    std::list<SceneGraphPanel*>::iterator it = std::find(_imp->_extraSceneGraphPanels.begin(), _imp->_extraSceneGraphPanels.end(), panel);
+    if (it == _imp->_extraSceneGraphPanels.end()) {
+        return;
+    }
+    _imp->_extraSceneGraphPanels.erase(it);
+    unregisterTab(panel);
+    delete panel;
+}
+
+bool
+Gui::isExtraSceneGraphScriptName(const std::string& name)
+{
+    return extraSceneGraphIndex(name) != 0;
+}
+
+bool
+Gui::isExtraSceneGraphPanel(const PanelWidget* panel) const
+{
+    for (SceneGraphPanel* extra : _imp->_extraSceneGraphPanels) {
+        if (static_cast<const PanelWidget*>(extra) == panel) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::list<SceneGraphPanel*>
+Gui::getSceneGraphPanels() const
+{
+    std::list<SceneGraphPanel*> panels = _imp->_extraSceneGraphPanels;
+    if (_imp->_sceneGraphPanel) {
+        panels.push_front(_imp->_sceneGraphPanel);
+    }
+    return panels;
+}
+
+void
+Gui::removeSceneGraphPanelsOutsidePanes()
+{
+    std::set<PanelWidget*> inPanes;
+    const std::list<TabWidget*> panes = getPanes();
+    for (TabWidget* pane : panes) {
+        for (int i = 0; i < pane->count(); ++i) {
+            inPanes.insert(pane->tabAt(i));
+        }
+    }
+    const std::list<SceneGraphPanel*> extras = _imp->_extraSceneGraphPanels;
+    for (SceneGraphPanel* panel : extras) {
+        if (!inPanes.count(panel)) {
+            removeSceneGraphPanel(panel);
+        }
+    }
 }
 
 const std::list<Histogram*> &

@@ -447,6 +447,7 @@ TabWidget::createMenu(const QPoint& globalPos)
     menu.addAction( tr("Script editor here"), this, SLOT(moveScriptEditorHere()) );
     menu.addAction( tr("Progress Panel here"), this, SLOT(moveProgressPanelHere()) );
     menu.addAction(tr("Scene Graph here"), this, SLOT(moveSceneGraphHere()));
+    menu.addAction(tr("New Scene Graph"), this, SLOT(newSceneGraphHere()));
 
     std::map<NATRON_PYTHON_NAMESPACE::PyPanel*, std::string> userPanels = _imp->gui->getPythonPanels();
     if ( !userPanels.empty() ) {
@@ -887,6 +888,16 @@ TabWidget::moveSceneGraphHere()
     moveTab(_imp->gui->getSceneGraphPanel(), _imp->gui->getSceneGraphPanel(), this);
 }
 
+void
+TabWidget::newSceneGraphHere()
+{
+    SceneGraphPanel* panel = _imp->gui->addNewSceneGraphPanel();
+
+    appendTab(panel, panel);
+
+    _imp->gui->getApp()->triggerAutoSave();
+}
+
 TabWidget*
 TabWidget::splitInternal(bool autoSave,
                          Qt::Orientation orientation)
@@ -1177,6 +1188,10 @@ TabWidget::removeTab(int index,
             _imp->gui->removeHistogram(isHisto);
 
             //Return because at this point isHisto is invalid
+            return;
+        } else if (_imp->gui && _imp->gui->isExtraSceneGraphPanel(tab)) {
+            _imp->gui->removeSceneGraphPanel(dynamic_cast<SceneGraphPanel*>(tab));
+
             return;
         } else {
             ///Do not delete unique widgets such as the properties bin, node graph or curve editor

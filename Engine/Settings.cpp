@@ -1479,6 +1479,16 @@ Settings::initializeKnobsNodeGraph()
                                             "hide them for the session."));
     _nodegraphTab->addKnob(_showExpressionLines);
 
+    _showGpuRegions = AppManager::createKnob<KnobBool>(this, tr("Show GPU Regions"));
+    _showGpuRegions->setName("showGpuRegions");
+    _showGpuRegions->setHintToolTip(tr("When checked, the node graph outlines the regions of the active viewer's last render "
+                                       "that stay resident on the GPU, marks each pipe where a region ends with a red X and "
+                                       "the reason, and fades nodes that computed no pixels in that render because their "
+                                       "image came from the cache or they passed their input through. With GPU compute off "
+                                       "or no GPU, it draws nothing. The \"Show GPU Regions\" action of the node graph "
+                                       "toggles the same setting."));
+    _nodegraphTab->addKnob(_showGpuRegions);
+
     _tabMenuSeparator = AppManager::createKnob<KnobSeparator>(this, tr("Tab menu"));
     _tabMenuSeparator->setName("tabMenuSeparator");
     _nodegraphTab->addKnob(_tabMenuSeparator);
@@ -1874,6 +1884,7 @@ Settings::setDefaultValues()
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _showLinkLines->setDefaultValue(true);
     _showExpressionLines->setDefaultValue(true);
+    _showGpuRegions->setDefaultValue(false);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
     _useAntiAliasing->setDefaultValue(true);
 
@@ -2423,6 +2434,7 @@ Settings::restoreSettings(bool useDefault)
         appPTR->setNThreadsToRender( getNumberOfThreads() );
         appPTR->setUseThreadPool( _useThreadPool->getValue() );
         appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
+        ViewerInstance::setGpuPlacementOverlayEnabled(_showGpuRegions->getValue());
     } catch (std::logic_error&) {
         // ignore
     }
@@ -2571,6 +2583,8 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
+    } else if (k == _showGpuRegions.get()) {
+        ViewerInstance::setGpuPlacementOverlayEnabled(_showGpuRegions->getValue());
     } else if (k == _renderOnEditingFinished.get()) {
         const AppInstanceVec& apps = appPTR->getAppInstances();
         for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
@@ -3518,6 +3532,18 @@ bool
 Settings::isExpressionLinesVisible() const
 {
     return _showExpressionLines->getValue();
+}
+
+bool
+Settings::isGpuRegionOverlayEnabled() const
+{
+    return _showGpuRegions->getValue();
+}
+
+void
+Settings::setGpuRegionOverlayEnabled(bool enabled)
+{
+    _showGpuRegions->setValue(enabled);
 }
 
 bool

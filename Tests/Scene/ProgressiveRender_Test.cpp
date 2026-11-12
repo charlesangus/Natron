@@ -31,7 +31,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -149,6 +152,7 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        hold(false);
         _render.reset();
         _stage.reset();
         HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
@@ -167,6 +171,22 @@ protected:
         if (edited && _render) {
             _render->invalidate();
         }
+    }
+
+    // A render of the stage, with nothing set yet, whose listener is heard().
+    void newRender()
+    {
+        hold(false);
+        _listened = nullptr;
+        _render.reset();
+        {
+            std::lock_guard<std::mutex> lock(_signalMutex);
+            _published.clear();
+            _calls = 0;
+        }
+        SceneStage* stage = _stage.get();
+        _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [this]() { heard(); }, 0.05f));
+        _listened = _render.get();
     }
 
     // Starts a Cycles render of the fixture through its camera, kSize pixels square, with a render
@@ -190,8 +210,7 @@ protected:
         _view.width = kSize;
         _view.height = kSize;
         _view.time = PXR_NS::UsdTimeCode::Default();
-        SceneStage* stage = _stage.get();
-        _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, std::function<void()>(), 0.05f));
+        newRender();
         _render->setSettings(settings);
         _render->setRenderer(kRenderDelegateCyclesId);
         _render->setThreads([]() { return 2; });
@@ -200,42 +219,116 @@ protected:
         return true;
     }
 
-    // Records each frame published, polling, until the render is done, it fails, or the time is up.
-    // True if it finished.
-    bool collectUntilDone(std::vector<std::shared_ptr<const ProgressiveRender::Frame>>* frames)
+    // The listener: records the frame just published, and waits while the render is held.
+    void heard()
+    {
+        ProgressiveRender* render = _listened.load();
+        const std::shared_ptr<const ProgressiveRender::Frame> frame = render ? render->getFrame() : std::shared_ptr<const ProgressiveRender::Frame>();
+        std::unique_lock<std::mutex> lock(_signalMutex);
+
+        if (frame && (_published.empty() || (_published.back() != frame))) {
+            _published.push_back(frame);
+        }
+        ++_calls;
+        if (_hold) {
+            _held = true;
+            _signal.notify_all();
+            _signal.wait(lock, [this]() { return !_hold; });
+            _held = false;
+        }
+        _signal.notify_all();
+    }
+
+    // While on, the worker stops in the listener after its next frame, without a lock of the
+    // render's or the stage's, until it is off again.
+    void hold(bool on)
+    {
+        std::lock_guard<std::mutex> lock(_signalMutex);
+
+        _hold = on;
+        _signal.notify_all();
+    }
+
+    std::size_t publishedCount()
+    {
+        std::lock_guard<std::mutex> lock(_signalMutex);
+
+        return _published.size();
+    }
+
+    int calls()
+    {
+        std::lock_guard<std::mutex> lock(_signalMutex);
+
+        return _calls;
+    }
+
+    // Waits, under _signalMutex, until reached() holds, reading it again at each call of the
+    // listener and at least every 10 ms for what the listener is not told of. False, with a
+    // failure, if it did not hold within kTimeout.
+    bool waitUntil(const std::function<bool()>& reached,
+                   const char* what)
     {
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-        while (std::chrono::steady_clock::now() < end) {
-            record(frames);
-            const ProgressiveRender::Status status = _render->getStatus();
-            if (!status.error.empty()) {
-                ADD_FAILURE() << status.error;
+        std::unique_lock<std::mutex> lock(_signalMutex);
+
+        while (!reached()) {
+            if (std::chrono::steady_clock::now() >= end) {
+                ADD_FAILURE() << what << " did not happen in " << kTimeout.count() << " s";
 
                 return false;
             }
-            if (status.converged && !frames->empty() && frames->back()->converged && (frames->back()->restart == status.restarts) && (status.samples == frames->back()->samples)) {
-                return true;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            _signal.wait_for(lock, std::chrono::milliseconds(10));
         }
-        ADD_FAILURE() << "the render did not finish in " << kTimeout.count() << " s";
 
-        return false;
+        return true;
     }
 
-    void record(std::vector<std::shared_ptr<const ProgressiveRender::Frame>>* frames)
+    // Waits until the render is done or fails, and gives the frames published from the from-th
+    // on. True if it finished.
+    bool collectUntilDone(std::size_t from,
+                          std::vector<std::shared_ptr<const ProgressiveRender::Frame>>* frames)
     {
-        std::shared_ptr<const ProgressiveRender::Frame> frame = _render->getFrame();
-        if (frame && (frames->empty() || (frames->back()->serial != frame->serial))) {
-            frames->push_back(frame);
+        std::string error;
+        const bool finished = waitUntil([this, &error]() {
+            const ProgressiveRender::Status status = _render->getStatus();
+            if (!status.error.empty()) {
+                error = status.error;
+
+                return true;
+            }
+            const std::shared_ptr<const ProgressiveRender::Frame> frame = _render->getFrame();
+
+            return status.converged && frame && frame->converged && (frame->restart == status.restarts) && !_published.empty() && (_published.back() == frame);
+        },
+                                        "the end of the render");
+        {
+            std::lock_guard<std::mutex> lock(_signalMutex);
+            frames->assign(_published.begin() + (std::ptrdiff_t)std::min(from, _published.size()), _published.end());
         }
+        if (!error.empty()) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+
+        return finished;
     }
 
     std::mutex _stageLock;
     std::unique_ptr<SceneStage> _stage;
     std::unique_ptr<ProgressiveRender> _render;
+    std::atomic<ProgressiveRender*> _listened { nullptr };
     ProgressiveRender::View _view;
     ScenePayload _base;
+
+    // Guards what the listener records, and the hold.
+    std::mutex _signalMutex;
+    std::condition_variable _signal;
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> _published;
+    int _calls = 0;
+    bool _hold = false;
+    bool _held = false;
 };
 
 // The render refines in the background: each frame published has at least the samples of the one
@@ -248,7 +341,7 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     const int liveBefore = ProgressiveRender::getLiveCount();
     ASSERT_TRUE(start());
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
-    ASSERT_TRUE(collectUntilDone(&frames));
+    ASSERT_TRUE(collectUntilDone(0, &frames));
     ASSERT_FALSE(frames.empty());
 
     EXPECT_EQ(kSamples, _render->getMaxSamples());
@@ -264,6 +357,9 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
         if (i > 0) {
             EXPECT_GE(frames[i]->samples, frames[i - 1]->samples) << "frame " << i;
             EXPECT_GT(frames[i]->serial, frames[i - 1]->serial);
+        }
+        if (i + 1 < frames.size()) {
+            EXPECT_FALSE(frames[i]->converged) << "frame " << i;
         }
     }
     std::cout << std::endl;
@@ -281,6 +377,7 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     EXPECT_TRUE(status.converged);
     EXPECT_EQ(kSamples, status.samples);
     EXPECT_EQ(U64(1), status.restarts);
+    // Nothing comes later: a frame would, were the render still under way.
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     EXPECT_EQ(status.frames, _render->getStatus().frames) << "frames were published after the render was done";
     EXPECT_EQ(last.serial, _render->getFrame()->serial);
@@ -290,9 +387,9 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
 }
 
-// Ten edits in about 50 ms, while the render refines, restart it once, and no frame of the scene
-// before them is published after them: every later frame shows the near cube where the last edit
-// put it.
+// Ten edits while the render refines restart it once, and no frame of the scene before them is
+// published after them: every later frame shows the near cube where the last edit put it. The
+// render is held in its listener while the edits come, so that it cannot restart between them.
 TEST_F(ProgressiveRenderTest, CoalescesEditsIntoOneRestart)
 {
     if (!cyclesOrSkip()) {
@@ -300,61 +397,46 @@ TEST_F(ProgressiveRenderTest, CoalescesEditsIntoOneRestart)
     }
     ASSERT_TRUE(start());
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
-    ASSERT_TRUE(collectUntilDone(&frames));
+    ASSERT_TRUE(collectUntilDone(0, &frames));
     const U64 restartsBefore = _render->getRestartCount();
-    // A render under way, as when edits come while it refines.
-    _render->setMaxSamples(kSamples * 64);
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    // A render under way, as when edits come while it refines: held at its first frame.
+    hold(true);
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(kSamples * 2);
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "a frame of the raised cap"));
+    const std::shared_ptr<const ProgressiveRender::Frame> held = _render->getFrame();
+    ASSERT_TRUE(held != nullptr);
     const U64 restartsRefining = _render->getRestartCount();
-    EXPECT_EQ(restartsBefore + 1, restartsRefining);
-    record(&frames);
+    EXPECT_GT(restartsRefining, restartsBefore);
+    EXPECT_EQ(restartsRefining, held->restart);
 
     const int kEdits = 10;
     const double kLastBack = 5.;
-    const std::chrono::steady_clock::time_point burstStart = std::chrono::steady_clock::now();
     for (int i = 1; i <= kEdits; ++i) {
         sync(movedNear(_base, kLastBack * i / kEdits, 0xed17000ULL + (U64)i));
-        record(&frames);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    const double burstMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - burstStart).count();
-    std::cout << "[   NOTE   ] " << kEdits << " edits took " << burstMs << " ms" << std::endl;
-    const U64 serialAfterBurst = frames.back()->serial;
-    // Frames of the edited scene, for a second.
-    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-    std::chrono::steady_clock::time_point firstNew = end;
-    while (std::chrono::steady_clock::now() < std::min(end, firstNew + std::chrono::seconds(1))) {
-        record(&frames);
-        if ((firstNew == end) && (frames.back()->serial > serialAfterBurst)) {
-            firstNew = std::chrono::steady_clock::now();
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    _render->stop();
-    ASSERT_GT(frames.back()->serial, serialAfterBurst) << "no frame of the edited scene in " << kTimeout.count() << " s";
+    hold(false);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+    ASSERT_TRUE(collectUntilDone(mark, &after));
+    ASSERT_FALSE(after.empty());
+    EXPECT_EQ(held, after.front());
 
     const U64 restartsAfter = _render->getRestartCount();
-    // The edits are one restart while each comes within the restart's quiet time of the last and
-    // the burst is shorter than the longest a restart waits.
-    if (burstMs < 90.) {
-        EXPECT_EQ(restartsRefining + 1, restartsAfter);
-    } else {
-        std::cout << "[   NOTE   ] the edits outlasted the longest a restart waits; checking a bound" << std::endl;
-        EXPECT_LE(restartsAfter, restartsRefining + 1 + (U64)(burstMs / 100.));
-    }
+    EXPECT_EQ(restartsRefining + 1, restartsAfter);
     const float moved = windowDepth(_view.frustum, kNearDistance + kLastBack);
     const float before = windowDepth(_view.frustum, kNearDistance);
     for (const std::shared_ptr<const ProgressiveRender::Frame>& frame : frames) {
-        if ((frame->serial > serialAfterBurst) || (frame->restart > restartsRefining)) {
-            EXPECT_GT(frame->restart, restartsRefining) << "frame " << frame->serial << " is of the render before the edits";
-            if (frame->serial > serialAfterBurst) {
-                EXPECT_EQ(restartsAfter, frame->restart) << "frame " << frame->serial;
-                EXPECT_NEAR(moved, centreDepth(*frame), 1e-4f) << "frame " << frame->serial << " (restart " << frame->restart << ") is stale";
-            }
-        } else {
-            EXPECT_NEAR(before, centreDepth(*frame), 1e-4f) << "frame " << frame->serial;
-        }
+        EXPECT_NEAR(before, centreDepth(*frame), 1e-4f) << "frame " << frame->serial;
     }
+    EXPECT_NEAR(before, centreDepth(*held), 1e-4f) << "frame " << held->serial;
+    for (const std::shared_ptr<const ProgressiveRender::Frame>& frame : after) {
+        if (frame->serial <= held->serial) {
+            continue;
+        }
+        EXPECT_EQ(restartsAfter, frame->restart) << "frame " << frame->serial;
+        EXPECT_NEAR(moved, centreDepth(*frame), 1e-4f) << "frame " << frame->serial << " (restart " << frame->restart << ") is stale";
+    }
+    EXPECT_EQ(kSamples * 2, after.back()->samples);
 }
 
 // Stopping pauses the delegate where it is; resuming continues from its samples, without a
@@ -366,25 +448,33 @@ TEST_F(ProgressiveRenderTest, StopKeepsTheSamplesAndResumeContinues)
     }
     HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixedSampling(1000000));
     ASSERT_TRUE(start());
-    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-    while ((_render->getStatus().samples < 2) && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    ASSERT_GE(_render->getStatus().samples, 2);
+    ASSERT_TRUE(waitUntil([this]() {
+        const ProgressiveRender::Status status = _render->getStatus();
+
+        return !status.error.empty() || (status.samples >= 2);
+    },
+                          "a second sample"));
+    ASSERT_TRUE(_render->getStatus().error.empty()) << _render->getStatus().error;
     _render->stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_TRUE(waitUntil([this]() { return _render->getStatus().paused; }, "the pause"));
     const ProgressiveRender::Status stopped = _render->getStatus();
     EXPECT_TRUE(stopped.stopped);
+    // Nothing moves while it is paused.
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     const ProgressiveRender::Status still = _render->getStatus();
+    EXPECT_TRUE(still.paused);
     EXPECT_EQ(stopped.samples, still.samples);
     EXPECT_EQ(stopped.frames, still.frames);
 
     _render->resume();
-    while ((_render->getStatus().samples <= still.samples) && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    ASSERT_TRUE(waitUntil([this, &still]() {
+        const ProgressiveRender::Status status = _render->getStatus();
+
+        return !status.error.empty() || (!status.paused && (status.samples > still.samples));
+    },
+                          "a sample after the resume"));
     const ProgressiveRender::Status resumed = _render->getStatus();
+    EXPECT_TRUE(resumed.error.empty()) << resumed.error;
     EXPECT_FALSE(resumed.stopped);
     EXPECT_GT(resumed.samples, still.samples);
     EXPECT_EQ(still.restarts, resumed.restarts);
@@ -398,25 +488,18 @@ TEST_F(ProgressiveRenderTest, AFailureReachesTheListener)
         return;
     }
     ASSERT_TRUE(start());
-    _render.reset();
-    std::atomic<int> calls(0);
-    SceneStage* stage = _stage.get();
-    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    newRender();
     _render->setRenderer("NatronNoSuchRenderDelegate");
     _render->setView(_view);
-    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    EXPECT_GT(calls.load(), 0) << "the listener was not called";
+    EXPECT_TRUE(waitUntil([this]() { return _calls > 0; }, "a call of the listener"));
     const ProgressiveRender::Status status = _render->getStatus();
     EXPECT_FALSE(status.error.empty());
     EXPECT_FALSE(status.active);
     EXPECT_TRUE(_render->getFrame() == nullptr);
     // It does not retry: no further call comes.
-    const int after = calls.load();
+    const int after = calls();
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    EXPECT_EQ(after, calls.load());
+    EXPECT_EQ(after, calls());
     _render.reset();
 }
 
@@ -429,11 +512,8 @@ TEST_F(ProgressiveRenderTest, AThrowOutsideTheRenderFailsItAndAnEditRecovers)
         return;
     }
     ASSERT_TRUE(start());
-    _render.reset();
-    std::atomic<int> calls(0);
     std::atomic<bool> throwing(true);
-    SceneStage* stage = _stage.get();
-    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    newRender();
     _render->setThreads([&throwing]() -> int {
         if (throwing.load()) {
             throw std::runtime_error("delegate broke");
@@ -443,30 +523,23 @@ TEST_F(ProgressiveRenderTest, AThrowOutsideTheRenderFailsItAndAnEditRecovers)
     });
     _render->setRenderer(kRenderDelegateCyclesId);
     _render->setView(_view);
-    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    ASSERT_GT(calls.load(), 0) << "the listener was not called";
+    ASSERT_TRUE(waitUntil([this]() { return _calls > 0; }, "a call of the listener"));
     EXPECT_NE(std::string::npos, _render->getStatus().error.find("delegate broke")) << _render->getStatus().error;
     EXPECT_FALSE(_render->getStatus().active);
-    const int after = calls.load();
+    const int after = calls();
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    EXPECT_EQ(after, calls.load());
+    EXPECT_EQ(after, calls());
 
     throwing = false;
+    const std::size_t mark = publishedCount();
     _render->invalidate();
-    while (!_render->getStatus().error.empty() && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    EXPECT_TRUE(waitUntil([this]() { return _render->getStatus().error.empty(); }, "the recovery"));
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
-    EXPECT_TRUE(collectUntilDone(&frames));
+    EXPECT_TRUE(collectUntilDone(mark, &frames));
 
     throwing = true;
     _render->invalidate();
-    while (_render->getStatus().error.empty() && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    EXPECT_TRUE(waitUntil([this]() { return !_render->getStatus().error.empty(); }, "the second failure"));
     EXPECT_NE(std::string::npos, _render->getStatus().error.find("delegate broke")) << _render->getStatus().error;
     EXPECT_FALSE(_render->getStatus().active);
     throwing = false;
@@ -481,11 +554,8 @@ TEST_F(ProgressiveRenderTest, AnEditDuringAFailingPassDoesNotHideTheFailure)
         return;
     }
     ASSERT_TRUE(start());
-    _render.reset();
-    std::atomic<int> calls(0);
     std::atomic<bool> armed(true);
-    SceneStage* stage = _stage.get();
-    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    newRender();
     ProgressiveRender::View moved = _view;
     moved.width += 2;
     RenderDelegates::setRenderFaultHook([this, &armed, moved]() {
@@ -497,12 +567,8 @@ TEST_F(ProgressiveRenderTest, AnEditDuringAFailingPassDoesNotHideTheFailure)
     _render->setRenderer(kRenderDelegateCyclesId);
     _render->setThreads([]() { return 2; });
     _render->setView(_view);
-    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    EXPECT_TRUE(waitUntil([this]() { return _calls > 0; }, "a call of the listener"));
     EXPECT_FALSE(armed.load());
-    EXPECT_GT(calls.load(), 0) << "the listener was not called";
     EXPECT_NE(std::string::npos, _render->getStatus().error.find("texture commit failed")) << _render->getStatus().error;
     _render.reset();
     RenderDelegates::setRenderFaultHook(nullptr);
@@ -516,41 +582,34 @@ TEST_F(ProgressiveRenderTest, AFailureRetriesAtTheNextSceneEditAndNotAtAMove)
         return;
     }
     ASSERT_TRUE(start());
-    _render.reset();
-    std::atomic<int> calls(0);
     std::atomic<bool> armed(true);
-    SceneStage* stage = _stage.get();
     RenderDelegates::setRenderFaultHook([&armed]() {
         if (armed.exchange(false)) {
             throw std::runtime_error("texture commit failed");
         }
     });
-    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    newRender();
     _render->setRenderer(kRenderDelegateCyclesId);
     _render->setThreads([]() { return 2; });
     _render->setView(_view);
-    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    ASSERT_GT(calls.load(), 0) << "the listener was not called";
+    ASSERT_TRUE(waitUntil([this]() { return _calls > 0; }, "a call of the listener"));
     EXPECT_FALSE(_render->getStatus().error.empty());
     const std::uint64_t builds = HydraRender::getEngineBuildCount();
 
     ProgressiveRender::View moved = _view;
     moved.width += 2;
     _render->setView(moved);
+    // No engine is built for the move.
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
     EXPECT_FALSE(_render->getStatus().error.empty());
 
     _render->setView(_view);
+    const std::size_t mark = publishedCount();
     _render->invalidate();
-    while (!_render->getStatus().error.empty() && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    EXPECT_TRUE(waitUntil([this]() { return _render->getStatus().error.empty(); }, "the retry"));
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
-    EXPECT_TRUE(collectUntilDone(&frames));
+    EXPECT_TRUE(collectUntilDone(mark, &frames));
     EXPECT_FALSE(frames.empty());
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
     _render.reset();
@@ -565,28 +624,22 @@ TEST_F(ProgressiveRenderTest, AnExceptionFromHydraFailsTheRenderAndALaterRenderR
         return;
     }
     ASSERT_TRUE(start());
-    _render.reset();
-    std::atomic<int> calls(0);
-    SceneStage* stage = _stage.get();
     RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
-    _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [&calls]() { ++calls; }, 0.05f));
+    newRender();
     _render->setRenderer(kRenderDelegateCyclesId);
     _render->setThreads([]() { return 2; });
     _render->setView(_view);
-    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-    while ((calls.load() == 0) && (std::chrono::steady_clock::now() < end)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    EXPECT_TRUE(waitUntil([this]() { return _calls > 0; }, "a call of the listener"));
     RenderDelegates::setRenderFaultHook(nullptr);
-    EXPECT_GT(calls.load(), 0) << "the listener was not called";
     const ProgressiveRender::Status failed = _render->getStatus();
     EXPECT_NE(std::string::npos, failed.error.find("texture commit failed")) << failed.error;
     EXPECT_FALSE(failed.active);
 
+    const std::size_t mark = publishedCount();
     _render->setRenderer(std::string());
     _render->setRenderer(kRenderDelegateCyclesId);
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
-    EXPECT_TRUE(collectUntilDone(&frames));
+    EXPECT_TRUE(collectUntilDone(mark, &frames));
     EXPECT_FALSE(frames.empty());
     _render.reset();
 }
@@ -600,7 +653,7 @@ TEST_F(ProgressiveRenderTest, CyclesSessionsShareTheLastCountAskedFor)
     }
     ASSERT_TRUE(start());
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
-    ASSERT_TRUE(collectUntilDone(&frames));
+    ASSERT_TRUE(collectUntilDone(0, &frames));
     EXPECT_EQ(2, HydraRender::getCyclesThreads());
     const U64 restartsBefore = _render->getRestartCount();
     const std::uint64_t buildsBefore = HydraRender::getEngineBuildCount();
@@ -610,22 +663,24 @@ TEST_F(ProgressiveRenderTest, CyclesSessionsShareTheLastCountAskedFor)
     second->setRenderer(kRenderDelegateCyclesId);
     second->setThreads([]() { return 3; });
     second->setView(_view);
-    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
-    for (;;) {
+    std::string error;
+    ASSERT_TRUE(waitUntil([this, &second, &error, restartsBefore]() {
         const ProgressiveRender::Status a = _render->getStatus();
         const ProgressiveRender::Status b = second->getStatus();
-        ASSERT_TRUE(a.error.empty()) << a.error;
-        ASSERT_TRUE(b.error.empty()) << b.error;
+        if (!a.error.empty() || !b.error.empty()) {
+            error = a.error + b.error;
+
+            return true;
+        }
         const std::shared_ptr<const ProgressiveRender::Frame> frameA = _render->getFrame();
         const std::shared_ptr<const ProgressiveRender::Frame> frameB = second->getFrame();
         const bool doneA = a.converged && frameA && frameA->converged && (frameA->restart == a.restarts) && (a.restarts > restartsBefore);
         const bool doneB = b.converged && frameB && frameB->converged && (frameB->restart == b.restarts);
-        if (doneA && doneB) {
-            break;
-        }
-        ASSERT_TRUE(std::chrono::steady_clock::now() < end) << "the renders did not finish in " << kTimeout.count() << " s";
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+
+        return doneA && doneB;
+    },
+                          "the end of both renders"));
+    ASSERT_TRUE(error.empty()) << error;
     EXPECT_EQ(3, HydraRender::getCyclesThreads());
     EXPECT_GE(HydraRender::getEngineBuildCount(), buildsBefore + 2) << "the first viewer's engine was not made again";
     EXPECT_EQ(kSamples, _render->getFrame()->samples);
@@ -649,28 +704,29 @@ TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverT
     prim["cycles:samples"] = PXR_NS::VtValue(12);
     ASSERT_TRUE(start(prim));
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
-    ASSERT_TRUE(collectUntilDone(&frames));
+    ASSERT_TRUE(collectUntilDone(0, &frames));
     EXPECT_EQ(12, _render->getMaxSamples());
     EXPECT_EQ(12, frames.back()->samples);
 
+    std::size_t mark = publishedCount();
     _render->setMaxSamples(5);
-    frames.clear();
-    ASSERT_TRUE(collectUntilDone(&frames));
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
     EXPECT_EQ(5, _render->getMaxSamples());
     EXPECT_EQ(5, frames.back()->samples);
 
     const U64 restarts = _render->getRestartCount();
     const U64 builds = HydraRender::getEngineBuildCount();
     _render->setSettings(prim);
+    // The same settings: nothing restarts, now or a little later.
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     EXPECT_EQ(restarts, _render->getRestartCount());
     EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
 
+    mark = publishedCount();
     _render->setMaxSamples(0);
     prim["cycles:samples"] = PXR_NS::VtValue(7);
     _render->setSettings(prim);
-    frames.clear();
-    ASSERT_TRUE(collectUntilDone(&frames));
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
     EXPECT_EQ(7, _render->getMaxSamples());
     EXPECT_EQ(7, frames.back()->samples);
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);

@@ -5,7 +5,9 @@ a red X and "no GPU path" where the upper region feeds TimeBlur, and an entry ti
 one. Placement is weight-based: a region of Point nodes alone (Saturation, Grade) weighs under kGpuRegionMinWeight
 and stays on the CPU, so each side of the TimeBlur has a Blur, a Filter that is enough on its own. The overlay's
 outline item publishes what it draws as properties (regionCount, exitCount, entryCount, fallbackCount, fadedCount,
-fadedNodes, mixedCount, exitLabels), which the checks read. A faded node is covered by a child item whose data(0) is
+fadedNodes, mixedCount, exitLabels, regionRects, pipeLines, refreshCount, redrawCount), which the checks read.
+regionRects holds one scene rectangle per region ("x,y,w,h"), pipeLines one "region,x1,y1,x2,y2" per marked pipe;
+refreshCount counts full rebuilds of the overlay and redrawCount the single-region redraws. A faded node is covered by a child item whose data(0) is
 "gpuFadeScrim"; its own opacity stays 1.
 
 Whether a GPU is usable is read from natron.log: "GPU compute ready on" or "GPU compute is unavailable:".
@@ -24,6 +26,12 @@ Cases:
   fallback   with NATRON_GPU_FAULT=lost@region:1 the first operation of the first GPU region run loses the device,
              and that region gets the fallback outline. The preference is on from the start in this mode, so that
              the render the fault lands in is one the overlay records
+  moved      with a GPU, moving a region's member node redraws that region's outline round the node and leaves the
+             other regions' outlines alone, without a full rebuild
+  selection  with a GPU, selecting and deselecting every node rebuilds nothing and changes no outline or pipe
+  low detail with a GPU, zoomed out into the low level of detail, the faded node's pixels differ with the overlay on
+             and return to the unfaded pixels with it off; screenshots m116_lowdetail_on.png and m116_lowdetail_off.png
+  inputs     with a GPU, hiding a node's inputs removes the marked pipe at that node, and showing them puts it back
   stable     with a GPU, moving the main window changes neither the regions nor the fading, and turning the
              preference off and on shows the regions again without a render or an edit
 
@@ -64,6 +72,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtTest import QTest
+    from PySide6.QtGui import QFontMetrics
     from PySide6.QtWidgets import QApplication
 
     import guitest as gt
@@ -102,9 +111,40 @@ try:
         if item is None:
             return 0
         value = item.property(name)
-        if name in ("exitLabels", "fadedNodes"):
+        if name in ("exitLabels", "fadedNodes", "regionRects", "pipeLines"):
             return [str(v) for v in value] if value else []
         return int(value) if value is not None else 0
+
+    def region_rects():
+        return [tuple(float(v) for v in text.split(",")) for text in prop("regionRects")]
+
+    def pipe_lines():
+        return [tuple(float(v) for v in text.split(",")) for text in prop("pipeLines")]
+
+    def rect_has(rect, x, y):
+        return rect[2] > 0 and rect[0] <= x <= rect[0] + rect[2] and rect[1] <= y <= rect[1] + rect[3]
+
+    def node_box(node):
+        x, y = node.getPosition()[0:2]
+        w, h = node.getSize()[0:2]
+        return x, y, w, h
+
+    def node_centre(node):
+        x, y, w, h = node_box(node)
+        return x + w / 2.0, y + h / 2.0
+
+    def pipes_into(node):
+        """The marked pipes whose destination end (the first point) is at node's inputs."""
+        x, y, w, h = node_box(node)
+        pad = 20.0
+        return [line for line in pipe_lines() if x - pad <= line[1] <= x + w + pad and y - pad <= line[2] <= y + h + pad]
+
+    def viewport_pixel(view, scene_x, scene_y):
+        """The colour of the node graph's viewport at a scene point, rendered from the widget itself."""
+        viewport = hold(view.viewport())
+        at = view.mapFromScene(scene_x, scene_y)
+        c = viewport.grab().toImage().pixelColor(at.x(), at.y())
+        return (c.red(), c.green(), c.blue())
 
     def graph_items():
         view = node_graph_view()
@@ -366,6 +406,123 @@ try:
                 caption("m116_cached.png", "every node above the edited Saturation is faded; Saturation is not")
             else:
                 gt.report("NOTE cached case skipped: a device fault is injected")
+
+            gt.section("moved")
+            moved = chain[1]
+            rects_before = prop("regionRects")
+            parsed_before = region_rects()
+            centre_before = node_centre(moved)
+            own = [i for i, r in enumerate(parsed_before) if rect_has(r, *centre_before)]
+            if not check(own, "a region outlines %s before it moves (rects %r)" % (moved.getScriptName(), rects_before)):
+                gt.report("NOTE moved case skipped: the cost model kept %s on the CPU" % moved.getScriptName())
+            else:
+                region = own[0]
+                refreshes = prop("refreshCount")
+                redraws = prop("redrawCount")
+                moved.setPosition(400, NODE_SPACING)
+                new_box = node_box(moved)
+                corners = [(new_box[0], new_box[1]), (new_box[0] + new_box[2], new_box[1] + new_box[3])]
+
+                def outline_follows():
+                    rects = region_rects()
+                    return (len(rects) == len(parsed_before)
+                            and all(rect_has(rects[region], x, y) for x, y in corners))
+
+                ok = yield ("until", outline_follows, POLL_TIMEOUT_S)
+                check(ok, "the region's outline follows %s to its new place (was %r, now %r)"
+                      % (moved.getScriptName(), rects_before[region:region + 1], prop("regionRects")[region:region + 1]))
+                after = prop("regionRects")
+                check(after[region] != rects_before[region], "the moved region's bounds changed")
+                check(all(after[i] == rects_before[i] for i in range(len(after)) if i != region),
+                      "no other region's outline changed (before %r, after %r)" % (rects_before, after))
+                check(prop("redrawCount") > redraws and prop("refreshCount") == refreshes,
+                      "the move redraws regions without rebuilding the overlay (redraws %d -> %d, rebuilds %d -> %d)"
+                      % (redraws, prop("redrawCount"), refreshes, prop("refreshCount")))
+                moved.setPosition(0, NODE_SPACING)
+                ok = yield ("until", lambda: prop("regionRects") == rects_before, POLL_TIMEOUT_S)
+                check(ok, "moving the node back restores every outline (%r)" % prop("regionRects"))
+
+            gt.section("selection")
+            yield ("sleep", 500)
+            snap_before = (prop("refreshCount"), prop("regionRects"), prop("pipeLines"), prop("regionCount"))
+            app.selectAllNodes()
+            yield ("sleep", 1000)
+            snap_selected = (prop("refreshCount"), prop("regionRects"), prop("pipeLines"), prop("regionCount"))
+            check(snap_selected == snap_before and shown(),
+                  "selecting every node rebuilds nothing and leaves the outlines and pipes alone (%r -> %r)"
+                  % (snap_before, snap_selected))
+            app.clearSelection()
+            yield ("sleep", 1000)
+            snap_cleared = (prop("refreshCount"), prop("regionRects"), prop("pipeLines"), prop("regionCount"))
+            check(snap_cleared == snap_before and shown(),
+                  "deselecting every node rebuilds nothing and leaves the outlines and pipes alone (%r -> %r)"
+                  % (snap_before, snap_cleared))
+
+            gt.section("low detail")
+            faded_names = prop("fadedNodes")
+            faded_node = app.getNode(faded_names[0]) if faded_names else None
+            if faded_node is None:
+                gt.report("NOTE low detail case skipped: no node is faded (a device fault is injected or nothing was cached)")
+            else:
+                graph = node_graph_view()
+                saved_transform = graph.transform()
+                switch_zoom = 4.0 / QFontMetrics(QApplication.font()).height()
+                zoom = switch_zoom * 0.3
+                chain_centre = node_centre(chain[len(chain) // 2])
+                graph.resetTransform()
+                graph.scale(zoom, zoom)
+                graph.centerOn(chain_centre[0], chain_centre[1])
+                graph.viewport().update()
+                yield ("sleep", 1000)
+                cx, cy = node_centre(faded_node)
+                bg_at = graph.mapToScene(QPoint(12, 12))
+                background = viewport_pixel(graph, bg_at.x(), bg_at.y())
+                on_pixel = viewport_pixel(graph, cx, cy)
+                caption("m116_lowdetail_on.png", "zoomed out to the low level of detail, overlay on: %s is faded"
+                        % faded_node.getScriptName())
+                pref.setValue(False)
+                ok = yield ("until", lambda: not shown() and viewport_pixel(graph, cx, cy) != on_pixel, POLL_TIMEOUT_S)
+                off_pixel = viewport_pixel(graph, cx, cy)
+                check(ok, "turning the overlay off repaints the low-detail layer: the faded node's pixel changes "
+                          "(on %r, off %r)" % (on_pixel, off_pixel))
+
+                def distance(a, b):
+                    return sum(abs(u - v) for u, v in zip(a, b))
+
+                check(distance(on_pixel, background) < distance(off_pixel, background),
+                      "the faded node sits closer to the background than the unfaded one (on %r, off %r, background %r)"
+                      % (on_pixel, off_pixel, background))
+                caption("m116_lowdetail_off.png", "zoomed out to the low level of detail, overlay off: no fade")
+                pref.setValue(True)
+                ok = yield ("until", lambda: shown() and viewport_pixel(graph, cx, cy) == on_pixel, POLL_TIMEOUT_S)
+                check(ok, "turning the overlay back on fades the node again in the low-detail layer (now %r, wanted %r)"
+                      % (viewport_pixel(graph, cx, cy), on_pixel))
+                graph.setTransform(saved_transform)
+                graph.centerOn(0, len(chain) * NODE_SPACING // 2)
+                graph.viewport().update()
+                yield ("sleep", 1000)
+
+            gt.section("inputs")
+            tested = False
+            for target in (timeblur, lower_blur):
+                pipes = pipes_into(target)
+                if not pipes:
+                    continue
+                tested = True
+                total = pipe_lines()
+                hide = target.getParam("hideInputs")
+                if not check(hide is not None, "%s has hideInputs" % target.getScriptName()):
+                    continue
+                hide.setValue(True)
+                ok = yield ("until", lambda: not pipes_into(target), POLL_TIMEOUT_S)
+                check(ok, "hiding the inputs of %s removes its marked pipe (%r left)" % (target.getScriptName(), pipes_into(target)))
+                check(len(pipe_lines()) == len(total) - len(pipes),
+                      "no other marked pipe is removed (%d of %d left)" % (len(pipe_lines()), len(total)))
+                hide.setValue(False)
+                ok = yield ("until", lambda: sorted(pipe_lines()) == sorted(total), POLL_TIMEOUT_S)
+                check(ok, "showing the inputs of %s again restores the marked pipe (%r)" % (target.getScriptName(), pipe_lines()))
+            if not tested:
+                gt.report("NOTE inputs case skipped: no marked pipe reaches the TimeBlur or the lower Blur")
 
             gt.section("stable")
             regions_before = prop("regionCount")

@@ -375,6 +375,8 @@ GpuRegionOverlay::GpuRegionOverlay(NodeGraph* graph,
     , _pending(false)
     , _remapPending(true)
     , _changesPending(false)
+    , _refreshCount(0)
+    , _redrawCount(0)
 {
     _outlines->setObjectName(QString::fromUtf8("GpuRegionOutlineItem"));
     _markers->setObjectName(QString::fromUtf8("GpuRegionMarkerItem"));
@@ -449,6 +451,7 @@ GpuRegionOverlay::refreshChangedRegions()
         if (region >= _regions.size()) {
             continue;
         }
+        ++_redrawCount;
         _draws[region] = drawRegion(_regions[region]);
         _outlines->setShapes(region, _draws[region].outlines);
         _markers->setShapes(region, _draws[region].markers);
@@ -940,9 +943,19 @@ GpuRegionOverlay::publishCounts()
     int fallbackCount = 0;
     int mixedCount = 0;
     QStringList exitLabels;
+    QStringList regionRects;
+    QStringList pipeLines;
 
     for (std::size_t r = 0; r < _draws.size(); ++r) {
         const RegionDraw& draw = _draws[r];
+        QRectF rect;
+        for (const GpuRegionItem::Outline& outline : draw.outlines.outlines) {
+            rect = rect.united(outline.path.boundingRect());
+        }
+        regionRects << QString::fromUtf8("%1,%2,%3,%4").arg(rect.x()).arg(rect.y()).arg(rect.width()).arg(rect.height());
+        for (const GpuRegionItem::Marker& marker : draw.markers.markers) {
+            pipeLines << QString::fromUtf8("%1,%2,%3,%4,%5").arg(r).arg(marker.pipe.x1()).arg(marker.pipe.y1()).arg(marker.pipe.x2()).arg(marker.pipe.y2());
+        }
         if (draw.outlined) {
             ++regionCount;
             if (_regions[r].fellBack) {
@@ -962,6 +975,10 @@ GpuRegionOverlay::publishCounts()
     _outlines->setProperty("fadedNodes", _fadedNames);
     _outlines->setProperty("mixedCount", mixedCount);
     _outlines->setProperty("exitLabels", exitLabels);
+    _outlines->setProperty("regionRects", regionRects);
+    _outlines->setProperty("pipeLines", pipeLines);
+    _outlines->setProperty("refreshCount", _refreshCount);
+    _outlines->setProperty("redrawCount", _redrawCount);
 }
 
 void
@@ -984,6 +1001,7 @@ GpuRegionOverlay::refresh()
             _remapPending = false;
             remap();
         }
+        ++_refreshCount;
         indexRegions();
         _changedRegions.clear();
 

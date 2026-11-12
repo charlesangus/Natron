@@ -244,6 +244,8 @@ private:
     bool _pending;
     bool _remapPending;
     bool _changesPending;
+    int _refreshCount;
+    int _redrawCount;
 };
 
 NATRON_NAMESPACE_EXIT

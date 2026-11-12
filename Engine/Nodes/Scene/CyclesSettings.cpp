@@ -217,7 +217,6 @@ make()
     add("passes", setting("cycles:film:pass_alpha_threshold", "passAlphaThreshold", "The alpha above which a pixel counts as covered in the data passes, such as depth and normals. Lower includes more soft edges.", VtValue(0.5f)));
     add("passes", setting("cycles:film:display_pass", "displayPass", "The number of the pass the render shows instead of the combined image, as Cycles numbers its pass types. 1 is Combined.", VtValue(1)));
     add("passes", setting("cycles:film:show_active_pixels", "showActivePixels", "Marks the pixels adaptive sampling is still working on. It is for checking Adaptive Threshold, not for final frames.", VtValue(false)));
-    add("passes", setting("cycles:film:use_sample_count", "useSampleCount", "Renders a pass showing how many samples each pixel took, which shows where adaptive sampling spent its time.", VtValue(false)));
 
     add("world", setting("cycles:background:use_shader", "useShader", "Lets the world shader light the scene and show behind it. Off gives a black world.", VtValue(true)));
     add("world", setting("cycles:background:visibility", "visibility", "Which kinds of ray can see the world, as the sum of Camera 1, Transmission 2, Diffuse 4, Glossy 8, Volume Scatter 16 and Shadow 96. The default of 127 shows it to all of them.", VtValue(127u)));
@@ -273,6 +272,9 @@ make()
     enabledBy("custom_pixel_jitter_sample", "use_custom_pixel_jitter_sample");
     enabledBy("sample_subset_offset", "use_sample_subset");
     enabledBy("sample_subset_length", "use_sample_subset");
+
+    // Cycles sets this from its tile count on every sync, so a value sent here is overwritten.
+    c.excludedKeys.push_back("cycles:film:use_sample_count");
 
     return c;
 } // make

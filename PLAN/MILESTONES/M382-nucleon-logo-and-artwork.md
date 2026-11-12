@@ -120,5 +120,5 @@ Context:
   - Round 4 goes to the Fable agent.
 - 2026-11-11 — Round 4 feedback (user):
   - Bauhaus/Feynman: a few more stylised variations.
-  - Quarks: a few more blue-sky "three quarks" ideas, at least one Bauhaus-inspired.
+  - Quarks: a few more blue-sky "three quarks" ideas, at least one Bauhaus-inspired. The triangle and same-size-quarks constraints from round 3 are lifted for this round.
   - Round 5 goes to a Fable agent.

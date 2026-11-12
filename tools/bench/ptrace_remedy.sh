@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by the stack samplers and profile_ops.sh.
 #   ptrace_remedy   prints why this user may be unable to attach to a process that is not its
 #                   child, and the fix; prints nothing when attaching should work.

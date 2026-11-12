@@ -13,6 +13,7 @@ out=$4
 : > "$out"
 : > "$out.err"
 # shellcheck source=ptrace_remedy.sh
+# shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/ptrace_remedy.sh"
 if ! command -v gdb > /dev/null 2>&1; then
     echo "sample_stacks_gdb.sh: gdb is not installed (sudo apt install gdb, or elfutils for eu-stack)" | tee -a "$out.err" >&2

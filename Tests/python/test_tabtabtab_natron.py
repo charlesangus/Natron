@@ -147,6 +147,97 @@ def _plugin_action(label, plugin_id="", major=1, color="", shortcut=""):
     })
 
 
+class _CppMenu(object):
+    """A menu built in C++, which Python reaches only through wrappers."""
+
+    def __init__(self, actions=None):
+        self.actions = list(actions or [])
+        self.filters = []
+        self.destroyed_slots = []
+
+    def send(self, event_type):
+        event = types.SimpleNamespace(type=lambda: event_type)
+        for event_filter in list(self.filters):
+            event_filter.eventFilter(_MenuWrapper(self), event)
+
+    def destroy(self):
+        for slot in list(self.destroyed_slots):
+            slot(None)
+
+
+class _CppAction(object):
+    def __init__(self, text, menu=None, properties=None):
+        self.text = text
+        self.menu = menu
+        self.properties = dict(properties or {})
+
+
+class _MenuWrapper(object):
+    """A PySide wrapper of a C++ menu: unusable once invalidated, although
+    the menu lives on."""
+
+    def __init__(self, cpp):
+        self._cpp = cpp
+        self._valid = True
+        self.destroyed = types.SimpleNamespace(connect=cpp.destroyed_slots.append)
+
+    def _check(self):
+        if not self._valid:
+            raise RuntimeError("Internal C++ object (PySide6.QtWidgets.QMenu) already deleted.")
+
+    def actions(self):
+        self._check()
+        return [_ActionWrapper(action) for action in self._cpp.actions]
+
+    def isEnabled(self):
+        self._check()
+        return True
+
+    def installEventFilter(self, event_filter):
+        self._check()
+        if event_filter not in self._cpp.filters:
+            self._cpp.filters.append(event_filter)
+
+
+class _ActionWrapper(object):
+    """A PySide wrapper of a C++ action. The menu wrapper menu() returns is
+    its child, invalidated once this wrapper is collected."""
+
+    def __init__(self, cpp):
+        self._cpp = cpp
+        self._children = []
+
+    def __del__(self):
+        for child in self._children:
+            child._valid = False
+
+    def menu(self):
+        if self._cpp.menu is None:
+            return None
+        child = _MenuWrapper(self._cpp.menu)
+        self._children.append(child)
+        return child
+
+    def text(self):
+        return self._cpp.text
+
+    def property(self, name):
+        return self._cpp.properties.get(name)
+
+    def shortcut(self):
+        return _FakeKeySequenceValue("")
+
+    def isVisible(self):
+        return True
+
+    def isEnabled(self):
+        return True
+
+
+def _cpp_plugin_action(label, plugin_id):
+    return _CppAction(label, properties={"natronPluginOwned": True, "natronPluginID": plugin_id})
+
+
 class _FakeWidget(object):
     def __init__(self, classname="", parent=None, menubar=None):
         self._classname = classname
@@ -305,7 +396,8 @@ class NatronAdapterTests(unittest.TestCase):
         pyside6.QtWidgets = qtwidgets
 
         shiboken6_module = types.ModuleType("shiboken6")
-        shiboken6_module.isValid = lambda obj: True
+        shiboken6_module.isValid = lambda obj: getattr(obj, "_valid", True)
+        shiboken6_module.getCppPointer = lambda obj: (id(getattr(obj, "_cpp", obj)),)
 
         natron_ns = types.SimpleNamespace(
             getSettings=lambda: _FakeSettings({}),
@@ -1001,6 +1093,85 @@ class NatronAdapterTests(unittest.TestCase):
         self.assertIsNot(second, first)
         self.assertEqual([i["menupath"] for i in second], ["Filter/Blur", "Filter/Defocus"])
         self.assertIs(plugin.get_items(), second)
+
+    def _wrapped_nodes_menu(self, h, actions):
+        h.qtcore.QEvent.ActionAdded = "ActionAdded"
+        h.qtcore.QEvent.ActionRemoved = "ActionRemoved"
+        h.qtcore.QEvent.ActionChanged = "ActionChanged"
+        h.qtcore.QEvent.EnabledChange = "EnabledChange"
+        root = _CppMenu(actions)
+        wrapper = _MenuWrapper(root)
+        h.natron_ns.nodesMenu = lambda: wrapper
+        return root
+
+    def test_cached_submenus_outlive_the_wrappers_of_the_first_walk(self):
+        h = self._load_adapter()
+        filter_menu = _CppMenu([_cpp_plugin_action("Blur", "BlurOFX")])
+        self._wrapped_nodes_menu(h, [_CppAction("Filter", menu=filter_menu)])
+        plugin = h.module.NatronPlugin()
+
+        first = plugin.get_items()
+        h.module.invalidate_items()
+        second = plugin.get_items()
+
+        self.assertEqual([i["menupath"] for i in first], ["Filter/Blur"])
+        self.assertEqual([i["menupath"] for i in second], ["Filter/Blur"])
+
+    def test_a_submenu_deleted_between_opens_is_walked_again(self):
+        h = self._load_adapter()
+        old_filter = _CppMenu([_cpp_plugin_action("Blur", "BlurOFX")])
+        filter_action = _CppAction("Filter", menu=old_filter)
+        root = self._wrapped_nodes_menu(h, [filter_action])
+        plugin = h.module.NatronPlugin()
+        self.assertEqual([i["menupath"] for i in plugin.get_items()], ["Filter/Blur"])
+
+        # The action outlives its submenu, so the nodes menu reports nothing.
+        filter_action.menu = None
+        old_filter.destroy()
+        self.assertEqual([i["menupath"] for i in plugin.get_items()], ["Filter"])
+
+        new_filter = _CppMenu([_cpp_plugin_action("Defocus", "DefocusOFX")])
+        root.actions = [_CppAction("Filter", menu=new_filter)]
+        root.send("ActionChanged")
+
+        self.assertEqual([i["menupath"] for i in plugin.get_items()], ["Filter/Defocus"])
+
+    def test_a_submenu_gone_without_a_destroyed_signal_is_walked_again(self):
+        h = self._load_adapter()
+        filter_action = _CppAction("Filter", menu=_CppMenu([_cpp_plugin_action("Blur", "BlurOFX")]))
+        color_menu = _CppMenu([_cpp_plugin_action("Grade", "GradeOFX")])
+        self._wrapped_nodes_menu(h, [filter_action, _CppAction("Color", menu=color_menu)])
+        plugin = h.module.NatronPlugin()
+        plugin.get_items()
+
+        # Neither the nodes menu nor the submenu reports the loss; a change
+        # elsewhere starts the next walk.
+        filter_action.menu = None
+        color_menu.actions.append(_cpp_plugin_action("Saturation", "SaturationOFX"))
+        color_menu.send("ActionAdded")
+
+        self.assertEqual([i["menupath"] for i in plugin.get_items()],
+                         ["Filter", "Color/Grade", "Color/Saturation"])
+
+    def test_command_menus_outlive_the_wrappers_of_the_first_walk(self):
+        h = self._load_adapter()
+
+        def traverse(menu, _path=None):
+            return [{"menuobj": a, "menupath": "%s/%s" % (_path, a.text())} for a in menu.actions()]
+
+        h.core._traverse_qt_menu = traverse
+        h.qtcore.QEvent.ActionAdded = "ActionAdded"
+        menubar = _MenuWrapper(_CppMenu([_CppAction("File", menu=_CppMenu([_CppAction("Save")]))]))
+        window = _FakeWidget(classname="Natron::Gui", menubar=menubar)
+        plugin = h.module.NatronPlugin()
+        plugin.set_window(window)
+
+        first = plugin.get_items()
+        h.module.invalidate_items()
+        second = plugin.get_items()
+
+        self.assertEqual([i["menupath"] for i in first], ["File/Save"])
+        self.assertEqual([i["menupath"] for i in second], ["File/Save"])
 
     def test_invalidate_items_picks_up_a_new_shortcut_property(self):
         h = self._load_adapter()

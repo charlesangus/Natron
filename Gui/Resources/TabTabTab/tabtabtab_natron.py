@@ -155,15 +155,24 @@ def _accepts(action, context):
 
 # The walked menus are watched for the events Qt sends a menu when one of its
 # actions is added, removed or changed (text, shortcut, visibility, enabled
-# state). A menu's walk is kept until such an event, or invalidate_items(),
-# drops it, so an open re-walks only what changed: the Edit menu after an
-# undo step, say, not the nodes menu. A menu that cannot be watched is walked
-# on every call. The versions, one per kind of walk, tell the lists built
-# from the walks when to be rebuilt.
+# state). A menu's walk is kept until such an event, the menu's destruction
+# or invalidate_items() drops it, so an open re-walks only what changed: the
+# Edit menu after an undo step, say, not the nodes menu. A menu that cannot be
+# watched is walked on every call. The versions, one per kind of walk, tell
+# the lists built from the walks when to be rebuilt.
+#
+# Menus are keyed by their C++ address, not by their wrapper. PySide makes the
+# wrapper action.menu() returns a child of the action's wrapper and
+# invalidates it once the action's wrapper is collected, although the menu
+# lives on; asking again gives a new wrapper for the same menu. A walk
+# therefore keeps each submenu's action, and asks it for the menu when the
+# submenu is walked.
 _segments = {}
 _owners = {}
 _watched = set()
+_destroy_hooked = set()
 _versions = {'nodes': 0, 'commands': 0}
+_command_caches = {}
 _menu_watcher = None
 _menu_change_events = None
 
@@ -181,19 +190,55 @@ def _enabled_change_event():
     return getattr(QtCore.QEvent, "EnabledChange", None)
 
 
-def _menu_changed(menu):
-    for key in _owners.get(menu, ()):
+def _menu_id(menu):
+    try:
+        return shiboken6.getCppPointer(menu)[0]
+    except (AttributeError, TypeError, IndexError, RuntimeError):
+        return None
+
+
+def _submenu_of(action):
+    """The live menu `action` opens, or None."""
+    try:
+        if not shiboken6.isValid(action):
+            return None
+        menu = action.menu()
+    except RuntimeError:
+        return None
+    return menu if _is_alive(menu) else None
+
+
+def _menu_changed(menu_id):
+    for key in _owners.get(menu_id, ()):
         _segments.pop(key, None)
         _versions[key[0]] += 1
+
+
+def _menu_destroyed(menu_id):
+    # A menu made later may be given the same address.
+    _menu_changed(menu_id)
+    _owners.pop(menu_id, None)
+    _watched.discard(menu_id)
+    _destroy_hooked.discard(menu_id)
+    _command_caches.pop(menu_id, None)
+
+
+def _hook_destroyed(menu, menu_id):
+    if menu_id in _destroy_hooked:
+        return
+    try:
+        menu.destroyed.connect(lambda *_args: _menu_destroyed(menu_id))
+    except (AttributeError, TypeError, RuntimeError):
+        return
+    _destroy_hooked.add(menu_id)
 
 
 def invalidate_items():
     """Drop every cached menu walk, for changes no menu event reports: the
     nodes menu rebuilt, or a node action's shortcut or colour property set."""
     _segments.clear()
-    for menu in [m for m in _watched if not _is_alive(m)]:
-        _watched.discard(menu)
-        _owners.pop(menu, None)
+    _owners.clear()
+    _command_caches.clear()
     for kind in _versions:
         _versions[kind] += 1
 
@@ -202,13 +247,16 @@ def _watch(menu, owner):
     """Drop the walk cached under `owner` when `menu` changes; False when
     `menu` cannot be watched, and so its walk must not be cached."""
     global _menu_watcher
-    if menu not in _watched:
+    menu_id = _menu_id(menu)
+    if menu_id is None:
+        return False
+    if menu_id not in _watched:
         if _menu_watcher is None:
             class _MenuWatcher(QtCore.QObject):
                 def eventFilter(self, watched, event):
                     kind = event.type()
                     if kind in _change_events():
-                        _menu_changed(watched)
+                        _menu_changed(_menu_id(watched))
                     elif kind == _enabled_change_event():
                         # A disabled submenu drops out of its parent's walk.
                         invalidate_items()
@@ -219,16 +267,19 @@ def _watch(menu, owner):
             menu.installEventFilter(_menu_watcher)
         except (AttributeError, TypeError, RuntimeError):
             return False
-        _watched.add(menu)
-    _owners.setdefault(menu, set()).add(owner)
+        _watched.add(menu_id)
+        _hook_destroyed(menu, menu_id)
+    _owners.setdefault(menu_id, set()).add(owner)
     return True
 
 
 def _node_segment(menu, parts):
-    """The walk of `menu` alone: (item, filter info, submenu, path) per
-    entry, a submenu entry standing for that submenu's own walk."""
-    key = ('nodes', menu)
-    cached = _segments.get(key)
+    """The walk of `menu` alone: (item, filter info, submenu action, path) per
+    entry, an entry with a submenu action standing for that submenu's own
+    walk."""
+    menu_id = _menu_id(menu)
+    key = ('nodes', menu_id)
+    cached = _segments.get(key) if menu_id is not None else None
     if cached is not None and cached[0] == parts:
         return cached[1], True
     entries = []
@@ -242,8 +293,8 @@ def _node_segment(menu, parts):
         submenu = action.menu()
         if submenu is not None:
             if submenu.isEnabled():
-                entries.append((None, None, submenu, path))
-            else:
+                entries.append((None, None, action, path))
+            elif menu_id is not None:
                 _watch(submenu, key)
             continue
         item = {'menuobj': action, 'menupath': "/".join(path)}
@@ -253,20 +304,32 @@ def _node_segment(menu, parts):
         if shortcut:
             item['shortcut'] = shortcut
         entries.append((item, _filter_info(action), None, None))
-    cacheable = _watch(menu, key)
+    cacheable = menu_id is not None and _watch(menu, key)
     if cacheable:
         _segments[key] = (parts, entries)
     return entries, cacheable
 
 
-def _collect_nodes(menu, parts, items, infos):
+def _collect_nodes(menu, parts, items, infos, rewalk=True):
+    start = len(items)
     entries, cacheable = _node_segment(menu, parts)
-    for item, info, submenu, path in entries:
-        if submenu is None:
+    for item, info, action, path in entries:
+        if action is None:
             items.append(item)
             infos.append(info)
-        else:
-            cacheable = _collect_nodes(submenu, path, items, infos) and cacheable
+            continue
+        submenu = _submenu_of(action)
+        if submenu is None:
+            # The submenu is gone and its menu reported no change, so the
+            # cached walk of the menu is stale.
+            _segments.pop(('nodes', _menu_id(menu)), None)
+            if rewalk:
+                del items[start:]
+                del infos[start:]
+                return _collect_nodes(menu, parts, items, infos, False)
+            cacheable = False
+            continue
+        cacheable = _collect_nodes(submenu, path, items, infos) and cacheable
     return cacheable
 
 
@@ -288,12 +351,14 @@ def _node_items():
     if not _is_alive(menu):
         return _NO_ITEMS, _NO_ITEMS
     version = _versions['nodes']
-    if _node_cache is not None and _node_cache[0] == version and _node_cache[1] is menu:
+    menu_id = _menu_id(menu)
+    if (_node_cache is not None and _node_cache[0] == version and menu_id is not None
+            and _node_cache[1] == menu_id):
         return _node_cache[2], _node_cache[3]
     items = []
     infos = []
     if _collect_nodes(menu, (), items, infos) and version == _versions['nodes']:
-        _node_cache = (version, menu, items, infos)
+        _node_cache = (version, menu_id, items, infos)
     return items, infos
 
 
@@ -306,25 +371,24 @@ def _with_shortcuts(items):
 
 
 def _command_segment(menu, title):
-    key = ('commands', menu)
-    cached = _segments.get(key)
+    menu_id = _menu_id(menu)
+    key = ('commands', menu_id)
+    cached = _segments.get(key) if menu_id is not None else None
     if cached is not None and cached[0] == title:
         return cached[1]
     items = _with_shortcuts(tabtabtab_nuke_core._traverse_qt_menu(menu, _path=title))
-    _watch_tree(menu, key)
-    _segments[key] = (title, items)
+    if menu_id is not None and _watch_tree(menu, key):
+        _segments[key] = (title, items)
     return items
 
 
 def _watch_tree(menu, owner):
-    _watch(menu, owner)
+    watched = _watch(menu, owner)
     for action in menu.actions():
         submenu = action.menu()
         if submenu is not None:
-            _watch_tree(submenu, owner)
-
-
-_command_caches = {}
+            watched = _watch_tree(submenu, owner) and watched
+    return watched
 
 
 def _command_items(window):
@@ -335,23 +399,25 @@ def _command_items(window):
     menubar = window.menuBar()
     if menubar is None:
         return _NO_ITEMS
-    key = ('commands', menubar)
-    if not _watch(menubar, key):
+    menubar_id = _menu_id(menubar)
+    key = ('commands', menubar_id)
+    if menubar_id is None or not _watch(menubar, key):
         return _with_shortcuts(find_qt_menu_items(menubar))
-    cached = _command_caches.get(menubar)
+    cached = _command_caches.get(menubar_id)
     version = _versions['commands']
     if cached is not None and cached[0] == version:
         return cached[1]
     tops = _segments.get(key)
     if tops is None:
-        tops = [(action.menu(), action.text()) for action in menubar.actions() if action.menu()]
+        tops = [(action, action.text()) for action in menubar.actions() if action.menu()]
         _segments[key] = tops
     items = []
-    for menu, title in tops:
-        if _is_alive(menu):
+    for action, title in tops:
+        menu = _submenu_of(action)
+        if menu is not None:
             items.extend(_command_segment(menu, title))
     if version == _versions['commands']:
-        _command_caches[menubar] = (version, items)
+        _command_caches[menubar_id] = (version, items)
     return items
 
 

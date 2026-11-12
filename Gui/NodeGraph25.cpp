@@ -203,7 +203,16 @@ NodeGraph::event(QEvent* e)
     if ( !getGui() ) {
         return false;
     }
-    if (e->type() == QEvent::KeyPress) {
+    if (e->type() == QEvent::ShortcutOverride) {
+        // A create-node key rebound to one a global action also uses (F2 opens render
+        // statistics) must reach the KeyPress below instead of triggering that action.
+        QKeyEvent* ke = static_cast<QKeyEvent*>(e);
+        if (isNodeCreationShortcutTarget() && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {
+            ke->accept();
+
+            return true;
+        }
+    } else if (e->type() == QEvent::KeyPress) {
         QKeyEvent* ke = dynamic_cast<QKeyEvent*>(e);
         assert(ke);
         if (ke && isNodeCreationShortcutTarget() && isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, ke->modifiers(), (Qt::Key)ke->key())) {

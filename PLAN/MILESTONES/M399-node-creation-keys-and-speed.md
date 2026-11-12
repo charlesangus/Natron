@@ -248,6 +248,12 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: builds; ctest and the tab-menu `Tests/gui/` scripts pass; none of the three shows in a creation sample at 3000 nodes.
   - size: M
 
+- [ ] M399.P4.T7 — Bound the graph walks each connect runs
+  - files: `Engine/Node*.cpp`, `Engine/NodeInputs.cpp`, `Gui/NodeGraph05.cpp` as the callers direct
+  - approach: P4.T4's agent found positioning's remaining cost is not `moveBelowPositionRecursively` but four full-graph walks per connect: two `hasViewersConnected`, `abortViewerRendersForEdit` → `getDownstreamOutputs`, and the cycle check (`isNodeUpstream` → `hashDependsOn`). Bound each to the nodes the edit affects, with a visited set, and drop duplicate walks per connect. Behaviour stays the same.
+  - verify: builds; ctest passes, with visit-count tests on a 3000-node graph; the stage log's positioning median is under 2 ms at 3000 nodes.
+  - size: M
+
 - [ ] M399.P4.T3 — Re-measure on the dev host and close the remaining misses
   - files: `tools/bench/gui/baselines/xvfb.jsonl`; code as the misses direct
   - approach: Re-run M399.P3.T1's ops on the dev host's release AppImage. For any op over

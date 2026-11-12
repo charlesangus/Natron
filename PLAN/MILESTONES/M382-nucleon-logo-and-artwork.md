@@ -118,3 +118,7 @@ Context:
   - Wedge-split variations: the wedge going right through, a more extreme split, the wedge passing through the split.
   - Feynman: liked but too simplistic and unbalanced. Revisit as more Bauhaus, more exaggerated and stylised, less literally a Feynman diagram.
   - Round 4 goes to the Fable agent.
+- 2026-11-11 — Round 4 feedback (user):
+  - Bauhaus/Feynman: a few more stylised variations.
+  - Quarks: a few more blue-sky "three quarks" ideas, at least one Bauhaus-inspired.
+  - Round 5 goes to a Fable agent.

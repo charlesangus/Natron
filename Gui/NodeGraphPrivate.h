@@ -189,8 +189,7 @@ private:
 // The navigator overlay. It paints its own border and nothing at all while the graph renders its
 // thumbnail, so the scene can be rendered without taking the overlay out of it.
 class Navigator
-    : public QGraphicsPixmapItem
-{
+    : public QGraphicsPixmapItem {
     const bool* _hiddenDuringRender;
     QPen _borderPen;
     double _width;

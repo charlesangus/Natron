@@ -1567,6 +1567,13 @@ RenderScheduler::completeTask(const FramePtr& frame,
     int runnablePriority = 0;
     std::vector<ReadyRef> purgedOnFailure;
     bool failsFrame = retCode == EffectInstance::eRenderRoIRetCodeFailed;
+
+    // Once the consumers are ready the frame can finish and its caller clear the cache before this
+    // thread returns, and a plane held here would count as a use that keeps the cleared entry in
+    // RAM. The consumers read theirs from the store.
+    if (task.consumers > 0) {
+        planes.clear();
+    }
     {
         QMutexLocker k(&_mutex);
         --_outstandingRunnables;

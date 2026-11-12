@@ -141,7 +141,6 @@ Graph GUI Responsiveness merges, so re-grep them.
     `main`.
   - verify: the script runs to completion and fails on `main` for at least the path the user
     hit. Record the failing paths in this milestone's `## Decisions`. If nothing fails,
-- 2026-11-12 — P3.T1 landed at 1ac1e1d02 (gate run 43197694625). First create-preset run (Xvfb, dev host, stripped release AppImage, 20 reps, mixed): `create_by_shortcut` median/p95/max 407/594/681 ms at 0, 454/671/765 at 300, 724/1054/1158 at 3000; `tab_menu_create` 311/556/652, 347/575/637, 891/1097/1142; `tab_menu_open` 72/127/157, 76/93/106, 66/99/125. Every op misses its budget (50 ms create, 33 ms open) at every size. Results: `build/bench/gui/20261112T113121Z-*` in the M399 worktree, stage split in `node-creation-stages.jsonl`.
     report that to the PM, because the reproduction must be widened before any fix.
   - size: M
 
@@ -181,7 +180,7 @@ Graph GUI Responsiveness merges, so re-grep them.
     release build and writes their rows. `compare.py` accepts the file.
   - size: M
 
-- [ ] M399.P3.T2 — Profile both paths on the dev host and rank the misses
+- [x] M399.P3.T2 — Profile both paths on the dev host and rank the misses
   - files: none (measurement); results go in this milestone's `## Decisions`
   - approach: On this 4-core dev host, with the stripped release AppImage under Xvfb, run
     M399.P3.T1's ops with the stage split on. Where a stage is opaque, use the profiling
@@ -231,6 +230,24 @@ Graph GUI Responsiveness merges, so re-grep them.
     `tab_menu_open` meets 33 ms in M399.P3.T1's bench.
   - size: M
 
+- [ ] M399.P4.T4 — Scope data-kind invalidation and make positioning O(1)
+  - files: `Engine/Node.cpp` (~:3120 `invalidateEffectiveOutputDataKindCaches`), `Gui/NodeGraph05.cpp` (~:242-256 `moveNodesForIdealPosition`)
+  - approach: A connect from creation's positioning walks the whole connected component both ways to invalidate data-kind caches. Invalidate downstream only, or lazily by a generation counter checked on read. Move the nodes below the new one without the recursive walk.
+  - verify: builds; ctest passes; the stage log's positioning median is under 2 ms at 3000 nodes.
+  - size: M
+
+- [ ] M399.P4.T5 — Update the item grid and navigator incrementally after a creation
+  - files: `Gui/NodeGraph30.cpp` (~:565, ~:634), `Gui/NodeGraph10.cpp` (~:181), `Gui/NodeGraphLowDetailLayer.cpp` as needed
+  - approach: Creation sets `itemGridDirty` through `invalidateNavigator`, so the next paint rebuilds the whole grid, and `areAllNodesVisible` recomputes every node's bounds on the navigator timer. Insert or update only the new node and its edges in the grid, and cache the nodes' bounding rect, updated per change.
+  - verify: builds; ctest and `m55_node_graph.py` pass; the post-create loop pass at 3000 nodes is within 10% of its value on an empty graph.
+  - size: M
+
+- [ ] M399.P4.T6 — Remove the smaller creation costs
+  - files: `Gui/TabMenuBridge.cpp` (~:200-237), `Engine/Project.cpp` (~:2782), `Gui/NodeGraphUndoRedo.cpp` (~:296)
+  - approach: `triggerInContext` diffs the node list before and after (O(N²)); use the created node it returns. Make `Project::refreshLayersKnob` incremental instead of walking every node. Drop the duplicate autosave in `AddMultipleNodesCommand::redo`.
+  - verify: builds; ctest and the tab-menu `Tests/gui/` scripts pass; none of the three shows in a creation sample at 3000 nodes.
+  - size: M
+
 - [ ] M399.P4.T3 — Re-measure on the dev host and close the remaining misses
   - files: `tools/bench/gui/baselines/xvfb.jsonl`; code as the misses direct
   - approach: Re-run M399.P3.T1's ops on the dev host's release AppImage. For any op over
@@ -256,3 +273,11 @@ global-mode exit, and creation and tab-menu feel on this host.
 - 2026-11-12 — Phases 1 and 2 implemented (2879f2e56), build pending. Reproduction on the pre-fix AppImage: number keys case (a), a remembered viewer lost, and (b), a closed tab, fail; (c), a project reload, passes because loading sets the remembered viewer, so the user's reload case may be a new process or a recent-files open, still unreproduced. Global mode: only application deactivation (X focus loss) leaves the mode engaged, for all three targets, with the filter eating Tab and the crosshair cursor stuck. Esc, Enter and right-click exits already work. Ctrl+E does not engage the mode under Xvfb, so the script triggers the action. Extra fix: `Gui::removeViewerTab`'s shadowed `collection` cleared the remembered viewer even when another existed.
 - 2026-11-12 — First gate (run 43160524173) failed only `m45_tab_menu.py`: the script drove a node graph hidden behind another tab with a synthetic Enter. PM call: fix the script (9204c6ce4: bring the tab forward, activate, focus, cursor over the viewport), not restore the entered flag. That exposed a pre-existing bug: a create-node key rebound to one a global action uses (F2 is Enable Render Statistics) fired the global action. Fixed by the focused graph claiming the key on ShortcutOverride (5612d9331), as ViewerTab does. Gate re-running (run 43182441048). Open: the shortcut editor checks conflicts only within a group.
 - 2026-11-12 — Release gate green at 5612d9331 with all six GUI scripts (run 43182441048). Early UAT AppImage for phases 1-2 is out. P3.T1 dispatched.
+- 2026-11-12 — P3.T1 landed at 1ac1e1d02 (gate run 43197694625). Bench results are under `build/bench/gui/20261112T113121Z-*` and `115847Z-*` (3000 only, eu-stack sampled) in the M399 worktree; the stage split is `node-creation-stages.jsonl`.
+- 2026-11-12 — **P3.T2 profile** (dev host, stripped release AppImage under Xvfb). The host was loaded (load 26-40 from an outside compile), so wall times are inflated about 2-2.5×; main-thread CPU is given beside them, and a clean-load re-run is owed in P4.T3. The 3000 run repeated within 5%.
+  - p95/max ms at 0/300/3000: `create_by_shortcut` 594/681, 671/765, 1054/1158 (CPU median 165/203/539); `tab_menu_create` 556/652, 575/637, 1097/1142 (CPU 151/191/582); `tab_menu_open` 127/157, 93/106, 99/125 (CPU 39-40; the first open of the session 206-296). Budgets 50 / 50 / 33.
+  - Create stage medians at 0/300/3000: createNodeGui 257/242/304, panelBuild 254/214/154, positioning 0.4/17/138, engineCreateNode 4.6/4.6/7.5, pythonCallbacks 0.2/0.3/1.7, preview and autosave about 0.005. Unattributed: about 150 ms at 0 and 420 at 3000, the paint pass after creation (loop pass 83/96/250).
+  - Samples at 3000: ensurePanelCreated 60% (initializeKnobs 37%), moveNodesForIdealPosition 32%, `Node::invalidateEffectiveOutputDataKindCaches` 22% (a whole-component walk from connectInput, `Engine/Node.cpp:3120`), NodeGui init and edges about 12%. After creation: a full item-grid rebuild (`NodeGraph10.cpp:181`, set dirty by `invalidateNavigator` at `NodeGraph30.cpp:565`), low-detail `paintCached`, `areAllNodesVisible` → calcNodesBoundingRect (`NodeGraph30.cpp:634`), `Project::refreshLayersKnob` over every node (`Project.cpp:2782`).
+  - Tab open: launch 8, show 7, refreshAfterShow 26-34 (getItems 23-28 inside), then a second getItems of 23-27 after the paint; about 25 ms unattributed.
+  - Suspects: inline preview and autosave ruled out (about 0). Confirmed: panel build (the largest fixed cost); Python on every open (`TabMenuBridge.cpp:106-125`, `_read_preferences` at `tabtabtab_natron.py:358`); the menu walk, twice per open with no cache (`tabtabtab_nuke_core.py:967`, `:1033`), weights loaded on show and saved on close; `singleShot(0)` hops, 2 per open and 1 per create. `preload` is never called, so the first open costs about 200 ms more. `triggerInContext` diffs nodes in O(N²) (`TabMenuBridge.cpp:200-237`). The growth with N is positioning, the data-kind walk, and the post-create grid and paint work.
+  - Ranked: (1) defer the panel build, 150-250 ms, P4.T1; (2) scoped data-kind invalidation and O(1) positioning, about 140 ms at 3000, new P4.T4; (3) incremental grid and navigator, about 170 ms at 3000, new P4.T5; (4) the tab menu's cached items, preload, compiled callable, no hops, cached prefs and weights, 30-60 ms per open and about 200 ms on the first, P4.T2; (5) `triggerInContext`, `refreshLayersKnob` and the duplicate autosave, 10-40 ms, new P4.T6; (6) NodeGui::initialize's name HTML and edge labels, 20-40 ms, folded into P4.T1. If P4.T3 still misses, check Shiboken lazy class loading (about 15 samples, probably the bench's own Python) before product code.

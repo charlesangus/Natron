@@ -128,6 +128,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         frameArgs->view = args.view;
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
+        frameArgs->abortInfo = args.abortInfo;
         tls->frameArgs.push_back(frameArgs);
         fallbackFrameArgs.reset(new ScopedSceneFallbackFrameArgs(tls));
     } else {
@@ -174,7 +175,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                     return eRenderRoIRetCodeFailed;
                 }
 
-                return evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context), outputScene, errorMessage);
+                return evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context, args.abortInfo), outputScene, errorMessage);
             }
 
             EffectInstancePtr identityInput = getInput(identityInputNb);
@@ -182,7 +183,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                 return eRenderRoIRetCodeOk;
             }
 
-            return identityInput->evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context), outputScene, errorMessage);
+            return identityInput->evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context, args.abortInfo), outputScene, errorMessage);
         }
     }
 

@@ -79,6 +79,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/PythonUndoRecorder.h"
+#include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/UndoHistory.h"
@@ -295,6 +296,9 @@ GuiAppInstance::aboutToQuit()
             _imp->_gui->getUndoHistory()->setReplayHook(std::function<void(bool)>());
         }
 
+        // The scene stages of closed panels still stopping: none may evaluate a node the project
+        // reset destroys.
+        SceneNodeStageSource::joinReaped();
         AppInstance::aboutToQuit();
 
         _imp->_isClosing = true;
@@ -306,6 +310,8 @@ GuiAppInstance::aboutToQuit()
         qApp->processEvents();
         // Make sure all deleteLater calls are reached
         qApp->sendPostedEvents(0, QEvent::DeferredDelete);
+        // Those the panels just destroyed handed over.
+        SceneNodeStageSource::joinReaped();
 
         _imp->_gui = 0;
     }

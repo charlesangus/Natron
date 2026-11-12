@@ -25,8 +25,10 @@
 
 #include "SceneNodeStageSource.h"
 
+#include <deque>
 #include <string>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
@@ -42,6 +44,7 @@ bool
 evaluateNode(const NodeWPtr& weakNode,
              const SceneEvaluationContext& context,
              double time,
+             const AbortableRenderInfoPtr& abortInfo,
              ScenePayload* payload,
              std::string* error)
 {
@@ -50,7 +53,7 @@ evaluateNode(const NodeWPtr& weakNode,
     bool ok = false;
 
     if (effect && node->isActivated() && effect->producesSceneData()) {
-        ok = (effect->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0), context), payload, error) == EffectInstance::eRenderRoIRetCodeOk);
+        ok = (effect->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0), context, abortInfo), payload, error) == EffectInstance::eRenderRoIRetCodeOk);
     } else {
         *error = "The node puts out no scene.";
     }
@@ -60,6 +63,42 @@ evaluateNode(const NodeWPtr& weakNode,
 
     return ok;
 }
+
+struct Reaper {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::deque<std::shared_ptr<SceneNodeStageSource>> queue;
+    bool busy = false;
+    std::thread thread;
+
+    void run()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        for (;;) {
+            changed.wait(lock, [this]() { return !queue.empty(); });
+            std::shared_ptr<SceneNodeStageSource> source = queue.front();
+            queue.pop_front();
+            busy = true;
+            lock.unlock();
+            source->stop();
+            // Dropped here, unless another owner still holds it, so that destroying the stage
+            // happens off the thread that let it go too.
+            source.reset();
+            lock.lock();
+            busy = false;
+            changed.notify_all();
+        }
+    }
+};
+
+// Never destroyed: a source may still be handed over while statics are torn down.
+Reaper&
+reaper()
+{
+    static Reaper* instance = new Reaper;
+
+    return *instance;
+}
 } // namespace
 
 SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
@@ -68,6 +107,7 @@ SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
                                            bool loadPayloads)
     : _node(node)
     , _context(context)
+    , _abortInfo(AbortableRenderInfo::create(true, 0))
     , _synced(synced)
     , _loadPayloads(loadPayloads)
     , _contextId(SceneEvaluationContext::makeId())
@@ -91,7 +131,13 @@ SceneNodeStageSource::requestStop()
         std::lock_guard<std::mutex> lock(_queueMutex);
         _quit = true;
     }
-    _stopRequested = true;
+    {
+        std::lock_guard<std::mutex> lock(_contextMutex);
+        _context = nullptr;
+    }
+    if (!_stopRequested.exchange(true)) {
+        _abortInfo->setAborted();
+    }
     _queueChanged.notify_all();
 }
 
@@ -107,6 +153,46 @@ SceneNodeStageSource::stop()
     requestStop();
     if (_worker.joinable()) {
         _worker.join();
+    }
+}
+
+void
+SceneNodeStageSource::reap(const std::vector<std::shared_ptr<SceneNodeStageSource>>& sources)
+{
+    Reaper& r = reaper();
+    {
+        std::lock_guard<std::mutex> lock(r.mutex);
+        for (const std::shared_ptr<SceneNodeStageSource>& source : sources) {
+            if (source) {
+                source->requestStop();
+                r.queue.push_back(source);
+            }
+        }
+        if (!r.thread.joinable()) {
+            r.thread = std::thread([&r]() { r.run(); });
+        }
+    }
+    r.changed.notify_all();
+}
+
+void
+SceneNodeStageSource::joinReaped()
+{
+    Reaper& r = reaper();
+    std::unique_lock<std::mutex> lock(r.mutex);
+
+    r.changed.wait(lock, [&r]() { return r.queue.empty() && !r.busy; });
+}
+
+void
+SceneNodeStageSource::postToContext(const std::function<void()>& call)
+{
+    // Held across the post, so that requestStop(), on context's thread, returns only once no
+    // post can still name it.
+    std::lock_guard<std::mutex> lock(_contextMutex);
+
+    if (_context) {
+        QMetaObject::invokeMethod(_context, call, Qt::QueuedConnection);
     }
 }
 
@@ -201,7 +287,7 @@ void
 SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
 {
     // Only this worker creates the stage, so reading the pointer needs no lock.
-    if (!_stage) {
+    if (!_stage || (requests.empty() && !_stage->hasPendingLoads())) {
         return;
     }
     for (const LoadRequest& request : requests) {
@@ -234,7 +320,7 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
     const SceneStage::LoadPreparer prepare = [this](const SceneLoadSetPtr& loadSet) -> std::function<void()> {
         ScenePayload payload;
         std::string error;
-        if (!evaluateNode(_node, SceneEvaluationContext(_contextId, loadSet), _time, &payload, &error) || _stopRequested) {
+        if (!evaluateNode(_node, SceneEvaluationContext(_contextId, loadSet), _time, _abortInfo, &payload, &error) || _stopRequested) {
             return std::function<void()>();
         }
 
@@ -244,16 +330,16 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
             _editCount = _stage->getEditCount();
         };
     };
-    _stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare);
-    if (_stopRequested) {
+    if (!_stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare) || _stopRequested) {
         return;
     }
     std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
-    QMetaObject::invokeMethod(_context, [self]() {
+    postToContext([self]() {
         std::shared_ptr<SceneNodeStageSource> source = self.lock();
         if (source && !source->_stopRequested && source->_loadsChanged) {
             source->_loadsChanged();
-        } }, Qt::QueuedConnection);
+        }
+    });
 }
 
 void
@@ -283,7 +369,7 @@ SceneNodeStageSource::run()
         _time = time;
         ScenePayload payload;
         std::string error;
-        const bool ok = evaluateNode(_node, SceneEvaluationContext(_contextId, _loadSet), time, &payload, &error);
+        const bool ok = evaluateNode(_node, SceneEvaluationContext(_contextId, _loadSet), time, _abortInfo, &payload, &error);
         if (_stopRequested) {
             continue;
         }
@@ -300,11 +386,12 @@ SceneNodeStageSource::run()
         ++_composeCount;
         std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
         const QString qerror = QString::fromStdString(error);
-        QMetaObject::invokeMethod(_context, [self, ok, qerror]() {
+        postToContext([self, ok, qerror]() {
             std::shared_ptr<SceneNodeStageSource> source = self.lock();
             if (source && !source->_stopRequested && source->_synced) {
                 source->_synced(ok, qerror);
-            } }, Qt::QueuedConnection);
+            }
+        });
         // Asked for against the composition just synced.
         serviceLoads(loads);
     }

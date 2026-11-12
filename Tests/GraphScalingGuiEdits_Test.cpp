@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <list>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -117,7 +118,10 @@ deactivateInBatch(const AppInstancePtr& app,
         outputsToDisconnect.push_back(outputs);
     }
 
-    Node::RemovalBatch removalBatch;
+    std::optional<Node::RemovalBatch> removalBatch;
+    if (nodes.size() > 1) {
+        removalBatch.emplace();
+    }
     Node::InputEditBatch batch(app);
     const Node::PythonDeclarationBatch pythonBatch;
 
@@ -993,4 +997,52 @@ TEST_F(GraphScalingGuiEdits, BatchedDeleteOfManyLeavesWalksTheirInputOnce)
     EXPECT_EQ(eDataKindDeep, hub->getEffectiveOutputDataKind());
 
     QObject::disconnect(connection);
+}
+
+// As undoing a delete in the node graph does: the rechecks by name of the activation, then one
+// over every invalid expression, which also finds an expression naming the node through an alias.
+TEST_F(GraphScalingGuiEdits, UndoneDeleteRevalidatesQualifiedAndAliasedExpressions)
+{
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    groupArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "Holder");
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr holder = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(holder));
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(holder->getEffectInstance());
+    ASSERT_TRUE(bool(collection));
+    CreateNodeArgs targetArgs(kGradePluginID, collection);
+    targetArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "Target");
+    NodePtr target = getApp()->createNode(targetArgs);
+    ASSERT_TRUE(bool(target));
+    ASSERT_EQ(std::string("Target"), target->getScriptName_mt_safe());
+    doubleKnob(target, "mix")->setValue(0.25, ViewSpec::all(), 0);
+
+    NodePtr qualified = createNamedNode(getApp(), kGradePluginID, "Qualified");
+    NodePtr aliased = createNamedNode(getApp(), kGradePluginID, "Aliased");
+    ASSERT_TRUE(qualified && aliased);
+    KnobDoubleBasePtr qualifiedOffset = doubleKnob(qualified, "offset");
+    KnobDoubleBasePtr aliasedOffset = doubleKnob(aliased, "offset");
+    ASSERT_TRUE(qualifiedOffset && aliasedOffset);
+
+    const std::string appID = getApp()->getAppIDString();
+    std::string error;
+    ASSERT_TRUE(interpretPythonScript("targetAlias = " + appID + ".Holder.Target\n", &error, 0)) << error;
+    ASSERT_NO_THROW(qualifiedOffset->setExpression(0, "Holder.Target.mix.get()", false, true));
+    ASSERT_NO_THROW(aliasedOffset->setExpression(0, "targetAlias.mix.get()", false, true));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(qualifiedOffset));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(aliasedOffset));
+
+    const std::vector<NodePtr> removed = { target };
+    deactivateInBatch(getApp(), removed);
+    EXPECT_FALSE(qualifiedOffset->isExpressionValid(0, 0));
+    EXPECT_FALSE(aliasedOffset->isExpressionValid(0, 0));
+
+    activateInBatch(getApp(), removed);
+    getApp()->recheckInvalidExpressions();
+    EXPECT_TRUE(qualifiedOffset->isExpressionValid(0, 0));
+    EXPECT_TRUE(aliasedOffset->isExpressionValid(0, 0));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(qualifiedOffset));
+    EXPECT_DOUBLE_EQ(0.25, readOffset(aliasedOffset));
+
+    EXPECT_TRUE(interpretPythonScript("del targetAlias\n", &error, 0)) << error;
 }

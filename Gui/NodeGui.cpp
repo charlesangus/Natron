@@ -2744,6 +2744,8 @@ NodeGui::onPersistentMessageChanged()
         (*it)->getViewer()->updatePersistentMessage();
     }
 
+    // The message text can reach past the body, and hiding it does not go through resize().
+    _graph->noteNodeGeometryChanged(this);
     // Covers the message kinds handled above without a refresh of the indicator.
     _graph->scheduleNodeRenderStateRefresh(this);
 }

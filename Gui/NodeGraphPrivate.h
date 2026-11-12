@@ -430,7 +430,7 @@ public:
     bool navigatorDeferredByDrag;
     int navigatorBatchDepth;
     bool navigatorBatchPending;
-    // Whether what the drag or the batch put off includes a change that can leave the hit-test
+    // Whether what the batch put off includes a change that can leave the hit-test
     // grid wrong everywhere, rather than only the image and the bounds.
     bool navigatorDeferredRebuildsGrid;
 

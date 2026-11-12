@@ -136,7 +136,9 @@ NodeGraph::NodeGraph(Gui* gui,
     // strip; the pan relies on that.
     setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
     setRenderHint(QPainter::Antialiasing);
-    setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+    // Not AnchorUnderMouse: hover moves skip QGraphicsView::mouseMoveEvent, so Qt's last mouse
+    // scene point goes stale; the wheel zoom pivots on the cursor by hand instead.
+    setTransformationAnchor(QGraphicsView::AnchorViewCenter);
     // Fixed, so that items never grow or shrink the scrollable area and panning is a scroll.
     setSceneRect(QRectF(NATRON_SCENE_MIN, NATRON_SCENE_MIN, NATRON_SCENE_MAX - NATRON_SCENE_MIN, NATRON_SCENE_MAX - NATRON_SCENE_MIN));
     scale(0.8, 0.8);

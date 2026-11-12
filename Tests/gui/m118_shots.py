@@ -68,14 +68,16 @@ try:
         return root_graph().transform().m22()
 
     def wheel(steps):
+        """Hovers, then wheels, at an off-centre point, the way a user zooms towards the cursor."""
         vp = root_graph().viewport()
-        pos = QPointF(vp.width() / 2.0, vp.height() / 2.0)
+        pos = QPointF(vp.width() * 0.4, vp.height() * 0.45)
+        QApplication.sendEvent(vp, QMouseEvent(QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton, Qt.NoModifier))
         glob = QPointF(vp.mapToGlobal(QPoint(int(pos.x()), int(pos.y()))))
         QApplication.sendEvent(vp, QWheelEvent(pos, glob, QPoint(0, 0), QPoint(0, WHEEL_STEP * steps), Qt.NoButton,
                                                Qt.NoModifier, Qt.NoScrollPhase, False))
 
     def zoom_to(target, tolerance):
-        """Wheel-zooms about the viewport centre until the scale is within tolerance of target."""
+        """Wheel-zooms about an off-centre cursor until the scale is within tolerance of target."""
         for _ in range(400):
             s = scale()
             if abs(s / target - 1.0) <= tolerance:

@@ -55,7 +55,7 @@ SIZE_ROUND_TRIPS = 10
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt, QTimer
-    from PySide6.QtGui import QFontMetrics, QGuiApplication, QHelpEvent, QKeyEvent, QMouseEvent
+    from PySide6.QtGui import QFontMetrics, QGuiApplication, QHelpEvent, QKeyEvent, QMouseEvent, QWheelEvent
     from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMainWindow, QPushButton, QToolTip, QWidget
 
     import guitest as gt
@@ -499,6 +499,33 @@ try:
             check(tuple(end_size) == tuple(start_size),
                   "size-round-trip: %d getSize()->setSize() round trips leave the %s at %s (got %s)"
                   % (SIZE_ROUND_TRIPS, label, tuple(start_size), tuple(end_size)))
+
+        # ---- wheel-zoom-pivot: after a plain hover, wheel zoom keeps the scene point under the
+        # cursor where it was. Hover moves never reach QGraphicsView::mouseMoveEvent, so a pivot
+        # taken from Qt's last mouse scene point would sit wherever the last drag ended.
+        gt.section("wheel-zoom-pivot")
+        frame_nodes(root_graph(), [sized_node, sized_backdrop])
+        yield ("sleep", SETTLE_MS)
+        graph_w = root_graph()
+        vp_w = graph_w.viewport()
+        cursor = QPoint(int(vp_w.width() * 0.25), int(vp_w.height() * 0.3))
+        send_mouse(vp_w, QEvent.MouseMove, cursor, Qt.NoButton, Qt.NoButton)
+        for label, notches in (("in", 1), ("in", 1), ("out", -1), ("out", -1)):
+            before = graph_w.mapToScene(cursor)
+            start_zoom = graph_w.transform().m11()
+            QApplication.sendEvent(vp_w, QWheelEvent(QPointF(cursor), QPointF(vp_w.mapToGlobal(cursor)), QPoint(0, 0),
+                                                     QPoint(0, 120 * notches), Qt.NoButton, Qt.NoModifier,
+                                                     Qt.NoScrollPhase, False))
+            QApplication.processEvents()
+            zoom = graph_w.transform().m11()
+            after = graph_w.mapToScene(cursor)
+            drift = max(abs(after.x() - before.x()), abs(after.y() - before.y())) * zoom
+            check(zoom != start_zoom, "wheel-zoom-pivot: a wheel notch %s changes the zoom (%.4f -> %.4f)"
+                  % (label, start_zoom, zoom))
+            check(drift <= 1.0, "wheel-zoom-pivot: zooming %s keeps the scene point under the off-centre cursor "
+                  "within 1 px (drift %.2f px)" % (label, drift))
+        del vp_w
+        del graph_w
 
         # =====================================================================================
         # Splice into pipe: always on, unconnected nodes/chains only. Holding Ctrl during the

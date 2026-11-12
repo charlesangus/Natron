@@ -696,9 +696,7 @@ NodeGraph::centerOnAllNodes()
     //we want to fit at scale 1 at most
     if (currentZoomFactor > 1.) {
         double scaleFactor = 1. / currentZoomFactor;
-        setTransformationAnchor(QGraphicsView::AnchorViewCenter);
         scale(scaleFactor, scaleFactor);
-        setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     }
 
     // A new view transform already repaints the viewport.

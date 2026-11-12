@@ -34,11 +34,12 @@
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QWheelEvent>
-#include <QToolButton>
 #include <QApplication>
+#include <QScrollBar>
 #include <QTabBar>
+#include <QToolButton>
 #include <QTreeWidget>
+#include <QWheelEvent>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -162,7 +163,8 @@ NodeGraph::leaveEvent(QEvent* e)
 
 void
 NodeGraph::wheelEventInternal(bool ctrlDown,
-                              double delta)
+                              double delta,
+                              const QPointF* viewPivot)
 {
     double scaleFactor = pow( NATRON_WHEEL_ZOOM_PER_DELTA, delta);
     QTransform transfo = transform();
@@ -183,7 +185,18 @@ NodeGraph::wheelEventInternal(bool ctrlDown,
         _imp->_accumDelta += delta;
         if (std::abs(_imp->_accumDelta) > 60) {
             scaleFactor = pow( NATRON_WHEEL_ZOOM_PER_DELTA, _imp->_accumDelta );
-            scale(scaleFactor, scaleFactor);
+            if (viewPivot) {
+                const QPointF scenePivot = viewportTransform().inverted().map(*viewPivot);
+                setTransformationAnchor(QGraphicsView::NoAnchor);
+                scale(scaleFactor, scaleFactor);
+                setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+                // The scene rect is fixed and huge, so this shift never runs into the scroll range.
+                const QPointF drift = viewportTransform().map(scenePivot) - *viewPivot;
+                horizontalScrollBar()->setValue(horizontalScrollBar()->value() + qRound(drift.x()));
+                verticalScrollBar()->setValue(verticalScrollBar()->value() + qRound(drift.y()));
+            } else {
+                scale(scaleFactor, scaleFactor);
+            }
             _imp->_accumDelta = 0;
             refreshDetailLevel();
             refreshOverlays();
@@ -197,7 +210,8 @@ NodeGraph::wheelEvent(QWheelEvent* e)
     if (e->angleDelta().x() != 0) {
         return;
     }
-    wheelEventInternal( modCASIsControl(e), e->angleDelta().y() );
+    const QPointF pivot = e->position();
+    wheelEventInternal(modCASIsControl(e), e->angleDelta().y(), &pivot);
     _imp->_lastMousePos = QPoint(e->position().x(), e->position().y());
     dragPickedUpArrowToCursor();
     update();
@@ -506,9 +520,13 @@ NodeGraphPrivate::invalidateNavigator(bool rebuildGrid)
     navigatorContentDirty = true;
     if (_evtState == eEventStateDraggingNode) {
         // Positions change on every move of the drag; growNodesBoundsForDrag() and the grid's
-        // stale items keep up with them until the release ends the deferral.
+        // stale items keep up with them until the release ends the deferral. Only the thumbnail
+        // waits: the splice, cut-line and hit tests query the grid during the drag.
         navigatorDeferredByDrag = true;
-        navigatorDeferredRebuildsGrid = navigatorDeferredRebuildsGrid || rebuildGrid;
+        if (rebuildGrid) {
+            itemGridDirty = true;
+            invalidateLowDetailLayers();
+        }
 
         return;
     }

@@ -503,7 +503,8 @@ private:
     // An uneditable or unedited PyPlug's graph is painted under a veil with the unlock button.
     bool isDrawingLockedVeil() const;
 
-    void wheelEventInternal(bool ctrlDown, double delta);
+    // A null viewPivot zooms about the view centre.
+    void wheelEventInternal(bool ctrlDown, double delta, const QPointF* viewPivot);
 
     std::unique_ptr<NodeGraphPrivate> _imp;
 };

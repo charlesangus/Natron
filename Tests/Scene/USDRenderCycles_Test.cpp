@@ -67,7 +67,9 @@
 #include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
@@ -670,6 +672,78 @@ TEST_F(USDRenderCyclesTest, LaterEngineFollowsASmallerThreadBudget)
     const double cpu = processCpuSeconds() - cpuBefore;
     ASSERT_GT(wall, 0.);
     EXPECT_LE(cpu / wall, budget + 0.75) << cpu << " s of CPU over " << wall << " s on " << cores << " cores";
+}
+
+// The pixels of a and b, kSize x kSize rgba, that differ by more than kChannelTolerance in a channel.
+static std::size_t
+differingPixels(const std::vector<float>& a,
+                const std::vector<float>& b)
+{
+    std::size_t differing = 0;
+    const std::size_t pixels = std::min(a.size(), b.size()) / 4;
+    for (std::size_t p = 0; p < pixels; ++p) {
+        bool differs = false;
+        for (int k = 0; k < 4; ++k) {
+            differs = differs || !(std::fabs(a[p * 4 + k] - b[p * 4 + k]) <= kChannelTolerance);
+        }
+        differing += differs ? 1 : 0;
+    }
+
+    return differing;
+}
+
+// An engine that rendered the stage renders it again after an edit as a new engine does: Cycles
+// marks its buffers converged when the edit's reset cuts its render short, before it has rendered
+// a sample of the edited stage.
+TEST_F(USDRenderCyclesTest, EditedStageRendersAsWithAFreshEngine)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    HydraRender::releaseAllCpuEngines();
+    NodePtr reader;
+    NodePtr node = createGraph(&reader);
+    ASSERT_TRUE(bool(node));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    ASSERT_TRUE(bool(transform));
+    connectNodes(reader, transform, 0, true);
+    KnobString* pattern = knob<KnobString>(transform, kUSDEditTransformParamPrimPattern);
+    KnobDouble* translate = knob<KnobDouble>(transform, kSceneParamTranslate);
+    ASSERT_TRUE(pattern && translate);
+    pattern->setValue(std::string("/World/Near"));
+
+    static const int reused = 0;
+    static const int fresh = 1;
+    HydraRender::Request request;
+    ASSERT_TRUE(cyclesRequest(transform, &reused, &request));
+    HydraRender::Result before;
+    std::string error;
+    ASSERT_TRUE(HydraRender::render(request, &before, &error)) << error;
+
+    // The near cube's front face, two units wide and nine from the camera, moves from the centre
+    // to centre on x = -1: (16, 32) was off it and is now on it, (40, 32) the other way round.
+    translate->setValue(-1., ViewSpec::all(), 0);
+    ASSERT_TRUE(cyclesRequest(transform, &reused, &request));
+    HydraRender::Result edited;
+    ASSERT_TRUE(HydraRender::render(request, &edited, &error)) << error;
+    request.owner = &fresh;
+    HydraRender::Result reference;
+    ASSERT_TRUE(HydraRender::render(request, &reference, &error)) << error;
+
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    ASSERT_EQ(pixels * 4, before.rgba.size());
+    ASSERT_EQ(pixels * 4, edited.rgba.size());
+    ASSERT_EQ(pixels * 4, reference.rgba.size());
+    const std::size_t movedOn = pixelIndex(16, kNearY);
+    const std::size_t movedOff = pixelIndex(40, kNearY);
+    EXPECT_EQ(0.f, before.rgba[movedOn * 4 + 3]);
+    EXPECT_NEAR(1.f, before.rgba[movedOff * 4 + 3], 1e-3f);
+
+    EXPECT_GT(edited.rgba[movedOn * 4] + edited.rgba[movedOn * 4 + 1] + edited.rgba[movedOn * 4 + 2], 0.05f);
+    EXPECT_NEAR(1.f, edited.rgba[movedOn * 4 + 3], 1e-3f);
+    EXPECT_EQ(0.f, edited.rgba[movedOff * 4 + 3]);
+    const std::size_t differing = differingPixels(edited.rgba, reference.rgba);
+    EXPECT_LE((double)differing, kDifferingFraction * (double)pixels) << differing << " of " << pixels << " pixels differ from a fresh engine's render";
 }
 
 // Records rgba as the golden case when NATRON_GOLDEN_RECORD_DIR is set, otherwise compares it to the

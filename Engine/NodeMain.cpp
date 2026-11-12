@@ -38,6 +38,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
 #include "Engine/LibraryBinary.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -218,7 +219,10 @@ Node::load(const CreateNodeArgs& args)
         return;
     }
 
-    _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
+    {
+        NodeCreationStageLog::Scope stage("pythonCallbacks");
+        _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
+    }
 
     // Expressions written before this node existed may name it. A loading project rechecks
     // them all once it is loaded.

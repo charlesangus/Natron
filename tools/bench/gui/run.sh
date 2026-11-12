@@ -6,8 +6,13 @@
 #
 # Options:
 #   --driver gui|roto        gui_bench.py (node graph, default) or roto_bench.py (roto/paint)
-#   --preset gate|full       the matrix (default gate): gate is comp at 300,3000 nodes; full is chain,
-#                            wide, comp and mixed at 300,1000,3000. Both use --reps auto and the graph cache
+#   --preset gate|full|create  the matrix (default gate): gate is comp at 300,3000 nodes; full is chain,
+#                            wide, comp and mixed at 300,1000,3000. Both use --reps auto and the graph cache.
+#                            create is mixed at 0,300,3000 nodes running only the node-creation ops
+#                            create_by_shortcut, tab_menu_open and tab_menu_create (20 reps each; --reps does
+#                            not apply); --ops, --sizes and --topologies still override it
+#   --stages                 write NATRON_NODE_CREATION_STAGE_LOG beside the result, so the node-creation
+#                            ops also record a per-stage split of the creation and the tab menu
 #   --sizes N[,N...]         node counts (overrides the preset)
 #   --topologies T[,T...]    chain, wide, comp, mixed (overrides the preset)
 #   --reps N|auto            repetitions per op (overrides the preset; auto repeats a short op until 5
@@ -82,6 +87,7 @@ fresh_graphs=0
 outdir="$repo/build/bench/gui"
 self_check=0
 forced_repaint=1
+stages=0
 detach=-1
 while [ $# -gt 0 ]; do
     case $1 in
@@ -89,7 +95,8 @@ while [ $# -gt 0 ]; do
         --host) mode=host ;;
         --driver) driver=${2:?--driver needs gui or roto}; shift ;;
         --appimage) appimage=${2:?--appimage needs a path}; shift ;;
-        --preset) preset=${2:?--preset needs gate or full}; shift ;;
+        --preset) preset=${2:?--preset needs gate, full or create}; shift ;;
+        --stages) stages=1 ;;
         --sizes) sizes=${2:?--sizes needs a list}; shift ;;
         --topologies) topologies=${2:?--topologies needs a list}; shift ;;
         --reps) reps=${2:?--reps needs a count}; shift ;;
@@ -116,9 +123,11 @@ case $driver in
     *) echo "unknown driver: $driver (gui or roto)" >&2; exit 2 ;;
 esac
 case $preset in
-    gate) preset_sizes=300,3000 preset_topologies=comp preset_restarts=0 ;;
-    full) preset_sizes=300,1000,3000 preset_topologies=chain,wide,comp,mixed preset_restarts=unlimited ;;
-    *) echo "unknown preset: $preset (gate or full)" >&2; exit 2 ;;
+    gate) preset_sizes=300,3000 preset_topologies=comp preset_restarts=0 preset_ops="" ;;
+    full) preset_sizes=300,1000,3000 preset_topologies=chain,wide,comp,mixed preset_restarts=unlimited preset_ops="" ;;
+    create) preset_sizes=0,300,3000 preset_topologies=mixed preset_restarts=0
+            preset_ops=create_by_shortcut,tab_menu_open,tab_menu_create ;;
+    *) echo "unknown preset: $preset (gate, full or create)" >&2; exit 2 ;;
 esac
 if [ -n "$rerun" ]; then
     if [ -n "$ops" ]; then
@@ -128,6 +137,7 @@ if [ -n "$rerun" ]; then
     ops=$rerun
     reps=${reps:-5}
 fi
+ops=${ops:-$preset_ops}
 sizes=${sizes:-$preset_sizes}
 restarts=${restarts:-$preset_restarts}
 case $restarts in
@@ -178,6 +188,7 @@ args=("--$mode" --driver "$driver" --preset "$preset" --sizes "$sizes" --topolog
 [ "$forced_repaint" = 0 ] && args+=(--no-forced-repaint)
 [ -n "$appimage" ] && args+=(--appimage "$appimage")
 [ -n "$ops" ] && args+=(--ops "$ops")
+[ "$stages" -eq 1 ] && args+=(--stages)
 [ "$self_check" -eq 1 ] && args+=(--self-check)
 [ -n "$baseline" ] && args+=(--baseline "$baseline")
 [ "$fresh_graphs" -eq 1 ] && args+=(--fresh-graphs)
@@ -259,6 +270,12 @@ if [ "$driver" = roto ]; then
     rm -f "$NATRON_ROTO_LATENCY_LOG"
 else
     unset NATRON_ROTO_LATENCY_LOG
+fi
+if [ "$stages" -eq 1 ]; then
+    export NATRON_NODE_CREATION_STAGE_LOG="$work/node-creation-stages.jsonl"
+    rm -f "$NATRON_NODE_CREATION_STAGE_LOG"
+else
+    unset NATRON_NODE_CREATION_STAGE_LOG
 fi
 
 wedged_exit=3

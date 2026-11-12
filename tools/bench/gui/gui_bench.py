@@ -33,6 +33,11 @@ Configured by the environment:
     GUI_BENCH_IDLE_S      length of the idle op (default 5)
     GUI_BENCH_FORCED_REPAINT  0 replaces each interaction event's forced viewport repaint with a
                           processEvents pass (default 1)
+    GUI_BENCH_OPS         also selects the node-creation ops (create_by_shortcut, tab_menu_open,
+                          tab_menu_create), which run only when named: 20 reps each, timed from the key
+                          event to the end of the event-loop pass that painted the result
+    NATRON_NODE_CREATION_STAGE_LOG  a file Natron appends engine and GUI stage spans of node creation to
+                          (see README.md); the node-creation ops then also report a per-stage split
     GUI_BENCH_SELF_CHECK  1 adds an op that blocks the main thread for 300 ms once and checks
                           that the stall log attributes exactly one stall to it
     GUI_BENCH_OUT         JSON-lines output (default $NATRON_GUI_TEST_OUT/gui_bench.jsonl)
@@ -153,8 +158,8 @@ LOAD_GUARD_FACTOR = 3.0
 
 try:
     import NatronEngine
-    from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent
+    from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, QObject, QPoint, QPointF, Qt, QTimer
+    from PySide6.QtGui import QCursor, QGuiApplication, QMouseEvent, QWheelEvent
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QMainWindow, QTextEdit, QWidget
 
     import gen_graph
@@ -1108,6 +1113,346 @@ try:
             yield None
         return {"events": events, "reps": 1}
 
+    # ---- node creation ops ---------------------------------------------------------------------
+
+    CREATE_REPS = 20
+    CREATE_PAINT_TIMEOUT_S = 2.0
+    CREATE_BUDGET_MS = {"create_by_shortcut": 50.0, "tab_menu_open": 33.0, "tab_menu_create": 50.0}
+    STAGE_LOG = os.environ.get("NATRON_NODE_CREATION_STAGE_LOG", "")
+    BLUR_ID = "Blur"
+    # The session's first Tab, which the ops measure on their own: the popup is built on it.
+    session_open = {"done": False}
+    python_spans = []
+
+    class PaintWatch(QObject):
+        """Fires once, on the first QEvent.Paint that accepts() takes after arming."""
+
+        def __init__(self, accepts):
+            super(PaintWatch, self).__init__()
+            self.accepts = accepts
+            self.armed = False
+            self.fired = False
+
+        def eventFilter(self, obj, event):
+            if self.armed and not self.fired and event.type() == QEvent.Paint:
+                try:
+                    if self.accepts(obj):
+                        self.fired = True
+                except RuntimeError:
+                    pass
+            return False
+
+    def key_tester():
+        try:
+            from PySide6.QtTest import QTest
+        except ImportError:
+            raise RuntimeError("the node-creation ops need PySide6.QtTest, which only the --xvfb run bundles")
+        return QTest
+
+    def measure_paint(host, accepts, send):
+        """(t0, t1) in ms: just before send() posts the key event, and the end of the event-loop pass that
+        delivered the first accepted paint to host, or to the whole application when host is None. A
+        paint taken during send() does not count. Raises when none arrives in CREATE_PAINT_TIMEOUT_S."""
+        for _ in range(3):
+            QApplication.processEvents()
+        watch = PaintWatch(accepts)
+        target = host if host is not None else QApplication.instance()
+        target.installEventFilter(watch)
+        t0 = mono_ms()
+        try:
+            send()
+            watch.armed = True
+            deadline = t0 + CREATE_PAINT_TIMEOUT_S * 1000.0
+            while not watch.fired and mono_ms() < deadline:
+                QApplication.processEvents()
+            t1 = mono_ms()
+        finally:
+            target.removeEventFilter(watch)
+        if not watch.fired:
+            raise RuntimeError("no paint showed the result within %.0f s" % CREATE_PAINT_TIMEOUT_S)
+        return t0, t1
+
+    def focus_graph_for_keys():
+        """Leaves the project's graph where a real user's key reaches it: its tab in front, the window
+        active, the viewport focused and the pointer over it (NodeGraph::isNodeCreationShortcutTarget)."""
+        front_root_graph()
+        win = main_window()
+        if win is None:
+            raise RuntimeError("no main window")
+        win.activateWindow()
+        win.raise_()
+        deadline = time.time() + 10.0
+        while not win.isActiveWindow() and time.time() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.02)
+        active = win.isActiveWindow()
+        win = None
+        if not active:
+            raise RuntimeError("the main window did not become active")
+        graph = root_graph()
+        graph.setFocus(Qt.OtherFocusReason)
+        viewport = graph.viewport()
+        if not viewport.rect().contains(viewport.mapFromGlobal(QCursor.pos())):
+            QCursor.setPos(viewport.mapToGlobal(viewport.rect().center()))
+        QApplication.processEvents()
+        if not graph.hasFocus():
+            raise RuntimeError("the node graph did not take focus")
+
+    def pick_target(ctx):
+        return (middle(ctx.processing, 1) or ctx.summary["root_nodes"][:1])[0]
+
+    def menu_popup():
+        import tabtabtab_nuke_core
+        popup = tabtabtab_nuke_core._tabtabtab_instance
+        return popup if popup is not None and popup.isVisible() else None
+
+    def popup_painted(obj):
+        """A paint of the open tab menu while its list holds rows."""
+        if not obj.isWidgetType():
+            return False
+        popup = menu_popup()
+        return popup is not None and obj.window() is popup and popup.things.model().rowCount() > 0
+
+    def install_menu_spans():
+        """Times the Python launch, the widget's show and the deferred refresh, and get_items inside them,
+        into python_spans by wrapping them in place."""
+        import tabtabtab_natron
+        import tabtabtab_nuke_core
+
+        def wrapped(stage, fn):
+            def timed(*args, **kwargs):
+                t0 = mono_ms()
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    python_spans.append((stage, t0, mono_ms()))
+            return timed
+        if getattr(tabtabtab_natron.launch, "_bench_spans", False):
+            return
+        tabtabtab_natron.launch = wrapped("tabMenuLaunch", tabtabtab_natron.launch)
+        tabtabtab_natron.launch._bench_spans = True
+        tabtabtab_natron._plugin.get_items = wrapped("tabMenuGetItems", tabtabtab_natron._plugin.get_items)
+        widget = tabtabtab_nuke_core.TabTabTabWidget
+        widget.show = wrapped("tabMenuShow", widget.show)
+        widget._refresh_after_show = wrapped("tabMenuRefreshAfterShow", widget._refresh_after_show)
+
+    def read_stage_spans(offset):
+        """[(stage, start_ms, end_ms)] Natron's stage log gained past offset, then python_spans."""
+        spans = list(python_spans)
+        if STAGE_LOG and os.path.exists(STAGE_LOG):
+            with open(STAGE_LOG) as f:
+                f.seek(offset)
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    spans.append((rec["stage"], rec["start_ms"], rec["end_ms"]))
+        return spans
+
+    def stage_offset():
+        del python_spans[:]
+        return os.path.getsize(STAGE_LOG) if STAGE_LOG and os.path.exists(STAGE_LOG) else 0
+
+    def split_spans(spans, t0, t1):
+        """({stage: ms}, {stage: ms}): the span time of the stages that ended by t1, and of those that
+        started in the window and ended after it. Nested stages each count their whole span."""
+        within, deferred = {}, {}
+        for stage, start, end in spans:
+            if start < t0:
+                continue
+            bucket = within if end <= t1 else deferred
+            bucket[stage] = bucket.get(stage, 0.0) + (end - start)
+        return within, deferred
+
+    def stage_summary(reps):
+        names = sorted(set(k for rep in reps for k in rep))
+        return dict((name, {"median": round(statistics.median(rep.get(name, 0.0) for rep in reps), 3),
+                            "max": round(max(rep.get(name, 0.0) for rep in reps), 3)}) for name in names)
+
+    def create_record(name, st):
+        lat = st["lat"]
+        record = {"headline": "latency", "budget_ms": CREATE_BUDGET_MS[name], "latency_reps": len(lat)}
+        if lat:
+            record.update({"median_ms": round(statistics.median(lat), 3), "p95_ms": round(percentile(lat, 0.95), 3),
+                           "min_ms": round(min(lat), 3), "max_ms": round(max(lat), 3),
+                           "latency_ms": [round(v, 3) for v in lat]})
+        if st.get("first_open_ms") is not None:
+            record["first_open_ms"] = round(st["first_open_ms"], 3)
+        if STAGE_LOG and st["stages"]:
+            record["latency_stages_ms"] = stage_summary(st["stages"])
+            record["deferred_stages_ms"] = stage_summary(st["deferred"])
+        if STAGE_LOG and st.get("first_stages"):
+            record["first_open_stages_ms"] = dict((k, round(v, 3)) for k, v in st["first_stages"].items())
+        return record
+
+    def note_stages(st, offset, t0, t1):
+        QApplication.processEvents()
+        within, deferred = split_spans(read_stage_spans(offset), t0, t1)
+        st["stages"].append(within)
+        st["deferred"].append(deferred)
+
+    def created_ready(st):
+        """Whether a paint can show the new node: it is selected, or it exists under the name the last
+        rep gave it. Both are cheap, unlike listing the root."""
+        def ready(obj):
+            if any(n.getScriptName() != st["target"] for n in selected_nodes()):
+                return True
+            expect = st.get("expect")
+            return bool(expect) and app.getNode(expect) is not None
+        return ready
+
+    def check_created_and_undo(st):
+        """Requires exactly one new Blur, then undoes it and checks the root is as it was."""
+        QApplication.processEvents()
+        made = root_names() - st["before"]
+        if len(made) != 1:
+            raise RuntimeError("expected one new node, found %d: %s" % (len(made), sorted(made)[:5]))
+        name = made.pop()
+        node = app.getNode(name)
+        if node is None or node.getPluginID() != BLUR_ID:
+            raise RuntimeError("the new node %s is not a Blur" % name)
+        st["expect"] = name
+        trigger("undo")
+        QApplication.processEvents()
+        restore_root(st["before"])
+
+    def create_setup(needs_menu):
+        def setup(ctx, st):
+            key_tester()
+            if needs_menu:
+                install_menu_spans()
+            st.update({"target": pick_target(ctx), "before": root_names(), "lat": [], "stages": [], "deferred": []})
+            st["record"] = {}
+        return setup
+
+    def create_teardown(name):
+        def teardown(ctx, st):
+            try:
+                close_menu()
+            except Exception:
+                pass
+            st["record"].update(create_record(name, st))
+        return teardown
+
+    def prepare_keys(ctx, st, rep):
+        focus_graph_for_keys()
+        select([st["target"]])
+        QApplication.processEvents()
+
+    def open_menu_timed():
+        """Presses Tab on the focused graph and waits for the populated menu's first paint. Returns the
+        window, the stage log offset and whether this was the session's first open."""
+        QTest = key_tester()
+        graph = root_graph()
+        offset = stage_offset()
+        t0, t1 = measure_paint(None, popup_painted, lambda: QTest.keyPress(graph, Qt.Key_Tab))
+        QTest.keyRelease(graph, Qt.Key_Tab)
+        first = not session_open["done"]
+        session_open["done"] = True
+        return (t0, t1), offset, first
+
+    def close_menu():
+        popup = menu_popup()
+        if popup is None:
+            return
+        key_tester().keyClick(popup, Qt.Key_Escape)
+        deadline = time.time() + 5.0
+        while menu_popup() is not None and time.time() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.005)
+        if menu_popup() is not None:
+            raise RuntimeError("the tab menu did not close")
+        QApplication.processEvents()
+
+    def op_create_by_shortcut():
+        def events(ctx, st, rep):
+            QTest = key_tester()
+            graph = root_graph()
+            st["offset"] = stage_offset()
+            t0, t1 = measure_paint(graph.viewport(), created_ready(st), lambda: QTest.keyPress(graph, Qt.Key_B))
+            QTest.keyRelease(graph, Qt.Key_B)
+            st["lat"].append(t1 - t0)
+            st["window"] = (t0, t1)
+            yield None
+
+        def after(ctx, st, rep):
+            note_stages(st, st["offset"], *st["window"])
+            check_created_and_undo(st)
+        return {"setup": create_setup(False), "before": prepare_keys, "events": events, "after": after,
+                "teardown": create_teardown("create_by_shortcut"), "reps": CREATE_REPS}
+
+    def op_tab_menu_open():
+        def events(ctx, st, rep):
+            st["window"], st["offset"], first = open_menu_timed()
+            st["first"] = first
+            if first:
+                st["first_open_ms"] = st["window"][1] - st["window"][0]
+            else:
+                st["lat"].append(st["window"][1] - st["window"][0])
+            yield None
+
+        def after(ctx, st, rep):
+            if st["first"]:
+                QApplication.processEvents()
+                st["first_stages"] = split_spans(read_stage_spans(st["offset"]), *st["window"])[0]
+            else:
+                note_stages(st, st["offset"], *st["window"])
+            close_menu()
+        # One more rep when the session's first open is still to come, kept out of the distribution.
+        reps = CREATE_REPS + (0 if session_open["done"] else 1)
+        return {"setup": create_setup(True), "before": prepare_keys, "events": events, "after": after,
+                "teardown": create_teardown("tab_menu_open"), "reps": reps}
+
+    def op_tab_menu_create():
+        def before(ctx, st, rep):
+            prepare_keys(ctx, st, rep)
+            window, _, first = open_menu_timed()
+            if first:
+                st["first_open_ms"] = window[1] - window[0]
+            popup = menu_popup()
+            if popup is None:
+                raise RuntimeError("the tab menu is not open")
+            key_tester().keyClicks(popup.input, "blur")
+            model = popup.things.model()
+            deadline = time.time() + 5.0
+            row = -1
+            while row < 0 and time.time() < deadline:
+                QApplication.processEvents()
+                for r in range(model.rowCount()):
+                    if str(model.index(r, 0).data()).split("[")[0].strip() == "Blur":
+                        row = r
+                        break
+            if row < 0:
+                raise RuntimeError("the tab menu does not list Blur for 'blur'")
+            popup.things.setCurrentIndex(model.index(row, 0))
+            QApplication.processEvents()
+
+        def events(ctx, st, rep):
+            QTest = key_tester()
+            popup = menu_popup()
+            if popup is None:
+                raise RuntimeError("the tab menu closed before Enter")
+            line_edit = popup.input
+            graph = root_graph()
+            st["offset"] = stage_offset()
+            t0, t1 = measure_paint(graph.viewport(), created_ready(st),
+                                   lambda: QTest.keyPress(line_edit, Qt.Key_Return))
+            st["lat"].append(t1 - t0)
+            st["window"] = (t0, t1)
+            yield None
+
+        def after(ctx, st, rep):
+            note_stages(st, st["offset"], *st["window"])
+            check_created_and_undo(st)
+            if menu_popup() is not None:
+                close_menu()
+        return {"setup": create_setup(True), "before": before, "events": events, "after": after,
+                "teardown": create_teardown("tab_menu_create"), "reps": CREATE_REPS}
+
+    CREATE_OPS = [("create_by_shortcut", op_create_by_shortcut), ("tab_menu_open", op_tab_menu_open),
+                  ("tab_menu_create", op_tab_menu_create)]
+
     INTERACTION_OPS = [
         ("fit_all", op_fit_all), ("zoom_step", op_zoom_step), ("pan", op_pan),
         ("hover", op_hover), ("click_select", op_click_select), ("select_all", op_select_all),
@@ -1437,6 +1782,7 @@ try:
                     plan.append((name, make, "edit", wanted, list(DELETE_CYCLE[:last + 1])))
             elif selected(name):
                 plan.append((name, make, "edit", None, None))
+        plan.extend((name, make, "edit", None, None) for name, make in CREATE_OPS if name in ONLY_OPS)
         if selected("load"):
             plan.append(("load", op_load, "interaction", None, None))
         if SELF_CHECK:

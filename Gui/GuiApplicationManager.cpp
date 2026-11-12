@@ -60,6 +60,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h" // PLUGINID_OFX_*
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -1104,6 +1105,7 @@ GuiApplicationManager::initGui(const CLArgs& args)
     _imp->stallMonitor = StallMonitor::createFromEnvironment();
     // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
     RotoLatencyProbe::startFromEnvironment();
+    NodeCreationStageLog::startFromEnvironment();
 
     return exec();
 } // GuiApplicationManager::initGui

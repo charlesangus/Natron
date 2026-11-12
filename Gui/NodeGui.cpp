@@ -72,6 +72,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/MissingPluginNode.h"
@@ -713,6 +714,7 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
         return;
     }
     _panelCreated = true;
+    NodeCreationStageLog::Scope stage("panelBuild");
     // Before the knob GUIs are built from it: a panel is shown as it is created.
     NodePtr shownNode = getNode();
     if (shownNode) {

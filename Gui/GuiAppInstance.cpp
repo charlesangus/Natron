@@ -51,6 +51,7 @@
 #include "Engine/Image.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -532,6 +533,7 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
                               const NodePtr& parentMultiInstance,
                               const CreateNodeArgs& args)
 {
+    NodeCreationStageLog::Scope createStage("createNodeGui");
     NodeCollectionPtr group = node->getGroup();
     NodeGraph* graph;
 
@@ -600,13 +602,20 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
 
     if ( !serialization && !isViewer ) {
         ///we make sure we can have a clean preview.
-        node->computePreviewImage( getTimeLine()->currentFrame() );
-        triggerAutoSave();
+        {
+            NodeCreationStageLog::Scope stage("preview");
+            node->computePreviewImage(getTimeLine()->currentFrame());
+        }
+        {
+            NodeCreationStageLog::Scope stage("autosave");
+            triggerAutoSave();
+        }
     }
 
     // NodeGui::initialize already placed a node whose serialization holds a position.
     const bool hasStoredPosition = serialization && serialization->layout.hasPosition;
     if (node->getParentMultiInstanceName().empty() && !hasStoredPosition) {
+        NodeCreationStageLog::Scope stage("positioning");
         bool autoConnect = args.getProperty<bool>(kCreateNodeArgsPropAutoConnect);
 
         if ( selectedNodes.empty() || serialization) {

@@ -277,7 +277,11 @@ DeepToImage::render(const RenderActionArgs& args)
     // The deep input renders under the context this node requests it under, as an image input does.
     InputContextArgs inputContext(this, input, 0, args.time, args.view);
     inputContext.install();
+    takeLastPullFresh();
     const RenderRoIRetCode deepCode = input->renderDeepRoI(deepArgs, &deepImage);
+    if (takeLastPullFresh()) {
+        getNode()->noteInputExecution(0);
+    }
     if ((deepCode != eRenderRoIRetCodeOk) || !deepImage) {
         return eStatusFailed;
     }

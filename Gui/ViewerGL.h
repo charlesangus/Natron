@@ -276,6 +276,9 @@ public Q_SLOTS:
 
     void toggleOverlays();
 
+    void setStaleBorderVisible(bool visible);
+    bool isStaleBorderVisible() const;
+
     void toggleWipe();
 
     void centerWipe();

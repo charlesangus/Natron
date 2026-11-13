@@ -1368,6 +1368,10 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( engine.get(), SIGNAL(renderFinished(int)), this, SLOT(onEngineStopped()) );
     QObject::connect( engine.get(), SIGNAL(renderStarted(bool)), this, SLOT(onEngineStarted(bool)) );
 
+    _imp->staleBorderTimer.setSingleShot(true);
+    QObject::connect(&_imp->staleBorderTimer, SIGNAL(timeout()), this, SLOT(onStaleBorderTimeout()));
+    QObject::connect(_imp->viewerNode, &ViewerInstance::staleChanged, this, &ViewerTab::onViewerStaleChanged);
+
     _imp->mustSetUpPlaybackButtonsTimer.setSingleShot(true);
     QObject::connect( &_imp->mustSetUpPlaybackButtonsTimer, SIGNAL(timeout()), this, SLOT(onSetDownPlaybackButtonsTimeout()) );
     manageSlotsForInfoWidget(0, true);

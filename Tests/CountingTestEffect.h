@@ -291,7 +291,8 @@ private:
  * corner of the render window. Caches its output only when its "cacheOutput" knob is set, so that by default every
  * renderRoI on it reaches render(). Fails when its "fail" knob is set, throws when its "throwInRender" knob is set,
  * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap. Its images are keyed by
- * frame only when its "frameVarying" knob is set.
+ * frame only when its "frameVarying" knob is set. Its "identity" knob makes it an identity of its first input, as a
+ * disabled node is: it has no settings panel, so no Disable knob.
  **/
 class CountingTestEffectBase
     : public NativeEffectBase {
@@ -304,6 +305,7 @@ public:
         , _cacheOutput()
         , _throwInRender()
         , _frameVarying()
+        , _identity()
     {
     }
 
@@ -331,6 +333,26 @@ public:
         KnobBoolPtr cacheKnob = _cacheOutput.lock();
 
         return cacheKnob && cacheKnob->getValue();
+    }
+
+    virtual bool isIdentity(double time,
+                            const RenderScale& /*scale*/,
+                            const RectI& /*roi*/,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        KnobBoolPtr identityKnob = _identity.lock();
+
+        if (!identityKnob || !identityKnob->getValue() || !getInput(0)) {
+            return false;
+        }
+        *inputNb = 0;
+        *inputTime = time;
+        *inputView = view;
+
+        return true;
     }
 
     virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
@@ -405,6 +427,13 @@ private:
         frameVarying->setDefaultValue(false);
         page->addKnob(frameVarying);
         _frameVarying = frameVarying;
+
+        KnobBoolPtr identity = createKnob<KnobBool>(std::string("Identity"));
+        identity->setName("identity");
+        identity->setAnimationEnabled(false);
+        identity->setDefaultValue(false);
+        page->addKnob(identity);
+        _identity = identity;
     }
 
     virtual StatusEnum getPreferredMetadataAt(double /*time*/,
@@ -501,6 +530,7 @@ private:
     KnobBoolWPtr _cacheOutput;
     KnobBoolWPtr _throwInRender;
     KnobBoolWPtr _frameVarying;
+    KnobBoolWPtr _identity;
 };
 
 class CountingTestEffect

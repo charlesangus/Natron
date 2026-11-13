@@ -448,10 +448,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
         inputContext.install();
 
         {
-            ///Notify the node that we're going to render something with the input
-            EffectInstance::NotifyInputNRenderingStarted_RAIIPtr inputNIsRendering_RAII;
             assert(inputNb != -1); //< see getInputNumber
-            inputNIsRendering_RAII.reset(new EffectInstance::NotifyInputNRenderingStarted_RAII(node.get(), inputNb));
 
             ///For all views requested in input
             for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
@@ -513,9 +510,14 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                                                                    time /*callerRenderTime*/));
 
                                 EffectInstance::RenderRoIRetCode ret;
-                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext); //< requested bitdepth
+                                bool freshInput = false;
+                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext, &freshInput); //< requested bitdepth
                                 if (ret != EffectInstance::eRenderRoIRetCodeOk) {
                                     return ret;
+                                }
+                                // An input the cache served lights no edge: nothing ran upstream for this render.
+                                if (freshInput) {
+                                    node->noteInputExecution(inputNb);
                                 }
                             }
                             for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
@@ -535,7 +537,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                     }
                 } // for all ranges
             } // for all views
-        } // EffectInstance::NotifyInputNRenderingStarted_RAII
+        }
     } // for all inputs
     return EffectInstance::eRenderRoIRetCodeOk;
 } // EffectInstance::treeRecurseFunctor

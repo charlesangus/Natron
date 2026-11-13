@@ -415,6 +415,38 @@ TEST_F(DeepRenderPipelineTest, SecondRenderOfTheSameFrameIsACacheHit)
     EXPECT_EQ(2, deepRenderTestGainRenderCount().load());
 }
 
+TEST_F(DeepRenderPipelineTest, ADeepInputLightsOnlyWhenItsUpstreamRan)
+{
+    const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+    _source->takeExecutionCount(Node::eExecutionDeviceCpu);
+    _gain->takeExecutionCount(Node::eExecutionDeviceCpu);
+    _gain->takeInputExecutionCount(0);
+
+    DeepImagePtr first;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &first));
+    EXPECT_EQ(1, _source->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_EQ(1, _gain->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_GT(_gain->takeInputExecutionCount(0), 0) << "the source ran";
+
+    DeepImagePtr cached;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &cached));
+    EXPECT_EQ(0, _source->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_EQ(0, _gain->takeExecutionCount(Node::eExecutionDeviceCpu)) << "a cache hit is no execution";
+    EXPECT_EQ(0, _gain->takeInputExecutionCount(0));
+
+    first.reset();
+    cached.reset();
+    appPTR->removeAllCacheEntriesForHolder(_gain.get(), true);
+
+    DeepImagePtr again;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &again));
+    EXPECT_EQ(1, deepRenderTestSourceRenderCount().load());
+    EXPECT_EQ(2, deepRenderTestGainRenderCount().load());
+    EXPECT_EQ(0, _source->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_EQ(1, _gain->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_EQ(0, _gain->takeInputExecutionCount(0)) << "the input came from the deep cache";
+}
+
 TEST_F(DeepRenderPipelineTest, BoundsGrowthReRendersOverTheUnionOfRequestedRoIs)
 {
     const RectI fullFrame(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);

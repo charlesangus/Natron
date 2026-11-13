@@ -607,6 +607,25 @@ public:
                        NodeMetadata& metadata);
 };
 
+/**
+ * @brief Publishes, when the renderRoI(), renderDeepRoI() or evaluateScene() holding it returns, what
+ * EffectInstance::takeLastPullFresh() reports: the pulls nested in the call finish first, so they
+ * cannot overwrite it.
+ **/
+class PullFreshRecorder {
+public:
+    PullFreshRecorder();
+
+    ~PullFreshRecorder();
+
+    void setFresh(bool fresh)
+    {
+        _fresh = fresh;
+    }
+
+private:
+    bool _fresh;
+};
 
 NATRON_NAMESPACE_EXIT
 

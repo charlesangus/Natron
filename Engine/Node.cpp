@@ -7274,49 +7274,6 @@ Node::purgeAllInstancesCaches()
 }
 
 bool
-Node::notifyInputNIsRendering(int inputNb)
-{
-    if ( !getApp() || getApp()->isGuiFrozen() ) {
-        return false;
-    }
-
-    timeval now;
-
-
-    gettimeofday(&now, 0);
-
-    QMutexLocker l(&_imp->lastRenderStartedMutex);
-    double t =  now.tv_sec  - _imp->lastInputNRenderStartedSlotCallTime.tv_sec +
-               (now.tv_usec - _imp->lastInputNRenderStartedSlotCallTime.tv_usec) * 1e-6f;
-
-    assert( inputNb >= 0 && inputNb < (int)_imp->inputIsRenderingCounter.size() );
-
-    if ( (t > NATRON_RENDER_GRAPHS_HINTS_REFRESH_RATE_SECONDS) || (_imp->inputIsRenderingCounter[inputNb] == 0) ) {
-        _imp->lastInputNRenderStartedSlotCallTime = now;
-        ++_imp->inputIsRenderingCounter[inputNb];
-
-        l.unlock();
-
-        Q_EMIT inputNIsRendering(inputNb);
-
-        return true;
-    }
-
-    return false;
-}
-
-void
-Node::notifyInputNIsFinishedRendering(int inputNb)
-{
-    {
-        QMutexLocker l(&_imp->lastRenderStartedMutex);
-        assert( inputNb >= 0 && inputNb < (int)_imp->inputIsRenderingCounter.size() );
-        --_imp->inputIsRenderingCounter[inputNb];
-    }
-    Q_EMIT inputNIsFinishedRendering(inputNb);
-}
-
-bool
 Node::notifyRenderingStarted()
 {
     if ( !getApp() || getApp()->isGuiFrozen() ) {
@@ -7358,21 +7315,64 @@ Node::notifyRenderingEnded()
 }
 
 int
-Node::getIsInputNRenderingCounter(int inputNb) const
-{
-    QMutexLocker l(&_imp->lastRenderStartedMutex);
-
-    assert( inputNb >= 0 && inputNb < (int)_imp->inputIsRenderingCounter.size() );
-
-    return _imp->inputIsRenderingCounter[inputNb];
-}
-
-int
 Node::getIsNodeRenderingCounter() const
 {
     QMutexLocker l(&_imp->lastRenderStartedMutex);
 
     return _imp->renderStartedCounter;
+}
+
+void
+Node::noteExecution(ExecutionDeviceEnum device,
+                    int count)
+{
+    if (count <= 0) {
+        return;
+    }
+    if (_imp->executionCounts[device].fetch_add(count) == 0) {
+        Q_EMIT executionCountChanged();
+    }
+}
+
+int
+Node::takeExecutionCount(ExecutionDeviceEnum device)
+{
+    return _imp->executionCounts[device].exchange(0);
+}
+
+void
+Node::noteInputExecution(int inputNb)
+{
+    const Node::Implementation::InputExecutionCounts* counts = _imp->inputExecutionCounts.load(std::memory_order_acquire);
+    if (!counts || (inputNb < 0) || (inputNb >= counts->size)) {
+        return;
+    }
+    if (counts->counts[inputNb].fetch_add(1) == 0) {
+        Q_EMIT inputExecutionCountChanged();
+    }
+}
+
+int
+Node::takeInputExecutionCount(int inputNb)
+{
+    const Node::Implementation::InputExecutionCounts* counts = _imp->inputExecutionCounts.load(std::memory_order_acquire);
+    if (!counts || (inputNb < 0) || (inputNb >= counts->size)) {
+        return 0;
+    }
+
+    return counts->counts[inputNb].exchange(0);
+}
+
+void
+Node::stampFreshOutput(std::uint64_t key) const
+{
+    _imp->freshOutputStamps[key % Node::Implementation::kFreshOutputSlots].store(key, std::memory_order_release);
+}
+
+bool
+Node::hasFreshOutputStamp(std::uint64_t key) const
+{
+    return _imp->freshOutputStamps[key % Node::Implementation::kFreshOutputSlots].load(std::memory_order_acquire) == key;
 }
 
 void

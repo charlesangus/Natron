@@ -1432,17 +1432,51 @@ public:
 
     void purgeAllInstancesCaches();
 
-    bool notifyInputNIsRendering(int inputNb);
-
-    void notifyInputNIsFinishedRendering(int inputNb);
-
     bool notifyRenderingStarted();
 
     void notifyRenderingEnded();
 
-    int getIsInputNRenderingCounter(int inputNb) const;
-
     int getIsNodeRenderingCounter() const;
+
+    enum ExecutionDeviceEnum {
+        eExecutionDeviceCpu = 0,
+        eExecutionDeviceGpu = 1
+    };
+
+    /**
+     * @brief Records that this node's effect really ran count times on the device, whatever the render took from a
+     * store or a cache. Safe from any render thread; emits executionCountChanged() when the count leaves zero.
+     **/
+    void noteExecution(ExecutionDeviceEnum device, int count = 1);
+
+    /**
+     * @brief The executions on the device since the last call to this for it, which is then reset, so a render shorter
+     * than a reader's interval is still seen once. Whoever reads the counts owns them: two readers share the executions.
+     **/
+    int takeExecutionCount(ExecutionDeviceEnum device);
+
+    /**
+     * @brief Records that this node read input inputNb's output while the input's pixels were computed for the render
+     * rather than taken from a cache. Safe from any render thread; emits inputExecutionCountChanged() when the count of
+     * the input leaves zero.
+     **/
+    void noteInputExecution(int inputNb);
+
+    /**
+     * @brief Like takeExecutionCount(), for the reads noteInputExecution() recorded on input inputNb.
+     **/
+    int takeInputExecutionCount(int inputNb);
+
+    /**
+     * @brief Records key, made by FrameRenderContext from a frame, a time and a view, as one this node's output was
+     * computed for. Lock free, safe from any render thread.
+     **/
+    void stampFreshOutput(std::uint64_t key) const;
+
+    /**
+     * @brief Whether stampFreshOutput() recorded key and no other key took its place since. Lock free.
+     **/
+    bool hasFreshOutputStamp(std::uint64_t key) const;
 
     /**
      * @brief forwarded to the live instance
@@ -2661,11 +2695,11 @@ Q_SIGNALS:
 
     void previewRefreshRequested(double);
 
-    void inputNIsRendering(int inputNb);
-
-    void inputNIsFinishedRendering(int inputNb);
-
     void renderingStarted();
+
+    void executionCountChanged();
+
+    void inputExecutionCountChanged();
 
     void renderingEnded();
 

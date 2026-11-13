@@ -436,6 +436,10 @@ public:
 
         // How many times the region was run again on the GPU after running out of device memory.
         int retries = 0;
+
+        // Per member, in Region::members order: whether device work recording it was submitted, in any run of the
+        // region, those before a retry or a CPU fallback included. Empty when nothing was submitted.
+        std::vector<char> memberRanOnDevice;
     };
 
     /**
@@ -501,6 +505,18 @@ public:
                                                             int task,
                                                             StorageModeEnum storage,
                                                             std::map<ImageLayerDesc, ImagePtr>* planes);
+
+    /**
+     * @brief Records what renderTaskOnCpu() did for graph.tasks[task], which left cacheState and executed (see
+     * EffectInstance::takeLastRenderExecuted()): when the effect executed, a CPU execution of its node and a fresh
+     * output in context. A task the cache did not serve but that executed nothing, an identity one among them, has a
+     * fresh output when one of its dependencies has.
+     **/
+    static void noteTaskRanOnCpu(const FrameRenderContext& context,
+                                 const FrameGraph& graph,
+                                 int task,
+                                 EffectInstance::RenderCacheStateEnum cacheState,
+                                 bool executed);
 
     /**
      * @brief Queues the tasks of graph. The context must stay unchanged until the future finished. An empty graph

@@ -1567,6 +1567,32 @@ RenderScheduler::renderTaskOnCpu(const FrameGraph& graph,
 }
 
 void
+RenderScheduler::noteTaskRanOnCpu(const FrameRenderContext& context,
+                                  const FrameGraph& graph,
+                                  int taskIndex,
+                                  EffectInstance::RenderCacheStateEnum cacheState,
+                                  bool executed)
+{
+    const FrameGraph::Task& task = graph.tasks[taskIndex];
+    if (!task.key.node || (cacheState == EffectInstance::eRenderCacheStateHit)) {
+        return;
+    }
+    if (task.isIdentity || !executed) {
+        for (int d : task.dependencies) {
+            const FrameStore::TaskKey& input = graph.tasks[d].key;
+            if (context.hasFreshOutput(input.node.get(), input.time, input.view)) {
+                context.noteFreshOutput(task.key.node.get(), task.key.time, task.key.view);
+                break;
+            }
+        }
+
+        return;
+    }
+    task.key.node->noteExecution(Node::eExecutionDeviceCpu);
+    context.noteFreshOutput(task.key.node.get(), task.key.time, task.key.view);
+}
+
+void
 RenderScheduler::executeTask(const FramePtr& frame,
                              int taskIndex,
                              int budget,
@@ -1610,8 +1636,13 @@ RenderScheduler::executeTask(const FramePtr& frame,
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
         EffectInstance::takeLastRenderCacheState();
+        EffectInstance::takeLastRenderExecuted();
         retCode = renderTaskOnCpu(frame->graph, taskIndex, task.storage, &planes);
         const EffectInstance::RenderCacheStateEnum cacheState = EffectInstance::takeLastRenderCacheState();
+        const bool executed = EffectInstance::takeLastRenderExecuted();
+        if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
+            noteTaskRanOnCpu(*frame->context, frame->graph, taskIndex, cacheState, executed);
+        }
         --_tasksRendering;
         if (profiling) {
             const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count();
@@ -1771,6 +1802,35 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             sink.append(lines);
         }
         deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
+        if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost) {
+            const std::vector<int>& members = frame->graph.regions[region].members;
+            // Members read one another on the device, where no pull lights their edges; members come after their
+            // inputs, so an input's output is known fresh before its consumers are looked at.
+            for (std::size_t i = 0; (i < members.size()) && (i < report.memberRanOnDevice.size()); ++i) {
+                const FrameGraph::Task& member = frame->graph.tasks[members[i]];
+                if (!member.key.node) {
+                    continue;
+                }
+                const bool ran = report.memberRanOnDevice[i] != 0;
+                bool freshInput = false;
+                for (std::size_t k = 0; (k < member.dependencies.size()) && (k < member.dependencyInputNbs.size()); ++k) {
+                    const FrameStore::TaskKey& input = frame->graph.tasks[member.dependencies[k]].key;
+                    if ((member.dependencyInputNbs[k] < 0) || !frame->context->hasFreshOutput(input.node.get(), input.time, input.view)) {
+                        continue;
+                    }
+                    freshInput = true;
+                    if (ran || member.isIdentity) {
+                        member.key.node->noteInputExecution(member.dependencyInputNbs[k]);
+                    }
+                }
+                if (ran) {
+                    member.key.node->noteExecution(Node::eExecutionDeviceGpu);
+                }
+                if (ran || (member.isIdentity && freshInput)) {
+                    frame->context->noteFreshOutput(member.key.node.get(), member.key.time, member.key.view);
+                }
+            }
+        }
         if (deviceLost || !report.cpuFallback.empty()) {
             RegionFallback fallback;
             fallback.region = region;

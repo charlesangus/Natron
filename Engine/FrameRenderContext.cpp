@@ -26,6 +26,7 @@
 #include "FrameRenderContext.h"
 
 #include <cassert>
+#include <cstring>
 #include <functional>
 #include <utility>
 
@@ -434,10 +435,33 @@ FrameStore::clear()
     }
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+std::uint64_t
+nextFreshOutputFrameId()
+{
+    static std::atomic<std::uint64_t> next(1);
+
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::uint64_t
+mixFreshOutputKey(std::uint64_t x)
+{
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+
+    return x ^ (x >> 31);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 FrameRenderContext::FrameRenderContext()
     : _argsMap()
     , _argsByHolder()
     , _rotoPaintTreeNodes()
+    , _freshOutputFrameId(nextFreshOutputFrameId())
     , _request()
     , _abortInfo()
     , _stats()
@@ -628,6 +652,39 @@ bool
 FrameRenderContext::isRotoPaintTreeNode(const Node* node) const
 {
     return node && (_rotoPaintTreeNodes.find(node) != _rotoPaintTreeNodes.end());
+}
+
+std::uint64_t
+FrameRenderContext::freshOutputKey(double time,
+                                   ViewIdx view) const
+{
+    std::uint64_t timeBits = 0;
+    static_assert(sizeof(timeBits) == sizeof(time), "a double is 64 bits");
+    std::memcpy(&timeBits, &time, sizeof(time));
+    std::uint64_t key = mixFreshOutputKey(_freshOutputFrameId);
+    key = mixFreshOutputKey(key ^ timeBits);
+    key = mixFreshOutputKey(key ^ (std::uint64_t)(std::int64_t)view.value());
+
+    // An empty slot holds 0.
+    return key ? key : 1;
+}
+
+void
+FrameRenderContext::noteFreshOutput(const Node* node,
+                                    double time,
+                                    ViewIdx view) const
+{
+    if (node) {
+        node->stampFreshOutput(freshOutputKey(time, view));
+    }
+}
+
+bool
+FrameRenderContext::hasFreshOutput(const Node* node,
+                                   double time,
+                                   ViewIdx view) const
+{
+    return node && node->hasFreshOutputStamp(freshOutputKey(time, view));
 }
 
 NATRON_NAMESPACE_EXIT

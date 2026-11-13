@@ -155,6 +155,7 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , _screenPixelRatio(0.)
     , _textFont()
     , overlay(true)
+    , staleBorder(false)
     , updatingTexture(false)
     , clearColor(0, 0, 0, 255)
     , menu(new Menu(_this))

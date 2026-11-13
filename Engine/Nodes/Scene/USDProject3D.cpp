@@ -427,6 +427,14 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     keyHasher.appendU64(cameraScene.getStackHash());
     keyHasher.appendString(cameraPath);
     keyHasher.appendDouble(aspect);
+    // Looking for the first camera searches the scene as the camera input loads it.
+    if (cameraPath.empty()) {
+        const SceneEvaluationContext& cameraContext = args.getInputContext(kUSDProject3DInputCamera);
+        keyHasher.appendBool(cameraContext.includesEverything());
+        if (!cameraContext.includesEverything()) {
+            keyHasher.appendU64(cameraContext.loadSet->getHash());
+        }
+    }
     const U64 samplesKey = keyHasher.finalize();
 
     std::shared_ptr<const CameraSamples> samples;
@@ -478,7 +486,14 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             }
             computed = missingSamples();
         } else {
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(cameraScene, errorMessage);
+            // A named camera needs only the payloads on its path; the first camera is searched for
+            // in the whole scene as the camera input loads it.
+            if (cameraPath.empty() && args.context.reach) {
+                args.context.reach->add(std::vector<std::string>(1, "/"));
+            }
+            const SceneLoadSetPtr cameraLoadSet = cameraPath.empty() ? args.getInputContext(kUSDProject3DInputCamera).loadSet
+                                                                     : SceneLoadSet::withPaths(args.getInputContext(kUSDProject3DInputCamera).loadSet, std::vector<std::string>(1, cameraPath));
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(cameraScene, cameraLoadSet, errorMessage);
             const PXR_NS::UsdStageRefPtr stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {

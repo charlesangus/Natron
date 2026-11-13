@@ -242,7 +242,9 @@ CarCity::CarCity(int blocks,
                      << quad << "    }\n";
             if ((b == 0) && (n == 0)) {
                 building << "    def Camera \"Cam\"\n    {\n        double3 xformOp:translate = (0, 0, 10)\n"
-                         << "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n";
+                         << "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+                         << "    def Xform \"Reset\"\n    {\n        double3 xformOp:translate = (1, 2, 3)\n"
+                         << "        uniform token[] xformOpOrder = [\"!resetXformStack!\", \"xformOp:translate\"]\n    }\n";
             }
             building << "}\n";
             root << "        def Xform \"B_" << n << "\" (\n            prepend payload = @./buildings/" << name << "@\n        )\n        {\n        }\n";

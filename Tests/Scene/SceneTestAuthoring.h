@@ -41,7 +41,7 @@
 NATRON_NAMESPACE_ENTER
 
 // /World/Block_<b>/B_<n>, each building a payload file holding /Geo, /car_0 and the mesh /Panel,
-// the first one also the camera /Cam, beside the mesh /World/Ground outside every payload. The
+// the first one also the camera /Cam and /Reset, a transform that resets its stack, beside the mesh /World/Ground outside every payload. The
 // files sit in a directory of their own so that no other test has their layers open.
 class CarCity {
 public:

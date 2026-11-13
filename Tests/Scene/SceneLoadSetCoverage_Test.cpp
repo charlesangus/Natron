@@ -42,10 +42,12 @@
 #include "BaseTest.h"
 #include "SceneTestAuthoring.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -55,6 +57,7 @@
 #include "Engine/Nodes/Scene/USDCube.h"
 #include "Engine/Nodes/Scene/USDEditPrim.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDProjectUV.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
@@ -62,6 +65,7 @@
 #include "Engine/Nodes/Scene/USDSetAttribute.h"
 #include "Engine/Nodes/Scene/USDVariant.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
+#include "Engine/Project.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -94,6 +98,22 @@ protected:
             if (file) {
                 file->setValue(path);
             }
+        }
+
+        return node;
+    }
+
+    // The city read with its up axis and units converted to a project that differs from the file.
+    NodePtr metricsReader(const CarCity& city)
+    {
+        NodePtr node = reader(city);
+        KnobChoice* upAxis = dynamic_cast<KnobChoice*>(getApp()->getProject()->getKnobByName("upAxis").get());
+        KnobBool* matchUpAxis = node ? dynamic_cast<KnobBool*>(node->getKnobByName(kUSDReadParamMatchUpAxis).get()) : nullptr;
+
+        EXPECT_TRUE(upAxis && matchUpAxis);
+        if (upAxis && matchUpAxis) {
+            upAxis->setValue(1);
+            matchUpAxis->setValue(true);
         }
 
         return node;
@@ -268,6 +288,48 @@ protected:
         EXPECT_TRUE(node->connectInput(input, 0));
 
         return node;
+    }
+
+    NodePtr project3D(const NodePtr& cameraScene,
+                      const std::string& cameraPath)
+    {
+        NodePtr plate = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+
+        EXPECT_TRUE(plate && node);
+        if (!plate || !node) {
+            return NodePtr();
+        }
+        KnobString* cameraKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDProject3DParamCameraPath).get());
+        EXPECT_TRUE(cameraKnob != nullptr);
+        if (cameraKnob) {
+            cameraKnob->setValue(cameraPath);
+        }
+        EXPECT_TRUE(node->connectInput(plate, kUSDProject3DInputImage));
+        EXPECT_TRUE(node->connectInput(cameraScene, kUSDProject3DInputCamera));
+
+        return node;
+    }
+
+    // Whether a projection shader in payload has a camera, its matrix not the zero one a missing
+    // camera authors.
+    static bool hasProjection(const ScenePayload& payload)
+    {
+        const PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+
+        if (!stage) {
+            return false;
+        }
+        for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
+            PXR_NS::GfMatrix4d matrix(0.);
+            const PXR_NS::UsdShadeShader shader(prim);
+
+            if (shader && shader.GetInput(PXR_NS::TfToken("worldToProjector")) && shader.GetInput(PXR_NS::TfToken("worldToProjector")).Get(&matrix, PXR_NS::UsdTimeCode::Default())) {
+                return matrix != PXR_NS::GfMatrix4d(0.);
+            }
+        }
+
+        return false;
     }
 };
 
@@ -731,6 +793,65 @@ TEST_F(SceneLoadSetCoverageTest, AProjectUVCameraInsideAPayloadResolvesWithOnlyI
     node->getPersistentMessage(&message, &type, false);
     EXPECT_FALSE(message.contains(QString::fromUtf8("No camera"))) << message.toStdString();
     EXPECT_TRUE(hasUVsUnloaded(payload, "/World/Ground"));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AProject3DEvaluatesTheSameOnALoadSetAsOnEverything)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr firstCamera = project3D(source, std::string());
+    NodePtr namedCamera = project3D(source, "/World/Block_0/B_0/Cam");
+    ASSERT_TRUE(source && firstCamera && namedCamera);
+
+    expectParity(firstCamera, loadingOnly({ "/World/Block_0" }));
+    expectParity(namedCamera, loadingOnly({ "/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AProject3DCameraInsideAPayloadResolvesWithOnlyItsBuildingOpen)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = project3D(source, "/World/Block_0/B_0/Cam");
+    ASSERT_TRUE(source && node);
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_LE(city.openedBuildings(), 1);
+
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_FALSE(message.contains(QString::fromUtf8("no camera"), Qt::CaseInsensitive)) << message.toStdString();
+    EXPECT_TRUE(hasProjection(payload));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AMetricsCorrectionOpensNoBuildingWithNothingLoaded)
+{
+    CarCity city(2, 2);
+    NodePtr node = metricsReader(city);
+    ASSERT_TRUE(bool(node));
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AMetricsCorrectionEvaluatesTheSameOnALoadSetAsOnEverything)
+{
+    CarCity city(2, 2);
+    NodePtr node = metricsReader(city);
+    ASSERT_TRUE(bool(node));
+
+    expectParity(node, loadingOnly({ "/World/Block_0" }));
 }
 
 TEST_F(SceneLoadSetCoverageTest, AMergeOfTheCityOpensNoBuildingWithNothingLoaded)

@@ -109,10 +109,6 @@ CLANG_DIAG_ON(uninitialized)
  **/
 #define registerMouseShortcut(group, id, description, modifiers, button) ( _imp->addMouseShortcut(group, id, description, modifiers, button) )
 
-//Increment this when making change to default shortcuts or changes that would break expected default shortcuts
-//in a way. This way the user will get prompted to restore default shortcuts on next launch
-#define NATRON_SHORTCUTS_DEFAULT_VERSION 8
-
 inline void initGuiResource() {
     Q_INIT_RESOURCE(GuiResources);
 }
@@ -694,20 +690,7 @@ restoreSavedShortcut(QSettings& settings,
 void
 GuiApplicationManager::loadShortcuts()
 {
-    bool settingsExistd = getCurrentSettings()->didSettingsExistOnStartup();
-    QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
-    int settingsVersion = -1;
-
-    if ( settings.contains( QString::fromUtf8("NATRON_SHORTCUTS_DEFAULT_VERSION") ) ) {
-        settingsVersion = settings.value( QString::fromUtf8("NATRON_SHORTCUTS_DEFAULT_VERSION") ).toInt();
-    }
-
-    if ( settingsExistd && (settingsVersion < NATRON_SHORTCUTS_DEFAULT_VERSION) ) {
-        _imp->_shortcutsChangedVersion = true;
-    }
-
-    settings.setValue(QString::fromUtf8("NATRON_SHORTCUTS_DEFAULT_VERSION"), NATRON_SHORTCUTS_DEFAULT_VERSION);
-
+    QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
 
     for (AppShortcuts::iterator it = _imp->_actionShortcuts.begin(); it != _imp->_actionShortcuts.end(); ++it) {
         settings.beginGroup(it->first);
@@ -739,12 +722,6 @@ GuiApplicationManager::onViewer3DNavigationChanged(int navigation)
             mAction->setBindings(bindings);
         }
     }
-}
-
-bool
-GuiApplicationManager::isShorcutVersionUpToDate() const
-{
-    return !_imp->_shortcutsChangedVersion;
 }
 
 void
@@ -949,6 +926,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, kShortcutDescActionGraphDisableNodes, Qt::NoModifier, Qt::Key_D);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, kShortcutDescActionGraphRemoveNodes, Qt::NoModifier, Qt::Key_Backspace);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowLinkLines, kShortcutDescActionGraphShowLinkLines, Qt::ShiftModifier, Qt::Key_E);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowGpuRegions, kShortcutDescActionGraphShowGpuRegions, Qt::ShiftModifier, Qt::Key_G);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateDownstream, kShortcutDescActionGraphNavigateDownstram, Qt::NoModifier, Qt::Key_Down);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateUpstream, kShortcutDescActionGraphNavigateUpstream, Qt::NoModifier, Qt::Key_Up);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectUp, kShortcutDescActionGraphSelectUp, Qt::ShiftModifier, Qt::Key_Up);

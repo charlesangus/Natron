@@ -455,6 +455,15 @@ public:
     }
 
     /**
+     * @brief Appends nodes whose hashes fold in what feeds this one, though nothing folds in
+     * theirs but their metadata readers: marking this node marks them and those readers only,
+     * whether or not they are dirty already, and the walk goes no further below them.
+     **/
+    virtual void appendHashLeafDependents(std::vector<NodePtr>* /*leaves*/) const
+    {
+    }
+
+    /**
      * @brief Appends nodes whose context reads this node's read-set folds in, besides its inputs
      * and the nodes its expressions read, each with the variables it sets on that node.
      **/
@@ -481,6 +490,30 @@ public:
      * MT-Safe
      **/
     EffectInstancePtr getInput(int n) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The input number isIdentity() answers for an effect that is an identity of
+     * getInternalIdentitySource() rather than of one of its inputs. Only host-side effects answer
+     * it; it is never passed to an OpenFX plug-in. Distinct from -1 (no input), -2 (itself) and
+     * FrameViewRequest::TaskEdge::kContextRequestInputNb, which task edges carry beside it.
+     **/
+    static constexpr int kIdentityInternalSource = -4;
+
+    /**
+     * @brief The effect an identity answer of identityInputNb passes through: getInput() for an
+     * input, getInternalIdentitySource() for kIdentityInternalSource, null otherwise.
+     **/
+    EffectInstancePtr getIdentitySource(int identityInputNb) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The effect, not one of this effect's inputs, whose output this effect passes through
+     * when it answers kIdentityInternalSource, such as what feeds a group's Output. The render
+     * walks it as it walks inputs. Null by default.
+     **/
+    virtual EffectInstancePtr getInternalIdentitySource() const WARN_UNUSED_RETURN
+    {
+        return EffectInstancePtr();
+    }
 
     /**
      * @brief Forwarded to the node holding the effect

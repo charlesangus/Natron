@@ -1,27 +1,74 @@
 #!/usr/bin/env python3
 """Compares GUI benchmark runs written by tools/bench/gui/run.sh.
 
-    compare.py BASELINE.jsonl RUN.jsonl [--tol 0.2]   per-op median change; exit 1 on a regression
+    compare.py BASELINE.jsonl RUN.jsonl [--tol T]      per-op change; exit 1 on a regression
     compare.py --scaling RUN.jsonl                     how each op grows with graph size
+    compare.py --budgets RUN.jsonl                     a host run's per-event times against the budgets
     compare.py --self-test
 
-A regression is an op whose median grew by more than --tol (a fraction) and by more than
---min-ms milliseconds, an op whose status fell from ok (a new timeout or error), an op missing
-from the run, or an op with a stall longer than --long-stall-ms (default 250) where the baseline had none. Medians within --min-ms of each other are too close to timer noise to judge.
+A regression is an op whose per-event p50, per-event p95 (judged only with 20 or more events on both
+sides) or rep median (judged only with 3 or more reps on both sides, or more than one event per rep)
+grew by more than --tol (a fraction; default 0.2, or 3.0 when either run's mode is xvfb) and by more than
+--min-ms milliseconds (default 5, or 200 under xvfb), an op whose status fell
+from ok (newly over budget, timed out or errored) or to an error from over budget, an op missing from
+the run or not run for a reason of its own, or an op with a stall longer than --long-stall-ms (default
+250, or 3000 under xvfb) where the baseline had none. Under xvfb two recordings of the same build differ
+by several times, so only a large change counts there. Values within --min-ms of each other are too close to timer noise to
+judge.
+
+over_budget (and the older timeout) are censored: the rep was abandoned at its timeout, so the value is
+only a lower bound, printed with censored_ms, how far the rep got. Censored on both sides is "still
+over" and judged neither way, unless the run newly wedged Natron after a baseline that got less than half
+way to the wedge guard; censored only in the baseline is an
+improvement. An op that errored in the baseline has no time to judge the run by. An op "not run"
+because the step before it in the delete/undo/redo cycle failed is not a regression of its own; the
+failed step is. "not run here" marks an op carried from a smaller n where it wedged Natron. An op not
+run because an earlier op wedged Natron with no restart left ("Natron wedged on <op>") is "not
+measured" when the baseline has no ok record of it either, and "REGRESSED: missing after wedge" when
+it does. When the run's note says the graph at a size was never set up (its load wedged, or Natron
+died generating or loading it), that size's ops are reported as "setup wedged" instead.
+
+A slowdown that rests on fewer than 5 samples on either side is "CONFIRM" rather than a regression: it
+does not fail the comparison, and the output ends with the run.sh --rerun command that re-runs those
+ops with 5 reps (--appimage PATH puts the AppImage's path in it; otherwise it names the run's AppImage
+file). A fall from ok to over_budget is a lower bound, so its own sample count does not matter: it is a
+regression unless the baseline has fewer than 5 samples, and then CONFIRM until a re-run has gone over
+on 5 reps with censored_ms past the baseline median by more than --tol and --min-ms. A wedge is always
+a regression.
+
+--budgets judges each budgeted op at the largest n of each topology on its per-event p50: 16 ms per
+event for interaction ops, 100 ms for edits (OP_BUDGET_MS in gui_bench.py). Over budget, censored or not
+run fails; exit 1 on any failure. Budgets are for host runs; Xvfb numbers are only for regressions.
+
+The header names each side's build (AppImage file name, size, mtime and sha256) and the harness
+commit, and warns when both sides are the same AppImage. When a (topology, n, seed) graph that both
+sides generated has different hashes, the two runs timed different graphs: a warning on stderr names
+each mismatch, and no row for those sizes is a like-for-like comparison.
+
+When both runs carry the per-event split (step_wall_*, step_cpu_*, loop_pass_*), a line under
+each op shows the medians of the step's wall time, its main-thread CPU and the loop pass after it.
 
 --scaling fits log(median) against log(n) per (op, topology) over the sizes present and marks
 slopes above --superlinear (default 1.2) as superlinear, steepest first: those are the ops whose cost grows faster
 than the graph.
 """
 import argparse
+import ast
 import json
 import math
+import os
 import sys
 
 
 def load(path):
+    host, ops, _notes = load_all(path)
+    return host, ops
+
+
+def load_all(path):
+    """(host, {(op, topology, n): op record}, {(topology, n): setup note}) of the records in path."""
     host = None
-    ops = {}
+    ops, notes = {}, {}
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -33,42 +80,364 @@ def load(path):
                 host = rec
             elif kind == "op":
                 ops[(rec["op"], rec["topology"], rec["n"])] = rec
-    return host, ops
+            elif kind == "note" and rec.get("setup_failed"):
+                notes.setdefault((rec["topology"], rec["n"]), rec)
+    return host, ops, notes
 
 
-def compare(base_ops, run_ops, tol, min_ms, long_stall_ms=250.0):
-    """(rows, regressions) where rows are printable lines."""
-    rows, regressions = [], []
+def load_graphs(path):
+    """{(topology, n, seed): {hash}} of the graph records in path."""
+    graphs = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            if rec.get("type") == "graph":
+                graphs.setdefault((rec["topology"], rec["n"], rec.get("seed")), set()).add(rec.get("hash"))
+    return graphs
+
+
+def graph_mismatches(base_graphs, run_graphs):
+    """[(topology, n, seed, base hashes, run hashes)] for each graph both sides built that differs."""
+    out = []
+    for key in sorted(set(base_graphs) & set(run_graphs), key=lambda k: (k[0], k[1], str(k[2]))):
+        if base_graphs[key] != run_graphs[key]:
+            out.append(key + (sorted(map(str, base_graphs[key])), sorted(map(str, run_graphs[key]))))
+    return out
+
+
+CENSORED = ("timeout", "over_budget")
+CONFIRM_SAMPLES = 5
+# A rep median from fewer reps than this is one or two draws, so a single-event op is judged on its
+# per-event percentiles instead.
+MEDIAN_MIN_REPS = 3
+PER_EVENT_FIELDS = (("step_wall_p50", "p50"), ("step_wall_p95", "p95"))
+# Below this many events a p95 is the slowest event or next to it, which is noise rather than a tail.
+P95_MIN_SAMPLES = 20
+
+
+def censored(rec):
+    return rec.get("status") in CENSORED
+
+
+def samples(rec):
+    """How many timings rec's numbers rest on: its timed events, else its reps; None when it says neither."""
+    count = rec.get("samples_total") or len(rec.get("samples_ms") or ())
+    return count if count else rec.get("reps")
+
+
+def too_few(*recs):
+    counts = [samples(rec) for rec in recs]
+    return any(c is not None and c < CONFIRM_SAMPLES for c in counts)
+
+
+def fewest(*recs):
+    counts = [c for c in (samples(rec) for rec in recs) if c is not None]
+    return min(counts) if counts else 0
+
+
+def over_reps(rec):
+    """How many reps of a censored record went over: each is a lower bound, so this, not its event
+    count, is what a censored value rests on."""
+    return rec.get("over_reps") or 0
+
+
+def lower_bound_slower(b, r, tol, min_ms):
+    """True when the censored run's lower bound, censored_ms, is already past the baseline median by
+    more than tol and min_ms."""
+    return worse(b.get("median_ms"), r.get("censored_ms"), tol, min_ms)
+
+
+# Xvfb recordings of one build differ by several times in both directions (see BASELINE.md), so its
+# gate only judges changes well outside that.
+XVFB_TOL = 3.0
+XVFB_LONG_STALL_MS = 3000.0
+XVFB_MIN_MS = 200.0
+# A baseline that reached more of the wedge guard than this was already close to wedging, so the run
+# crossing the guard is the same behaviour on the other side of a timing edge.
+NEW_WEDGE_GUARD_FRACTION = 0.5
+
+
+def newly_wedged(b, r):
+    if not r.get("wedged") or b.get("wedged"):
+        return False
+    reached, guard_s = b.get("censored_ms"), r.get("guard_s")
+    return reached is None or not guard_s or reached < NEW_WEDGE_GUARD_FRACTION * guard_s * 1000.0
+
+
+def is_xvfb(*hosts):
+    return any(h and h.get("mode") == "xvfb" for h in hosts)
+
+
+WEDGE_REASON = "Natron wedged on "
+
+
+def after_wedge(rec):
+    return rec.get("status") == "not_run" and (rec.get("reason") or "").startswith(WEDGE_REASON)
+
+
+def excused_not_run(key, rec, run_ops):
+    """True when rec is not run because the step it names, at the same topology and n, was not ok."""
+    if rec.get("status") != "not_run":
+        return False
+    words = (rec.get("reason") or "").split()
+    if not words or words[0] == key[0]:
+        return False
+    before = run_ops.get((words[0], key[1], key[2]))
+    return before is not None and before.get("status") != "ok"
+
+
+def compare(base_ops, run_ops, tol, min_ms, long_stall_ms=250.0, run_notes=None):
+    """(rows, regressions, confirms) where rows are printable lines, regressions the keys that fail and
+    confirms the keys that look regressed on fewer than CONFIRM_SAMPLES timings. run_notes maps
+    (topology, n) to the run's note that the graph at that size was never set up."""
+    rows, regressions, confirms = [], [], []
+    run_notes = run_notes or {}
     for key in sorted(set(base_ops) | set(run_ops)):
         op, topology, n = key
         label = "%-20s %-7s %6d" % (op, topology, n)
         b, r = base_ops.get(key), run_ops.get(key)
+        setup = run_notes.get((topology, n))
         if b is None:
             rows.append("%s  only in the run" % label)
             continue
         if r is None:
-            rows.append("%s  REGRESSED: missing from the run" % label)
+            if setup is not None:
+                rows.append("%s  REGRESSED: setup wedged, not measured (%s)" % (label, setup.get("note")))
+            else:
+                rows.append("%s  REGRESSED: missing from the run" % label)
             regressions.append(key)
             continue
-        if b.get("status") == "ok" and r.get("status") != "ok":
-            rows.append("%s  REGRESSED status %s -> %s" % (label, b.get("status"), r.get("status")))
+        bst, rst = b.get("status"), r.get("status")
+        few = too_few(b, r)
+        if rst == "not_run":
+            if after_wedge(r) and setup is not None:
+                rows.append("%s  %ssetup wedged in %s (%s)" % (label, "REGRESSED: " if bst == "ok" else "",
+                                                              setup.get("phase"), setup.get("note")))
+                if bst == "ok":
+                    regressions.append(key)
+            elif after_wedge(r):
+                if bst == "ok":
+                    rows.append("%s  REGRESSED: missing after wedge (%s)" % (label, r.get("reason")))
+                    regressions.append(key)
+                else:
+                    rows.append("%s  not measured (%s)" % (label, r.get("reason")))
+            elif excused_not_run(key, r, run_ops):
+                rows.append("%s  not run: %s" % (label, r.get("reason")))
+            elif bst == "not_run":
+                rows.append("%s  not run in either" % label)
+            else:
+                rows.append("%s  REGRESSED: not run (%s)" % (label, r.get("reason")))
+                regressions.append(key)
+            continue
+        if bst == "not_run":
+            rows.append("%s  baseline not run (%s) -> %s" % (label, b.get("reason"), outcome(r)))
+            continue
+        if censored(b) and censored(r):
+            if newly_wedged(b, r):
+                rows.append("%s  REGRESSED still over and now wedged:%s /%s" % (label, timed_out(b), timed_out(r)))
+                regressions.append(key)
+            else:
+                rows.append("%s  still over:%s /%s" % (label, timed_out(b), timed_out(r)))
+            continue
+        if bst == "ok" and censored(r):
+            # The run's value is a lower bound, so only the baseline's sample count can leave it in doubt,
+            # until a re-run has gone over on enough reps of its own.
+            thin = too_few(b)
+            slower = lower_bound_slower(b, r, tol, min_ms)
+            if r.get("wedged") or not thin or (slower and over_reps(r) >= CONFIRM_SAMPLES):
+                why = " past the baseline's %.2f ms" % b["median_ms"] if slower else ""
+                rows.append("%s  REGRESSED status ok -> %s%s%s" % (label, rst, timed_out(r), why))
+                regressions.append(key)
+            else:
+                rows.append("%s  CONFIRM status ok -> %s%s against a baseline of %d sample(s)" % (
+                    label, rst, timed_out(r), fewest(b)))
+                confirms.append(key)
+            continue
+        if bst == "ok" and rst != "ok":
+            rows.append("%s  REGRESSED status %s -> %s%s" % (label, bst, rst, timed_out(r)))
             regressions.append(key)
+            continue
+        if rst == "error" and bst != "error":
+            rows.append("%s  REGRESSED status %s%s -> error (%s)" % (label, bst, timed_out(b), r.get("error")))
+            regressions.append(key)
+            continue
+        if bst == "error" and rst == "error":
+            rows.append("%s  error in both (%s)" % (label, r.get("error")))
+            continue
+        if bst == "error" and censored(r):
+            rows.append("%s  baseline error -> %s%s, no baseline time to judge it by" % (label, rst, timed_out(r)))
+            continue
+        if bst != "ok" and rst == "ok" and r.get("median_ms") is not None:
+            if censored(b):
+                rows.append("%s  baseline %s%s -> %10.2f ms  improved" % (label, censored_word(b), timed_out(b),
+                                                                         r["median_ms"]))
+            else:
+                rows.append("%s  baseline %s -> %10.2f ms" % (label, bst, r["median_ms"]))
             continue
         bm, rm = b.get("median_ms"), r.get("median_ms")
         if bm is None or rm is None:
-            rows.append("%s  no median (%s / %s)" % (label, b.get("status"), r.get("status")))
+            rows.append("%s  no median (%s / %s)" % (label, bst, rst))
             continue
         change = (rm - bm) / bm if bm > 0 else 0.0
+        slower = [name for name, bv, rv in metrics(b, r) if worse(bv, rv, tol, min_ms)]
         bs, rs = b.get("stalls", {}).get("max_ms", 0.0), r.get("stalls", {}).get("max_ms", 0.0)
-        regressed = change > tol and rm - bm > min_ms
-        verdict = "REGRESSED" if regressed else ("improved" if change < -tol and bm - rm > min_ms else "")
         if rs > long_stall_ms >= bs:
-            regressed = True
             verdict = "REGRESSED stall %.0f ms (baseline max %.0f ms)" % (rs, bs)
-        if regressed:
             regressions.append(key)
+        elif slower and few:
+            verdict = "CONFIRM %s slower on %d sample(s)" % ("/".join(slower), fewest(b, r))
+            confirms.append(key)
+        elif slower:
+            verdict = "REGRESSED" if slower == ["median"] else "REGRESSED %s" % "/".join(slower)
+            regressions.append(key)
+        else:
+            verdict = "improved" if change < -tol and bm - rm > min_ms else ""
         rows.append("%s  %10.2f -> %10.2f ms  %+7.1f%%  %s" % (label, bm, rm, 100.0 * change, verdict))
-    return rows, regressions
+        split = split_row(label, b, r)
+        if split:
+            rows.append(split)
+    return rows, regressions, confirms
+
+
+def median_judged(b, r):
+    """True when the rep median rests on MEDIAN_MIN_REPS reps on both sides, or each rep is many events."""
+    if max(b.get("events_per_rep") or 1, r.get("events_per_rep") or 1) > 1:
+        return True
+    return min(b.get("reps") or 0, r.get("reps") or 0) >= MEDIAN_MIN_REPS
+
+
+def metrics(b, r):
+    """[(name, baseline, run)] of the rep median, when it is judged, and the per-event percentiles both
+    sides carry."""
+    out = [("median", b.get("median_ms"), r.get("median_ms"))] if median_judged(b, r) else []
+    for field, name in PER_EVENT_FIELDS:
+        if b.get(field) is None or r.get(field) is None:
+            continue
+        if name == "p95" and min(samples(b) or 0, samples(r) or 0) < P95_MIN_SAMPLES:
+            continue
+        out.append(("event " + name, b[field], r[field]))
+    return out
+
+
+def worse(bv, rv, tol, min_ms):
+    return bv is not None and rv is not None and bv > 0 and (rv - bv) / bv > tol and rv - bv > min_ms
+
+
+def censored_word(rec):
+    return "timed out" if rec.get("status") == "timeout" else "over budget"
+
+
+def outcome(rec):
+    if rec.get("status") == "ok" and rec.get("median_ms") is not None:
+        return "%.2f ms" % rec["median_ms"]
+    return "%s%s" % (rec.get("status"), timed_out(rec))
+
+
+def timed_out(rec):
+    """' (>N s)' for a censored record, with how far the rep got (censored_ms) and, for one carried from
+    a smaller n where it wedged Natron, where it was measured."""
+    if not censored(rec) or rec.get("timeout_s") is None:
+        return ""
+    if rec.get("wedged_at_n") is not None or (rec.get("not_run") and rec.get("status") == "timeout"):
+        return " (>%.0f s at n=%d, not run here)" % (rec["timeout_s"], rec.get("wedged_at_n", 0))
+    text = " (>%.0f s" % rec["timeout_s"]
+    if rec.get("wedged"):
+        text += ", wedged"
+    if rec.get("censored_ms") is not None:
+        text += ", reached %.0f ms" % rec["censored_ms"]
+    return text + ")"
+
+
+SPLIT_FIELDS = (("step_wall_median_ms", "wall"), ("step_cpu_median_ms", "cpu"), ("loop_pass_median_ms", "loop"))
+
+
+def split_row(label, b, r):
+    """A line comparing the per-event timing split, with the per-event p50 and p95 when both sides have
+    them, or None when either side lacks the split."""
+    parts = []
+    for field, name in SPLIT_FIELDS:
+        bv, rv = b.get(field), r.get(field)
+        if bv is None or rv is None:
+            return None
+        parts.append("%s %.2f -> %.2f" % (name, bv, rv))
+    for field, name in PER_EVENT_FIELDS:
+        bv, rv = b.get(field), r.get(field)
+        if bv is not None and rv is not None:
+            parts.append("%s %.2f -> %.2f" % (name, bv, rv))
+    return "%s    per event ms: %s" % (label, ", ".join(parts))
+
+
+def rerun_command(keys, run_host, baseline, appimage=None):
+    """The run.sh line that re-runs keys' ops with 5 reps on the run's build, against baseline."""
+    ops = sorted(set(k[0] for k in keys))
+    topologies = sorted(set(k[1] for k in keys))
+    sizes = sorted(set(k[2] for k in keys))
+    mode = (run_host or {}).get("mode")
+    cmd = ["tools/bench/gui/run.sh", "--%s" % (mode if mode in ("xvfb", "host") else "xvfb"),
+           "--rerun", ",".join(ops), "--reps", str(CONFIRM_SAMPLES),
+           "--topologies", ",".join(topologies), "--sizes", ",".join(map(str, sizes))]
+    image = appimage or (run_host or {}).get("appimage_name")
+    if image:
+        cmd += ["--appimage", image]
+    cmd += ["--baseline", baseline]
+    return " ".join(cmd)
+
+
+def load_budgets(path=None):
+    """OP_BUDGET_MS from gui_bench.py, evaluated from its source so this script needs no Natron."""
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui_bench.py")
+    with open(path) as f:
+        tree = ast.parse(f.read(), path)
+    names = ("INTERACTION_BUDGET_MS", "EDIT_BUDGET_MS", "OP_BUDGET_MS")
+    scope = {"dict": dict, "__builtins__": {}}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and getattr(node.targets[0], "id", None) in names:
+            scope[node.targets[0].id] = eval(compile(ast.Expression(node.value), path, "eval"), scope)
+    return scope["OP_BUDGET_MS"]
+
+
+def per_event_ms(rec, field="step_wall_p50"):
+    """rec's per-event time: the recorded percentile, else the rep median over its events."""
+    if rec.get(field) is not None:
+        return rec[field]
+    if field == "step_wall_p50" and rec.get("median_ms") is not None:
+        return rec["median_ms"] / max(1, rec.get("events_per_rep") or 1)
+    return None
+
+
+def budgets(run_ops, table):
+    """(rows, failures): each budgeted op at its largest n per topology, judged on its per-event p50."""
+    largest = {}
+    for op, topology, n in run_ops:
+        if op in table and n > largest.get((op, topology), -1):
+            largest[(op, topology)] = n
+    rows, failures = [], []
+    for (op, topology), n in sorted(largest.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        rec = run_ops[(op, topology, n)]
+        budget = table[op]
+        label = "%-20s %-7s %6d  budget %5.0f ms/event" % (op, topology, n, budget)
+        p50, p95 = per_event_ms(rec), per_event_ms(rec, "step_wall_p95")
+        reached = "p50 %8.2f" % p50 if p50 is not None else "p50      n/a"
+        reached += "  p95 %8.2f" % p95 if p95 is not None else "  p95      n/a"
+        status = rec.get("status")
+        if status == "not_run":
+            rows.append("%s  FAIL not run (%s)" % (label, rec.get("reason")))
+            failures.append((op, topology, n))
+        elif censored(rec):
+            rows.append("%s  %s  FAIL %s%s" % (label, reached, status, timed_out(rec)))
+            failures.append((op, topology, n))
+        elif status != "ok" or p50 is None:
+            rows.append("%s  FAIL %s" % (label, status))
+            failures.append((op, topology, n))
+        elif p50 > budget:
+            rows.append("%s  %s  FAIL" % (label, reached))
+            failures.append((op, topology, n))
+        else:
+            rows.append("%s  %s  pass%s" % (label, reached, "  (p95 over)" if p95 is not None and p95 > budget else ""))
+    return rows, failures
 
 
 def slope(points):
@@ -99,16 +468,141 @@ def scaling(run_ops, superlinear):
     return out
 
 
+def describe_build(host):
+    """The build under test: the AppImage's file identity when there is one, else the build type."""
+    if not host.get("appimage_name"):
+        return "%s (no AppImage identity recorded)" % host.get("build_type")
+    return "appimage %s, %s bytes, modified %s, sha256 %s" % (
+        host.get("appimage_name"), host.get("appimage_bytes"), host.get("appimage_mtime"),
+        (host.get("appimage_sha256") or "?")[:16])
+
+
 def describe_host(host):
     if not host:
         return "no host record"
-    return "%s, %s (%s cores), %s, %s %s" % (host.get("hostname"), host.get("cpu_model"), host.get("cores"),
-                                              host.get("qt_platform"), host.get("build_type"), host.get("git_sha"))
+    text = "%s, %s (%s cores), %s, %s; harness %s" % (host.get("hostname"), host.get("cpu_model"), host.get("cores"),
+                                                     host.get("qt_platform"), describe_build(host), host.get("git_sha"))
+    if host.get("mixed_builds"):
+        text += "; WARNING merged from different builds: %s" % " | ".join(host["mixed_builds"])
+    return text
+
+
+def build_id(host):
+    """A key that differs between builds: the AppImage's sha256, else its name, size and mtime."""
+    if not host:
+        return None
+    if host.get("appimage_sha256"):
+        return host["appimage_sha256"]
+    if host.get("appimage_name"):
+        return "%s/%s/%s" % (host.get("appimage_name"), host.get("appimage_bytes"), host.get("appimage_mtime"))
+    return None
+
+
+def self_test_censored(op):
+    def timed(name, median, count, **extra):
+        rec = dict(op(name, 300, median), reps=count, samples_ms=[median] * count)
+        rec.update(extra)
+        return rec
+
+    def over(name, count=1, **extra):
+        rec = dict(op(name, 300, None, "over_budget"), timeout_s=12.0, censored_ms=12100.0, reps=0,
+                   samples_ms=[100.0] * count)
+        rec.update(extra)
+        return rec
+
+    def k(name):
+        return (name, "mixed", 300)
+
+    base = {k("still"): over("still"), k("fixed"): over("fixed"), k("slow"): timed("slow", 50.0, 5),
+            k("hang"): timed("hang", 50.0, 5), k("blip"): timed("blip", 50.0, 1),
+            k("lone"): timed("lone", 100.0, 1, step_wall_p50=100.0),
+            k("tail"): timed("tail", 50.0, 40, step_wall_p50=1.0, step_wall_p95=20.0),
+            k("delete_1000"): timed("delete_1000", 900.0, 1), k("undo"): timed("undo", 90.0, 1),
+            k("redo"): timed("redo", 90.0, 1), k("gone"): timed("gone", 50.0, 5),
+            k("single"): timed("single", 1100.0, 5, step_wall_p50=1100.0),
+            k("confirmed"): timed("confirmed", 1100.0, 3), k("capped"): timed("capped", 20000.0, 5),
+            k("broke"): over("broke"), k("mended"): dict(op("mended", 300, None, "error"), error="boom"),
+            k("bare"): dict(op("bare", 300, 50.0), step_wall_p50=50.0), k("newly"): over("newly"),
+            k("onerep"): timed("onerep", 10.0, 1), k("many"): timed("many", 10.0, 1, events_per_rep=10, samples_ms=[1.0] * 10)}
+    run = {k("still"): over("still"), k("fixed"): timed("fixed", 40.0, 5), k("slow"): over("slow", 5),
+           k("hang"): over("hang", wedged=True), k("blip"): over("blip"),
+           k("lone"): timed("lone", 300.0, 1, step_wall_p50=300.0),
+           k("tail"): timed("tail", 50.0, 40, step_wall_p50=1.0, step_wall_p95=60.0),
+           k("delete_1000"): timed("delete_1000", 900.0, 1), k("undo"): over("undo", 0, wedged=True),
+           k("redo"): dict(op("redo", 300, None, "not_run"), not_run=True, reason="undo wedged Natron"),
+           k("gone"): dict(op("gone", 300, None, "not_run"), not_run=True, reason="gone was deselected"),
+           k("single"): over("single", censored_ms=2609.0, over_reps=1),
+           k("confirmed"): over("confirmed", 5, over_reps=5), k("capped"): over("capped", over_reps=1),
+           k("broke"): dict(op("broke", 300, None, "error"), error="boom"), k("mended"): over("mended"),
+           k("bare"): timed("bare", 300.0, 1, step_wall_p50=300.0), k("newly"): over("newly", wedged=True),
+           k("onerep"): timed("onerep", 50.0, 1),
+           k("many"): timed("many", 50.0, 1, events_per_rep=10, samples_ms=[5.0] * 10)}
+    base.update({k("lost"): timed("lost", 50.0, 5), k("unseen"): over("unseen"),
+                 k("twice"): dict(op("twice", 300, None, "not_run"), not_run=True, reason="Natron wedged on hang")})
+    for name in ("lost", "unseen", "twice"):
+        run[k(name)] = dict(op(name, 300, None, "not_run"), not_run=True, reason="Natron wedged on hang")
+    rows, regressed, confirms = compare(base, run, 0.2, 5.0)
+    text = dict((row.split()[0], row) for row in rows if "per event" not in row)
+    assert sorted(k[0] for k in regressed) == ["broke", "capped", "confirmed", "gone", "hang", "lost", "many",
+                                               "newly", "single", "slow", "tail", "undo"], (regressed, rows)
+    assert sorted(k[0] for k in confirms) == ["bare", "blip", "lone"], (confirms, rows)
+    expected = {
+        "still": "still over: (>12 s, reached 12100 ms) / (>12 s, reached 12100 ms)",
+        "fixed": "baseline over budget (>12 s, reached 12100 ms) ->",
+        "blip": "CONFIRM status ok -> over_budget (>12 s, reached 12100 ms) against a baseline of 1 sample(s)",
+        "single": "REGRESSED status ok -> over_budget (>12 s, reached 2609 ms) past the baseline's 1100.00 ms",
+        "confirmed": "past the baseline's 1100.00 ms",
+        "capped": "REGRESSED status ok -> over_budget (>12 s, reached 12100 ms)",
+        "lone": "CONFIRM event p50 slower on 1 sample(s)",
+        "bare": "CONFIRM event p50 slower on 1 sample(s)",
+        "tail": "REGRESSED event p95",
+        "broke": "REGRESSED status over_budget (>12 s, reached 12100 ms) -> error (boom)",
+        "mended": "baseline error -> over_budget (>12 s, reached 12100 ms), no baseline time",
+        "newly": "REGRESSED still over and now wedged",
+        "many": "REGRESSED",
+        "redo": "not run: undo wedged Natron",
+        "lost": "REGRESSED: missing after wedge (Natron wedged on hang)",
+        "unseen": "not measured (Natron wedged on hang)",
+        "twice": "not measured (Natron wedged on hang)",
+    }
+    for name, want in expected.items():
+        assert want in text[name], (name, text[name])
+    assert "improved" in text["fixed"] and "past" not in text["capped"], rows
+    assert "REGRESSED" not in text["redo"] and "REGRESSED" not in text["mended"], rows
+    assert text["onerep"].rstrip().endswith("%"), text["onerep"]
+    assert fewest({}, {"reps": None}) == 0 and fewest({"reps": 2}, {}) == 2
+    command = rerun_command(confirms, {"mode": "host", "appimage_name": "N.AppImage"}, "/b.jsonl")
+    assert command == ("tools/bench/gui/run.sh --host --rerun bare,blip,lone --reps 5 --topologies mixed --sizes 300 "
+                       "--appimage N.AppImage --baseline /b.jsonl"), command
+
+    note = {"type": "note", "topology": "mixed", "n": 1000, "phase": "load", "setup_failed": True,
+            "note": "Natron wedged in the graph's load (> 60 s)"}
+    wedged_base = {("pan", "mixed", 1000): op("pan", 1000, 5.0), ("hover", "mixed", 1000): op("hover", 1000, 5.0)}
+    wedged_run = {("pan", "mixed", 1000): dict(op("pan", 1000, None, "not_run"), not_run=True,
+                                               reason="Natron wedged on load")}
+    rows, regressed, _ = compare(wedged_base, wedged_run, 0.2, 5.0, run_notes={("mixed", 1000): note})
+    assert len(regressed) == 2, (regressed, rows)
+    assert "REGRESSED: setup wedged, not measured (Natron wedged in the graph's load" in rows[0], rows
+    assert "REGRESSED: setup wedged in load" in rows[1], rows
+
+    table = load_budgets()
+    assert table["hover"] == 16.0 and table["delete_1000"] == 100.0 and "load" not in table, table
+    host = {("hover", "mixed", 300): dict(op("hover", 300, 4000.0), step_wall_p50=20.0, step_wall_p95=30.0),
+            ("hover", "mixed", 3000): dict(op("hover", 3000, 2000.0), step_wall_p50=10.0, step_wall_p95=30.0),
+            ("pan", "mixed", 3000): dict(op("pan", 3000, None, "over_budget"), timeout_s=3.2, censored_ms=3300.0),
+            ("undo", "mixed", 3000): dict(op("undo", 3000, 60.0), events_per_rep=1),
+            ("redo", "mixed", 3000): dict(op("redo", 3000, None, "not_run"), reason="undo failed"),
+            ("load", "mixed", 3000): op("load", 3000, 9000.0)}
+    rows, failures = budgets(host, table)
+    assert sorted(f[0] for f in failures) == ["pan", "redo"], (failures, rows)
+    assert len(rows) == 4 and not any("load" in row for row in rows), rows
+    hover = [row for row in rows if row.startswith("hover")]
+    assert len(hover) == 1 and " 3000 " in hover[0] and "pass  (p95 over)" in hover[0], hover
 
 
 def self_test():
     def op(name, n, median, status="ok", stall=0.0):
-        return {"type": "op", "op": name, "topology": "mixed", "n": n, "status": status,
+        return {"type": "op", "op": name, "topology": "mixed", "n": n, "status": status, "reps": 5,
                 "median_ms": median, "stalls": {"count": 1 if stall else 0, "max_ms": stall}}
 
     base = {("a", "mixed", 300): op("a", 300, 100.0), ("b", "mixed", 300): op("b", 300, 100.0),
@@ -124,7 +618,7 @@ def self_test():
            ("g", "mixed", 300): op("g", 300, 5.0)}
     # a stays within tolerance, c doubles below --min-ms, g has no baseline and h's long stall is
     # already in the baseline; b slowed, d timed out, e stalled and f vanished.
-    _rows, regressed = compare(base, run, 0.2, 5.0)
+    _rows, regressed, _confirms = compare(base, run, 0.2, 5.0)
     got = sorted(k[0] for k in regressed)
     assert got == ["b", "d", "e", "f"], got
 
@@ -140,6 +634,38 @@ def self_test():
     assert set(result) == {("lin", "mixed"), ("quad", "mixed")}, result
     assert abs(result[("lin", "mixed")][0] - 1.0) < 1e-9 and not result[("lin", "mixed")][1], result
     assert abs(result[("quad", "mixed")][0] - 2.0) < 1e-9 and result[("quad", "mixed")][1], result
+    with_split = dict(op("a", 300, 10.0), step_wall_median_ms=4.0, step_cpu_median_ms=3.5, loop_pass_median_ms=6.0)
+    rows, _, _ = compare({("a", "mixed", 300): with_split}, {("a", "mixed", 300): with_split}, 0.2, 5.0)
+    assert len(rows) == 2 and "cpu 3.50 -> 3.50" in rows[1], rows
+    rows, _, _ = compare({("a", "mixed", 300): op("a", 300, 10.0)}, {("a", "mixed", 300): with_split}, 0.2, 5.0)
+    assert len(rows) == 1, rows
+    wedged = dict(op("w", 300, None, "timeout"), timeout_s=300.0, wedged=True)
+    carried = dict(op("w", 1000, None, "timeout"), timeout_s=300.0, wedged=True, not_run=True, wedged_at_n=300)
+    rows, regressed, _ = compare({("w", "mixed", 300): wedged, ("w", "mixed", 1000): carried},
+                              {("w", "mixed", 300): op("w", 300, 40.0), ("w", "mixed", 1000): op("w", 1000, 90.0)},
+                              0.2, 5.0)
+    assert not regressed, regressed
+    assert "baseline timed out (>300 s, wedged) ->" in rows[0] and rows[0].endswith("improved"), rows
+    assert "(>300 s at n=300, not run here)" in rows[1], rows
+    rows, regressed, _ = compare({("w", "mixed", 300): op("w", 300, 40.0)}, {("w", "mixed", 300): wedged}, 0.2, 5.0)
+    assert regressed and "timeout (>300 s, wedged)" in rows[0], rows
+    self_test_censored(op)
+    guarded = dict(op("g", 300, None, "over_budget"), censored_ms=12000.0, guard_s=12.0, wedged=True)
+    assert newly_wedged(dict(op("g", 300, None, "over_budget"), censored_ms=3000.0), guarded)
+    assert newly_wedged(op("g", 300, 40.0), guarded)
+    assert newly_wedged(dict(op("g", 300, None, "over_budget")), guarded)
+    assert not newly_wedged(dict(op("g", 300, None, "over_budget"), censored_ms=8900.0), guarded)
+    assert not newly_wedged(dict(guarded), guarded)
+    rows, regressed, _ = compare({("g", "mixed", 300): dict(op("g", 300, None, "over_budget"), censored_ms=8900.0)},
+                                 {("g", "mixed", 300): guarded}, 0.2, 5.0)
+    assert not regressed and "still over" in rows[0], rows
+    assert is_xvfb({"mode": "host"}, {"mode": "xvfb"}) and not is_xvfb({"mode": "host"}, None)
+    mismatched = graph_mismatches({("mixed", 300, 1): {"aa"}, ("mixed", 1000, 1): {"bb"}, ("comp", 300, 1): {"cc"}},
+                                  {("mixed", 300, 1): {"aa"}, ("mixed", 1000, 1): {"bx"}, ("wide", 300, 1): {"dd"}})
+    assert mismatched == [("mixed", 1000, 1, ["bb"], ["bx"])], mismatched
+    same = {"appimage_name": "a.AppImage", "appimage_sha256": "ab" * 32}
+    assert build_id(same) == build_id(dict(same)) and build_id({"build_type": "release"}) is None
+    assert "sha256 abababababababab" in describe_host(dict(same, hostname="h")), describe_host(same)
     print("compare.py self-test passed")
     return 0
 
@@ -147,15 +673,29 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="*")
-    ap.add_argument("--tol", type=float, default=0.2)
-    ap.add_argument("--min-ms", type=float, default=5.0)
-    ap.add_argument("--long-stall-ms", type=float, default=250.0)
+    ap.add_argument("--tol", type=float)
+    ap.add_argument("--min-ms", type=float)
+    ap.add_argument("--long-stall-ms", type=float)
     ap.add_argument("--scaling", action="store_true")
     ap.add_argument("--superlinear", type=float, default=1.2)
+    ap.add_argument("--budgets", action="store_true")
+    ap.add_argument("--appimage", help="the AppImage path the printed re-run command names")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
+    if args.budgets:
+        if len(args.files) != 1:
+            ap.error("--budgets takes one run")
+        host, ops = load(args.files[0])
+        print("# %s" % describe_host(host))
+        if host and host.get("mode") != "host":
+            print("# warning: budgets are judged on a host run; this one is %s" % host.get("mode"))
+        rows, failures = budgets(ops, load_budgets())
+        for row in rows:
+            print(row)
+        print("%d op(s) over budget" % len(failures))
+        return 1 if failures else 0
     if args.scaling:
         if len(args.files) != 1:
             ap.error("--scaling takes one run")
@@ -171,15 +711,36 @@ def main():
     if len(args.files) != 2:
         ap.error("give a baseline and a run")
     base_host, base_ops = load(args.files[0])
-    run_host, run_ops = load(args.files[1])
+    run_host, run_ops, run_notes = load_all(args.files[1])
     print("# baseline: %s" % describe_host(base_host))
     print("# run:      %s" % describe_host(run_host))
     if base_host and run_host and base_host.get("cpu_model") != run_host.get("cpu_model"):
         print("# warning: the runs come from different CPUs")
-    rows, regressions = compare(base_ops, run_ops, args.tol, args.min_ms, args.long_stall_ms)
+    if build_id(base_host) is not None and build_id(base_host) == build_id(run_host):
+        print("# warning: the baseline and the run are the same AppImage")
+    mismatched = graph_mismatches(load_graphs(args.files[0]), load_graphs(args.files[1]))
+    if mismatched:
+        sys.stderr.write("WARNING: the baseline and the run timed different graphs; the rows for these sizes are "
+                         "not comparable; re-record the older side with the current harness:\n")
+        for topology, n, seed, bh, rh in mismatched:
+            sys.stderr.write("WARNING:   %s n=%d seed=%s: baseline hash %s, run hash %s\n" % (
+                topology, n, seed, ",".join(h[:12] for h in bh), ",".join(h[:12] for h in rh)))
+        print("# warning: %d graph(s) differ from the baseline's; see stderr" % len(mismatched))
+    for (topology, n), note in sorted(run_notes.items()):
+        print("# setup wedged at %s n=%d: %s" % (topology, n, note.get("note")))
+    xvfb = is_xvfb(base_host, run_host)
+    tol = args.tol if args.tol is not None else XVFB_TOL if xvfb else 0.2
+    long_stall = args.long_stall_ms if args.long_stall_ms is not None else XVFB_LONG_STALL_MS if xvfb else 250.0
+    min_ms = args.min_ms if args.min_ms is not None else XVFB_MIN_MS if xvfb else 5.0
+    print("# tolerance %g, min %g ms, long stall %g ms%s" % (tol, min_ms, long_stall, " (xvfb defaults)" if xvfb else ""))
+    rows, regressions, confirms = compare(base_ops, run_ops, tol, min_ms, long_stall, run_notes)
     for row in rows:
         print(row)
     print("%d regression(s)" % len(regressions))
+    if confirms:
+        print("%d op(s) to confirm; they rest on fewer than %d samples. Re-run them with:" % (
+            len(confirms), CONFIRM_SAMPLES))
+        print("  " + rerun_command(confirms, run_host, os.path.abspath(args.files[0]), args.appimage))
     return 1 if regressions else 0
 
 

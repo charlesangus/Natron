@@ -28,11 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <list>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -43,16 +46,19 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
 #include <QGraphicsPixmapItem>
+#include <QImage>
 #include <QMutex>
 #include <QPainter>
 #include <QPen>
 #include <QPointF>
+#include <QRegion>
 #include <QStyleOptionGraphicsItem>
 #include <QTimer>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeGraphItemGrid.h"
 #include "Gui/NodeGraphPickUp.h"
 #include "Gui/NodeGraphShake.h"
 #include "Gui/NodeGraphUndoRedo.h" // NodeGuiPtr
@@ -65,9 +71,14 @@ CLANG_DIAG_ON(uninitialized)
 ///These are percentages of the size of the NodeGraph in widget coordinates.
 #define NATRON_NAVIGATOR_BASE_HEIGHT 0.2
 #define NATRON_NAVIGATOR_BASE_WIDTH 0.2
+#define NATRON_NAVIGATOR_RENDER_DELAY_MS 250
+// Matches the height below which a node's name text stops being drawn.
+#define NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX 4
 
-#define NATRON_SCENE_MAX 1e6
-#define NATRON_SCENE_MIN 0
+// Bounds of the fixed scene rectangle the view scrolls over. At the largest zoom (50) its width
+// in view pixels stays below INT_MAX, which the scroll bar values are limited to.
+#define NATRON_SCENE_MAX 1e7
+#define NATRON_SCENE_MIN -1e7
 
 NATRON_NAMESPACE_ENTER
 
@@ -83,79 +94,198 @@ enum EventStateEnum {
     eEventStateCutting,
 };
 
+// A list of nodes in insertion order that finds and removes a node in constant time. A node is
+// in it at most once.
+class IndexedNodeGuiList {
+public:
+    typedef NodesGuiList::iterator iterator;
+    typedef NodesGuiList::const_iterator const_iterator;
+    typedef NodesGuiList::const_reverse_iterator const_reverse_iterator;
+
+    operator const NodesGuiList&() const { return _list; }
+    const NodesGuiList& list() const { return _list; }
+
+    iterator begin() { return _list.begin(); }
+    iterator end() { return _list.end(); }
+    const_iterator begin() const { return _list.begin(); }
+    const_iterator end() const { return _list.end(); }
+    const_reverse_iterator rbegin() const { return _list.rbegin(); }
+    const_reverse_iterator rend() const { return _list.rend(); }
+
+    bool empty() const { return _list.empty(); }
+    std::size_t size() const { return _list.size(); }
+    const NodeGuiPtr& front() const { return _list.front(); }
+    const NodeGuiPtr& back() const { return _list.back(); }
+
+    bool contains(const NodeGui* node) const
+    {
+        return _index.find(const_cast<NodeGui*>(node)) != _index.end();
+    }
+
+    bool contains(const NodeGuiPtr& node) const { return contains(node.get()); }
+
+    // A key that sorts the nodes in list order, so that a few nodes found some other way can be
+    // put in that order without walking the list. Only valid while the node is in the list.
+    std::uint64_t orderOf(const NodeGui* node) const
+    {
+        std::unordered_map<NodeGui*, Entry>::const_iterator found = _index.find(const_cast<NodeGui*>(node));
+
+        return (found == _index.end()) ? 0 : found->second.order;
+    }
+
+    // Returns false, leaving the order alone, if the node is already in the list.
+    bool push_back(const NodeGuiPtr& node)
+    {
+        if (!node || contains(node)) {
+            return false;
+        }
+        _list.push_back(node);
+        Entry& entry = _index[node.get()];
+        entry.it = --_list.end();
+        entry.order = ++_lastOrder;
+
+        return true;
+    }
+
+    iterator erase(iterator it)
+    {
+        _index.erase(it->get());
+
+        return _list.erase(it);
+    }
+
+    // Returns the removed node, or a null pointer if the node was not in the list.
+    NodeGuiPtr remove(const NodeGui* node)
+    {
+        std::unordered_map<NodeGui*, Entry>::iterator found = _index.find(const_cast<NodeGui*>(node));
+        if (found == _index.end()) {
+            return NodeGuiPtr();
+        }
+        NodeGuiPtr ret = *found->second.it;
+        _list.erase(found->second.it);
+        _index.erase(found);
+
+        return ret;
+    }
+
+    void clear()
+    {
+        _list.clear();
+        _index.clear();
+    }
+
+private:
+    struct Entry {
+        iterator it;
+        std::uint64_t order = 0;
+    };
+
+    NodesGuiList _list;
+    std::unordered_map<NodeGui*, Entry> _index;
+    // Only ever grows, so a node pushed later always sorts after every node already in the list.
+    std::uint64_t _lastOrder = 0;
+};
+
+// The navigator overlay. It paints its own border and nothing at all while the graph renders its
+// thumbnail, so the scene can be rendered without taking the overlay out of it.
 class Navigator
-    : public QGraphicsPixmapItem
-{
-    QGraphicsLineItem* _navLeftEdge;
-    QGraphicsLineItem* _navBottomEdge;
-    QGraphicsLineItem* _navRightEdge;
-    QGraphicsLineItem* _navTopEdge;
+    : public QGraphicsPixmapItem {
+    const bool* _hiddenDuringRender;
+    QPen _borderPen;
+    double _width;
+    double _height;
 
 public:
-
-    Navigator(QGraphicsItem* parent = 0)
-        : QGraphicsPixmapItem(parent)
-        , _navLeftEdge(NULL)
-        , _navBottomEdge(NULL)
-        , _navRightEdge(NULL)
-        , _navTopEdge(NULL)
+    explicit Navigator(const bool* hiddenDuringRender)
+        : QGraphicsPixmapItem(0)
+        , _hiddenDuringRender(hiddenDuringRender)
+        , _borderPen()
+        , _width(0.)
+        , _height(0.)
     {
-        QPen p;
-
-        p.setBrush( QColor(200, 200, 200) );
-        p.setWidth(2);
-
-        _navLeftEdge = new QGraphicsLineItem(this);
-        _navLeftEdge->setPen(p);
-
-        _navBottomEdge = new QGraphicsLineItem(this);
-        _navBottomEdge->setPen(p);
-
-        _navRightEdge = new QGraphicsLineItem(this);
-        _navRightEdge->setPen(p);
-
-        _navTopEdge = new QGraphicsLineItem(this);
-        _navTopEdge->setPen(p);
+        _borderPen.setBrush(QColor(200, 200, 200));
+        _borderPen.setWidth(2);
     }
 
     virtual ~Navigator()
     {
     }
 
-    int getLineWidth() const
-    {
-        return _navLeftEdge->pen().width();
-    }
-
     void refreshPosition(const QPointF & navTopLeftScene,
                          double width,
                          double height)
     {
+        if ((width != _width) || (height != _height)) {
+            prepareGeometryChange();
+            _width = width;
+            _height = height;
+        }
         setPos(navTopLeftScene);
+    }
 
-        _navLeftEdge->setLine(0,
-                              height,
-                              0,
-                              0);
+    virtual QRectF boundingRect() const OVERRIDE FINAL
+    {
+        const double m = _borderPen.widthF() / 2.;
 
-        _navTopEdge->setLine(0,
-                             0,
-                             width,
-                             0);
+        return QGraphicsPixmapItem::boundingRect().united(QRectF(0, 0, _width, _height)).adjusted(-m, -m, m, m);
+    }
 
-        _navRightEdge->setLine(width,
-                               0,
-                               width,
-                               height);
+    virtual QPainterPath shape() const OVERRIDE FINAL
+    {
+        QPainterPath path;
+        path.addRect(boundingRect());
 
-        _navBottomEdge->setLine(width,
-                                height,
-                                0,
-                                height);
+        return path;
+    }
+
+    virtual void paint(QPainter* painter,
+                       const QStyleOptionGraphicsItem* option,
+                       QWidget* widget) OVERRIDE FINAL
+    {
+        if (*_hiddenDuringRender) {
+            return;
+        }
+        QGraphicsPixmapItem::paint(painter, option, widget);
+        painter->setPen(_borderPen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawLine(QPointF(0, _height), QPointF(0, 0));
+        painter->drawLine(QPointF(0, 0), QPointF(_width, 0));
+        painter->drawLine(QPointF(_width, 0), QPointF(_width, _height));
+        painter->drawLine(QPointF(_width, _height), QPointF(0, _height));
+    }
+};
+
+class GpuRegionOverlay;
+// An empty item that only parents a kind of item apart from the nodes, at the nodes' origin.
+// Qt keeps an item's children in one list that it renumbers or re-sorts as children come, go or
+// change z, so the edges and arrows of a large graph would make every such change to the nodes
+// cost a walk over all of them.
+class NodeGraphItemLayer
+    : public QGraphicsItem {
+public:
+    NodeGraphItemLayer(QGraphicsItem* parent,
+                       qreal z)
+        : QGraphicsItem(parent)
+    {
+        setFlag(QGraphicsItem::ItemHasNoContents);
+        setAcceptedMouseButtons(Qt::NoButton);
+        setZValue(z);
+    }
+
+    virtual QRectF boundingRect() const OVERRIDE FINAL
+    {
+        return QRectF();
+    }
+
+    virtual void paint(QPainter* /*painter*/,
+                       const QStyleOptionGraphicsItem* /*option*/,
+                       QWidget* /*widget*/) OVERRIDE FINAL
+    {
     }
 };
 
 class LoopBlockOverlay;
+class NodeGraphLowDetailLayer;
 
 class NodeGraphPrivate
 {
@@ -173,23 +303,41 @@ public:
     bool _magnifOn;
     Edge* _arrowSelected;
     mutable QMutex _nodesMutex;
-    NodesGuiList _nodes;
-    NodesGuiList _nodesTrash;
+    IndexedNodeGuiList _nodes;
+    IndexedNodeGuiList _nodesTrash;
 
     /// Enables the create-node shortcut that opens the tab menu.
     /// This is set to true on enterEvent and set back to false on leaveEvent
     bool _nodeCreationShortcutEnabled;
-    QGraphicsItem* _root; ///< this is the parent of all items in the graph
+    // The parent of all items in the graph. It stays at the scene origin: the view pans by
+    // scrolling, so root, node-root and scene coordinates are all the same.
+    QGraphicsItem* _root;
     QGraphicsItem* _nodeRoot; ///< this is the parent of all nodes
     LoopBlockOverlay* _loopBlocks;
     bool _selectionChangeScheduled = false;
+    GpuRegionOverlay* _gpuRegions;
+    NodeGraphLowDetailLayer* lowDetailEdgeLayer;
+    NodeGraphLowDetailLayer* lowDetailNodeLayer;
+    QGraphicsItem* edgeLayer = nullptr;
+    QGraphicsItem* linkArrowLayer = nullptr;
+    QGraphicsItem* backdropLinkArrowLayer = nullptr;
+    // The highest stacking serial handed out to a node so far.
+    std::uint64_t lastNodeStackSerial = 0;
+    // What the low-detail layers have to draw again, in _nodeRoot coordinates. Changes add to it
+    // and the layers are updated once, when control returns to the event loop or just before the
+    // view paints, so a change to many items is one update rather than one per item.
+    QRectF lowDetailDirty;
+    bool lowDetailFlushPosted = false;
     QGraphicsSimpleTextItem* _cacheSizeText;
     bool cacheSizeHidden;
     QTimer _refreshCacheTextTimer;
     Navigator* _navigator;
     QMenu* _menu;
-    QGraphicsItem *_tL, *_tR, *_bR, *_bL;
-    bool _refreshOverlays;
+    // Coalesces overlay refreshes asked for by content changes; view changes refresh at once so
+    // the overlays move in the same frame as the scrolled content.
+    QTimer overlayRefreshTimer;
+    // Set while a pan sets both scroll bars, so that the overlays are refreshed once, not per bar.
+    bool overlayRefreshSuspended;
 
     Edge* _hintInputEdge;
     Edge* _hintOutputEdge;
@@ -202,6 +350,10 @@ public:
     // The entry's inputs the plan allows, best first, and the one the hinted pipe goes into.
     std::vector<int> _spliceEntryInputs;
     int _spliceEntryInput = -1;
+    // Which entry input, or -1 for none, each pipe met so far allows, keyed by the pipe's
+    // destination, input and source. Validating a pipe walks the graph upstream, and the same
+    // pipe is met on every move while the selection lies over it.
+    std::map<std::pair<std::pair<const Node*, int>, const Node*>, int> _spliceEntryInputForPipe;
     NodeGuiPtr _spliceExit;
     Edge* _splicePipe = nullptr;
     // Set by Escape or focus loss, and cleared by the next press, so that the rest of the drag
@@ -238,16 +390,15 @@ public:
 
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step
-    NodesGuiList _selection;
+    IndexedNodeGuiList _selection; //< in the order the nodes were selected
 
     //To avoid calling unsetCursor too much
     bool cursorSet;
     std::map<NodeGuiPtr, NodesGuiList> _nodesWithinBDAtPenDown;
     QRectF _selectionRect;
 
-    // eEventStateCutting: the cut line drawn so far, in _root's coordinates so that panning keeps
-    // it on the pipes, and the pipes it crosses by destination and input, highlighted until the
-    // cut ends.
+    // eEventStateCutting: the cut line drawn so far, in scene coordinates, and the pipes it
+    // crosses by destination and input, highlighted until the cut ends.
     std::vector<QPointF> _cutLine;
     std::map<NodeGuiWPtr, std::set<int>, std::owner_less<NodeGuiWPtr>> _cutPipes;
     bool _bendPointsVisible;
@@ -263,11 +414,63 @@ public:
     ViewerTab* lastSelectedViewer;
     QPixmap unlockIcon;
 
-    ///True when the graph is rendered from the getFullSceneScreenShot() function
+    /// True while the scene is rendered into the navigator thumbnail
     bool isDoingPreviewRender;
     QTimer autoScrollTimer;
     QTimer refreshRenderStateTimer;
 
+    // The navigator shows a thumbnail of the nodes rendered once per graph change, at the latest
+    // after navigatorRenderTimer fires; panning and zooming only recompose it with the view
+    // rectangle. Both rectangles are in scene coordinates.
+    QImage navigatorContent;
+    QRectF navigatorContentRect;
+    bool navigatorContentDirty;
+    QTimer navigatorRenderTimer;
+    QRectF nodesBounds;
+    bool nodesBoundsDirty;
+    // While a node drag is under way the navigator keeps the thumbnail it had, and the bounds
+    // only grow, so that no move pays for walking every node; the drag's end renders it once.
+    bool navigatorDeferredByDrag;
+    int navigatorBatchDepth;
+    bool navigatorBatchPending;
+    // Whether what the batch put off includes a change that can leave the hit-test
+    // grid wrong everywhere, rather than only the image and the bounds.
+    bool navigatorDeferredRebuildsGrid;
+
+    // A node, or an edge held by the node owner, as the hit-test grid stores it. slot is
+    // kGridNodeSlot for the node itself, -1 for its output edge and the input number otherwise.
+    // Neither pointer is followed before owner is found in _nodes, so entries for deleted items
+    // are harmless until they are dropped.
+    struct GridItem {
+        QGraphicsItem* item = nullptr;
+        NodeGui* owner = nullptr;
+        int slot = 0;
+    };
+    static constexpr int kGridNodeSlot = -2;
+
+    // The subtree bounds of every node and edge in _nodeRoot coordinates. invalidateNavigatorContent()
+    // rebuilds it on the next query, for nodes or edges coming or going; a node or edge reporting
+    // a change to its own look or geometry updates just the items in itemGridStale.
+    NodeGraphItemGrid<const QGraphicsItem*, GridItem> itemGrid;
+    bool itemGridDirty;
+    std::unordered_map<const QGraphicsItem*, GridItem> itemGridStale;
+    bool antiAliasing;
+    bool lowDetail;
+    int lowDetailFontHeight;
+
+    int stackingBatchDepth;
+    bool loadStackingBatchOpen;
+    std::unordered_map<NodeGui*, NodeGuiWPtr> frameDependentNodes;
+    bool timelineConnected;
+    std::vector<NodeGuiWPtr> stackingPending;
+    std::unordered_set<NodeGui*> stackingPendingSet;
+    int refreshBatchDepth = 0;
+    std::vector<std::pair<NodeGuiWPtr, int>> refreshPending;
+    std::unordered_map<NodeGui*, std::size_t> refreshPendingIndex;
+
+    // Nodes whose rendering counters or persistent message changed since refreshRenderStateTimer
+    // last fired, keyed by address so that a node queued twice is refreshed once.
+    std::map<NodeGui*, NodeGuiWPtr> renderStateDirty;
 
     NodeGraphPrivate(NodeGraph* p,
                      const NodeCollectionPtr& group);
@@ -276,7 +479,62 @@ public:
 
     void resetAllClipboards();
 
+    // In scene coordinates. Cached until a node moves, resizes, shows, hides, or an edge changes.
     QRectF calcNodesBoundingRect();
+
+    // The scene rectangle the navigator maps onto its widget-sized image, and the scale it uses.
+    void getNavigatorMapping(QRectF* sceneRect, double* scale, QPointF* offset) const;
+    void renderNavigatorContent();
+
+    // Unites the moved nodes into the cached bounds the navigator frames while it is deferred.
+    void growNodesBoundsForDrag(const std::set<NodeGuiPtr>& moved);
+    void endNavigatorDragDeferral();
+
+    // rebuildGrid is for changes the hit-test grid is not told about item by item, such as nodes
+    // or edges coming or going; it makes the next query refile every item.
+    void invalidateNavigator(bool rebuildGrid);
+
+    // Whether item, a node or one of its edges, is where the graph keeps items of its kind.
+    bool isInGraph(const QGraphicsItem* item) const
+    {
+        const QGraphicsItem* parent = item->parentItem();
+
+        return parent && ((parent == _nodeRoot) || (parent == edgeLayer));
+    }
+
+    bool isGridItemValid(const GridItem& gridItem) const;
+    void refreshItemGrid();
+
+    // The grid entries of the nodes and edges whose subtree bounds may meet queryRoot, given in
+    // _nodeRoot coordinates. Paint code passes refresh false: refiling can take _nodesMutex and
+    // walk every node, and flushLowDetailUpdates() already refiled before the view paints.
+    void getGridItems(const QRectF& queryRoot, std::vector<GridItem>* items, bool refresh = true);
+
+    // Adds rect, in _nodeRoot coordinates, to what the low-detail layers draw again.
+    void addLowDetailDirty(const QRectF& rect);
+
+    // Makes everything the low-detail layers draw be drawn again, now when repaint is set and
+    // otherwise at their next paint.
+    void invalidateLowDetailLayers(bool repaint = true);
+
+    // Refiles the items that changed and updates the low-detail layers where they did. painting,
+    // when the view is about to paint it, is the region of the viewport that paint covers: the
+    // layers draw the changes in it then, and an update there would only paint it twice.
+    void flushLowDetailUpdates(const QRegion* painting = nullptr);
+
+    // Fades the nodes and their edges in or out for the level of detail lowDetail says.
+    void applyDetailLevel();
+
+    // The nodes and edges whose subtree bounds may meet queryRoot, given in _nodeRoot coordinates.
+    void getGridCandidates(const QRectF& queryRoot, std::vector<QGraphicsItem*>* candidates);
+    void getGridCandidatesForViewportRect(const QRect& rect, std::vector<QGraphicsItem*>* candidates);
+
+    // What NodeGraph::getGraphItemsMeetingViewportRect() returns, searching only the subtrees of
+    // candidates.
+    void collectGraphItemsMeetingViewportRect(const QRect& rect,
+                                              bool skipText,
+                                              const std::vector<QGraphicsItem*>& candidates,
+                                              std::vector<QGraphicsItem*>* hits) const;
 
     void copyNodesInternal(const NodesGuiList& selection, NodeClipBoard & clipboard);
     void pasteNodesInternal(const NodeClipBoard & clipboard, const QPointF& scenPos,
@@ -312,6 +570,13 @@ public:
     void editSelectionFromSelectionRectangle(bool addToSelection);
 
     void resetSelection();
+
+    // Makes nodes, in their order, the selection.
+    void replaceSelection(const NodesGuiList& nodes);
+
+    // Between begin and end, navigator invalidations are coalesced into one at the end.
+    void beginNavigatorBatch();
+    void endNavigatorBatch();
 
     void setNodesBendPointsVisible(bool visible);
 

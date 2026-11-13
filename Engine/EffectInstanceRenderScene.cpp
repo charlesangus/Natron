@@ -178,7 +178,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                 return evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context, args.abortInfo), outputScene, errorMessage);
             }
 
-            EffectInstancePtr identityInput = getInput(identityInputNb);
+            EffectInstancePtr identityInput = getIdentitySource(identityInputNb);
             if (!identityInput || !identityInput->producesSceneData()) {
                 return eRenderRoIRetCodeOk;
             }

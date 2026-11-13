@@ -186,6 +186,14 @@ public:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
+    virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time) OVERRIDE FINAL;
+
+    /**
+     * @brief The paint toolbar and brush settings this node shares with RotoPaint, and the
+     * stroke builder that paints with them into a session's layer.
+     **/
+    RotoPaintInteractPtr getPaintInteract() const;
+
     virtual bool isMultiPlanar() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
@@ -534,6 +542,7 @@ private:
     // Set to the baker's generation as each bake lands, so that the node's hash changes and the output refreshes.
     KnobIntWPtr _bakeGeneration;
     KnobIntWPtr _outputTile;
+    RotoPaintInteractPtr _paintInteract;
     std::atomic<int> _sessionRenders;
     std::unique_ptr<TexturePaintBaker> _baker;
     // Session bakes queued and not landed, by session; main thread.

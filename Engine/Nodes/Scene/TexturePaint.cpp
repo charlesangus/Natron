@@ -73,6 +73,7 @@
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoPaintInteract.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/TimeLine.h"
 
@@ -442,7 +443,42 @@ TexturePaint::initializeKnobs()
     outputTile->setAnimationEnabled(false);
     page->addKnob(outputTile);
     _outputTile = outputTile;
+
+    const RotoPaintInteractPtr paint = RotoPaintInteract::create(this, true);
+    _paintInteract = paint;
+    paint->createSettingKnobs(this, page);
+    paint->createResetCloneOffsetKnob(page);
+    const KnobPagePtr toolbar = paint->createToolbarKnobs(0);
+    paint->createToolKnobs(this, toolbar, true);
+    if (const RotoContextPtr context = getNode()->getRotoContext()) {
+        const std::weak_ptr<RotoPaintInteract> weakPaint = paint;
+        QObject::connect(context.get(), &RotoContext::breakMultiStroke, this, [weakPaint]() {
+            if (const RotoPaintInteractPtr p = weakPaint.lock()) {
+                p->onBreakMultiStrokeTriggered();
+            }
+        });
+    }
+    const KnobButtonPtr brush = paint->brushAction.lock();
+    paint->setCurrentTool(brush);
+    paint->onRoleChangedInternal(paint->paintBrushToolGroup.lock());
+    paint->onToolChangedInternal(brush);
 } // TexturePaint::initializeKnobs
+
+RotoPaintInteractPtr
+TexturePaint::getPaintInteract() const
+{
+    return _paintInteract;
+}
+
+void
+TexturePaint::refreshExtraStateAfterTimeChanged(bool isPlayback,
+                                                double time)
+{
+    NativeEffectBase::refreshExtraStateAfterTimeChanged(isPlayback, time);
+    if (_paintInteract) {
+        _paintInteract->refreshAfterTimeChanged(time);
+    }
+}
 
 void
 TexturePaint::onCurveLayerCreated(const RotoLayerPtr& layer)
@@ -1951,6 +1987,10 @@ TexturePaint::knobChanged(KnobI* k,
         (void)enqueueBakeInputs(time, ViewIdx(0));
 
         return true;
+    }
+    bool paintRet = false;
+    if (k && _paintInteract && _paintInteract->onKnobChanged(k, time, &paintRet)) {
+        return paintRet;
     }
 
     return NativeEffectBase::knobChanged(k, reason, view, time, originatedFromMainThread);

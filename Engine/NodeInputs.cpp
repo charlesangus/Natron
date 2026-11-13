@@ -305,6 +305,35 @@ Node::appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const
 }
 
 void
+Node::appendDraftFlagDependents(std::vector<NodePtr>* dependents) const
+{
+    appendOutputsWithGroupRedirection(dependents);
+    // The flag is read through raw inputs, so a container's own outputs read it even where the
+    // redirection skips them for the nodes inside.
+    const bool redirected = isEffectGroup() || dynamic_cast<const GroupOutput*>(_imp->effect.get()) || _imp->precomp.lock();
+    if (redirected) {
+        QMutexLocker l(&_imp->outputsMutex);
+        for (NodesWList::const_iterator it = _imp->outputs.begin(); it != _imp->outputs.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output) {
+                dependents->push_back(std::move(output));
+            }
+        }
+    }
+}
+
+bool
+Node::getDownstreamViewersOfOwnEdit(std::list<ViewerInstance*>* viewers) const
+{
+    if (!downstreamViewersOfEdit || (downstreamViewersOfEdit->node != this) || (downstreamViewersOfEdit->graphGeneration != LoopEnd::getGraphGeneration())) {
+        return false;
+    }
+    *viewers = downstreamViewersOfEdit->viewers;
+
+    return true;
+}
+
+void
 Node::appendOutputsThroughOneRedirection(std::vector<NodePtr>* outputs) const
 {
     auto appendOutputsOf = [outputs](const Node& node) {
@@ -1853,9 +1882,7 @@ Node::endInputEdition(bool triggerRender)
 
         if (triggerRender) {
             std::list<ViewerInstance* > viewers;
-            if (downstreamViewersOfEdit && (downstreamViewersOfEdit->node == this) && (downstreamViewersOfEdit->graphGeneration == LoopEnd::getGraphGeneration())) {
-                viewers = downstreamViewersOfEdit->viewers;
-            } else {
+            if (!getDownstreamViewersOfOwnEdit(&viewers)) {
                 hasViewersConnected(&viewers);
             }
             for (std::list<ViewerInstance* >::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {

@@ -40,6 +40,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Project.h"
 #include "Engine/ViewerInstance.h"
 
@@ -221,7 +222,7 @@ TEST_F(GraphScalingConnectTest, WithNoViewerConnectedNoWalkLooksForViewers)
     EXPECT_FALSE(ViewerInstance::isAnyViewerConnected());
 }
 
-TEST_F(GraphScalingConnectTest, InputRelatedRefreshVisitsOnlyWhatIsBelowTheEdit)
+TEST_F(GraphScalingConnectTest, InputRelatedRefreshVisitsNothingBelowAnEditLeavingTheDraftFlag)
 {
     const AppInstancePtr app = getApp();
     std::vector<NodePtr> chain;
@@ -229,8 +230,6 @@ TEST_F(GraphScalingConnectTest, InputRelatedRefreshVisitsOnlyWhatIsBelowTheEdit)
     ASSERT_EQ(kChainLength, (int)chain.size());
     ASSERT_FALSE(ViewerInstance::isAnyViewerConnected());
 
-    // With no viewer, the only downstream walk of a connection is the input-related refresh, which
-    // starts at the outputs of the node whose input changed.
     NodePtr leaf = createNamedNode(app, PLUGINID_NATRON_GRADE, "Leaf");
     ASSERT_TRUE(bool(leaf));
     U64 before = Node::getDownstreamWalkVisitCount();
@@ -244,14 +243,141 @@ TEST_F(GraphScalingConnectTest, InputRelatedRefreshVisitsOnlyWhatIsBelowTheEdit)
     ASSERT_TRUE(inserted->connectInput(chain[mid], 0));
     EXPECT_EQ((U64)0, Node::getDownstreamWalkVisitCount() - before);
 
-    // chain[mid + 2] to the end of the chain, then the leaf.
-    const U64 belowEdit = kChainLength - mid - 2 + 1;
     before = Node::getDownstreamWalkVisitCount();
     ASSERT_TRUE(chain[mid + 1]->replaceInput(inserted, 0));
-    const U64 visits = Node::getDownstreamWalkVisitCount() - before;
-    EXPECT_GE(visits, belowEdit);
-    EXPECT_LE(visits, belowEdit + 1);
+    EXPECT_LE(Node::getDownstreamWalkVisitCount() - before, (U64)2);
     EXPECT_EQ(inserted, chain[mid + 1]->getInput(0));
+}
+
+TEST_F(GraphScalingConnectTest, DraftFlagFollowsADraftNodeInsertedAndRemovedMidChain)
+{
+    const AppInstancePtr app = getApp();
+    std::vector<NodePtr> chain;
+    buildChain(app, &chain);
+    ASSERT_EQ(kChainLength, (int)chain.size());
+    ASSERT_FALSE(ViewerInstance::isAnyViewerConnected());
+
+    auto countDraft = [&chain](int from, int to) {
+        int n = 0;
+        for (int i = from; i < to; ++i) {
+            n += chain[i]->isDraftModeUsed() ? 1 : 0;
+        }
+
+        return n;
+    };
+    const int mid = kChainLength / 2;
+    ASSERT_EQ(0, countDraft(0, kChainLength));
+
+    NodePtr first = createNamedNode(app, PLUGINID_NATRON_REFORMAT, "FirstReformat");
+    ASSERT_TRUE(bool(first));
+    ASSERT_TRUE(first->connectInput(chain[mid], 0));
+    ASSERT_TRUE(first->isDraftModeUsed());
+    ASSERT_TRUE(chain[mid + 1]->replaceInput(first, 0));
+    EXPECT_EQ(kChainLength - mid - 1, countDraft(mid + 1, kChainLength));
+    EXPECT_EQ(0, countDraft(0, mid + 1));
+
+    ASSERT_TRUE(chain[mid + 1]->replaceInput(chain[mid], 0));
+    EXPECT_EQ(0, countDraft(0, kChainLength));
+
+    ASSERT_TRUE(chain[mid + 1]->replaceInput(first, 0));
+    ASSERT_EQ(kChainLength - mid - 1, countDraft(mid + 1, kChainLength));
+
+    // The first Reformat's flag is already set, so nothing below it can change.
+    NodePtr second = createNamedNode(app, PLUGINID_NATRON_REFORMAT, "SecondReformat");
+    ASSERT_TRUE(bool(second));
+    ASSERT_TRUE(second->connectInput(chain[mid], 0));
+    const U64 before = Node::getDownstreamWalkVisitCount();
+    ASSERT_TRUE(first->replaceInput(second, 0));
+    EXPECT_LE(Node::getDownstreamWalkVisitCount() - before, (U64)2);
+    EXPECT_EQ(kChainLength - mid - 1, countDraft(mid + 1, kChainLength));
+    EXPECT_EQ(0, countDraft(0, mid + 1));
+}
+
+TEST_F(GraphScalingConnectTest, DraftFlagReachesTheRejoinOfADiamond)
+{
+    const AppInstancePtr app = getApp();
+    NodePtr constant = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "DiamondConstant");
+    NodePtr left = createNamedNode(app, PLUGINID_NATRON_GRADE, "DiamondLeft");
+    NodePtr right = createNamedNode(app, PLUGINID_NATRON_GRADE, "DiamondRight");
+    NodePtr join = createNamedNode(app, PLUGINID_NATRON_GRADE, "DiamondJoin");
+    NodePtr tail = createNamedNode(app, PLUGINID_NATRON_GRADE, "DiamondTail");
+    ASSERT_TRUE(constant && left && right && join && tail);
+    ASSERT_TRUE(left->connectInput(constant, 0));
+    ASSERT_TRUE(right->connectInput(constant, 0));
+    ASSERT_TRUE(join->connectInput(left, 0));
+    int rejoin = -1;
+    for (int i = 1; i < join->getNInputs(); ++i) {
+        if (join->connectInput(right, i)) {
+            rejoin = i;
+            break;
+        }
+    }
+    ASSERT_NE(-1, rejoin);
+    ASSERT_TRUE(tail->connectInput(join, 0));
+    ASSERT_FALSE(join->isDraftModeUsed());
+
+    NodePtr reformat = createNamedNode(app, PLUGINID_NATRON_REFORMAT, "DiamondReformat");
+    ASSERT_TRUE(bool(reformat));
+    ASSERT_TRUE(reformat->connectInput(constant, 0));
+    ASSERT_TRUE(right->replaceInput(reformat, 0));
+
+    EXPECT_TRUE(right->isDraftModeUsed());
+    EXPECT_TRUE(join->isDraftModeUsed());
+    EXPECT_TRUE(tail->isDraftModeUsed());
+    EXPECT_FALSE(left->isDraftModeUsed());
+}
+
+TEST_F(GraphScalingConnectTest, AnInsertLeavesWhatIsBelowDirtyAndWhatIsAboveClean)
+{
+    const AppInstancePtr app = getApp();
+    std::vector<NodePtr> chain;
+    buildChain(app, &chain);
+    ASSERT_EQ(kChainLength, (int)chain.size());
+
+    const int mid = kChainLength / 2;
+    ASSERT_FALSE(chain.back()->isInputRelatedDataDirty());
+    ASSERT_FALSE(chain[mid - 1]->isInputRelatedDataDirty());
+
+    NodePtr inserted = createNamedNode(app, PLUGINID_NATRON_GRADE, "Inserted");
+    ASSERT_TRUE(bool(inserted));
+    ASSERT_TRUE(inserted->connectInput(chain[mid], 0));
+    ASSERT_TRUE(chain[mid + 1]->replaceInput(inserted, 0));
+    EXPECT_TRUE(chain.back()->isInputRelatedDataDirty());
+    EXPECT_FALSE(chain[mid - 1]->isInputRelatedDataDirty());
+
+    chain.back()->refreshPanelInputRelatedData();
+    EXPECT_FALSE(chain.back()->isInputRelatedDataDirty());
+    EXPECT_FALSE(chain[mid + 2]->isInputRelatedDataDirty());
+
+    NodePtr again = createNamedNode(app, PLUGINID_NATRON_GRADE, "InsertedAgain");
+    ASSERT_TRUE(bool(again));
+    ASSERT_TRUE(again->connectInput(chain[mid + 10], 0));
+    ASSERT_TRUE(chain[mid + 11]->replaceInput(again, 0));
+    EXPECT_TRUE(chain.back()->isInputRelatedDataDirty());
+    EXPECT_FALSE(chain[mid + 2]->isInputRelatedDataDirty());
+}
+
+TEST_F(GraphScalingConnectTest, AnInsertRefreshesTheVisiblePanelsBelowItAtOnce)
+{
+    const AppInstancePtr app = getApp();
+    std::vector<NodePtr> chain;
+    buildChain(app, &chain);
+    ASSERT_EQ(kChainLength, (int)chain.size());
+
+    const int mid = kChainLength / 2;
+    NodePtr shown = createNamedNode(app, PLUGINID_NATRON_GRADE, "ShownPanel");
+    ASSERT_TRUE(bool(shown));
+    ASSERT_TRUE(shown->connectInput(chain[mid + 3], 0));
+    shown->noteSettingsPanelVisibility(true);
+
+    NodePtr inserted = createNamedNode(app, PLUGINID_NATRON_GRADE, "Inserted");
+    ASSERT_TRUE(bool(inserted));
+    ASSERT_TRUE(inserted->connectInput(chain[mid], 0));
+    ASSERT_TRUE(chain[mid + 1]->replaceInput(inserted, 0));
+
+    EXPECT_FALSE(shown->isInputRelatedDataDirty());
+    EXPECT_TRUE(chain.back()->isInputRelatedDataDirty());
+    shown->noteSettingsPanelVisibility(false);
 }
 
 TEST_F(GraphScalingConnectTest, ReconnectingAFanOutInOneBatchRefreshesWhatIsBelowOnce)
@@ -283,8 +409,6 @@ TEST_F(GraphScalingConnectTest, ReconnectingAFanOutInOneBatchRefreshesWhatIsBelo
     ASSERT_TRUE(bool(inserted));
     ASSERT_TRUE(inserted->connectInput(selected, 0));
 
-    // below, then chain[mid + 2] to the end of the chain.
-    const U64 belowEdit = 1 + (kChainLength - mid - 2);
     const U64 before = Node::getDownstreamWalkVisitCount();
     {
         Node::InputEditBatch batch(app);
@@ -297,6 +421,6 @@ TEST_F(GraphScalingConnectTest, ReconnectingAFanOutInOneBatchRefreshesWhatIsBelo
     EXPECT_EQ(side, below->getInput(rejoin));
     EXPECT_EQ(inserted, side->getInput(0));
     EXPECT_EQ(selected, inserted->getInput(0));
-    EXPECT_GE(visits, belowEdit - 1);
-    EXPECT_LE(visits, belowEdit + 1);
+    // No draft flag changes and no viewer is connected, so nothing below the edit is visited.
+    EXPECT_LE(visits, (U64)2);
 }

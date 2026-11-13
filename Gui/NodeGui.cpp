@@ -798,6 +798,9 @@ NodeGui::dropUnbuiltPanel()
     NodeSettingsPanel* panel = _settingsPanel;
     _settingsPanel = 0;
     _panelCreated = false;
+    if (NodePtr node = getNode()) {
+        node->noteSettingsPanelVisibility(false);
+    }
     _panelDockPending = false;
     _panelTailPending = false;
     _panelTailStep = 0;
@@ -825,6 +828,9 @@ NodeGui::connectSettingsPanel()
     QObject::connect(_settingsPanel, SIGNAL(minimized()), this, SLOT(onSettingsPanelMinimized()));
     QObject::connect(_settingsPanel, SIGNAL(maximized()), this, SLOT(onSettingsPanelMaximized()));
     QObject::connect(_settingsPanel, SIGNAL(colorChanged(QColor)), this, SLOT(onSettingsPanelColorChanged(QColor)));
+    if (NodePtr node = getNode()) {
+        node->noteSettingsPanelVisibility(isSettingsPanelVisible());
+    }
 }
 
 void
@@ -963,6 +969,9 @@ NodeGui::onSettingsPanelClosed(bool closed)
             effect->refreshOverlayImages();
         }
     }
+    if (NodePtr shown = getNode()) {
+        shown->noteSettingsPanelVisibility(isSettingsPanelVisible());
+    }
     // A node nobody looks at is left dirty by the edits upstream of it, and its panel shows it.
     NodePtr node = closed ? NodePtr() : getNode();
     if (node) {
@@ -974,12 +983,18 @@ NodeGui::onSettingsPanelClosed(bool closed)
 void
 NodeGui::onSettingsPanelMinimized()
 {
+    if (NodePtr node = getNode()) {
+        node->noteSettingsPanelVisibility(isSettingsPanelVisible());
+    }
     Q_EMIT settingsPanelMinimized();
 }
 
 void
 NodeGui::onSettingsPanelMaximized()
 {
+    if (NodePtr node = getNode()) {
+        node->noteSettingsPanelVisibility(isSettingsPanelVisible());
+    }
     Q_EMIT settingsPanelMaximized();
 }
 
@@ -3627,6 +3642,9 @@ NodeGui::destroyGui()
     }
     NodePtr internalNode = _internalNode.lock();
     assert(internalNode);
+    if (internalNode) {
+        internalNode->noteSettingsPanelVisibility(false);
+    }
 
     //Remove viewer UI
     guiObj->removeNodeViewerInterface(thisShared, true);

@@ -220,6 +220,9 @@ thread_local int inputRelatedDataRefreshDeferralDepth = 0;
 int inputEditBatchDepth = 0;
 std::vector<NodeWPtr> inputEditBatchEdited;
 
+// Each edit takes the next value as the stamp of the nodes it edits. Main thread only.
+U64 inputEditGeneration = 0;
+
 // A cached data kind or downstream requirement counts only if stored under the current epoch.
 // Moving it drops every cache at once, which an InputEditBatch does instead of walking from each
 // node it invalidates; the walk at its end then reaches each node once.
@@ -889,6 +892,7 @@ Node::fetchParentMultiInstancePointer()
             ///as the child
             _imp->multiInstanceParent = *it;
             (*it)->_imp->appendChild(thisShared);
+            refreshDerivedPanelVisibilityRegistration();
             QObject::connect( it->get(), SIGNAL(inputChanged(int)), this, SLOT(onParentMultiInstanceInputChanged(int)) );
             break;
         }
@@ -3717,6 +3721,11 @@ namespace {
 QMutex channelSelectorOwnersMutex;
 std::map<const Node*, NodeWPtr> channelSelectorOwners;
 
+// Lets an edit refresh the shown nodes it leaves dirty without walking below it to find them.
+QMutex panelVisibilityRegistryMutex;
+std::map<const Node*, NodeWPtr> nodesWithVisibleSettingsPanel;
+std::map<const Node*, NodeWPtr> nodesWithDerivedPanelVisibility;
+
 } // namespace
 
 Node::~Node()
@@ -3725,6 +3734,11 @@ Node::~Node()
     releaseStashedPythonObject();
     releaseOwnCacheID();
 
+    {
+        QMutexLocker k(&panelVisibilityRegistryMutex);
+        nodesWithVisibleSettingsPanel.erase(this);
+        nodesWithDerivedPanelVisibility.erase(this);
+    }
     QMutexLocker k(&channelSelectorOwnersMutex);
     channelSelectorOwners.erase(this);
 }
@@ -7718,6 +7732,9 @@ Node::onKnobSlaved(const KnobIPtr& slave,
             changed = true;
         }
     }
+    if (changed) {
+        refreshDerivedPanelVisibilityRegistration();
+    }
     if (changed && !deferLinksChangedToInputEditBatch(this, false)) {
         Q_EMIT knobsLinksChanged();
     }
@@ -10054,6 +10071,7 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     {
         QMutexLocker k(&_imp->pluginsPropMutex);
         _imp->mustComputeInputRelatedData = false;
+        _imp->inputRelatedDataRefreshedAt = inputEditGeneration;
     }
     bool hasChanged = false;
     hasChanged |= refreshDraftFlagInternal(inputs);
@@ -10110,12 +10128,8 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
 bool
 Node::refreshInputRelatedDataInternal(bool domarking, std::set<Node*>& markedNodes)
 {
-    {
-        QMutexLocker k(&_imp->pluginsPropMutex);
-        if (!_imp->mustComputeInputRelatedData) {
-            //We didn't change
-            return false;
-        }
+    if (!isInputRelatedDataDirty()) {
+        return false;
     }
 
     if (domarking) {
@@ -10149,6 +10163,7 @@ Node::refreshInputRelatedDataInternal(bool domarking, std::set<Node*>& markedNod
         assert(roto);
         NodePtr bottomMerge = roto->getRotoPaintBottomMergeNode();
         if (bottomMerge) {
+            markRotoPaintTreeInputRelatedDataDirty();
             bottomMerge->refreshInputRelatedDataRecursiveInternal(markedNodes);
         }
     }
@@ -10159,9 +10174,106 @@ Node::refreshInputRelatedDataInternal(bool domarking, std::set<Node*>& markedNod
 bool
 Node::isInputRelatedDataDirty() const
 {
-    QMutexLocker k(&_imp->pluginsPropMutex);
+    U64 refreshedAt;
+    {
+        QMutexLocker k(&_imp->pluginsPropMutex);
+        if (_imp->mustComputeInputRelatedData) {
+            return true;
+        }
+        refreshedAt = _imp->inputRelatedDataRefreshedAt;
+    }
 
-    return _imp->mustComputeInputRelatedData;
+    return getUpstreamInputEditStamp() > refreshedAt;
+}
+
+void
+Node::appendInputEditSources(std::vector<NodePtr>* sources) const
+{
+    if (!_imp->inputsInitialized) {
+        return;
+    }
+    const std::vector<NodeWPtr> inputs = getInputs_copy();
+    for (const NodeWPtr& weak : inputs) {
+        NodePtr input = weak.lock();
+        if (!input) {
+            continue;
+        }
+        if (NodeGroup* isGroup = input->isEffectGroup()) {
+            NodePtr output = isGroup->getOutputNode(false);
+            if (output) {
+                sources->push_back(std::move(output));
+            }
+        } else if (PrecompNode* isPrecomp = dynamic_cast<PrecompNode*>(input->getEffectInstance().get())) {
+            NodePtr output = isPrecomp->getOutputNode();
+            if (output) {
+                sources->push_back(std::move(output));
+            }
+        }
+        sources->push_back(std::move(input));
+    }
+    if (dynamic_cast<const GroupInput*>(_imp->effect.get())) {
+        NodeGroup* isGroup = dynamic_cast<NodeGroup*>(getGroup().get());
+        NodePtr container = isGroup ? isGroup->getNode() : NodePtr();
+        if (container) {
+            sources->push_back(std::move(container));
+        }
+    }
+}
+
+U64
+Node::getUpstreamInputEditStamp() const
+{
+    const U64 graphGeneration = LoopEnd::getGraphGeneration();
+    auto memoized = [graphGeneration](const Node* node) {
+        return (node->_imp->upstreamInputEditStampEditGeneration == inputEditGeneration) && (node->_imp->upstreamInputEditStampGraphGeneration == graphGeneration);
+    };
+
+    if (memoized(this)) {
+        return _imp->upstreamInputEditStamp;
+    }
+
+    // Depth first and iterative, as a long chain would overflow the stack; each node's answer is
+    // memoized when its sources are done, so a node below several paths is walked once.
+    struct Frame {
+        const Node* node;
+        std::vector<NodePtr> sources;
+        std::size_t next;
+        U64 newest;
+    };
+    std::vector<Frame> stack;
+    auto push = [&stack](const Node* node) {
+        node->_imp->upstreamInputEditStampComputing = true;
+        stack.push_back(Frame { node, std::vector<NodePtr>(), 0, 0 });
+        node->appendInputEditSources(&stack.back().sources);
+    };
+
+    push(this);
+    U64 result = 0;
+    while (!stack.empty()) {
+        Frame& frame = stack.back();
+        if (frame.next < frame.sources.size()) {
+            const Node* source = frame.sources[frame.next++].get();
+            frame.newest = std::max(frame.newest, source->_imp->inputEditStamp);
+            if (memoized(source)) {
+                frame.newest = std::max(frame.newest, source->_imp->upstreamInputEditStamp);
+            } else if (!source->_imp->upstreamInputEditStampComputing) {
+                push(source);
+            }
+            continue;
+        }
+        const Node* done = frame.node;
+        result = frame.newest;
+        done->_imp->upstreamInputEditStamp = result;
+        done->_imp->upstreamInputEditStampEditGeneration = inputEditGeneration;
+        done->_imp->upstreamInputEditStampGraphGeneration = graphGeneration;
+        done->_imp->upstreamInputEditStampComputing = false;
+        stack.pop_back();
+        if (!stack.empty()) {
+            stack.back().newest = std::max(stack.back().newest, result);
+        }
+    }
+
+    return result;
 }
 
 void
@@ -10197,13 +10309,19 @@ Node::markAllInputRelatedDataDirty()
         _imp->mustComputeInputRelatedData = true;
     }
     if ( isRotoPaintingNode() ) {
-        RotoContextPtr roto = getRotoContext();
-        assert(roto);
-        NodesList rotoNodes;
-        roto->getRotoPaintTreeNodes(&rotoNodes);
-        for (NodesList::iterator it = rotoNodes.begin(); it != rotoNodes.end(); ++it) {
-            (*it)->markAllInputRelatedDataDirty();
-        }
+        markRotoPaintTreeInputRelatedDataDirty();
+    }
+}
+
+void
+Node::markRotoPaintTreeInputRelatedDataDirty()
+{
+    RotoContextPtr roto = getRotoContext();
+    assert(roto);
+    NodesList rotoNodes;
+    roto->getRotoPaintTreeNodes(&rotoNodes);
+    for (NodesList::iterator it = rotoNodes.begin(); it != rotoNodes.end(); ++it) {
+        (*it)->markAllInputRelatedDataDirty();
     }
 }
 
@@ -10299,6 +10417,7 @@ Node::refreshShownInputRelatedData(std::set<Node*>& visited)
         assert(roto);
         NodePtr bottomMerge = roto->getRotoPaintBottomMergeNode();
         if (bottomMerge) {
+            markRotoPaintTreeInputRelatedDataDirty();
             bottomMerge->refreshInputRelatedDataRecursiveInternal(visited);
         }
     }
@@ -10407,55 +10526,85 @@ Node::refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited)
 {
     assert(QThread::currentThread() == qApp->thread());
 
-    std::unordered_set<const Node*> visited;
-    // Breadth first: the vector is the queue, read from the front without erasing.
-    std::vector<NodePtr> toVisit;
     for (const NodePtr& node : edited) {
-        node->appendOutputsWithGroupRedirection(&toVisit);
-    }
-    std::vector<NodePtr> reached;
-    for (std::size_t next = 0; next < toVisit.size(); ++next) {
-        NodePtr node = toVisit[next];
-        if (!node || !visited.insert(node.get()).second) {
-            continue;
-        }
-        countDownstreamWalkVisit();
-        node->markAllInputRelatedDataDirty();
-        reached.push_back(node);
-        node->appendOutputsWithGroupRedirection(&toVisit);
+        node->_imp->inputEditStamp = ++inputEditGeneration;
     }
 
     // The draft flag is the one piece of this data a render reads; it only reads the inputs'
-    // flags, so it is settled here for every node reached, without reading a hash. Breadth-first
-    // order is upstream first on a chain; a diamond takes another pass.
-    for (bool changed = true; changed;) {
-        changed = false;
-        for (std::size_t i = 0; i < reached.size(); ++i) {
-            if (reached[i]->_imp->effect) {
-                changed |= reached[i]->refreshDraftFlagInternal(reached[i]->getInputs_copy());
-            }
+    // flags, so it is settled here without reading a hash. A node whose flag the edit leaves as
+    // it was changes nothing below it, so only the nodes below a change are visited.
+    std::vector<NodePtr> pending;
+    for (const NodePtr& node : edited) {
+        if (node->_imp->effect && node->refreshDraftFlagInternal(node->getInputs_copy())) {
+            node->appendDraftFlagDependents(&pending);
+        }
+    }
+    for (std::size_t next = 0; next < pending.size(); ++next) {
+        NodePtr node = std::move(pending[next]);
+        countDownstreamWalkVisit();
+        if (node->_imp->effect && node->refreshDraftFlagInternal(node->getInputs_copy())) {
+            node->appendDraftFlagDependents(&pending);
         }
     }
 
     // The rest is what panels and the node graph show: the nodes whose settings panel is visible,
-    // and those showing a missing-channel message the edit may have resolved, are refreshed now.
-    // The others are refreshed when their panel is shown (refreshPanelInputRelatedData()).
-    for (std::size_t i = 0; i < reached.size(); ++i) {
-        bool hasChannelSelectorMessage;
-        {
-            QMutexLocker k(&reached[i]->_imp->persistentMessageMutex);
-            hasChannelSelectorMessage = reached[i]->_imp->persistentMessageFromChannelSelector;
+    // and those showing a missing-channel message the edit may have resolved, are refreshed now if
+    // the edit left them dirty. The others are refreshed when their panel is shown
+    // (refreshPanelInputRelatedData()). The edited nodes are left to the caller.
+    std::unordered_set<const Node*> handled;
+    for (const NodePtr& node : edited) {
+        handled.insert(node.get());
+    }
+    std::vector<std::pair<NodePtr, bool>> candidates;
+    {
+        QMutexLocker k(&panelVisibilityRegistryMutex);
+        for (std::map<const Node*, NodeWPtr>::const_iterator it = nodesWithVisibleSettingsPanel.begin(); it != nodesWithVisibleSettingsPanel.end(); ++it) {
+            NodePtr node = it->second.lock();
+            if (node) {
+                candidates.push_back(std::make_pair(std::move(node), true));
+            }
         }
-        if (hasChannelSelectorMessage || reached[i]->isSettingsPanelVisible()) {
-            reached[i]->refreshPanelInputRelatedData();
-        } else if (ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(reached[i]->_imp->effect.get())) {
-            // A viewer's layer menu and displayed format are on screen with its panel closed.
-            // The format reaches the viewer only through the current-frame hook, which a
-            // metadata comparison on the viewer's own answer would not run for a format change
-            // upstream, so it is forced. One call per viewer reached, not per node.
-            isViewer->onChannelsSelectorRefreshed();
-            isViewer->refreshCurrentFrameMetadata(reached[i]->getApp()->getTimeLine()->currentFrame(), true);
+        for (std::map<const Node*, NodeWPtr>::const_iterator it = nodesWithDerivedPanelVisibility.begin(); it != nodesWithDerivedPanelVisibility.end(); ++it) {
+            NodePtr node = it->second.lock();
+            if (node) {
+                candidates.push_back(std::make_pair(std::move(node), false));
+            }
         }
+    }
+    {
+        NodesList owners;
+        getNodesOwningChannelSelectorMessage(&owners);
+        for (NodesList::iterator it = owners.begin(); it != owners.end(); ++it) {
+            candidates.push_back(std::make_pair(*it, true));
+        }
+    }
+    for (const std::pair<NodePtr, bool>& candidate : candidates) {
+        const NodePtr& node = candidate.first;
+        if (handled.count(node.get()) || !(candidate.second || node->isSettingsPanelVisible())) {
+            continue;
+        }
+        handled.insert(node.get());
+        if (node->isInputRelatedDataDirty()) {
+            node->refreshPanelInputRelatedData();
+        }
+    }
+
+    // A viewer's layer menu and displayed format are on screen with its panel closed. The format
+    // reaches the viewer only through the current-frame hook, which a metadata comparison on the
+    // viewer's own answer would not run for a format change upstream, so it is forced. One call
+    // per viewer below the edit, not per node.
+    std::list<ViewerInstance*> viewers;
+    if ((edited.size() != 1) || !edited.front()->getDownstreamViewersOfOwnEdit(&viewers)) {
+        viewers.clear();
+        getViewersDownstreamOf(std::list<NodePtr>(edited.begin(), edited.end()), &viewers);
+    }
+    for (ViewerInstance* viewer : viewers) {
+        NodePtr node = viewer->getNode();
+        if (!node || !handled.insert(node.get()).second) {
+            continue;
+        }
+        viewer->onChannelsSelectorRefreshed();
+        viewer->refreshCurrentFrameMetadata(node->getApp()->getTimeLine()->currentFrame(), true);
     }
 }
 
@@ -10807,6 +10956,40 @@ Node::isSettingsPanelVisible() const
     std::set<const Node*> tmplist;
 
     return isSettingsPanelVisibleInternal(tmplist);
+}
+
+void
+Node::noteSettingsPanelVisibility(bool visible)
+{
+    QMutexLocker k(&panelVisibilityRegistryMutex);
+
+    if (visible) {
+        nodesWithVisibleSettingsPanel[this] = weak_from_this();
+    } else {
+        nodesWithVisibleSettingsPanel.erase(this);
+    }
+}
+
+void
+Node::refreshDerivedPanelVisibilityRegistration()
+{
+    bool derived = bool(_imp->multiInstanceParent.lock());
+    if (!derived) {
+        QMutexLocker l(&_imp->nodeLinksMutex);
+        for (KnobLinkList::const_iterator it = _imp->nodeLinks.begin(); it != _imp->nodeLinks.end(); ++it) {
+            NodePtr masterNode = it->masterNode.lock();
+            if (masterNode && (masterNode.get() != this)) {
+                derived = true;
+                break;
+            }
+        }
+    }
+    QMutexLocker k(&panelVisibilityRegistryMutex);
+    if (derived) {
+        nodesWithDerivedPanelVisibility[this] = weak_from_this();
+    } else {
+        nodesWithDerivedPanelVisibility.erase(this);
+    }
 }
 
 void

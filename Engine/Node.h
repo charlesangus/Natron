@@ -1076,6 +1076,13 @@ public:
 
     bool isSettingsPanelVisible() const;
 
+    /**
+     * @brief Called by the node's GUI whenever its own settings panel is shown or hidden. An edit
+     * refreshes the dirty input-related data of the nodes registered visible, and of those whose
+     * panel visibility follows another node's, without walking the graph to find them.
+     **/
+    void noteSettingsPanelVisibility(bool visible);
+
     bool isSettingsPanelMinimized() const;
 
     void onOpenGLEnabledKnobChangedOnProject(bool activated);
@@ -2083,13 +2090,13 @@ public:
     void refreshInputRelatedDataAfterInputChange();
 
     /**
-     * @brief Marks the input-related data (produced layers, channel selectors, identity state,
+     * @brief Leaves the input-related data (produced layers, channel selectors, identity state,
      * the current-frame metadata hook) of every node downstream of this one dirty, reading no
-     * hash, so that a branch nothing shows is never rehashed for it. Renders read none of it but
-     * the draft flag, which is settled here for every node reached. The nodes whose settings panel
-     * is visible, or that show a missing-channel message, are refreshed now; the others when their
-     * panel is shown, except that a viewer reached has its layer menu relisted now. Main thread
-     * only.
+     * hash and visiting none of them: isInputRelatedDataDirty() finds the edit upstream. Renders
+     * read none of it but the draft flag, which is settled here for the nodes whose flag the edit
+     * changes. The nodes whose settings panel is visible, or that show a missing-channel message,
+     * are refreshed now if dirty; the others when their panel is shown, except that a viewer
+     * downstream has its layer menu relisted now. Main thread only.
      **/
     void refreshShownDownstreamInputRelatedData();
 
@@ -2568,7 +2575,30 @@ private:
     // dataKindChanged(), once each.
     static void invalidateEffectiveOutputDataKindCaches(const std::vector<Node*>& starts);
 
+    // Returns whether the flag changed.
     bool refreshDraftFlagInternal(const std::vector<NodeWPtr>& inputs);
+
+    // The nodes whose draft flag reads this one's: its outputs, and those the downstream walks
+    // reach through a group, a GroupOutput or a precomp's output node.
+    void appendDraftFlagDependents(std::vector<NodePtr>* dependents) const;
+
+    // The nodes an edit of which reaches this one through appendOutputsWithGroupRedirection(), one
+    // step up: the inputs, the output node of an input that is a group or a precomp, and a
+    // GroupInput's container.
+    void appendInputEditSources(std::vector<NodePtr>* sources) const;
+
+    // The newest input-edit stamp of any node upstream of this one, memoized. Main thread only.
+    U64 getUpstreamInputEditStamp() const;
+
+    // The viewers below the edit of this node's inputs being ended, found when it aborted their
+    // renders. False if the graph has changed since then, or if this is not that edit.
+    bool getDownstreamViewersOfOwnEdit(std::list<ViewerInstance*>* viewers) const;
+
+    // A multi-instance child, or a node with a link to another node's knob, shows its settings
+    // panel as visible when another node's is.
+    void refreshDerivedPanelVisibilityRegistration();
+
+    void markRotoPaintTreeInputRelatedDataDirty();
 
     void setNameInternal(const std::string& name, bool throwErrors);
 

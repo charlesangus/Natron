@@ -166,6 +166,30 @@ def sam_decoder():
                  [neg, pos, zero, iou])
 
 
+# The constant flow flow-constant.onnx returns, in pixels: dx then dy.
+FLOW_DX = 2.5
+FLOW_DY = -1.5
+
+
+def flow_constant():
+    # A RAFT-shaped model: two images in, [1, 2, height, width] flow out, the same everywhere.
+    # Only the images' size reaches the output, so tests check geometry and not quality.
+    tail = helper.make_tensor("tail_start", TensorProto.INT64, [1], [2])
+    tail_end = helper.make_tensor("tail_end", TensorProto.INT64, [1], [4])
+    head = helper.make_tensor("flow_head", TensorProto.INT64, [2], [1, 2])
+    zero = helper.make_tensor("zero", TensorProto.FLOAT, [1], [0.0])
+    offset = helper.make_tensor("offset", TensorProto.FLOAT, [1, 2, 1, 1], [FLOW_DX, FLOW_DY])
+    return model("flow_constant",
+                 [helper.make_node("Shape", ["image1"], ["dims"]),
+                  helper.make_node("Slice", ["dims", "tail_start", "tail_end"], ["size"]),
+                  helper.make_node("Concat", ["flow_head", "size"], ["flow_dims"], axis=0),
+                  helper.make_node("ConstantOfShape", ["flow_dims"], ["zeros"], value=zero),
+                  helper.make_node("Add", ["zeros", "offset"], ["flow"])],
+                 [image_value("image1", TensorProto.FLOAT), image_value("image2", TensorProto.FLOAT)],
+                 [helper.make_tensor_value_info("flow", TensorProto.FLOAT, [1, 2, "height", "width"])],
+                 [tail, tail_end, head, offset])
+
+
 MODELS = {
     "identity.onnx": lambda: identity(TensorProto.FLOAT, "identity"),
     "identity-fp16.onnx": lambda: identity(TensorProto.FLOAT16, "identity_fp16"),
@@ -175,6 +199,7 @@ MODELS = {
     "upscale2-nearest.onnx": lambda: upscale_nearest(2),
     "upscale4-nearest.onnx": lambda: upscale_nearest(4),
     "slow-loop.onnx": slow_loop,
+    "flow-constant.onnx": flow_constant,
     "seg-segnext-encoder.onnx": segnext_encoder,
     "seg-segnext-decoder.onnx": segnext_decoder,
     "seg-sam-encoder.onnx": sam_encoder,

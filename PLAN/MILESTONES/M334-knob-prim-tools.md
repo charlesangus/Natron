@@ -52,7 +52,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
 
 ## Phase 334.2: Filter as pattern editor
 
-- [ ] M334.P2.T1 — Filter takes path expressions and applies them
+- [x] M334.P2.T1 — Filter takes path expressions and applies them
   - files: `Gui/SceneGraphPanel.cpp`, `Gui/SceneGraphModel.{h,cpp}`, `Tests/gui/scene_filter_pattern.py`
   - approach: text beginning with `/` or containing `%` or `{` is parsed as an expression through `PrimSelector`; other text stays a name search. Matching stays incremental (8 ms slices between stage-lock releases, per the 2026-11-02 M231 - Scene Graph Panel decision) and uses `UsdObjectCollectionExpressionEvaluator`'s incremental searcher. Add `loaded` and `active` predicates through a custom predicate library. Apply To Node writes the expression to the current node's first prim pattern knob as one undo step. Invalid expressions show the parse error beside the field.
   - verify: GUI script — `//{kind:component}` lists only components and highlights in the viewer; Apply To Node writes that text; the panel reports unsearched unloaded branches; the main thread stays within the stall budget on the flat file.
@@ -72,3 +72,4 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
 
 - 2026-11-13 — P1.T1 implemented (d2f484280), unbuilt until the phase build. Select Matches uses `SceneOps::UnloadedSearch` on input 0, which loads payloads privately, so it searches everything and has no "unsearched" branches to report; matches under payloads the viewer hasn't loaded are selected in the viewer but have no panel rows.
 - 2026-11-13 — Select Matches searches only what the viewer has loaded, reports unsearched unloaded branches, and lets the user load those payloads from there to select inside them (user); P3.T1 replaces the P1.T1 private everything search.
+- 2026-11-13 — P2.T1 implemented (965ec29ce). `UsdObjectCollectionExpressionEvaluator` can't take a custom predicate library, so the walk uses its `PathExprEval` type with the collection predicates plus `loaded` and `active`, and that type's `IncrementalSearcher`. Expression mode tests inactive prims (so `{active:false}` finds anything) but never descends below them. Typing an expression sets the viewer selection; the message line sits under the field. `%` (collection references) is rejected by the shared parser.

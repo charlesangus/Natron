@@ -49,13 +49,13 @@ Make M234 - Camera Projection Nodes' `USDProject3D` render in Cycles and MoonRay
   - verify: gtest — the same three cases as M344.P2.T1 pass through MoonRay.
   - size: L
 
-- [ ] M344.P2.T4 — MoonRay-readable projection frame
+- [x] M344.P2.T4 — MoonRay-readable projection frame
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}` (`authorProjectionFrame`), `Engine/Nodes/Scene/USDProject3D.cpp`, `Engine/Nodes/Scene/USDWrite.cpp`, `Tests/Scene/USDRenderMoonRay_Test.cpp`
   - approach: hdMoonray drops float4 arrays and matrices (`lib/hydramoonray/Primvars.cc` ~246-320), so the Cycles column primvars never reach MoonRay. Also author float3 column and translation primvars of the projection frame (missing reads as identity via `AttributeMap` defaults), read them in the MoonRay network with `AttributeMap`, and strip them in USDWrite's bake alongside the Cycles ones.
   - verify: the MoonRay geometry-space test passes for a held non-mesh prim without reference points and for a prim whose frame isn't its current transform (both cases that fail today), matching Storm.
   - size: M
 
-- [ ] M344.P2.T3 — Export and progressive viewer check
+- [x] M344.P2.T3 — Export and progressive viewer check
   - files: `Engine/Nodes/Scene/USDWrite.cpp` (only if needed), `Tests/Scene/USDWrite_Test.cpp`, `Tests/gui/scene_projection_delegates.py`
   - approach: confirm the export bake drops the native outputs, and fix it if not. A GUI script selects each delegate, projects a Constant-driven plate onto a card, moves the camera and edits the plate.
   - verify: gtest — an exported file has no `cycles:` or `moonray:` outputs and renders the same in `usdview`; the Xvfb script at 1920x1080 passes and its screenshots go to the user, one file each.
@@ -74,3 +74,4 @@ Make M234 - Camera Projection Nodes' `USDProject3D` render in Cycles and MoonRay
   - **For P2 (PM):** build Cycles from `geometry` Position + `vector_math` dots, as MoonRay does, rather than the `ob_tfm` trick. That handles orthographic projectors (G singular) and gives the depth for near/far clip. Geometry projection space and frame hold need the per-prim reference: read the world-space `natronReferencePoints*` primvar (or float3 primvar rows) through `cycles_attribute` / a MoonRay primitive-attribute map; P2.T1 settles which and records it.
 - 2026-11-13 — P2.T1 implemented (72225731e). `projectorValues()`/`plateValues()` are the single source for the Storm and Cycles inputs. Geometry space reaches Cycles through three float4 column primvars (frame minus identity; a missing primvar reads as zero, i.e. identity), and frame hold through `natronReferencePointsHold*` via `cycles_attribute`. Known approximations: Project On tests the frame normal, not the deformed one, with reference points; a reference point exactly at the origin reads as missing. USDWrite's bake strips the new primvars. The reference crop `CyclesProject3DReference` is recorded at the gate.
 - 2026-11-13 — P2.T2 implemented (c77c78647). hdMoonray passes no float4 or matrix primvars, so geometry space on MoonRay uses the world position, and held meshes use their reference points. Held non-meshes without reference points, and prims whose frame isn't their current transform, don't match Storm yet; P2.T4 added (float3 frame primvars, PM call per Scope "all behaviour on both delegates"). Also fixed: Cycles authoring failed for Project On = Both. The gate must record `MoonRayProject3DReference` with `NATRON_TEST_REQUIRE_MOONRAY=1`.
+- 2026-11-13 — P2.T4 and P2.T3 implemented (ae7c6e416). MoonRay reads four float3 frame primvars, so in geometry space a prim without a frame primvar projects in object space, as Storm and Cycles do. USDWrite's bake did keep the Cycles and MoonRay outputs; it now drops them, their shaders and the projection primvars. New GUI script `scene_projection_delegates.py`. Full gate running with `--record-goldens` (Cycles and MoonRay references).

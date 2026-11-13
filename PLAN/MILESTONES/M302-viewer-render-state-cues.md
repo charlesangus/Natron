@@ -34,6 +34,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 - 2026-11-01 — **The border delay is a user preference (user);** default 150 ms (planner).
 - 2026-11-01 — **Dots mean real execution, coloured by device (user).**
 - 2026-11-12 — Member UAT moves to F6's Feature UAT (user, 2026-11-12): the screenshot approval and GPU dot colour check are collected at F6 - Unified Tiered Cache's UAT; the milestone merges into F6 once its automated gate and review round pass.
+- 2026-11-12 — P2.T2 and P2.T3 boxes checked (implemented and gated green in run 43275753469). Merged F6 after F6 took main (7134824f1); release gate with tests re-running.
 
 ## Phase 302.1: Viewer stale state
 
@@ -57,13 +58,13 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
   - verify: A unit test runs a two-member GPU region and reads one GPU execution per member; a cache-served member reads zero.
   - size: M
 
-- [ ] M302.P2.T2 — Stop lighting edges on cache hits
+- [x] M302.P2.T2 — Stop lighting edges on cache hits
   - files: `Engine/ParallelRenderArgs.cpp` (~:448-450), `Engine/EffectInstanceRenderRoI.cpp`, `Gui/Edge.cpp`
   - approach: An input edge lights only when its upstream node executed for this render, not when a consumer merely pulled the input from a cache.
   - verify: A unit test with a cached upstream shows no edge lit; with a missing upstream, it is lit.
   - size: M
 
-- [ ] M302.P2.T3 — Colour the dot by device
+- [x] M302.P2.T3 — Colour the dot by device
   - files: `Gui/NodeGui.cpp` (~:2728-2775), `Gui/NodeGraph35.cpp` (poll ~:271)
   - approach: The dot reads both device counters: yellow for CPU as today, a distinct colour for GPU, split half and half if both ran. The poll interval is unchanged.
   - verify: A GUI script under Xvfb renders a mixed CPU/GPU graph; screenshots show the expected colours and go to the user.

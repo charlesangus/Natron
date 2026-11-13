@@ -712,13 +712,11 @@ KnobGuiString::onPickPrimsClicked()
     }
     EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
     NodePtr node = effect ? effect->getNode() : NodePtr();
-    NodePtr input = node ? node->getInput(0) : NodePtr();
     AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
     TimeLinePtr timeline = app ? app->getTimeLine() : TimeLinePtr();
     const double time = timeline ? timeline->currentFrame() : 0.;
-    const QStringList current = QString::fromStdString(knob->getValue(0)).split(QLatin1Char(' '), Qt::SkipEmptyParts);
     const bool multiple = (knob->getPrimPathHint() == KnobString::ePrimPathHintPattern);
-    ScenePrimPickerPopup* popup = new ScenePrimPickerPopup(gui, input, multiple, current, time, _pickPrimsButton->window());
+    ScenePrimPickerPopup* popup = new ScenePrimPickerPopup(gui, node, multiple, QString::fromStdString(knob->getValue(0)), time, _pickPrimsButton->window());
     QPointer<KnobGuiString> self(this);
     QObject::connect(popup, &ScenePrimPickerPopup::primsPicked, this, [self](const QStringList& paths) {
         if (self) {

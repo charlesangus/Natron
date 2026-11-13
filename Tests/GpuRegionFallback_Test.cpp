@@ -1294,6 +1294,68 @@ TEST_F(GpuDeviceServeTest, PartialDeviceHitRendersOnlyTheMissingHalfIntoTheGrown
     expectMatchesColdRender(grades.back(), run);
 }
 
+// A run forced into strips cannot copy a partial device entry into each strip's rows, so the members it would have grown
+// render their whole RoI instead, on the GPU, rather than failing the region.
+TEST_F(GpuDeviceServeTest, PartialDeviceHitInARegionForcedIntoStripsRendersTheWholeRoI)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    const RectI lowerHalf(0, 0, kWidth, kHeight / 2);
+    const RectI upperHalf(0, kHeight / 2, kWidth, kHeight);
+    const RectI window(0, 0, kWidth, kHeight);
+    std::string error;
+
+    FrameGraph first;
+    {
+        FrameRun run;
+        ASSERT_TRUE(prepareFrame(grades.back(), &run, &error, RectD(lowerHalf.x1, lowerHalf.y1, lowerHalf.x2, lowerHalf.y2))) << error;
+        placeOnGpu(&run, grades);
+        ASSERT_EQ(1u, run.graph.regions.size());
+        first = run.graph;
+        ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+        ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+        ASSERT_EQ(0, report->strips);
+    }
+    ASSERT_GE(membersInDeviceTier(first), 2);
+
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(grades.back(), &run, &error)) << error;
+    RenderScheduler::pruneBehindCacheHits(run.graph, run.context);
+    placeOnGpu(&run, grades);
+    ASSERT_EQ(1u, run.graph.regions.size());
+    const FrameGraph graph = run.graph;
+    const FrameGraph::Region& region = graph.regions.front();
+    ASSERT_EQ(grades.size(), region.members.size());
+    int partialMembers = 0;
+    for (std::size_t i = 0; i < region.members.size(); ++i) {
+        const FrameGraph::Task& task = graph.tasks[region.members[i]];
+        if (!task.deviceMissingRoI.isNull()) {
+            EXPECT_EQ(upperHalf, task.deviceMissingRoI) << task.key.node->getScriptName_mt_safe();
+            EXPECT_FALSE(task.servedFromCache) << task.key.node->getScriptName_mt_safe();
+            ++partialMembers;
+        }
+    }
+    ASSERT_GE(partialMembers, 2);
+
+    // The smallest buffer range that fits a strip at all, which every strip is rounded up to.
+    setGpuStripOverridesForTests(gpu::kMinSizeClass, 0);
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    setGpuStripOverridesForTests(0, 0);
+    EXPECT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    EXPECT_GT(report->strips, 0);
+    EXPECT_EQ(0, report->grownFromDevice);
+    ASSERT_EQ(region.members.size(), report->renderedRects.size());
+    for (std::size_t i = 0; i < region.members.size(); ++i) {
+        EXPECT_EQ(window, report->renderedRects[i]) << graph.tasks[region.members[i]].key.node->getScriptName_mt_safe();
+    }
+    EXPECT_TRUE(run.future->getRegionFallbacks().empty());
+    expectMatchesColdRender(grades.back(), run);
+}
+
 class GpuDeviceTierStressTest
     : public GpuDeviceServeTest {
 protected:

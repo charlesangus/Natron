@@ -760,7 +760,7 @@ private:
 #ifdef NATRON_HAVE_GPU
         const FrameGraph::Task& task = _graph.tasks[member->task];
         const CacheDeviceTierPtr tier = appPTR ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
-        if (task.deviceMissingRoI.isNull() || !tier || (tier->runtime() != &_runtime)) {
+        if (!_growFromDeviceTier || task.deviceMissingRoI.isNull() || !tier || (tier->runtime() != &_runtime)) {
             return false;
         }
         const CacheDeviceEntryPtr entry = tier->find(cacheKeyOf(*member, *out));
@@ -773,6 +773,7 @@ private:
             || (cached.mipmapLevel != out->layout.mipmapLevel) || cached.bounds.intersect(task.renderedRoI).isNull()) {
             return false;
         }
+        // The tier's headers belong to no image and do not change once inserted, so this needs no image's lock.
         const Bitmap bitmap = entry->header()->bitmap;
         if (bitmap.getBounds() != cached.bounds) {
             return false;
@@ -1086,7 +1087,7 @@ private:
                 Slot out;
                 out.layout = layoutOf(task, plane.plane, task.renderedRoI);
                 if (!growFromDeviceTier(&member, &out) && task.servedFromCache) {
-                    return fail(taskIndex, "the device tier no longer holds the part of the output whose inputs the plan let go");
+                    return fail(taskIndex, _growFromDeviceTier ? "the device tier no longer holds the part of the output whose inputs the plan let go" : "a strip records an output grown from the device tier whole only, and the plan let go of inputs the rest of it reads");
                 }
                 if (!planInputs(edges, &member)) {
                     if (out.cachedPart) {
@@ -2116,6 +2117,14 @@ private:
                 out.view = viewOf(&out.handle.buffer(), out.layout);
 
                 if (out.cachedPart) {
+                    // The union of the entry's bounds and the RoI has corners neither covers, which the download to the
+                    // host tier and a device copy would otherwise move as garbage.
+                    const gpu::GpuStatus cleared = recorder.fillBuffer(out.handle.buffer(), (VkDeviceSize)out.layout.pixelBytes(), 0u);
+                    if (!cleared.ok()) {
+                        fail(member.task, "cannot clear the output grown from the device tier: " + cleared.message);
+
+                        return EffectInstance::eRenderRoIRetCodeFailed;
+                    }
                     const std::vector<VkBufferCopy> copies = cachedPartCopies(out);
                     const gpu::GpuStatus copied = recorder.copyBuffer(*out.cachedBuffer, out.handle.buffer(), copies);
                     if (!copied.ok()) {
@@ -2414,7 +2423,7 @@ private:
         if (!strips->empty()) {
             for (const Slot& slot : _slots) {
                 if (slot.cachedPart) {
-                    return fail(NodePtr(), "an output grown from the device tier is recorded whole only");
+                    return replanWithoutDeviceTier(strips);
                 }
             }
             for (Slot& slot : _slots) {
@@ -2428,6 +2437,29 @@ private:
         }
 
         return true;
+    }
+
+    /**
+     * @brief Plans the region again with every member rendering its whole RoI, for a run as strips, which cannot copy
+     * the part of an output a partial device entry holds into each strip's rows. A member whose partial hit let its
+     * inputs go fails the region instead, as they no longer cover what it would render.
+     **/
+    bool replanWithoutDeviceTier(std::vector<GpuStrip>* strips)
+    {
+        for (Slot& slot : _slots) {
+            if (slot.pinned) {
+                slot.pinned->unpin();
+            }
+            if (slot.cachedPart) {
+                slot.cachedPart->unpin();
+            }
+        }
+        _slots.clear();
+        _members.clear();
+        strips->clear();
+        _growFromDeviceTier = false;
+
+        return plan() && resolveInputs() && planStrips(strips);
     }
 
     /**
@@ -3741,6 +3773,9 @@ private:
     int _stripRows = 0;
     int _inFlight = 1;
     bool _overlapped = false;
+
+    // Cleared when the region turns out to run as strips, which record a grown output whole only.
+    bool _growFromDeviceTier = true;
 
     // Index in Region::members of each member task, -1 for every other task.
     std::vector<int> _position;

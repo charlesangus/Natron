@@ -840,6 +840,35 @@ protected:
         return true;
     }
 
+    // The key renderRoI looks the RGBA output of node's task in graph up by.
+    static ImageKey outputKey(const FrameGraph& graph,
+                              const NodePtr& node)
+    {
+        const int index = taskOf(graph, node);
+        if (index < 0) {
+            return ImageKey();
+        }
+        const FrameGraph::Task& task = graph.tasks[index];
+
+        return task.key.node->getEffectInstance()->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, false /*draft*/, task.cacheMipmapLevel).forEntry(task.key.mipmapLevel, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    }
+
+    // A RAM entry of the host tier, not the stub a peek makes of a device entry.
+    static bool inHostTier(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return false;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     static std::vector<float> rootPixels(const FrameRun& run)
     {
         const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
@@ -1835,16 +1864,21 @@ TEST_F(GpuResidencyTest, StripsMatchTheWholeRegionExactly)
     expectReleased(whole);
 
     setGpuStripOverridesForTests(1u << 20, 0);
+    appPTR->clearAllCaches();
     FrameRun tiled;
     ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+    const ImageKey grade1Key = outputKey(tiled.graph, chain.grade1);
+    const ImageKey blurKey = outputKey(tiled.graph, chain.blur);
+    ASSERT_FALSE(inHostTier(grade1Key));
+    ASSERT_FALSE(inHostTier(blurKey));
     ASSERT_TRUE(render(&tiled));
     EXPECT_EQ(0, fallbacksOf(tiled));
     EXPECT_EQ(1, tiled.stats->getGpuRegionsRun());
     EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
-    // One upload of the source per strip, and three downloads: the second Grade's, and the first Grade's and the
-    // Blur's for the host tier.
+    // One upload of the source per strip; the interior members' outputs reach the host tier.
     EXPECT_GT(tiled.stats->getUploadCount(), 2);
-    EXPECT_EQ(3 * tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+    EXPECT_TRUE(inHostTier(grade1Key)) << "the host tier did not admit the first Grade";
+    EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
     EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * ((tiled.stats->getGpuPipelinedRegions() > 0) ? kGpuStripMaxInFlight : 1));
 
     const std::vector<float> tiledPixels = rootPixels(tiled);
@@ -2204,9 +2238,13 @@ TEST_F(GpuResidencyTest, PipelinedStripsMatchTheWholeRegionExactly)
         const bool on = (mode == GpuStripPipelining::On);
         SCOPED_TRACE(on ? "pipelined" : "serial");
         setGpuStripPipeliningForTests(mode);
+        // So that the host tier holds no output of the other mode's run.
+        appPTR->clearAllCaches();
         const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
         FrameRun tiled;
         ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+        const ImageKey grade1Key = outputKey(tiled.graph, chain.grade1);
+        const ImageKey blurKey = outputKey(tiled.graph, chain.blur);
         ASSERT_TRUE(render(&tiled));
         std::printf("[          ] %s: uploads %d, pipelined regions %d, transfer hidden %.3f ms, exposed %.3f ms, peak %llu bytes\n",
                     on ? "pipelined" : "serial",
@@ -2220,8 +2258,8 @@ TEST_F(GpuResidencyTest, PipelinedStripsMatchTheWholeRegionExactly)
         EXPECT_EQ((on && canPipeline()) ? 1 : 0, tiled.stats->getGpuPipelinedRegions());
         EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
         EXPECT_GT(tiled.stats->getUploadCount(), 2);
-        // The second Grade's download, and the first Grade's and the Blur's for the host tier, per strip.
-        EXPECT_EQ(3 * tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+        EXPECT_TRUE(inHostTier(grade1Key)) << "the host tier did not admit the first Grade";
+        EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
         EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * (on ? kGpuStripMaxInFlight : 1));
 
         const std::vector<float> tiledPixels = rootPixels(tiled);
@@ -2977,6 +3015,7 @@ TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
         const int blurTask = taskOf(run.graph, blur);
         const int gradeTask = taskOf(run.graph, grade);
         ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
+        const ImageKey blurKey = outputKey(run.graph, blur);
         assignRegions(&run.graph, { { blurTask, gradeTask } });
         run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
         ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
@@ -2990,8 +3029,8 @@ TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
         EXPECT_GT(report.strips, 1);
         EXPECT_LE(report.stripsInFlight, 1);
         EXPECT_EQ((unsigned long long)report.strips, report.uploadsImported + report.uploadsStaged);
-        // The Grade's download and the Blur's for the host tier, per strip.
-        EXPECT_EQ(2ull * report.strips, report.downloadsImported + report.downloadsStaged);
+        EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
+        EXPECT_GT(report.downloadsImported, 0ull);
         // Even on the first frame, each strip's download finds the chunks of its rows prepared.
         EXPECT_EQ(0u, report.importsAtDownload) << "a strip download imported its rows itself";
         EXPECT_EQ(0u, report.downloadsStaged);

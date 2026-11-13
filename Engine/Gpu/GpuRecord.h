@@ -142,6 +142,10 @@ public:
     // recorded before it and visible to those recorded after.
     GpuStatus copyBuffer(const GpuBuffer& src, const GpuBuffer& dst, std::span<const VkBufferCopy> regions);
 
+    // Records filling the first `size` bytes of `dst` with the 32-bit `value`, ordered and made visible as copyBuffer()
+    // is. size is a multiple of 4.
+    GpuStatus fillBuffer(const GpuBuffer& dst, VkDeviceSize size, uint32_t value);
+
     void resetQueries(VkQueryPool pool, uint32_t first, uint32_t count);
     // Writes the time at which every command recorded before it, in this buffer and before it on the queue, is done.
     void writeTimestamp(VkQueryPool pool, uint32_t query);

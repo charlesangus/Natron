@@ -748,7 +748,7 @@ public:
      * score stay as they were, no signal is emitted and an entry held on disk is not opened, so its data may turn out
      * to be unreadable later. An entry only in the disk tier comes back as an unallocated stub made from its verified
      * header, which claims all of its pixels if the file holds them all and none otherwise. An image entry only in a
-     * device tier comes back as an unallocated stub sharing the device entry's header, in GL texture storage mode.
+     * device tier comes back as an unallocated stub with a copy of the device entry's header, in GL texture storage mode.
      *
      * Skips _getLock, which getOrCreate() holds while it evicts and allocates; a miss on an entry being created at that
      * moment only means the caller doesn't count on it.
@@ -922,6 +922,14 @@ public:
         }
         tier->attachHost(NULL);
         tier->clear();
+    }
+
+    // Off the cache lock: the tier takes its images' mutexes, which come before it.
+    void removeFromDeviceTiers(U64 hash) const
+    {
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+            tier->removeKey(hash);
+        }
     }
 
     std::vector<CacheDeviceTierPtr> deviceTiers() const
@@ -1993,6 +2001,7 @@ public:
         if (_diskTier) {
             _diskTier->retract(entry, true);
         }
+        removeFromDeviceTiers(entry->getHashKey());
         if ( !toRemove.empty() ) {
             _deleterThread.appendToQueue(toRemove);
 
@@ -2058,6 +2067,7 @@ public:
                 _diskTier->retract(entry, true);
             }
         }
+        removeFromDeviceTiers(hash);
         if ( !toRemove.empty() ) {
             _deleterThread.appendToQueue(toRemove);
 
@@ -2189,6 +2199,10 @@ private:
             for (const StoredEntryPtr& entry : toDelete) {
                 _diskTier->retract(entry, false);
             }
+        }
+        // Off the cache lock: the tier takes its images' mutexes, which come before it.
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+            tier->removeHolder(holderID, nodeHash, removeAll);
         }
         if ( !toDelete.empty() ) {
             _deleterThread.appendToQueue(toDelete);

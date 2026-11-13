@@ -95,16 +95,6 @@ public:
     Image(const ImageKey & key,
           const ImageParamsPtr& params);
 
-    /**
-     * @brief A cache entry sharing header with another tier's copy of the same entry, so that both see one bitmap,
-     * one residency mask and one set of costs. A bitmap the header already holds for these bounds is kept when the
-     * memory is allocated.
-     **/
-    Image(const ImageKey& key,
-          const ImageParamsPtr& params,
-          const CacheAPI* cache,
-          const CacheEntryHeaderPtr& header);
-
     virtual ~Image();
 
     bool usesBitMap() const { return _useBitmap; }
@@ -923,9 +913,6 @@ private:
     ImageFieldingOrderEnum _fielding;
     bool _useBitmap;
     int _nbComponents;
-    // Set only while the first allocation of a shared header is pending: a later one follows a deallocation, after
-    // which the pixels the bitmap claims are gone.
-    bool _keepSharedBitmap = false;
 };
 
 //template <> inline unsigned char clamp(unsigned char v) { return v; }

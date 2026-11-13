@@ -1516,8 +1516,14 @@ holdInStore(const FrameRenderContextPtr& context,
             }
         }
     };
+    bool held = true;
     for (const CacheDeviceEntryPtr& entry : inPlace) {
-        (void)tier->holdFor(entry, evictFromStore, weakContext);
+        held = tier->holdFor(entry, evictFromStore, weakContext) && held;
+    }
+    if (!held) {
+        // The entry left the tier after the store took the image, so no eviction reaches the store any more and the
+        // pool may have taken the buffer already: the store keeps the pixels in RAM instead.
+        evictFromStore();
     }
 #else
     (void)context;

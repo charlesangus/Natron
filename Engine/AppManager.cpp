@@ -3233,8 +3233,15 @@ AppManager::getDeviceCacheTier() const
     }
     if (!_imp->deviceTier) {
         _imp->deviceTier = std::make_shared<CacheDeviceTier>(runtime);
-        _imp->deviceTier->setRuntimeHold([gpu]() {
-            return gpu->holdRuntime();
+        // Looks the context up on each call: the tier can outlive a context swapped out for tests, so it must not keep
+        // a pointer to it, and only the context still running the tier's runtime protects it.
+        _imp->deviceTier->setRuntimeHold([runtime]() -> std::shared_ptr<void> {
+            GpuContext* current = appPTR ? appPTR->getGpuContext() : nullptr;
+            if (!current || (current->runtime() != runtime)) {
+                return std::shared_ptr<void>();
+            }
+
+            return current->holdRuntime();
         });
         _imp->_nodeCache->addDeviceTier(_imp->deviceTier);
     }

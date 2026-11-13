@@ -3,6 +3,8 @@
 #include "GpuSizeClass.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace gpu {
 
@@ -14,6 +16,17 @@ namespace {
         return { VK_ERROR_OUT_OF_DEVICE_MEMORY,
                  "GPU buffer pool cannot provide " + std::to_string(size) + " bytes within a budget of "
                      + std::to_string(budget) + " bytes" };
+    }
+
+    // The cached map orders leases by score, which a NaN would break; one goes first, as the least worth keeping.
+    double
+    sanitizedScore(double score)
+    {
+        if (std::isnan(score)) {
+            return 0.0;
+        }
+
+        return std::clamp(score, std::numeric_limits<double>::lowest(), std::numeric_limits<double>::max());
     }
 
 } // namespace
@@ -367,7 +380,7 @@ GpuBufferPool::setClassified(detail::BufferLease* lease, std::function<void()> c
     lease->onEvict = std::move(cb);
     lease->evictable = true;
     lease->cached = cached;
-    lease->score = score;
+    lease->score = sanitizedScore(score);
     lease->stamp = ++clock_;
     linkLocked(lease);
 }
@@ -378,7 +391,7 @@ GpuBufferPool::setScore(detail::BufferLease* lease, double score)
     std::lock_guard<std::mutex> lock(mutex_);
     if (lease->evictable && lease->cached) {
         unlinkLocked(lease);
-        lease->score = score;
+        lease->score = sanitizedScore(score);
         linkLocked(lease);
     }
 }

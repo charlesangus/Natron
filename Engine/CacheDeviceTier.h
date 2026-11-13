@@ -38,6 +38,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "Engine/CacheEntry.h"
 #include "Engine/CacheTier.h"
@@ -105,11 +106,21 @@ public:
         return _header;
     }
 
-    // How another holder of the image evicts it, which the image gets back once the tier lets it go.
-    const std::function<void()>& holderEvict() const
-    {
-        return _holderEvict;
-    }
+    // How another holder of the image evicts it. A holder with a liveness token is dropped once that expires.
+    struct Holder {
+        std::function<void()> evict;
+        std::weak_ptr<void> alive;
+        bool tracked = false;
+    };
+
+    // The holders still alive, which the image gets back once the tier lets it go.
+    std::vector<Holder> liveHolders() const;
+
+    // For the entry that replaces another when a further holder is handed the image: takes the live holders of the
+    // old one, then adds the new holder.
+    void inheritHolders(const CacheDeviceEntry& from);
+    void addHolder(const std::function<void()>& evict,
+                   const std::weak_ptr<void>& alive);
 
     virtual TileCacheFilePtr allocTile(std::size_t* dataOffset) OVERRIDE FINAL;
     virtual void freeTile(const TileCacheFilePtr& file, std::size_t dataOffset) OVERRIDE FINAL;
@@ -136,7 +147,7 @@ private:
     const std::shared_ptr<GpuDeviceImage> _image;
     const CacheEntryHeaderPtr _header;
     const std::size_t _bytes;
-    const std::function<void()> _holderEvict;
+    std::vector<Holder> _holders;
 };
 
 typedef std::shared_ptr<CacheDeviceEntry> CacheDeviceEntryPtr;
@@ -208,10 +219,13 @@ public:
     /**
      * @brief Makes holderEvict, in place of the entry's, the eviction of another holder of its image, as insert()
      * takes it, so that a frame store handed the image in place still gets its pixels in RAM when the pool takes the
-     * buffer. The entry that replaces entry, or null once entry left the tier or its image is no longer resident.
+     * buffer. The holders the entry already has are kept, so that several frames sharing the image all get their
+     * pixels in RAM, and a holder whose alive token expired is dropped. The entry that replaces entry, or null once
+     * entry left the tier or its image is no longer resident.
      **/
     CacheDeviceEntryPtr holdFor(const CacheDeviceEntryPtr& entry,
-                                const std::function<void()>& holderEvict);
+                                const std::function<void()>& holderEvict,
+                                const std::weak_ptr<void>& alive);
 
     /**
      * @brief Moves the entry's pixels to RAM for a reader that needs them there, whatever the cost rule would say: the

@@ -308,6 +308,7 @@ struct Slot {
     GpuDeviceImagePtr cachedPart;
     gpu::GpuBuffer* cachedBuffer = nullptr;
     Bitmap cachedBitmap;
+    float cachedCostNs = 0.f;
 
     bool released = false;
 };
@@ -785,6 +786,7 @@ private:
         out->cachedPart = image;
         out->cachedBuffer = buffer;
         out->cachedBitmap = bitmap;
+        out->cachedCostNs = entry->header()->recomputeCostNs.load();
         member->renderRect = task.deviceMissingRoI;
 
         return true;
@@ -2448,7 +2450,9 @@ private:
         const long long ownNs = timed ? _report->memberNs[_position[member.task]] : 0;
         const CacheRetentionSignalsPtr retention = node->getRetentionSignals();
         if (ownNs > 0) {
-            header.recomputeCostNs.store(CacheEviction::costAfterRender(0.f, (double)ownNs, area, area));
+            // A grown entry's own time covers only the part it rendered, so the cost the entry had is kept under it.
+            const float measured = CacheEviction::costAfterRender(0.f, (double)ownNs, area, area);
+            header.recomputeCostNs.store(slot.cachedPart ? slot.cachedCostNs + measured : measured);
             if (retention) {
                 retention->rememberCost(header.recomputeCostNs.load());
             }

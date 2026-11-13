@@ -88,8 +88,42 @@ CacheDeviceEntry::CacheDeviceEntry(const ImageKey& key,
     , _image(image)
     , _header(header)
     , _bytes(bytes)
-    , _holderEvict(holderEvict)
 {
+    if (holderEvict) {
+        Holder holder;
+        holder.evict = holderEvict;
+        _holders.push_back(holder);
+    }
+}
+
+std::vector<CacheDeviceEntry::Holder>
+CacheDeviceEntry::liveHolders() const
+{
+    std::vector<Holder> live;
+    for (const Holder& holder : _holders) {
+        if (!holder.tracked || !holder.alive.expired()) {
+            live.push_back(holder);
+        }
+    }
+
+    return live;
+}
+
+void
+CacheDeviceEntry::addHolder(const std::function<void()>& evict,
+                            const std::weak_ptr<void>& alive)
+{
+    Holder holder;
+    holder.evict = evict;
+    holder.alive = alive;
+    holder.tracked = true;
+    _holders.push_back(holder);
+}
+
+void
+CacheDeviceEntry::inheritHolders(const CacheDeviceEntry& from)
+{
+    _holders = from.liveHolders();
 }
 
 TileCacheFilePtr
@@ -336,8 +370,8 @@ CacheDeviceTier::watchEviction(const CacheDeviceEntryPtr& entry)
 #ifdef NATRON_HAVE_GPU
     const std::weak_ptr<CacheDeviceTier> weakTier = shared_from_this();
     const std::weak_ptr<CacheDeviceEntry> weakEntry = entry;
-    const std::function<void()> holderEvict = entry->holderEvict();
-    entry->image()->setCached([weakTier, weakEntry, holderEvict] {
+    const std::vector<CacheDeviceEntry::Holder> holders = entry->liveHolders();
+    entry->image()->setCached([weakTier, weakEntry, holders] {
         {
             const CacheDeviceTierPtr tier = weakTier.lock();
             const CacheDeviceEntryPtr evicted = weakEntry.lock();
@@ -345,8 +379,10 @@ CacheDeviceTier::watchEviction(const CacheDeviceEntryPtr& entry)
                 (void)tier->demote(evicted);
             }
         }
-        if (holderEvict) {
-            holderEvict();
+        for (const CacheDeviceEntry::Holder& holder : holders) {
+            if (!holder.tracked || !holder.alive.expired()) {
+                holder.evict();
+            }
         }
     },
                               scoreOf(*entry), entry->header());
@@ -393,13 +429,16 @@ CacheDeviceTier::find(const ImageKey& key)
 
 CacheDeviceEntryPtr
 CacheDeviceTier::holdFor(const CacheDeviceEntryPtr& entry,
-                         const std::function<void()>& holderEvict)
+                         const std::function<void()>& holderEvict,
+                         const std::weak_ptr<void>& alive)
 {
 #ifdef NATRON_HAVE_GPU
     if (!entry || !entry->image()->isResident()) {
         return CacheDeviceEntryPtr();
     }
-    const CacheDeviceEntryPtr held = std::make_shared<CacheDeviceEntry>(entry->getKey(), entry->image(), entry->header(), entry->size(), holderEvict);
+    const CacheDeviceEntryPtr held = std::make_shared<CacheDeviceEntry>(entry->getKey(), entry->image(), entry->header(), entry->size());
+    held->inheritHolders(*entry);
+    held->addHolder(holderEvict, alive);
     {
         // Swapped in under the lock, so that an entry another render inserted under the key meanwhile is kept.
         std::lock_guard<std::mutex> k(_lock);
@@ -420,6 +459,7 @@ CacheDeviceTier::holdFor(const CacheDeviceEntryPtr& entry,
 #else
     (void)entry;
     (void)holderEvict;
+    (void)alive;
 
     return CacheDeviceEntryPtr();
 #endif
@@ -661,8 +701,15 @@ void
 CacheDeviceTier::letGo(const CacheDeviceEntry& entry)
 {
 #ifdef NATRON_HAVE_GPU
-    if (entry.holderEvict()) {
-        entry.image()->setEvictable(entry.holderEvict());
+    const std::vector<CacheDeviceEntry::Holder> holders = entry.liveHolders();
+    if (!holders.empty()) {
+        entry.image()->setEvictable([holders] {
+            for (const CacheDeviceEntry::Holder& holder : holders) {
+                if (!holder.tracked || !holder.alive.expired()) {
+                    holder.evict();
+                }
+            }
+        });
     } else {
         entry.image()->clearEvictable();
     }

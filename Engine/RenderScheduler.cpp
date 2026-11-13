@@ -1517,7 +1517,7 @@ holdInStore(const FrameRenderContextPtr& context,
         }
     };
     for (const CacheDeviceEntryPtr& entry : inPlace) {
-        (void)tier->holdFor(entry, evictFromStore);
+        (void)tier->holdFor(entry, evictFromStore, weakContext);
     }
 #else
     (void)context;

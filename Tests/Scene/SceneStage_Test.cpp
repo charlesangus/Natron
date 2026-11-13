@@ -875,3 +875,30 @@ TEST(SceneStageLoads, AnEditWhilePreparingPutsTheBatchBack)
     EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
     EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
 }
+
+TEST(SceneStageLoads, ACancelWhileADiscardedPrepareIsRequeuedKeepsTheBatchGone)
+{
+    PayloadCity city(1, 1);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    const ScenePayload edited = SceneOps::appendLayer(city.payload(), makeLayer("def Xform \"Other\"\n{\n}\n"), 7);
+
+    int commits = 0;
+    const SceneStage::LoadPreparer prepare = [&](const SceneLoadSetPtr&) -> std::function<void()> {
+        EXPECT_TRUE(stage.sync(edited));
+
+        return [&]() { ++commits; };
+    };
+    const SceneStage::LockedSection writeLocked = [&stage](const std::function<void()>& section) {
+        stage.cancelPendingLoads();
+        section();
+    };
+    stage.requestLoad({ building(0, 0) }, false);
+    stage.serviceLoads(kNoLock, writeLocked, std::function<bool()>(), prepare);
+
+    EXPECT_EQ(commits, 0);
+    EXPECT_FALSE(stage.hasPendingLoads());
+
+    EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+}

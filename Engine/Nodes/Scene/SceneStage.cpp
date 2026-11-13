@@ -762,14 +762,17 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     });
     if (requeue) {
         std::lock_guard<std::mutex> lock(_loadMutex);
-        // A request made meanwhile for one of the paths is the newer one.
-        for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
-            if (!_pendingLoads.insert(request).second) {
-                continue;
-            }
-            const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector>::const_iterator excluded = exclusions.find(request.first);
-            if (excluded != exclusions.end()) {
-                _pendingExclusions[request.first] = excluded->second;
+        // A cancel since the batch was taken withdrew these requests; requeueing would revive them.
+        if (_cancelGeneration == generation) {
+            // A request made meanwhile for one of the paths is the newer one.
+            for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
+                if (!_pendingLoads.insert(request).second) {
+                    continue;
+                }
+                const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector>::const_iterator excluded = exclusions.find(request.first);
+                if (excluded != exclusions.end()) {
+                    _pendingExclusions[request.first] = excluded->second;
+                }
             }
         }
     } else if (!splitLoads.empty()) {

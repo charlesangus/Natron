@@ -448,7 +448,8 @@ TexturePaint::initializeKnobs()
     const RotoPaintInteractPtr paint = RotoPaintInteract::create(this, true);
     _paintInteract = paint;
     paint->createSettingKnobs(this, page);
-    paint->createResetCloneOffsetKnob(page);
+    const KnobButtonPtr resetCloneOffset = paint->createResetCloneOffsetKnob(page);
+    paint->addSettingKnobsToViewerUI(this, resetCloneOffset);
     const KnobPagePtr toolbar = paint->createToolbarKnobs(0);
     paint->createToolKnobs(this, toolbar, true);
     if (const RotoContextPtr context = getNode()->getRotoContext()) {

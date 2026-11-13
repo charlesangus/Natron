@@ -52,6 +52,7 @@
 class QContextMenuEvent;
 class QKeyEvent;
 class QMouseEvent;
+class QPainter;
 class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
@@ -791,6 +792,7 @@ protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
+    void leaveEvent(QEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
@@ -850,6 +852,22 @@ private:
 
     // Closes the painted node's session, queueing its bake: the camera moved, or Bake Paint.
     void closePaintSession();
+
+    // Follows the painted node: connects to its baker's progress, drops the overlays of another node.
+    void followPaintNode();
+
+    // Asks for refreshPaintOverlays() at most every 100 ms.
+    void schedulePaintRefresh();
+
+    /**
+     * @brief Renders the strokes of the session being painted, and of the closed ones whose bake
+     * has not landed, into the images paintGL() draws over the view. A closed session's image is
+     * kept as it was painted and dropped when its bake lands.
+     **/
+    void refreshPaintOverlays();
+
+    // Draws the unbaked buffers, brush ring and bake progress; paintGL(), inside its painter.
+    void drawPaintOverlays(QPainter& painter, bool poseKnown, const SceneViewportRenderer::CameraPose& pose);
 
     // Whether navigation moves the camera looked through, not the free camera.
     bool navigatesLockedCamera() const;

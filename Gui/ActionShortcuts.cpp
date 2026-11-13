@@ -504,6 +504,11 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, Qt::Key(0), Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
+        // Draw states of the picked box or the selection: down opens rows up, up boxes their parents.
+        { kShortcutIDActionViewer3DDrawChildren, kShortcutDescActionViewer3DDrawChildren, Qt::NoModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawFull, kShortcutDescActionViewer3DDrawFull, Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawLoadAll, kShortcutDescActionViewer3DDrawLoadAll, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawParentBBox, kShortcutDescActionViewer3DDrawParentBBox, Qt::NoModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

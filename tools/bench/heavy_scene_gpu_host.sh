@@ -21,9 +21,12 @@
 #             and what the viewer draw states have to pass:
 #               draw flat pruned   populate_pruned
 #               draw flat          populate_full, prune_restore, sibling_state, noedit, reveal_cancel,
-#                                  reveal, sibling_shot, orbit10k, boxes_shot, draw_budget
+#                                  reveal, sibling_shot, orbit10k, boxes_shot, draw_budget,
+#                                  reveal_wide, reveal_cancel_paced
 #               draw city pruned   populate_pruned, then load_all under the pruned root
 #               draw city          populate_full, load_all, then the flat run's scenarios
+#               draw city reveal   populate_full, then reveal_load_all at the root of the unloaded
+#                                  stage, the loads joining the paced reveal as they land
 #               draw lobby         as draw city, on Lobby's own rows
 #               draw island        populate_full, prune_restore, noedit, draw_budget, under island's
 #                                  RAM guard
@@ -56,6 +59,13 @@
 #                      SCENE_DIR does. What each scene resolved to is printed.
 #   GATE_LARGE_BLOCKS  how many blocks the larger load asks for, from Block2 up (default 30, a tenth of
 #                      the default city); a city made smaller through FIXTURE_MAKE_ARGS needs fewer
+#   ONLY_LABELS        space or comma separated labels (budget-island, gate-draw-city, ...); the other
+#                      runs are left out, with no record. For profiling one run.
+#   ONLY_SCENARIOS     comma separated scenarios that replace the chosen runs' own list (budget-island
+#                      with populate_full alone, say); needs ONLY_LABELS
+#   BENCH_HOLD_FILE    passed to the run: the populate scenarios report "BEGIN populate" and wait (up to
+#                      BENCH_HOLD_S, default 120) for this file to exist before they open the file, so a
+#                      stack sampler can attach first; BENCH_PTRACER_ANY=1 lets any process of the user attach
 #   ISLAND_MIN_RAM_GB  available RAM below which Island is skipped (default 24)
 #
 # Memory guard: heavy_scene_watchdog.sh polls once a second and kills the run with SIGKILL when
@@ -213,7 +223,17 @@ host_gpu_name() {
 }
 HOST_GPU="$(host_gpu_name)"
 
+# True when ONLY_LABELS is unset or names the label.
+wanted() {
+    [ -z "${ONLY_LABELS:-}" ] && return 0
+    case " ${ONLY_LABELS//,/ } " in
+        *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
+
 record_skip() {
+    wanted "$1" || return 0
     printf '{"label": "%s", "scenario": "*", "result": "skipped", "reason": "%s", "peak_rss_mb": null, "gl_renderer": "%s"}\n' \
         "$1" "$2" "$HOST_GPU" >> "$RESULT"
     echo "=== $1: skipped: $2"
@@ -245,6 +265,8 @@ host_report() {
 launch() {
     local label="$1" fixture="$2" file="$3" scenarios="$4" rc
     shift 4
+    wanted "$label" || return 0
+    [ -n "${ONLY_SCENARIOS:-}" ] && scenarios="$ONLY_SCENARIOS"
     echo "=== $label"
     host_report
     nice -n 5 env BENCH_FIXTURE="$fixture" BENCH_FILE="$file" BENCH_SCENARIOS="$scenarios" BENCH_LABEL="$label" \
@@ -323,11 +345,12 @@ launch gate-city-twirl city "$CITY" open,twirl
 
 # The gate's draw runs carry draw_budget and the timing records the time to picture is judged on, so
 # the budget runs need not repeat them.
-DRAW_SCENARIOS="prune_restore,sibling_state,noedit,reveal_cancel,reveal,sibling_shot,orbit10k,boxes_shot,draw_budget"
+DRAW_SCENARIOS="prune_restore,sibling_state,noedit,reveal_cancel,reveal,sibling_shot,orbit10k,boxes_shot,draw_budget,reveal_wide,reveal_cancel_paced"
 launch gate-draw-flat-pruned flat "$FIXTURE_DIR/heavy_flat.usdc" populate_pruned
 launch gate-draw-flat flat "$FIXTURE_DIR/heavy_flat.usdc" "populate_full,$DRAW_SCENARIOS" NATRON_DRAW_STATE_TIMING=1
 launch gate-draw-city-pruned city "$CITY" populate_pruned,load_all BENCH_LOAD_ALL=1
 launch gate-draw-city city "$CITY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
+launch gate-draw-city-reveal city "$CITY" populate_full,reveal_load_all
 
 if [ -f "$LOBBY" ]; then
     launch gate-lobby-building scene "$LOBBY" open,load

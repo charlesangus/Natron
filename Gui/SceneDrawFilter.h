@@ -80,6 +80,11 @@ NATRON_NAMESPACE_ENTER
  * Lights stop only under a Hidden row. A BBox row, or a row boxed by a Children parent, hides
  * geometry and leaves its lights, so drilling into a scene never darkens it.
  *
+ * A native instance draws through an instancer far from its row, under /UsdNiPropagatedPrototypes
+ * (usdImaging/niPrototypePropagatingSceneIndex.h), which names the instance among its
+ * instanceLocations. So a row over an instance turns that instance off in the instancer's mask
+ * (hd/instancerTopologySchema.h), and the instancer and its prototypes stay in Hydra, Hidden or not.
+ *
  * The notices of one call go out together, once per prim, and a prim that ends where it started
  * sends none. They reach the render index directly, so callers hold the viewer lock and the GL
  * context, between renders. Hydra reads GetPrim() from its sync threads, which is safe only because
@@ -114,6 +119,9 @@ public:
 
     static void applyToRules(const SceneDrawDelta& delta, Rules* rules);
 
+    // Whether the rule governing path, its own or its nearest ancestor's, is Hidden.
+    static bool isUnderHiddenRow(const Rules& rules, const PXR_NS::SdfPath& path);
+
     ~SceneDrawFilter() override;
 
     PXR_NS::HdSceneIndexPrim GetPrim(const PXR_NS::SdfPath& primPath) const override;
@@ -127,17 +135,34 @@ public:
 
     /**
      * @brief Hides at once what the delta hides. What it shows goes out now if revealBatch is 0, and
-     * otherwise through stepReveal(). A reveal under way stops: what it announced hides again, and
-     * whatever the new rules still show is revealed from the start.
+     * otherwise through stepReveal(). A reveal under way carries on under the new rules: what they
+     * hide goes at once and what it announced and they still show stays. At or below a changed row,
+     * the change's own reveal takes the place of what was left of it there; elsewhere the rules
+     * have not changed, so what is left there still comes, after what this delta shows.
+     *
+     * With a non-zero revealBatch, what the delta's loads bring in joins a reveal as it arrives
+     * instead of reaching Hydra all at once, until a delta with revealBatch 0 comes.
      */
     void applyDelta(const SceneDrawDelta& delta, std::size_t revealBatch = 0);
 
     /** @brief As applyDelta() on each in turn, with the notices of all of them sent at once. */
     void applyDeltas(const std::vector<const SceneDrawDelta*>& deltas, std::size_t revealBatch = 0);
 
-    /** @brief Announces up to maxPrims more prims of the reveal under way. */
-    std::size_t stepReveal(std::size_t maxPrims);
+    /**
+     * @brief Announces up to maxPrims more prims of the reveal under way, the most recent change
+     * first and each subtree depth first in the input's order. It stops early at the deadline, which
+     * bounds the prims it looks at where it finds few to show.
+     */
+    std::size_t stepReveal(std::size_t maxPrims, Clock::time_point deadline = (Clock::time_point::max)());
     bool isRevealing() const { return _revealing; }
+    // Whether the last stepReveal() stopped at its deadline before its prim count.
+    bool wasStepCut() const { return _stepCut; }
+
+    /**
+     * @brief Marks a render's end. A prim the input takes away and adds again within one render, as a
+     * resync does, is one Hydra held, and it comes back as it was rather than joining a reveal.
+     */
+    void endRender();
 
     using LightPredicate = std::function<bool(const PXR_NS::SdfPath&)>;
 
@@ -161,7 +186,9 @@ public:
     unsigned long long getShownSentCount() const { return _shownSent; }
     // The hides and shows that went as a visibility change, with the prim kept in Hydra.
     unsigned long long getVisibilitySentCount() const { return _visibilitySent; }
-    std::size_t getHeldInvisibleCount() const { return _invisible.size(); }
+    std::size_t getHeldInvisibleCount() const { return _invisibleCount; }
+    // Native instances the rules turn off in their instancer's mask.
+    std::size_t getMaskedInstanceCount() const { return _maskedCount; }
     Clock::time_point getLastInputAddedTime() const { return _lastInputAdded; }
 
 protected:
@@ -170,48 +197,113 @@ protected:
     void _PrimsDirtied(const PXR_NS::HdSceneIndexBase& sender, const PXR_NS::HdSceneIndexObserver::DirtiedPrimEntries& entries) override;
 
 private:
-    enum OutputEnum {
+    enum OutputEnum : unsigned char {
         eOutputShown,
         eOutputInvisible,
         eOutputAbsent
     };
 
-    struct Change {
-        PXR_NS::SdfPath path;
-        PXR_NS::TfToken primType;
-        OutputEnum before;
-        OutputEnum after;
+    using RulePtr = const Rules::value_type*;
+
+    // The input's hierarchy, kept from its notices, so that a change walks the prims a row governs
+    // without reading them through the input, which costs microseconds a prim on a stage.
+    struct Node {
+        const PXR_NS::SdfPath* path = nullptr;
+        PXR_NS::TfToken type;
+        Node* parent = nullptr;
+        Node* firstChild = nullptr;
+        Node* lastChild = nullptr;
+        Node* prev = nullptr;
+        Node* next = nullptr;
+        // What Hydra holds. It lags the rules only where a reveal has yet to arrive.
+        OutputEnum output = eOutputShown;
+        OutputEnum before = eOutputShown;
+        bool hideable = false;
+        bool light = false;
+        bool pending = false;
+        bool arriving = false;
+    };
+
+    // now and was are the rules governing node in _rules and _revealFrom; belowNow and belowWas say
+    // whether those have a rule under it, without which its descendants all share its rule.
+    struct Frame {
+        Node* node;
+        Node* next;
+        RulePtr now;
+        RulePtr was;
+        bool belowNow;
+        bool belowWas;
+        bool entered;
+        // Left by an earlier change, so it cannot tell where the rules changed and looks at every
+        // prim the rules may show.
+        bool structural;
+    };
+
+    // An instancer that names the prims it draws. hidden is indexed as its instanceLocations.
+    struct Instancer {
+        std::vector<PXR_NS::SdfPath> locations;
+        std::vector<bool> hidden;
+        std::size_t hiddenCount = 0;
+        bool pending = false;
     };
 
     explicit SceneDrawFilter(const PXR_NS::HdSceneIndexBaseRefPtr& input);
 
-    bool isHidden(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType) const;
-    void trackLights(const PXR_NS::HdSceneIndexObserver::AddedPrimEntries& entries);
-    bool mayChangeBelow(const PXR_NS::SdfPath& path, bool toHidden) const;
+    void readInstancer(const PXR_NS::SdfPath& path, const PXR_NS::HdSceneIndexPrim& prim);
+    void forgetInstancer(const PXR_NS::SdfPath& path);
+    PXR_NS::HdSceneIndexPrim withMask(const PXR_NS::SdfPath& primPath, PXR_NS::HdSceneIndexPrim prim) const;
+    bool setInstanceHidden(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool hidden);
+    void updateInstances(const std::vector<PXR_NS::SdfPath>& roots);
+
+    Node& nodeAt(const PXR_NS::SdfPath& path);
+    Node* indexPrim(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType);
+    void forget(Node* top);
+    void setOutput(Node& node, OutputEnum output);
+    void transition(Node& node, OutputEnum after);
+    Frame rootFrame(Node* node, bool structural) const;
+    Frame childFrame(const Frame& parent, Node* child) const;
+    bool descends(const Frame& frame, unsigned mode) const;
+    bool hasLightBelow(const PXR_NS::SdfPath& path) const;
+    std::size_t visit(const Frame& frame, unsigned mode);
+    std::size_t walk(std::vector<Frame>* stack, unsigned mode, std::size_t maxShown, Clock::time_point deadline);
+    void updateRevealRoots(const std::vector<const SceneDrawDelta*>& deltas, const std::vector<PXR_NS::SdfPath>& changed, std::size_t revealBatch);
+    bool defersArrival(const Node& node, bool known, OutputEnum before) const;
     void finishRevealIfDone();
-    std::size_t revealUpTo(std::size_t maxPrims);
-    OutputEnum heldOutput(const PXR_NS::SdfPath& path) const;
-    void transition(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType, OutputEnum before, OutputEnum after);
     void sendChanges();
 
     Rules _rules;
-    // While a reveal runs, _revealFrom holds the rules it started from: a prim those hid and _rules
-    // show stays hidden until it is in _revealed.
+    // The rules before the last change, while its reveal runs.
     bool _revealing = false;
+    bool _stepCut = false;
     Rules _revealFrom;
-    std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _revealed;
-    std::vector<PXR_NS::SdfPath> _revealStack;
-    std::vector<PXR_NS::SdfPath> _revealRoots;
+    // Frontiers, each a path down from where a reveal started, so the reveal keeps no record of the
+    // prims it has shown.
+    std::vector<Frame> _revealStack;
 
-    // Every light the input has announced, whether drawn or not.
-    std::set<PXR_NS::SdfPath> _lights;
+    // Where what loads in is revealed rather than sent at once.
+    std::set<PXR_NS::SdfPath> _arrivalRoots;
+    // Prims Hydra held when the input took them away during this render.
+    std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _removedHeld;
 
-    // The hidden prims Hydra still holds, invisible. Any other hidden prim is out of Hydra.
-    std::set<PXR_NS::SdfPath> _invisible;
+    std::unordered_map<PXR_NS::SdfPath, Node, PXR_NS::SdfPath::Hash> _nodes;
+    Node* _root = nullptr;
 
-    // What a call has changed so far, one entry per prim, sent by sendChanges().
-    std::vector<Change> _changes;
-    std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> _changeAt;
+    // Every light the input has announced, whether drawn or not. The paths are sorted so that a walk
+    // under a boxed row, which leaves lights, goes only where one is.
+    std::unordered_set<const Node*> _lights;
+    std::set<PXR_NS::SdfPath> _lightPaths;
+
+    std::size_t _invisibleCount = 0;
+
+    std::unordered_map<PXR_NS::SdfPath, Instancer, PXR_NS::SdfPath::Hash> _instancers;
+    // Each instance location to its instancer and its index there, sorted so that a changed row finds
+    // the instances below it without looking at the others.
+    std::multimap<PXR_NS::SdfPath, std::pair<PXR_NS::SdfPath, std::size_t>> _locations;
+    std::size_t _maskedCount = 0;
+
+    // What a call has changed so far, sent by sendChanges().
+    std::vector<Node*> _changes;
+    std::vector<PXR_NS::SdfPath> _maskChanges;
 
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;
@@ -220,6 +312,43 @@ private:
     unsigned long long _shownSent = 0;
     unsigned long long _visibilitySent = 0;
     Clock::time_point _lastInputAdded;
+};
+
+/**
+ * @brief Sizes a reveal's batches from what the frames that showed them cost, so a modest machine and
+ * a many-core one both keep near the frame time they aim for.
+ *
+ * A frame costs a fixed part and a part per prim shown. The fixed part is large in Storm, which
+ * gathers every draw item again when an rprim comes or goes (hd/changeTracker.h
+ * GetRprimIndexVersion), and it grows as the reveal does. The pacer fits both to its last few
+ * frames. Where the fixed part alone nearly fills the target, no batch keeps the target, and a batch
+ * costing about the fixed part again keeps half of each frame for progress.
+ */
+class SceneRevealPacer {
+public:
+    explicit SceneRevealPacer(double targetMs = 33., std::size_t firstBatch = 1024);
+
+    std::size_t nextBatch() const { return _batch; }
+    // How long a frame showing prims took, from the step to the end of its render.
+    void observe(std::size_t prims, double ms);
+    double getFixedMs() const { return _fixedMs; }
+    double getPerPrimMs() const { return _perPrimMs; }
+
+private:
+    struct Sample {
+        double prims;
+        double ms;
+    };
+
+    static constexpr std::size_t kSamples = 8;
+
+    double _targetMs;
+    std::size_t _batch;
+    Sample _samples[kSamples];
+    std::size_t _sampleCount = 0;
+    std::size_t _nextSample = 0;
+    double _fixedMs = 0.;
+    double _perPrimMs = 0.;
 };
 
 NATRON_NAMESPACE_EXIT

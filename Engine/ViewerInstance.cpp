@@ -97,6 +97,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Global/FloatingPointExceptions.h"
+#include "Serialization/NodeSerialization.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -439,6 +440,53 @@ ViewerInstance::getRawDisplayLabel(int textureIndex) const
     std::lock_guard<std::mutex> lock(_rawDisplayLabelMutex);
 
     return ((textureIndex == 0) || (textureIndex == 1)) ? _rawDisplayLabel[textureIndex] : std::string();
+}
+
+void
+ViewerInstance::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization)
+{
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    if (serialization && !serialization->sceneView.isEmpty()) {
+        _loadedSceneView.reset(new Serialization::SceneViewSerialization(serialization->sceneView));
+    } else {
+        _loadedSceneView.reset();
+    }
+}
+
+Serialization::SceneViewSerialization
+ViewerInstance::getLoadedSceneView() const
+{
+    Serialization::SceneViewSerialization view;
+
+    // A tab that went, or another one, saves the view as it last was: that is the view to restore.
+    sceneViewToSerialization(&view);
+
+    return view;
+}
+
+void
+ViewerInstance::setSceneViewSaver(const SceneViewSaver& saver)
+{
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    _sceneViewSaver = saver;
+    _loadedSceneView.reset();
+}
+
+void
+ViewerInstance::sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const
+{
+    // Held while the saver runs, so that the view it reads cannot be destroyed under it.
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    if (_sceneViewSaver) {
+        _sceneViewSaver(serialization);
+    } else if (_loadedSceneView) {
+        *serialization = *_loadedSceneView;
+    } else {
+        *serialization = Serialization::SceneViewSerialization();
+    }
 }
 
 void

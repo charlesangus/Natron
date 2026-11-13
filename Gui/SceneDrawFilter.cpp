@@ -26,6 +26,7 @@
 #include "Gui/SceneDrawFilter.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <set>
@@ -35,6 +36,7 @@
 #define NATRON_SCENEDRAWFILTER_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/overlayContainerDataSource.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
@@ -103,15 +105,57 @@ isHideable(const TfToken& primType)
     return (hideable.count(primType) != 0) || HdPrimTypeIsLight(primType);
 }
 
-bool
-hiddenBy(const SceneDrawFilter::Rules& rules,
-         const SdfPath& path)
+using RulePtr = const SceneDrawFilter::Rules::value_type*;
+
+enum WalkFlags : unsigned {
+    eWalkHide = 1,
+    eWalkShow = 2,
+    // Sets each prim's output to what the rules give, without notices.
+    eWalkSeed = 4
+};
+
+RulePtr
+governing(const SceneDrawFilter::Rules& rules,
+          const SdfPath& path)
 {
     if (rules.empty()) {
-        return false;
+        return nullptr;
     }
     const SceneDrawFilter::Rules::const_iterator rule = SdfPathFindLongestPrefix(rules, path);
-    if (rule == rules.end()) {
+
+    return (rule != rules.end()) ? &*rule : nullptr;
+}
+
+bool
+hasRuleBelow(const SceneDrawFilter::Rules& rules,
+             const SdfPath& path)
+{
+    const SceneDrawFilter::Rules::const_iterator next = rules.upper_bound(path);
+
+    return (next != rules.end()) && next->first.HasPrefix(path);
+}
+
+// A child's governing rule is its own or its parent's, so a walk needs one lookup a prim, and none
+// where nothing below has a rule.
+void
+lookUpChild(const SceneDrawFilter::Rules& rules,
+            const SdfPath& path,
+            RulePtr* rule,
+            bool* below)
+{
+    SceneDrawFilter::Rules::const_iterator next = rules.lower_bound(path);
+    if ((next != rules.end()) && (next->first == path)) {
+        *rule = &*next;
+        ++next;
+    }
+    *below = (next != rules.end()) && next->first.HasPrefix(path);
+}
+
+bool
+hiddenBy(RulePtr rule,
+         const SdfPath& path)
+{
+    if (!rule) {
         return false;
     }
     switch (rule->second) {
@@ -127,48 +171,27 @@ hiddenBy(const SceneDrawFilter::Rules& rules,
     return false;
 }
 
-// Whatever this hides leaves Hydra. A light is hidden by a Hidden row alone: boxed geometry is no
-// reason to darken the scene.
+// Whatever this hides leaves Hydra.
 bool
-underHiddenRow(const SceneDrawFilter::Rules& rules,
-               const SdfPath& path)
+underHiddenRow(RulePtr rule)
 {
-    if (rules.empty()) {
-        return false;
-    }
-    const SceneDrawFilter::Rules::const_iterator rule = SdfPathFindLongestPrefix(rules, path);
-
-    return (rule != rules.end()) && (rule->second == SceneDrawFilter::eRuleHidden);
+    return rule && (rule->second == SceneDrawFilter::eRuleHidden);
 }
 
+// A light is hidden by a Hidden row alone: boxed geometry is no reason to darken the scene.
 bool
-hiddenFor(const SceneDrawFilter::Rules& rules,
+hiddenFor(RulePtr rule,
           const SdfPath& path,
-          const TfToken& primType)
+          bool light)
 {
-    return HdPrimTypeIsLight(primType) ? underHiddenRow(rules, path) : hiddenBy(rules, path);
+    return light ? underHiddenRow(rule) : hiddenBy(rule, path);
 }
 
-// Whether a descendant of `path` with no rule of its own is hidden, which needs no child's path.
+// Whether geometry below a prim whose subtree has no rule of its own is hidden.
 bool
-hiddenBelow(const SceneDrawFilter::Rules& rules,
-            const SdfPath& path)
+geometryHiddenBelow(RulePtr rule)
 {
-    if (rules.empty()) {
-        return false;
-    }
-    const SceneDrawFilter::Rules::const_iterator rule = SdfPathFindLongestPrefix(rules, path);
-
-    return (rule != rules.end()) && (rule->second != SceneDrawFilter::eRuleShow);
-}
-
-bool
-hasRuleBelow(const SceneDrawFilter::Rules& rules,
-             const SdfPath& path)
-{
-    const SceneDrawFilter::Rules::const_iterator next = rules.upper_bound(path);
-
-    return (next != rules.end()) && next->first.HasPrefix(path);
+    return rule && (rule->second != SceneDrawFilter::eRuleShow);
 }
 
 void
@@ -211,6 +234,21 @@ visibilityLocators()
     static const HdDataSourceLocatorSet locators { HdVisibilitySchema::GetDefaultLocator() };
 
     return locators;
+}
+
+const HdDataSourceLocatorSet&
+maskLocators()
+{
+    static const HdDataSourceLocatorSet locators { HdInstancerTopologySchema::GetDefaultLocator().Append(HdInstancerTopologySchemaTokens->mask) };
+
+    return locators;
+}
+
+// Under a Children row too: an instance draws only what lies below it.
+bool
+instanceHiddenBy(RulePtr rule)
+{
+    return geometryHiddenBelow(rule);
 }
 } // anon namespace
 
@@ -255,6 +293,13 @@ SceneDrawFilter::New(const HdSceneIndexBaseRefPtr& input)
     return TfCreateRefPtr(new SceneDrawFilter(input));
 }
 
+bool
+SceneDrawFilter::isUnderHiddenRow(const Rules& rules,
+                                  const SdfPath& path)
+{
+    return underHiddenRow(governing(rules, path));
+}
+
 void
 SceneDrawFilter::applyToRules(const SceneDrawDelta& delta,
                               Rules* rules)
@@ -279,6 +324,24 @@ SceneDrawFilter::applyToRules(const SceneDrawDelta& delta,
 SceneDrawFilter::SceneDrawFilter(const HdSceneIndexBaseRefPtr& input)
     : HdSingleInputFilteringSceneIndexBase(input)
 {
+    const auto root = _nodes.try_emplace(SdfPath::AbsoluteRootPath());
+    _root = &root.first->second;
+    _root->path = &root.first->first;
+    if (!input) {
+        return;
+    }
+    // The filter hears only of what the input adds from now on.
+    const SdfPathVector tops = input->GetChildPrimPaths(SdfPath::AbsoluteRootPath());
+    SdfPathVector stack(tops.rbegin(), tops.rend());
+    while (!stack.empty()) {
+        const SdfPath path = stack.back();
+        stack.pop_back();
+        const HdSceneIndexPrim prim = input->GetPrim(path);
+        indexPrim(path, prim.primType);
+        readInstancer(path, prim);
+        const SdfPathVector children = input->GetChildPrimPaths(path);
+        stack.insert(stack.end(), children.rbegin(), children.rend());
+    }
 }
 
 SceneDrawFilter::~SceneDrawFilter()
@@ -294,22 +357,217 @@ SceneDrawFilter::~SceneDrawFilter()
     }
 }
 
-bool
-SceneDrawFilter::isHidden(const SdfPath& path,
-                          const TfToken& primType) const
+SceneDrawFilter::Node&
+SceneDrawFilter::nodeAt(const SdfPath& path)
 {
-    if (hiddenFor(_rules, path, primType)) {
-        return true;
+    const auto found = _nodes.try_emplace(path);
+    Node& node = found.first->second;
+    if (!found.second) {
+        return node;
+    }
+    node.path = &found.first->first;
+    // Up to the nearest ancestor already known, without recursing as deep as the scene is.
+    for (Node* child = &node;;) {
+        const auto above = _nodes.try_emplace(child->path->GetParentPath());
+        Node& parent = above.first->second;
+        if (above.second) {
+            parent.path = &above.first->first;
+        }
+        child->parent = &parent;
+        child->prev = parent.lastChild;
+        if (parent.lastChild) {
+            parent.lastChild->next = child;
+        } else {
+            parent.firstChild = child;
+        }
+        parent.lastChild = child;
+        if (!above.second) {
+            break;
+        }
+        child = &parent;
     }
 
-    return _revealing && hiddenFor(_revealFrom, path, primType) && (_revealed.count(path) == 0);
+    return node;
+}
+
+SceneDrawFilter::Node*
+SceneDrawFilter::indexPrim(const SdfPath& path,
+                           const TfToken& primType)
+{
+    if (!path.IsAbsolutePath()) {
+        return nullptr;
+    }
+    Node& node = nodeAt(path);
+    node.type = primType;
+    node.hideable = isHideable(primType);
+    const bool light = HdPrimTypeIsLight(primType);
+    if (light != node.light) {
+        node.light = light;
+        if (light) {
+            _lights.insert(&node);
+            _lightPaths.insert(path);
+        } else {
+            _lights.erase(&node);
+            _lightPaths.erase(path);
+        }
+    }
+
+    return &node;
+}
+
+void
+SceneDrawFilter::forget(Node* top)
+{
+    for (Frame& frame : _revealStack) {
+        if (frame.next == top) {
+            frame.next = top->next;
+        }
+    }
+    const auto inside = [top](const Frame& frame) {
+        for (const Node* node = frame.node; node; node = node->parent) {
+            if (node == top) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    _revealStack.erase(std::remove_if(_revealStack.begin(), _revealStack.end(), inside), _revealStack.end());
+
+    Node* parent = top->parent;
+    (top->prev ? top->prev->next : parent->firstChild) = top->next;
+    (top->next ? top->next->prev : parent->lastChild) = top->prev;
+
+    std::vector<Node*> doomed { top };
+    for (std::size_t i = 0; i < doomed.size(); ++i) {
+        for (Node* child = doomed[i]->firstChild; child; child = child->next) {
+            doomed.push_back(child);
+        }
+    }
+    for (Node* node : doomed) {
+        if (node->type == HdPrimTypeTokens->instancer) {
+            forgetInstancer(*node->path);
+        }
+        if (node->light) {
+            _lights.erase(node);
+            _lightPaths.erase(*node->path);
+        }
+        if (!_arrivalRoots.empty() && node->hideable && (node->output != eOutputAbsent)) {
+            _removedHeld.insert(*node->path);
+        }
+        if (node->output == eOutputInvisible) {
+            --_invisibleCount;
+        }
+        _nodes.erase(_nodes.find(*node->path));
+    }
+}
+
+void
+SceneDrawFilter::setOutput(Node& node,
+                           OutputEnum output)
+{
+    if (node.output == eOutputInvisible) {
+        --_invisibleCount;
+    }
+    if (output == eOutputInvisible) {
+        ++_invisibleCount;
+    }
+    node.output = output;
+}
+
+// Instancers are few, so reading one through the input is cheap enough; its instances may be many.
+void
+SceneDrawFilter::readInstancer(const SdfPath& path,
+                               const HdSceneIndexPrim& prim)
+{
+    forgetInstancer(path);
+    if (prim.primType != HdPrimTypeTokens->instancer) {
+        return;
+    }
+    const HdPathArrayDataSourceHandle source = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetInstanceLocations();
+    if (!source) {
+        return;
+    }
+    const VtArray<SdfPath> locations = source->GetTypedValue(0.f);
+    if (locations.empty()) {
+        return;
+    }
+    Instancer& record = _instancers[path];
+    record.locations.assign(locations.cbegin(), locations.cend());
+    record.hidden.assign(record.locations.size(), false);
+    // The notice this came with carries the mask, so none is queued.
+    record.pending = true;
+    for (std::size_t i = 0; i < record.locations.size(); ++i) {
+        const SdfPath& location = record.locations[i];
+        _locations.emplace(location, std::make_pair(path, i));
+        if (!_rules.empty()) {
+            setInstanceHidden(path, record, i, instanceHiddenBy(governing(_rules, location)));
+        }
+    }
+    record.pending = false;
+}
+
+void
+SceneDrawFilter::forgetInstancer(const SdfPath& path)
+{
+    const auto found = _instancers.find(path);
+    if (found == _instancers.end()) {
+        return;
+    }
+    for (const SdfPath& location : found->second.locations) {
+        const auto range = _locations.equal_range(location);
+        for (auto it = range.first; it != range.second;) {
+            it = (it->second.first == path) ? _locations.erase(it) : std::next(it);
+        }
+    }
+    _maskedCount -= found->second.hiddenCount;
+    _instancers.erase(found);
+}
+
+bool
+SceneDrawFilter::setInstanceHidden(const SdfPath& instancer,
+                                   Instancer& record,
+                                   std::size_t index,
+                                   bool hidden)
+{
+    if (record.hidden[index] == hidden) {
+        return false;
+    }
+    record.hidden[index] = hidden;
+    if (hidden) {
+        ++record.hiddenCount;
+        ++_maskedCount;
+    } else {
+        --record.hiddenCount;
+        --_maskedCount;
+    }
+    if (!record.pending) {
+        record.pending = true;
+        _maskChanges.push_back(instancer);
+    }
+
+    return true;
+}
+
+// The instances at or below the changed rows, as no other instance's governing rule has changed.
+void
+SceneDrawFilter::updateInstances(const std::vector<SdfPath>& roots)
+{
+    for (const SdfPath& root : roots) {
+        for (auto it = _locations.lower_bound(root); (it != _locations.end()) && it->first.HasPrefix(root); ++it) {
+            const auto record = _instancers.find(it->second.first);
+            if (record != _instancers.end()) {
+                setInstanceHidden(it->second.first, record->second, it->second.second, instanceHiddenBy(governing(_rules, it->first)));
+            }
+        }
+    }
 }
 
 bool
 SceneDrawFilter::hasDrawnLights(const LightPredicate& counts) const
 {
-    for (const SdfPath& light : _lights) {
-        if ((!counts || counts(light)) && !isHidden(light, HdPrimTypeTokens->rectLight)) {
+    for (const Node* light : _lights) {
+        if ((light->output == eOutputShown) && (!counts || counts(*light->path))) {
             return true;
         }
     }
@@ -323,52 +581,75 @@ SceneDrawFilter::hidesLights() const
     const auto hidden = [](const Rules::value_type& rule) {
         return rule.second == eRuleHidden;
     };
-
-    return std::any_of(_rules.begin(), _rules.end(), hidden) || (_revealing && std::any_of(_revealFrom.begin(), _revealFrom.end(), hidden));
-}
-
-void
-SceneDrawFilter::trackLights(const HdSceneIndexObserver::AddedPrimEntries& entries)
-{
-    for (const HdSceneIndexObserver::AddedPrimEntry& entry : entries) {
-        if (HdPrimTypeIsLight(entry.primType)) {
-            _lights.insert(entry.primPath);
-        } else {
-            _lights.erase(entry.primPath);
-        }
-    }
-}
-
-// False lets a walk stop here: a row that goes on hiding a million prims must not visit them.
-bool
-SceneDrawFilter::mayChangeBelow(const SdfPath& path,
-                                bool toHidden) const
-{
-    if (hasRuleBelow(_rules, path) || hasRuleBelow(_revealFrom, path)) {
+    if (std::any_of(_rules.begin(), _rules.end(), hidden)) {
         return true;
     }
+    const auto held = [](const Node* light) {
+        return light->output != eOutputShown;
+    };
 
-    if ((hiddenBelow(_rules, path) == toHidden) && (hiddenBelow(_revealFrom, path) != toHidden)) {
-        return true;
-    }
-
-    return (underHiddenRow(_rules, path) == toHidden) && (underHiddenRow(_revealFrom, path) != toHidden);
+    return std::any_of(_lights.begin(), _lights.end(), held);
 }
 
 HdSceneIndexPrim
 SceneDrawFilter::GetPrim(const SdfPath& primPath) const
 {
     HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(primPath);
-    if (!isHideable(prim.primType) || !isHidden(primPath, prim.primType)) {
+    if ((_rules.empty() && !_revealing) || !isHideable(prim.primType)) {
         return prim;
     }
-    if (_invisible.count(primPath) != 0) {
+    const auto node = _nodes.find(primPath);
+    OutputEnum output = eOutputShown;
+    if (node != _nodes.end()) {
+        output = node->second.output;
+    } else if (hiddenFor(governing(_rules, primPath), primPath, HdPrimTypeIsLight(prim.primType))) {
+        output = eOutputAbsent;
+    }
+    switch (output) {
+    case eOutputShown:
+        return withMask(primPath, prim);
+    case eOutputInvisible:
         prim.dataSource = HdOverlayContainerDataSource::OverlayedContainerDataSources(invisibleData(), prim.dataSource);
 
         return prim;
+    case eOutputAbsent:
+        break;
     }
 
     return HdSceneIndexPrim();
+}
+
+// Over the mask the input authors, such as a point instancer's invisibleIds.
+HdSceneIndexPrim
+SceneDrawFilter::withMask(const SdfPath& primPath,
+                          HdSceneIndexPrim prim) const
+{
+    if (prim.primType != HdPrimTypeTokens->instancer) {
+        return prim;
+    }
+    const auto found = _instancers.find(primPath);
+    if ((found == _instancers.end()) || (found->second.hiddenCount == 0)) {
+        return prim;
+    }
+    const std::vector<bool>& hidden = found->second.hidden;
+    VtArray<bool> mask;
+    if (const HdBoolArrayDataSourceHandle authored = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetMask()) {
+        mask = authored->GetTypedValue(0.f);
+    }
+    if (mask.size() < hidden.size()) {
+        mask.resize(hidden.size(), true);
+    }
+    for (std::size_t i = 0; i < hidden.size(); ++i) {
+        if (hidden[i]) {
+            mask[i] = false;
+        }
+    }
+    const HdContainerDataSourceHandle overlay = HdRetainedContainerDataSource::New(
+        HdInstancerTopologySchema::GetSchemaToken(),
+        HdInstancerTopologySchema::Builder().SetMask(HdRetainedTypedSampledDataSource<VtArray<bool>>::New(mask)).Build());
+    prim.dataSource = HdOverlayContainerDataSource::OverlayedContainerDataSources(overlay, prim.dataSource);
+
+    return prim;
 }
 
 SdfPathVector
@@ -381,72 +662,243 @@ void
 SceneDrawFilter::seedRules(const Rules& rules)
 {
     _rules = rules;
+    _revealStack.clear();
+    _arrivalRoots.clear();
+    finishRevealIfDone();
+    std::vector<Frame> stack { rootFrame(_root, true) };
+    walk(&stack, eWalkSeed, (std::numeric_limits<std::size_t>::max)(), (Clock::time_point::max)());
+    updateInstances({ SdfPath::AbsoluteRootPath() });
+    for (const SdfPath& path : _maskChanges) {
+        _instancers[path].pending = false;
+    }
+    _maskChanges.clear();
 }
 
-SceneDrawFilter::OutputEnum
-SceneDrawFilter::heldOutput(const SdfPath& path) const
+SceneDrawFilter::Frame
+SceneDrawFilter::rootFrame(Node* node,
+                           bool structural) const
 {
-    return (_invisible.count(path) != 0) ? eOutputInvisible : eOutputAbsent;
+    const SdfPath& path = *node->path;
+    Frame frame { node, nullptr, governing(_rules, path), nullptr, hasRuleBelow(_rules, path), false, false, structural };
+    if (!structural) {
+        frame.was = governing(_revealFrom, path);
+        frame.belowWas = hasRuleBelow(_revealFrom, path);
+    }
+
+    return frame;
+}
+
+SceneDrawFilter::Frame
+SceneDrawFilter::childFrame(const Frame& parent,
+                            Node* child) const
+{
+    Frame frame { child, nullptr, parent.now, parent.was, false, false, false, parent.structural };
+    if (parent.belowNow) {
+        lookUpChild(_rules, *child->path, &frame.now, &frame.belowNow);
+    }
+    if (parent.belowWas) {
+        lookUpChild(_revealFrom, *child->path, &frame.was, &frame.belowWas);
+    }
+
+    return frame;
+}
+
+// False lets a walk stop here: a row that goes on hiding a million prims must not visit them.
+bool
+SceneDrawFilter::descends(const Frame& frame,
+                          unsigned mode) const
+{
+    if (!frame.node->firstChild) {
+        return false;
+    }
+    if (mode & eWalkSeed) {
+        return true;
+    }
+    if (frame.belowNow) {
+        return true;
+    }
+    const bool geometryHidden = geometryHiddenBelow(frame.now);
+    const bool lightsHidden = underHiddenRow(frame.now);
+    if (!frame.structural && !frame.belowWas && (geometryHidden == geometryHiddenBelow(frame.was)) && (lightsHidden == underHiddenRow(frame.was))) {
+        return false;
+    }
+
+    if ((mode & eWalkHide) && geometryHidden) {
+        return true;
+    }
+    if (!(mode & eWalkShow) || lightsHidden) {
+        return false;
+    }
+
+    // Under a boxed row only lights can show, so a reveal that row cut short ends within the step.
+    return !geometryHidden || hasLightBelow(*frame.node->path);
+}
+
+bool
+SceneDrawFilter::hasLightBelow(const SdfPath& path) const
+{
+    const std::set<SdfPath>::const_iterator next = _lightPaths.upper_bound(path);
+
+    return (next != _lightPaths.end()) && next->HasPrefix(path);
+}
+
+std::size_t
+SceneDrawFilter::visit(const Frame& frame,
+                       unsigned mode)
+{
+    Node& node = *frame.node;
+    if (!node.hideable) {
+        return 0;
+    }
+    const bool hidden = hiddenFor(frame.now, *node.path, node.light);
+    if (mode & eWalkSeed) {
+        setOutput(node, hidden ? eOutputAbsent : eOutputShown);
+
+        return 0;
+    }
+    if (hidden) {
+        if (mode & eWalkHide) {
+            const OutputEnum after = ((node.output == eOutputAbsent) || underHiddenRow(frame.now)) ? eOutputAbsent : eOutputInvisible;
+            if (after != node.output) {
+                transition(node, after);
+            }
+        }
+
+        return 0;
+    }
+    if ((mode & eWalkShow) && (node.output != eOutputShown)) {
+        transition(node, eOutputShown);
+
+        return 1;
+    }
+
+    return 0;
+}
+
+// Children are read only as each parent comes up, so a small batch does not pay for walking the
+// whole subtree first.
+std::size_t
+SceneDrawFilter::walk(std::vector<Frame>* stack,
+                      unsigned mode,
+                      std::size_t maxShown,
+                      Clock::time_point deadline)
+{
+    // Reading the clock costs about what a visit does.
+    const unsigned clockEvery = 512;
+    const bool timed = (deadline != (Clock::time_point::max)());
+    unsigned untilClock = clockEvery;
+    std::size_t shown = 0;
+    _stepCut = false;
+    while (!stack->empty() && (shown < maxShown)) {
+        if (timed && (--untilClock == 0)) {
+            untilClock = clockEvery;
+            if (Clock::now() >= deadline) {
+                _stepCut = true;
+                break;
+            }
+        }
+        Frame& frame = stack->back();
+        if (!frame.entered) {
+            frame.entered = true;
+            shown += visit(frame, mode);
+            if (!descends(frame, mode)) {
+                stack->pop_back();
+                continue;
+            }
+            frame.next = frame.node->firstChild;
+        }
+        Node* child = frame.next;
+        if (!child) {
+            stack->pop_back();
+            continue;
+        }
+        frame.next = child->next;
+        const Frame below = childFrame(frame, child);
+        stack->push_back(below);
+    }
+
+    return shown;
 }
 
 void
-SceneDrawFilter::transition(const SdfPath& path,
-                            const TfToken& primType,
-                            OutputEnum before,
+SceneDrawFilter::transition(Node& node,
                             OutputEnum after)
 {
-    if (after == eOutputInvisible) {
-        _invisible.insert(path);
-    } else {
-        _invisible.erase(path);
+    if (!node.pending) {
+        node.pending = true;
+        node.before = node.output;
+        _changes.push_back(&node);
     }
-    const auto at = _changeAt.emplace(path, _changes.size());
-    if (at.second) {
-        _changes.push_back(Change { path, primType, before, after });
-
-        return;
-    }
-    Change& change = _changes[at.first->second];
-    change.after = after;
-    if (!primType.IsEmpty()) {
-        change.primType = primType;
-    }
+    setOutput(node, after);
 }
 
 void
 SceneDrawFilter::sendChanges()
 {
-    HdSceneIndexObserver::AddedPrimEntries added;
-    HdSceneIndexObserver::DirtiedPrimEntries dirtied;
-    for (const Change& change : _changes) {
-        OutputEnum after = change.after;
-        if ((after == eOutputInvisible) && (change.before == eOutputAbsent)) {
+    std::size_t addedCount = 0;
+    for (Node* node : _changes) {
+        node->pending = false;
+        if ((node->output == eOutputInvisible) && (node->before == eOutputAbsent)) {
             // Shown and boxed again before Hydra heard of it: Hydra has still never held it.
-            _invisible.erase(change.path);
-            after = eOutputAbsent;
+            setOutput(*node, eOutputAbsent);
         }
-        if (after == change.before) {
-            continue;
-        }
-        if (after == eOutputAbsent) {
-            added.push_back(HdSceneIndexObserver::AddedPrimEntry(change.path, TfToken()));
-            ++_hiddenSent;
-        } else if ((after == eOutputShown) && (change.before == eOutputAbsent)) {
-            const TfToken primType = change.primType.IsEmpty() ? _GetInputSceneIndex()->GetPrim(change.path).primType : change.primType;
-            added.push_back(HdSceneIndexObserver::AddedPrimEntry(change.path, primType));
-            ++_shownSent;
-        } else {
-            dirtied.push_back(HdSceneIndexObserver::DirtiedPrimEntry(change.path, visibilityLocators()));
-            ++((after == eOutputShown) ? _shownSent : _hiddenSent);
+        if ((node->output != node->before) && ((node->output == eOutputAbsent) || (node->before == eOutputAbsent))) {
+            ++addedCount;
         }
     }
-    _changes.clear();
-    _changeAt.clear();
+    HdSceneIndexObserver::AddedPrimEntries added;
+    added.reserve(addedCount);
+    for (const Node* node : _changes) {
+        if (node->output == node->before) {
+            continue;
+        }
+        if (node->output == eOutputAbsent) {
+            added.emplace_back(*node->path, TfToken());
+            ++_hiddenSent;
+        } else if (node->before == eOutputAbsent) {
+            added.emplace_back(*node->path, node->type);
+            ++_shownSent;
+        }
+    }
     if (!added.empty()) {
         _SendPrimsAdded(added);
     }
+
+    // A dirtied entry carries its locator set inline, hundreds of bytes: a million-prim change built
+    // as one notice spends most of its time on that memory, where a batch at a time stays in cache.
+    const std::size_t dirtiedBatch = 4096;
+    HdSceneIndexObserver::DirtiedPrimEntries dirtied;
+    for (const Node* node : _changes) {
+        if ((node->output == node->before) || (node->output == eOutputAbsent) || (node->before == eOutputAbsent)) {
+            continue;
+        }
+        dirtied.emplace_back(*node->path, visibilityLocators());
+        ++((node->output == eOutputShown) ? _shownSent : _hiddenSent);
+        if (dirtied.size() == dirtiedBatch) {
+            _visibilitySent += dirtied.size();
+            _SendPrimsDirtied(dirtied);
+            dirtied.clear();
+        }
+    }
     if (!dirtied.empty()) {
         _visibilitySent += dirtied.size();
+        _SendPrimsDirtied(dirtied);
+        dirtied.clear();
+    }
+    _changes.clear();
+
+    for (const SdfPath& path : _maskChanges) {
+        const auto record = _instancers.find(path);
+        if (record != _instancers.end()) {
+            record->second.pending = false;
+        }
+        const auto node = _nodes.find(path);
+        if ((node == _nodes.end()) || (node->second.output != eOutputAbsent)) {
+            dirtied.emplace_back(path, maskLocators());
+        }
+    }
+    _maskChanges.clear();
+    if (!dirtied.empty()) {
         _SendPrimsDirtied(dirtied);
     }
 }
@@ -463,107 +915,137 @@ SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
                              std::size_t revealBatch)
 {
     Rules target = _rules;
-    std::set<SdfPath> hideRoots;
-    std::set<SdfPath> showRoots;
+    std::set<SdfPath> roots;
     for (const SceneDrawDelta* delta : deltas) {
         applyToRules(*delta, &target);
-        addPaths(delta->boxed, &hideRoots);
-        addPaths(delta->hidden, &hideRoots);
-        addPaths(delta->expanded, &hideRoots);
-        addPaths(delta->cleared, &hideRoots);
-        addPaths(delta->boxed, &showRoots);
-        addPaths(delta->hidden, &showRoots);
-        addPaths(delta->expanded, &showRoots);
-        addPaths(delta->cleared, &showRoots);
-        addPaths(delta->drawn, &showRoots);
+        addPaths(delta->drawn, &roots);
+        addPaths(delta->expanded, &roots);
+        addPaths(delta->boxed, &roots);
+        addPaths(delta->hidden, &roots);
+        addPaths(delta->cleared, &roots);
     }
-
-    if (_revealing) {
-        showRoots.insert(_revealRoots.begin(), _revealRoots.end());
-        _rules = std::move(_revealFrom);
-        _revealFrom.clear();
-        _revealing = false;
-        for (const SdfPath& path : _revealed) {
-            transition(path, TfToken(), eOutputShown, underHiddenRow(_rules, path) ? eOutputAbsent : eOutputInvisible);
-        }
-        _revealed.clear();
-        _revealStack.clear();
-        _revealRoots.clear();
-    }
-
     _revealFrom = std::move(_rules);
     _rules = std::move(target);
+    const std::vector<SdfPath> tops = topmost(roots);
+
+    // A frontier at or below a changed row goes, the change's own frame there taking its place.
+    // That frame and one below a frontier still under way cannot tell what Hydra has yet to be
+    // shown there from what the rules changed, so they look at every prim the rules show.
+    std::vector<bool> overlapping(tops.size(), false);
+    const auto underChanged = [&tops, &overlapping](const Frame& frame) {
+        const SdfPath& path = *frame.node->path;
+        std::vector<SdfPath>::const_iterator above = std::upper_bound(tops.begin(), tops.end(), path);
+        if ((above != tops.begin()) && path.HasPrefix(*std::prev(above))) {
+            overlapping[std::size_t(std::prev(above) - tops.begin())] = true;
+
+            return true;
+        }
+        for (; (above != tops.end()) && above->HasPrefix(path); ++above) {
+            overlapping[std::size_t(above - tops.begin())] = true;
+        }
+
+        return false;
+    };
+    _revealStack.erase(std::remove_if(_revealStack.begin(), _revealStack.end(), underChanged), _revealStack.end());
+
+    // Outside the changed rows the new rules agree with the old, so what a reveal under way has yet to
+    // announce is still to be shown, and nothing else there changes.
+    for (Frame& frame : _revealStack) {
+        const SdfPath& path = *frame.node->path;
+        frame.now = governing(_rules, path);
+        frame.belowNow = hasRuleBelow(_rules, path);
+        frame.was = nullptr;
+        frame.belowWas = false;
+        frame.structural = true;
+    }
+
+    std::vector<Frame> hiding;
+    std::vector<Frame> changed;
+    for (std::size_t i = tops.size(); i-- > 0;) {
+        const auto node = _nodes.find(tops[i]);
+        if (node != _nodes.end()) {
+            hiding.push_back(rootFrame(&node->second, false));
+            changed.push_back(rootFrame(&node->second, overlapping[i]));
+        }
+    }
+
+    const std::size_t all = (std::numeric_limits<std::size_t>::max)();
+    const Clock::time_point never = (Clock::time_point::max)();
+    walk(&hiding, eWalkHide, all, never);
+    if (revealBatch == 0) {
+        walk(&changed, eWalkShow, all, never);
+        walk(&_revealStack, eWalkShow, all, never);
+    } else {
+        _revealStack.insert(_revealStack.end(), changed.begin(), changed.end());
+    }
+    updateRevealRoots(deltas, tops, revealBatch);
+    // Masks change at once, reveal or not: an instance costs Hydra nothing to show.
+    updateInstances(tops);
     _revealing = true;
-
-    const HdSceneIndexBaseRefPtr& input = _GetInputSceneIndex();
-    SdfPathVector walk;
-    const std::vector<SdfPath> hideWalk = topmost(hideRoots);
-    walk.assign(hideWalk.rbegin(), hideWalk.rend());
-    while (!walk.empty()) {
-        const SdfPath path = walk.back();
-        walk.pop_back();
-        const TfToken primType = input->GetPrim(path).primType;
-        if (isHideable(primType) && hiddenFor(_rules, path, primType)) {
-            const OutputEnum before = hiddenFor(_revealFrom, path, primType) ? heldOutput(path) : eOutputShown;
-            const bool leaves = (before == eOutputAbsent) || underHiddenRow(_rules, path);
-            if (before != (leaves ? eOutputAbsent : eOutputInvisible)) {
-                transition(path, primType, before, leaves ? eOutputAbsent : eOutputInvisible);
-            }
-        }
-        if (mayChangeBelow(path, true)) {
-            const SdfPathVector children = input->GetChildPrimPaths(path);
-            walk.insert(walk.end(), children.rbegin(), children.rend());
-        }
-    }
-
-    _revealRoots = topmost(showRoots);
-    _revealStack.assign(_revealRoots.rbegin(), _revealRoots.rend());
-    if (_revealStack.empty()) {
-        finishRevealIfDone();
-    }
-    if ((revealBatch == 0) && _revealing) {
-        revealUpTo((std::numeric_limits<std::size_t>::max)());
-    }
-    sendChanges();
-}
-
-std::size_t
-SceneDrawFilter::stepReveal(std::size_t maxPrims)
-{
-    const std::size_t shown = revealUpTo(maxPrims);
-    sendChanges();
-
-    return shown;
-}
-
-std::size_t
-SceneDrawFilter::revealUpTo(std::size_t maxPrims)
-{
-    if (!_revealing) {
-        return 0;
-    }
-    const HdSceneIndexBaseRefPtr& input = _GetInputSceneIndex();
-    std::size_t shown = 0;
-    // Children are read only as each parent comes up, so a small batch does not pay for walking the
-    // whole subtree first.
-    while (!_revealStack.empty() && (shown < maxPrims)) {
-        const SdfPath path = _revealStack.back();
-        _revealStack.pop_back();
-        const TfToken primType = input->GetPrim(path).primType;
-        if (!hiddenFor(_rules, path, primType) && hiddenFor(_revealFrom, path, primType)) {
-            if (isHideable(primType) && _revealed.insert(path).second) {
-                transition(path, primType, heldOutput(path), eOutputShown);
-                ++shown;
-            }
-        }
-        if (mayChangeBelow(path, false)) {
-            const SdfPathVector children = input->GetChildPrimPaths(path);
-            _revealStack.insert(_revealStack.end(), children.rbegin(), children.rend());
-        }
-    }
     finishRevealIfDone();
+    sendChanges();
+}
+
+void
+SceneDrawFilter::updateRevealRoots(const std::vector<const SceneDrawDelta*>& deltas,
+                                   const std::vector<SdfPath>& changed,
+                                   std::size_t revealBatch)
+{
+    if (revealBatch == 0) {
+        _arrivalRoots.clear();
+        _removedHeld.clear();
+
+        return;
+    }
+    for (const SdfPath& top : changed) {
+        std::set<SdfPath>::iterator it = _arrivalRoots.lower_bound(top);
+        while ((it != _arrivalRoots.end()) && it->HasPrefix(top)) {
+            it = _arrivalRoots.erase(it);
+        }
+    }
+    for (const SceneDrawDelta* delta : deltas) {
+        for (const SceneDrawLoadRequest& load : delta->loads) {
+            const SdfPath path(load.path);
+            if (path.IsAbsolutePath() && path.IsPrimPath()) {
+                _arrivalRoots.insert(path);
+            }
+        }
+    }
+}
+
+// Lights come at once, as a reveal showing geometry in the dark would be no picture of the scene.
+bool
+SceneDrawFilter::defersArrival(const Node& node,
+                               bool known,
+                               OutputEnum before) const
+{
+    if (!node.hideable || node.light) {
+        return false;
+    }
+    if (known) {
+        return before == eOutputAbsent;
+    }
+
+    return _removedHeld.empty() || (_removedHeld.count(*node.path) == 0);
+}
+
+std::size_t
+SceneDrawFilter::stepReveal(std::size_t maxPrims,
+                            Clock::time_point deadline)
+{
+    const std::size_t shown = walk(&_revealStack, eWalkShow, maxPrims, deadline);
+    const bool cut = _stepCut;
+    finishRevealIfDone();
+    sendChanges();
+    _stepCut = cut;
 
     return shown;
+}
+
+void
+SceneDrawFilter::endRender()
+{
+    _removedHeld.clear();
 }
 
 void
@@ -574,8 +1056,6 @@ SceneDrawFilter::finishRevealIfDone()
     }
     _revealing = false;
     _revealFrom.clear();
-    _revealed.clear();
-    _revealRoots.clear();
 }
 
 void
@@ -584,34 +1064,66 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
 {
     _inputAdded += entries.size();
     _lastInputAdded = Clock::now();
-    trackLights(entries);
-    if (_rules.empty() && !_revealing) {
-        _SendPrimsAdded(entries);
-
-        return;
-    }
     HdSceneIndexObserver::AddedPrimEntries rewritten;
+    std::vector<Node*> arrived;
+    bool deferred = false;
     for (std::size_t i = 0; i < std::size_t(entries.size()); ++i) {
         const HdSceneIndexObserver::AddedPrimEntry& entry = entries[i];
-        if (!isHideable(entry.primType)) {
-            _invisible.erase(entry.primPath);
-
+        const bool arriving = !_arrivalRoots.empty() && entry.primPath.IsAbsolutePath()
+            && (SdfPathFindLongestPrefix(_arrivalRoots, entry.primPath) != _arrivalRoots.end());
+        bool known = false;
+        OutputEnum before = eOutputShown;
+        if (arriving) {
+            const auto found = _nodes.find(entry.primPath);
+            known = (found != _nodes.end());
+            before = known ? found->second.output : eOutputShown;
+        }
+        Node* node = indexPrim(entry.primPath, entry.primType);
+        if (!node) {
             continue;
         }
-        if (_revealing && !hiddenFor(_rules, entry.primPath, entry.primType) && hiddenFor(_revealFrom, entry.primPath, entry.primType)) {
-            // The reveal's walk may be past this prim's parent, and nothing would announce it then.
-            _revealed.insert(entry.primPath);
-            _invisible.erase(entry.primPath);
-
-            continue;
+        if (arriving && !node->arriving) {
+            node->arriving = true;
+            arrived.push_back(node);
         }
-        // A prim Hydra holds invisible stays held: passed on, its GetPrim() keeps it invisible.
-        if (isHidden(entry.primPath, entry.primType) && (_invisible.count(entry.primPath) == 0)) {
+        if (entry.primType == HdPrimTypeTokens->instancer) {
+            readInstancer(entry.primPath, _GetInputSceneIndex()->GetPrim(entry.primPath));
+        } else if (!_instancers.empty()) {
+            forgetInstancer(entry.primPath);
+        }
+        OutputEnum output = eOutputShown;
+        if (node->hideable && !_rules.empty()) {
+            const RulePtr rule = governing(_rules, entry.primPath);
+            if (hiddenFor(rule, entry.primPath, node->light)) {
+                // A prim Hydra holds invisible stays held: passed on, its GetPrim() keeps it invisible.
+                output = ((node->output == eOutputInvisible) && !underHiddenRow(rule)) ? eOutputInvisible : eOutputAbsent;
+            }
+        }
+        if ((output == eOutputShown) && arriving && defersArrival(*node, known, before)) {
+            output = eOutputAbsent;
+            deferred = true;
+        }
+        setOutput(*node, output);
+        if (output == eOutputAbsent) {
             if (rewritten.empty()) {
                 rewritten = entries;
             }
             rewritten[i].primType = TfToken();
         }
+    }
+    // A frame for each arrival whose parent did not arrive with it, which is the payload's own prim
+    // where a load resyncs its subtree.
+    for (std::size_t i = arrived.size(); i-- > 0;) {
+        Node* node = arrived[i];
+        if (deferred && !(node->parent && node->parent->arriving)) {
+            _revealStack.push_back(rootFrame(node, true));
+        }
+    }
+    for (Node* node : arrived) {
+        node->arriving = false;
+    }
+    if (deferred) {
+        _revealing = true;
     }
     _SendPrimsAdded(rewritten.empty() ? entries : rewritten);
 }
@@ -622,13 +1134,20 @@ SceneDrawFilter::_PrimsRemoved(const HdSceneIndexBase& /*sender*/,
 {
     _inputRemoved += entries.size();
     for (const HdSceneIndexObserver::RemovedPrimEntry& entry : entries) {
-        for (std::set<SdfPath>* held : { &_lights, &_invisible }) {
-            std::set<SdfPath>::iterator it = held->lower_bound(entry.primPath);
-            while ((it != held->end()) && it->HasPrefix(entry.primPath)) {
-                it = held->erase(it);
-            }
+        const auto found = _nodes.find(entry.primPath);
+        if (found == _nodes.end()) {
+            continue;
+        }
+        Node* node = &found->second;
+        if (node != _root) {
+            forget(node);
+            continue;
+        }
+        while (_root->firstChild) {
+            forget(_root->firstChild);
         }
     }
+    finishRevealIfDone();
     _SendPrimsRemoved(entries);
 }
 
@@ -637,24 +1156,88 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
                                const HdSceneIndexObserver::DirtiedPrimEntries& entries)
 {
     _inputDirtied += entries.size();
+    for (const HdSceneIndexObserver::DirtiedPrimEntry& entry : entries) {
+        if (entry.dirtyLocators.Intersects(HdInstancerTopologySchema::GetDefaultLocator())) {
+            const auto node = _nodes.find(entry.primPath);
+            if ((node != _nodes.end()) && (node->second.type == HdPrimTypeTokens->instancer)) {
+                readInstancer(entry.primPath, _GetInputSceneIndex()->GetPrim(entry.primPath));
+            }
+        }
+    }
     if (_rules.empty() && !_revealing) {
         _SendPrimsDirtied(entries);
 
         return;
     }
-    const HdSceneIndexBaseRefPtr& input = _GetInputSceneIndex();
     HdSceneIndexObserver::DirtiedPrimEntries kept;
     for (const HdSceneIndexObserver::DirtiedPrimEntry& entry : entries) {
-        const TfToken primType = input->GetPrim(entry.primPath).primType;
+        const auto node = _nodes.find(entry.primPath);
         // Storm defers an invisible prim's sync, keeping the dirty bits for when it shows again, so
-        // dropping them would show stale data.
-        if (!isHideable(primType) || !isHidden(entry.primPath, primType) || (_invisible.count(entry.primPath) != 0)) {
+        // only a prim out of Hydra can do without them.
+        if ((node == _nodes.end()) || !node->second.hideable || (node->second.output != eOutputAbsent)) {
             kept.push_back(entry);
         }
     }
     if (!kept.empty()) {
         _SendPrimsDirtied(kept);
     }
+}
+
+SceneRevealPacer::SceneRevealPacer(double targetMs,
+                                   std::size_t firstBatch)
+    : _targetMs(targetMs)
+    , _batch((std::max)(firstBatch, std::size_t(1)))
+    , _samples()
+{
+}
+
+void
+SceneRevealPacer::observe(std::size_t prims,
+                          double ms)
+{
+    if ((prims == 0) || !(ms >= 0.)) {
+        return;
+    }
+    _samples[_nextSample] = Sample { double(prims), ms };
+    _nextSample = (_nextSample + 1) % kSamples;
+    _sampleCount = (std::min)(_sampleCount + 1, kSamples);
+
+    double meanPrims = 0.;
+    double meanMs = 0.;
+    double longest = 0.;
+    for (std::size_t i = 0; i < _sampleCount; ++i) {
+        meanPrims += _samples[i].prims;
+        meanMs += _samples[i].ms;
+        longest = (std::max)(longest, _samples[i].ms);
+    }
+    meanPrims /= double(_sampleCount);
+    meanMs /= double(_sampleCount);
+    double spread = 0.;
+    double covariance = 0.;
+    for (std::size_t i = 0; i < _sampleCount; ++i) {
+        spread += (_samples[i].prims - meanPrims) * (_samples[i].prims - meanPrims);
+        covariance += (_samples[i].prims - meanPrims) * (_samples[i].ms - meanMs);
+    }
+    double fixedMs = -1.;
+    double perPrimMs = 0.;
+    // Batches of one size cannot tell the fixed part from the rest, nor can noise between close ones.
+    const double relative = 0.1 * meanPrims;
+    if ((_sampleCount >= 3) && (spread > relative * relative * double(_sampleCount))) {
+        perPrimMs = covariance / spread;
+        fixedMs = meanMs - perPrimMs * meanPrims;
+    }
+    if ((perPrimMs <= 0.) || (fixedMs < 0.) || (fixedMs > longest)) {
+        fixedMs = (std::min)(_fixedMs, 0.9 * ms);
+        perPrimMs = (ms - fixedMs) / double(prims);
+    }
+    _fixedMs = fixedMs;
+    _perPrimMs = (std::max)(perPrimMs, 1e-9);
+
+    const double wanted = (_fixedMs < 0.75 * _targetMs) ? ((_targetMs - _fixedMs) / _perPrimMs) : (_fixedMs / _perPrimMs);
+    const double current = double(_batch);
+    const double bounded = (std::min)((std::max)(wanted, current / 4.), current * 2.);
+    // The upper bound only keeps the conversion defined.
+    _batch = std::size_t((std::min)((std::max)(bounded, 1.), 1e15));
 }
 
 NATRON_NAMESPACE_EXIT

@@ -31,12 +31,15 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include <QActionGroup>
@@ -90,6 +93,7 @@
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
+#include "Serialization/NodeSerialization.h"
 
 // See UsdIncludes.h: oneTBB, which these include too, declares members named emit().
 #ifdef emit
@@ -120,6 +124,8 @@
 #include <pxr/imaging/hgi/texture.h>
 #include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usd/stageLoadRules.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/xformCache.h>
@@ -136,7 +142,9 @@
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
+#include "Gui/SceneDrawBoxes.h"
 #include "Gui/SceneDrawFilter.h"
+#include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGuides.h"
@@ -161,6 +169,14 @@ const int kMaxRenderPasses = 8;
 // A stage change usually reaches the screen sooner than this, and a status flashing over the old
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
+
+// A paced reveal aims for 30 frames a second, the rate a viewer still tumbles smoothly at.
+const double kRevealTargetMs = 33.;
+// A step looking at prims it finds nothing to show in, such as those of a subtree shown already,
+// stops here, so the frame it is part of still keeps to the target.
+const int kRevealStepDeadlineMs = 16;
+// Long enough to span the gaps between the moves of one drag.
+const int kRevealCameraYieldMs = 250;
 
 SdfPathVector
 toSdfPaths(const std::vector<std::string>& paths)
@@ -568,6 +584,41 @@ private:
 
     TfNotice::Key _key;
 };
+
+// One instance per box: corner picks between its min and max, a 0 or 1 per axis. A marker is a
+// cross of fixed size on screen around boxMin, corner its arm in pixels over markerScale.
+const char* const kBoxVertexShader = "#version 330 core\n"
+                                     "uniform mat4 viewProjection;\n"
+                                     "uniform int markers;\n"
+                                     "uniform vec2 markerScale;\n"
+                                     "layout(location = 0) in vec3 corner;\n"
+                                     "layout(location = 1) in vec3 boxMin;\n"
+                                     "layout(location = 2) in vec3 boxMax;\n"
+                                     "layout(location = 3) in vec3 boxColour;\n"
+                                     "out vec3 edgeColour;\n"
+                                     "void main() {\n"
+                                     "    edgeColour = boxColour;\n"
+                                     "    if (markers != 0) {\n"
+                                     "        vec4 centre = viewProjection * vec4(boxMin, 1.0);\n"
+                                     "        gl_Position = centre + vec4(corner.xy * markerScale * centre.w, 0.0, 0.0);\n"
+                                     "    } else {\n"
+                                     "        gl_Position = viewProjection * vec4(mix(boxMin, boxMax, corner), 1.0);\n"
+                                     "    }\n"
+                                     "}\n";
+const char* const kBoxFragmentShader = "#version 330 core\n"
+                                       "in vec3 edgeColour;\n"
+                                       "out vec4 colour;\n"
+                                       "void main() { colour = vec4(edgeColour, 1.0); }\n";
+const GLfloat kBoxEdges[] = {
+    0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0,
+    0, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 0, 0, 1,
+    0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1
+};
+const GLfloat kMarkerArms[] = { -1, 0, 0, 1, 0, 0, 0, -1, 0, 0, 1, 0 };
+const int kBoxFloats = 9;
+const float kMarkerPixels = 6.f;
+// Beyond a marker's arms, so a click need not land on its one-pixel lines.
+const float kMarkerPickSlack = 2.f;
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -634,7 +685,35 @@ struct SceneViewportRenderer::Implementation {
     std::unique_ptr<SceneStage> sceneStage;
     // The same object, readable without the lock by those who only queue load requests.
     std::atomic<SceneStage*> loadStage { nullptr };
+    // Load requests made before the first sync made the stage, handed to it then. The mutex also
+    // orders them against loadStage being set, so that none falls between.
+    std::mutex earlyLoadsMutex;
+    std::vector<SceneDrawLoadRequest> earlyLoads;
+    // The stage's load rules as its last load commit left them, for saving without the stage lock.
+    std::mutex loadRulesMutex;
+    SceneLoadRules loadRules;
+    bool loadRulesMade = false;
     SceneWriteBarrier::ParticipantId participant = 0;
+
+    // With the stage lock held exclusively, which also orders the writes of loadRulesMade.
+    void publishLoadRules()
+    {
+        SceneLoadRules rules;
+        for (const std::pair<SdfPath, UsdStageLoadRules::Rule>& rule : sceneStage->getStage()->GetLoadRules().GetRules()) {
+            SceneLoadRuleEnum saved = eSceneLoadRuleNone;
+            if (rule.second == UsdStageLoadRules::AllRule) {
+                saved = eSceneLoadRuleAll;
+            } else if (rule.second == UsdStageLoadRules::OnlyRule) {
+                saved = eSceneLoadRuleOnly;
+            } else if (rule.first.IsAbsoluteRootPath()) {
+                continue;
+            }
+            rules[rule.first.GetString()] = saved;
+        }
+        std::lock_guard<std::mutex> lock(loadRulesMutex);
+        loadRules.swap(rules);
+        loadRulesMade = true;
+    }
 
     // Written by sync on whichever thread runs it, read by the main thread.
     std::atomic<bool> shown;
@@ -677,8 +756,42 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> drawRevealing { false };
     std::atomic<bool> drawRevealStepDue { true };
     std::size_t drawRevealBatch = 0;
+    // A paced step is timed from its start to the end of the render that sent it to Hydra, which is
+    // where its cost lands.
+    SceneRevealPacer drawRevealPacer { kRevealTargetMs };
+    bool drawRevealStepTimed = false;
+    std::size_t drawRevealStepPrims = 0;
+    std::chrono::steady_clock::time_point drawRevealStepStart;
+    unsigned long long drawRevealSteps = 0;
+    // When the user last moved the camera, as steady clock ticks.
+    std::atomic<long long> cameraMovedAt { 0 };
+    // Background frames take the reveal steps then, so a render the main thread waits for takes none.
+    std::atomic<bool> backgroundFramesUsed { false };
     SceneDrawFilter::Rules drawRules;
     SceneDrawFilter::WeakPtr drawFilter;
+    // The list the box buffer holds, and how many of its boxes the last frame drew.
+    SceneDrawBoxes::ListPtr uploadedBoxes;
+    // What the last frame drew, which is what a click picks from.
+    SceneDrawBoxes::ListPtr drawnBoxList;
+    // Cleared by the main thread when the selection changes, as the buffer colours the boxes
+    // holding a selected prim.
+    std::atomic<bool> boxColoursValid { false };
+    std::vector<bool> boxHighlighted;
+    bool recordDrawnBoxes = false;
+    std::vector<DrawnBox> drawnBoxes;
+    // Bumped with each change of drawRules, so the guides follow them.
+    U64 drawRulesVersion = 0;
+    GLuint boxProgram = 0;
+    GLuint boxVao = 0;
+    GLuint boxEdgeBuffer = 0;
+    GLuint boxInstanceBuffer = 0;
+    GLsizei boxInstances = 0;
+    GLuint markerVao = 0;
+    GLuint markerArmBuffer = 0;
+    GLuint markerInstanceBuffer = 0;
+    GLsizei markerInstances = 0;
+    std::atomic<int> boxesDrawn { 0 };
+    std::atomic<int> markersDrawn { 0 };
     std::atomic<bool> everyLightHidden { false };
     StageNoticeCounter stageNotices;
     bool stageNoticesRegistered = false;
@@ -793,6 +906,7 @@ struct SceneViewportRenderer::Implementation {
     std::shared_ptr<const StageSummary> guidesSummary;
     std::vector<SceneGuides::Guide> guides;
     bool guidesValid = false;
+    U64 guidesRulesVersion = 0;
     double guidesTimeCode = 0.;
     double guidesLength = 0.;
     std::atomic<double> guideSize { 1. };
@@ -1062,9 +1176,21 @@ struct SceneViewportRenderer::Implementation {
         const std::shared_ptr<const StageSummary> summary = getStageSummary();
         const double time = timeCode();
         const double length = guideLength();
-        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length)) {
+        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length) || (guidesRulesVersion != drawRulesVersion)) {
             const UsdStageRefPtr stage = currentStage();
-            guides = (stage && summary) ? SceneGuides::buildGuides(stage, summary->guidePrims, UsdTimeCode(time), length) : std::vector<SceneGuides::Guide>();
+            guides.clear();
+            if (stage && summary) {
+                // A Hidden row takes its cameras' and lights' guides with it.
+                std::vector<SceneGuides::GuidePrim> shown;
+                shown.reserve(summary->guidePrims.size());
+                for (const SceneGuides::GuidePrim& prim : summary->guidePrims) {
+                    if (!SceneDrawFilter::isUnderHiddenRow(drawRules, prim.path)) {
+                        shown.push_back(prim);
+                    }
+                }
+                guides = SceneGuides::buildGuides(stage, shown, UsdTimeCode(time), length);
+            }
+            guidesRulesVersion = drawRulesVersion;
             guidesSummary = summary;
             guidesTimeCode = time;
             guidesLength = length;
@@ -1576,6 +1702,10 @@ struct SceneViewportRenderer::Implementation {
         std::lock_guard<std::mutex> lock(drawMutex);
         drawStats.filterBound = (filter != nullptr);
         drawStats.revealing = drawRevealing;
+        drawStats.revealBatch = drawRevealPacer.nextBatch();
+        drawStats.revealFixedMs = drawRevealPacer.getFixedMs();
+        drawStats.revealPerPrimUs = drawRevealPacer.getPerPrimMs() * 1000.;
+        drawStats.revealSteps = drawRevealSteps;
         drawStats.ruleCount = drawRules.size();
         if (!filter) {
             return;
@@ -1587,6 +1717,7 @@ struct SceneViewportRenderer::Implementation {
         drawStats.shownSent = filter->getShownSentCount();
         drawStats.visibilitySent = filter->getVisibilitySentCount();
         drawStats.heldInvisible = filter->getHeldInvisibleCount();
+        drawStats.maskedInstances = filter->getMaskedInstanceCount();
         if (drawStats.inputAdded != 0) {
             // The harness compares this with its own wall clock, and the filter keeps a steady one.
             const auto sinceAdded = SceneDrawFilter::Clock::now() - filter->getLastInputAddedTime();
@@ -1595,9 +1726,24 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
+    void noteCameraMoved()
+    {
+        cameraMovedAt = std::chrono::steady_clock::now().time_since_epoch().count();
+    }
+
+    bool yieldsToCamera() const
+    {
+        const long long movedAt = cameraMovedAt;
+
+        return (movedAt != 0)
+            && ((std::chrono::steady_clock::now().time_since_epoch().count() - movedAt)
+                < std::chrono::steady_clock::duration(std::chrono::milliseconds(kRevealCameraYieldMs)).count());
+    }
+
     // Needs stageMutex, the GL context current and an engine, between renders: the notices reach the
-    // render index directly.
-    void serviceDrawFilter()
+    // render index directly. A reveal step goes only into a frame, which is what shows it and what
+    // its cost is timed by.
+    void serviceDrawFilter(bool mayStep)
     {
         std::vector<QueuedDrawDelta> queued;
         U64 posted = 0;
@@ -1611,7 +1757,7 @@ struct SceneViewportRenderer::Implementation {
         const U64 appliedBefore = drawApplied;
         unsigned long long hiddenBefore = 0;
         unsigned long long shownBefore = 0;
-        if (timing && (!queued.empty() || (filter && filter->isRevealing() && drawRevealStepDue))) {
+        if (timing && (!queued.empty() || (mayStep && filter && filter->isRevealing() && drawRevealStepDue))) {
             timing->applyStarting();
             if (filter) {
                 hiddenBefore = filter->getHiddenSentCount();
@@ -1629,14 +1775,29 @@ struct SceneViewportRenderer::Implementation {
             deltas.push_back(&entry.delta);
         }
         if (!queued.empty()) {
+            ++drawRulesVersion;
+        }
+        if (!queued.empty() && boxes) {
+            boxes->setRules(drawRules);
+        }
+        if (!queued.empty()) {
             if (filter) {
                 filter->applyDeltas(deltas, drawRevealBatch);
             }
             drawRevealStepDue = true;
         }
         std::size_t stepped = 0;
-        if (filter && filter->isRevealing() && drawRevealStepDue.exchange(false)) {
-            stepped = filter->stepReveal(drawRevealBatch);
+        drawRevealStepTimed = false;
+        if (mayStep && filter && filter->isRevealing() && !yieldsToCamera() && drawRevealStepDue.exchange(false)) {
+            const bool paced = (drawRevealBatch == SceneViewportRenderer::kRevealPaced);
+            const std::chrono::steady_clock::time_point stepStart = std::chrono::steady_clock::now();
+            stepped = filter->stepReveal(paced ? drawRevealPacer.nextBatch() : drawRevealBatch,
+                                         stepStart + std::chrono::milliseconds(kRevealStepDeadlineMs));
+            ++drawRevealSteps;
+            // A step the deadline cut short says nothing of what its prims cost.
+            drawRevealStepTimed = paced && (stepped != 0) && !filter->wasStepCut();
+            drawRevealStepPrims = stepped;
+            drawRevealStepStart = stepStart;
         }
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
         const double ms = std::chrono::duration<double, std::milli>(end - start).count();
@@ -1657,6 +1818,21 @@ struct SceneViewportRenderer::Implementation {
         }
         refreshLightsHidden();
         refreshDrawStats();
+    }
+
+    // Needs stageMutex. After the renders of a frame: a load landing in one starts a reveal there.
+    void noteDrawFilterRendered(bool rendered)
+    {
+        SceneDrawFilter* filter = get_pointer(drawFilter);
+        if (!filter) {
+            return;
+        }
+        filter->endRender();
+        if (drawRevealStepTimed && rendered) {
+            drawRevealPacer.observe(drawRevealStepPrims, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawRevealStepStart).count());
+        }
+        drawRevealStepTimed = false;
+        drawRevealing = filter->isRevealing();
     }
 
     // The GL state both kinds of frame start from.
@@ -2343,6 +2519,250 @@ struct SceneViewportRenderer::Implementation {
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
     } // drawGuides
+
+    // Tells the box worker the frame's time and the stage's version. Needs stageMutex.
+    void feedBoxes()
+    {
+        if (boxes) {
+            boxes->setTime(timeCode());
+            boxes->setStageVersion(stageEditCount + stageLoadEditCount);
+        }
+    }
+
+    bool hasBoxes() const
+    {
+        const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
+
+        return list && !list->boxes.empty();
+    }
+
+    bool ensureBoxProgram()
+    {
+        if (boxProgram) {
+            return true;
+        }
+        const GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+        const GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(vertex, 1, &kBoxVertexShader, nullptr);
+        glShaderSource(fragment, 1, &kBoxFragmentShader, nullptr);
+        glCompileShader(vertex);
+        glCompileShader(fragment);
+        const GLuint program = glCreateProgram();
+        glAttachShader(program, vertex);
+        glAttachShader(program, fragment);
+        glLinkProgram(program);
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        GLint linked = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            glDeleteProgram(program);
+
+            return false;
+        }
+        boxProgram = program;
+        const auto makeVao = [](GLuint* vao, GLuint* shape, GLuint* instances, const GLfloat* vertices, GLsizeiptr size) {
+            glGenVertexArrays(1, vao);
+            glGenBuffers(1, shape);
+            glGenBuffers(1, instances);
+            glBindVertexArray(*vao);
+            glBindBuffer(GL_ARRAY_BUFFER, *shape);
+            glBufferData(GL_ARRAY_BUFFER, size, vertices, GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+            glBindBuffer(GL_ARRAY_BUFFER, *instances);
+            for (GLuint attribute = 1; attribute <= 3; ++attribute) {
+                glEnableVertexAttribArray(attribute);
+                glVertexAttribPointer(attribute, 3, GL_FLOAT, GL_FALSE, kBoxFloats * sizeof(GLfloat), reinterpret_cast<const void*>((attribute - 1) * 3 * sizeof(GLfloat)));
+                glVertexAttribDivisor(attribute, 1);
+            }
+        };
+        makeVao(&boxVao, &boxEdgeBuffer, &boxInstanceBuffer, kBoxEdges, sizeof(kBoxEdges));
+        makeVao(&markerVao, &markerArmBuffer, &markerInstanceBuffer, kMarkerArms, sizeof(kMarkerArms));
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        uploadedBoxes.reset();
+
+        return true;
+    } // ensureBoxProgram
+
+    // Which boxes hold a selected prim. Boxed rows never nest, so a selected prim deep in a boxed
+    // branch lights the one box drawn for its nearest boxed ancestor.
+    void findHighlightedBoxes(const SceneDrawBoxes::List& list)
+    {
+        boxHighlighted.assign(list.boxes.size(), false);
+        if (selected.empty()) {
+            return;
+        }
+        std::unordered_set<SdfPath, SdfPath::Hash> lit;
+        for (const std::string& path : selected) {
+            if (!SdfPath::IsValidPathString(path)) {
+                continue;
+            }
+            for (SdfPath at(path); !at.IsEmpty() && !at.IsAbsoluteRootPath(); at = at.GetParentPath()) {
+                if (!lit.insert(at).second) {
+                    break;
+                }
+            }
+        }
+        for (std::size_t index = 0; index < list.boxes.size(); ++index) {
+            boxHighlighted[index] = (lit.count(list.boxes[index].path) != 0);
+        }
+    }
+
+    // The box's projected centre and screen rectangle, if its centre is in front of the eye.
+    void recordDrawnBox(const SceneGizmo::View& view,
+                        const SceneDrawBoxes::Box& box,
+                        bool highlighted)
+    {
+        static const char* const kKindNames[] = { "box", "unloaded", "marker", "pending" };
+        DrawnBox drawn;
+        GfVec2d centre;
+        if (!SceneGizmo::project(view, (GfVec3d(box.min) + GfVec3d(box.max)) * 0.5, &centre)) {
+            return;
+        }
+        drawn.path = box.path.GetString();
+        drawn.kind = kKindNames[box.kind];
+        drawn.highlighted = highlighted;
+        drawn.x = centre[0];
+        drawn.y = centre[1];
+        drawn.left = drawn.right = centre[0];
+        drawn.top = drawn.bottom = centre[1];
+        for (int corner = 0; corner < 8; ++corner) {
+            const GfVec3d at((corner & 1) ? box.max[0] : box.min[0], (corner & 2) ? box.max[1] : box.min[1], (corner & 4) ? box.max[2] : box.min[2]);
+            GfVec2d p;
+            if (SceneGizmo::project(view, at, &p)) {
+                drawn.left = std::min(drawn.left, p[0]);
+                drawn.right = std::max(drawn.right, p[0]);
+                drawn.top = std::min(drawn.top, p[1]);
+                drawn.bottom = std::max(drawn.bottom, p[1]);
+            }
+        }
+        drawnBoxes.push_back(drawn);
+    }
+
+    // One draw call for the boxes and one for the markers, however many, depth-tested against the
+    // frame's depth like the guides. Unloaded rows are tinted; a pending row's marker is grey; a
+    // box holding a selected prim takes the guides' selection colour.
+    void drawBoxes(const GfFrustum& frustum,
+                   int width,
+                   int height)
+    {
+        const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
+
+        boxesDrawn = 0;
+        markersDrawn = 0;
+        drawnBoxList.reset();
+        drawnBoxes.clear();
+        if (!list || list->boxes.empty() || !ensureBoxProgram()) {
+            return;
+        }
+        const bool coloursValid = boxColoursValid.exchange(true);
+        if ((list != uploadedBoxes) || !coloursValid) {
+            findHighlightedBoxes(*list);
+            std::vector<GLfloat> boxData;
+            std::vector<GLfloat> markerData;
+            for (std::size_t index = 0; index < list->boxes.size(); ++index) {
+                const SceneDrawBoxes::Box& box = list->boxes[index];
+                GfVec3f colour(0.55f, 0.75f, 0.95f);
+                if (boxHighlighted[index]) {
+                    colour = GfVec3f(1.f, 0.8f, 0.1f);
+                } else if ((box.kind == SceneDrawBoxes::eKindUnloaded) || (box.kind == SceneDrawBoxes::eKindMarker)) {
+                    colour = GfVec3f(0.95f, 0.7f, 0.35f);
+                } else if (box.kind == SceneDrawBoxes::eKindPending) {
+                    colour = GfVec3f(0.6f, 0.6f, 0.6f);
+                }
+                std::vector<GLfloat>& data = ((box.kind == SceneDrawBoxes::eKindMarker) || (box.kind == SceneDrawBoxes::eKindPending)) ? markerData : boxData;
+                data.insert(data.end(), { box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2], colour[0], colour[1], colour[2] });
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, boxInstanceBuffer);
+            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(boxData.size() * sizeof(GLfloat)), boxData.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, markerInstanceBuffer);
+            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(markerData.size() * sizeof(GLfloat)), markerData.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            boxInstances = GLsizei(boxData.size() / kBoxFloats);
+            markerInstances = GLsizei(markerData.size() / kBoxFloats);
+            uploadedBoxes = list;
+        }
+        if ((boxInstances == 0) && (markerInstances == 0)) {
+            return;
+        }
+        drawnBoxList = list;
+        if (recordDrawnBoxes) {
+            const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+            for (std::size_t index = 0; index < list->boxes.size(); ++index) {
+                recordDrawnBox(view, list->boxes[index], boxHighlighted[index]);
+            }
+        }
+        // GfMatrix4d is row-major with row vectors, so its memory is what GL reads as column-major
+        // with column vectors, and view * projection here is projection * view there.
+        const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
+        glUseProgram(boxProgram);
+        glUniformMatrix4fv(glGetUniformLocation(boxProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
+        glLineWidth(1.f);
+        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 0);
+        glBindVertexArray(boxVao);
+        glDrawArraysInstanced(GL_LINES, 0, 24, boxInstances);
+        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 1);
+        glUniform2f(glGetUniformLocation(boxProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
+        glBindVertexArray(markerVao);
+        glDrawArraysInstanced(GL_LINES, 0, 4, markerInstances);
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_DEPTH_TEST);
+        boxesDrawn = int(boxInstances);
+        markersDrawn = int(markerInstances);
+    } // drawBoxes
+
+    void releaseBoxesGL()
+    {
+        if (boxProgram) {
+            glDeleteProgram(boxProgram);
+            glDeleteVertexArrays(1, &boxVao);
+            glDeleteBuffers(1, &boxEdgeBuffer);
+            glDeleteBuffers(1, &boxInstanceBuffer);
+            glDeleteVertexArrays(1, &markerVao);
+            glDeleteBuffers(1, &markerArmBuffer);
+            glDeleteBuffers(1, &markerInstanceBuffer);
+            boxProgram = 0;
+            boxVao = 0;
+            boxEdgeBuffer = 0;
+            boxInstanceBuffer = 0;
+            markerVao = 0;
+            markerArmBuffer = 0;
+            markerInstanceBuffer = 0;
+        }
+        uploadedBoxes.reset();
+        drawnBoxList.reset();
+        boxInstances = 0;
+        markerInstances = 0;
+    }
+
+    // The drawn box or marker under the pixel (x, y) of the frustum's width x height view, -1 for
+    // none. Needs stageMutex.
+    int pickBox(const GfFrustum& frustum,
+                int width,
+                int height,
+                int x,
+                int y,
+                GfVec3d* point) const
+    {
+        if (!drawnBoxList) {
+            return -1;
+        }
+
+        return SceneDrawBoxes::pick(*drawnBoxList, frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix(), width, height,
+                                    GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack, point);
+    }
+
+    // Last, so that it goes first: its worker reads the members above.
+    std::unique_ptr<SceneDrawBoxes> boxes;
 };
 
 SceneViewportRenderer::SceneViewportRenderer()
@@ -2374,6 +2794,26 @@ SceneViewportRenderer::SceneViewportRenderer()
             listener();
         } }, kBackgroundLinear));
     _imp->progressive->setThreads(&refineThreads);
+    // Like any other reader, the box worker lets a failed try to edit know when it lets go, and
+    // ends its pass for a waiting edit.
+    _imp->boxes.reset(new SceneDrawBoxes([imp](const SceneDrawBoxes::StageRead& read) {
+        SceneWriteBarrier::ReadScope readScope;
+        {
+            std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+            const bool shown = imp->shown && imp->sceneStage && imp->sceneStage->isValid();
+            read(shown ? imp->sceneStage->getStage() : UsdStageRefPtr(), imp->stageEditCount + imp->stageLoadEditCount);
+        }
+        if (imp->exclusiveOwed.exchange(false) && imp->readEnded) {
+            imp->readEnded();
+        } }, [imp]() { return (imp->exclusiveWaiting > 0) || imp->exclusiveOwed; }, [imp]() {
+        std::function<void()> listener;
+        {
+            std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
+            listener = imp->refineListener;
+        }
+        if (listener) {
+            listener();
+        } }));
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
@@ -2381,6 +2821,7 @@ SceneViewportRenderer::~SceneViewportRenderer()
     // Its worker reads the stage's layers under stageMutex: joined while the barrier still holds
     // writes back for it.
     _imp->progressive.reset();
+    _imp->boxes.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
     if (_imp->refineTexture || _imp->refineDepthBuffer) {
@@ -2429,7 +2870,12 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         if (!_imp->sceneStage) {
             // The viewer shows what was asked for: nothing loads until a load is requested.
             _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
+            std::lock_guard<std::mutex> earlyLock(_imp->earlyLoadsMutex);
             _imp->loadStage = _imp->sceneStage.get();
+            for (const SceneDrawLoadRequest& load : _imp->earlyLoads) {
+                _imp->sceneStage->requestLoad(toSdfPaths(std::vector<std::string>(1, load.path)), load.withDescendants, toSdfPaths(load.excluded));
+            }
+            _imp->earlyLoads.clear();
         }
         if (!_imp->sceneStage->isValid()) {
             _imp->shown = false;
@@ -2438,6 +2884,9 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
             }
 
             return false;
+        }
+        if (!_imp->loadRulesMade) {
+            _imp->publishLoadRules();
         }
         SceneLoadSetPtr evaluatedFor;
         SceneLoadReachPtr reach;
@@ -2627,7 +3076,7 @@ SceneViewportRenderer::needsBackgroundFrame() const
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
         || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
-        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue);
+        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue && !_imp->yieldsToCamera());
 }
 
 void
@@ -2655,12 +3104,34 @@ SceneViewportRenderer::applyPendingDrawDeltas()
             StormGLStateGuard guard;
             StormGLSection section;
             section.collectWith(_imp->engine->GetHgi());
-            _imp->serviceDrawFilter();
+            _imp->serviceDrawFilter(false);
         }
     }
     if (_imp->exclusiveOwed.exchange(false) && _imp->readEnded) {
         _imp->readEnded();
     }
+}
+
+bool
+SceneViewportRenderer::postDrawChange(const SceneDrawChange& change,
+                                      std::size_t revealBatch)
+{
+    const SceneDrawDelta& delta = change.delta;
+    // Loads alone go to the filter too when revealed, for it to know where what they bring in goes.
+    const bool posted = !delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()
+        || ((revealBatch != 0) && !delta.loads.empty());
+
+    if (posted) {
+        postDrawDelta(delta, revealBatch, change.startedAt);
+    }
+    if (!change.cancelledLoads.empty()) {
+        cancelStageLoads(change.cancelledLoads);
+    }
+    for (const SceneDrawLoadRequest& load : delta.loads) {
+        requestStageLoad(std::vector<std::string>(1, load.path), load.withDescendants, load.excluded);
+    }
+
+    return posted;
 }
 
 bool
@@ -2673,6 +3144,43 @@ void
 SceneViewportRenderer::noteDrawRevealPresented()
 {
     _imp->drawRevealStepDue = true;
+}
+
+int
+SceneViewportRenderer::getRevealYieldMs() const
+{
+    const long long movedAt = _imp->cameraMovedAt;
+    if (movedAt == 0) {
+        return 0;
+    }
+    const std::chrono::steady_clock::duration since(std::chrono::steady_clock::now().time_since_epoch().count() - movedAt);
+    const long long left = kRevealCameraYieldMs - std::chrono::duration_cast<std::chrono::milliseconds>(since).count();
+
+    return (left > 0) ? int(left) : 0;
+}
+
+int
+SceneViewportRenderer::getDrawnBoxCount() const
+{
+    return _imp->boxesDrawn;
+}
+
+int
+SceneViewportRenderer::getDrawnMarkerCount() const
+{
+    return _imp->markersDrawn;
+}
+
+void
+SceneViewportRenderer::setRecordDrawnBoxes(bool record)
+{
+    _imp->recordDrawnBoxes = record;
+}
+
+const std::vector<SceneViewportRenderer::DrawnBox>&
+SceneViewportRenderer::getDrawnBoxes() const
+{
+    return _imp->drawnBoxes;
 }
 
 SceneViewportRenderer::DrawFilterStats
@@ -2701,6 +3209,7 @@ bool
 SceneViewportRenderer::prepareBackgroundFrame(int width,
                                               int height)
 {
+    _imp->backgroundFramesUsed = true;
     if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded() || !needsBackgroundFrame()) {
         return false;
     }
@@ -2770,7 +3279,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         return;
     }
     section.collectWith(_imp->engine->GetHgi());
-    _imp->serviceDrawFilter();
+    _imp->serviceDrawFilter(true);
     frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
 
@@ -2810,6 +3319,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 
         return;
     }
+    _imp->noteDrawFilterRendered(passes != 0);
     if (passes == 0) {
         return;
     }
@@ -2832,13 +3342,23 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 
 void
 SceneViewportRenderer::requestStageLoad(const std::vector<std::string>& paths,
-                                        bool withDescendants)
+                                        bool withDescendants,
+                                        const std::vector<std::string>& excluded)
 {
     SceneStage* stage = _imp->loadStage;
 
-    if (stage) {
-        stage->requestLoad(toSdfPaths(paths), withDescendants);
+    if (!stage) {
+        std::lock_guard<std::mutex> lock(_imp->earlyLoadsMutex);
+        stage = _imp->loadStage;
+        if (!stage) {
+            for (const std::string& path : paths) {
+                _imp->earlyLoads.push_back(SceneDrawLoadRequest { path, withDescendants, excluded });
+            }
+
+            return;
+        }
     }
+    stage->requestLoad(toSdfPaths(paths), withDescendants, toSdfPaths(excluded));
 }
 
 void
@@ -2856,9 +3376,35 @@ SceneViewportRenderer::cancelStageLoads()
 {
     SceneStage* stage = _imp->loadStage;
 
-    if (stage) {
-        stage->cancelPendingLoads();
+    if (!stage) {
+        std::lock_guard<std::mutex> lock(_imp->earlyLoadsMutex);
+        stage = _imp->loadStage;
+        if (!stage) {
+            _imp->earlyLoads.clear();
+
+            return;
+        }
     }
+    stage->cancelPendingLoads();
+}
+
+void
+SceneViewportRenderer::cancelStageLoads(const std::vector<std::string>& paths)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        std::lock_guard<std::mutex> lock(_imp->earlyLoadsMutex);
+        stage = _imp->loadStage;
+        if (!stage) {
+            const std::set<std::string> cancelled(paths.begin(), paths.end());
+            std::vector<SceneDrawLoadRequest>& early = _imp->earlyLoads;
+            early.erase(std::remove_if(early.begin(), early.end(), [&cancelled](const SceneDrawLoadRequest& load) { return cancelled.count(load.path) != 0; }), early.end());
+
+            return;
+        }
+    }
+    stage->cancelPendingLoads(toSdfPaths(paths));
 }
 
 bool
@@ -2867,6 +3413,22 @@ SceneViewportRenderer::hasPendingStageLoads() const
     const SceneStage* stage = _imp->loadStage;
 
     return stage && stage->hasPendingLoads();
+}
+
+bool
+SceneViewportRenderer::hasOutstandingStageLoads() const
+{
+    const SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        std::lock_guard<std::mutex> lock(_imp->earlyLoadsMutex);
+        stage = _imp->loadStage;
+        if (!stage) {
+            return !_imp->earlyLoads.empty();
+        }
+    }
+
+    return stage->hasOutstandingLoads();
 }
 
 void
@@ -2948,6 +3510,9 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
         const std::unique_lock<std::shared_mutex> lock = imp->lockExclusive();
         section();
         imp->stageLoadEditCount = stage->getLoadEditCount();
+        if (stage->isValid()) {
+            imp->publishLoadRules();
+        }
         const SceneLoadSetPtr committedLoadSet = stage->getLoadSet();
         if (!committedLoadSet) {
             return;
@@ -3037,6 +3602,15 @@ SceneViewportRenderer::getStageLoadFailures() const
     }
 
     return result;
+}
+
+bool
+SceneViewportRenderer::getStageLoadRules(SceneLoadRules* rules) const
+{
+    std::lock_guard<std::mutex> lock(_imp->loadRulesMutex);
+    *rules = _imp->loadRules;
+
+    return _imp->loadRulesMade;
 }
 
 U64
@@ -3461,6 +4035,7 @@ void
 SceneViewportRenderer::tumble(double azimuthDegrees,
                               double elevationDegrees)
 {
+    _imp->noteCameraMoved();
     _imp->lookThrough.clear();
     // Tumbling an orthographic view leaves its axis.
     _imp->freeCamera.viewMode = eViewModePerspective;
@@ -3473,6 +4048,7 @@ SceneViewportRenderer::pan(double dxPixels,
                            double dyPixels,
                            int viewHeight)
 {
+    _imp->noteCameraMoved();
     _imp->lookThrough.clear();
     GfVec3d back, viewUp;
     _imp->viewBasis(&back, &viewUp);
@@ -3490,6 +4066,7 @@ SceneViewportRenderer::pan(double dxPixels,
 void
 SceneViewportRenderer::dolly(double factor)
 {
+    _imp->noteCameraMoved();
     _imp->lookThrough.clear();
     if (factor > 0.) {
         _imp->freeCamera.distance = std::max(_imp->freeCamera.distance * factor, 1e-9);
@@ -3542,6 +4119,7 @@ SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
 {
     _imp->selected = paths;
     _imp->guideBatchesValid = false;
+    _imp->boxColoursValid = false;
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
     _imp->engineSelection = paths;
     _imp->engineSelectionDirty = true;
@@ -3979,7 +4557,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         return eRenderStatusDone;
     }
     section.collectWith(_imp->engine->GetHgi());
-    _imp->serviceDrawFilter();
+    _imp->serviceDrawFilter(!_imp->backgroundFramesUsed);
     {
         std::string what;
         bool failed = false;
@@ -4050,10 +4628,16 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         // A kept image was graded by the frame that left it.
         _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
     }
+    _imp->noteDrawFilterRendered(!kept);
     _imp->noteStageAbsorbed(params);
 
     _imp->drawnGuides.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
+    _imp->feedBoxes();
+    _imp->boxesDrawn = 0;
+    _imp->markersDrawn = 0;
+    _imp->drawnBoxList.reset();
+    _imp->drawnBoxes.clear();
+    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
         glUseProgram(0);
@@ -4063,6 +4647,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         if (_imp->showGrid) {
             _imp->drawGrid(frustum);
         }
+        _imp->drawBoxes(frustum, width, height);
         if (_imp->showGuides) {
             _imp->drawGuides(frustum, width, height);
         }
@@ -4170,7 +4755,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glDeleteFramebuffers(1, &readFramebuffer);
-        if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles) && (frameWidth == width) && (frameHeight == height)) {
+        if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && (frameWidth == width) && (frameHeight == height)) {
             // The frame's depth, so that the grid and guides hide behind what it shows.
             glUseProgram(0);
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -4191,7 +4776,12 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     }
 
     _imp->drawnGuides.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles) {
+    _imp->feedBoxes();
+    _imp->boxesDrawn = 0;
+    _imp->markersDrawn = 0;
+    _imp->drawnBoxList.reset();
+    _imp->drawnBoxes.clear();
+    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
         glUseProgram(0);
@@ -4200,6 +4790,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         if (_imp->showGrid) {
             _imp->drawGrid(frustum);
         }
+        _imp->drawBoxes(frustum, width, height);
         if (_imp->showGuides) {
             _imp->drawGuides(frustum, width, height);
         }
@@ -4222,45 +4813,51 @@ SceneViewportRenderer::pick(int x,
         return std::string();
     }
     if (_imp->rendererId != kRenderDelegateStormId) {
-        std::string guidePath;
-        double guideDepth = 1.;
-        {
-            std::unique_lock<std::shared_mutex> lock;
-            if (!_imp->tryLockExclusive(&lock)) {
-                setBusy(busy);
-
-                return std::string();
-            }
-            if (_imp->showGuides) {
-                const GfFrustum frustum = _imp->computeFrustum(width, height);
-                const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
-                const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
-                const SceneGizmo::View view(viewMatrix, projection, width, height);
-                GfVec3d guidePoint;
-                const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
-                if (guide >= 0) {
-                    guidePath = _imp->guides[guide].path;
-                    guideDepth = ((viewMatrix * projection).Transform(guidePoint)[2] + 1.) * 0.5;
-                }
-            }
-        }
         // From the AOVs of the last pass, of the size of the view when it rendered; it takes the
-        // viewer lock itself.
+        // viewer lock itself, so it is read before ours is taken.
         const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
-        if (!frame || (frame->width <= 0) || (frame->height <= 0)) {
-            return guidePath;
-        }
-        const int fx = (int)((x + 0.5) * frame->width / width);
-        const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
-        const std::string prim = _imp->progressive->pick(*frame, fx, fy);
-        if (!guidePath.empty() && !prim.empty()) {
+        // What is under the pixel and its window depth; a prim without one is behind everything.
+        std::string path;
+        double nearest = std::numeric_limits<double>::infinity();
+        if (frame && (frame->width > 0) && (frame->height > 0)) {
+            const int fx = (int)((x + 0.5) * frame->width / width);
+            const int fy = frame->height - 1 - (int)((y + 0.5) * frame->height / height);
+            path = _imp->progressive->pick(*frame, fx, fy);
             const std::size_t pixel = (std::size_t)fy * (std::size_t)frame->width + (std::size_t)fx;
-            if ((pixel < frame->depth.size()) && (frame->depth[pixel] < guideDepth)) {
-                return prim;
+            if (!path.empty() && (pixel < frame->depth.size())) {
+                nearest = frame->depth[pixel];
+            }
+        }
+        std::unique_lock<std::shared_mutex> lock;
+        if (!_imp->tryLockExclusive(&lock)) {
+            setBusy(busy);
+
+            return std::string();
+        }
+        const GfFrustum frustum = _imp->computeFrustum(width, height);
+        const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+        const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
+        // A box wins a tie with a prim, and a guide a tie with either.
+        GfVec3d boxPoint;
+        const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+        if (box >= 0) {
+            const double boxDepth = ((viewMatrix * projection).Transform(boxPoint)[2] + 1.) * 0.5;
+            if (path.empty() || (boxDepth <= nearest)) {
+                path = _imp->drawnBoxList->boxes[box].path.GetString();
+                nearest = boxDepth;
+            }
+        }
+        if (_imp->showGuides) {
+            const SceneGizmo::View view(viewMatrix, projection, width, height);
+            const double maxDepth = path.empty() ? std::numeric_limits<double>::infinity() : 2. * nearest - 1.;
+            GfVec3d guidePoint;
+            const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint, maxDepth);
+            if (guide >= 0) {
+                path = _imp->guides[guide].path;
             }
         }
 
-        return guidePath.empty() ? prim : guidePath;
+        return path;
     }
     std::unique_lock<std::shared_mutex> lock;
     if (!_imp->tryLockExclusive(&lock)) {
@@ -4288,21 +4885,39 @@ SceneViewportRenderer::pick(int x,
                                                         stage->GetPseudoRoot(), _imp->renderParams(), &results)
         && !results.empty();
 
-    int guide = -1;
-    GfVec3d guidePoint;
-    if (_imp->showGuides) {
-        const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
-        guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint);
+    // The nearer wins: depth is -z in the camera's space, for either projection. A guide wins a
+    // tie, then a box.
+    const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
+    const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
+    std::string path;
+    double nearest = 0.;
+    GfVec3d nearestPoint;
+    if (hitPrim) {
+        path = results.front().hitPrimPath.GetString();
+        nearestPoint = results.front().hitPoint;
+        nearest = viewMatrix.Transform(nearestPoint)[2];
     }
-    if (guide >= 0) {
-        // The nearer wins: depth is -z in the camera's space, for either projection.
-        const GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
-        if (!hitPrim || (viewMatrix.Transform(guidePoint)[2] >= viewMatrix.Transform(results.front().hitPoint)[2])) {
-            return _imp->guides[guide].path;
+    GfVec3d boxPoint;
+    const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+    if (box >= 0) {
+        const double z = viewMatrix.Transform(boxPoint)[2];
+        if (path.empty() || (z >= nearest)) {
+            path = _imp->drawnBoxList->boxes[box].path.GetString();
+            nearest = z;
+            nearestPoint = boxPoint;
+        }
+    }
+    if (_imp->showGuides) {
+        const SceneGizmo::View view(viewMatrix, projection, width, height);
+        const double maxDepth = path.empty() ? std::numeric_limits<double>::infinity() : view.viewProjection.Transform(nearestPoint)[2];
+        GfVec3d guidePoint;
+        const int guide = SceneGuides::hitTest(view, _imp->currentGuides(), GfVec2d(x + 0.5, y + 0.5), _imp->lookThrough, &guidePoint, maxDepth);
+        if (guide >= 0) {
+            path = _imp->guides[guide].path;
         }
     }
 
-    return hitPrim ? results.front().hitPrimPath.GetString() : std::string();
+    return path;
 }
 
 std::vector<std::string>
@@ -4381,6 +4996,7 @@ SceneViewportRenderer::releaseGL()
 
     _imp->dropEngine();
     _imp->releaseGrade();
+    _imp->releaseBoxesGL();
     if (_imp->refineTexture) {
         glDeleteTextures(1, &_imp->refineTexture);
         glDeleteBuffers(1, &_imp->refineDepthBuffer);
@@ -4940,8 +5556,12 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
-    SceneDrawStates drawStates;
-    std::size_t drawRevealBatch = 0;
+    // Made by the widget, which its deliveries run on.
+    std::unique_ptr<SceneDrawStateQueue> drawStates;
+    std::size_t drawRevealBatch = SceneViewportRenderer::kRevealPaced;
+    // A restore's load set until the stage has taken its loads, which a save reads meanwhile.
+    mutable std::mutex restoredLoadsMutex;
+    SceneLoadRules restoredLoads;
     QString error;
     bool glInitialized = false;
     // The delegate rendering as of the last rendererChanged().
@@ -5434,6 +6054,8 @@ SceneViewport::SceneViewport(QWidget* parent)
         };
         timing->setTraceReadCallback([this, republish]() { QMetaObject::invokeMethod(this, republish, Qt::QueuedConnection); });
     }
+    _imp->drawStates.reset(new SceneDrawStateQueue([this](const std::function<void()>& run) { QMetaObject::invokeMethod(this, run, Qt::QueuedConnection); },
+                                                   [this](const SceneDrawChange& change) { deliverDrawChange(change); }));
 
     _imp->wheelMoveTimer = new QTimer(this);
     _imp->wheelMoveTimer->setSingleShot(true);
@@ -5580,6 +6202,7 @@ SceneViewport::SceneViewport(QWidget* parent)
 SceneViewport::~SceneViewport()
 {
     Q_EMIT closing();
+    _imp->drawStates.reset();
     _imp->renderer.setRefineListener(std::function<void()>());
     // Every thread is told before any is waited for: the worker's sync may wait for a frame, and
     // the load batch gives up on the files it is opening.
@@ -5646,6 +6269,7 @@ SceneViewport::onSynced(U64 serial,
                         const SceneViewportRenderer::FrameBounds& bounds)
 {
     _imp->syncedSerial = std::max(_imp->syncedSerial, serial);
+    wakeLoadsAskedBeforeStage();
     // The synced stage may name another renderer for Scene Default.
     followSceneRenderer();
     if (_imp->previewAwaitsSync && (serial > _imp->previewSerial)) {
@@ -5775,6 +6399,9 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
                                     U64 loadEditCount)
 {
     _imp->takenLoadEditCount = std::max(_imp->takenLoadEditCount, loadEditCount);
+    if (!_imp->renderer.hasPendingStageLoads()) {
+        forgetRestoredLoads();
+    }
     if (!bounds.empty && !_imp->renderer.isFramed()) {
         _imp->renderer.applyFrameBounds(bounds);
         endLockOutsideLookThrough();
@@ -5958,6 +6585,10 @@ SceneViewport::publishDrawStats()
     QVariantMap published;
     published[QString::fromUtf8("filterBound")] = stats.filterBound;
     published[QString::fromUtf8("revealing")] = stats.revealing;
+    published[QString::fromUtf8("revealBatch")] = QVariant::fromValue<qulonglong>(stats.revealBatch);
+    published[QString::fromUtf8("revealFixedMs")] = stats.revealFixedMs;
+    published[QString::fromUtf8("revealPerPrimUs")] = stats.revealPerPrimUs;
+    published[QString::fromUtf8("revealSteps")] = QVariant::fromValue<qulonglong>(stats.revealSteps);
     published[QString::fromUtf8("lastApplyMs")] = stats.lastApplyMs;
     published[QString::fromUtf8("ruleCount")] = QVariant::fromValue<qulonglong>(stats.ruleCount);
     published[QString::fromUtf8("posted")] = QVariant::fromValue<qulonglong>(stats.posted);
@@ -5969,6 +6600,7 @@ SceneViewport::publishDrawStats()
     published[QString::fromUtf8("shownSent")] = QVariant::fromValue<qulonglong>(stats.shownSent);
     published[QString::fromUtf8("visibilitySent")] = QVariant::fromValue<qulonglong>(stats.visibilitySent);
     published[QString::fromUtf8("heldInvisible")] = QVariant::fromValue<qulonglong>(stats.heldInvisible);
+    published[QString::fromUtf8("maskedInstances")] = QVariant::fromValue<qulonglong>(stats.maskedInstances);
     published[QString::fromUtf8("lastInputAddedEpochMs")] = QVariant::fromValue<qlonglong>(stats.lastInputAddedEpochMs);
     published[QString::fromUtf8("stageEdits")] = QVariant::fromValue<qulonglong>(stats.stageEdits);
     published[QString::fromUtf8("stageLoadEdits")] = QVariant::fromValue<qulonglong>(stats.stageLoadEdits);
@@ -5976,37 +6608,201 @@ SceneViewport::publishDrawStats()
     published[QString::fromUtf8("resyncedPaths")] = QVariant::fromValue<qulonglong>(stats.resyncedPaths);
     published[QString::fromUtf8("infoOnlyPaths")] = QVariant::fromValue<qulonglong>(stats.infoOnlyPaths);
     setProperty("natronSceneDrawStats", published);
+    const int boxes = _imp->renderer.getDrawnBoxCount();
+    if ((boxes > 0) && (property("natronSceneDrawBoxes").toInt() == 0)) {
+        setProperty("natronSceneFirstBoxesMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
+    }
+    setProperty("natronSceneDrawBoxes", boxes);
+    setProperty("natronSceneDrawMarkers", _imp->renderer.getDrawnMarkerCount());
 }
 
 void
-SceneViewport::sendDrawDelta(const SceneDrawDelta& delta,
-                             std::chrono::steady_clock::time_point startedAt)
+SceneViewport::deliverDrawChange(const SceneDrawChange& change)
 {
-    if (!delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()) {
-        _imp->renderer.postDrawDelta(delta, _imp->drawRevealBatch, startedAt);
-        if (_imp->usesRenderThread) {
-            Implementation* imp = _imp.get();
-            _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
-        }
+    if (_imp->renderer.postDrawChange(change, _imp->drawRevealBatch) && _imp->usesRenderThread) {
+        Implementation* imp = _imp.get();
+        _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
     }
-    for (const SceneDrawLoadRequest& load : delta.loads) {
-        requestLoad(QStringList(QString::fromStdString(load.path)), load.withDescendants);
+    if (!change.delta.loads.empty()) {
+        // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
+        {
+            std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+        }
+        _imp->loadWake.notify_one();
     }
     publishState();
     update();
+    if (!change.cancelledLoads.empty()) {
+        Q_EMIT stageLoadsChanged();
+    }
+    Q_EMIT drawStatesChanged();
+}
+
+namespace {
+bool
+isDrawStatePath(const std::string& path)
+{
+    return SdfPath::IsValidPathString(path) && SdfPath(path).IsAbsoluteRootOrPrimPath();
+}
+
+struct DrawKey {
+    const char* actionID;
+    SceneDrawStateEnum state;
+    // Whether the state goes on the parents of the rows rather than on the rows.
+    bool toParent;
+};
+
+const DrawKey kDrawKeys[] = {
+    { kShortcutIDActionViewer3DDrawChildren, eSceneDrawStateChildren, false },
+    { kShortcutIDActionViewer3DDrawFull, eSceneDrawStateFull, false },
+    { kShortcutIDActionViewer3DDrawLoadAll, eSceneDrawStateLoadAll, false },
+    { kShortcutIDActionViewer3DDrawParentBBox, eSceneDrawStateBBox, true },
+};
+
+const DrawKey*
+drawKeyFor(Qt::KeyboardModifiers modifiers,
+           int key)
+{
+    for (const DrawKey& drawKey : kDrawKeys) {
+        if (matchesKeyBinding(drawKey.actionID, modifiers, key)) {
+            return &drawKey;
+        }
+    }
+
+    return nullptr;
+}
+
+/**
+ * @brief The rows a draw state key acts on: for each selected prim, the row whose box stands for
+ * it when the prim or an ancestor is boxed or hidden, the prim otherwise; with toParent, the
+ * parents of those rows. So the down keys open the picked box, and the up key boxes the row above
+ * it, again on each press.
+ **/
+std::vector<std::string>
+drawKeyRows(const SceneDrawStates& states,
+            const QStringList& selection,
+            bool toParent)
+{
+    std::set<std::string> rows;
+
+    for (const QString& selected : selection) {
+        const std::string path = selected.toStdString();
+        if (!SdfPath::IsValidPathString(path) || !SdfPath(path).IsPrimPath()) {
+            continue;
+        }
+        SdfPath row(path);
+        for (const SdfPath& prefix : row.GetPrefixes()) {
+            const SceneDrawResolved resolved = states.resolve(prefix.GetString());
+            if (!resolved.blocked && ((resolved.state == eSceneDrawStateBBox) || (resolved.state == eSceneDrawStateHidden))) {
+                row = prefix;
+                break;
+            }
+        }
+        if (toParent) {
+            row = row.GetParentPath();
+            if (!row.IsPrimPath()) {
+                continue;
+            }
+        }
+        rows.insert(row.GetString());
+    }
+
+    return std::vector<std::string>(rows.begin(), rows.end());
+}
+} // anonymous namespace
+
+void
+SceneViewport::editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit,
+                              std::size_t rows)
+{
+    if (!_imp->drawStates) {
+        return;
+    }
+    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
+    // Nothing the stage still waits on or services came from an earlier change, so no change can
+    // cancel it. A batch being serviced still takes cancels, for its follow-up loads.
+    if (!_imp->renderer.hasOutstandingStageLoads()) {
+        _imp->drawStates->forgetIssuedLoads();
+    }
+    _imp->drawStates->edit(edit, startedAt, rows);
+}
+
+void
+SceneViewport::editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits)
+{
+    if (!edits.empty()) {
+        editDrawStates([edits](SceneDrawStates* states) { return states->editRows(edits); });
+    }
+}
+
+namespace {
+std::vector<std::string>
+drawStatePaths(const QStringList& paths)
+{
+    std::vector<std::string> valid;
+    for (const QString& path : paths) {
+        const std::string pathString = path.toStdString();
+        if (isDrawStatePath(pathString)) {
+            valid.push_back(pathString);
+        }
+    }
+
+    return valid;
+}
+} // anonymous namespace
+
+bool
+SceneViewport::setDrawStateOnRows(const QStringList& paths,
+                                  const QString& state)
+{
+    SceneDrawStateEnum parsed = eSceneDrawStateFull;
+    if (!sceneDrawStateFromName(state.toStdString(), &parsed)) {
+        return false;
+    }
+    const std::vector<std::string> rows = drawStatePaths(paths);
+    if (rows.size() != std::size_t(paths.size())) {
+        return false;
+    }
+    std::vector<SceneDrawRowEdit> edits;
+    for (const std::string& row : rows) {
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, row, parsed });
+    }
+    editDrawStateRows(edits);
+
+    return true;
+}
+
+void
+SceneViewport::clearDrawStatesBelowRows(const QStringList& paths)
+{
+    std::vector<SceneDrawRowEdit> edits;
+    for (const std::string& row : drawStatePaths(paths)) {
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, row, eSceneDrawStateFull });
+    }
+    editDrawStateRows(edits);
+}
+
+void
+SceneViewport::resetDrawStatesToGraphOnRows(const QStringList& paths)
+{
+    std::vector<SceneDrawRowEdit> edits;
+    for (const std::string& row : drawStatePaths(paths)) {
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, row, eSceneDrawStateFull });
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClear, row, eSceneDrawStateFull });
+    }
+    editDrawStateRows(edits);
 }
 
 bool
 SceneViewport::setDrawState(const QString& path,
                             const QString& state)
 {
-    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
     const std::string pathString = path.toStdString();
     SceneDrawStateEnum parsed = eSceneDrawStateFull;
-    if (!sceneDrawStateFromName(state.toStdString(), &parsed) || !SdfPath::IsValidPathString(pathString) || !SdfPath(pathString).IsAbsoluteRootOrPrimPath()) {
+    if (!sceneDrawStateFromName(state.toStdString(), &parsed) || !isDrawStatePath(pathString)) {
         return false;
     }
-    sendDrawDelta(_imp->drawStates.setState(pathString, parsed), startedAt);
+    editDrawStates([pathString, parsed](SceneDrawStates* states) { return states->setState(pathString, parsed); });
 
     return true;
 }
@@ -6014,27 +6810,64 @@ SceneViewport::setDrawState(const QString& path,
 void
 SceneViewport::clearDrawState(const QString& path)
 {
-    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
-    sendDrawDelta(_imp->drawStates.clearState(path.toStdString()), startedAt);
+    const std::string pathString = path.toStdString();
+    if (isDrawStatePath(pathString)) {
+        editDrawStates([pathString](SceneDrawStates* states) { return states->clearState(pathString); });
+    }
+}
+
+void
+SceneViewport::clearDrawStatesBelow(const QString& path)
+{
+    const std::string pathString = path.toStdString();
+    if (isDrawStatePath(pathString)) {
+        editDrawStates([pathString](SceneDrawStates* states) { return states->clearStatesBelow(pathString); });
+    }
+}
+
+void
+SceneViewport::resetDrawStatesToGraph(const QString& path)
+{
+    const std::string pathString = path.toStdString();
+    if (!isDrawStatePath(pathString)) {
+        return;
+    }
+    if (pathString == "/") {
+        clearDrawStates();
+
+        return;
+    }
+    resetDrawStatesToGraphOnRows(QStringList(path));
 }
 
 void
 SceneViewport::clearDrawStates()
 {
-    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
-    sendDrawDelta(_imp->drawStates.clearAllStates(), startedAt);
+    editDrawStates([](SceneDrawStates* states) { return states->clearAllStates(); });
 }
 
 QString
 SceneViewport::resolvedDrawState(const QString& path) const
 {
-    return QString::fromUtf8(sceneDrawStateName(_imp->drawStates.resolve(path.toStdString()).state));
+    SceneDrawResolved resolved { eSceneDrawStateFull, eSceneDrawOriginDefault, false };
+    if (_imp->drawStates) {
+        const std::string pathString = path.toStdString();
+        _imp->drawStates->read([&resolved, &pathString](const SceneDrawStates& states) { resolved = states.resolve(pathString); });
+    }
+
+    return QString::fromUtf8(sceneDrawStateName(resolved.state));
+}
+
+bool
+SceneViewport::tryReadDrawStates(const std::function<void(const SceneDrawStates&)>& read) const
+{
+    return _imp->drawStates && _imp->drawStates->tryRead(read);
 }
 
 void
 SceneViewport::setDrawRevealBatch(int prims)
 {
-    _imp->drawRevealBatch = std::size_t((std::max)(prims, 0));
+    _imp->drawRevealBatch = (prims < 0) ? SceneViewportRenderer::kRevealPaced : std::size_t(prims);
 }
 
 void
@@ -6048,6 +6881,7 @@ SceneViewport::setDrawTimingTrace(bool trace)
 void
 SceneViewport::requestUnload(const QStringList& paths)
 {
+    forgetRestoredLoads();
     _imp->renderer.requestStageUnload(toStdPaths(paths));
     {
         std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
@@ -6057,8 +6891,77 @@ SceneViewport::requestUnload(const QStringList& paths)
 }
 
 void
+SceneViewport::wakeLoadsAskedBeforeStage()
+{
+    // The first sync's stage took the loads asked for before it, which woke no load thread.
+    if (!_imp->renderer.hasPendingStageLoads()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+    }
+    _imp->loadWake.notify_one();
+}
+
+void
+SceneViewport::forgetRestoredLoads()
+{
+    std::lock_guard<std::mutex> lock(_imp->restoredLoadsMutex);
+    _imp->restoredLoads.clear();
+}
+
+void
+SceneViewport::saveSceneView(Serialization::SceneViewSerialization* serialization) const
+{
+    std::shared_ptr<const SceneDrawStateQueue::SetStates> states;
+    if (_imp->drawStates) {
+        states = _imp->drawStates->getSetStates();
+    }
+    SceneLoadRules rules;
+    _imp->renderer.getStageLoadRules(&rules);
+    {
+        std::lock_guard<std::mutex> lock(_imp->restoredLoadsMutex);
+        rules.insert(_imp->restoredLoads.begin(), _imp->restoredLoads.end());
+    }
+    for (const std::pair<std::string, std::string>& failure : _imp->renderer.getStageLoadFailures()) {
+        // Under an "all" rule the stage still asks for it; anywhere else the rules have lost it.
+        SceneLoadRuleEnum governing = eSceneLoadRuleNone;
+        for (SdfPath prefix(failure.first); !prefix.IsEmpty(); prefix = prefix.GetParentPath()) {
+            const SceneLoadRules::const_iterator found = rules.find(prefix.GetString());
+            if (found != rules.end()) {
+                governing = (found->first == failure.first) ? eSceneLoadRuleOnly : found->second;
+                break;
+            }
+        }
+        if (governing == eSceneLoadRuleNone) {
+            rules[failure.first] = eSceneLoadRuleOnly;
+        }
+    }
+    sceneViewToSerialization(states ? *states : SceneDrawStateQueue::SetStates(), rules, serialization);
+}
+
+void
+SceneViewport::restoreSceneView(const Serialization::SceneViewSerialization& serialization)
+{
+    std::vector<std::pair<std::string, SceneDrawStates::Stored>> states;
+    SceneLoadRules rules;
+    sceneViewFromSerialization(serialization, &states, &rules);
+    editDrawStates([states](SceneDrawStates* drawStates) { return drawStates->replaceSetStates(states); }, states.size());
+    {
+        std::lock_guard<std::mutex> lock(_imp->restoredLoadsMutex);
+        _imp->restoredLoads = rules;
+    }
+    for (const SceneDrawLoadRequest& load : sceneLoadRequestsFor(rules)) {
+        _imp->renderer.requestStageLoad(std::vector<std::string>(1, load.path), load.withDescendants, load.excluded);
+    }
+    wakeLoadsAskedBeforeStage();
+    publishState();
+}
+
+void
 SceneViewport::cancelPendingLoads()
 {
+    forgetRestoredLoads();
     _imp->renderer.cancelStageLoads();
     publishState();
     Q_EMIT stageLoadsChanged();
@@ -7156,6 +8059,7 @@ SceneViewport::paintGL()
         setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     }
     _imp->renderer.setRecordDrawnGuides(property("natronSceneRecordGuides").toBool());
+    _imp->renderer.setRecordDrawnBoxes(property("natronSceneRecordBoxes").toBool());
     SceneViewportRenderer::RenderStatusEnum status = SceneViewportRenderer::eRenderStatusBusy;
     if (_imp->usesRenderThread && (_imp->renderer.getActiveRendererId() != kRenderDelegateStormId)) {
         // The delegate's frames are made on the refinement's thread, and drawing one needs no
@@ -7197,7 +8101,13 @@ SceneViewport::paintGL()
     _imp->presentedScene = _imp->renderer.hasScene();
     if (_imp->renderer.isDrawRevealing()) {
         _imp->renderer.noteDrawRevealPresented();
-        update();
+        const int yieldMs = _imp->renderer.getRevealYieldMs();
+        if (yieldMs > 0) {
+            // The camera's own moves ask for the paints meanwhile.
+            QTimer::singleShot(yieldMs, this, [this]() { update(); });
+        } else {
+            update();
+        }
     }
     if (_imp->renderer.hasPendingRendererSwitch()) {
         // A sync landed between the last one followed and this paint.
@@ -7240,6 +8150,12 @@ SceneViewport::paintGL()
             guides.push_back(QVariantList { QString::fromStdString(guide.path), QString::fromStdString(guide.kind), guide.x / dpr, guide.y / dpr });
         }
         setProperty("natronSceneGuides", guides);
+        QVariantList drawnBoxes;
+        for (const SceneViewportRenderer::DrawnBox& box : _imp->renderer.getDrawnBoxes()) {
+            drawnBoxes.push_back(QVariantList { QString::fromStdString(box.path), QString::fromStdString(box.kind), box.highlighted,
+                                                box.x / dpr, box.y / dpr, box.left / dpr, box.top / dpr, box.right / dpr, box.bottom / dpr });
+        }
+        setProperty("natronSceneBoxes", drawnBoxes);
     }
 
     QPainter painter(this);
@@ -7775,7 +8691,7 @@ SceneViewport::event(QEvent* e)
             || (drawModeForKey(k->modifiers(), k->key()) >= 0) || matchesKeyBinding(kShortcutIDActionViewer3DShowGrid, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
-            || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key())
+            || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key()) || drawKeyFor(k->modifiers(), k->key())
             || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
 
@@ -7822,6 +8738,26 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DCycleTool, e->modifiers(), e->key())) {
         cycleTransformTool();
+        e->accept();
+
+        return;
+    }
+    if (const DrawKey* drawKey = drawKeyFor(e->modifiers(), e->key())) {
+        if (_imp->drawStates) {
+            const QStringList selection = getSelection();
+            const bool toParent = drawKey->toParent;
+            const SceneDrawStateEnum state = drawKey->state;
+            // The rows are found as the edit runs, so the key never waits on an edit under way and
+            // acts on the states the edits before it left.
+            editDrawStates([selection, toParent, state](SceneDrawStates* states) {
+                std::vector<SceneDrawRowEdit> edits;
+                for (const std::string& row : drawKeyRows(*states, selection, toParent)) {
+                    edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, row, state });
+                }
+
+                return states->editRows(edits);
+            });
+        }
         e->accept();
 
         return;

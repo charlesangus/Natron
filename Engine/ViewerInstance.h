@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -45,6 +46,7 @@
 #include "Engine/SceneLoadSet.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/SerializationFwd.h"
 
 // Script names of the Viewer node's knobs.
 #define kViewerParamEnableGain "enableGain"
@@ -272,6 +274,24 @@ public:
      * when that input is not raw.
      **/
     std::string getRawDisplayLabel(int textureIndex) const WARN_UNUSED_RETURN;
+
+    typedef std::function<void(Serialization::SceneViewSerialization*)> SceneViewSaver;
+
+    /**
+     * @brief The draw states and loads of the 3D view as the project was opened with them, or once
+     * setSceneViewSaver() is called, as the saver saves them. Main thread.
+     **/
+    Serialization::SceneViewSerialization getLoadedSceneView() const;
+
+    /**
+     * @brief Hands saving the 3D view to saver, which any thread that saves the project runs, and
+     * forgets the view the project was opened with. An empty saver saves nothing; this returns
+     * once a saver running has.
+     **/
+    void setSceneViewSaver(const SceneViewSaver& saver);
+
+    // What the project saves of the 3D view. Any thread.
+    void sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const;
 
     ///Called upon node creation and then never changed
     void setUiContext(OpenGLViewerI* viewer);
@@ -894,6 +914,7 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.
@@ -911,6 +932,9 @@ private:
     std::unique_ptr<ViewerInstancePrivate> _imp;
     mutable std::mutex _rawDisplayLabelMutex;
     std::string _rawDisplayLabel[2];
+    mutable std::mutex _sceneViewMutex;
+    std::unique_ptr<Serialization::SceneViewSerialization> _loadedSceneView;
+    SceneViewSaver _sceneViewSaver;
 };
 
 enum ViewerDisplayOutputEnum {

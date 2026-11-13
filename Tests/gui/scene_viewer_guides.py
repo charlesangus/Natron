@@ -37,6 +37,10 @@ STARTUP_TIMEOUT_S = 60.0
 NUKE_PRESET = 0
 # Half the side of the square searched around a reported guide point.
 SEARCH_RADIUS = 4
+# Half the side of the square around a clicked guide pixel that holds nothing but the guide and the
+# empty background: SceneGuides' 4-pixel pick tolerance plus a margin. A pixel where a guide line
+# meets a prim's silhouette is a depth tie that either may win.
+CLEAR_RADIUS = 6
 SMALL_GUIDE_SIZE = 1.0
 LARGE_GUIDE_SIZE = 3.0
 
@@ -184,18 +188,39 @@ try:
                     return True
         return False
 
-    def visible_point(image, anchor, test):
-        """The pixel nearest anchor that passes test: a guide's published point is on one of its
-        segments, which the scene's geometry may hide there, and a click picks what is drawn."""
-        if image is None or test(image.pixelColor(anchor.x(), anchor.y())):
-            return anchor
-        best = None
+    def is_background(c):
+        """The empty view and its grid: neutral greys, lighter than the box's black faces."""
+        return max(c.red(), c.green(), c.blue()) - min(c.red(), c.green(), c.blue()) < 16 and 50 <= c.green() <= 140
+
+    def clear_point(image, anchor, test):
+        """The pixel nearest anchor that passes test with only guide pixels or background within
+        CLEAR_RADIUS, or None: a guide's published point is on one of its segments, which the
+        scene's geometry may hide there, and a click picks what is drawn."""
+        if image is None:
+            return None
+        candidates = []
         for y in range(image.height()):
             for x in range(image.width()):
-                d = (x - anchor.x()) ** 2 + (y - anchor.y()) ** 2
-                if (best is None or d < best[0]) and test(image.pixelColor(x, y)):
-                    best = (d, QPoint(x, y))
-        return best[1] if best is not None else anchor
+                if test(image.pixelColor(x, y)):
+                    candidates.append(((x - anchor.x()) ** 2 + (y - anchor.y()) ** 2, x, y))
+        candidates.sort()
+        for _, x, y in candidates:
+            clear = True
+            for dy in range(-CLEAR_RADIUS, CLEAR_RADIUS + 1):
+                for dx in range(-CLEAR_RADIUS, CLEAR_RADIUS + 1):
+                    px, py = x + dx, y + dy
+                    if not (0 <= px < image.width() and 0 <= py < image.height()):
+                        clear = False
+                        break
+                    c = image.pixelColor(px, py)
+                    if not (test(c) or is_background(c)):
+                        clear = False
+                        break
+                if not clear:
+                    break
+            if clear:
+                return QPoint(x, y)
+        return None
 
     def count_pixels(image, test):
         """How many pixels of every other row and column pass test."""
@@ -346,12 +371,13 @@ try:
                (SMALL_GUIDE_SIZE, small_camera, small_light, LARGE_GUIDE_SIZE, large_camera, large_light))
         check(large_camera > small_camera * 1.5, "the camera guide grows with the guide size")
         check(large_light > small_light, "the light guide grows with the guide size")
-        cam_point = visible_point(image, guides()[cam_path][1], is_camera_colour)
+        cam_point = clear_point(image, guides()[cam_path][1], is_camera_colour)
         report("NOTE resized camera guide anchor %r, clicked at %r" % (guides()[cam_path][1], cam_point))
-        click(v, cam_point)
-        yield settle()
-        check(selection() == [cam_path], "a click on the resized camera guide selects the camera (%r)" % (selection(),))
-        save_view("scene-guides-size-3-camera-selected")
+        if check(cam_point is not None, "the resized camera guide has a pixel clear of the scene's geometry"):
+            click(v, cam_point)
+            yield settle()
+            check(selection() == [cam_path], "a click on the resized camera guide selects the camera (%r)" % (selection(),))
+            save_view("scene-guides-size-3-camera-selected")
         click(v, guides()[light_path][1])
         yield settle()
         check(selection() == [light_path], "a click on the resized light guide selects the light (%r)" % (selection(),))

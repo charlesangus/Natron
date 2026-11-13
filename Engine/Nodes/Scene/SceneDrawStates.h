@@ -31,7 +31,10 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -84,6 +87,9 @@ struct SceneDrawDelta {
     // The rule on these paths is gone; the nearest rule above now decides them.
     std::vector<std::string> cleared;
     std::vector<SceneDrawLoadRequest> loads;
+    // The subtrees the edit looked at: nothing outside them changed, and no load outside them is
+    // wanted or unwanted because of it.
+    std::vector<std::string> roots;
     // Stored states this edit looked at, which bounds what it cost.
     std::size_t visited = 0;
 
@@ -105,6 +111,21 @@ struct SceneDrawDelta {
  * Children row's subtree, whose unset children are boxes the model cannot name: the Children row
  * loads on its own and the rows drawn below it load by their own requests.
  */
+// One row's edit in SceneDrawStates::editRows().
+struct SceneDrawRowEdit {
+    enum KindEnum {
+        eKindSet,
+        eKindClear,
+        // SceneDrawStates::clearStatesBelow().
+        eKindClearBelow
+    };
+
+    KindEnum kind;
+    std::string path;
+    // For eKindSet.
+    SceneDrawStateEnum state;
+};
+
 class SceneDrawStates {
 public:
     SceneDrawDelta setState(const std::string& path, SceneDrawStateEnum state);
@@ -112,6 +133,11 @@ public:
     /** @brief Forgets every state set below the row, remembered ones too. The row's own stays. */
     SceneDrawDelta clearStatesBelow(const std::string& path);
     SceneDrawDelta clearAllStates();
+    /**
+     * @brief Makes the edits in order, as one edit with one delta: what an edit undoes of an earlier
+     * one in the list is never in the delta, nor asked to load.
+     **/
+    SceneDrawDelta editRows(const std::vector<SceneDrawRowEdit>& edits);
 
     SceneDrawDelta setPolicyState(const std::string& path, SceneDrawStateEnum state);
     SceneDrawDelta clearPolicyState(const std::string& path);
@@ -120,6 +146,13 @@ public:
     bool getSetState(const std::string& path, SceneDrawStateEnum* state) const;
     SceneDrawResolved resolve(const std::string& path) const;
     std::size_t storedCount() const;
+    // Every load the rows ask for as they stand, in path order; visits every stored row.
+    std::vector<SceneDrawLoadRequest> wantedLoads() const;
+    /**
+     * @brief The loads the rows at and below root ask for, in path order; visits only those rows. A
+     * load asked for above root that covers it is not listed.
+     **/
+    std::vector<SceneDrawLoadRequest> wantedLoadsUnder(const std::string& root) const;
 
     struct PathLess {
         bool operator()(const std::string& a, const std::string& b) const;
@@ -130,6 +163,11 @@ public:
         // False on an ancestor switched to Children for a row below: nobody asked to load that row.
         bool direct;
     };
+
+    /** @brief Every state set by the viewer, effective or remembered, in path order. */
+    std::vector<std::pair<std::string, Stored>> getSetStates() const;
+    /** @brief Puts states in place of every state set by the viewer, as one edit. */
+    SceneDrawDelta replaceSetStates(const std::vector<std::pair<std::string, Stored>>& states);
 
     enum RuleEnum {
         eRuleNone,
@@ -162,11 +200,47 @@ public:
 
 private:
     Effects effectsUnder(const std::string& root, std::size_t* visited) const;
-    SceneDrawDelta applyEdit(const std::string& root, const std::string& retryLoad, const Effects& before, std::size_t visited) const;
+    // The subtree a row edit changes, given the states as they stand.
+    std::string rootOf(const SceneDrawRowEdit& edit) const;
+    void applyRowEdit(const SceneDrawRowEdit& edit);
+    SceneDrawDelta applyEdit(const std::string& root, const std::vector<std::string>& retryLoads, const Effects& before, std::size_t visited) const;
 
     std::map<std::string, Stored, PathLess> _states;
     std::map<std::string, SceneDrawStateEnum, PathLess> _policy;
 };
+
+// A stage's payload load rule on a path, as UsdStageLoadRules has them.
+enum SceneLoadRuleEnum {
+    eSceneLoadRuleAll,
+    eSceneLoadRuleOnly,
+    eSceneLoadRuleNone
+};
+
+typedef std::map<std::string, SceneLoadRuleEnum, SceneDrawStates::PathLess> SceneLoadRules;
+
+/** @brief "all", "only" or "none". */
+const char* sceneLoadRuleName(SceneLoadRuleEnum rule);
+bool sceneLoadRuleFromName(const std::string& name, SceneLoadRuleEnum* rule);
+
+/**
+ * @brief The requests that bring a stage loading nothing to rules: a load with descendants for each
+ * "all" rule, leaving out the subtrees of the rules nearest below it, and an own load for each "only"
+ * rule. A "none" rule asks for nothing.
+ */
+std::vector<SceneDrawLoadRequest> sceneLoadRequestsFor(const SceneLoadRules& rules);
+
+/** @brief The viewer's set states and its stage's load rules, as a project saves them. */
+void sceneViewToSerialization(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states,
+                              const SceneLoadRules& rules,
+                              Serialization::SceneViewSerialization* serialization);
+
+/**
+ * @brief Reads back what sceneViewToSerialization() wrote. A path that is not an absolute path, or
+ * a state or rule name that is not one, is left out.
+ */
+void sceneViewFromSerialization(const Serialization::SceneViewSerialization& serialization,
+                                std::vector<std::pair<std::string, SceneDrawStates::Stored>>* states,
+                                SceneLoadRules* rules);
 
 NATRON_NAMESPACE_EXIT
 

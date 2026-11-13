@@ -45,6 +45,7 @@
 #include <OpenColorIO/OpenColorIO.h>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
@@ -60,6 +61,8 @@ NATRON_NAMESPACE_ENTER
 
 class SceneStage;
 struct SceneDrawDelta;
+struct SceneDrawChange;
+class SceneDrawStates;
 class SceneDrawTiming;
 class UndoHistory;
 class SceneTransformTarget;
@@ -255,8 +258,9 @@ public:
 
     /**
      * @brief Queues a draw state change for this renderer's engine; needsBackgroundFrame() holds
-     * until a frame has taken it in. revealBatch 0 shows everything in one go. startedAt is when the
-     * change was asked for, for drawTiming(). Main thread; takes no lock a frame or a sync holds.
+     * until a frame has taken it in. revealBatch 0 shows everything in one go, and kRevealPaced in
+     * batches sized from the frames' cost. startedAt is when the change was asked for, for
+     * drawTiming(). Main thread; takes no lock a frame or a sync holds.
      **/
     void postDrawDelta(const SceneDrawDelta& delta,
                        std::size_t revealBatch,
@@ -265,14 +269,35 @@ public:
     /** @brief Render thread. Sends what postDrawDelta() queued to the engine's filter. */
     void applyPendingDrawDeltas();
 
+    /**
+     * @brief Takes in one change of the viewer's draw states: posts its delta as postDrawDelta()
+     * does, drops the stage's queued loads at the change's cancelled paths and asks the stage for
+     * its loads, which serviceStageLoads() then takes. Never edits the stage. True if a delta was
+     * posted, for applyPendingDrawDeltas() to send. Main thread.
+     **/
+    bool postDrawChange(const SceneDrawChange& change, std::size_t revealBatch);
+
+    static constexpr std::size_t kRevealPaced = static_cast<std::size_t>(-1);
+
     bool isDrawRevealing() const;
 
     /** @brief The image of the last reveal step is on screen, so the next step may go. */
     void noteDrawRevealPresented();
 
+    /**
+     * @brief How long a reveal still waits for the camera, in milliseconds: none goes out while the
+     * user moves it, so the frames it asks for come at the scene's own cost. Main thread.
+     **/
+    int getRevealYieldMs() const;
+
     struct DrawFilterStats {
         bool filterBound = false;
         bool revealing = false;
+        // The batch the next paced reveal step shows, and the frame cost the pacer has fitted.
+        unsigned long long revealBatch = 0;
+        double revealFixedMs = 0.;
+        double revealPerPrimUs = 0.;
+        unsigned long long revealSteps = 0;
         double lastApplyMs = 0.;
         std::size_t ruleCount = 0;
         unsigned long long posted = 0;
@@ -285,6 +310,8 @@ public:
         // Of hiddenSent and shownSent, those sent as a visibility change.
         unsigned long long visibilitySent = 0;
         unsigned long long heldInvisible = 0;
+        // Native instances turned off in their instancer's mask.
+        unsigned long long maskedInstances = 0;
         long long lastInputAddedEpochMs = 0;
         unsigned long long stageEdits = 0;
         unsigned long long stageLoadEdits = 0;
@@ -293,6 +320,30 @@ public:
         unsigned long long infoOnlyPaths = 0;
     };
     DrawFilterStats getDrawFilterStats() const;
+
+    // The boxes and the markers of boxed rows the last frame drew.
+    int getDrawnBoxCount() const;
+    int getDrawnMarkerCount() const;
+
+    // A box or marker the last render drew: its row, kind (box, unloaded, marker or pending),
+    // whether it holds a selected prim, its projected centre and the screen rectangle of its
+    // corners, in pixels counted from the top left, for scripts to aim at.
+    struct DrawnBox {
+        std::string path;
+        std::string kind;
+        bool highlighted = false;
+        double x = 0.;
+        double y = 0.;
+        double left = 0.;
+        double top = 0.;
+        double right = 0.;
+        double bottom = 0.;
+    };
+
+    // Off by default: building the records costs nine projections per box.
+    void setRecordDrawnBoxes(bool record);
+
+    const std::vector<DrawnBox>& getDrawnBoxes() const;
 
     // Null unless NATRON_DRAW_STATE_TIMING is 1.
     SceneDrawTiming* drawTiming() const;
@@ -327,15 +378,24 @@ public:
 
     /**
      * @brief Passes load requests on to the stage, which takes them when serviceStageLoads() next
-     * runs. Ignored before the first sync has made the stage. See SceneStage::requestLoad().
+     * runs. Before the first sync has made the stage they wait, in order, for it to; the cancels
+     * drop them alike. See SceneStage::requestLoad().
      **/
-    void requestStageLoad(const std::vector<std::string>& paths, bool withDescendants);
+    void requestStageLoad(const std::vector<std::string>& paths,
+                          bool withDescendants,
+                          const std::vector<std::string>& excluded = std::vector<std::string>());
 
     void requestStageUnload(const std::vector<std::string>& paths);
 
     void cancelStageLoads();
 
+    // Drops the load requests at paths that no batch has taken yet.
+    void cancelStageLoads(const std::vector<std::string>& paths);
+
     bool hasPendingStageLoads() const;
+
+    // Whether a load request waits, before the stage exists too, or a batch is being serviced.
+    bool hasOutstandingStageLoads() const;
 
     /**
      * @brief Services the pending requests, opening their files with the viewer lock released.
@@ -385,6 +445,13 @@ public:
 
     // The prims whose last load failed, each with why.
     std::vector<std::pair<std::string, std::string>> getStageLoadFailures() const;
+
+    /**
+     * @brief The stage's payload load rules as its last load commit left them, kept while no scene
+     * is shown, the root's left out when it loads nothing. False before the first sync has made
+     * the stage. Any thread; never waits on the stage lock.
+     **/
+    bool getStageLoadRules(SceneLoadRules* rules) const;
 
     // The stage timecode shown, the project frame mapped by seconds.
     double getTimeCode() const;
@@ -706,8 +773,8 @@ public:
 
     /**
      * @brief The path of the prim drawn nearest to the pixel (x, y), counted from the top left of
-     * a width x height view, or empty if none is: a guide within a few pixels wins over a prim
-     * behind it. Needs the context of render() current.
+     * a width x height view, or empty if none is: a guide within a few pixels, or a boxed row's box
+     * or marker, wins over a prim behind it. Needs the context of render() current.
      **/
     std::string pick(int x, int y, int width, int height, bool* busy = nullptr);
 
@@ -980,6 +1047,28 @@ public:
      **/
     void releaseEngine();
 
+    /**
+     * @brief Calls read with this viewer's draw states, unless an edit of many rows holds them,
+     * which returns false at once. Main thread.
+     **/
+    bool tryReadDrawStates(const std::function<void(const SceneDrawStates&)>& read) const;
+
+    /**
+     * @brief This viewer's set draw states and its stage's load set, as a project saves them. A
+     * payload whose load failed is kept, so that a file found again loads on reopening, and so are
+     * the loads a restore still waits on. Saves the states as the last edit left them and the load
+     * rules as the last load commit did, so it waits on neither. Any thread.
+     **/
+    void saveSceneView(Serialization::SceneViewSerialization* serialization) const;
+
+    /**
+     * @brief Puts the saved states in place of this viewer's as one draw state edit, and asks for
+     * the saved load set, before the first sync if need be. Both go the way an edit's and a twirl's
+     * go: cancelPendingLoads() stops the loads, a later state change cancels the ones it no longer
+     * wants, and a load that fails shows on its row. Main thread.
+     **/
+    void restoreSceneView(const Serialization::SceneViewSerialization& serialization);
+
 public Q_SLOTS:
     // Prim paths. A slot, so that scripts reach it through the meta object.
     void requestLoad(const QStringList& paths, bool withDescendants);
@@ -995,10 +1084,26 @@ public Q_SLOTS:
      **/
     bool setDrawState(const QString& path, const QString& state);
     void clearDrawState(const QString& path);
+    // Clears the rows below path; its own state stays.
+    void clearDrawStatesBelow(const QString& path);
+    // Clears path and the rows below it, which then follow the graph's policy or the default.
+    void resetDrawStatesToGraph(const QString& path);
+    /**
+     * @brief The same edits on many rows, made as one edit with one change, so nothing is drawn or
+     * loaded between rows. setDrawStateOnRows() is false, and edits nothing, if a path or the
+     * name is not one.
+     **/
+    bool setDrawStateOnRows(const QStringList& paths, const QString& state);
+    void clearDrawStatesBelowRows(const QStringList& paths);
+    void resetDrawStatesToGraphOnRows(const QStringList& paths);
     void clearDrawStates();
-    // The state a path resolves to, effective or inherited.
+    // The state a path resolves to, effective or inherited. Waits for an edit under way.
     QString resolvedDrawState(const QString& path) const;
-    // What a change shows goes out this many prims per frame; 0 shows it at once.
+    /**
+     * @brief What a change shows, and what its loads bring in, goes out this many prims per frame; 0
+     * shows it at once. Below 0, the default, each frame's batch is sized from what the frames before
+     * it cost, so the viewer keeps its frame rate.
+     **/
     void setDrawRevealBatch(int prims);
     /**
      * @brief With NATRON_DRAW_STATE_TIMING=1, traces the frames of the changes that follow, until
@@ -1022,6 +1127,9 @@ Q_SIGNALS:
     // Emitted on the main thread after a batch of payload requests is serviced or the waiting ones
     // are cancelled.
     void stageLoadsChanged();
+
+    // A draw state edit has reached the renderer (main thread).
+    void drawStatesChanged();
 
     // First thing in the destructor, with the renderer still whole (main thread).
     void closing();
@@ -1112,7 +1220,13 @@ private:
 
     // Main thread: starts the frame that takes in a stage change, if one is due and can start.
     void startBackgroundFrame();
-    void sendDrawDelta(const SceneDrawDelta& delta, std::chrono::steady_clock::time_point startedAt);
+    // rows: how many rows the edit brings in, which sends a large one to the worker.
+    void editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit, std::size_t rows = 0);
+    void editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits);
+    void deliverDrawChange(const SceneDrawChange& change);
+    void wakeLoadsAskedBeforeStage();
+    // A restore's load set stops standing in for loads the stage has yet to take.
+    void forgetRestoredLoads();
     void publishDrawStats();
 
     void onBackgroundFrameDone();

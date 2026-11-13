@@ -44,6 +44,9 @@
                          first again, whose stage the panel keeps
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
+        BENCH_HOLD_FILE  when set, populate_full and populate_pruned report "BEGIN populate" and wait up to
+                         BENCH_HOLD_S (default 120) for this file to exist before opening the scene, so a stack
+                         sampler can attach first; BENCH_PTRACER_ANY=1 lets any process of the user attach
         BENCH_SCENARIO_LIMIT_S  wall-clock limit of a scenario, from outside Natron (default 300)
         BENCH_OPEN_LIMIT_S      the same for one that opens or loads the whole file (default 1800)
         BENCH_MEM_FLOOR_GB, BENCH_MEM_LIMIT_GB, BENCH_SWAP_GROWTH_GB  see heavy_scene_watchdog.sh
@@ -90,11 +93,15 @@ from total_ms and is not_valid.
 sibling_shot compares screen grabs around one state change on sibling_row, branch and root; the root, which the viewer frames, is the control: if it changes no pixels the state does
 nothing, and if it does, a row that did not is out of frame or ineffective (shot_reading says which,
 from its coverage). It needs geometry on screen, so it skips with payloads unloaded. orbit10k and
-boxes_shot need a viewer that publishes natronSceneDrawBoxes, and skip without one.
+boxes_shot need a viewer that publishes natronSceneDrawBoxes, and skip without one; boxes_shot's
+first_boxes_ms runs from the change to the paint that first drew a box (natronSceneFirstBoxesMs).
 
 Budgets: main-thread stall under 100 ms; time from a draw state change to the image that shows it under
 100 ms (time_to_picture_ms, worst untraced change of prune_restore, sibling_state and draw_budget, with
-draw_budget's rows also judged apart); first frame under 2 s on a scene with payloads; no payload
+draw_budget's rows also judged apart); a paced reveal of the root with Load All (reveal_load_all,
+which also waits for the loads to land) and of the wide row (reveal_wide) completes with no gap over
+100 ms between painted frames; a paced reveal of the wide row boxed again shows at most the one batch
+under way (reveal_cancel_paced); first frame under 2 s on a scene with payloads; no payload
 file opened that the action did not request; orbit at or above 30 fps; no stage edit or notice from a
 draw state; the draw filter on this viewer's engine; pixels changed on the control row.
 """
@@ -120,11 +127,13 @@ TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
 SCENARIO_LIMIT_S = int(os.environ.get("BENCH_SCENARIO_LIMIT_S", "300"))
 OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
 PICK_LIMIT_S = int(os.environ.get("BENCH_PICK_LIMIT_S", "900"))
+HOLD_FILE = os.environ.get("BENCH_HOLD_FILE", "")
+HOLD_S = float(os.environ.get("BENCH_HOLD_S", "120"))
 OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "load_all")
 DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal", "reveal_cancel", "orbit10k", "boxes_shot",
-                  "sibling_state", "sibling_shot", "noedit", "draw_budget")
+                  "sibling_state", "sibling_shot", "noedit", "draw_budget", "reveal_load_all", "reveal_wide", "reveal_cancel_paced")
 # A wide row's restore puts the whole scene back into Hydra, several times over.
-LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget",)
+LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide")
 PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
 DRAW_TIMING = os.environ.get("NATRON_DRAW_STATE_TIMING") == "1"
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
@@ -147,6 +156,14 @@ try:
     STATE_ROLE = Qt.UserRole + 3
     STATE_UNLOADED, STATE_LOADED, STATE_FAILED = 1, 3, 4
     LOADING_LABEL = "Loading..."
+
+    if os.environ.get("BENCH_PTRACER_ANY") == "1":
+        # Under kernel.yama.ptrace_scope 1 only an ancestor may attach, and a stack sampler is not one.
+        import ctypes
+        _libc = ctypes.CDLL(None, use_errno=True)
+        _libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        if _libc.prctl(0x59616d61, ctypes.c_ulong(-1).value, 0, 0, 0) != 0:
+            report("NOTE prctl(PR_SET_PTRACER_ANY) failed: %s" % os.strerror(ctypes.get_errno()))
 
     ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
     fixture = os.environ.get("BENCH_FIXTURE", "flat")
@@ -687,6 +704,13 @@ try:
         if hidden_root:
             target = widgets_of("SceneViewport")[0]
             draw_call(target, "setDrawState", Q_ARG("QString", rows["root"]), Q_ARG("QString", "bbox"))
+        if HOLD_FILE:
+            report("BEGIN populate")
+            yield ("until", lambda: os.path.exists(HOLD_FILE), HOLD_S)
+            if os.path.exists(HOLD_FILE):
+                os.remove(HOLD_FILE)
+            else:
+                report("NOTE wait expired: %s was not created within %.0f s; populating without a sampler" % (HOLD_FILE, HOLD_S))
         t0_ms = yield from open_file(m, connected=True)
         stats = draw_stats()
         added_at = stats.get("lastInputAddedEpochMs")
@@ -715,6 +739,90 @@ try:
             for key, value in timings.items():
                 m.values["%s_%s" % (name, key)] = value
 
+    def watch_reveal(done):
+        """Waits up to reveal_max_s for done; returns whether it held, the frames painted and the longest gap between two."""
+        paints = set()
+        worst = 0.0
+        last = time.perf_counter()
+        deadline = time.time() + reveal_max_s
+        while not done() and time.time() < deadline:
+            yield ("sleep", 0)
+            painted = prop("natronSceneLastPaintMs")
+            if painted is not None and painted not in paints:
+                paints.add(painted)
+                now = time.perf_counter()
+                worst = max(worst, (now - last) * 1000.0)
+                last = now
+        return done(), len(paints), worst
+
+    def paced_reveal(m, name, row, start_state, state, done=None):
+        """Reveals row from start_state to state at the viewer's own pace and records how the frames held up."""
+        yield from clear_draw_states()
+        yield from set_draw_state(row, start_state)
+        v = view()
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, -1))
+        heartbeat.start()
+        before = draw_stats()
+        started = time.perf_counter()
+        yield from set_draw_state(row, state)
+        complete, frames, worst = yield from watch_reveal(lambda: not draw_stats().get("revealing") and (done is None or done()))
+        elapsed = (time.perf_counter() - started) * 1000.0
+        after = draw_stats()
+        if not complete:
+            yield from set_draw_state(row, start_state)
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
+        m.values[name + "_row"] = row
+        m.values[name + "_complete"] = complete
+        m.values[name + "_prims"] = after.get("shownSent", 0) - before.get("shownSent", 0)
+        m.values[name + "_steps"] = after.get("revealSteps", 0) - before.get("revealSteps", 0)
+        m.values[name + "_last_batch"] = after.get("revealBatch")
+        m.values[name + "_fixed_ms"] = ms(after.get("revealFixedMs"))
+        m.values[name + "_per_prim_us"] = after.get("revealPerPrimUs")
+        m.values[name + "_frames"] = frames
+        m.values[name + "_ms"] = round(elapsed, 1)
+        m.values[name + "_worst_frame_ms"] = round(worst, 1)
+
+    def action_reveal_load_all(m):
+        v = view()
+        require(v is not None and shown(), "reveal_load_all: a scene view is visible and showing the scene")
+        edits_before = int(v.property("natronSceneLoadEdits") or 0)
+        m.all_payloads_requested = True
+        committed = commit_watch(v)
+        yield from paced_reveal(m, "reveal_load_all", rows["root"], "bbox", "loadAll", committed)
+        load_results(m, v, "load", edits_before)
+
+    def action_reveal_wide(m):
+        yield from paced_reveal(m, "reveal_wide", rows["widest_row"], "bbox", "full")
+
+    def action_reveal_cancel_paced(m):
+        row = rows["widest_row"]
+        yield from clear_draw_states()
+        yield from set_draw_state(row, "bbox")
+        v = view()
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, -1))
+        heartbeat.start()
+        before = draw_stats()
+        yield from set_draw_state(row, "full")
+
+        def advanced():
+            stats = draw_stats()
+            return stats.get("revealSteps", 0) - before.get("revealSteps", 0) >= 3 or not stats.get("revealing")
+
+        ok = yield ("until", advanced, TIMEOUT_S)
+        check(ok, "reveal_cancel_paced: the reveal advanced")
+        at_cancel = draw_stats()
+        cancelled = yield from set_draw_state(row, "bbox")
+        yield ("sleep", 200)
+        settled = draw_stats()
+        draw_call(v, "setDrawRevealBatch", Q_ARG(int, 0))
+        m.values["cancel_paced_row"] = row
+        m.values["cancel_paced_was_active"] = bool(at_cancel.get("revealing"))
+        m.values["cancel_paced_batch"] = at_cancel.get("revealBatch")
+        m.values["cancel_paced_total_ms"] = cancelled["total_ms"]
+        # A step under way when the change is posted may still finish; nothing after it may run.
+        m.values["cancel_paced_overshoot_prims"] = settled.get("shownSent", 0) - at_cancel.get("shownSent", 0)
+        m.values["cancel_paced_stopped"] = not settled.get("revealing")
+
     def action_reveal(m):
         row = rows["reveal_branch"]
         yield from clear_draw_states()
@@ -725,19 +833,7 @@ try:
         before = draw_stats()
         started = time.perf_counter()
         yield from set_draw_state(row, "full")
-        paints = set()
-        worst = 0.0
-        last = time.perf_counter()
-        deadline = time.time() + reveal_max_s
-        while draw_stats().get("revealing") and time.time() < deadline:
-            yield ("sleep", 0)
-            painted = prop("natronSceneLastPaintMs")
-            if painted is not None and painted not in paints:
-                paints.add(painted)
-                now = time.perf_counter()
-                worst = max(worst, (now - last) * 1000.0)
-                last = now
-        complete = not draw_stats().get("revealing")
+        complete, frames, worst = yield from watch_reveal(lambda: not draw_stats().get("revealing"))
         elapsed = (time.perf_counter() - started) * 1000.0
         after = draw_stats()
         if not complete:
@@ -747,9 +843,9 @@ try:
         m.values["reveal_batch"] = reveal_batch
         m.values["reveal_complete"] = complete
         m.values["reveal_prims"] = after.get("shownSent", 0) - before.get("shownSent", 0)
-        m.values["reveal_frames"] = len(paints)
+        m.values["reveal_frames"] = frames
         m.values["reveal_ms"] = round(elapsed, 1)
-        m.values["reveal_fps"] = round(len(paints) * 1000.0 / elapsed, 1) if elapsed > 0 else None
+        m.values["reveal_fps"] = round(frames * 1000.0 / elapsed, 1) if elapsed > 0 else None
         m.values["reveal_worst_frame_ms"] = round(worst, 1)
 
     def action_reveal_cancel(m):
@@ -788,7 +884,8 @@ try:
 
     def action_orbit10k(m):
         yield from clear_draw_states()
-        yield from set_draw_state(rows["root"], "bbox")
+        # Children rather than BBox, which would draw the root as a single box.
+        yield from set_draw_state(rows["root"], "children")
         sent_ms = time.time() * 1000.0
         ok = yield ("until", lambda: boxes_drawn() > 0, TIMEOUT_S)
         check(ok, "orbit10k: boxes were drawn")
@@ -800,9 +897,14 @@ try:
 
     def action_boxes_shot(m):
         yield from clear_draw_states()
+        ok = yield ("until", lambda: boxes_drawn() == 0, TIMEOUT_S)
+        check(ok, "boxes_shot: no box is drawn before the change")
+        sent_ms = time.time() * 1000.0
         yield from set_draw_state(rows["root"], "bbox")
         ok = yield ("until", lambda: boxes_drawn() > 0, TIMEOUT_S)
         check(ok, "boxes_shot: boxes were drawn")
+        # Stamped by the paint that first drew a box, so the poll's interval is not in it.
+        m.values["first_boxes_ms"] = round(prop("natronSceneFirstBoxesMs", 0) - sent_ms, 1) if ok else None
         yield ("sleep", 500)
         m.values["boxes_drawn"] = boxes_drawn()
         m.values["screenshot"] = shot("boxes_%s.png" % fixture)
@@ -1064,7 +1166,8 @@ try:
                "prune_restore": action_prune_restore, "reveal": action_reveal, "reveal_cancel": action_reveal_cancel,
                "orbit10k": action_orbit10k, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
                "sibling_shot": action_sibling_shot, "noedit": action_noedit, "draw_budget": action_draw_budget,
-               "node_switch": action_node_switch}
+               "reveal_load_all": action_reveal_load_all, "reveal_wide": action_reveal_wide,
+               "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch}
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:
@@ -1083,11 +1186,12 @@ try:
         if name == "twirl" and not rows.get("twirl_row"):
             return "the scene has no payload row to twirl"
         has_payloads = fixture == "city" or bool(rows.get("payload_rows"))
-        if name == "load_all" and not has_payloads:
+        if name in ("load_all", "reveal_load_all") and not has_payloads:
             return "the scene has no payloads to load"
         needs_row = {"populate_pruned": "root", "prune_restore": "branch", "noedit": "branch", "reveal_cancel": "branch",
                      "reveal": "reveal_branch", "sibling_state": "sibling_row", "sibling_shot": "sibling_row", "draw_budget": "sibling_row",
-                     "orbit10k": "box_depth", "boxes_shot": "box_depth"}
+                     "orbit10k": "box_depth", "boxes_shot": "box_depth",
+                     "reveal_load_all": "root", "reveal_wide": "widest_row", "reveal_cancel_paced": "widest_row"}
         if name in needs_row and rows.get(needs_row[name]) is None:
             return "the scene has no such row: no prim here holds the geometry %s needs" % name
         if name == "sibling_shot" and has_payloads and load_state == "none":
@@ -1128,6 +1232,15 @@ try:
             budgets["unrequested_payloads"]["sample"] = [os.path.basename(i) for i in unrequested[:5]]
         if "orbit_fps" in m.values:
             budgets["orbit_fps"] = verdict(m.values["orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu)
+        for name in ("reveal_load_all", "reveal_wide"):
+            if name + "_worst_frame_ms" in m.values:
+                budgets[name + "_complete"] = verdict(1 if m.values[name + "_complete"] else 0, 1, False)
+                budgets[name + "_worst_frame_ms"] = verdict(m.values[name + "_worst_frame_ms"], STALL_BUDGET_MS, True, valid=gpu)
+        if "cancel_paced_overshoot_prims" in m.values:
+            batch = m.values["cancel_paced_batch"]
+            budgets["cancel_paced_overshoot_prims"] = verdict(m.values["cancel_paced_overshoot_prims"], batch, True,
+                                                              valid=m.values["cancel_paced_was_active"] and batch is not None)
+            budgets["cancel_paced_stopped"] = verdict(1 if m.values["cancel_paced_stopped"] else 0, 1, False)
         if "stage_edits" in m.values:
             budgets["stage_edits"] = verdict(m.values["stage_edits"], 0, True)
         if "sibling_resynced_paths" in m.values:

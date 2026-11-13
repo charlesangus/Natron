@@ -56,6 +56,7 @@
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
+#include "Serialization/NodeSerialization.h"
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/Button.h"
@@ -1573,6 +1574,12 @@ ViewerTab::onActiveInputDataKindChanged()
         QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
         QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
         refreshSceneRenderFromKnobs();
+        // Before the first sync, so that the saved loads go out with the scene's first stage.
+        _imp->sceneViewport->restoreSceneView(node->getLoadedSceneView());
+        // They were saved against the scene shown now, which must not cancel them as another's.
+        _imp->sceneLoadsNode = getSceneViewedNode();
+        SceneViewport* viewport = _imp->sceneViewport;
+        node->setSceneViewSaver([viewport](Serialization::SceneViewSerialization* serialization) { viewport->saveSceneView(serialization); });
     }
     if (!_imp->sceneViewport) {
         return;

@@ -43,6 +43,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class SceneDrawStates;
 class SceneStage;
 
 /**
@@ -139,6 +140,8 @@ public:
         eColumnName = 0,
         eColumnType,
         eColumnKind,
+        // The row's draw state in the viewer the panel is linked to.
+        eColumnDrawState,
         eColumnCount
     };
 
@@ -149,6 +152,14 @@ public:
         eChangedHereRole,
         // The row's payload, a PayloadStateEnum.
         ePayloadStateRole,
+        // Whether the viewer can box the row only by loading it: its payload is unloaded and no
+        // extentsHint on a model bounds it, a bool.
+        eUnknownBoundsRole,
+        // The row's draw state in the linked viewer, set on it or not, a SceneDrawStateEnum. None
+        // without a viewer.
+        eDrawStateRole,
+        // Whether that state comes from an ancestor or the default rather than from the row, a bool.
+        eDrawStateInheritedRole,
     };
 
     enum PayloadStateEnum {
@@ -161,6 +172,15 @@ public:
 
     // How many children one fetchMore() adds.
     static constexpr int kFetchBatchSize = 1000;
+
+    // Reads the linked viewer's draw states; false, without calling read, while an edit holds them.
+    typedef std::function<bool(const std::function<void(const SceneDrawStates&)>&)> DrawStatesReader;
+    // Sets the linked viewer's draw state at a path to a SceneDrawStateEnum, or for -1 resets the path
+    // and the rows below it to the graph.
+    typedef std::function<void(const QString& path, int state)> DrawStateWriter;
+
+    // "BBox", "Children", "Full", "Load All" or "Hidden".
+    static QString drawStateLabel(int state);
 
     // The mime type of dragged prim paths: UTF-8, one path per line.
     static QString primPathsMimeType();
@@ -224,6 +244,16 @@ public:
 
     bool isChangedHere(const QString& path) const;
 
+    /**
+     * @brief Where the draw state column reads and edits: the linked viewer, by path, whichever stage
+     * the model shows. Never the stage. Without a reader the column is empty; without a writer it is
+     * read only.
+     **/
+    void setDrawStateAccess(const DrawStatesReader& reader, const DrawStateWriter& writer);
+
+    // The linked viewer's draw states changed: the column reads them again.
+    void refreshDrawStates();
+
     int getChangedHereCount() const;
 
     // How many items have been read, the root's children and down.
@@ -243,6 +273,8 @@ public:
     QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
     Qt::ItemFlags flags(const QModelIndex& index) const override;
+    // The draw state column takes a SceneDrawStateEnum, or -1 to reset the row to the graph.
+    bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
     bool canFetchMore(const QModelIndex& parent) const override;
     void fetchMore(const QModelIndex& parent) override;
     QStringList mimeTypes() const override;

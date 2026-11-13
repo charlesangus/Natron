@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <chrono>
 #include <memory>
 #include <set>
 #include <string>
@@ -39,6 +41,7 @@
 #undef emit
 #endif
 #include <pxr/imaging/hd/changeTracker.h>
+#include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
@@ -196,6 +199,64 @@ addLights(const HdRetainedSceneIndexRefPtr& scene)
     add("/World/rig/subrig", TfToken("xform"));
     add("/World/rig/subrig/spot", HdPrimTypeTokens->sphereLight);
     add("/World/rig/mesh", HdPrimTypeTokens->mesh);
+}
+
+// A native instancer as usdImaging propagates it, away from the instances it names.
+HdContainerDataSourceHandle
+instancerData(const std::vector<std::string>& locations,
+              const std::vector<bool>& mask = std::vector<bool>())
+{
+    VtArray<SdfPath> paths;
+    for (const std::string& location : locations) {
+        paths.push_back(SdfPath(location));
+    }
+    HdInstancerTopologySchema::Builder builder;
+    builder.SetInstanceLocations(HdRetainedTypedSampledDataSource<VtArray<SdfPath>>::New(paths));
+    if (!mask.empty()) {
+        builder.SetMask(HdRetainedTypedSampledDataSource<VtArray<bool>>::New(VtArray<bool>(mask.begin(), mask.end())));
+    }
+
+    return HdRetainedContainerDataSource::New(HdInstancerTopologySchema::GetSchemaToken(), builder.Build());
+}
+
+const char* const kNativeInstancer = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer";
+
+// /World/a/i1, /World/a/i2 and /World/b/i3, drawn by kNativeInstancer.
+void
+addInstances(const HdRetainedSceneIndexRefPtr& scene,
+             const std::vector<bool>& mask = std::vector<bool>())
+{
+    const auto add = [&scene](const char* path, const TfToken& type, const HdContainerDataSourceHandle& data) {
+        scene->AddPrims({ { SdfPath(path), type, data } });
+    };
+    add("/World/a/i1", TfToken(), someData());
+    add("/World/a/i2", TfToken(), someData());
+    add("/World/b/i3", TfToken(), someData());
+    add("/UsdNiPropagatedPrototypes", TfToken(), someData());
+    add("/UsdNiPropagatedPrototypes/Bindings", TfToken(), someData());
+    add("/UsdNiPropagatedPrototypes/Bindings/__Prototype_1", TfToken(), someData());
+    add(kNativeInstancer, HdPrimTypeTokens->instancer, instancerData({ "/World/a/i1", "/World/a/i2", "/World/b/i3" }, mask));
+    add("/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype", TfToken("xform"), someData());
+    add("/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype/m", HdPrimTypeTokens->mesh, someData());
+}
+
+// Empty when the instancer draws every instance.
+std::vector<bool>
+maskOf(const HdSceneIndexBase& index,
+       const char* path)
+{
+    const HdSceneIndexPrim prim = index.GetPrim(SdfPath(path));
+    const HdBoolArrayDataSourceHandle mask = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetMask();
+    if (!mask) {
+        return std::vector<bool>();
+    }
+    const VtArray<bool> values = mask->GetTypedValue(0.f);
+    std::vector<bool> result(values.cbegin(), values.cend());
+    if (std::find(result.begin(), result.end(), false) == result.end()) {
+        result.clear();
+    }
+
+    return result;
 }
 
 class NullLight
@@ -913,6 +974,237 @@ TEST_F(SceneDrawFilterTest, BoxingOnePrimChangesItsVisibilityAndNotTheRenderInde
     EXPECT_EQ(1, delegate.rprimsDestroyed);
 }
 
+TEST_F(SceneDrawFilterTest, ChangesToSeveralRowsAppliedTogetherAnnounceEachPrimOnce)
+{
+    const SceneDrawDelta world = states.setState("/World", eSceneDrawStateBBox);
+    const SceneDrawDelta a = states.setState("/World/a", eSceneDrawStateFull);
+    const SceneDrawDelta deep = states.setState("/World/a/deep", eSceneDrawStateHidden);
+
+    filter->applyDeltas({ &world, &a, &deep });
+
+    EXPECT_EQ((PathSet { "/World/a/deep/m2" }), recorder.leftHydra);
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), recorder.invisible);
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_EQ(5u, filter->getHiddenSentCount());
+    EXPECT_EQ(0u, filter->getShownSentCount());
+    EXPECT_EQ((PathSet { "/World/a/m1" }), drawnGeometry());
+}
+
+TEST_F(SceneDrawFilterTest, AWideChangeAnnouncesOnlyThePrimsItChanges)
+{
+    filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateBBox));
+    recorder.reset();
+    const unsigned long long hiddenBefore = filter->getHiddenSentCount();
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), recorder.hides);
+    EXPECT_EQ(5u, filter->getHiddenSentCount() - hiddenBefore);
+    EXPECT_EQ(6u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, AChangeDuringARevealKeepsWhatItAnnouncedThatTheNewRulesShow)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 2);
+    filter->stepReveal(2);
+    const PathSet announced = recorder.shows;
+    ASSERT_EQ(2u, announced.size());
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateBBox));
+
+    EXPECT_FALSE(filter->isRevealing());
+    PathSet expected = kAllGeometry;
+    expected.erase("/World/a/deep/m2");
+    EXPECT_EQ(expected, drawnGeometry());
+    for (const std::string& path : recorder.hides) {
+        EXPECT_EQ("/World/a/deep/m2", path);
+    }
+    for (const std::string& path : recorder.shows) {
+        EXPECT_EQ(0u, announced.count(path)) << path << " was announced twice";
+    }
+}
+
+TEST_F(SceneDrawFilterTest, APrimHiddenDuringARevealAndShownAgainIsRevealed)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox), 1);
+    filter->applyDelta(states.clearState("/World/b"), 1);
+
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+    }
+
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+namespace {
+bool
+hiddenByRules(const SceneDrawFilter::Rules& rules,
+              const SdfPath& path,
+              bool light)
+{
+    const SceneDrawFilter::Rules::const_iterator rule = SdfPathFindLongestPrefix(rules, path);
+    if (rule == rules.end()) {
+        return false;
+    }
+    if (light) {
+        return rule->second == SceneDrawFilter::eRuleHidden;
+    }
+    switch (rule->second) {
+    case SceneDrawFilter::eRuleShow:
+        return false;
+    case SceneDrawFilter::eRuleHide:
+    case SceneDrawFilter::eRuleHidden:
+        return true;
+    case SceneDrawFilter::eRuleExpand:
+        return rule->first != path;
+    }
+
+    return false;
+}
+
+// Every geometry prim and light of the input is drawn exactly when the filter's rules show it, and a
+// Hidden row keeps it out of Hydra.
+void
+expectFilteredSceneFollowsTheRules(const HdSceneIndexBase& input,
+                                   const SceneDrawFilter& filter)
+{
+    const std::set<TfToken> geometry = { HdPrimTypeTokens->mesh, HdPrimTypeTokens->sphere, HdPrimTypeTokens->instancer };
+    SdfPathVector stack = input.GetChildPrimPaths(SdfPath::AbsoluteRootPath());
+    std::size_t checked = 0;
+    while (!stack.empty()) {
+        const SdfPath path = stack.back();
+        stack.pop_back();
+        const SdfPathVector children = input.GetChildPrimPaths(path);
+        stack.insert(stack.end(), children.begin(), children.end());
+        const TfToken primType = input.GetPrim(path).primType;
+        const bool light = HdPrimTypeIsLight(primType);
+        if (!light && (geometry.count(primType) == 0)) {
+            continue;
+        }
+        ++checked;
+        const HdSceneIndexPrim prim = filter.GetPrim(path);
+        const bool hidden = hiddenByRules(filter.getRules(), path, light);
+        EXPECT_EQ(!hidden, !prim.primType.IsEmpty() && visible(prim)) << path;
+        const SceneDrawFilter::Rules::const_iterator rule = SdfPathFindLongestPrefix(filter.getRules(), path);
+        if (hidden && (rule != filter.getRules().end()) && (rule->second == SceneDrawFilter::eRuleHidden)) {
+            EXPECT_TRUE(prim.primType.IsEmpty()) << path << " is under a Hidden row";
+        }
+    }
+    EXPECT_LT(0u, checked);
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, TheFilteredSceneFollowsTheRulesThroughBatchedChangesAndInputChanges)
+{
+    addLights(scene);
+    const SceneDrawDelta world = states.setState("/World", eSceneDrawStateBBox);
+    const SceneDrawDelta a = states.setState("/World/a", eSceneDrawStateFull);
+    const SceneDrawDelta deep = states.setState("/World/a/deep", eSceneDrawStateHidden);
+    const SceneDrawDelta b = states.setState("/World/b", eSceneDrawStateChildren);
+    const SceneDrawDelta rig = states.setState("/World/rig/subrig", eSceneDrawStateHidden);
+    filter->applyDeltas({ &world, &a, &deep, &b, &rig });
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+
+    scene->AddPrims({ { SdfPath("/World/a/deep/late"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/b/late"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/d/e/late"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/rig/subrig/late"), HdPrimTypeTokens->sphereLight, someData() } });
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+
+    scene->RemovePrims({ { SdfPath("/World/a") } });
+    const SceneDrawDelta deepCleared = states.clearState("/World/a/deep");
+    const SceneDrawDelta worldFull = states.setState("/World", eSceneDrawStateFull);
+    const SceneDrawDelta rigBoxed = states.setState("/World/rig", eSceneDrawStateBBox);
+    filter->applyDeltas({ &deepCleared, &worldFull, &rigBoxed });
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+
+    scene->AddPrims({ { SdfPath("/World/a/m1"), HdPrimTypeTokens->mesh, someData() } });
+    const SceneDrawDelta cHidden = states.setState("/World/c", eSceneDrawStateHidden);
+    const SceneDrawDelta rigHidden = states.setState("/World/rig", eSceneDrawStateHidden);
+    filter->applyDeltas({ &cHidden, &rigHidden }, 1);
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+    EXPECT_TRUE(drawn("/World/a/m1"));
+}
+
+TEST_F(SceneDrawFilterTest, ASubtreeRemovedAndAddedAgainFollowsTheRules)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    ASSERT_EQ(2u, filter->getHeldInvisibleCount());
+
+    scene->RemovePrims({ { SdfPath("/World/a") } });
+
+    EXPECT_EQ((PathSet { "/World/a" }), recorder.removed);
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+    recorder.reset();
+
+    scene->AddPrims({ { SdfPath("/World/a"), TfToken("xform"), someData() }, { SdfPath("/World/a/m1"), HdPrimTypeTokens->mesh, someData() } });
+
+    EXPECT_EQ((PathSet { "/World/a/m1" }), recorder.leftHydra);
+    EXPECT_FALSE(drawn("/World/a/m1"));
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull));
+
+    EXPECT_EQ((PathSet { "/World/a/m1" }), recorder.shows);
+    EXPECT_TRUE(drawn("/World/a/m1"));
+}
+
+TEST_F(SceneDrawFilterTest, RemovingPrimsDuringARevealLetsItFinish)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+
+    scene->RemovePrims({ { SdfPath("/World/b") }, { SdfPath("/World/a/deep") } });
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+    }
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/inst", "/World/c" }), drawnGeometry());
+    EXPECT_EQ(0u, filter->getHeldInvisibleCount());
+}
+
+TEST_F(SceneDrawFilterTest, AFilterOnAnEmptySceneLearnsThePrimsAsTheyArrive)
+{
+    HdRetainedSceneIndexRefPtr empty = HdRetainedSceneIndex::New();
+    TfRefPtr<SceneDrawFilter> late = SceneDrawFilter::New(empty);
+    Recorder lateRecorder;
+    late->AddObserver(HdSceneIndexObserverPtr(&lateRecorder));
+    SceneDrawStates lateStates;
+    late->applyDelta(lateStates.setState("/World/a", eSceneDrawStateBBox));
+    EXPECT_TRUE(lateRecorder.empty());
+
+    HdRetainedSceneIndex::AddedPrimEntries entries;
+    SdfPathVector stack = scene->GetChildPrimPaths(SdfPath::AbsoluteRootPath());
+    while (!stack.empty()) {
+        const SdfPath path = stack.back();
+        stack.pop_back();
+        entries.push_back({ path, scene->GetPrim(path).primType, someData() });
+        const SdfPathVector children = scene->GetChildPrimPaths(path);
+        stack.insert(stack.end(), children.begin(), children.end());
+    }
+    empty->AddPrims(entries);
+
+    EXPECT_EQ((PathSet { "/World/a/m1", "/World/a/deep/m2" }), lateRecorder.leftHydra);
+    EXPECT_TRUE(late->GetPrim(SdfPath("/World/a/m1")).primType.IsEmpty());
+    EXPECT_FALSE(late->GetPrim(SdfPath("/World/b/m3")).primType.IsEmpty());
+    lateRecorder.reset();
+
+    late->applyDelta(lateStates.setState("/World", eSceneDrawStateHidden));
+
+    EXPECT_EQ((PathSet { "/World/b/m3", "/World/b/ball", "/World/inst", "/World/c" }), lateRecorder.leftHydra);
+    lateRecorder.reset();
+
+    late->applyDelta(lateStates.clearAllStates());
+
+    EXPECT_EQ(kAllGeometry, lateRecorder.shows);
+}
+
 TEST_F(SceneDrawFilterTest, RegisteringTwiceIsHarmless)
 {
     SceneDrawFilter::registerForAllRenderers();
@@ -920,4 +1212,504 @@ TEST_F(SceneDrawFilterTest, RegisteringTwiceIsHarmless)
 
     EXPECT_TRUE(SceneDrawFilter::takeAppendedInstanceId().empty());
     EXPECT_FALSE(get_pointer(SceneDrawFilter::find("no such engine")));
+}
+
+TEST_F(SceneDrawFilterTest, ABoxedRowMasksTheNativeInstancesBelowItAndKeepsTheirInstancer)
+{
+    addInstances(scene);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+
+    EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+    EXPECT_EQ(2u, filter->getMaskedInstanceCount());
+    EXPECT_EQ(1u, recorder.dirtied.count(kNativeInstancer));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
+    EXPECT_TRUE(drawn("/UsdNiPropagatedPrototypes/Bindings/__Prototype_1/UsdNiInstancer/UsdNiPrototype/m"));
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull));
+
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+    EXPECT_EQ(0u, filter->getMaskedInstanceCount());
+    EXPECT_EQ(1u, recorder.dirtied.count(kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, AHiddenRowMasksItsInstancesAndARowOnOneInstanceMasksOnlyIt)
+{
+    addInstances(scene);
+
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateHidden));
+
+    EXPECT_EQ((std::vector<bool> { true, true, false }), maskOf(*filter, kNativeInstancer));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
+
+    filter->applyDelta(states.setState("/World/a/i2", eSceneDrawStateChildren));
+
+    EXPECT_EQ((std::vector<bool> { true, false, false }), maskOf(*filter, kNativeInstancer));
+
+    filter->applyDelta(states.clearAllStates());
+
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+}
+
+TEST_F(SceneDrawFilterTest, RowsOutsideTheInstancesLeaveTheirMaskAlone)
+{
+    addInstances(scene);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/c", eSceneDrawStateBBox));
+
+    EXPECT_TRUE(maskOf(*filter, kNativeInstancer).empty());
+    EXPECT_EQ(0u, recorder.dirtied.count(kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, TheMaskKeepsWhatTheInputMasks)
+{
+    addInstances(scene, { true, false, true });
+
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+
+    EXPECT_EQ((std::vector<bool> { true, false, false }), maskOf(*filter, kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, AnInstancerAddedOrSeededUnderRulesStartsMasked)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    addInstances(scene);
+
+    EXPECT_EQ((std::vector<bool> { false, false, true }), maskOf(*filter, kNativeInstancer));
+
+    SceneDrawFilter::Rules rules;
+    SceneDrawFilter::applyToRules(states.setState("/World/b", eSceneDrawStateBBox), &rules);
+    TfRefPtr<SceneDrawFilter> fresh = SceneDrawFilter::New(scene);
+    fresh->seedRules(rules);
+
+    EXPECT_EQ((std::vector<bool> { true, true, false }), maskOf(*fresh, kNativeInstancer));
+    EXPECT_EQ(1u, fresh->getMaskedInstanceCount());
+}
+
+TEST_F(SceneDrawFilterTest, ANewInstanceListIsReadWhenTheInputAddsItAgain)
+{
+    addInstances(scene);
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+
+    scene->AddPrims({ { SdfPath(kNativeInstancer), HdPrimTypeTokens->instancer, instancerData({ "/World/b/i3", "/World/a/i1" }) } });
+
+    EXPECT_EQ((std::vector<bool> { false, true }), maskOf(*filter, kNativeInstancer));
+    EXPECT_EQ(1u, filter->getMaskedInstanceCount());
+
+    scene->RemovePrims({ SdfPath("/UsdNiPropagatedPrototypes") });
+
+    EXPECT_EQ(0u, filter->getMaskedInstanceCount());
+}
+
+namespace {
+// The prims announced with their type, in the order they went.
+class ShowOrder
+    : public HdSceneIndexObserver {
+public:
+    void PrimsAdded(const HdSceneIndexBase& /*sender*/,
+                    const AddedPrimEntries& entries) override
+    {
+        for (const AddedPrimEntry& entry : entries) {
+            if (!entry.primType.IsEmpty()) {
+                shown.push_back(entry.primPath.GetString());
+            }
+        }
+    }
+
+    void PrimsRemoved(const HdSceneIndexBase& /*sender*/,
+                      const RemovedPrimEntries& /*entries*/) override
+    {
+    }
+
+    void PrimsDirtied(const HdSceneIndexBase& sender,
+                      const DirtiedPrimEntries& entries) override
+    {
+        static const HdDataSourceLocatorSet visibilityOnly { HdVisibilitySchema::GetDefaultLocator() };
+        for (const DirtiedPrimEntry& entry : entries) {
+            if ((entry.dirtyLocators == visibilityOnly) && visible(sender.GetPrim(entry.primPath))) {
+                shown.push_back(entry.primPath.GetString());
+            }
+        }
+    }
+
+    void PrimsRenamed(const HdSceneIndexBase& /*sender*/,
+                      const RenamedPrimEntries& /*entries*/) override
+    {
+    }
+
+    std::vector<std::string> shown;
+};
+
+PathSet
+toSet(const std::vector<std::string>& paths)
+{
+    return PathSet(paths.begin(), paths.end());
+}
+
+void
+revealAll(SceneDrawFilter& filter,
+          std::size_t batch)
+{
+    while (filter.isRevealing()) {
+        filter.stepReveal(batch);
+    }
+}
+
+// What a payload landing at /World/a brings in, as usdImaging resyncs it.
+void
+addPayload(const HdRetainedSceneIndexRefPtr& scene)
+{
+    scene->AddPrims({ { SdfPath("/World/a/payload"), TfToken("xform"), someData() },
+                      { SdfPath("/World/a/payload/p1"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/a/payload/p2"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/a/payload/lamp"), HdPrimTypeTokens->sphereLight, someData() } });
+}
+
+void
+appendInputOrder(const HdSceneIndexBase& scene,
+                 const SdfPath& path,
+                 std::vector<std::string>* order)
+{
+    if (kAllGeometry.count(path.GetString()) != 0) {
+        order->push_back(path.GetString());
+    }
+    for (const SdfPath& child : scene.GetChildPrimPaths(path)) {
+        appendInputOrder(scene, child, order);
+    }
+}
+
+// The geometry below root, depth first in the order the input lists children. A retained scene
+// index lists them newest first, not in the order they were added.
+std::vector<std::string>
+inputOrder(const HdSceneIndexBase& scene,
+           const char* root)
+{
+    std::vector<std::string> order;
+    appendInputOrder(scene, SdfPath(root), &order);
+
+    return order;
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, ARevealGoesDepthFirstInTheInputsOrder)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    ShowOrder order;
+    filter->AddObserver(HdSceneIndexObserverPtr(&order));
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    revealAll(*filter, 1);
+
+    const std::vector<std::string> expected = inputOrder(*scene, "/World");
+    EXPECT_EQ(kAllGeometry.size(), expected.size());
+    EXPECT_EQ(expected, order.shown);
+    filter->RemoveObserver(HdSceneIndexObserverPtr(&order));
+}
+
+TEST_F(SceneDrawFilterTest, ARevealOfSeveralRowsFinishesOneBeforeTheNextAndTheLatestChangeComesFirst)
+{
+    const SceneDrawDelta boxA = states.setState("/World/a", eSceneDrawStateBBox);
+    const SceneDrawDelta boxB = states.setState("/World/b", eSceneDrawStateBBox);
+    filter->applyDeltas({ &boxA, &boxB });
+    ShowOrder order;
+    filter->AddObserver(HdSceneIndexObserverPtr(&order));
+
+    const SceneDrawDelta fullA = states.setState("/World/a", eSceneDrawStateFull);
+    const SceneDrawDelta fullB = states.setState("/World/b", eSceneDrawStateFull);
+    filter->applyDeltas({ &fullA, &fullB }, 1);
+    revealAll(*filter, 1);
+
+    const std::vector<std::string> rowA = inputOrder(*scene, "/World/a");
+    const std::vector<std::string> rowB = inputOrder(*scene, "/World/b");
+    ASSERT_EQ(2u, rowA.size());
+    ASSERT_EQ(2u, rowB.size());
+    std::vector<std::string> expected = rowA;
+    expected.insert(expected.end(), rowB.begin(), rowB.end());
+    EXPECT_EQ(expected, order.shown);
+    order.shown.clear();
+
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateFull), 1);
+    EXPECT_EQ(1u, filter->stepReveal(1));
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull), 1);
+    revealAll(*filter, 1);
+
+    expected = { rowB.front() };
+    expected.insert(expected.end(), rowA.begin(), rowA.end());
+    expected.insert(expected.end(), rowB.begin() + 1, rowB.end());
+    EXPECT_EQ(expected, order.shown);
+    filter->RemoveObserver(HdSceneIndexObserverPtr(&order));
+}
+
+TEST_F(SceneDrawFilterTest, BoxingTheRowOfARevealStopsItWithinOneStep)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+    const PathSet announced = recorder.shows;
+    ASSERT_EQ(1u, announced.size());
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox), 1);
+
+    EXPECT_EQ(announced, recorder.hides);
+    EXPECT_EQ(0u, filter->stepReveal(1));
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_TRUE(drawnGeometry().empty());
+}
+
+TEST_F(SceneDrawFilterTest, BoxingARevealFromHiddenStillBringsBackItsLightsAndNothingElse)
+{
+    addLights(scene);
+    filter->applyDelta(states.setState("/World", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox), 1);
+    std::size_t steps = 0;
+    while (filter->isRevealing()) {
+        filter->stepReveal(1);
+        ++steps;
+    }
+
+    // One step a light, and one to find nothing is left.
+    EXPECT_LE(steps, 5u);
+    EXPECT_TRUE(drawnGeometry().empty());
+    EXPECT_FALSE(drawn("/World/rig/mesh"));
+    for (const char* light : { "/World/rig/key", "/World/rig/key/fill", "/World/rig/dome", "/World/rig/subrig/spot" }) {
+        EXPECT_TRUE(drawn(light)) << light;
+    }
+    for (const std::string& path : recorder.shows) {
+        EXPECT_EQ(0u, kAllGeometry.count(path)) << path;
+    }
+}
+
+TEST_F(SceneDrawFilterTest, OverlappingRevealsAnnounceEachPrimOnceAndFinish)
+{
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    ShowOrder order;
+    filter->AddObserver(HdSceneIndexObserverPtr(&order));
+
+    // A row below a reveal under way, then the reveal's own row again, then a row above both.
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull), 1);
+    filter->stepReveal(1);
+    filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateFull), 1);
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), 1);
+    filter->stepReveal(1);
+    filter->applyDelta(states.setState("/World", eSceneDrawStateFull), 1);
+    revealAll(*filter, 1);
+
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_EQ(kAllGeometry, toSet(order.shown));
+    EXPECT_EQ(kAllGeometry.size(), order.shown.size());
+    filter->RemoveObserver(HdSceneIndexObserverPtr(&order));
+}
+
+TEST_F(SceneDrawFilterTest, ARowChangedAgainDuringItsRevealStillRevealsWhatItHadLeft)
+{
+    SceneDrawDelta box;
+    box.boxed = { "/World/b" };
+    SceneDrawDelta show;
+    show.drawn = { "/World/b" };
+    filter->applyDelta(box);
+    filter->applyDelta(show, 1);
+    ASSERT_EQ(1u, filter->stepReveal(1));
+
+    // The row's rule is what it was, so only the frontier left there knows what is still to come.
+    filter->applyDelta(show, 1);
+    revealAll(*filter, 1);
+
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+}
+
+TEST_F(SceneDrawFilterTest, WhatALoadAllBringsInJoinsAReveal)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), 1);
+    recorder.reset();
+
+    addPayload(scene);
+
+    EXPECT_TRUE(filter->isRevealing());
+    EXPECT_EQ((PathSet { "/World/a/payload/p1", "/World/a/payload/p2" }), recorder.leftHydra);
+    EXPECT_EQ((PathSet { "/World/a/payload", "/World/a/payload/lamp" }), recorder.shows);
+    EXPECT_FALSE(drawn("/World/a/payload/p1"));
+
+    scene->AddPrims({ { SdfPath("/World/c2"), HdPrimTypeTokens->mesh, someData() } });
+    EXPECT_TRUE(drawn("/World/c2"));
+
+    EXPECT_EQ(1u, filter->stepReveal(1));
+    EXPECT_TRUE(drawn("/World/a/payload/p1"));
+    EXPECT_FALSE(drawn("/World/a/payload/p2"));
+    revealAll(*filter, 1);
+    EXPECT_TRUE(drawn("/World/a/payload/p2"));
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+}
+
+TEST_F(SceneDrawFilterTest, APrimResyncedWithinARenderComesBackAsHydraHeldIt)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), 1);
+    addPayload(scene);
+    revealAll(*filter, 1);
+    filter->endRender();
+    recorder.reset();
+
+    scene->RemovePrims({ SdfPath("/World/a/payload") });
+    addPayload(scene);
+
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_TRUE(drawn("/World/a/payload/p1"));
+    EXPECT_TRUE(drawn("/World/a/payload/p2"));
+    EXPECT_TRUE(recorder.leftHydra.empty());
+    filter->endRender();
+
+    scene->RemovePrims({ SdfPath("/World/a/payload") });
+    filter->endRender();
+    addPayload(scene);
+
+    EXPECT_TRUE(filter->isRevealing());
+    EXPECT_FALSE(drawn("/World/a/payload/p1"));
+}
+
+TEST_F(SceneDrawFilterTest, AChangeShownAtOnceLetsLoadsArriveAtOnce)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), 1);
+    filter->applyDelta(states.setState("/World/c", eSceneDrawStateBBox));
+
+    addPayload(scene);
+
+    EXPECT_FALSE(filter->isRevealing());
+    EXPECT_TRUE(drawn("/World/a/payload/p1"));
+    EXPECT_TRUE(drawn("/World/a/payload/p2"));
+}
+
+TEST_F(SceneDrawFilterTest, BoxingTheRowOfALoadAllLeavesWhatArrivesBoxed)
+{
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateLoadAll), 1);
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox), 1);
+
+    addPayload(scene);
+    revealAll(*filter, 1);
+
+    EXPECT_FALSE(drawn("/World/a/payload/p1"));
+    EXPECT_FALSE(drawn("/World/a/payload/p2"));
+    EXPECT_TRUE(drawn("/World/a/payload/lamp"));
+}
+
+TEST_F(SceneDrawFilterTest, AStepStopsAtItsDeadline)
+{
+    const std::size_t wide = 3000;
+    HdRetainedSceneIndex::AddedPrimEntries entries { { SdfPath("/Wide"), TfToken("xform"), someData() } };
+    for (std::size_t i = 0; i < wide; ++i) {
+        entries.push_back({ SdfPath("/Wide/m" + std::to_string(i)), HdPrimTypeTokens->mesh, someData() });
+    }
+    scene->AddPrims(entries);
+    filter->applyDelta(states.setState("/Wide", eSceneDrawStateBBox));
+    filter->applyDelta(states.setState("/Wide", eSceneDrawStateFull), 1);
+
+    const std::size_t shown = filter->stepReveal(wide, SceneDrawFilter::Clock::now() - std::chrono::seconds(1));
+
+    EXPECT_TRUE(filter->wasStepCut());
+    EXPECT_LT(shown, wide);
+    EXPECT_TRUE(filter->isRevealing());
+
+    EXPECT_EQ(wide - shown, filter->stepReveal(wide));
+    EXPECT_FALSE(filter->wasStepCut());
+    EXPECT_FALSE(filter->isRevealing());
+}
+
+TEST_F(SceneDrawFilterTest, ADeepSceneIsIndexedAndRevealedWithoutRecursing)
+{
+    std::string path = "/Deep";
+    for (int i = 0; i < 3000; ++i) {
+        path += "/x";
+    }
+    const std::string leaf = path + "/m";
+    scene->AddPrims({ { SdfPath(leaf), HdPrimTypeTokens->mesh, someData() } });
+    filter->applyDelta(states.setState("/Deep", eSceneDrawStateBBox));
+    ASSERT_FALSE(drawn(leaf.c_str()));
+
+    filter->applyDelta(states.setState("/Deep", eSceneDrawStateFull), 1);
+    revealAll(*filter, 1);
+
+    EXPECT_TRUE(drawn(leaf.c_str()));
+    scene->RemovePrims({ SdfPath("/Deep") });
+    EXPECT_FALSE(filter->isRevealing());
+}
+
+namespace {
+// Feeds the pacer frames costing fixedMs plus perPrimMs a prim, and returns the batches it chose.
+std::vector<std::size_t>
+pace(SceneRevealPacer& pacer,
+     double fixedMs,
+     double perPrimMs,
+     int frames)
+{
+    std::vector<std::size_t> batches;
+    for (int i = 0; i < frames; ++i) {
+        const std::size_t batch = pacer.nextBatch();
+        batches.push_back(batch);
+        pacer.observe(batch, fixedMs + perPrimMs * double(batch));
+    }
+    batches.push_back(pacer.nextBatch());
+
+    return batches;
+}
+} // anon namespace
+
+TEST(SceneRevealPacerTest, BatchesFillTheTargetFrame)
+{
+    SceneRevealPacer pacer(33., 1024);
+    pace(pacer, 0., 0.01, 30);
+
+    EXPECT_NEAR(3300., double(pacer.nextBatch()), 33.);
+}
+
+TEST(SceneRevealPacerTest, TheFixedPartOfAFrameIsLeftOutOfTheBatch)
+{
+    SceneRevealPacer pacer(33., 1024);
+    pace(pacer, 10., 0.001, 30);
+
+    EXPECT_NEAR(23000., double(pacer.nextBatch()), 230.);
+    EXPECT_NEAR(10., pacer.getFixedMs(), 0.1);
+}
+
+TEST(SceneRevealPacerTest, AFasterMachineTakesLargerBatches)
+{
+    SceneRevealPacer modest(33., 1024);
+    SceneRevealPacer manyCore(33., 1024);
+    pace(modest, 5., 0.02, 30);
+    pace(manyCore, 5., 0.002, 30);
+
+    EXPECT_GT(manyCore.nextBatch(), 5 * modest.nextBatch());
+}
+
+TEST(SceneRevealPacerTest, AFrameTheFixedPartFillsSpendsAsMuchAgainOnTheReveal)
+{
+    SceneRevealPacer pacer(33., 1024);
+    const std::vector<std::size_t> batches = pace(pacer, 600., 0.0006, 30);
+
+    for (std::size_t i = 1; i < batches.size(); ++i) {
+        EXPECT_LE(batches[i], 2 * batches[i - 1]);
+    }
+    EXPECT_NEAR(1e6, double(pacer.nextBatch()), 1e4);
+}
+
+TEST(SceneRevealPacerTest, ASlowFrameShrinksTheBatchByAQuarterAtMost)
+{
+    SceneRevealPacer pacer(33., 1024);
+    pacer.observe(1024, 10000.);
+
+    EXPECT_EQ(256u, pacer.nextBatch());
+    pacer.observe(0, 50.);
+    EXPECT_EQ(256u, pacer.nextBatch());
+    for (int i = 0; i < 20; ++i) {
+        pacer.observe(pacer.nextBatch(), 10000.);
+    }
+    EXPECT_GE(pacer.nextBatch(), 1u);
 }

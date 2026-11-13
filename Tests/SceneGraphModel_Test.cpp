@@ -42,11 +42,13 @@
 
 #include <QAbstractItemModelTester>
 #include <QElapsedTimer>
+#include <QFont>
 #include <QMimeData>
 #include <QPersistentModelIndex>
 #include <QSignalSpy>
 #include <QStringList>
 
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -1027,5 +1029,149 @@ TEST(SceneGraphModelPayloads, UnloadRemovesRowsAndKeepsTheBadge)
     fixture.twirl(kB0);
     fixture.service();
     EXPECT_EQ(QStringList(QString::fromUtf8("Geo")), childNames(fixture.model, b0));
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+namespace {
+
+// Stands in for the viewer the panel is linked to: its draw states, and the edits the column asks of it.
+struct DrawStatesViewer {
+    SceneDrawStates states;
+    // As if an edit of many rows held them.
+    bool busy = false;
+    QStringList writes;
+    SceneGraphModel* model = nullptr;
+
+    SceneGraphModel::DrawStatesReader reader()
+    {
+        return [this](const std::function<void(const SceneDrawStates&)>& read) {
+            if (busy) {
+                return false;
+            }
+            read(states);
+
+            return true;
+        };
+    }
+
+    SceneGraphModel::DrawStateWriter writer()
+    {
+        return [this](const QString& path, int state) {
+            writes << QString::fromUtf8("%1=%2").arg(path).arg(state);
+            const std::string p = path.toStdString();
+            if (state < 0) {
+                states.clearStatesBelow(p);
+                states.clearState(p);
+            } else {
+                states.setState(p, (SceneDrawStateEnum)state);
+            }
+            model->refreshDrawStates();
+        };
+    }
+};
+
+QModelIndex
+drawCell(const QModelIndex& row)
+{
+    return row.sibling(row.row(), SceneGraphModel::eColumnDrawState);
+}
+
+} // anon namespace
+
+TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(referenceScene());
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setSource(source);
+    if (model.canFetchMore(QModelIndex())) {
+        model.fetchMore(QModelIndex());
+    }
+    const QModelIndex world = model.index(0, SceneGraphModel::eColumnName);
+    if (model.canFetchMore(world)) {
+        model.fetchMore(world);
+    }
+    ASSERT_EQ(QStringList() << QString::fromUtf8("Box") << QString::fromUtf8("Ball") << QString::fromUtf8("Cam"), childNames(model, world));
+    EXPECT_EQ(QString::fromUtf8("Draw State"), model.headerData(SceneGraphModel::eColumnDrawState, Qt::Horizontal).toString());
+
+    // Without a viewer the column is empty and cannot be edited.
+    EXPECT_FALSE(drawCell(world).data().isValid());
+    EXPECT_FALSE(model.flags(drawCell(world)) & Qt::ItemIsEditable);
+    EXPECT_FALSE(model.setData(drawCell(world), (int)eSceneDrawStateBBox));
+
+    DrawStatesViewer viewer;
+    viewer.model = &model;
+    const U64 editCount = source->getEditCount();
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    model.setDrawStateAccess(viewer.reader(), viewer.writer());
+    EXPECT_FALSE(changed.isEmpty());
+    EXPECT_TRUE(model.flags(drawCell(world)) & Qt::ItemIsEditable);
+    EXPECT_FALSE(model.flags(world) & Qt::ItemIsEditable);
+
+    // Nothing set: every row draws in full, as the default has it.
+    const QModelIndex box = model.index(0, 0, world);
+    const QModelIndex ball = model.index(1, 0, world);
+    const QModelIndex cam = model.index(2, 0, world);
+    EXPECT_EQ(QString::fromUtf8("Full"), drawCell(box).data().toString());
+    EXPECT_EQ((int)eSceneDrawStateFull, box.data(SceneGraphModel::eDrawStateRole).toInt());
+    EXPECT_TRUE(box.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
+    EXPECT_TRUE(drawCell(box).data(Qt::FontRole).value<QFont>().italic());
+
+    // A state set on a row reads as set; the rows below it inherit what it implies.
+    EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStateChildren));
+    EXPECT_EQ(QStringList(QString::fromUtf8("/World=%1").arg((int)eSceneDrawStateChildren)), viewer.writes);
+    EXPECT_EQ(QString::fromUtf8("Children"), drawCell(world).data().toString());
+    EXPECT_FALSE(world.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
+    EXPECT_FALSE(drawCell(world).data(Qt::FontRole).value<QFont>().italic());
+    EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(ball).data().toString());
+    EXPECT_TRUE(ball.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
+
+    // Full deep down switches the boxing ancestor to Children; the siblings stay boxed.
+    EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStateBBox));
+    EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(world).data().toString());
+    EXPECT_TRUE(model.setData(drawCell(ball), (int)eSceneDrawStateFull));
+    EXPECT_EQ(QString::fromUtf8("Children"), drawCell(world).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Full"), drawCell(ball).data().toString());
+    EXPECT_FALSE(ball.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
+    EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(box).data().toString());
+    EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(cam).data().toString());
+
+    EXPECT_TRUE(model.setData(drawCell(cam), (int)eSceneDrawStateLoadAll));
+    EXPECT_EQ(QString::fromUtf8("Load All"), drawCell(cam).data().toString());
+    EXPECT_TRUE(model.setData(drawCell(box), (int)eSceneDrawStateHidden));
+    EXPECT_EQ(QString::fromUtf8("Hidden"), drawCell(box).data().toString());
+
+    // Out of range is refused without reaching the viewer.
+    const int writes = viewer.writes.size();
+    EXPECT_FALSE(model.setData(drawCell(box), 99));
+    EXPECT_FALSE(model.setData(drawCell(box), QString::fromUtf8("full")));
+    EXPECT_FALSE(model.setData(box, (int)eSceneDrawStateBBox));
+    EXPECT_EQ(writes, viewer.writes.size());
+
+    // Reset to Graph on a row clears it and everything below.
+    EXPECT_TRUE(model.setData(drawCell(world), -1));
+    for (const QModelIndex& row : { world, box, ball, cam }) {
+        EXPECT_EQ(QString::fromUtf8("Full"), drawCell(row).data().toString());
+        EXPECT_TRUE(row.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
+    }
+
+    // While an edit holds the states the column shows nothing rather than wait; the change it
+    // makes reads them again.
+    viewer.states.setState("/World", eSceneDrawStateBBox);
+    viewer.busy = true;
+    model.refreshDrawStates();
+    EXPECT_FALSE(drawCell(world).data().isValid());
+    viewer.busy = false;
+    model.refreshDrawStates();
+    EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(world).data().toString());
+
+    // The column reads only the viewer.
+    EXPECT_EQ(editCount, source->getEditCount());
+
+    model.setDrawStateAccess(SceneGraphModel::DrawStatesReader(), SceneGraphModel::DrawStateWriter());
+    EXPECT_FALSE(drawCell(world).data().isValid());
+    EXPECT_FALSE(model.flags(drawCell(world)) & Qt::ItemIsEditable);
     EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
 }

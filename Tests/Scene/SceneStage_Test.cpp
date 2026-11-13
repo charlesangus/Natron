@@ -592,6 +592,82 @@ TEST(SceneStageLoads, CancelDropsWhatHasNotStarted)
     EXPECT_TRUE(city.loadedBuildings().empty());
 }
 
+TEST(SceneStageLoads, CancellingPathsDropsOnlyTheirLoads)
+{
+    PayloadCity city(1, 3);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    stage.requestLoad({ building(0, 0) }, false);
+    stage.serviceLoads(kNoLock, kNoLock);
+
+    stage.requestLoad({ building(0, 1), building(0, 2) }, false);
+    stage.requestUnload({ building(0, 0) });
+    stage.cancelPendingLoads({ building(0, 1), building(0, 0) });
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(building(0, 1)).IsLoaded());
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 2)).IsLoaded());
+}
+
+TEST(SceneStageLoads, WithDescendantsLeavesTheExcludedSubtreesClosed)
+{
+    PayloadCity city(3, 2);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true, { PXR_NS::SdfPath("/World/Block_1"), building(2, 0) });
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda", "b0_1.usda", "b2_1.usda" }));
+    EXPECT_FALSE(stage.hasPendingLoads());
+}
+
+TEST(SceneStageLoads, APayloadAboveAnExclusionLoadsAloneThenItsOtherDescendants)
+{
+    PayloadCity city(1, 1);
+    city.writeBuilding("keep.usda", std::string());
+    city.writeBuilding("skip.usda", std::string());
+    city.writeBuilding("b0_0.usda",
+                       "    def Xform \"Keep\" (\n        prepend payload = @./keep.usda@\n    )\n    {\n    }\n"
+                       "    def Xform \"Skip\" (\n        prepend payload = @./skip.usda@\n    )\n    {\n    }\n");
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    const PXR_NS::SdfPath skip = building(0, 0).AppendChild(PXR_NS::TfToken("Skip"));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true, { skip });
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda" }));
+    EXPECT_TRUE(stage.hasPendingLoads());
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda", "keep.usda" }));
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(skip).IsLoaded());
+    EXPECT_FALSE(stage.hasPendingLoads());
+}
+
+TEST(SceneStageLoads, ACancelDuringASplitLoadAsksForNothingMore)
+{
+    PayloadCity city(1, 1);
+    city.writeBuilding("keep.usda", std::string());
+    city.writeBuilding("skip.usda", std::string());
+    city.writeBuilding("b0_0.usda",
+                       "    def Xform \"Keep\" (\n        prepend payload = @./keep.usda@\n    )\n    {\n    }\n"
+                       "    def Xform \"Skip\" (\n        prepend payload = @./skip.usda@\n    )\n    {\n    }\n");
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true, { building(0, 0).AppendChild(PXR_NS::TfToken("Skip")) });
+    const SceneStage::LockedSection writeLocked = [&stage](const std::function<void()>& section) {
+        stage.cancelPendingLoads({ PXR_NS::SdfPath("/World") });
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked));
+
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda" }));
+    EXPECT_FALSE(stage.hasPendingLoads());
+}
+
 TEST(SceneStageLoads, ASyncToAnotherSceneDuringABatchLoadsNoneOfIt)
 {
     PayloadCity first(1, 1);
@@ -798,4 +874,141 @@ TEST(SceneStageLoads, AnEditWhilePreparingPutsTheBatchBack)
 
     EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
     EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+}
+
+TEST(SceneStageLoads, ACancelWhileADiscardedPrepareIsRequeuedKeepsTheBatchGone)
+{
+    PayloadCity city(1, 1);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    const ScenePayload edited = SceneOps::appendLayer(city.payload(), makeLayer("def Xform \"Other\"\n{\n}\n"), 7);
+
+    int commits = 0;
+    const SceneStage::LoadPreparer prepare = [&](const SceneLoadSetPtr&) -> std::function<void()> {
+        EXPECT_TRUE(stage.sync(edited));
+
+        return [&]() { ++commits; };
+    };
+    const SceneStage::LockedSection writeLocked = [&stage](const std::function<void()>& section) {
+        stage.cancelPendingLoads();
+        section();
+    };
+    stage.requestLoad({ building(0, 0) }, false);
+    stage.serviceLoads(kNoLock, writeLocked, std::function<bool()>(), prepare);
+
+    EXPECT_EQ(commits, 0);
+    EXPECT_FALSE(stage.hasPendingLoads());
+
+    EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+}
+
+TEST(SceneStageLoads, ACancelOfOnePathWhileADiscardedPrepareIsRequeuedPutsTheOthersBack)
+{
+    PayloadCity city(1, 2);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    const ScenePayload edited = SceneOps::appendLayer(city.payload(), makeLayer("def Xform \"Other\"\n{\n}\n"), 7);
+
+    const SceneStage::LoadPreparer prepare = [&](const SceneLoadSetPtr&) -> std::function<void()> {
+        EXPECT_TRUE(stage.sync(edited));
+
+        return []() { };
+    };
+    const SceneStage::LockedSection writeLocked = [&stage](const std::function<void()>& section) {
+        stage.cancelPendingLoads({ building(0, 0) });
+        section();
+    };
+    stage.requestLoad({ building(0, 0), building(0, 1) }, false);
+    stage.serviceLoads(kNoLock, writeLocked, std::function<bool()>(), prepare);
+
+    EXPECT_TRUE(stage.hasPendingLoads());
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(building(0, 0)).IsLoaded());
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(0, 1)).IsLoaded());
+    EXPECT_FALSE(stage.hasPendingLoads());
+}
+
+namespace {
+// One building whose file authors two nested payloads, Keep and Skip.
+void
+writeNestedBuilding(const PayloadCity& city)
+{
+    city.writeBuilding("keep.usda", std::string());
+    city.writeBuilding("skip.usda", std::string());
+    city.writeBuilding("b0_0.usda",
+                       "    def Xform \"Keep\" (\n        prepend payload = @./keep.usda@\n    )\n    {\n    }\n"
+                       "    def Xform \"Skip\" (\n        prepend payload = @./skip.usda@\n    )\n    {\n    }\n");
+}
+} // anonymous namespace
+
+TEST(SceneStageLoads, ACancelOfAnotherPathDuringASplitLoadKeepsItsFollowUp)
+{
+    PayloadCity city(1, 1);
+    writeNestedBuilding(city);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true, { building(0, 0).AppendChild(PXR_NS::TfToken("Skip")) });
+    const SceneStage::LockedSection writeLocked = [&stage](const std::function<void()>& section) {
+        stage.cancelPendingLoads({ PXR_NS::SdfPath("/Elsewhere") });
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked));
+    EXPECT_TRUE(stage.hasPendingLoads());
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda", "keep.usda" }));
+}
+
+TEST(SceneStageLoads, ACancelOfTheSplitPayloadDuringItsLoadAsksForNothingBelowIt)
+{
+    PayloadCity city(1, 1);
+    writeNestedBuilding(city);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true, { building(0, 0).AppendChild(PXR_NS::TfToken("Skip")) });
+    const SceneStage::LockedSection writeLocked = [&stage](const std::function<void()>& section) {
+        stage.cancelPendingLoads({ building(0, 0) });
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked));
+
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda" }));
+    EXPECT_FALSE(stage.hasPendingLoads());
+}
+
+TEST(SceneStageLoads, ANewerRequestDuringASplitLoadTakesThePlaceOfItsFollowUp)
+{
+    PayloadCity city(1, 1);
+    writeNestedBuilding(city);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    const PXR_NS::SdfPath keep = building(0, 0).AppendChild(PXR_NS::TfToken("Keep"));
+    const PXR_NS::SdfPath skip = building(0, 0).AppendChild(PXR_NS::TfToken("Skip"));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true, { skip });
+    const SceneStage::LockedSection writeLocked = [&](const std::function<void()>& section) {
+        stage.requestLoad({ PXR_NS::SdfPath("/World") }, true, { keep, skip });
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked));
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda" }));
+    EXPECT_FALSE(stage.getStage()->GetPrimAtPath(keep).IsLoaded());
+    EXPECT_FALSE(stage.hasPendingLoads());
+}
+
+TEST(SceneStageLoads, ExclusionsLeaveOutOnlyTheirOwnSubtrees)
+{
+    PayloadCity city(3, 2);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true, { building(2, 1), PXR_NS::SdfPath("/World/Block_1"), building(0, 0) });
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_1.usda", "b2_0.usda" }));
 }

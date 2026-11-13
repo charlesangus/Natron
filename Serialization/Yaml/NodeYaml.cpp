@@ -52,6 +52,77 @@ namespace YamlDetail {
         }
 
         void
+        emitStringMap(YAML::Emitter& em,
+                      const std::map<std::string, std::string>& values)
+        {
+            em << YAML::BeginMap;
+            for (const std::pair<const std::string, std::string>& entry : values) {
+                emitKey(em, entry.first);
+                em << YAML::Value;
+                emitString(em, entry.second);
+            }
+            em << YAML::EndMap;
+        }
+
+        std::map<std::string, std::string>
+        readStringMap(const YAML::Node& node,
+                      const std::string& context,
+                      YamlWarnings* warnings)
+        {
+            std::map<std::string, std::string> values;
+            MapReader reader(node, context, warnings);
+            for (const std::pair<std::string, YAML::Node>& entry : reader.entries()) {
+                values[entry.first] = readString(entry.second, context + "." + entry.first);
+            }
+
+            return values;
+        }
+
+        void
+        emitSceneView(YAML::Emitter& em,
+                      const SceneViewSerialization& view)
+        {
+            em << YAML::BeginMap;
+            if (!view.drawStates.empty()) {
+                emitKey(em, "drawStates");
+                em << YAML::Value;
+                emitStringMap(em, view.drawStates);
+            }
+            if (!view.impliedChildren.empty()) {
+                emitKey(em, "impliedChildren");
+                em << YAML::Value;
+                emitStringList(em, view.impliedChildren);
+            }
+            if (!view.loadRules.empty()) {
+                emitKey(em, "loadRules");
+                em << YAML::Value;
+                emitStringMap(em, view.loadRules);
+            }
+            em << YAML::EndMap;
+        }
+
+        SceneViewSerialization
+        readSceneView(const YAML::Node& node,
+                      const std::string& context,
+                      YamlWarnings* warnings)
+        {
+            SceneViewSerialization view;
+            MapReader reader(node, context, warnings);
+            if (YAML::Node drawStates = reader.get("drawStates")) {
+                view.drawStates = readStringMap(drawStates, context + ".drawStates", warnings);
+            }
+            if (YAML::Node implied = reader.get("impliedChildren")) {
+                view.impliedChildren = readStringList(implied, context + ".impliedChildren");
+            }
+            if (YAML::Node loadRules = reader.get("loadRules")) {
+                view.loadRules = readStringMap(loadRules, context + ".loadRules", warnings);
+            }
+            reader.finish();
+
+            return view;
+        }
+
+        void
         emitNode(YAML::Emitter& em,
                  const NodeSerialization& node,
                  const std::string& fullName,
@@ -130,6 +201,11 @@ namespace YamlDetail {
                 emitKey(em, "userPages");
                 em << YAML::Value;
                 emitUserPages(em, node.userPages);
+            }
+            if (!node.sceneView.isEmpty()) {
+                emitKey(em, "sceneView");
+                em << YAML::Value;
+                emitSceneView(em, node.sceneView);
             }
             BlobEncodeContext blobs { &sink, fullName, usedPaths };
             if (node.hasRotoContext) {
@@ -228,6 +304,9 @@ namespace YamlDetail {
             }
             if (YAML::Node userPages = reader.get("userPages")) {
                 data.userPages = readUserPages(userPages, context + ".userPages", warnings);
+            }
+            if (YAML::Node sceneView = reader.get("sceneView")) {
+                data.sceneView = readSceneView(sceneView, context + ".sceneView", warnings);
             }
             if (YAML::Node roto = reader.get("roto")) {
                 data.hasRotoContext = true;

@@ -1,13 +1,16 @@
 """Generates the heavy scene fixtures the scene-viewer spike and budgets run against.
 
   python3 tools/bench/heavy_scene_make.py [--out build/bench] [--prims 1000000]
-          [--blocks 300] [--buildings-per-block 12] [--floors 16]
+          [--blocks 300] [--buildings-per-block 12] [--floors 16] [--instances 64]
+          [--instances-only]
 
 Needs the pxr Python module (the natron-dev image has it). Writes under --out:
 
   heavy_city.usda          payload city: /World > BlockN (group) > BM (assembly), one payload per building
   heavy_city_payloads/     one .usdc per building, each holding floors (component) of cube leaves
   heavy_flat.usdc          the same prim count as one flat file with no payloads
+  heavy_instances.usda     /World/Instanced, a grid of native instances of /Prototype, beside
+                           /World/Scatter, a point instancer of as many balls
 
 The city composes to about --prims once every payload is loaded and to a few thousand prims
 before. Nine in ten buildings carry an extentsHint in the root layer; the rest have none, so a
@@ -97,6 +100,40 @@ def make_city(out_dir, prims, blocks, buildings_per_block, floors):
     print("wrote %s: %d payload files of %d prims" % (city_path, buildings, prims_per_building))
 
 
+def make_instances(out_dir, instances):
+    path = os.path.join(out_dir, "heavy_instances.usda")
+    columns = max(1, int(instances ** 0.5))
+    layer = Sdf.Layer.CreateNew(path)
+    with Sdf.ChangeBlock():
+        layer.defaultPrim = "World"
+        layer.pseudoRoot.SetInfo("upAxis", "Y")
+        prototype = Sdf.PrimSpec(layer, "Prototype", Sdf.SpecifierClass, "Xform")
+        body = _define(prototype, "Body", "Cube")
+        size = Sdf.AttributeSpec(body, "size", Sdf.ValueTypeNames.Double)
+        size.default = 1.0
+        world = _define(layer, "World", "Xform", "group")
+        instanced = _define(world, "Instanced", "Xform", "group")
+        for i in range(instances):
+            instance = _define(instanced, "Inst%d" % i, "Xform", "component")
+            instance.referenceList.Prepend(Sdf.Reference(primPath=Sdf.Path("/Prototype")))
+            instance.instanceable = True
+            _translate(instance, -2.0 * (columns - i % columns), 0, 2.0 * (i // columns))
+
+        scatter = _define(world, "Scatter", "PointInstancer")
+        prototypes = _define(scatter, "Prototypes", "Scope")
+        ball = _define(prototypes, "Ball", "Sphere")
+        radius = Sdf.AttributeSpec(ball, "radius", Sdf.ValueTypeNames.Double)
+        radius.default = 0.6
+        targets = Sdf.RelationshipSpec(scatter, "prototypes")
+        targets.targetPathList.Prepend(ball.path)
+        positions = Sdf.AttributeSpec(scatter, "positions", Sdf.ValueTypeNames.Point3fArray)
+        positions.default = [(2.0 * (1 + i % columns), 0.0, 2.0 * (i // columns)) for i in range(instances)]
+        indices = Sdf.AttributeSpec(scatter, "protoIndices", Sdf.ValueTypeNames.IntArray)
+        indices.default = [0] * instances
+    layer.Save()
+    print("wrote %s: %d native instances and %d point instances" % (path, instances, instances))
+
+
 def make_flat(out_dir, prims):
     path = os.path.join(out_dir, "heavy_flat.usdc")
     subprocess.check_call([sys.executable, os.path.join(HERE, "scene_edit_bench.py"), "make-file", path, "--prims", str(prims)])
@@ -109,12 +146,16 @@ def main():
     parser.add_argument("--blocks", type=int, default=300)
     parser.add_argument("--buildings-per-block", type=int, default=12)
     parser.add_argument("--floors", type=int, default=16)
+    parser.add_argument("--instances", type=int, default=64)
+    parser.add_argument("--instances-only", action="store_true", help="write heavy_instances.usda alone")
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     start = time.time()
-    make_city(args.out, args.prims, args.blocks, args.buildings_per_block, args.floors)
-    make_flat(args.out, args.prims)
+    make_instances(args.out, args.instances)
+    if not args.instances_only:
+        make_city(args.out, args.prims, args.blocks, args.buildings_per_block, args.floors)
+        make_flat(args.out, args.prims)
     print("generated in %.1f s" % (time.time() - start))
 
 

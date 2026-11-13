@@ -139,6 +139,11 @@ public:
     GpuStatus copyFromExternal(const GpuBuffer& src, VkDeviceSize srcBytes, const GpuBuffer& dst,
                                std::span<const VkBufferCopy> regions);
 
+    // Records a copy of `bytes` from src at srcOffset into dst at dstOffset, after earlier dispatches' writes and
+    // before later dispatches and host reads once the context's work is done.
+    GpuStatus copyBuffer(const GpuBuffer& src, VkDeviceSize srcOffset, const GpuBuffer& dst, VkDeviceSize dstOffset,
+                         VkDeviceSize bytes);
+
     void resetQueries(VkQueryPool pool, uint32_t first, uint32_t count);
     // Writes the time at which every command recorded before it, in this buffer and before it on the queue, is done.
     void writeTimestamp(VkQueryPool pool, uint32_t query);
@@ -184,6 +189,9 @@ private:
     std::vector<VkSemaphore> externalWaits_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+    // The build scratch acceleration-structure builds share; the barrier before each build orders the previous
+    // build's scratch writes before it.
+    GpuBuffer* accelScratch_ = nullptr;
     bool open_ = false;
     bool outOfMemory_ = false;
 };

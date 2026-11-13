@@ -293,6 +293,15 @@ bool recordDeviceWindow(const Request& request,
                         const RectI& outputRect,
                         Result* info,
                         std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether owner's last recordDeviceWindow() found the delegate had rendered on the CPU instead,
+ * under the same device generation and pool budget, and no render of owner's has been on the GPU
+ * since. A caller asking whether to take the GPU path then knows it would fall back. Never waits. MT-safe.
+ **/
+bool deviceFrameFellBack(const void* owner,
+                         std::uint64_t generation,
+                         std::uint64_t budget);
 #endif
 
 /**
@@ -325,8 +334,13 @@ bool engineSetting(const void* owner,
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);
 
-// Drops every owner's stage and Storm engine, on the render thread, without waiting.
+// Drops every owner's stage and Storm engine, and has every Natron Utility engine give back what it
+// keeps on the GPU, on the render threads, without waiting.
 void releaseAll();
+
+// releaseAll(), then, on the thread the Natron Utility engines render on, once they gave their GPU
+// memory back, empties the GPU pool of its free buffers. Does not wait.
+void releaseAllGpuMemory();
 
 // Drops every owner's stage and engine of a delegate other than Storm, without waiting.
 void releaseAllCpuEngines();

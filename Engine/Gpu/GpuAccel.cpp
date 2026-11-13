@@ -299,10 +299,14 @@ public:
         GpuDevice& dev = ctx.device();
         const VkDeviceSize alignment
             = std::max<VkDeviceSize>(accelProperties(dev).minAccelerationStructureScratchOffsetAlignment, 1);
-        GpuBuffer* scratch = nullptr;
-        if (GpuStatus s = ctx.scratch(std::max<VkDeviceSize>(scratchBytes, 1) + alignment - 1, scratch); !s) {
-            s.message = "acceleration structure build scratch of " + std::to_string(scratchBytes) + " bytes: " + s.message;
-            return s;
+        const VkDeviceSize needed = std::max<VkDeviceSize>(scratchBytes, 1) + alignment - 1;
+        GpuBuffer* scratch = ctx.accelScratch_;
+        if (!scratch || scratch->size() < needed) {
+            if (GpuStatus s = ctx.scratch(needed, scratch); !s) {
+                s.message = "acceleration structure build scratch of " + std::to_string(scratchBytes) + " bytes: " + s.message;
+                return s;
+            }
+            ctx.accelScratch_ = scratch;
         }
         desc.info.scratchData.deviceAddress = alignUp(bufferAddress(dev, *scratch), alignment);
         const VkAccelerationStructureBuildRangeInfoKHR* ranges = &desc.range;
@@ -310,6 +314,14 @@ public:
         fns.cmdBuild(cmd, 1, &desc.info, &ranges);
         afterBuild(cmd);
         return {};
+    }
+
+    // Hands `query` to the context, whose recorded work may still write it.
+    static void retire(GpuRecordContext& ctx, detail::AccelQueryPool& query)
+    {
+        if (query.handle() != VK_NULL_HANDLE) {
+            ctx.hold(std::make_shared<detail::AccelQueryPool>(std::move(query)));
+        }
     }
 
     static void recordCompactedSizeQuery(VkCommandBuffer cmd, const AccelFns& fns, const GpuAccelStructure& structure,
@@ -414,6 +426,7 @@ GpuBlas::build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuTriangles& t
 {
     const char* where = "GpuBlas::build";
     GpuAccelRecorder::retire(ctx, out.structure_);
+    GpuAccelRecorder::retire(ctx, out.query_);
     out = GpuBlas();
     AccelFns fns;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -548,7 +561,7 @@ GpuBlas::compact(GpuRecordContext& ctx, GpuBufferPool& pool)
     afterBuild(cmd);
     GpuAccelRecorder::retire(ctx, structure_);
     structure_ = std::move(compacted);
-    query_.reset();
+    GpuAccelRecorder::retire(ctx, query_);
     sizeQueried_ = false;
     return {};
 }

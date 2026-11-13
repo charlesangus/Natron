@@ -342,6 +342,43 @@ GpuRecordContext::hold(std::shared_ptr<void> object)
 }
 
 GpuStatus
+GpuRecordContext::copyBuffer(const GpuBuffer& src, VkDeviceSize srcOffset, const GpuBuffer& dst, VkDeviceSize dstOffset,
+                             VkDeviceSize bytes)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyBuffer: context already submitted" };
+    }
+    if (!src || !dst || bytes == 0 || srcOffset + bytes > src.size() || dstOffset + bytes > dst.size()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::copyBuffer: invalid range" };
+    }
+    VkMemoryBarrier2 before { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    before.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    before.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    before.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    before.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &before;
+    vkCmdPipelineBarrier2(cmd_, &dep);
+
+    const VkBufferCopy region { srcOffset, dstOffset, bytes };
+    vkCmdCopyBuffer(cmd_, src.buffer(), dst.buffer(), 1, &region);
+
+    VkMemoryBarrier2 after { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    after.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    after.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    after.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT
+        | VK_PIPELINE_STAGE_2_HOST_BIT;
+    after.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+        | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dep2 { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep2.memoryBarrierCount = 1;
+    dep2.pMemoryBarriers = &after;
+    vkCmdPipelineBarrier2(cmd_, &dep2);
+    return {};
+}
+
+GpuStatus
 GpuRecordContext::copyFromExternal(const GpuBuffer& src, VkDeviceSize srcBytes, const GpuBuffer& dst,
                                    std::span<const VkBufferCopy> regions)
 {

@@ -38,6 +38,7 @@
 #include <vector>
 
 #include <QActionGroup>
+#include <QApplication>
 #include <QCheckBox>
 #include <QContextMenuEvent>
 #include <QCursor>
@@ -65,6 +66,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GpuContext.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
@@ -679,8 +681,14 @@ struct SceneViewportRenderer::Implementation {
     GLuint deviceProgram = 0;
     int deviceWidth = 0;
     int deviceHeight = 0;
-    // Set once the hand-off failed: GPU frames are read back to the host from then on.
-    bool deviceColorFailed = false;
+    // Set once no hand-off path builds for the GL context: GPU frames go through the host until releaseGL().
+    bool deviceColorUnsupported = false;
+    // Hand-offs that failed in a row for another reason. Past a few, GPU frames go through the host until releaseGL()
+    // or until the runtime is recreated, which may well repair what failed.
+    int deviceColorFailures = 0;
+    std::uint64_t deviceColorFailedGeneration = 0;
+    // Why the last GPU frame went through the host instead of the GL hand-off; empty when it did not.
+    std::string deviceColorError;
 #endif
     // Last, so that its worker, which reads the stage, is joined before the stage goes.
     std::unique_ptr<HydraRender::ProgressiveRender> progressive;
@@ -1238,6 +1246,50 @@ struct SceneViewportRenderer::Implementation {
     }
 
 #ifdef NATRON_HAVE_GPU
+    static constexpr int kMaxDeviceColorFailures = 3;
+
+    static std::uint64_t gpuGeneration()
+    {
+        GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+
+        return gpu ? gpu->generation() : 0;
+    }
+
+    bool deviceColorOff() const
+    {
+        return deviceColorUnsupported || (deviceColorFailures >= kMaxDeviceColorFailures);
+    }
+
+    // Each paint: lets a lost device go, so that the hand-off does not keep it from recovering, and turns the
+    // hand-off back on once the runtime was recreated after it had failed.
+    void maintainDeviceColor(HydraRender::ProgressiveRender& progressive)
+    {
+        if (deviceUpload) {
+            deviceUpload->releaseIfLost();
+        }
+        if (!deviceColorUnsupported && (deviceColorFailures >= kMaxDeviceColorFailures) && (gpuGeneration() != deviceColorFailedGeneration)) {
+            deviceColorFailures = 0;
+            progressive.setDeviceColor(true);
+        }
+    }
+
+    void deviceColorFailed(HydraRender::ProgressiveRender& progressive,
+                           const std::string& error)
+    {
+        deviceColorError = error;
+        if (deviceUpload && deviceUpload->unsupported()) {
+            deviceColorUnsupported = true;
+        } else {
+            ++deviceColorFailures;
+            deviceColorFailedGeneration = gpuGeneration();
+        }
+        releaseDeviceColor();
+        if (deviceColorOff()) {
+            qDebug() << "SceneViewport: GPU frames go through the host:" << error.c_str();
+            progressive.setDeviceColor(false);
+        }
+    }
+
     void releaseDeviceColor()
     {
         deviceUpload.reset();
@@ -3121,6 +3173,9 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
 
         return eRenderStatusDone;
     }
+#ifdef NATRON_HAVE_GPU
+    _imp->maintainDeviceColor(progressive);
+#endif
     // The prim's settings for the renderer first, so that its engine is made under them; the
     // view's own sample cap applies over its samples.
     progressive.setSettings(_imp->sceneSettingsFor(_imp->rendererId));
@@ -3179,13 +3234,14 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
 #ifdef NATRON_HAVE_GPU
             if (frame->deviceColor) {
                 std::string error;
-                bool drawn = !_imp->deviceColorFailed && _imp->drawDeviceColor(*frame, &error);
-                if (!drawn) {
-                    if (!_imp->deviceColorFailed) {
-                        qDebug() << "SceneViewport: the GPU frame goes through the host:" << error.c_str();
-                        _imp->deviceColorFailed = true;
-                        progressive.setDeviceColor(false);
-                        _imp->releaseDeviceColor();
+                const bool off = _imp->deviceColorOff();
+                const bool drawn = !off && _imp->drawDeviceColor(*frame, &error);
+                if (drawn) {
+                    _imp->deviceColorFailures = 0;
+                    _imp->deviceColorError.clear();
+                } else {
+                    if (!off) {
+                        _imp->deviceColorFailed(progressive, error);
                     }
                     std::vector<unsigned char> host;
                     if (progressive.hostColor(*frame, &host, &error)) {
@@ -3425,6 +3481,23 @@ SceneViewportRenderer::releaseGL()
     _imp->uploadedFrame.reset();
 #ifdef NATRON_HAVE_GPU
     _imp->releaseDeviceColor();
+    // A new GL context may well build a hand-off this one did not.
+    _imp->deviceColorUnsupported = false;
+    _imp->deviceColorFailures = 0;
+    _imp->deviceColorError.clear();
+    if (_imp->progressive) {
+        _imp->progressive->setDeviceColor(true);
+    }
+#endif
+}
+
+void
+SceneViewportRenderer::releaseLostDevice()
+{
+#ifdef NATRON_HAVE_GPU
+    if (_imp->deviceUpload) {
+        _imp->deviceUpload->releaseIfLost();
+    }
 #endif
 }
 
@@ -3565,6 +3638,26 @@ std::string
 SceneViewportRenderer::getLastFramePath() const
 {
     return _imp->framePath;
+}
+
+bool
+SceneViewportRenderer::isHandoffUnsupported() const
+{
+#ifdef NATRON_HAVE_GPU
+    return _imp->deviceColorUnsupported;
+#else
+    return true;
+#endif
+}
+
+std::string
+SceneViewportRenderer::getHandoffError() const
+{
+#ifdef NATRON_HAVE_GPU
+    return _imp->deviceColorError;
+#else
+    return "Natron was built without the Vulkan backend";
+#endif
 }
 
 double
@@ -4221,6 +4314,28 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->renderer.setRefineListener([this]() {
         QMetaObject::invokeMethod(this, [this]() { update(); }, Qt::QueuedConnection);
     });
+#ifdef NATRON_HAVE_GPU
+    // A view's GL hand-off keeps the GPU from being recreated; a hidden view never paints to let a lost one go.
+    static std::once_flag lossReleaser;
+    std::call_once(lossReleaser, []() {
+        GpuContext::addLossReleaser([]() {
+            QCoreApplication* app = QCoreApplication::instance();
+            if (!app) {
+                return;
+            }
+            QMetaObject::invokeMethod(app, []() {
+                const QWidgetList widgets = QApplication::allWidgets();
+                for (QWidget* widget : widgets) {
+                    SceneViewport* view = qobject_cast<SceneViewport*>(widget);
+                    if (view && view->_imp->glInitialized && view->context()) {
+                        view->makeCurrent();
+                        view->_imp->renderer.releaseLostDevice();
+                        view->doneCurrent();
+                    }
+                } }, Qt::QueuedConnection);
+        });
+    });
+#endif
     publishState();
 }
 
@@ -4445,6 +4560,8 @@ SceneViewport::publishRefineState()
     setProperty("natronSceneUploadMs", _imp->renderer.getLastUploadMs());
     setProperty("natronSceneUploadPixels", _imp->renderer.getLastUploadPixels());
     setProperty("natronSceneFramePath", QString::fromStdString(_imp->renderer.getLastFramePath()));
+    setProperty("natronSceneHandoffUnsupported", _imp->renderer.isHandoffUnsupported());
+    setProperty("natronSceneHandoffError", QString::fromStdString(_imp->renderer.getHandoffError()));
     Q_EMIT refineStateChanged();
 }
 

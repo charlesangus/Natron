@@ -1277,46 +1277,67 @@ TEST_F(USDRenderRendererTest, ThePurposeKnobsDefaultToRenderOnlyAndChooseWhatEac
 
 #ifdef NATRON_HAVE_GPU
 namespace {
-// Has the Utility delegate render on a runtime of the test's own, whose buffer pool is too small
-// for any frame.
-class StarvedUtilityGpuRuntime {
+// Puts a forced GPU context in the application's place while it lives, since the application's may
+// refuse a CPU-type device. The Utility engines hold the context's runtime, so they go first. A non-zero
+// poolBudget caps the runtime's buffer pool, so that a frame runs out of device memory.
+class OwnGpuContext {
 public:
-    StarvedUtilityGpuRuntime()
+    explicit OwnGpuContext(std::uint64_t poolBudget = 0)
     {
-        gpu::GpuRuntimeOptions options;
+        GpuContextOptions options;
+        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
 
-        options.device = gputest::deviceOptions();
-        options.pool.overrideBudgetBytes = 1024;
-        status = gpu::GpuRuntime::create(options, _runtime);
-        if (status) {
-            setUtilityGpuRuntimeForTesting(_runtime.get());
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        options.infoLog = [logged](const std::string& line) {
+            *logged = line;
+        };
+
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
+
+            return;
+        }
+        if (poolBudget) {
+            own->runtime()->pool().setUserBudget(poolBudget);
+        }
+        _saved = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
+    }
+
+    ~OwnGpuContext()
+    {
+        HydraRender::releaseAll();
+        appPTR->clearAllCaches();
+        if (_swapped) {
+            appPTR->swapGpuContextForTests(std::move(_saved));
         }
     }
 
-    ~StarvedUtilityGpuRuntime()
+    gpu::GpuRuntime* runtime() const
     {
-        setUtilityGpuRuntimeForTesting(nullptr);
+        return _swapped ? appPTR->getGpuContext()->runtime() : nullptr;
     }
 
-    std::string missingSupport() const
-    {
-        return WavefrontGpu::missingSupport(*_runtime);
-    }
-
-    gpu::GpuStatus status;
+    std::string unavailable;
 
 private:
-    std::unique_ptr<gpu::GpuRuntime> _runtime;
+    std::unique_ptr<GpuContext> _saved;
+    bool _swapped = false;
 };
+
+const std::uint64_t kStarvedPoolBytes = 1024;
 } // anon namespace
 
 TEST_F(USDRenderRendererTest, AnAutoUtilityRenderThatFallsBackToTheCpuWarnsOnTheNode)
 {
-    StarvedUtilityGpuRuntime runtime;
+    OwnGpuContext gpu(kStarvedPoolBytes);
 
-    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
 
-    const std::string missing = runtime.missingSupport();
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
 
     if (!missing.empty()) {
         GPUTEST_SKIP() << missing;
@@ -1346,53 +1367,6 @@ TEST_F(USDRenderRendererTest, AnAutoUtilityRenderThatFallsBackToTheCpuWarnsOnThe
 }
 
 namespace {
-// Puts a forced GPU context in the application's place while it lives, since the application's may
-// refuse a CPU-type device. The Utility engines hold the context's runtime, so they go first.
-class OwnGpuContext {
-public:
-    OwnGpuContext()
-    {
-        GpuContextOptions options;
-        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
-
-        options.mode = GpuResolvedMode::Force;
-        options.device = gputest::cpuFallbackSelector();
-        options.infoLog = [logged](const std::string& line) {
-            *logged = line;
-        };
-
-        std::unique_ptr<GpuContext> own(new GpuContext(options));
-
-        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
-            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
-
-            return;
-        }
-        _saved = appPTR->swapGpuContextForTests(std::move(own));
-        _swapped = true;
-    }
-
-    ~OwnGpuContext()
-    {
-        HydraRender::releaseAll();
-        appPTR->clearAllCaches();
-        if (_swapped) {
-            appPTR->swapGpuContextForTests(std::move(_saved));
-        }
-    }
-
-    gpu::GpuRuntime* runtime() const
-    {
-        return _swapped ? appPTR->getGpuContext()->runtime() : nullptr;
-    }
-
-    std::string unavailable;
-
-private:
-    std::unique_ptr<GpuContext> _saved;
-    bool _swapped = false;
-};
-
 struct SchedulerFrame {
     AbortableRenderInfoPtr abortInfo;
     RenderStatsPtr stats;
@@ -1837,3 +1811,60 @@ TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesEnginesAndPooledBuffers)
     HydraRender::releaseAll();
     EXPECT_EQ(0u, HydraRender::getEngineCount());
 }
+
+#ifdef NATRON_HAVE_GPU
+// Free GPU Memory has a Natron Utility engine, which renders on a thread of its own, give back its
+// tracer and its film, and empties the pool of them once it did; the engine itself stays.
+TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesNatronUtilityGpuMemory)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    request.renderer = kRenderDelegateUtilityId;
+    request.settings[kUtilitySettingDevice] = PXR_NS::VtValue(PXR_NS::TfToken(kUtilityDeviceGpu));
+    HydraRender::Result result;
+    std::string error;
+
+    HydraRender::releaseAll();
+    gpu.runtime()->pool().trim();
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    ASSERT_EQ(0u, result.device.rfind("GPU", 0)) << result.device;
+    const std::size_t engines = HydraRender::getCpuEngineCount();
+    EXPECT_GT(gpu.runtime()->pool().stats().liveBytes, 0u);
+
+    appPTR->freeGpuMemory();
+    // Waits for the engine's thread to run what Free GPU Memory queued on it.
+    EXPECT_EQ(engines, HydraRender::getCpuEngineCount());
+
+    const gpu::GpuBufferPoolStats freed = gpu.runtime()->pool().stats();
+
+    EXPECT_EQ(0u, freed.liveBytes);
+    EXPECT_EQ(0u, freed.pooledBytes);
+
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+
+    error.clear();
+    request.time = PXR_NS::UsdTimeCode(2.);
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    EXPECT_EQ(0u, result.device.rfind("GPU", 0)) << result.device;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+
+    const Coverage box = coverageOf("/World/Box", kWidth, kHeight, result.primId, result.depth, result.rgba);
+
+    EXPECT_GT(box.count, 100);
+    HydraRender::release(&owner);
+    // Waits for the engine, which holds the context's runtime, to go before the context does.
+    EXPECT_EQ(engines - 1, HydraRender::getCpuEngineCount());
+}
+#endif

@@ -38,6 +38,10 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Format.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
+#include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -935,9 +939,19 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
         if (!query.plane.isColorLayer() || (utilityDevice(query.time, query.view) == kUtilityDeviceCpu)) {
             return false;
         }
-        const UtilityGpu gpu = acquireUtilityGpu();
+        // Asked while the frame is being planned, so it neither waits for the GPU nor recovers a lost one:
+        // the render itself does both, and a frame asked before then renders on the CPU.
+        GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
+        if (!context || context->isInitializing() || !context->isAvailable()) {
+            return false;
+        }
+        const std::shared_ptr<void> hold = context->holdRuntime();
+        gpu::GpuRuntime* runtime = hold ? context->runtime() : nullptr;
+        if (!runtime || runtime->isLost() || !WavefrontGpu::missingSupport(*runtime).empty()) {
+            return false;
+        }
 
-        return gpu.runtime && WavefrontGpu::missingSupport(*gpu.runtime).empty();
+        return !HydraRender::deviceFrameFellBack(this, context->generation(), utilityGpuBudget());
     }
     // Only Storm renders into GL; the other delegates' host pixels are read back by render().
     if (!RenderDelegates::isStorm(renderer)) {

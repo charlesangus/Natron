@@ -28,6 +28,7 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -45,9 +46,9 @@ class GpuRuntime;
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The GPU the utility renderer may use: the application's runtime, or the one a test installed.
- * runtime is null when there is none, and unavailable then says why. hold keeps the application from
- * recreating the runtime under whoever keeps it.
+ * @brief The GPU the utility renderer may use: the application's runtime. runtime is null when there is
+ * none, and unavailable then says why. hold keeps the application from recreating the runtime under
+ * whoever keeps it.
  **/
 struct UtilityGpu {
     gpu::GpuRuntime* runtime = nullptr;
@@ -57,17 +58,17 @@ struct UtilityGpu {
 
 UtilityGpu acquireUtilityGpu();
 
-// Makes acquireUtilityGpu() return runtime instead of the application's; null restores the application's.
-void setUtilityGpuRuntimeForTesting(gpu::GpuRuntime* runtime);
+// The memory the application's GPU pool may use; 0 while there is no usable GPU. Never waits for it.
+std::uint64_t utilityGpuBudget();
 
 #ifdef NATRON_HAVE_GPU
 
 /**
  * @brief Draws frames on the device with the SPIR-V builds of the kernels WavefrontCpu runs on the CPU,
- * tracing with a GpuTracer. Each batch of whole rows, a frame of up to about four million pixels being
- * one, is one record context: ray generation, intersection and shading back to back, then one
- * submission. Rays and hit surfaces live in pool scratch; what the film reads back and the shading
- * tables are host-visible, because a record context has no copy of its own between the two.
+ * tracing with a GpuTracer. Each batch of whole rows, of about a quarter of a million pixels so that a
+ * stop is seen within one batch on a slow device, is one record context: ray generation, intersection
+ * and shading back to back, then one submission. Rays, hit surfaces and the shading tables stay on the
+ * device; only the AOVs the film binds on the host, and the hit ids that tell its misses, are read back.
  *
  * A device failure never throws: render() returns false and status() says why. The registry and the
  * pool must outlive the executor.
@@ -92,6 +93,12 @@ public:
 
     // Why the last render() returned false, or the reason the executor cannot run at all.
     Tracer::Outcome status() const;
+
+    // Whether the last render() failed while the tracer built the scene on the device, as opposed to
+    // while it drew the frame; only then is the scene, not one frame, what the device cannot hold.
+    bool sceneFailed() const;
+
+    bool deviceLost() const;
 
     std::string deviceName() const;
 

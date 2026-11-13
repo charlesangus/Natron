@@ -1457,7 +1457,7 @@ AppManager::clearPluginsLoadedCache()
 void
 AppManager::freeGpuMemory()
 {
-    SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseRenderEnginesGpuMemory();
     SceneCaches::releaseLiveTextures();
     releaseSceneViewEngines();
     if (_imp->gpuContext) {

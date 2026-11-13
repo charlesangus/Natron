@@ -43,6 +43,7 @@
 #ifdef NATRON_HAVE_GPU
 namespace gpu {
 class GpuBuffer;
+class GpuBufferHandle;
 class GpuBufferPool;
 class GpuDevice;
 class GpuKernelRegistry;
@@ -62,6 +63,12 @@ std::shared_ptr<const UtilityFilmKernels> makeUtilityFilmKernels(gpu::GpuDevice&
                                                                  gpu::GpuStatus* status);
 
 /**
+ * @brief Releases every device film whose device is lost, wherever it is held, so that none keeps the runtime from
+ * recovering. GpuContext::recoverIfLost() calls it once a film was made. MT-safe.
+ **/
+void releaseLostUtilityDeviceFilms();
+
+/**
  * @brief What UtilityRenderBuffer::GetResource() returns while a frame's colour is on the device: the
  * film, whose pixels are RGBA floats, row by row from the bottom row.
  **/
@@ -70,6 +77,7 @@ public:
     UtilityDeviceResource();
     explicit UtilityDeviceResource(const std::shared_ptr<UtilityDeviceFilm>& film);
 
+    // Null without a film or once it was released.
     gpu::GpuDevice* device() const;
     unsigned int width() const;
     unsigned int height() const;
@@ -90,8 +98,15 @@ public:
                                 std::uint64_t outOffset,
                                 std::uint32_t outRowStride) const;
 
-    // The film's pixels, width() x height() RGBA floats with no padding; null without a film.
-    const gpu::GpuBuffer* pixels() const;
+    /**
+     * @brief The film's pixels, width() x height() RGBA floats with no padding, and the hold on the runtime that keeps
+     * them valid while the caller uses them. False without a film or once it was released.
+     **/
+    bool lease(gpu::GpuBufferHandle* pixels,
+               std::shared_ptr<void>* runtimeHold) const;
+
+    // Releases the film, and with it every copy of this resource, when its device is lost.
+    void releaseIfLost() const;
 
     /**
      * @brief Copies the film's pixels into *out, as pixels() lays them out, and waits for the copy.
@@ -174,6 +189,12 @@ public:
     static std::uint64_t deviceDownloadCount();
 
 #ifdef NATRON_HAVE_GPU
+    /**
+     * @brief Lets go of the device film: the frame is read back to the host pixels first unless the device is lost.
+     * Holders of a copy of the film keep it until they let go. Not while a frame runs.
+     **/
+    void releaseDevice();
+
     /**
      * @brief Whether a frame can keep these pixels on the device: they are RGBA floats and the last
      * clear() gave a value, which the device frame starts from.

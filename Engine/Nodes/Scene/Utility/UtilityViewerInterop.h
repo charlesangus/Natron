@@ -69,8 +69,18 @@ public:
     // "zerocopy", "hostsync" or "readback": the path of the last upload, empty before one.
     std::string path() const;
 
+    /**
+     * @brief Whether the last failed upload failed because no hand-off path builds between this GL context and the
+     * device, or NATRON_VIEWER_HANDOFF refuses them, so that asking again on this context is pointless. Other
+     * failures, as a lost device or a failed copy, may pass on a later frame.
+     **/
+    bool unsupported() const;
+
     // Frees the hand-off and the films it keeps; the next upload builds it again.
     void release();
+
+    // release() once the device is lost, so that the hand-off keeps no hold on the runtime that recovery waits for.
+    void releaseIfLost();
 
 private:
     struct Implementation;

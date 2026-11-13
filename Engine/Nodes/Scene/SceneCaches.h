@@ -51,6 +51,12 @@ void releaseIdleQueryStages();
 void releaseRenderEngines();
 
 /**
+ * @brief releaseRenderEngines(), and once the Natron Utility engines gave back the GPU memory they
+ * keep between frames, empties the GPU pool of its free buffers. Does not wait. MT-safe.
+ **/
+void releaseRenderEnginesGpuMemory();
+
+/**
  * @brief Drops every USDRender node's stage and engine of a render delegate other than Storm, and
  * with them the host memory they hold. Free GPU Memory leaves these; the purge of scene memory
  * drops them. Does not wait. MT-safe.

@@ -147,6 +147,18 @@ public:
         return (_color.size() == 1) ? _color.front() : nullptr;
     }
 
+    virtual WavefrontAovs aovs() const OVERRIDE
+    {
+        WavefrontAovs aovs;
+
+        aovs.color = !_color.empty();
+        aovs.depth = !_depth.empty();
+        aovs.primId = !_primId.empty();
+        aovs.instanceId = !_instanceId.empty();
+
+        return aovs;
+    }
+
 private:
     std::vector<UtilityRenderBuffer*> _color;
     std::vector<UtilityRenderBuffer*> _depth;
@@ -359,6 +371,15 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
             std::string warning;
             bool onCpu = device == Device::Cpu;
 
+#ifdef NATRON_HAVE_GPU
+            const std::uint64_t budget = (device == Device::Auto) ? utilityGpuBudget() : 0;
+            std::string remembered;
+
+            if ((device == Device::Auto) && _renderParam->gpuOutOfMemory(snapshot->version, budget, &remembered)) {
+                warning = "The GPU ran out of memory, so the frame was rendered on the CPU: " + remembered;
+                onCpu = true;
+            }
+#endif
             if (!onCpu) {
                 std::string unavailable;
                 WavefrontGpu* gpu = _renderParam->gpuExecutor(&unavailable);
@@ -378,11 +399,15 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                     const bool outOfMemory = outcome.status == Tracer::Status::OutOfMemory;
                     const bool lost = outcome.status == Tracer::Status::DeviceLost;
 
-                    if (outOfMemory || lost) {
-                        _renderParam->dropGpuExecutor();
-                    }
                     const bool failed = outcome.status != Tracer::Status::Ok && outcome.status != Tracer::Status::Stopped;
 
+                    if (outOfMemory && device == Device::Auto) {
+                        // The scene is not tried on the GPU again until it or the budget changes, so nothing of it stays there.
+                        _renderParam->rememberGpuOutOfMemory(snapshot->version, budget, outcome.message);
+                        _renderParam->dropGpuExecutor();
+                    } else if (lost || (outOfMemory && gpu->sceneFailed())) {
+                        _renderParam->dropGpuExecutor();
+                    }
                     if (failed && device == Device::Auto && (outOfMemory || lost)) {
                         warning = std::string(outOfMemory ? "The GPU ran out of memory" : "The GPU was lost") + ", so the frame was rendered on the CPU: " + outcome.message;
                         renderedOn = "CPU";

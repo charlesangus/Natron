@@ -488,16 +488,28 @@ try:
 
         gpu, error = yield from render_on(device_menu, "gpu", "gpu")
         if error:
-            report("NOTE no GPU frame to compare, the renderer cannot render on the GPU here: %s" % (error,))
+            report("NOTE GPU path not taken: Natron Utility cannot render on the GPU here: %s" % (error,))
             check(not os.environ.get("NATRON_TEST_REQUIRE_GPU"),
                   "NATRON_TEST_REQUIRE_GPU is set but Natron Utility cannot render on the GPU (%s)" % (error,))
         else:
             path = prop("natronSceneFramePath") or ""
-            report("NOTE GPU frame path: %r" % (path,))
-            check(path == "upload" or path.startswith("interop:"),
-                  "the GPU frame reaches the view through the GL hand-off or a host upload (%r)" % (path,))
+            unsupported = bool(prop("natronSceneHandoffUnsupported"))
+            handoff_error = prop("natronSceneHandoffError") or ""
+            if path.startswith("interop:"):
+                report("NOTE GPU frame imported through the GL hand-off (%s)" % (path,))
+            elif unsupported:
+                # Where no hand-off path builds (lavapipe under Xvfb may lack the GL external-memory
+                # extensions), the upload is the expected path, so only the reason is reported.
+                report("NOTE GPU frame uploaded from host memory: the GL hand-off is unavailable in this "
+                       "context (%s)" % (handoff_error,))
+            else:
+                report("NOTE GPU frame path %r; hand-off error %r" % (path, handoff_error))
+            check(path.startswith("interop:") or (path == "upload" and unsupported),
+                  "the GPU frame is imported through the GL hand-off wherever one builds (path %r, hand-off %s: %s)"
+                  % (path, "unavailable" if unsupported else "available", handoff_error or "no error"))
             if os.environ.get("NATRON_TEST_REQUIRE_INTEROP"):
-                check(path.startswith("interop:"), "NATRON_TEST_REQUIRE_INTEROP: the GPU frame is imported (%r)" % (path,))
+                check(path.startswith("interop:"),
+                      "NATRON_TEST_REQUIRE_INTEROP: the GPU frame is imported (path %r, %s)" % (path, handoff_error))
             check(cpu is not None and gpu is not None and cpu.size() == gpu.size(),
                   "the CPU and GPU shots have one size")
             if cpu is not None and gpu is not None and cpu.size() == gpu.size():
@@ -545,7 +557,7 @@ try:
         yield from pick_renderer(v, "Natron Utility", UTILITY_ID)
         yield from measure_edit_stall(v)
 
-        section("Natron Utility on the GPU: the view imports its frame, or uploads it where it cannot")
+        section("Natron Utility on the GPU: the view imports its frame wherever the GL hand-off builds")
         yield from check_gpu_frame()
 
         navigation.setValue(original_navigation)

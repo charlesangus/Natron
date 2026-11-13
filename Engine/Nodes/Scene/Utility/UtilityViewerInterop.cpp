@@ -35,6 +35,8 @@
 
 #include "Engine/Gpu/GlInterop.h"
 #include "Engine/Gpu/GpuBuffer.h"
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuDevice.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 
 NATRON_NAMESPACE_ENTER
@@ -73,19 +75,22 @@ struct UtilityViewerInterop::Implementation {
 
     const ProcLoader loader;
     gpu::GpuDevice* device = nullptr;
+    // Keeps the device the interop is made on from being recreated under it.
+    std::shared_ptr<void> runtimeHold;
     std::optional<gpu::GlHandoffPath> path;
-    // The film each slot was last produced from, so that it outlives the copy the device makes of
-    // it, and its device the interop.
-    std::array<std::shared_ptr<const UtilityDeviceResource>, gpu::GlInterop::kSlots> slotFilms;
-    // Last, so that it goes before the films whose device it is made on.
+    bool unsupported = false;
+    // The pixels each slot was last produced from, so that they outlive the copy the device makes of them.
+    std::array<gpu::GpuBufferHandle, gpu::GlInterop::kSlots> slotPixels;
+    // Last, so that it goes before the pixels and the hold.
     std::unique_ptr<gpu::GlInterop> interop;
 
     void release()
     {
         interop.reset();
-        slotFilms.fill(nullptr);
+        slotPixels.fill(gpu::GpuBufferHandle());
         device = nullptr;
         path.reset();
+        runtimeHold.reset();
     }
 
     bool build(VkDeviceSize bytes,
@@ -108,6 +113,7 @@ struct UtilityViewerInterop::Implementation {
         const Override forced = handoffOverride();
         if (forced.refuse) {
             *error = "NATRON_VIEWER_HANDOFF=cpu";
+            unsupported = true;
 
             return false;
         }
@@ -125,6 +131,7 @@ struct UtilityViewerInterop::Implementation {
         if (!choice.path) {
             interop.reset();
             *error = choice.lost ? "The device was lost while the GL hand-off was made." : "No GL hand-off path builds: " + choice.reasons;
+            unsupported = !choice.lost;
 
             return false;
         }
@@ -149,9 +156,13 @@ UtilityViewerInterop::upload(const std::shared_ptr<const UtilityDeviceResource>&
                              unsigned int texture,
                              std::string* error)
 {
-    const gpu::GpuBuffer* pixels = film ? film->pixels() : nullptr;
+    _imp->unsupported = false;
+    releaseIfLost();
 
-    if (!pixels || !film->device() || (film->width() == 0) || (film->height() == 0)) {
+    gpu::GpuBufferHandle pixels;
+    std::shared_ptr<void> runtimeHold;
+
+    if (!film || !film->lease(&pixels, &runtimeHold) || !film->device() || (film->width() == 0) || (film->height() == 0)) {
         *error = "The Utility renderer holds no frame on the device.";
 
         return false;
@@ -159,12 +170,13 @@ UtilityViewerInterop::upload(const std::shared_ptr<const UtilityDeviceResource>&
     if (film->device() != _imp->device) {
         _imp->release();
         _imp->device = film->device();
+        _imp->runtimeHold = runtimeHold;
     }
 
     const gpu::GlFrame frame { film->width(), film->height(), gpu::GlPixelFormat::Rgba32F };
     const VkDeviceSize bytes = frame.bytes();
 
-    if (pixels->size() < bytes) {
+    if (pixels.size() < bytes) {
         *error = "The Utility renderer's film is smaller than its frame.";
 
         return false;
@@ -173,7 +185,7 @@ UtilityViewerInterop::upload(const std::shared_ptr<const UtilityDeviceResource>&
         return false;
     }
 
-    const VkBuffer source = pixels->buffer();
+    const VkBuffer source = pixels.vkBuffer();
     const gpu::GlRecordFn record = [source, bytes](VkCommandBuffer cmd, VkBuffer dst) {
         // The film was written by compute work submitted earlier on the same queue.
         VkBufferMemoryBarrier2 toCopy { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
@@ -202,7 +214,7 @@ UtilityViewerInterop::upload(const std::shared_ptr<const UtilityDeviceResource>&
 
         return false;
     }
-    _imp->slotFilms[slot] = film;
+    _imp->slotPixels[slot] = pixels;
     if (gpu::GpuStatus s = _imp->interop->upload(slot, texture, 0, 0); !s) {
         *error = "The GL hand-off could not upload the frame: " + s.message;
         (void)_imp->interop->discard(slot);
@@ -220,10 +232,24 @@ UtilityViewerInterop::path() const
     return _imp->path ? std::string(gpu::overrideName(*_imp->path)) : std::string();
 }
 
+bool
+UtilityViewerInterop::unsupported() const
+{
+    return _imp->unsupported;
+}
+
 void
 UtilityViewerInterop::release()
 {
     _imp->release();
+}
+
+void
+UtilityViewerInterop::releaseIfLost()
+{
+    if (_imp->device && _imp->device->isLost()) {
+        _imp->release();
+    }
 }
 
 NATRON_NAMESPACE_EXIT

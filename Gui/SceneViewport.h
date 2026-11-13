@@ -529,6 +529,10 @@ public:
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
+    // Lets the GL hand-off go if its GPU was lost, so that it does not keep the GPU from being recreated.
+    // Needs the context of render() current.
+    void releaseLostDevice();
+
     /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
      * empty id. kRenderDelegateSceneDefaultId renders with the renderer the stage's active render
@@ -589,6 +593,12 @@ public:
     // ("zerocopy", "hostsync" or "readback") for a GPU frame of the Natron Utility renderer
     // imported from the device, "upload" for one uploaded from host memory; empty before one.
     std::string getLastFramePath() const;
+
+    // Whether no GL hand-off path builds in the context of render(), so that GPU frames go through the host.
+    bool isHandoffUnsupported() const;
+
+    // Why the last GPU frame went through the host rather than the GL hand-off; empty when it did not.
+    std::string getHandoffError() const;
 
 private:
     RenderStatusEnum renderLocked(unsigned int fbo, int width, int height, bool followScene);

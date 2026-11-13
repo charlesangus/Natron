@@ -61,7 +61,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -77,8 +76,12 @@
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/AppManager.h"
+#include "Engine/Gpu/GpuBufferPool.h"
 #include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/GpuContext.h"
 #include "Gpu/GpuTestDevice.h"
+#include "Gpu/GpuTestSelector.h"
 #endif
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -836,38 +839,53 @@ private:
     bool _hadOld;
 };
 
-// Has the delegate render on a runtime of the test's own, so that its options and environment hold.
-// Must outlive every UtilityRender of the test.
+// Puts a GPU context of the test's own in the application's place while it lives, created under the test's
+// environment and able to pick a CPU-type device. Must outlive every UtilityRender of the test.
 class UtilityGpuRuntime {
 public:
     // A non-zero poolBudget caps the buffer pool, so that the frame runs out of device memory.
     explicit UtilityGpuRuntime(std::uint64_t poolBudget = 0)
     {
-        gpu::GpuRuntimeOptions options;
+        GpuContextOptions options;
+        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
 
-        options.device = gputest::deviceOptions();
-        options.pool.overrideBudgetBytes = poolBudget;
-        options.pipelines.directory = (std::filesystem::temp_directory_path() / "natron-utility-gpu-pipelines").string();
-        status = gpu::GpuRuntime::create(options, _runtime);
-        if (status) {
-            setUtilityGpuRuntimeForTesting(_runtime.get());
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        options.infoLog = [logged](const std::string& line) {
+            *logged = line;
+        };
+
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
+
+            return;
         }
+        if (poolBudget) {
+            own->runtime()->pool().setUserBudget(poolBudget);
+        }
+        _saved = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
     }
 
     ~UtilityGpuRuntime()
     {
-        setUtilityGpuRuntimeForTesting(nullptr);
+        if (_swapped) {
+            appPTR->swapGpuContextForTests(std::move(_saved));
+        }
     }
 
     std::string missingSupport() const
     {
-        return WavefrontGpu::missingSupport(*_runtime);
+        return WavefrontGpu::missingSupport(*appPTR->getGpuContext()->runtime());
     }
 
-    gpu::GpuStatus status;
+    std::string unavailable;
 
 private:
-    std::unique_ptr<gpu::GpuRuntime> _runtime;
+    std::unique_ptr<GpuContext> _saved;
+    bool _swapped = false;
 };
 
 const std::uint64_t kStarvedPoolBytes = 1024;
@@ -877,7 +895,7 @@ TEST(NatronUtilityRender, GpuDrawsTheRedCubeAsTheCpuDoes)
 {
     UtilityGpuRuntime runtime;
 
-    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
 
     const std::string missing = runtime.missingSupport();
 
@@ -932,7 +950,7 @@ TEST(NatronUtilityRender, ForcedGpuWithoutRayQueryFailsNamingTheExtension)
     const ScopedEnv noRayQuery("NATRON_GPU_NO_RAY_QUERY", "1");
     UtilityGpuRuntime runtime;
 
-    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
 
     UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
 
@@ -948,7 +966,7 @@ TEST(NatronUtilityRender, AutoWithoutRayQueryRendersOnTheCpuWithoutAWarning)
     const ScopedEnv noRayQuery("NATRON_GPU_NO_RAY_QUERY", "1");
     UtilityGpuRuntime runtime;
 
-    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
 
     UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
 
@@ -963,7 +981,7 @@ TEST(NatronUtilityRender, AutoRendersOnTheCpuWhenTheGpuRunsOutOfMemory)
 {
     UtilityGpuRuntime runtime(kStarvedPoolBytes);
 
-    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
 
     const std::string missing = runtime.missingSupport();
 
@@ -989,7 +1007,7 @@ TEST(NatronUtilityRender, ForcedGpuOutOfMemoryFails)
 {
     UtilityGpuRuntime runtime(kStarvedPoolBytes);
 
-    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
 
     const std::string missing = runtime.missingSupport();
 

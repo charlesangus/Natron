@@ -74,6 +74,38 @@ QStringList keepSelectionOrder(const QStringList& order, const QStringList& sele
  **/
 std::string primPathsText(KnobString::PrimPathHintEnum hint, const QStringList& paths);
 
+enum PrimEditEnum {
+    ePrimEditReplace,
+    ePrimEditAdd,
+    ePrimEditRemove
+};
+
+/**
+ * @brief The text a prim knob with hint holds after edit applies paths to current. Replace is
+ * primPathsText(). For a pattern knob, Add appends the paths that are not entries yet, and Remove
+ * takes out the entries that are exactly one of the paths. A pattern that is an expression rather
+ * than a list of paths has its entries removed only where that leaves the rest meaning the same;
+ * a path it can't remove that way is taken away with a difference, as in "(/a /b) - /c". Adding to
+ * an expression parenthesizes it first. A path knob only ever replaces.
+ **/
+std::string editPrimPathsText(KnobString::PrimPathHintEnum hint,
+                              PrimEditEnum edit,
+                              const std::string& current,
+                              const QStringList& paths);
+
+/**
+ * @brief The prims selected now: the selection viewer's, else the Scene Graph panel's.
+ **/
+QStringList currentSelection(Gui* gui);
+
+/**
+ * @brief Selects in the viewer and the Scene Graph panel the prims the value of knob matches in
+ * the scene of its node's first input, payloads included. The search runs off the UI thread; the
+ * selection is set when it ends, and the status bar says what it found or why it did not.
+ **/
+void selectMatches(Gui* gui,
+                   const KnobStringPtr& knob);
+
 /**
  * @brief Why paths can't be set on the current node now, or empty when they can.
  **/

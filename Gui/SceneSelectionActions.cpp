@@ -25,13 +25,20 @@
 
 #include "SceneSelectionActions.h"
 
+// Before Qt's OpenGL headers.
+#include "Gui/SceneViewport.h"
+
 #include <list>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <QPointF>
 #include <QRectF>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStatusBar>
+#include <QTimer>
 #include <QUndoCommand>
 #include <QtCore/QCoreApplication>
 
@@ -40,6 +47,8 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Plugin.h"
 #include "Engine/ViewerInstance.h"
@@ -50,6 +59,7 @@
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/SceneGraphPanel.h"
 #include "Gui/TabMenuBridge.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
@@ -252,6 +262,29 @@ insertAfterViewed(const NodePtr& viewed,
     }
 }
 
+// Whether token is an operator of a path expression, or holds one.
+bool
+isExpressionToken(const QString& token)
+{
+    return (token == QLatin1String("-")) || (token == QLatin1String("+")) || (token == QLatin1String("&")) || (token == QLatin1String("~"))
+        || token.contains(QLatin1Char('(')) || token.contains(QLatin1Char(')')) || token.contains(QLatin1Char('~')) || token.contains(QLatin1Char('&')) || token.contains(QLatin1Char('%'));
+}
+
+bool
+isOperatorToken(const QString& token)
+{
+    return (token == QLatin1String("-")) || (token == QLatin1String("+")) || (token == QLatin1String("&")) || (token == QLatin1String("~"));
+}
+
+bool
+isWildcardToken(const QString& token)
+{
+    return token.contains(QLatin1Char('*')) || token.contains(QLatin1Char('?')) || token.contains(QLatin1Char('[')) || token.contains(QLatin1String("//"));
+}
+
+// The search Select Matches started last; an older one that ends later is dropped.
+int g_matchSearchGeneration = 0;
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 namespace SceneSelectionActions {
@@ -351,6 +384,164 @@ primKnob(const NodePtr& node)
     }
 
     return path;
+}
+
+std::string
+editPrimPathsText(KnobString::PrimPathHintEnum hint,
+                  PrimEditEnum edit,
+                  const std::string& current,
+                  const QStringList& paths)
+{
+    if ((hint != KnobString::ePrimPathHintPattern) || (edit == ePrimEditReplace)) {
+        return primPathsText(hint, paths);
+    }
+    const QStringList tokens = QString::fromStdString(current).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    bool isExpression = false;
+    bool hasWildcard = false;
+    for (const QString& token : tokens) {
+        isExpression = isExpression || isExpressionToken(token);
+        hasWildcard = hasWildcard || isWildcardToken(token);
+    }
+    QStringList wanted;
+    for (const QString& path : paths) {
+        const QString trimmed = path.trimmed();
+        if (!trimmed.isEmpty() && !wanted.contains(trimmed)) {
+            wanted << trimmed;
+        }
+    }
+    if (edit == ePrimEditAdd) {
+        QStringList missing;
+        for (const QString& path : wanted) {
+            if (!tokens.contains(path)) {
+                missing << path;
+            }
+        }
+        if (missing.isEmpty()) {
+            return tokens.join(QLatin1Char(' ')).toStdString();
+        }
+        const QString base = (isExpression && (tokens.size() > 1)) ? QStringLiteral("(%1)").arg(tokens.join(QLatin1Char(' '))) : tokens.join(QLatin1Char(' '));
+
+        return (base.isEmpty() ? missing.join(QLatin1Char(' ')) : base + QLatin1Char(' ') + missing.join(QLatin1Char(' '))).toStdString();
+    }
+
+    QStringList kept = tokens;
+    QStringList subtract;
+    for (const QString& path : wanted) {
+        bool removed = false;
+        for (int i = kept.size() - 1; i >= 0; --i) {
+            if (kept[i] != path) {
+                continue;
+            }
+            // Dropping an entry beside an operator would leave the rest meaning something else.
+            const bool beforeOperator = (i > 0) && isOperatorToken(kept[i - 1]);
+            const bool afterOperator = (i + 1 < kept.size()) && isOperatorToken(kept[i + 1]);
+            if (!isExpression || (!beforeOperator && !afterOperator)) {
+                kept.removeAt(i);
+                removed = true;
+            }
+        }
+        if (!removed && (isExpression || hasWildcard)) {
+            subtract << path;
+        }
+    }
+    QString text = kept.join(QLatin1Char(' '));
+    if (!subtract.isEmpty()) {
+        if (text.isEmpty()) {
+            return std::string();
+        }
+        if (kept.size() > 1) {
+            text = QStringLiteral("(%1)").arg(text);
+        }
+        text += QStringLiteral(" - ") + subtract.join(QStringLiteral(" - "));
+    }
+
+    return text.toStdString();
+}
+
+QStringList
+currentSelection(Gui* gui)
+{
+    ViewerTab* viewer = selectionViewer(gui);
+    SceneViewport* viewport = viewer ? viewer->getSceneViewport() : nullptr;
+    if (viewport) {
+        return viewport->getSelection();
+    }
+    SceneGraphPanel* panel = gui ? gui->getSceneGraphPanel() : nullptr;
+
+    return panel ? panel->getSelection() : QStringList();
+}
+
+void
+selectMatches(Gui* gui,
+              const KnobStringPtr& knob)
+{
+    if (!gui || !knob) {
+        return;
+    }
+    const std::string expression = knob->getValue(0);
+    const QString label = QString::fromStdString(knob->getLabel());
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (PrimSelector::isBlank(expression)) {
+        showHint(gui, tr("Select Matches: the %1 is empty.").arg(label));
+
+        return;
+    }
+    std::string error;
+    if (!PrimSelector::validate(expression, &error)) {
+        showHint(gui, tr("Select Matches: the %1 is not valid: %2").arg(label, QString::fromStdString(error)));
+
+        return;
+    }
+    if (!node || !node->getInput(0)) {
+        showHint(gui, tr("Select Matches: the node has no scene on its input."));
+
+        return;
+    }
+    const int generation = ++g_matchSearchGeneration;
+    std::shared_ptr<SceneOps::UnloadedSearch> search = SceneOps::UnloadedSearch::start(node->getEffectInstance(), 0, expression);
+    QTimer* timer = new QTimer(gui);
+    timer->setInterval(50);
+    QObject::connect(timer, &QTimer::timeout, timer, [gui, timer, search, generation, label]() {
+        if (generation != g_matchSearchGeneration) {
+            timer->deleteLater();
+
+            return;
+        }
+        const SceneOps::UnloadedSearch::StatusEnum status = search->getStatus();
+        if (status == SceneOps::UnloadedSearch::eStatusRunning) {
+            return;
+        }
+        timer->deleteLater();
+        if (status == SceneOps::UnloadedSearch::eStatusFailed) {
+            showHint(gui, tr("Select Matches: %1").arg(QString::fromStdString(search->getError())));
+
+            return;
+        }
+        if (status != SceneOps::UnloadedSearch::eStatusDone) {
+            return;
+        }
+        QStringList matches;
+        for (const std::string& path : search->getMatches()) {
+            matches << QString::fromStdString(path);
+        }
+        if (matches.isEmpty()) {
+            showHint(gui, tr("Select Matches: nothing matches the %1.").arg(label));
+
+            return;
+        }
+        ViewerTab* viewer = selectionViewer(gui);
+        SceneViewport* viewport = viewer ? viewer->getSceneViewport() : nullptr;
+        if (viewport) {
+            viewport->setSelection(matches);
+        } else {
+            for (SceneGraphPanel* panel : gui->getSceneGraphPanels()) {
+                panel->showSelection(matches);
+            }
+        }
+        showHint(gui, tr("Select Matches: %1 prims selected.").arg(matches.size()));
+    });
+    timer->start();
 }
 
 QString

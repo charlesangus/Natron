@@ -71,10 +71,14 @@ Controls:
   cannot skin, stays rigid with a warning naming it, and slides. Bound any other way
   than by those nodes, such as in a file or by a script, a Geometry projection takes
   the camera in the geometry's own coordinates, and with no node to place it,
-  deforming geometry slides through the image. USDAssignMaterial's binding does not
-  reach inside native instances in Storm, so they show no projection, with a
-  warning. The instances of a point instancer share their prototype's placement,
-  also with a warning: each shows the image as it falls on the prototype.
+  deforming geometry slides through the image. Native instances project from
+  their own placements, as USDAssignMaterial binds them on their instance roots. A
+  gprim offset from its instance root projects shifted, and a sticky or held projection
+  on a deforming instanced mesh stays rigid, each with a warning. The instances of a
+  point instancer share their prototype's placement, with a warning: each shows the
+  image as it falls on the prototype. A baked export cannot bake instanced projections,
+  as overs cannot reach below an instance and instances share the prototype's UVs: it
+  keeps the Storm shader and warns.
 - Project On: Both, Front (faces facing the camera) or Back. Curves and points have no
   faces, so they show as Both. A baked export ignores it, with a warning.
 - Crop: beyond the camera's frame the surface shows Outside, and inside it, where the

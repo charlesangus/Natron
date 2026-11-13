@@ -27,6 +27,10 @@
 
 #include <cassert>
 #include <stdexcept>
+#include <vector>
+
+#include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -34,6 +38,20 @@ std::string
 GroupOutput::getPluginDescription() const
 {
     return "This node can only be used within a Group. There can only be 1 Output node in the group. It defines the output of the group.";
+}
+
+void
+GroupOutput::appendHashLeafDependents(std::vector<NodePtr>* leaves) const
+{
+    // The containing group's hash folds in what feeds this node. The group's consumers read
+    // through it to this node's input, and are reached from there.
+    const NodePtr node = getNode();
+    const NodeCollectionPtr collection = node ? node->getGroup() : NodeCollectionPtr();
+    const NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(collection);
+
+    if (group) {
+        leaves->push_back(group->getNode());
+    }
 }
 
 NATRON_NAMESPACE_EXIT

@@ -54,6 +54,7 @@
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TrackerContext.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -153,6 +154,9 @@ Node::load(const CreateNodeArgs& args)
         if (layout.hasOverlayColor) {
             setOverlayColor(layout.overlayR, layout.overlayG, layout.overlayB);
         }
+        if (ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(_imp->effect.get())) {
+            viewer->refreshLockDecoration();
+        }
     }
 
     if ( _imp->supportedDepths.empty() ) {
@@ -214,7 +218,19 @@ Node::load(const CreateNodeArgs& args)
     // After the knobs are loaded, so a pasted or duplicated node's saved config does not win.
     getApp()->getProject()->pushOCIOConfigToNode(thisShared);
 
+    if (finishCreationInPythonDeclarationBatch(!serialization && !isLoadingPyPlug)) {
+        return;
+    }
+
     _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
+
+    // Expressions written before this node existed may name it. A loading project rechecks
+    // them all once it is loaded.
+    if (!getApp()->getProject()->isLoadingProject()) {
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        getApp()->recheckInvalidExpressionsReferencing(names);
+    }
 } // load
 
 
@@ -708,7 +724,9 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
 
     AppInstancePtr app = getApp();
     if (app) {
-        app->recheckInvalidExpressions();
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        app->recheckInvalidExpressionsReferencing(names);
     }
 
     ///Remove the Python node
@@ -806,6 +824,9 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
     {
         QMutexLocker k(&_imp->activatedMutex);
         _imp->isBeingDestroyed = true;
+    }
+    if (QThread::currentThread() == qApp->thread()) {
+        releaseStashedPythonObject();
     }
 
     bool allProcessingQuit = areAllProcessingThreadsQuit();

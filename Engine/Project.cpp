@@ -661,11 +661,15 @@ Project::loadProjectInternal(const QString& path,
     projectSerialization.creationDate = manifest.creationDate;
 
     bool ret = false;
-    {
+    try {
         FlagSetter __raii_loadingProjectInternal__(true, &_imp->isLoadingProjectInternal, &_imp->isLoadingProjectMutex);
 
         ret = fromSerialization(projectSerialization, name, path, mustSave);
-    } // __raii_loadingProjectInternal__
+    } catch (...) {
+        // The GUI defers layout work until the nodes are restored: let it catch up with what loaded.
+        getApp()->onProjectNodesRestored();
+        throw;
+    }
 
     // The manifest holds what changes on every save, so that project.yaml does not.
     _imp->lastAuthorName->setValue(manifest.author);
@@ -2781,6 +2785,28 @@ Project::refreshLayersKnob()
 }
 
 void
+Project::queueLayersKnobRefresh()
+{
+    // Encoding the table visits every node and its widget is rebuilt, which a script creating or
+    // destroying nodes one call at a time would otherwise pay for each of them.
+    if (appPTR->isBackground()) {
+        refreshLayersKnob();
+
+        return;
+    }
+    if (_imp->layersKnobRefreshQueued) {
+        return;
+    }
+    _imp->layersKnobRefreshQueued = true;
+    QTimer::singleShot(0, this, [this]() {
+        _imp->layersKnobRefreshQueued = false;
+        if (!isLoadingProject() && !isProjectClosing()) {
+            refreshLayersKnob();
+        }
+    });
+}
+
+void
 Project::emitProjectLayersChangedSignal()
 {
     refreshLayersKnob();
@@ -4872,13 +4898,21 @@ Project::extractTreesFromNodes(const NodesList& nodes,
             NodesTree tree;
             tree.output.node = *it;
             const NodesWList& outputs = (*it)->getGuiOutputs();
+            std::set<Node*> outputsSeen;
             for (NodesWList::const_iterator it2 = outputs.begin(); it2 != outputs.end(); ++it2) {
                 NodePtr output = it2->lock();
                 if (!output) {
                     continue;
                 }
-                int idx = output->inputIndex(*it);
-                tree.output.outputs.push_back( std::make_pair(idx, *it2) );
+                if (!outputsSeen.insert(output.get()).second) {
+                    continue;
+                }
+                const std::vector<NodeWPtr>& outputInputs = output->getGuiInputs();
+                for (std::size_t idx = 0; idx < outputInputs.size(); ++idx) {
+                    if (outputInputs[idx].lock() == *it) {
+                        tree.output.outputs.push_back(std::make_pair((int)idx, *it2));
+                    }
+                }
             }
 
             const std::vector<NodeWPtr>& inputs = (*it)->getGuiInputs();

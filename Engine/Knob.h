@@ -755,8 +755,22 @@ public:
      * @brief Tries to re-apply invalid expressions, returns true if they are all valid
      **/
     virtual bool checkInvalidExpressions() = 0;
+
+    /**
+     * @brief Puts this knob's expression functions back on its Python parameter, which is a new
+     * object once the node's Python attributes have been declared again.
+     **/
+    virtual void restoreExpressionFunctions() = 0;
     virtual bool isExpressionValid(int dimension, std::string* error) const = 0;
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) = 0;
+
+    /**
+     * @brief Flags the expression of dimension invalid with error because node, which it reads, was
+     * deactivated. If it was valid, or only invalid because of other deactivated nodes, a recheck
+     * once they are all active again under the names they had then makes it valid again without
+     * running Python.
+     **/
+    virtual void setExpressionMissingNode(int dimension, const NodePtr& node, const std::string& error) = 0;
 
     /**
      * @brief Replaces the node name "oldName" by "newName" in the expression of dimension, if set,
@@ -1909,8 +1923,15 @@ public:
     virtual bool isAnimated( int dimension, ViewSpec view = ViewSpec::current() ) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool hasAnimation() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool checkInvalidExpressions() OVERRIDE FINAL;
+    virtual void restoreExpressionFunctions() OVERRIDE FINAL;
     virtual bool isExpressionValid(int dimension, std::string* error) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setExpressionInvalid(int dimension, bool valid, const std::string& error) OVERRIDE FINAL;
+    virtual void setExpressionMissingNode(int dimension, const NodePtr& node, const std::string& error) OVERRIDE FINAL;
+
+private:
+    // Makes the expression of dimension valid again if only the deactivation of nodes now back
+    // made it invalid, returning false if it must be set again instead.
+    bool restoreExpressionOfReturnedNodes(int dimension);
 
 protected:
 public:
@@ -1922,6 +1943,13 @@ public:
     virtual std::string validateExpression(const std::string& expression, int dimension, bool hasRetVariable,
                                            std::string* resultAsString) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+private:
+    // As validateExpression, also handing back in *function (a new reference, or null) the
+    // function the expression is evaluated by.
+    std::string validateExpressionInternal(const std::string& expression, int dimension, bool hasRetVariable,
+                                           std::string* resultAsString, PyObject** function);
+
+public:
 protected:
 
     template <typename T>
@@ -1957,6 +1985,24 @@ public:
      **/
     static U64 getHashedMetadataSourcesGeneration();
     static void moveHashedMetadataSourcesGeneration();
+
+    /**
+     * @brief Moved whenever a Python name an expression's function is reached by may stop
+     * leading to it, so that functions kept for evaluation are looked up again.
+     **/
+    static void moveExpressionFunctionsGeneration();
+
+    /**
+     * @brief For tests: how many times an expression's function was looked up by its Python
+     * name, and how many evaluations ran the expression as a script instead of calling it.
+     **/
+    static U64 getExpressionFunctionsResolvedCount();
+    static U64 getExpressionScriptsRunCount();
+
+    /**
+     * @brief For tests: how many listener refreshes refreshListenersAfterValueChange() made.
+     **/
+    static U64 getListenerRefreshCount();
     virtual std::string getExpression(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const std::vector<std::shared_ptr<Curve>  > & getCurves() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setAnimationEnabled(bool val) OVERRIDE FINAL;
@@ -2184,8 +2230,17 @@ public:
      **/
     bool showsKeysOnTimeline() const;
 
+    /**
+     * @brief Tells the timeline this knob's keys changed. Callable from any thread.
+     **/
+    void invalidateTimelineMarkers() const;
+
+    /**
+     * @brief Whether the GUI curve holds edits not yet copied to the internal curve, which happens while a render is running.
+     **/
+    bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
+
 private:
-    void updateDriverKeysOnTimeline(const KnobDriverPtr& previous, const KnobDriverPtr& driver);
     static void appendDriverKeyTimes(const KnobDriver& driver, std::list<SequenceTime>* times);
 
 public:
@@ -2547,7 +2602,6 @@ protected:
     virtual std::shared_ptr<Curve> getGuiCurve(ViewSpec view, int dimension, bool byPassMaster = false) const OVERRIDE FINAL;
 
     void setGuiCurveHasChanged(ViewSpec view, int dimension, bool changed);
-    bool hasGuiCurveChanged(ViewSpec view, int dimension) const;
     void clearExpressionsResultsIfNeeded(std::map<int, Natron::ValueChangedReasonEnum>& modifiedDimensions);
 
 
@@ -3331,9 +3385,6 @@ public:
      * @brief Restore all knobs to their default values
      **/
     void restoreDefaultValues();
-    virtual void aboutToRestoreDefaultValues()
-    {
-    }
 
     /**
      * @brief When frozen is true all the knobs of this effect read-only so the user can't interact with it.

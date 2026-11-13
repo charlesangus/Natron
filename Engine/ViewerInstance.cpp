@@ -27,9 +27,13 @@
 #include "ViewerInstancePrivate.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring> // for std::memcpy
+#include <iterator> // size
 #include <limits>
 #include <list>
 #include <memory>
@@ -45,6 +49,7 @@ CLANG_DIAG_OFF(deprecated)
 #include <QDebug>
 #include <QFutureWatcher>
 #include <QMutex>
+#include <QRegularExpression>
 #include <QThread>
 #include <QThreadPool>
 #include <QTimer>
@@ -56,6 +61,9 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
+#include "Engine/FrameRenderContext.h"
+#include "Engine/GenericSchedulerThread.h"
+#include "Engine/GpuContext.h"
 #include "Engine/GpuPlacement.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
@@ -90,6 +98,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
+#include "Global/FloatingPointExceptions.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -102,38 +111,15 @@ NATRON_NAMESPACE_ENTER
 using std::make_pair;
 using std::shared_ptr;
 
-NATRON_NAMESPACE_ANONYMOUS_ENTER
-
-struct MinMaxVal {
-    MinMaxVal(double min_, double max_)
-    : min(min_)
-    , max(max_)
-    {
-    }
-    MinMaxVal()
-    : min(std::numeric_limits<double>::max())
-    , max(std::numeric_limits<double>::lowest())
-    {
-    }
-
-    double min;
-    double max;
-};
-
-NATRON_NAMESPACE_ANONYMOUS_EXIT
-
 static void scaleToTexture8bits(const RectI& roi,
                                 const RenderViewerArgs & args,
                                 ViewerInstance* viewer,
                                 const UpdateViewerParams::CachedTile& tile,
                                 U32* output);
 static void scaleToTexture32bits(const RectI& roi,
-                                 const RenderViewerArgs & args,
+                                 const RenderViewerArgs& args,
                                  const UpdateViewerParams::CachedTile& tile,
-                                 float *output);
-static MinMaxVal findAutoContrastVminVmax(const ImagePtr inputImage,
-                                                         DisplayChannelsEnum channels,
-                                                         const RectI & rect);
+                                 float* output);
 static void renderFunctor(const RectI& roi,
                           const RenderViewerArgs & args,
                           ViewerInstance* viewer,
@@ -176,6 +162,9 @@ applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& proc
         }
     }
     if (processor.cpu) {
+        // OCIO's CPU kernels call libm on NaN and Inf pixels, which raises FP exceptions that
+        // debug builds trap.
+        const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
         try {
             // Any other gamma would amplify the approximation's error past a code value.
             if ((output == eViewerDisplayOutputEightBit) && (gamma == 1.)) {
@@ -206,6 +195,141 @@ applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& proc
     }
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+const std::chrono::milliseconds kGpuPlacementDebounce(100);
+
+// Nothing signals the end of what holds a plan, playback least of all: its engine may still report it active right when
+// it reports having finished.
+const std::chrono::milliseconds kGpuPlacementHoldPoll(100);
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+/**
+ * @brief Runs a viewer's dry runs. The thread starts with the first request, so a viewer pays nothing while the overlay
+ * has never been on. A plan waits until requests have paused for kGpuPlacementDebounce: a knob drag edits the graph many
+ * times a second, and the viewer's real renders keep the overlay current until the drag pauses.
+ **/
+class GpuPlacementPlanner
+    : public GenericSchedulerThread {
+public:
+    explicit GpuPlacementPlanner(ViewerInstance* viewer)
+        : GenericSchedulerThread()
+        , _viewer(viewer)
+    {
+        setThreadName("GpuPlacementPlanner");
+    }
+
+    virtual ~GpuPlacementPlanner()
+    {
+    }
+
+    void request()
+    {
+        bool start;
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            _pending = true;
+            _lastRequest = std::chrono::steady_clock::now();
+            start = !_active;
+            _active = true;
+        }
+        _wake.notify_all();
+        if (start && !startTask(std::make_shared<GenericThreadStartArgs>())) {
+            std::lock_guard<std::mutex> k(_mutex);
+            _active = false;
+        }
+    }
+
+    void abortRunningPlan()
+    {
+        AbortableRenderInfoPtr running;
+        {
+            std::lock_guard<std::mutex> k(_mutex);
+            running = _running;
+        }
+        if (running) {
+            running->setAborted();
+        }
+    }
+
+private:
+    virtual TaskQueueBehaviorEnum tasksQueueBehaviour() const OVERRIDE FINAL
+    {
+        return eTaskQueueBehaviorSkipToMostRecent;
+    }
+
+    virtual void onQuitRequested(bool /*allowRestarts*/) OVERRIDE FINAL
+    {
+        abortRunningPlan();
+        {
+            // A task queued but never run would otherwise leave every later request() waiting on it.
+            std::lock_guard<std::mutex> k(_mutex);
+            _active = false;
+        }
+        _wake.notify_all();
+    }
+
+    virtual ThreadStateEnum threadLoopOnce(const GenericThreadStartArgsPtr& /*inArgs*/) OVERRIDE FINAL
+    {
+        for (;;) {
+            const AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+            for (;;) {
+                // Neither of these may run under _mutex: quitThread() can hold what they lock while it calls onQuitRequested().
+                const ThreadStateEnum state = resolveState();
+                if (state != eThreadStateActive) {
+                    std::lock_guard<std::mutex> k(_mutex);
+                    _active = false;
+
+                    return state;
+                }
+                const bool held = _viewer->isGpuPlacementDryRunHeld();
+
+                std::unique_lock<std::mutex> k(_mutex);
+                if (!_pending) {
+                    // request() starts a task only while this is false, so a request after this line is not lost.
+                    _active = false;
+
+                    return eThreadStateActive;
+                }
+                const std::chrono::steady_clock::time_point quietAt = _lastRequest + kGpuPlacementDebounce;
+                if (std::chrono::steady_clock::now() < quietAt) {
+                    _wake.wait_until(k, quietAt);
+                } else if (held) {
+                    _wake.wait_for(k, kGpuPlacementHoldPoll);
+                } else {
+                    _pending = false;
+                    _running = abortInfo;
+                    break;
+                }
+            }
+            // aborted() prefers what is stored on an AbortableThread over the frame args, and this thread outlives a plan.
+            setAbortInfo(true, abortInfo, _viewer->getNode()->getEffectInstance());
+            try {
+                _viewer->runGpuPlacementDryRun(abortInfo);
+            } catch (const std::exception& e) {
+                // GenericSchedulerThread::run() has no handler, so a throw from an effect's action would end the process.
+                qDebug() << "GPU placement dry run failed:" << e.what();
+            } catch (...) {
+                qDebug() << "GPU placement dry run failed";
+            }
+            clearAbortInfo();
+            std::lock_guard<std::mutex> k(_mutex);
+            _running.reset();
+        }
+    }
+
+    ViewerInstance* const _viewer;
+    std::mutex _mutex;
+    std::condition_variable _wake;
+    bool _pending = false;
+
+    // A task is queued or running, and will see _pending before it ends.
+    bool _active = false;
+    std::chrono::steady_clock::time_point _lastRequest;
+    AbortableRenderInfoPtr _running;
+};
+
 EffectInstance*
 ViewerInstance::BuildEffect(NodePtr n)
 {
@@ -223,6 +347,8 @@ ViewerInstance::ViewerInstance(NodePtr node)
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
     setSupportsRenderScaleMaybe(EffectInstance::eSupportsYes);
+
+    _imp->gpuPlacementPlanner = std::make_shared<GpuPlacementPlanner>(this);
 
     QObject::connect( this, SIGNAL(disconnectTextureRequest(int,bool)), this, SLOT(executeDisconnectTextureRequestOnMainThread(int,bool)) );
     QObject::connect( _imp.get(), SIGNAL(mustRedrawViewer()), this, SLOT(redrawViewer()) );
@@ -243,6 +369,9 @@ ViewerInstance::~ViewerInstance()
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
+    // A plan reads this viewer until its thread has stopped.
+    _imp->gpuPlacementPlanner->quitThread(false);
+    _imp->gpuPlacementPlanner->waitForThreadToQuit_enforce_blocking();
 
     // If _imp->updateViewerRunning is true, that means that the next updateViewer call was
     // not yet processed. Since we're in the main thread and it is processed in the main thread,
@@ -325,6 +454,7 @@ ViewerInstance::setUiContext(OpenGLViewerI* viewer)
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
+    std::lock_guard<std::mutex> k(_imp->gpuPlacementUiContextMutex);
     _imp->uiContext = viewer;
 }
 
@@ -333,7 +463,13 @@ ViewerInstance::invalidateUiContext()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    _imp->uiContext = NULL;
+    {
+        std::lock_guard<std::mutex> k(_imp->gpuPlacementUiContextMutex);
+        _imp->uiContext = NULL;
+    }
+
+    // A running plan finds the UI context gone at its next read of it, and has no more use for the rest of its work.
+    _imp->gpuPlacementPlanner->abortRunningPlan();
 #ifdef NATRON_HAVE_GPU
     _imp->stagedFrames[0].reset();
     _imp->stagedFrames[1].reset();
@@ -417,7 +553,6 @@ bool
 knobRequestsRender(const std::string& name)
 {
     static const char* const names[] = {
-        kViewerParamAutoContrast,
         kViewerParamDisplayChannels,
         kViewerParamDisplayChannelsB,
         kViewerParamLayer,
@@ -448,6 +583,36 @@ bool
 knobChangesDisplay(const std::string& name)
 {
     return (name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamDisplay) || (name == kViewerParamView) || (name == kViewerParamLook);
+}
+
+// The label is rich text: once edited in the panel its lines sit inside a font tag, possibly
+// ahead of a custom-data tag, so the lock lines have to go inside those too.
+QString
+withLockLines(QString label,
+              const QString& lockLines)
+{
+    const QString lockLine = QString::fromUtf8("Locked input \\d+ to [^\\n<]*");
+    const QString fontStart = QString::fromUtf8("<font[^>]*>");
+
+    label.remove(QRegularExpression(QString::fromUtf8("\\n") + lockLine));
+    label.replace(QRegularExpression(QString::fromUtf8("(^|") + fontStart + QString::fromUtf8(")") + lockLine + QString::fromUtf8("\\n?")),
+                  QString::fromUtf8("\\1"));
+    if (lockLines.isEmpty()) {
+        return label;
+    }
+
+    int insertAt = label.indexOf(QString::fromUtf8(NATRON_CUSTOM_HTML_TAG_START));
+    if (insertAt == -1) {
+        insertAt = label.lastIndexOf(QString::fromUtf8(kFontEndTag));
+    }
+    if (insertAt == -1) {
+        insertAt = label.size();
+    }
+    const QString before = label.left(insertAt);
+    const bool startsContent = before.isEmpty() || before.contains(QRegularExpression(fontStart + QString::fromUtf8("$")));
+    label.insert(insertAt, (startsContent ? QString() : QString::fromUtf8("\n")) + lockLines);
+
+    return label;
 }
 
 const char kViewerLookNoneID[] = "none";
@@ -542,11 +707,6 @@ ViewerInstance::initializeKnobs()
     gamma->setDisplayMaximum(5.);
     k.gamma = gamma;
 
-    KnobBoolPtr autoContrast = createViewerKnob<KnobBool>(this, page, tr("Auto Contrast"), kViewerParamAutoContrast,
-                                                          tr("Sets gain and offset so the darkest and brightest values of the "
-                                                             "image map to black and white. Gain and Gamma are ignored while it is on."));
-    k.autoContrast = autoContrast;
-
     KnobBoolPtr checkerboard = createViewerKnob<KnobBool>(this, page, tr("Enable Checker Board"), kViewerParamCheckerboard,
                                                           tr("Draws a checkerboard under input A instead of black."));
     k.checkerboard = checkerboard;
@@ -618,6 +778,15 @@ ViewerInstance::initializeKnobs()
         input->setMinimum(-1);
         input->setMaximum(getNInputs() - 1);
         k.inputs[i] = input;
+    }
+
+    const int nLockable = std::min<int>(getNInputs(), static_cast<int>(std::size(k.lockedInputs)));
+    for (int i = 0; i < nLockable; ++i) {
+        const std::string lockName = kViewerParamLockedInputPrefix + std::to_string(i + 1);
+        KnobStringPtr lock = createViewerKnob<KnobString>(this, page, tr("Locked Input %1").arg(i + 1), lockName.c_str(),
+                                                          tr("The script name of the node this input is locked to, empty for none."));
+        lock->setSecretByDefault(true);
+        k.lockedInputs[i] = lock;
     }
 
     KnobChoicePtr operation = createViewerKnob<KnobChoice>(this, page, tr("Operation"), kViewerParamOperation,
@@ -757,6 +926,117 @@ ViewerInstance::initializeKnobs()
     }
 } // ViewerInstance::initializeKnobs
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+const double kLockGrey = 0x11 / 255.;
+
+bool
+isLockGrey(const Node& node)
+{
+    double r, g, b;
+    node.getUserColor(&r, &g, &b);
+
+    return node.hasUserColor() && (std::abs(r - kLockGrey) < 1e-3) && (std::abs(g - kLockGrey) < 1e-3) && (std::abs(b - kLockGrey) < 1e-3);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+std::string
+ViewerInstance::getLockedInput(int inputNb) const
+{
+    if ((inputNb < 0) || (inputNb >= getNInputs()) || (inputNb >= static_cast<int>(std::size(_imp->knobs.lockedInputs)))) {
+        return std::string();
+    }
+    KnobStringPtr knob = _imp->knobs.lockedInputs[inputNb].lock();
+
+    return knob ? knob->getValue() : std::string();
+}
+
+void
+ViewerInstance::setLockedInput(int inputNb,
+                               const std::string& nodeName)
+{
+    if ((inputNb < 0) || (inputNb >= getNInputs()) || (inputNb >= static_cast<int>(std::size(_imp->knobs.lockedInputs)))) {
+        return;
+    }
+    KnobStringPtr knob = _imp->knobs.lockedInputs[inputNb].lock();
+    if (!knob || (knob->getValue() == nodeName)) {
+        return;
+    }
+    {
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        knob->setValue(nodeName);
+    }
+    refreshLockDecoration();
+}
+
+void
+ViewerInstance::refreshLockDecoration()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    QString lockLines;
+    bool anyLock = false;
+
+    const int nLockable = std::min<int>(getNInputs(), static_cast<int>(std::size(_imp->knobs.lockedInputs)));
+    for (int i = 0; i < nLockable; ++i) {
+        const std::string name = getLockedInput(i);
+        if (name.empty()) {
+            continue;
+        }
+        if (anyLock) {
+            lockLines += QLatin1Char('\n');
+        }
+        lockLines += QString::fromUtf8("Locked input %1 to %2").arg(i + 1).arg(QString::fromUtf8(name.c_str()));
+        anyLock = true;
+    }
+
+    KnobStringPtr label = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kUserLabelKnobName));
+    if (label) {
+        const QString updated = withLockLines(QString::fromUtf8(label->getValue().c_str()), lockLines);
+        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
+        label->setValue(updated.toStdString());
+    }
+
+    if (anyLock) {
+        if (!_imp->lockColourApplied) {
+            _imp->colourBeforeLock = node->hasUserColor();
+            if (_imp->colourBeforeLock) {
+                node->getUserColor(&_imp->savedColour[0], &_imp->savedColour[1], &_imp->savedColour[2]);
+            }
+            node->setColor(kLockGrey, kLockGrey, kLockGrey);
+            _imp->lockColourApplied = true;
+        }
+    } else if (_imp->lockColourApplied) {
+        _imp->lockColourApplied = false;
+        // A colour other than the grey set on lock was chosen by the user meanwhile.
+        if (isLockGrey(*node)) {
+            if (_imp->colourBeforeLock) {
+                node->setColor(_imp->savedColour[0], _imp->savedColour[1], _imp->savedColour[2]);
+            } else {
+                node->resetColor();
+            }
+        }
+    }
+}
+
+bool
+ViewerInstance::getColourToSave(bool* hasColour,
+                                double* rgb) const
+{
+    NodePtr node = getNode();
+    if (!_imp->lockColourApplied || !node || !isLockGrey(*node)) {
+        return false;
+    }
+    *hasColour = _imp->colourBeforeLock;
+    for (int i = 0; i < 3; ++i) {
+        rgb[i] = _imp->savedColour[i];
+    }
+
+    return true;
+}
 bool
 ViewerInstance::knobChanged(KnobI* k,
                             ValueChangedReasonEnum reason,
@@ -965,6 +1245,8 @@ ViewerInstance::applyActiveInput(int side,
 void
 ViewerInstance::onInspectorActiveInputsChanged()
 {
+    requestGpuPlacementDryRun();
+
     NodePtr node = getNode();
     InspectorNode* isInspector = dynamic_cast<InspectorNode*>(node.get());
     if (!isInspector) {
@@ -1197,6 +1479,14 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 std::mutex gSchedulerResultHookMutex;
 ViewerInstance::SchedulerResultHook gSchedulerResultHook;
 
+std::atomic<bool> gGpuPlacementOverlayEnabled(false);
+std::atomic<int> gGpuShadowPlacementCount(0);
+std::atomic<int> gGpuPlacementDryRunCount(0);
+std::atomic<bool> gGpuPlacementFrozenForTests(false);
+
+// Lets a snapshot from before the overlay was last turned on be told from a current one without reaching every viewer.
+std::atomic<U64> gGpuPlacementOverlayGeneration(0);
+
 ViewerInstance::SchedulerResultHook
 schedulerResultHook()
 {
@@ -1205,18 +1495,27 @@ schedulerResultHook()
     return gSchedulerResultHook;
 }
 
+bool
+viewerTakesCpuFramesOnly(OpenGLViewerI* uiContext)
+{
 #ifdef NATRON_HAVE_GPU
-// The GPU viewer process neither measures the frame for auto-contrast nor reads a matte from a second plane, and a
+    return !uiContext || (uiContext->handoffRung() == ViewerHandoffRung::Cpu);
+#else
+    Q_UNUSED(uiContext);
+
+    return true;
+#endif
+}
+
+#ifdef NATRON_HAVE_GPU
+// The GPU viewer process does not read a matte from a second plane, and a
 // root rendered for only part of the texture would drop the tiles found in the cache.
 bool
 viewerFrameCanTakeDeviceRoot(const ViewerArgs& inArgs,
                              const std::list<ImageLayerDesc>& components,
-                             OpenGLViewerI* uiContext)
+                             bool cpuFramesOnly)
 {
-    if (!uiContext || (uiContext->handoffRung() == ViewerHandoffRung::Cpu)) {
-        return false;
-    }
-    if (inArgs.autoContrast) {
+    if (cpuFramesOnly) {
         return false;
     }
     if ((inArgs.channels == eDisplayChannelsMatte) && (components.size() > 1)) {
@@ -1346,20 +1645,100 @@ noteHandoffRefusal(const RenderStatsPtr& stats,
 }
 #endif
 
-// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
-// back to renderRoI. The root task renders exactly what renderRoI would: the viewer's RoI and displayed layers.
-FrameFuturePtr
-submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
-                                   const std::shared_ptr<FrameRequestMap>& request,
-                                   const ViewerArgs& inArgs,
-                                   bool hasRotoPaintNode,
-                                   ViewIdx view,
-                                   const RectI& roi,
-                                   const std::list<ImageLayerDesc>& components,
-                                   ImageBitDepthEnum bitdepth,
-                                   const RenderStatsPtr& stats,
-                                   OpenGLViewerI* uiContext,
-                                   FrameRenderContextPtr* contextOut)
+// The graph of the viewer input for one frame, empty when the request pass does not reach the input. The root task
+// renders exactly what renderRoI would: the viewer's RoI and displayed layers.
+FrameGraph
+buildViewerFrameGraph(const FrameRenderContextPtr& context,
+                      const ViewerArgs& inArgs,
+                      ViewIdx view,
+                      const RectI& roi,
+                      const std::list<ImageLayerDesc>& components,
+                      ImageBitDepthEnum bitdepth,
+                      bool cpuFramesOnly)
+{
+#ifdef NATRON_HAVE_GPU
+    context->setWantsRootOnDevice(viewerFrameCanTakeDeviceRoot(inArgs, components, cpuFramesOnly));
+#else
+    Q_UNUSED(cpuFramesOnly);
+#endif
+    FrameGraph graph = RenderScheduler::buildGraph(context, inArgs.activeInputToRender->getNode(), inArgs.params->time, view, inArgs.params->mipmapLevel);
+    if (!graph.tasks.empty()) {
+        FrameGraph::Task& root = graph.tasks.front();
+        root.roi = roi;
+        root.components = components;
+        root.bitdepth = bitdepth;
+    }
+
+    return graph;
+}
+
+// Returns whether a shadow plan was placed.
+bool
+addPlacedGraphToSnapshot(FrameGraph* graph,
+                         const FrameRenderContextPtr& context,
+                         GpuPlacementSnapshotBuilder* builder)
+{
+    ShadowPlacement shadow;
+    if (placeRenderGraph(*graph, context, &shadow)) {
+        builder->addGraph(*graph, shadow);
+
+        return true;
+    }
+    builder->addUnplacedGraph(*graph);
+
+    return false;
+}
+
+// Which layers the viewer asks of its input, none when it has no layer to show, and where the alpha it shows sits in
+// them.
+void
+computeViewerRequestedLayers(const ViewerArgs& inArgs,
+                             const ImageLayerDesc& inputLayers,
+                             std::list<ImageLayerDesc>* requestedComponents,
+                             int* alphaChannelIndex)
+{
+    *alphaChannelIndex = -1;
+    if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {
+        /// We fetch the Layer specified in the gui
+        if (inArgs.params->layer.getNumComponents() > 0) {
+            requestedComponents->push_back(inArgs.params->layer);
+        }
+    } else {
+        /// We fetch the alpha layer
+        if (!inArgs.params->alphaChannelName.empty()) {
+            requestedComponents->push_back(inArgs.params->alphaLayer);
+            const std::vector<std::string>& channels = inArgs.params->alphaLayer.getChannels();
+            for (std::size_t i = 0; i < channels.size(); ++i) {
+                if (channels[i] == inArgs.params->alphaChannelName) {
+                    *alphaChannelIndex = i;
+                    break;
+                }
+            }
+            // alphaChannelIndex stays -1 when the colour views name an A the stream lacks (an
+            // RGB-only plane): that alpha reads as zero, so the A display below renders black.
+        }
+        if (inArgs.channels == eDisplayChannelsMatte) {
+            // For the matte overlay also display the alpha mask on top of the red channel of the image
+            if ((inArgs.params->layer.getNumComponents() > 0) && (inArgs.params->layer != inArgs.params->alphaLayer)) {
+                requestedComponents->push_back(inArgs.params->layer);
+            }
+        }
+    }
+
+    // Raw is shown from the input's own plane (its 1 or 3 channels), whatever layer the Viewer
+    // is set to, and converted to RGBA with alpha 1 by RawDisplay below.
+    if (inArgs.rawUpstream) {
+        requestedComponents->clear();
+        requestedComponents->push_back(inputLayers);
+        *alphaChannelIndex = ((inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte)) ? 3 : -1;
+    }
+}
+
+ViewerInstance::SchedulerEligibility
+computeViewerFrameEligibility(const ParallelRenderArgsSetter* setter,
+                              const std::shared_ptr<FrameRequestMap>& request,
+                              const ViewerArgs& inArgs,
+                              bool hasRotoPaintNode)
 {
     const NodePtr inputNode = inArgs.activeInputToRender->getNode();
     ViewerInstance::SchedulerEligibility eligibility;
@@ -1377,24 +1756,42 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
     eligibility.onPoolThread = QThreadPool::globalInstance()->contains(QThread::currentThread());
     eligibility.onMainThread = QCoreApplication::instance() && (QThread::currentThread() == QCoreApplication::instance()->thread());
 
+    return eligibility;
+}
+
+// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
+// back to renderRoI.
+FrameFuturePtr
+submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
+                                   const std::shared_ptr<FrameRequestMap>& request,
+                                   const ViewerArgs& inArgs,
+                                   bool hasRotoPaintNode,
+                                   ViewIdx view,
+                                   const RectI& roi,
+                                   const std::list<ImageLayerDesc>& components,
+                                   ImageBitDepthEnum bitdepth,
+                                   const RenderStatsPtr& stats,
+                                   OpenGLViewerI* uiContext,
+                                   GpuPlacementSnapshotBuilder* placementBuilder,
+                                   FrameRenderContextPtr* contextOut)
+{
+    const ViewerInstance::SchedulerEligibility eligibility = computeViewerFrameEligibility(setter, request, inArgs, hasRotoPaintNode);
     const char* reason = 0;
     if (ViewerInstance::isFrameEligibleForScheduler(eligibility, &reason)) {
         FrameRenderContextPtr context = FrameRenderContext::createFromSetter(*setter, inArgs.params->abortInfo, stats, inArgs.params->time, view);
         context->setRequest(request);
-#ifdef NATRON_HAVE_GPU
-        context->setWantsRootOnDevice(viewerFrameCanTakeDeviceRoot(inArgs, components, uiContext));
-#else
-        Q_UNUSED(uiContext);
-#endif
-        FrameGraph graph = RenderScheduler::buildGraph(context, inputNode, inArgs.params->time, view, inArgs.params->mipmapLevel);
+        FrameGraph graph = buildViewerFrameGraph(context, inArgs, view, roi, components, bitdepth, viewerTakesCpuFramesOnly(uiContext));
         if (graph.tasks.empty()) {
             reason = "request does not reach the viewer input";
         } else {
-            FrameGraph::Task& root = graph.tasks.front();
-            root.roi = roi;
-            root.components = components;
-            root.bitdepth = bitdepth;
-            placeRenderGraph(graph, context);
+            if (placementBuilder) {
+                context->setRecordsRenderedNodes(true);
+                if (addPlacedGraphToSnapshot(&graph, context, placementBuilder)) {
+                    gGpuShadowPlacementCount.fetch_add(1, std::memory_order_relaxed);
+                }
+            } else {
+                placeRenderGraph(graph, context);
+            }
             if (contextOut) {
                 *contextOut = context;
             }
@@ -1417,6 +1814,934 @@ ViewerInstance::setSchedulerResultHookForTests(const SchedulerResultHook& hook)
     std::lock_guard<std::mutex> k(gSchedulerResultHookMutex);
 
     gSchedulerResultHook = hook;
+}
+
+void
+GpuPlacementSnapshotBuilder::addGraph(const FrameGraph& real,
+                                      const ShadowPlacement& shadow)
+{
+    GraphPlan plan;
+    const std::vector<FrameGraph::Task>& tasks = shadow.graph.tasks;
+
+    plan.regionCount = (int)shadow.graph.regions.size();
+    plan.tasks.reserve(tasks.size());
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        const FrameGraph::Task& task = tasks[i];
+        TaskPlan taskPlan;
+        taskPlan.node = task.key.node;
+        taskPlan.region = task.regionId;
+        taskPlan.realRegion = real.tasks[i].regionId;
+        taskPlan.reason = task.placementReason;
+        taskPlan.detail = task.placementDetail;
+        plan.tasks.push_back(std::move(taskPlan));
+        for (std::size_t e = 0; e < task.dependencies.size(); ++e) {
+            // A negative input number is a read no pipe of the node graph stands for, so there is nothing to mark.
+            if (task.dependencyInputNbs[e] >= 0) {
+                EdgePlan edge;
+                edge.source = task.dependencies[e];
+                edge.dest = (int)i;
+                edge.inputNb = task.dependencyInputNbs[e];
+                plan.edges.push_back(edge);
+            }
+        }
+    }
+    _graphs.push_back(std::move(plan));
+    _placed = true;
+}
+
+bool
+GpuPlacementSnapshotBuilder::hasPlacedGraph() const
+{
+    return _placed;
+}
+
+void
+GpuPlacementSnapshotBuilder::addUnplacedGraph()
+{
+    _graphs.emplace_back();
+}
+
+void
+GpuPlacementSnapshotBuilder::addUnplacedGraph(const FrameGraph& real)
+{
+    GraphPlan plan;
+    plan.tasks.reserve(real.tasks.size());
+    for (const FrameGraph::Task& task : real.tasks) {
+        TaskPlan taskPlan;
+        taskPlan.node = task.key.node;
+        plan.tasks.push_back(std::move(taskPlan));
+    }
+    _graphs.push_back(std::move(plan));
+}
+
+void
+GpuPlacementSnapshotBuilder::finishGraph(EffectInstance::RenderRoIRetCode retCode,
+                                         const std::vector<RegionFallback>& fallbacks,
+                                         const std::unordered_set<const Node*>* renderedNodes)
+{
+    if (retCode == EffectInstance::eRenderRoIRetCodeAborted) {
+        _aborted = true;
+    }
+    if (_graphs.empty()) {
+        return;
+    }
+    GraphPlan& plan = _graphs.back();
+    plan.fallbacks = fallbacks;
+    if (renderedNodes) {
+        plan.recordsRuns = true;
+        for (TaskPlan& task : plan.tasks) {
+            const NodePtr node = task.node.lock();
+            task.ran = node && renderedNodes->count(node.get()) > 0;
+        }
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+typedef std::owner_less<NodeWPtr> NodeOwnerLess;
+
+struct PipeLess {
+    bool operator()(const GpuPlacementSnapshot::Pipe& a,
+                    const GpuPlacementSnapshot::Pipe& b) const
+    {
+        if (NodeOwnerLess()(a.destNode, b.destNode)) {
+            return true;
+        }
+        if (NodeOwnerLess()(b.destNode, a.destNode)) {
+            return false;
+        }
+
+        return a.inputNb < b.inputNb;
+    }
+};
+
+struct NodeTally {
+    int gpuTasks = 0;
+    int cpuTasks = 0;
+};
+
+struct PipeTally {
+    int exits = 0;
+    int others = 0;
+    FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
+    std::string detail;
+    bool reasonsDiffer = false;
+
+    // The snapshot regions already listing this pipe.
+    std::set<int> listedIn;
+};
+
+int
+findRegionGroup(std::vector<int>& parents,
+                int region)
+{
+    while (parents[region] != region) {
+        parents[region] = parents[parents[region]];
+        region = parents[region];
+    }
+
+    return region;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+GpuPlacementSnapshotPtr
+GpuPlacementSnapshotBuilder::build() const
+{
+    if (_aborted || _graphs.empty()) {
+        return GpuPlacementSnapshotPtr();
+    }
+
+    std::vector<int> regionOffsets;
+    int regionCount = 0;
+    for (const GraphPlan& graph : _graphs) {
+        regionOffsets.push_back(regionCount);
+        regionCount += graph.regionCount;
+    }
+
+    std::vector<int> parents(regionCount);
+    for (int r = 0; r < regionCount; ++r) {
+        parents[r] = r;
+    }
+    std::map<NodeWPtr, int, NodeOwnerLess> regionOfNode;
+    std::map<NodeWPtr, NodeTally, NodeOwnerLess> nodeTallies;
+    for (std::size_t g = 0; g < _graphs.size(); ++g) {
+        for (const TaskPlan& task : _graphs[g].tasks) {
+            NodeTally& tally = nodeTallies[task.node];
+            if (task.region < 0) {
+                ++tally.cpuTasks;
+                continue;
+            }
+            ++tally.gpuTasks;
+            const int region = regionOffsets[g] + task.region;
+            const std::pair<std::map<NodeWPtr, int, NodeOwnerLess>::iterator, bool> added = regionOfNode.insert(std::make_pair(task.node, region));
+            if (!added.second) {
+                parents[findRegionGroup(parents, region)] = findRegionGroup(parents, added.first->second);
+            }
+        }
+    }
+
+    std::shared_ptr<GpuPlacementSnapshot> snapshot = std::make_shared<GpuPlacementSnapshot>();
+
+    // Snapshot regions and their members come in the order the graphs first name them, so that a merge is stable.
+    std::vector<int> snapshotRegionOfGroup(regionCount, -1);
+    const auto snapshotRegionOf = [&parents, &snapshotRegionOfGroup](int region) {
+        return snapshotRegionOfGroup[findRegionGroup(parents, region)];
+    };
+    std::set<NodeWPtr, NodeOwnerLess> listedMembers;
+    for (std::size_t g = 0; g < _graphs.size(); ++g) {
+        for (const TaskPlan& task : _graphs[g].tasks) {
+            if (task.region < 0) {
+                continue;
+            }
+            const int group = findRegionGroup(parents, regionOffsets[g] + task.region);
+            if (snapshotRegionOfGroup[group] < 0) {
+                snapshotRegionOfGroup[group] = (int)snapshot->regions.size();
+                snapshot->regions.emplace_back();
+            }
+            if (listedMembers.insert(task.node).second) {
+                const NodeTally& tally = nodeTallies[task.node];
+                GpuPlacementSnapshot::Member member;
+                member.node = task.node;
+                member.mixed = tally.cpuTasks > 0;
+                snapshot->regions[snapshotRegionOfGroup[group]].members.push_back(std::move(member));
+            }
+        }
+    }
+
+    std::map<GpuPlacementSnapshot::Pipe, PipeTally, PipeLess> pipeTallies;
+    const auto pipeOf = [](const TaskPlan& dest, const EdgePlan& edge) {
+        GpuPlacementSnapshot::Pipe pipe;
+        pipe.destNode = dest.node;
+        pipe.inputNb = edge.inputNb;
+
+        return pipe;
+    };
+    for (const GraphPlan& graph : _graphs) {
+        for (const EdgePlan& edge : graph.edges) {
+            const TaskPlan& source = graph.tasks[edge.source];
+            const TaskPlan& dest = graph.tasks[edge.dest];
+            PipeTally& tally = pipeTallies[pipeOf(dest, edge)];
+            if ((source.region < 0) || (source.region == dest.region)) {
+                ++tally.others;
+                continue;
+            }
+            if (tally.exits == 0) {
+                tally.reason = dest.reason;
+                tally.detail = dest.detail;
+            } else if ((tally.reason != dest.reason) || (tally.detail != dest.detail)) {
+                tally.reasonsDiffer = true;
+            }
+            ++tally.exits;
+        }
+    }
+    for (std::size_t g = 0; g < _graphs.size(); ++g) {
+        const GraphPlan& graph = _graphs[g];
+        for (const EdgePlan& edge : graph.edges) {
+            const TaskPlan& source = graph.tasks[edge.source];
+            const TaskPlan& dest = graph.tasks[edge.dest];
+            const GpuPlacementSnapshot::Pipe pipe = pipeOf(dest, edge);
+            PipeTally& tally = pipeTallies[pipe];
+            if ((source.region >= 0) && (source.region != dest.region)) {
+                const int region = snapshotRegionOf(regionOffsets[g] + source.region);
+                if (tally.listedIn.insert(region).second) {
+                    GpuPlacementSnapshot::Exit regionExit;
+                    regionExit.pipe = pipe;
+                    regionExit.reason = tally.reason;
+                    regionExit.detail = tally.detail;
+                    regionExit.mixed = tally.reasonsDiffer || (tally.others > 0);
+                    snapshot->regions[region].exits.push_back(std::move(regionExit));
+                }
+            } else if ((source.region < 0) && (dest.region >= 0) && (tally.exits == 0)) {
+                const int region = snapshotRegionOf(regionOffsets[g] + dest.region);
+
+                // A source on the GPU in another graph is drawn inside this region, where a tick would mean nothing.
+                const std::map<NodeWPtr, int, NodeOwnerLess>::const_iterator sourceRegion = regionOfNode.find(source.node);
+                const bool insideRegion = (sourceRegion != regionOfNode.end()) && (snapshotRegionOf(sourceRegion->second) == region);
+                if (!insideRegion && tally.listedIn.insert(region).second) {
+                    snapshot->regions[region].entries.push_back(pipe);
+                }
+            }
+        }
+    }
+
+    std::vector<bool> fellBack(regionCount, false);
+    for (std::size_t g = 0; g < _graphs.size(); ++g) {
+        const GraphPlan& graph = _graphs[g];
+        for (const RegionFallback& fallback : graph.fallbacks) {
+            std::set<int> planned;
+            for (const TaskPlan& task : graph.tasks) {
+                // A lost device sends the whole frame back to the CPU, not just the region that met it.
+                if ((task.region >= 0) && (fallback.deviceLost || (task.realRegion == fallback.region))) {
+                    planned.insert(regionOffsets[g] + task.region);
+                }
+            }
+            for (int region : planned) {
+                GpuPlacementSnapshot::Region& out = snapshot->regions[snapshotRegionOf(region)];
+                if (!out.fellBack) {
+                    out.fellBack = true;
+                    out.fallbackReason = fallback.reason;
+                } else if (out.fallbackReason != fallback.reason) {
+                    out.fallbackMixed = true;
+                }
+                out.deviceLost = out.deviceLost || fallback.deviceLost;
+                out.retries = std::max(out.retries, fallback.retries);
+                fellBack[region] = true;
+            }
+        }
+    }
+    for (int region = 0; region < regionCount; ++region) {
+        GpuPlacementSnapshot::Region& out = snapshot->regions[snapshotRegionOf(region)];
+        if (out.fellBack && !fellBack[region]) {
+            out.fallbackMixed = true;
+        }
+    }
+
+    std::map<NodeWPtr, std::size_t, NodeOwnerLess> runOfNode;
+    for (const GraphPlan& graph : _graphs) {
+        if (!graph.recordsRuns) {
+            continue;
+        }
+        for (const TaskPlan& task : graph.tasks) {
+            const std::pair<std::map<NodeWPtr, std::size_t, NodeOwnerLess>::iterator, bool> added = runOfNode.insert(std::make_pair(task.node, snapshot->nodeRuns.size()));
+            if (added.second) {
+                GpuPlacementSnapshot::NodeRun run;
+                run.node = task.node;
+                snapshot->nodeRuns.push_back(run);
+            }
+            if (task.ran) {
+                snapshot->nodeRuns[added.first->second].ran = true;
+            }
+        }
+    }
+
+    return snapshot;
+} // GpuPlacementSnapshotBuilder::build
+
+void
+ViewerInstance::setGpuPlacementOverlayEnabled(bool enabled)
+{
+    if (gGpuPlacementOverlayEnabled.exchange(enabled) == enabled) {
+        return;
+    }
+    if (enabled) {
+        gGpuPlacementOverlayGeneration.fetch_add(1);
+        requestGpuPlacementDryRunForEveryViewer();
+    }
+}
+
+bool
+ViewerInstance::isGpuPlacementOverlayEnabled()
+{
+    return gGpuPlacementOverlayEnabled.load();
+}
+
+int
+ViewerInstance::getGpuShadowPlacementCountForTests()
+{
+    return gGpuShadowPlacementCount.load();
+}
+
+GpuPlacementSnapshotPtr
+ViewerInstance::getGpuPlacementSnapshot() const
+{
+    if (!isGpuPlacementOverlayEnabled()) {
+        return GpuPlacementSnapshotPtr();
+    }
+    std::lock_guard<std::mutex> k(_imp->gpuPlacementSnapshotMutex);
+    if (_imp->gpuPlacementSnapshotStamp.overlayGeneration != gGpuPlacementOverlayGeneration.load()) {
+        return GpuPlacementSnapshotPtr();
+    }
+
+    return _imp->gpuPlacementSnapshot;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+bool
+sameNode(const NodeWPtr& a,
+         const NodeWPtr& b)
+{
+    return !a.owner_before(b) && !b.owner_before(a);
+}
+
+bool
+samePipe(const GpuPlacementSnapshot::Pipe& a,
+         const GpuPlacementSnapshot::Pipe& b)
+{
+    return sameNode(a.destNode, b.destNode) && (a.inputNb == b.inputNb);
+}
+
+bool
+sameMember(const GpuPlacementSnapshot::Member& a,
+           const GpuPlacementSnapshot::Member& b)
+{
+    return sameNode(a.node, b.node) && (a.mixed == b.mixed);
+}
+
+bool
+sameExit(const GpuPlacementSnapshot::Exit& a,
+         const GpuPlacementSnapshot::Exit& b)
+{
+    return samePipe(a.pipe, b.pipe) && (a.reason == b.reason) && (a.detail == b.detail) && (a.mixed == b.mixed);
+}
+
+bool
+sameRegion(const GpuPlacementSnapshot::Region& a,
+           const GpuPlacementSnapshot::Region& b)
+{
+    return std::equal(a.members.begin(), a.members.end(), b.members.begin(), b.members.end(), sameMember) && std::equal(a.exits.begin(), a.exits.end(), b.exits.begin(), b.exits.end(), sameExit) && std::equal(a.entries.begin(), a.entries.end(), b.entries.begin(), b.entries.end(), samePipe) && (a.fellBack == b.fellBack) && (a.fallbackReason == b.fallbackReason) && (a.deviceLost == b.deviceLost) && (a.retries == b.retries) && (a.fallbackMixed == b.fallbackMixed);
+}
+
+bool
+sameNodeRun(const GpuPlacementSnapshot::NodeRun& a,
+            const GpuPlacementSnapshot::NodeRun& b)
+{
+    return sameNode(a.node, b.node) && (a.ran == b.ran);
+}
+
+bool
+sameGpuPlacement(const GpuPlacementSnapshot& a,
+                 const GpuPlacementSnapshot& b)
+{
+    return std::equal(a.regions.begin(), a.regions.end(), b.regions.begin(), b.regions.end(), sameRegion) && std::equal(a.nodeRuns.begin(), a.nodeRuns.end(), b.nodeRuns.begin(), b.nodeRuns.end(), sameNodeRun);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+ViewerInstance::ViewerInstancePrivate::GpuPlacementStamp
+ViewerInstance::ViewerInstancePrivate::currentGpuPlacementStamp() const
+{
+    GpuPlacementStamp stamp;
+
+    stamp.overlayGeneration = gGpuPlacementOverlayGeneration.load();
+    stamp.graphEdits = gpuPlacementGraphEdits.load();
+
+    return stamp;
+}
+
+bool
+ViewerInstance::ViewerInstancePrivate::hasDryRunGpuPlacement() const
+{
+    const GpuPlacementStamp stamp = currentGpuPlacementStamp();
+    std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
+
+    return gpuPlacementRegions && gpuPlacementRegionsFromDryRun && (gpuPlacementRegionsStamp == stamp);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// run with the nodes earlier also ran and the regions that earlier fell back, for renders of one state of the graph:
+// one that renders only the tiles another left out ran the rest of the nodes too, and a region that recovered from a
+// lost device in one render fell back in the other.
+GpuPlacementSnapshotPtr
+withEarlierRuns(const GpuPlacementSnapshotPtr& run,
+                const GpuPlacementSnapshotPtr& earlier)
+{
+    std::shared_ptr<GpuPlacementSnapshot> merged = std::make_shared<GpuPlacementSnapshot>(*run);
+    std::set<NodeWPtr, NodeOwnerLess> fellBackMembers;
+    for (const GpuPlacementSnapshot::Region& region : merged->regions) {
+        if (region.fellBack) {
+            for (const GpuPlacementSnapshot::Member& member : region.members) {
+                fellBackMembers.insert(member.node);
+            }
+        }
+    }
+    for (const GpuPlacementSnapshot::Region& region : earlier->regions) {
+        if (!region.fellBack || region.members.empty() || fellBackMembers.count(region.members.front().node)) {
+            continue;
+        }
+        merged->regions.push_back(region);
+        for (const GpuPlacementSnapshot::Member& member : region.members) {
+            fellBackMembers.insert(member.node);
+        }
+    }
+    std::map<NodeWPtr, std::size_t, NodeOwnerLess> runOfNode;
+    for (std::size_t i = 0; i < merged->nodeRuns.size(); ++i) {
+        runOfNode.insert(std::make_pair(merged->nodeRuns[i].node, i));
+    }
+    for (const GpuPlacementSnapshot::NodeRun& before : earlier->nodeRuns) {
+        const std::pair<std::map<NodeWPtr, std::size_t, NodeOwnerLess>::iterator, bool> added = runOfNode.insert(std::make_pair(before.node, merged->nodeRuns.size()));
+        if (added.second) {
+            merged->nodeRuns.push_back(before);
+        } else {
+            GpuPlacementSnapshot::NodeRun& now = merged->nodeRuns[added.first->second];
+            now.ran = now.ran || before.ran;
+        }
+    }
+
+    return merged;
+}
+
+bool
+anyNodeRan(const GpuPlacementSnapshot& snapshot)
+{
+    for (const GpuPlacementSnapshot::NodeRun& run : snapshot.nodeRuns) {
+        if (run.ran) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The regions of placement, with which of them fell back in run. A region of run that shares a node with one of
+// placement is that region.
+GpuPlacementSnapshotPtr
+composeGpuPlacement(const GpuPlacementSnapshot& placement,
+                    const GpuPlacementSnapshot* run)
+{
+    std::shared_ptr<GpuPlacementSnapshot> out = std::make_shared<GpuPlacementSnapshot>();
+    out->regions = placement.regions;
+    std::map<NodeWPtr, std::vector<std::size_t>, NodeOwnerLess> runRegionsOfNode;
+    if (run) {
+        out->nodeRuns = run->nodeRuns;
+        for (std::size_t r = 0; r < run->regions.size(); ++r) {
+            for (const GpuPlacementSnapshot::Member& member : run->regions[r].members) {
+                std::vector<std::size_t>& regions = runRegionsOfNode[member.node];
+                if (regions.empty() || (regions.back() != r)) {
+                    regions.push_back(r);
+                }
+            }
+        }
+    }
+    // The region of out that last matched each region of run, so that a region of run is matched once per region.
+    std::vector<std::size_t> matchedBy(run ? run->regions.size() : 0, out->regions.size());
+    std::vector<std::size_t> matched;
+    for (std::size_t r = 0; r < out->regions.size(); ++r) {
+        GpuPlacementSnapshot::Region& region = out->regions[r];
+        region.fellBack = false;
+        region.fallbackReason.clear();
+        region.deviceLost = false;
+        region.retries = 0;
+        region.fallbackMixed = false;
+        matched.clear();
+        for (const GpuPlacementSnapshot::Member& member : region.members) {
+            const std::map<NodeWPtr, std::vector<std::size_t>, NodeOwnerLess>::const_iterator found = runRegionsOfNode.find(member.node);
+            if (found == runRegionsOfNode.end()) {
+                continue;
+            }
+            for (std::size_t ranRegion : found->second) {
+                if (matchedBy[ranRegion] != r) {
+                    matchedBy[ranRegion] = r;
+                    matched.push_back(ranRegion);
+                }
+            }
+        }
+        bool anyKept = false;
+        for (std::size_t index : matched) {
+            const GpuPlacementSnapshot::Region& ranRegion = run->regions[index];
+            if (!ranRegion.fellBack) {
+                anyKept = true;
+                continue;
+            }
+            if (!region.fellBack) {
+                region.fellBack = true;
+                region.fallbackReason = ranRegion.fallbackReason;
+            } else if (region.fallbackReason != ranRegion.fallbackReason) {
+                region.fallbackMixed = true;
+            }
+            region.deviceLost = region.deviceLost || ranRegion.deviceLost;
+            region.retries = std::max(region.retries, ranRegion.retries);
+            region.fallbackMixed = region.fallbackMixed || ranRegion.fallbackMixed;
+        }
+        if (region.fellBack && anyKept) {
+            region.fallbackMixed = true;
+        }
+    }
+
+    return out;
+} // composeGpuPlacement
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+ViewerInstance::ViewerInstancePrivate::publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder,
+                                                           const GpuPlacementStamp& stamp,
+                                                           bool isDryRun)
+{
+    if (!ViewerInstance::isGpuPlacementOverlayEnabled() || instance->isGpuPlacementFrozen()) {
+        return false;
+    }
+    GpuPlacementSnapshotPtr snapshot = builder.build();
+    if (!snapshot) {
+        return false;
+    }
+    const bool placed = builder.hasPlacedGraph();
+
+    // Publishers take turns, so the state below changes only while this is held, and is read here without
+    // gpuPlacementSnapshotMutex, which the GUI takes and so is held only to store the result.
+    std::unique_lock<std::mutex> publishing(gpuPlacementPublishMutex);
+
+    // A plan of an older state is dropped: a re-plan of the new one is already asked for.
+    if (stamp != currentGpuPlacementStamp()) {
+        return false;
+    }
+    GpuPlacementSnapshotPtr regions = gpuPlacementRegions;
+    GpuPlacementStamp regionsStamp = gpuPlacementRegionsStamp;
+    bool regionsFromDryRun = gpuPlacementRegionsFromDryRun;
+    bool regionsPlaced = gpuPlacementRegionsPlaced;
+    GpuPlacementSnapshotPtr ran = gpuPlacementRun;
+    GpuPlacementStamp ranStamp = gpuPlacementRunStamp;
+    bool replan = false;
+    const bool haveRegions = regions && (regionsStamp == stamp);
+    if (isDryRun) {
+        // A device lost since the render placed is no reason to stop showing where it ran.
+        if (!haveRegions || placed || !regionsPlaced) {
+            regions = snapshot;
+            regionsStamp = stamp;
+            regionsFromDryRun = true;
+            regionsPlaced = placed;
+        }
+    } else {
+        if (!haveRegions || (placed && !regionsPlaced)) {
+            regions = snapshot;
+            regionsStamp = stamp;
+            regionsFromDryRun = false;
+            regionsPlaced = placed;
+            replan = placed;
+        }
+        if (!ran || (ranStamp != stamp)) {
+            ran = snapshot;
+            ranStamp = stamp;
+        } else if (anyNodeRan(*snapshot)) {
+            // A render that took everything from the cache, such as a redraw, says nothing new about this state.
+            ran = withEarlierRuns(snapshot, ran);
+        }
+    }
+    const bool haveRun = ran && (ranStamp == stamp);
+    GpuPlacementSnapshotPtr composed = composeGpuPlacement(*regions, haveRun ? ran.get() : nullptr);
+    const bool hadSnapshot = gpuPlacementSnapshot && (gpuPlacementSnapshotStamp.overlayGeneration == stamp.overlayGeneration);
+    const bool changed = !hadSnapshot || !sameGpuPlacement(*gpuPlacementSnapshot, *composed);
+    {
+        std::lock_guard<std::mutex> k(gpuPlacementSnapshotMutex);
+        gpuPlacementRegions = std::move(regions);
+        gpuPlacementRegionsStamp = regionsStamp;
+        gpuPlacementRegionsFromDryRun = regionsFromDryRun;
+        gpuPlacementRegionsPlaced = regionsPlaced;
+        gpuPlacementRun = std::move(ran);
+        gpuPlacementRunStamp = ranStamp;
+        if (changed) {
+            gpuPlacementSnapshot = std::move(composed);
+        }
+        gpuPlacementSnapshotStamp = stamp;
+    }
+    publishing.unlock();
+    if (replan) {
+        gpuPlacementPlanner->request();
+    }
+
+    return changed;
+} // ViewerInstance::ViewerInstancePrivate::publishGpuPlacement
+
+void
+ViewerInstance::requestGpuPlacementDryRun()
+{
+    if (!isGpuPlacementOverlayEnabled()) {
+        return;
+    }
+    _imp->gpuPlacementGraphEdits.fetch_add(1);
+    _imp->gpuPlacementPlanner->request();
+}
+
+void
+ViewerInstance::requestGpuPlacementDryRunForEveryViewer()
+{
+    if (!isGpuPlacementOverlayEnabled() || !appPTR) {
+        return;
+    }
+    const AppInstanceVec apps = appPTR->getAppInstances();
+    for (AppInstanceVec::const_iterator app = apps.begin(); app != apps.end(); ++app) {
+        std::list<ViewerInstance*> viewers;
+        (*app)->getProject()->getViewers(&viewers);
+        for (std::list<ViewerInstance*>::const_iterator viewer = viewers.begin(); viewer != viewers.end(); ++viewer) {
+            (*viewer)->requestGpuPlacementDryRun();
+        }
+    }
+}
+
+int
+ViewerInstance::getGpuPlacementDryRunCountForTests()
+{
+    return gGpuPlacementDryRunCount.load();
+}
+
+void
+ViewerInstance::setGpuPlacementFrozenForTests(bool frozen)
+{
+    gGpuPlacementFrozenForTests.store(frozen);
+}
+
+void
+ViewerInstance::getRenderAgesForTests(int textureIndex,
+                                      U64* renderAge,
+                                      U64* displayAge) const
+{
+    QMutexLocker k(&_imp->renderAgeMutex);
+
+    *renderAge = _imp->renderAge[textureIndex];
+    *displayAge = _imp->displayAge[textureIndex];
+}
+
+bool
+ViewerInstance::isGpuPlacementFrozen() const
+{
+    return gGpuPlacementFrozenForTests.load() || isDoingSequentialRender();
+}
+
+bool
+ViewerInstance::isGpuPlacementDryRunHeld() const
+{
+    if (isGpuPlacementFrozen() || isDoingPartialUpdates()) {
+        return true;
+    }
+    const AppInstancePtr app = getApp();
+    if (!app) {
+        return true;
+    }
+    const ProjectPtr project = app->getProject();
+    if (project->isLoadingProject() || project->isProjectClosing()) {
+        return true;
+    }
+    NodePtr rotoPaintNode;
+    RotoStrokeItemPtr stroke;
+    bool isPainting = false;
+    app->getActiveRotoDrawingStroke(&rotoPaintNode, &stroke, &isPainting);
+
+    return isPainting;
+}
+
+void
+ViewerInstance::onNodeHashChanged(U64 hash)
+{
+    OutputEffectInstance::onNodeHashChanged(hash);
+
+    // A plan that finds the hash dirty reads the graph as that edit left it, so it would only drop itself for a re-plan.
+    if (QThread::currentThread() != _imp->gpuPlacementPlanner.get()) {
+        requestGpuPlacementDryRun();
+    }
+}
+
+void
+ViewerInstance::quitBackgroundWork(bool blocking)
+{
+    OutputEffectInstance::quitBackgroundWork(blocking);
+    _imp->gpuPlacementPlanner->quitThread(true);
+    if (blocking) {
+        _imp->gpuPlacementPlanner->waitForThreadToQuit_enforce_blocking();
+    }
+}
+
+static bool checkTreeCanRender(Node* node);
+
+struct ViewerInstance::GpuPlacementUiState {
+    ViewIdx view;
+    int inputCount = 1;
+    bool userRoIEnabled = false;
+    double zoomFactor = 1.;
+    bool cpuFramesOnly = true;
+};
+
+bool
+ViewerInstance::readGpuPlacementUiState(GpuPlacementUiState* state) const
+{
+    // What the UI context would answer, read here because a knob's value can need the GIL, which the main thread may
+    // hold while it waits on the mutex below.
+    const KnobBoolPtr userRoI = getKnobByNameAndType<KnobBool>(kViewerParamEnableUserRoI);
+    state->userRoIEnabled = userRoI && userRoI->getValue();
+
+    std::lock_guard<std::mutex> k(_imp->gpuPlacementUiContextMutex);
+    OpenGLViewerI* uiContext = _imp->uiContext;
+    if (!uiContext) {
+        return false;
+    }
+    state->view = uiContext->getCurrentView();
+    state->inputCount = (uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ? 1 : 2;
+    state->zoomFactor = uiContext->getZoomFactor();
+    state->cpuFramesOnly = viewerTakesCpuFramesOnly(uiContext);
+
+    return true;
+}
+
+bool
+ViewerInstance::getGpuPlacementRoI(int textureIndex,
+                                   const RectD& rod,
+                                   double par,
+                                   unsigned int mipmapLevel,
+                                   bool exact,
+                                   RectI* roi) const
+{
+    std::lock_guard<std::mutex> k(_imp->gpuPlacementUiContextMutex);
+    OpenGLViewerI* uiContext = _imp->uiContext;
+    if (!uiContext) {
+        return false;
+    }
+    if (exact) {
+        *roi = uiContext->getExactImageRectangleDisplayed(textureIndex, rod, par, mipmapLevel);
+    } else {
+        // Regions can depend on the RoI, so this asks for the tile-rounded one a real render would.
+        std::vector<RectI> tiles, tilesRounded;
+        int tileSize;
+        RectI roiNotRounded;
+        *roi = uiContext->getImageRectangleDisplayedRoundedToTileSize(textureIndex, rod, par, mipmapLevel, &tiles, &tilesRounded, &tileSize, &roiNotRounded);
+    }
+
+    return true;
+}
+
+void
+ViewerInstance::planGpuPlacementOfInput(int textureIndex,
+                                        SequenceTime time,
+                                        const GpuPlacementUiState& ui,
+                                        const AbortableRenderInfoPtr& abortInfo,
+                                        GpuPlacementSnapshotBuilder* builder)
+{
+    const ViewIdx view = ui.view;
+    int activeInputs[2];
+    getActiveInputs(activeInputs[0], activeInputs[1]);
+
+    ViewerArgs args;
+    args.activeInputIndex = activeInputs[textureIndex];
+    const EffectInstancePtr upstream = getInput(args.activeInputIndex);
+    if (upstream) {
+        args.activeInputToRender = upstream->getNearestNonDisabled(time);
+    }
+    if (!args.activeInputToRender || !checkTreeCanRender(args.activeInputToRender->getNode().get())) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    args.deepUpstream = args.activeInputToRender->producesDeepData();
+    if (args.deepUpstream || upstream->producesSceneData()) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    args.rawUpstream = args.activeInputToRender->getNode()->getEffectiveOutputDataKind() == eDataKindRaw;
+    args.forceRender = false;
+    args.userRoIEnabled = ui.userRoIEnabled;
+    args.mustComputeRoDAndLookupCache = false;
+    args.channels = getChannels(textureIndex);
+    args.params = std::make_shared<UpdateViewerParams>();
+    args.params->textureIndex = textureIndex;
+    args.params->time = time;
+    args.params->view = view;
+    args.params->abortInfo = abortInfo;
+    args.params->nbCachedTile = 0;
+    {
+        QMutexLocker locker(&_imp->viewerParamsMutex);
+        args.params->layer = _imp->viewerParamsLayer;
+        args.params->alphaLayer = _imp->viewerParamsAlphaLayer;
+        args.params->alphaChannelName = _imp->viewerParamsAlphaChannelName;
+        args.isDoingPartialUpdates = _imp->isDoingPartialUpdates;
+    }
+    computeMipmapLevels(ui.zoomFactor, &args);
+    const unsigned int mipmapLevel = args.mipmapLevelWithDraft;
+    args.params->mipmapLevel = mipmapLevel;
+
+    ViewerParallelRenderArgsSetter frameArgs(time,
+                                             view,
+                                             true,
+                                             false,
+                                             abortInfo,
+                                             getNode(),
+                                             textureIndex,
+                                             getTimeline().get(),
+                                             false,
+                                             NodePtr(),
+                                             args.activeInputToRender->getNode(),
+                                             args.draftModeEnabled,
+                                             RenderStatsPtr());
+
+    const EffectInstance::SupportsEnum supportsRS = args.activeInputToRender->supportsRenderScaleMaybe();
+    args.activeInputHash = args.activeInputToRender->getHash();
+    RectD rod;
+    if (args.activeInputToRender->getRegionOfDefinition_public(args.activeInputHash,
+                                                               time,
+                                                               (supportsRS == eSupportsNo) ? RenderScale::identity : RenderScale::fromMipmapLevel(mipmapLevel),
+                                                               view,
+                                                               &rod,
+                                                               0)
+        == eStatusFailed) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    ifInfiniteclipRectToProjectDefault(&rod);
+    args.params->rod = rod;
+
+    const NodeMetadataConstPtr metadata = args.activeInputToRender->getRenderMetadata(time, view);
+    args.params->pixelAspectRatio = metadata->getPixelAspectRatio(-1);
+    RectI roi;
+    const bool exact = args.userRoIEnabled || args.isDoingPartialUpdates;
+    if (!getGpuPlacementRoI(textureIndex, rod, args.params->pixelAspectRatio, mipmapLevel, exact, &roi) || roi.isNull()) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+
+    std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+    const RectD canonicalRoi = roi.toCanonical(mipmapLevel, args.params->pixelAspectRatio, rod);
+    if (EffectInstance::computeRequestPass(time, view, mipmapLevel, canonicalRoi, getNode(), *request) == eStatusFailed) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    frameArgs.updateNodesRequest(*request);
+
+    ImageLayerDesc layers, pairedLayers;
+    EffectInstance::getLayersFromMetadata(*metadata, -1, &layers, &pairedLayers);
+    std::list<ImageLayerDesc> requestedLayers;
+    int alphaChannelIndex;
+    computeViewerRequestedLayers(args, layers, &requestedLayers, &alphaChannelIndex);
+    if (requestedLayers.empty()) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+
+    if (!ViewerInstance::isFrameEligibleForScheduler(computeViewerFrameEligibility(&frameArgs, request, args, false), 0)) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+
+    FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameArgs, abortInfo, RenderStatsPtr(), time, view);
+    context->setRequest(request);
+    FrameGraph graph = buildViewerFrameGraph(context, args, view, roi, requestedLayers, metadata->getBitDepth(-1), ui.cpuFramesOnly);
+    if (graph.tasks.empty()) {
+        builder->addUnplacedGraph();
+
+        return;
+    }
+    addPlacedGraphToSnapshot(&graph, context, builder);
+} // ViewerInstance::planGpuPlacementOfInput
+
+void
+ViewerInstance::runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo)
+{
+    GpuPlacementUiState ui;
+    if (!isGpuPlacementOverlayEnabled() || !getNode()->isActivated() || _imp->hasDryRunGpuPlacement() || !readGpuPlacementUiState(&ui)) {
+        return;
+    }
+    if (GpuContext* gpu = appPTR->getGpuContext()) {
+        // A loss is otherwise only recovered from by the next render, and until then nothing would be planned.
+        gpu->recoverIfLost();
+    }
+    const ViewerInstancePrivate::GpuPlacementStamp stamp = _imp->currentGpuPlacementStamp();
+    GpuPlacementSnapshotBuilder builder;
+    if ((appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) || !isGpuPlacementAvailable()) {
+        builder.addUnplacedGraph();
+    } else {
+        const SequenceTime time = (SequenceTime)getTimeline()->currentFrame();
+        for (int i = 0; i < ui.inputCount; ++i) {
+            planGpuPlacementOfInput(i, time, ui, abortInfo, &builder);
+        }
+    }
+    if (!abortInfo->isAborted() && _imp->publishGpuPlacement(builder, stamp, true)) {
+        Q_EMIT gpuPlacementSnapshotChanged();
+    }
+    gGpuPlacementDryRunCount.fetch_add(1);
 }
 
 ViewerInstance::ViewerRenderRetCode
@@ -1443,6 +2768,12 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
     };
     NodePtr thisNode = getNode();
     ViewerArgsPtr args[2];
+    std::optional<GpuPlacementSnapshotBuilder> placementBuilder;
+    ViewerInstancePrivate::GpuPlacementStamp placementStamp;
+    if (isGpuPlacementOverlayEnabled()) {
+        placementBuilder.emplace();
+        placementStamp = _imp->currentGpuPlacementStamp();
+    }
     for (int i = 0; i < 2; ++i) {
         args[i] = std::make_shared<ViewerArgs>();
         if ( (i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ) {
@@ -1591,9 +2922,10 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                                   viewerHash,
                                                   canAbort,
                                                   rotoPaintNode,
-                                                  false, //useTLS
+                                                  false, // useTLS
                                                   ViewerCurrentFrameRequestSchedulerStartArgsPtr(),
                                                   stats,
+                                                  placementBuilder ? &*placementBuilder : nullptr,
                                                   *args[i]);
                 args[i]->isRenderingFlag.reset();
             }
@@ -1610,6 +2942,10 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 args[i].reset();
             }
         }
+    }
+
+    if (placementBuilder && _imp->publishGpuPlacement(*placementBuilder, placementStamp, false)) {
+        Q_EMIT gpuPlacementSnapshotChanged();
     }
 
     if ( (status[0] == eViewerRenderRetCodeFail) && (status[1] == eViewerRenderRetCodeFail) ) {
@@ -1647,6 +2983,12 @@ ViewerInstance::renderViewer(ViewIdx view,
     ViewerInstance::ViewerRenderRetCode ret[2] = {
         eViewerRenderRetCodeRedraw, eViewerRenderRetCodeRedraw
     };
+    std::optional<GpuPlacementSnapshotBuilder> placementBuilder;
+    ViewerInstancePrivate::GpuPlacementStamp placementStamp;
+    if (isGpuPlacementOverlayEnabled() && !isSequentialRender) {
+        placementBuilder.emplace();
+        placementStamp = _imp->currentGpuPlacementStamp();
+    }
     for (int i = 0; i < 2; ++i) {
         if (args[i] && args[i]->params) {
             if ( (i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ) {
@@ -1675,6 +3017,7 @@ ViewerInstance::renderViewer(ViewIdx view,
                 }
                 ret[i] = renderViewer_internal(view, singleThreaded, isSequentialRender, viewerHash, canAbort, rotoPaintNode, useTLS, request,
                                                i == 0 ? stats : RenderStatsPtr(),
+                                               placementBuilder ? &*placementBuilder : nullptr,
                                                *args[i]);
 
                 // Reset the rednering flag
@@ -1718,6 +3061,9 @@ ViewerInstance::renderViewer(ViewIdx view,
         }
     }
 
+    if (placementBuilder && _imp->publishGpuPlacement(*placementBuilder, placementStamp, false)) {
+        Q_EMIT gpuPlacementSnapshotChanged();
+    }
 
     if ( (ret[0] == eViewerRenderRetCodeFail) || (ret[1] == eViewerRenderRetCodeFail) ) {
         return eViewerRenderRetCodeFail;
@@ -1843,6 +3189,12 @@ ViewerInstance::getRenderViewerArgsAndCheckCache_public(SequenceTime time,
                                                         const RenderStatsPtr& stats,
                                                         ViewerArgs* outArgs)
 {
+    // Held until playback stops, then planned on the frame it stopped at. Here rather than in renderViewer(), which a
+    // playback of cached frames never reaches.
+    if (isSequential) {
+        requestGpuPlacementDryRun();
+    }
+
     AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(textureIndex, canAbort, isSequential);
     ViewerRenderRetCode stat = getRenderViewerArgsAndCheckCache(time, isSequential, view, textureIndex, viewerHash, rotoPaintNode, abortInfo, stats, outArgs);
 
@@ -1863,28 +3215,7 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 {
     assert(_imp->uiContext);
 
-    // This is the current zoom factor (1. == 100%) currently set by the user in the viewport
-    double zoomFactor = _imp->uiContext->getZoomFactor();
-
-    outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
-    outArgs->mipmapLevelWithDraft = outArgs->mipmapLevelWithoutDraft;
-
-    outArgs->draftModeEnabled = getApp()->isDraftRenderEnabled();
-
-    // If draft mode is enabled, compute the mipmap level according to the auto-proxy setting in the preferences
-    if ( outArgs->draftModeEnabled && appPTR->getCurrentSettings()->isAutoProxyEnabled() ) {
-        unsigned int autoProxyLevel = appPTR->getCurrentSettings()->getAutoProxyMipmapLevel();
-        if (zoomFactor > 1) {
-            //Decrease draft mode at each inverse mipmaplevel level taken
-            unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
-            if (invLevel < autoProxyLevel) {
-                autoProxyLevel -= invLevel;
-            } else {
-                autoProxyLevel = 0;
-            }
-        }
-        outArgs->mipmapLevelWithDraft = std::max(outArgs->mipmapLevelWithoutDraft, autoProxyLevel);
-    }
+    computeMipmapLevels(_imp->uiContext->getZoomFactor(), outArgs);
 
     // The hash of the node to render, we store it and make sure we never call getHash() again for the render of this frame.
     // It is the hash the metadata read here belong to, so the PAR placing the tiles looked up
@@ -1933,7 +3264,6 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     outArgs->params->textureIndex = textureIndex;
 
     // These are the user settings from the viewer UI
-    outArgs->autoContrast = isAutoContrastEnabled();
     outArgs->channels = getChannels(textureIndex);
     outArgs->params->gain = getGain();
     outArgs->params->gamma = getGamma();
@@ -1950,6 +3280,31 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     // Flag that we are going to render
     outArgs->isRenderingFlag = std::make_shared<RenderingFlagSetter>( getNode() );
 } // ViewerInstance::setupMinimalUpdateViewerParams
+
+void
+ViewerInstance::computeMipmapLevels(double zoomFactor,
+                                    ViewerArgs* outArgs) const
+{
+    outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
+    outArgs->mipmapLevelWithDraft = outArgs->mipmapLevelWithoutDraft;
+
+    outArgs->draftModeEnabled = getApp()->isDraftRenderEnabled();
+
+    // If draft mode is enabled, compute the mipmap level according to the auto-proxy setting in the preferences
+    if (outArgs->draftModeEnabled && appPTR->getCurrentSettings()->isAutoProxyEnabled()) {
+        unsigned int autoProxyLevel = appPTR->getCurrentSettings()->getAutoProxyMipmapLevel();
+        if (zoomFactor > 1) {
+            // Decrease draft mode at each inverse mipmaplevel level taken
+            unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
+            if (invLevel < autoProxyLevel) {
+                autoProxyLevel -= invLevel;
+            } else {
+                autoProxyLevel = 0;
+            }
+        }
+        outArgs->mipmapLevelWithDraft = std::max(outArgs->mipmapLevelWithoutDraft, autoProxyLevel);
+    }
+}
 
 void
 ViewerInstance::getRegionsOfInterest(double /*time*/,
@@ -1980,7 +3335,7 @@ ViewerInstance::getViewerRoIAndTexture(const RectD& rod,
     // Roi is the coordinates of the 4 corners of the texture in the bounds with the current zoom
     // factor taken into account.
 
-    // When auto-contrast is enabled or user RoI, we compute exactly the image portion displayed in the rectangle and
+    // When user RoI is enabled, we compute exactly the image portion displayed in the rectangle and
     // do not round it to Viewer tiles.
 
     outArgs->params->tiles.clear();
@@ -2173,10 +3528,10 @@ ViewerInstance::getRoDAndLookupCache(const bool useOnlyRoDCache,
                                      const RenderStatsPtr& stats,
                                      ViewerArgs* outArgs)
 {
-    // We never use the texture cache when the user RoI is enabled or while painting or when auto-contrast is on, otherwise we would have
+    // We never use the texture cache when the user RoI is enabled or while painting, otherwise we would have
     // zillions of textures in the cache, each a few pixels different.
     // A texture found in the cache would end the job here, before its overlay images get a pass.
-    const bool useTextureCache = !outArgs->userRoIEnabled && !outArgs->autoContrast && !rotoPaintNode.get() && !outArgs->isDoingPartialUpdates && outArgs->staleOverlayImageEffects.empty();
+    const bool useTextureCache = !outArgs->userRoIEnabled && !rotoPaintNode.get() && !outArgs->isDoingPartialUpdates && outArgs->staleOverlayImageEffects.empty();
 
     // If it's eSupportsMaybe and mipmapLevel!=0, don't forget to update
     // this after the first call to getRegionOfDefinition().
@@ -2409,6 +3764,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                       bool useTLS,
                                       const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
                                       const RenderStatsPtr& stats,
+                                      GpuPlacementSnapshotBuilder* placementBuilder,
                                       ViewerArgs& inArgs)
 {
     assert(inArgs.activeInputToRender);
@@ -2481,7 +3837,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
      * 3) Single frame non-abortable render: the canAbort flag is set to false and the isSequentialRender flag is set to false.
      */
 
-    const bool useTextureCache = !inArgs.forceRender && !inArgs.userRoIEnabled && !inArgs.autoContrast && rotoPaintNode.get() == 0 && !inArgs.isDoingPartialUpdates && inArgs.staleOverlayImageEffects.empty();
+    const bool useTextureCache = !inArgs.forceRender && !inArgs.userRoIEnabled && rotoPaintNode.get() == 0 && !inArgs.isDoingPartialUpdates && inArgs.staleOverlayImageEffects.empty();
     RectI roi = inArgs.params->roi;
 
     // We might already have some tiles cached, get their bounding box to see if it is less than the actual RoI
@@ -2547,40 +3903,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     ImageBitDepthEnum imageDepth = renderMetadata->getBitDepth(-1);
     std::list<ImageLayerDesc> requestedComponents;
     int alphaChannelIndex = -1;
-    if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {
-        ///We fetch the Layer specified in the gui
-        if (inArgs.params->layer.getNumComponents() > 0) {
-            requestedComponents.push_back(inArgs.params->layer);
-        }
-    } else {
-        ///We fetch the alpha layer
-        if ( !inArgs.params->alphaChannelName.empty() ) {
-            requestedComponents.push_back(inArgs.params->alphaLayer);
-            const std::vector<std::string>& channels = inArgs.params->alphaLayer.getChannels();
-            for (std::size_t i = 0; i < channels.size(); ++i) {
-                if (channels[i] == inArgs.params->alphaChannelName) {
-                    alphaChannelIndex = i;
-                    break;
-                }
-            }
-            // alphaChannelIndex stays -1 when the colour views name an A the stream lacks (an
-            // RGB-only plane): that alpha reads as zero, so the A display below renders black.
-        }
-        if (inArgs.channels == eDisplayChannelsMatte) {
-            //For the matte overlay also display the alpha mask on top of the red channel of the image
-            if ( (inArgs.params->layer.getNumComponents() > 0) && (inArgs.params->layer != inArgs.params->alphaLayer) ) {
-                requestedComponents.push_back(inArgs.params->layer);
-            }
-        }
-    }
-
-    // Raw is shown from the input's own plane (its 1 or 3 channels), whatever layer the Viewer
-    // is set to, and converted to RGBA with alpha 1 by RawDisplay below.
-    if (inArgs.rawUpstream) {
-        requestedComponents.clear();
-        requestedComponents.push_back(components);
-        alphaChannelIndex = ((inArgs.channels == eDisplayChannelsA) || (inArgs.channels == eDisplayChannelsMatte)) ? 3 : -1;
-    }
+    computeViewerRequestedLayers(inArgs, components, &requestedComponents, &alphaChannelIndex);
 
     if (requestedComponents.empty()) {
         return eViewerRenderRetCodeBlack;
@@ -2687,10 +4010,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 FrameFuturePtr future;
                 FrameRenderContextPtr frameContext;
                 if (taskGraphMode) {
-                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, &frameContext);
+                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, &frameContext);
                 }
                 if (future) {
                     retCode = future->wait();
+                    if (placementBuilder) {
+                        const std::unordered_set<const Node*> renderedNodes = frameContext ? frameContext->renderedNodes() : std::unordered_set<const Node*>();
+                        placementBuilder->finishGraph(retCode, future->getRegionFallbacks(), frameContext ? &renderedNodes : nullptr);
+                    }
                     layers = future->getRootPlanes();
                     if (const SchedulerResultHook hook = schedulerResultHook()) {
                         hook(frameContext, &layers);
@@ -3093,21 +4420,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
 
         if (singleThreaded) {
-            if (inArgs.autoContrast && !inArgs.isDoingPartialUpdates) {
-                double vmin, vmax;
-                MinMaxVal vMinMax = findAutoContrastVminVmax(colorImage, inArgs.channels, viewerRenderRoI);
-                vmin = vMinMax.min;
-                vmax = vMinMax.max;
-
-                ///if vmax - vmin is greater than 1 the gain will be really small and we won't see
-                ///anything in the image
-                if (vmin == vmax) {
-                    vmin = vmax - 1.;
-                }
-                updateParams->gain = 1 / (vmax - vmin);
-                updateParams->offset = -vmin / ( vmax - vmin);
-            }
-
             const RenderViewerArgs args(colorImage,
                                         alphaImage,
                                         inArgs.channels,
@@ -3129,47 +4441,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             bool runInCurrentThread = QThreadPool::globalInstance()->activeThreadCount() >= QThreadPool::globalInstance()->maxThreadCount();
             if ( !runInCurrentThread && (splitRoi.size() > 1) ) {
                 runInCurrentThread = true;
-            }
-
-
-            ///if autoContrast is enabled, find out the vmin/vmax before rendering and mapping against new values
-            if (inArgs.autoContrast && !inArgs.isDoingPartialUpdates) {
-                double vmin = std::numeric_limits<double>::infinity();
-                double vmax = -std::numeric_limits<double>::infinity();
-
-                if (runInCurrentThread) {
-                    MinMaxVal vMinMax = findAutoContrastVminVmax(colorImage, inArgs.channels, viewerRenderRoI);
-                    vmin = vMinMax.min;
-                    vmax = vMinMax.max;
-                } else {
-                    std::vector<RectI> splitRects = viewerRenderRoI.splitIntoSmallerRects( appPTR->getMaxThreadCount() );
-                    std::function<MinMaxVal (const RectI&)> findAutoContrast = [&](const RectI &rect) {
-                        return findAutoContrastVminVmax(colorImage, inArgs.channels, rect);
-                    };
-                    QFuture<MinMaxVal> future = QtConcurrent::mapped( splitRects, findAutoContrast );
-                    future.waitForFinished();
-                    QList<MinMaxVal> results = future.results();
-                    Q_FOREACH (const MinMaxVal &vMinMax, results) {
-                        if (vMinMax.min < vmin) {
-                            vmin = vMinMax.min;
-                        }
-                        if (vMinMax.max > vmax) {
-                            vmax = vMinMax.max;
-                        }
-                    }
-                } // runInCurrentThread
-
-                if (vmax == vmin) {
-                    vmin = vmax - 1.;
-                }
-
-                if (vmax <= 0) {
-                    updateParams->gain = 0;
-                    updateParams->offset = 0;
-                } else {
-                    updateParams->gain = 1 / (vmax - vmin);
-                    updateParams->offset =  -vmin / (vmax - vmin);
-                }
             }
 
             const RenderViewerArgs args(colorImage,
@@ -3299,124 +4570,6 @@ viewerProcessRectOnCpu(const ImageConstPtr& input,
     tile.ramBuffer = (unsigned char*)output;
     renderFunctor(rect, args, NULL, tile);
 }
-
-inline
-MinMaxVal
-findAutoContrastVminVmax_generic(const ImagePtr inputImage,
-                                 int nComps,
-                                 DisplayChannelsEnum channels,
-                                 const RectI & rect)
-{
-    double localVmin = std::numeric_limits<double>::infinity();
-    double localVmax = -std::numeric_limits<double>::infinity();
-    Image::ReadAccess acc = inputImage->getReadRights();
-
-    for (int y = rect.bottom(); y < rect.top(); ++y) {
-        const float* src_pixels = (const float*)acc.pixelAt(rect.left(), y);
-        ///we fill the scan-line with all the pixels of the input image
-        for (int x = rect.left(); x < rect.right(); ++x) {
-            double r = 0.;
-            double g = 0.;
-            double b = 0.;
-            double a = 0.;
-            switch (nComps) {
-            case 4:
-                r = src_pixels[0];
-                g = src_pixels[1];
-                b = src_pixels[2];
-                a = src_pixels[3];
-                break;
-            case 3:
-                r = src_pixels[0];
-                g = src_pixels[1];
-                b = src_pixels[2];
-                a = 1.;
-                break;
-            case 2:
-                r = src_pixels[0];
-                g = src_pixels[1];
-                b = 0.;
-                a = 1.;
-                break;
-            case 1:
-                a = src_pixels[0];
-                r = g = b = 0.;
-                break;
-            default:
-                r = g = b = a = 0.;
-            }
-
-            double mini, maxi;
-            switch (channels) {
-            case eDisplayChannelsRGB:
-                mini = std::min(std::min(r, g), b);
-                maxi = std::max(std::max(r, g), b);
-                break;
-            case eDisplayChannelsY:
-                mini = 0.299 * r + 0.587 * g + 0.114 * b;
-                maxi = mini;
-                break;
-            case eDisplayChannelsR:
-                mini = r;
-                maxi = mini;
-                break;
-            case eDisplayChannelsG:
-                mini = g;
-                maxi = mini;
-                break;
-            case eDisplayChannelsB:
-                mini = b;
-                maxi = mini;
-                break;
-            case eDisplayChannelsA:
-                mini = a;
-                maxi = mini;
-                break;
-            default:
-                mini = 0.;
-                maxi = 0.;
-                break;
-            }
-            if (mini < localVmin) {
-                localVmin = mini;
-            }
-            if (maxi > localVmax) {
-                localVmax = maxi;
-            }
-
-            src_pixels += nComps;
-        }
-    }
-
-    return MinMaxVal(localVmin, localVmax);
-} // findAutoContrastVminVmax_generic
-
-template <int nComps>
-MinMaxVal
-findAutoContrastVminVmax_internal(const ImagePtr inputImage,
-                                  DisplayChannelsEnum channels,
-                                  const RectI & rect)
-{
-    return findAutoContrastVminVmax_generic(inputImage, nComps, channels, rect);
-}
-
-MinMaxVal
-findAutoContrastVminVmax(const ImagePtr inputImage,
-                         DisplayChannelsEnum channels,
-                         const RectI & rect)
-{
-    int nComps = inputImage->getComponents().getNumComponents();
-
-    if (nComps == 4) {
-        return findAutoContrastVminVmax_internal<4>(inputImage, channels, rect);
-    } else if (nComps == 3) {
-        return findAutoContrastVminVmax_internal<3>(inputImage, channels, rect);
-    } else if (nComps == 1) {
-        return findAutoContrastVminVmax_internal<1>(inputImage, channels, rect);
-    } else {
-        return findAutoContrastVminVmax_generic(inputImage, nComps, channels, rect);
-    }
-} // findAutoContrastVminVmax
 
 template <typename PIX, int maxValue>
 inline float
@@ -4581,34 +5734,6 @@ ViewerInstance::onMipmapLevelChanged(unsigned int level)
 }
 
 void
-ViewerInstance::onAutoContrastChanged(bool autoContrast,
-                                      bool refresh)
-{
-    // always running in the main thread
-    assert( qApp && qApp->thread() == QThread::currentThread() );
-    KnobBoolPtr knob = _imp->knobs.autoContrast.lock();
-    if (!knob || (knob->getValue() == autoContrast)) {
-        return;
-    }
-    {
-        SetterKnobWrites guard(&_imp->knobWritesFromSetter);
-        knob->setValue(autoContrast);
-    }
-    if (refresh && !getApp()->getProject()->isLoadingProject()) {
-        renderCurrentFrame(true);
-    }
-}
-
-bool
-ViewerInstance::isAutoContrastEnabled() const
-{
-    // MT-safe
-    KnobBoolPtr knob = _imp->knobs.autoContrast.lock();
-
-    return knob ? knob->getValue() : false;
-}
-
-void
 ViewerInstance::setDisplayTransform(const std::string& display,
                                     const std::string& view,
                                     const std::string& look)
@@ -5067,21 +6192,6 @@ ViewIdx
 ViewerInstance::getViewerCurrentView() const
 {
     return _imp->uiContext ? _imp->uiContext->getCurrentView() : ViewIdx(0);
-}
-
-void
-ViewerInstance::setActivateInputChangeRequestedFromViewer(bool fromViewer)
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    _imp->activateInputChangedFromViewer = fromViewer;
-}
-
-bool
-ViewerInstance::isInputChangeRequestedFromViewer() const
-{
-    assert( QThread::currentThread() == qApp->thread() );
-
-    return _imp->activateInputChangedFromViewer;
 }
 
 void

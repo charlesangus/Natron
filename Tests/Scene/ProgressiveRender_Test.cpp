@@ -59,6 +59,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Tests/Scene/CyclesTestUtils.h"
+#include "Tests/TestWatchdog.h"
 
 NATRON_NAMESPACE_USING
 
@@ -228,11 +229,13 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
+        _watchdog.start();
         HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixedSampling(kSamples));
     }
 
     virtual void TearDown() OVERRIDE
     {
+        _watchdog.setPhase("teardown");
         ProgressiveRender::setBeforeSyncHook(std::function<void()>());
         hold(false);
         _render.reset();
@@ -241,14 +244,20 @@ protected:
         _stage.reset();
         HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
         BaseTest::TearDown();
+        _watchdog.stop();
     }
 
     // Syncs payload into the stage under the stage lock, and restarts the render if that edited
     // it, as the viewer's sync does.
     void sync(const ScenePayload& payload)
     {
-        std::lock_guard<std::mutex> lock(_stageLock);
-        if (_stage->sync(payload) && _render) {
+        _watchdog.setPhase("syncScene");
+        bool edited = false;
+        {
+            std::lock_guard<std::mutex> lock(_stageLock);
+            edited = _stage->sync(payload);
+        }
+        if (edited && _render) {
             _render->invalidate();
         }
     }
@@ -363,6 +372,7 @@ protected:
     bool waitUntil(const std::function<bool()>& reached,
                    const char* what)
     {
+        _watchdog.setPhase("render");
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
         std::unique_lock<std::mutex> lock(_signalMutex);
 
@@ -489,6 +499,7 @@ protected:
 
     std::mutex _stageLock;
     std::unique_ptr<SceneStage> _stage;
+    TestWatchdog _watchdog;
     std::unique_ptr<ProgressiveRender> _render;
     std::atomic<ProgressiveRender*> _listened { nullptr };
     ProgressiveRender::View _view;

@@ -26,6 +26,8 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
@@ -150,7 +152,6 @@ NodeGraph::connectInputArrowToNode(Edge* arrow,
     assert(nodeHoldingEdge);
 
     bool ok = handleConnectionError(nodeHoldingEdge, target, arrow->getInputNumber());
-    arrow->stackBefore(target.get());
     if (ok) {
         pushUndoCommand(new ConnectCommand(this, arrow, arrow->getSource(), target),
                         NodesGuiList { nodeHoldingEdge, arrow->getSource(), target });
@@ -389,6 +390,7 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 
     _imp->_evtState = eEventStateNone;
     _imp->_dragGesture.end();
+    _imp->endNavigatorDragDeferral();
 
     _imp->autoScrollTimer.stop();
 
@@ -535,33 +537,20 @@ NodeGraph::scrollViewIfNeeded(const QPointF& scenePos)
 
 
     if ( (dx != 0) || (dy != 0) ) {
-        moveRootInternal(-dx, -dy);
-        /*if (_imp->_evtState == eEventStateDraggingArrow && _imp->_arrowSelected) {
-
-           } else if (_imp->_evtState == eEventStateDraggingNode && !_imp->_selection.empty()) {
-            Qt::KeyboardModifiers mods = qApp->keyboardModifiers();
-            QPointF lastMousePosScene = mapToScene(_imp->_lastMousePos);
-            QPoint newPos = _imp->_lastMousePos + QPoint(dx,dy);
-            QPointF newPosScene = mapToScene(newPos);
-            moveSelectedNodesBy(mods.testFlag(Qt::ShiftModifier), mods.testFlag(Qt::ControlModifier), lastMousePosScene, newPosScene, visibleSceneRect(), false);
-            _imp->_lastMousePos = newPos;
-           }*/
-
-        _imp->_refreshOverlays = true;
-        update();
+        // The step is in scene units, so it is at least one pixel however far the view is zoomed out.
+        const QTransform& t = transform();
+        int px = (dx == 0) ? 0 : (dx > 0 ? 1 : -1) * std::max(1, qRound(std::abs(dx * t.m11())));
+        int py = (dy == 0) ? 0 : (dy > 0 ? 1 : -1) * std::max(1, qRound(std::abs(dy * t.m22())));
+        panContentBy(QPoint(-px, -py));
+        if (_imp->_evtState == eEventStateSelectionRect) {
+            // The band's far corner stays under the cursor, which the scroll moved over the scene.
+            const QPointF cur = mapToScene(mapFromGlobal(QCursor::pos()));
+            _imp->_selectionRect = QRectF(_imp->_lastSelectionStartPointScene, cur).normalized();
+            viewport()->update();
+        }
     } else {
         _imp->autoScrollTimer.stop();
     }
-}
-
-void
-NodeGraph::moveRootInternal(double dx,
-                            double dy)
-{
-    _imp->_lastSelectionStartPointScene.rx() += dx;
-    _imp->_lastSelectionStartPointScene.ry() += dy;
-
-    _imp->_root->moveBy(dx, dy);
 }
 
 void

@@ -249,6 +249,8 @@ public:
     virtual void addNodeKeyframesToTimeline(Node* node) OVERRIDE FINAL;
     virtual void removeNodesKeyframesFromTimeline(const std::list<Node*> & nodes) OVERRIDE FINAL;
     virtual void removeNodeKeyframesFromTimeline(Node* node) OVERRIDE FINAL;
+    virtual void setNodeShownOnTimeline(const NodePtr& node, bool shown) OVERRIDE FINAL;
+    virtual void invalidateNodeKeyframeIndicators() OVERRIDE FINAL;
     virtual void getKeyframes(std::list<SequenceTime>* keys) const OVERRIDE FINAL;
     virtual void removeAllUserKeyframesIndicators() OVERRIDE FINAL;
     virtual void addUserKeyframeIndicator(SequenceTime time) OVERRIDE FINAL;

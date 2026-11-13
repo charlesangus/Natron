@@ -972,6 +972,9 @@ Param::_addAsDependencyOf(int fromExprDimension,
     KnobIPtr expressionKnob = param->_knob.lock();
     KnobIPtr getValueCallerKnob = _knob.lock();
 
+    if (!expressionKnob || !getValueCallerKnob) {
+        return;
+    }
     if ( (fromExprDimension < 0) || ( fromExprDimension >= expressionKnob->getDimension() ) ) {
         return;
     }
@@ -3064,9 +3067,19 @@ FileParam::reloadFile()
 {
     KnobFilePtr k = _sKnob.lock();
 
-    if (k) {
-        k->reloadFile();
+    if (!k) {
+        return;
     }
+    KnobButtonPtr button = k->getReloadButton();
+    if (!button) {
+        k->reloadFile();
+
+        return;
+    }
+    // A reload waits for the renders reading the file, and those may need the Python lock.
+    PythonGILUnlocker pgl;
+
+    button->trigger();
 }
 
 /////////////////////OutputFileParam

@@ -652,7 +652,8 @@ authorCollectionBinding(const PXR_NS::UsdPrim& root,
     const PXR_NS::UsdShadeMaterialBindingAPI bindingAPI = PXR_NS::UsdShadeMaterialBindingAPI::Apply(root);
     bool authored = collection && bindingAPI
         && collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims))
-        && collection.CreateIncludesRel().SetTargets(binding.includes);
+        && collection.CreateIncludesRel().SetTargets(binding.includes)
+        && (binding.excludes.empty() || collection.CreateExcludesRel().SetTargets(binding.excludes));
     PXR_NS::TfToken relName;
     if (authored) {
         relName = bindingAPI.GetCollectionBindingRel(name, binding.purpose).GetName();
@@ -945,14 +946,18 @@ authorReferencePoints(const PXR_NS::UsdPrim& prim,
 bool
 authorMaterialBinding(const PXR_NS::UsdPrim& prim,
                       const std::string& materialPath,
-                      std::string* errorMessage)
+                      std::string* errorMessage,
+                      const PXR_NS::TfToken& purpose,
+                      const PXR_NS::TfToken& strength)
 {
     if (materialPath.empty()) {
         return true;
     }
     const PXR_NS::UsdShadeMaterialBindingAPI binding = prim ? PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim) : PXR_NS::UsdShadeMaterialBindingAPI();
-    const PXR_NS::UsdRelationship rel = binding ? prim.CreateRelationship(PXR_NS::UsdShadeTokens->materialBinding, false) : PXR_NS::UsdRelationship();
-    if (!rel || !rel.SetTargets({ PXR_NS::SdfPath(materialPath) })) {
+    const bool allPurpose = purpose.IsEmpty() || (purpose == PXR_NS::UsdShadeTokens->allPurpose);
+    const PXR_NS::TfToken relName = allPurpose ? PXR_NS::UsdShadeTokens->materialBinding : PXR_NS::TfToken(PXR_NS::UsdShadeTokens->materialBinding.GetString() + ":" + purpose.GetString());
+    const PXR_NS::UsdRelationship rel = binding ? prim.CreateRelationship(relName, false) : PXR_NS::UsdRelationship();
+    if (!rel || !rel.SetTargets({ PXR_NS::SdfPath(materialPath) }) || (!strength.IsEmpty() && !PXR_NS::UsdShadeMaterialBindingAPI::SetMaterialBindingStrength(rel, strength))) {
         *errorMessage = EffectInstance::tr("USD could not bind %1 to the material at %2.").arg(QString::fromStdString(prim ? prim.GetPath().GetString() : std::string())).arg(QString::fromStdString(materialPath)).toStdString();
 
         return false;

@@ -1428,7 +1428,8 @@ TEST_F(USDProject3DTest, AssignedToInstancesItWarnsWhatItCannotPlace)
     const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
     ASSERT_TRUE(bool(stage));
     const QString message = getMessage(assign);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Left/Box"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/World/Left"))) << message.toStdString();
+    EXPECT_TRUE(hasValue(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Left")))));
     EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Protos/Shape"))) << message.toStdString();
     EXPECT_FALSE(message.contains(QString::fromUtf8("/World/Scatter/Unlisted"))) << message.toStdString();
     EXPECT_FALSE(message.contains(QString::fromUtf8("/World/Plain"))) << message.toStdString();
@@ -1808,8 +1809,126 @@ TEST_F(USDProject3DTest, ADeformingMatchInsideAnInstanceWarnsAndTakesNoReference
 
     const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
     ASSERT_TRUE(bool(stage));
-    EXPECT_TRUE(getMessage(assign).contains(QString::fromUtf8("/Left/Box"))) << getMessage(assign).toStdString();
+    const QString message = getMessage(assign);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("deform"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Left"))) << message.toStdString();
+    EXPECT_FALSE(message.contains(QString::fromUtf8("/Left/Box"))) << message.toStdString();
     EXPECT_TRUE(getReferencePrimvars(stage->GetPrimAtPath(PXR_NS::SdfPath("/Left/Box"))).empty());
+    EXPECT_TRUE(hasValue(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/Left")))));
+}
+
+TEST_F(USDProject3DTest, AStillMatchInsideAnInstanceTakesItsHeldFrameWithoutAWarning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdPrim proto = file->CreateClassPrim(PXR_NS::SdfPath("/Proto"));
+        proto.SetTypeName(PXR_NS::TfToken("Xform"));
+        defineQuad(file, "/Proto/Box").CreatePointsAttr().Set(quadPoints(0.f, 0.f));
+        const PXR_NS::UsdPrim instance = PXR_NS::UsdGeomXform::Define(file, PXR_NS::SdfPath("/Left")).GetPrim();
+        instance.GetReferences().AddInternalReference(PXR_NS::SdfPath("/Proto"));
+        instance.SetInstanceable(true);
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Left");
+    ASSERT_TRUE(bool(assign));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    EXPECT_TRUE(hasValue(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/Left")))));
+}
+
+// A nested instance is an instance proxy, which takes no opinion, so the frame goes on the outermost root.
+TEST_F(USDProject3DTest, AMatchInsideANestedInstanceTakesItsFrameOnTheOutermostRoot)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    {
+        const PXR_NS::UsdStageRefPtr file = PXR_NS::UsdStage::CreateNew(path.toStdString());
+        ASSERT_TRUE(bool(file));
+        const PXR_NS::UsdPrim inner = file->CreateClassPrim(PXR_NS::SdfPath("/Inner"));
+        inner.SetTypeName(PXR_NS::TfToken("Xform"));
+        defineQuad(file, "/Inner/Box").CreatePointsAttr().Set(quadPoints(0.f, 0.f));
+        const PXR_NS::UsdPrim outer = file->CreateClassPrim(PXR_NS::SdfPath("/Outer"));
+        outer.SetTypeName(PXR_NS::TfToken("Xform"));
+        const PXR_NS::UsdPrim nested = PXR_NS::UsdGeomXform::Define(file, PXR_NS::SdfPath("/Outer/B")).GetPrim();
+        nested.GetReferences().AddInternalReference(PXR_NS::SdfPath("/Inner"));
+        nested.SetInstanceable(true);
+        PXR_NS::UsdGeomXform left = PXR_NS::UsdGeomXform::Define(file, PXR_NS::SdfPath("/Left"));
+        left.AddTranslateOp().Set(PXR_NS::GfVec3d(4., 0., 0.));
+        left.GetPrim().GetReferences().AddInternalReference(PXR_NS::SdfPath("/Outer"));
+        left.GetPrim().SetInstanceable(true);
+        ASSERT_TRUE(file->GetRootLayer()->Save());
+    }
+    NodePtr assign = createHeldAssignOf(path, "/Left/B/Box");
+    ASSERT_TRUE(bool(assign));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    ASSERT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Left/B")).IsInstanceProxy());
+    EXPECT_TRUE(getMessage(assign).isEmpty()) << getMessage(assign).toStdString();
+    PXR_NS::GfMatrix4d matrix(0.);
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/Left"))), &matrix));
+    EXPECT_NEAR(4., matrix.ExtractTranslation()[0], 1e-9);
+    EXPECT_FALSE(PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/Left/B/Box"))).ComputeBoundMaterial().GetPath().IsEmpty());
+}
+
+// Each instance projects from where it is placed, its frame authored on its own root.
+TEST_F(USDProject3DTest, TwoInstancesOfOnePrimGetTheirOwnFramesOnTheirRoots)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString path = tmp.path() + QString::fromUtf8("/pair.usda");
+    {
+        QFile file(path);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        file.write("#usda 1.0\n"
+                   "class Xform \"Proto\" {\n"
+                   "    def Mesh \"Box\" {}\n"
+                   "}\n"
+                   "def Xform \"World\" {\n"
+                   "    def Xform \"Left\" (\n"
+                   "        instanceable = true\n"
+                   "        references = </Proto>\n"
+                   "    ) {\n"
+                   "        double3 xformOp:translate = (-2, 0, 0)\n"
+                   "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                   "    }\n"
+                   "    def Xform \"Right\" (\n"
+                   "        instanceable = true\n"
+                   "        references = </Proto>\n"
+                   "    ) {\n"
+                   "        double3 xformOp:translate = (5, 0, 0)\n"
+                   "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                   "    }\n"
+                   "}\n");
+    }
+    createRig();
+    ASSERT_TRUE(bool(projector));
+    getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(reader && assign);
+    getKnob<KnobFile>(reader, kUSDReadParamFile)->setValue(path.toStdString());
+    getKnob<KnobString>(assign, kUSDAssignMaterialParamPrimPattern)->setValue("/World/*/Box");
+    ASSERT_TRUE(assign->connectInput(reader, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(assign->connectInput(projector, kUSDAssignMaterialInputMaterial));
+
+    const PXR_NS::UsdStageRefPtr stage = composeNode(assign);
+    ASSERT_TRUE(bool(stage));
+    PXR_NS::GfMatrix4d left(0.);
+    PXR_NS::GfMatrix4d right(0.);
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Left"))), &left));
+    ASSERT_TRUE(readMatrix(getFramePrimvar(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Right"))), &right));
+    EXPECT_NEAR(-2., left.ExtractTranslation()[0], 1e-9);
+    EXPECT_NEAR(5., right.ExtractTranslation()[0], 1e-9);
+    EXPECT_FALSE(getMessage(assign).contains(QString::fromUtf8("/World/Left/Box"))) << getMessage(assign).toStdString();
+    EXPECT_FALSE(getMessage(assign).contains(QString::fromUtf8("/World/Right/Box"))) << getMessage(assign).toStdString();
 }
 
 TEST_F(USDProject3DTest, AnAlembicCacheTakesItsPointsAtTheHold)

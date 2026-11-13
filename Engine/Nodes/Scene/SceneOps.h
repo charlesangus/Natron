@@ -363,12 +363,14 @@ bool parsePrimExpression(const std::string& text,
  * @brief The prims of stage that expression (parsePrimExpression()) selects, in depth-first stage
  * order. Only active, loaded, defined, non-abstract prims are visited, so a prim under an inactive one
  * never matches. Returns false with *errorMessage set, and *paths empty, when expression does not
- * parse; blank text selects nothing.
+ * parse; blank text selects nothing. With traverseInstanceProxies, prims inside native instances
+ * are visited and can match too.
  **/
 bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  const std::string& expression,
                  std::vector<PXR_NS::SdfPath>* paths,
-                 std::string* errorMessage);
+                 std::string* errorMessage,
+                 bool traverseInstanceProxies = false);
 
 /**
  * @brief The rotation about X, in degrees, that turns correction's from up axis into its to up

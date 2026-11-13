@@ -385,6 +385,32 @@ evaluateAsViewer(const NodePtr& node,
     EXPECT_FALSE(payload.isEmpty());
 }
 
+// The targets of the relationship at path in payload composed with loadSet; empty when it is absent.
+std::vector<std::string>
+relationshipTargets(const ScenePayload& payload,
+                    const SceneLoadSetPtr& loadSet,
+                    const std::string& path)
+{
+    std::vector<std::string> targets;
+    std::string error;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, loadSet, &error);
+    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    EXPECT_TRUE(bool(stage)) << error;
+    if (!stage) {
+        return targets;
+    }
+    const PXR_NS::UsdRelationship relationship = stage->GetRelationshipAtPath(PXR_NS::SdfPath(path));
+    std::vector<PXR_NS::SdfPath> paths;
+    if (relationship) {
+        relationship.GetTargets(&paths);
+    }
+    for (const PXR_NS::SdfPath& target : paths) {
+        targets.push_back(target.GetString());
+    }
+
+    return targets;
+}
+
 // Whether some prefix is root or lies below it.
 bool
 reachesUnder(const std::vector<std::string>& prefixes,
@@ -791,8 +817,51 @@ TEST_F(SceneLoadSetCoverageTest, APruneAboveAWrapEvaluatesTheSameAndReachesTheMo
     const std::vector<std::string> prefixes = reach->getPrefixes();
     EXPECT_TRUE(reachesUnder(prefixes, "/Grp/World"));
     EXPECT_TRUE(SceneOps::loadChangeReaches(loaded.get(), loadingOnly({ "/Grp/World/Block_0", "/Grp/World/Block_1" }).get(), prefixes));
+    EXPECT_EQ(2, city.openedBuildings());
 
     expectParity(node, loaded);
+}
+
+TEST_F(SceneLoadSetCoverageTest, AWrapOpensNoBuildingsWhenTheViewerLoadsNone)
+{
+    CarCity city(2, 2);
+    NodePtr node = xformPrim(reader(city), "/World");
+    ASSERT_TRUE(bool(node));
+    setChoice(node, kSceneReparentParamMode, "wrap");
+    setString(node, kSceneReparentParamWrapName, "Grp");
+
+    evaluateAsViewer(node, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()), std::make_shared<SceneLoadReach>());
+
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AWrapRetargetsALinkInsideAPayloadOnceThePayloadLoads)
+{
+    CarCity city(2, 2);
+    NodePtr node = xformPrim(readerOf(writeLinkedCity(city)), "/World");
+    ASSERT_TRUE(bool(node));
+    setChoice(node, kSceneReparentParamMode, "wrap");
+    setString(node, kSceneReparentParamWrapName, "Grp");
+    const std::string link = "/Grp/World/Block_0/B_0/Geo.lookAt";
+    const SceneLoadSetPtr none = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
+    const SceneLoadSetPtr loaded = loadingOnly({ "/Grp/World/Block_0" });
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+    const std::vector<std::string> lamp(1, "/Props/Lamp");
+
+    ScenePayload before;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), none, reach)), &before, &error))
+        << error;
+    EXPECT_EQ(0, city.openedBuildings());
+    EXPECT_TRUE(relationshipTargets(before, none, link).empty());
+    EXPECT_TRUE(SceneOps::loadChangeReaches(none.get(), loaded.get(), reach->getPrefixes()));
+
+    ScenePayload after;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), loaded, std::make_shared<SceneLoadReach>())), &after, &error))
+        << error;
+    EXPECT_EQ(lamp, relationshipTargets(after, loaded, link));
 }
 
 TEST_F(SceneLoadSetCoverageTest, AGraftRenamingACollidingRootLoadsAtLeastWhatItsOutputLoads)

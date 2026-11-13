@@ -445,9 +445,12 @@ SceneReparentNode::renderWrap(const SceneRenderActionArgs& args,
     const PXR_NS::SdfPath moved = wrapPath.AppendChild(wrapped.GetNameToken());
 
     const ScenePayload upstream = args.getInputScene(0);
+    const SceneEvaluationContext& inputContext = args.getInputContext(0);
     std::vector<WrapRetarget> retargets;
     {
-        SceneQueryPool::Lease lease = upstream.isEmpty() ? SceneQueryPool::Lease() : SceneQueryPool::instance().borrow(upstream, errorMessage);
+        // The existence checks load only the two paths; the retargets below read the whole stage.
+        SceneQueryPool::Lease lease = upstream.isEmpty() ? SceneQueryPool::Lease()
+                                                         : SceneQueryPool::instance().borrow(upstream, SceneLoadSet::withPaths(inputContext.loadSet, { wrappedPath, wrapPath.GetString() }), errorMessage);
         const PXR_NS::UsdStageRefPtr stage = lease.isValid() ? lease.getStage() : PXR_NS::UsdStageRefPtr();
         if (!upstream.isEmpty() && !stage) {
             if (errorMessage->empty()) {
@@ -466,6 +469,22 @@ SceneReparentNode::renderWrap(const SceneRenderActionArgs& args,
         }
         if (stage->GetPrimAtPath(wrapPath)) {
             *errorMessage = tr("Input 0 already has a prim at %1; give Wrap Name another name.").arg(QString::fromStdString(wrapPath.GetString())).toStdString();
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+    }
+    if (!upstream.isEmpty()) {
+        // A link can sit in any prim, so a payload that loads later may add one.
+        if (inputContext.reach) {
+            inputContext.reach->add({ std::string("/") });
+        }
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, inputContext.loadSet, errorMessage);
+        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+        if (!stage) {
+            if (errorMessage->empty()) {
+                *errorMessage = tr("USD could not compose the input scene.").toStdString();
+            }
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;

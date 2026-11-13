@@ -57,6 +57,7 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     require(usd.getParam("filename") is not None, "USDRead has a filename parameter")
     usd.getParam("filename").setValue(scene_path)
     camera = app.createNode("USDCamera")

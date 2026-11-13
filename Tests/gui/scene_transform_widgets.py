@@ -67,6 +67,7 @@ try:
         return node
 
     usd = make("USDRead", 0, 0)
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     rig = make("USDXformPrim", 0, 100)
     rig.getParam("primPath").setValue("/Rig")

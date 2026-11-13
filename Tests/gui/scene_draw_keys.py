@@ -82,6 +82,7 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     usd.setPosition(0, 0)
     usd.getParam("filename").setValue(scene_path)
     viewer = app.getNode("Viewer1")

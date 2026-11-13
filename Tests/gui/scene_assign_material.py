@@ -73,6 +73,7 @@ try:
         return node
 
     read = make("USDRead", 0, 0)
+    read.getParam("initialDraw").setValue(3)
     read.getParam("filename").setValue(asset_path)
     red = make("USDMaterial", 250, 0)
     red.getParam("primPath").setValue("/Red")

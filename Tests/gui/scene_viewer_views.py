@@ -66,6 +66,7 @@ try:
         return node
 
     usd = make("USDRead", 0, 0)
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     lock_cam = make("USDCamera", 200, 0)
     lock_cam.setScriptName("LockCam")

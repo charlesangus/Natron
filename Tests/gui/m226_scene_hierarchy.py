@@ -56,6 +56,7 @@ try:
     reads = [make("USDRead", 0, 0), make("USDRead", 300, 0)]
     for r in reads:
         r.getParam("filename").setValue(scene_path)
+        r.getParam("initialDraw").setValue(3)
     xforms = [make("USDXformPrim", 0, 100), make("USDXformPrim", 300, 100)]
     merge = make("USDMerge", 150, 200)
     for i in range(2):

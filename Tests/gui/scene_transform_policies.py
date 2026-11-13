@@ -89,6 +89,7 @@ try:
     rig.getParam("primPath").setValue("/Rig")
     rig.getParam("rotate").set(0.0, RIG_ANGLE, 0.0)
     usd = make("USDRead", "Read", 300, 100)
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     merge = make("USDMerge", "Merge", 150, 200)
     require(rig.connectInput(0, key_light), "connect Key into Rig")

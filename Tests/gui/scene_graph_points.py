@@ -105,6 +105,7 @@ try:
         return node
 
     usd = create("USDRead", 0, 0)
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     frame_offset = usd.getParam("frameOffset")
     require(frame_offset is not None, "USDRead has a frameOffset parameter")

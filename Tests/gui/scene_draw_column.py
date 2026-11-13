@@ -106,10 +106,12 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     usd.setPosition(0, 0)
     usd.getParam("filename").setValue(scene_path)
     other = app.createNode("USDRead")
     require(other is not None, "create the second USDRead")
+    other.getParam("initialDraw").setValue(3)
     other.setPosition(300, 0)
     other.getParam("filename").setValue(other_path)
     viewer = app.getNode("Viewer1")

@@ -25,7 +25,10 @@
 
 #include "USDRead.h"
 
+#include <algorithm>
+#include <set>
 #include <string>
+#include <vector>
 
 #include <QString>
 #include <QStringList>
@@ -39,6 +42,7 @@
 #include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
@@ -75,6 +79,49 @@ const PXR_NS::TfToken&
 upAxisToken(SceneMetadata::UpAxisEnum upAxis)
 {
     return (upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y;
+}
+
+/**
+ * The names of the prims some layer of layer's sublayer stack defines at its root, sorted. A
+ * root prim the file only overs is left out: what defines it comes from elsewhere in the graph,
+ * and its draw is not the file's to set. Only sublayers are followed: references and payloads
+ * cannot add a root prim, and following them would open payload files.
+ **/
+std::vector<std::string>
+definedRootPrims(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    std::vector<std::string> names;
+
+    if (!layer) {
+        return names;
+    }
+    std::set<std::string> visited;
+    std::set<std::string> found;
+    std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
+    PXR_NS::TfErrorMark mark;
+    while (!pending.empty()) {
+        const PXR_NS::SdfLayerRefPtr current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current->GetIdentifier()).second) {
+            continue;
+        }
+        for (const PXR_NS::SdfPrimSpecHandle& spec : current->GetRootPrims()) {
+            if (spec && (spec->GetSpecifier() == PXR_NS::SdfSpecifierDef)) {
+                found.insert(spec->GetName());
+            }
+        }
+        for (const std::string& subLayerPath : current->GetSubLayerPaths()) {
+            const PXR_NS::SdfLayerRefPtr subLayer = PXR_NS::SdfLayer::FindOrOpenRelativeToLayer(current, subLayerPath);
+            if (subLayer) {
+                pending.push_back(subLayer);
+            }
+        }
+    }
+    // A missing sublayer is the stage's error to report when it composes.
+    mark.Clear();
+    names.assign(found.begin(), found.end());
+
+    return names;
 }
 } // anonymous namespace
 
@@ -127,6 +174,9 @@ USDRead::USDRead(NodePtr node)
     , _matchUpAxis()
     , _matchUnits()
     , _useFileMetrics()
+    , _initialDraw()
+    , _levels()
+    , _toKind()
     , _imp(new Implementation)
 {
 }
@@ -208,6 +258,140 @@ USDRead::initializeKnobs()
     useFileMetrics->setAllDimensionsEnabled(false);
     page->addKnob(useFileMetrics);
     _useFileMetrics = useFileMetrics;
+
+    // The draw knobs stay out of the node's hash, so they never key the layer: a change of them
+    // re-evaluates the node into the same stack with other draw rules.
+    KnobChoicePtr initialDraw = createKnob<KnobChoice>(tr("Initial Draw"));
+    initialDraw->setName(kUSDReadParamInitialDraw);
+    initialDraw->setHintToolTip(tr("How viewers draw the file's top-level prims, the prims it defines at its root, until "
+                                   "a draw state set in a viewer or by a node further down says otherwise. Prims another "
+                                   "node adds to the scene are not affected. Only viewers read this: renders and "
+                                   "written files are the same whatever it is set to."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kUSDReadInitialDrawBBox, tr("BBox").toStdString(),
+                                       tr("Each top-level prim draws as one box.").toStdString()));
+        options.push_back(ChoiceOption(kUSDReadInitialDrawLevels, tr("Levels").toStdString(),
+                                       tr("The hierarchy opens Levels deep below each top-level prim, and the prims there "
+                                          "draw as boxes.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption(kUSDReadInitialDrawToKind, tr("To Kind").toStdString(),
+                                       tr("The hierarchy opens below each top-level prim down to the first prim of the "
+                                          "kind To Kind names, or of a kind derived from it, which draws as a box.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption(kUSDReadInitialDrawFull, tr("Full").toStdString(),
+                                       tr("The top-level prims draw in full, as far as their payloads are loaded.").toStdString()));
+        options.push_back(ChoiceOption(kUSDReadInitialDrawFullLoad, tr("Full + Load").toStdString(),
+                                       tr("The top-level prims draw in full, and viewers load every payload below them.").toStdString()));
+        initialDraw->populateChoices(options);
+    }
+    initialDraw->setDefaultValue(0);
+    initialDraw->setAnimationEnabled(false);
+    initialDraw->setHashExempt(true);
+    page->addKnob(initialDraw);
+    _initialDraw = initialDraw;
+
+    KnobIntPtr levels = createKnob<KnobInt>(tr("Levels"));
+    levels->setName(kUSDReadParamLevels);
+    levels->setHintToolTip(tr("How many levels of the hierarchy open below each top-level prim before prims draw as "
+                              "boxes: 1 boxes the top-level prims' children. An unloaded payload on the way draws as a "
+                              "box where it is."));
+    levels->setDefaultValue(1);
+    levels->setMinimum(1);
+    levels->setDisplayMinimum(1);
+    levels->setDisplayMaximum(10);
+    levels->setAnimationEnabled(false);
+    levels->setHashExempt(true);
+    page->addKnob(levels);
+    _levels = levels;
+
+    KnobChoicePtr toKind = createKnob<KnobChoice>(tr("To Kind"));
+    toKind->setName(kUSDReadParamToKind);
+    toKind->setHintToolTip(tr("The kind the hierarchy opens down to below each top-level prim: the first prim of this "
+                              "kind, or of a kind derived from it, draws as a box. An Assembly is a Group, and Groups and "
+                              "Components are Models. An unloaded payload on the way draws as a box where it is."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(PXR_NS::KindTokens->component.GetString(), tr("Component").toStdString(), ""));
+        options.push_back(ChoiceOption(PXR_NS::KindTokens->assembly.GetString(), tr("Assembly").toStdString(), ""));
+        options.push_back(ChoiceOption(PXR_NS::KindTokens->group.GetString(), tr("Group").toStdString(), ""));
+        options.push_back(ChoiceOption(PXR_NS::KindTokens->model.GetString(), tr("Model").toStdString(), ""));
+        options.push_back(ChoiceOption(PXR_NS::KindTokens->subcomponent.GetString(), tr("Subcomponent").toStdString(), ""));
+        toKind->populateChoices(options);
+    }
+    toKind->setDefaultValue(0);
+    toKind->setAnimationEnabled(false);
+    toKind->setHashExempt(true);
+    page->addKnob(toKind);
+    _toKind = toKind;
+
+    refreshInitialDrawKnobs();
+}
+
+void
+USDRead::refreshInitialDrawKnobs()
+{
+    KnobChoicePtr initialDraw = _initialDraw.lock();
+    KnobIntPtr levels = _levels.lock();
+    KnobChoicePtr toKind = _toKind.lock();
+
+    if (!initialDraw) {
+        return;
+    }
+    const std::string mode = initialDraw->getActiveEntry().id;
+    if (levels) {
+        levels->setSecret(mode != kUSDReadInitialDrawLevels);
+    }
+    if (toKind) {
+        toKind->setSecret(mode != kUSDReadInitialDrawToKind);
+    }
+}
+
+SceneDrawRules
+USDRead::getInitialDrawRules(const std::string& path) const
+{
+    std::vector<std::string> roots;
+    {
+        SceneWriteBarrier::ReadScope read;
+        std::string error;
+        roots = definedRootPrims(SceneFileSource::openLayer(path, &error));
+    }
+    if (roots.empty()) {
+        return SceneDrawRules();
+    }
+
+    SceneDrawRule rule;
+    for (const std::string& name : roots) {
+        if (!rule.pattern.empty()) {
+            rule.pattern += ' ';
+        }
+        rule.pattern += '/';
+        rule.pattern += name;
+    }
+    rule.origin = getScriptName_mt_safe();
+
+    KnobChoicePtr initialDraw = _initialDraw.lock();
+    const std::string mode = initialDraw ? initialDraw->getActiveEntry().id : std::string(kUSDReadInitialDrawBBox);
+    if (mode == kUSDReadInitialDrawLevels) {
+        KnobIntPtr levels = _levels.lock();
+        rule.state = eSceneDrawStateBBox;
+        rule.levels = (std::max)(1, levels ? levels->getValue() : 1);
+    } else if (mode == kUSDReadInitialDrawToKind) {
+        KnobChoicePtr toKind = _toKind.lock();
+        rule.state = eSceneDrawStateBBox;
+        rule.toKind = toKind ? toKind->getActiveEntry().id : std::string();
+        if (rule.toKind.empty()) {
+            rule.toKind = PXR_NS::KindTokens->component.GetString();
+        }
+    } else if (mode == kUSDReadInitialDrawFull) {
+        rule.state = eSceneDrawStateFull;
+    } else if (mode == kUSDReadInitialDrawFullLoad) {
+        rule.state = eSceneDrawStateLoadAll;
+    } else {
+        rule.state = eSceneDrawStateBBox;
+    }
+
+    return SceneDrawRules(1, rule);
 }
 
 void
@@ -225,6 +409,7 @@ void
 USDRead::onKnobsLoaded()
 {
     refreshUseFileMetricsEnabled();
+    refreshInitialDrawKnobs();
 }
 
 void
@@ -281,7 +466,13 @@ USDRead::knobChanged(KnobI* k,
     KnobButtonPtr reload = _reload.lock();
     KnobFilePtr filename = _filename.lock();
     KnobButtonPtr useFileMetrics = _useFileMetrics.lock();
+    KnobChoicePtr initialDraw = _initialDraw.lock();
 
+    if (initialDraw && (k == initialDraw.get())) {
+        refreshInitialDrawKnobs();
+
+        return true;
+    }
     if (filename && (k == filename.get())) {
         refreshUseFileMetricsEnabled();
         stampClosure();
@@ -498,6 +689,7 @@ USDRead::renderScene(const SceneRenderActionArgs& /*args*/,
 
         return eStatusFailed;
     }
+    *outputScene = outputScene->withDrawRules(getInitialDrawRules(path));
 
     // The scene's metrics as this node's layer leaves them: the project's for a converted aspect,
     // else the file's, USD's fallbacks where it authors none.

@@ -50,4 +50,31 @@ value for it, so the scene reports the project's metrics from this node on.
 to the file's (fallbacks where unauthored), as one undoable edit. It is a one-shot
 copy, and is disabled while no file is set.
 
+## Initial Draw
+
+**Initial Draw** sets how viewers draw the file's top-level prims: the prims that
+the file, or a file it sublayers, defines at its root. A root prim the file only
+overs is left alone, and so are prims other nodes add to the scene, such as a
+primitive merged with the read, which keep their own draw.
+
+- **BBox** (default) draws each top-level prim as one box, from its extents hint,
+  or as a marker where it has none. A large file shows its layout at once, and no
+  payload is loaded.
+- **Levels** opens the hierarchy **Levels** deep below each top-level prim and
+  boxes the prims there; 1 boxes the top-level prims' children.
+- **To Kind** opens the hierarchy below each top-level prim down to the first
+  prim whose kind is **To Kind** or derives from it (an Assembly is a Group;
+  Groups and Components are Models), and boxes that prim.
+- **Full** draws the top-level prims in full, as far as their payloads are
+  loaded.
+- **Full + Load** draws them in full and has each viewer load every payload
+  below them.
+
+Both walks stop at an unloaded payload, which is boxed where it is. These are
+draw rules carried beside the scene, not edits to it: the node's layer is the
+same whatever Initial Draw says, renders and written files never see them, and a
+change re-draws the viewers without composing anything again. A draw state set in
+a viewer, or set by a node further down the graph, takes precedence. Rows the
+rules decide name this node as their origin.
+
 Tolerance: none recorded.

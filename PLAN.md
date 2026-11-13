@@ -441,7 +441,7 @@ future core work has solid ground to build on.
 | M308 | Knob Label Cleanup | todo | - |  | E10 | | | [M308-knob-label-cleanup.md](PLAN/MILESTONES/M308-knob-label-cleanup.md) |
 | M309 | Roto Feather Falloff Banding | done | M224 | | E6 | | | [M309-roto-feather-falloff-banding.md](PLAN/MILESTONES/M309-roto-feather-falloff-banding.md) |
 | M310 | Device-Switch Shader Test Fix | done | - | bosley-native-nodes | E14 | | | [M310-device-switch-shader-test-fix.md](PLAN/MILESTONES/M310-device-switch-shader-test-fix.md) |
-| M311 | UDIM Live Textures | todo | M233 |  | E9 | F11 | | [M311-udim-live-textures.md](PLAN/MILESTONES/M311-udim-live-textures.md) |
+| M311 | UDIM Live Textures | doing | M233 | bosley-native-nodes | E9 | F11 | | [M311-udim-live-textures.md](PLAN/MILESTONES/M311-udim-live-textures.md) |
 | M312 | USDLayerMaterial Node | todo | M53 |  | E9 | F11 | | [M312-usdlayermaterial-node.md](PLAN/MILESTONES/M312-usdlayermaterial-node.md) |
 | M313 | USDBakeTextures Node | todo | M53, M234 |  | E9 | F11 | | [M313-usdbaketextures-node.md](PLAN/MILESTONES/M313-usdbaketextures-node.md) |
 | M314 | Paint-Through Inputs | todo | M53, M234 |  | E9 | F11 | | [M314-paint-through-inputs.md](PLAN/MILESTONES/M314-paint-through-inputs.md) |

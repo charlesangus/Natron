@@ -161,6 +161,7 @@ Graph GUI Responsiveness merges, so re-grep them.
   - size: M
 - 2026-11-12 — **Round 3 bench** (8489ce70f, run 20261112T231959Z, Xvfb, relative only). The harness now counts trailing repaints (T22), so wall and CPU per event are not comparable with earlier rounds: per-event CPU at 3000 is about 220 ms for create and tab create, where the old window cut off the second repaint. T17 holds: `tab_menu_create` CPU at 3000 is 226 ms against `create_by_shortcut` 222. T22 holds. Still missing: T18, where individual `panelBuildPass` runs have a median of 9.4 ms, p90 15.4, p99 25 and max 36, and 8% exceed 16 ms (p90 target 10). T19, where positioning at 3000 is 9.3 ms for shortcut, 9.7 for tab and 4.6 for create_then_key (target 2). T20, where createNodeGui at 3000 is 13.6, 14.3 and 7.7 ms (target 5). At 0 and 300, engine plus GUI plus positioning comes to 5-9 ms; the rest of each latency is Xvfb compositing. Tab open at 0/300/3000 is 5.5-6 ms for launch and show, and 24-29 ms end to end. T21 has not been measured.
 - 2026-11-12 — T18-T20 round 4 (bddb09f01, build run 43331868915). Profile, sampled sparsely with eu-stack: panel pass overshoot is Qt's per-widget `setVisible` (restyle, ancestor relayout, X round trip) inside single knobs; the pass now checks the budget before each knob against the last knob's cost, and creates tabs in a pass of its own (`panelBuildPages`). Synchronous builds log as `panelBuildSync`. About 9 ms of createNodeGui's 13.6 ms at 3000 is the nested positioning; its own cost is about 3 ms. A fan-out insert reconnects its outputs in one `InputEditBatch`. New sub-stages `positioningMove`/`positioningConnect`/`nodeGraphItem` will show where positioning goes. Open: heavy single knobs stay over 10 ms unless rows are built under a hidden container (a design change; not done).
+- 2026-11-12 — **Round 4 bench** (bddb09f01, run 20261113T011941Z, Xvfb, relative only). Per-pass `panelBuildPass` median 6.7 ms, p90 12.6, p99 21, max 34 (round 3: 9.4/15.4/25/36); tabs pass `panelBuildPages` median 1.9 ms. Positioning at 3000 is all `positioningConnect`: median 7-8 ms (`positioningMove` ~0). `nodeGraphItem` is 2.4-3 ms at 3000, so createNodeGui's own cost meets T20's 5 ms target once nested positioning is excluded; T20 done, and the remainder is filed as P4.T23. Tab open launch and show are 3.6-4.2 ms; end to end 21-23 ms median, max 41 at 3000. The settle window now runs through the incremental panel build's repaints, so headline latencies include it. T18 short of p90 10 (single heavy knobs: Qt show/restyle). The rest waits on the user's `--host` run on a real display (UAT step 13).
 
 ## Phase 399.3: Measure creation and tab-menu latency
 
@@ -328,7 +329,7 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: positioning median ≤ 2 ms at 3000.
   - size: M
 
-- [ ] M399.P4.T20 — createNodeGui growth from 2 to 20 ms
+- [x] M399.P4.T20 — createNodeGui growth from 2 to 20 ms
   - files: `Gui/GuiAppInstance.cpp` (~:537-614), `Gui/NodeGui.cpp`
   - approach: find what scans all nodes during node GUI creation and bound it.
   - verify: createNodeGui ≤ 5 ms at 3000.
@@ -345,6 +346,12 @@ Graph GUI Responsiveness merges, so re-grep them.
   - approach: drain until idle after undo before t0, and extend each step to the next idle so trailing repaints count.
   - verify: the shortcut step includes the trailing paint; no `~NodeSettingsPanel` samples in the tab window.
   - size: S
+
+- [ ] M399.P4.T23 — Chain insert refreshes everything below once
+  - files: Engine `replaceInput`/refresh path, `Gui/NodeGraph05.cpp`
+  - approach: `positioningConnect` is all of positioning at 3000 (median 7-8 ms, p90 8.5, max 27; `positioningMove` ~0). Inserting mid-chain refreshes every downstream node (the draft flag every render reads). Bound or defer that walk without changing what renders read.
+  - verify: positioning median ≤ 2 ms at 3000.
+  - size: L
 
 - [ ] M399.P4.T3 — Re-measure on the dev host and close the remaining misses
   - files: `tools/bench/gui/baselines/xvfb.jsonl`; code as the misses direct

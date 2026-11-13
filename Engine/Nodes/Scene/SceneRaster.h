@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <set>
 #include <string>
@@ -85,6 +86,8 @@ struct CameraArgs {
     // The prims whose meshes, at or under them, are drawn; empty draws every mesh of the stage.
     // Invisible meshes and those of guide purpose are left out.
     std::vector<PXR_NS::SdfPath> prims;
+    // When set and true, drawing stops and renderCamera returns false with an empty error.
+    std::function<bool()> cancelled;
 };
 
 struct CameraBuffers {
@@ -141,6 +144,8 @@ struct BakeArgs {
     // A second texture coordinate primvar, as a material's primvar reader names it, whose value at
     // each texel BakeBuffers::readerSt holds; empty to skip it.
     PXR_NS::TfToken readerStName;
+    // When set and true, drawing stops and bakeUV returns false with an empty error.
+    std::function<bool()> cancelled;
 };
 
 struct BakeBuffers {

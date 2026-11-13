@@ -26,6 +26,7 @@
 #include "TexturePaintBaker.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/TLSHolder.h"
@@ -46,7 +47,16 @@ public:
 
     Bake bake;
     int epoch = 0;
+    std::vector<std::shared_ptr<void>> keepAlive;
 };
+
+void
+TexturePaintBaker::Context::keepAlive(const std::shared_ptr<void>& object)
+{
+    if (_task && object) {
+        _task->keepAlive.push_back(object);
+    }
+}
 
 void
 TexturePaintBaker::Context::progress(double fraction,
@@ -115,6 +125,21 @@ TexturePaintBaker::stop(bool allowRestart)
 }
 
 void
+TexturePaintBaker::retire(std::unique_ptr<TexturePaintBaker> baker)
+{
+    if (!baker) {
+        return;
+    }
+    TexturePaintBaker* retired = baker.release();
+    retired->requestStop(false);
+    // deleteLater rather than delete: the caller may be running inside one of retired's slots.
+    QObject::connect(retired, &QThread::finished, retired, &QObject::deleteLater);
+    if (!retired->isRunning()) {
+        retired->deleteLater();
+    }
+}
+
+void
 TexturePaintBaker::getLastProgress(double* fraction,
                                    QString* label) const
 {
@@ -162,7 +187,7 @@ TexturePaintBaker::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
     _cancel = mustQuitThread();
     bool ok = false;
     if (task && !_cancel.load()) {
-        Context context(this);
+        Context context(this, task.get());
         context.progress(0., task->bake.label);
         ok = task->bake.work && task->bake.work(context) && !_cancel.load();
     }
@@ -185,13 +210,14 @@ TexturePaintBaker::onWorkDone()
         std::pair<std::shared_ptr<Task>, bool> done;
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            if (_stopped.load() || _finished.empty()) {
+            if (_finished.empty()) {
                 return;
             }
             done = _finished.front();
             _finished.pop_front();
         }
-        if (done.first->epoch != _epoch.load()) {
+        // A dropped result is still taken off the queue, so that what it keeps alive is released here.
+        if (_stopped.load() || (done.first->epoch != _epoch.load())) {
             continue;
         }
         if (done.second) {

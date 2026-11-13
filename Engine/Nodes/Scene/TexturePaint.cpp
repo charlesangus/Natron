@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -44,6 +45,7 @@
 
 #include <SequenceParsing.h>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -69,6 +71,7 @@
 #include "Engine/Nodes/Scene/TexturePaintInteract.h"
 #include "Engine/Nodes/Scene/TexturePaintUndo.h"
 #include "Engine/Nodes/Scene/TexturePaintView.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
@@ -276,15 +279,14 @@ planePurpose(const ImageLayerDesc& plane)
 
 TexturePaint::TexturePaint(NodePtr node)
     : NativeEffectBase(node)
+    , _tileEpoch(0)
     , _sessionRenders(0)
 {
 }
 
 TexturePaint::~TexturePaint()
 {
-    if (_baker) {
-        _baker->stop();
-    }
+    TexturePaintBaker::retire(std::move(_baker));
 }
 
 const NodeSpec*
@@ -695,12 +697,58 @@ TexturePaint::getRegionOfDefinition(U64 /*hash*/,
 }
 
 U64
-TexturePaint::getTileCacheKey(ViewIdx view) const
+TexturePaint::getBakedFilesDigest() const
+{
+    const KnobIPtr bakeKnobs[] = { _bakedInputs.lock(), _bakeInputsPath.lock(), _bakedOutput.lock(), _bakeOutputPath.lock() };
+    ContentHasher signature;
+    for (const KnobIPtr& knob : bakeKnobs) {
+        signature.appendU64(knob ? knob->getContentHash() : 0);
+    }
+    signature.appendU64(_tileEpoch.load());
+    const U64 current = signature.finalize();
+    {
+        std::lock_guard<std::mutex> lock(_stampsMutex);
+        if (_stampsValid && (_stampsSignature == current)) {
+            return _stampsDigest;
+        }
+    }
+
+    // The stamps are read when the record changes rather than per tile request: a bake rewriting
+    // the files the tiles start from must not change their key before it lands.
+    ContentHasher digest;
+    for (const std::vector<std::string>& files : { getBakedInputFiles(), getBakedOutputFiles() }) {
+        for (const std::string& path : files) {
+            digest.appendString(path);
+            digest.appendI64(fileStamp(path));
+        }
+    }
+    const U64 value = digest.finalize();
+    std::lock_guard<std::mutex> lock(_stampsMutex);
+    _stampsValid = true;
+    _stampsSignature = current;
+    _stampsDigest = value;
+
+    return value;
+}
+
+void
+TexturePaint::reloadBakedFiles()
+{
+    ++_tileEpoch;
+}
+
+U64
+TexturePaint::getTileCacheKey(double time,
+                              ViewIdx view) const
 {
     ContentHasher hasher;
 
     hasher.appendString(PLUGINID_NATRON_TEXTUREPAINT);
     hasher.appendI64(view.value());
+    if (getTextureMode() != eTextureModeAnimated) {
+        hasher.appendDouble(getTextureTime(time));
+    }
+    hasher.appendU64(_tileEpoch.load());
     RotoCurveContextPtr context = getNode()->getCurveContext();
     hasher.appendU64(context ? context->getContentHash() : 0);
     const KnobIPtr knobs[] = {
@@ -721,17 +769,11 @@ TexturePaint::getTileCacheKey(ViewIdx view) const
         hasher.appendBool(isSessionFrozen(session));
     }
 
-    // The baked files are edited or deleted on disk without any knob changing.
     const KnobIPtr bakeKnobs[] = { _bakedInputs.lock(), _bakeInputsPath.lock(), _bakedOutput.lock(), _bakeOutputPath.lock() };
     for (const KnobIPtr& knob : bakeKnobs) {
         hasher.appendU64(knob ? knob->getContentHash() : 0);
     }
-    for (const std::vector<std::string>& files : { getBakedInputFiles(), getBakedOutputFiles() }) {
-        for (const std::string& path : files) {
-            hasher.appendString(path);
-            hasher.appendI64(fileStamp(path));
-        }
-    }
+    hasher.appendU64(getBakedFilesDigest());
 
     return hasher.finalize();
 }
@@ -1224,7 +1266,8 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
             }
             std::vector<std::string> paths;
             std::string note;
-            if (!ensureTiles(frameTime, run.view, tile, run.planes, &paths, &note, error, control.cancelled)) {
+            std::shared_ptr<void> lease;
+            if (!ensureTiles(frameTime, run.view, tile, run.planes, &paths, &note, error, control.cancelled, &lease)) {
                 return false;
             }
             std::size_t index = 0;
@@ -1335,11 +1378,9 @@ TexturePaint::restoreBakeOutputState(const BakeOutputState& state)
     if (record) {
         record->setValue(state.record);
     }
-    {
-        // Tiles composed over the undone bake's files must not outlive it, whatever their key.
-        std::lock_guard<std::mutex> lock(_bakeMutex);
-        TexturePaintCache::removeStaleTiles(getTileDirectory(), 0);
-    }
+    // Tiles composed over the undone bake's files must not be used again, whatever their key;
+    // the next tile built deletes them.
+    ++_tileEpoch;
     syncSessionViews();
 }
 
@@ -1356,10 +1397,7 @@ TexturePaint::reapplyBakeOutputState(const BakeOutputState& state)
     if (record) {
         record->setValue(state.bakedRecord);
     }
-    {
-        std::lock_guard<std::mutex> lock(_bakeMutex);
-        TexturePaintCache::removeStaleTiles(getTileDirectory(), 0);
-    }
+    ++_tileEpoch;
     syncSessionViews();
 }
 
@@ -1401,6 +1439,56 @@ TexturePaint::bakeOutput(double time,
     return std::make_shared<TexturePaintBakeOutputUndoCommand>(getNode(), state, *files, backups, backupDirectory);
 }
 
+namespace {
+// Whether every one of paths holds a cached tile of size; *note receives the first one's note.
+bool
+tilesCached(const std::vector<std::string>& paths,
+            int size,
+            std::string* note)
+{
+    note->clear();
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        std::string fileNote;
+        if (!TexturePaintCache::readTileNote(paths[i], size, &fileNote)) {
+            note->clear();
+
+            return false;
+        }
+        if (i == 0) {
+            *note = fileNote;
+        }
+    }
+
+    return true;
+}
+
+// The abort state of the render running on the calling thread, null outside one.
+AbortableRenderInfoPtr
+callerAbortInfo(const EffectInstance& effect)
+{
+    const ParallelRenderArgsPtr frameArgs = effect.getParallelRenderArgsTLS();
+
+    return frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
+}
+} // anon namespace
+
+void
+TexturePaint::removeUnusedTiles(const std::string& directory)
+{
+    std::set<U64> keep;
+
+    for (const std::pair<const int, U64>& live : _liveTileKeys) {
+        keep.insert(live.second);
+    }
+    for (const std::pair<const U64, int>& reader : _tileReaders) {
+        keep.insert(reader.first);
+    }
+    for (const std::pair<const std::string, std::shared_ptr<TileBuild>>& build : _tileBuilds) {
+        keep.insert(build.second->key);
+    }
+    TexturePaintCache::removeStaleTiles(directory, keep);
+}
+
 bool
 TexturePaint::ensureTiles(double time,
                           ViewIdx view,
@@ -1409,35 +1497,121 @@ TexturePaint::ensureTiles(double time,
                           std::vector<std::string>* paths,
                           std::string* note,
                           std::string* error,
-                          const std::function<bool()>& cancel)
+                          const std::function<bool()>& cancel,
+                          std::shared_ptr<void>* lease)
 {
     const int size = getTileResolution();
     const bool animated = getTextureMode() == eTextureModeAnimated;
     time = getTextureTime(time);
     syncStrokeLifetimes();
     const std::string frame = animated ? QString::number(time, 'g', 12).toStdString() : std::string();
-    AppInstancePtr app = getApp();
     const std::string directory = getTileDirectory();
-
-    std::lock_guard<std::mutex> lock(_bakeMutex);
-    const U64 key = getTileCacheKey(view);
-    bool cached = true;
+    const U64 key = getTileCacheKey(time, view);
 
     paths->clear();
     note->clear();
     for (const ImageLayerDesc& plane : planes) {
         const std::string name = plane.isColorLayer() ? std::string("rgba") : plane.getLayerID();
         paths->push_back(TexturePaintCache::tilePath(directory, key, frame, name, tile));
-        std::string fileNote;
-        if (!TexturePaintCache::readTileNote(paths->back(), size, &fileNote)) {
-            cached = false;
-        } else if (paths->size() == 1) {
-            *note = fileNote;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(_tilesMutex);
+        ++_tileReaders[key];
+        _liveTileKeys[view.value()] = key;
+    }
+    const std::shared_ptr<void> hold(nullptr, [this, key](void*) {
+        std::lock_guard<std::mutex> lock(_tilesMutex);
+        std::map<U64, int>::iterator it = _tileReaders.find(key);
+        if ((it != _tileReaders.end()) && (--it->second <= 0)) {
+            _tileReaders.erase(it);
         }
+    });
+
+    // Pool threads have no render state of their own, so the caller's abort is read through its
+    // AbortableRenderInfo there rather than through aborted().
+    const AbortableRenderInfoPtr parentAbort = callerAbortInfo(*this);
+    const std::thread::id caller = std::this_thread::get_id();
+    const std::function<bool()> cancelled = [this, cancel, parentAbort, caller]() -> bool {
+        if (cancel && cancel()) {
+            return true;
+        }
+        if (parentAbort && parentAbort->isAborted()) {
+            return true;
+        }
+
+        return (std::this_thread::get_id() == caller) && aborted();
+    };
+
+    const std::string id = std::to_string(key) + "_" + frame + "_" + std::to_string(tile);
+    for (;;) {
+        if (tilesCached(*paths, size, note)) {
+            if (lease) {
+                *lease = hold;
+            }
+
+            return true;
+        }
+        std::shared_ptr<TileBuild> build;
+        {
+            std::unique_lock<std::mutex> lock(_tilesMutex);
+            std::map<std::string, std::shared_ptr<TileBuild>>::iterator it = _tileBuilds.find(id);
+            if (it != _tileBuilds.end()) {
+                const std::shared_ptr<TileBuild> other = it->second;
+                while (!other->done) {
+                    if (cancelled()) {
+                        error->clear();
+
+                        return false;
+                    }
+                    _tileBuilt.wait_for(lock, std::chrono::milliseconds(20));
+                }
+                if (!other->ok && !other->error.empty()) {
+                    *error = other->error;
+
+                    return false;
+                }
+                // Built, or abandoned by an aborted render: either way this request looks again.
+                continue;
+            }
+            build = std::make_shared<TileBuild>();
+            build->key = key;
+            _tileBuilds[id] = build;
+        }
+
+        const bool ok = buildTiles(time, view, tile, planes, *paths, note, error, cancelled);
+        {
+            std::lock_guard<std::mutex> lock(_tilesMutex);
+            build->done = true;
+            build->ok = ok;
+            build->error = ok ? std::string() : *error;
+            _tileBuilds.erase(id);
+            if (ok) {
+                removeUnusedTiles(directory);
+            }
+        }
+        _tileBuilt.notify_all();
+        if (ok && lease) {
+            *lease = hold;
+        }
+
+        return ok;
     }
-    if (cached) {
-        return true;
-    }
+} // TexturePaint::ensureTiles
+
+bool
+TexturePaint::buildTiles(double time,
+                         ViewIdx view,
+                         int tile,
+                         const std::list<ImageLayerDesc>& planes,
+                         const std::vector<std::string>& paths,
+                         std::string* note,
+                         std::string* error,
+                         const std::function<bool()>& cancelled)
+{
+    const int size = getTileResolution();
+    AppInstancePtr app = getApp();
+
     note->clear();
 
     // A base file deleted or unreadable since the bake is an error rather than the constant
@@ -1483,9 +1657,7 @@ TexturePaint::ensureTiles(double time,
     TexturePaintCache::TileArgs args;
     args.udimTile = tile;
     args.size = size;
-    args.cancelled = [this, cancel]() -> bool {
-        return aborted() || (cancel && cancel());
-    };
+    args.cancelled = cancelled;
     if (scene.stage) {
         args.stage = scene.stage;
         args.time = scene.time;
@@ -1515,10 +1687,11 @@ TexturePaint::ensureTiles(double time,
         sessions.push_back(std::make_pair(session, viewNode));
     }
 
+    const AbortableRenderInfoPtr parentAbort = callerAbortInfo(*this);
     bool overlapsFound = false;
     std::size_t index = 0;
     for (const ImageLayerDesc& plane : planes) {
-        const std::string& path = (*paths)[index++];
+        const std::string& path = paths[index++];
         const bool paints = (plane.isColorLayer() && painted.isColorLayer()) || (plane.getLayerID() == painted.getLayerID());
         std::vector<TexturePaintCache::PaintSession> layered;
         if (paints) {
@@ -1527,13 +1700,32 @@ TexturePaint::ensureTiles(double time,
                 (void)getSessionCamera(session.first, &entry.camera);
                 const RotoLayerPtr layer = session.first;
                 const NodePtr viewNode = session.second;
-                entry.renderBuffer = [this, layer, viewNode, plane, time, view](SessionBuffer* buffer, std::string* bufferError) -> bool {
-                    // renderNodeImage() resets the thread's render state, which this render thread still needs.
+                entry.renderBuffer = [this, layer, viewNode, plane, time, view, cancelled, parentAbort](SessionBuffer* buffer, std::string* bufferError) -> bool {
+                    // A bake has no render of its own to abort the session's with, so it gets one
+                    // this thread aborts when the bake is cancelled.
+                    const AbortableRenderInfoPtr abortInfo = parentAbort ? parentAbort : AbortableRenderInfo::create(true, 0);
+                    std::atomic<bool> finished(false);
                     bool ok = false;
+                    // renderNodeImage() resets the thread's render state, which this render thread still needs.
                     std::thread worker([&]() {
-                        ok = renderSessionBufferFrom(viewNode, layer, plane, time, view, buffer, bufferError);
+                        ok = renderSessionBufferFrom(viewNode, layer, plane, time, view, buffer, bufferError, abortInfo);
+                        finished = true;
                     });
+                    while (!finished.load()) {
+                        if (cancelled()) {
+                            if (abortInfo != parentAbort) {
+                                abortInfo->setAborted();
+                            }
+                            break;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
                     worker.join();
+                    if (cancelled()) {
+                        bufferError->clear();
+
+                        return false;
+                    }
 
                     return ok;
                 };
@@ -1569,10 +1761,9 @@ TexturePaint::ensureTiles(double time,
             return false;
         }
     }
-    TexturePaintCache::removeStaleTiles(directory, key);
 
     return true;
-} // TexturePaint::ensureTiles
+} // TexturePaint::buildTiles
 
 StatusEnum
 TexturePaint::render(const RenderActionArgs& args)
@@ -1593,13 +1784,15 @@ TexturePaint::render(const RenderActionArgs& args)
     std::vector<std::string> paths;
     std::string note;
     std::string error;
-    if (!ensureTiles(args.time, args.view, tile, planes, &paths, &note, &error)) {
+    std::shared_ptr<void> lease;
+    if (!ensureTiles(args.time, args.view, tile, planes, &paths, &note, &error, std::function<bool()>(), &lease)) {
         if (!error.empty()) {
             setPersistentMessage(eMessageTypeError, error);
         }
 
         return eStatusFailed;
     }
+    bool rebuilt = false;
 
     const unsigned int level = args.mappedScale.toMipmapLevel();
     const int step = 1 << level;
@@ -1609,7 +1802,7 @@ TexturePaint::render(const RenderActionArgs& args)
         if (!image) {
             continue;
         }
-        const std::string& path = paths[index++];
+        const std::size_t planeIndex = index++;
         if (image->getBitDepth() != eImageBitDepthFloat) {
             return eStatusFailed;
         }
@@ -1621,10 +1814,29 @@ TexturePaint::render(const RenderActionArgs& args)
         RectI window(roi.x1 * step, roi.y1 * step, roi.x2 * step, roi.y2 * step);
         window = window.intersect(RectI(0, 0, size, size));
         std::vector<float> texels;
-        if (!window.isNull() && !TexturePaintCache::readTile(path, window, &texels, &error)) {
-            setPersistentMessage(eMessageTypeError, error);
+        if (!window.isNull() && !TexturePaintCache::readTile(paths[planeIndex], window, &texels, &error)) {
+            // The lease keeps this node's own pruning off the files; anything else deleting the
+            // cache gets the tiles built again, once.
+            std::error_code ec;
+            bool read = false;
+            if (!rebuilt && !std::filesystem::exists(paths[planeIndex], ec)) {
+                rebuilt = true;
+                lease.reset();
+                error.clear();
+                if (!ensureTiles(args.time, args.view, tile, planes, &paths, &note, &error, std::function<bool()>(), &lease)) {
+                    if (!error.empty()) {
+                        setPersistentMessage(eMessageTypeError, error);
+                    }
 
-            return eStatusFailed;
+                    return eStatusFailed;
+                }
+                read = TexturePaintCache::readTile(paths[planeIndex], window, &texels, &error);
+            }
+            if (!read) {
+                setPersistentMessage(eMessageTypeError, error);
+
+                return eStatusFailed;
+            }
         }
         const bool color = layer.first.isColorLayer();
         const int nComps = (int)image->getComponentsCount();
@@ -1931,16 +2143,14 @@ TexturePaint::syncSessionViews()
 }
 
 void
-TexturePaint::quitBackgroundWork(bool blocking)
+TexturePaint::quitBackgroundWork(bool /*blocking*/)
 {
     if (!_baker) {
         return;
     }
-    if (blocking) {
-        _baker->stop(true);
-    } else {
-        _baker->requestStop(true);
-    }
+    // Even a blocking quit does not wait: the bake's work keeps the node alive until it returns,
+    // and Node::deactivate() calls this on the main thread.
+    _baker->requestStop(true);
     std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
     _pendingSessionBakes.clear();
 }
@@ -2077,6 +2287,12 @@ TexturePaint::landBake(bool ok)
     }
 }
 
+std::weak_ptr<TexturePaint>
+TexturePaint::weakSelf()
+{
+    return std::static_pointer_cast<TexturePaint>(shared_from_this());
+}
+
 namespace {
 // Tells the baker's progress and cancellation to the worker bodies, which know neither the baker nor Qt signals.
 template <typename Control>
@@ -2111,27 +2327,37 @@ TexturePaint::enqueueBakeInputs(double time,
     std::shared_ptr<std::string> failure = std::make_shared<std::string>();
     TexturePaintBaker::Bake bake;
     bake.label = tr("Baking inputs");
-    bake.work = [this, run, failure](TexturePaintBaker::Context& context) -> bool {
+    const std::weak_ptr<TexturePaint> weak = weakSelf();
+    bake.work = [weak, run, failure](TexturePaintBaker::Context& context) -> bool {
+        const std::shared_ptr<TexturePaint> self = weak.lock();
+        if (!self) {
+            return false;
+        }
+        context.keepAlive(self);
         BakeControl control = makeControl<BakeControl>(context);
 
-        return runBakeInputs(*run, control, failure.get());
+        return self->runBakeInputs(*run, control, failure.get());
     };
-    bake.completion = [this, run, failure](bool ok) {
+    bake.completion = [weak, run, failure](bool ok) {
+        const std::shared_ptr<TexturePaint> self = weak.lock();
+        if (!self) {
+            return;
+        }
         if (!ok) {
-            setPersistentMessage(eMessageTypeError, failure->empty() ? tr("The inputs could not be baked.").toStdString() : *failure);
-            landBake(false);
+            self->setPersistentMessage(eMessageTypeError, failure->empty() ? tr("The inputs could not be baked.").toStdString() : *failure);
+            self->landBake(false);
 
             return;
         }
         std::vector<std::string> files;
         std::string warning;
-        applyBakeInputs(*run, &files, &warning);
+        self->applyBakeInputs(*run, &files, &warning);
         if (warning.empty()) {
-            clearPersistentMessage(false);
+            self->clearPersistentMessage(false);
         } else {
-            setPersistentMessage(eMessageTypeWarning, warning);
+            self->setPersistentMessage(eMessageTypeWarning, warning);
         }
-        landBake(true);
+        self->landBake(true);
     };
 
     return getBaker()->enqueue(bake);
@@ -2153,25 +2379,37 @@ TexturePaint::enqueueBakeOutput(double time,
     std::shared_ptr<std::string> failure = std::make_shared<std::string>();
     TexturePaintBaker::Bake bake;
     bake.label = tr("Baking output");
-    bake.work = [this, run, failure](TexturePaintBaker::Context& context) -> bool {
+    const std::weak_ptr<TexturePaint> weak = weakSelf();
+    bake.work = [weak, run, failure](TexturePaintBaker::Context& context) -> bool {
+        const std::shared_ptr<TexturePaint> self = weak.lock();
+        if (!self) {
+            return false;
+        }
+        context.keepAlive(self);
         BakeControl control = makeControl<BakeControl>(context);
 
-        return runBakeOutput(*run, control, failure.get());
+        return self->runBakeOutput(*run, control, failure.get());
     };
-    bake.completion = [this, run, failure, time, view, backupDirectory](bool ok) {
-        if (!ok) {
+    bake.completion = [weak, run, failure, backupDirectory](bool ok) {
+        const std::shared_ptr<TexturePaint> self = weak.lock();
+        if (!ok || !self) {
             std::error_code ec;
             std::filesystem::remove_all(backupDirectory, ec);
-            setPersistentMessage(eMessageTypeError, failure->empty() ? tr("The painted texture could not be baked.").toStdString() : *failure);
-            landBake(false);
+        }
+        if (!self) {
+            return;
+        }
+        if (!ok) {
+            self->setPersistentMessage(eMessageTypeError, failure->empty() ? tr("The painted texture could not be baked.").toStdString() : *failure);
+            self->landBake(false);
 
             return;
         }
         BakeOutputState state;
-        applyBakeOutput(*run, &state);
-        clearPersistentMessage(false);
-        landBake(true);
-        pushUndoCommand(std::make_shared<TexturePaintBakeOutputUndoCommand>(getNode(), state, run->files, run->backups, backupDirectory));
+        self->applyBakeOutput(*run, &state);
+        self->clearPersistentMessage(false);
+        self->landBake(true);
+        self->pushUndoCommand(std::make_shared<TexturePaintBakeOutputUndoCommand>(self->getNode(), state, run->files, run->backups, backupDirectory));
     };
 
     return getBaker()->enqueue(bake);
@@ -2183,6 +2421,7 @@ TexturePaint::runSessionBake(double time,
                              const BakeControl& control,
                              std::string* error)
 {
+    time = getTextureTime(time);
     AppInstancePtr app = getApp();
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
     KnobStringPtr uvPrimvar = _uvPrimvar.lock();
@@ -2239,23 +2478,33 @@ TexturePaint::enqueueSessionBake(const RotoLayerPtr& session,
     std::shared_ptr<std::string> failure = std::make_shared<std::string>();
     TexturePaintBaker::Bake bake;
     bake.label = tr("Baking session");
-    bake.work = [this, failure, time, view](TexturePaintBaker::Context& context) -> bool {
+    const std::weak_ptr<TexturePaint> weak = weakSelf();
+    bake.work = [weak, failure, time, view](TexturePaintBaker::Context& context) -> bool {
+        const std::shared_ptr<TexturePaint> self = weak.lock();
+        if (!self) {
+            return false;
+        }
+        context.keepAlive(self);
         BakeControl control = makeControl<BakeControl>(context);
 
-        return runSessionBake(time, view, control, failure.get());
+        return self->runSessionBake(time, view, control, failure.get());
     };
-    bake.completion = [this, failure, key](bool ok) {
+    bake.completion = [weak, failure, key](bool ok) {
+        const std::shared_ptr<TexturePaint> self = weak.lock();
+        if (!self) {
+            return;
+        }
         {
-            std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
-            std::map<const RotoLayer*, int>::iterator it = _pendingSessionBakes.find(key);
-            if ((it != _pendingSessionBakes.end()) && (--it->second <= 0)) {
-                _pendingSessionBakes.erase(it);
+            std::lock_guard<std::mutex> lock(self->_pendingSessionBakesMutex);
+            std::map<const RotoLayer*, int>::iterator it = self->_pendingSessionBakes.find(key);
+            if ((it != self->_pendingSessionBakes.end()) && (--it->second <= 0)) {
+                self->_pendingSessionBakes.erase(it);
             }
         }
         if (!ok && !failure->empty()) {
-            setPersistentMessage(eMessageTypeError, *failure);
+            self->setPersistentMessage(eMessageTypeError, *failure);
         }
-        landBake(ok);
+        self->landBake(ok);
     };
     {
         std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
@@ -2288,29 +2537,44 @@ TexturePaint::getSessionBufferSize(const RotoLayerPtr& session,
 }
 
 namespace {
-// The plane image holds over pixels as 4 floats per pixel, zero where it has no data.
+/**
+ * The plane image holds over pixels as 4 floats per pixel, zero outside rendered, the part of
+ * pixels the render covered. A missing image fails, with *error empty when abortInfo was aborted:
+ * a buffer of zeros would be cached as paint that erased the texture.
+ **/
 bool
 readPlane(const ImagePtr& image,
           const RectI& pixels,
+          const RectI& rendered,
+          const AbortableRenderInfoPtr& abortInfo,
           std::vector<float>* rgba,
           std::string* error)
 {
     const std::size_t width = (std::size_t)pixels.width();
 
-    rgba->assign(width * (std::size_t)pixels.height() * 4, 0.f);
+    rgba->clear();
     if (!image) {
-        return true;
+        if (abortInfo && abortInfo->isAborted()) {
+            error->clear();
+        } else {
+            *error = QObject::tr("The paint buffer could not be rendered.").toStdString();
+        }
+
+        return false;
     }
     if (image->getBitDepth() != eImageBitDepthFloat) {
         *error = QObject::tr("The paint buffer did not render in floating point.").toStdString();
 
         return false;
     }
-    const int nComps = (int)image->getComponentsCount();
-    const RectI area = pixels.intersect(image->getBounds());
-    if (area.isNull()) {
-        return true;
+    const RectI area = pixels.intersect(rendered);
+    if (area.isNull() || !image->getBounds().contains(area)) {
+        *error = QObject::tr("The paint buffer rendered over the wrong area.").toStdString();
+
+        return false;
     }
+    rgba->assign(width * (std::size_t)pixels.height() * 4, 0.f);
+    const int nComps = (int)image->getComponentsCount();
     Image::ReadAccess access(image.get());
     for (int y = area.y1; y < area.y2; ++y) {
         for (int x = area.x1; x < area.x2; ++x) {
@@ -2355,7 +2619,8 @@ TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
                                       double time,
                                       ViewIdx view,
                                       SessionBuffer* buffer,
-                                      std::string* error)
+                                      std::string* error,
+                                      const AbortableRenderInfoPtr& abortInfo)
 {
     ++_sessionRenders;
     syncStrokeLifetimes();
@@ -2370,7 +2635,8 @@ TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
 
     RectI rendered;
     std::vector<float> base;
-    if (!readPlane(renderNodeImage(viewNode, time, view, level, pixels, plane, &rendered), pixels, &base, error)) {
+    const ImagePtr baseImage = renderNodeImage(viewNode, time, view, level, pixels, plane, &rendered, abortInfo);
+    if (!readPlane(baseImage, pixels, rendered, abortInfo, &base, error)) {
         return false;
     }
     buffer->touched.assign(count, 0);
@@ -2395,7 +2661,13 @@ TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
 
         return true;
     }
-    if (!readPlane(renderNodeImage(top, time, view, level, pixels, plane, &rendered), pixels, &buffer->rgba, error)) {
+    if (abortInfo && abortInfo->isAborted()) {
+        error->clear();
+
+        return false;
+    }
+    const ImagePtr strokesImage = renderNodeImage(top, time, view, level, pixels, plane, &rendered, abortInfo);
+    if (!readPlane(strokesImage, pixels, rendered, abortInfo, &buffer->rgba, error)) {
         return false;
     }
 

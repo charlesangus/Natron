@@ -47,13 +47,16 @@
 #include <OpenImageIO/imageio.h>
 
 #include <QCoreApplication>
+#include <QEvent>
 #include <QFile>
+#include <QPointer>
 #include <QString>
 #include <QTemporaryDir>
 #include <QThread>
 
 #include "BaseTest.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Curve.h"
@@ -1810,6 +1813,134 @@ TEST_F(TexturePaintTest, StaticModeIgnoresLifetimes)
     const ImagePtr atNine = renderNodeImage(paint, 9., ViewIdx(0), 0, RectI(0, 0, kSmallTile, kSmallTile), ImageLayerDesc::getRGBAComponents(), &rendered);
     expectColor(texelAt(renderTile(paint), 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the stroke at the project's first frame");
     expectColor(texelAt(atNine, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the stroke at another frame");
+}
+
+TEST_F(TexturePaintTest, StaticTilesFollowTheProjectsFirstFrame)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+    ASSERT_TRUE(bool(renderTile(paint)));
+
+    // Clearing the image caches makes the render reach the node, which then finds its composed tiles.
+    appPTR->clearAllCaches();
+    int before = effect->getSessionRenderCount();
+    ASSERT_TRUE(bool(renderTile(paint)));
+    EXPECT_EQ(before, effect->getSessionRenderCount()) << "the composed tiles are reused";
+
+    setProjectFrameRange(paint, 3, 9);
+    appPTR->clearAllCaches();
+    before = effect->getSessionRenderCount();
+    ASSERT_TRUE(bool(renderTile(paint)));
+    EXPECT_GT(effect->getSessionRenderCount(), before) << "a static texture is composed at the new first frame";
+}
+
+TEST_F(TexturePaintTest, QuittingBackgroundWorkNeverWaitsForTheBake)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    ASSERT_TRUE(bool(node));
+    TexturePaint* effect = getTexturePaint(node);
+    ASSERT_TRUE(effect != nullptr);
+    std::atomic<bool> started(false);
+    std::atomic<bool> release(false);
+    std::atomic<bool> exited(false);
+    std::atomic<int> completions(0);
+    TexturePaintBaker::Bake bake;
+    // Ignores cancellation, as a bake inside one long render does until that render returns.
+    bake.work = [&](TexturePaintBaker::Context&) {
+        started = true;
+        while (!release.load()) {
+            QThread::msleep(2);
+        }
+        exited = true;
+
+        return false;
+    };
+    bake.completion = [&](bool) { ++completions; };
+    ASSERT_TRUE(effect->getBaker()->enqueue(bake));
+    ASSERT_TRUE(pumpUntil([&]() { return started.load(); }, 10000));
+
+    const Clock::time_point start = Clock::now();
+    effect->quitBackgroundWork(true);
+    EXPECT_LT(millisSince(start), 100);
+    EXPECT_FALSE(exited.load());
+
+    release = true;
+    EXPECT_TRUE(pumpUntil([&]() { return exited.load(); }, 5000));
+    for (int i = 0; i < 50; ++i) {
+        QCoreApplication::processEvents();
+    }
+    EXPECT_EQ(0, completions.load());
+}
+
+TEST_F(TexturePaintTest, RetiringABakerReturnsAtOnceAndDeletesItLater)
+{
+    std::unique_ptr<TexturePaintBaker> baker(new TexturePaintBaker());
+    std::atomic<bool> started(false);
+    std::atomic<bool> release(false);
+    std::atomic<bool> exited(false);
+    std::atomic<int> completions(0);
+    TexturePaintBaker::Bake bake;
+    bake.work = [&](TexturePaintBaker::Context&) {
+        started = true;
+        while (!release.load()) {
+            QThread::msleep(2);
+        }
+        exited = true;
+
+        return false;
+    };
+    bake.completion = [&](bool) { ++completions; };
+    ASSERT_TRUE(baker->enqueue(bake));
+    ASSERT_TRUE(pumpUntil([&]() { return started.load(); }, 10000));
+
+    QPointer<TexturePaintBaker> watched(baker.get());
+    const Clock::time_point start = Clock::now();
+    TexturePaintBaker::retire(std::move(baker));
+    EXPECT_LT(millisSince(start), 100);
+    EXPECT_FALSE(watched.isNull()) << "a baker whose thread still runs is not deleted yet";
+
+    release = true;
+    // processEvents() alone leaves deferred deletes posted at this loop level pending.
+    EXPECT_TRUE(pumpUntil([&]() {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+        return watched.isNull();
+    },
+                          5000));
+    EXPECT_TRUE(exited.load());
+    EXPECT_EQ(0, completions.load());
+}
+
+TEST_F(TexturePaintTest, AnAbortedSessionRenderFailsWithoutAnError)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+    NodePtr viewNode = effect->getSessionView(session);
+    ASSERT_TRUE(bool(viewNode));
+
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    abortInfo->setAborted();
+    TexturePaint::SessionBuffer buffer;
+    std::string error;
+    EXPECT_FALSE(effect->renderSessionBufferFrom(viewNode, session, ImageLayerDesc::getRGBAComponents(), 1., ViewIdx(0), &buffer, &error, abortInfo));
+    EXPECT_TRUE(error.empty()) << error;
+
+    TexturePaint::SessionBuffer live;
+    error.clear();
+    EXPECT_TRUE(effect->renderSessionBufferFrom(viewNode, session, ImageLayerDesc::getRGBAComponents(), 1., ViewIdx(0), &live, &error, AbortableRenderInfo::create(true, 0))) << error;
+    EXPECT_FALSE(live.rgba.empty());
 }
 
 TEST_F(TexturePaintTest, AnimatedBakeOutputWritesAFilePerFrame)

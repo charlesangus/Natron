@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <list>
@@ -179,7 +180,10 @@ public:
 
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
 
-    // Cancels the bake in progress and drops the queued ones, as the node is deleted or the project closes.
+    /**
+     * @brief Cancels the bake in progress and drops the queued ones, as the node is deleted or the
+     * project closes. Never waits, blocking or not: the running bake stops at its next poll.
+     **/
     virtual void quitBackgroundWork(bool blocking) OVERRIDE FINAL;
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
@@ -300,14 +304,19 @@ public:
     // The view session's strokes are painted over, created on first use. Main thread.
     NodePtr getSessionView(const RotoLayerPtr& session);
 
-    // renderSessionBuffer() over viewNode, which must be session's view. Any thread.
+    /**
+     * @brief renderSessionBuffer() over viewNode, which must be session's view. Any thread. With
+     * abortInfo, its setAborted() stops the render, which then returns false with *error empty.
+     * A view that renders nothing is an error, never an empty buffer.
+     **/
     bool renderSessionBufferFrom(const NodePtr& viewNode,
                                  const RotoLayerPtr& session,
                                  const ImageLayerDesc& plane,
                                  double time,
                                  ViewIdx view,
                                  SessionBuffer* buffer,
-                                 std::string* error);
+                                 std::string* error,
+                                 const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
     /**
      * @brief The planes the node outputs at time and view: the colour plane, then the Layer
@@ -419,10 +428,19 @@ public:
     // The node's baker, created on first use. Main thread.
     TexturePaintBaker* getBaker();
 
+    /**
+     * @brief Reads the baked files' modification stamps again, so that tiles are composed afresh
+     * over files edited outside the node. The stamps are otherwise read once per bake record.
+     **/
+    void reloadBakedFiles();
+
 protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
+    // What the baker's closures hold instead of this, so that a bake never outlives the node unseen.
+    std::weak_ptr<TexturePaint> weakSelf();
+
     struct BakeControl {
         std::function<bool()> cancelled;
         std::function<void(double, const QString&)> progress;
@@ -504,14 +522,37 @@ private:
     // The directory the tiles of this node are cached in.
     std::string getTileDirectory() const WARN_UNUSED_RETURN;
 
-    // What the tiles of view are cached under, whatever the frame; changes with anything they depend on.
-    U64 getTileCacheKey(ViewIdx view) const WARN_UNUSED_RETURN;
+    /**
+     * @brief What the tiles of view are cached under; changes with anything they depend on. In
+     * Animated mode the frame is in the tile's file name instead, so the key is that of every frame.
+     **/
+    U64 getTileCacheKey(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    // Hashes the baked files' paths and modification stamps, read once per bake record and epoch.
+    U64 getBakedFilesDigest() const WARN_UNUSED_RETURN;
+
+    // Composes and writes planes of tile into paths, which are not cached. As ensureTiles().
+    bool buildTiles(double time,
+                    ViewIdx view,
+                    int tile,
+                    const std::list<ImageLayerDesc>& planes,
+                    const std::vector<std::string>& paths,
+                    std::string* note,
+                    std::string* error,
+                    const std::function<bool()>& cancelled);
+
+    // Deletes the cached tiles no view or reader still uses. Under _tilesMutex.
+    void removeUnusedTiles(const std::string& directory);
 
     /**
      * @brief Bakes and caches planes of tile at time and view unless they are cached already;
      * *paths receives the file of each plane, in order, and *note the overlap warning of the
      * tile, empty when its meshes' UV layouts do not overlap. False with *error set on failure,
      * and with *error empty when the render was aborted.
+     *
+     * One tile is built once however many threads ask for it, the others waiting for it, while
+     * different tiles build at once. When lease is set it receives what keeps *paths from being
+     * deleted as stale; the files may be read until it is released.
      **/
     bool ensureTiles(double time,
                      ViewIdx view,
@@ -520,14 +561,35 @@ private:
                      std::vector<std::string>* paths,
                      std::string* note,
                      std::string* error,
-                     const std::function<bool()>& cancel = std::function<bool()>());
+                     const std::function<bool()>& cancel = std::function<bool()>(),
+                     std::shared_ptr<void>* lease = nullptr);
 
     // Views are looked up from render threads while the main thread creates them.
     mutable std::mutex _viewsMutex;
     std::map<const RotoLayer*, SessionView> _views;
 
-    // Render threads asking for one tile at once bake it once.
-    std::mutex _bakeMutex;
+    struct TileBuild {
+        U64 key = 0;
+        bool done = false;
+        bool ok = false;
+        std::string error;
+    };
+
+    // Guards the tile builds, readers and live keys below, never held across a build.
+    std::mutex _tilesMutex;
+    std::condition_variable _tileBuilt;
+    // The tile builds running, by the key, frame and tile they write.
+    std::map<std::string, std::shared_ptr<TileBuild>> _tileBuilds;
+    // How many ensureTiles() leases hold the files of each key.
+    std::map<U64, int> _tileReaders;
+    // The key each view last asked for, so that one view's tiles do not evict another's.
+    std::map<int, U64> _liveTileKeys;
+    // Bumped by undo, redo and reloadBakedFiles(), so that no tile composed before is used again.
+    std::atomic<std::uint64_t> _tileEpoch;
+    mutable std::mutex _stampsMutex;
+    mutable bool _stampsValid = false;
+    mutable U64 _stampsSignature = 0;
+    mutable U64 _stampsDigest = 0;
 
     PrimSelector _primPattern;
     KnobStringWPtr _uvPrimvar;

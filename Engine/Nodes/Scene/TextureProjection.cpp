@@ -26,6 +26,7 @@
 #include "TextureProjection.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 #include "Engine/AppManager.h"
@@ -132,6 +133,7 @@ project(const PXR_NS::UsdStageRefPtr& stage,
     cameraArgs.height = image.height;
     cameraArgs.pixelAspect = image.pixelAspect;
     cameraArgs.fit = args.fit;
+    cameraArgs.cancelled = args.cancelled;
 
     SceneRaster::CameraBuffers zbuffer;
     PXR_NS::GfFrustum frustum;
@@ -156,6 +158,7 @@ project(const PXR_NS::UsdStageRefPtr& stage,
     bakeArgs.width = args.width;
     bakeArgs.height = args.height;
     bakeArgs.udimTile = args.udimTile;
+    bakeArgs.cancelled = args.cancelled;
     SceneRaster::BakeBuffers bake;
     if (!SceneRaster::bakeUV(stage, bakeArgs, &bake, errorMessage)) {
         return false;
@@ -171,7 +174,16 @@ project(const PXR_NS::UsdStageRefPtr& stage,
     result->height = height;
     result->rgba.assign((std::size_t)width * (std::size_t)height * 4, 0.f);
     result->coverage.assign((std::size_t)width * (std::size_t)height, 0);
+    std::atomic<bool> stop(false);
     parallelForOnGlobalPool(height, maxThreads(), [&](int y) {
+        if (stop.load(std::memory_order_relaxed)) {
+            return;
+        }
+        if (args.cancelled && args.cancelled()) {
+            stop = true;
+
+            return;
+        }
         for (int x = 0; x < width; ++x) {
             const std::size_t i = (std::size_t)x + (std::size_t)y * (std::size_t)width;
             if (!bake.coverage[i]) {
@@ -210,6 +222,11 @@ project(const PXR_NS::UsdStageRefPtr& stage,
             result->coverage[i] = 1;
         }
     });
+    if (stop.load()) {
+        errorMessage->clear();
+
+        return false;
+    }
 
     if (args.edgeDilation > 0) {
         dilate(width, height, args.edgeDilation, &bake.coverage, &result->rgba);

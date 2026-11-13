@@ -26,7 +26,9 @@
 #include "SceneRaster.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <set>
 
@@ -98,17 +100,19 @@ namespace {
      * the pixel's perspective-correct weights of the triangle's three corners. An edge two triangles
      * share is drawn once: of the two, only the triangle it runs upward (or leftward, when
      * horizontal) in, once wound counter-clockwise, owns the centres on it. Within a row triangles
-     * are shaded in order; rows run in parallel, a chunk of them per task.
+     * are shaded in order; rows run in parallel, a chunk of them per task. False when cancelled
+     * returned true, polled per triangle, which leaves the buffers partly shaded.
      **/
     template <typename Shade>
-    void
+    bool
     rasterize(int width,
               int height,
               const std::vector<RasterTriangle>& tris,
+              const std::function<bool()>& cancelled,
               const Shade& shade)
     {
         if ((width <= 0) || (height <= 0) || tris.empty()) {
-            return;
+            return !(cancelled && cancelled());
         }
         // NativeEffectBase::makeDeepScanlineChunks()' partition: more chunks than threads, so that a
         // dense patch of the image does not leave most threads waiting on one chunk.
@@ -126,10 +130,19 @@ namespace {
             }
         }
 
+        std::atomic<bool> stop(false);
         parallelForOnGlobalPool((int)chunks.size(), maxRasterThreads(), [&](int c) {
             const RectI& chunk = chunks[c];
 
             for (std::size_t t : bins[c]) {
+                if (stop.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                if (cancelled && cancelled()) {
+                    stop = true;
+
+                    return;
+                }
                 const RasterTriangle& tri = tris[t];
                 const double area = (tri.x[1] - tri.x[0]) * (tri.y[2] - tri.y[0]) - (tri.y[1] - tri.y[0]) * (tri.x[2] - tri.x[0]);
                 if ((area == 0.) || !std::isfinite(area)) {
@@ -181,6 +194,8 @@ namespace {
                 }
             }
         });
+
+        return !stop.load() && !(cancelled && cancelled());
     }
 
     // A mesh's triangulation and world-space points at one time.
@@ -573,7 +588,7 @@ renderCamera(const UsdStageRefPtr& stage,
         buffers->udimTile.assign(numPixels, 0);
     }
 
-    rasterize(args.width, args.height, tris, [buffers, wantSt](const RasterTriangle& tri, std::size_t i, const float w[3]) {
+    const bool drawn = rasterize(args.width, args.height, tris, args.cancelled, [buffers, wantSt](const RasterTriangle& tri, std::size_t i, const float w[3]) {
         const float depth = w[0] * tri.depth[0] + w[1] * tri.depth[1] + w[2] * tri.depth[2];
         if (depth < buffers->depth[i]) {
             buffers->depth[i] = depth;
@@ -591,6 +606,11 @@ renderCamera(const UsdStageRefPtr& stage,
             }
         }
     });
+    if (!drawn) {
+        errorMessage->clear();
+
+        return false;
+    }
 
     return true;
 } // renderCamera
@@ -681,7 +701,7 @@ bakeUV(const UsdStageRefPtr& stage,
         buffers->readerSt.assign(numTexels, GfVec2f(0.f));
     }
 
-    rasterize(args.width, args.height, tris, [buffers, wantReader](const RasterTriangle& tri, std::size_t i, const float w[3]) {
+    const bool drawn = rasterize(args.width, args.height, tris, args.cancelled, [buffers, wantReader](const RasterTriangle& tri, std::size_t i, const float w[3]) {
         buffers->coverage[i] = 1;
         buffers->worldPosition[i] = tri.world[0] * w[0] + tri.world[1] * w[1] + tri.world[2] * w[2];
         buffers->worldNormal[i] = tri.normal;
@@ -689,6 +709,11 @@ bakeUV(const UsdStageRefPtr& stage,
             buffers->readerSt[i] = tri.hasSt ? (tri.st[0] * w[0] + tri.st[1] * w[1] + tri.st[2] * w[2]) : GfVec2f(0.f);
         }
     });
+    if (!drawn) {
+        errorMessage->clear();
+
+        return false;
+    }
 
     return true;
 } // bakeUV

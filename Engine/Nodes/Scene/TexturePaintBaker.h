@@ -45,8 +45,9 @@ NATRON_NAMESPACE_ENTER
  * where a bake changes knobs, freezes sessions or pushes its undo step. Completions run in
  * enqueue order. Nothing here takes the viewer lock.
  *
- * Stopping (the node is deleted, the project closes) cancels the running worker, drops the
- * queued bakes and every completion not yet run, and returns once the thread is gone.
+ * Stopping (the node is deleted, the project closes) cancels the running worker and drops the
+ * queued bakes and every completion not yet run. requestStop() and retire() return at once;
+ * stop() also waits for the thread to exit.
  **/
 class TexturePaintBaker
     : public GenericSchedulerThread {
@@ -54,11 +55,15 @@ class TexturePaintBaker
     Q_OBJECT
     GCC_DIAG_SUGGEST_OVERRIDE_ON
 
+    class Task;
+
 public:
     class Context {
     public:
-        explicit Context(TexturePaintBaker* baker)
+        explicit Context(TexturePaintBaker* baker,
+                         Task* task = nullptr)
             : _baker(baker)
+            , _task(task)
         {
         }
 
@@ -71,8 +76,16 @@ public:
         void progress(double fraction,
                       const QString& label);
 
+        /**
+         * @brief Keeps object alive until the bake's result reaches the main thread, so that the
+         * worker never drops the last reference to it: what it destroys is then destroyed on the
+         * main thread, whether or not the completion runs.
+         **/
+        void keepAlive(const std::shared_ptr<void>& object);
+
     private:
         TexturePaintBaker* _baker;
+        Task* _task;
     };
 
     struct Bake {
@@ -102,6 +115,12 @@ public:
 
     // requestStop(), then waits for the thread to exit: bounded by one tile, the worker polling between tiles.
     void stop(bool allowRestart = false);
+
+    /**
+     * @brief Stops baker for good without waiting and deletes it on the main thread once its thread
+     * has exited. Safe to call from inside one of its own signals or completions.
+     **/
+    static void retire(std::unique_ptr<TexturePaintBaker> baker);
 
     // Whether a bake is queued or running, or finished but its completion has not run yet.
     bool isBaking() const WARN_UNUSED_RETURN
@@ -146,8 +165,6 @@ private Q_SLOTS:
     void onWorkDone();
 
 private:
-    class Task;
-
     virtual TaskQueueBehaviorEnum tasksQueueBehaviour() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return eTaskQueueBehaviorProcessInOrder;

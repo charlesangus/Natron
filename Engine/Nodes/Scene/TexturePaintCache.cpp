@@ -239,6 +239,7 @@ composeTile(const TileArgs& args,
             bake.width = args.size;
             bake.height = args.size;
             bake.udimTile = args.udimTile;
+            bake.cancelled = args.cancelled;
             SceneRaster::BakeBuffers buffers;
             if (!SceneRaster::bakeUV(args.stage, bake, &buffers, error)) {
                 return false;
@@ -291,6 +292,9 @@ composeTile(const TileArgs& args,
         if (!session.renderBuffer(&buffer, error)) {
             return false;
         }
+        if (isCancelled(args, error)) {
+            return false;
+        }
         const std::size_t texels = (std::size_t)std::max(0, buffer.width) * (std::size_t)std::max(0, buffer.height);
         if ((texels == 0) || (buffer.rgba.size() != texels * 4) || (buffer.touched.size() != texels)) {
             return fail(error, "A session's paint buffer is malformed.");
@@ -329,6 +333,7 @@ composeTile(const TileArgs& args,
         project.occlusion = true;
         project.projectBackFaces = false;
         project.edgeDilation = 0;
+        project.cancelled = args.cancelled;
 
         for (const PXR_NS::SdfPath& mesh : args.meshes) {
             if (isCancelled(args, error)) {
@@ -480,15 +485,28 @@ readTile(const std::string& path,
 
 void
 removeStaleTiles(const std::string& directory,
-                 U64 key)
+                 const std::set<U64>& keep)
 {
-    const std::string prefix = hex(key) + "_";
+    std::vector<std::string> prefixes;
+    for (U64 key : keep) {
+        prefixes.push_back(hex(key) + "_");
+    }
     std::error_code ec;
     std::vector<std::filesystem::path> stale;
 
     for (std::filesystem::directory_iterator it(directory, ec), end; !ec && (it != end); it.increment(ec)) {
         const std::string name = it->path().filename().string();
-        if (it->is_regular_file(ec) && (name.compare(0, prefix.size(), prefix) != 0)) {
+        if (!it->is_regular_file(ec)) {
+            continue;
+        }
+        bool kept = false;
+        for (const std::string& prefix : prefixes) {
+            if (name.compare(0, prefix.size(), prefix) == 0) {
+                kept = true;
+                break;
+            }
+        }
+        if (!kept) {
             stale.push_back(it->path());
         }
     }

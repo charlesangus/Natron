@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -161,8 +162,8 @@ bool readTile(const std::string& path,
               std::vector<float>* rgba,
               std::string* error) WARN_UNUSED_RETURN;
 
-// Deletes the files in directory that were not cached under key.
-void removeStaleTiles(const std::string& directory, U64 key);
+// Deletes the files in directory that were not cached under one of the keys in keep.
+void removeStaleTiles(const std::string& directory, const std::set<U64>& keep);
 } // namespace TexturePaintCache
 
 NATRON_NAMESPACE_EXIT

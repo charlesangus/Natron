@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -86,6 +87,8 @@ struct Args {
     bool projectBackFaces = false;
     // Passes of edge dilation, each growing the layout by one texel.
     int edgeDilation = 0;
+    // When set and true, the projection stops and project returns false with an empty error.
+    std::function<bool()> cancelled;
 };
 
 struct Result {

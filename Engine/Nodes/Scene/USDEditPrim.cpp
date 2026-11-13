@@ -40,10 +40,10 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
-#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SchemaKnobMapper.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
 
@@ -110,6 +110,7 @@ authorPrim(const PXR_NS::UsdPrim& prim,
 
 struct USDEditPrim::Implementation {
     PrimSelector primPattern;
+    PrimPatternCache matches;
     KnobChoiceWPtr mode;
     KnobStringWPtr primPath;
     KnobChoiceWPtr schema;
@@ -456,28 +457,19 @@ USDEditPrim::renderScene(const SceneRenderActionArgs& args,
             return eStatusFailed;
         }
         std::vector<PXR_NS::SdfPath> matches;
+        SceneNodeAuthoring::PatternMatches found;
         if (!upstream.isEmpty() && !PrimSelector::isBlank(pattern) && (applies || !attributes.empty())) {
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
-            PXR_NS::UsdStageRefPtr stage = lease.getStage();
-            if (!stage) {
-                if (errorMessage->empty()) {
-                    *errorMessage = tr("USD could not compose the input scene.").toStdString();
-                }
+            SceneQueryPool::Lease lease;
+            if (!SceneNodeAuthoring::matchPattern(&_imp->matches, upstream, pattern, args.context, 0, SceneNodeAuthoring::PatternFilter(), &lease, &found, errorMessage)) {
                 setPersistentMessage(eMessageTypeError, *errorMessage);
 
                 return eStatusFailed;
             }
-            if (!SceneOps::selectPrims(stage, pattern, &matches, errorMessage)) {
-                setPersistentMessage(eMessageTypeError, *errorMessage);
-
-                return eStatusFailed;
-            }
+            matches = found.paths;
             if (matches.empty()) {
                 *outputScene = upstream;
-                setPersistentMessage(eMessageTypeWarning, tr("The prim pattern \"%1\" matches no prim to edit; the scene is "
-                                                             "passed through unchanged.")
-                                                              .arg(QString::fromStdString(pattern))
-                                                              .toStdString());
+                setPersistentMessage(eMessageTypeWarning,
+                                     SceneNodeAuthoring::describeNoMatch(pattern, found, tr("the scene is passed through unchanged").toStdString()));
 
                 return eStatusOK;
             }
@@ -541,7 +533,13 @@ USDEditPrim::renderScene(const SceneRenderActionArgs& args,
         std::vector<PXR_NS::SdfPath> missing = ancestors;
         std::vector<bool> missingTyped(ancestors.size(), false);
         if (!upstream.isEmpty() && !ancestors.empty()) {
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+            // The ancestors are looked at in the stage whatever the viewer loads, and the reach
+            // makes a payload load that changes them evaluate the node again.
+            const std::string pathString = path.GetString();
+            if (args.context.reach) {
+                args.context.reach->add({ pathString });
+            }
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, SceneLoadSet::withPaths(args.context.loadSet, { pathString }), errorMessage);
             PXR_NS::UsdStageRefPtr stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {

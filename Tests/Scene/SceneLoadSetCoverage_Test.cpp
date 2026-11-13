@@ -40,7 +40,9 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDEditPrim.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDSetAttribute.h"
@@ -110,6 +112,30 @@ protected:
         if (patternKnob && nameKnob) {
             patternKnob->setValue(pattern);
             nameKnob->setValue(std::string("tag"));
+        }
+        EXPECT_TRUE(node->connectInput(input, 0));
+
+        return node;
+    }
+
+    NodePtr editPrim(const NodePtr& input,
+                     const std::string& mode,
+                     const std::string& target)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITPRIM));
+
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        KnobChoice* modeKnob = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDEditPrimParamMode).get());
+        KnobChoice* schemaKnob = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDEditPrimParamSchema).get());
+        KnobString* targetKnob = dynamic_cast<KnobString*>(node->getKnobByName(mode == "edit" ? kUSDEditPrimParamPrimPattern : kSceneParamPrimPath).get());
+        EXPECT_TRUE(modeKnob && schemaKnob && targetKnob);
+        if (modeKnob && schemaKnob && targetKnob) {
+            modeKnob->setValueFromID(mode, 0);
+            schemaKnob->setValueFromID("Camera", 0);
+            targetKnob->setValue(target);
         }
         EXPECT_TRUE(node->connectInput(input, 0));
 
@@ -196,4 +222,36 @@ TEST_F(SceneLoadSetCoverageTest, ASetAttributeThatFindsNothingSaysHowManyBranche
     EXPECT_EQ((int)eMessageTypeWarning, type);
     EXPECT_TRUE(message.contains(QString::fromUtf8("0 matches, 4 unloaded branches not searched"))) << message.toStdString();
     EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AnEditPrimInEachModeOpensNoBuildingWithNothingLoaded)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr edit = editPrim(source, "edit", "/World/Block_0/B_0");
+    NodePtr define = editPrim(source, "define", "/World/Block_0/Added");
+    ASSERT_TRUE(source && edit && define);
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+
+    for (const NodePtr& node : { edit, define }) {
+        std::string error;
+        ScenePayload payload;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+            << error;
+        EXPECT_FALSE(payload.isEmpty());
+    }
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AnEditPrimEvaluatesTheSameOnALoadSetAsOnEverything)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr edit = editPrim(source, "edit", "/World/Block_0//car*");
+    NodePtr define = editPrim(source, "define", "/World/Block_0/Added");
+    ASSERT_TRUE(source && edit && define);
+
+    expectParity(edit, loadingOnly({ "/World/Block_0" }));
+    expectParity(define, loadingOnly({ "/World/Block_0" }));
 }

@@ -97,3 +97,4 @@ GPU for downstream GPU nodes and the viewer.
   - Then: un-WIP the commit message, syntax-check, gate, re-review.
 - 2026-11-13 — PR #270 review fixes finished (b3380b12b): finding #2 exposed Free GPU Memory emptying the pool before the Utility engine returned its buffers, now fixed; #10's viewer check requires the GL hand-off only where one can be built. Gating with `natron_utility_viewer.py`.
 - 2026-11-13 — Gate green on b3380b12b (run 43439305717, with `natron_utility_viewer.py`). Round 1 closed on PR #270; review round 2 (final) running.
+- 2026-11-13 — Review round 2 (final): round 1 11 fixed, 4 partly. 7 new findings: one high (test GPU-context swaps can free a context the Utility engine still uses); the 3D viewer's Utility engine escapes loss releasers and Free GPU Memory; the interop GUI check could pass on interop-capable hardware. All being fixed, then the gate decides.

@@ -401,9 +401,9 @@ private:
  *
  * hdMoonray hands a primvar to the maps only as user data of a type it translates
  * (lib/hydramoonray/Primvars.cc setUserDataValues): float, float2, float3, colour, int and string
- * arrays, not the float4 frame columns. Geometry space therefore takes the frame as the prim's
- * transform at the rendered frame, which it is unless held, and a held prim follows its
- * reference points (point3f, read through AttributeMap's primitive attribute).
+ * arrays, not the float4 frame columns Cycles reads nor the matrix. Geometry space therefore reads
+ * the frame from its float3 parts (SceneProjectionCameras::moonRayFramePrimvar()) through
+ * AttributeMap's primitive attribute, applied to the object-space position.
  **/
 class MoonRayNetwork
     : private ShaderGraph {
@@ -417,19 +417,30 @@ public:
     bool author(const PXR_NS::UsdShadeMaterial& material,
                 const NetworkProjection& projection)
     {
+        const bool geometrySpace = projection.space == USDProject3D::eProjectionSpaceGeometry;
         PXR_NS::UsdShadeShader point = node("MoonRayPosition", "AttributeMap");
         setToken(point, "map_type", "position");
-        ShaderSocket position = toWorld("MoonRayWorldPosition", "point", ShaderSocket { point, "out" });
+        ShaderSocket position;
+        ShaderSocket columns[3];
+        if (geometrySpace) {
+            const ShaderSocket object = fromRender("MoonRayObjectPosition", "point", "object", ShaderSocket { point, "out" });
+            ShaderSocket parts[4];
+            for (int part = 0; part < 4; ++part) {
+                parts[part] = attribute(SceneProjectionCameras::moonRayFrameReader(part), SceneProjectionCameras::moonRayFramePrimvar(projection.framePrimvar, part), PXR_NS::GfVec3f(0.f));
+            }
+            PXR_NS::UsdShadeShader offsets = node("MoonRayFrameOffsets", "FloatToRgbMap");
+            for (int j = 0; j < 3; ++j) {
+                columns[j] = parts[j];
+                connect(offsets, kChannels[j], PXR_NS::SdfValueTypeNames->Float, op("MoonRayFrameDot" + std::to_string(j), "dot", object, columns[j]));
+            }
+            position = op("MoonRayFramePosition", "add", op("MoonRayFrameLinear", "add", object, ShaderSocket { offsets, "out" }), parts[3]);
+        } else {
+            position = fromRender("MoonRayWorldPosition", "point", "world", ShaderSocket { point, "out" });
+        }
         if (!projection.referencePrimvar.empty()) {
             // The default marks a prim without reference points, which keeps its own position.
             const float missing = 1e30f;
-            PXR_NS::UsdShadeShader reference = node(kSceneProjectionMoonRayReferencePoints, "AttributeMap");
-            setToken(reference, "map_type", "primitive attribute");
-            setValue(reference, "primitive_attribute_name", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(projection.referencePrimvar));
-            setToken(reference, "primitive_attribute_type", "vec3f");
-            setValue(reference, "default_value", PXR_NS::SdfValueTypeNames->Color3f, PXR_NS::VtValue(PXR_NS::GfVec3f(missing)));
-            setValue(reference, "warn_when_unavailable", PXR_NS::SdfValueTypeNames->Bool, PXR_NS::VtValue(false));
-            const ShaderSocket stored { reference, "out" };
+            const ShaderSocket stored = attribute(kSceneProjectionMoonRayReferencePoints, projection.referencePrimvar, PXR_NS::GfVec3f(missing));
             const ShaderSocket present = op("MoonRayReferencePresent", "less_than", op("MoonRayReferenceLength", "length", stored, ShaderOperand()), 0.5f * missing);
             const ShaderSocket delta = op("MoonRayReferenceDelta", "subtract", stored, position);
             position = op("MoonRayReferencePosition", "add", op("MoonRayReferenceShift", "multiply", delta, present), position);
@@ -441,9 +452,9 @@ public:
             projected[k] = op(SceneProjectionCameras::moonRayProjectorOffset(k), "add", dot, ShaderOperand());
         }
         PXR_NS::UsdShadeShader combined = node("MoonRayFrame", "FloatToRgbMap");
-        connect(combined, "R", PXR_NS::SdfValueTypeNames->Float, op("MoonRayFrameU", "divide", projected[0], projected[3]));
-        connect(combined, "G", PXR_NS::SdfValueTypeNames->Float, op("MoonRayFrameV", "divide", projected[1], projected[3]));
-        setValue(combined, "B", PXR_NS::SdfValueTypeNames->Float, PXR_NS::VtValue(0.f));
+        connect(combined, kChannels[0], PXR_NS::SdfValueTypeNames->Float, op("MoonRayFrameU", "divide", projected[0], projected[3]));
+        connect(combined, kChannels[1], PXR_NS::SdfValueTypeNames->Float, op("MoonRayFrameV", "divide", projected[1], projected[3]));
+        setValue(combined, kChannels[2], PXR_NS::SdfValueTypeNames->Float, PXR_NS::VtValue(0.f));
         const ShaderSocket frame { combined, "out" };
         const ShaderSocket uv = op(kSceneProjectionMoonRayPlateOffset, "add", op(kSceneProjectionMoonRayPlateScale, "multiply", frame, ShaderOperand()), ShaderOperand());
 
@@ -454,8 +465,30 @@ public:
             // MoonRay keeps the geometric normal on the face's own side.
             PXR_NS::UsdShadeShader geometric = node("MoonRayNormal", "AttributeMap");
             setToken(geometric, "map_type", "geometric normal");
-            const ShaderSocket normal = toWorld("MoonRayWorldNormal", "normal", ShaderSocket { geometric, "out" });
-            const ShaderSocket facing = op("MoonRayFacing", "dot", normal, toward);
+            ShaderSocket facing;
+            if (geometrySpace) {
+                // As for Cycles: the frame's cofactors carry the object's normal to where the frame
+                // puts it, and the determinant's sign undoes a mirror's flip.
+                const ShaderSocket objectNormal = fromRender("MoonRayObjectNormal", "normal", "object", ShaderSocket { geometric, "out" });
+                ShaderSocket axes[3];
+                for (int j = 0; j < 3; ++j) {
+                    PXR_NS::GfVec3f unit(0.f);
+                    unit[j] = 1.f;
+                    axes[j] = op("MoonRayFrameAxis" + std::to_string(j), "add", columns[j], unit);
+                }
+                PXR_NS::UsdShadeShader normal = node("MoonRayFrameNormal", "FloatToRgbMap");
+                ShaderSocket handedness;
+                for (int k = 0; k < 3; ++k) {
+                    const ShaderSocket cofactor = op("MoonRayFrameCofactor" + std::to_string(k), "cross", axes[(k + 1) % 3], axes[(k + 2) % 3]);
+                    connect(normal, kChannels[k], PXR_NS::SdfValueTypeNames->Float, op("MoonRayFrameNormal" + std::to_string(k), "dot", cofactor, objectNormal));
+                    if (k == 0) {
+                        handedness = op("MoonRayFrameDeterminant", "dot", axes[0], cofactor);
+                    }
+                }
+                facing = op("MoonRayFacingHanded", "multiply", op("MoonRayFacing", "dot", ShaderSocket { normal, "out" }, toward), handedness);
+            } else {
+                facing = op("MoonRayFacing", "dot", fromRender("MoonRayWorldNormal", "normal", "world", ShaderSocket { geometric, "out" }), toward);
+            }
             const bool front = projection.projectOn == USDProject3D::eProjectOnFront;
             inside = op("MoonRayInsideFacing", "multiply", inside, op(front ? "MoonRayFacesProjector" : "MoonRayFacesAway", front ? "greater_than" : "less_than", facing, 0.f));
         }
@@ -506,19 +539,38 @@ private:
         return ShaderSocket { shader, "out" };
     }
 
-    // Render space, which AttributeMap reports in, to world space.
-    ShaderSocket toWorld(const std::string& name,
-                         const char* inputType,
-                         const ShaderSocket& source)
+    // From render space, which AttributeMap reports in, to toSpace: world, or object for the
+    // shaded prim's own.
+    ShaderSocket fromRender(const std::string& name,
+                            const char* inputType,
+                            const char* toSpace,
+                            const ShaderSocket& source)
     {
         PXR_NS::UsdShadeShader shader = node(name, "TransformSpaceMap");
         setToken(shader, "input_type", inputType);
         setToken(shader, "from_space", "render");
-        setToken(shader, "to_space", "world");
+        setToken(shader, "to_space", toSpace);
         connect(shader, "input", PXR_NS::SdfValueTypeNames->Vector3f, source);
 
         return ShaderSocket { shader, "out" };
     }
+
+    // The prim's float3 primvar, or fallback where it has none.
+    ShaderSocket attribute(const std::string& name,
+                           const std::string& primvar,
+                           const PXR_NS::GfVec3f& fallback)
+    {
+        PXR_NS::UsdShadeShader shader = node(name, "AttributeMap");
+        setToken(shader, "map_type", "primitive attribute");
+        setValue(shader, "primitive_attribute_name", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(primvar));
+        setToken(shader, "primitive_attribute_type", "vec3f");
+        setValue(shader, "default_value", PXR_NS::SdfValueTypeNames->Color3f, PXR_NS::VtValue(fallback));
+        setValue(shader, "warn_when_unavailable", PXR_NS::SdfValueTypeNames->Bool, PXR_NS::VtValue(false));
+
+        return ShaderSocket { shader, "out" };
+    }
+
+    static constexpr const char* kChannels[3] = { "R", "G", "B" };
 };
 } // anonymous namespace
 

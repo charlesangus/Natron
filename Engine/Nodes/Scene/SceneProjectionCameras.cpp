@@ -145,6 +145,12 @@ moonRayProjectorOffset(int component)
     return std::string("MoonRayProjectorOffset") + "XYZW"[component & 3];
 }
 
+std::string
+moonRayFrameReader(int part)
+{
+    return "MoonRayFramePart" + std::to_string(part);
+}
+
 std::vector<ShaderValue>
 projectorValues(const PXR_NS::GfMatrix4d& worldToProjector,
                 const PXR_NS::GfVec4f& origin)
@@ -204,6 +210,26 @@ frameColumn(const PXR_NS::GfMatrix4d& frame,
     }
 
     return PXR_NS::VtVec4fArray(1, value);
+}
+
+std::string
+moonRayFramePrimvar(const std::string& framePrimvar,
+                    int part)
+{
+    return framePrimvar + "MoonRay" + std::to_string(part);
+}
+
+PXR_NS::GfVec3f
+moonRayFramePart(const PXR_NS::GfMatrix4d& frame,
+                 int part)
+{
+    if (part >= 3) {
+        return PXR_NS::GfVec3f((float)frame[3][0], (float)frame[3][1], (float)frame[3][2]);
+    }
+    PXR_NS::GfVec3f value((float)frame[0][part], (float)frame[1][part], (float)frame[2][part]);
+    value[part] -= 1.f;
+
+    return value;
 }
 
 bool

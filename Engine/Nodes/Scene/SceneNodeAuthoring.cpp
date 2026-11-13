@@ -757,10 +757,17 @@ authorProjectionFrame(const PXR_NS::UsdPrim& prim,
         const PXR_NS::TfToken name(SceneProjectionCameras::frameColumnPrimvar(projection.framePrimvar, column));
         attributes.push_back(primvars.CreatePrimvar(name, PXR_NS::SdfValueTypeNames->Float4Array, PXR_NS::UsdGeomTokens->constant).GetAttr());
     }
+    for (int part = 0; part < 4; ++part) {
+        const PXR_NS::TfToken name(SceneProjectionCameras::moonRayFramePrimvar(projection.framePrimvar, part));
+        attributes.push_back(primvars.CreatePrimvar(name, PXR_NS::SdfValueTypeNames->Float3, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    }
     const auto setFrame = [&attributes](const PXR_NS::GfMatrix4d& frame, PXR_NS::UsdTimeCode time) {
         bool ok = attributes[0] && attributes[0].Set(frame, time);
         for (int column = 0; ok && (column < 3); ++column) {
             ok = attributes[column + 1] && attributes[column + 1].Set(SceneProjectionCameras::frameColumn(frame, column), time);
+        }
+        for (int part = 0; ok && (part < 4); ++part) {
+            ok = attributes[part + 4] && attributes[part + 4].Set(SceneProjectionCameras::moonRayFramePart(frame, part), time);
         }
 
         return ok;

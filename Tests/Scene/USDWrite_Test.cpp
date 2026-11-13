@@ -1283,6 +1283,74 @@ TEST_F(USDWriteProjectionTest, AProjectionIsBakedToUVsAndAPreviewSurface)
     EXPECT_FALSE(projection.IsActive());
 }
 
+// Exported, a projection keeps no Cycles or MoonRay network: those renderers resolve the material
+// to the baked preview surface Storm reads, and neither the networks nor the frame primvars they
+// read are written, in World space or held in Geometry space, flattened or layered.
+TEST_F(USDWriteProjectionTest, ABakedProjectionDropsItsCyclesAndMoonRayNetworks)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    createRig();
+    ASSERT_TRUE(projector && card);
+    KnobDouble* translate = getKnob<KnobDouble>(card, kSceneParamTranslate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(3., 0.5, ViewSpec::all(), 0);
+    struct Case {
+        const char* dir;
+        USDWrite::ExportModeEnum mode;
+        bool held;
+    };
+    const Case cases[] = {
+        { "/world-flattened", USDWrite::eExportModeFlattened, false },
+        { "/world-layered", USDWrite::eExportModeLayered, false },
+        { "/held-flattened", USDWrite::eExportModeFlattened, true },
+        { "/held-layered", USDWrite::eExportModeLayered, true },
+    };
+    for (const Case& c : cases) {
+        getKnob<KnobChoice>(projector, kUSDProject3DParamProjectionSpace)->setValue((int)(c.held ? USDProject3D::eProjectionSpaceGeometry : USDProject3D::eProjectionSpaceWorld));
+        getKnob<KnobBool>(projector, kUSDProject3DParamUseFrameHold)->setValue(c.held);
+        getKnob<KnobDouble>(projector, kUSDProject3DParamFrameHold)->setValue(1.);
+        const QString dir = tmp.path() + QString::fromUtf8(c.dir);
+        const PXR_NS::UsdStageRefPtr stage = writeAndOpen(card, dir, c.mode);
+        ASSERT_TRUE(bool(stage)) << c.dir;
+
+        for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
+            for (const char* needle : { "cycles:", "moonray:", "cycles_", "AttributeMap", "OpMap", "natronProjectionFrame", "natronReferencePoints" }) {
+                EXPECT_FALSE(file.second.contains(needle)) << c.dir << " " << file.first.toStdString() << " holds " << needle;
+            }
+        }
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath("/Card1"));
+        ASSERT_TRUE(bool(prim)) << c.dir;
+        for (const PXR_NS::UsdGeomPrimvar& primvar : PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvars()) {
+            EXPECT_EQ(std::string::npos, primvar.GetPrimvarName().GetString().find("natronProjectionFrame")) << c.dir;
+        }
+        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+        ASSERT_TRUE(bool(material)) << c.dir;
+        const PXR_NS::UsdShadeShader storm = material.ComputeSurfaceSource();
+        ASSERT_TRUE(bool(storm)) << c.dir;
+        PXR_NS::TfToken id;
+        ASSERT_TRUE(storm.GetShaderId(&id)) << c.dir;
+        EXPECT_EQ(std::string("UsdPreviewSurface"), id.GetString()) << c.dir;
+        for (const char* context : { "cycles", "moonray" }) {
+            EXPECT_FALSE(bool(material.GetSurfaceOutput(PXR_NS::TfToken(context)))) << c.dir << " " << context;
+            const PXR_NS::UsdShadeShader surface = material.ComputeSurfaceSource(PXR_NS::TfTokenVector { PXR_NS::TfToken(context), PXR_NS::UsdShadeTokens->universalRenderContext });
+            EXPECT_EQ(storm.GetPath(), surface.GetPath()) << c.dir << " " << context;
+        }
+        for (const PXR_NS::UsdPrim& child : material.GetPrim().GetChildren()) {
+            const std::string name = child.GetName().GetString();
+            EXPECT_NE(0u, name.rfind("Cycles", 0)) << c.dir << " keeps " << name;
+            EXPECT_NE(0u, name.rfind("MoonRay", 0)) << c.dir << " keeps " << name;
+        }
+        const PXR_NS::UsdGeomPrimvar st = stOf(stage);
+        ASSERT_TRUE(bool(st)) << c.dir;
+        const std::pair<PXR_NS::GfVec2f, PXR_NS::GfVec2f> bounds = boundsOf(st, PXR_NS::UsdTimeCode(1.));
+        EXPECT_NEAR(0.f, bounds.first[0], 1e-4f) << c.dir;
+        EXPECT_NEAR(0.f, bounds.first[1], 1e-4f) << c.dir;
+        EXPECT_NEAR(1.f, bounds.second[0], 1e-4f) << c.dir;
+        EXPECT_NEAR(1.f, bounds.second[1], 1e-4f) << c.dir;
+    }
+}
+
 TEST_F(USDWriteProjectionTest, AProjectionBoundToNothingWarns)
 {
     QTemporaryDir tmp;

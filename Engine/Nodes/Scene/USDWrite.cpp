@@ -927,7 +927,8 @@ struct WrittenSpecLocator {
     }
 };
 
-// What only a Storm projection reads, recorded per material and gprim.
+// What only a live projection reads, recorded per material and gprim: the Storm surface's
+// placement and the Cycles and MoonRay networks.
 struct ProjectionSpecs {
     WrittenSpecs properties;
     WrittenSpecs prims;
@@ -1036,20 +1037,71 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
                 : PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(geometryProjection.framePrimvar));
         };
+        // The Cycles and MoonRay networks, so a renderer reading the export takes the baked
+        // surface instead. Nothing the Storm surface reads is theirs, which the bake reuses.
+        const auto recordNetworks = [&](ProjectionSpecs* specs) {
+            const PXR_NS::UsdShadeMaterial material(scene->GetPrimAtPath(materialPath));
+            std::set<PXR_NS::SdfPath> seen;
+            std::vector<PXR_NS::UsdShadeConnectableAPI> pending(1, PXR_NS::UsdShadeConnectableAPI(shader.GetPrim()));
+            const auto walk = [&](bool record) {
+                while (!pending.empty()) {
+                    const PXR_NS::UsdShadeConnectableAPI node = pending.back();
+                    pending.pop_back();
+                    const PXR_NS::SdfPath path = node.GetPath();
+                    if (!node || (path == materialPath) || !path.HasPrefix(materialPath) || !seen.insert(path).second) {
+                        continue;
+                    }
+                    if (record) {
+                        locator.addPrim(node.GetPrim(), &specs->prims);
+                    }
+                    for (const PXR_NS::UsdShadeInput& input : node.GetInputs()) {
+                        for (const PXR_NS::UsdShadeConnectionSourceInfo& source : input.GetConnectedSources()) {
+                            pending.push_back(source.source);
+                        }
+                    }
+                }
+            };
+            walk(false);
+            for (const char* context : { "cycles", "moonray" }) {
+                const PXR_NS::UsdShadeOutput output = material ? material.GetSurfaceOutput(PXR_NS::TfToken(context)) : PXR_NS::UsdShadeOutput();
+                if (!output) {
+                    continue;
+                }
+                locator.addAttribute(output.GetAttr(), &specs->properties);
+                for (const PXR_NS::UsdShadeConnectionSourceInfo& source : output.GetConnectedSources()) {
+                    pending.push_back(source.source);
+                }
+            }
+            walk(true);
+        };
         const auto recordSpecs = [&](const std::vector<PXR_NS::UsdPrim>& prims, ProjectionSpecs* specs) {
+            recordNetworks(specs);
             if (geometryProjection.framePrimvar.empty()) {
                 return;
             }
             for (const PXR_NS::UsdPrim& prim : prims) {
                 locator.addAttribute(frameOf(prim).GetAttr(), &specs->properties);
                 locator.addAttribute(referenceOf(prim).GetAttr(), &specs->properties);
+                std::vector<std::string> names;
                 for (int column = 0; column < 3; ++column) {
-                    const PXR_NS::TfToken name(SceneProjectionCameras::frameColumnPrimvar(geometryProjection.framePrimvar, column));
-                    locator.addAttribute(PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(name).GetAttr(), &specs->properties);
+                    names.push_back(SceneProjectionCameras::frameColumnPrimvar(geometryProjection.framePrimvar, column));
+                }
+                for (int part = 0; part < 4; ++part) {
+                    names.push_back(SceneProjectionCameras::moonRayFramePrimvar(geometryProjection.framePrimvar, part));
+                }
+                for (const std::string& name : names) {
+                    locator.addAttribute(PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(name)).GetAttr(), &specs->properties);
                 }
             }
             const PXR_NS::UsdPrim owner = shader.GetPrim().GetParent();
-            for (const std::string& name : { SceneProjectionCameras::cyclesFrameColumn(0), SceneProjectionCameras::cyclesFrameColumn(1), SceneProjectionCameras::cyclesFrameColumn(2), std::string(kSceneProjectionCyclesReferencePoints) }) {
+            std::vector<std::string> readers = { std::string(kSceneProjectionCyclesReferencePoints), std::string(kSceneProjectionMoonRayReferencePoints) };
+            for (int column = 0; column < 3; ++column) {
+                readers.push_back(SceneProjectionCameras::cyclesFrameColumn(column));
+            }
+            for (int part = 0; part < 4; ++part) {
+                readers.push_back(SceneProjectionCameras::moonRayFrameReader(part));
+            }
+            for (const std::string& name : readers) {
                 const PXR_NS::UsdPrim reader = owner ? owner.GetChild(PXR_NS::TfToken(name)) : PXR_NS::UsdPrim();
                 if (reader) {
                     locator.addPrim(reader, &specs->prims);

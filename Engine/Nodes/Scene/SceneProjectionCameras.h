@@ -90,6 +90,8 @@ std::string cyclesFrameColumn(int column);
 #define kSceneProjectionMoonRayReferencePoints "MoonRayReferencePoints"
 std::string moonRayProjectorDot(int component);
 std::string moonRayProjectorOffset(int component);
+// The attribute map reading moonRayFramePrimvar(..., part).
+std::string moonRayFrameReader(int part);
 
 // One input of a shader under the projection material, by the shader's name there.
 struct ShaderValue {
@@ -118,6 +120,17 @@ std::string frameColumnPrimvar(const std::string& framePrimvar,
                                int column);
 PXR_NS::VtVec4fArray frameColumn(const PXR_NS::GfMatrix4d& frame,
                                  int column);
+
+/**
+ * @brief hdMoonray passes neither matrix nor float4 primvars to its maps, so the frame is also
+ * authored as four constant float3 primvars: parts 0 to 2 are the upper three entries of the
+ * frame's columns minus the identity's, part 3 its translation. A prim without them reads
+ * AttributeMap's zero default, the identity, as for Cycles.
+ **/
+std::string moonRayFramePrimvar(const std::string& framePrimvar,
+                                int part);
+PXR_NS::GfVec3f moonRayFramePart(const PXR_NS::GfMatrix4d& frame,
+                                 int part);
 
 struct Unresolved {
     PXR_NS::SdfPath shader;

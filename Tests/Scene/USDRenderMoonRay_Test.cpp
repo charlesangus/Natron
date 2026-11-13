@@ -64,6 +64,7 @@
 
 #include <pxr/base/plug/registry.h>
 #include <pxr/base/tf/diagnosticMgr.h>
+#include <pxr/usd/usdGeom/basisCurves.h>
 
 #include "BaseTest.h"
 
@@ -88,8 +89,10 @@
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMaterial.h"
@@ -2240,4 +2243,111 @@ TEST_F(USDRenderMoonRayProjectionTest, GeometrySpaceHeldSticksToTheMovingCard)
     EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
     ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
     EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
+}
+
+// Linear curves, not a mesh, so no reference points: held at frame 1 in Geometry space, the plate
+// rides on the projection's frame alone as the curves' transform carries them 2 units by frame 11.
+// Ribbons 0.35 wide every 0.25 cover the card's 16 x 8 units.
+TEST_F(USDRenderMoonRayProjectionTest, GeometrySpaceHeldSticksToMovingCurvesWithoutReferencePoints)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const double shift = 2.;
+    const QString file = tmp.path() + QString::fromUtf8("/curves.usda");
+    {
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(file.toStdString());
+        ASSERT_TRUE(bool(stage));
+        PXR_NS::UsdGeomBasisCurves curves = PXR_NS::UsdGeomBasisCurves::Define(stage, PXR_NS::SdfPath("/Card"));
+        const int rows = 33;
+        PXR_NS::VtVec3fArray points;
+        for (int row = 0; row < rows; ++row) {
+            const float y = (float)(-kProjectionCardHeight / 2. + row * kProjectionCardHeight / (rows - 1));
+            points.push_back(PXR_NS::GfVec3f((float)(-kProjectionCardWidth / 2.), y, 0.f));
+            points.push_back(PXR_NS::GfVec3f((float)(kProjectionCardWidth / 2.), y, 0.f));
+        }
+        curves.CreateTypeAttr().Set(PXR_NS::UsdGeomTokens->linear);
+        curves.CreateCurveVertexCountsAttr().Set(PXR_NS::VtIntArray(rows, 2));
+        curves.CreatePointsAttr().Set(points);
+        curves.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(1, 0.35f));
+        curves.SetWidthsInterpolation(PXR_NS::UsdGeomTokens->constant);
+        PXR_NS::UsdGeomXformOp translate = curves.AddTranslateOp();
+        translate.Set(PXR_NS::GfVec3d(0.), PXR_NS::UsdTimeCode(1.));
+        translate.Set(PXR_NS::GfVec3d(shift, 0., 0.), PXR_NS::UsdTimeCode(11.));
+        ASSERT_TRUE(stage->GetRootLayer()->Save());
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* space = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(graph.projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(graph.projector, kUSDProject3DParamFrameHold);
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    KnobFile* fileKnob = reader ? knob<KnobFile>(reader, kUSDReadParamFile) : NULL;
+    NodePtr merge = graph.render->getInput(0)->getInput(0);
+    ASSERT_TRUE(space && useHold && hold && fileKnob && assign && merge);
+    ASSERT_TRUE(setString(assign, kUSDAssignMaterialParamPrimPattern, "/Card"));
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    fileKnob->setValue(file.toStdString());
+    graph.card->disconnectInput(0);
+    merge->disconnectInput(0);
+    connectNodes(reader, assign, kUSDAssignMaterialInputScene, true);
+    connectNodes(graph.projector, assign, kUSDAssignMaterialInputMaterial, true);
+    connectNodes(assign, merge, 0, true);
+
+    RenderedPlane rgba;
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+    ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
+    EXPECT_FALSE(assign->hasPersistentMessage()) << messageOf(assign);
+}
+
+// In Geometry space the projection is fixed where the card node places the card, so a transform
+// after it carries the plate along, and a mirror there leaves the face that looked at the
+// projector still showing it under Project On Front.
+TEST_F(USDRenderMoonRayProjectionTest, GeometrySpaceFollowsATransformAfterTheCard)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* space = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectionSpace);
+    KnobChoice* projectOn = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectOn);
+    KnobChoice* outside = knob<KnobChoice>(graph.projector, kUSDProject3DParamOutside);
+    NodePtr edit = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    NodePtr merge = graph.render->getInput(0)->getInput(0);
+    ASSERT_TRUE(space && projectOn && outside && edit && merge);
+    ASSERT_TRUE(setString(edit, kUSDEditTransformParamPrimPattern, "/Card"));
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    merge->disconnectInput(0);
+    connectNodes(graph.card, edit, 0, true);
+    connectNodes(edit, merge, 0, true);
+
+    const double shift = 2.;
+    ASSERT_TRUE(setTriple(edit, kSceneParamTranslate, shift, 0., 0.));
+    RenderedPlane rgba;
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
+    EXPECT_FALSE(edit->hasPersistentMessage()) << messageOf(edit);
+
+    ASSERT_TRUE(setTriple(edit, kSceneParamTranslate, 0., 0., 0.));
+    ASSERT_TRUE(setTriple(edit, kSceneParamScale, -1., 1., 1.));
+    outside->setValue((int)USDProject3D::eOutsideBlack);
+    projectOn->setValue((int)USDProject3D::eProjectOnFront);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_GT(countIn(rgba, kProjectionCardInterior, eProjectedRed), kProjectionCardInterior.area() / 8);
+    EXPECT_GT(countIn(rgba, kProjectionCardInterior, eProjectedBlue), kProjectionCardInterior.area() / 8);
+    projectOn->setValue((int)USDProject3D::eProjectOnBack);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedBlack));
 }

@@ -122,6 +122,11 @@ bump the submodule's gitlink, commit and push that branch, and set
 `NATRON_MOONRAY_COMMIT` in the `Dockerfile` to the new super-repo SHA (a full
 40-character SHA).
 
+Never force-push or rebase the forks' `natron/...` branches. The build pins
+commits that are reachable only through those branches, so rewriting one can
+leave a pin pointing at nothing. A new change goes on top as a new commit, and
+the pin moves to that commit.
+
 The prefix is relocatable and is never put on the loader path: MoonRay's
 libraries carry `$ORIGIN` RUNPATHs and link the image's `/usr/local/lib`
 copies, which the script checks (no unresolved library, no library in two

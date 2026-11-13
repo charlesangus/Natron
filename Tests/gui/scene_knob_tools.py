@@ -15,6 +15,9 @@ Checks:
   - a USDXformPrim's Prim Path menu offers only Replace, Pick in Viewer and Select Matches, and Replace writes the
     first selected prim.
 
+  - the viewer shows the USDPrune's output, whose own matches are deactivated, yet Select Matches searches the node's
+    input with the viewer's loads: with "/World//*" it still finds the prims below the deactivated ones, in the
+    branch the viewer has loaded;
   - on a payload scene with nothing loaded, Select Matches selects only the loaded matches and reports the
     unloaded branches not searched while no payload loads; its "Load and select" button loads the payloads and
     selects the matches inside them.
@@ -41,6 +44,7 @@ CAM = "/World/Cam"
 STATE_UNLOADED = 1
 BLOCK0_B0 = "/World/Block0/B0"
 UNLOADED_GEO = "/World/Block0/B0/Floor/Geo"
+B0_FLOOR = "/World/Block0/B0/Floor"
 PLAIN = "/World/Plain"
 
 
@@ -321,6 +325,17 @@ try:
               "Load and select selects the match inside the payload besides the loaded one (got %r)" % (viewer_selection(),))
         check(view().property("natronSceneLoadEdits") > edits_before, "Load and select loaded the payload in the viewer")
         check(offer_widget("knobPrimSelectMatchesLoad", QPushButton) is None, "the offer is gone once the payload is loaded")
+
+        # The viewer shows the USDPrune's output, where the pattern's own matches are deactivated and
+        # the walk of that stage would not descend into them; the search reads the node's input.
+        pattern.setValue("/World//*")
+        trigger(menu, "knobPrimSelectMatches")
+        ok = yield ("until", lambda: B0_FLOOR in viewer_selection() and UNLOADED_GEO in viewer_selection(), POLL_TIMEOUT_S)
+        check(ok and BLOCK0_B0 in viewer_selection() and PLAIN in viewer_selection(),
+              "Select Matches finds the matches the viewer's pruned stage has deactivated, loaded branch included "
+              "(got %r)" % (viewer_selection(),))
+        check(offer_widget("knobPrimSelectMatchesLoad", QPushButton) is None,
+              "the search of the input uses the viewer's loads, so nothing is left to offer")
         prune.disconnectInput(0)
         require(prune.connectInput(0, usd), "connect the USDPrune back to the first scene")
         ok = yield ("until", lambda: bool(world_children(panel_tree())) and BOX in world_children(panel_tree()), POLL_TIMEOUT_S)

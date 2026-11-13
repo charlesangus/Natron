@@ -28,13 +28,14 @@
 // Before Qt's OpenGL headers.
 #include "Gui/SceneViewport.h"
 
+#include <algorithm>
 #include <climits>
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
-#include <QElapsedTimer>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -63,9 +64,11 @@
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Plugin.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h"
@@ -73,6 +76,7 @@
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneGraphPanel.h"
+#include "Gui/SceneNodeStageSource.h"
 #include "Gui/TabMenuBridge.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
@@ -678,8 +682,6 @@ currentSelection(Gui* gui)
 
 namespace {
     constexpr int kMatchStepMs = 8;
-    constexpr int kLoadPollMs = 100;
-    constexpr int kLoadWaitMs = 30000;
     constexpr int kOfferMs = 60000;
 
     // The "Load and select" report in the status bar, if one is up.
@@ -700,69 +702,120 @@ namespace {
         g_loadOffer.clear();
     }
 
-    SceneViewport*
-    selectionViewport(Gui* gui)
-    {
-        ViewerTab* viewer = selectionViewer(gui);
-
-        return viewer ? viewer->getSceneViewport() : nullptr;
-    }
-
-    // The viewport is the selection viewer's, resolved on this tick, so its renderer is alive.
     bool
-    tryReadViewerStage(SceneViewport* viewport,
-                       const std::function<void(const SceneStage* stage)>& read)
+    sceneReaches(const NodePtr& from,
+                 const NodePtr& target)
     {
-        SceneWriteBarrier::ReadScope scope;
+        std::vector<NodePtr> pending(1, from);
+        std::set<const Node*> seen;
+        while (!pending.empty()) {
+            NodePtr node = pending.back();
+            pending.pop_back();
+            if (!node || !seen.insert(node.get()).second) {
+                continue;
+            }
+            if (node == target) {
+                return true;
+            }
+            for (std::size_t i = 0; i < node->getInputs().size(); ++i) {
+                pending.push_back(node->getInput(i));
+            }
+        }
 
-        return viewport->getRenderer().tryReadStage(read);
+        return false;
     }
 
-    void startMatchSearch(Gui* gui, const std::string& expression, const QString& label);
+    // The viewer whose load rules the node's scene is opened with: the active one if its scene
+    // reaches the node, else the first other showing a scene that does. A scene the node's input
+    // holds is searched with whatever that viewer has loaded, as the viewer shows it.
+    SceneViewport*
+    loadRulesViewport(Gui* gui,
+                      const NodePtr& node)
+    {
+        std::vector<ViewerTab*> tabs;
+        if (ViewerTab* active = selectionViewer(gui)) {
+            tabs.push_back(active);
+        }
+        for (ViewerTab* tab : gui->getViewersList()) {
+            if (tab && (std::find(tabs.begin(), tabs.end(), tab) == tabs.end())) {
+                tabs.push_back(tab);
+            }
+        }
+        for (ViewerTab* tab : tabs) {
+            if (tab->isShowingScene() && sceneReaches(tab->getSceneViewedNode(), node)) {
+                return tab->getSceneViewport();
+            }
+        }
 
-    // Loads paths in the viewer as the Scene Graph panel's Load does, and searches again once they are
-    // loaded, or after a wait if one never loads.
+        return nullptr;
+    }
+
+    bool
+    underPath(const std::string& path,
+              const QStringList& roots)
+    {
+        for (const QString& root : roots) {
+            const std::string prefix = root.toStdString();
+            if ((path == prefix) || (path.compare(0, prefix.size() + 1, prefix + "/") == 0)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void startMatchSearch(Gui* gui, const NodePtr& node, const std::string& expression, const QString& label);
+
+    // Loads paths in the viewer as the Scene Graph panel's Load does, and searches again once the
+    // viewer has taken the batch in: sceneSynced and stageLoadsChanged both say the stage changed.
+    // A payload that fails to load ends it with a report.
     void
     loadAndSearch(Gui* gui,
+                  const NodePtr& node,
                   const QStringList& paths,
                   const std::string& expression,
                   const QString& label)
     {
-        SceneViewport* viewport = selectionViewport(gui);
+        QPointer<SceneViewport> viewport(loadRulesViewport(gui, node));
         if (!viewport) {
             showHint(gui, tr("Select Matches: there is no viewer to load in."));
 
             return;
         }
         const int generation = ++g_matchSearchGeneration;
-        viewport->requestLoad(paths, true);
-        showHint(gui, tr("Select Matches: loading %1 unloaded branches.").arg(paths.size()));
-        std::shared_ptr<QElapsedTimer> waited(new QElapsedTimer);
-        waited->start();
-        QTimer* timer = new QTimer(gui);
-        timer->setInterval(kLoadPollMs);
-        QObject::connect(timer, &QTimer::timeout, timer, [gui, timer, paths, expression, label, generation, waited]() {
-            SceneViewport* current = selectionViewport(gui);
-            if ((generation != g_matchSearchGeneration) || !current) {
-                timer->deleteLater();
+        QObject* waiter = new QObject(gui);
+        const std::function<void()> check = [gui, node, paths, expression, label, generation, viewport, waiter]() {
+            if ((generation != g_matchSearchGeneration) || !viewport) {
+                waiter->deleteLater();
 
                 return;
             }
-            int remaining = 0;
-            if (!tryReadViewerStage(current, [&](const SceneStage* stage) { remaining = SceneGraphPrimWalk::countUnloaded(stage, paths); })) {
+            SceneViewportRenderer& renderer = viewport->getRenderer();
+            if (renderer.hasPendingStageLoads()) {
                 return;
             }
-            if ((remaining > 0) && (waited->elapsed() < kLoadWaitMs)) {
-                return;
+            waiter->deleteLater();
+            for (const std::pair<std::string, std::string>& failure : renderer.getStageLoadFailures()) {
+                if (underPath(failure.first, paths)) {
+                    showHint(gui, tr("Select Matches: %1 did not load: %2").arg(QString::fromStdString(failure.first), QString::fromStdString(failure.second)));
+
+                    return;
+                }
             }
-            timer->deleteLater();
-            startMatchSearch(gui, expression, label);
-        });
-        timer->start();
+            startMatchSearch(gui, node, expression, label);
+        };
+        QObject::connect(viewport.data(), &SceneViewport::sceneSynced, waiter, check);
+        QObject::connect(viewport.data(), &SceneViewport::stageLoadsChanged, waiter, check);
+        viewport->requestLoad(paths, true);
+        showHint(gui, tr("Select Matches: loading %1 unloaded branches.").arg(paths.size()));
+        if (!viewport->getRenderer().hasPendingStageLoads()) {
+            check();
+        }
     }
 
     void
     showLoadOffer(Gui* gui,
+                  const NodePtr& node,
                   const QString& report,
                   const QStringList& paths,
                   const std::string& expression,
@@ -792,27 +845,126 @@ namespace {
                 dropLoadOffer();
             }
         });
-        QObject::connect(button, &QPushButton::clicked, offer, [gui, paths, expression, label]() {
+        QObject::connect(button, &QPushButton::clicked, offer, [gui, node, paths, expression, label]() {
             dropLoadOffer();
-            loadAndSearch(gui, paths, expression, label);
+            loadAndSearch(gui, node, paths, expression, label);
         });
     }
 
+    // The node's input scene, opened with nothing loaded and then with the viewer's load rules.
     struct MatchSearch {
         SceneGraphPrimWalk walk;
         QStringList found;
+        std::shared_ptr<SceneNodeStageSource> source;
+        QPointer<SceneViewport> viewport;
+        bool offerLoad = false;
+
+        ~MatchSearch()
+        {
+            if (source) {
+                SceneNodeStageSource::reap({ source });
+            }
+        }
     };
 
-    // Walks the viewer's stage in short slices under its read lock, so the UI and the viewer's own
-    // frames and syncs go on between them, then selects what matched.
+    void
+    reportMatches(Gui* gui,
+                  const NodePtr& node,
+                  const std::shared_ptr<MatchSearch>& search,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        const QStringList matches = search->found;
+        const QStringList unloaded = search->walk.getUnloadedBranchPaths();
+        QString report;
+        if (matches.isEmpty()) {
+            report = tr("Select Matches: nothing loaded matches the %1.").arg(label);
+        } else {
+            report = tr("Select Matches: %1 prims selected.").arg(matches.size());
+        }
+        if (!unloaded.isEmpty()) {
+            report += (unloaded.size() == 1) ? tr(" 1 unloaded branch not searched.")
+                                             : tr(" %1 unloaded branches not searched.").arg(unloaded.size());
+        }
+        if (!matches.isEmpty()) {
+            SceneViewport* viewport = search->viewport ? search->viewport.data() : nullptr;
+            if (!viewport) {
+                ViewerTab* viewer = selectionViewer(gui);
+                viewport = (viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr;
+            }
+            if (viewport) {
+                viewport->setSelection(matches);
+            }
+        }
+        showHint(gui, report);
+        if (!unloaded.isEmpty() && search->offerLoad) {
+            showLoadOffer(gui, node, report, unloaded, expression, label);
+        }
+    }
+
+    // Walks the stage in short slices under its read lock, so the UI goes on between them.
+    void
+    stepMatchSearch(Gui* gui,
+                    const NodePtr& node,
+                    const std::shared_ptr<MatchSearch>& search,
+                    const std::string& expression,
+                    const QString& label,
+                    int generation)
+    {
+        std::vector<std::pair<std::string, std::string>> failures;
+        search->source->readStage([&](const SceneStage* stage) {
+            if (stage) {
+                for (const SceneStage::LoadFailure& failure : stage->getLoadFailures()) {
+                    failures.emplace_back(failure.prim.GetString(), failure.error);
+                }
+            }
+        });
+        if (!failures.empty()) {
+            showHint(gui, tr("Select Matches: %1 did not load: %2").arg(QString::fromStdString(failures.front().first), QString::fromStdString(failures.front().second)));
+
+            return;
+        }
+        search->walk.start();
+        QTimer* timer = new QTimer(gui);
+        timer->setInterval(0);
+        QObject::connect(timer, &QTimer::timeout, timer, [gui, node, timer, search, generation, expression, label]() {
+            if (generation != g_matchSearchGeneration) {
+                timer->deleteLater();
+
+                return;
+            }
+            bool shown = false;
+            if (!search->source->tryReadStage([&](const SceneStage* stage) {
+                    shown = (stage != nullptr);
+                    search->walk.step(stage, kMatchStepMs, INT_MAX, [](const QString&) { return false; }, &search->found);
+                })) {
+                return;
+            }
+            if (!shown) {
+                timer->deleteLater();
+                showHint(gui, tr("Select Matches: the node's input shows no scene."));
+
+                return;
+            }
+            if (!search->walk.isOver()) {
+                return;
+            }
+            timer->deleteLater();
+            reportMatches(gui, node, search, expression, label);
+        });
+        timer->start();
+    }
+
     void
     startMatchSearch(Gui* gui,
+                     const NodePtr& node,
                      const std::string& expression,
                      const QString& label)
     {
         dropLoadOffer();
-        if (!selectionViewport(gui)) {
-            showHint(gui, tr("Select Matches: there is no viewer to search."));
+        const NodePtr input = node ? node->getInput(0) : NodePtr();
+        if (!input) {
+            showHint(gui, tr("Select Matches: the node has no scene on its input."));
 
             return;
         }
@@ -823,55 +975,40 @@ namespace {
 
             return;
         }
-        search->walk.start();
+        search->viewport = loadRulesViewport(gui, node);
+        search->offerLoad = !search->viewport.isNull();
+        SceneLoadRules rules;
+        if (search->viewport) {
+            search->viewport->getRenderer().getStageLoadRules(&rules);
+        }
         const int generation = ++g_matchSearchGeneration;
-        QTimer* timer = new QTimer(gui);
-        timer->setInterval(0);
-        QObject::connect(timer, &QTimer::timeout, timer, [gui, timer, search, generation, expression, label]() {
-            SceneViewport* viewport = selectionViewport(gui);
-            if ((generation != g_matchSearchGeneration) || !viewport) {
-                timer->deleteLater();
+        const std::weak_ptr<MatchSearch> weak(search);
+        QPointer<Gui> guard(gui);
+        search->source = std::make_shared<SceneNodeStageSource>(input, gui, [guard, node, weak, rules, expression, label, generation](bool ok, const QString& error) {
+            std::shared_ptr<MatchSearch> current = weak.lock();
+            if (!guard || !current || (generation != g_matchSearchGeneration)) {
+                return;
+            }
+            if (!ok) {
+                showHint(guard, tr("Select Matches: %1").arg(error));
 
                 return;
             }
-            bool shown = false;
-            if (!tryReadViewerStage(viewport, [&](const SceneStage* stage) {
-                    shown = (stage != nullptr);
-                    search->walk.step(stage, kMatchStepMs, INT_MAX, [](const QString&) { return false; }, &search->found);
-                })) {
-                return;
-            }
-            if (!shown) {
-                timer->deleteLater();
-                showHint(gui, tr("Select Matches: the viewer shows no scene."));
+            if (sceneLoadRequestsFor(rules).empty()) {
+                stepMatchSearch(guard, node, current, expression, label, generation);
 
                 return;
             }
-            if (!search->walk.isOver()) {
-                return;
-            }
-            timer->deleteLater();
-            const QStringList matches = search->found;
-            const QStringList unloaded = search->walk.getUnloadedBranchPaths();
-            QString report;
-            if (matches.isEmpty()) {
-                report = tr("Select Matches: nothing loaded matches the %1.").arg(label);
-            } else {
-                report = tr("Select Matches: %1 prims selected.").arg(matches.size());
-            }
-            if (!unloaded.isEmpty()) {
-                report += (unloaded.size() == 1) ? tr(" 1 unloaded branch not searched.")
-                                                 : tr(" %1 unloaded branches not searched.").arg(unloaded.size());
-            }
-            if (!matches.isEmpty()) {
-                viewport->setSelection(matches);
-            }
-            showHint(gui, report);
-            if (!unloaded.isEmpty()) {
-                showLoadOffer(gui, report, unloaded, expression, label);
+            current->source->requestLoadRules(rules); }, false);
+        search->source->setLoadsChanged([guard, node, weak, expression, label, generation]() {
+            std::shared_ptr<MatchSearch> current = weak.lock();
+            if (guard && current && (generation == g_matchSearchGeneration)) {
+                stepMatchSearch(guard, node, current, expression, label, generation);
             }
         });
-        timer->start();
+        const GuiAppInstancePtr app = gui->getApp();
+        search->source->request(app ? app->getTimeLine()->currentFrame() : 0.);
+        showHint(gui, tr("Select Matches: reading the scene of %1...").arg(QString::fromStdString(input->getLabel())));
     }
 } // anonymous namespace
 
@@ -895,7 +1032,8 @@ selectMatches(Gui* gui,
 
         return;
     }
-    startMatchSearch(gui, expression, label);
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    startMatchSearch(gui, effect ? effect->getNode() : NodePtr(), expression, label);
 }
 
 QString

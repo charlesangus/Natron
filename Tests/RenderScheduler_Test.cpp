@@ -27,7 +27,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -51,8 +55,11 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheDeviceTier.h"
+#include "Engine/CacheEntry.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
+#include "Engine/GpuContext.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -68,6 +75,10 @@
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -1315,6 +1326,86 @@ TEST_F(RenderSchedulerTest, ARegionBeingRenderedElsewhereKeepsItsDependencies)
     appPTR->removeFromNodeCache(entry);
 }
 #endif
+
+#ifdef NATRON_HAVE_GPU
+// An entry only on the device serves its task, and the plan neither promotes it nor counts it as used. A device is
+// needed to hold the image, so without one the test is skipped, or fails when NATRON_TEST_REQUIRE_GPU=1.
+TEST_F(RenderSchedulerTest, AnEntryOnlyOnTheDeviceServesItsTask)
+{
+    appPTR->clearAllCaches();
+    GpuContext* gpuContext = appPTR->getGpuContext();
+    if (gpuContext) {
+        gpuContext->waitForInit(std::chrono::seconds(60));
+    }
+    if (!gpuContext || !gpuContext->isAvailable()) {
+        const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
+        if (require && (std::strcmp(require, "1") == 0)) {
+            ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU=1 but the application has no GPU context";
+        } else {
+            std::printf("[  SKIPPED ] no GPU context\n");
+        }
+
+        return;
+    }
+    const std::shared_ptr<void> hold = gpuContext->holdRuntime();
+    gpu::GpuRuntime* runtime = gpuContext->runtime();
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(runtime && tier);
+
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    FrameRun plan;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &plan, &error)) << error;
+    const RectI bounds(0, 0, kCountingTestSize, kCountingTestSize);
+
+    GpuImageLayout layout;
+    layout.layer = ImageLayerDesc::getRGBAComponents();
+    layout.rod = RectD(0., 0., kCountingTestSize, kCountingTestSize);
+    layout.bounds = bounds;
+    gpu::GpuBufferHandle handle;
+    gpu::GpuStatus status = runtime->acquire(layout.deviceBytes(), handle);
+    ASSERT_TRUE(bool(status)) << status.message;
+    std::vector<float> pixels((std::size_t)bounds.area() * 4, 5.f);
+    gpu::TimelineValue done;
+    status = runtime->upload({ pixels.data(), pixels.size() * sizeof(float) }, handle.buffer(), 0, done);
+    ASSERT_TRUE(bool(status)) << status.message;
+    ASSERT_TRUE(bool(runtime->wait(done)));
+    const GpuDeviceImagePtr image = GpuDeviceImage::create(*runtime, handle, layout, RenderStatsPtr());
+    ASSERT_TRUE(bool(image));
+
+    const CacheEntryHeaderPtr header = std::make_shared<CacheEntryHeader>();
+    header->bounds = bounds;
+    header->bitmap.initialize(bounds);
+    header->bitmap.setTo1();
+    const ImageKey key = outputKey(nodes[1], plan).forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    ASSERT_TRUE(bool(tier->insert(key, image, header)));
+    header->lastUse.store(1);
+
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error, true)) << error;
+    ASSERT_EQ(2u, run.numTasks);
+    const FrameGraph::Task* task = findTask(run.graph, nodes[1]);
+    ASSERT_TRUE(task != nullptr);
+    EXPECT_TRUE(task->servedFromCache);
+    EXPECT_TRUE(task->servedTier == EffectInstance::OutputCacheTier::Device);
+    EXPECT_TRUE(task->dependencies.empty());
+    EXPECT_TRUE(findTask(run.graph, nodes[0]) == nullptr);
+    EXPECT_EQ((U64)1, header->lastUse.load());
+    EXPECT_TRUE(image->isResident());
+
+    // Once the pixels are gone from the device the entry no longer counts.
+    ASSERT_TRUE(bool(image->downloadToRam()));
+    FrameRun after;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &after, &error, true)) << error;
+    EXPECT_EQ(3u, after.numTasks);
+    const FrameGraph::Task* notServed = findTask(after.graph, nodes[1]);
+    ASSERT_TRUE(notServed != nullptr);
+    EXPECT_FALSE(notServed->servedFromCache);
+
+    tier->clear();
+}
+#endif // NATRON_HAVE_GPU
 
 // Eviction scores read lastUse; a plan that bumped it would keep alive what it only looked at.
 TEST_F(RenderSchedulerTest, ProbingAnEntryDoesNotCountAsUsingIt)

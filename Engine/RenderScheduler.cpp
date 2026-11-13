@@ -788,12 +788,14 @@ RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
 
             const bool rendersFullScale = (task.key.mipmapLevel != 0) && (task.cacheMipmapLevel == 0);
             RectD missing;
+            EffectInstance::OutputCacheTier servedBy = EffectInstance::OutputCacheTier::Memory;
             const EffectInstance::OutputCacheCoverage coverage = effect->probeOutputInCache(nodeRequest->second->nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, task.key.mipmapLevel,
                                                                                             rendersFullScale, frameArgs->draftMode && task.key.node->isDraftModeUsed(), frameArgs->tilesSupported,
-                                                                                            region, request->globalData.rod, task.pixelAspectRatio, task.components, task.bitdepth, &missing);
+                                                                                            region, request->globalData.rod, task.pixelAspectRatio, task.components, task.bitdepth, &missing, &servedBy);
             if (coverage == EffectInstance::OutputCacheCoverage::Full) {
                 kept.clear();
                 task.servedFromCache = true;
+                task.servedTier = servedBy;
             } else if ((coverage == EffectInstance::OutputCacheCoverage::Partial) && !kept.empty() && (!request->globalData.transforms || request->globalData.transforms->empty())) {
                 RoIMap missingPartRoIs;
                 effect->getRegionsOfInterest_public(task.key.time, nodeRequest->second->mappedScale, request->globalData.rod, missing, task.key.view, &missingPartRoIs);
@@ -803,6 +805,7 @@ RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
                            }),
                            kept.end());
                 task.servedFromCache = kept.size() != before;
+                task.servedTier = servedBy;
             }
         }
         droppedAny = droppedAny || (kept.size() != task.dependencies.size());

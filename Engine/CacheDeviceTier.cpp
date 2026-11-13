@@ -376,6 +376,37 @@ CacheDeviceTier::find(const ImageKey& key)
     return found;
 }
 
+ImagePtr
+CacheDeviceTier::peekStub(const ImageKey& key,
+                          const CacheAPI* cache) const
+{
+    CacheDeviceEntryPtr found;
+    {
+        std::lock_guard<std::mutex> k(_lock);
+        const Table::const_iterator it = _table.find(key.getHash());
+        if (it != _table.end()) {
+            for (const CacheDeviceEntryPtr& entry : it->second) {
+                if (entry->getKey() == key) {
+                    found = entry;
+                    break;
+                }
+            }
+        }
+    }
+    if (!found || !(found->header()->residency.load() & CacheEntryHeader::eResidencyDevice) || !found->image()->isResident()) {
+        return ImagePtr();
+    }
+    const GpuImageLayout& layout = found->image()->layout();
+    try {
+        const ImageParamsPtr params = Image::makeParams(layout.rod, layout.bounds, layout.par, layout.mipmapLevel, false,
+                                                        layout.layer, eImageBitDepthFloat, layout.fielding, eStorageModeGLTex);
+
+        return std::make_shared<Image>(found->getKey(), params, cache, found->header());
+    } catch (const std::bad_alloc&) {
+        return ImagePtr();
+    }
+}
+
 bool
 CacheDeviceTier::takeLocked(const CacheDeviceEntry* entry)
 {

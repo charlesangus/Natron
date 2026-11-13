@@ -1938,6 +1938,15 @@ public:
         Full
     };
 
+    // Where a probe found the entries it counted on.
+    enum class OutputCacheTier {
+        Memory,
+        // At least one layer is a stub of a file, whose pixels are not read until renderRoI promotes it.
+        Disk,
+        // Every layer is held by a device tier only.
+        Device
+    };
+
     /**
      * @brief What the cache holds of this effect's output for region, in pixels at mipmapLevel, asking what renderRoI's
      * lookup would: the same keys in the same order and the same bitmap and being-rendered state. Nothing is counted as a
@@ -1952,6 +1961,8 @@ public:
      * @param acceptsPartial Whether the effect can render a part of its output.
      * @param missing Set for OutputCacheCoverage::Partial: an enclosing rectangle of what is missing, in canonical
      * coordinates.
+     * @param servedBy Set, when not null, to where the entries counted on were found. A device entry is only counted at
+     * the exact level, as it has no pixels to downscale from.
      **/
     OutputCacheCoverage probeOutputInCache(U64 nodeHash,
                                            bool isFrameVaryingOrAnimated,
@@ -1966,7 +1977,8 @@ public:
                                            double par,
                                            const std::list<ImageLayerDesc>& layers,
                                            ImageBitDepthEnum bitdepth,
-                                           RectD* missing);
+                                           RectD* missing,
+                                           OutputCacheTier* servedBy = nullptr);
 
     /**
      * @brief Whether renderRoI pulls this effect's inputs at level 0 whatever level it is asked for.

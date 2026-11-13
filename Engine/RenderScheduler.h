@@ -152,6 +152,9 @@ struct FrameGraph {
         // Such a task can't join a GPU region, which renders the whole RoI from the region's inputs.
         bool servedFromCache = false;
 
+        // Where the entries that serve the task were found; meaningful when servedFromCache.
+        EffectInstance::OutputCacheTier servedTier = EffectInstance::OutputCacheTier::Memory;
+
         // Empty when the request doesn't know the region of definition.
         RectI pixelRoD;
         double pixelAspectRatio = 1.;

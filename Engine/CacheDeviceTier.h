@@ -200,6 +200,15 @@ public:
     CacheDeviceEntryPtr find(const ImageKey& key);
 
     /**
+     * @brief An unallocated image of key's entry sharing its header, for a lookup that must not count as a use: the
+     * entry keeps its place, a downloaded or evicted image is left in the table for the next find() to remove, and
+     * no device memory is pinned. Null when the tier has no resident entry of key. Its storage mode is
+     * eStorageModeGLTex, so a lookup can tell it from a RAM image and has no pixels to read from it.
+     **/
+    ImagePtr peekStub(const ImageKey& key,
+                      const CacheAPI* cache) const;
+
+    /**
      * @brief What clear() takes a runtime token from, for a caller such as a cache clear that holds none. Set before
      * the tier is attached to a cache.
      **/

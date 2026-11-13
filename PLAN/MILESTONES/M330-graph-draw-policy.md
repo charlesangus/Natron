@@ -44,7 +44,7 @@ assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
 
 ## Phase 330.2: USDExpandHierarchy
 
-- [ ] M330.P2.T1 — USDExpandHierarchy node
+- [x] M330.P2.T1 — USDExpandHierarchy node
   - files: `Engine/Nodes/Scene/USDExpandHierarchy.{h,cpp}`, `Engine/Nodes/Scene/USDExpandHierarchy.reg.inc`, `Engine/Nodes/Scene/docs/USDExpandHierarchy.md`, `Tests/Scene/USDExpandHierarchy_Test.cpp`, `Tests/gui/scene_expand_hierarchy.py`
   - approach: authors no layer; passes its input stack through and appends rules. Holds a list of rules so Bake to Node can write several; check existing table knobs before adding a knob type. Pattern knobs carry the prim-path hint. Viewer resolution matches patterns against loaded prims. A Full + Load rule iterates its re-match after each load. Rewrites the node removed from M231 - Scene Graph Panel; take its docs and registration from git history.
   - verify: gtest — stack hash is unchanged by the node, and a rule's effect is resolved per viewer; GUI script — a Full + Load rule on one block loads only that block's payloads, and removing the node returns that block to its USDRead default draw while its payloads stay loaded until Unload.
@@ -52,13 +52,13 @@ assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
 
 ## Phase 330.3: Row origin and baking
 
-- [ ] M330.P3.T1 — Show where each row's state comes from
+- [x] M330.P3.T1 — Show where each row's state comes from
   - files: `Gui/SceneGraphPanel.cpp`, `Gui/SceneGraphModel.{h,cpp}`, `Tests/gui/scene_draw_origin.py`
   - approach: the draw column distinguishes viewer-set, graph-set and inherited values, with a tooltip naming the node. Reset to Graph on a row or on the panel clears interactive states.
   - verify: GUI script — a graph-set row shows its node in the tooltip, an interactive change flips its origin, and Reset to Graph flips it back.
   - size: M
 
-- [ ] M330.P3.T2 — Bake to Node
+- [x] M330.P3.T2 — Bake to Node
   - files: `Gui/SceneGraphPanel.cpp`, `Gui/SceneSelectionActions.{h,cpp}`, `Tests/gui/scene_bake_to_node.py`
   - approach: a panel action writing the viewer's interactive states into a USDExpandHierarchy below the viewed node, as literal paths, and clearing them. One undo step covers node, rules and clearing. If a USDExpandHierarchy is directly below, add to it.
   - verify: GUI script — after baking, the viewer draws the same, the states are graph-origin, Undo restores both graph and interactive states; saving and reopening keeps the draw.
@@ -73,3 +73,8 @@ assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
   - The draw knobs are left out of the node hash, so changing them changes only the rules, not the stack.
   - The BBox default is kept as specified. 30 existing viewer GUI scripts that inspect drawn geometry now set Initial Draw to Full; the 7 left unchanged never look at the 3D drawing.
   - Phase-1 gate running with all 31 changed scripts.
+- 2026-11-13 — All tasks implemented:
+  - P2.T1 (f2aef69b3): rules are rows of plain knobs (`pattern<i>`/`draw<i>`/`levels<i>` plus `ruleCount`, as in RFVSwitch). The table knob packs rows into one string and so can't carry the prim-path hint. A new rule defaults to Full, so adding one never loads payloads. Full + Load stops once a load brings in nothing new.
+  - P3 (7140d4d7b): graph-set cells get a marker and a tooltip naming the node. Draw edits aren't undoable, so Reset to Graph isn't either.
+  - Bake to Node puts descendants' rules before their ancestors'. A new node takes the viewed node's place in every input it fed. The whole bake is one undo step.
+  - The phase-1 gate was cancelled in favour of one full gate (35 GUI scripts).

@@ -2,8 +2,10 @@
 
 Graph: USDRead of a small stage this script writes to $NATRON_GUI_TEST_OUT/scene_bake_to_node.usda,
 with Initial Draw at Full, into Viewer1. Rows: /World holding /World/A and /World/B, each an Xform
-holding a Cube. The viewer sets Full on /World/A/Cube, then BBox on /World/A, which keeps the
-cube's Full without drawing it, and Hidden on /World/B. The script checks:
+holding a Cube. The USDRead's Initial Draw sets /World. The viewer sets Full on /World/A/Cube,
+then BBox on /World/A, which keeps the cube's Full without drawing it, and Hidden on /World/B. A
+row under a BBox or Hidden row reads as inherited whatever is set on it, so the cubes always do.
+The script checks:
   - Bake to Node is disabled while the viewer sets nothing, and enabled once it does;
   - baking creates one USDExpandHierarchy reading the USDRead, which the Viewer then views, with
     one rule naming each set path, the cube's before /World/A's;
@@ -11,7 +13,8 @@ cube's Full without drawing it, and Hidden on /World/B. The script checks:
     Bake to Node is disabled again;
   - one Undo removes the node, reconnects the Viewer to the USDRead and gives the viewer its states
     back; Redo bakes them again;
-  - with the USDExpandHierarchy viewed, a new viewer state bakes into it, adding a rule and no node;
+  - with the USDExpandHierarchy viewed, a new viewer state on /World bakes into it, adding a rule
+    and no node, and the node's rule then sets /World in place of the USDRead's;
   - the saved project reopens to the same rows, still set by the node.
 
 Screenshots for sign-off: scene-bake-before, scene-bake-baked, scene-bake-undone,
@@ -333,9 +336,11 @@ try:
         section("viewer states")
         for path, state in VIEWER_STATES:
             set_state(path, state)
-        set_rows = [p for p, _ in VIEWER_STATES]
+        # The cube's own state stays hidden under /World/A's BBox, so only the rows above it read set.
+        set_rows = [A, B]
         ok = yield ("until", lambda: all(origin(p) == ("viewer", "") for p in set_rows), POLL_TIMEOUT_S)
         require(ok, "the viewer sets %r (got %r)" % (set_rows, origins()))
+        check(origin(A_CUBE) == ("inherited", ""), "%s under a BBox reads inherited (got %r)" % (A_CUBE, origin(A_CUBE)))
         ok = yield ("until", lambda: bake_button() is not None and bake_button().isEnabled(), POLL_TIMEOUT_S)
         check(ok, "Bake to Node is enabled once the viewer sets states")
         yield ("sleep", SETTLE_MS)
@@ -387,22 +392,22 @@ try:
         yield from expect("redone cells", cells, viewer_cells)
 
         section("bake into the viewed node")
-        set_state(B_CUBE, "bbox")
-        ok = yield ("until", lambda: origin(B_CUBE) == ("viewer", ""), POLL_TIMEOUT_S)
-        require(ok, "the viewer sets %s (got %r)" % (B_CUBE, origin(B_CUBE)))
+        set_state(WORLD, "children")
+        ok = yield ("until", lambda: origin(WORLD) == ("viewer", ""), POLL_TIMEOUT_S)
+        require(ok, "the viewer sets %s (got %r)" % (WORLD, origin(WORLD)))
         ok = yield ("until", lambda: bake_button() is not None and bake_button().isEnabled(), POLL_TIMEOUT_S)
         check(ok, "Bake to Node is enabled again")
         yield ("sleep", SETTLE_MS)
         again_cells = cells()
         bake("bake again")
-        ok = yield ("until", lambda: origin(B_CUBE) == ("graph", name), POLL_TIMEOUT_S)
-        check(ok, "%s is set by %s (got %r)" % (B_CUBE, name, origin(B_CUBE)))
+        ok = yield ("until", lambda: origin(WORLD) == ("graph", name), POLL_TIMEOUT_S)
+        check(ok, "%s is set by %s (got %r)" % (WORLD, name, origin(WORLD)))
         check(len(expand_nodes()) == before_nodes + 1, "no node is created (got %r)" % [n.getScriptName() for n in expand_nodes()])
-        check(rules_of(expand)[-1] == (B_CUBE, "bbox") and len(rules_of(expand)) == 4,
+        check(rules_of(expand)[-1] == (WORLD, "children") and len(rules_of(expand)) == 4,
               "%s gains one rule (got %r)" % (name, rules_of(expand)))
         yield from expect("baked again", cells, again_cells)
         final_origins = dict(baked_origins)
-        final_origins[B_CUBE] = ("graph", name)
+        final_origins[WORLD] = ("graph", name)
         yield from expect("baked again origins", origins, final_origins)
 
         section("save and reopen")

@@ -301,6 +301,8 @@ try:
         save("scene-expand-hierarchy-full-load")
 
         section("node taken out")
+        # connectInput refuses an input that is already connected.
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         yield from expect_rows("taken out", dict((p, ("bbox", False)) for p in TOP_LEVEL))
         yield ("sleep", SETTLE_MS)

@@ -1380,12 +1380,24 @@ getTestOp(const NodePtr& node)
 
 // Draw rules ride beside the stack: a merge hands them on in input order, after the rules its
 // inputs share, and the stack, its hash and a write of it are the same with or without them.
+// The graph's USDRead sets its Initial Draw rule upstream of every node here.
 TEST_F(USDWriteTest, DrawRulesReachDownstreamInInputOrderAndNeverReachAWrite)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     NodePtr merge = createGraph(kReferenceScene, 0.);
     ASSERT_TRUE(bool(merge));
+    ScenePayload mergeScene;
+    std::string mergeError;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, merge->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &mergeScene, &mergeError)) << mergeError;
+    const SceneDrawRules readRules = mergeScene.getDrawRules();
+    ASSERT_EQ((std::size_t)1, readRules.size());
+    const auto after = [&readRules](const SceneDrawRules& rules) {
+        SceneDrawRules all = readRules;
+        all.insert(all.end(), rules.begin(), rules.end());
+
+        return all;
+    };
     NodePtr plain = createNode(QString::fromUtf8(kTestPluginIDSceneOp));
     NodePtr ruled = createNode(QString::fromUtf8(kTestPluginIDSceneOp));
     ASSERT_TRUE(plain && ruled && getTestOp(plain) && getTestOp(ruled));
@@ -1400,8 +1412,8 @@ TEST_F(USDWriteTest, DrawRulesReachDownstreamInInputOrderAndNeverReachAWrite)
     std::string error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, plain->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &plainScene, &error)) << error;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, ruled->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &ruledScene, &error)) << error;
-    EXPECT_TRUE(plainScene.getDrawRules().empty());
-    EXPECT_EQ((SceneDrawRules { shared, own }), ruledScene.getDrawRules());
+    EXPECT_EQ(readRules, plainScene.getDrawRules());
+    EXPECT_EQ(after(SceneDrawRules { shared, own }), ruledScene.getDrawRules());
     EXPECT_EQ(plainScene.getStackHash(), ruledScene.getStackHash());
     EXPECT_EQ(exportStage(SceneOps::compose(plainScene)), exportStage(SceneOps::compose(ruledScene)));
 
@@ -1420,7 +1432,7 @@ TEST_F(USDWriteTest, DrawRulesReachDownstreamInInputOrderAndNeverReachAWrite)
     ASSERT_TRUE(below->connectInput(together, 0));
     ScenePayload belowScene;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, below->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &belowScene, &error)) << error;
-    EXPECT_EQ((SceneDrawRules { shared, own, secondOwn, belowOwn }), belowScene.getDrawRules());
+    EXPECT_EQ(after(SceneDrawRules { shared, own, secondOwn, belowOwn }), belowScene.getDrawRules());
 
     const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
     for (USDWrite::ExportModeEnum mode : modes) {

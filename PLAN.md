@@ -414,7 +414,7 @@ future core work has solid ground to build on.
 | M277 | Graph Creation And Insert | done | M192, M193 | bosley-native-nodes | E10 | | | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
 | M278 | Translucent Selection Highlight | todo | M234 |  | E9 | | | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
 | M279 | Utility Renderer Foundation | done | M248 | bosley-native-nodes | E19 | F7 | | [M279-utility-renderer-foundation.md](PLAN/MILESTONES/M279-utility-renderer-foundation.md) |
-| M280 | Utility Renderer GPU Path | todo | M279, M253 |  | E19 | F7 | | [M280-utility-renderer-gpu-path.md](PLAN/MILESTONES/M280-utility-renderer-gpu-path.md) |
+| M280 | Utility Renderer GPU Path | doing | M279, M253 | bosley-native-nodes | E19 | F7 | | [M280-utility-renderer-gpu-path.md](PLAN/MILESTONES/M280-utility-renderer-gpu-path.md) |
 | M281 | Utility Materials And Lights | todo | M280, M233, M234 |  | E19 | F7 | | [M281-utility-materials-and-lights.md](PLAN/MILESTONES/M281-utility-materials-and-lights.md) |
 | M283 | Utility Sampling And Motion Blur | todo | M280, M253 |  | E19 | F7 | | [M283-utility-sampling-and-motion-blur.md](PLAN/MILESTONES/M283-utility-sampling-and-motion-blur.md) |
 | M282 | Utility Reflection And Refraction | todo | M281, M283 |  | E19 | F7 | | [M282-utility-reflection-and-refraction.md](PLAN/MILESTONES/M282-utility-reflection-and-refraction.md) |

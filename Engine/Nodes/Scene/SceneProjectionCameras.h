@@ -78,6 +78,19 @@ std::string cyclesProjectorOffset(int component);
 // The attribute node reading frameColumnPrimvar(..., column).
 std::string cyclesFrameColumn(int column);
 
+/**
+ * @brief The same for the MoonRay network. MoonRay's maps pass colours, so a scalar is a colour
+ * of three equal channels: moonRayProjectorDot(k) and moonRayProjectorOffset(k) give component k
+ * as dot(P, op2) + op2, and the plate's window is a multiply by one op2 and an add of the other.
+ **/
+#define kSceneProjectionMoonRayToward "MoonRayTowardProjector"
+#define kSceneProjectionMoonRayPlateScale "MoonRayPlateScale"
+#define kSceneProjectionMoonRayPlateOffset "MoonRayPlateOffset"
+#define kSceneProjectionMoonRayPlateTexture "MoonRayPlateTexture"
+#define kSceneProjectionMoonRayReferencePoints "MoonRayReferencePoints"
+std::string moonRayProjectorDot(int component);
+std::string moonRayProjectorOffset(int component);
+
 // One input of a shader under the projection material, by the shader's name there.
 struct ShaderValue {
     PXR_NS::TfToken shader;
@@ -87,8 +100,8 @@ struct ShaderValue {
 };
 
 /**
- * @brief Every input the projector sets, on the Storm surface and on the Cycles network alike,
- * so the two read one source. The list's order and length do not depend on the values.
+ * @brief Every input the projector sets, on the Storm surface and on the Cycles and MoonRay
+ * networks alike, so the three read one source. The list's order and length do not depend on the values.
  **/
 std::vector<ShaderValue> projectorValues(const PXR_NS::GfMatrix4d& worldToProjector,
                                          const PXR_NS::GfVec4f& origin);

@@ -77,26 +77,26 @@ heldPrimvarName(const char* base,
     return name;
 }
 
-struct CyclesSocket {
+struct ShaderSocket {
     PXR_NS::UsdShadeShader node;
     const char* output = "value";
 };
 
-// A Cycles node input: connected to a socket, a constant, or left for the projector's values.
-struct CyclesOperand {
-    CyclesOperand() = default;
-    CyclesOperand(float value)
+// A node input: connected to a socket, a constant, or left for the projector's values.
+struct ShaderOperand {
+    ShaderOperand() = default;
+    ShaderOperand(float value)
         : set(true)
         , vector(value)
         , scalar(value)
     {
     }
-    CyclesOperand(const PXR_NS::GfVec3f& value)
+    ShaderOperand(const PXR_NS::GfVec3f& value)
         : set(true)
         , vector(value)
     {
     }
-    CyclesOperand(const CyclesSocket& source)
+    ShaderOperand(const ShaderSocket& source)
         : set(true)
         , connected(true)
         , socket(source)
@@ -105,12 +105,12 @@ struct CyclesOperand {
 
     bool set = false;
     bool connected = false;
-    CyclesSocket socket;
+    ShaderSocket socket;
     PXR_NS::GfVec3f vector = PXR_NS::GfVec3f(0.f);
     float scalar = 0.f;
 };
 
-struct CyclesProjection {
+struct NetworkProjection {
     int space = USDProject3D::eProjectionSpaceWorld;
     // Empty unless held in Geometry space.
     std::string referencePrimvar;
@@ -129,143 +129,16 @@ struct CyclesProjection {
  * columns and a divide. Only the topology is authored here: the inputs the projector and the
  * plate's window set come from SceneProjectionCameras::projectorValues() and plateValues().
  **/
-class CyclesNetwork {
-public:
-    CyclesNetwork(const PXR_NS::UsdStageRefPtr& stage,
-                  const PXR_NS::SdfPath& material)
+// Shader nodes under one material, any failure remembered so a network is checked once.
+class ShaderGraph {
+protected:
+    ShaderGraph(const PXR_NS::UsdStageRefPtr& stage,
+                const PXR_NS::SdfPath& material)
         : _stage(stage)
         , _material(material)
     {
     }
 
-    bool author(const PXR_NS::UsdShadeMaterial& material,
-                const CyclesProjection& projection)
-    {
-        const bool geometrySpace = projection.space == USDProject3D::eProjectionSpaceGeometry;
-        PXR_NS::UsdShadeShader geometry = node("CyclesGeometry", "cycles_geometry");
-        // Cycles turns the normal toward the ray and flags the back: the face's own side is the
-        // true normal flipped back on a back face.
-        const CyclesSocket sign = math("CyclesFaceSign", "multiply_add", CyclesSocket { geometry, "backfacing" }, -2.f, 1.f);
-        const CyclesSocket ownNormal = vectorMath("CyclesFaceNormal", "scale", CyclesSocket { geometry, "true_normal" }, CyclesOperand(), CyclesOperand(), sign);
-
-        CyclesSocket position { geometry, "position" };
-        CyclesSocket normal = ownNormal;
-        CyclesSocket handedness;
-        if (geometrySpace) {
-            PXR_NS::UsdShadeShader coordinates = node("CyclesObjectPosition", "cycles_texture_coordinate");
-            const CyclesSocket object { coordinates, "object" };
-            CyclesSocket columns[3];
-            CyclesSocket offsets[3];
-            for (int j = 0; j < 3; ++j) {
-                PXR_NS::UsdShadeShader column = node(SceneProjectionCameras::cyclesFrameColumn(j), "cycles_attribute");
-                setValue(column, "attribute", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(SceneProjectionCameras::frameColumnPrimvar(projection.framePrimvar, j)));
-                columns[j] = CyclesSocket { column, "vector" };
-                const CyclesSocket dot = vectorMath("CyclesFrameDot" + std::to_string(j), "dot_product", object, columns[j], CyclesOperand(), CyclesOperand(), "value");
-                offsets[j] = math("CyclesFrameOffset" + std::to_string(j), "add", dot, CyclesSocket { column, "alpha" });
-            }
-            const CyclesSocket offset = combine("CyclesFrameOffsets", offsets[0], offsets[1], offsets[2]);
-            position = vectorMath("CyclesFramePosition", "add", object, offset);
-            if (!projection.referencePrimvar.empty()) {
-                // Cycles reads a missing attribute as zero and says no more, so a zero point is
-                // taken for a prim without reference points.
-                PXR_NS::UsdShadeShader reference = node(kSceneProjectionCyclesReferencePoints, "cycles_attribute");
-                setValue(reference, "attribute", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(projection.referencePrimvar));
-                const CyclesSocket point { reference, "vector" };
-                const CyclesSocket length = vectorMath("CyclesReferenceLength", "length", point, CyclesOperand(), CyclesOperand(), CyclesOperand(), "value");
-                const CyclesSocket present = math("CyclesReferencePresent", "greater_than", length, 0.f);
-                const CyclesSocket delta = vectorMath("CyclesReferenceDelta", "subtract", point, position);
-                position = vectorMath("CyclesReferencePosition", "multiply_add", delta, present, position);
-            }
-            if (projection.projectOn != USDProject3D::eProjectOnBoth) {
-                // The frame's inverse transpose, as cofactors over the determinant, carries the
-                // object's normal to where the frame puts it; only the sign of the determinant
-                // matters to which side faces the projector.
-                PXR_NS::UsdShadeShader toObject = node("CyclesObjectNormal", "cycles_vector_transform");
-                setToken(toObject, "transform_type", "normal");
-                setToken(toObject, "convert_from", "world");
-                setToken(toObject, "convert_to", "object");
-                connect(toObject, "vector", PXR_NS::SdfValueTypeNames->Vector3f, ownNormal);
-                const CyclesSocket objectNormal { toObject, "vector" };
-                CyclesSocket axes[3];
-                for (int j = 0; j < 3; ++j) {
-                    PXR_NS::GfVec3f unit(0.f);
-                    unit[j] = 1.f;
-                    axes[j] = vectorMath("CyclesFrameAxis" + std::to_string(j), "add", columns[j], unit);
-                }
-                CyclesSocket rows[3];
-                for (int k = 0; k < 3; ++k) {
-                    const CyclesSocket cofactor = vectorMath("CyclesFrameCofactor" + std::to_string(k), "cross_product", axes[(k + 1) % 3], axes[(k + 2) % 3]);
-                    rows[k] = vectorMath("CyclesFrameNormal" + std::to_string(k), "dot_product", cofactor, objectNormal, CyclesOperand(), CyclesOperand(), "value");
-                    if (k == 0) {
-                        handedness = vectorMath("CyclesFrameDeterminant", "dot_product", axes[0], cofactor, CyclesOperand(), CyclesOperand(), "value");
-                    }
-                }
-                normal = combine("CyclesFrameNormal", rows[0], rows[1], rows[2]);
-            }
-        }
-
-        CyclesSocket projected[4];
-        for (int k = 0; k < 4; ++k) {
-            const CyclesSocket dot = vectorMath(SceneProjectionCameras::cyclesProjectorDot(k), "dot_product", position, CyclesOperand(), CyclesOperand(), CyclesOperand(), "value");
-            projected[k] = math(SceneProjectionCameras::cyclesProjectorOffset(k), "add", dot, CyclesOperand());
-        }
-        const CyclesSocket frame = combine("CyclesFrame", math("CyclesFrameU", "divide", projected[0], projected[3]), math("CyclesFrameV", "divide", projected[1], projected[3]), 0.f);
-        const CyclesSocket uv = vectorMath(kSceneProjectionCyclesPlateTransform, "multiply_add", frame, CyclesOperand(), CyclesOperand());
-
-        CyclesSocket inside = math("CyclesInFront", "greater_than", projected[3], 0.f);
-        if (projection.projectOn != USDProject3D::eProjectOnBoth) {
-            const CyclesSocket toward = vectorMath(kSceneProjectionCyclesToward, "multiply_add", position, CyclesOperand(), CyclesOperand());
-            CyclesSocket facing = vectorMath("CyclesFacing", "dot_product", normal, toward, CyclesOperand(), CyclesOperand(), "value");
-            if (handedness.node) {
-                facing = math("CyclesFacingHanded", "multiply", facing, handedness);
-            }
-            facing = math((projection.projectOn == USDProject3D::eProjectOnFront) ? "CyclesFacesProjector" : "CyclesFacesAway",
-                          (projection.projectOn == USDProject3D::eProjectOnFront) ? "greater_than" : "less_than", facing, 0.f);
-            inside = math("CyclesInsideFacing", "multiply", inside, facing);
-        }
-        if (projection.clip) {
-            const CyclesSocket depth = math("CyclesDepth", "divide", projected[2], projected[3]);
-            inside = math("CyclesInsideClip", "multiply", inside, math("CyclesWithinClip", "compare", depth, 0.f, 1.f));
-        }
-
-        CyclesOperand colour = PXR_NS::GfVec3f(0.f);
-        CyclesOperand alpha = 1.f;
-        if (projection.hasPlate) {
-            PXR_NS::UsdShadeShader texture = node(kSceneProjectionCyclesPlateTexture, "UsdUVTexture");
-            connect(texture, "st", PXR_NS::SdfValueTypeNames->Float2, uv);
-            for (const char* name : { "wrapS", "wrapT" }) {
-                setToken(texture, name, "black");
-            }
-            setToken(texture, "sourceColorSpace", "auto");
-            colour = CyclesSocket { texture, "rgb" };
-            alpha = CyclesSocket { texture, "a" };
-        }
-        if (projection.crop) {
-            const CyclesSocket cell = vectorMath("CyclesFrameCell", "floor", frame);
-            const CyclesSocket offFrame = vectorMath("CyclesFrameCellLength", "length", cell, CyclesOperand(), CyclesOperand(), CyclesOperand(), "value");
-            alpha = math("CyclesCroppedAlpha", "multiply", alpha, math("CyclesInFrame", "less_than", offFrame, 0.5f));
-        }
-        CyclesSocket coverage;
-        if (projection.outside == USDProject3D::eOutsideBlack) {
-            coverage = math("CyclesCoverage", "multiply_add", alpha, inside, math("CyclesOutside", "subtract", 1.f, inside));
-        } else {
-            coverage = math("CyclesCoverage", "multiply", alpha, inside);
-        }
-        PXR_NS::UsdShadeShader emission = node("CyclesEmission", "cycles_emission");
-        feed(emission, "color", PXR_NS::SdfValueTypeNames->Color3f, vectorMath("CyclesColour", "scale", colour, CyclesOperand(), CyclesOperand(), inside));
-        setValue(emission, "strength", PXR_NS::SdfValueTypeNames->Float, PXR_NS::VtValue(1.f));
-        PXR_NS::UsdShadeShader transparent = node("CyclesTransparent", "cycles_transparent_bsdf");
-        PXR_NS::UsdShadeShader mix = node("CyclesSurface", "cycles_mix_closure");
-        connect(mix, "fac", PXR_NS::SdfValueTypeNames->Float, coverage);
-        connect(mix, "closure1", PXR_NS::SdfValueTypeNames->Token, CyclesSocket { transparent, "bsdf" });
-        connect(mix, "closure2", PXR_NS::SdfValueTypeNames->Token, CyclesSocket { emission, "emission" });
-        // hdCycles matches a terminal by the socket's label, not its name.
-        const PXR_NS::UsdShadeOutput closure = _ok ? mix.CreateOutput(PXR_NS::TfToken("Closure"), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeOutput();
-
-        return closure && material.CreateSurfaceOutput(PXR_NS::TfToken("cycles")).ConnectToSource(closure);
-    } // author
-
-private:
     PXR_NS::UsdShadeShader node(const std::string& name,
                                 const char* id)
     {
@@ -294,7 +167,7 @@ private:
     void connect(PXR_NS::UsdShadeShader shader,
                  const char* input,
                  const PXR_NS::SdfValueTypeName& type,
-                 const CyclesSocket& source)
+                 const ShaderSocket& source)
     {
         PXR_NS::UsdShadeShader from = source.node;
         const PXR_NS::UsdShadeOutput output = (_ok && from) ? from.CreateOutput(PXR_NS::TfToken(source.output), type) : PXR_NS::UsdShadeOutput();
@@ -305,7 +178,7 @@ private:
     void feed(PXR_NS::UsdShadeShader shader,
               const char* input,
               const PXR_NS::SdfValueTypeName& type,
-              const CyclesOperand& operand)
+              const ShaderOperand& operand)
     {
         if (!operand.set) {
             return;
@@ -319,11 +192,164 @@ private:
         }
     }
 
-    CyclesSocket math(const std::string& name,
+    // The material's surface for renderContext, from output on shader.
+    bool setSurface(const PXR_NS::UsdShadeMaterial& material,
+                    const char* renderContext,
+                    PXR_NS::UsdShadeShader shader,
+                    const char* output)
+    {
+        const PXR_NS::UsdShadeOutput surface = _ok ? shader.CreateOutput(PXR_NS::TfToken(output), PXR_NS::SdfValueTypeNames->Token) : PXR_NS::UsdShadeOutput();
+
+        return surface && material.CreateSurfaceOutput(PXR_NS::TfToken(renderContext)).ConnectToSource(surface);
+    }
+
+private:
+    PXR_NS::UsdStageRefPtr _stage;
+    PXR_NS::SdfPath _material;
+    bool _ok = true;
+};
+
+class CyclesNetwork
+    : private ShaderGraph {
+public:
+    CyclesNetwork(const PXR_NS::UsdStageRefPtr& stage,
+                  const PXR_NS::SdfPath& material)
+        : ShaderGraph(stage, material)
+    {
+    }
+
+    bool author(const PXR_NS::UsdShadeMaterial& material,
+                const NetworkProjection& projection)
+    {
+        const bool geometrySpace = projection.space == USDProject3D::eProjectionSpaceGeometry;
+        PXR_NS::UsdShadeShader geometry = node("CyclesGeometry", "cycles_geometry");
+        // Cycles turns the normal toward the ray and flags the back: the face's own side is the
+        // true normal flipped back on a back face.
+        const ShaderSocket sign = math("CyclesFaceSign", "multiply_add", ShaderSocket { geometry, "backfacing" }, -2.f, 1.f);
+        const ShaderSocket ownNormal = vectorMath("CyclesFaceNormal", "scale", ShaderSocket { geometry, "true_normal" }, ShaderOperand(), ShaderOperand(), sign);
+
+        ShaderSocket position { geometry, "position" };
+        ShaderSocket normal = ownNormal;
+        ShaderSocket handedness;
+        if (geometrySpace) {
+            PXR_NS::UsdShadeShader coordinates = node("CyclesObjectPosition", "cycles_texture_coordinate");
+            const ShaderSocket object { coordinates, "object" };
+            ShaderSocket columns[3];
+            ShaderSocket offsets[3];
+            for (int j = 0; j < 3; ++j) {
+                PXR_NS::UsdShadeShader column = node(SceneProjectionCameras::cyclesFrameColumn(j), "cycles_attribute");
+                setValue(column, "attribute", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(SceneProjectionCameras::frameColumnPrimvar(projection.framePrimvar, j)));
+                columns[j] = ShaderSocket { column, "vector" };
+                const ShaderSocket dot = vectorMath("CyclesFrameDot" + std::to_string(j), "dot_product", object, columns[j], ShaderOperand(), ShaderOperand(), "value");
+                offsets[j] = math("CyclesFrameOffset" + std::to_string(j), "add", dot, ShaderSocket { column, "alpha" });
+            }
+            const ShaderSocket offset = combine("CyclesFrameOffsets", offsets[0], offsets[1], offsets[2]);
+            position = vectorMath("CyclesFramePosition", "add", object, offset);
+            if (!projection.referencePrimvar.empty()) {
+                // Cycles reads a missing attribute as zero and says no more, so a zero point is
+                // taken for a prim without reference points.
+                PXR_NS::UsdShadeShader reference = node(kSceneProjectionCyclesReferencePoints, "cycles_attribute");
+                setValue(reference, "attribute", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(projection.referencePrimvar));
+                const ShaderSocket point { reference, "vector" };
+                const ShaderSocket length = vectorMath("CyclesReferenceLength", "length", point, ShaderOperand(), ShaderOperand(), ShaderOperand(), "value");
+                const ShaderSocket present = math("CyclesReferencePresent", "greater_than", length, 0.f);
+                const ShaderSocket delta = vectorMath("CyclesReferenceDelta", "subtract", point, position);
+                position = vectorMath("CyclesReferencePosition", "multiply_add", delta, present, position);
+            }
+            if (projection.projectOn != USDProject3D::eProjectOnBoth) {
+                // The frame's inverse transpose, as cofactors over the determinant, carries the
+                // object's normal to where the frame puts it; only the sign of the determinant
+                // matters to which side faces the projector.
+                PXR_NS::UsdShadeShader toObject = node("CyclesObjectNormal", "cycles_vector_transform");
+                setToken(toObject, "transform_type", "normal");
+                setToken(toObject, "convert_from", "world");
+                setToken(toObject, "convert_to", "object");
+                connect(toObject, "vector", PXR_NS::SdfValueTypeNames->Vector3f, ownNormal);
+                const ShaderSocket objectNormal { toObject, "vector" };
+                ShaderSocket axes[3];
+                for (int j = 0; j < 3; ++j) {
+                    PXR_NS::GfVec3f unit(0.f);
+                    unit[j] = 1.f;
+                    axes[j] = vectorMath("CyclesFrameAxis" + std::to_string(j), "add", columns[j], unit);
+                }
+                ShaderSocket rows[3];
+                for (int k = 0; k < 3; ++k) {
+                    const ShaderSocket cofactor = vectorMath("CyclesFrameCofactor" + std::to_string(k), "cross_product", axes[(k + 1) % 3], axes[(k + 2) % 3]);
+                    rows[k] = vectorMath("CyclesFrameNormal" + std::to_string(k), "dot_product", cofactor, objectNormal, ShaderOperand(), ShaderOperand(), "value");
+                    if (k == 0) {
+                        handedness = vectorMath("CyclesFrameDeterminant", "dot_product", axes[0], cofactor, ShaderOperand(), ShaderOperand(), "value");
+                    }
+                }
+                normal = combine("CyclesFrameNormal", rows[0], rows[1], rows[2]);
+            }
+        }
+
+        ShaderSocket projected[4];
+        for (int k = 0; k < 4; ++k) {
+            const ShaderSocket dot = vectorMath(SceneProjectionCameras::cyclesProjectorDot(k), "dot_product", position, ShaderOperand(), ShaderOperand(), ShaderOperand(), "value");
+            projected[k] = math(SceneProjectionCameras::cyclesProjectorOffset(k), "add", dot, ShaderOperand());
+        }
+        const ShaderSocket frame = combine("CyclesFrame", math("CyclesFrameU", "divide", projected[0], projected[3]), math("CyclesFrameV", "divide", projected[1], projected[3]), 0.f);
+        const ShaderSocket uv = vectorMath(kSceneProjectionCyclesPlateTransform, "multiply_add", frame, ShaderOperand(), ShaderOperand());
+
+        ShaderSocket inside = math("CyclesInFront", "greater_than", projected[3], 0.f);
+        // Authored either way: projectorValues() sets its inputs.
+        const ShaderSocket toward = vectorMath(kSceneProjectionCyclesToward, "multiply_add", position, ShaderOperand(), ShaderOperand());
+        if (projection.projectOn != USDProject3D::eProjectOnBoth) {
+            ShaderSocket facing = vectorMath("CyclesFacing", "dot_product", normal, toward, ShaderOperand(), ShaderOperand(), "value");
+            if (handedness.node) {
+                facing = math("CyclesFacingHanded", "multiply", facing, handedness);
+            }
+            facing = math((projection.projectOn == USDProject3D::eProjectOnFront) ? "CyclesFacesProjector" : "CyclesFacesAway",
+                          (projection.projectOn == USDProject3D::eProjectOnFront) ? "greater_than" : "less_than", facing, 0.f);
+            inside = math("CyclesInsideFacing", "multiply", inside, facing);
+        }
+        if (projection.clip) {
+            const ShaderSocket depth = math("CyclesDepth", "divide", projected[2], projected[3]);
+            inside = math("CyclesInsideClip", "multiply", inside, math("CyclesWithinClip", "compare", depth, 0.f, 1.f));
+        }
+
+        ShaderOperand colour = PXR_NS::GfVec3f(0.f);
+        ShaderOperand alpha = 1.f;
+        if (projection.hasPlate) {
+            PXR_NS::UsdShadeShader texture = node(kSceneProjectionCyclesPlateTexture, "UsdUVTexture");
+            connect(texture, "st", PXR_NS::SdfValueTypeNames->Float2, uv);
+            for (const char* name : { "wrapS", "wrapT" }) {
+                setToken(texture, name, "black");
+            }
+            setToken(texture, "sourceColorSpace", "auto");
+            colour = ShaderSocket { texture, "rgb" };
+            alpha = ShaderSocket { texture, "a" };
+        }
+        if (projection.crop) {
+            const ShaderSocket cell = vectorMath("CyclesFrameCell", "floor", frame);
+            const ShaderSocket offFrame = vectorMath("CyclesFrameCellLength", "length", cell, ShaderOperand(), ShaderOperand(), ShaderOperand(), "value");
+            alpha = math("CyclesCroppedAlpha", "multiply", alpha, math("CyclesInFrame", "less_than", offFrame, 0.5f));
+        }
+        ShaderSocket coverage;
+        if (projection.outside == USDProject3D::eOutsideBlack) {
+            coverage = math("CyclesCoverage", "multiply_add", alpha, inside, math("CyclesOutside", "subtract", 1.f, inside));
+        } else {
+            coverage = math("CyclesCoverage", "multiply", alpha, inside);
+        }
+        PXR_NS::UsdShadeShader emission = node("CyclesEmission", "cycles_emission");
+        feed(emission, "color", PXR_NS::SdfValueTypeNames->Color3f, vectorMath("CyclesColour", "scale", colour, ShaderOperand(), ShaderOperand(), inside));
+        setValue(emission, "strength", PXR_NS::SdfValueTypeNames->Float, PXR_NS::VtValue(1.f));
+        PXR_NS::UsdShadeShader transparent = node("CyclesTransparent", "cycles_transparent_bsdf");
+        PXR_NS::UsdShadeShader mix = node("CyclesSurface", "cycles_mix_closure");
+        connect(mix, "fac", PXR_NS::SdfValueTypeNames->Float, coverage);
+        connect(mix, "closure1", PXR_NS::SdfValueTypeNames->Token, ShaderSocket { transparent, "bsdf" });
+        connect(mix, "closure2", PXR_NS::SdfValueTypeNames->Token, ShaderSocket { emission, "emission" });
+        // hdCycles matches a terminal by the socket's label, not its name.
+        return setSurface(material, "cycles", mix, "Closure");
+    } // author
+
+private:
+    ShaderSocket math(const std::string& name,
                       const char* operation,
-                      const CyclesOperand& a,
-                      const CyclesOperand& b,
-                      const CyclesOperand& c = CyclesOperand())
+                      const ShaderOperand& a,
+                      const ShaderOperand& b,
+                      const ShaderOperand& c = ShaderOperand())
     {
         PXR_NS::UsdShadeShader shader = node(name, "cycles_math");
         setToken(shader, "math_type", operation);
@@ -331,15 +357,15 @@ private:
         feed(shader, "value2", PXR_NS::SdfValueTypeNames->Float, b);
         feed(shader, "value3", PXR_NS::SdfValueTypeNames->Float, c);
 
-        return CyclesSocket { shader, "value" };
+        return ShaderSocket { shader, "value" };
     }
 
-    CyclesSocket vectorMath(const std::string& name,
+    ShaderSocket vectorMath(const std::string& name,
                             const char* operation,
-                            const CyclesOperand& a,
-                            const CyclesOperand& b = CyclesOperand(),
-                            const CyclesOperand& c = CyclesOperand(),
-                            const CyclesOperand& scale = CyclesOperand(),
+                            const ShaderOperand& a,
+                            const ShaderOperand& b = ShaderOperand(),
+                            const ShaderOperand& c = ShaderOperand(),
+                            const ShaderOperand& scale = ShaderOperand(),
                             const char* output = "vector")
     {
         PXR_NS::UsdShadeShader shader = node(name, "cycles_vector_math");
@@ -349,25 +375,150 @@ private:
         feed(shader, "vector3", PXR_NS::SdfValueTypeNames->Vector3f, c);
         feed(shader, "scale", PXR_NS::SdfValueTypeNames->Float, scale);
 
-        return CyclesSocket { shader, output };
+        return ShaderSocket { shader, output };
     }
 
-    CyclesSocket combine(const std::string& name,
-                         const CyclesOperand& x,
-                         const CyclesOperand& y,
-                         const CyclesOperand& z)
+    ShaderSocket combine(const std::string& name,
+                         const ShaderOperand& x,
+                         const ShaderOperand& y,
+                         const ShaderOperand& z)
     {
         PXR_NS::UsdShadeShader shader = node(name, "cycles_combine_xyz");
         feed(shader, "x", PXR_NS::SdfValueTypeNames->Float, x);
         feed(shader, "y", PXR_NS::SdfValueTypeNames->Float, y);
         feed(shader, "z", PXR_NS::SdfValueTypeNames->Float, z);
 
-        return CyclesSocket { shader, "vector" };
+        return ShaderSocket { shader, "vector" };
+    }
+};
+
+/**
+ * @brief The projection as stock MoonRay maps under the material, its surface on
+ * outputs:moonray:surface, built like the Cycles network from dot products and a divide. The
+ * maps pass colours, so every scalar is carried as three equal channels, and a float input bound
+ * to a map reads their average. As for Cycles, the values come from projectorValues() and
+ * plateValues().
+ *
+ * hdMoonray hands a primvar to the maps only as user data of a type it translates
+ * (lib/hydramoonray/Primvars.cc setUserDataValues): float, float2, float3, colour, int and string
+ * arrays, not the float4 frame columns. Geometry space therefore takes the frame as the prim's
+ * transform at the rendered frame, which it is unless held, and a held prim follows its
+ * reference points (point3f, read through AttributeMap's primitive attribute).
+ **/
+class MoonRayNetwork
+    : private ShaderGraph {
+public:
+    MoonRayNetwork(const PXR_NS::UsdStageRefPtr& stage,
+                   const PXR_NS::SdfPath& material)
+        : ShaderGraph(stage, material)
+    {
     }
 
-    PXR_NS::UsdStageRefPtr _stage;
-    PXR_NS::SdfPath _material;
-    bool _ok = true;
+    bool author(const PXR_NS::UsdShadeMaterial& material,
+                const NetworkProjection& projection)
+    {
+        PXR_NS::UsdShadeShader point = node("MoonRayPosition", "AttributeMap");
+        setToken(point, "map_type", "position");
+        ShaderSocket position = toWorld("MoonRayWorldPosition", "point", ShaderSocket { point, "out" });
+        if (!projection.referencePrimvar.empty()) {
+            // The default marks a prim without reference points, which keeps its own position.
+            const float missing = 1e30f;
+            PXR_NS::UsdShadeShader reference = node(kSceneProjectionMoonRayReferencePoints, "AttributeMap");
+            setToken(reference, "map_type", "primitive attribute");
+            setValue(reference, "primitive_attribute_name", PXR_NS::SdfValueTypeNames->String, PXR_NS::VtValue(projection.referencePrimvar));
+            setToken(reference, "primitive_attribute_type", "vec3f");
+            setValue(reference, "default_value", PXR_NS::SdfValueTypeNames->Color3f, PXR_NS::VtValue(PXR_NS::GfVec3f(missing)));
+            setValue(reference, "warn_when_unavailable", PXR_NS::SdfValueTypeNames->Bool, PXR_NS::VtValue(false));
+            const ShaderSocket stored { reference, "out" };
+            const ShaderSocket present = op("MoonRayReferencePresent", "less_than", op("MoonRayReferenceLength", "length", stored, ShaderOperand()), 0.5f * missing);
+            const ShaderSocket delta = op("MoonRayReferenceDelta", "subtract", stored, position);
+            position = op("MoonRayReferencePosition", "add", op("MoonRayReferenceShift", "multiply", delta, present), position);
+        }
+
+        ShaderSocket projected[4];
+        for (int k = 0; k < 4; ++k) {
+            const ShaderSocket dot = op(SceneProjectionCameras::moonRayProjectorDot(k), "dot", position, ShaderOperand());
+            projected[k] = op(SceneProjectionCameras::moonRayProjectorOffset(k), "add", dot, ShaderOperand());
+        }
+        PXR_NS::UsdShadeShader combined = node("MoonRayFrame", "FloatToRgbMap");
+        connect(combined, "R", PXR_NS::SdfValueTypeNames->Float, op("MoonRayFrameU", "divide", projected[0], projected[3]));
+        connect(combined, "G", PXR_NS::SdfValueTypeNames->Float, op("MoonRayFrameV", "divide", projected[1], projected[3]));
+        setValue(combined, "B", PXR_NS::SdfValueTypeNames->Float, PXR_NS::VtValue(0.f));
+        const ShaderSocket frame { combined, "out" };
+        const ShaderSocket uv = op(kSceneProjectionMoonRayPlateOffset, "add", op(kSceneProjectionMoonRayPlateScale, "multiply", frame, ShaderOperand()), ShaderOperand());
+
+        ShaderSocket inside = op("MoonRayInFront", "greater_than", projected[3], 0.f);
+        // Authored either way: projectorValues() sets its inputs.
+        const ShaderSocket toward = op(kSceneProjectionMoonRayToward, "add", position, ShaderOperand());
+        if (projection.projectOn != USDProject3D::eProjectOnBoth) {
+            // MoonRay keeps the geometric normal on the face's own side.
+            PXR_NS::UsdShadeShader geometric = node("MoonRayNormal", "AttributeMap");
+            setToken(geometric, "map_type", "geometric normal");
+            const ShaderSocket normal = toWorld("MoonRayWorldNormal", "normal", ShaderSocket { geometric, "out" });
+            const ShaderSocket facing = op("MoonRayFacing", "dot", normal, toward);
+            const bool front = projection.projectOn == USDProject3D::eProjectOnFront;
+            inside = op("MoonRayInsideFacing", "multiply", inside, op(front ? "MoonRayFacesProjector" : "MoonRayFacesAway", front ? "greater_than" : "less_than", facing, 0.f));
+        }
+        if (projection.clip) {
+            const ShaderSocket depth = op("MoonRayDepthMagnitude", "abs", op("MoonRayDepth", "divide", projected[2], projected[3]), ShaderOperand());
+            inside = op("MoonRayInsideClip", "multiply", inside, op("MoonRayWithinClip", "less_than_or_equal", depth, 1.f));
+        }
+
+        ShaderOperand colour = PXR_NS::GfVec3f(0.f);
+        ShaderOperand alpha = 1.f;
+        if (projection.hasPlate) {
+            PXR_NS::UsdShadeShader texture = node(kSceneProjectionMoonRayPlateTexture, "UsdUVTexture");
+            connect(texture, "st", PXR_NS::SdfValueTypeNames->Float2, uv);
+            for (const char* name : { "wrapS", "wrapT" }) {
+                setToken(texture, name, "black");
+            }
+            setToken(texture, "sourceColorSpace", "raw");
+            colour = ShaderSocket { texture, "rgb" };
+            alpha = ShaderSocket { texture, "a" };
+        }
+        if (projection.crop) {
+            const ShaderSocket offFrame = op("MoonRayFrameCellLength", "length", op("MoonRayFrameCell", "floor", frame, ShaderOperand()), ShaderOperand());
+            alpha = op("MoonRayCroppedAlpha", "multiply", alpha, op("MoonRayInFrame", "less_than", offFrame, 0.5f));
+        }
+        ShaderSocket coverage = op("MoonRayInsideAlpha", "multiply", alpha, inside);
+        if (projection.outside == USDProject3D::eOutsideBlack) {
+            coverage = op("MoonRayCoverage", "add", coverage, op("MoonRayOutside", "subtract", 1.f, inside));
+        }
+        PXR_NS::UsdShadeShader surface = node("MoonRaySurface", "DwaEmissiveMaterial");
+        setValue(surface, "show_emission", PXR_NS::SdfValueTypeNames->Bool, PXR_NS::VtValue(true));
+        connect(surface, "emission", PXR_NS::SdfValueTypeNames->Color3f, op("MoonRayColour", "multiply", colour, inside));
+        connect(surface, "presence", PXR_NS::SdfValueTypeNames->Float, coverage);
+
+        return setSurface(material, "moonray", surface, "surface");
+    } // author
+
+private:
+    ShaderSocket op(const std::string& name,
+                    const char* operation,
+                    const ShaderOperand& a,
+                    const ShaderOperand& b)
+    {
+        PXR_NS::UsdShadeShader shader = node(name, "OpMap");
+        setToken(shader, "operation", operation);
+        feed(shader, "op1", PXR_NS::SdfValueTypeNames->Color3f, a);
+        feed(shader, "op2", PXR_NS::SdfValueTypeNames->Color3f, b);
+
+        return ShaderSocket { shader, "out" };
+    }
+
+    // Render space, which AttributeMap reports in, to world space.
+    ShaderSocket toWorld(const std::string& name,
+                         const char* inputType,
+                         const ShaderSocket& source)
+    {
+        PXR_NS::UsdShadeShader shader = node(name, "TransformSpaceMap");
+        setToken(shader, "input_type", inputType);
+        setToken(shader, "from_space", "render");
+        setToken(shader, "to_space", "world");
+        connect(shader, "input", PXR_NS::SdfValueTypeNames->Vector3f, source);
+
+        return ShaderSocket { shader, "out" };
+    }
 };
 } // anonymous namespace
 
@@ -983,19 +1134,24 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             return false;
         }
 
-        CyclesProjection cycles;
-        cycles.space = space;
-        cycles.framePrimvar = framePrimvar;
+        NetworkProjection network;
+        network.space = space;
+        network.framePrimvar = framePrimvar;
         if ((space == (int)eProjectionSpaceGeometry) && useFrameHold) {
-            cycles.referencePrimvar = referencePrimvar;
+            network.referencePrimvar = referencePrimvar;
         }
-        cycles.projectOn = projectOn;
-        cycles.crop = crop;
-        cycles.clip = clip;
-        cycles.outside = outside;
-        cycles.hasPlate = hasPlate;
-        if (!CyclesNetwork(stage, path).author(material, cycles)) {
+        network.projectOn = projectOn;
+        network.crop = crop;
+        network.clip = clip;
+        network.outside = outside;
+        network.hasPlate = hasPlate;
+        if (!CyclesNetwork(stage, path).author(material, network)) {
             *error = tr("USD could not author the Cycles projection network of the material at %1.").arg(pathString).toStdString();
+
+            return false;
+        }
+        if (!MoonRayNetwork(stage, path).author(material, network)) {
+            *error = tr("USD could not author the MoonRay projection network of the material at %1.").arg(pathString).toStdString();
 
             return false;
         }
@@ -1010,7 +1166,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         // maps the format inside it, so overscan projects when Crop is off.
         if (hasPlate) {
             const LiveTextureSource live = SceneNodeAuthoring::recordLiveTexture(edit, plate);
-            for (const char* name : { kUSDProject3DTextureName, kSceneProjectionCyclesPlateTexture }) {
+            for (const char* name : { kUSDProject3DTextureName, kSceneProjectionCyclesPlateTexture, kSceneProjectionMoonRayPlateTexture }) {
                 PXR_NS::UsdShadeShader owner(stage->GetPrimAtPath(path.AppendChild(PXR_NS::TfToken(name))));
                 const PXR_NS::UsdShadeInput file = owner ? owner.CreateInput(PXR_NS::TfToken("file"), PXR_NS::SdfValueTypeNames->Asset) : PXR_NS::UsdShadeInput();
                 ok = ok && file && SceneNodeAuthoring::authorValue(file.GetAttr(), edit, live.varying, [&live](double frame) { return PXR_NS::SdfAssetPath(live.getUri(frame)); });

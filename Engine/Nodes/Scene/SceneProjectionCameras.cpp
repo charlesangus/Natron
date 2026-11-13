@@ -133,6 +133,18 @@ cyclesFrameColumn(int column)
     return "CyclesFrameColumn" + std::to_string(column);
 }
 
+std::string
+moonRayProjectorDot(int component)
+{
+    return std::string("MoonRayProjectorDot") + "XYZW"[component & 3];
+}
+
+std::string
+moonRayProjectorOffset(int component)
+{
+    return std::string("MoonRayProjectorOffset") + "XYZW"[component & 3];
+}
+
 std::vector<ShaderValue>
 projectorValues(const PXR_NS::GfMatrix4d& worldToProjector,
                 const PXR_NS::GfVec4f& origin)
@@ -147,11 +159,16 @@ projectorValues(const PXR_NS::GfMatrix4d& worldToProjector,
         const PXR_NS::GfVec3f column((float)worldToProjector[0][k], (float)worldToProjector[1][k], (float)worldToProjector[2][k]);
         values.push_back({ PXR_NS::TfToken(cyclesProjectorDot(k)), PXR_NS::TfToken("vector2"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(column) });
         values.push_back({ PXR_NS::TfToken(cyclesProjectorOffset(k)), PXR_NS::TfToken("value2"), PXR_NS::SdfValueTypeNames->Float, PXR_NS::VtValue((float)worldToProjector[3][k]) });
+        values.push_back({ PXR_NS::TfToken(moonRayProjectorDot(k)), PXR_NS::TfToken("op2"), PXR_NS::SdfValueTypeNames->Color3f, PXR_NS::VtValue(column) });
+        values.push_back({ PXR_NS::TfToken(moonRayProjectorOffset(k)), PXR_NS::TfToken("op2"), PXR_NS::SdfValueTypeNames->Color3f, PXR_NS::VtValue(PXR_NS::GfVec3f((float)worldToProjector[3][k])) });
     }
     // origin.xyz - P * origin.w, toward the camera's position or along its view when orthographic.
     const PXR_NS::TfToken toward(kSceneProjectionCyclesToward);
     values.push_back({ toward, PXR_NS::TfToken("vector2"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(PXR_NS::GfVec3f(-origin[3])) });
     values.push_back({ toward, PXR_NS::TfToken("vector3"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(PXR_NS::GfVec3f(origin[0], origin[1], origin[2])) });
+    const PXR_NS::TfToken moonRayToward(kSceneProjectionMoonRayToward);
+    values.push_back({ moonRayToward, PXR_NS::TfToken("op1_factor"), PXR_NS::SdfValueTypeNames->Float, PXR_NS::VtValue(-origin[3]) });
+    values.push_back({ moonRayToward, PXR_NS::TfToken("op2"), PXR_NS::SdfValueTypeNames->Color3f, PXR_NS::VtValue(PXR_NS::GfVec3f(origin[0], origin[1], origin[2])) });
 
     return values;
 }
@@ -165,6 +182,8 @@ plateValues(const PXR_NS::GfVec4f& plateTransform)
         { PXR_NS::TfToken(kUSDProject3DShaderName), PXR_NS::TfToken(kUSDProject3DInputPlateTransform), PXR_NS::SdfValueTypeNames->Float4, PXR_NS::VtValue(plateTransform) },
         { window, PXR_NS::TfToken("vector2"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(PXR_NS::GfVec3f(plateTransform[0], plateTransform[1], 0.f)) },
         { window, PXR_NS::TfToken("vector3"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(PXR_NS::GfVec3f(plateTransform[2], plateTransform[3], 0.f)) },
+        { PXR_NS::TfToken(kSceneProjectionMoonRayPlateScale), PXR_NS::TfToken("op2"), PXR_NS::SdfValueTypeNames->Color3f, PXR_NS::VtValue(PXR_NS::GfVec3f(plateTransform[0], plateTransform[1], 0.f)) },
+        { PXR_NS::TfToken(kSceneProjectionMoonRayPlateOffset), PXR_NS::TfToken("op2"), PXR_NS::SdfValueTypeNames->Color3f, PXR_NS::VtValue(PXR_NS::GfVec3f(plateTransform[2], plateTransform[3], 0.f)) },
     };
 }
 

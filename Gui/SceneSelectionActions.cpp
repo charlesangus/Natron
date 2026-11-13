@@ -33,13 +33,18 @@
 #include <string>
 #include <vector>
 
+#include <QEvent>
+#include <QKeyEvent>
+#include <QLineEdit>
 #include <QPointF>
+#include <QPointer>
 #include <QRectF>
 #include <QRegularExpression>
 #include <QSet>
 #include <QStatusBar>
 #include <QTimer>
 #include <QUndoCommand>
+#include <QWidget>
 #include <QtCore/QCoreApplication>
 
 #include "Engine/CreateNodeArgs.h"
@@ -109,6 +114,174 @@ private:
     std::string _oldValue;
     std::string _newValue;
 };
+
+// While a pick is armed, the keys that end it are taken from the viewer and the Scene Graph panels,
+// and the mode is dropped when what it was armed for goes away.
+class ArmedPick
+    : public QObject {
+public:
+    ArmedPick(Gui* gui,
+              ViewerTab* viewer,
+              const NodePtr& node,
+              const KnobStringPtr& knob,
+              const std::function<void(const QStringList&)>& commit)
+        : _gui(gui)
+        , _viewer(viewer)
+        , _node(node)
+        , _knob(knob)
+        , _commit(commit)
+        , _label(QString::fromStdString(node->getScriptName_mt_safe() + "." + knob->getName()))
+        , _timer(new QTimer(this))
+    {
+        _timer->setInterval(50);
+        QObject::connect(_timer, &QTimer::timeout, this, [this]() {
+            if (!stillValid()) {
+                end();
+            }
+        });
+        _timer->start();
+        qApp->installEventFilter(this);
+        publish(_label);
+    }
+
+    static QString text(const char* source)
+    {
+        return QCoreApplication::translate("SceneSelectionActions", source);
+    }
+
+    const QString& label() const
+    {
+        return _label;
+    }
+
+    // Stops the mode and clears what it showed; the object is deleted once the event loop is back.
+    void end();
+
+    bool eventFilter(QObject* watched,
+                     QEvent* e) override
+    {
+        if (_ended || ((e->type() != QEvent::KeyPress) && (e->type() != QEvent::ShortcutOverride))) {
+            return false;
+        }
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        const bool enter = (k->key() == Qt::Key_Return) || (k->key() == Qt::Key_Enter);
+        const bool escape = (k->key() == Qt::Key_Escape);
+        if ((!enter && !escape) || (k->modifiers() & ~Qt::KeypadModifier) || !inPickSurface(watched)) {
+            return false;
+        }
+        if (e->type() == QEvent::ShortcutOverride) {
+            e->accept();
+
+            return false;
+        }
+        if (escape) {
+            end();
+            SceneSelectionActions::showHint(_gui, text("Pick cancelled."));
+        } else {
+            commitSelection();
+        }
+        e->accept();
+
+        return true;
+    }
+
+private:
+    // The viewer's scene view and the Scene Graph panels, but not their text fields, which keep
+    // Enter and Esc for themselves.
+    static bool inPickSurface(QObject* watched)
+    {
+        QWidget* widget = qobject_cast<QWidget*>(watched);
+
+        if (!widget || qobject_cast<QLineEdit*>(widget)) {
+            return false;
+        }
+        for (QWidget* w = widget; w; w = w->parentWidget()) {
+            if (dynamic_cast<SceneViewport*>(w) || dynamic_cast<SceneGraphPanel*>(w)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool stillValid() const
+    {
+        NodePtr node = _node.lock();
+        if (!_gui || !_viewer || !node || !node->isActivated() || !_knob.lock() || (SceneSelectionActions::selectionViewer(_gui) != _viewer.data())) {
+            return false;
+        }
+        for (DockablePanel* dockable : _gui->getVisiblePanels_mt_safe()) {
+            NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
+            NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
+            if (nodeGui && (nodeGui->getNode() == node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void commitSelection()
+    {
+        const QStringList paths = SceneSelectionActions::currentSelection(_gui);
+
+        if (paths.isEmpty()) {
+            SceneSelectionActions::showHint(_gui, text("No prims are selected."));
+
+            return;
+        }
+        const std::function<void(const QStringList&)> commit = _commit;
+        QPointer<Gui> gui = _gui;
+        end();
+        commit(paths);
+        if (gui) {
+            SceneSelectionActions::showHint(gui, text("Picked %1 prims.").arg(paths.size()));
+        }
+    }
+
+    void publish(const QString& label)
+    {
+        if (!_gui) {
+            return;
+        }
+        for (ViewerTab* tab : _gui->getViewersList()) {
+            SceneViewport* viewport = tab ? tab->getSceneViewport() : nullptr;
+            if (viewport) {
+                viewport->setArmedPick((tab == _viewer.data()) ? label : QString());
+            }
+        }
+        for (SceneGraphPanel* panel : _gui->getSceneGraphPanels()) {
+            panel->setArmedPick(label);
+        }
+    }
+
+    QPointer<Gui> _gui;
+    QPointer<ViewerTab> _viewer;
+    NodeWPtr _node;
+    KnobStringWPtr _knob;
+    std::function<void(const QStringList&)> _commit;
+    QString _label;
+    QTimer* _timer;
+    bool _ended = false;
+};
+
+ArmedPick* g_armedPick = nullptr;
+
+void
+ArmedPick::end()
+{
+    if (_ended) {
+        return;
+    }
+    _ended = true;
+    _timer->stop();
+    qApp->removeEventFilter(this);
+    publish(QString());
+    if (g_armedPick == this) {
+        g_armedPick = nullptr;
+    }
+    deleteLater();
+}
 
 // Gives the prim knob of the node args create paths as its initial value, which no paths leave
 // empty so the knob never evaluates with its normal default. A USDXformPrim wraps a selected prim
@@ -631,6 +804,35 @@ createFromSelection(Gui* gui,
         }
     };
     TabMenuBridge::launch(graph, context);
+}
+
+bool
+armPick(Gui* gui,
+        const KnobStringPtr& knob,
+        const std::function<void(const QStringList& paths)>& commit)
+{
+    ViewerTab* viewer = selectionViewer(gui);
+    EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : nullptr;
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    if (!viewer || !viewer->getSceneViewport() || !node) {
+        showHint(gui, tr("Pick: open a 3D viewer to select prims in."));
+
+        return false;
+    }
+    cancelArmedPick();
+    g_armedPick = new ArmedPick(gui, viewer, node, knob, commit);
+    showHint(gui, tr("Pick for %1: select prims, Enter writes them, Esc cancels.").arg(g_armedPick->label()));
+
+    return true;
+}
+
+void
+cancelArmedPick()
+{
+    if (g_armedPick) {
+        g_armedPick->end();
+    }
 }
 
 void

@@ -1006,6 +1006,10 @@ public:
 
     void setSelectionActions(const SelectionActions& actions);
 
+    // Shows, and publishes as natronSceneArmedPick, the knob an armed pick writes to, "node.knob";
+    // empty when none is armed.
+    void setArmedPick(const QString& label);
+
     // The Camera node that made the camera prim at a path of the shown scene, null for none.
     void setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider);
 

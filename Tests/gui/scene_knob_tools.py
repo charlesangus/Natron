@@ -5,14 +5,14 @@ open. The "..." button beside its Prim Pattern field owns a menu (object name kn
 whose actions are triggered directly; prims are selected through the Scene Graph panel's tree.
 
 Checks:
-  - the menu offers Replace, Add, Remove and Select Matches on a pattern knob;
+  - the menu offers Replace, Add, Remove, Pick in Viewer and Select Matches on a pattern knob;
   - Add appends the selected prims in selection order and leaves the ones already there;
   - Remove takes the selected prims out of the pattern;
   - Replace swaps the pattern for the selected prims;
   - each of the three is one undo step, restoring the pattern before it;
   - Remove of a prim a wildcard entry covers appends a difference, "/World/* - /World/Cam";
   - Select Matches with the pattern "/World/*" selects Box, Ball and Cam in the 3D view;
-  - a USDXformPrim's Prim Path menu offers only Replace and Select Matches, and Replace writes the
+  - a USDXformPrim's Prim Path menu offers only Replace, Pick in Viewer and Select Matches, and Replace writes the
     first selected prim.
 
 Shot: scene-knob-tools-matches.png (after Select Matches).
@@ -199,8 +199,8 @@ try:
         require(ok, "the Prim Pattern field has a selection menu")
         menu = tools_menus()[0]
         names = [a.objectName() for a in menu.actions() if a.objectName()]
-        check(names == ["knobPrimReplace", "knobPrimAdd", "knobPrimRemove", "knobPrimSelectMatches"],
-              "a pattern knob's menu offers Replace, Add, Remove and Select Matches (got %r)" % (names,))
+        check(names == ["knobPrimReplace", "knobPrimAdd", "knobPrimRemove", "knobPrimPick", "knobPrimSelectMatches"],
+              "a pattern knob's menu offers Replace, Add, Remove, Pick in Viewer and Select Matches (got %r)" % (names,))
 
         yield from select([BOX, BALL])
         trigger(menu, "knobPrimAdd")
@@ -250,8 +250,8 @@ try:
         require(ok, "the USDXformPrim's panel shows one selection menu")
         path_menu = [m for m in tools_menus() if m.parent().isVisible()][0]
         names = [a.objectName() for a in path_menu.actions() if a.objectName()]
-        check(names == ["knobPrimReplace", "knobPrimSelectMatches"],
-              "a path knob's menu offers only Replace and Select Matches (got %r)" % (names,))
+        check(names == ["knobPrimReplace", "knobPrimPick", "knobPrimSelectMatches"],
+              "a path knob's menu offers only Replace, Pick in Viewer and Select Matches (got %r)" % (names,))
         yield from select([BALL, BOX])
         trigger(path_menu, "knobPrimReplace")
         check(str(xform.getParam("primPath").getValue()) == BALL,

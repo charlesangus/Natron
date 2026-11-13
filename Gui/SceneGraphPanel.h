@@ -111,6 +111,10 @@ public:
     // The selected prims, the current one last.
     QStringList getSelection() const;
 
+    // Shows, and publishes as natronSceneArmedPick, the knob an armed pick writes to, "node.knob";
+    // empty when none is armed.
+    void setArmedPick(const QString& label);
+
 public Q_SLOTS:
 
     void onActiveViewerChanged();

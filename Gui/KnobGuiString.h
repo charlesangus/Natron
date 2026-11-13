@@ -197,6 +197,9 @@ public:
     // Writes the viewer's selected prims into the knob as edit says, in one undo step.
     void editPrimPaths(SceneSelectionActions::PrimEditEnum edit);
 
+    // Arms the viewer pick for this knob; Enter there writes the selection as dropPrimPaths() does.
+    void armPrimPick();
+
 private:
     // Sets the knob to newText in one undo step when it differs.
     void writePrimText(const std::string& newText);

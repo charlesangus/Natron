@@ -574,6 +574,10 @@ KnobGuiString::createWidget(QHBoxLayout* layout)
                 QObject::connect(removeAction, &QAction::triggered, this, [this]() { editPrimPaths(SceneSelectionActions::ePrimEditRemove); });
             }
             _primToolsMenu->addSeparator();
+            QAction* pickAction = _primToolsMenu->addAction(tr("Pick in Viewer"));
+            pickAction->setObjectName(QString::fromUtf8("knobPrimPick"));
+            pickAction->setToolTip(tr("Arms the viewer and the Scene Graph panel: select prims, then Enter writes them to this knob and Esc cancels."));
+            QObject::connect(pickAction, &QAction::triggered, this, [this]() { armPrimPick(); });
             QAction* matchesAction = _primToolsMenu->addAction(tr("Select Matches"));
             matchesAction->setObjectName(QString::fromUtf8("knobPrimSelectMatches"));
             QObject::connect(matchesAction, SIGNAL(triggered()), this, SLOT(onSelectMatches()));
@@ -685,6 +689,23 @@ KnobGuiString::editPrimPaths(SceneSelectionActions::PrimEditEnum edit)
         return;
     }
     writePrimText(SceneSelectionActions::editPrimPathsText(knob->getPrimPathHint(), edit, knob->getValue(0), paths));
+}
+
+void
+KnobGuiString::armPrimPick()
+{
+    KnobStringPtr knob = _knob.lock();
+
+    if (!knob || !acceptsPrimPaths()) {
+        return;
+    }
+    QPointer<KnobGuiString> self(this);
+    const KnobString::PrimPathHintEnum hint = knob->getPrimPathHint();
+    SceneSelectionActions::armPick(getGui(), knob, [self, hint](const QStringList& paths) {
+        if (self) {
+            self->writePrimText(SceneSelectionActions::primPathsText(hint, paths));
+        }
+    });
 }
 
 void

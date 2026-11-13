@@ -31,6 +31,7 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include <functional>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -132,6 +133,24 @@ QString createBlocker(Gui* gui, const NodePtr& viewed);
  * unless paths is empty.
  **/
 void createFromSelection(Gui* gui, const NodePtr& viewed, const QStringList& paths);
+
+/**
+ * @brief Puts the selection viewer and the Scene Graph panels into the armed state for knob: the
+ * viewer overlay and the panels say which knob the pick is for, and natronSceneArmedPick on both
+ * holds "node.knob". Enter, with the focus in the viewer or a panel, calls commit with the prims
+ * selected and ends the mode; Esc ends it with nothing written. Only one knob is armed: arming
+ * another ends the first. The mode ends by itself when the node's settings panel closes, the node
+ * goes, or the selection viewer changes. False, with the reason in the status bar, when there is
+ * no viewer to select in.
+ **/
+bool armPick(Gui* gui,
+             const KnobStringPtr& knob,
+             const std::function<void(const QStringList& paths)>& commit);
+
+/**
+ * @brief Ends the armed pick, if any, writing nothing.
+ **/
+void cancelArmedPick();
 
 /**
  * @brief Shows text in gui's status bar for a few seconds.

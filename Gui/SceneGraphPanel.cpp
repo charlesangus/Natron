@@ -426,6 +426,7 @@ struct SceneGraphPanel::Implementation {
     QComboBox* followChooser = nullptr;
     SceneNodeChooser* nodeChooser = nullptr;
     QLabel* status = nullptr;
+    QString armedPick;
     QLineEdit* filter = nullptr;
     QStackedWidget* stack = nullptr;
     QTreeView* tree = nullptr;
@@ -651,6 +652,7 @@ struct SceneGraphPanel::Implementation {
     {
         NodePtr node = panel->getShownNode();
 
+        panel->setProperty("natronSceneArmedPick", armedPick);
         panel->setProperty("natronSceneGraphPinned", isPinned());
         panel->setProperty("natronSceneGraphFollow", (follow == SceneGraphPanel::eFollowSelection) ? QString::fromUtf8("selection") : QString::fromUtf8("viewer"));
         panel->setProperty("natronSceneGraphNode", node ? QString::fromStdString(node->getFullyQualifiedName()) : QString());
@@ -719,7 +721,11 @@ struct SceneGraphPanel::Implementation {
         } else {
             text = SceneGraphPanel::tr("No viewer");
         }
+        if (!armedPick.isEmpty()) {
+            text = SceneGraphPanel::tr("Pick for %1: select prims, Enter writes them, Esc cancels").arg(armedPick);
+        }
         status->setText(text);
+        status->setStyleSheet(armedPick.isEmpty() ? QString() : QString::fromUtf8("QLabel { color: #e6a050; font-weight: bold; }"));
         if (!filterPattern.isEmpty()) {
             stack->setCurrentWidget(results);
         } else if (hasScene()) {
@@ -2026,6 +2032,13 @@ SceneGraphPanel::showSelection(const QStringList& paths)
         _imp->selectResults(paths);
     }
     _imp->inspectorRefresh.start();
+}
+
+void
+SceneGraphPanel::setArmedPick(const QString& label)
+{
+    _imp->armedPick = label;
+    _imp->updateStatus();
 }
 
 QStringList

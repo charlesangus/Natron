@@ -5686,6 +5686,7 @@ struct SceneViewport::Implementation {
     // Whether navigating through a stage camera moves its node, and why the last try could not.
     bool lockView = false;
     QString lockMessage;
+    QString armedPick;
 
     // A move of the locked camera under way. Its node's ops are taken to be the outermost of the
     // prim's, with the camera at world = inner * local * parentToWorld (row vectors), local being
@@ -6042,6 +6043,7 @@ SceneViewport::SceneViewport(QWidget* parent)
     setObjectName(QString::fromUtf8("SceneViewport"));
     // The selected prims, the current one last, for scripts.
     setProperty("natronSceneSelection", QStringList());
+    setProperty("natronSceneArmedPick", QString());
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
     // framebuffer's content between paints; not checked against Qt's source.
@@ -7541,6 +7543,14 @@ SceneViewport::setSelectionActions(const SelectionActions& actions)
 }
 
 void
+SceneViewport::setArmedPick(const QString& label)
+{
+    _imp->armedPick = label;
+    setProperty("natronSceneArmedPick", label);
+    update();
+}
+
+void
 SceneViewport::setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider)
 {
     _imp->cameraNodeProvider = provider;
@@ -8216,6 +8226,10 @@ SceneViewport::paintGL()
             painter.setPen(QColor(230, 160, 80));
             painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignBottom, _imp->lockMessage);
         }
+    }
+    if (!_imp->armedPick.isEmpty()) {
+        painter.setPen(QColor(240, 170, 80));
+        painter.drawText(rect().adjusted(8, 6, -8, -28), Qt::AlignHCenter | Qt::AlignBottom, tr("Pick for %1: select prims, Enter writes them, Esc cancels").arg(_imp->armedPick));
     }
     if (_imp->dragging && (_imp->dragRole == Implementation::eDragRoleMarquee)) {
         painter.setPen(QPen(QColor(230, 230, 230), 1., Qt::DashLine));

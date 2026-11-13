@@ -297,10 +297,11 @@ protected:
     bool prepareFrame(const NodePtr& root,
                       FrameRun* run,
                       std::string* error,
-                      const RectD& window = RectD(0, 0, kWidth, kHeight))
+                      const RectD& window = RectD(0, 0, kWidth, kHeight),
+                      bool profileNodes = false)
     {
         run->abortInfo = AbortableRenderInfo::create(true, 0);
-        run->stats = std::make_shared<RenderStats>(false);
+        run->stats = std::make_shared<RenderStats>(profileNodes);
 
         ParallelRenderArgsSetter frameArgs(kTime,
                                            ViewIdx(0),
@@ -1041,6 +1042,27 @@ protected:
         return calls;
     }
 
+    // Needs a run prepared with profileNodes.
+    static void cacheAccessesOf(const FrameRun& run,
+                                const NodePtr& node,
+                                int* misses,
+                                int* hits,
+                                int* renderedRects)
+    {
+        *misses = 0;
+        *hits = 0;
+        *renderedRects = 0;
+        double totalTime = 0.;
+        const std::map<NodePtr, NodeRenderStats> stats = run.stats->getStats(&totalTime);
+        const std::map<NodePtr, NodeRenderStats>::const_iterator found = stats.find(node);
+        if (found == stats.end()) {
+            return;
+        }
+        int downscaledHits = 0;
+        found->second.getCacheAccessInfos(misses, hits, &downscaledHits);
+        *renderedRects = (int)found->second.getRenderedRectangles().size();
+    }
+
     // Compares the root of run with a render of root from empty caches.
     void expectMatchesColdRender(const NodePtr& root,
                                  const FrameRun& run)
@@ -1160,7 +1182,7 @@ TEST_F(GpuDeviceServeTest, EditingTheLastNodeAfterAStrippedFrameRunsOnlyItAndRea
 
     ASSERT_TRUE(setKnobValues(grades.back(), "multiply", { 0.7, 0.8, 0.9, 1. }));
     FrameRun run;
-    ASSERT_TRUE(prepareFrame(grades.back(), &run, &error)) << error;
+    ASSERT_TRUE(prepareFrame(grades.back(), &run, &error, RectD(0, 0, kWidth, kHeight), true /*profileNodes*/)) << error;
     RenderScheduler::pruneBehindCacheHits(run.graph, run.context);
     placeOnGpu(&run, grades);
     run.stats->setTrackRenderRoICalls(true);
@@ -1185,7 +1207,14 @@ TEST_F(GpuDeviceServeTest, EditingTheLastNodeAfterAStrippedFrameRunsOnlyItAndRea
     ASSERT_EQ(1u, gpuTasks.size());
     EXPECT_EQ(grades.back()->getScriptName_mt_safe(), gpuTasks.begin()->first);
     EXPECT_EQ(0, renderRoICallsOf(run, grades[0]));
-    EXPECT_EQ(0, renderRoICallsOf(run, grades[1]));
+    // Unlike a device hit, a host hit is served by a renderRoI call that returns the cached image without rendering.
+    int misses = 0;
+    int hits = 0;
+    int renderedRects = 0;
+    cacheAccessesOf(run, grades[1], &misses, &hits, &renderedRects);
+    EXPECT_EQ(0, misses);
+    EXPECT_GT(hits, 0);
+    EXPECT_EQ(0, renderedRects);
     expectMatchesColdRender(grades.back(), run);
 }
 

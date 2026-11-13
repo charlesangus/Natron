@@ -27,16 +27,80 @@
 
 #include "Global/Macros.h"
 
-#include <string>
+#include <unistd.h>
 
+#include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "SceneTestAuthoring.h"
+
+#include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/ViewIdx.h"
 #include "SceneTestEffect.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
+struct PrimSnapshot {
+    std::string typeName;
+    bool active;
+    std::map<std::string, std::string> properties;
+};
+
+std::map<std::string, PrimSnapshot>
+snapshot(const PXR_NS::UsdStageRefPtr& stage)
+{
+    std::map<std::string, PrimSnapshot> prims;
+
+    for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange::Stage(stage, PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimAllPrimsPredicate))) {
+        PrimSnapshot entry;
+        entry.typeName = prim.GetTypeName().GetString();
+        entry.active = prim.IsActive();
+        for (const PXR_NS::UsdProperty& property : prim.GetProperties()) {
+            std::string value;
+            if (const PXR_NS::UsdAttribute attribute = property.As<PXR_NS::UsdAttribute>()) {
+                PXR_NS::VtValue authored;
+                attribute.Get(&authored);
+                value = PXR_NS::TfStringify(authored);
+            } else if (const PXR_NS::UsdRelationship relationship = property.As<PXR_NS::UsdRelationship>()) {
+                PXR_NS::SdfPathVector targets;
+                relationship.GetTargets(&targets);
+                for (const PXR_NS::SdfPath& target : targets) {
+                    value += target.GetString() + ";";
+                }
+            }
+            entry.properties[property.GetName().GetString()] = value;
+        }
+        prims[prim.GetPath().GetString()] = entry;
+    }
+
+    return prims;
+}
+
+PXR_NS::UsdStageRefPtr
+openLoaded(const ScenePayload& payload,
+           const SceneLoadSetPtr& loadSet)
+{
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(payload);
+
+    if (stage) {
+        stage->SetLoadRules(SceneOps::getLoadRules(loadSet.get()));
+    }
+
+    return stage;
+}
+
 bool
 authorIntAttribute(const SceneLayerEdit& edit,
                    PXR_NS::SdfSpecifier specifier,
@@ -148,6 +212,141 @@ sceneTestRenderGeometry(SceneTestGeometry* effect,
     };
 
     return effect->emitLayer(graft.payload, graft.factsDigest, author, output, errorMessage);
+}
+
+CarCity::CarCity(int blocks,
+                 int buildingsPerBlock)
+{
+    static std::atomic<int> counter(0);
+
+    _dir = std::filesystem::temp_directory_path() / ("scene_car_city_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+    std::filesystem::create_directories(_dir / "buildings");
+    _dir = std::filesystem::canonical(_dir);
+    std::ofstream root(rootPath());
+    root << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\ndef Xform \"World\"\n{\n";
+    for (int b = 0; b < blocks; ++b) {
+        root << "    def Xform \"Block_" << b << "\"\n    {\n";
+        for (int n = 0; n < buildingsPerBlock; ++n) {
+            const std::string name = "b" + std::to_string(b) + "_" + std::to_string(n) + ".usda";
+            const std::string file = (_dir / "buildings" / name).string();
+            std::ofstream building(file);
+            building << "#usda 1.0\n(\n    defaultPrim = \"Building\"\n)\ndef Xform \"Building\"\n{\n"
+                     << "    def Cube \"Geo\"\n    {\n    }\n    def Xform \"car_0\"\n    {\n    }\n}\n";
+            root << "        def Xform \"B_" << n << "\" (\n            prepend payload = @./buildings/" << name << "@\n        )\n        {\n        }\n";
+            _buildingPaths.push_back(file);
+        }
+        root << "    }\n";
+    }
+    root << "}\n";
+}
+
+CarCity::~CarCity()
+{
+    std::error_code ignored;
+
+    std::filesystem::remove_all(_dir, ignored);
+}
+
+std::string
+CarCity::rootPath() const
+{
+    return (_dir / "root.usda").string();
+}
+
+ScenePayload
+CarCity::payload() const
+{
+    const PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(rootPath());
+
+    EXPECT_TRUE(bool(layer));
+
+    return SceneOps::appendLayer(ScenePayload(), layer, 1);
+}
+
+int
+CarCity::getNumBuildings() const
+{
+    return (int)_buildingPaths.size();
+}
+
+int
+CarCity::openedBuildings() const
+{
+    int count = 0;
+
+    for (const std::string& path : _buildingPaths) {
+        if (PXR_NS::SdfLayer::Find(path)) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+std::string
+carPath(int block,
+        int index)
+{
+    return "/World/Block_" + std::to_string(block) + "/B_" + std::to_string(index) + "/car_0";
+}
+
+SceneLoadSetPtr
+loadingOnly(const std::vector<std::string>& paths)
+{
+    std::vector<SceneLoadSet::Entry> entries;
+    SceneLoadSet::Entry none;
+
+    none.path = "/";
+    none.rule = SceneLoadSet::eRuleNone;
+    entries.push_back(none);
+    for (const std::string& path : paths) {
+        SceneLoadSet::Entry all;
+        all.path = path;
+        all.rule = SceneLoadSet::eRuleAll;
+        entries.push_back(all);
+    }
+
+    return std::make_shared<const SceneLoadSet>(entries);
+}
+
+void
+expectParity(const NodePtr& node,
+             const SceneLoadSetPtr& loadSet)
+{
+    ASSERT_TRUE(bool(node));
+    std::string error;
+    ScenePayload viewer;
+    ScenePayload full;
+    const EffectInstancePtr effect = node->getEffectInstance();
+
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              effect->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), loadSet)), &viewer, &error))
+        << error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              effect->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext()), &full, &error))
+        << error;
+
+    const PXR_NS::UsdStageRefPtr viewerStage = openLoaded(viewer, loadSet);
+    const PXR_NS::UsdStageRefPtr fullStage = openLoaded(full, loadSet);
+    ASSERT_TRUE(viewerStage && fullStage);
+    const std::map<std::string, PrimSnapshot> expected = snapshot(fullStage);
+    const std::map<std::string, PrimSnapshot> actual = snapshot(viewerStage);
+
+    for (const auto& item : expected) {
+        const auto found = actual.find(item.first);
+        if (found == actual.end()) {
+            ADD_FAILURE() << "missing prim " << item.first;
+            continue;
+        }
+        EXPECT_EQ(item.second.typeName, found->second.typeName) << item.first;
+        EXPECT_EQ(item.second.active, found->second.active) << item.first;
+        EXPECT_EQ(item.second.properties, found->second.properties) << item.first;
+    }
+    for (const auto& item : actual) {
+        if (expected.find(item.first) == expected.end()) {
+            ADD_FAILURE() << "extra prim " << item.first;
+        }
+    }
 }
 
 NATRON_NAMESPACE_EXIT

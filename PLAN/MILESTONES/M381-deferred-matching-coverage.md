@@ -158,7 +158,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: test — loading Block_0 in the viewer refills the variant menu with B_0's variant set and drops the note's count; the note row is disabled in the combo box (GUI check in an existing scene GUI script, or a gtest on `ChoiceOption` plus `ComboBox` if a widget test exists).
   - size: M
 
-- [ ] M381.P4.T5 — No implicit everything borrow
+- [x] M381.P4.T5 — No implicit everything borrow
   - files: `Engine/Nodes/Scene/SceneQueryPool.h` (~:106) and every remaining caller
   - approach: delete `SceneQueryPool::borrow(payload, err)`; every caller names its set, with an explicit everything plus a reason for USDWrite, render metadata and Search Unloaded. Add an owner table to the `SceneQueryPool.h` doc.
   - verify: `rg` finds no implicit borrow; syntax-check on the touched files; the P1–P4 suites pass.
@@ -180,3 +180,4 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 - 2026-11-13 — P4.T7 implemented (ff16fe245): `mapContextDownToNode` walks from the viewer's input to the node. The mapped context keeps the viewer's id (evaluations derive their own ids privately), so Centre Pivot may fall back to the node's latest result.
 - 2026-11-13 — P4.T8 implemented (d626498f1): `ViewerInstance::setSceneLoadSet` queues `SceneMenuRefresh::followLoadChanges()`; camera menus reach the whole stage. `ChoiceOption` has a `disabled` flag honoured by `ComboBox` (new `ComboBox_Test`); `KnobChoice` itself doesn't refuse a scripted pick, the nodes ignore the note value.
 - 2026-11-13 — P4.T6 implemented (6110fc68b). The output metadata is the primId table of every gprim on the fully loaded stage, so it can't come from a partial load (the verify line's "same metadata with nothing loaded" can't hold). It is never built on the main thread: readers off the main thread or `prepareRender` build it from a full stage, main-thread readers get an uncached provisional empty answer and are invalidated when it arrives (PM, accepted). Main-thread readers (Python, clip preferences) see no primId entries until a render or an off-thread reader builds the table for the current hash; a background full load just to fill it was rejected, as it would load the whole scene for a node merely being in the graph.
+- 2026-11-13 — P4.T5 implemented (311c55e48): no unconverted borrower found; explicit `SceneLoadSet::everything()` only at USDRender's render output and off-thread primId metadata, and in tests. All tasks implemented; full release gate running (stale phase-3 build cancelled). The gate's Xvfb checks (properties responsiveness on the city, a Centre Pivot press) need a GUI script, written next and run with `--from-run`.

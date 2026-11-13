@@ -35,13 +35,13 @@ GPU for downstream GPU nodes and the viewer.
 
 ## Phase 280.1: Device support
 
-- [ ] M280.P1.T1 — Ray-tracing capability in GpuDevice
+- [x] M280.P1.T1 — Ray-tracing capability in GpuDevice
   - files: `Engine/Gpu/GpuDevice.{h,cpp}`, `Engine/Gpu/Vma.cpp`, `Tests/Gpu/GpuDeviceRayTracing_Test.cpp`
   - approach: query `VkPhysicalDeviceAccelerationStructureFeaturesKHR`, `VkPhysicalDeviceRayQueryFeaturesKHR` and `bufferDeviceAddress` in the feature chain; enable them only when all are present, plus the VMA buffer-device-address flag. Expose `GpuDevice::supportsRayQuery()`. No behaviour change for devices without them.
   - verify: gtest on the CI/lavapipe device reports the capability (record what lavapipe advertises in the test output); existing Gpu tests pass unchanged; forcing the capability off via an env override is honoured.
   - size: M
 
-- [ ] M280.P1.T2 — Acceleration structure wrapper
+- [x] M280.P1.T2 — Acceleration structure wrapper
   - files: `Engine/Gpu/GpuAccel.{h,cpp}` (new), `Engine/Gpu/CMakeLists.txt`, `Tests/Gpu/GpuAccel_Test.cpp`
   - approach: thin RAII types for BLAS (triangle geometry from vertex/index `GpuBuffer`s, build, refit with `ALLOW_UPDATE`, compaction) and TLAS (instance buffer with transform and custom index), with scratch from `GpuBufferPool` and a size query before allocation so out-of-memory is reported, not crashed. Natron-agnostic: no Hydra types.
   - verify: gtest builds a BLAS for one quad and a TLAS with two instances on lavapipe; a size query larger than the device budget returns an out-of-memory status.
@@ -49,13 +49,13 @@ GPU for downstream GPU nodes and the viewer.
 
 ## Phase 280.2: GPU tracer and executor
 
-- [ ] M280.P2.T1 — GPU tracer behind the Tracer interface
+- [x] M280.P2.T1 — GPU tracer behind the Tracer interface
   - files: `Engine/Nodes/Scene/Utility/GpuTracer.{h,cpp}`, `Engine/Nodes/Scene/Utility/Kernels/Intersect.slang`, `Engine/Nodes/Scene/Utility/CMakeLists.txt`, `Tests/Scene/NatronUtilityTracer_Test.cpp`
   - approach: implement M279's `Tracer` on `GpuAccel`: upload dirty geometry, refit or rebuild BLAS per dirty bit, rebuild TLAS on scene version change. `Intersect.slang` (SPIR-V only, no CPP twin) reads the ray batch, runs `RayQuery` and writes the same hit layout the Embree tracer produces; an occlusion entry point answers shadow batches.
   - verify: the tracer test suite runs against both backends (parameterised); hit t within 1e-5 relative, ids identical except on edge-grazing rays, which the test excludes by construction.
   - size: L
 
-- [ ] M280.P2.T2 — GPU wavefront executor and device choice
+- [x] M280.P2.T2 — GPU wavefront executor and device choice
   - files: `Engine/Nodes/Scene/Utility/WavefrontGpu.{h,cpp}`, `Engine/Nodes/Scene/Utility/UtilityRenderPass.cpp`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.cpp`, `Tests/Scene/NatronUtility_Test.cpp`
   - approach: dispatch the SPIR-V RayGen, Intersect and ShadeFlat kernels through `GpuRecordContext`. The render pass picks the executor from the `Device` setting (descriptor registered in the delegate) and `supportsRayQuery()`; on an allocation failure in Auto it re-runs the frame on the CPU executor and posts a warning through the delegate's render-stat dictionary for the node to show.
   - verify: gtest — the red-cube render matches between CPU and GPU executors within tolerance; Device=GPU with the capability forced off fails with the extension named; an injected allocation failure in Auto renders on CPU and reports the warning.
@@ -63,13 +63,13 @@ GPU for downstream GPU nodes and the viewer.
 
 ## Phase 280.3: Resident output
 
-- [ ] M280.P3.T1 — USDRender GPU output from Natron Utility buffers
+- [x] M280.P3.T1 — USDRender GPU output from Natron Utility buffers
   - files: `Engine/Nodes/Scene/USDRender.cpp`, `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}`, `Engine/Nodes/Scene/Utility/UtilityRenderBuffer.{h,cpp}`, `Tests/Scene/USDRender_Test.cpp`
   - approach: `UtilityRenderBuffer::GetResource` returns a handle to its `GpuBuffer` when GPU-resident; HydraRenderImpl passes it to USDRender's `renderGpu`, which copies or aliases it into the output region without a host round-trip. `Map()` downloads lazily for CPU consumers. Readback stays the path for every other delegate.
   - verify: gtest — a USDRender (Natron Utility, GPU) → GPU Grade chain records zero host downloads (transfer counter); the CPU-consumer path still returns identical pixels.
   - size: L
 
-- [ ] M280.P3.T2 — Viewer shows the GPU frame through GL interop
+- [x] M280.P3.T2 — Viewer shows the GPU frame through GL interop
   - files: `Gui/SceneViewport.cpp`, `Engine/Gpu/GlInterop.{h,cpp}`, `Tests/gui/natron_utility_viewer.py`
   - approach: when the viewer's delegate is Natron Utility on GPU, import its colour buffer through the existing Vulkan→GL interop with semaphores instead of uploading a mapped CPU buffer; fall back to the upload when interop is unavailable.
   - verify: the M279 viewer GUI script, extended to force GPU, passes under the strict Xvfb runner and its screenshot matches the CPU one; screenshot shared with the user.
@@ -85,3 +85,4 @@ GPU for downstream GPU nodes and the viewer.
 - 2026-11-01 — **No compute-shader BVH (user):** GPUs without ray-tracing hardware use the CPU path.
 - 2026-11-12 — P1.T1 implemented (fd227125d); F7 took main (0c83f0148, one HydraRenderImpl conflict: main's publish/finished rule kept with the Utility delegate's whole-frame rule on top) and is merged into this branch. lavapipe's driver library names all three extensions; whether it sets the feature bits prints on the first test run.
 - 2026-11-13 — P2.T2 (e95fc6253), the Device menu and node warnings (b2a644320), and P3.T1 (7bbb2f936) implemented. Auto also falls back to the CPU on a lost device (PM call, as for out-of-memory). The device that rendered shows as an info persistent message on USDRender. The colour film stays on the device while depth, primId and instance id still read back per batch. P3.T2 and the once-per-frame strip fix are in progress.
+- 2026-11-13 — Gate green (run 43419744078 on 6f19477d5): build, both ctest legs and `natron_utility_viewer.py` 84/84. The stripped-region test now caps the strip buffer so the region really strips. PR #270 is open into F7 and under review. Screenshot sign-off and the AMD/NVIDIA check go to F7's UAT.

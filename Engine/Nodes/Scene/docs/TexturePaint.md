@@ -37,8 +37,9 @@ Controls:
   `[Project]/textures/texturePaint_output.<UDIM>.exr`. A bake that does not
   finish puts back the files it replaced. A Bake Output fails, naming the other
   node, while another TexturePaint node's Bake Output of the same files has not
-  finished. A Bake Output cannot be undone or redone while another Bake Output
-  of the node is queued or running.
+  finished. An undo or redo of a Bake Output waits for the node's queued Bake
+  Outputs, and is refused, changing nothing, once a later one has landed or
+  while another node is baking the same files.
 - Output Tile: the UDIM tile the node outputs as its image (1001 by default).
 
 The node does not yet render: its output is transparent black, the size of one

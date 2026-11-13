@@ -24,6 +24,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -136,7 +137,7 @@ public:
      **/
     static void shutdownAll();
 
-    // Lets bakers made afterwards, and the file queue, work again after shutdownAll().
+    // Lets bakers made afterwards, and the file queue, work again after shutdownAll(): see TexturePaintFileQueue::restartForTesting().
     static void restartForTesting();
 
     // Whether a bake is queued or running, or finished but its completion has not run yet.
@@ -265,19 +266,36 @@ public:
     static std::uint64_t newId();
 
     /**
-     * @brief Records that bake, of owner, is about to back up target. Owner 0 is no node, held by
-     * no other bake. Otherwise *holder receives the name of the owner whose bake holds target.
+     * @brief The key a claim on path is held under: its directory resolved through symbolic links
+     * and "..", then its file name, so that every spelling of one file claims it alike.
+     **/
+    static std::string claimKey(const std::string& path);
+
+    /**
+     * @brief Records that bake, of owner, is about to back up the file of key, a claimKey(). Owner
+     * 0 is no node, held by no other bake. Otherwise *holder receives the owner whose bake holds it.
      **/
     static ClaimResultEnum claim(std::uint64_t bake,
                                  std::uint64_t owner,
-                                 const std::string& ownerName,
-                                 const std::string& target,
-                                 std::string* holder);
+                                 const std::string& key,
+                                 std::uint64_t* holder);
 
-    // Whether a bake other than bake holds target, *holder receiving its owner's name.
+    // Whether a bake other than bake holds the file of key, *holder receiving its owner.
     static bool isHeldByAnotherBake(std::uint64_t bake,
-                                    const std::string& target,
-                                    std::string* holder);
+                                    const std::string& key,
+                                    std::uint64_t* holder);
+
+    /**
+     * @brief The name messages give owner by, kept current by the owner as it is renamed; read on
+     * any thread, so that a refusal names the node as it is called when it is refused.
+     **/
+    static void setOwnerName(std::uint64_t owner,
+                             const std::string& name);
+
+    static void forgetOwner(std::uint64_t owner);
+
+    // Empty for an owner with no name.
+    static std::string getOwnerName(std::uint64_t owner);
 
     // Drops every claim of bake. Safe to call more than once.
     static void settle(std::uint64_t bake);
@@ -297,10 +315,13 @@ public:
     // Whether no step is queued or running.
     static bool isIdleForTesting();
 
+    // How many steps wait behind the one running, if any.
+    static std::size_t getQueuedCountForTesting();
+
     // Whether the queue's thread exists.
     static bool isThreadRunningForTesting();
 
-    // Takes steps on a thread again after shutdown().
+    // Takes steps on a thread again after shutdown(), with no claim held and no hook.
     static void restartForTesting();
 };
 

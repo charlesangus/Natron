@@ -38,6 +38,7 @@ TexturePaintBakeOutputUndoCommand::TexturePaintBakeOutputUndoCommand(const NodeP
     , _node(node)
     , _state(state)
     , _files(files)
+    , _applied(std::make_shared<bool>(true))
     , _firstRedo(true)
 {
 }
@@ -61,7 +62,7 @@ TexturePaintBakeOutputUndoCommand::undo()
     std::shared_ptr<TexturePaint> paint = getPaint();
 
     if (paint) {
-        (void)paint->enqueueBakeOutputSwap(_files, _state, true);
+        (void)paint->enqueueBakeOutputSwap(_files, _state, true, _applied);
     }
 }
 
@@ -76,7 +77,7 @@ TexturePaintBakeOutputUndoCommand::redo()
     }
     std::shared_ptr<TexturePaint> paint = getPaint();
     if (paint) {
-        (void)paint->enqueueBakeOutputSwap(_files, _state, false);
+        (void)paint->enqueueBakeOutputSwap(_files, _state, false, _applied);
     }
 }
 

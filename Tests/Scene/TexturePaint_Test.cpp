@@ -2209,6 +2209,22 @@ undoDirectory(const QTemporaryDir& dir)
 
     return found.empty() ? std::string() : found.front();
 }
+
+// The temporary files Bake Outputs left in dir, which a bake that ended removes.
+std::vector<std::string>
+bakeTemps(const QTemporaryDir& dir)
+{
+    std::vector<std::string> found;
+    std::error_code ec;
+
+    for (std::filesystem::directory_iterator it(dir.path().toStdString(), ec), end; !ec && (it != end); it.increment(ec)) {
+        if (it->path().filename().string().find(".baking") != std::string::npos) {
+            found.push_back(it->path().string());
+        }
+    }
+
+    return found;
+}
 } // anon namespace
 
 TEST_F(TexturePaintTest, ARedoAfterAFailedUndoKeepsTheOriginal)
@@ -2386,6 +2402,7 @@ TEST_F(TexturePaintTest, ABakeOutputThatNeverLandsPutsItsFilesBack)
     expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.5f, 0.5f, 0.5f, 1.f, "the file before the bake");
     EXPECT_FALSE(std::filesystem::exists(dir.path().toStdString() + "/out.1002.exr"));
     EXPECT_FALSE(std::filesystem::exists(dir.path().toStdString() + "/.texturepaint-undo"));
+    EXPECT_TRUE(bakeTemps(dir).empty());
 }
 
 TEST_F(TexturePaintTest, WhatABakeKeepsAliveIsReleasedOnTheMainThread)
@@ -2727,7 +2744,7 @@ bakeOutputFilesOf(std::uint64_t owner,
 {
     std::shared_ptr<TexturePaint::BakeOutputFiles> files = std::make_shared<TexturePaint::BakeOutputFiles>();
     files->owner = owner;
-    files->ownerName = ownerName;
+    TexturePaintFileQueue::setOwnerName(owner, ownerName);
 
     return files;
 }
@@ -2781,9 +2798,10 @@ TEST_F(TexturePaintTest, AnUnsettledBakeHoldsItsFilesAgainstEveryOtherBake)
     EXPECT_TRUE(heldBySameOwner) << "a later bake of the same node waits for the earlier one instead of failing";
     EXPECT_EQ("the first bake", readText(target));
 
-    std::string holder;
-    EXPECT_TRUE(TexturePaintFileQueue::isHeldByAnotherBake(otherNode->bake, target, &holder));
-    EXPECT_EQ("Group1.PaintA", holder);
+    std::uint64_t holder = 0;
+    EXPECT_TRUE(TexturePaintFileQueue::isHeldByAnotherBake(otherNode->bake, TexturePaintFileQueue::claimKey(target), &holder));
+    EXPECT_EQ(paintA, holder);
+    EXPECT_EQ("Group1.PaintA", TexturePaintFileQueue::getOwnerName(holder));
 
     // Two dropped bakes of one file: the newer one could only claim it once the older one went
     // back, so the file ends as it was before both.
@@ -2880,6 +2898,13 @@ TEST_F(TexturePaintTest, AnUndoSubmittedAfterARollbackOfTheSameFileRunsAfterIt)
 
 TEST_F(TexturePaintTest, ShuttingDownStopsEveryBakerAndPutsBackTheFilesOfABakeThatNeverLanded)
 {
+    // Destroyed last, whatever fails first, so that the tests after this one bake again.
+    struct RestartAfterShutdown {
+        ~RestartAfterShutdown()
+        {
+            TexturePaintBaker::restartForTesting();
+        }
+    } restart;
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     RotoLayerPtr session;
@@ -2920,7 +2945,7 @@ TEST_F(TexturePaintTest, ShuttingDownStopsEveryBakerAndPutsBackTheFilesOfABakeTh
     expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.5f, 0.5f, 0.5f, 1.f, "the file before the bake");
     EXPECT_FALSE(std::filesystem::exists(dir.path().toStdString() + "/out.1002.exr"));
     EXPECT_FALSE(std::filesystem::exists(dir.path().toStdString() + "/.texturepaint-undo"));
-    TexturePaintBaker::restartForTesting();
+    EXPECT_TRUE(bakeTemps(dir).empty());
 }
 
 TEST_F(TexturePaintTest, PasteOfAPasteReplacesTheSuffixAndKeepsEmptyPathsEmpty)
@@ -3177,10 +3202,300 @@ TEST_F(TexturePaintTest, UndoingABakeWhileALaterBakeIsQueuedIsRefused)
     ASSERT_TRUE(effect->getBaker()->enqueue(marker));
     ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
     first->undo();
+    EXPECT_FALSE(paint->hasPersistentMessage()) << "the undo waits for the bake instead of being refused at once";
     release = true;
     ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
 
     expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 0.f, 1.f, 1.f, "the later bake, which the refused undo left");
     EXPECT_TRUE(TexturePaint::isSessionFrozen(session)) << "the refused undo changes nothing";
     EXPECT_TRUE(TexturePaint::isSessionFrozen(later));
+    EXPECT_TRUE(paint->hasPersistentMessage());
+    const std::string record = getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue();
+    EXPECT_FALSE(record.empty());
+
+    // The undo never happened, so redoing the bake has nothing to do.
+    undoBakeOutput(paint, first, false);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 0.f, 1.f, 1.f, "the later bake, which the redo left");
+    EXPECT_EQ(record, getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue());
+}
+
+namespace {
+// Holds paint's baker on a bake of its own until release is set, so that what is enqueued after
+// it is still queued.
+void
+holdBaker(TexturePaint* effect,
+          std::atomic<bool>* release)
+{
+    TexturePaintBaker::Bake marker;
+    marker.work = [release](TexturePaintBaker::Context&) {
+        const Clock::time_point deadline = Clock::now() + std::chrono::seconds(60);
+        while (!release->load() && (Clock::now() < deadline)) {
+            QThread::msleep(2);
+        }
+
+        return true;
+    };
+    ASSERT_TRUE(effect->getBaker()->enqueue(marker));
+}
+
+// Waits until every bake paint's baker ran before now has finished and its result, landed or
+// dropped, has reached the main thread.
+bool
+drainBaker(TexturePaint* effect)
+{
+    const std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
+    TexturePaintBaker::Bake marker;
+    marker.work = [](TexturePaintBaker::Context&) {
+        return true;
+    };
+    marker.completion = [done](bool) {
+        *done = true;
+    };
+
+    return effect->getBaker()->enqueue(marker) && pumpUntil([&]() { return done->load(); }, 60000);
+}
+
+std::string
+persistentMessageOf(const NodePtr& node)
+{
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+
+    return message.toStdString();
+}
+} // anon namespace
+
+TEST_F(TexturePaintTest, AnUndoDroppedBeforeItsFileStepRunsLeavesTheFilesAndTheRecord)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    const float grey[3] = { 0.5f, 0.5f, 0.5f };
+    writeSplitTexture(red, grey, grey);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+
+    std::vector<std::string> files;
+    UndoCommandPtr command = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(command));
+    command->redo();
+    const std::string record = getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue();
+
+    {
+        RollbackGate gate;
+        command->undo();
+        ASSERT_TRUE(pumpUntil([&]() { return gate.waitUntilHeld(0); }, 30000)) << "the undo's file step is next";
+        effect->quitBackgroundWork(true);
+        ASSERT_TRUE(drainBaker(effect));
+        gate.release();
+        ASSERT_TRUE(pumpUntil([]() { return TexturePaintFileQueue::isIdleForTesting(); }, 30000));
+    }
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the bake, which the dropped undo left");
+    EXPECT_EQ(record, getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue());
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
+
+    // Still applied: a redo has nothing to do, and an undo puts back what the bake replaced.
+    undoBakeOutput(paint, command, false);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the bake, which the redo left");
+    undoBakeOutput(paint, command, true);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.5f, 0.5f, 0.5f, 1.f, "the file before the bake");
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+}
+
+TEST_F(TexturePaintTest, AnUndoQueuedBehindAFailedBakeOutputLandsOnceItEnds)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    const float grey[3] = { 0.5f, 0.5f, 0.5f };
+    writeSplitTexture(red, grey, grey);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+
+    const std::string before = getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue();
+    std::vector<std::string> files;
+    UndoCommandPtr first = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(first));
+    first->redo();
+
+    // Under a regular file, where no tile can be written.
+    const std::string blocker = dir.path().toStdString() + "/blocker";
+    std::ofstream(blocker.c_str()) << "not a directory";
+    getKnob<KnobOutputFile>(paint, kTexturePaintParamBakeOutputPath)->setValue(blocker + "/out.<UDIM>.exr");
+
+    std::atomic<bool> release(false);
+    holdBaker(effect, &release);
+    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+    first->undo();
+    release = true;
+    ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.5f, 0.5f, 0.5f, 1.f, "the file before the bake, which the undo put back");
+    EXPECT_EQ(before, getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue()) << "the record before the first bake";
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+    EXPECT_TRUE(bakeTemps(dir).empty());
+}
+
+TEST_F(TexturePaintTest, EveryPathToAClaimedFileFindsItsClaim)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string base = dir.path().toStdString();
+    std::filesystem::create_directories(base + "/a");
+    std::filesystem::create_directory_symlink(base + "/a", base + "/link");
+    const std::uint64_t first = TexturePaintFileQueue::newId();
+    const std::uint64_t second = TexturePaintFileQueue::newId();
+    TexturePaintFileQueue::setOwnerName(first, "Group1.PaintA");
+    TexturePaintFileQueue::setOwnerName(second, "Group1.PaintB");
+    const std::uint64_t firstBake = TexturePaintFileQueue::newId();
+    const std::uint64_t secondBake = TexturePaintFileQueue::newId();
+
+    std::uint64_t holder = 0;
+    ASSERT_EQ(TexturePaintFileQueue::eClaimResultTaken, TexturePaintFileQueue::claim(firstBake, first, TexturePaintFileQueue::claimKey(base + "/a/x.exr"), &holder));
+    for (const std::string& alias : { base + "/a/../a/x.exr", base + "/link/x.exr", base + "//a/./x.exr", base + "/missing/../a/x.exr" }) {
+        EXPECT_EQ(TexturePaintFileQueue::claimKey(base + "/a/x.exr"), TexturePaintFileQueue::claimKey(alias)) << alias;
+        holder = 0;
+        EXPECT_EQ(TexturePaintFileQueue::eClaimResultHeldByAnotherOwner, TexturePaintFileQueue::claim(secondBake, second, TexturePaintFileQueue::claimKey(alias), &holder)) << alias;
+        EXPECT_EQ(first, holder) << alias;
+        EXPECT_EQ("Group1.PaintA", TexturePaintFileQueue::getOwnerName(holder)) << alias;
+    }
+    EXPECT_NE(TexturePaintFileQueue::claimKey(base + "/a/y.exr"), TexturePaintFileQueue::claimKey(base + "/a/x.exr"));
+
+    TexturePaintFileQueue::settle(firstBake);
+    TexturePaintFileQueue::settle(secondBake);
+    TexturePaintFileQueue::forgetOwner(first);
+    TexturePaintFileQueue::forgetOwner(second);
+    EXPECT_EQ(TexturePaintFileQueue::eClaimResultTaken, TexturePaintFileQueue::claim(secondBake, second, TexturePaintFileQueue::claimKey(base + "/link/x.exr"), &holder));
+    TexturePaintFileQueue::settle(secondBake);
+}
+
+TEST_F(TexturePaintTest, TwoQueuedBakeOutputsOfANodeToTheSameFilesLandInOrder)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    const float grey[3] = { 0.5f, 0.5f, 0.5f };
+    writeSplitTexture(red, grey, grey);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+
+    std::vector<UndoCommandPtr> commands;
+    effect->setUndoCommandSinkForTesting([&commands](const UndoCommandPtr& command) {
+        commands.push_back(command);
+    });
+    std::atomic<bool> release(false);
+    holdBaker(effect, &release);
+    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+    RotoLayerPtr later = effect->addSession(viewCamera());
+    ASSERT_TRUE(bool(later));
+    setColor(addBrushStroke(paint, later, eRotoStrokeTypeSolid, "later", kRedU, 0.5), 0., 0., 1.);
+    ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+    release = true;
+    ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+    effect->setUndoCommandSinkForTesting(std::function<void(const UndoCommandPtr&)>());
+
+    EXPECT_FALSE(paint->hasPersistentMessage()) << persistentMessageOf(paint);
+    ASSERT_EQ(2u, commands.size());
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 0.f, 1.f, 1.f, "the second bake");
+    EXPECT_TRUE(bakeTemps(dir).empty());
+
+    undoBakeOutput(paint, commands[1], true);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the first bake, which the second backed up");
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(later));
+    undoBakeOutput(paint, commands[0], true);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.5f, 0.5f, 0.5f, 1.f, "the file before both bakes");
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+}
+
+TEST_F(TexturePaintTest, ABakeOutputOfFilesAnotherNodeIsBakingFailsNamingIt)
+{
+    QTemporaryDir dir;
+    QTemporaryDir otherDir;
+    ASSERT_TRUE(dir.isValid() && otherDir.isValid());
+    RotoLayerPtr session;
+    RotoLayerPtr otherSession;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    NodePtr other = createPaintedQuads(otherDir, &otherSession);
+    ASSERT_TRUE(paint && other);
+    useSmallTiles(paint);
+    useSmallTiles(other);
+    const std::string red = setBakeOutputPath(paint, dir);
+    (void)setBakeOutputPath(other, dir);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+    setColor(addBrushStroke(other, otherSession, eRotoStrokeTypeSolid, "other", kRedU, 0.5), 0., 0., 1.);
+    TexturePaint* effect = getTexturePaint(paint);
+    TexturePaint* otherEffect = getTexturePaint(other);
+
+    {
+        RollbackGate gate;
+        ASSERT_TRUE(effect->enqueueBakeOutput(1., ViewIdx(0)));
+        ASSERT_TRUE(gate.waitUntilHeld(60000)) << "the first node's tile is about to be written";
+        ASSERT_TRUE(otherEffect->enqueueBakeOutput(1., ViewIdx(0)));
+        ASSERT_TRUE(pumpUntil([]() { return TexturePaintFileQueue::getQueuedCountForTesting() >= 1; }, 60000));
+        gate.release();
+        ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking() && !otherEffect->isBaking(); }, 60000));
+    }
+
+    EXPECT_FALSE(paint->hasPersistentMessage()) << persistentMessageOf(paint);
+    ASSERT_TRUE(other->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, persistentMessageOf(other).find(paint->getFullyQualifiedName())) << persistentMessageOf(other);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the first node's bake");
+    EXPECT_TRUE(bakeTemps(dir).empty());
+}
+
+TEST_F(TexturePaintTest, UndoingABakeWhoseFilesAnotherNodeIsBakingIsRefusedNamingIt)
+{
+    QTemporaryDir dir;
+    QTemporaryDir otherDir;
+    ASSERT_TRUE(dir.isValid() && otherDir.isValid());
+    RotoLayerPtr session;
+    RotoLayerPtr otherSession;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    NodePtr other = createPaintedQuads(otherDir, &otherSession);
+    ASSERT_TRUE(paint && other);
+    useSmallTiles(paint);
+    useSmallTiles(other);
+    const std::string red = setBakeOutputPath(paint, dir);
+    (void)setBakeOutputPath(other, dir);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+    setColor(addBrushStroke(other, otherSession, eRotoStrokeTypeSolid, "other", kRedU, 0.5), 0., 0., 1.);
+    TexturePaint* effect = getTexturePaint(paint);
+    TexturePaint* otherEffect = getTexturePaint(other);
+
+    std::vector<std::string> files;
+    UndoCommandPtr command = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(command));
+    command->redo();
+    const std::string record = getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue();
+
+    {
+        RollbackGate gate;
+        ASSERT_TRUE(otherEffect->enqueueBakeOutput(1., ViewIdx(0)));
+        ASSERT_TRUE(gate.waitUntilHeld(60000)) << "the other node's tile is about to be written";
+        command->undo();
+        // The undo's file step queues behind the held one, while the other node holds the file.
+        ASSERT_TRUE(pumpUntil([]() { return TexturePaintFileQueue::getQueuedCountForTesting() >= 1; }, 60000));
+        gate.release();
+        ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking() && !otherEffect->isBaking(); }, 60000));
+    }
+
+    ASSERT_TRUE(paint->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, persistentMessageOf(paint).find(other->getFullyQualifiedName())) << persistentMessageOf(paint);
+    EXPECT_EQ(record, getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue()) << "the refused undo changes nothing";
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 0.f, 1.f, 1.f, "the other node's bake");
+    EXPECT_TRUE(bakeTemps(dir).empty());
 }

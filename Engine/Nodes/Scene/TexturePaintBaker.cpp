@@ -26,6 +26,7 @@
 #include "TexturePaintBaker.h"
 
 #include <condition_variable>
+#include <filesystem>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -367,7 +368,6 @@ namespace {
 struct FileClaim {
     std::uint64_t bake = 0;
     std::uint64_t owner = 0;
-    std::string ownerName;
 };
 
 struct FileQueueState {
@@ -384,6 +384,7 @@ struct FileQueueState {
     std::mutex lateMutex;
     std::uint64_t lastId = 0;
     std::unordered_map<std::string, FileClaim> claims;
+    std::unordered_map<std::uint64_t, std::string> ownerNames;
 };
 
 // Never destroyed: a step can be submitted during static destruction, after shutdown().
@@ -526,49 +527,98 @@ TexturePaintFileQueue::newId()
     return ++s.lastId;
 }
 
+std::string
+TexturePaintFileQueue::claimKey(const std::string& path)
+{
+    const std::filesystem::path given(path);
+    const std::filesystem::path parent = given.has_parent_path() ? given.parent_path() : std::filesystem::path(".");
+    std::error_code ec;
+    std::filesystem::path resolved = std::filesystem::weakly_canonical(parent, ec);
+
+    if (ec) {
+        ec.clear();
+        resolved = std::filesystem::absolute(parent, ec);
+        if (ec) {
+            resolved = parent;
+        }
+    }
+
+    return (resolved / given.filename()).lexically_normal().string();
+}
+
 TexturePaintFileQueue::ClaimResultEnum
 TexturePaintFileQueue::claim(std::uint64_t bake,
                              std::uint64_t owner,
-                             const std::string& ownerName,
-                             const std::string& target,
-                             std::string* holder)
+                             const std::string& key,
+                             std::uint64_t* holder)
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
-    const std::unordered_map<std::string, FileClaim>::const_iterator it = s.claims.find(target);
+    const std::unordered_map<std::string, FileClaim>::const_iterator it = s.claims.find(key);
 
     if ((it != s.claims.end()) && (it->second.bake != bake)) {
         if (holder) {
-            *holder = it->second.ownerName;
+            *holder = it->second.owner;
         }
 
         return ((owner != 0) && (it->second.owner == owner)) ? eClaimResultHeldBySameOwner : eClaimResultHeldByAnotherOwner;
     }
-    FileClaim& claimed = s.claims[target];
+    FileClaim& claimed = s.claims[key];
     claimed.bake = bake;
     claimed.owner = owner;
-    claimed.ownerName = ownerName;
 
     return eClaimResultTaken;
 }
 
 bool
 TexturePaintFileQueue::isHeldByAnotherBake(std::uint64_t bake,
-                                           const std::string& target,
-                                           std::string* holder)
+                                           const std::string& key,
+                                           std::uint64_t* holder)
 {
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
-    const std::unordered_map<std::string, FileClaim>::const_iterator it = s.claims.find(target);
+    const std::unordered_map<std::string, FileClaim>::const_iterator it = s.claims.find(key);
 
     if ((it == s.claims.end()) || (it->second.bake == bake)) {
         return false;
     }
     if (holder) {
-        *holder = it->second.ownerName;
+        *holder = it->second.owner;
     }
 
     return true;
+}
+
+void
+TexturePaintFileQueue::setOwnerName(std::uint64_t owner,
+                                    const std::string& name)
+{
+    if (owner == 0) {
+        return;
+    }
+    FileQueueState& s = fileQueueState();
+    std::lock_guard<std::mutex> lock(s.mutex);
+
+    s.ownerNames[owner] = name;
+}
+
+void
+TexturePaintFileQueue::forgetOwner(std::uint64_t owner)
+{
+    FileQueueState& s = fileQueueState();
+    std::lock_guard<std::mutex> lock(s.mutex);
+
+    s.ownerNames.erase(owner);
+}
+
+std::string
+TexturePaintFileQueue::getOwnerName(std::uint64_t owner)
+{
+    FileQueueState& s = fileQueueState();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    const std::unordered_map<std::uint64_t, std::string>::const_iterator it = s.ownerNames.find(owner);
+
+    return (it == s.ownerNames.end()) ? std::string() : it->second;
 }
 
 void
@@ -640,6 +690,15 @@ TexturePaintFileQueue::isIdleForTesting()
     return s.queued.empty() && !s.busy;
 }
 
+std::size_t
+TexturePaintFileQueue::getQueuedCountForTesting()
+{
+    FileQueueState& s = fileQueueState();
+    std::lock_guard<std::mutex> lock(s.mutex);
+
+    return s.queued.size();
+}
+
 bool
 TexturePaintFileQueue::isThreadRunningForTesting()
 {
@@ -656,6 +715,9 @@ TexturePaintFileQueue::restartForTesting()
     std::lock_guard<std::mutex> lock(s.mutex);
 
     s.stopping = false;
+    s.claims.clear();
+    s.beforeWorkHook = std::function<void()>();
+    s.changed.notify_all();
 }
 
 NATRON_NAMESPACE_EXIT

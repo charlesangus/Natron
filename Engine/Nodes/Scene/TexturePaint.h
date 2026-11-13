@@ -188,6 +188,8 @@ public:
 
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
 
+    virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
+
     /**
      * @brief Cancels the bake in progress and drops the queued ones, as the node is deleted or the
      * project closes. Never waits, blocking or not: the running bake stops at its next poll.
@@ -434,6 +436,8 @@ public:
 
         struct Entry {
             std::string target;
+            // target's TexturePaintFileQueue::claimKey().
+            std::string key;
             // What target held before the bake, while it is not at target.
             std::string backup;
             // What the bake wrote, while the bake is undone.
@@ -444,19 +448,21 @@ public:
             FileIdentity written;
         };
         std::vector<Entry> entries;
+        // The claim keys of the entries.
         std::unordered_set<std::string> targets;
         // Where the backups and stashes are, deleted with them.
         std::set<std::string> directories;
         std::string token;
-        // The bake's identity in the TexturePaintFileQueue claims, given with its first claim; 0 before.
+        // The bake's identity in the TexturePaintFileQueue claims, given when the bake is queued or
+        // with its first claim; 0 before.
         std::uint64_t bake = 0;
-        // The node that bakes, by TexturePaintFileQueue::newId(), and its name for the errors of
-        // other nodes' bakes; 0 for none.
+        // The node that bakes, by TexturePaintFileQueue::newId(), which names it; 0 for none.
         std::uint64_t owner = 0;
-        std::string ownerName;
         bool undone = false;
         // Whether every entry's written identity is recorded.
         bool sealed = false;
+        // Whether the backups and stashes are deleted, after which nothing can be swapped.
+        bool discarded = false;
     };
 
     /**
@@ -504,8 +510,8 @@ public:
      * redoing, the reverse, backing up whatever is at the target by then. Asking for the state
      * the files are already in moves nothing and succeeds. Refuses, moving nothing, when another
      * bake holds a target, and, undoing, when a target is no longer the file the bake wrote. A
-     * failure puts back what it moved and returns false with *error set. With evict, drops the
-     * targets' cached headers.
+     * failure puts back what it moved and returns false with *error set. Refuses once files are
+     * discarded. With evict, drops the targets' cached headers.
      **/
     static bool swapBakeOutputFiles(BakeOutputFiles* files,
                                     bool undo,
@@ -523,7 +529,7 @@ public:
      * sessions with strokes, which *state receives along with the record as it was. *undoFiles
      * receives what the undo step swaps, the targets that existed before backed up. False with
      * *error set on failure, the files put back as they were and nothing changed, or while a
-     * queued Bake Output of the node has not landed.
+     * queued Bake Output of the node, or an undo or redo of one, has not landed.
      **/
     bool writeBakeOutput(double time,
                          ViewIdx view,
@@ -538,15 +544,23 @@ public:
     void reapplyBakeOutputState(const BakeOutputState& state);
 
     /**
-     * @brief Submits swapBakeOutputFiles() to the TexturePaintFileQueue and, on the baker, waits for
-     * it; once it lands, restores (undo) or reapplies the state on the main thread, or shows why
-     * the files could not be swapped as the persistent message, state unchanged. Refused, with
-     * the message, while a Bake Output of the node is queued, running or landing: its record and
-     * files would no longer be the ones state names. Main thread.
+     * @brief Queues an undo (or redo) of the Bake Output of files and state on the node's baker,
+     * behind every bake queued before it. When the baker reaches it, the main thread checks that
+     * the record is still the one the bake set (undo) or found (redo); if so the files swap on
+     * the TexturePaintFileQueue and, once that lands, the state is restored (undo) or reapplied.
+     * Otherwise, or when the files cannot be swapped, nothing changes and the persistent message
+     * says why. *applied, which the undo step shares with every swap it queues, tells whether its
+     * bake is applied as the swaps landed so far left it: a swap asking for the state it is in
+     * already does nothing, so that the swap after a refused one leaves the files as they are. A
+     * swap the baker drops never moves the files, or puts back what it moved. Main thread.
      **/
     bool enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& files,
                                const BakeOutputState& state,
-                               bool undo);
+                               bool undo,
+                               const std::shared_ptr<bool>& applied);
+
+    // Bake Outputs that land hand their undo step to sink rather than pushing it, when set.
+    void setUndoCommandSinkForTesting(const std::function<void(const UndoCommandPtr&)>& sink);
 
     /**
      * @brief The bakes below queue on the node's TexturePaintBaker, in order, and return at once;
@@ -600,7 +614,11 @@ private:
 
     bool prepareBakeOutput(double time, ViewIdx view, BakeOutputRun* run, std::string* error);
     bool runBakeOutput(BakeOutputRun& run, const BakeControl& control, std::string* error);
-    // Backs up and writes one target of run on the TexturePaintFileQueue, waiting for it.
+    /**
+     * @brief Writes rgba to a temporary file beside path on the calling thread, then backs path up
+     * and renames the temporary file over it on the TexturePaintFileQueue, waiting for that. The
+     * temporary file is gone once the step ran, whether or not the write landed.
+     **/
     static bool writeBakeTarget(const BakeOutputRun& run,
                                 const std::string& path,
                                 const std::shared_ptr<std::vector<float>>& rgba,
@@ -785,8 +803,10 @@ private:
     std::unique_ptr<TexturePaintBaker> _baker;
     // This node's identity as the owner of TexturePaintFileQueue claims.
     const std::uint64_t _bakeOwnerId;
-    // Bake Outputs queued, running or landing, whose files are not yet owned by an undo step or put back.
+    // Bake Outputs, and their undos and redos, queued, running or landing, whose files are not
+    // yet owned by an undo step or put back.
     const std::shared_ptr<std::atomic<int>> _pendingBakeOutputs;
+    std::function<void(const UndoCommandPtr&)> _undoSinkForTesting;
     // quitBackgroundWork clears this from a destroyNode watcher thread, and a queued
     // clear could outlive the node, so the map is guarded rather than main-thread only.
     mutable std::mutex _pendingSessionBakesMutex;

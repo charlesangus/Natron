@@ -42,8 +42,10 @@ NATRON_NAMESPACE_ENTER
  * puts back what the output files held before the bake, unfreezes the sessions it froze and sets
  * the bake record back, so those sessions render from their strokes again; a file the bake
  * created goes. Redoing puts the bake's files back and freezes the same sessions again, so a
- * redo never bakes. Both swap the files by renames on the TexturePaintFileQueue and change the
- * node once that lands, so neither waits on the disk.
+ * redo never bakes. Both queue on the node's baker behind its pending bakes, swap the files by
+ * renames on the TexturePaintFileQueue and change the node once that lands, so neither waits on
+ * the disk. One that is refused changes nothing, and the one after it, asking for the state the
+ * bake is in already, does nothing either.
  **/
 class TexturePaintBakeOutputUndoCommand
     : public UndoCommand {
@@ -63,6 +65,8 @@ private:
     NodeWPtr _node;
     TexturePaint::BakeOutputState _state;
     std::shared_ptr<TexturePaint::BakeOutputFiles> _files;
+    // Whether the bake is applied, as the swaps landed so far left it.
+    std::shared_ptr<bool> _applied;
     bool _firstRedo;
 };
 

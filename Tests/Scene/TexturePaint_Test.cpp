@@ -27,9 +27,11 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -46,15 +48,21 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeColorSampler.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataView.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/TexturePaint.h"
 #include "Engine/Nodes/Scene/TexturePaintView.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Project.h"
+#include "Engine/RectI.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
@@ -311,9 +319,17 @@ protected:
     NodePtr createPaintedQuads(const QTemporaryDir& dir,
                                RotoLayerPtr* session)
     {
+        return createPaintedScene(dir, kTwoQuads, session);
+    }
+
+    // As createPaintedQuads(), over the scene usda.
+    NodePtr createPaintedScene(const QTemporaryDir& dir,
+                               const char* usda,
+                               RotoLayerPtr* session)
+    {
         const QString path = dir.path() + QString::fromUtf8("/quads.usda");
         QFile file(path);
-        if (!file.open(QIODevice::WriteOnly) || (file.write(kTwoQuads) < 0)) {
+        if (!file.open(QIODevice::WriteOnly) || (file.write(usda) < 0)) {
             ADD_FAILURE() << "could not write " << path.toStdString();
 
             return NodePtr();
@@ -663,4 +679,308 @@ TEST_F(TexturePaintTest, BufferSizeFollowsBufferResolutionNotTheViewer)
     EXPECT_EQ(1024, oneK.width);
     EXPECT_EQ(683, oneK.height);
     EXPECT_TRUE(pixelAt(oneK, kRedU, 0.5).touched);
+}
+
+namespace {
+// A red quad on tile 1001 with the left half of it hidden behind an occluder, which has no UVs and
+// so is not painted, and beside it a blue quad on tile 1002 facing away from viewCamera().
+const char* const kOccludedAndBackFacing = R"usda(#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Red" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2, -2, 0), (0, -2, 0), (0, 2, 0), (-2, 2, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Red>
+    }
+
+    def Mesh "Occluder"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2.5, -2.5, 1), (-1, -2.5, 1), (-1, 2.5, 1), (-2.5, 2.5, 1)]
+    }
+
+    def Mesh "Back" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 3, 2, 1]
+        point3f[] points = [(0, -2, 0), (2, -2, 0), (2, 2, 0), (0, 2, 0)]
+        texCoord2f[] primvars:st = [(1, 0), (2, 0), (2, 1), (1, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Blue>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Looks/Red/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (1, 0, 0)
+                token outputs:surface
+            }
+        }
+
+        def Material "Blue"
+        {
+            token outputs:surface.connect = </World/Looks/Blue/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 0, 1)
+                token outputs:surface
+            }
+        }
+    }
+}
+)usda";
+
+// Two quads side by side in space whose UV layouts both cover the whole of tile 1001.
+const char* const kOverlappingQuads = R"usda(#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Left"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2, -2, 0), (0, -2, 0), (0, 2, 0), (-2, 2, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+    }
+
+    def Mesh "Right"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, -2, 0), (2, -2, 0), (2, 2, 0), (0, 2, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+    }
+}
+)usda";
+
+const int kSmallTile = 1024;
+
+// Keeps the tiles and buffers small so that baking stays quick.
+void
+useSmallTiles(const NodePtr& paint)
+{
+    getKnob<KnobChoice>(paint, kTexturePaintParamTileResolution)->setValueFromID("1K", 0);
+    getKnob<KnobChoice>(paint, kTexturePaintParamBufferResolution)->setValueFromID("1K", 0);
+}
+
+ImagePtr
+renderTile(const NodePtr& paint,
+           const ImageLayerDesc& plane = ImageLayerDesc::getRGBAComponents())
+{
+    RectI rendered;
+
+    return renderNodeImage(paint, 1., ViewIdx(0), 0, RectI(0, 0, kSmallTile, kSmallTile), plane, &rendered);
+}
+
+// The texel of tile under texture coordinates (s, t) within the tile.
+BufferPixel
+texelAt(const ImagePtr& tile,
+        double s,
+        double t)
+{
+    BufferPixel pixel = { { 0.f, 0.f, 0.f, 0.f }, false };
+    const int x = std::min(kSmallTile - 1, std::max(0, (int)(s * kSmallTile)));
+    const int y = std::min(kSmallTile - 1, std::max(0, (int)(t * kSmallTile)));
+
+    if (!tile || !tile->getBounds().contains(x, y)) {
+        ADD_FAILURE() << "no texel at " << x << ", " << y;
+
+        return pixel;
+    }
+    Image::ReadAccess access(tile.get());
+    const float* in = reinterpret_cast<const float*>(access.pixelAt(x, y));
+    const int nComps = (int)tile->getComponentsCount();
+    for (int c = 0; (c < nComps) && (c < 4) && in; ++c) {
+        pixel.rgba[c] = in[c];
+    }
+
+    return pixel;
+}
+
+// A solid stroke along v from normalized view point u0 to u1, wide enough to cover a band of texels.
+RotoStrokeItemPtr
+addSpanStroke(const NodePtr& paint,
+              const RotoLayerPtr& session,
+              const std::string& name,
+              double u0,
+              double u1,
+              double v)
+{
+    RotoContextPtr context = paint->getRotoContext();
+    RotoStrokeItemPtr stroke(new RotoStrokeItem(eRotoStrokeTypeSolid, context, name, RotoLayerPtr()));
+
+    stroke->createNodes();
+    context->addItem(session, 0, stroke, RotoItem::eSelectionReasonOther);
+    KnobChoicePtr lifeTime = std::dynamic_pointer_cast<KnobChoice>(stroke->getKnobByName("lifeTime"));
+    if (lifeTime) {
+        lifeTime->setValue(0);
+    }
+    stroke->getBrushSizeKnob()->setValue(400.);
+    stroke->getBrushHardnessKnob()->setValue(1.);
+    const int steps = 40;
+    for (int i = 0; i <= steps; ++i) {
+        double x = 0.;
+        double y = 0.;
+        TexturePaintView::viewToPaintSpace(viewCamera().aspect, u0 + (u1 - u0) * i / steps, v, &x, &y);
+        stroke->appendPoint(i == 0, RotoPoint(x, y, 1., 1. + i));
+    }
+    stroke->setStrokeFinished();
+    context->refreshRotoPaintTree();
+
+    return stroke;
+}
+} // anonymous namespace
+
+TEST_F(TexturePaintTest, TileTakesPaintOnlyWhereTheSessionCameraSeesTheMesh)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedScene(dir, kOccludedAndBackFacing, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+
+    // Across both quads, through the middle of the view.
+    RotoStrokeItemPtr stroke = addSpanStroke(paint, session, "across", 0.17, 0.83, 0.5);
+    {
+        KnobColorPtr color = stroke->getColorKnob();
+        color->setValue(0., ViewSpec::all(), 0);
+        color->setValue(1., ViewSpec::all(), 1);
+        color->setValue(0., ViewSpec::all(), 2);
+    }
+
+    ImagePtr red = renderTile(paint);
+    ASSERT_TRUE(bool(red));
+    // The red quad's s runs with x, so the occluder over x in [-2, -1] hides s below 0.5.
+    expectColor(texelAt(red, 0.75, 0.5), 0.f, 1.f, 0.f, 1.f, "visible half under the stroke");
+    expectColor(texelAt(red, 0.25, 0.5), 1.f, 0.f, 0.f, 1.f, "occluded half under the stroke");
+    expectColor(texelAt(red, 0.75, 0.9), 1.f, 0.f, 0.f, 1.f, "visible half away from the stroke");
+
+    getKnob<KnobInt>(paint, kTexturePaintParamOutputTile)->setValue(1002);
+    ImagePtr back = renderTile(paint);
+    ASSERT_TRUE(bool(back));
+    for (double s : { 0.25, 0.5, 0.75 }) {
+        expectColor(texelAt(back, s, 0.5), 0.f, 0.f, 1.f, 1.f, "back face under the stroke");
+    }
+}
+
+TEST_F(TexturePaintTest, PlanePurposesReachMetadataDownstream)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5);
+
+    NodePtr viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAVIEW));
+    ASSERT_TRUE(bool(viewer));
+    connectNodes(paint, viewer, 0, true);
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(viewer->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+
+    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    const std::optional<std::string> purpose = metadata.getString(kTexturePaintMetadataPurposePrefix "rgba");
+    ASSERT_TRUE(purpose.has_value());
+    EXPECT_EQ(std::string(kTexturePaintPurposeDiffuseColor), *purpose);
+}
+
+TEST_F(TexturePaintTest, OverlappingUvLayoutsWarnNamingBothMeshes)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedScene(dir, kOverlappingQuads, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+
+    ASSERT_TRUE(bool(renderTile(paint)));
+    QString message;
+    int type = -1;
+    paint->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Left"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Right"))) << message.toStdString();
+}
+
+TEST_F(TexturePaintTest, LoadedProjectRendersItsTileWithoutANewSession)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    RotoStrokeItemPtr solid = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5);
+    setColor(solid, 0., 1., 0.);
+    const std::string name = paint->getScriptName();
+
+    ProjectPtr project = getApp()->getProject();
+    const QString dirPath = dir.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("texture-paint-tile.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    solid.reset();
+    session.reset();
+    paint.reset();
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    // The stroke at view u = 1/3 lies at x = -1 on the red quad, which is s = 0.5 on tile 1001.
+    ImagePtr tile = renderTile(loaded);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "under the stroke");
+    expectColor(texelAt(tile, 0.1, 0.5), 1.f, 0.f, 0.f, 1.f, "away from the stroke");
+}
+
+TEST_F(TexturePaintTest, EachNodeBakesToItsOwnFiles)
+{
+    NodePtr first = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    NodePtr second = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    ASSERT_TRUE(first && second);
+
+    for (const char* knob : { kTexturePaintParamBakeInputsPath, kTexturePaintParamBakeOutputPath }) {
+        const std::string firstPath = getKnob<KnobOutputFile>(first, knob)->getValue();
+        const std::string secondPath = getKnob<KnobOutputFile>(second, knob)->getValue();
+        EXPECT_NE(firstPath, secondPath) << knob;
+        EXPECT_NE(std::string::npos, firstPath.find(first->getScriptName())) << firstPath;
+        EXPECT_NE(std::string::npos, secondPath.find(second->getScriptName())) << secondPath;
+        EXPECT_NE(std::string::npos, firstPath.find("<UDIM>")) << firstPath;
+    }
+    EXPECT_EQ(std::string("[Project]/textures/") + first->getScriptName() + "_output.<UDIM>.exr",
+              getKnob<KnobOutputFile>(first, kTexturePaintParamBakeOutputPath)->getValue());
 }

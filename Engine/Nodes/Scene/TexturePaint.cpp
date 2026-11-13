@@ -28,25 +28,39 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include <QString>
+#include <QStringList>
+
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
+#include "Engine/Nodes/Scene/TexturePaintCache.h"
 #include "Engine/Nodes/Scene/TexturePaintView.h"
+#include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -205,7 +219,6 @@ TexturePaint::initializeKnobs()
                                       "<UDIM> token stands for the tile number. They are the base the strokes are "
                                       "painted over.")
                                        .toStdString());
-    bakeInputsPath->setDefaultValue("[Project]/textures/texturePaint_inputs.<UDIM>.exr");
     bakeInputsPath->setAnimationEnabled(false);
     page->addKnob(bakeInputsPath);
     _bakeInputsPath = bakeInputsPath;
@@ -215,7 +228,6 @@ TexturePaint::initializeKnobs()
     bakeOutputPath->setHintToolTip(tr("The files the painted texture is baked into, one per UDIM tile: the <UDIM> "
                                       "token stands for the tile number. Baking freezes the sessions baked.")
                                        .toStdString());
-    bakeOutputPath->setDefaultValue("[Project]/textures/texturePaint_output.<UDIM>.exr");
     bakeOutputPath->setAnimationEnabled(false);
     page->addKnob(bakeOutputPath);
     _bakeOutputPath = bakeOutputPath;
@@ -275,11 +287,144 @@ TexturePaint::onCurveLayerCreated(const RotoLayerPtr& layer)
     frozen->setDefaultValue(false);
 } // TexturePaint::onCurveLayerCreated
 
+void
+TexturePaint::onEffectCreated(bool /*mayCreateFileDialog*/,
+                              const CreateNodeArgs& args)
+{
+    if (!args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization)) {
+        // Named after the node, so that two TexturePaint nodes never bake over each other's files.
+        const std::string name = getNode()->getScriptName_mt_safe();
+        KnobOutputFilePtr inputs = _bakeInputsPath.lock();
+        KnobOutputFilePtr output = _bakeOutputPath.lock();
+        if (inputs) {
+            inputs->setValue("[Project]/textures/" + name + "_inputs.<UDIM>.exr");
+        }
+        if (output) {
+            output->setValue("[Project]/textures/" + name + "_output.<UDIM>.exr");
+        }
+
+        return;
+    }
+
+    // A loaded node's sessions get their views now, so its tiles render before any session is added.
+    bool created = false;
+    for (const RotoLayerPtr& session : getSessions()) {
+        bool made = false;
+        (void)ensureSessionView(session, &made);
+        created = created || made;
+    }
+    if (created) {
+        RotoContextPtr context = getNode()->getRotoContext();
+        if (context) {
+            context->refreshRotoPaintTree();
+        }
+    }
+}
+
 Route
 TexturePaint::route(double /*time*/,
                     ViewIdx /*view*/)
 {
-    return Route::black();
+    return getInput(0) ? Route::none() : Route::black();
+}
+
+ImageLayerDesc
+TexturePaint::getPaintedPlane(double time,
+                              ViewIdx view) const
+{
+    std::vector<ResolvedLayer> resolved;
+
+    if (getNode()->resolveLayerKnob(time, view, &resolved) && !resolved.empty() && (resolved.front().desc.getNumComponents() > 0)) {
+        return resolved.front().desc;
+    }
+
+    return ImageLayerDesc::getRGBAComponents();
+}
+
+bool
+TexturePaint::sessionHasStrokes(const RotoLayerPtr& session) const
+{
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+
+    if (!context || !session) {
+        return false;
+    }
+    for (const RotoDrawableItemPtr& item : context->getCurvesByRenderOrder(false)) {
+        if (item && (getSessionOf(*item) == session)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::list<ImageLayerDesc>
+TexturePaint::getOutputPlanes(double time,
+                              ViewIdx view) const
+{
+    std::list<ImageLayerDesc> planes;
+
+    planes.push_back(ImageLayerDesc::getRGBAComponents());
+    const ImageLayerDesc painted = getPaintedPlane(time, view);
+    if (!painted.isColorLayer()) {
+        for (const RotoLayerPtr& session : getSessions()) {
+            if (sessionHasStrokes(session)) {
+                planes.push_back(painted);
+                break;
+            }
+        }
+    }
+
+    return planes;
+}
+
+void
+TexturePaint::getComponentsNeededAndProduced(double time,
+                                             ViewIdx view,
+                                             EffectInstance::ComponentsNeededMap* comps,
+                                             double* passThroughTime,
+                                             int* passThroughView,
+                                             int* passThroughInputNb)
+{
+    EffectInstance::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
+    // Nothing is fetched from the scene input as an image.
+    comps->erase(0);
+    (*comps)[-1] = getOutputPlanes(time, view);
+}
+
+StatusEnum
+TexturePaint::getPreferredMetadataAt(double /*time*/,
+                                     ViewIdx /*view*/,
+                                     NodeMetadata& metadata)
+{
+    const int size = getTileResolution();
+
+    metadata.setBitDepth(-1, eImageBitDepthFloat);
+    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setNComps(-1, 4);
+    metadata.setIsFrameVarying(getTextureMode() == eTextureModeAnimated);
+    metadata.setOutputFormat(RectI(0, 0, size, size));
+    metadata.setPixelAspectRatio(-1, 1.);
+
+    return eStatusOK;
+}
+
+ImageMetadata
+TexturePaint::deriveOutputMetadata(double time,
+                                   ViewIdx view)
+{
+    ImageMetadata metadata;
+    const std::list<ImageLayerDesc> planes = getOutputPlanes(time, view);
+
+    for (const ImageLayerDesc& plane : planes) {
+        if (plane.isColorLayer()) {
+            metadata.setString(kTexturePaintMetadataPurposePrefix "rgba", kTexturePaintPurposeDiffuseColor);
+        } else {
+            metadata.setString(kTexturePaintMetadataPurposePrefix + plane.getLayerID(), plane.getLayerID());
+        }
+    }
+
+    return metadata;
 }
 
 StatusEnum
@@ -299,11 +444,255 @@ TexturePaint::getRegionOfDefinition(U64 /*hash*/,
     return eStatusOK;
 }
 
-StatusEnum
-TexturePaint::render(const RenderActionArgs& /*args*/)
+U64
+TexturePaint::getTileCacheKey(ViewIdx view) const
 {
-    return eStatusOK;
+    ContentHasher hasher;
+
+    hasher.appendString(PLUGINID_NATRON_TEXTUREPAINT);
+    hasher.appendI64(view.value());
+    RotoCurveContextPtr context = getNode()->getCurveContext();
+    hasher.appendU64(context ? context->getContentHash() : 0);
+    const KnobIPtr knobs[] = {
+        _primPattern.getKnob(),
+        _uvPrimvar.lock(),
+        _tileResolution.lock(),
+        _bufferResolution.lock(),
+        _textureMode.lock(),
+        getNode()->getLayerKnob(),
+    };
+    for (const KnobIPtr& knob : knobs) {
+        hasher.appendU64(knob ? knob->getContentHash() : 0);
+    }
+    const NodePtr input = getNode()->getInput(0);
+    hasher.appendU64(input ? input->getHashValue() : 0);
+
+    return hasher.finalize();
 }
+
+bool
+TexturePaint::ensureTiles(double time,
+                          ViewIdx view,
+                          int tile,
+                          const std::list<ImageLayerDesc>& planes,
+                          std::vector<std::string>* paths,
+                          std::string* note,
+                          std::string* error)
+{
+    const int size = getTileResolution();
+    const bool animated = getTextureMode() == eTextureModeAnimated;
+    const std::string frame = animated ? QString::number(time, 'g', 12).toStdString() : std::string();
+    AppInstancePtr app = getApp();
+    const std::string projectFile = (app && app->getProject()) ? (app->getProject()->getProjectPath() + app->getProject()->getProjectFilename()).toStdString() : std::string();
+    const std::string directory = TexturePaintCache::tileDirectory(appPTR->getDiskCacheLocation().toStdString(), projectFile, getNode()->getFullyQualifiedName());
+
+    std::lock_guard<std::mutex> lock(_bakeMutex);
+    const U64 key = getTileCacheKey(view);
+    bool cached = true;
+
+    paths->clear();
+    note->clear();
+    for (const ImageLayerDesc& plane : planes) {
+        const std::string name = plane.isColorLayer() ? std::string("rgba") : plane.getLayerID();
+        paths->push_back(TexturePaintCache::tilePath(directory, key, frame, name, tile));
+        std::string fileNote;
+        if (!TexturePaintCache::readTileNote(paths->back(), size, &fileNote)) {
+            cached = false;
+        } else if (paths->size() == 1) {
+            *note = fileNote;
+        }
+    }
+    if (cached) {
+        return true;
+    }
+    note->clear();
+
+    ScenePayload scene;
+    EffectInstancePtr input = getInput(0);
+    if (input && (input->evaluateScene(EvaluateSceneArgs(time, view), &scene, error) != eRenderRoIRetCodeOk)) {
+        if (error->empty()) {
+            *error = tr("The input scene could not be evaluated.").toStdString();
+        }
+
+        return false;
+    }
+    SceneQueryPool::Lease lease;
+    TexturePaintCache::TileArgs args;
+    args.udimTile = tile;
+    args.size = size;
+    args.cancelled = [this]() -> bool {
+        return aborted();
+    };
+    if (input && !scene.isEmpty()) {
+        lease = SceneQueryPool::instance().borrow(scene, error);
+        args.stage = lease.getStage();
+        if (!args.stage) {
+            if (error->empty()) {
+                *error = tr("USD could not compose the input scene.").toStdString();
+            }
+
+            return false;
+        }
+        const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+        args.time = PXR_NS::UsdTimeCode(SceneOps::frameToTimeCode(scene, time, fps));
+        KnobStringPtr uvPrimvar = _uvPrimvar.lock();
+        const std::string primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
+        args.stName = PXR_NS::TfToken(primvar.empty() ? std::string("st") : primvar);
+        if (!TexturePaintCache::matchedMeshes(args.stage, _primPattern.getExpression(), args.stName, &args.meshes, error)) {
+            return false;
+        }
+    }
+
+    const ImageLayerDesc painted = getPaintedPlane(time, view);
+    std::vector<std::pair<RotoLayerPtr, NodePtr>> sessions;
+    for (const RotoLayerPtr& session : getSessions()) {
+        if (!sessionHasStrokes(session)) {
+            continue;
+        }
+        NodePtr viewNode = findSessionView(session.get());
+        if (!viewNode) {
+            *error = tr("The session %1 has no view to paint over.").arg(QString::fromUtf8(session->getScriptName().c_str())).toStdString();
+
+            return false;
+        }
+        sessions.push_back(std::make_pair(session, viewNode));
+    }
+
+    bool overlapsFound = false;
+    std::size_t index = 0;
+    for (const ImageLayerDesc& plane : planes) {
+        const std::string& path = (*paths)[index++];
+        const bool paints = (plane.isColorLayer() && painted.isColorLayer()) || (plane.getLayerID() == painted.getLayerID());
+        std::vector<TexturePaintCache::PaintSession> layered;
+        if (paints) {
+            for (const std::pair<RotoLayerPtr, NodePtr>& session : sessions) {
+                TexturePaintCache::PaintSession entry;
+                (void)getSessionCamera(session.first, &entry.camera);
+                const RotoLayerPtr layer = session.first;
+                const NodePtr viewNode = session.second;
+                entry.renderBuffer = [this, layer, viewNode, plane, time, view](SessionBuffer* buffer, std::string* bufferError) -> bool {
+                    // renderNodeImage() resets the thread's render state, which this render thread still needs.
+                    bool ok = false;
+                    std::thread worker([&]() {
+                        ok = renderSessionBufferFrom(viewNode, layer, plane, time, view, buffer, bufferError);
+                    });
+                    worker.join();
+
+                    return ok;
+                };
+                layered.push_back(entry);
+            }
+        }
+        std::vector<float> rgba;
+        std::vector<TexturePaintCache::MeshPair> overlaps;
+        if (!TexturePaintCache::composeTile(args, plane.isColorLayer(), layered, &rgba, overlapsFound ? 0 : &overlaps, error)) {
+            return false;
+        }
+        if (!overlapsFound) {
+            overlapsFound = true;
+            QStringList pairs;
+            for (const TexturePaintCache::MeshPair& pair : overlaps) {
+                pairs.push_back(tr("%1 and %2").arg(QString::fromUtf8(pair.first.GetString().c_str()), QString::fromUtf8(pair.second.GetString().c_str())));
+            }
+            if (!pairs.isEmpty()) {
+                *note = tr("The UV layouts of these meshes overlap in tile %1, so their paint lands on each other: %2.")
+                            .arg(tile)
+                            .arg(pairs.join(QString::fromUtf8("; ")))
+                            .toStdString();
+            }
+        }
+        if (!TexturePaintCache::writeTile(path, size, rgba, *note, error)) {
+            return false;
+        }
+    }
+    TexturePaintCache::removeStaleTiles(directory, key);
+
+    return true;
+} // TexturePaint::ensureTiles
+
+StatusEnum
+TexturePaint::render(const RenderActionArgs& args)
+{
+    KnobIntPtr outputTile = _outputTile.lock();
+    const int tile = outputTile ? outputTile->getValue() : 1001;
+    const int size = getTileResolution();
+
+    std::list<ImageLayerDesc> planes;
+    for (const std::pair<ImageLayerDesc, ImagePtr>& layer : args.outputLayers) {
+        if (layer.second) {
+            planes.push_back(layer.first);
+        }
+    }
+    if (planes.empty()) {
+        return eStatusOK;
+    }
+    std::vector<std::string> paths;
+    std::string note;
+    std::string error;
+    if (!ensureTiles(args.time, args.view, tile, planes, &paths, &note, &error)) {
+        if (!error.empty()) {
+            setPersistentMessage(eMessageTypeError, error);
+        }
+
+        return eStatusFailed;
+    }
+
+    const unsigned int level = args.mappedScale.toMipmapLevel();
+    const int step = 1 << level;
+    std::size_t index = 0;
+    for (const std::pair<ImageLayerDesc, ImagePtr>& layer : args.outputLayers) {
+        const ImagePtr& image = layer.second;
+        if (!image) {
+            continue;
+        }
+        const std::string& path = paths[index++];
+        if (image->getBitDepth() != eImageBitDepthFloat) {
+            return eStatusFailed;
+        }
+        const RectI roi = args.roi.intersect(image->getBounds());
+        if (roi.isNull()) {
+            continue;
+        }
+        // Each pixel at the mipmap level takes the texel at the centre of the block it covers.
+        RectI window(roi.x1 * step, roi.y1 * step, roi.x2 * step, roi.y2 * step);
+        window = window.intersect(RectI(0, 0, size, size));
+        std::vector<float> texels;
+        if (!window.isNull() && !TexturePaintCache::readTile(path, window, &texels, &error)) {
+            setPersistentMessage(eMessageTypeError, error);
+
+            return eStatusFailed;
+        }
+        const bool color = layer.first.isColorLayer();
+        const int nComps = (int)image->getComponentsCount();
+        const std::size_t windowWidth = (std::size_t)window.width();
+        Image::WriteAccess access(image.get());
+        for (int y = roi.y1; y < roi.y2; ++y) {
+            float* row = reinterpret_cast<float*>(access.pixelAt(roi.x1, y));
+            if (!row) {
+                continue;
+            }
+            const int ty = y * step + step / 2;
+            for (int x = roi.x1; x < roi.x2; ++x) {
+                const int tx = x * step + step / 2;
+                float* out = row + (std::size_t)(x - roi.x1) * (std::size_t)nComps;
+                const bool inside = !window.isNull() && window.contains(tx, ty);
+                const float* texel = inside ? texels.data() + ((std::size_t)(ty - window.y1) * windowWidth + (std::size_t)(tx - window.x1)) * 4 : 0;
+                for (int c = 0; c < nComps; ++c) {
+                    // A one-channel colour plane is alpha.
+                    const int channel = (color && (nComps == 1)) ? 3 : c;
+                    out[c] = (texel && (channel < 4)) ? texel[channel] : 0.f;
+                }
+            }
+        }
+    }
+    if (note.empty()) {
+        clearPersistentMessage(false);
+    } else {
+        setPersistentMessage(eMessageTypeWarning, note);
+    }
+
+    return eStatusOK;
+} // TexturePaint::render
 
 FramesNeededMap
 TexturePaint::getFramesNeeded(double /*time*/,
@@ -601,6 +990,19 @@ TexturePaint::renderSessionBuffer(const RotoLayerPtr& session,
 
         return false;
     }
+
+    return renderSessionBufferFrom(viewNode, session, plane, time, view, buffer, error);
+}
+
+bool
+TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
+                                      const RotoLayerPtr& session,
+                                      const ImageLayerDesc& plane,
+                                      double time,
+                                      ViewIdx view,
+                                      SessionBuffer* buffer,
+                                      std::string* error)
+{
     SceneRaster::ExplicitCamera camera;
     (void)getSessionCamera(session, &camera);
     const unsigned int level = TexturePaintView::bufferMipmapLevel(getBufferResolution());
@@ -663,7 +1065,7 @@ TexturePaint::renderSessionBuffer(const RotoLayerPtr& session,
     }
 
     return true;
-} // TexturePaint::renderSessionBuffer
+} // TexturePaint::renderSessionBufferFrom
 
 std::list<RotoLayerPtr>
 TexturePaint::getSessions() const

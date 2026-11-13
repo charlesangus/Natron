@@ -53,6 +53,14 @@
 #define kTexturePaintParamBakeOutputPath "bakeOutputPath"
 #define kTexturePaintParamOutputTile "outputTile"
 
+/**
+ * The output metadata names the material input each plane of the texture set feeds, under this
+ * prefix followed by the plane: <prefix>rgba is "diffuseColor", and the plane of any other paint
+ * layer, such as <prefix>specular, holds that layer's name.
+ **/
+#define kTexturePaintMetadataPurposePrefix "natron/texturePaint/purpose/"
+#define kTexturePaintPurposeDiffuseColor "diffuseColor"
+
 // The knobs every session layer carries (RotoLayer::getHostKnobs()).
 #define kTexturePaintSessionParamCameraToWorld "cameraToWorld"
 #define kTexturePaintSessionParamViewHeight "viewHeight"
@@ -74,6 +82,11 @@ struct ExplicitCamera;
  * stored in normalized view coordinates. A session, the strokes painted through one view camera,
  * is a layer under the base layer carrying that camera and whether the session is frozen (baked
  * into the Bake Output files) as layer knobs, saved with the project.
+ *
+ * The output is the UDIM tile Output Tile names, at Tile Resolution: the colour plane, and the
+ * Layer knob's plane when it is another one and a session has strokes. Tiles are baked from the
+ * sessions on first use and cached on disk (TexturePaintCache), keyed by a hash of the strokes,
+ * the sessions and their cameras, the scene and the knobs that shape the texture.
  **/
 class TexturePaint
     : public NativeEffectBase {
@@ -149,6 +162,24 @@ public:
                              ViewSpec view,
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual bool isMultiPlanar() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual void getComponentsNeededAndProduced(double time,
+                                                ViewIdx view,
+                                                EffectInstance::ComponentsNeededMap* comps,
+                                                double* passThroughTime,
+                                                int* passThroughView,
+                                                int* passThroughInputNb) OVERRIDE FINAL;
+
+    virtual StatusEnum getPreferredMetadataAt(double time,
+                                              ViewIdx view,
+                                              NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void onEffectCreated(bool mayCreateFileDialog, const CreateNodeArgs& args) OVERRIDE FINAL;
 
     virtual Route route(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -228,6 +259,15 @@ public:
     // The view session's strokes are painted over, created on first use. Main thread.
     NodePtr getSessionView(const RotoLayerPtr& session);
 
+    /**
+     * @brief The planes the node outputs at time and view: the colour plane, then the Layer
+     * knob's plane when it is not the colour plane and a session has strokes.
+     **/
+    std::list<ImageLayerDesc> getOutputPlanes(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+protected:
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     struct SessionView {
         RotoLayerWPtr session;
@@ -247,9 +287,43 @@ private:
     // Brings every view in step after a change to the scene input or a knob they copy.
     void syncSessionViews();
 
+    // renderSessionBuffer() over viewNode, which must be session's view. Any thread.
+    bool renderSessionBufferFrom(const NodePtr& viewNode,
+                                 const RotoLayerPtr& session,
+                                 const ImageLayerDesc& plane,
+                                 double time,
+                                 ViewIdx view,
+                                 SessionBuffer* buffer,
+                                 std::string* error);
+
+    // The plane strokes paint: the Layer knob's, or the colour plane when it selects none.
+    ImageLayerDesc getPaintedPlane(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    bool sessionHasStrokes(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;
+
+    // What the tiles of view are cached under, whatever the frame; changes with anything they depend on.
+    U64 getTileCacheKey(ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Bakes and caches planes of tile at time and view unless they are cached already;
+     * *paths receives the file of each plane, in order, and *note the overlap warning of the
+     * tile, empty when its meshes' UV layouts do not overlap. False with *error set on failure,
+     * and with *error empty when the render was aborted.
+     **/
+    bool ensureTiles(double time,
+                     ViewIdx view,
+                     int tile,
+                     const std::list<ImageLayerDesc>& planes,
+                     std::vector<std::string>* paths,
+                     std::string* note,
+                     std::string* error);
+
     // Views are looked up from render threads while the main thread creates them.
     mutable std::mutex _viewsMutex;
     std::map<const RotoLayer*, SessionView> _views;
+
+    // Render threads asking for one tile at once bake it once.
+    std::mutex _bakeMutex;
 
     PrimSelector _primPattern;
     KnobStringWPtr _uvPrimvar;

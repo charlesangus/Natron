@@ -42,6 +42,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
+#include "Engine/Nodes/Scene/TexturePaintCache.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -49,40 +50,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// UsdPreviewSurface's own default diffuseColor, so a mesh with no usable colour looks as a
-// renderer would show it.
-const float kNeutralGrey = 0.18f;
-
-PXR_NS::GfVec3f
-baseColorOf(const PXR_NS::UsdPrim& prim,
-            PXR_NS::UsdTimeCode time)
-{
-    const PXR_NS::GfVec3f neutral(kNeutralGrey, kNeutralGrey, kNeutralGrey);
-
-    if (!prim) {
-        return neutral;
-    }
-    const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial(PXR_NS::UsdShadeTokens->preview);
-    if (!material) {
-        return neutral;
-    }
-    const PXR_NS::UsdShadeShader surface = material.ComputeSurfaceSource();
-    PXR_NS::TfToken shaderId;
-    if (!surface || !surface.GetShaderId(&shaderId) || (shaderId != PXR_NS::TfToken("UsdPreviewSurface"))) {
-        return neutral;
-    }
-    const PXR_NS::UsdShadeInput diffuse = surface.GetInput(PXR_NS::TfToken("diffuseColor"));
-    if (!diffuse || diffuse.HasConnectedSource()) {
-        return neutral;
-    }
-    PXR_NS::GfVec3f color;
-    if (!diffuse.Get(&color, time)) {
-        return neutral;
-    }
-
-    return color;
-}
-
 template <typename K, typename V>
 void
 setIfDifferent(const std::shared_ptr<K>& knob,
@@ -382,7 +349,7 @@ TexturePaintView::renderView(double time,
     std::vector<PXR_NS::GfVec3f> colors;
     colors.reserve(buffers.meshPaths.size());
     for (const PXR_NS::SdfPath& path : buffers.meshPaths) {
-        colors.push_back(baseColorOf(stage->GetPrimAtPath(path), timeCode));
+        colors.push_back(TexturePaintCache::meshBaseColor(stage->GetPrimAtPath(path), timeCode));
     }
 
     const std::size_t count = (std::size_t)width * (std::size_t)height;

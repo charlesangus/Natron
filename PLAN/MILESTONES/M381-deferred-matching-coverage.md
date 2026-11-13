@@ -84,7 +84,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: gtest — identity nodes pass the same pointers; `unite` is a superset of both on every prim of the city; a mapped input's reach comes back mapped; a diamond keeps two memo slots.
   - size: M
 
-- [ ] M381.P3.T7 — Path-changing nodes map load sets and reach
+- [x] M381.P3.T7 — Path-changing nodes map load sets and reach
   - files: `Engine/Nodes/Scene/SceneOps.{h,cpp}` (`reparentRoots` ~:2569, `readInput` ~:2194, `rootHoldsGprim` ~:2289; `SceneReparentArgs` gains `inputContexts`, empty = current()), `Engine/Nodes/Scene/SceneReparentNode.cpp` (graft ~:474, `renderWrap` ~:364, beside `mapToInputPath` ~:282), `Engine/Nodes/Scene/USDAssignMaterial.cpp` (~:294), `Engine/Nodes/Scene/SceneNodeAuthoring.cpp` (`graftSharedMaterial` ~:840), `Engine/Nodes/Scene/USDReference.cpp` (source borrow ~:325), `Engine/Nodes/Scene/USDProjectUV.cpp` (~:758), `Engine/Nodes/Scene/USDProject3D.cpp` (~:353), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: `SceneOps::mapGraftLoadSet`/`mapGraftReach` (destination, pass-through root, autoRename candidates united; unknown → null), wrap and reference mappings (check USD's ancestral-arc composition under load rules in the pxr headers before relying on the reference ancestor rule); `reparentRoots` reads each input on `inputContexts[i]` and records reach there; nodes override the P3.T6 virtuals. Camera inputs that aren't composed into the output (USDProjectUV, USDProject3D) get `withPaths(none, {camera})` as their input context.
   - verify: a USDPrune `/World//car*` above USDXformPrim `/Grp`, viewer L={/Grp/World/Block_0}: parity, only Block_0 opens, and loading `/Grp/World/Block_1` re-evaluates the prune; the same through wrap mode, an autoRename collision (superset parity), the AssignMaterial material input and the USDReference source; reach comes back in `/Grp` paths. `AGraftEvaluatesTheSameOnALoadSetAsOnEverything` is rewritten to load `/Grp/World/Block_0` with an upstream pattern node.
@@ -92,7 +92,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 
 - [ ] M381.P3.T2 — `graftMaterial` on the evaluation context
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.cpp` (~:765), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
-  - approach: the current context with reach of the grafted roots.
+  - approach: the current context with reach of the grafted roots. Also map grafts through `graftMaterialInput` (the geometry Material input) the way P3.T7 maps `graftSharedMaterial`.
   - verify: probe plus parity on a material input that has a payload.
   - size: M
 
@@ -155,3 +155,4 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 - 2026-11-13 — P1.T1 implemented (578518139). `expectParity` composes fully loaded, so `openedBuildings()` is meaningless after a parity check in the same test.
 - 2026-11-13 — P3.T1 implemented (1094c6953). It exposed a pre-existing F4 bug from M331 - Deferred Pattern Matching: `evaluateScene` passes the caller's context unchanged to every input, but load sets and reach are in the viewer's (output) paths, so a pattern node upstream of a graft, a reference source or a material input matches nothing inside payloads and is never re-evaluated by a load (stale). Consultant design adopted: inputs evaluate on their own context through identity-by-default virtuals at the input-evaluation boundary, path-changing nodes map load sets down and reach back up, unknown mappings fall back to a superset (P3.T6, P3.T7, before P3.T2). P3.T1's parity test was vacuous (it loaded `/World/Block_0` on a `/Grp` stage) and is rewritten in P3.T7.
 - 2026-11-13 — Camera inputs that aren't composed into the output read on `withPaths(none, {camera})` rather than the viewer's set (PM call): the viewer's set says nothing about a separate camera branch.
+- 2026-11-13 — P3.T7 implemented (100056752). USD probe (pxr 26.08): a referencing prim's own load rule decides both the payloads above the referenced prim and its own payload, confirming "S's ancestors get T's self rule". The P3.T6 identity shortcut now also requires the same reach object, since a mapped input whose set equals the caller's would otherwise return unmapped reach. autoRename maps conservatively (a root picks up every `D/X_n` rule), over-loading on collisions; accepted as a correct superset (PM). USDReference with no Source Prim reads its source with everything loaded. `graftMaterialInput` is mapped in P3.T2.

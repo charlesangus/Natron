@@ -573,6 +573,11 @@ SceneBreadcrumbBar::openSegmentMenu(Segment segment, QWidget* anchor)
     const Segment copy = segment;
     QObject::connect(frame, &QAction::triggered, this, [this, copy]() { frameSegment(copy); });
 
+    QAction* showInGraph = menu->addAction(tr("Show In Scene Graph"));
+    showInGraph->setObjectName(QStringLiteral("breadcrumbShowInSceneGraph"));
+    showInGraph->setEnabled(present);
+    QObject::connect(showInGraph, &QAction::triggered, this, [this, path]() { Q_EMIT showInSceneGraphRequested(QStringList(path)); });
+
     menu->popup(anchor->mapToGlobal(anchor->rect().bottomLeft()));
 }
 

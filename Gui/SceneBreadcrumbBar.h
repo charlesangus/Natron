@@ -49,7 +49,8 @@ class SceneViewport;
  * the selection. A chevron after `/` and after each segment lists the prim's children in a
  * ScenePrimListPopup, and a right-click on a segment opens a menu: Siblings lists the siblings with
  * the segment marked, Copy Path and Copy Selected Paths fill the clipboard and Frame selects the
- * prim and frames it, as a double-click does. Segments the stage no longer has are greyed and cannot
+ * prim and frames it, as a double-click does, and Show In Scene Graph asks for the prim to be revealed
+ * in a Scene Graph panel (showInSceneGraphRequested). Segments the stage no longer has are greyed and cannot
  * be clicked, though their menu and drag still work; a hover tells what the prim is. A drag from a
  * segment carries its path and a drag from the "+N" badge carries every selected path. When the bar
  * is too narrow the middle segments fold into a "..." button whose menu lists them.
@@ -102,6 +103,11 @@ public:
     // Makes the mime data a drag of a segment (its path) or of the "+N" badge (empty path) would
     // carry, as a child of the bar named "breadcrumbMime" that replaces the last one.
     Q_INVOKABLE void exposeMimeData(const QString& segmentPath);
+
+Q_SIGNALS:
+
+    // The segment menu's Show In Scene Graph asked for these prims to be revealed in a panel.
+    void showInSceneGraphRequested(const QStringList& paths);
 
 public Q_SLOTS:
 

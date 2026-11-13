@@ -2028,6 +2028,20 @@ SceneGraphPanel::showSelection(const QStringList& paths)
     _imp->inspectorRefresh.start();
 }
 
+void
+SceneGraphPanel::revealPaths(const QStringList& paths)
+{
+    if (!paths.isEmpty()) {
+        showSelection(paths);
+    }
+}
+
+bool
+SceneGraphPanel::followsViewer(const ViewerTab* viewer) const
+{
+    return viewer && !_imp->userPinned && (_imp->follow == eFollowViewer) && (_imp->viewer == viewer);
+}
+
 QStringList
 SceneGraphPanel::getSelection() const
 {

@@ -1484,6 +1484,11 @@ ViewerTab::onActiveInputDataKindChanged()
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
         _imp->sceneBreadcrumbBar = new SceneBreadcrumbBar(_imp->sceneViewport, _imp->viewerSubContainer);
         _imp->sceneBreadcrumbBar->hide();
+        QObject::connect(_imp->sceneBreadcrumbBar, &SceneBreadcrumbBar::showInSceneGraphRequested, this, [this](const QStringList& paths) {
+            if (Gui* gui = getGui()) {
+                gui->showPrimsInSceneGraph(this, paths);
+            }
+        });
         _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneBreadcrumbBar);
         _imp->viewerSubContainerLayout->insertWidget(index + 2, _imp->sceneViewport, 1);
         // The USDEditTransform whose settings panel was opened last.

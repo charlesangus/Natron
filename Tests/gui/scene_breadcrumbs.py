@@ -326,7 +326,7 @@ try:
         require(ok, "a right-click on group_1 opens a menu")
         check(popup() is None, "the right-click opens the menu, not the siblings popup")
         labels = [str(a.text()) for a in segment_menu().actions() if not a.isSeparator()]
-        check(labels == ["Siblings", "Copy Path", "Copy Selected Paths", "Frame"], "the menu lists its four entries (got %r)" % (labels,))
+        check(labels == ["Siblings", "Copy Path", "Copy Selected Paths", "Frame", "Show In Scene Graph"], "the menu lists its five entries (got %r)" % (labels,))
         check(all(menu_action(n).isEnabled() for n in ("breadcrumbSiblings", "breadcrumbCopyPath", "breadcrumbCopySelectedPaths", "breadcrumbFrame")),
               "every entry of a present segment's menu is enabled")
         shot("scene_breadcrumbs_menu.png")

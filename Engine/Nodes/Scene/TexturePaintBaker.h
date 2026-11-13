@@ -51,6 +51,9 @@ NATRON_NAMESPACE_ENTER
  * Stopping (the node is deleted, the project closes) cancels the running worker and drops the
  * queued bakes and every completion not yet run. requestStop() and retire() return at once;
  * stop() also waits for the thread to exit.
+ *
+ * Every baker of the process, retired ones included, is known, so that shutdownAll() can stop and
+ * join them all without the event loop that deletes retired ones.
  **/
 class TexturePaintBaker
     : public GenericSchedulerThread {
@@ -125,6 +128,17 @@ public:
      **/
     static void retire(std::unique_ptr<TexturePaintBaker> baker);
 
+    /**
+     * @brief Stops every baker for good and waits for its thread, drops every completion not yet
+     * run, whose bakes put their files back, deletes the retired bakers, then shuts the
+     * TexturePaintFileQueue down. Main thread, once, while the application shuts down, before
+     * the plug-ins and statics the bakes use go.
+     **/
+    static void shutdownAll();
+
+    // Lets bakers made afterwards, and the file queue, work again after shutdownAll().
+    static void restartForTesting();
+
     // Whether a bake is queued or running, or finished but its completion has not run yet.
     bool isBaking() const WARN_UNUSED_RETURN
     {
@@ -186,6 +200,9 @@ private:
     std::atomic<bool> _stopped;
     // Counts the stops, so that a bake enqueued before one never runs its completion after it.
     std::atomic<int> _epoch;
+    // Main thread, under the registry's lock.
+    bool _retired;
+    bool _shutDown;
 
     mutable std::mutex _mutex;
     struct Finished {
@@ -201,52 +218,90 @@ private:
     QString _lastLabel;
 };
 
+struct TexturePaintFileStep;
+typedef std::shared_ptr<TexturePaintFileStep> TexturePaintFileTicket;
+
 /**
- * @brief The one thread of the process that puts back the files of Bake Outputs whose completion
- * was dropped. Each bake that writes files takes a sequence number and claims each file before
- * backing it up; it settles its claims once its undo step owns the files or once they are put
- * back. A queued rollback waits until no newer bake that claimed one of its files is unsettled,
- * so the rollbacks of bakes that wrote the same file run newest first, each putting back what the
- * next older one wrote. A claim waits while a rollback that may run touches the file, so a new
- * bake backs up what the rollback put back rather than what it is putting back.
+ * @brief The one thread of the process on which every Bake Output file step of every node runs,
+ * strictly in the order the steps were submitted: backing up and writing targets, sealing,
+ * undo and redo swaps, the rollbacks of failed and dropped bakes, and discarding backups. With
+ * one ordered executor, a step sees every file as the steps submitted before it left it.
+ *
+ * A bake claims each file before backing it up and settles its claims once its undo step owns the
+ * files or once they are put back. A claim a bake of another node holds is refused, naming that
+ * node; one an earlier bake of the same node holds is reported so that the caller can wait for it
+ * to land or to be put back.
  **/
-class TexturePaintRollbacks {
+class TexturePaintFileQueue {
 public:
     // shuttingDown: shutdown() has begun, and what outlives the application must not be touched.
     typedef std::function<void(bool shuttingDown)> Work;
 
-    // A new sequence number, larger than every one given before.
-    static std::uint64_t newSequence();
+    enum ClaimResultEnum {
+        eClaimResultTaken,
+        eClaimResultHeldBySameOwner,
+        eClaimResultHeldByAnotherOwner,
+    };
+
+    // A step that runs work once submitted.
+    static TexturePaintFileTicket makeStep(const Work& work);
 
     /**
-     * @brief Records that the bake of sequence is about to back up target, once no rollback that
-     * may run touches it. False, recording nothing, when cancelled() turns true while waiting.
+     * @brief Queues step behind every step submitted before it; returns at once. Once shutdown()
+     * has finished, runs it on the caller, with shuttingDown.
      **/
-    static bool claim(std::uint64_t sequence,
-                      const std::string& target,
-                      const std::function<bool()>& cancelled);
+    static void submit(const TexturePaintFileTicket& step);
 
-    // Drops every claim of sequence. Safe to call more than once.
-    static void settle(std::uint64_t sequence);
+    static TexturePaintFileTicket submit(const Work& work);
 
     /**
-     * @brief Queues work, the rollback of the bake of sequence, which settles once work returns.
-     * Returns at once. After shutdown(), runs work on the caller, with shuttingDown.
+     * @brief Waits until step has run. False when cancelled() turned true first: the step still
+     * runs, in its turn. Never on the queue's own thread.
      **/
-    static void enqueue(std::uint64_t sequence,
-                        const Work& work);
+    static bool wait(const TexturePaintFileTicket& step,
+                     const std::function<bool()>& cancelled = std::function<bool()>());
+
+    // A number no call returned before, never 0: the identity of a bake or of a node.
+    static std::uint64_t newId();
 
     /**
-     * @brief Runs every queued rollback, newest first whatever the claims, then stops the thread
-     * and waits for it. Called once, while the application shuts down.
+     * @brief Records that bake, of owner, is about to back up target. Owner 0 is no node, held by
+     * no other bake. Otherwise *holder receives the name of the owner whose bake holds target.
+     **/
+    static ClaimResultEnum claim(std::uint64_t bake,
+                                 std::uint64_t owner,
+                                 const std::string& ownerName,
+                                 const std::string& target,
+                                 std::string* holder);
+
+    // Whether a bake other than bake holds target, *holder receiving its owner's name.
+    static bool isHeldByAnotherBake(std::uint64_t bake,
+                                    const std::string& target,
+                                    std::string* holder);
+
+    // Drops every claim of bake. Safe to call more than once.
+    static void settle(std::uint64_t bake);
+
+    // Returns once some bake settled, or after timeout.
+    static void waitForSettlement(std::chrono::milliseconds timeout);
+
+    /**
+     * @brief Runs every queued step, then stops the thread and waits for it. Steps submitted
+     * afterwards run on their callers. Called once, while the application shuts down.
      **/
     static void shutdown();
 
-    // Runs on the rollback thread before each rollback; an empty hook removes it.
+    // Runs on the queue's thread before each step; an empty hook removes it.
     static void setBeforeWorkHookForTesting(const std::function<void()>& hook);
 
-    // Whether no rollback is queued or running.
+    // Whether no step is queued or running.
     static bool isIdleForTesting();
+
+    // Whether the queue's thread exists.
+    static bool isThreadRunningForTesting();
+
+    // Takes steps on a thread again after shutdown().
+    static void restartForTesting();
 };
 
 NATRON_NAMESPACE_EXIT

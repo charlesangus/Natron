@@ -25,8 +25,6 @@
 
 #include "TexturePaintUndo.h"
 
-#include <thread>
-
 #include <QCoreApplication>
 
 #include "Engine/Node.h"
@@ -46,19 +44,7 @@ TexturePaintBakeOutputUndoCommand::TexturePaintBakeOutputUndoCommand(const NodeP
 
 TexturePaintBakeOutputUndoCommand::~TexturePaintBakeOutputUndoCommand()
 {
-    if (!_files) {
-        return;
-    }
-    std::shared_ptr<TexturePaint> paint = getPaint();
-    if (paint) {
-        paint->enqueueBakeOutputDiscard(_files);
-
-        return;
-    }
-    const std::shared_ptr<TexturePaint::BakeOutputFiles> files = _files;
-    std::thread([files]() {
-        TexturePaint::discardBakeOutputFiles(*files);
-    }).detach();
+    TexturePaint::enqueueBakeOutputDiscard(_files);
 }
 
 std::shared_ptr<TexturePaint>

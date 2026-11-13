@@ -519,6 +519,11 @@ AppManager::~AppManager()
         }
     }
 
+    // No event loop deletes retired bakers or lands bakes any more: every TexturePaint bake is
+    // stopped and joined here, the files of those that never landed go back, and every file step
+    // runs whole, while the plug-ins and statics they use still exist.
+    TexturePaintBaker::shutdownAll();
+
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {
             delete *itver;
@@ -538,10 +543,6 @@ AppManager::~AppManager()
 
     // No render is left to abort, and the watchdog thread reads this manager.
     AbortWatchdog::shutdown();
-
-    // The files of bakes the closed projects dropped go back before the statics the rollbacks
-    // use are destroyed, and none is cut off part way.
-    TexturePaintRollbacks::shutdown();
 
     {
         QMutexLocker k(&_imp->renderSchedulerMutex);

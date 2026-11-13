@@ -132,7 +132,7 @@ renameInPath(const std::string& value,
  * Puts suffix at the end of the first dot-separated part of path's file name, in place of the
  * suffix a paste of the source gave it, so that a paste of a paste does not pile up suffixes:
  * "_" and the source's name, after any "_"-joined names of groups, the source's qualified name
- * wherever the source was pasted.
+ * wherever the source was pasted. A group's name is matched whole, since it may hold "_" itself.
  **/
 std::string
 suffixFileName(const std::string& path,
@@ -150,14 +150,21 @@ suffixFileName(const std::string& path,
     if (!sourceName.empty() && (stemEnd - nameStart > tail.size()) && (path.compare(stemEnd - tail.size(), tail.size(), tail) == 0)) {
         cut = stemEnd - tail.size();
         for (;;) {
-            const std::size_t underscore = path.rfind('_', cut - 1);
-            if ((underscore == std::string::npos) || (underscore <= nameStart) || (cut - underscore < 2)) {
+            // The longest name that ends the stem, so that "fx_grp" goes whole when "grp" is a group too.
+            std::size_t longest = 0;
+            for (const std::string& group : groupNames) {
+                const std::size_t length = group.size() + 1;
+                if (group.empty() || (cut - nameStart <= length) || (length <= longest)) {
+                    continue;
+                }
+                if ((path[cut - length] == '_') && (path.compare(cut - group.size(), group.size(), group) == 0)) {
+                    longest = length;
+                }
+            }
+            if (longest == 0) {
                 break;
             }
-            if (!groupNames.count(path.substr(underscore + 1, cut - underscore - 1))) {
-                break;
-            }
-            cut = underscore;
+            cut -= longest;
         }
     }
 
@@ -373,6 +380,8 @@ TexturePaint::TexturePaint(NodePtr node)
     : NativeEffectBase(node)
     , _tileEpoch(std::make_shared<std::atomic<std::uint64_t>>(0))
     , _sessionRenders(0)
+    , _bakeOwnerId(TexturePaintFileQueue::newId())
+    , _pendingBakeOutputs(std::make_shared<std::atomic<int>>(0))
 {
 }
 
@@ -1130,6 +1139,7 @@ TexturePaint::getTileDirectory(std::string* directory,
     std::shared_ptr<TexturePaintCache::TileDirectoryClaim> previous;
     bool claimed = false;
     bool held = false;
+    std::chrono::steady_clock::time_point retry = now;
     {
         std::lock_guard<std::mutex> lock(_tileDirectoryMutex);
         const bool current = _tileClaim && (_tileClaimId == id) && (_tileClaimSaved == saved);
@@ -1153,6 +1163,8 @@ TexturePaint::getTileDirectory(std::string* directory,
         held = _tileClaim && (_tileClaimId == id) && (_tileClaimSaved == saved);
         if (held) {
             *directory = _tileClaim->getPath();
+        } else {
+            retry = _tileClaimRetry;
         }
     }
     if (previous && !previous->isShared()) {
@@ -1169,7 +1181,8 @@ TexturePaint::getTileDirectory(std::string* directory,
     }
     if (!held) {
         // A directory nothing holds can be pruned or shared while tiles are written to it.
-        *error = tr("No tile cache directory under %1 can be held for this node; trying again in %2 seconds.").arg(QString::fromStdString(root)).arg((int)kTileClaimRetry.count()).toStdString();
+        const long long seconds = std::max<long long>(1, (long long)std::ceil(std::chrono::duration<double>(retry - now).count()));
+        *error = tr("No tile cache directory under %1 can be held for this node; trying again in %n second(s).", "", (int)seconds).arg(QString::fromStdString(root)).toStdString();
 
         return false;
     }
@@ -1391,6 +1404,8 @@ TexturePaint::prepareBakeOutput(double time,
     run->view = view;
     getBakeFrames(&run->firstFrame, &run->lastFrame);
     run->undoFiles = std::make_shared<BakeOutputFiles>();
+    run->undoFiles->owner = _bakeOwnerId;
+    run->undoFiles->ownerName = getNode()->getFullyQualifiedName();
     run->primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
     run->expression = _primPattern.getExpression();
     run->size = getTileResolution();
@@ -1420,23 +1435,21 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                             std::string* error)
 {
     // A bake that does not finish leaves the files as they were, and the tiles composed over the
-    // files it wrote meanwhile are not used again.
+    // files it wrote meanwhile are not used again. Its rollback follows its last file step on the
+    // TexturePaintFileQueue, even when a cancelled wait left that step to run later.
     struct RollBack {
-        TexturePaint::BakeOutputFiles* files;
-        std::atomic<std::uint64_t>* epoch;
+        std::shared_ptr<TexturePaint::BakeOutputFiles> files;
+        std::shared_ptr<std::atomic<std::uint64_t>> epoch;
+        std::weak_ptr<TexturePaint> node;
+        std::function<bool()> cancelled;
         bool armed;
         ~RollBack()
         {
             if (armed && files) {
-                const bool wrote = !files->entries.empty();
-                TexturePaint::rollBackBakeOutputFiles(files);
-                TexturePaint::settleBakeOutputFiles(*files);
-                if (wrote) {
-                    ++*epoch;
-                }
+                (void)TexturePaintFileQueue::wait(TexturePaint::enqueueBakeOutputRollback(files, epoch, node), cancelled);
             }
         }
-    } rollBack = { run.undoFiles.get(), _tileEpoch.get(), true };
+    } rollBack = { run.undoFiles, _tileEpoch, weakSelf(), control.cancelled, true };
     InputScene scene;
     if (!openInputScene(run.input, run.time, run.view, run.fps, &scene, error)) {
         return false;
@@ -1508,10 +1521,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                 if (!MaterialBake::purposePath(framePattern, purpose.toStdString(), tile, &path, error)) {
                     return false;
                 }
-                if (run.undoFiles && !backUpBakeTarget(run.undoFiles.get(), path, error, control.cancelled)) {
-                    return false;
-                }
-                if (!TexturePaintCache::writeTile(path, run.size, rgba, std::string(), error)) {
+                if (!writeBakeTarget(run, path, std::make_shared<std::vector<float>>(std::move(rgba)), control, error)) {
                     return false;
                 }
                 run.files.push_back(path);
@@ -1522,12 +1532,59 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
             stepsDone += 1.;
         }
     }
-    if (run.undoFiles) {
-        sealBakeOutputFiles(run.undoFiles.get());
+    const std::shared_ptr<BakeOutputFiles> files = run.undoFiles;
+    if (!TexturePaintFileQueue::wait(TexturePaintFileQueue::submit([files](bool /*shuttingDown*/) { sealBakeOutputFiles(files.get()); }), control.cancelled)) {
+        return false;
     }
     rollBack.armed = false;
 
     return true;
+}
+
+bool
+TexturePaint::writeBakeTarget(const BakeOutputRun& run,
+                              const std::string& path,
+                              const std::shared_ptr<std::vector<float>>& rgba,
+                              const BakeControl& control,
+                              std::string* error)
+{
+    struct Write {
+        bool ok = false;
+        bool heldBySameOwner = false;
+        std::string error;
+    };
+    const std::shared_ptr<BakeOutputFiles> files = run.undoFiles;
+    const int size = run.size;
+
+    for (;;) {
+        const std::shared_ptr<Write> write = std::make_shared<Write>();
+        const TexturePaintFileTicket step = TexturePaintFileQueue::submit([files, path, size, rgba, write](bool /*shuttingDown*/) {
+            if (backUpBakeTarget(files.get(), path, &write->error, &write->heldBySameOwner)) {
+                write->ok = TexturePaintCache::writeTile(path, size, *rgba, std::string(), &write->error);
+            }
+        });
+        if (!TexturePaintFileQueue::wait(step, control.cancelled)) {
+            error->clear();
+
+            return false;
+        }
+        if (write->ok) {
+            return true;
+        }
+        // An earlier Bake Output of this node wrote path and is landing or going back; only a bake
+        // that can be cancelled waits for it, the synchronous one refusing to start meanwhile.
+        if (!write->heldBySameOwner || !control.cancelled) {
+            *error = write->error;
+
+            return false;
+        }
+        TexturePaintFileQueue::waitForSettlement(std::chrono::milliseconds(50));
+        if (control.cancelled()) {
+            error->clear();
+
+            return false;
+        }
+    }
 }
 
 void
@@ -1563,6 +1620,12 @@ TexturePaint::writeBakeOutput(double time,
     files->clear();
     undoFiles->reset();
     error->clear();
+    // Its completion runs on this thread, which waits here: that bake's files would never settle.
+    if (_pendingBakeOutputs->load() > 0) {
+        *error = tr("A queued Bake Output of this node has not finished yet.").toStdString();
+
+        return false;
+    }
     BakeOutputRun run;
     if (!prepareBakeOutput(time, view, &run, error)) {
         return false;
@@ -1782,8 +1845,11 @@ bool
 TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
                                const std::string& target,
                                std::string* error,
-                               const std::function<bool()>& cancelled)
+                               bool* heldBySameOwner)
 {
+    if (heldBySameOwner) {
+        *heldBySameOwner = false;
+    }
     if (files->targets.count(target)) {
         return true;
     }
@@ -1791,11 +1857,21 @@ TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
         static std::atomic<unsigned int> bakes(0);
         files->token = std::to_string((long)::getpid()) + "_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(++bakes);
     }
-    if (files->sequence == 0) {
-        files->sequence = TexturePaintRollbacks::newSequence();
+    if (files->bake == 0) {
+        files->bake = TexturePaintFileQueue::newId();
     }
-    if (!TexturePaintRollbacks::claim(files->sequence, target, cancelled)) {
-        error->clear();
+    std::string holder;
+    const TexturePaintFileQueue::ClaimResultEnum claim = TexturePaintFileQueue::claim(files->bake, files->owner, files->ownerName, target, &holder);
+    if (claim == TexturePaintFileQueue::eClaimResultHeldBySameOwner) {
+        if (heldBySameOwner) {
+            *heldBySameOwner = true;
+        }
+        *error = tr("%1 is still held by an earlier Bake Output of this node.").arg(QString::fromStdString(target)).toStdString();
+
+        return false;
+    }
+    if (claim == TexturePaintFileQueue::eClaimResultHeldByAnotherOwner) {
+        *error = tr("%1 is being baked by %2, whose Bake Output has not finished; bake again once it has.").arg(QString::fromStdString(target)).arg(QString::fromStdString(holder.empty() ? tr("another bake").toStdString() : holder)).toStdString();
 
         return false;
     }
@@ -1853,6 +1929,9 @@ TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files,
                                       bool evict,
                                       std::vector<std::string>* kept)
 {
+    // Directories holding a backup that could not leave them, which may be all that is left of
+    // what a target held before the bake.
+    std::set<std::string> holding;
     for (std::vector<BakeOutputFiles::Entry>::reverse_iterator it = files->entries.rbegin(); it != files->entries.rend(); ++it) {
         std::error_code ec;
         if (files->sealed && (BakeOutputFiles::FileIdentity::of(it->target) != it->written)) {
@@ -1863,14 +1942,23 @@ TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files,
                 for (int n = 1; std::filesystem::exists(std::filesystem::symlink_status(keptPath, ec)); ++n) {
                     keptPath = it->target + ".pre-bake." + std::to_string(n);
                 }
-                if (moveFile(it->backup, keptPath, ec) && kept) {
+                if (!moveFile(it->backup, keptPath, ec)) {
+                    keptPath = it->backup;
+                    holding.insert(std::filesystem::path(it->backup).parent_path().string());
+                }
+                if (kept) {
                     kept->push_back(keptPath);
                 }
             }
             continue;
         }
         if (it->hasBackup) {
-            moveFile(it->backup, it->target, ec);
+            if (!moveFile(it->backup, it->target, ec)) {
+                holding.insert(std::filesystem::path(it->backup).parent_path().string());
+                if (kept) {
+                    kept->push_back(it->backup);
+                }
+            }
         } else {
             std::filesystem::remove(it->target, ec);
         }
@@ -1878,7 +1966,13 @@ TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files,
     if (evict) {
         evictBakeTargets(*files);
     }
-    discardBakeOutputFiles(*files);
+    BakeOutputFiles discarded;
+    for (const std::string& directory : files->directories) {
+        if (!holding.count(directory)) {
+            discarded.directories.insert(directory);
+        }
+    }
+    discardBakeOutputFiles(discarded);
     files->entries.clear();
     files->targets.clear();
     files->directories.clear();
@@ -1887,9 +1981,7 @@ TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files,
 void
 TexturePaint::settleBakeOutputFiles(const BakeOutputFiles& files)
 {
-    if (files.sequence != 0) {
-        TexturePaintRollbacks::settle(files.sequence);
-    }
+    TexturePaintFileQueue::settle(files.bake);
 }
 
 namespace {
@@ -1901,7 +1993,7 @@ reportKeptOriginals(const std::weak_ptr<TexturePaint>& node,
     for (const std::string& path : kept) {
         paths.push_back(QString::fromStdString(path));
     }
-    const QString message = QCoreApplication::translate("TexturePaint", "A Bake Output that did not finish could not put back files written again since it ran; what they held before the bake is kept as %1.").arg(paths.join(QString::fromUtf8(", ")));
+    const QString message = QCoreApplication::translate("TexturePaint", "A Bake Output that did not finish could not put back every file it replaced; what they held before the bake is kept as %1.").arg(paths.join(QString::fromUtf8(", ")));
     if (appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("TexturePaint"), QDateTime::currentDateTime(), message);
     }
@@ -1917,34 +2009,36 @@ reportKeptOriginals(const std::weak_ptr<TexturePaint>& node,
 }
 } // anon namespace
 
-void
+TexturePaintFileTicket
 TexturePaint::enqueueBakeOutputRollback(const std::shared_ptr<BakeOutputFiles>& files,
                                         const std::shared_ptr<std::atomic<std::uint64_t>>& epoch,
                                         const std::weak_ptr<TexturePaint>& node)
 {
     if (!files) {
-        return;
+        return TexturePaintFileTicket();
     }
-    if (files->entries.empty()) {
-        settleBakeOutputFiles(*files);
 
-        return;
-    }
-    if (epoch) {
-        ++*epoch;
-    }
     // Thousands of files for an Animated output, maybe on a network file system: never on the
-    // main thread.
-    TexturePaintRollbacks::enqueue(files->sequence, [files, epoch, node](bool shuttingDown) {
+    // main thread. What the bake wrote is only known on the queue, after its last write.
+    return TexturePaintFileQueue::submit([files, epoch, node](bool shuttingDown) {
+        if (files->entries.empty()) {
+            settleBakeOutputFiles(*files);
+
+            return;
+        }
+        if (epoch) {
+            ++*epoch;
+        }
         std::vector<std::string> kept;
         // The header cache is a static that may be gone by then, and of no use once shutting down.
         rollBackBakeOutputFiles(files.get(), !shuttingDown, &kept);
+        settleBakeOutputFiles(*files);
         // Tiles composed while the files were going back may have read the bake's.
         if (epoch) {
             ++*epoch;
         }
-        if (!kept.empty() && !shuttingDown) {
-            reportKeptOriginals(node, kept);
+        if (!kept.empty()) {
+            reportKeptOriginals(shuttingDown ? std::weak_ptr<TexturePaint>() : node, kept);
         }
     });
 }
@@ -1952,12 +2046,21 @@ TexturePaint::enqueueBakeOutputRollback(const std::shared_ptr<BakeOutputFiles>& 
 bool
 TexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
                                   bool undo,
-                                  std::string* error)
+                                  std::string* error,
+                                  bool evict)
 {
     // An undo that failed leaves the files baked while the undo stack has moved on: the redo that
     // follows must not back up the baked file over the original's backup.
     if (files->undone == undo) {
         return true;
+    }
+    for (const BakeOutputFiles::Entry& entry : files->entries) {
+        std::string holder;
+        if (TexturePaintFileQueue::isHeldByAnotherBake(files->bake, entry.target, &holder)) {
+            *error = tr("%1 is being baked by %2, whose Bake Output has not finished, so the bake cannot be undone or redone now.").arg(QString::fromStdString(entry.target)).arg(QString::fromStdString(holder)).toStdString();
+
+            return false;
+        }
     }
     if (undo) {
         // The bake's own files only: a later bake, or anything else, may have written the targets
@@ -2000,7 +2103,9 @@ TexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
         }
         if (!ok) {
             journal.revert();
-            evictBakeTargets(*files);
+            if (evict) {
+                evictBakeTargets(*files);
+            }
 
             return false;
         }
@@ -2013,7 +2118,9 @@ TexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
         // Where the file system copies instead of linking, the redone file is a new one.
         sealBakeOutputFiles(files);
     }
-    evictBakeTargets(*files);
+    if (evict) {
+        evictBakeTargets(*files);
+    }
 
     return true;
 }
@@ -2037,20 +2144,32 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
     if (!files) {
         return false;
     }
-    std::shared_ptr<std::string> failure = std::make_shared<std::string>();
+    if (_pendingBakeOutputs->load() > 0) {
+        setPersistentMessage(eMessageTypeError, tr("A Bake Output of this node has not finished, so the bake cannot be undone or redone now.").toStdString());
+
+        return false;
+    }
+    struct Swap {
+        bool ok = false;
+        std::string failure;
+    };
+    const std::shared_ptr<Swap> swap = std::make_shared<Swap>();
+    const TexturePaintFileTicket step = TexturePaintFileQueue::makeStep([files, undo, swap](bool shuttingDown) {
+        swap->ok = swapBakeOutputFiles(files.get(), undo, &swap->failure, !shuttingDown);
+    });
     TexturePaintBaker::Bake bake;
     bake.label = undo ? tr("Undoing Bake Output") : tr("Redoing Bake Output");
     const std::weak_ptr<TexturePaint> weak = weakSelf();
-    bake.work = [files, undo, failure](TexturePaintBaker::Context& /*context*/) -> bool {
-        return swapBakeOutputFiles(files.get(), undo, failure.get());
+    bake.work = [step, swap](TexturePaintBaker::Context& context) -> bool {
+        return TexturePaintFileQueue::wait(step, [&context]() { return context.cancelled(); }) && swap->ok;
     };
-    bake.completion = [weak, state, undo, failure](bool ok) {
+    bake.completion = [weak, state, undo, swap](bool ok) {
         const std::shared_ptr<TexturePaint> self = weak.lock();
         if (!self) {
             return;
         }
         if (!ok) {
-            self->setPersistentMessage(eMessageTypeError, failure->empty() ? tr("The files of the bake could not be swapped.").toStdString() : *failure);
+            self->setPersistentMessage(eMessageTypeError, swap->failure.empty() ? tr("The files of the bake could not be swapped.").toStdString() : swap->failure);
 
             return;
         }
@@ -2060,11 +2179,15 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
             self->reapplyBakeOutputState(state);
         }
     };
+    // The baker first, so that a swap whose state could never change does not move files.
     if (!getBaker()->enqueue(bake)) {
         setPersistentMessage(eMessageTypeError, tr("The files of the bake could not be swapped: the node no longer bakes.").toStdString());
 
         return false;
     }
+    // Submitted now rather than when the baker reaches it, so that it comes before the discard of
+    // a step dropped meanwhile.
+    TexturePaintFileQueue::submit(step);
 
     return true;
 }
@@ -2075,19 +2198,9 @@ TexturePaint::enqueueBakeOutputDiscard(const std::shared_ptr<BakeOutputFiles>& f
     if (!files) {
         return;
     }
-    TexturePaintBaker::Bake bake;
-    bake.label = tr("Discarding Bake Output backups");
-    bake.work = [files](TexturePaintBaker::Context& /*context*/) -> bool {
+    TexturePaintFileQueue::submit([files](bool /*shuttingDown*/) {
         discardBakeOutputFiles(*files);
-
-        return true;
-    };
-    // Never makes a baker: with none, no swap of files is queued for the discard to follow.
-    if (!_baker || !_baker->enqueue(bake)) {
-        TexturePaintRollbacks::enqueue(0, [files](bool /*shuttingDown*/) {
-            discardBakeOutputFiles(*files);
-        });
-    }
+    });
 }
 
 namespace {
@@ -3077,16 +3190,21 @@ TexturePaint::enqueueBakeOutput(double time,
     }
     // A bake whose completion never runs, because the node stopped baking first, has written files
     // no record names and no undo step owns: they are put back as they were.
+    // Dropped, in turn, by the baker after the bake's work returned, so that the rollback is
+    // submitted after the bake's last file step; dropped at the latest by shutdownAll().
     struct Owner {
         std::shared_ptr<BakeOutputFiles> files;
         std::shared_ptr<std::atomic<std::uint64_t>> epoch;
         std::weak_ptr<TexturePaint> node;
+        std::shared_ptr<std::atomic<int>> pending;
         bool adopted = false;
         ~Owner()
         {
             if (!adopted) {
-                enqueueBakeOutputRollback(files, epoch, node);
+                (void)enqueueBakeOutputRollback(files, epoch, node);
             }
+            // After the rollback is submitted, so that a swap allowed from now on follows it.
+            --*pending;
         }
     };
     const std::weak_ptr<TexturePaint> weak = weakSelf();
@@ -3094,6 +3212,8 @@ TexturePaint::enqueueBakeOutput(double time,
     owner->files = run->undoFiles;
     owner->epoch = _tileEpoch;
     owner->node = weak;
+    owner->pending = _pendingBakeOutputs;
+    ++*_pendingBakeOutputs;
     std::shared_ptr<std::string> failure = std::make_shared<std::string>();
     TexturePaintBaker::Bake bake;
     bake.label = tr("Baking output");

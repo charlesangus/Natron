@@ -34,7 +34,11 @@ Controls:
   painted over. The default is `[Project]/textures/texturePaint_inputs.<UDIM>.exr`.
 - Bake Output Path: the files the painted texture is baked into, one per tile,
   with a `<UDIM>` token. Baking freezes the sessions it bakes. The default is
-  `[Project]/textures/texturePaint_output.<UDIM>.exr`.
+  `[Project]/textures/texturePaint_output.<UDIM>.exr`. A bake that does not
+  finish puts back the files it replaced. A Bake Output fails, naming the other
+  node, while another TexturePaint node's Bake Output of the same files has not
+  finished. A Bake Output cannot be undone or redone while another Bake Output
+  of the node is queued or running.
 - Output Tile: the UDIM tile the node outputs as its image (1001 by default).
 
 The node does not yet render: its output is transparent black, the size of one

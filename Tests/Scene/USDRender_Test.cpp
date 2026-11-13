@@ -1602,12 +1602,15 @@ TEST_F(USDRenderUtilityGpuTest, AGpuGradeReadsTheGpuFrameOnTheDeviceAndTheCpuMap
 }
 
 namespace {
-// Forces the GPU regions into strips of rows rows while it lives.
+// Forces the GPU regions into strips of rows rows while it lives. The row cap alone only bounds the
+// height of strips a region already needs, so the buffer range is capped below a whole RGBA frame too.
 class StripRows {
 public:
     explicit StripRows(int rows)
     {
-        setGpuStripOverridesForTests(0, rows);
+        const std::uint64_t wholeFrameBytes = (std::uint64_t)kWidth * kHeight * 4 * sizeof(float);
+
+        setGpuStripOverridesForTests(wholeFrameBytes / 2, rows);
     }
 
     ~StripRows()

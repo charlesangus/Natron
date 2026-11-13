@@ -47,7 +47,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
 
 ## Phase 335.2: The progressive worker follows draw states
 
-- [ ] M335.P2.T1 — Draw rules in `ProgressiveRender`
+- [x] M335.P2.T1 — Draw rules in `ProgressiveRender`
   - files: `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}` (Implementation ~:2447, `makeEngine` ~:2552, render block ~:3001-3036, `edited()` ~:2516), `Tests/Scene/ProgressiveRender_Test.cpp`
   - approach: `setDrawRules(Rules)`, `applyDrawDeltas(std::vector<SceneDrawDelta>)` and `setRenderEverything(bool)` queue under `mutex` and call `edited()`. `makeEngine` builds inside an `EngineScope` and seeds the filter. The worker applies the queue (revealBatch 0) under `engineMutex` and the stage guard before `renderGuarded`, then `endRender()`. Render Everything calls `replaceRules({})`.
   - verify: new cases — a hidden prim leaves the primId frame; five deltas within 20 ms cause one restart; Render Everything on then off restores the frame.
@@ -88,3 +88,4 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
 - 2026-11-13 — Delegate viewer renders fall back to a headlight when Hidden rows remove every scene light, as Storm does (user); P3.T4 added. Turning Render Everything off unloads nothing (PM, per "closing a row never unloads").
 - 2026-11-13 — Phase 1 build (run 43440936742) failed two tests: `replaceRules` A→empty→A doesn't restore Hidden rows (a real bug), and the MoonRay light check assumed darker without the light (MoonRay's frame was brighter). Fixes in progress. `USDRenderMoonRayTest` timed out in one leg.
 - 2026-11-13 — Phase 1 build failures were test errors (a8f40dce3). `replaceRules` A→empty→A matches a fresh filter in what is drawn, but boxed prims Hydra has held stay held invisible rather than removed, as `SceneDrawFilter` is designed to (Storm flips visibility instead of rebuilding batches); "identical" in P1.T2's verify means the same drawn result and rules (PM). hdMoonray turns on its own white dome light ("defaultLight") when the scene has no lights, and maps UsdLux `normalize` (default false) so the test light was nearly black; the light checks now use a red key light. P3.T4 adds the camera headlight for both Cycles and MoonRay, replacing MoonRay's dome fallback, so every renderer matches Storm (PM, per the user's headlight choice).
+- 2026-11-13 — P2.T1 implemented (27cfa594b). Deltas are folded into the worker's rule copy (`applyToRules`) and the worker sends the difference with `replaceRules`, never paced; a change during a pass is caught by comparing `drawEdits`. Phase 1+2 build running.

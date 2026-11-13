@@ -933,6 +933,43 @@ SceneDrawFilter::applyDelta(const SceneDrawDelta& delta,
 }
 
 void
+SceneDrawFilter::replaceRules(const Rules& rules)
+{
+    if (rules == _rules) {
+        return;
+    }
+    SceneDrawDelta delta;
+    for (const Rules::value_type& rule : _rules) {
+        if (rules.find(rule.first) == rules.end()) {
+            delta.cleared.push_back(rule.first.GetString());
+        }
+    }
+    for (const Rules::value_type& rule : rules) {
+        const Rules::const_iterator current = _rules.find(rule.first);
+        if ((current != _rules.end()) && (current->second == rule.second)) {
+            continue;
+        }
+        std::vector<std::string>* list = nullptr;
+        switch (rule.second) {
+        case eRuleShow:
+            list = &delta.drawn;
+            break;
+        case eRuleExpand:
+            list = &delta.expanded;
+            break;
+        case eRuleHide:
+            list = &delta.boxed;
+            break;
+        case eRuleHidden:
+            list = &delta.hidden;
+            break;
+        }
+        list->push_back(rule.first.GetString());
+    }
+    applyDelta(delta);
+}
+
+void
 SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
                              std::size_t revealBatch)
 {

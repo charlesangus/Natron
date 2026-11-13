@@ -161,6 +161,13 @@ public:
      */
     void applyDelta(const SceneDrawDelta& delta, std::size_t revealBatch = 0);
 
+    /**
+     * @brief Moves the filter from its rules to these, sending only what the difference changes: a
+     * prim whose state ends where it began sends nothing, and the same rules send nothing at all. No
+     * rules show everything.
+     */
+    void replaceRules(const Rules& rules);
+
     /** @brief As applyDelta() on each in turn, with the notices of all of them sent at once. */
     void applyDeltas(const std::vector<const SceneDrawDelta*>& deltas, std::size_t revealBatch = 0);
 

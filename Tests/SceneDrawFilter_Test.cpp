@@ -1134,6 +1134,85 @@ TEST_F(SceneDrawFilterTest, TheFilteredSceneFollowsTheRulesThroughBatchedChanges
     EXPECT_TRUE(drawn("/World/a/m1"));
 }
 
+namespace {
+SceneDrawFilter::Rules
+mixedRules(SceneDrawStates& states)
+{
+    SceneDrawFilter::Rules rules;
+    SceneDrawFilter::applyToRules(states.setState("/World/a", eSceneDrawStateBBox), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/a/deep", eSceneDrawStateHidden), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/b", eSceneDrawStateChildren), &rules);
+
+    return rules;
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, ReplacingRulesWithTheCurrentRulesSendsNothing)
+{
+    const SceneDrawFilter::Rules rules = mixedRules(states);
+    filter->seedRules(rules);
+
+    filter->replaceRules(rules);
+
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_EQ(0u, filter->getHiddenSentCount() + filter->getShownSentCount());
+}
+
+TEST_F(SceneDrawFilterTest, ReplacingRulesGoingToNoneAndBackSendsOnlyWhatChanged)
+{
+    const SceneDrawFilter::Rules rules = mixedRules(states);
+    filter->seedRules(rules);
+    const PathSet before = drawnGeometry();
+    ASSERT_NE(kAllGeometry, before);
+
+    filter->replaceRules(SceneDrawFilter::Rules());
+
+    PathSet changed;
+    for (const std::string& path : kAllGeometry) {
+        if (before.count(path) == 0) {
+            changed.insert(path);
+        }
+    }
+    EXPECT_EQ(changed, recorder.shows);
+    EXPECT_TRUE(recorder.hides.empty());
+    EXPECT_TRUE(filter->getRules().empty());
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+
+    recorder.reset();
+    filter->replaceRules(rules);
+
+    EXPECT_EQ(changed, recorder.hides);
+    EXPECT_TRUE(recorder.shows.empty());
+    EXPECT_EQ(before, drawnGeometry());
+
+    TfRefPtr<SceneDrawFilter> fresh = SceneDrawFilter::New(scene);
+    fresh->seedRules(rules);
+    for (const std::string& path : kAllGeometry) {
+        const HdSceneIndexPrim a = filter->GetPrim(SdfPath(path));
+        const HdSceneIndexPrim b = fresh->GetPrim(SdfPath(path));
+        EXPECT_EQ(b.primType, a.primType) << path;
+        EXPECT_EQ(visible(b), visible(a)) << path;
+    }
+    EXPECT_EQ(fresh->getRules(), filter->getRules());
+}
+
+TEST_F(SceneDrawFilterTest, ReplacingRulesChangesOnlyTheRowsThatDiffer)
+{
+    SceneDrawFilter::Rules from = mixedRules(states);
+    filter->seedRules(from);
+    SceneDrawFilter::Rules to = from;
+    to[SdfPath("/World/a")] = SceneDrawFilter::eRuleShow;
+
+    filter->replaceRules(to);
+
+    EXPECT_TRUE(recorder.hides.empty());
+    EXPECT_TRUE(recorder.shows.count("/World/a/m1") == 1);
+    for (const std::string& path : recorder.shows) {
+        EXPECT_EQ(0u, path.find("/World/a/")) << path;
+    }
+    expectFilteredSceneFollowsTheRules(*scene, *filter);
+}
+
 TEST_F(SceneDrawFilterTest, ASubtreeRemovedAndAddedAgainFollowsTheRules)
 {
     filter->applyDelta(states.setState("/World/a", eSceneDrawStateBBox));

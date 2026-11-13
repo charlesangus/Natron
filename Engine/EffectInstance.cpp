@@ -7083,6 +7083,14 @@ EffectInstance::getCurveContextKind() const
     return eCurveContextKindNone;
 }
 
+NodePtr
+EffectInstance::getPaintTreeSource() const
+{
+    NodePtr node = getNode();
+
+    return node ? node->getInput(0) : NodePtr();
+}
+
 RotoCurveContextPtr
 EffectInstance::createGeometryCurveContext(const NodePtr& node) const
 {

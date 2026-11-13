@@ -610,6 +610,12 @@ public:
     virtual CurveContextKindEnum getCurveContextKind() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The node the bottom of a Paint host's stroke tree merges over: input 0 by default.
+     * A host painting over an image of its own overrides it. Null for no source.
+     **/
+    virtual NodePtr getPaintTreeSource() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief The columns and context-menu actions a curve host adds to its panel's curve list, or
      * null for none. Owned by the effect. Only read when getCurveContextKind() is not None.
      **/

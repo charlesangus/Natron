@@ -47,6 +47,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <clocale>
 #include <csignal>
@@ -98,14 +99,11 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 
-
-#include "Global/ProcInfo.h"
-#include "Global/GLIncludes.h"
-#include "Global/StrUtils.h"
-#ifdef DEBUG
 #include "Global/FloatingPointExceptions.h"
-#endif
+#include "Global/GLIncludes.h"
+#include "Global/ProcInfo.h"
 #include "Global/PythonUtils.h"
+#include "Global/StrUtils.h"
 
 #include "Engine/AbortWatchdog.h"
 #include "Engine/Ai/ModelDownloader.h"
@@ -897,6 +895,10 @@ AppManager::loadInternal(const CLArgs& cl)
         // Under Auto the GL suite never uses a software renderer; only NATRON_GPU=force allows one.
         const GLRendererPick glPick = OSGLContext::pickRenderer(_imp->openGLRenderers, chosenDevice, gpuMode == GpuResolvedMode::Force);
         const bool glEnabled = gpuMode != GpuResolvedMode::Off && glPick.enabled && isOpenGLLoaded();
+        // Before the render threads exist: the GL suite's worker contexts are made current and compile on them.
+        if (glEnabled && glPick.software) {
+            boost_adaptbx::floating_point::note_software_renderer();
+        }
         const std::string glStatus = glEnabled ? glPick.reason : "GL suite disabled (" + glPick.reason + ")";
         _imp->renderingContextPool->setRenderingState(glEnabled, glPick.rendererID, glStatus);
         _imp->_settings->setGpuStatus(_imp->renderingContextPool->getRendererStatus());
@@ -1006,6 +1008,10 @@ AppManager::initializeOpenGLFunctionsOnce(bool createOpenGLContext)
     QMutexLocker k(&_imp->openGLFunctionsMutex);
 
     if (!_imp->hasInitializedOpenGLFunctions) {
+        // Everything below is the GL driver's own code or glue to it. Software rasterisers such as
+        // Mesa's llvmpipe raise FE_INVALID/FE_DIVBYZERO compiling their built-in shaders as the context
+        // is made and first used, and the main thread traps those in a debug build.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
         OSGLContextPtr glContext;
         bool checkRenderingReq = true;
         if (createOpenGLContext) {
@@ -3124,6 +3130,9 @@ AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
         return;
     }
     _imp->renderSchedulerMode = (int)mode;
+
+    // Real renders in legacy mode keep the last placement, so nothing else would clear the regions of the old mode.
+    ViewerInstance::requestGpuPlacementDryRunForEveryViewer();
 }
 
 void
@@ -3912,6 +3921,16 @@ NATRON_PYTHON_NAMESPACE::ensureScriptHasModuleImport(const std::string& moduleNa
 
 #endif
 
+namespace {
+std::atomic<U64> gInterpretedScripts { 0 };
+}
+
+U64
+NATRON_PYTHON_NAMESPACE::getInterpretedScriptsCount()
+{
+    return gInterpretedScripts.load();
+}
+
 bool
 NATRON_PYTHON_NAMESPACE::interpretPythonScript(const std::string& script,
                                                std::string* error,
@@ -3921,6 +3940,7 @@ NATRON_PYTHON_NAMESPACE::interpretPythonScript(const std::string& script,
 
     return true;
 #endif
+    gInterpretedScripts.fetch_add(1);
     PythonGILLocker pgl;
     PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
     int status = -1;

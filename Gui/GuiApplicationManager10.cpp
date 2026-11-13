@@ -59,6 +59,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
@@ -107,10 +108,6 @@ CLANG_DIAG_ON(uninitialized)
  * registered so that the shortcut view shows it. The 3D viewer's editable mouse actions use addViewer3DMouseShortcut.
  **/
 #define registerMouseShortcut(group, id, description, modifiers, button) ( _imp->addMouseShortcut(group, id, description, modifiers, button) )
-
-//Increment this when making change to default shortcuts or changes that would break expected default shortcuts
-//in a way. This way the user will get prompted to restore default shortcuts on next launch
-#define NATRON_SHORTCUTS_DEFAULT_VERSION 8
 
 inline void initGuiResource() {
     Q_INIT_RESOURCE(GuiResources);
@@ -245,7 +242,6 @@ public:
     }
 
 protected:
-
     bool event(QEvent* e);
 };
 
@@ -335,7 +331,15 @@ GuiApplicationManager::initializeQApp(int &argc,
 bool
 GuiApplicationManager::checkGLContextRequirements()
 {
-    const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(GuiGLRequirements::probe());
+    const GuiGLRequirements::ContextInfo info = GuiGLRequirements::probe();
+    // Qt makes the GUI's contexts lazily inside window events, and a software rasterizer compiles shaders
+    // in each, so on one no guard can be scoped to the driver calls.
+    if (OSGLContext::noteSoftwareRenderer(info.renderer.toStdString())) {
+#ifdef DEBUG
+        qDebug().noquote() << "Float traps are off: the GL renderer" << info.renderer << "is software.";
+#endif
+    }
+    const GuiGLRequirements::Verdict verdict = GuiGLRequirements::judge(info);
     if (verdict.accepted) {
         HydraGLContextQt::install();
 
@@ -686,20 +690,7 @@ restoreSavedShortcut(QSettings& settings,
 void
 GuiApplicationManager::loadShortcuts()
 {
-    bool settingsExistd = getCurrentSettings()->didSettingsExistOnStartup();
-    QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
-    int settingsVersion = -1;
-
-    if ( settings.contains( QString::fromUtf8("NATRON_SHORTCUTS_DEFAULT_VERSION") ) ) {
-        settingsVersion = settings.value( QString::fromUtf8("NATRON_SHORTCUTS_DEFAULT_VERSION") ).toInt();
-    }
-
-    if ( settingsExistd && (settingsVersion < NATRON_SHORTCUTS_DEFAULT_VERSION) ) {
-        _imp->_shortcutsChangedVersion = true;
-    }
-
-    settings.setValue(QString::fromUtf8("NATRON_SHORTCUTS_DEFAULT_VERSION"), NATRON_SHORTCUTS_DEFAULT_VERSION);
-
+    QSettings settings(QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME));
 
     for (AppShortcuts::iterator it = _imp->_actionShortcuts.begin(); it != _imp->_actionShortcuts.end(); ++it) {
         settings.beginGroup(it->first);
@@ -731,12 +722,6 @@ GuiApplicationManager::onViewer3DNavigationChanged(int navigation)
             mAction->setBindings(bindings);
         }
     }
-}
-
-bool
-GuiApplicationManager::isShorcutVersionUpToDate() const
-{
-    return !_imp->_shortcutsChangedVersion;
 }
 
 void
@@ -941,6 +926,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphDisableNodes, kShortcutDescActionGraphDisableNodes, Qt::NoModifier, Qt::Key_D);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphRemoveNodes, kShortcutDescActionGraphRemoveNodes, Qt::NoModifier, Qt::Key_Backspace);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowLinkLines, kShortcutDescActionGraphShowLinkLines, Qt::ShiftModifier, Qt::Key_E);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowGpuRegions, kShortcutDescActionGraphShowGpuRegions, Qt::ShiftModifier, Qt::Key_G);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateDownstream, kShortcutDescActionGraphNavigateDownstram, Qt::NoModifier, Qt::Key_Down);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNavigateUpstream, kShortcutDescActionGraphNavigateUpstream, Qt::NoModifier, Qt::Key_Up);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSelectUp, kShortcutDescActionGraphSelectUp, Qt::ShiftModifier, Qt::Key_Up);

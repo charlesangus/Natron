@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
-#include <string>
 #include <list>
 #include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -91,14 +92,44 @@ public:
 
     void deselect();
 
-    QImage getFullSceneScreenShot();
-
     bool areAllNodesVisible();
 
     /**
-     * @brief Repaint the navigator
+     * @brief Recompose the navigator from its cached thumbnail and the visible rectangle
      **/
     void updateNavigator();
+
+    /**
+     * @brief Refreshes the overlays (navigator, cache size text) once control returns to the
+     * event loop, however many times it is called before then.
+     **/
+    void scheduleOverlayRefresh();
+
+    /**
+     * @brief Call when nodes or edges come, go or change in ways not reported to
+     * noteNodeGeometryChanged() or noteEdgeGeometryChanged(): the navigator thumbnail is rendered
+     * again shortly after, once for any number of calls in between, and the next hit test or
+     * low-detail paint refiles every item.
+     **/
+    void invalidateNavigatorContent();
+
+    /**
+     * @brief Like invalidateNavigatorContent(), for a change to items that are, or are about to
+     * be, reported one by one: only the thumbnail and the nodes' bounds are refreshed.
+     **/
+    void invalidateNavigatorImage();
+
+    /**
+     * @brief Call when a node of this graph, or one of its edges, may have moved or changed shape,
+     * so that hit tests find it where it now is. owner is the destination of an input edge (slot
+     * is its input number) or the source of an output edge (slot is -1).
+     **/
+    void noteNodeGeometryChanged(NodeGui* node);
+    void noteEdgeGeometryChanged(NodeGui* owner, int slot, Edge* edge);
+
+    // Repaints what the low-detail layers draw of item, a node or an edge, both where its grid
+    // entry still has it and where it is now: a faded item ignores its own update().
+    void repaintLowDetailItem(QGraphicsItem* item);
 
     const NodesGuiList & getAllActiveNodes() const;
     NodesGuiList getAllActiveNodes_mt_safe() const;
@@ -108,6 +139,11 @@ public:
     void restoreFromTrash(NodeGui* node);
 
     QGraphicsItem* getRootItem() const;
+
+    // The parents of the nodes' edges and of the link arrows, in the nodes' coordinates. An arrow
+    // from a backdrop goes under the backdrops, every other one above the edges.
+    QGraphicsItem* getEdgeLayer() const;
+    QGraphicsItem* getLinkArrowLayer(bool fromBackdrop) const;
     virtual void notifyGuiClosing() OVERRIDE FINAL;
     void discardScenePointer();
 
@@ -120,9 +156,9 @@ public:
     void centerOnItem(QGraphicsItem* item);
 
     /**
-     * @brief Redraws the loop blocks once control returns to the event loop; topology also
-     * recomputes which nodes form each block, after a connection or a node came or went, and
-     * emits topologyChanged.
+     * @brief Redraws the loop blocks once control returns to the event loop; topology also recomputes
+     * which nodes form each block, maps the GPU regions onto the nodes again and redraws them, after a
+     * connection or a node came or went, and emits topologyChanged.
      **/
     void scheduleLoopBlockRefresh(bool topology);
 
@@ -186,9 +222,70 @@ public:
      **/
     void createLinkedNodes(const QPointF& pos);
 
-    QPointF getRootPos() const;
-
     bool isDoingNavigatorRender() const;
+
+    // The saved anti-aliasing preference, cached because the graph's items read it on every paint.
+    bool isAntiAliasingEnabled() const;
+
+    // True when the view is zoomed out past the point where node names become too small to read:
+    // nodes then draw their body only, and edges their line only.
+    bool isLowDetail() const;
+
+    // Re-derives the level of detail from the zoom and, when it flips, swaps the nodes and edges
+    // between drawing themselves and being drawn by the low-detail layers.
+    void refreshDetailLevel();
+
+    /**
+     * @brief While a batch is open, a node that moves or resizes is not raised above the other
+     * nodes at once: the outermost endNodeStackingBatch() raises every node that moved meanwhile,
+     * in the order they moved.
+     **/
+    void beginNodeStackingBatch();
+    void endNodeStackingBatch();
+
+    // Returns false when no batch is open, in which case the caller restacks the node itself.
+    bool deferNodeStacking(NodeGui* node);
+
+    // Stacks the visible nodes above every other node, each above the ones before it. Nodes that
+    // already are the topmost ones, in that order, are left alone.
+    void raiseNodes(const std::vector<NodeGui*>& nodes);
+
+    enum DeferredRefreshEnum {
+        eDeferredRefreshName = 1,
+        eDeferredRefreshEdgeLines = 2,
+        eDeferredRefreshDataKindPen = 4,
+        eDeferredRefreshDataKindPenForced = 8
+    };
+
+    /**
+     * @brief While a batch is open, nodes leave the refreshes above to the outermost
+     * endNodeRefreshBatch(), which runs each one once per node: a paste would otherwise lay out
+     * names and edges again as each node, input and data kind arrives.
+     **/
+    void beginNodeRefreshBatch();
+    void endNodeRefreshBatch();
+
+    // Returns false when no batch is open, in which case the caller refreshes at once.
+    bool deferNodeRefresh(NodeGui* node, int refreshes);
+
+    // True while a project load restores nodes: stacking, edges and the navigator wait for
+    // onProjectNodesRestored().
+    bool isLoadingProjectNodes() const;
+
+    // Called once the project's nodes are restored, including after a failed load.
+    void onProjectNodesRestored();
+
+    /**
+     * @brief Queues a refresh of the node's state indicator and rendering edges. The refresh
+     * timer only runs while nodes are queued.
+     **/
+    void scheduleNodeRenderStateRefresh(NodeGui* node);
+
+    /**
+     * @brief Frame changes reach only the nodes registered here, through one timeline
+     * connection per graph. A node stays registered until it is destroyed.
+     **/
+    void registerFrameDependentNode(NodeGui* node);
 
 Q_SIGNALS:
 
@@ -201,6 +298,8 @@ Q_SIGNALS:
 public Q_SLOTS:
 
     void deleteSelection();
+
+    void onTimelineFrameChanged(SequenceTime time, int reason);
 
     void connectCurrentViewerToSelection(int inputNB, bool isASide);
 
@@ -275,6 +374,8 @@ public Q_SLOTS:
 
     void toggleAutoTurbo();
 
+    void toggleGpuRegionOverlay();
+
     void onGroupNameChanged(const QString& name);
     void onGroupScriptNameChanged(const QString& name);
 
@@ -292,6 +393,8 @@ private:
     void showNodePanel(bool casIsCtrl, bool casIsShift, NodeGui* nearbyNode);
 
     void checkForSpliceHint();
+
+    void onNavigatorRenderTimerTimeout();
 
     void buildSplicePlan();
 
@@ -360,12 +463,14 @@ private:
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual bool event(QEvent* e) OVERRIDE FINAL;
+    virtual bool viewportEvent(QEvent* e) OVERRIDE FINAL;
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseReleaseEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseMoveEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void mouseDoubleClickEvent(QMouseEvent* e) OVERRIDE FINAL;
     virtual void resizeEvent(QResizeEvent* e) OVERRIDE FINAL;
     virtual void paintEvent(QPaintEvent* e) OVERRIDE FINAL;
+    virtual void scrollContentsBy(int dx, int dy) OVERRIDE FINAL;
     virtual void wheelEvent(QWheelEvent* e) OVERRIDE FINAL;
     virtual void focusInEvent(QFocusEvent* e) OVERRIDE FINAL;
     virtual void focusOutEvent(QFocusEvent* e) OVERRIDE FINAL;
@@ -384,13 +489,24 @@ private:
 
     void getNodesWithinViewportRect(const QRect& rect, std::set<NodeGui*>* nodes) const;
 
+    // The graph items, text included unless skipText, whose shape meets a viewport rectangle.
+    void getGraphItemsMeetingViewportRect(const QRect& rect, bool skipText, std::vector<QGraphicsItem*>* hits) const;
+
     NearbyItemEnum hasItemNearbyMouse(const QPoint& mousePosViewport,
                                       NodeGui** node,
                                       Edge** edge);
 
-    void moveRootInternal(double dx, double dy);
+    // Scrolls the view so that the content moves by delta view pixels.
+    void panContentBy(const QPoint& delta);
 
-    void wheelEventInternal(bool ctrlDown, double delta);
+    // Places the overlays at the view's corners and recomposes the navigator.
+    void refreshOverlays();
+
+    // An uneditable or unedited PyPlug's graph is painted under a veil with the unlock button.
+    bool isDrawingLockedVeil() const;
+
+    // A null viewPivot zooms about the view centre.
+    void wheelEventInternal(bool ctrlDown, double delta, const QPointF* viewPivot);
 
     std::unique_ptr<NodeGraphPrivate> _imp;
 };
@@ -454,6 +570,56 @@ private:
     virtual void changeEvent(QEvent* e) OVERRIDE FINAL;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     std::unique_ptr<EditNodeNameDialogPrivate> _imp;
+};
+
+// Opens a node stacking batch on graph, if any, for the scope.
+class NodeStackingBatch {
+public:
+    explicit NodeStackingBatch(NodeGraph* graph)
+        : _graph(graph)
+    {
+        if (_graph) {
+            _graph->beginNodeStackingBatch();
+        }
+    }
+
+    ~NodeStackingBatch()
+    {
+        if (_graph) {
+            _graph->endNodeStackingBatch();
+        }
+    }
+
+    NodeStackingBatch(const NodeStackingBatch&) = delete;
+    NodeStackingBatch& operator=(const NodeStackingBatch&) = delete;
+
+private:
+    NodeGraph* _graph;
+};
+
+// Opens a node refresh batch on graph, if any, for the scope.
+class NodeRefreshBatch {
+public:
+    explicit NodeRefreshBatch(NodeGraph* graph)
+        : _graph(graph)
+    {
+        if (_graph) {
+            _graph->beginNodeRefreshBatch();
+        }
+    }
+
+    ~NodeRefreshBatch()
+    {
+        if (_graph) {
+            _graph->endNodeRefreshBatch();
+        }
+    }
+
+    NodeRefreshBatch(const NodeRefreshBatch&) = delete;
+    NodeRefreshBatch& operator=(const NodeRefreshBatch&) = delete;
+
+private:
+    NodeGraph* _graph;
 };
 
 NATRON_NAMESPACE_EXIT

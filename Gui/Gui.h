@@ -449,6 +449,8 @@ public:
 
     void centerAllNodeGraphsWithTimer();
 
+    void onProjectNodesRestoredInNodeGraphs();
+
     void setLastEnteredTabWidget(TabWidget* tab);
 
     TabWidget* getLastEnteredTabWidget() const;

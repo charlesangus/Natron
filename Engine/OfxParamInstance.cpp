@@ -75,6 +75,22 @@ struct OfxKeyFrames_compare
 
 typedef std::set<double, OfxKeyFrames_compare> OfxKeyFramesSet;
 
+static ValueRoleEnum
+valueRoleForOfxDoubleType(const std::string& doubleType)
+{
+    if (doubleType == kOfxParamDoubleTypeAngle) {
+        return eValueRoleRotate;
+    }
+    if (doubleType == kOfxParamDoubleTypeScale) {
+        return eValueRoleScale;
+    }
+    if ((doubleType == kOfxParamDoubleTypeXY) || (doubleType == kOfxParamDoubleTypeXYAbsolute) || (doubleType == kOfxParamDoubleTypeNormalisedXY) || (doubleType == kOfxParamDoubleTypeNormalisedXYAbsolute)) {
+        return eValueRoleTranslate;
+    }
+
+    return eValueRoleNone;
+}
+
 static void
 getOfxKeyFrames(KnobI* knob,
                 OfxKeyFramesSet &keyframes,
@@ -962,6 +978,7 @@ OfxDoubleInstance::OfxDoubleInstance(const OfxEffectInstancePtr& node,
                 ( doubleType == kOfxParamDoubleTypeNormalisedYAbsolute) ) {
         dblKnob->setValueIsNormalized(0, eValueIsNormalizedY);
     }
+    dblKnob->setValueRole(valueRoleForOfxDoubleType(doubleType));
 
     double incr = properties.getDoubleProperty(kOfxParamPropIncrement);
     double def = properties.getDoubleProperty(kOfxParamPropDefault);
@@ -2425,8 +2442,12 @@ OfxDouble2DInstance::OfxDouble2DInstance(const OfxEffectInstancePtr& node,
                            (doubleType == kOfxParamDoubleTypeXY) ||
                            (doubleType == kOfxParamDoubleTypeNormalisedXY) );
 
+    // A rectangle merges a position and a size pair into one knob, so neither pair's type
+    // describes the whole knob.
     if (isRectangleType > 0) {
         dblKnob->setAsRectangle();
+    } else {
+        dblKnob->setValueRole(valueRoleForOfxDoubleType(doubleType));
     }
     std::vector<double> increment(ofxDims);
     std::vector<int> decimals(ofxDims);
@@ -3069,6 +3090,10 @@ OfxDouble3DInstance::OfxDouble3DInstance(const OfxEffectInstancePtr& node,
     const std::string & doubleType = getDoubleType();
     // only auto-merge dimensions and show a single slider if this is a scale
     knob->setCanAutoFoldDimensions(doubleType == kOfxParamDoubleTypeScale);
+    // A 3x3 matrix merges three rows into one knob, so no row's type describes the whole knob.
+    if (knobDims == ofxDims) {
+        knob->setValueRole(valueRoleForOfxDoubleType(doubleType));
+    }
 
     std::vector<int> decimals(ofxDims);
     std::vector<double> def(ofxDims);

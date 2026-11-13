@@ -221,11 +221,6 @@ GenericSchedulerThreadWatcher::handleBlockingTask(int taskID)
     BlockingTaskEnum task = (BlockingTaskEnum)taskID;
 
     switch (task) {
-    case eBlockingTaskWaitForAbort:
-        _thread->abortThreadedTask();
-        _thread->waitForAbortToComplete_not_main_thread();
-        break;
-
     case eBlockingTaskWaitForQuitAllowRestart:
     case eBlockingTaskWaitForQuitDisallowRestart:
         _thread->quitThread(task == eBlockingTaskWaitForQuitAllowRestart);
@@ -240,11 +235,6 @@ RenderEngineWatcher::handleBlockingTask(int taskID)
     BlockingTaskEnum task = (BlockingTaskEnum)taskID;
 
     switch (task) {
-    case eBlockingTaskWaitForAbort:
-        _engine->abortRenderingNoRestart();
-        _engine->waitForAbortToComplete_not_main_thread();
-        break;
-
     case eBlockingTaskWaitForQuitAllowRestart:
     case eBlockingTaskWaitForQuitDisallowRestart:
         _engine->quitEngine(task == eBlockingTaskWaitForQuitAllowRestart);
@@ -263,10 +253,6 @@ NodeRenderWatcher::handleBlockingTask(int taskID)
             continue;
         }
         switch (task) {
-        case eBlockingTaskAbortAnyProcessing:
-            (*it)->abortAnyProcessing_blocking();
-            break;
-
         case eBlockingTaskQuitAnyProcessing:
             (*it)->quitAnyProcessing_blocking(false);
             break;

@@ -7,6 +7,8 @@
 #include <mutex>
 #include <string_view>
 
+#include "Global/FloatingPointExceptions.h"
+
 namespace gpu {
 
 namespace {
@@ -127,6 +129,9 @@ namespace {
     GpuStatus enumeratePhysical(VkInstance inst, std::vector<VkPhysicalDevice>& out)
     {
         uint32_t n = 0;
+        // lavapipe initialises while the devices are enumerated, and Mesa's compilers raise FE_INVALID,
+        // which debug builds trap on the thread making the call.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
         VkResult r = vkEnumeratePhysicalDevices(inst, &n, nullptr);
         if (r != VK_SUCCESS) {
             return fail(r, "vkEnumeratePhysicalDevices failed");
@@ -221,7 +226,12 @@ namespace {
             ci.enabledExtensionCount = 1;
             ci.ppEnabledExtensionNames = &kDebugUtils;
         }
-        VkResult r = vkCreateInstance(&ci, nullptr, &inst);
+        VkResult r;
+        {
+            // The loader and Mesa's drivers do float work of their own here, which debug builds trap.
+            const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+            r = vkCreateInstance(&ci, nullptr, &inst);
+        }
         if (r != VK_SUCCESS) {
             return fail(r, "vkCreateInstance failed");
         }
@@ -368,6 +378,34 @@ planQueues(std::span<const VkQueueFamilyProperties> families)
     return plan;
 }
 
+std::vector<VkPhysicalDeviceType>
+enumeratePhysicalDeviceTypes()
+{
+    std::vector<VkPhysicalDeviceType> types;
+    VkApplicationInfo app {};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici {};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    // The loader and Mesa's drivers do float work of their own here, which debug builds trap.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+    if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) {
+        return types;
+    }
+    std::vector<VkPhysicalDevice> pds;
+    if (enumeratePhysical(instance, pds)) {
+        for (VkPhysicalDevice pd : pds) {
+            VkPhysicalDeviceProperties props {};
+            vkGetPhysicalDeviceProperties(pd, &props);
+            types.push_back(props.deviceType);
+        }
+    }
+    vkDestroyInstance(instance, nullptr);
+    return types;
+}
+
 GpuStatus
 GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
 {
@@ -377,6 +415,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     if (options.fault.kind != GpuFaultPlan::Kind::Off) {
         dev->faultKind_.store(options.fault.kind);
         dev->faultAt_.store(options.fault.atOperation);
+        dev->faultRegionOnly_.store(options.fault.regionOnly);
     }
     dev->onDeviceLost_ = options.onDeviceLost;
 
@@ -449,18 +488,42 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         }
     } else {
         std::vector<GpuDeviceCandidate> candidates(pds.size());
+        std::string skippedCpu;
+        std::string skippedFeatures;
         for (size_t i = 0; i < pds.size(); ++i) {
             candidates[i].index = static_cast<uint32_t>(i);
             candidates[i].type = props[i].deviceType;
             candidates[i].deviceLocalHeapSize = largestDeviceLocalHeap(pds[i]);
             candidates[i].name = props[i].deviceName;
             candidates[i].meetsRequirements = meetsRequirements(pds[i], props[i]);
+            if (!candidates[i].meetsRequirements && props[i].deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                skippedFeatures += (skippedFeatures.empty() ? "" : ", ") + candidates[i].name;
+            }
+            if (props[i].deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                // A software rasteriser is only ever used when the user names it.
+                if (candidates[i].meetsRequirements) {
+                    skippedCpu += (skippedCpu.empty() ? "" : ", ") + candidates[i].name;
+                }
+                candidates[i].meetsRequirements = false;
+            }
         }
         if (const std::optional<GpuAutoPick> best = pickAutoDevice(candidates)) {
             pick = static_cast<int>(candidates[best->candidate].index);
             selectionReason = best->reason;
         }
         if (pick < 0) {
+            if (!skippedFeatures.empty()) {
+                std::string message = "no GPU meets the required features (" + skippedFeatures + ")";
+                if (!skippedCpu.empty()) {
+                    message += "; CPU devices (" + skippedCpu + ") need NATRON_GPU_DEVICE";
+                }
+                return fail(VK_ERROR_FEATURE_NOT_PRESENT, message);
+            }
+            if (!skippedCpu.empty()) {
+                return fail(VK_ERROR_FEATURE_NOT_PRESENT,
+                            "only CPU Vulkan devices (" + skippedCpu
+                                + ") are present; set NATRON_GPU_DEVICE to use one");
+            }
             return fail(VK_ERROR_FEATURE_NOT_PRESENT, "no device meets the required features");
         }
     }
@@ -566,7 +629,13 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     dci.pQueueCreateInfos = qcis.data();
     dci.enabledExtensionCount = static_cast<uint32_t>(enabled.size());
     dci.ppEnabledExtensionNames = enabled.data();
-    VkResult r = vkCreateDevice(dev->physical_, &dci, nullptr, &dev->device_);
+    VkResult r;
+    {
+        // lavapipe builds its blitter shaders while the device is created, and Mesa's compilers raise
+        // FE_INVALID, which debug builds trap on this thread.
+        const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+        r = vkCreateDevice(dev->physical_, &dci, nullptr, &dev->device_);
+    }
     if (r != VK_SUCCESS) {
         return fail(r, "vkCreateDevice failed on " + dev->info_.name + " (VkResult " + std::to_string(static_cast<int>(r)) + ")");
     }
@@ -679,9 +748,18 @@ GpuDevice::check(VkResult result, const char* what)
 GpuStatus
 GpuDevice::countOperation()
 {
-    const uint64_t n = operations_.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint64_t n = operations_.fetch_add(1, std::memory_order_relaxed) + 1;
     const uint64_t at = faultAt_.load(std::memory_order_acquire);
-    if (at == 0 || n != at) {
+    if (at == 0) {
+        return {};
+    }
+    if (faultRegionOnly_.load(std::memory_order_acquire)) {
+        if (!GpuRegionFaultScope::active()) {
+            return {};
+        }
+        n = regionOperations_.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+    if (n != at) {
         return {};
     }
     const GpuFaultPlan::Kind kind = faultKind_.load(std::memory_order_acquire);
@@ -702,6 +780,7 @@ GpuDevice::injectFault(GpuFaultPlan::Kind kind, uint64_t inOperations)
         faultKind_.store(GpuFaultPlan::Kind::Off, std::memory_order_release);
         return;
     }
+    faultRegionOnly_.store(false, std::memory_order_release);
     faultKind_.store(kind, std::memory_order_release);
     faultAt_.store(operations_.load(std::memory_order_relaxed) + inOperations, std::memory_order_release);
 }
@@ -749,7 +828,12 @@ GpuFaultPlan::parse(const std::string& text, GpuFaultPlan& out)
         return false;
     }
     const std::string kind = text.substr(0, at);
-    const std::string num = text.substr(at + 1);
+    std::string num = text.substr(at + 1);
+    const std::string regionPrefix = "region:";
+    const bool regionOnly = num.compare(0, regionPrefix.size(), regionPrefix) == 0;
+    if (regionOnly) {
+        num = num.substr(regionPrefix.size());
+    }
     if (num.empty() || num.find_first_not_of("0123456789") != std::string::npos || num.size() > 18) {
         return false;
     }
@@ -758,13 +842,34 @@ GpuFaultPlan::parse(const std::string& text, GpuFaultPlan& out)
         return false;
     }
     if (kind == "lost") {
-        out = { Kind::DeviceLost, n };
+        out = { Kind::DeviceLost, n, regionOnly };
     } else if (kind == "oom") {
-        out = { Kind::OutOfMemory, n };
+        out = { Kind::OutOfMemory, n, regionOnly };
     } else {
         return false;
     }
     return true;
+}
+
+namespace {
+    thread_local bool tInGpuRegion = false;
+}
+
+GpuRegionFaultScope::GpuRegionFaultScope()
+    : previous_(tInGpuRegion)
+{
+    tInGpuRegion = true;
+}
+
+GpuRegionFaultScope::~GpuRegionFaultScope()
+{
+    tInGpuRegion = previous_;
+}
+
+bool
+GpuRegionFaultScope::active()
+{
+    return tInGpuRegion;
 }
 
 GpuStatus

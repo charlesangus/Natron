@@ -71,6 +71,12 @@ typedef std::function<std::unique_ptr<HydraGLContext>(std::string* error)> Hydra
  **/
 void setHydraGLContextFactory(const HydraGLContextFactory& factory);
 
+/**
+ * @brief OSGLContext::noteSoftwareRenderer() for code that cannot include OSGLContext.h's GL headers alongside
+ * USD's: switches float traps off process-wide when @p renderer, a GL_RENDERER string, is a software rasterizer.
+ **/
+bool noteSoftwareGLRenderer(const std::string& renderer);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Scene_HydraGLContext_h

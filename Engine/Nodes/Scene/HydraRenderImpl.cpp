@@ -642,6 +642,9 @@ public:
                 _contextError = "USDRender could not load the OpenGL entry points of its context (" + _context->description() + ").";
                 _context.reset();
             } else {
+                // Before HgiGL and Storm compile anything on this thread: the factory's own guard has ended.
+                const GLubyte* renderer = glGetString(GL_RENDERER);
+                noteSoftwareGLRenderer(renderer ? reinterpret_cast<const char*>(renderer) : "");
                 // An HgiGL that goes collects every thread's garbage.
                 StormGLSection section;
                 _hgi = Hgi::CreateNamedHgi(HgiTokens->OpenGL);
@@ -2965,6 +2968,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     int samplesAtRestart = -1;
     double clockAtRestart = -1.;
     bool restartSeen = true;
+    // Whether the delegate's clock has started over since the restart, and its sample count when
+    // that was first seen.
+    bool clockFallen = false;
+    int samplesAtClockFall = -1;
+    bool lastConverged = false;
     bool firstPass = false;
     bool engineFresh = false;
     Clock::time_point restartTime = Clock::now();
@@ -2990,6 +2998,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             log.reset();
             status.active = false;
             status.converged = false;
+            status.paused = false;
             status.samples = -1;
             if ((renderer == failedRenderer) && (sceneEdits != failedEdits)) {
                 if (pending) {
@@ -3047,6 +3056,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             keepFrame = false;
             lastSamples = -1;
+            lastConverged = false;
             engineFresh = true;
             needRestart = true;
             continue;
@@ -3093,10 +3103,12 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 continue;
             }
             status.stopped = true;
+            status.paused = true;
             wake.wait(lock);
             continue;
         }
         status.stopped = false;
+        status.paused = false;
         if (paused) {
             lock.unlock();
             {
@@ -3132,6 +3144,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             needRestart = false;
             done = false;
             ++status.restarts;
+            status.converged = false;
+            clockFallen = false;
+            samplesAtClockFall = -1;
             restartTime = Clock::now();
             stallSince = restartTime;
             firstPass = true;
@@ -3238,7 +3253,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         const Clock::time_point now = Clock::now();
         if (!restartSeen) {
             const bool samplesFell = (samples >= 0) && (samplesAtRestart >= 0) && (samples < samplesAtRestart);
-            const bool clockFell = (clock >= 0.) && (clockAtRestart >= 0.) && (clock < clockAtRestart);
+            if (!clockFallen && (clock >= 0.) && (clockAtRestart >= 0.) && (clock < clockAtRestart)) {
+                // Cycles starts its clock over when its session resets, before it renders a sample
+                // of the new render: until its sample count moves after that, the count it reports
+                // and the pixels it holds are still the render's of before.
+                clockFallen = true;
+                samplesAtClockFall = samples;
+            }
+            const bool clockFell = clockFallen && ((samples < 0) || (samples != samplesAtClockFall));
             const bool blind = (samples < 0) && (clock < 0.);
             restartSeen = samplesFell || clockFell || blind;
             if (!restartSeen && (now - restartTime >= kRestartUnseen)) {
@@ -3250,18 +3272,23 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 continue;
             }
         }
-        const bool changed = (samples != lastSamples) || (converged != status.converged);
+        const bool changed = (samples != lastSamples) || (converged != lastConverged);
         if (samples != lastSamples) {
             stallSince = now;
         }
         lastSamples = samples;
+        lastConverged = converged;
         status.samples = samples;
         status.maxSamples = cap;
-        status.converged = converged;
+        // Done at the cap; or, for a delegate counting no samples, or one whose adaptive sampling
+        // stopped short of the cap, once it converged and held still. A delegate's word alone is
+        // not enough: Cycles marks its buffers converged when a reset cuts a render short.
+        const bool atCap = (cap > 0) && (samples >= cap);
+        const bool finished = restartSeen && converged && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
         // Natron Utility's tiles land in no order and count no samples, so only its finished frame is
         // a picture.
         const bool wholeFrames = engineRenderer == kRenderDelegateUtilityId;
-        bool publish = restartSeen && (samples != 0) && (wholeFrames ? converged : (changed || (samples < 0) || !frame || (frame->restart != restartIndex)));
+        bool publish = restartSeen && (samples != 0) && (wholeFrames ? finished : (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex)));
         if (publish) {
             lock.unlock();
             read.reset(new Frame);
@@ -3285,15 +3312,13 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             read->samples = samples;
             read->generation = passGeneration;
             read->maxSamples = cap;
-            read->converged = converged;
+            read->converged = finished;
             read->restart = restartIndex;
             read->serial = ++status.frames;
             frame = read;
         }
-        // Done at the cap; or, for a delegate counting no samples, or one whose adaptive sampling
-        // stopped short of the cap, once it converged and held still.
-        const bool atCap = (cap > 0) && (samples >= cap);
-        done = restartSeen && converged && (frame && (frame->restart == restartIndex)) && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
+        done = finished && publish;
+        status.converged = done;
         if (publish && listener) {
             lock.unlock();
             listener();

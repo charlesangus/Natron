@@ -725,8 +725,12 @@ def _warm_up(attempts):
         if layout is not None:
             layout.activate()
         # The native window and its backing store, which the first show
-        # would otherwise create.
-        popup.winId()
+        # would otherwise create. Not winId(): it sets WA_NativeWindow,
+        # which makes Qt turn every child of the main window native, and
+        # then each repaint() in the main window paints and composites at
+        # once instead of being coalesced into the next frame. The
+        # unbound call skips the popup's own create(), which picks an item.
+        QtWidgets.QWidget.create(popup)
         # Painting the hidden popup into a pixmap runs the list's deferred
         # item layout, the delegate, the row colours and the glyph caches
         # once, off screen and without taking focus.

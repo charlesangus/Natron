@@ -378,6 +378,7 @@ class NatronAdapterTests(unittest.TestCase):
 
         qtwidgets = types.ModuleType("PySide6.QtWidgets")
         qtwidgets.QMainWindow = type("QMainWindow", (), {})
+        qtwidgets.QWidget = type("QWidget", (), {"create": MagicMock()})
 
         class _StubQApplication(object):
             @staticmethod
@@ -748,7 +749,10 @@ class NatronAdapterTests(unittest.TestCase):
         h.module._warm_up(1)
 
         popup.layout.return_value.activate.assert_called_once_with()
-        popup.winId.assert_called_once_with()
+        # winId() would make every child of the main window native.
+        h.module.QtWidgets.QWidget.create.assert_called_once_with(popup)
+        popup.winId.assert_not_called()
+        popup.create.assert_not_called()
         popup.grab.assert_called_once_with()
         popup.show.assert_not_called()
         popup.setFocus.assert_not_called()

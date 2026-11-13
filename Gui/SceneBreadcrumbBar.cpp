@@ -77,6 +77,22 @@ stateName(SceneBreadcrumbBar::StateEnum state)
     return "unknown";
 }
 
+// An inactive prim, such as one a prune deactivated, is still returned by GetPrimAtPath but is
+// not part of the scene, as the Scene Graph panel shows it.
+UsdPrim
+primOnStage(const UsdStageRefPtr& usdStage,
+            const std::string& path)
+{
+    if (!usdStage || !SdfPath::IsValidPathString(path)) {
+        return UsdPrim();
+    }
+    const UsdPrim prim = usdStage->GetPrimAtPath(SdfPath(path));
+    if (!prim || !prim.IsActive() || !prim.IsDefined() || prim.IsAbstract()) {
+        return UsdPrim();
+    }
+
+    return prim;
+}
 }
 
 QVariant
@@ -291,9 +307,7 @@ SceneBreadcrumbBar::readStates(QList<Segment>& segments)
             return;
         }
         for (Segment& segment : segments) {
-            const std::string path = segment.path.toStdString();
-            const bool present = SdfPath::IsValidPathString(path) && bool(usdStage->GetPrimAtPath(SdfPath(path)));
-            segment.state = present ? eStatePresent : eStateMissing;
+            segment.state = primOnStage(usdStage, segment.path.toStdString()) ? eStatePresent : eStateMissing;
         }
     });
     if (!read) {
@@ -475,7 +489,7 @@ SceneBreadcrumbBar::segmentToolTip(const Segment& segment) const
             if (!usdStage || !SdfPath::IsValidPathString(path)) {
                 return;
             }
-            const UsdPrim prim = usdStage->GetPrimAtPath(SdfPath(path));
+            const UsdPrim prim = primOnStage(usdStage, path);
             if (!prim) {
                 state = eStateMissing;
 

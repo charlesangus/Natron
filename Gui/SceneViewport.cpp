@@ -779,6 +779,8 @@ struct SceneViewportRenderer::Implementation {
     std::vector<bool> boxHighlighted;
     bool recordDrawnBoxes = false;
     std::vector<DrawnBox> drawnBoxes;
+    // Whether the box worker was last given no rules for Render Everything, not drawRules.
+    bool boxesBlanked = false;
     // Bumped with each change of drawRules, so the guides follow them.
     U64 drawRulesVersion = 0;
     GLuint boxProgram = 0;
@@ -1785,8 +1787,11 @@ struct SceneViewportRenderer::Implementation {
         if (!queued.empty()) {
             ++drawRulesVersion;
         }
-        if (!queued.empty() && boxes) {
-            boxes->setRules(drawRules);
+        // A delegate rendering everything draws every row, so no box stands in for one.
+        const bool boxesBlank = renderEverything && (rendererId != kRenderDelegateStormId);
+        if (boxes && (!queued.empty() || (boxesBlank != boxesBlanked))) {
+            boxes->setRules(boxesBlank ? SceneDrawFilter::Rules() : drawRules);
+            boxesBlanked = boxesBlank;
         }
         if (!queued.empty() && progressive && (rendererId != kRenderDelegateStormId)) {
             std::vector<SceneDrawDelta> forwarded;
@@ -7316,6 +7321,14 @@ void
 SceneViewport::setRenderEverything(bool on)
 {
     _imp->renderer.setRenderEverything(on);
+    if (on) {
+        // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
+        {
+            std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+        }
+        _imp->loadWake.notify_one();
+        publishState();
+    }
     update();
 }
 

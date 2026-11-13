@@ -6,13 +6,16 @@ B0 does not. Under Storm the script sets Load All on /World/Block0/B1 and BBox o
 buildings, frames everything, then picks Cycles in the view's Renderer submenu, so the rules reach
 the worker on the switch. It checks:
   - only B1's payload is opened, the other three stay unloaded;
-  - the view keeps the rules and draws the boxed rows over the frame (natronSceneDrawBoxes and
-    natronSceneDrawMarkers above 0);
-  - clicks over a grid of the view (picked from the Cycles primId AOV and the boxes) find prims
-    below B1 and none below another building;
+  - the view keeps a rule for each boxed building, and none for B1: Load All under a drawn parent
+    only loads, it draws what is drawn already; it draws the boxed rows over the frame
+    (natronSceneDrawBoxes and natronSceneDrawMarkers above 0);
+  - clicks at the projected centres of the opened payloads' prims and over a grid of the view
+    (picked from the Cycles primId AOV and the boxes) find prims below B1 and none below another
+    building;
   - BBox on B1 while Cycles renders reaches the rules (ruleCount) and the overlay (one more box),
     and B1's prims leave the frame: a later sweep picks no prim below any building;
-  - Render Everything on loads every payload and the sweep picks prims below all four buildings;
+  - Render Everything on loads every payload, the boxes leave the overlay, and the sweep picks
+    prims below all four buildings;
     off brings the draw rules back (no prim picked, every building boxed) and unloads nothing;
     on again it is still on after the project is saved and reopened.
 
@@ -25,6 +28,7 @@ Screenshots: m335-cycles-one-asset, m335-cycles-all-boxed.
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
 """
+import math
 import os
 import sys
 import traceback
@@ -58,7 +62,7 @@ try:
     from PySide6.QtGui import QContextMenuEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
-    from pxr import Sdf
+    from pxr import Gf, Sdf
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
@@ -202,23 +206,87 @@ try:
         event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.NoModifier)
         QApplication.sendEvent(v, event)
 
+    def translate_of(spec):
+        if spec is None or "xformOp:translate" not in spec.attributes:
+            return Gf.Vec3d(0.0)
+        value = spec.attributes["xformOp:translate"].default
+        return Gf.Vec3d(*value) if value is not None else Gf.Vec3d(0.0)
+
+    def prim_centres(row):
+        """World centres of the gprims in row's payload file, or [] while the viewer has not opened
+        it: reading it here would open it, which the payload checks would count."""
+        name = payload_of(row)
+        layers = [layer for layer in Sdf.Layer.GetLoadedLayers()
+                  if PAYLOAD_MARK in layer.identifier and os.path.basename(layer.identifier) == name]
+        city = Sdf.Layer.FindOrOpen(city_path)
+        if not layers or city is None:
+            return []
+        layer = layers[0]
+        row_spec = city.GetPrimAtPath(row)
+        base = Gf.Vec3d(0.0)
+        for prefix in Sdf.Path(row).GetPrefixes():
+            base += translate_of(city.GetPrimAtPath(prefix))
+        root = layer.GetPrimAtPath(Sdf.Path.absoluteRootPath.AppendChild(layer.defaultPrim))
+        centres = []
+
+        def walk(spec, offset):
+            for child in spec.nameChildren:
+                at = offset + translate_of(child)
+                if child.typeName not in ("", "Xform", "Scope"):
+                    centres.append(at)
+                walk(child, at)
+
+        if root is not None:
+            # The row's own translate is stronger than the payload root's.
+            has_own = row_spec is not None and "xformOp:translate" in row_spec.attributes
+            walk(root, base if has_own else base + translate_of(root))
+        return centres
+
+    def to_widget(points):
+        """points projected through the view's free camera, as the viewer frames it (Y up),
+        in widget pixels; [] unless the view is a free perspective one."""
+        v = view()
+        camera = prop("natronSceneFreeCamera")
+        if v is None or not camera or prop("natronSceneViewMode") != "perspective" or prop("natronSceneLookThrough"):
+            return []
+        px, py, pz, distance, azimuth, elevation, fov = [float(x) for x in list(camera)]
+        az, el = math.radians(azimuth), math.radians(elevation)
+        back = Gf.Vec3d(math.cos(el) * math.sin(az), math.sin(el), math.cos(el) * math.cos(az))
+        pivot = Gf.Vec3d(px, py, pz)
+        width, height = v.width(), v.height()
+        frustum = Gf.Frustum()
+        frustum.SetPositionAndRotationFromMatrix(Gf.Matrix4d().SetLookAt(pivot + back * distance, pivot, Gf.Vec3d(0, 1, 0)).GetInverse())
+        frustum.SetPerspective(fov, float(width) / max(1, height), 0.01, 1e6)
+        matrix = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix()
+        result = []
+        for point in points:
+            ndc = matrix.Transform(point)
+            x, y = (ndc[0] + 1.0) * 0.5 * width, (1.0 - ndc[1]) * 0.5 * height
+            if 0 <= x < width and 0 <= y < height:
+                result.append(QPoint(int(x), int(y)))
+        return result
+
     def sweep():
-        """Steps that click a grid over the view; returns every path the clicks selected."""
+        """Steps that click the projected centre of every prim in an opened payload, then a grid
+        over the view; returns every path the clicks selected. The grid alone misses prims as
+        small as the city's cubes."""
         yield from activate_view()
         v = view()
         width, height = v.width(), v.height()
-        found = set()
-        previous = selection()
+        targets = to_widget([p for r in ROWS for p in prim_centres(r)])
         for gy in range(GRID_ROWS):
             for gx in range(GRID_COLUMNS):
-                pos = QPoint(int(width * (gx + 0.5) / GRID_COLUMNS), int(height * (gy + 0.5) / GRID_ROWS))
-                mouse(v, QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton)
-                mouse(v, QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton)
-                QApplication.processEvents()
-                # A click that picks what the last one did changes nothing to wait for.
-                yield ("until", lambda: selection() != previous, PICK_WAIT_S)
-                previous = selection()
-                found.update(previous)
+                targets.append(QPoint(int(width * (gx + 0.5) / GRID_COLUMNS), int(height * (gy + 0.5) / GRID_ROWS)))
+        found = set()
+        previous = selection()
+        for pos in targets:
+            mouse(v, QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton)
+            mouse(v, QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton)
+            QApplication.processEvents()
+            # A click that picks what the last one did changes nothing to wait for.
+            yield ("until", lambda: selection() != previous, PICK_WAIT_S)
+            previous = selection()
+            found.update(previous)
         return found
 
     def prims_below(paths, row):
@@ -257,8 +325,9 @@ try:
         require(ok, "Load All on %s" % LOADED)
         ok = QMetaObject.invokeMethod(view(), "setDrawStateOnRows", Q_ARG("QStringList", BOXED), Q_ARG("QString", "bbox"))
         require(ok, "BBox on %r" % (BOXED,))
-        ok = yield ("until", lambda: int(draw_stats().get("ruleCount", 0)) == len(ROWS), POLL_TIMEOUT_S)
-        check(ok, "the view holds a rule for each building (%r)" % (draw_stats().get("ruleCount"),))
+        # Load All under the drawn root draws nothing new, so it holds no rule: only the boxes do.
+        ok = yield ("until", lambda: int(draw_stats().get("ruleCount", 0)) == len(BOXED), POLL_TIMEOUT_S)
+        check(ok, "the view holds a rule for each boxed building (%r)" % (draw_stats().get("ruleCount"),))
         ok = yield ("until", lambda: payload_of(LOADED) in opened_payloads() and not num("natronSceneLoadsPending", 0),
                     LOAD_TIMEOUT_S)
         check(ok, "Load All opens %s's payload (%r)" % (LOADED, opened_payloads()))
@@ -289,7 +358,7 @@ try:
         check(len(unrequested) == 0, "unrequested payloads stay unloaded under Cycles (%d open: %r)" % (len(unrequested), unrequested))
         ok = yield ("until", lambda: drawn()[0] > 0 and sum(drawn()) == len(BOXED), POLL_TIMEOUT_S)
         check(ok, "the boxed buildings draw over the Cycles frame (boxes, markers %r)" % (drawn(),))
-        check(int(draw_stats().get("ruleCount", 0)) == len(ROWS), "the rules survive the switch (%r)" % (draw_stats().get("ruleCount"),))
+        check(int(draw_stats().get("ruleCount", 0)) == len(BOXED), "the rules survive the switch (%r)" % (draw_stats().get("ruleCount"),))
 
         paths = yield from sweep_until("one asset loaded",
                                        lambda p: bool(prims_below(p, LOADED)) and not prims_below_other_rows(p, LOADED), 5)
@@ -331,6 +400,8 @@ try:
         check(ok, "the change restarts the delegate (restarts %r -> %r)" % (restarts, num("natronSceneRestartCount")))
         ok = yield ("until", cycles_refined, REFINE_TIMEOUT_S)
         check(ok, "Cycles draws the whole scene (samples %r)" % (num("natronSceneSamples"),))
+        ok = yield ("until", lambda: drawn() == (0, 0), POLL_TIMEOUT_S)
+        check(ok, "no box stands in for a row while everything renders (boxes, markers %r)" % (drawn(),))
         paths = yield from sweep_until("render everything",
                                        lambda p: all(prims_below(p, r) for r in ROWS), 8)
         for r in ROWS:
@@ -343,6 +414,8 @@ try:
         check(ok, "the change restarts the delegate (restarts %r -> %r)" % (restarts, num("natronSceneRestartCount")))
         ok = yield ("until", cycles_refined, REFINE_TIMEOUT_S)
         check(ok, "Cycles draws the frame under the draw states (samples %r)" % (num("natronSceneSamples"),))
+        ok = yield ("until", lambda: drawn()[0] > 0, POLL_TIMEOUT_S)
+        check(ok, "the boxes are back over the frame (boxes, markers %r)" % (drawn(),))
         check(int(draw_stats().get("ruleCount", 0)) == len(ROWS), "the rules are still held (%r)" % (draw_stats().get("ruleCount"),))
         paths = yield from sweep_until("render everything off", lambda p: not any(prims_below(p, r) for r in ROWS), 5)
         check(not any(prims_below(paths, r) for r in ROWS),

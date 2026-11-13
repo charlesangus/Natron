@@ -109,6 +109,8 @@ public Q_SLOTS:
 
     void onSelectedBezierCloned();
 
+    void onStrokeLifeTimeChanged();
+
     void onTimeChanged(SequenceTime time, int reason);
 
     ///A new item has been created internally

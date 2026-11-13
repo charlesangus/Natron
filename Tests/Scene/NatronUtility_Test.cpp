@@ -1024,3 +1024,20 @@ TEST(NatronUtilityRender, ForcedGpuOutOfMemoryFails)
     EXPECT_NE(std::string::npos, error.find(std::to_string(kStarvedPoolBytes))) << error;
 }
 #endif // NATRON_HAVE_GPU
+
+// A recovered device is a new GPU generation with its memory free again, so what ran out of memory before
+// is tried on it.
+TEST(NatronUtilityRender, TheOutOfMemoryMemoHoldsForOneSceneBudgetAndGpuGeneration)
+{
+    UtilityScene scene;
+    UtilityRenderParam param(&scene, nullptr);
+    std::string message;
+
+    EXPECT_FALSE(param.gpuOutOfMemory(3, 7, 11, &message));
+    param.rememberGpuOutOfMemory(3, 7, 11, "no room");
+    ASSERT_TRUE(param.gpuOutOfMemory(3, 7, 11, &message));
+    EXPECT_EQ("no room", message);
+    EXPECT_FALSE(param.gpuOutOfMemory(4, 7, 11, &message)) << "another scene version";
+    EXPECT_FALSE(param.gpuOutOfMemory(3, 8, 11, &message)) << "another budget";
+    EXPECT_FALSE(param.gpuOutOfMemory(3, 7, 12, &message)) << "another GPU generation";
+}

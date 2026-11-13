@@ -94,16 +94,19 @@ public:
     void dropGpuExecutor();
 
     /**
-     * @brief Remembers that scene version ran out of GPU memory under budget, so that Auto renders it on
-     * the CPU straight away, without building it on the device for every frame, until either changes.
-     * Frame thread only, like gpuExecutor().
+     * @brief Remembers that scene version ran out of GPU memory under budget on the runtime of GPU
+     * generation (GpuContext::generation()), so that Auto renders it on the CPU straight away, without
+     * building it on the device for every frame, until any of them changes. Frame thread only, like
+     * gpuExecutor().
      **/
     void rememberGpuOutOfMemory(std::uint64_t version,
                                 std::uint64_t budget,
+                                std::uint64_t generation,
                                 const std::string& message);
-    // True with *message set when version and budget are those remembered.
+    // True with *message set when version, budget and generation are those remembered.
     bool gpuOutOfMemory(std::uint64_t version,
                         std::uint64_t budget,
+                        std::uint64_t generation,
                         std::string* message) const;
 
     /**
@@ -165,6 +168,7 @@ private:
     bool _outOfMemory = false;
     std::uint64_t _outOfMemoryVersion = 0;
     std::uint64_t _outOfMemoryBudget = 0;
+    std::uint64_t _outOfMemoryGeneration = 0;
     std::string _outOfMemoryMessage;
     std::mutex _buffersMutex;
     std::set<UtilityRenderBuffer*> _buffers;

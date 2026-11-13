@@ -1148,9 +1148,16 @@ GuiApplicationManager::releaseSceneViewEngines()
         const std::list<ViewerTab*> viewers = gui->getViewersList_mt_safe();
         for (ViewerTab* viewer : viewers) {
             SceneViewport* view = viewer->getSceneViewport();
-            // Other delegates hold host memory, not the GPU's.
-            if (view && RenderDelegates::isStorm(view->getRenderer().getActiveRendererId())) {
+            if (!view) {
+                continue;
+            }
+            const std::string renderer = view->getRenderer().getActiveRendererId();
+            // The delegates other than Storm and Natron Utility hold host memory, not the GPU's.
+            if (RenderDelegates::isStorm(renderer)) {
                 view->releaseEngine();
+            } else if (renderer == kRenderDelegateUtilityId) {
+                // Its engine gives its GPU memory back on its own worker; the hand-off lives in this view's context.
+                view->releaseDeviceUpload();
             }
         }
     }

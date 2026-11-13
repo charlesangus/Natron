@@ -109,6 +109,12 @@ public:
     void releaseIfLost() const;
 
     /**
+     * @brief Releases the film, and with it every copy of this resource; work already recorded on it
+     * keeps what it reads until it is done.
+     **/
+    void release() const;
+
+    /**
      * @brief Copies the film's pixels into *out, as pixels() lays them out, and waits for the copy.
      * False with *error set when the device cannot.
      **/
@@ -190,8 +196,8 @@ public:
 
 #ifdef NATRON_HAVE_GPU
     /**
-     * @brief Lets go of the device film: the frame is read back to the host pixels first unless the device is lost.
-     * Holders of a copy of the film keep it until they let go. Not while a frame runs.
+     * @brief Releases the device film, for every holder of a copy of it: the frame is read back to the host pixels
+     * first unless the device is lost. Not while a frame runs.
      **/
     void releaseDevice();
 

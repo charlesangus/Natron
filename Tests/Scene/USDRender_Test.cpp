@@ -39,9 +39,11 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -1575,6 +1577,55 @@ TEST_F(USDRenderUtilityGpuTest, AGpuGradeReadsTheGpuFrameOnTheDeviceAndTheCpuMap
     EXPECT_GT(covered, 100u) << "the frame is empty, which proves nothing";
 }
 
+// An Auto frame that ran out of GPU memory keeps later Auto frames off the GPU, but not a frame the
+// Device setting forces onto it.
+TEST_F(USDRenderUtilityGpuTest, AnAutoFallbackDoesNotRefuseAForcedGpuRender)
+{
+    OwnGpuContext gpu(kStarvedPoolBytes);
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    NodePtr settings;
+    NodePtr render = createRender(kFixture, &settings);
+
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(selectRenderer(rendererKnob(render), kRenderDelegateUtilityId));
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceAuto));
+    HydraRender::releaseAll();
+
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(render->getEffectInstance().get());
+
+    ASSERT_TRUE(native);
+
+    GpuQuery query;
+
+    query.time = 1.;
+    query.view = ViewIdx(0);
+    query.plane = ImageLayerDesc::getRGBAComponents();
+    query.nComps = 4;
+    query.bitDepth = eImageBitDepthFloat;
+    ASSERT_TRUE(native->canRenderOnGpu(query));
+
+    SchedulerFrame run;
+    std::string error;
+
+    ASSERT_TRUE(renderFrame(render, { render }, &run, &error)) << error;
+    ASSERT_FALSE(native->canRenderOnGpu(query)) << "the Auto frame did not fall back to the CPU, which proves nothing";
+
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
+    EXPECT_TRUE(native->canRenderOnGpu(query)) << "an Auto fallback refused a frame forced onto the GPU";
+
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceAuto));
+    EXPECT_FALSE(native->canRenderOnGpu(query));
+    HydraRender::releaseAll();
+}
+
 namespace {
 // Forces the GPU regions into strips of rows rows while it lives. The row cap alone only bounds the
 // height of strips a region already needs, so the buffer range is capped below a whole RGBA frame too.
@@ -1866,5 +1917,179 @@ TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesNatronUtilityGpuMemory)
     HydraRender::release(&owner);
     // Waits for the engine, which holds the context's runtime, to go before the context does.
     EXPECT_EQ(engines - 1, HydraRender::getCpuEngineCount());
+}
+
+namespace {
+typedef HydraRender::ProgressiveRender ProgressiveRender;
+
+const std::chrono::seconds kProgressiveTimeout(60);
+
+// Renders the reference scene through the 3D viewer's progressive engine with Natron Utility forced onto the GPU,
+// its colour left on the device as the viewer asks for it.
+void
+startUtilityOnGpu(ProgressiveRender& render,
+                  const PXR_NS::UsdStageRefPtr& stage,
+                  const void* owner)
+{
+    ProgressiveRender::View view;
+
+    view.frustum = referenceRequest(stage, 1., owner).frustum;
+    view.width = kWidth;
+    view.height = kHeight;
+    view.time = PXR_NS::UsdTimeCode(1.);
+    RenderDelegates::list();
+    render.setDeviceColor(true);
+    render.setSettings({ { kUtilitySettingDevice, PXR_NS::VtValue(PXR_NS::TfToken(kUtilityDeviceGpu)) } });
+    render.setRenderer(kRenderDelegateUtilityId);
+    render.setThreads([]() { return 0; });
+    render.setView(view);
+}
+
+// The converged frame of a restart at least as late as minRestart, null with *error set when the render fails
+// or does not converge in time.
+std::shared_ptr<const ProgressiveRender::Frame>
+convergedFrame(const ProgressiveRender& render,
+               std::uint64_t minRestart,
+               std::string* error)
+{
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+
+    while (std::chrono::steady_clock::now() < end) {
+        const ProgressiveRender::Status status = render.getStatus();
+        const std::shared_ptr<const ProgressiveRender::Frame> frame = render.getFrame();
+
+        if (!status.error.empty()) {
+            *error = status.error;
+
+            return std::shared_ptr<const ProgressiveRender::Frame>();
+        }
+        if (status.converged && frame && frame->converged && (frame->restart == status.restarts) && (status.restarts >= minRestart)) {
+            return frame;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    *error = "the render did not converge in " + std::to_string(kProgressiveTimeout.count()) + " s";
+
+    return std::shared_ptr<const ProgressiveRender::Frame>();
+}
+} // anon namespace
+
+// The 3D viewer's Natron Utility engine renders nothing more once converged, so Free GPU Memory has its own
+// worker give its GPU memory back; the frame shown is published again from host memory.
+TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesAProgressiveNatronUtilityRendersGpuMemory)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    std::mutex stageLock;
+    ProgressiveRender render(&stageLock, [stage]() { return stage; }, std::function<void()>(), 0.05f);
+    std::string error;
+
+    HydraRender::releaseAll();
+    gpu.runtime()->pool().trim();
+    startUtilityOnGpu(render, stage, &owner);
+
+    const std::shared_ptr<const ProgressiveRender::Frame> first = convergedFrame(render, 1, &error);
+
+    ASSERT_TRUE(bool(first)) << error;
+    ASSERT_TRUE(bool(first->deviceColor)) << "the frame is not on the GPU";
+
+    std::vector<unsigned char> before;
+
+    ASSERT_TRUE(render.hostColor(*first, &before, &error)) << error;
+    EXPECT_GT(gpu.runtime()->pool().stats().liveBytes, 0u);
+
+    appPTR->freeGpuMemory();
+
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+    gpu::GpuBufferPoolStats freed = gpu.runtime()->pool().stats();
+    std::shared_ptr<const ProgressiveRender::Frame> hosted = render.getFrame();
+
+    while (((freed.liveBytes != 0) || (freed.pooledBytes != 0) || !hosted || hosted->deviceColor) && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        freed = gpu.runtime()->pool().stats();
+        hosted = render.getFrame();
+    }
+    EXPECT_EQ(0u, freed.liveBytes) << "the frame held here keeps no film";
+    EXPECT_EQ(0u, freed.pooledBytes);
+    ASSERT_TRUE(bool(hosted));
+    EXPECT_FALSE(bool(hosted->deviceColor));
+    EXPECT_EQ(first->restart, hosted->restart);
+    EXPECT_TRUE(hosted->rgba == before) << "the frame published again is not the one shown";
+
+    render.invalidate();
+
+    const std::shared_ptr<const ProgressiveRender::Frame> again = convergedFrame(render, first->restart + 1, &error);
+
+    ASSERT_TRUE(bool(again)) << error;
+    EXPECT_TRUE(bool(again->deviceColor)) << "the render after Free GPU Memory is not on the GPU";
+}
+
+// A converged progressive Natron Utility render issues no further frame that would notice a lost device, so the
+// loss releaser has its worker drop the runtime it holds, and the runtime recovers.
+TEST_F(USDRenderNodeTest, AConvergedProgressiveNatronUtilityRenderLetsALostGpuRecover)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    std::mutex stageLock;
+    ProgressiveRender render(&stageLock, [stage]() { return stage; }, std::function<void()>(), 0.05f);
+    std::string error;
+
+    HydraRender::releaseAll();
+    startUtilityOnGpu(render, stage, &owner);
+
+    const std::shared_ptr<const ProgressiveRender::Frame> first = convergedFrame(render, 1, &error);
+
+    ASSERT_TRUE(bool(first)) << error;
+    ASSERT_TRUE(bool(first->deviceColor)) << "the frame is not on the GPU";
+
+    GpuContext* context = appPTR->getGpuContext();
+    gpu::GpuRuntime* runtime = gpu.runtime();
+    const std::uint64_t generation = context->generation();
+
+    runtime->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+
+    gpu::GpuBufferHandle handle;
+
+    EXPECT_EQ(VK_ERROR_DEVICE_LOST, runtime->acquire(1 << 20, handle).result);
+    ASSERT_TRUE(runtime->isLost());
+
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+    bool recovered = context->recoverIfLost();
+
+    while (!recovered && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        recovered = context->recoverIfLost();
+    }
+    ASSERT_TRUE(recovered) << "the progressive render kept the lost runtime";
+    EXPECT_NE(generation, context->generation());
+
+    render.invalidate();
+
+    const std::shared_ptr<const ProgressiveRender::Frame> again = convergedFrame(render, first->restart + 1, &error);
+
+    ASSERT_TRUE(bool(again)) << error;
+    EXPECT_TRUE(bool(again->deviceColor)) << "the render after the recovery is not on the GPU";
 }
 #endif

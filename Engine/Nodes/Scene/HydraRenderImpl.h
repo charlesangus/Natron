@@ -296,12 +296,14 @@ bool recordDeviceWindow(const Request& request,
 
 /**
  * @brief Whether owner's last recordDeviceWindow() found the delegate had rendered on the CPU instead,
- * under the same device generation and pool budget, and no render of owner's has been on the GPU
- * since. A caller asking whether to take the GPU path then knows it would fall back. Never waits. MT-safe.
+ * under the same device generation, pool budget and Device setting (kUtilitySettingDevice, "auto" when
+ * unset), and no render of owner's has been on the GPU since. A caller asking whether to take the GPU
+ * path then knows it would fall back. Never waits. MT-safe.
  **/
 bool deviceFrameFellBack(const void* owner,
                          std::uint64_t generation,
-                         std::uint64_t budget);
+                         std::uint64_t budget,
+                         const std::string& device);
 #endif
 
 /**
@@ -338,8 +340,8 @@ void release(const void* owner);
 // keeps on the GPU, on the render threads, without waiting.
 void releaseAll();
 
-// releaseAll(), then, on the thread the Natron Utility engines render on, once they gave their GPU
-// memory back, empties the GPU pool of its free buffers. Does not wait.
+// releaseAll() and ProgressiveRender::releaseAllGpu(), then, on the thread the Natron Utility engines
+// render on, once they gave their GPU memory back, empties the GPU pool of its free buffers. Does not wait.
 void releaseAllGpuMemory();
 
 // Drops every owner's stage and engine of a delegate other than Storm, without waiting.
@@ -542,6 +544,23 @@ public:
     bool hostColor(const Frame& frame,
                    std::vector<unsigned char>* rgba,
                    std::string* error) const;
+
+    /**
+     * @brief Has a Natron Utility engine give back, on the worker, the GPU memory it keeps between
+     * frames, then empties the GPU pool of its free buffers. A frame published with deviceColor is
+     * published again with its colour read back into rgba, and its film is let go for every holder.
+     * Does not wait.
+     **/
+    void releaseGpu();
+
+    // Has a Natron Utility engine let go of its GPU, on the worker, if that was lost. Does not wait.
+    void releaseLostGpu();
+
+    // releaseGpu() on every ProgressiveRender alive. MT-safe.
+    static void releaseAllGpu();
+
+    // releaseLostGpu() on every ProgressiveRender alive; a GPU loss releaser calls it. MT-safe.
+    static void releaseAllLostGpu();
 #endif
 
     /**

@@ -51,6 +51,9 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/GpuContext.h"
+#endif
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -373,9 +376,11 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
 #ifdef NATRON_HAVE_GPU
             const std::uint64_t budget = (device == Device::Auto) ? utilityGpuBudget() : 0;
+            const GpuContext* gpuContext = appPTR ? appPTR->getGpuContext() : nullptr;
+            const std::uint64_t generation = gpuContext ? gpuContext->generation() : 0;
             std::string remembered;
 
-            if ((device == Device::Auto) && _renderParam->gpuOutOfMemory(snapshot->version, budget, &remembered)) {
+            if ((device == Device::Auto) && _renderParam->gpuOutOfMemory(snapshot->version, budget, generation, &remembered)) {
                 warning = "The GPU ran out of memory, so the frame was rendered on the CPU: " + remembered;
                 onCpu = true;
             }
@@ -403,7 +408,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
                     if (outOfMemory && device == Device::Auto) {
                         // The scene is not tried on the GPU again until it or the budget changes, so nothing of it stays there.
-                        _renderParam->rememberGpuOutOfMemory(snapshot->version, budget, outcome.message);
+                        _renderParam->rememberGpuOutOfMemory(snapshot->version, budget, generation, outcome.message);
                         _renderParam->dropGpuExecutor();
                     } else if (lost || (outOfMemory && gpu->sceneFailed())) {
                         _renderParam->dropGpuExecutor();

@@ -534,6 +534,12 @@ public:
     void releaseLostDevice();
 
     /**
+     * @brief Lets the GL hand-off go with the GPU memory it holds; the next frame the GPU renders builds
+     * it again. The frame shown stays. Needs the context of render() current.
+     **/
+    void releaseDeviceUpload();
+
+    /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
      * empty id. kRenderDelegateSceneDefaultId renders with the renderer the stage's active render
      * settings prim names (natron:renderer), Storm's without one, following it as the stage
@@ -594,8 +600,13 @@ public:
     // imported from the device, "upload" for one uploaded from host memory; empty before one.
     std::string getLastFramePath() const;
 
-    // Whether no GL hand-off path builds in the context of render(), so that GPU frames go through the host.
+    // Whether the probe allows no GL hand-off path in the context of render(), or NATRON_VIEWER_HANDOFF refuses
+    // them, so that GPU frames go through the host.
     bool isHandoffUnsupported() const;
+
+    // "zerocopy", "hostsync" or "readback": the fastest GL hand-off path the probe found for the context of
+    // render(); empty before a GPU frame reached it.
+    std::string getHandoffBest() const;
 
     // Why the last GPU frame went through the host rather than the GL hand-off; empty when it did not.
     std::string getHandoffError() const;
@@ -779,6 +790,9 @@ public:
      * Main thread; waits for a sync under way.
      **/
     void releaseEngine();
+
+    // The renderer's releaseDeviceUpload(), in this widget's context. Main thread.
+    void releaseDeviceUpload();
 
 Q_SIGNALS:
 

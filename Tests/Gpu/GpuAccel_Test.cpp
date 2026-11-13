@@ -244,6 +244,72 @@ GPU_TEST_F(GpuAccelTest, CompactionShrinksOrKeepsTheSize)
     EXPECT_FALSE(blas.compactedSize(again).ok());
 }
 
+GPU_TEST_F(GpuAccelTest, CompactionAfterARefitUsesTheRefitsSize)
+{
+    auto build = context(*pool);
+    ASSERT_TRUE(build != nullptr);
+    GpuStatus s = GpuBlas::build(*build, *pool, quad.triangles(), {}, blas);
+    ASSERT_TRUE(s.ok()) << s.message;
+    s = build->submitAndWait();
+    ASSERT_TRUE(s.ok()) << s.message;
+
+    quad.moveVertex(2, 4.0f, 3.0f, 2.0f);
+    auto refit = context(*pool);
+    ASSERT_TRUE(refit != nullptr);
+    s = blas.refit(*refit, quad.triangles());
+    ASSERT_TRUE(s.ok()) << s.message;
+    s = refit->submitAndWait();
+    ASSERT_TRUE(s.ok()) << s.message;
+
+    VkDeviceSize compactedBytes = 0;
+    s = blas.compactedSize(compactedBytes);
+    ASSERT_TRUE(s.ok()) << s.message;
+    EXPECT_GT(compactedBytes, 0u);
+    EXPECT_LE(compactedBytes, blas.size());
+
+    auto compact = context(*pool);
+    ASSERT_TRUE(compact != nullptr);
+    s = blas.compact(*compact, *pool);
+    ASSERT_TRUE(s.ok()) << s.message;
+    EXPECT_EQ(blas.size(), compactedBytes);
+    const auto instances = twoInstances(blas);
+    s = GpuTlas::build(*compact, *pool, instances, tlas);
+    ASSERT_TRUE(s.ok()) << s.message;
+    s = compact->submitAndWait();
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+GPU_TEST_F(GpuAccelTest, ARefitThatNeverRanKeepsTheBuildsSize)
+{
+    auto build = context(*pool);
+    ASSERT_TRUE(build != nullptr);
+    GpuStatus s = GpuBlas::build(*build, *pool, quad.triangles(), {}, blas);
+    ASSERT_TRUE(s.ok()) << s.message;
+    s = build->submitAndWait();
+    ASSERT_TRUE(s.ok()) << s.message;
+    VkDeviceSize built = 0;
+    s = blas.compactedSize(built);
+    ASSERT_TRUE(s.ok()) << s.message;
+
+    {
+        auto abandoned = context(*pool);
+        ASSERT_TRUE(abandoned != nullptr);
+        s = blas.refit(*abandoned, quad.triangles());
+        ASSERT_TRUE(s.ok()) << s.message;
+    }
+    VkDeviceSize after = 0;
+    s = blas.compactedSize(after);
+    ASSERT_TRUE(s.ok()) << s.message;
+    EXPECT_EQ(after, built);
+
+    auto compact = context(*pool);
+    ASSERT_TRUE(compact != nullptr);
+    s = blas.compact(*compact, *pool);
+    ASSERT_TRUE(s.ok()) << s.message;
+    s = compact->submitAndWait();
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
 GPU_TEST_F(GpuAccelTest, SizesOverTheBudgetReturnOutOfMemory)
 {
     GpuAccelSizes sizes;

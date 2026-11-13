@@ -495,6 +495,8 @@ GpuBlas::refit(GpuRecordContext& ctx, const GpuTriangles& triangles)
     if (GpuStatus s = GpuAccelRecorder::recordBuild(ctx, cmd, fns, desc, updateScratchBytes_); !s) {
         return GpuAccelRecorder::fail(ctx, std::move(s));
     }
+    // An update counts as a build: the compacting copy's destination has to be as large as the size queried after
+    // the source's latest build, and an update may change it, so the size the build queried no longer holds.
     if (options_.allowCompaction && query_.handle() != VK_NULL_HANDLE) {
         GpuAccelRecorder::recordCompactedSizeQuery(cmd, fns, structure_, query_.handle());
         sizeQueried_ = true;

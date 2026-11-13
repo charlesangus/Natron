@@ -532,6 +532,14 @@ UtilityDeviceResource::releaseIfLost() const
     }
 }
 
+void
+UtilityDeviceResource::release() const
+{
+    if (_film) {
+        _film->release();
+    }
+}
+
 bool
 UtilityDeviceResource::download(std::vector<float>* out,
                                 std::string* error) const
@@ -867,8 +875,11 @@ UtilityRenderBuffer::releaseDevice()
         _onDevice = false;
         film = std::move(_film);
     }
-    // Only this buffer's reference goes: a viewer still showing the frame keeps it until it shows another.
-    film.reset();
+    // Every holder lets go too: a strip still to copy its window renders again on the CPU, and a viewer
+    // showing the frame keeps the pixels it already has. Recorded copies hold a lease of their own.
+    if (film) {
+        film->release();
+    }
     _converged.store(false);
 }
 

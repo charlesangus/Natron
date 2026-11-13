@@ -69,10 +69,15 @@ public:
     // "zerocopy", "hostsync" or "readback": the path of the last upload, empty before one.
     std::string path() const;
 
+    // "zerocopy", "hostsync" or "readback": the fastest path the probe found this GL context and the device to
+    // share, whether or not it then built; empty before a probe.
+    std::string bestPath() const;
+
     /**
-     * @brief Whether the last failed upload failed because no hand-off path builds between this GL context and the
-     * device, or NATRON_VIEWER_HANDOFF refuses them, so that asking again on this context is pointless. Other
-     * failures, as a lost device or a failed copy, may pass on a later frame.
+     * @brief Whether the last failed upload failed because the probe allows no hand-off path between this GL context
+     * and the device, or NATRON_VIEWER_HANDOFF refuses them, so that asking again on this context is pointless. Other
+     * failures, as a lost device, a failed copy or a path the probe allows that does not build, may pass on a later
+     * frame.
      **/
     bool unsupported() const;
 

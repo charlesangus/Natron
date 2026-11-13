@@ -494,19 +494,26 @@ try:
         else:
             path = prop("natronSceneFramePath") or ""
             unsupported = bool(prop("natronSceneHandoffUnsupported"))
+            best = prop("natronSceneHandoffBest") or ""
             handoff_error = prop("natronSceneHandoffError") or ""
-            if path.startswith("interop:"):
-                report("NOTE GPU frame imported through the GL hand-off (%s)" % (path,))
-            elif unsupported:
-                # Where no hand-off path builds (lavapipe under Xvfb may lack the GL external-memory
-                # extensions), the upload is the expected path, so only the reason is reported.
-                report("NOTE GPU frame uploaded from host memory: the GL hand-off is unavailable in this "
-                       "context (%s)" % (handoff_error,))
-            else:
-                report("NOTE GPU frame path %r; hand-off error %r" % (path, handoff_error))
+            report("NOTE GPU frame path %r; best hand-off the probe found %r; hand-off error %r" % (
+                path, best, handoff_error))
+            check(not os.environ.get("NATRON_VIEWER_HANDOFF"),
+                  "NATRON_VIEWER_HANDOFF is unset, so the viewer picks its own hand-off (it is %r)" % (
+                      os.environ.get("NATRON_VIEWER_HANDOFF"),))
+            # Where the probe allows no path at all, the upload from host memory is the expected one.
             check(path.startswith("interop:") or (path == "upload" and unsupported),
-                  "the GPU frame is imported through the GL hand-off wherever one builds (path %r, hand-off %s: %s)"
-                  % (path, "unavailable" if unsupported else "available", handoff_error or "no error"))
+                  "the GPU frame is imported through the GL hand-off wherever the probe allows one (path %r, "
+                  "hand-off %s: %s)" % (path, "unavailable" if unsupported else "available",
+                                        handoff_error or "no error"))
+            check(best != "" or unsupported,
+                  "the viewer publishes the best hand-off path its probe found (%r)" % (best,))
+            # lavapipe and llvmpipe share no semaphores, so their best path is hostsync; only a device and a GL
+            # context that share semaphores must take the fastest path rather than any that builds.
+            if best == "zerocopy":
+                check(path == "interop:zerocopy",
+                      "the GPU frame takes the zero-copy hand-off the probe found (path %r, %s)" % (
+                          path, handoff_error or "no error"))
             if os.environ.get("NATRON_TEST_REQUIRE_INTEROP"):
                 check(path.startswith("interop:"),
                       "NATRON_TEST_REQUIRE_INTEROP: the GPU frame is imported (path %r, %s)" % (path, handoff_error))

@@ -78,6 +78,8 @@ struct UtilityViewerInterop::Implementation {
     // Keeps the device the interop is made on from being recreated under it.
     std::shared_ptr<void> runtimeHold;
     std::optional<gpu::GlHandoffPath> path;
+    // The fastest path the last probe found the device and the GL context to share.
+    std::optional<gpu::GlHandoffPath> best;
     bool unsupported = false;
     // The pixels each slot was last produced from, so that they outlive the copy the device makes of them.
     std::array<gpu::GpuBufferHandle, gpu::GlInterop::kSlots> slotPixels;
@@ -123,7 +125,10 @@ struct UtilityViewerInterop::Implementation {
 
             return false;
         }
+        best = caps.best;
+        bool tried = false;
         const gpu::GlHandoffChoice choice = gpu::chooseHandoffPath(caps, forced.first ? *forced.first : gpu::GlHandoffPath::ZeroCopy, [&](gpu::GlHandoffPath trial) {
+            tried = true;
             interop.reset();
 
             return gpu::GlInterop::create(*device, gl, bytes, trial, interop);
@@ -131,7 +136,9 @@ struct UtilityViewerInterop::Implementation {
         if (!choice.path) {
             interop.reset();
             *error = choice.lost ? "The device was lost while the GL hand-off was made." : "No GL hand-off path builds: " + choice.reasons;
-            unsupported = !choice.lost;
+            // A path the probe allows but that fails to build may build on a later frame; only a context the
+            // probe allows no path on is not worth asking again.
+            unsupported = !choice.lost && !tried;
 
             return false;
         }
@@ -230,6 +237,12 @@ std::string
 UtilityViewerInterop::path() const
 {
     return _imp->path ? std::string(gpu::overrideName(*_imp->path)) : std::string();
+}
+
+std::string
+UtilityViewerInterop::bestPath() const
+{
+    return _imp->best ? std::string(gpu::overrideName(*_imp->best)) : std::string();
 }
 
 bool

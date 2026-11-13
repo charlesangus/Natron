@@ -681,8 +681,10 @@ struct SceneViewportRenderer::Implementation {
     GLuint deviceProgram = 0;
     int deviceWidth = 0;
     int deviceHeight = 0;
-    // Set once no hand-off path builds for the GL context: GPU frames go through the host until releaseGL().
+    // Set once the probe allows no hand-off path for the GL context: GPU frames go through the host until releaseGL().
     bool deviceColorUnsupported = false;
+    // The fastest hand-off path the last probe found for the GL context, kept after the hand-off is released.
+    std::string deviceBestPath;
     // Hand-offs that failed in a row for another reason. Past a few, GPU frames go through the host until releaseGL()
     // or until the runtime is recreated, which may well repair what failed.
     int deviceColorFailures = 0;
@@ -1337,7 +1339,11 @@ struct SceneViewportRenderer::Implementation {
             deviceWidth = frame.width;
             deviceHeight = frame.height;
         }
-        if (!deviceUpload->upload(frame.deviceColor, deviceTexture, error)) {
+        const bool uploaded = deviceUpload->upload(frame.deviceColor, deviceTexture, error);
+        if (!deviceUpload->bestPath().empty()) {
+            deviceBestPath = deviceUpload->bestPath();
+        }
+        if (!uploaded) {
             return false;
         }
         if (!deviceProgram) {
@@ -3483,6 +3489,7 @@ SceneViewportRenderer::releaseGL()
     _imp->releaseDeviceColor();
     // A new GL context may well build a hand-off this one did not.
     _imp->deviceColorUnsupported = false;
+    _imp->deviceBestPath.clear();
     _imp->deviceColorFailures = 0;
     _imp->deviceColorError.clear();
     if (_imp->progressive) {
@@ -3498,6 +3505,14 @@ SceneViewportRenderer::releaseLostDevice()
     if (_imp->deviceUpload) {
         _imp->deviceUpload->releaseIfLost();
     }
+#endif
+}
+
+void
+SceneViewportRenderer::releaseDeviceUpload()
+{
+#ifdef NATRON_HAVE_GPU
+    _imp->releaseDeviceColor();
 #endif
 }
 
@@ -3647,6 +3662,16 @@ SceneViewportRenderer::isHandoffUnsupported() const
     return _imp->deviceColorUnsupported;
 #else
     return true;
+#endif
+}
+
+std::string
+SceneViewportRenderer::getHandoffBest() const
+{
+#ifdef NATRON_HAVE_GPU
+    return _imp->deviceBestPath;
+#else
+    return std::string();
 #endif
 }
 
@@ -4561,6 +4586,7 @@ SceneViewport::publishRefineState()
     setProperty("natronSceneUploadPixels", _imp->renderer.getLastUploadPixels());
     setProperty("natronSceneFramePath", QString::fromStdString(_imp->renderer.getLastFramePath()));
     setProperty("natronSceneHandoffUnsupported", _imp->renderer.isHandoffUnsupported());
+    setProperty("natronSceneHandoffBest", QString::fromStdString(_imp->renderer.getHandoffBest()));
     setProperty("natronSceneHandoffError", QString::fromStdString(_imp->renderer.getHandoffError()));
     Q_EMIT refineStateChanged();
 }
@@ -5344,6 +5370,16 @@ SceneViewport::releaseEngine()
     }
     // A hidden view makes its engine when it is next shown.
     update();
+}
+
+void
+SceneViewport::releaseDeviceUpload()
+{
+    if (_imp->glInitialized && context()) {
+        makeCurrent();
+        _imp->renderer.releaseDeviceUpload();
+        doneCurrent();
+    }
 }
 
 void

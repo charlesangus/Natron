@@ -137,20 +137,23 @@ UtilityRenderParam::dropGpuExecutor()
 void
 UtilityRenderParam::rememberGpuOutOfMemory(std::uint64_t version,
                                            std::uint64_t budget,
+                                           std::uint64_t generation,
                                            const std::string& message)
 {
     _outOfMemory = true;
     _outOfMemoryVersion = version;
     _outOfMemoryBudget = budget;
+    _outOfMemoryGeneration = generation;
     _outOfMemoryMessage = message;
 }
 
 bool
 UtilityRenderParam::gpuOutOfMemory(std::uint64_t version,
                                    std::uint64_t budget,
+                                   std::uint64_t generation,
                                    std::string* message) const
 {
-    if (!_outOfMemory || (version != _outOfMemoryVersion) || (budget != _outOfMemoryBudget)) {
+    if (!_outOfMemory || (version != _outOfMemoryVersion) || (budget != _outOfMemoryBudget) || (generation != _outOfMemoryGeneration)) {
         return false;
     }
     *message = _outOfMemoryMessage;

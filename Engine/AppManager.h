@@ -436,7 +436,8 @@ public:
 
     /**
      * @brief Replaces the GPU context and returns the previous one, so that a test can render with a device the
-     * settings would not select. No render may be running.
+     * settings would not select. Drops the scene engines and waits for their render threads first, so
+     * that the previous context can be destroyed. No render may be running.
      **/
     std::unique_ptr<GpuContext> swapGpuContextForTests(std::unique_ptr<GpuContext> context);
 

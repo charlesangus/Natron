@@ -951,7 +951,7 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
             return false;
         }
 
-        return !HydraRender::deviceFrameFellBack(this, context->generation(), utilityGpuBudget());
+        return !HydraRender::deviceFrameFellBack(this, context->generation(), utilityGpuBudget(), utilityDevice(query.time, query.view));
     }
     // Only Storm renders into GL; the other delegates' host pixels are read back by render().
     if (!RenderDelegates::isStorm(renderer)) {

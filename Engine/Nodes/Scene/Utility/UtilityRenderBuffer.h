@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <pxr/imaging/hd/renderBuffer.h>
@@ -88,6 +89,16 @@ public:
                                 const gpu::GpuBuffer& out,
                                 std::uint64_t outOffset,
                                 std::uint32_t outRowStride) const;
+
+    // The film's pixels, width() x height() RGBA floats with no padding; null without a film.
+    const gpu::GpuBuffer* pixels() const;
+
+    /**
+     * @brief Copies the film's pixels into *out, as pixels() lays them out, and waits for the copy.
+     * False with *error set when the device cannot.
+     **/
+    bool download(std::vector<float>* out,
+                  std::string* error) const;
 
     bool operator==(const UtilityDeviceResource& other) const
     {

@@ -154,6 +154,7 @@ HydraGLContextFactory gFactory;
 
 std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
+std::atomic<std::uint64_t> gEngineRenders(0);
 
 // A cancel asked for on the waiting caller's thread while the render thread is inside
 // UsdImagingGLEngine::Render, which only the delegate's stop can cut short. The render thread takes
@@ -1436,6 +1437,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
 
     entry.rendered = true;
+    ++gEngineRenders;
     entry.serial = ++_renderSerial;
     entry.writeCount = writeCount;
     entry.time = request.time;
@@ -2333,6 +2335,83 @@ packsOnGpu()
 }
 
 #ifdef NATRON_HAVE_GPU
+namespace {
+    // What makes two requests the same frame of an owner, its window included.
+    struct DeviceFrameKey {
+        std::string renderer;
+        U64 stackHash = 0;
+        SceneMetadata metadata;
+        U64 writeCount = 0;
+        UsdTimeCode time;
+        GfMatrix4d view;
+        GfMatrix4d projection;
+        int width = 0;
+        int height = 0;
+        bool headlight = false;
+        bool showRender = false;
+        bool showProxy = false;
+        bool showGuides = false;
+        RendererSettings settings;
+
+        bool operator==(const DeviceFrameKey& other) const
+        {
+            return (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
+        }
+    };
+
+    DeviceFrameKey
+    deviceFrameKey(const Request& request)
+    {
+        DeviceFrameKey key;
+        key.renderer = request.renderer.empty() ? std::string(kRenderDelegateStormId) : request.renderer;
+        key.stackHash = request.scene.getStackHash();
+        key.metadata = request.scene.getMetadata();
+        key.writeCount = SceneWriteBarrier::getWriteCount();
+        key.time = request.time;
+        key.view = request.frustum.ComputeViewMatrix();
+        key.projection = request.frustum.ComputeProjectionMatrix();
+        key.width = request.width;
+        key.height = request.height;
+        key.headlight = request.headlight;
+        key.showRender = request.showRender;
+        key.showProxy = request.showProxy;
+        key.showGuides = request.showGuides;
+        key.settings = request.settings;
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(key.renderer)) {
+            key.settings[setting.first] = setting.second;
+        }
+
+        return key;
+    }
+
+    // An owner's last frame left on the device, which every strip of a region copies its window from.
+    // The mutex is held across the render, so strips running at once wait for the one that renders.
+    struct DeviceFrame {
+        std::mutex mutex;
+        bool valid = false;
+        DeviceFrameKey key;
+        UtilityDeviceResource film;
+        std::string warning;
+        std::string errors;
+        std::string device;
+    };
+
+    std::mutex gDeviceFramesMutex;
+    std::map<const void*, std::shared_ptr<DeviceFrame>> gDeviceFrames;
+
+    std::shared_ptr<DeviceFrame>
+    deviceFrameOf(const void* owner)
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        std::shared_ptr<DeviceFrame>& frame = gDeviceFrames[owner];
+        if (!frame) {
+            frame = std::make_shared<DeviceFrame>();
+        }
+
+        return frame;
+    }
+} // anon namespace
+
 bool
 recordDeviceWindow(const Request& request,
                    const PlaneWindow& window,
@@ -2364,58 +2443,81 @@ recordDeviceWindow(const Request& request,
 
         return false;
     }
-    bool ok = false;
+    const DeviceFrameKey key = deviceFrameKey(request);
+    const std::shared_ptr<DeviceFrame> frame = deviceFrameOf(request.owner);
     UtilityDeviceResource film;
-    RenderCancel cancel;
-    std::function<void()> whileWaiting;
-    if (request.aborted) {
-        whileWaiting = [&request, &cancel]() {
-            if (request.aborted()) {
-                cancel.request();
-            }
-        };
-    }
-    const int threadBudget = AppTLS::currentThreadBudget();
-    const bool ran = thread.runAndWait([&]() {
-        // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
-        AppTLS::ThreadBudgetScope budget(threadBudget);
+    {
+        const std::lock_guard<std::mutex> frameLock(frame->mutex);
+        if (!frame->valid || !(frame->key == key)) {
+            // The engine's next frame goes into this film when nothing else holds it.
+            frame->valid = false;
+            frame->film = UtilityDeviceResource();
 
-        try {
-            EngineEntry* entry = thread.renderEngine(request, &cancel, error);
-            if (!entry) {
-                return;
+            bool ok = false;
+            UtilityDeviceResource rendered;
+            Result renderedInfo;
+            RenderCancel cancel;
+            std::function<void()> whileWaiting;
+            if (request.aborted) {
+                whileWaiting = [&request, &cancel]() {
+                    if (request.aborted()) {
+                        cancel.request();
+                    }
+                };
             }
-            HdRenderBuffer* buffer = entry->engine->GetAovRenderBuffer(HdAovTokens->color);
-            if (!buffer) {
-                *error = entry->rendererName + " rendered no color AOV.";
+            const int threadBudget = AppTLS::currentThreadBudget();
+            const bool ran = thread.runAndWait([&]() {
+                // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
+                AppTLS::ThreadBudgetScope budget(threadBudget);
 
-                return;
-            }
-            buffer->Resolve();
-            if (((int)buffer->GetWidth() != entry->width) || ((int)buffer->GetHeight() != entry->height)) {
-                *error = entry->rendererName + "'s color AOV is not the size asked for.";
+                try {
+                    EngineEntry* entry = thread.renderEngine(request, &cancel, error);
+                    if (!entry) {
+                        return;
+                    }
+                    HdRenderBuffer* buffer = entry->engine->GetAovRenderBuffer(HdAovTokens->color);
+                    if (!buffer) {
+                        *error = entry->rendererName + " rendered no color AOV.";
 
-                return;
-            }
-            const VtValue resource = buffer->GetResource(false);
-            if (!resource.IsHolding<UtilityDeviceResource>()) {
-                *error = entry->rendererName + " did not leave its frame on the GPU.";
+                        return;
+                    }
+                    buffer->Resolve();
+                    if (((int)buffer->GetWidth() != entry->width) || ((int)buffer->GetHeight() != entry->height)) {
+                        *error = entry->rendererName + "'s color AOV is not the size asked for.";
 
-                return;
+                        return;
+                    }
+                    const VtValue resource = buffer->GetResource(false);
+                    if (!resource.IsHolding<UtilityDeviceResource>()) {
+                        *error = entry->rendererName + " did not leave its frame on the GPU.";
+
+                        return;
+                    }
+                    rendered = resource.UncheckedGet<UtilityDeviceResource>();
+                    renderedInfo.warning = entry->warning;
+                    renderedInfo.errors = entry->errors;
+                    renderedInfo.device = entry->device;
+                    ok = true;
+                } catch (const std::exception& e) {
+                    *error = std::string("Hydra failed: ") + e.what();
+                    ok = false;
+                }
+            },
+                                               error, whileWaiting);
+            if (!ran || !ok) {
+                return false;
             }
-            film = resource.UncheckedGet<UtilityDeviceResource>();
-            info->warning = entry->warning;
-            info->errors = entry->errors;
-            info->device = entry->device;
-            ok = true;
-        } catch (const std::exception& e) {
-            *error = std::string("Hydra failed: ") + e.what();
-            ok = false;
+            frame->key = key;
+            frame->film = rendered;
+            frame->warning = renderedInfo.warning;
+            frame->errors = renderedInfo.errors;
+            frame->device = renderedInfo.device;
+            frame->valid = true;
         }
-    },
-                                       error, whileWaiting);
-    if (!ran || !ok) {
-        return false;
+        film = frame->film;
+        info->warning = frame->warning;
+        info->errors = frame->errors;
+        info->device = frame->device;
     }
     // A record context belongs to the thread that made it, so the copy is recorded here, not on the render thread.
     if (film.device() != &context.device()) {
@@ -2441,6 +2543,12 @@ recordDeviceWindow(const Request& request,
 void
 release(const void* owner)
 {
+#ifdef NATRON_HAVE_GPU
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        gDeviceFrames.erase(owner);
+    }
+#endif
     RenderThread& storm = RenderThread::storm();
     RenderThread& cpu = RenderThread::cpu();
 
@@ -2451,6 +2559,12 @@ release(const void* owner)
 void
 releaseAll()
 {
+#ifdef NATRON_HAVE_GPU
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        gDeviceFrames.clear();
+    }
+#endif
     RenderThread& thread = RenderThread::storm();
 
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
@@ -2560,6 +2674,12 @@ std::uint64_t
 getEngineBuildCount()
 {
     return gEngineBuilds.load();
+}
+
+std::uint64_t
+getEngineRenderCount()
+{
+    return gEngineRenders.load();
 }
 
 std::string
@@ -2710,6 +2830,21 @@ namespace {
 
         return table;
     }
+
+    // A premultiplied linear pixel over the background, then encoded.
+    void
+    encodePixel(const float c[4],
+                float background,
+                const std::vector<unsigned char>& table,
+                unsigned char* out)
+    {
+        const float under = background * (1.f - std::min(1.f, std::max(0.f, c[3])));
+        for (int k = 0; k < 3; ++k) {
+            const float value = std::min(1.f, std::max(0.f, c[k] + under));
+            out[k] = table[(std::size_t)(value * 4095.f + 0.5f)];
+        }
+        out[3] = 255;
+    }
 } // anon namespace
 
 struct ProgressiveRender::Implementation {
@@ -2719,6 +2854,8 @@ struct ProgressiveRender::Implementation {
     const std::function<UsdStageRefPtr()> stageOf;
     const std::function<void()> listener;
     const float background;
+    // setDeviceColor()'s; readFrame() reads it without mutex.
+    std::atomic<bool> deviceColor { false };
 
     // Guards the requests, the status and the frame; never held while taking stageLock.
     mutable std::mutex mutex;
@@ -2941,6 +3078,18 @@ struct ProgressiveRender::Implementation {
         const std::vector<unsigned char>& table = srgbTable();
         out->width = width;
         out->height = height;
+#ifdef NATRON_HAVE_GPU
+        if (deviceColor.load() && (engineRenderer == kRenderDelegateUtilityId)) {
+            HdRenderBuffer* buffer = engine->GetAovRenderBuffer(HdAovTokens->color);
+            if (buffer && ((int)buffer->GetWidth() == width) && ((int)buffer->GetHeight() == height)) {
+                const VtValue resource = buffer->GetResource(false);
+                if (resource.IsHolding<UtilityDeviceResource>()) {
+                    out->deviceColor = std::make_shared<const UtilityDeviceResource>(resource.UncheckedGet<UtilityDeviceResource>());
+                }
+            }
+        }
+        if (!out->deviceColor)
+#endif
         {
             MappedAov color(engine.get(), rendererName, width, height, HdAovTokens->color, error);
             if (!color.valid()) {
@@ -2956,13 +3105,7 @@ struct ProgressiveRender::Implementation {
                 for (std::size_t k = 0; (k < components) && (k < 4); ++k) {
                     c[k] = componentToFloat(componentFormat, at + k * componentSize);
                 }
-                // Premultiplied: over the background, then encoded.
-                const float under = background * (1.f - std::min(1.f, std::max(0.f, c[3])));
-                for (int k = 0; k < 3; ++k) {
-                    const float value = std::min(1.f, std::max(0.f, c[k] + under));
-                    out->rgba[i * 4 + k] = table[(std::size_t)(value * 4095.f + 0.5f)];
-                }
-                out->rgba[i * 4 + 3] = 255;
+                encodePixel(c, background, table, &out->rgba[i * 4]);
             }
         }
         {
@@ -3619,6 +3762,43 @@ ProgressiveRender::getRestartCount() const
 
     return _imp->status.restarts;
 }
+
+#ifdef NATRON_HAVE_GPU
+void
+ProgressiveRender::setDeviceColor(bool onDevice)
+{
+    _imp->deviceColor.store(onDevice);
+}
+
+bool
+ProgressiveRender::hostColor(const Frame& frame,
+                             std::vector<unsigned char>* rgba,
+                             std::string* error) const
+{
+    if (!frame.deviceColor) {
+        *error = "The frame's colour is not on the device.";
+
+        return false;
+    }
+    const std::size_t pixels = (std::size_t)frame.width * (std::size_t)frame.height;
+    if (((std::size_t)frame.deviceColor->width() * frame.deviceColor->height()) != pixels) {
+        *error = "The frame's colour on the device is not the frame's size.";
+
+        return false;
+    }
+    std::vector<float> linear;
+    if (!frame.deviceColor->download(&linear, error)) {
+        return false;
+    }
+    const std::vector<unsigned char>& table = srgbTable();
+    rgba->resize(pixels * 4);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        encodePixel(&linear[i * 4], _imp->background, table, &(*rgba)[i * 4]);
+    }
+
+    return true;
+}
+#endif
 
 std::string
 ProgressiveRender::pick(const Frame& frame,

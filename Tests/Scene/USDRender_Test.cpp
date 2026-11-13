@@ -88,6 +88,7 @@
 #include "Engine/Gpu/GpuBufferPool.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/Image.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Image/GpuRender.h"
@@ -1595,6 +1596,70 @@ TEST_F(USDRenderUtilityGpuTest, AGpuGradeReadsTheGpuFrameOnTheDeviceAndTheCpuMap
         }
     }
     EXPECT_GT(covered, 100u) << "the frame is empty, which proves nothing";
+}
+
+namespace {
+// Forces the GPU regions into strips of rows rows while it lives.
+class StripRows {
+public:
+    explicit StripRows(int rows)
+    {
+        setGpuStripOverridesForTests(0, rows);
+    }
+
+    ~StripRows()
+    {
+        setGpuStripOverridesForTests(0, 0);
+    }
+};
+} // anon namespace
+
+// Each strip of a region copies its window out of one GPU frame, so the frame renders once however
+// many strips there are, and gives the pixels the CPU maps.
+TEST_F(USDRenderUtilityGpuTest, AStrippedRegionRendersTheUtilityFrameOnce)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    NodePtr settings;
+    NodePtr render = createRender(kFixture, &settings);
+
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(selectRenderer(rendererKnob(render), kRenderDelegateUtilityId));
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
+    HydraRender::releaseAll();
+
+    const std::uint64_t renders = HydraRender::getEngineRenderCount();
+    SchedulerFrame stripped;
+    std::string error;
+
+    {
+        const StripRows strips(32);
+
+        ASSERT_TRUE(renderFrame(render, { render }, &stripped, &error)) << error;
+    }
+    EXPECT_LT(0, gpuRunsOf(stripped, render));
+    EXPECT_GT(stripped.stats->getDownloadCount(), 1) << "the region did not run as strips";
+    EXPECT_EQ(renders + 1, HydraRender::getEngineRenderCount()) << "the strips did not share one frame";
+
+    const std::vector<float> onGpu = rootRgba(stripped);
+    std::vector<RenderedPlane> planes;
+
+    ASSERT_TRUE(renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+
+    const std::vector<float>& onCpu = planes.front().pixels;
+
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, onCpu.size());
+    ASSERT_EQ(onCpu.size(), onGpu.size());
+    EXPECT_EQ(0, std::memcmp(onCpu.data(), onGpu.data(), onCpu.size() * sizeof(float)));
 }
 #endif // NATRON_HAVE_GPU
 

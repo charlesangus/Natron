@@ -279,6 +279,36 @@ recordPack(const std::shared_ptr<UtilityDeviceFilm>& film,
 
     return gpu::GpuStatus();
 }
+
+// Copies the whole film into out, bytes long, waiting for the copy.
+gpu::GpuStatus
+downloadFilm(const std::shared_ptr<UtilityDeviceFilm>& film,
+             void* out,
+             std::size_t bytes)
+{
+    if (bytes != static_cast<std::size_t>(film->width) * film->height * kFilmPixelBytes) {
+        return failure("The Utility renderer's film is not the size of the buffer it is read into");
+    }
+
+    std::unique_ptr<gpu::GpuRecordContext> context;
+    gpu::GpuBuffer staging;
+    gpu::GpuStatus status = gpu::GpuRecordContext::create(film->registry, context, &film->pool);
+
+    if (status) {
+        status = gpu::GpuBuffer::createStaging(film->device, bytes, gpu::kGpuBufferDefaultUsage, staging);
+    }
+    if (status) {
+        status = recordPack(film, *context, 0, 0, static_cast<int>(film->width), static_cast<int>(film->height), 4, staging, 0, film->width * 4);
+    }
+    if (status) {
+        status = context->submitAndWait();
+    }
+    if (status) {
+        std::memcpy(out, staging.mapped(), bytes);
+    }
+
+    return status;
+}
 } // anon namespace
 
 std::shared_ptr<const UtilityFilmKernels>
@@ -350,6 +380,33 @@ UtilityDeviceResource::recordWindow(gpu::GpuRecordContext& context,
     }
 
     return recordPack(_film, context, x1, y1, x2, y2, nComps, out, outOffset, outRowStride);
+}
+
+const gpu::GpuBuffer*
+UtilityDeviceResource::pixels() const
+{
+    return _film ? &_film->pixels : nullptr;
+}
+
+bool
+UtilityDeviceResource::download(std::vector<float>* out,
+                                std::string* error) const
+{
+    if (!_film) {
+        *error = "The Utility renderer holds no frame on the device";
+
+        return false;
+    }
+    out->resize(static_cast<std::size_t>(_film->width) * _film->height * 4);
+    const gpu::GpuStatus status = downloadFilm(_film, out->data(), out->size() * sizeof(float));
+
+    if (!status) {
+        *error = "The Utility renderer could not read its frame back from the GPU: " + status.message;
+
+        return false;
+    }
+
+    return true;
 }
 #endif // NATRON_HAVE_GPU
 
@@ -628,26 +685,14 @@ UtilityRenderBuffer::downloadLocked()
         return;
     }
 
-    std::unique_ptr<gpu::GpuRecordContext> context;
-    gpu::GpuBuffer staging;
-    gpu::GpuStatus status = gpu::GpuRecordContext::create(film.registry, context, &film.pool);
+    const gpu::GpuStatus status = downloadFilm(_film, _pixels.data(), bytes);
 
-    if (status) {
-        status = gpu::GpuBuffer::createStaging(film.device, bytes, gpu::kGpuBufferDefaultUsage, staging);
-    }
-    if (status) {
-        status = recordPack(_film, *context, 0, 0, static_cast<int>(film.width), static_cast<int>(film.height), 4, staging, 0, film.width * 4);
-    }
-    if (status) {
-        status = context->submitAndWait();
-    }
     if (!status) {
         // The host keeps the frame's clear value: the frame is lost with the device, not partly shown.
         TF_WARN("The Utility renderer could not read its frame back from the GPU: %s", status.message.c_str());
 
         return;
     }
-    std::memcpy(_pixels.data(), staging.mapped(), bytes);
     ++gDeviceDownloads;
 #endif
 }

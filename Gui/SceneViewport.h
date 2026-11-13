@@ -585,6 +585,11 @@ public:
     double getLastUploadMs() const;
     int getLastUploadPixels() const;
 
+    // How the last progressive frame reached its texture: "interop:" and the GL hand-off's path
+    // ("zerocopy", "hostsync" or "readback") for a GPU frame of the Natron Utility renderer
+    // imported from the device, "upload" for one uploaded from host memory; empty before one.
+    std::string getLastFramePath() const;
+
 private:
     RenderStatusEnum renderLocked(unsigned int fbo, int width, int height, bool followScene);
 

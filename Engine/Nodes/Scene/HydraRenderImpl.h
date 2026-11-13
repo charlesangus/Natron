@@ -58,6 +58,7 @@ NATRON_NAMESPACE_ENTER
 #ifdef NATRON_HAVE_GPU
 struct GpuImageView;
 class RectI;
+class UtilityDeviceResource;
 #endif
 
 /**
@@ -346,6 +347,10 @@ std::size_t getCpuEngineCount();
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
 
+// How many frames engines of every delegate have rendered in this process, not counting a request
+// served by the owner's last render.
+std::uint64_t getEngineRenderCount();
+
 /**
  * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is
  * process-wide, and the first live session fixes it for all. It is the count asked for last, by a
@@ -425,6 +430,11 @@ public:
         std::uint64_t serial = 0;
         // The edits made before its pass, for pick().
         std::uint64_t generation = 0;
+#ifdef NATRON_HAVE_GPU
+        // Set instead of rgba when setDeviceColor() asked for the colour of a GPU frame to stay
+        // on the device: its linear premultiplied RGBA floats, the bottom row first.
+        std::shared_ptr<const UtilityDeviceResource> deviceColor;
+#endif
     };
 
     struct Status {
@@ -502,6 +512,23 @@ public:
 
     // How many renders have been started, the first included.
     std::uint64_t getRestartCount() const;
+
+#ifdef NATRON_HAVE_GPU
+    /**
+     * @brief Whether frames the Natron Utility renderer leaves on the GPU are published with
+     * deviceColor and no rgba, for a viewer that imports them; off at first. Frames published
+     * before a change keep the form they had.
+     **/
+    void setDeviceColor(bool onDevice);
+
+    /**
+     * @brief The rgba frame would have had without deviceColor, read back from the device. False
+     * with *error set when frame has no deviceColor or the device cannot read it back.
+     **/
+    bool hostColor(const Frame& frame,
+                   std::vector<unsigned char>* rgba,
+                   std::string* error) const;
+#endif
 
     /**
      * @brief The path of the prim drawn at the pixel (x, y) of frame, one getFrame() gave, counted

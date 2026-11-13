@@ -50,6 +50,7 @@
 #include <QLabel>
 #include <QMetaObject>
 #include <QMouseEvent>
+#include <QOpenGLContext>
 #include <QPainter>
 #include <QPointer>
 #include <QSignalBlocker>
@@ -81,6 +82,7 @@
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Nodes/Scene/Utility/UtilityViewerInterop.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
@@ -197,6 +199,28 @@ const char* const kGradeVertexShader = "#version 400 compatibility\n"
                                        "void main() {\n"
                                        "    gl_Position = vec4((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0, 0.0, 1.0);\n"
                                        "}\n";
+
+#ifdef NATRON_HAVE_GPU
+// The pass that turns a GPU frame of the Natron Utility renderer, linear and premultiplied, into
+// the pixels ProgressiveRender::Frame::rgba holds: over the background, clamped, sRGB encoded.
+std::string
+deviceColorFragmentShader()
+{
+    std::string source = "#version 400 compatibility\n"
+                         "uniform sampler2D colorFrame;\n"
+                         "uniform float background;\n"
+                         "\n";
+    source += kSrgbDisplayFunction;
+    source += "\n"
+              "void main() {\n"
+              "    vec4 c = texelFetch(colorFrame, ivec2(gl_FragCoord.xy), 0);\n"
+              "    vec3 v = clamp(c.rgb + vec3(background * (1.0 - clamp(c.a, 0.0, 1.0))), 0.0, 1.0);\n"
+              "    gl_FragColor = vec4(toDisplay(vec4(v, 1.0)).rgb, 1.0);\n"
+              "}\n";
+
+    return source;
+}
+#endif
 
 /**
  * @brief The pass that draws Storm's colour AOV onto the framebuffer, around displayFunction, which
@@ -644,6 +668,20 @@ struct SceneViewportRenderer::Implementation {
     int drawnSamples = -1;
     double uploadMs = -1.;
     int uploadPixels = 0;
+    // How the last frame reached refineTexture: "interop:<hand-off path>" when its colour came
+    // from the GPU through the GL hand-off, "upload" when from host memory; empty before one.
+    std::string framePath;
+#ifdef NATRON_HAVE_GPU
+    // The hand-off of the Natron Utility renderer's GPU frames, the float texture it fills and the
+    // pass that draws that into refineTexture: of the context of render(), made on first use.
+    std::unique_ptr<UtilityViewerInterop> deviceUpload;
+    GLuint deviceTexture = 0;
+    GLuint deviceProgram = 0;
+    int deviceWidth = 0;
+    int deviceHeight = 0;
+    // Set once the hand-off failed: GPU frames are read back to the host from then on.
+    bool deviceColorFailed = false;
+#endif
     // Last, so that its worker, which reads the stage, is joined before the stage goes.
     std::unique_ptr<HydraRender::ProgressiveRender> progressive;
 
@@ -1198,6 +1236,88 @@ struct SceneViewportRenderer::Implementation {
         gradeShader.reset();
         gradeDirty = true;
     }
+
+#ifdef NATRON_HAVE_GPU
+    void releaseDeviceColor()
+    {
+        deviceUpload.reset();
+        if (deviceTexture) {
+            glDeleteTextures(1, &deviceTexture);
+            deviceTexture = 0;
+        }
+        if (deviceProgram) {
+            glDeleteProgram(deviceProgram);
+            deviceProgram = 0;
+        }
+        deviceWidth = 0;
+        deviceHeight = 0;
+    }
+
+    /**
+     * @brief Draws frame's deviceColor into refineTexture, which must have the frame's size and be
+     * refineFramebuffer's colour, through the GL hand-off. Needs the GL context current; leaves
+     * the framebuffer binding, the viewport and the program to the caller to set again.
+     **/
+    bool drawDeviceColor(const HydraRender::ProgressiveRender::Frame& frame,
+                         std::string* error)
+    {
+        QOpenGLContext* context = QOpenGLContext::currentContext();
+        if (!context) {
+            *error = "No GL context is current.";
+
+            return false;
+        }
+        if (!deviceUpload) {
+            deviceUpload.reset(new UtilityViewerInterop([context](const char* name) { return (void*)context->getProcAddress(name); }));
+        }
+        if (!deviceTexture) {
+            glGenTextures(1, &deviceTexture);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindSampler(0, 0);
+        glBindTexture(GL_TEXTURE_2D, deviceTexture);
+        if ((frame.width != deviceWidth) || (frame.height != deviceHeight)) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, frame.width, frame.height, 0, GL_RGBA, GL_FLOAT, nullptr);
+            deviceWidth = frame.width;
+            deviceHeight = frame.height;
+        }
+        if (!deviceUpload->upload(frame.deviceColor, deviceTexture, error)) {
+            return false;
+        }
+        if (!deviceProgram) {
+            try {
+                deviceProgram = linkProgram(kGradeVertexShader, deviceColorFragmentShader());
+            } catch (const std::exception& e) {
+                *error = e.what();
+
+                return false;
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, refineFramebuffer);
+        glViewport(0, 0, frame.width, frame.height);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glUseProgram(deviceProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, deviceTexture);
+        glUniform1i(glGetUniformLocation(deviceProgram, "colorFrame"), 0);
+        glUniform1f(glGetUniformLocation(deviceProgram, "background"), kBackgroundLinear);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glUseProgram(0);
+        framePath = "interop:" + deviceUpload->path();
+
+        return true;
+    }
+#endif
 
     // Needs the GL context current. Throws what OpenColorIO throws.
     void uploadLuts(const OCIO_NAMESPACE::GpuShaderDescRcPtr& desc)
@@ -1839,6 +1959,9 @@ SceneViewportRenderer::SceneViewportRenderer()
             listener();
         } }, kBackgroundLinear));
     _imp->progressive->setThreads(&refineThreads);
+#ifdef NATRON_HAVE_GPU
+    _imp->progressive->setDeviceColor(true);
+#endif
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
@@ -1854,6 +1977,12 @@ SceneViewportRenderer::~SceneViewportRenderer()
     if (_imp->gradeProgram || !_imp->gradeLuts.empty()) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its display transform pass";
     }
+#ifdef NATRON_HAVE_GPU
+    if (_imp->deviceUpload || _imp->deviceTexture || _imp->deviceProgram) {
+        qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its GPU frame hand-off";
+        (void)_imp->deviceUpload.release();
+    }
+#endif
     if (_imp->engine) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its Storm engine";
         (void)_imp->engine.release();
@@ -3032,19 +3161,47 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            const unsigned char* hostPixels = frame->rgba.empty() ? nullptr : frame->rgba.data();
             if ((frameWidth != _imp->refineWidth) || (frameHeight != _imp->refineHeight)) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frameWidth, frameHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frameWidth, frameHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, hostPixels);
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, _imp->refineFramebuffer);
                 glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _imp->refineTexture, 0);
                 glBindFramebuffer(GL_FRAMEBUFFER, fbo);
                 _imp->refineWidth = frameWidth;
                 _imp->refineHeight = frameHeight;
-            } else {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_UNSIGNED_BYTE, frame->rgba.data());
+            } else if (hostPixels) {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_UNSIGNED_BYTE, hostPixels);
             }
+            _imp->framePath = "upload";
+#ifdef NATRON_HAVE_GPU
+            if (frame->deviceColor) {
+                std::string error;
+                bool drawn = !_imp->deviceColorFailed && _imp->drawDeviceColor(*frame, &error);
+                if (!drawn) {
+                    if (!_imp->deviceColorFailed) {
+                        qDebug() << "SceneViewport: the GPU frame goes through the host:" << error.c_str();
+                        _imp->deviceColorFailed = true;
+                        progressive.setDeviceColor(false);
+                        _imp->releaseDeviceColor();
+                    }
+                    std::vector<unsigned char> host;
+                    if (progressive.hostColor(*frame, &host, &error)) {
+                        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+                        glActiveTexture(GL_TEXTURE0);
+                        glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
+                        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_UNSIGNED_BYTE, host.data());
+                    } else {
+                        qDebug() << "SceneViewport: the GPU frame could not be read back:" << error.c_str();
+                    }
+                    _imp->framePath = "upload";
+                }
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glViewport(0, 0, width, height);
+            }
+#endif
             // The depth stays in a buffer of the GPU's, for the paints that draw the grid over the
             // frame again before the next one.
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
@@ -3266,6 +3423,9 @@ SceneViewportRenderer::releaseGL()
     _imp->refineWidth = 0;
     _imp->refineHeight = 0;
     _imp->uploadedFrame.reset();
+#ifdef NATRON_HAVE_GPU
+    _imp->releaseDeviceColor();
+#endif
 }
 
 void
@@ -3399,6 +3559,12 @@ SceneViewportRenderer::releaseRefinement()
     _imp->refineRenderer.clear();
     _imp->refineError.clear();
     _imp->uploadedFrame.reset();
+}
+
+std::string
+SceneViewportRenderer::getLastFramePath() const
+{
+    return _imp->framePath;
 }
 
 double
@@ -4278,6 +4444,7 @@ SceneViewport::publishRefineState()
     setProperty("natronSceneRefineFrames", QVariant::fromValue<qulonglong>(status.frames));
     setProperty("natronSceneUploadMs", _imp->renderer.getLastUploadMs());
     setProperty("natronSceneUploadPixels", _imp->renderer.getLastUploadPixels());
+    setProperty("natronSceneFramePath", QString::fromStdString(_imp->renderer.getLastFramePath()));
     Q_EMIT refineStateChanged();
 }
 

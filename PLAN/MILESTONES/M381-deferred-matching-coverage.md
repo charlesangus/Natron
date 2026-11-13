@@ -78,7 +78,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: USDMerge on the city opens 0 buildings; parity of grafts and unmapped links; a viewer graft and a render graft don't evict each other.
   - size: L
 
-- [ ] M381.P3.T6 — Inputs evaluate on their own context
+- [x] M381.P3.T6 — Inputs evaluate on their own context
   - files: `Engine/EffectInstance.h` (~:1759, ~:1815), `Engine/EffectInstanceRenderScene.cpp` (~:194-232), `Engine/SceneLoadSet.{h,cpp}`, `Tests/Scene/SceneQueryPool_Test.cpp`
   - approach: `getSceneInputContext`/`mapSceneInputReach` virtuals, identity by default; the input loop evaluates each input on its mapped context with a reach of its own when the set differs, maps that reach back after `renderScene` and adds it to the caller's; `SceneRenderActionArgs::getInputContext(i)`; a stable id per (parent id, input) for mapped contexts; `SceneLoadSet::unite(a, b)` (true union, self/below split; null wins).
   - verify: gtest — identity nodes pass the same pointers; `unite` is a superset of both on every prim of the city; a mapped input's reach comes back mapped; a diamond keeps two memo slots.

@@ -37,7 +37,7 @@ Make M234 - Camera Projection Nodes' `USDProject3D` render in Cycles and MoonRay
 
 ## Phase 344.2: Authoring
 
-- [ ] M344.P2.T1 — `USDProject3D` authors the Cycles network
+- [x] M344.P2.T1 — `USDProject3D` authors the Cycles network
   - files: `Engine/Nodes/Scene/USDProject3D.cpp`, `Engine/Nodes/Scene/SceneProjectionCameras.{h,cpp}`, `Tests/Scene/USDRenderCycles_Test.cpp`, one reference crop (≤256 px, half-float, zip)
   - approach: author T1's network on `outputs:cycles:surface` from the values already stored for glslfx, per frame or held, so the two can't drift. Any fork node goes in first, with `NATRON_CYCLES_COMMIT` bumped.
   - verify: gtest — a plate projected onto a card from the render camera reproduces the plate; Crop and Project On change the expected pixels; an animated camera differs at two frames.
@@ -66,3 +66,4 @@ Make M234 - Camera Projection Nodes' `USDProject3D` render in Cycles and MoonRay
   - **MoonRay:** `ProjectCameraMap` is unusable: hdMoonray's coordsys binding is a stub (lib/hydramoonray/CoordSys.cc:63) and it can't express plateTransform. Stock maps instead: `AttributeMap`(position) → `TransformSpaceMap`(render→world) → `OpMap` dots/divides → `FloatToRgbMap` → `UsdUVTexture` (wrap black, raw); crop, w>0 and Project On via further `OpMap`s; `DwaEmissiveMaterial` → `outputs:moonray:surface`.
   - **Motion blur:** neither delegate reads time samples on material networks (cycles hydra/material.cpp:282-307; hdMoonray Material.cc:203), so the projection is evaluated at the frame time.
   - **For P2 (PM):** build Cycles from `geometry` Position + `vector_math` dots, as MoonRay does, rather than the `ob_tfm` trick. That handles orthographic projectors (G singular) and gives the depth for near/far clip. Geometry projection space and frame hold need the per-prim reference: read the world-space `natronReferencePoints*` primvar (or float3 primvar rows) through `cycles_attribute` / a MoonRay primitive-attribute map; P2.T1 settles which and records it.
+- 2026-11-13 — P2.T1 implemented (c59715bdb). `projectorValues()`/`plateValues()` are the single source for the Storm and Cycles inputs. Geometry space reaches Cycles through three float4 column primvars (frame minus identity; a missing primvar reads as zero, i.e. identity), and frame hold through `natronReferencePointsHold*` via `cycles_attribute`. Known approximations: Project On tests the frame normal, not the deformed one, with reference points; a reference point exactly at the origin reads as missing. USDWrite's bake strips the new primvars. The reference crop `CyclesProject3DReference` is recorded at the gate.

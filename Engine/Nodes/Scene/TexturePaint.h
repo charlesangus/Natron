@@ -300,6 +300,15 @@ public:
     // The view session's strokes are painted over, created on first use. Main thread.
     NodePtr getSessionView(const RotoLayerPtr& session);
 
+    // renderSessionBuffer() over viewNode, which must be session's view. Any thread.
+    bool renderSessionBufferFrom(const NodePtr& viewNode,
+                                 const RotoLayerPtr& session,
+                                 const ImageLayerDesc& plane,
+                                 double time,
+                                 ViewIdx view,
+                                 SessionBuffer* buffer,
+                                 std::string* error);
+
     /**
      * @brief The planes the node outputs at time and view: the colour plane, then the Layer
      * knob's plane when it is not the colour plane and a session has strokes.
@@ -462,15 +471,6 @@ private:
 
     // Brings every view in step after a change to the scene input or a knob they copy.
     void syncSessionViews();
-
-    // renderSessionBuffer() over viewNode, which must be session's view. Any thread.
-    bool renderSessionBufferFrom(const NodePtr& viewNode,
-                                 const RotoLayerPtr& session,
-                                 const ImageLayerDesc& plane,
-                                 double time,
-                                 ViewIdx view,
-                                 SessionBuffer* buffer,
-                                 std::string* error);
 
     // The plane strokes paint: the Layer knob's, or the colour plane when it selects none.
     ImageLayerDesc getPaintedPlane(double time, ViewIdx view) const WARN_UNUSED_RETURN;

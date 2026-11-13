@@ -44,6 +44,7 @@
 #include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QFocusEvent>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QKeyEvent>
@@ -59,6 +60,7 @@
 #include <QUndoCommand>
 #include <QWheelEvent>
 #include <QWidgetAction>
+#include <QtConcurrentRun>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDebug>
 
@@ -88,6 +90,7 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
@@ -3860,6 +3863,42 @@ struct SceneViewport::Implementation {
         SceneRaster::ExplicitCamera camera;
     };
     std::vector<PaintOverlay> paintOverlays;
+    // One session of a refresh: rendered on the worker when render is set, else, or when the
+    // render fails, the fallback it had.
+    struct PaintJobEntry {
+        RotoLayerPtr session;
+        NodePtr viewNode;
+        bool render = false;
+        bool hasFallback = false;
+        PaintOverlay fallback;
+        SceneRaster::ExplicitCamera camera;
+        QImage image;
+    };
+    typedef std::vector<PaintJobEntry> PaintJob;
+    // Replaces the overlays with a refresh's results.
+    void applyPaintJob(PaintJob* job)
+    {
+        std::vector<PaintOverlay> overlays;
+        for (PaintJobEntry& entry : *job) {
+            if (entry.render && !entry.image.isNull()) {
+                PaintOverlay overlay;
+                overlay.session = entry.session;
+                overlay.camera = entry.camera;
+                overlay.image = std::move(entry.image);
+                overlays.push_back(std::move(overlay));
+            } else if (entry.hasFallback) {
+                overlays.push_back(std::move(entry.fallback));
+            }
+        }
+        paintOverlays.swap(overlays);
+    }
+    // At most one refresh renders at a time; one asked for meanwhile runs when it ends, from the state then.
+    QFutureWatcher<PaintJob>* paintJobWatcher = nullptr;
+    bool paintJobRunning = false;
+    bool paintJobAgain = false;
+    // Bumped when the painted node changes, so a refresh of the previous one is dropped.
+    unsigned paintEpoch = 0;
+    unsigned paintJobEpoch = 0;
     // The node whose baker paintGL() is connected to.
     NodeWPtr paintHostNode;
     std::vector<QMetaObject::Connection> paintConnections;
@@ -4018,6 +4057,19 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->paintRefreshTimer->setSingleShot(true);
     _imp->paintRefreshTimer->setInterval(100);
     QObject::connect(_imp->paintRefreshTimer, &QTimer::timeout, this, [this]() { refreshPaintOverlays(); });
+    _imp->paintJobWatcher = new QFutureWatcher<Implementation::PaintJob>(this);
+    QObject::connect(_imp->paintJobWatcher, &QFutureWatcher<Implementation::PaintJob>::finished, this, [this]() {
+        Implementation::PaintJob job = _imp->paintJobWatcher->result();
+        _imp->paintJobRunning = false;
+        if (_imp->paintJobEpoch == _imp->paintEpoch) {
+            _imp->applyPaintJob(&job);
+            update();
+        }
+        if (_imp->paintJobAgain) {
+            _imp->paintJobAgain = false;
+            refreshPaintOverlays();
+        }
+    });
     _imp->previewTimer = new QTimer(this);
     _imp->previewTimer->setSingleShot(true);
     _imp->previewTimer->setInterval(30000);
@@ -5361,6 +5413,7 @@ SceneViewport::followPaintNode()
     }
     _imp->paintConnections.clear();
     _imp->paintOverlays.clear();
+    ++_imp->paintEpoch;
     _imp->paintHostNode = node;
     _imp->bakeFraction = 0.;
     _imp->bakeLabel.clear();
@@ -5372,6 +5425,10 @@ SceneViewport::followPaintNode()
         return;
     }
     baker->getLastProgress(&_imp->bakeFraction, &_imp->bakeLabel);
+    if (RotoCurveContextPtr context = node->getCurveContext()) {
+        _imp->paintConnections.push_back(QObject::connect(context.get(), &RotoCurveContext::itemInserted, this, [this](int, int) { schedulePaintRefresh(); }));
+        _imp->paintConnections.push_back(QObject::connect(context.get(), &RotoCurveContext::itemRemoved, this, [this](const RotoItemPtr&, int) { schedulePaintRefresh(); }));
+    }
     _imp->paintConnections.push_back(QObject::connect(baker, &TexturePaintBaker::progress, this, [this](double fraction, const QString& label) {
         _imp->bakeFraction = fraction;
         _imp->bakeLabel = label;
@@ -5403,10 +5460,16 @@ SceneViewport::refreshPaintOverlays()
     NodePtr node;
     TexturePaint* effect = _imp->getPaintNode(&node);
     if (!effect) {
+        ++_imp->paintEpoch;
         if (!_imp->paintOverlays.empty()) {
             _imp->paintOverlays.clear();
             update();
         }
+
+        return;
+    }
+    if (_imp->paintJobRunning) {
+        _imp->paintJobAgain = true;
 
         return;
     }
@@ -5424,36 +5487,54 @@ SceneViewport::refreshPaintOverlays()
         }
     }
 
-    std::vector<Implementation::PaintOverlay> overlays;
+    Implementation::PaintJob job;
+    bool anyRender = false;
     for (const RotoLayerPtr& session : wanted) {
-        const Implementation::PaintOverlay* kept = nullptr;
+        Implementation::PaintJobEntry entry;
+        entry.session = session;
         for (const Implementation::PaintOverlay& overlay : _imp->paintOverlays) {
             if (overlay.session.lock() == session) {
-                kept = &overlay;
+                entry.fallback = overlay;
+                entry.hasFallback = true;
             }
         }
         // A closed session no longer changes: the image it had when it closed stays until its bake lands.
-        if (kept && (session != current)) {
-            overlays.push_back(*kept);
+        if (entry.hasFallback && (session != current)) {
+            job.push_back(std::move(entry));
             continue;
         }
-        Implementation::PaintOverlay overlay;
-        overlay.session = session;
-        TexturePaint::SessionBuffer buffer;
-        std::string error;
-        if (planes.empty() || !TexturePaint::getSessionCamera(session, &overlay.camera) || !effect->renderSessionBuffer(session, planes.back(), time, view, &buffer, &error)) {
-            if (kept) {
-                overlays.push_back(*kept);
-            }
-            continue;
+        if (!planes.empty() && TexturePaint::getSessionCamera(session, &entry.camera)) {
+            entry.viewNode = effect->getSessionView(session);
+            entry.render = (bool)entry.viewNode;
         }
-        overlay.image = overlayImage(buffer);
-        if (!overlay.image.isNull()) {
-            overlays.push_back(overlay);
-        }
+        anyRender |= entry.render;
+        job.push_back(std::move(entry));
     }
-    _imp->paintOverlays.swap(overlays);
-    update();
+    if (!anyRender) {
+        _imp->applyPaintJob(&job);
+        update();
+
+        return;
+    }
+
+    const ImageLayerDesc plane = planes.back();
+    _imp->paintJobRunning = true;
+    _imp->paintJobEpoch = _imp->paintEpoch;
+    _imp->paintJobWatcher->setFuture(QtConcurrent::run([node, time, view, plane, job = std::move(job)]() mutable {
+        TexturePaint* texturePaint = dynamic_cast<TexturePaint*>(node->getEffectInstance().get());
+        for (Implementation::PaintJobEntry& entry : job) {
+            if (!entry.render || !texturePaint) {
+                continue;
+            }
+            TexturePaint::SessionBuffer buffer;
+            std::string error;
+            if (texturePaint->renderSessionBufferFrom(entry.viewNode, entry.session, plane, time, view, &buffer, &error)) {
+                entry.image = overlayImage(buffer);
+            }
+        }
+
+        return job;
+    }));
 }
 
 void

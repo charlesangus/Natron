@@ -862,7 +862,8 @@ private:
     /**
      * @brief Renders the strokes of the session being painted, and of the closed ones whose bake
      * has not landed, into the images paintGL() draws over the view. A closed session's image is
-     * kept as it was painted and dropped when its bake lands.
+     * kept as it was painted and dropped when its bake lands. The rendering runs on a worker, one
+     * refresh at a time; the images are swapped in here when it ends.
      **/
     void refreshPaintOverlays();
 

@@ -1123,6 +1123,11 @@ struct SceneViewportRenderer::Implementation {
         // refining.
         progressive->setRenderer(std::string());
         refineRenderer.clear();
+        // The worker is sent draw changes only while a delegate other than Storm renders, so it
+        // takes the rules Storm drew by when one starts.
+        if (renderer != kRenderDelegateStormId) {
+            progressive->setDrawRules(drawRules);
+        }
     }
 
     std::shared_ptr<const StageSummary> getStageSummary() const
@@ -1781,6 +1786,14 @@ struct SceneViewportRenderer::Implementation {
         }
         if (!queued.empty() && boxes) {
             boxes->setRules(drawRules);
+        }
+        if (!queued.empty() && progressive && (rendererId != kRenderDelegateStormId)) {
+            std::vector<SceneDrawDelta> forwarded;
+            forwarded.reserve(queued.size());
+            for (const QueuedDrawDelta& entry : queued) {
+                forwarded.push_back(entry.delta);
+            }
+            progressive->applyDrawDeltas(forwarded);
         }
         if (!queued.empty()) {
             if (filter) {
@@ -3101,11 +3114,13 @@ SceneViewportRenderer::applyPendingDrawDeltas()
     SceneWriteBarrier::ReadScope read;
     {
         std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
-        // Without an engine the queue waits for the frame that makes one.
         if (_imp->engine) {
             StormGLStateGuard guard;
             StormGLSection section;
             section.collectWith(_imp->engine->GetHgi());
+            _imp->serviceDrawFilter(false);
+        } else if (_imp->rendererId != kRenderDelegateStormId) {
+            // No Storm engine to notify: the rules, the boxes and the worker still follow.
             _imp->serviceDrawFilter(false);
         }
     }
@@ -4683,6 +4698,13 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     }
     if (_imp->getRendererErrorCopy().empty()) {
         _imp->setRendererErrorCopy(RenderDelegates::unavailableMessage(_imp->rendererId));
+    }
+    if (_imp->engine) {
+        StormGLSection section;
+        section.collectWith(_imp->engine->GetHgi());
+        _imp->serviceDrawFilter(false);
+    } else {
+        _imp->serviceDrawFilter(false);
     }
     const UsdStageRefPtr stage = _imp->currentStage();
     if (!_imp->getRendererErrorCopy().empty() || !stage) {

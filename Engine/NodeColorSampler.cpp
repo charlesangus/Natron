@@ -173,8 +173,15 @@ renderLayer(const NodePtr& node,
                                        time);
     std::map<ImageLayerDesc, ImagePtr> layers;
     try {
-        if ((effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
+        if (effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) {
             return false;
+        }
+        if (layers.empty()) {
+            // renderRoI succeeds with no image when there is nothing to draw, a plane the node
+            // neither produces nor passes through among them: transparent black, not a failure.
+            image->reset();
+
+            return emptyIsResult && !abortInfo->isAborted();
         }
     } catch (const std::exception&) {
         // A top-level render that fails throws rather than returning a code.

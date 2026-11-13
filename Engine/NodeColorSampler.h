@@ -55,9 +55,10 @@ ImagePtr renderNodeImage(const NodePtr& node,
 
 /**
  * @brief As renderNodeImage(), but telling an empty result from a failure: returns true with a
- * null *image, and an empty renderedRect, when pixelRect misses the region of definition, so
- * that the pixels are all transparent black; false in the other cases renderNodeImage() returns
- * NULL, an aborted render among them.
+ * null *image, and an empty renderedRect, when pixelRect misses the region of definition or the
+ * node has nothing to draw there, such as a layer it neither produces nor passes through, so that
+ * the pixels are all transparent black; false in the other cases renderNodeImage() returns NULL,
+ * an aborted render among them.
  **/
 bool renderNodeImageIfAny(const NodePtr& node,
                           double time,

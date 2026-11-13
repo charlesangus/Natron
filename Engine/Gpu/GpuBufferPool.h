@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "GpuBuffer.h"
@@ -40,6 +41,9 @@ namespace detail {
         uint64_t stamp = 0;
         std::function<void()> onEvict;
         bool evictable = false;
+        // A cached lease may be dropped without downloading; `score` orders those, lowest first.
+        bool cached = false;
+        double score = 0.0;
     };
 } // namespace detail
 
@@ -62,6 +66,12 @@ public:
     // needed. It must make the owner release its handles (typically after downloading the contents).
     // It may run after the owner already dropped the handle, so it must not assume the buffer is still held.
     void markEvictable(std::function<void()> onEvict) const;
+    // Like markEvictable, but the contents can be recomputed, so `onEvict` may just drop the handles.
+    // Cached buffers are evicted before any markEvictable buffer, lowest `score` first, then least recently used.
+    // The score is a number the owner refreshes with setCachedScore, never a callback, so the pool takes
+    // no lock of the owner's while holding its own.
+    void markCached(std::function<void()> onEvict, double score) const;
+    void setCachedScore(double score) const;
     void clearEvictable() const;
 
 private:
@@ -90,8 +100,8 @@ public:
     GpuBufferPool(const GpuBufferPool&) = delete;
     GpuBufferPool& operator=(const GpuBufferPool&) = delete;
 
-    // Free lists, then VMA within budget, then trim the free lists, then evict least-recently-used
-    // buffers. Out-of-memory is VK_ERROR_OUT_OF_DEVICE_MEMORY, returned without evicting when the
+    // Free lists, then VMA within budget, then trim the free lists, then evict cached buffers by score
+    // and then required ones least-recently-used. Out-of-memory is VK_ERROR_OUT_OF_DEVICE_MEMORY, returned without evicting when the
     // request alone exceeds the budget.
     GpuStatus acquire(VkDeviceSize size, GpuBufferHandle& out);
 
@@ -117,7 +127,13 @@ private:
     void release(detail::BufferLease* lease);
     void touch(detail::BufferLease* lease);
     void setEvictable(detail::BufferLease* lease, std::function<void()> cb);
+    void setCached(detail::BufferLease* lease, std::function<void()> cb, double score);
+    void setClassified(detail::BufferLease* lease, std::function<void()> cb, bool cached, double score);
+    void setScore(detail::BufferLease* lease, double score);
     void clearEvictable(detail::BufferLease* lease);
+    void unlinkLocked(detail::BufferLease* lease);
+    void linkLocked(detail::BufferLease* lease);
+    detail::BufferLease* takeVictimLocked(std::function<void()>& cb);
     uint64_t computeBudget();
     uint64_t usageLocked() const { return stats_.liveBytes + stats_.pooledBytes; }
     void reserveLocked(uint64_t bytes);
@@ -129,8 +145,10 @@ private:
     uint64_t clock_ = 0;
     std::atomic<uint64_t> allocations_ { 0 };
     std::map<VkDeviceSize, std::vector<GpuBuffer>> free_;
-    // Evictable live buffers ordered by last use, oldest first.
+    // Evictable live buffers that must be downloaded on eviction, ordered by last use, oldest first.
     std::map<uint64_t, detail::BufferLease*> lru_;
+    // Evictable live buffers that may be dropped, ordered by score then last use.
+    std::map<std::pair<double, uint64_t>, detail::BufferLease*> cached_;
 };
 
 } // namespace gpu

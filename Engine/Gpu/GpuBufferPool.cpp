@@ -31,6 +31,18 @@ GpuBufferHandle::markEvictable(std::function<void()> onEvict) const
 }
 
 void
+GpuBufferHandle::markCached(std::function<void()> onEvict, double score) const
+{
+    lease_->pool->setCached(lease_.get(), std::move(onEvict), score);
+}
+
+void
+GpuBufferHandle::setCachedScore(double score) const
+{
+    lease_->pool->setScore(lease_.get(), score);
+}
+
+void
 GpuBufferHandle::clearEvictable() const
 {
     lease_->pool->clearEvictable(lease_.get());
@@ -148,18 +160,12 @@ GpuBufferPool::evict(uint64_t bytes)
         std::function<void()> cb;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (lru_.empty()) {
+            // As in acquire(): removed before the unlocked call so that the callback runs exactly once.
+            detail::BufferLease* victim = takeVictimLocked(cb);
+            if (!victim) {
                 break;
             }
-            // As in acquire(): removed before the unlocked call so that the callback runs exactly once.
-            auto oldest = lru_.begin();
-            detail::BufferLease* victim = oldest->second;
-            cb = std::move(victim->onEvict);
-            victim->onEvict = nullptr;
-            victim->evictable = false;
             freed += victim->buffer.size();
-            lru_.erase(oldest);
-            ++stats_.evictions;
         }
         if (cb) {
             cb();
@@ -251,26 +257,58 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
             continue;
         }
 
-        if (lru_.empty()) {
+        // Removing the entry before the call is what makes each callback run exactly once, and running
+        // it unlocked lets it release handles, which re-enter release() and take the lock.
+        std::function<void()> cb;
+        if (!takeVictimLocked(cb)) {
             GpuStatus s = outOfMemory(size, limit);
             s.budgetContention = !vmaRefused;
             return s;
         }
-
-        // Removing the entry before the call is what makes each callback run exactly once, and running
-        // it unlocked lets it release handles, which re-enter release() and take the lock.
-        auto oldest = lru_.begin();
-        detail::BufferLease* victim = oldest->second;
-        std::function<void()> cb = std::move(victim->onEvict);
-        victim->onEvict = nullptr;
-        victim->evictable = false;
-        lru_.erase(oldest);
-        ++stats_.evictions;
         vmaRefused = false;
         lock.unlock();
         if (cb) {
             cb();
         }
+    }
+}
+
+detail::BufferLease*
+GpuBufferPool::takeVictimLocked(std::function<void()>& cb)
+{
+    detail::BufferLease* victim = nullptr;
+    if (!cached_.empty()) {
+        victim = cached_.begin()->second;
+    } else if (!lru_.empty()) {
+        victim = lru_.begin()->second;
+    } else {
+        return nullptr;
+    }
+    unlinkLocked(victim);
+    cb = std::move(victim->onEvict);
+    victim->onEvict = nullptr;
+    victim->evictable = false;
+    ++stats_.evictions;
+    return victim;
+}
+
+void
+GpuBufferPool::unlinkLocked(detail::BufferLease* lease)
+{
+    if (lease->cached) {
+        cached_.erase({ lease->score, lease->stamp });
+    } else {
+        lru_.erase(lease->stamp);
+    }
+}
+
+void
+GpuBufferPool::linkLocked(detail::BufferLease* lease)
+{
+    if (lease->cached) {
+        cached_[{ lease->score, lease->stamp }] = lease;
+    } else {
+        lru_[lease->stamp] = lease;
     }
 }
 
@@ -283,7 +321,7 @@ GpuBufferPool::release(detail::BufferLease* lease)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (lease->evictable) {
-            lru_.erase(lease->stamp);
+            unlinkLocked(lease);
         }
         stats_.liveBytes -= size;
         if (usageLocked() + size <= limit) {
@@ -299,9 +337,9 @@ GpuBufferPool::touch(detail::BufferLease* lease)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (lease->evictable) {
-        lru_.erase(lease->stamp);
+        unlinkLocked(lease);
         lease->stamp = ++clock_;
-        lru_[lease->stamp] = lease;
+        linkLocked(lease);
     } else {
         lease->stamp = ++clock_;
     }
@@ -310,14 +348,39 @@ GpuBufferPool::touch(detail::BufferLease* lease)
 void
 GpuBufferPool::setEvictable(detail::BufferLease* lease, std::function<void()> cb)
 {
+    setClassified(lease, std::move(cb), false, 0.0);
+}
+
+void
+GpuBufferPool::setCached(detail::BufferLease* lease, std::function<void()> cb, double score)
+{
+    setClassified(lease, std::move(cb), true, score);
+}
+
+void
+GpuBufferPool::setClassified(detail::BufferLease* lease, std::function<void()> cb, bool cached, double score)
+{
     std::lock_guard<std::mutex> lock(mutex_);
     if (lease->evictable) {
-        lru_.erase(lease->stamp);
+        unlinkLocked(lease);
     }
     lease->onEvict = std::move(cb);
     lease->evictable = true;
+    lease->cached = cached;
+    lease->score = score;
     lease->stamp = ++clock_;
-    lru_[lease->stamp] = lease;
+    linkLocked(lease);
+}
+
+void
+GpuBufferPool::setScore(detail::BufferLease* lease, double score)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (lease->evictable && lease->cached) {
+        unlinkLocked(lease);
+        lease->score = score;
+        linkLocked(lease);
+    }
 }
 
 void
@@ -325,7 +388,7 @@ GpuBufferPool::clearEvictable(detail::BufferLease* lease)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (lease->evictable) {
-        lru_.erase(lease->stamp);
+        unlinkLocked(lease);
         lease->evictable = false;
         lease->onEvict = nullptr;
     }

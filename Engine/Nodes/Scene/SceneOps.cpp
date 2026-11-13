@@ -50,6 +50,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
@@ -773,7 +774,8 @@ namespace {
                     const std::string& expression,
                     std::vector<PXR_NS::SdfPath>* paths,
                     std::string* errorMessage,
-                    const std::function<bool()>& cancelled)
+                    const std::function<bool()>& cancelled,
+                    const PXR_NS::Usd_PrimFlagsPredicate& predicate = PXR_NS::UsdPrimDefaultPredicate)
     {
         paths->clear();
         PXR_NS::SdfPathExpression parsed;
@@ -785,7 +787,7 @@ namespace {
         }
         const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
         PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
-        PXR_NS::UsdPrimRange range = stage->Traverse();
+        PXR_NS::UsdPrimRange range = stage->Traverse(predicate);
         std::size_t visited = 0;
         for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
             if (cancelled && ((++visited % kSelectCancelPollPrims) == 0) && cancelled()) {
@@ -825,6 +827,172 @@ selectPrims(const PXR_NS::UsdStageRefPtr& stage,
 {
     return selectPrimsImpl(stage, expression, paths, errorMessage, cancelled);
 }
+
+namespace {
+    // Unlike a node's selection, a viewer's rules match an unloaded payload's own prim: it is
+    // what the viewer draws a box for.
+    const PXR_NS::Usd_PrimFlagsPredicate&
+    drawRulePredicate()
+    {
+        static const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
+
+        return predicate;
+    }
+
+    bool
+    isUnloadedPayload(const PXR_NS::UsdPrim& prim)
+    {
+        return prim.HasAuthoredPayloads() && !prim.IsLoaded();
+    }
+
+    struct DrawRuleWalk {
+        const SceneDrawRule& rule;
+        PXR_NS::TfToken kind;
+        const std::function<bool()>& cancelled;
+        SceneDrawStates::PolicyStates* policy;
+        std::size_t visited = 0;
+        bool stopped = false;
+
+        bool poll()
+        {
+            if (!stopped && cancelled && ((++visited % kSelectCancelPollPrims) == 0) && cancelled()) {
+                stopped = true;
+            }
+
+            return !stopped;
+        }
+
+        void add(const PXR_NS::UsdPrim& prim,
+                 SceneDrawStateEnum state)
+        {
+            sceneAddDrawRuleMatch(prim.GetPath().GetString(), state, rule.origin, policy);
+        }
+
+        void levels(const PXR_NS::UsdPrim& prim,
+                    int depth)
+        {
+            if (!poll()) {
+                return;
+            }
+            if ((depth >= rule.levels) || isUnloadedPayload(prim)) {
+                add(prim, rule.state);
+
+                return;
+            }
+            add(prim, eSceneDrawStateChildren);
+            for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(drawRulePredicate())) {
+                levels(child, depth + 1);
+            }
+        }
+
+        // Whether prim or a prim below it took the rule's state.
+        bool toKind(const PXR_NS::UsdPrim& prim)
+        {
+            if (!poll()) {
+                return false;
+            }
+            PXR_NS::TfToken primKind;
+            if ((PXR_NS::UsdModelAPI(prim).GetKind(&primKind) && PXR_NS::KindRegistry::IsA(primKind, kind)) || isUnloadedPayload(prim)) {
+                add(prim, rule.state);
+
+                return true;
+            }
+            bool reached = false;
+            for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(drawRulePredicate())) {
+                reached = toKind(child) || reached;
+            }
+            if (reached) {
+                // After the prims below: Children blocks nothing, so it switches none of them.
+                add(prim, eSceneDrawStateChildren);
+            }
+
+            return reached;
+        }
+    };
+} // anonymous namespace
+
+bool
+drawRulesNeedStage(const SceneDrawRules& rules)
+{
+    for (const SceneDrawRule& rule : rules) {
+        if ((rule.levels > 0) || !rule.toKind.empty()) {
+            return true;
+        }
+        PrimSelector::Reach reach;
+        std::string error;
+        if (PrimSelector::getReach(rule.pattern, &reach, &error) && !reach.literalOnly) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+               const SceneDrawRules& rules,
+               SceneDrawStates::PolicyStates* policy,
+               const std::function<bool()>& cancelled)
+{
+    policy->clear();
+    for (const SceneDrawRule& rule : rules) {
+        PrimSelector::Reach reach;
+        std::string error;
+        if (PrimSelector::isBlank(rule.pattern) || !PrimSelector::getReach(rule.pattern, &reach, &error)) {
+            // The node that set the rule reports its own bad pattern.
+            continue;
+        }
+        const bool walks = (rule.levels > 0) || !rule.toKind.empty();
+        std::vector<PXR_NS::SdfPath> matches;
+        if (reach.literalOnly) {
+            for (const std::string& literal : reach.literals) {
+                if (PXR_NS::SdfPath::IsValidPathString(literal)) {
+                    const PXR_NS::SdfPath path(literal);
+                    if (path.IsAbsoluteRootOrPrimPath()) {
+                        matches.push_back(path);
+                    }
+                }
+            }
+        } else if (stage) {
+            if (!selectPrimsImpl(stage, rule.pattern, &matches, &error, cancelled, drawRulePredicate())) {
+                if (cancelled && cancelled()) {
+                    policy->clear();
+
+                    return false;
+                }
+                continue;
+            }
+        }
+        if (!walks) {
+            for (const PXR_NS::SdfPath& path : matches) {
+                sceneAddDrawRuleMatch(path.GetString(), rule.state, rule.origin, policy);
+            }
+            continue;
+        }
+        if (!stage) {
+            continue;
+        }
+        DrawRuleWalk walk { rule, PXR_NS::TfToken(rule.toKind), cancelled, policy };
+        for (const PXR_NS::SdfPath& path : matches) {
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            if (!prim || !prim.IsActive() || !prim.IsDefined() || prim.IsAbstract()) {
+                continue;
+            }
+            if (rule.toKind.empty()) {
+                walk.levels(prim, 0);
+            } else {
+                walk.toKind(prim);
+            }
+            if (walk.stopped) {
+                policy->clear();
+
+                return false;
+            }
+        }
+    }
+
+    return true;
+} // matchDrawRules
 
 PXR_NS::UsdStageLoadRules
 getLoadRules(const SceneLoadSet* loadSet)

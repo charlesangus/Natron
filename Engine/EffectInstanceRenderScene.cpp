@@ -196,6 +196,10 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     actionArgs.isRenderResponseToUserInteraction = frameArgs->isRenderResponseToUserInteraction;
     actionArgs.context = args.context;
 
+    // The inputs' draw rules in input order, kept from the action: what it sets on its output
+    // are its own rules, and a payload it passes on from an input would otherwise bring that
+    // input's rules twice.
+    SceneDrawRules drawRules;
     const int nInputs = getNInputs();
     for (int i = 0; i < nInputs; ++i) {
         EffectInstancePtr input = getInput(i);
@@ -211,7 +215,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         if (inputCode != eRenderRoIRetCodeOk) {
             return inputCode;
         }
-        actionArgs.inputScenes[i] = inputScene;
+        appendSceneDrawRules(inputScene.getDrawRules(), &drawRules);
+        actionArgs.inputScenes[i] = inputScene.getDrawRules().empty() ? inputScene : inputScene.withDrawRules(SceneDrawRules());
     }
 
     if (aborted()) {
@@ -251,7 +256,12 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return eRenderRoIRetCodeFailed;
     }
 
-    *outputScene = renderedScene;
+    if (drawRules.empty()) {
+        *outputScene = renderedScene;
+    } else {
+        appendSceneDrawRules(renderedScene.getDrawRules(), &drawRules);
+        *outputScene = renderedScene.withDrawRules(drawRules);
+    }
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::evaluateScene

@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -404,6 +405,24 @@ bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  std::vector<PXR_NS::SdfPath>* paths,
                  std::string* errorMessage,
                  const std::function<bool()>& cancelled);
+
+/**
+ * @brief Whether matchDrawRules() needs a stage for rules: false when every rule names plain paths
+ * only and walks nothing below them, so loads cannot change what they match.
+ **/
+bool drawRulesNeedStage(const SceneDrawRules& rules);
+
+/**
+ * @brief The graph policy rules ask for on stage, in their order (sceneAddDrawRuleMatch()). A
+ * pattern matches the active, defined, non-abstract prims stage has composed, an unloaded payload's
+ * own prim included; plain paths are taken without a stage, whether they exist or not. A rule
+ * that matches nothing, or whose pattern does not parse, adds nothing and is no error. stage may
+ * be null. Polls cancelled as it walks; returns false with *policy empty once it turns true.
+ **/
+bool matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneDrawRules& rules,
+                    SceneDrawStates::PolicyStates* policy,
+                    const std::function<bool()>& cancelled);
 
 // The stage load rules loadSet stands for: every payload for a null one.
 PXR_NS::UsdStageLoadRules getLoadRules(const SceneLoadSet* loadSet);

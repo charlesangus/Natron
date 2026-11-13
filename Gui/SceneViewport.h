@@ -1224,6 +1224,8 @@ private:
     void editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit, std::size_t rows = 0);
     void editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits);
     void deliverDrawChange(const SceneDrawChange& change);
+    // Main thread: the graph policy the scene's draw rules, of the generation given, matched.
+    void onDrawRulesMatched(U64 generation, const SceneDrawStates::PolicyStates& policy);
     void wakeLoadsAskedBeforeStage();
     // A restore's load set stops standing in for loads the stage has yet to take.
     void forgetRestoredLoads();

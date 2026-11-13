@@ -25,15 +25,30 @@
 
 #include "ScenePayloadImpl.h"
 
+#include <algorithm>
+
 NATRON_NAMESPACE_ENTER
+
+void
+appendSceneDrawRules(const SceneDrawRules& rules,
+                     SceneDrawRules* to)
+{
+    for (const SceneDrawRule& rule : rules) {
+        if (std::find(to->begin(), to->end(), rule) == to->end()) {
+            to->push_back(rule);
+        }
+    }
+}
 
 ScenePayload::ScenePayload()
     : _imp()
+    , _drawRules()
 {
 }
 
 ScenePayload::ScenePayload(const std::shared_ptr<const ScenePayloadImpl>& imp)
     : _imp(imp)
+    , _drawRules()
 {
 }
 
@@ -84,6 +99,26 @@ ScenePayload::isSameStack(const ScenePayload& other) const
     }
 
     return true;
+}
+
+const SceneDrawRules&
+ScenePayload::getDrawRules() const
+{
+    static const SceneDrawRules none;
+
+    return _drawRules ? *_drawRules : none;
+}
+
+ScenePayload
+ScenePayload::withDrawRules(const SceneDrawRules& rules) const
+{
+    ScenePayload payload(_imp);
+
+    if (!rules.empty()) {
+        payload._drawRules = std::make_shared<const SceneDrawRules>(rules);
+    }
+
+    return payload;
 }
 
 NATRON_NAMESPACE_EXIT

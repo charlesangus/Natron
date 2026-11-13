@@ -5753,6 +5753,9 @@ struct SceneViewport::Implementation {
     bool quit = false;
     bool hasPending = false;
     ScenePayload pending;
+    // Draw rules for the stage as the worker last synced it, which leave it as it is.
+    bool hasPendingDrawRules = false;
+    SceneDrawRules pendingDrawRules;
     // The live textures the pending payload shows at pendingFrame, which the worker renders
     // before it syncs: Hydra only reads them.
     LiveTextureSourceList pendingLiveTextures;
@@ -5764,6 +5767,48 @@ struct SceneViewport::Implementation {
     // Main thread: what the next requestSync()'s payload was evaluated for.
     SceneLoadSetPtr requestedLoadSet;
     SceneLoadReachPtr requestedReach;
+
+    // The draw rules of the scene the worker last matched, and how many times they changed; the
+    // load thread matches them again after each load, so a pattern finds what the load brought.
+    std::mutex drawRulesMutex;
+    SceneDrawRules syncedDrawRules;
+    U64 drawRulesGeneration = 0;
+    // Main thread: the policy last put in the draw states, and the generation it was matched for.
+    SceneDrawStates::PolicyStates appliedPolicy;
+    U64 appliedDrawRulesGeneration = 0;
+
+    // Any thread but the main one: matches rules on the stage shown and hands the policy to view.
+    // False, handing nothing, once cancelled turns true.
+    bool matchDrawRules(SceneViewport* view,
+                        const SceneDrawRules& rules,
+                        U64 generation,
+                        const std::function<bool()>& cancelled)
+    {
+        SceneDrawStates::PolicyStates policy;
+        bool matched = true;
+        renderer.readStage([&](const SceneStage* stage) {
+            matched = SceneOps::matchDrawRules(stage ? stage->getStage() : UsdStageRefPtr(), rules, &policy, cancelled);
+        });
+        if (!matched) {
+            return false;
+        }
+        // Dropped by Qt if the widget is gone by then.
+        QMetaObject::invokeMethod(view, [view, generation, policy]() { view->onDrawRulesMatched(generation, policy); }, Qt::QueuedConnection);
+
+        return true;
+    }
+
+    // Worker: publishes rules for the load thread, as a new generation when they changed.
+    U64 publishDrawRules(const SceneDrawRules& rules)
+    {
+        std::lock_guard<std::mutex> lock(drawRulesMutex);
+        if (rules != syncedDrawRules) {
+            syncedDrawRules = rules;
+            ++drawRulesGeneration;
+        }
+
+        return drawRulesGeneration;
+    }
 
     // Main thread: the last request made, the last one synced, and the error the last request
     // shows once synced. A request whose payload shows live textures leaves the renderer at the
@@ -6122,6 +6167,18 @@ SceneViewport::SceneViewport(QWidget* parent)
             if (imp->loadQuit) {
                 return;
             }
+            {
+                SceneDrawRules rules;
+                U64 generation = 0;
+                {
+                    std::lock_guard<std::mutex> lock(imp->drawRulesMutex);
+                    rules = imp->syncedDrawRules;
+                    generation = imp->drawRulesGeneration;
+                }
+                if (SceneOps::drawRulesNeedStage(rules)) {
+                    imp->matchDrawRules(this, rules, generation, [imp]() { return imp->loadQuit.load(); });
+                }
+            }
             // Payloads without extent hints leave nothing to frame until one of them loads.
             const U64 loadEditCount = imp->renderer.getStageLoadEditCount();
             const SceneViewportRenderer::FrameBounds bounds = imp->renderer.isFramed() ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
@@ -6130,6 +6187,24 @@ SceneViewport::SceneViewport(QWidget* parent)
         }
     });
     _imp->worker = std::thread([this, imp]() {
+        // Whether the stage holds a synced scene to match draw rules on.
+        bool stageSynced = false;
+        // What the draw rules were last matched for, completely.
+        bool rulesMatched = false;
+        SceneDrawRules matchedRules;
+        ScenePayload matchedFor;
+        const auto matchDrawRules = [this, imp, &rulesMatched, &matchedRules](const SceneDrawRules& rules, bool stackChanged) {
+            if (rulesMatched && (rules == matchedRules) && !(stackChanged && SceneOps::drawRulesNeedStage(rules))) {
+                return;
+            }
+            const U64 generation = imp->publishDrawRules(rules);
+            rulesMatched = imp->matchDrawRules(this, rules, generation, [imp]() {
+                std::lock_guard<std::mutex> lock(imp->queueMutex);
+
+                return imp->quit || imp->hasPending || imp->hasPendingDrawRules;
+            });
+            matchedRules = rules;
+        };
         for (;;) {
             ScenePayload payload;
             U64 serial = 0;
@@ -6142,13 +6217,21 @@ SceneViewport::SceneViewport(QWidget* parent)
             bool pivot = false;
             SceneLoadSetPtr loadSet;
             SceneLoadReachPtr reach;
+            bool rulesOnly = false;
+            SceneDrawRules rulesOnlyRules;
             {
                 std::unique_lock<std::mutex> lock(imp->queueMutex);
-                imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending || (imp->pendingFramingId != 0) || imp->pendingPivot; });
+                imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending || imp->hasPendingDrawRules || (imp->pendingFramingId != 0) || imp->pendingPivot; });
                 if (imp->quit) {
                     return;
                 }
                 sync = imp->hasPending;
+                rulesOnly = !sync && imp->hasPendingDrawRules;
+                if (rulesOnly) {
+                    rulesOnlyRules.swap(imp->pendingDrawRules);
+                }
+                imp->hasPendingDrawRules = false;
+                imp->pendingDrawRules.clear();
                 if (sync) {
                     payload = imp->pending;
                     imp->pending = ScenePayload();
@@ -6182,6 +6265,14 @@ SceneViewport::SceneViewport(QWidget* parent)
                 const SceneViewportRenderer::FrameBounds bounds = (!ok || imp->renderer.isFramed()) ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
                 // Dropped by Qt if the widget is gone by then.
                 QMetaObject::invokeMethod(this, [this, serial, ok, qerror, bounds]() { onSynced(serial, ok, qerror, bounds); }, Qt::QueuedConnection);
+                stageSynced = ok;
+                if (ok) {
+                    matchDrawRules(payload.getDrawRules(), !payload.isSameStack(matchedFor));
+                    matchedFor = payload;
+                }
+            }
+            if (rulesOnly && stageSynced) {
+                matchDrawRules(rulesOnlyRules, false);
             }
             if (framingId != 0) {
                 const SceneViewportRenderer::FrameBounds bounds = imp->renderer.computeFrameBounds(framingSelection, imp->renderer.getTimeCode());
@@ -6617,6 +6708,18 @@ SceneViewport::publishDrawStats()
 }
 
 void
+SceneViewport::onDrawRulesMatched(U64 generation,
+                                  const SceneDrawStates::PolicyStates& policy)
+{
+    if ((generation < _imp->appliedDrawRulesGeneration) || ((generation == _imp->appliedDrawRulesGeneration) && (policy == _imp->appliedPolicy))) {
+        return;
+    }
+    _imp->appliedDrawRulesGeneration = generation;
+    _imp->appliedPolicy = policy;
+    editDrawStates([policy](SceneDrawStates* states) { return states->replacePolicyStates(policy); }, policy.size());
+}
+
+void
 SceneViewport::deliverDrawChange(const SceneDrawChange& change)
 {
     if (_imp->renderer.postDrawChange(change, _imp->drawRevealBatch) && _imp->usesRenderThread) {
@@ -6974,6 +7077,24 @@ SceneViewport::setScene(const ScenePayload& payload,
 {
     _imp->frame = frame;
     _imp->framesPerSecond = framesPerSecond;
+    if (!payload.isEmpty() && _imp->requestedError.isEmpty() && !_imp->requestedLiveTextures && payload.isSameStack(_imp->requestedPayload)) {
+        // Only the draw rules can differ: the stage, and any frame rendering it, stay as they are.
+        _imp->requestedPayload = payload;
+        _imp->requestedLoadSet.reset();
+        _imp->requestedReach.reset();
+        {
+            std::lock_guard<std::mutex> lock(_imp->queueMutex);
+            if (_imp->hasPending) {
+                _imp->pending = payload;
+            } else {
+                _imp->hasPendingDrawRules = true;
+                _imp->pendingDrawRules = payload.getDrawRules();
+            }
+        }
+        _imp->queueChanged.notify_one();
+
+        return;
+    }
     requestSync(payload, QString());
 }
 

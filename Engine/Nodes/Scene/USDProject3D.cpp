@@ -345,6 +345,28 @@ USDProject3D::getPlateAspect(double time) const
     return (format.height() > 0) ? format.width() * format.getPixelAspectRatio() / format.height() : 1.;
 }
 
+SceneEvaluationContext
+USDProject3D::getSceneInputContext(int inputNb,
+                                   const SceneEvaluationContext& ctx,
+                                   double /*time*/,
+                                   ViewIdx /*view*/) const
+{
+    return (inputNb == kUSDProject3DInputCamera) ? SceneNodeAuthoring::getCameraInputContext(ctx, _camera.getPath()) : ctx;
+}
+
+void
+USDProject3D::mapSceneInputReach(int inputNb,
+                                 const std::vector<std::string>& in,
+                                 std::vector<std::string>* out) const
+{
+    // A camera input read on its own context loads the same whatever the output loads.
+    if (inputNb == kUSDProject3DInputCamera) {
+        out->clear();
+    } else {
+        *out = in;
+    }
+}
+
 StatusEnum
 USDProject3D::renderScene(const SceneRenderActionArgs& args,
                           ScenePayload* outputScene,

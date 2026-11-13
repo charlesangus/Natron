@@ -748,6 +748,28 @@ USDProjectUV::getFormatAspect() const
     return (format.height() > 0) ? format.width() * format.getPixelAspectRatio() / format.height() : 1.;
 }
 
+SceneEvaluationContext
+USDProjectUV::getSceneInputContext(int inputNb,
+                                   const SceneEvaluationContext& ctx,
+                                   double /*time*/,
+                                   ViewIdx /*view*/) const
+{
+    return (inputNb == 1) ? SceneNodeAuthoring::getCameraInputContext(ctx, _camera.getPath()) : ctx;
+}
+
+void
+USDProjectUV::mapSceneInputReach(int inputNb,
+                                 const std::vector<std::string>& in,
+                                 std::vector<std::string>* out) const
+{
+    // A camera input read on its own context loads the same whatever the output loads.
+    if (inputNb == 1) {
+        out->clear();
+    } else {
+        *out = in;
+    }
+}
+
 StatusEnum
 USDProjectUV::renderScene(const SceneRenderActionArgs& args,
                           ScenePayload* outputScene,
@@ -867,11 +889,17 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
                 // A named camera needs only the payloads on its path; looking for the first camera
                 // searches the whole scene as the evaluation loads it, so any load can change it.
                 const std::vector<std::string> cameraReach(1, settings.cameraPath.empty() ? std::string("/") : settings.cameraPath);
-                context.reach->add(cameraReach);
-                if (args.context.reach) {
-                    args.context.reach->add(cameraReach);
+                // A Camera input on its own context (getSceneInputContext()) loads the same
+                // whatever the output loads, so no load of the output reaches the camera.
+                const bool cameraApart = cameraInput && !SceneNodeAuthoring::getCameraInputContext(SceneEvaluationContext(), settings.cameraPath).includesEverything();
+                if (!cameraApart) {
+                    context.reach->add(cameraReach);
+                    if (args.context.reach) {
+                        args.context.reach->add(cameraReach);
+                    }
                 }
-                const SceneLoadSetPtr cameraLoadSet = settings.cameraPath.empty() ? context.loadSet : SceneLoadSet::withPaths(context.loadSet, cameraReach);
+                const SceneLoadSetPtr cameraLoadSet = cameraApart ? SceneLoadSet::withPaths(args.getInputContext(1).loadSet, cameraReach)
+                                                                  : (settings.cameraPath.empty() ? context.loadSet : SceneLoadSet::withPaths(context.loadSet, cameraReach));
                 lease = SceneQueryPool::instance().borrow(cameraScene, cameraLoadSet, errorMessage);
                 stage = lease.getStage();
                 if (!stage) {

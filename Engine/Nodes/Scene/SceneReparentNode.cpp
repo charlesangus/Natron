@@ -30,6 +30,7 @@
 
 #include <QStringList>
 
+#include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
@@ -37,6 +38,8 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Project.h"
+#include "Engine/SceneLoadSet.h"
 
 #include <pxr/usd/usd/primRange.h>
 
@@ -341,6 +344,89 @@ SceneReparentNode::authorOverrides(const SceneLayerEdit& edit,
     return true;
 }
 
+bool
+SceneReparentNode::getPlacement(bool* wrapping,
+                                std::string* destination,
+                                std::string* moved,
+                                bool* autoRename) const
+{
+    PXR_NS::SdfPath path;
+    std::string error;
+    if (!SceneNodeAuthoring::getPrimPath(_primPath.lock(), &path, &error)) {
+        return false;
+    }
+    *wrapping = isWrapping();
+    *destination = path.GetString();
+    moved->clear();
+    KnobBoolPtr autoRenameKnob = _autoRename.lock();
+    *autoRename = autoRenameKnob && autoRenameKnob->getValue();
+    if (!*wrapping) {
+        return true;
+    }
+    KnobStringPtr wrapNameKnob = _wrapName.lock();
+    PXR_NS::SdfPath wrapPath;
+    if (!getWrapPath(path, wrapNameKnob ? wrapNameKnob->getValue() : std::string(), &wrapPath, &error)) {
+        return false;
+    }
+    *moved = wrapPath.AppendChild(path.GetNameToken()).GetString();
+
+    return true;
+}
+
+std::string
+SceneReparentNode::getPassThroughRoot() const
+{
+    AppInstancePtr app = getApp();
+
+    return app ? app->getProject()->getProjectMaterialsScope() : std::string();
+}
+
+SceneEvaluationContext
+SceneReparentNode::getSceneInputContext(int inputNb,
+                                        const SceneEvaluationContext& ctx,
+                                        double /*time*/,
+                                        ViewIdx /*view*/) const
+{
+    bool wrapping = false;
+    std::string destination;
+    std::string moved;
+    bool autoRename = false;
+    if ((inputNb < 0) || (inputNb >= kSceneReparentInputCount) || !getPlacement(&wrapping, &destination, &moved, &autoRename)) {
+        return ctx;
+    }
+    if (wrapping) {
+        return (inputNb == 0) ? SceneEvaluationContext(ctx.id, SceneOps::mapWrapLoadSet(ctx.loadSet, destination, moved)) : ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, destination, getPassThroughRoot(), autoRename));
+}
+
+void
+SceneReparentNode::mapSceneInputReach(int inputNb,
+                                      const std::vector<std::string>& in,
+                                      std::vector<std::string>* out) const
+{
+    bool wrapping = false;
+    std::string destination;
+    std::string moved;
+    bool autoRename = false;
+    if ((inputNb < 0) || (inputNb >= kSceneReparentInputCount) || !getPlacement(&wrapping, &destination, &moved, &autoRename)) {
+        *out = in;
+
+        return;
+    }
+    if (wrapping) {
+        if (inputNb == 0) {
+            SceneOps::mapWrapReach(destination, moved, in, out);
+        } else {
+            *out = in;
+        }
+
+        return;
+    }
+    SceneOps::mapGraftReach(&_graftMemo, inputNb, destination, getPassThroughRoot(), in, out);
+}
+
 StatusEnum
 SceneReparentNode::renderWrap(const SceneRenderActionArgs& args,
                               const std::string& wrappedPath,
@@ -472,6 +558,7 @@ SceneReparentNode::renderScene(const SceneRenderActionArgs& args,
     SceneReparentArgs reparent;
     for (int i = 0; i < kSceneReparentInputCount; ++i) {
         reparent.inputs.push_back(args.getInputScene(i));
+        reparent.inputContexts.push_back(args.getInputContext(i));
     }
     reparent.destinationPath = path.GetString();
     reparent.destinationType = getPrimTypeName();

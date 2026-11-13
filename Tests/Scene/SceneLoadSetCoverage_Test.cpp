@@ -48,6 +48,8 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneReparentNode.h"
+#include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDEditPrim.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDProjectUV.h"
@@ -364,6 +366,55 @@ graftIn(const SceneEvaluationContext& context,
 
     return report;
 }
+
+// Evaluates node as a viewer loading loadSet, reach gathering the paths a load change reaches.
+void
+evaluateAsViewer(const NodePtr& node,
+                 const SceneLoadSetPtr& loadSet,
+                 const SceneLoadReachPtr& reach)
+{
+    ASSERT_TRUE(bool(node));
+    std::string error;
+    ScenePayload payload;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), loadSet, reach)), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+}
+
+// Whether some prefix is root or lies below it.
+bool
+reachesUnder(const std::vector<std::string>& prefixes,
+             const std::string& root)
+{
+    for (const std::string& prefix : prefixes) {
+        if ((prefix == root) || (prefix.compare(0, root.size() + 1, root + "/") == 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+setChoice(const NodePtr& node,
+          const char* name,
+          const std::string& id)
+{
+    KnobChoice* knob = dynamic_cast<KnobChoice*>(node->getKnobByName(name).get());
+    ASSERT_TRUE(knob != NULL) << name;
+    knob->setValueFromID(id, 0);
+}
+
+void
+setString(const NodePtr& node,
+          const char* name,
+          const std::string& value)
+{
+    KnobString* knob = dynamic_cast<KnobString*>(node->getKnobByName(name).get());
+    ASSERT_TRUE(knob != NULL) << name;
+    knob->setValue(value);
+}
 } // anonymous namespace
 
 TEST_F(SceneLoadSetCoverageTest, TheProbeCountsTheBuildingsOpenInTheProcess)
@@ -639,10 +690,124 @@ TEST_F(SceneLoadSetCoverageTest, AGraftEvaluatesTheSameOnALoadSetAsOnEverything)
 {
     CarCity city(2, 2);
     NodePtr source = readerOf(writeLinkedCity(city));
-    NodePtr node = xformPrim(source, "/Grp");
-    ASSERT_TRUE(source && node);
+    NodePtr pruned = prune(source, "/World//car*");
+    NodePtr node = xformPrim(pruned, "/Grp");
+    ASSERT_TRUE(source && pruned && node);
 
-    expectParity(node, loadingOnly({ "/World/Block_0" }));
+    expectParity(node, loadingOnly({ "/Grp/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, APruneAboveAGraftOpensOnlyTheGraftedPathsLoadedAndReachesThem)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr pruned = prune(source, "/World//car*");
+    NodePtr node = xformPrim(pruned, "/Grp");
+    ASSERT_TRUE(source && pruned && node);
+    const SceneLoadSetPtr loaded = loadingOnly({ "/Grp/World/Block_0" });
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+
+    evaluateAsViewer(node, loaded, reach);
+    EXPECT_EQ(2, city.openedBuildings());
+    const std::vector<std::string> prefixes = reach->getPrefixes();
+    EXPECT_TRUE(reachesUnder(prefixes, "/Grp/World"));
+    EXPECT_FALSE(reachesUnder(prefixes, "/World"));
+    EXPECT_TRUE(SceneOps::loadChangeReaches(loaded.get(), loadingOnly({ "/Grp/World/Block_0", "/Grp/World/Block_1" }).get(), prefixes));
+
+    expectParity(node, loaded);
+}
+
+TEST_F(SceneLoadSetCoverageTest, APruneAboveAWrapEvaluatesTheSameAndReachesTheMovedPaths)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr pruned = prune(source, "/World//car*");
+    NodePtr node = xformPrim(pruned, "/World");
+    ASSERT_TRUE(source && pruned && node);
+    setChoice(node, kSceneReparentParamMode, "wrap");
+    setString(node, kSceneReparentParamWrapName, "Grp");
+    const SceneLoadSetPtr loaded = loadingOnly({ "/Grp/World/Block_0" });
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+
+    evaluateAsViewer(node, loaded, reach);
+    const std::vector<std::string> prefixes = reach->getPrefixes();
+    EXPECT_TRUE(reachesUnder(prefixes, "/Grp/World"));
+    EXPECT_TRUE(SceneOps::loadChangeReaches(loaded.get(), loadingOnly({ "/Grp/World/Block_0", "/Grp/World/Block_1" }).get(), prefixes));
+
+    expectParity(node, loaded);
+}
+
+TEST_F(SceneLoadSetCoverageTest, AGraftRenamingACollidingRootLoadsAtLeastWhatItsOutputLoads)
+{
+    CarCity first(2, 2);
+    CarCity second(2, 2);
+    NodePtr a = prune(reader(first), "/World//car*");
+    NodePtr b = prune(reader(second), "/World//car*");
+    ASSERT_TRUE(a && b);
+    NodePtr node = xformPrim(a, "/Grp");
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(node->connectInput(b, 1));
+    KnobBool* autoRename = dynamic_cast<KnobBool*>(node->getKnobByName(kSceneReparentParamAutoRename).get());
+    ASSERT_TRUE(autoRename != NULL);
+    autoRename->setValue(true);
+    const SceneLoadSetPtr loaded = loadingOnly({ "/Grp/World_1/Block_0" });
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+
+    evaluateAsViewer(node, loaded, reach);
+    // Which input lands under World_1 is known only once both are read, so both load Block_0.
+    EXPECT_EQ(2, second.openedBuildings());
+    EXPECT_GE(2, first.openedBuildings());
+    EXPECT_TRUE(SceneOps::loadChangeReaches(loaded.get(), loadingOnly({ "/Grp/World_1/Block_0", "/Grp/World_1/Block_1" }).get(), reach->getPrefixes()));
+
+    expectParity(node, loaded);
+}
+
+TEST_F(SceneLoadSetCoverageTest, AnAssignedMaterialInputReachesTheScopeItIsGraftedUnder)
+{
+    CarCity city(2, 2);
+    CarCity materialCity(2, 2);
+    NodePtr scene = reader(city);
+    NodePtr material = prune(readerOf(writeLinkedCity(materialCity)), "/World//car*");
+    ASSERT_TRUE(scene && material);
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(node->connectInput(scene, kUSDAssignMaterialInputScene));
+    ASSERT_TRUE(node->connectInput(material, kUSDAssignMaterialInputMaterial));
+    setString(node, kUSDAssignMaterialParamPrimPattern, "/World/Ground");
+    const SceneLoadSetPtr loaded = loadingOnly({ "/World/Block_0" });
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+
+    evaluateAsViewer(node, loaded, reach);
+    const std::vector<std::string> prefixes = reach->getPrefixes();
+    EXPECT_TRUE(reachesUnder(prefixes, "/materials/World"));
+    EXPECT_TRUE(SceneOps::loadChangeReaches(loaded.get(), loadingOnly({ "/World/Block_0", "/materials/World/Block_0" }).get(), prefixes));
+
+    expectParity(node, loaded);
+    expectParity(node, loadingOnly({ "/materials/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AReferencedSourceInputOpensOnlyWhatTheTargetLoadsAndReachesIt)
+{
+    CarCity city(2, 2);
+    NodePtr source = prune(reader(city), "/World//car*");
+    ASSERT_TRUE(bool(source));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREFERENCE));
+    ASSERT_TRUE(bool(node));
+    setChoice(node, kUSDReferenceParamSource, "input");
+    setString(node, kSceneParamPrimPath, "/Ref");
+    setString(node, kUSDReferenceParamSourcePrim, "/World/Block_0");
+    ASSERT_TRUE(node->connectInput(source, 1));
+    const SceneLoadSetPtr loaded = loadingOnly({ "/Ref/B_0" });
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+
+    evaluateAsViewer(node, loaded, reach);
+    EXPECT_EQ(1, city.openedBuildings());
+    const std::vector<std::string> prefixes = reach->getPrefixes();
+    EXPECT_TRUE(reachesUnder(prefixes, "/Ref"));
+    EXPECT_FALSE(reachesUnder(prefixes, "/World"));
+    EXPECT_TRUE(SceneOps::loadChangeReaches(loaded.get(), loadingOnly({ "/Ref/B_0", "/Ref/B_1" }).get(), prefixes));
+
+    expectParity(node, loaded);
 }
 
 TEST_F(SceneLoadSetCoverageTest, GraftsAndUnmappedLinksOnALoadSetAreThoseOfEverythingItLoads)

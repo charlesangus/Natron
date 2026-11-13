@@ -96,6 +96,13 @@ public:
     static std::shared_ptr<const SceneLoadSet> unite(const std::shared_ptr<const SceneLoadSet>& a,
                                                      const std::shared_ptr<const SceneLoadSet>& b);
 
+    /**
+     * @brief The rule one entry at path would need to include what this set includes at path and
+     * below it where no entry below path decides: the rule of the nearest entry at or above path,
+     * eRuleNone for an eRuleOnly above it, eRuleAll with no entries.
+     **/
+    RuleEnum getRuleAt(const std::string& path) const;
+
     U64 getHash() const;
 
     bool operator==(const SceneLoadSet& other) const;

@@ -282,6 +282,65 @@ USDReference::onKnobsLoaded()
     refreshVisibility();
 }
 
+bool
+USDReference::getArcPaths(std::string* targetPath,
+                          std::string* sourcePath) const
+{
+    PXR_NS::SdfPath target;
+    std::string error;
+    if (!SceneNodeAuthoring::getPrimPath(_primPath.lock(), &target, &error)) {
+        return false;
+    }
+    *targetPath = target.GetString();
+    KnobStringPtr sourcePrimKnob = _sourcePrim.lock();
+    const std::string sourcePrim = sourcePrimKnob ? sourcePrimKnob->getValue() : std::string();
+    const bool valid = PXR_NS::SdfPath::IsValidPathString(sourcePrim) && PXR_NS::SdfPath(sourcePrim).IsAbsolutePath() && PXR_NS::SdfPath(sourcePrim).IsPrimPath();
+    *sourcePath = valid ? sourcePrim : std::string();
+
+    return true;
+}
+
+SceneEvaluationContext
+USDReference::getSceneInputContext(int inputNb,
+                                   const SceneEvaluationContext& ctx,
+                                   double /*time*/,
+                                   ViewIdx /*view*/) const
+{
+    if (inputNb != 1) {
+        return ctx;
+    }
+    // Referencing a file, the node reads nothing of the Source input.
+    if (getSource() == eSourceFile) {
+        return SceneEvaluationContext(ctx.id, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    }
+    std::string targetPath;
+    std::string sourcePath;
+    if (!getArcPaths(&targetPath, &sourcePath) || sourcePath.empty()) {
+        return SceneEvaluationContext(ctx.id, SceneLoadSetPtr());
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneOps::mapReferenceLoadSet(ctx.loadSet, targetPath, sourcePath));
+}
+
+void
+USDReference::mapSceneInputReach(int inputNb,
+                                 const std::vector<std::string>& in,
+                                 std::vector<std::string>* out) const
+{
+    if (inputNb != 1) {
+        *out = in;
+
+        return;
+    }
+    out->clear();
+    std::string targetPath;
+    std::string sourcePath;
+    if ((getSource() == eSourceFile) || !getArcPaths(&targetPath, &sourcePath)) {
+        return;
+    }
+    SceneOps::mapReferenceReach(targetPath, sourcePath, in, out);
+}
+
 StatusEnum
 USDReference::renderScene(const SceneRenderActionArgs& args,
                           ScenePayload* outputScene,
@@ -331,7 +390,7 @@ USDReference::renderScene(const SceneRenderActionArgs& args,
             } else if (!source.getMetadata().defaultPrim.empty()) {
                 sourcePaths.push_back("/" + source.getMetadata().defaultPrim);
             }
-            if (!borrowStage(source, args.context, sourcePaths, &lease, errorMessage)) {
+            if (!borrowStage(source, args.getInputContext(1), sourcePaths, &lease, errorMessage)) {
                 setPersistentMessage(eMessageTypeError, *errorMessage);
 
                 return eStatusFailed;

@@ -263,15 +263,37 @@ bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
  * @brief For a node assigning one shared material: grafts every root prim of material under the
  * scope root /<scope> (typed Scope) through SceneOps::reparentRoots, memoized in memo, a root named
  * like the scope passed through rather than nested. graft->materialPath is the grafted path of
- * material's first UsdShadeMaterial, depth first. Returns false with *errorMessage set when scope
- * is empty or authoring fails.
+ * material's first UsdShadeMaterial, depth first. materialContext is the context material was
+ * evaluated on (getSharedMaterialContext()). Returns false with *errorMessage set when scope is
+ * empty or authoring fails.
  **/
 bool graftSharedMaterial(const ScenePayload& material,
+                         const SceneEvaluationContext& materialContext,
                          const std::string& scope,
                          const std::string& layerTag,
                          SceneGraftMemo* memo,
                          SceneMaterialGraft* graft,
                          std::string* errorMessage);
+
+/**
+ * @brief The context the material input of graftSharedMaterial() is evaluated on, for an output
+ * evaluated on ctx, and the reach that input gathers as output paths, for scope.
+ **/
+SceneEvaluationContext getSharedMaterialContext(const SceneEvaluationContext& ctx,
+                                                const std::string& scope);
+void mapSharedMaterialReach(SceneGraftMemo* memo,
+                            const std::string& scope,
+                            const std::vector<std::string>& in,
+                            std::vector<std::string>* out);
+
+/**
+ * @brief The context a camera input that is read but not composed into the output is evaluated
+ * on: only the payloads on the way to cameraPath, whatever ctx loads, so that no load of the
+ * output reaches it. ctx itself when cameraPath is not an absolute prim path, as when the first
+ * camera of the input is looked for.
+ **/
+SceneEvaluationContext getCameraInputContext(const SceneEvaluationContext& ctx,
+                                             const std::string& cameraPath);
 
 /**
  * @brief One collection-based material binding authorCollectionBinding() writes on a root prim.

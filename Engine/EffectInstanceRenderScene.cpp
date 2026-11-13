@@ -252,7 +252,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
 
         ScenePayload inputScene;
         RenderRoIRetCode inputCode;
-        if (inputContext.hasSameLoadSet(args.context)) {
+        if (inputContext.hasSameLoadSet(args.context) && (inputContext.reach == args.context.reach)) {
             inputCode = input->evaluateScene(args, &inputScene, errorMessage);
         } else {
             {

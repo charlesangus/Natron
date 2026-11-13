@@ -1844,10 +1844,12 @@ protected:
      * input's prims at other paths (a graft, a wrap, a reference) maps ctx's set onto the
      * input's paths, erring towards loading more, null when it cannot tell.
      *
-     * Only the load set of the result counts. When it differs from ctx's, evaluateScene() gives
-     * the input an id kept for this node, inputNb and ctx's id, so that a node reached both
-     * through the mapping and directly memoizes each apart, and a reach of its own that
-     * mapSceneInputReach() brings back to ctx.
+     * Only the load set of the result counts, and whether its reach is ctx's: a node whose input
+     * paths differ from its output's returns another reach (null will do), so that the input's
+     * reach is mapped even where the two sets happen to include the same payloads. When the set or
+     * the reach differs from ctx's, evaluateScene() gives the input an id kept for this node,
+     * inputNb and ctx's id, so that a node reached both through the mapping and directly memoizes
+     * each apart, and a reach of its own that mapSceneInputReach() brings back to ctx.
      **/
     virtual SceneEvaluationContext getSceneInputContext(int /*inputNb*/,
                                                         const SceneEvaluationContext& ctx,

@@ -2608,15 +2608,17 @@ reparentRoots(const SceneReparentArgs& args,
     // wrapper: the same stack composes the same.
     std::vector<GraftSlot> slots(args.inputs.size());
     std::vector<bool> readConsumed(memoizedSlots, false);
-    std::vector<std::string> reach;
+    // Where loads change each input's reads, on the paths of the context it was read on.
+    std::vector<std::vector<std::string>> reaches(args.inputs.size());
     for (std::size_t i = 0; i < args.inputs.size(); ++i) {
         GraftSlot& slot = slots[i];
+        const SceneEvaluationContext& inputContext = (i < args.inputContexts.size()) ? args.inputContexts[i] : context;
         slot.input = args.inputs[i];
         slot.destinationPath = args.destinationPath;
         slot.passThroughRoot = args.passThroughRoot;
-        slot.loadSet = context.loadSet;
+        slot.loadSet = inputContext.loadSet;
         bool gprimChecked = false;
-        if (const GraftSlot* previous = findSlotShared(state, memoized, &readConsumed, slot.input, &context.loadSet, NULL)) {
+        if (const GraftSlot* previous = findSlotShared(state, memoized, &readConsumed, slot.input, &inputContext.loadSet, NULL)) {
             slot.rootNames = previous->rootNames;
             slot.links = previous->links;
             slot.wrapper = previous->wrapper;
@@ -2630,16 +2632,16 @@ reparentRoots(const SceneReparentArgs& args,
             if (const GraftSlot* other = findSlotShared(state, memoized, NULL, slot.input, NULL, NULL)) {
                 slot.wrapper = other->wrapper;
             }
-            if (!readInput(slot.input, context.loadSet, &slot.rootNames, &slot.links, &slot.readReach, errorMessage)) {
+            if (!readInput(slot.input, inputContext.loadSet, &slot.rootNames, &slot.links, &slot.readReach, errorMessage)) {
                 return false;
             }
             ++state.inputReadCount;
         }
-        if (!gprimChecked && !slot.passThroughRoot.empty() && (std::find(slot.rootNames.begin(), slot.rootNames.end(), slot.passThroughRoot) != slot.rootNames.end()) && !rootHoldsGprim(slot.input, context.loadSet, slot.passThroughRoot, &slot.passThroughHoldsGprim, &slot.passThroughReach, errorMessage)) {
+        if (!gprimChecked && !slot.passThroughRoot.empty() && (std::find(slot.rootNames.begin(), slot.rootNames.end(), slot.passThroughRoot) != slot.rootNames.end()) && !rootHoldsGprim(slot.input, inputContext.loadSet, slot.passThroughRoot, &slot.passThroughHoldsGprim, &slot.passThroughReach, errorMessage)) {
             return false;
         }
-        reach.insert(reach.end(), slot.readReach.begin(), slot.readReach.end());
-        reach.insert(reach.end(), slot.passThroughReach.begin(), slot.passThroughReach.end());
+        reaches[i].insert(reaches[i].end(), slot.readReach.begin(), slot.readReach.end());
+        reaches[i].insert(reaches[i].end(), slot.passThroughReach.begin(), slot.passThroughReach.end());
         if (destination.IsRootPrimPath()) {
             for (const std::string& root : slot.rootNames) {
                 if ((root == destination.GetName()) && (root != slot.passThroughRoot)) {
@@ -2806,8 +2808,11 @@ reparentRoots(const SceneReparentArgs& args,
     committed.slots.swap(slots);
     committed.output = result;
     state.graftLayerAuthorCount += graftLayersAuthored;
-    if (context.reach && !reach.empty()) {
-        context.reach->add(reach);
+    for (std::size_t i = 0; i < reaches.size(); ++i) {
+        const SceneEvaluationContext& inputContext = (i < args.inputContexts.size()) ? args.inputContexts[i] : context;
+        if (inputContext.reach && !reaches[i].empty()) {
+            inputContext.reach->add(reaches[i]);
+        }
     }
 
     if (grafts) {
@@ -2846,6 +2851,318 @@ reparentRoots(const SceneReparentArgs& args,
 
     return true;
 } // reparentRoots
+
+namespace {
+    // path as the absolute root or an absolute prim path; the empty path when it is neither.
+    PXR_NS::SdfPath
+    loadSetPath(const std::string& path)
+    {
+        if (!PXR_NS::SdfPath::IsValidPathString(path)) {
+            return PXR_NS::SdfPath();
+        }
+        const PXR_NS::SdfPath parsed(path);
+
+        return (parsed.IsAbsoluteRootPath() || (parsed.IsAbsolutePath() && parsed.IsPrimPath())) ? parsed : PXR_NS::SdfPath();
+    }
+
+    // Whether every entry of loadSet is a valid path loadSetPath() accepts.
+    bool
+    hasValidPaths(const SceneLoadSet& loadSet)
+    {
+        for (const SceneLoadSet::Entry& entry : loadSet.getEntries()) {
+            if (loadSetPath(entry.path).IsEmpty()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // The rules of loadSet strictly below from, moved below to.
+    void
+    appendMovedBelow(const SceneLoadSet& loadSet,
+                     const PXR_NS::SdfPath& from,
+                     const PXR_NS::SdfPath& to,
+                     std::vector<SceneLoadSet::Entry>* entries)
+    {
+        for (const SceneLoadSet::Entry& entry : loadSet.getEntries()) {
+            const PXR_NS::SdfPath path(entry.path);
+            if ((path != from) && path.HasPrefix(from)) {
+                entries->push_back(SceneLoadSet::Entry { path.ReplacePrefix(from, to).GetString(), entry.rule });
+            }
+        }
+    }
+
+    // What loadSet includes at and below from, at and below to.
+    void
+    appendMovedSubtree(const SceneLoadSet& loadSet,
+                       const PXR_NS::SdfPath& from,
+                       const PXR_NS::SdfPath& to,
+                       std::vector<SceneLoadSet::Entry>* entries)
+    {
+        entries->push_back(SceneLoadSet::Entry { to.GetString(), loadSet.getRuleAt(from.GetString()) });
+        appendMovedBelow(loadSet, from, to, entries);
+    }
+
+    // entries as a load set, null when every one includes everything.
+    SceneLoadSetPtr
+    makeMappedLoadSet(const std::vector<SceneLoadSet::Entry>& entries)
+    {
+        for (const SceneLoadSet::Entry& entry : entries) {
+            if (entry.rule != SceneLoadSet::eRuleAll) {
+                return std::make_shared<const SceneLoadSet>(entries);
+            }
+        }
+
+        return SceneLoadSetPtr();
+    }
+
+    void
+    addOnce(const std::string& path,
+            std::vector<std::string>* out)
+    {
+        if (std::find(out->begin(), out->end(), path) == out->end()) {
+            out->push_back(path);
+        }
+    }
+
+    // The root name autoRename would have given the suffix of name to, empty when name has none.
+    std::string
+    getRenamedStem(const std::string& name)
+    {
+        const std::string::size_type underscore = name.rfind('_');
+
+        if ((underscore == std::string::npos) || (underscore == 0) || (underscore + 1 == name.size()) || (name[underscore + 1] == '0')) {
+            return std::string();
+        }
+        for (std::string::size_type i = underscore + 1; i < name.size(); ++i) {
+            if ((name[i] < '0') || (name[i] > '9')) {
+                return std::string();
+            }
+        }
+
+        return name.substr(0, underscore);
+    }
+} // anonymous namespace
+
+SceneLoadSetPtr
+mapGraftLoadSet(const SceneLoadSetPtr& loadSet,
+                const std::string& destinationPath,
+                const std::string& passThroughRoot,
+                bool autoRename)
+{
+    if (!loadSet || loadSet->getEntries().empty()) {
+        return SceneLoadSetPtr();
+    }
+    const PXR_NS::SdfPath destination = loadSetPath(destinationPath);
+    if (destination.IsEmpty() || destination.IsAbsoluteRootPath() || !hasValidPaths(*loadSet)) {
+        return SceneLoadSetPtr();
+    }
+    // The destination prim is the graft's own: nothing loads at it, and what lies above it holds
+    // no input prim. Its rule for what lies below is every root's that no rule under it names.
+    const SceneLoadSet::RuleEnum destinationRule = (loadSet->getRuleAt(destinationPath) == SceneLoadSet::eRuleAll) ? SceneLoadSet::eRuleAll : SceneLoadSet::eRuleNone;
+    const SceneLoadSet::Entry closed { std::string("/"), SceneLoadSet::eRuleNone };
+
+    // The children of the destination that rules name, by the input root each can be grafted from.
+    std::map<std::string, std::set<std::string>> childrenByRoot;
+    const std::size_t childDepth = destination.GetPathElementCount() + 1;
+    for (const SceneLoadSet::Entry& entry : loadSet->getEntries()) {
+        const PXR_NS::SdfPath path(entry.path);
+        if ((path.GetPathElementCount() < childDepth) || !path.HasPrefix(destination)) {
+            continue;
+        }
+        const std::string child = path.GetPrefixes()[childDepth - 1].GetName();
+        childrenByRoot[child].insert(child);
+        const std::string stem = autoRename ? getRenamedStem(child) : std::string();
+        if (!stem.empty()) {
+            childrenByRoot[stem].insert(child);
+        }
+    }
+    childrenByRoot.erase(passThroughRoot);
+
+    std::vector<SceneLoadSet::Entry> entries(1, SceneLoadSet::Entry { std::string("/"), destinationRule });
+    for (const std::pair<const std::string, std::set<std::string>>& root : childrenByRoot) {
+        const PXR_NS::SdfPath rootPath = PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(root.first));
+        std::vector<SceneLoadSetPtr> candidates;
+        for (const std::string& child : root.second) {
+            std::vector<SceneLoadSet::Entry> candidate(1, closed);
+            appendMovedSubtree(*loadSet, destination.AppendChild(PXR_NS::TfToken(child)), rootPath, &candidate);
+            candidates.push_back(std::make_shared<const SceneLoadSet>(candidate));
+        }
+        if (autoRename) {
+            // The root may as well have landed under a suffix no rule names.
+            candidates.push_back(std::make_shared<const SceneLoadSet>(std::vector<SceneLoadSet::Entry> { closed, SceneLoadSet::Entry { rootPath.GetString(), destinationRule } }));
+        }
+        SceneLoadSetPtr united = candidates.front();
+        for (std::size_t i = 1; i < candidates.size(); ++i) {
+            united = SceneLoadSet::unite(united, candidates[i]);
+        }
+        if (!united) {
+            return SceneLoadSetPtr();
+        }
+        entries.push_back(SceneLoadSet::Entry { rootPath.GetString(), united->getRuleAt(rootPath.GetString()) });
+        appendMovedBelow(*united, rootPath, rootPath, &entries);
+    }
+    if (!passThroughRoot.empty() && PXR_NS::SdfPath::IsValidIdentifier(passThroughRoot)) {
+        const PXR_NS::SdfPath passed = PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(passThroughRoot));
+        appendMovedSubtree(*loadSet, passed, passed, &entries);
+    }
+
+    return makeMappedLoadSet(entries);
+} // mapGraftLoadSet
+
+void
+mapGraftReach(SceneGraftMemo* memo,
+              std::size_t inputIndex,
+              const std::string& destinationPath,
+              const std::string& passThroughRoot,
+              const std::vector<std::string>& in,
+              std::vector<std::string>* out)
+{
+    out->clear();
+    if (in.empty()) {
+        return;
+    }
+    const PXR_NS::SdfPath destination = loadSetPath(destinationPath);
+    if (destination.IsEmpty() || destination.IsAbsoluteRootPath()) {
+        out->push_back("/");
+
+        return;
+    }
+    std::vector<std::string> rootNames;
+    std::vector<std::string> childNames;
+    if (memo) {
+        SceneGraftMemo::State& state = memo->getState();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        const GraftContext* grafted = state.find(SceneEvaluationContext::current().id);
+        if (grafted && (inputIndex < grafted->slots.size()) && (grafted->slots[inputIndex].destinationPath == destinationPath)) {
+            rootNames = grafted->slots[inputIndex].rootNames;
+            childNames = grafted->slots[inputIndex].childNames;
+        }
+    }
+
+    for (const std::string& prefix : in) {
+        const PXR_NS::SdfPath path = loadSetPath(prefix);
+        if (path.IsEmpty()) {
+            addOnce("/", out);
+            continue;
+        }
+        if (!path.IsAbsoluteRootPath()) {
+            const PXR_NS::SdfPath root = path.GetPrefixes().front();
+            const std::string name = root.GetName();
+            if (name == passThroughRoot) {
+                addOnce(prefix, out);
+                continue;
+            }
+            const std::vector<std::string>::const_iterator found = std::find(rootNames.begin(), rootNames.end(), name);
+            if (found != rootNames.end()) {
+                const PXR_NS::TfToken child(childNames[found - rootNames.begin()]);
+                addOnce(path.ReplacePrefix(root, destination.AppendChild(child)).GetString(), out);
+                continue;
+            }
+        }
+        addOnce(destinationPath, out);
+        if (!passThroughRoot.empty()) {
+            addOnce("/" + passThroughRoot, out);
+        }
+    }
+} // mapGraftReach
+
+SceneLoadSetPtr
+mapWrapLoadSet(const SceneLoadSetPtr& loadSet,
+               const std::string& wrappedPath,
+               const std::string& movedPath)
+{
+    if (!loadSet || loadSet->getEntries().empty()) {
+        return SceneLoadSetPtr();
+    }
+    const PXR_NS::SdfPath wrapped = loadSetPath(wrappedPath);
+    const PXR_NS::SdfPath moved = loadSetPath(movedPath);
+    if (wrapped.IsEmpty() || wrapped.IsAbsoluteRootPath() || moved.IsEmpty() || moved.IsAbsoluteRootPath() || !hasValidPaths(*loadSet)) {
+        return SceneLoadSetPtr();
+    }
+
+    // The wrapped prim is deactivated where it was: only its moved copy loads.
+    std::vector<SceneLoadSet::Entry> entries;
+    for (const SceneLoadSet::Entry& entry : loadSet->getEntries()) {
+        const PXR_NS::SdfPath path(entry.path);
+        if (!path.HasPrefix(wrapped) && !path.HasPrefix(moved)) {
+            entries.push_back(entry);
+        }
+    }
+    appendMovedSubtree(*loadSet, moved, wrapped, &entries);
+
+    return makeMappedLoadSet(entries);
+}
+
+void
+mapWrapReach(const std::string& wrappedPath,
+             const std::string& movedPath,
+             const std::vector<std::string>& in,
+             std::vector<std::string>* out)
+{
+    out->clear();
+    const PXR_NS::SdfPath wrapped = loadSetPath(wrappedPath);
+    const PXR_NS::SdfPath moved = loadSetPath(movedPath);
+    for (const std::string& prefix : in) {
+        const PXR_NS::SdfPath path = loadSetPath(prefix);
+        if (path.IsEmpty() || wrapped.IsEmpty() || moved.IsEmpty()) {
+            addOnce("/", out);
+        } else if (path.HasPrefix(wrapped)) {
+            addOnce(path.ReplacePrefix(wrapped, moved).GetString(), out);
+        } else if (wrapped.HasPrefix(path)) {
+            addOnce(prefix, out);
+            addOnce(movedPath, out);
+        } else {
+            addOnce(prefix, out);
+        }
+    }
+}
+
+SceneLoadSetPtr
+mapReferenceLoadSet(const SceneLoadSetPtr& loadSet,
+                    const std::string& targetPath,
+                    const std::string& sourcePath)
+{
+    if (!loadSet || loadSet->getEntries().empty()) {
+        return SceneLoadSetPtr();
+    }
+    const PXR_NS::SdfPath target = loadSetPath(targetPath);
+    const PXR_NS::SdfPath source = loadSetPath(sourcePath);
+    if (target.IsEmpty() || target.IsAbsoluteRootPath() || source.IsEmpty() || source.IsAbsoluteRootPath() || !hasValidPaths(*loadSet)) {
+        return SceneLoadSetPtr();
+    }
+
+    std::vector<SceneLoadSet::Entry> entries(1, SceneLoadSet::Entry { std::string("/"), SceneLoadSet::eRuleNone });
+    if (loadSet->getRuleAt(targetPath) != SceneLoadSet::eRuleNone) {
+        for (PXR_NS::SdfPath ancestor = source.GetParentPath(); !ancestor.IsAbsoluteRootPath(); ancestor = ancestor.GetParentPath()) {
+            entries.push_back(SceneLoadSet::Entry { ancestor.GetString(), SceneLoadSet::eRuleOnly });
+        }
+    }
+    appendMovedSubtree(*loadSet, target, source, &entries);
+
+    return makeMappedLoadSet(entries);
+}
+
+void
+mapReferenceReach(const std::string& targetPath,
+                  const std::string& sourcePath,
+                  const std::vector<std::string>& in,
+                  std::vector<std::string>* out)
+{
+    out->clear();
+    const PXR_NS::SdfPath source = sourcePath.empty() ? PXR_NS::SdfPath() : loadSetPath(sourcePath);
+    for (const std::string& prefix : in) {
+        const PXR_NS::SdfPath path = loadSetPath(prefix);
+        if (source.IsEmpty() || path.IsEmpty()) {
+            addOnce(targetPath, out);
+        } else if (path.HasPrefix(source)) {
+            addOnce(path.ReplacePrefix(source, PXR_NS::SdfPath(targetPath)).GetString(), out);
+        } else if (source.HasPrefix(path)) {
+            addOnce(targetPath, out);
+        }
+    }
+}
 
 PXR_NS::SdfLayerRefPtr
 createStackLayer(const ScenePayload& input,

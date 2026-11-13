@@ -249,6 +249,19 @@ SceneLoadSet::unite(const SceneLoadSetPtr& a,
     return std::make_shared<const SceneLoadSet>(entries);
 }
 
+SceneLoadSet::RuleEnum
+SceneLoadSet::getRuleAt(const std::string& path) const
+{
+    RulesByPath rules;
+    for (const Entry& entry : _entries) {
+        rules[entry.path] = entry.rule;
+    }
+    bool self, below;
+    getInclusion(rules, path, &self, &below);
+
+    return ruleFor(self, below);
+}
+
 const std::vector<SceneLoadSet::Entry>&
 SceneLoadSet::getEntries() const
 {

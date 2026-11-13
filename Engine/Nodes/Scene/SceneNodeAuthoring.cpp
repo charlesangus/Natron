@@ -827,6 +827,7 @@ graftMaterialInput(const ScenePayload& material,
 
 bool
 graftSharedMaterial(const ScenePayload& material,
+                    const SceneEvaluationContext& materialContext,
                     const std::string& scope,
                     const std::string& layerTag,
                     SceneGraftMemo* memo,
@@ -846,8 +847,45 @@ graftSharedMaterial(const ScenePayload& material,
     args.ancestorType = "Scope";
     args.passThroughRoot = scope;
     args.layerTag = layerTag;
+    args.inputContexts.push_back(materialContext);
 
     return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+SceneEvaluationContext
+getCameraInputContext(const SceneEvaluationContext& ctx,
+                      const std::string& cameraPath)
+{
+    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath) || !PXR_NS::SdfPath(cameraPath).IsAbsolutePath() || !PXR_NS::SdfPath(cameraPath).IsPrimPath()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneLoadSet::withPaths(std::make_shared<const SceneLoadSet>(SceneLoadSet::none()), std::vector<std::string>(1, cameraPath)));
+}
+
+SceneEvaluationContext
+getSharedMaterialContext(const SceneEvaluationContext& ctx,
+                         const std::string& scope)
+{
+    if (scope.empty()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, "/" + scope, scope, false));
+}
+
+void
+mapSharedMaterialReach(SceneGraftMemo* memo,
+                       const std::string& scope,
+                       const std::vector<std::string>& in,
+                       std::vector<std::string>* out)
+{
+    if (scope.empty()) {
+        *out = in;
+
+        return;
+    }
+    SceneOps::mapGraftReach(memo, 0, "/" + scope, scope, in, out);
 }
 
 std::vector<PXR_NS::TfToken>

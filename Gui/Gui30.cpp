@@ -59,6 +59,7 @@
 #include "Gui/TabWidget.h"
 #include "Gui/ThemedIcon.h"
 #include "Gui/UndoHistory.h"
+#include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -557,7 +558,10 @@ Gui::connectInput(int inputNb,
     } else {
         graph = _imp->_nodeGraphArea;
     }
-    graph->connectCurrentViewerToSelection(inputNb, isASide);
+    ViewerTab* viewer = graph->getViewerForInputKeys();
+    if (viewer) {
+        viewer->connectToInput(inputNb, isASide);
+    }
 }
 
 void

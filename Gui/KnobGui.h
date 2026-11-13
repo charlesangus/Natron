@@ -219,13 +219,6 @@ public:
 
     int getKnobsCountOnSameLine() const;
 
-
-    void removeAllKeyframeMarkersOnTimeline(int dim);
-    void setAllKeyframeMarkersOnTimeline(int dim);
-    void setKeyframeMarkerOnTimeline(double time);
-
-    static void setKeyframeMarkerOnTimeline(const KnobIPtr& knob, double time);
-
     /**
      * @brief Refreshes the widgets of the knob's live GUI, if it has any. dimension -1 is all.
      **/
@@ -248,11 +241,7 @@ public:
         if (knob) {
             ret = knob->setValue(v, ViewSpec::current(), dimension, reason, newKey);
         }
-        if ( (ret > 0) && (ret != KnobHelper::eValueChangedReturnCodeNothingChanged) && (reason == eValueChangedReasonUserEdited) ) {
-            assert(newKey != nullptr);
-            if (ret == KnobHelper::eValueChangedReturnCodeKeyframeAdded && newKey != nullptr) {
-                setKeyframeMarkerOnTimeline(knobI, newKey->getTime());
-            }
+        if ((ret > 0) && (ret != KnobHelper::eValueChangedReturnCodeNothingChanged) && (reason == eValueChangedReasonUserEdited)) {
             KnobGuiPtr gui = getLiveGui(knobI);
             if (gui) {
                 Q_EMIT gui->keyFrameSet();
@@ -282,10 +271,6 @@ public:
         KnobHelper::ValueChangedReturnCodeEnum addedKey = KnobHelper::eValueChangedReturnCodeNothingChanged;
         if (knob) {
             addedKey = knob->setValueAtTime(time, v, view, dimension, reason, newKey);
-        }
-        if ( (knob) && (reason == eValueChangedReasonUserEdited) ) {
-            assert(newKey);
-            setKeyframeMarkerOnTimeline(knobI, newKey->getTime());
         }
         if (refreshGui) {
             refreshLiveGui(knobI, dimension);
@@ -413,12 +398,7 @@ public Q_SLOTS:
 
     void onMultipleKeyRemoved(const std::list<double>& keys, ViewSpec view, int dimension, int reason);
 
-    void onInternalAnimationAboutToBeRemoved(ViewSpec view, int dimension);
-
     void onInternalAnimationRemoved();
-
-    ///Handler when a keyframe is moved in the curve editor/dope sheet
-    void onKeyFrameMoved(ViewSpec view, int dimension, double oldTime, double newTime);
 
     void setSecret();
 

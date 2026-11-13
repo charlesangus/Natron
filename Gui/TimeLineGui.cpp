@@ -388,6 +388,11 @@ void
 TimeLineGui::discardGuiPointer()
 {
     _imp->gui = 0;
+    // The tab outlives its viewer node until the event loop deletes it, and a refresh firing in that
+    // gap would read the destroyed viewer.
+    _imp->cachedFramesRefreshTimer.stop();
+    _imp->viewer = 0;
+    disconnectSlotsFromViewerCache();
 }
 
 struct TimeLineKey
@@ -962,6 +967,9 @@ TimeLineGui::onFrameChanged(SequenceTime,
 void
 TimeLineGui::seek(SequenceTime time)
 {
+    if (!_imp->gui || !_imp->viewer) {
+        return;
+    }
     if ( time != _imp->timeline->currentFrame() ) {
         _imp->gui->getApp()->setLastViewerUsingTimeline( _imp->viewer->getNode() );
         _imp->seekingTimeline = true;
@@ -1011,6 +1019,9 @@ TimeLineGui::mousePressEvent(QMouseEvent* e)
 void
 TimeLineGui::mouseMoveEvent(QMouseEvent* e)
 {
+    if (!_imp->gui || !_imp->viewer) {
+        return;
+    }
     int mouseMoveXprev = _imp->mouseMoveX;
 
     _imp->lastMouseEventWidgetCoord = e->position().toPoint();
@@ -1100,6 +1111,12 @@ TimeLineGui::leaveEvent(QEvent* e)
 void
 TimeLineGui::mouseReleaseEvent(QMouseEvent* e)
 {
+    if (!_imp->gui || !_imp->viewer) {
+        _imp->state = eTimelineStateIdle;
+        QOpenGLWidget::mouseReleaseEvent(e);
+
+        return;
+    }
     if (_imp->state == eTimelineStateSelectingZoomRange) {
         // - if the last selected frame is the same as the first selected frame, zoom on the PROJECT range
         //   (NOT the playback range as in the following, and NOT adding margins as centerOn() does)
@@ -1158,6 +1175,9 @@ TimeLineGui::mouseReleaseEvent(QMouseEvent* e)
 void
 TimeLineGui::wheelEvent(QWheelEvent* e)
 {
+    if (!_imp->gui) {
+        return;
+    }
     if (e->angleDelta().x() != 0) {
         return;
     }
@@ -1240,6 +1260,27 @@ TimeLineGui::getVisibleRange(SequenceTime* left,
     double w = width();
     double curveWidth = w / _imp->tlZoomCtx.zoomFactor;
     *right = *left + curveWidth;
+}
+
+QVariantList
+TimeLineGui::keyframeMarkerTimes() const
+{
+    if (!_imp->gui) {
+        return QVariantList();
+    }
+    std::list<SequenceTime> keys;
+    std::list<SequenceTime> userKeys;
+    _imp->gui->getApp()->getKeyframes(&keys);
+    _imp->gui->getApp()->getUserKeyframes(&userKeys);
+    std::set<SequenceTime> markers(keys.begin(), keys.end());
+    markers.insert(userKeys.begin(), userKeys.end());
+
+    QVariantList times;
+    for (std::set<SequenceTime>::const_iterator it = markers.begin(); it != markers.end(); ++it) {
+        times.push_back(*it);
+    }
+
+    return times;
 }
 
 void

@@ -536,6 +536,41 @@ TEST_F(USDCameraTest, ReloadFollowsTheRewrittenFileAndAMissingCameraErrors)
     EXPECT_NE(std::string::npos, getErrorMessage(camera).find("/Track/Cam"));
 }
 
+TEST_F(USDCameraTest, ReloadRereadsASublayerOfTheFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string rootPath = dir.filePath(QString::fromUtf8("root.usda")).toStdString();
+    const std::string sublayerPath = dir.filePath(QString::fromUtf8("tracked.usda")).toStdString();
+    const std::string original = readFile(kTrackedCamera);
+    ASSERT_FALSE(original.empty());
+    writeFile(sublayerPath, original);
+    writeFile(rootPath, "#usda 1.0\n(\n    defaultPrim = \"Track\"\n    timeCodesPerSecond = 24\n    subLayers = [@./tracked.usda@]\n)\n");
+    NodePtr camera = createFileCamera(rootPath);
+    ASSERT_TRUE(bool(camera));
+    {
+        PXR_NS::UsdStageRefPtr stage = composeNode(camera);
+        ASSERT_TRUE(bool(stage));
+        EXPECT_FLOAT_EQ(0.5f, getFloat(PXR_NS::UsdGeomCamera(stage->GetPrimAtPath(getNodePath(camera))).GetFocalLengthAttr(), PXR_NS::UsdTimeCode(10.)));
+    }
+
+    writeFile(sublayerPath, replaceOnce(original, "10: 0.5,", "10: 0.7,"));
+    pressReload(camera);
+    PXR_NS::UsdStageRefPtr stage = composeNode(camera);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_FLOAT_EQ(0.7f, getFloat(PXR_NS::UsdGeomCamera(stage->GetPrimAtPath(getNodePath(camera))).GetFocalLengthAttr(), PXR_NS::UsdTimeCode(10.)));
+}
+
+TEST_F(USDCameraTest, TheFileKnobLeavesReloadToTheReloadButton)
+{
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    ASSERT_TRUE(bool(camera));
+    KnobFile* file = dynamic_cast<KnobFile*>(camera->getKnobByName(kUSDCameraParamFile).get());
+    ASSERT_TRUE(file != NULL);
+    EXPECT_FALSE(file->showsReloadButton());
+    EXPECT_EQ(camera->getKnobByName(kUSDCameraParamReload), file->getReloadButton());
+}
+
 TEST_F(USDCameraTest, TheKnobsShowTheFilesValuesUntilAGroupIsEdited)
 {
     NodePtr camera = createFileCamera(kTrackedCamera);

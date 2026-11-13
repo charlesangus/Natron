@@ -50,7 +50,6 @@
 #define kViewerParamGain "gain"
 #define kViewerParamEnableGamma "enableGamma"
 #define kViewerParamGamma "gamma"
-#define kViewerParamAutoContrast "autoContrast"
 #define kViewerParamCheckerboard "enableCheckerBoard"
 #define kViewerParamDisplay "display"
 #define kViewerParamView "view"
@@ -61,6 +60,8 @@
 #define kViewerParamAlphaChannel "alphaChannel"
 #define kViewerParamAInput "aInput"
 #define kViewerParamBInput "bInput"
+// Followed by the input number, counted from 1.
+#define kViewerParamLockedInputPrefix "lockedInput"
 #define kViewerParamOperation "operation"
 #define kViewerParamWipeCenter "wipeCenter"
 #define kViewerParamWipeAmount "wipeAmount"
@@ -233,7 +234,6 @@ public:
     RenderingFlagSetterPtr isRenderingFlag;
     bool draftModeEnabled;
     unsigned int mipmapLevelWithDraft, mipmapLevelWithoutDraft;
-    bool autoContrast;
     DisplayChannelsEnum channels;
     bool userRoIEnabled;
     bool mustComputeRoDAndLookupCache;
@@ -533,10 +533,6 @@ public:
 
     void setAlphaChannel(const ImageLayerDesc& layer, const std::string& channelName, bool doRender);
 
-    bool isAutoContrastEnabled() const WARN_UNUSED_RETURN;
-
-    void onAutoContrastChanged(bool autoContrast, bool refresh);
-
     /**
      * @brief Returns the current view, MT-safe
      **/
@@ -596,6 +592,29 @@ public:
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
 
     void getActiveInputs(int & a, int &b) const;
+
+    /**
+     * @brief The script name of the node the input is locked to, empty if it is not locked.
+     **/
+    std::string getLockedInput(int inputNb) const;
+
+    /**
+     * @brief Also keeps the viewer's label and colour in step with its locks. Main thread only.
+     **/
+    void setLockedInput(int inputNb, const std::string& nodeName);
+
+    /**
+     * @brief Brings the node's lock lines and colour in line with the locks. Main thread only.
+     **/
+    void refreshLockDecoration();
+
+    /**
+     * @brief While the lock colour is on the node, the colour the node has apart from it: returns
+     * true with *hasColour false when it has none. Returns false, leaving the outputs alone, when
+     * the node's colour is not the lock colour. Saving writes this so the lock grey is never
+     * stored as the node's own colour.
+     **/
+    bool getColourToSave(bool* hasColour, double* rgb) const;
 
     /**
      * @brief The data kind the A input delivers, as the graph resolves it, which decides whether
@@ -666,11 +685,6 @@ public:
     bool isDoingPartialUpdates() const;
 
     virtual void reportStats(int time, ViewIdx view, double wallTime, const RenderStatsMap& stats, const RenderStatsPtr& renderStats) OVERRIDE FINAL;
-
-    ///Only callable on MT
-    void setActivateInputChangeRequestedFromViewer(bool fromViewer);
-
-    bool isInputChangeRequestedFromViewer() const;
 
     void setViewerPaused(bool paused, bool allInputs);
 

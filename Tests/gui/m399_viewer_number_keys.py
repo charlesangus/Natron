@@ -144,15 +144,27 @@ try:
         QTest.keyClick(graph_of(group), key)
         QApplication.processEvents()
 
+    click_problem = [""]
+
     def click_viewer(viewer, group=None):
         """Makes viewer's tab current in its pane and clicks its image, which focuses that Viewer."""
-        pane, i = find_tab(viewer_tab_label(viewer, group))
+        label = viewer_tab_label(viewer, group)
+        pane, i = find_tab(label)
         if pane is None:
+            tabs = [pane_.getTabLabel(k) for pane_ in panes() for k in range(pane_.count())]
+            click_problem[0] = "no tab %r among %r" % (label, tabs)
             return False
         pane.setCurrentIndex(i)
-        QApplication.processEvents()
-        shown = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
+        shown = []
+        deadline = time.time() + ACTIVATE_TIMEOUT_S
+        while time.time() < deadline:
+            QApplication.processEvents()
+            shown = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
+            if len(shown) == 1:
+                break
+            time.sleep(0.02)
         if len(shown) != 1:
+            click_problem[0] = "%d visible ViewerGL widgets after selecting tab %r" % (len(shown), label)
             return False
         QTest.mouseClick(shown[0], Qt.LeftButton, Qt.NoModifier, shown[0].rect().center())
         QApplication.processEvents()
@@ -281,9 +293,10 @@ try:
         multi_source = create(SOURCE, 0, 0, multi)
         yield ("sleep", SETTLE_MS)
         gt.require(click_viewer(focused, multi), "g: clicked the image of %s, the only Viewer shown"
-                   % viewer_tab_label(focused, multi))
+                   % viewer_tab_label(focused, multi), click_problem[0])
         yield ("sleep", SETTLE_MS)
-        gt.require(click_viewer(root_viewer), "g: clicked the image of the root Viewer, the only Viewer shown")
+        gt.require(click_viewer(root_viewer), "g: clicked the image of the root Viewer, the only Viewer shown",
+                   click_problem[0])
         yield ("sleep", SETTLE_MS)
         newest.destroy()
         yield ("sleep", SETTLE_MS)

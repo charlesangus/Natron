@@ -89,3 +89,4 @@ Scouted facts (2026-10-25, from the plan; neither dependency is built yet):
 ## Decisions
 
 - 2026-10-25 — **Neural flow gets its own milestone under E16 - AI Tools (user),** elaborated now and run after M203 and M204.
+- 2026-11-12 — **No shared E16 range wrapper exists:** M207 - Neural Denoise dropped it (user, 2026-10-27) in favour of an OCIO colour-space knob. The runner carries its own odd, invertible wrap (identity for |x| ≤ 1, 1 + ln|x| beyond); P2.T1 adds the same OCIO input-space knob as the denoise and upscale nodes, so the wrap only compresses HDR highlights. P1.T2 implemented in 4dea66ad7; its ctest runs with the phase build.

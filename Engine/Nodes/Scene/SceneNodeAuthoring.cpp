@@ -30,8 +30,13 @@
 #include <cstdint>
 #include <list>
 #include <mutex>
+#include <thread>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QMetaObject>
+
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -47,6 +52,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
+#include "Engine/ViewerInstance.h"
 
 #include <pxr/usd/usd/collectionAPI.h>
 #include <pxr/usd/usd/primRange.h>
@@ -210,7 +216,9 @@ SceneCameraPathKnobs::getPath() const
 
 void
 SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras,
-                                  bool readDownstream) const
+                                  bool readDownstream,
+                                  std::size_t unsearched,
+                                  bool noViewer) const
 {
     KnobChoicePtr menuKnob = menu.lock();
     if (!menuKnob) {
@@ -235,6 +243,9 @@ SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras,
                                            EffectInstance::tr("%1 (missing)").arg(QString::fromStdString(chosen)).toStdString(),
                                            EffectInstance::tr("No camera upstream has this path yet: nothing projects until one does.").toStdString()));
         }
+    }
+    if (unsearched > 0) {
+        options.push_back(makeSceneUnsearchedOption(unsearched, noViewer));
     }
     // Repopulating an unchanged menu would move the node's hash and come back here.
     const std::vector<ChoiceOption> current = menuKnob->getEntries_mt_safe();
@@ -265,7 +276,20 @@ SceneCameraPathKnobs::knobChanged(KnobI* k,
         const int index = menuKnob->getValue();
         if (((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonNatronGuiEdited))
             && (index >= 0) && (index < menuKnob->getNumEntries())) {
-            pathKnob->setValue(menuKnob->getEntry(index).id);
+            const std::string picked = menuKnob->getEntry(index).id;
+            if (!isSceneUnsearchedOption(picked)) {
+                pathKnob->setValue(picked);
+            } else {
+                // The note names no camera: the menu goes back to the path's entry.
+                const std::vector<ChoiceOption> entries = menuKnob->getEntries_mt_safe();
+                const std::string chosen = pathKnob->getValue();
+                for (std::size_t i = 0; i < entries.size(); ++i) {
+                    if (chosen.empty() ? !isSceneUnsearchedOption(entries[i].id) : (entries[i].id == chosen)) {
+                        menuKnob->setValue((int)i);
+                        break;
+                    }
+                }
+            }
         }
 
         return true;
@@ -277,6 +301,173 @@ SceneCameraPathKnobs::knobChanged(KnobI* k,
     }
 
     return false;
+}
+
+ChoiceOption
+makeSceneUnsearchedOption(std::size_t unsearched,
+                          bool noViewer)
+{
+    const QString tip = noViewer ? EffectInstance::tr("No viewer shows this node, so nothing inside a payload was searched. Show the node in a viewer and load these branches there to list what they hold.")
+                                 : EffectInstance::tr("The viewer showing this node leaves these branches unloaded. Load them there to list what they hold.");
+
+    return ChoiceOption(kSceneMenuUnsearchedId,
+                        EffectInstance::tr("%1 unloaded branches not searched").arg((qulonglong)unsearched).toStdString(),
+                        tip.toStdString());
+}
+
+bool
+isSceneUnsearchedOption(const std::string& id)
+{
+    return id == kSceneMenuUnsearchedId;
+}
+
+SceneMenuJob::SceneMenuJob(bool noViewer)
+    : _noViewer(noViewer)
+    , _abortInfo(AbortableRenderInfo::create(true, 0))
+{
+}
+
+void
+SceneMenuJob::cancel()
+{
+    _abortInfo->setAborted();
+}
+
+bool
+SceneMenuJob::isCancelled() const
+{
+    return _abortInfo->isAborted();
+}
+
+void
+SceneMenuJob::wait() const
+{
+    std::unique_lock<std::mutex> l(_lock);
+
+    _done.wait(l, [this]() { return _finished; });
+}
+
+bool
+SceneMenuJob::isDone() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _finished;
+}
+
+SceneMenuJob::Result
+SceneMenuJob::getResult() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _result;
+}
+
+void
+SceneMenuJob::finish(const Result& result)
+{
+    {
+        std::lock_guard<std::mutex> l(_lock);
+        _result = result;
+        _finished = true;
+    }
+    _done.notify_all();
+}
+
+struct SceneMenuRefresh::State {
+    std::mutex lock;
+    std::shared_ptr<SceneMenuJob> current;
+    const U64 noViewerId = SceneEvaluationContext::makeId();
+    const U64 mappedId = SceneEvaluationContext::makeId();
+};
+
+SceneMenuRefresh::SceneMenuRefresh()
+    : _state(std::make_shared<State>())
+{
+}
+
+SceneMenuRefresh::~SceneMenuRefresh()
+{
+    std::lock_guard<std::mutex> l(_state->lock);
+
+    if (_state->current) {
+        _state->current->cancel();
+    }
+}
+
+SceneEvaluationContext
+SceneMenuRefresh::getContext(EffectInstance* effect,
+                             bool* noViewer) const
+{
+    SceneEvaluationContext context;
+
+    *noViewer = !SceneNodeAuthoring::getShowingViewerContext(effect, &context);
+    if (*noViewer) {
+        context = SceneEvaluationContext(_state->noViewerId, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    }
+
+    return context;
+}
+
+U64
+SceneMenuRefresh::getMappedContextId() const
+{
+    return _state->mappedId;
+}
+
+std::shared_ptr<SceneMenuJob>
+SceneMenuRefresh::start(EffectInstance* effect,
+                        bool noViewer,
+                        const WorkFunc& work,
+                        const ApplyFunc& apply)
+{
+    std::shared_ptr<SceneMenuJob> job = std::make_shared<SceneMenuJob>(noViewer);
+    {
+        std::lock_guard<std::mutex> l(_state->lock);
+        if (_state->current) {
+            _state->current->cancel();
+        }
+        _state->current = job;
+    }
+    std::weak_ptr<State> weakState = _state;
+    std::weak_ptr<EffectInstance> weakEffect = effect ? effect->weak_from_this() : std::weak_ptr<EffectInstance>();
+    std::thread([job, work, apply, weakState, weakEffect]() {
+        SceneMenuJob::Result result;
+        if (!job->isCancelled()) {
+            try {
+                work(*job, &result);
+            } catch (...) {
+                result = SceneMenuJob::Result();
+            }
+        }
+        job->finish(result);
+        if (job->isCancelled() || !QCoreApplication::instance()) {
+            return;
+        }
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [job, apply, weakState, weakEffect]() {
+            const std::shared_ptr<State> state = weakState.lock();
+            const EffectInstancePtr effect = weakEffect.lock();
+            if (state && effect) {
+                apply(job);
+            } }, Qt::QueuedConnection);
+    }).detach();
+
+    return job;
+}
+
+bool
+SceneMenuRefresh::take(const std::shared_ptr<SceneMenuJob>& job)
+{
+    if (!job || !job->isDone() || job->isCancelled()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> l(_state->lock);
+    if (_state->current != job) {
+        return false;
+    }
+    _state->current.reset();
+
+    return true;
 }
 
 std::string
@@ -878,6 +1069,64 @@ graftSharedMaterial(const ScenePayload& material,
     args.inputContexts.push_back(materialContext);
 
     return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+bool
+getShowingViewerContext(EffectInstance* effect,
+                        SceneEvaluationContext* context)
+{
+    const NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (!node) {
+        return false;
+    }
+    std::list<ViewerInstance*> viewers;
+    Node::getViewersDownstreamOf(std::list<NodePtr>(1, node), &viewers);
+    if (viewers.empty()) {
+        return false;
+    }
+    ViewerInstance* shown = viewers.front();
+    const AppInstancePtr app = effect->getApp();
+    const NodePtr active = app ? app->getActiveViewerNode() : NodePtr();
+    for (ViewerInstance* viewer : viewers) {
+        if (active && (viewer->getNode() == active)) {
+            shown = viewer;
+            break;
+        }
+    }
+    *context = shown->getSceneEvaluationContext();
+
+    return true;
+}
+
+bool
+borrowMenuScene(const EffectInstancePtr& input,
+                double time,
+                const SceneEvaluationContext& context,
+                const SceneMenuJob& job,
+                ScenePayload* scene,
+                SceneQueryPool::Lease* lease)
+{
+    if (!input || job.isCancelled()) {
+        return false;
+    }
+    std::string error;
+    if ((input->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0), context, job.getAbortInfo()), scene, &error) != EffectInstance::eRenderRoIRetCodeOk) || scene->isEmpty() || job.isCancelled()) {
+        return false;
+    }
+    *lease = SceneQueryPool::instance().borrow(*scene, context.loadSet, &error);
+
+    return lease->isValid();
+}
+
+std::size_t
+countMenuUnsearched(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneEvaluationContext& context)
+{
+    if (!stage || context.includesEverything()) {
+        return 0;
+    }
+
+    return SceneOps::countUnloadedPayloads(stage, std::vector<std::string>(1, std::string("/")));
 }
 
 SceneEvaluationContext

@@ -46,7 +46,6 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
-#include "Engine/ViewerInstance.h"
 #include <pxr/usd/usdGeom/modelAPI.h>
 
 NATRON_NAMESPACE_ENTER
@@ -304,20 +303,8 @@ USDEditTransform::knobChanged(KnobI* k,
     if (!button || (k != button.get())) {
         return false;
     }
-    // Several viewers can show the node: the one the user works in, else any that does.
-    std::list<ViewerInstance*> viewers;
-    Node::getViewersDownstreamOf(std::list<NodePtr>(1, getNode()), &viewers);
-    ViewerInstance* shown = viewers.empty() ? nullptr : viewers.front();
-    AppInstancePtr app = getApp();
-    NodePtr active = app ? app->getActiveViewerNode() : NodePtr();
-    for (ViewerInstance* viewer : viewers) {
-        if (active && (viewer->getNode() == active)) {
-            shown = viewer;
-            break;
-        }
-    }
-    if (shown) {
-        const SceneEvaluationContext context = shown->getSceneEvaluationContext();
+    SceneEvaluationContext context;
+    if (SceneNodeAuthoring::getShowingViewerContext(this, &context)) {
         startCentrePivot(&context);
     } else {
         startCentrePivot(nullptr);

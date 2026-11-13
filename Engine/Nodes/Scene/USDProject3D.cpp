@@ -306,22 +306,49 @@ USDProject3D::scheduleCameraMenuRefresh()
         refreshCameraMenu(); }, Qt::QueuedConnection);
 }
 
-void
+std::shared_ptr<SceneMenuJob>
 USDProject3D::refreshCameraMenu()
 {
-    std::vector<std::string> cameras;
-    EffectInstancePtr input = getInput(kUSDProject3DInputCamera);
-    ScenePayload scene;
-    std::string error;
-    if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        if (lease.isValid()) {
-            for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
-                cameras.push_back(path.GetString());
-            }
+    bool noViewer = false;
+    const SceneEvaluationContext viewerContext = _cameraMenuRefresh.getContext(this, &noViewer);
+    const int inputNb = kUSDProject3DInputCamera;
+    const EffectInstancePtr input = getInput(inputNb);
+    const double time = getCurrentTime();
+    SceneEvaluationContext context = viewerContext;
+    if (input) {
+        context = getSceneInputContext(inputNb, viewerContext, time, ViewIdx(0));
+        if (!context.hasSameLoadSet(viewerContext)) {
+            context.id = _cameraMenuRefresh.getMappedContextId();
         }
+        context.reach.reset();
     }
-    _camera.refreshMenu(cameras, true);
+    SceneMenuRefresh::WorkFunc work = [input, time, context](const SceneMenuJob& job,
+                                                             SceneMenuJob::Result* result) {
+        result->lists.resize(1);
+        ScenePayload scene;
+        SceneQueryPool::Lease lease;
+        if (!SceneNodeAuthoring::borrowMenuScene(input, time, context, job, &scene, &lease)) {
+            return;
+        }
+        for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
+            result->lists[0].push_back(path.GetString());
+        }
+        result->unsearched = SceneNodeAuthoring::countMenuUnsearched(lease.getStage(), context);
+    };
+
+    return _cameraMenuRefresh.start(this, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyCameraMenu(job); });
+}
+
+bool
+USDProject3D::applyCameraMenu(const std::shared_ptr<SceneMenuJob>& job)
+{
+    if (!_cameraMenuRefresh.take(job)) {
+        return false;
+    }
+    const SceneMenuJob::Result result = job->getResult();
+    _camera.refreshMenu(result.lists.empty() ? std::vector<std::string>() : result.lists[0], true, result.unsearched, job->hasNoViewer());
+
+    return true;
 }
 
 double

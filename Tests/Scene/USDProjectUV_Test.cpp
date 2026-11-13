@@ -325,7 +325,11 @@ TEST_F(USDProjectUVTest, TheCameraMenuListsTheCameraInputsCameras)
     ASSERT_TRUE(bool(projector));
     USDProjectUV* effect = dynamic_cast<USDProjectUV*>(projector->getEffectInstance().get());
     ASSERT_TRUE(effect != NULL);
-    effect->refreshCameraMenu();
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshCameraMenu();
+        job->wait();
+        EXPECT_TRUE(effect->applyCameraMenu(job));
+    }
     KnobChoice* menu = getKnob<KnobChoice>(projector, kUSDProjectUVParamCamera);
     KnobString* path = getKnob<KnobString>(projector, kUSDProjectUVParamCameraPath);
     ASSERT_TRUE(menu && path);
@@ -335,7 +339,11 @@ TEST_F(USDProjectUVTest, TheCameraMenuListsTheCameraInputsCameras)
 
     // A path none of them has is listed after them; picking a camera sets the path.
     path->setValue("/Later");
-    effect->refreshCameraMenu();
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshCameraMenu();
+        job->wait();
+        EXPECT_TRUE(effect->applyCameraMenu(job));
+    }
     entries = menu->getEntries_mt_safe();
     ASSERT_EQ((std::size_t)2, entries.size());
     EXPECT_EQ(std::string("/Later"), entries[1].id);

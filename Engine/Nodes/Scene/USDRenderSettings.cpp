@@ -227,6 +227,28 @@ USDRenderSettings::knobChanged(KnobI* k,
                                double /*time*/,
                                bool /*originatedFromMainThread*/)
 {
+    KnobChoicePtr camera = _camera.lock();
+    if (camera && (k == camera.get())) {
+        const ChoiceOption active = camera->getActiveEntry();
+        if (!isSceneUnsearchedOption(active.id)) {
+            _chosenCamera = active;
+        } else if (!_chosenCamera.id.empty()) {
+            // The note names no camera: the camera chosen before it stays chosen.
+            const std::vector<ChoiceOption> entries = camera->getEntries_mt_safe();
+            std::size_t i = 0;
+            while ((i < entries.size()) && (entries[i].id != _chosenCamera.id)) {
+                ++i;
+            }
+            if (i < entries.size()) {
+                camera->setValue((int)i);
+            } else {
+                camera->setActiveEntry(_chosenCamera);
+            }
+        }
+
+        return true;
+    }
+
     return _settings && _settings->knobChanged(k);
 }
 
@@ -276,37 +298,71 @@ USDRenderSettings::scheduleCameraMenuRefresh()
         refreshCameraMenu(); }, Qt::QueuedConnection);
 }
 
-void
+std::shared_ptr<SceneMenuJob>
 USDRenderSettings::refreshCameraMenu()
 {
-    KnobChoicePtr camera = _camera.lock();
-
-    if (!camera) {
-        return;
-    }
-    std::vector<ChoiceOption> options;
-    EffectInstancePtr input = getInput(0);
-    ScenePayload scene;
-    std::string error;
-    if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        if (lease.isValid()) {
-            for (const PXR_NS::UsdPrim& prim : lease.getStage()->Traverse()) {
-                if (prim.IsA<PXR_NS::UsdGeomCamera>()) {
-                    options.push_back(ChoiceOption(prim.GetPath().GetString(), prim.GetPath().GetString(), ""));
-                }
+    bool noViewer = false;
+    const SceneEvaluationContext context = _cameraMenuRefresh.getContext(this, &noViewer);
+    const EffectInstancePtr input = getInput(0);
+    const double time = getCurrentTime();
+    SceneMenuRefresh::WorkFunc work = [input, time, context](const SceneMenuJob& job,
+                                                             SceneMenuJob::Result* result) {
+        result->lists.resize(1);
+        ScenePayload scene;
+        SceneQueryPool::Lease lease;
+        if (!SceneNodeAuthoring::borrowMenuScene(input, time, context, job, &scene, &lease)) {
+            return;
+        }
+        for (const PXR_NS::UsdPrim& prim : lease.getStage()->Traverse()) {
+            if (job.isCancelled()) {
+                return;
+            }
+            if (prim.IsA<PXR_NS::UsdGeomCamera>()) {
+                result->lists[0].push_back(prim.GetPath().GetString());
             }
         }
+        result->unsearched = SceneNodeAuthoring::countMenuUnsearched(lease.getStage(), context);
+    };
+
+    return _cameraMenuRefresh.start(this, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyCameraMenu(job); });
+}
+
+bool
+USDRenderSettings::applyCameraMenu(const std::shared_ptr<SceneMenuJob>& job)
+{
+    if (!_cameraMenuRefresh.take(job)) {
+        return false;
+    }
+    KnobChoicePtr camera = _camera.lock();
+    if (!camera) {
+        return false;
+    }
+    const SceneMenuJob::Result result = job->getResult();
+    std::vector<ChoiceOption> options;
+    if (!result.lists.empty()) {
+        for (const std::string& path : result.lists[0]) {
+            options.push_back(ChoiceOption(path, path, ""));
+        }
+    }
+    if (result.unsearched > 0) {
+        options.push_back(makeSceneUnsearchedOption(result.unsearched, job->hasNoViewer()));
     }
     // Repopulating an unchanged menu would move the hash and come back here.
     const std::vector<ChoiceOption> current = camera->getEntries_mt_safe();
     bool same = current.size() == options.size();
     for (std::size_t i = 0; same && (i < options.size()); ++i) {
-        same = current[i].id == options[i].id;
+        same = (current[i].id == options[i].id) && (current[i].label == options[i].label);
     }
     if (!same) {
         camera->populateChoices(options);
     }
+    // A menu holding only the note lands on it; once cameras are listed the first is chosen, as
+    // it is when nothing was chosen.
+    if (!options.empty() && !isSceneUnsearchedOption(options[0].id) && isSceneUnsearchedOption(camera->getActiveEntry().id)) {
+        camera->setValue(0);
+    }
+
+    return true;
 }
 
 bool
@@ -347,7 +403,10 @@ USDRenderSettings::authorLayer(const SceneLayerEdit& edit,
 
     // Every UsdRenderSettingsBase attribute is uniform: a default value, never time samples.
     bool ok = true;
-    const std::string cameraPath = camera->getActiveEntry().id;
+    std::string cameraPath = camera->getActiveEntry().id;
+    if (isSceneUnsearchedOption(cameraPath)) {
+        cameraPath.clear();
+    }
     if (!cameraPath.empty()) {
         if (!PXR_NS::SdfPath::IsValidPathString(cameraPath) || !PXR_NS::SdfPath(cameraPath).IsAbsolutePath()) {
             *errorMessage = tr("The camera %1 is not an absolute prim path.").arg(QString::fromStdString(cameraPath)).toStdString();

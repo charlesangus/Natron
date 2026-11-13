@@ -64,6 +64,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDReference.h"
 #include "Engine/Nodes/Scene/USDRender.h"
+#include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Nodes/Scene/USDSetAttribute.h"
 #include "Engine/Nodes/Scene/USDVariant.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
@@ -1352,4 +1353,130 @@ TEST_F(SceneLoadSetCoverageTest, ASecondCentrePivotRequestCancelsTheFirst)
     EXPECT_DOUBLE_EQ(1., pivot->getValue(0));
     EXPECT_DOUBLE_EQ(2., pivot->getValue(1));
     EXPECT_DOUBLE_EQ(3., pivot->getValue(2));
+}
+
+namespace {
+// The ids of menu's entries.
+std::vector<std::string>
+entryIds(const KnobChoice* menu)
+{
+    std::vector<std::string> ids;
+
+    for (const ChoiceOption& option : menu->getEntries_mt_safe()) {
+        ids.push_back(option.id);
+    }
+
+    return ids;
+}
+} // anonymous namespace
+
+TEST_F(SceneLoadSetCoverageTest, ACameraMenuRefreshReturnsBeforeTheMenuFillsAndCountsTheUnsearchedBranches)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+    ASSERT_TRUE(source && node);
+    ASSERT_TRUE(node->connectInput(source, 0));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    KnobChoice* menu = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderSettingsParamCamera).get());
+    ASSERT_TRUE(effect && menu);
+    const std::vector<std::string> before = entryIds(menu);
+
+    const std::shared_ptr<SceneMenuJob> job = effect->refreshCameraMenu();
+    ASSERT_TRUE(bool(job));
+    EXPECT_EQ(before, entryIds(menu));
+    job->wait();
+    // Filled on the main thread only, which this test is and which has not run the queued fill.
+    EXPECT_EQ(before, entryIds(menu));
+    EXPECT_TRUE(job->hasNoViewer());
+    ASSERT_TRUE(effect->applyCameraMenu(job));
+
+    // No viewer shows the node: nothing is loaded, and the camera inside a building is not found.
+    const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+    ASSERT_EQ((std::size_t)1, entries.size());
+    EXPECT_EQ(std::string(kSceneMenuUnsearchedId), entries[0].id);
+    EXPECT_EQ(std::string("4 unloaded branches not searched"), entries[0].label);
+    EXPECT_EQ(0, city.openedBuildings());
+    EXPECT_FALSE(effect->applyCameraMenu(job));
+}
+
+TEST_F(SceneLoadSetCoverageTest, ACameraMenuOnACameraInputLoadsOnlyTheChosenCamerasBuilding)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = project3D(source, "/World/Block_0/B_0/Cam");
+    ASSERT_TRUE(source && node);
+    USDProject3D* effect = dynamic_cast<USDProject3D*>(node->getEffectInstance().get());
+    KnobChoice* menu = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDProject3DParamCamera).get());
+    ASSERT_TRUE(effect && menu);
+
+    const std::shared_ptr<SceneMenuJob> job = effect->refreshCameraMenu();
+    job->wait();
+    ASSERT_TRUE(effect->applyCameraMenu(job));
+
+    const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+    ASSERT_EQ((std::size_t)2, entries.size());
+    EXPECT_EQ(std::string("/World/Block_0/B_0/Cam"), entries[0].id);
+    EXPECT_EQ(std::string(kSceneMenuUnsearchedId), entries[1].id);
+    EXPECT_EQ(std::string("3 unloaded branches not searched"), entries[1].label);
+    EXPECT_EQ(0, menu->getValue());
+    EXPECT_LE(city.openedBuildings(), 1);
+
+    // Picking the note leaves the camera path as it was.
+    menu->setValue(1);
+    menu->onValueChanged(1, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    KnobString* path = dynamic_cast<KnobString*>(node->getKnobByName(kUSDProject3DParamCameraPath).get());
+    ASSERT_TRUE(path != nullptr);
+    EXPECT_EQ(std::string("/World/Block_0/B_0/Cam"), path->getValue());
+    EXPECT_EQ(0, menu->getValue());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AVariantMenuOnAnUnloadedPrimNotesItsBranchAndOpensNoBuilding)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = variant(source, "/World/Block_0/B_0");
+    ASSERT_TRUE(source && node);
+    USDVariant* effect = dynamic_cast<USDVariant*>(node->getEffectInstance().get());
+    KnobChoice* sets = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDVariantParamVariantSets).get());
+    ASSERT_TRUE(effect && sets);
+    const std::vector<std::string> before = entryIds(sets);
+
+    const std::shared_ptr<SceneMenuJob> job = effect->refreshVariantMenus();
+    EXPECT_EQ(before, entryIds(sets));
+    job->wait();
+    EXPECT_EQ(before, entryIds(sets));
+    ASSERT_TRUE(effect->applyVariantMenus(job));
+
+    // The building's variant set is authored inside its payload, which nothing loads.
+    const std::vector<ChoiceOption> entries = sets->getEntries_mt_safe();
+    ASSERT_EQ((std::size_t)1, entries.size());
+    EXPECT_EQ(std::string(kSceneMenuUnsearchedId), entries[0].id);
+    EXPECT_EQ(std::string("1 unloaded branches not searched"), entries[0].label);
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, ASecondMenuRefreshSupersedesTheFirst)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = project3D(source, "/World/Block_0/B_0/Cam");
+    ASSERT_TRUE(source && node);
+    USDProject3D* effect = dynamic_cast<USDProject3D*>(node->getEffectInstance().get());
+    KnobChoice* menu = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDProject3DParamCamera).get());
+    ASSERT_TRUE(effect && menu);
+    const std::vector<std::string> before = entryIds(menu);
+
+    const std::shared_ptr<SceneMenuJob> first = effect->refreshCameraMenu();
+    const std::shared_ptr<SceneMenuJob> second = effect->refreshCameraMenu();
+    EXPECT_TRUE(first->isCancelled());
+    EXPECT_FALSE(second->isCancelled());
+    first->wait();
+    second->wait();
+
+    EXPECT_FALSE(effect->applyCameraMenu(first));
+    EXPECT_EQ(before, entryIds(menu));
+    EXPECT_TRUE(effect->applyCameraMenu(second));
+    EXPECT_EQ((std::vector<std::string> { "/World/Block_0/B_0/Cam", kSceneMenuUnsearchedId }), entryIds(menu));
+    EXPECT_FALSE(effect->applyCameraMenu(first));
 }

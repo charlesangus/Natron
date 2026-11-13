@@ -148,7 +148,11 @@ protected:
     {
         USDVariant* effect = dynamic_cast<USDVariant*>(node->getEffectInstance().get());
         ASSERT_TRUE(effect != nullptr);
-        effect->refreshVariantMenus();
+        {
+            const std::shared_ptr<SceneMenuJob> job = effect->refreshVariantMenus();
+            job->wait();
+            EXPECT_TRUE(effect->applyVariantMenus(job));
+        }
     }
 };
 

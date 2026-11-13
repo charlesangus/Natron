@@ -300,6 +300,33 @@ void mapSharedMaterialReach(SceneGraftMemo* memo,
                             std::vector<std::string>* out);
 
 /**
+ * @brief The context of the viewer showing effect, for work on effect's scene done outside an
+ * evaluation: the active viewer when its scene input reaches effect, else the first viewer whose
+ * does. False, leaving *context alone, when no viewer shows effect. Main thread.
+ **/
+bool getShowingViewerContext(EffectInstance* effect,
+                             SceneEvaluationContext* context);
+
+/**
+ * @brief Evaluates input at time on context into *scene for a menu refresh running as job, and
+ * borrows its stage into *lease with context's load set. False when job is cancelled, input is
+ * null or the scene is empty or does not compose.
+ **/
+bool borrowMenuScene(const EffectInstancePtr& input,
+                     double time,
+                     const SceneEvaluationContext& context,
+                     const SceneMenuJob& job,
+                     ScenePayload* scene,
+                     SceneQueryPool::Lease* lease);
+
+/**
+ * @brief How many unloaded payloads a menu listing what the whole of stage holds did not search:
+ * 0 when context loads everything.
+ **/
+std::size_t countMenuUnsearched(const PXR_NS::UsdStageRefPtr& stage,
+                                const SceneEvaluationContext& context);
+
+/**
  * @brief The context a camera input that is read but not composed into the output is evaluated
  * on: only the payloads on the way to cameraPath, whatever ctx loads, so that no load of the
  * output reaches it. ctx itself when cameraPath is not an absolute prim path, as when the first

@@ -35,6 +35,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 - 2026-11-01 — **Dots mean real execution, coloured by device (user).**
 - 2026-11-12 — Member UAT moves to F6's Feature UAT (user, 2026-11-12): the screenshot approval and GPU dot colour check are collected at F6 - Unified Tiered Cache's UAT; the milestone merges into F6 once its automated gate and review round pass.
 - 2026-11-12 — P2.T2 and P2.T3 boxes checked (implemented and gated green in run 43275753469). Merged F6 after F6 took main (7134824f1); release gate with tests re-running.
+- 2026-11-13 — PR #266 opened into F6. GUI scripts passed on 7134824f1 (run 43378186485: stale border 16/16, device dots 21/21). Review round 1 (Claude reviewer, Codex quota spent) had 10 findings; 8 are fixed in fac468e00. The fixes: dots light only from real executions; dead input-render plumbing removed; lock-free execution counters and per-node freshness stamps keyed by frame, time and view; device-run region members light their edges; and the test hooks moved to `ViewerInstanceTestAccess`. **Kept (PM):** the viewer's own dot lights when it converts and uploads, even from a cached upstream; Fail/Black clears the display age at once, so an older render can't draw over the black. Gate re-running with the GUI scripts; the GUI bench follows (node/edge paint paths changed).
 
 ## Phase 302.1: Viewer stale state
 

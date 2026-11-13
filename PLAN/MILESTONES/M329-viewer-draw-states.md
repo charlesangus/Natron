@@ -146,7 +146,7 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
   - verify: gtest — identical in every case, and no layer dirtied.
   - size: M
 
-- [ ] M329.P5.T4 — Acceptance run and UAT.
+- [x] M329.P5.T4 — Acceptance run and UAT.
   - files: `build/appimages/` (AppImage plus same-named steps `.md`), this milestone's `## Decisions`.
   - approach: stripped release AppImage; run `DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh gate <AppImage>`; record `build/bench-gpu/heavy-scene-gate.jsonl`.
   - verify: every gate record passes, or its failure is reported with numbers; user approves the screenshots and UAT.
@@ -201,3 +201,4 @@ Acceptance sketch: the draw column shows BBox, Children, Full, Full + Load and H
 - 2026-11-12 — Member UAT moves to F4's Feature UAT (user, 2026-11-12): P5.T4's UAT sign-off and the GPU-host gate run are collected at F4 - Heavy Scene Viewer's UAT (§9b step 5); the milestone merges into F4 once its automated gate and review round pass. P2.T4 closes on the user's 2026-11-10 acceptance of the numbers.
 - 2026-11-12 — Merged feature/f4-heavy-scene-viewer (641a37097; F4 held an older M329 snapshot via M332's squash, so HEAD's M329 files won and M332's and main's changes were ported on). A requeue after a discarded prepare now honours load cancellation (6ead0b5a4, new SceneStage gtest). Release gate with tests running.
 - 2026-11-13 — **PR #263 review round 1 (Claude reviewer; Codex quota spent): 10 findings, 9 fixed in b8a244122.** The fixes: per-path load cancellation; outstanding-load gating; restore runs off the main thread; saves come from published snapshots; draw keys edit inside the edit lambda; wanted-load checks only under a delta's roots; sorted exclusions; batched row edits; and `getLoadedSceneView` returns the saver's output. **Finding 8 kept as built (PM call):** a state change stops the rest of a reveal at and below the changed rows; reveals of rows the change didn't touch carry on, since stopping them would leave prims the rules still show undrawn, with nothing to announce them. Four SceneDrawFilter tests pin that behaviour. The edge case reads as "the changed rows' reveal stops", and the filter doc now says so. Gate re-running with the GUI scripts named explicitly; earlier gates on this branch ran none.
+- 2026-11-13 — Merged into F4 - Heavy Scene Viewer as PR #263 (80a789d9e). P5.T4's UAT sign-off and the GPU-host gate run are collected at F4's Feature UAT (user, 2026-11-12).

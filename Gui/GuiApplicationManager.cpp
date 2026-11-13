@@ -319,12 +319,6 @@ pixmapEnumToPath(PixmapEnum e)
     case NATRON_PIXMAP_VIEWER_RENDER_SCALE_CHECKED:
         path = NATRON_ICONS_PATH "natron/render-scale.svg";
         break;
-    case NATRON_PIXMAP_VIEWER_AUTOCONTRAST_ENABLED:
-        path = NATRON_ICONS_PATH "lucide/contrast.svg";
-        break;
-    case NATRON_PIXMAP_VIEWER_AUTOCONTRAST_DISABLED:
-        path = NATRON_ICONS_PATH "lucide/contrast.svg";
-        break;
     case NATRON_PIXMAP_OPEN_FILE:
         path = NATRON_ICONS_PATH "lucide/folder-open.svg";
         break;

@@ -1110,7 +1110,8 @@ public:
     void openFile();
 
     /**
-     * @brief Force a refresh of the file
+     * @brief Force a refresh of the file, the way the node's panel does: through the node's Reload
+     * button when the file has one.
      **/
     void reloadFile();
 };

@@ -29,6 +29,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -41,6 +42,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
@@ -624,17 +626,7 @@ ConnectCommand::doConnect(const NodeGuiPtr &oldSrc,
     NodePtr internalDst =  dst->getNode();
     NodePtr internalNewSrc = newSrc ? newSrc->getNode() : NodePtr();
     NodePtr internalOldSrc = oldSrc ? oldSrc->getNode() : NodePtr();
-    ViewerInstance* isViewer = internalDst->isEffectViewer();
 
-
-    if (isViewer) {
-        ///if the node is an inspector  disconnect any current connection between the inspector and the _newSrc
-        for (int i = 0; i < internalDst->getNInputs(); ++i) {
-            if ( (i != inputNb) && (internalDst->getInput(i) == internalNewSrc) ) {
-                internalDst->disconnectInput(i);
-            }
-        }
-    }
     if (internalOldSrc && internalNewSrc) {
         internalDst->replaceInput(internalNewSrc, inputNb);
     } else {
@@ -1530,9 +1522,7 @@ LoadNodePresetsCommand::redo()
             if (k > 0) {  /// this is a multi-instance child, create it
                 NodePtr newNode = panel->createNewInstance(false);
                 newNode->fromSerialization(**it);
-                std::list<SequenceTime> keys;
-                newNode->getAllKnobsKeyframes(&keys);
-                newNode->getApp()->addMultipleKeyframeIndicatorsAdded(keys, true);
+                newNode->showKeyframesOnTimeline(true);
                 _newChildren.push_back(newNode);
             }
         }
@@ -1656,13 +1646,21 @@ extractTreesFromNodes(const std::list<NodeGuiPtr> & nodes,
             tree.output.node = *it;
             NodePtr n = (*it)->getNode();
             const NodesWList& outputs = n->getGuiOutputs();
+            std::set<Node*> outputsSeen;
             for (NodesWList::const_iterator it2 = outputs.begin(); it2 != outputs.end(); ++it2) {
                 NodePtr output = it2->lock();
                 if (!output) {
                     continue;
                 }
-                int idx = output->inputIndex(n);
-                tree.output.outputs.push_back( std::make_pair(idx, output) );
+                if (!outputsSeen.insert(output.get()).second) {
+                    continue;
+                }
+                const std::vector<NodeWPtr>& outputInputs = output->getGuiInputs();
+                for (std::size_t idx = 0; idx < outputInputs.size(); ++idx) {
+                    if (outputInputs[idx].lock() == n) {
+                        tree.output.outputs.push_back(std::make_pair((int)idx, output));
+                    }
+                }
             }
 
             const std::vector<Edge*>& inputs = (*it)->getInputsArrows();
@@ -2129,9 +2127,10 @@ GroupFromSelectionCommand::redo()
                 int inputIdx = output->getInputIndex(foundOriginalOutputNode->getNode().get());
                 assert(inputIdx != -1);
                 output->replaceInput(isGrp->getNode(), inputIdx);
-                OutputLink& link = _outputLinks[*it2];
+                OutputLink link;
                 link.inputNode = foundOriginalOutputNode->getNode();
                 link.inputIdx = inputIdx;
+                _outputLinks.insert(std::make_pair(*it2, link));
             }
         } // for all trees
     } // !_firstRedoCalled
@@ -2464,6 +2463,87 @@ InlineGroupCommand::redo()
     }
     _graph->getGui()->getApp()->triggerAutoSave();
     _firstRedoCalled = true;
+}
+
+ViewerInputLockCommand::ViewerInputLockCommand(NodeGraph* graph,
+                                               const NodeGuiPtr& viewer,
+                                               Edge* input,
+                                               const NodeGuiPtr& source,
+                                               QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _viewer(viewer)
+    , _inputNb(input->getInputNumber())
+    , _locking(source != nullptr)
+    , _oldActiveA(-1)
+    , _oldActiveB(-1)
+{
+    const NodePtr node = viewer->getNode();
+    if (ViewerInstance* isViewer = node->isEffectViewer()) {
+        _oldLock = isViewer->getLockedInput(_inputNb);
+    }
+    if (InspectorNode* isInspector = dynamic_cast<InspectorNode*>(node.get())) {
+        isInspector->getActiveInputs(_oldActiveA, _oldActiveB);
+    }
+    if (source) {
+        _newLock = source->getNode()->getScriptName_mt_safe();
+        if (input->getSource() != source) {
+            new ConnectCommand(graph, input, input->getSource(), source, this);
+        }
+    }
+    setText((_locking ? tr("Lock Viewer Input %1") : tr("Unlock Viewer Input %1")).arg(_inputNb + 1));
+}
+
+void
+ViewerInputLockCommand::setLock(const std::string& name)
+{
+    NodeGuiPtr viewer = _viewer.lock();
+    ViewerInstance* isViewer = viewer ? viewer->getNode()->isEffectViewer() : 0;
+    if (isViewer) {
+        isViewer->setLockedInput(_inputNb, name);
+    }
+}
+
+void
+ViewerInputLockCommand::undo()
+{
+    NodeGuiPtr viewer = _viewer.lock();
+    if (!viewer) {
+        setObsolete(true);
+
+        return;
+    }
+    QUndoCommand::undo();
+    setLock(_oldLock);
+    if (_locking) {
+        const NodePtr node = viewer->getNode();
+        KnobIntPtr activeA = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kViewerParamAInput));
+        KnobIntPtr activeB = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(kViewerParamBInput));
+        if (activeA && activeB) {
+            activeA->setValue(_oldActiveA);
+            activeB->setValue(_oldActiveB);
+        }
+        viewer->refreshEdges();
+    }
+}
+
+void
+ViewerInputLockCommand::redo()
+{
+    NodeGuiPtr viewer = _viewer.lock();
+    if (!viewer) {
+        setObsolete(true);
+
+        return;
+    }
+    setLock(_newLock);
+    QUndoCommand::redo();
+    if (_locking) {
+        InspectorNode* isInspector = dynamic_cast<InspectorNode*>(viewer->getNode().get());
+        if (isInspector) {
+            isInspector->setActiveInputAndRefresh(_inputNb, true);
+        }
+        viewer->refreshEdges();
+    }
 }
 
 NATRON_NAMESPACE_EXIT

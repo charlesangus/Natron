@@ -97,3 +97,4 @@ Moved out of this milestone (user, 2026-11-13): this phase becomes its own follo
 - 2026-11-13 — PR #271 opened into F11 - Texture Painting; review round 1 by a Claude reviewer (Codex quota exhausted).
 - 2026-11-13 — PR #271 review round 1 (Claude, Codex exhausted): 8 findings (3 medium: stale tile files in USDWrite, one tile set for every frame, per-prepare tile-version walks), all being fixed.
 - 2026-11-13 — Review round 1 fixes (cd1718efc): all 8 findings addressed; USDWrite tile sets are now per frame for varying sources (the Scope edge case). Re-gating.
+- 2026-11-13 — Gate green on the round-1 fixes (run 43443542792). Review round 2 (final): 6 of 8 fixed. 2 new medium: stale-tile deletion could remove another export's tiles (`scene.usda` and `scene.usdc` share a textures dir); whether a source is UDIM still depends on the playhead frame. Being fixed: recorded-file deletion, per-file textures dirs, a tile marker in file names.

@@ -344,11 +344,16 @@ bool authorReferencePoints(const PXR_NS::UsdPrim& prim,
 
 /**
  * @brief Binds prim to the material at materialPath (material:binding, with
- * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty.
+ * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty. A purpose of
+ * full or preview binds material:binding:<purpose>; an empty or allPurpose one binds
+ * material:binding. A non-empty strength (UsdShadeTokens->strongerThanDescendants or
+ * weakerThanDescendants) is authored as the binding's bindMaterialAs.
  **/
 bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
                            const std::string& materialPath,
-                           std::string* errorMessage);
+                           std::string* errorMessage,
+                           const PXR_NS::TfToken& purpose = PXR_NS::TfToken(),
+                           const PXR_NS::TfToken& strength = PXR_NS::TfToken());
 
 /**
  * @brief For a node assigning one shared material: grafts every root prim of material under the

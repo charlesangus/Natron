@@ -60,6 +60,28 @@ struct RootMatches {
     std::vector<PXR_NS::TfToken> existingBindings;
 };
 
+// A native instance root that gets a direct binding: Storm carries no collection binding from an
+// ancestor onto the prims of a native instance.
+struct InstanceBinding {
+    PXR_NS::SdfPath root;
+    // Matches below the root: the binding reaches the whole instance, not only them.
+    std::vector<PXR_NS::SdfPath> narrowMatches;
+    bool wholeInstanceMatched = false;
+    bool alreadyBound = false;
+};
+
+PXR_NS::SdfPath
+getInstanceRoot(const PXR_NS::UsdPrim& prim)
+{
+    PXR_NS::UsdPrim current = prim;
+
+    while (current && !current.IsInstance()) {
+        current = current.GetParent();
+    }
+
+    return current ? current.GetPath() : PXR_NS::SdfPath();
+}
+
 struct PlacedPrim {
     PXR_NS::SdfPath path;
     std::map<double, PXR_NS::GfMatrix4d> matrices;
@@ -491,7 +513,22 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
         }
     }
 
+    PXR_NS::TfToken bindingPurpose;
+    switch (purposeKnob->getValue()) {
+    case ePurposeFull:
+        bindingPurpose = PXR_NS::UsdShadeTokens->full;
+        break;
+    case ePurposePreview:
+        bindingPurpose = PXR_NS::UsdShadeTokens->preview;
+        break;
+    default:
+        bindingPurpose = PXR_NS::UsdShadeTokens->allPurpose;
+        break;
+    }
+    const PXR_NS::TfToken bindingStrength = (strengthKnob->getValue() == (int)eStrengthWeakerThanDescendants) ? PXR_NS::UsdShadeTokens->weakerThanDescendants : PXR_NS::UsdShadeTokens->strongerThanDescendants;
+
     std::vector<RootMatches> roots;
+    std::vector<InstanceBinding> instances;
     if (!isBlank(pattern)) {
         SceneQueryPool::Lease lease;
         PXR_NS::UsdStageRefPtr stage;
@@ -508,18 +545,45 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             }
         }
         std::vector<PXR_NS::SdfPath> found;
-        if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
+        if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage, true)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
         }
         std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> rootIndices;
+        std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> instanceIndices;
+        const auto noteInstance = [&](const PXR_NS::SdfPath& instanceRoot, const PXR_NS::SdfPath& narrowMatch) {
+            const std::pair<std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash>::iterator, bool> added = instanceIndices.emplace(instanceRoot, instances.size());
+            if (added.second) {
+                InstanceBinding instance;
+                instance.root = instanceRoot;
+                const PXR_NS::UsdRelationship direct = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(instanceRoot)).GetDirectBindingRel(bindingPurpose);
+                instance.alreadyBound = direct && direct.HasAuthoredTargets();
+                instances.push_back(instance);
+            }
+            InstanceBinding& instance = instances[added.first->second];
+            if (narrowMatch.IsEmpty()) {
+                instance.wholeInstanceMatched = true;
+            } else {
+                instance.narrowMatches.push_back(narrowMatch);
+            }
+        };
         QStringList skipped;
         for (const PXR_NS::SdfPath& path : found) {
             const PXR_NS::SdfPath root = getRootPrim(path);
             if (!scope.empty() && (root.GetName() == scope)) {
                 skipped += QString::fromStdString(path.GetString());
                 continue;
+            }
+            const PXR_NS::UsdPrim matched = stage->GetPrimAtPath(path);
+            if (matched.IsInstanceProxy()) {
+                noteInstance(getInstanceRoot(matched), path);
+                continue;
+            }
+            for (const PXR_NS::UsdPrim& below : PXR_NS::UsdPrimRange(matched)) {
+                if (below.IsInstance()) {
+                    noteInstance(below.GetPath(), PXR_NS::SdfPath());
+                }
             }
             const std::pair<std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash>::iterator, bool> inserted = rootIndices.emplace(root, roots.size());
             if (inserted.second) {
@@ -535,7 +599,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                             .arg(QString::fromStdString(scope))
                             .arg(skipped.join(QLatin1String(", ")));
         }
-        if (roots.empty()) {
+        if (roots.empty() && instances.empty()) {
             warnings += tr("The prim pattern \"%1\" matches no prim to bind the material to; the scene is passed through "
                            "unchanged.")
                             .arg(QString::fromStdString(pattern));
@@ -543,6 +607,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             warnings += tr("There is no material to bind: connect the Material input or set Material Path. The scene is "
                            "passed through unchanged.");
             roots.clear();
+            instances.clear();
         } else if (!materialConnected && stage) {
             const PXR_NS::UsdPrim materialPrim = stage->GetPrimAtPath(PXR_NS::SdfPath(materialPath));
             if (!materialPrim || !materialPrim.IsA<PXR_NS::UsdShadeMaterial>()) {
@@ -644,7 +709,32 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
         }
     }
 
-    if (roots.empty()) {
+    QStringList narrow;
+    QStringList alreadyBound;
+    std::vector<PXR_NS::SdfPath> instanceRoots;
+    for (const InstanceBinding& instance : instances) {
+        if (instance.alreadyBound) {
+            alreadyBound += QString::fromStdString(instance.root.GetString());
+            continue;
+        }
+        instanceRoots.push_back(instance.root);
+        if (!instance.wholeInstanceMatched) {
+            for (const PXR_NS::SdfPath& match : instance.narrowMatches) {
+                narrow += QString::fromStdString(match.GetString());
+            }
+        }
+    }
+    if (!narrow.isEmpty()) {
+        warnings += tr("These matches lie inside native instances, which take a material only as a whole, so every prim "
+                       "of the instance takes it: %1")
+                        .arg(narrow.join(QLatin1String(", ")));
+    }
+    if (!alreadyBound.isEmpty()) {
+        warnings += tr("These native instances already have a direct material binding from upstream, which is kept: %1")
+                        .arg(alreadyBound.join(QLatin1String(", ")));
+    }
+
+    if (roots.empty() && instanceRoots.empty()) {
         *outputScene = upstream;
         if (warnings.isEmpty()) {
             clearPersistentMessage(false);
@@ -658,21 +748,11 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
     SceneNodeAuthoring::SceneCollectionBinding binding;
     binding.materialPath = materialPath;
     binding.bindingName = getBindingName(getFullyQualifiedName());
-    switch (purposeKnob->getValue()) {
-    case ePurposeFull:
-        binding.purpose = PXR_NS::UsdShadeTokens->full;
-        break;
-    case ePurposePreview:
-        binding.purpose = PXR_NS::UsdShadeTokens->preview;
-        break;
-    default:
-        binding.purpose = PXR_NS::UsdShadeTokens->allPurpose;
-        break;
-    }
-    binding.strength = (strengthKnob->getValue() == (int)eStrengthWeakerThanDescendants) ? PXR_NS::UsdShadeTokens->weakerThanDescendants : PXR_NS::UsdShadeTokens->strongerThanDescendants;
+    binding.purpose = bindingPurpose;
+    binding.strength = bindingStrength;
 
-    SceneLayerMemo::AuthorFunc author = [this, roots, binding, projection, placement](const SceneLayerEdit& edit,
-                                                                                      std::string* error) {
+    SceneLayerMemo::AuthorFunc author = [this, roots, instanceRoots, binding, projection, placement](const SceneLayerEdit& edit,
+                                                                                                     std::string* error) {
         PXR_NS::UsdStageRefPtr stage = SceneNodeAuthoring::openLayerStage(edit, error);
         if (!stage) {
             if (error->empty()) {
@@ -686,6 +766,11 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             rootBinding.includes = matches.paths;
             rootBinding.existingBindings = matches.existingBindings;
             if (!SceneNodeAuthoring::authorCollectionBinding(stage->OverridePrim(matches.root), rootBinding, error)) {
+                return false;
+            }
+        }
+        for (const PXR_NS::SdfPath& instanceRoot : instanceRoots) {
+            if (!SceneNodeAuthoring::authorMaterialBinding(stage->OverridePrim(instanceRoot), binding.materialPath, error, binding.purpose, binding.strength)) {
                 return false;
             }
         }
@@ -728,6 +813,12 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             facts.appendString(name.GetString());
         }
     }
+    facts.appendU64(instanceRoots.size());
+    for (const PXR_NS::SdfPath& instanceRoot : instanceRoots) {
+        facts.appendString(instanceRoot.GetString());
+    }
+    facts.appendString(binding.purpose.GetString());
+    facts.appendString(binding.strength.GetString());
     facts.appendU64(placement->prims.size());
     if (!placement->prims.empty()) {
         facts.appendString(projection.framePrimvar);

@@ -674,7 +674,8 @@ bool
 selectPrims(const PXR_NS::UsdStageRefPtr& stage,
             const std::string& expression,
             std::vector<PXR_NS::SdfPath>* paths,
-            std::string* errorMessage)
+            std::string* errorMessage,
+            bool traverseInstanceProxies)
 {
     paths->clear();
     PXR_NS::SdfPathExpression parsed;
@@ -686,7 +687,7 @@ selectPrims(const PXR_NS::UsdStageRefPtr& stage,
     }
     const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
     PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
-    PXR_NS::UsdPrimRange range = stage->Traverse();
+    PXR_NS::UsdPrimRange range = traverseInstanceProxies ? stage->Traverse(PXR_NS::UsdTraverseInstanceProxies()) : stage->Traverse();
     for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
         const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
         if (result.GetValue()) {

@@ -154,20 +154,6 @@ columnHeader(int section,
     }
 }
 
-QMimeData*
-mimeDataOfPaths(const QStringList& paths)
-{
-    if (paths.isEmpty()) {
-        return nullptr;
-    }
-    QMimeData* mime = new QMimeData;
-    const QString joined = paths.join(QLatin1Char('\n'));
-    mime->setData(SceneGraphModel::primPathsMimeType(), joined.toUtf8());
-    mime->setText(joined);
-
-    return mime;
-}
-
 // Collects what the stage's edits resynced, on whichever thread edits the stage.
 class StageListener
     : public TfWeakBase {
@@ -897,6 +883,20 @@ QString
 SceneGraphModel::primPathsMimeType()
 {
     return QString::fromUtf8("application/x-natron-prim-paths");
+}
+
+QMimeData*
+SceneGraphModel::mimeDataOfPaths(const QStringList& paths)
+{
+    if (paths.isEmpty()) {
+        return nullptr;
+    }
+    QMimeData* mime = new QMimeData;
+    const QString joined = paths.join(QLatin1Char('\n'));
+    mime->setData(primPathsMimeType(), joined.toUtf8());
+    mime->setText(joined);
+
+    return mime;
 }
 
 SceneGraphModel::SceneGraphModel(QObject* parent)
@@ -1647,7 +1647,7 @@ SceneGraphModel::mimeData(const QModelIndexList& indexes) const
         }
     }
 
-    return mimeDataOfPaths(paths);
+    return SceneGraphModel::mimeDataOfPaths(paths);
 }
 
 Qt::DropActions
@@ -1902,7 +1902,7 @@ SceneChangedHereModel::mimeData(const QModelIndexList& indexes) const
         }
     }
 
-    return mimeDataOfPaths(paths);
+    return SceneGraphModel::mimeDataOfPaths(paths);
 }
 
 Qt::DropActions

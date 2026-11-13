@@ -36,6 +36,7 @@
 
 #include "Gui/GuiFwd.h"
 
+class QMimeData;
 class QToolButton;
 
 NATRON_NAMESPACE_ENTER
@@ -46,13 +47,17 @@ class SceneViewport;
  * @brief The strip above the scene view that shows the current selected prim's path as `/` and
  * one button per segment. A click selects the segment's prim, Shift+click adds it and `/` clears
  * the selection. A chevron after `/` and after each segment lists the prim's children in a
- * ScenePrimListPopup, and a right-click on a segment lists its siblings with it marked. Segments
- * the stage no longer has are greyed and cannot be clicked; when the bar is too narrow the middle segments fold into a "..." button whose menu lists them.
+ * ScenePrimListPopup, and a right-click on a segment opens a menu: Siblings lists the siblings with
+ * the segment marked, Copy Path and Copy Selected Paths fill the clipboard and Frame selects the
+ * prim and frames it, as a double-click does. Segments the stage no longer has are greyed and cannot
+ * be clicked, though their menu and drag still work; a hover tells what the prim is. A drag from a
+ * segment carries its path and a drag from the "+N" badge carries every selected path. When the bar
+ * is too narrow the middle segments fold into a "..." button whose menu lists them.
  *
  * The widget publishes natronBreadcrumbSegments (see Segment::toVariant()), natronBreadcrumbPath,
  * natronBreadcrumbMore and natronBreadcrumbElided for GUI tests. Its buttons are named
  * "breadcrumbRoot", "breadcrumbRootChevron", "breadcrumbSegment", "breadcrumbChevron",
- * "breadcrumbElision" and "breadcrumbMore".
+ * "breadcrumbElision" and "breadcrumbMore", and a segment's menu "breadcrumbSegmentMenu".
  **/
 class SceneBreadcrumbBar : public QWidget {
     Q_OBJECT
@@ -94,6 +99,10 @@ public:
 
     QSize minimumSizeHint() const override;
 
+    // Makes the mime data a drag of a segment (its path) or of the "+N" badge (empty path) would
+    // carry, as a child of the bar named "breadcrumbMime" that replaces the last one.
+    Q_INVOKABLE void exposeMimeData(const QString& segmentPath);
+
 public Q_SLOTS:
 
     // Reads the viewport's selection and the stage again.
@@ -108,6 +117,12 @@ private:
     void rebuild();
     void layoutButtons();
     void clickSegment(const Segment& segment);
+    void frameSegment(Segment segment);
+    void openSegmentMenu(Segment segment, QWidget* anchor);
+    QString segmentToolTip(const Segment& segment) const;
+    QStringList dragPaths(const QString& segmentPath) const;
+    void startDrag(QToolButton* button);
+    const Segment* segmentAt(const QString& path) const;
     void readStates(QList<Segment>& segments);
     QToolButton* makeButton(const QString& name, const QString& text);
     QToolButton* makeChevron(const QString& name, const QString& path);

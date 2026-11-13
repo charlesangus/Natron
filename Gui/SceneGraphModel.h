@@ -203,6 +203,10 @@ public:
     // The mime type of dragged prim paths: UTF-8, one path per line.
     static QString primPathsMimeType();
 
+    // The mime data of a drag of paths, owned by the caller: primPathsMimeType() and the text, one
+    // path per line. Null for no paths.
+    static QMimeData* mimeDataOfPaths(const QStringList& paths);
+
     explicit SceneGraphModel(QObject* parent = nullptr);
 
     ~SceneGraphModel() override;

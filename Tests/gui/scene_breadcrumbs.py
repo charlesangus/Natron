@@ -12,12 +12,17 @@ Checks:
   - a click on group_1 selects /geo/group_1, a Shift+click on group_1 adds it, the "/" button clears;
   - a "+1" badge shows when two prims are selected;
   - the chevron on group_1 lists its children with the scene graph's icons; a right-click on group_1
-    lists group_1 and group_2 with group_1 marked, and picking group_2 selects /geo/group_2;
+    opens a menu of Siblings, Copy Path, Copy Selected Paths and Frame, and Siblings lists group_1 and
+    group_2 with group_1 marked, and picking group_2 selects /geo/group_2;
+  - Copy Path puts /geo/group_1 on the clipboard, Copy Selected Paths with two prims selected puts both
+    lines there, and a double-click on group_1 selects it and moves the free camera (framing);
+  - a hover on group_1 shows a tooltip naming its type, kind and loaded state;
   - the filter narrows /big's 10000 children to one row, with the main thread within the stall
     budget while the list is read and the filter is typed;
   - the chevron on /pay shows a "Not loaded" row whose Load button fills the list;
-  - pruning the mesh greys it while its ancestors stay clickable, and a click on a greyed segment
-    changes nothing;
+  - pruning the mesh greys it while its ancestors stay clickable, a click on a greyed segment
+    changes nothing, its tooltip says "Not in this scene" and its menu still copies its path, with
+    Siblings and Frame disabled;
   - split to half the screen's width, a path of long names folds its middle segments into a "..."
     button whose menu lists them, first and last stay.
 
@@ -85,10 +90,10 @@ def write_scene(directory):
 
 try:
     import NatronEngine
-    from PySide6.QtCore import Q_ARG, QMetaObject, Qt, QTimer
-    from PySide6.QtGui import QIcon
+    from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, Qt, QTimer
+    from PySide6.QtGui import QHelpEvent, QIcon
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLineEdit, QListView, QPushButton, QToolButton
+    from PySide6.QtWidgets import QApplication, QLineEdit, QListView, QMenu, QPushButton, QToolButton, QToolTip
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -179,6 +184,28 @@ try:
 
     def popup_rows(p):
         return [str(r) for r in (p.property("natronPopupRows") or [])]
+
+    def segment_menu():
+        b = bar()
+        ms = [w for w in b.findChildren(QMenu, "breadcrumbSegmentMenu") if w.isVisible()] if b is not None else []
+        return hold(ms[0]) if ms else None
+
+    def menu_action(name):
+        m = segment_menu()
+        for a in (m.actions() if m is not None else []):
+            if a.objectName() == name:
+                return a
+        return None
+
+    def camera():
+        v = view()
+        value = v.property("natronSceneFreeCamera") if v is not None else None
+        return [float(x) for x in value] if value else None
+
+    def tooltip_of(button):
+        QToolTip.hideText()
+        QApplication.sendEvent(button, QHelpEvent(QEvent.ToolTip, button.rect().center(), button.mapToGlobal(button.rect().center())))
+        return str(QToolTip.text())
 
     def chevron(path):
         b = bar()
@@ -295,8 +322,17 @@ try:
         check(ok, "the popup closes")
 
         QTest.mouseClick(segment_button("group_1"), Qt.RightButton)
+        ok = yield ("until", lambda: segment_menu() is not None, POLL_TIMEOUT_S)
+        require(ok, "a right-click on group_1 opens a menu")
+        check(popup() is None, "the right-click opens the menu, not the siblings popup")
+        labels = [str(a.text()) for a in segment_menu().actions() if not a.isSeparator()]
+        check(labels == ["Siblings", "Copy Path", "Copy Selected Paths", "Frame"], "the menu lists its four entries (got %r)" % (labels,))
+        check(all(menu_action(n).isEnabled() for n in ("breadcrumbSiblings", "breadcrumbCopyPath", "breadcrumbCopySelectedPaths", "breadcrumbFrame")),
+              "every entry of a present segment's menu is enabled")
+        shot("scene_breadcrumbs_menu.png")
+        menu_action("breadcrumbSiblings").trigger()
         ok = yield ("until", lambda: popup() is not None and bool(popup().property("natronPopupComplete")), POLL_TIMEOUT_S)
-        require(ok, "a right-click on group_1 opens a popup")
+        require(ok, "Siblings opens a popup")
         p = popup()
         check(str(p.property("natronPopupParent")) == "/geo", "the popup lists geo's children (got %r)" % (p.property("natronPopupParent"),))
         check(popup_rows(p) == ["group_1", "group_2"], "the siblings are group_1 and group_2 (got %r)" % (popup_rows(p),))
@@ -309,6 +345,68 @@ try:
         check(ok, "picking group_2 selects /geo/group_2 (got %r)" % (selection(),))
         ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
         check(ok, "a pick closes the popup")
+
+        clipboard = QApplication.clipboard()
+        select([GROUP])
+        ok = yield ("until", lambda: texts() == ["geo", "group_1"] and states() == ["present"] * 2, POLL_TIMEOUT_S)
+        require(ok, "the bar shows geo, group_1")
+        clipboard.setText("")
+        QTest.mouseClick(segment_button("group_1"), Qt.RightButton)
+        ok = yield ("until", lambda: menu_action("breadcrumbCopyPath") is not None, POLL_TIMEOUT_S)
+        require(ok, "the menu opens on group_1")
+        menu_action("breadcrumbCopyPath").trigger()
+        check(str(clipboard.text()) == GROUP, "Copy Path puts /geo/group_1 on the clipboard (got %r)" % (clipboard.text(),))
+        ok = yield ("until", lambda: segment_menu() is None, POLL_TIMEOUT_S)
+        check(ok, "choosing an entry closes the menu")
+
+        select([MESH, GROUP])
+        ok = yield ("until", lambda: selection() == [MESH, GROUP] and texts() == ["geo", "group_1"], POLL_TIMEOUT_S)
+        require(ok, "two prims are selected and the bar shows the last (got %r)" % (selection(),))
+        clipboard.setText("")
+        QTest.mouseClick(segment_button("group_1"), Qt.RightButton)
+        ok = yield ("until", lambda: menu_action("breadcrumbCopySelectedPaths") is not None, POLL_TIMEOUT_S)
+        require(ok, "the menu opens on group_1 with two selected")
+        menu_action("breadcrumbCopySelectedPaths").trigger()
+        check(str(clipboard.text()).split("\n") == [MESH, GROUP], "Copy Selected Paths puts both paths on the clipboard, one per line (got %r)" % (clipboard.text(),))
+        ok = yield ("until", lambda: segment_menu() is None, POLL_TIMEOUT_S)
+
+        tip = tooltip_of(segment_button("group_1"))
+        check("Xform" in tip and GROUP in tip, "the tooltip of group_1 names its type (got %r)" % (tip,))
+        check("Kind:" in tip and "Loaded:" in tip, "the tooltip tells the kind and the loaded state (got %r)" % (tip,))
+        QToolTip.hideText()
+
+        select([MESH])
+        ok = yield ("until", lambda: texts() == ["geo", "group_1", "a_thing", "mesh"] and states() == ["present"] * 4, POLL_TIMEOUT_S)
+        require(ok, "the bar shows the mesh's path again")
+        v.update()
+        yield ("sleep", SETTLE_MS)
+        before = camera()
+        require(before is not None, "the free camera is published")
+        QTest.mouseDClick(segment_button("group_1"), Qt.LeftButton)
+        ok = yield ("until", lambda: selection() == [GROUP], POLL_TIMEOUT_S)
+        check(ok, "a double-click on group_1 selects /geo/group_1 (got %r)" % (selection(),))
+
+        def moved():
+            v.update()
+            now = camera()
+            return now is not None and any(abs(a - b) > 1e-6 * max(1.0, abs(a)) for a, b in zip(now, before))
+
+        ok = yield ("until", moved, POLL_TIMEOUT_S)
+        check(ok, "a double-click on group_1 frames it: the camera moved from %r to %r" % (before, camera()))
+
+        select([MESH])
+        ok = yield ("until", lambda: texts() == ["geo", "group_1", "a_thing", "mesh"] and segment_button("group_1") is not None, POLL_TIMEOUT_S)
+        v.update()
+        yield ("sleep", SETTLE_MS)
+        before = camera()
+        QTest.mouseClick(segment_button("a_thing"), Qt.RightButton)
+        ok = yield ("until", lambda: menu_action("breadcrumbFrame") is not None, POLL_TIMEOUT_S)
+        require(ok, "the menu opens on a_thing")
+        menu_action("breadcrumbFrame").trigger()
+        ok = yield ("until", lambda: selection() == ["/geo/group_1/a_thing"], POLL_TIMEOUT_S)
+        check(ok, "Frame selects the prim (got %r)" % (selection(),))
+        ok = yield ("until", moved, POLL_TIMEOUT_S)
+        check(ok, "Frame moves the camera")
 
         select([BIG])
         ok = yield ("until", lambda: texts() == ["big"] and chevron(BIG) is not None, POLL_TIMEOUT_S)
@@ -360,12 +458,25 @@ try:
         check(ok, "pruning the mesh greys the mesh alone (got %r)" % (states(),))
         yield ("sleep", SETTLE_MS)
         mesh_button = segment_button("mesh")
-        check(mesh_button is not None and not mesh_button.isEnabled(), "the greyed segment is still shown and cannot be clicked")
+        check(mesh_button is not None and str(mesh_button.property("natronBreadcrumbState")) == "missing", "the greyed segment is still shown")
         check(segment_button("a_thing").isEnabled(), "the ancestors stay clickable")
         shot("scene_breadcrumbs_pruned.png")
         QTest.mouseClick(mesh_button, Qt.LeftButton)
         yield ("sleep", SETTLE_MS)
         check(selection() == [MESH], "a click on the greyed segment changes nothing (got %r)" % (selection(),))
+        tip = tooltip_of(mesh_button)
+        check(tip == "Not in this scene", "the missing segment's tooltip says it is not in this scene (got %r)" % (tip,))
+        QToolTip.hideText()
+        clipboard.setText("")
+        QTest.mouseClick(mesh_button, Qt.RightButton)
+        ok = yield ("until", lambda: menu_action("breadcrumbCopyPath") is not None, POLL_TIMEOUT_S)
+        require(ok, "a right-click on the missing segment opens its menu")
+        check(not menu_action("breadcrumbSiblings").isEnabled() and not menu_action("breadcrumbFrame").isEnabled(),
+              "Siblings and Frame are disabled for a missing segment")
+        menu_action("breadcrumbCopyPath").trigger()
+        check(str(clipboard.text()) == MESH, "Copy Path works on the missing segment (got %r)" % (clipboard.text(),))
+        ok = yield ("until", lambda: segment_menu() is None, POLL_TIMEOUT_S)
+        check(selection() == [MESH], "the missing segment's menu leaves the selection (got %r)" % (selection(),))
 
         prune.getParam("primPattern").setValue("/nothing")
         select([])

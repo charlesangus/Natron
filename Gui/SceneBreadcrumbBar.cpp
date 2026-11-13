@@ -25,17 +25,26 @@
 
 #include "SceneBreadcrumbBar.h"
 
+#include <QtCore/QMimeData>
 #include <QtCore/QPointer>
 #include <QtCore/QTimer>
 #include <QtGui/QAction>
+#include <QtGui/QClipboard>
+#include <QtGui/QDrag>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QHelpEvent>
 #include <QtGui/QMouseEvent>
+#include <QtGui/QPalette>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QToolButton>
+#include <QtWidgets/QToolTip>
 
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Gui/SceneGraphModel.h"
 #include "Gui/ScenePrimListPopup.h"
 #include "Gui/SceneViewport.h"
 
@@ -100,6 +109,8 @@ struct SceneBreadcrumbBar::Private {
     // Parallel to segments: the chevron after each segment's button.
     QList<QToolButton*> chevrons;
     Qt::KeyboardModifiers pressModifiers = Qt::NoModifier;
+    QPointer<QToolButton> pressButton;
+    QPoint pressPos;
     bool rebuilding = false;
 };
 
@@ -293,8 +304,15 @@ SceneBreadcrumbBar::rebuild()
     if (known) {
         for (const Segment& segment : _imp->segments) {
             QToolButton* button = makeButton(QStringLiteral("breadcrumbSegment"), segment.text);
-            button->setEnabled(segment.state == eStatePresent);
             button->setProperty("natronBreadcrumbPath", segment.path);
+            button->setProperty("natronBreadcrumbState", QString::fromLatin1(stateName(segment.state)));
+            if (segment.state == eStateMissing) {
+                // Disabled buttons take no mouse events, and a missing segment still has its menu and drag.
+                QPalette greyed = button->palette();
+                greyed.setColor(QPalette::ButtonText, greyed.color(QPalette::Disabled, QPalette::ButtonText));
+                greyed.setColor(QPalette::WindowText, greyed.color(QPalette::Disabled, QPalette::WindowText));
+                button->setPalette(greyed);
+            }
             QToolButton* chevron = makeChevron(QStringLiteral("breadcrumbChevron"), segment.path);
             chevron->setEnabled(segment.state == eStatePresent);
             _imp->layout->insertWidget(at++, button);
@@ -399,6 +417,166 @@ SceneBreadcrumbBar::clickSegment(const Segment& segment)
 }
 
 void
+SceneBreadcrumbBar::frameSegment(Segment segment)
+{
+    _imp->pressModifiers = Qt::NoModifier;
+    if (!_imp->viewport || (segment.state == eStateMissing)) {
+        return;
+    }
+    _imp->viewport->select(QStringList(segment.path), SceneViewport::eSelectionModeReplace);
+    _imp->viewport->frameSelection();
+}
+
+const SceneBreadcrumbBar::Segment*
+SceneBreadcrumbBar::segmentAt(const QString& path) const
+{
+    for (const Segment& segment : _imp->segments) {
+        if (segment.path == path) {
+            return &segment;
+        }
+    }
+
+    return nullptr;
+}
+
+QString
+SceneBreadcrumbBar::segmentToolTip(const Segment& segment) const
+{
+    StateEnum state = segment.state;
+    QString type;
+    QString kind;
+    QString loaded;
+    if (_imp->viewport && _imp->viewport->getRenderer().hasScene() && _imp->viewport->isSceneSynced()) {
+        // A read an edit keeps out leaves the state the last refresh found.
+        _imp->viewport->getRenderer().tryReadStage([&](const SceneStage* stage) {
+            const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();
+            const std::string path = segment.path.toStdString();
+            if (!usdStage || !SdfPath::IsValidPathString(path)) {
+                return;
+            }
+            const UsdPrim prim = usdStage->GetPrimAtPath(SdfPath(path));
+            if (!prim) {
+                state = eStateMissing;
+
+                return;
+            }
+            state = eStatePresent;
+            type = QString::fromStdString(prim.GetTypeName().GetString());
+            TfToken kindToken;
+            if (prim.GetKind(&kindToken)) {
+                kind = QString::fromStdString(kindToken.GetString());
+            }
+            loaded = prim.IsLoaded() ? tr("yes") : tr("no");
+        });
+    }
+    if (state == eStateMissing) {
+        return tr("Not in this scene");
+    }
+    if (state != eStatePresent) {
+        return segment.path;
+    }
+
+    return tr("%1\nType: %2\nKind: %3\nLoaded: %4")
+        .arg(segment.path, type.isEmpty() ? tr("none") : type, kind.isEmpty() ? tr("none") : kind, loaded.isEmpty() ? tr("unknown") : loaded);
+}
+
+QStringList
+SceneBreadcrumbBar::dragPaths(const QString& segmentPath) const
+{
+    if (!segmentPath.isEmpty()) {
+        return QStringList(segmentPath);
+    }
+
+    return _imp->selection;
+}
+
+void
+SceneBreadcrumbBar::exposeMimeData(const QString& segmentPath)
+{
+    for (QMimeData* old : findChildren<QMimeData*>(QStringLiteral("breadcrumbMime"), Qt::FindDirectChildrenOnly)) {
+        delete old;
+    }
+    QMimeData* mime = SceneGraphModel::mimeDataOfPaths(dragPaths(segmentPath));
+    if (mime) {
+        mime->setObjectName(QStringLiteral("breadcrumbMime"));
+        mime->setParent(this);
+    }
+}
+
+void
+SceneBreadcrumbBar::startDrag(QToolButton* button)
+{
+    QMimeData* mime = SceneGraphModel::mimeDataOfPaths(dragPaths(button->property("natronBreadcrumbPath").toString()));
+    _imp->pressButton = nullptr;
+    _imp->pressModifiers = Qt::NoModifier;
+    if (!mime) {
+        return;
+    }
+    QPointer<QToolButton> guard(button);
+    QDrag* drag = new QDrag(button);
+    drag->setMimeData(mime);
+    drag->setPixmap(button->grab());
+    drag->exec(Qt::CopyAction);
+    // The release went to the drag, so the button never saw it.
+    if (guard) {
+        guard->setDown(false);
+    }
+}
+
+void
+SceneBreadcrumbBar::openSegmentMenu(Segment segment, QWidget* anchor)
+{
+    for (QMenu* old : findChildren<QMenu*>(QStringLiteral("breadcrumbSegmentMenu"), Qt::FindDirectChildrenOnly)) {
+        old->close();
+    }
+    QMenu* menu = new QMenu(this);
+    menu->setObjectName(QStringLiteral("breadcrumbSegmentMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+
+    const QString path = segment.path;
+    const bool present = (segment.state != eStateMissing);
+    QPointer<QWidget> anchorGuard(anchor);
+
+    QAction* siblings = menu->addAction(tr("Siblings"));
+    siblings->setObjectName(QStringLiteral("breadcrumbSiblings"));
+    siblings->setEnabled(present);
+    QObject::connect(siblings, &QAction::triggered, this, [this, path, anchorGuard]() {
+        // The menu is still closing: a popup opened now would be closed with it.
+        QTimer::singleShot(0, this, [this, path, anchorGuard]() {
+            if (!anchorGuard) {
+                return;
+            }
+            const int slash = path.lastIndexOf(QLatin1Char('/'));
+            openPopup(slash > 0 ? path.left(slash) : QString::fromLatin1(kRootText), path.mid(slash + 1), anchorGuard);
+        });
+    });
+
+    menu->addSeparator();
+
+    QAction* copyPath = menu->addAction(tr("Copy Path"));
+    copyPath->setObjectName(QStringLiteral("breadcrumbCopyPath"));
+    QObject::connect(copyPath, &QAction::triggered, this, [path]() { QGuiApplication::clipboard()->setText(path); });
+
+    QAction* copySelected = menu->addAction(tr("Copy Selected Paths"));
+    copySelected->setObjectName(QStringLiteral("breadcrumbCopySelectedPaths"));
+    copySelected->setEnabled(!_imp->selection.isEmpty());
+    QObject::connect(copySelected, &QAction::triggered, this, [this]() {
+        const QStringList selection = _imp->viewport ? _imp->viewport->getSelection() : _imp->selection;
+        QGuiApplication::clipboard()->setText(selection.join(QLatin1Char('\n')));
+    });
+
+    menu->addSeparator();
+
+    QAction* frame = menu->addAction(tr("Frame"));
+    frame->setObjectName(QStringLiteral("breadcrumbFrame"));
+    frame->setEnabled(present && _imp->viewport);
+    const Segment copy = segment;
+    QObject::connect(frame, &QAction::triggered, this, [this, copy]() { frameSegment(copy); });
+
+    menu->popup(anchor->mapToGlobal(anchor->rect().bottomLeft()));
+}
+
+void
 SceneBreadcrumbBar::resizeEvent(QResizeEvent* e)
 {
     QWidget::resizeEvent(e);
@@ -415,19 +593,56 @@ SceneBreadcrumbBar::showEvent(QShowEvent* e)
 bool
 SceneBreadcrumbBar::eventFilter(QObject* watched, QEvent* e)
 {
-    // A button's clicked() carries no modifiers.
-    if (e->type() == QEvent::MouseButtonPress) {
+    QToolButton* button = qobject_cast<QToolButton*>(watched);
+    const bool isSegment = button && (button->objectName() == QLatin1String("breadcrumbSegment"));
+    const Segment* segment = isSegment ? segmentAt(button->property("natronBreadcrumbPath").toString()) : nullptr;
+
+    switch (e->type()) {
+    case QEvent::MouseButtonPress: {
         const QMouseEvent* press = static_cast<QMouseEvent*>(e);
+        // A button's clicked() carries no modifiers.
         _imp->pressModifiers = press->modifiers();
-        QToolButton* button = qobject_cast<QToolButton*>(watched);
-        if ((press->button() == Qt::RightButton) && button && (button->objectName() == QLatin1String("breadcrumbSegment"))) {
-            // The siblings are the children of the parent, with this prim marked.
-            const QString path = button->property("natronBreadcrumbPath").toString();
-            const int slash = path.lastIndexOf(QLatin1Char('/'));
-            openPopup(slash > 0 ? path.left(slash) : QString::fromLatin1(kRootText), path.mid(slash + 1), button);
+        if (segment && (press->button() == Qt::RightButton)) {
+            openSegmentMenu(*segment, button);
 
             return true;
         }
+        if (press->button() == Qt::LeftButton) {
+            const bool draggable = segment || (button && (button == _imp->moreButton));
+            _imp->pressButton = draggable ? button : nullptr;
+            _imp->pressPos = press->position().toPoint();
+        }
+        break;
+    }
+    case QEvent::MouseMove: {
+        const QMouseEvent* move = static_cast<QMouseEvent*>(e);
+        if (button && (button == _imp->pressButton) && (move->buttons() & Qt::LeftButton)
+            && ((move->position().toPoint() - _imp->pressPos).manhattanLength() >= QApplication::startDragDistance())) {
+            startDrag(button);
+
+            return true;
+        }
+        break;
+    }
+    case QEvent::MouseButtonRelease:
+        _imp->pressButton = nullptr;
+        break;
+    case QEvent::MouseButtonDblClick:
+        if (segment && (static_cast<QMouseEvent*>(e)->button() == Qt::LeftButton)) {
+            frameSegment(*segment);
+
+            return true;
+        }
+        break;
+    case QEvent::ToolTip:
+        if (segment) {
+            QToolTip::showText(static_cast<QHelpEvent*>(e)->globalPos(), segmentToolTip(*segment), button);
+
+            return true;
+        }
+        break;
+    default:
+        break;
     }
 
     return QWidget::eventFilter(watched, e);

@@ -261,6 +261,13 @@ public:
      **/
     std::string getFailure(const std::string& uri) const;
 
+    /**
+     * @brief How many times prepare() has rendered each tile, by tile number; 0 stands for a
+     * texture that is not a UDIM tile. Tiles reused from an earlier URI or already stored count
+     * nothing.
+     **/
+    std::map<int, std::size_t> getRenderCounts() const;
+
 private:
     LiveTextureStore();
 
@@ -286,6 +293,7 @@ private:
     std::list<std::string> _uses;
     std::set<std::string> _rendering;
     std::map<std::string, std::string> _failures;
+    std::map<int, std::size_t> _renderCounts;
     // The URIs of the prepare() calls under way, with how many hold each.
     std::map<std::string, int> _pinned;
     std::set<std::string> _lastPrepared;

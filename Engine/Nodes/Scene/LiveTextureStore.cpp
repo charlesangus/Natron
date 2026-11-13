@@ -858,6 +858,7 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         {
             std::lock_guard<std::mutex> lock(_mutex);
             _rendering.erase(job.uri);
+            ++_renderCounts[job.tile];
             if (buffer) {
                 insertLocked(job.uri, buffer, false);
                 if (job.tileKey) {
@@ -914,6 +915,14 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
 
     return numFailed;
 } // LiveTextureStore::prepare
+
+std::map<int, std::size_t>
+LiveTextureStore::getRenderCounts() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return _renderCounts;
+}
 
 namespace SceneCaches {
 void

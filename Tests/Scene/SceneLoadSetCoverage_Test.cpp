@@ -43,6 +43,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDEditPrim.h"
+#include "Engine/Nodes/Scene/USDProjectUV.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDReference.h"
@@ -191,7 +192,51 @@ protected:
 
         return node;
     }
+
+    NodePtr projectUV(const NodePtr& input,
+                      const std::string& pattern,
+                      const std::string& projection,
+                      const std::string& cameraPath)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECTUV));
+
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        KnobString* patternKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDProjectUVParamPrimPattern).get());
+        KnobChoice* projectionKnob = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDProjectUVParamProjection).get());
+        KnobString* cameraKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDProjectUVParamCameraPath).get());
+        EXPECT_TRUE(patternKnob && projectionKnob && cameraKnob);
+        if (patternKnob && projectionKnob && cameraKnob) {
+            patternKnob->setValue(pattern);
+            projectionKnob->setValueFromID(projection, 0);
+            cameraKnob->setValue(cameraPath);
+        }
+        EXPECT_TRUE(node->connectInput(input, 0));
+
+        return node;
+    }
 };
+
+namespace {
+// Whether the scene, composed with nothing loaded, has UVs authored on the prim at path.
+bool
+hasUVsUnloaded(const ScenePayload& payload,
+               const std::string& path)
+{
+    std::string error;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()), &error);
+    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    EXPECT_TRUE(bool(stage)) << error;
+    if (!stage) {
+        return false;
+    }
+    const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(path));
+
+    return prim && prim.GetAttribute(PXR_NS::TfToken("primvars:st")).HasAuthoredValue();
+}
+} // anonymous namespace
 
 TEST_F(SceneLoadSetCoverageTest, TheProbeCountsTheBuildingsOpenInTheProcess)
 {
@@ -370,4 +415,57 @@ TEST_F(SceneLoadSetCoverageTest, AVariantSetAuthoredInAPayloadEvaluatesTheSameOn
     ASSERT_TRUE(source && node);
 
     expectParity(node, loadingOnly({ "/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AProjectUVOnMeshesOutsidePayloadsOpensNoBuildingWithNothingLoaded)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = projectUV(source, "/World//*", "planar", std::string());
+    ASSERT_TRUE(source && node);
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+    EXPECT_EQ(0, city.openedBuildings());
+    EXPECT_TRUE(hasUVsUnloaded(payload, "/World/Ground"));
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AProjectUVEvaluatesTheSameOnALoadSetAsOnEverything)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr firstCamera = projectUV(source, "/World//Panel /World/Ground", "perspective", std::string());
+    NodePtr namedCamera = projectUV(source, "/World//Panel /World/Ground", "perspective", "/World/Block_0/B_0/Cam");
+    ASSERT_TRUE(source && firstCamera && namedCamera);
+
+    expectParity(firstCamera, loadingOnly({ "/World/Block_0" }));
+    expectParity(namedCamera, loadingOnly({ "/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AProjectUVCameraInsideAPayloadResolvesWithOnlyItsBuildingOpen)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = projectUV(source, "/World/Ground", "perspective", "/World/Block_0/B_0/Cam");
+    ASSERT_TRUE(source && node);
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_LE(city.openedBuildings(), 1);
+
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_FALSE(message.contains(QString::fromUtf8("No camera"))) << message.toStdString();
+    EXPECT_TRUE(hasUVsUnloaded(payload, "/World/Ground"));
 }

@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
@@ -228,11 +229,14 @@ struct USDProjectUV::Result {
     std::vector<MeshUVs> meshes;
     bool animated = false;
     bool matchedAny = false;
+    std::size_t unsearched = 0;
     std::vector<std::string> nonMeshGprims;
     std::vector<std::string> malformedMeshes;
     std::size_t pointsBehind = 0;
     // Camera Path, when the camera scene has no camera there: no mesh gets UVs.
     std::string missingCamera;
+    // What the result's reads reach, given to every evaluation that takes the result.
+    std::vector<std::string> loadReach;
     U64 digest = 0;
 };
 
@@ -243,6 +247,7 @@ struct USDProjectUV::Implementation {
     bool resultValid = false;
     U64 resultKey = 0;
     std::shared_ptr<const Result> result;
+    PrimPatternCache matches;
 };
 
 namespace {
@@ -828,6 +833,10 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     keyHasher.appendU64(cameraScene.getStackHash());
     keyHasher.appendString(settings.cameraPath);
     keyHasher.appendDouble(settings.aspect);
+    keyHasher.appendBool(args.context.includesEverything());
+    if (!args.context.includesEverything()) {
+        keyHasher.appendU64(args.context.loadSet->getHash());
+    }
     const U64 resultKey = keyHasher.finalize();
 
     std::shared_ptr<const Result> result;
@@ -840,6 +849,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
 
     if (!result) {
         std::shared_ptr<Result> computed = std::make_shared<Result>();
+        const SceneEvaluationContext context(args.context.id, args.context.loadSet, std::make_shared<SceneLoadReach>());
         const double fps = layerKey.framesPerSecond;
         SceneLayerEdit range;
         range.firstFrame = layerKey.firstFrame;
@@ -854,7 +864,15 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
             SceneQueryPool::Lease lease;
             PXR_NS::UsdStageRefPtr stage;
             if (!cameraScene.isEmpty()) {
-                lease = SceneQueryPool::instance().borrow(cameraScene, errorMessage);
+                // A named camera needs only the payloads on its path; looking for the first camera
+                // searches the whole scene as the evaluation loads it, so any load can change it.
+                const std::vector<std::string> cameraReach(1, settings.cameraPath.empty() ? std::string("/") : settings.cameraPath);
+                context.reach->add(cameraReach);
+                if (args.context.reach) {
+                    args.context.reach->add(cameraReach);
+                }
+                const SceneLoadSetPtr cameraLoadSet = settings.cameraPath.empty() ? context.loadSet : SceneLoadSet::withPaths(context.loadSet, cameraReach);
+                lease = SceneQueryPool::instance().borrow(cameraScene, cameraLoadSet, errorMessage);
                 stage = lease.getStage();
                 if (!stage) {
                     if (errorMessage->empty()) {
@@ -917,9 +935,22 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
             }
         }
 
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+        SceneQueryPool::Lease lease;
+        SceneNodeAuthoring::PatternMatches matches;
+        if (computed->missingCamera.empty() && !SceneNodeAuthoring::matchPattern(&_imp->matches, upstream, settings.pattern, context, 0, SceneNodeAuthoring::PatternFilter(), &lease, &matches, errorMessage)) {
+            if (args.context.reach) {
+                args.context.reach->add(context.reach->getPrefixes());
+            }
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        const std::vector<PXR_NS::SdfPath>& found = matches.paths;
+        if (!found.empty() && !lease.isValid()) {
+            lease = SceneQueryPool::instance().borrow(upstream, context.loadSet, errorMessage);
+        }
         PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        if (!stage) {
+        if (!found.empty() && !stage) {
             if (errorMessage->empty()) {
                 *errorMessage = tr("USD could not compose the input scene.").toStdString();
             }
@@ -927,18 +958,18 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
 
             return eStatusFailed;
         }
-        std::vector<PXR_NS::SdfPath> found;
-        if (computed->missingCamera.empty() && !SceneOps::selectPrims(stage, settings.pattern, &found, errorMessage)) {
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
-        }
         computed->matchedAny = !found.empty() || !computed->missingCamera.empty();
+        computed->unsearched = matches.unsearched;
+        computed->loadReach = context.reach->getPrefixes();
         const PXR_NS::TfToken primvarName(settings.primvarName);
         const bool filterFaces = (settings.projectOn != eProjectOnBoth) || (settings.frustumCulling && (settings.projection == eProjectionPerspective));
 
         for (const PXR_NS::SdfPath& path : found) {
             const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            // A path under a payload this evaluation leaves unloaded matches without a prim to read.
+            if (!prim) {
+                continue;
+            }
             const PXR_NS::UsdGeomMesh mesh(prim);
             if (!mesh) {
                 if (prim.IsA<PXR_NS::UsdGeomGprim>()) {
@@ -1104,6 +1135,9 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
         _imp->resultKey = resultKey;
         _imp->result = result;
     }
+    if (args.context.reach) {
+        args.context.reach->add(result->loadReach);
+    }
 
     QStringList warnings;
     if (!result->missingCamera.empty()) {
@@ -1111,8 +1145,9 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
                                .arg(QString::fromStdString(result->missingCamera)));
     }
     if (!result->matchedAny) {
-        warnings.push_back(tr("The prim pattern \"%1\" matches no prim; the scene is passed through unchanged.")
-                               .arg(QString::fromStdString(settings.pattern)));
+        SceneNodeAuthoring::PatternMatches none;
+        none.unsearched = result->unsearched;
+        warnings.push_back(QString::fromStdString(SceneNodeAuthoring::describeNoMatch(settings.pattern, none, tr("the scene is passed through unchanged").toStdString())));
     }
     if (!result->nonMeshGprims.empty()) {
         warnings.push_back(tr("These matched prims are not meshes and get no UVs: %1")

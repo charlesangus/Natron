@@ -223,7 +223,11 @@ CarCity::CarCity(int blocks,
     std::filesystem::create_directories(_dir / "buildings");
     _dir = std::filesystem::canonical(_dir);
     std::ofstream root(rootPath());
-    root << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\ndef Xform \"World\"\n{\n";
+    const std::string quad = "        int[] faceVertexCounts = [4]\n        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                             "        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]\n";
+    root << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\ndef Xform \"World\"\n{\n"
+         << "    def Mesh \"Ground\"\n    {\n"
+         << quad << "    }\n";
     for (int b = 0; b < blocks; ++b) {
         root << "    def Xform \"Block_" << b << "\"\n    {\n";
         for (int n = 0; n < buildingsPerBlock; ++n) {
@@ -232,7 +236,14 @@ CarCity::CarCity(int blocks,
             std::ofstream building(file);
             building << "#usda 1.0\n(\n    defaultPrim = \"Building\"\n)\ndef Xform \"Building\" (\n    variantSets = \"look\"\n)\n{\n"
                      << "    variantSet \"look\" = {\n        \"plain\" {\n        }\n        \"tinted\" {\n            def Cube \"Tint\"\n            {\n            }\n        }\n    }\n"
-                     << "    def Cube \"Geo\"\n    {\n    }\n    def Xform \"car_0\"\n    {\n    }\n}\n";
+                     << "    def Cube \"Geo\"\n    {\n    }\n    def Xform \"car_0\"\n    {\n    }\n"
+                     << "    def Mesh \"Panel\"\n    {\n"
+                     << quad << "    }\n";
+            if ((b == 0) && (n == 0)) {
+                building << "    def Camera \"Cam\"\n    {\n        double3 xformOp:translate = (0, 0, 10)\n"
+                         << "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n";
+            }
+            building << "}\n";
             root << "        def Xform \"B_" << n << "\" (\n            prepend payload = @./buildings/" << name << "@\n        )\n        {\n        }\n";
             _buildingPaths.push_back(file);
         }

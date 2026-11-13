@@ -40,8 +40,9 @@
 
 NATRON_NAMESPACE_ENTER
 
-// /World/Block_<b>/B_<n>, each building a payload file holding /Geo and /car_0, in a directory
-// of its own so that no other test has its layers open.
+// /World/Block_<b>/B_<n>, each building a payload file holding /Geo, /car_0 and the mesh /Panel,
+// the first one also the camera /Cam, beside the mesh /World/Ground outside every payload. The
+// files sit in a directory of their own so that no other test has their layers open.
 class CarCity {
 public:
     CarCity(int blocks,

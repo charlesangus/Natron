@@ -182,6 +182,7 @@ set(Tests_SOURCES
     RenderBothWaysSelf_Test.cpp
     RenderContext_Test.cpp
     RenderContextMetadata_Test.cpp
+    RenderContextUdim_Test.cpp
     RenderContextRequest_Test.cpp
     RenderIsolation_Test.cpp
     RenderProfile_Test.cpp

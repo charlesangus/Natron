@@ -2253,7 +2253,9 @@ public:
      * @brief What the Python expression source reads of the rfv object: the variable named by each
      * rfv.<name>, rfv('<name>') and rfv['<name>'], either quote, in code rather than in a string
      * or a comment. Any other use of the name rfv, such as passing it on, getattr() or a computed
-     * key, may read any variable and makes the result reads-all.
+     * key, may read any variable and makes the result reads-all. loop.<v>, loops.<name>.<v>
+     * and udim.<v> read the variable named; loop, loops.<name> or udim used otherwise read all of
+     * their variables, and loops used otherwise any variable.
      **/
     static RenderContextReadSet getRFVExpressionReads(const std::string& expression);
 

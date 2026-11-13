@@ -1164,23 +1164,26 @@ public:
                                            double time,
                                            ViewIdx view,
                                            unsigned originalMipmapLevel,
-                                           const NodePtr & node,
+                                           const NodePtr& node,
                                            const NodePtr& callerNode,
-                                           const NodePtr & treeRoot,
-                                           const RectD & canonicalRenderWindow,
-                                           FrameRequestMap & requests);
+                                           const NodePtr& treeRoot,
+                                           const RectD& canonicalRenderWindow,
+                                           FrameRequestMap& requests,
+                                           const RenderContextPtr& rootContext = RenderContextPtr());
 
     /**
      * @brief Visit recursively the compositing tree and computes required information about region of interests for each node and
      * for each frame/view pair. This helps to call render a single time per frame/view pair for a node.
+     * treeRoot is visited under rootContext restricted to what its output reads, the empty context when null.
      * Implem is in ParallelRenderArgs.cpp
      **/
     static StatusEnum computeRequestPass(double time,
                                          ViewIdx view,
                                          unsigned int mipmapLevel,
-                                         const RectD & renderWindow,
-                                         const NodePtr & treeRoot,
-                                         FrameRequestMap & request);
+                                         const RectD& renderWindow,
+                                         const NodePtr& treeRoot,
+                                         FrameRequestMap& request,
+                                         const RenderContextPtr& rootContext = RenderContextPtr());
 
     /**
      * @brief Pre-renders the input frames node needs before rendering. Implem is in ParallelRenderArgs.cpp

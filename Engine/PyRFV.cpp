@@ -49,6 +49,7 @@ namespace PyRFV {
 const char* const kMainGlobalName = "NatronEngine_rfv";
 const char* const kMainLoopGlobalName = "NatronEngine_loop";
 const char* const kMainLoopsGlobalName = "NatronEngine_loops";
+const char* const kMainUdimGlobalName = "NatronEngine_udim";
 
 namespace {
 
@@ -338,6 +339,20 @@ namespace {
         return result;
     }
 
+    PyObject*
+    udimGetAttr(PyObject* self,
+                PyObject* attribute)
+    {
+        std::string name;
+        if (!utf8Of(attribute, &name) || (name.compare(0, 2, "__") == 0)) {
+            PyErr_Clear();
+
+            return PyObject_GenericGetAttr(self, attribute);
+        }
+
+        return getUdimVariable(name);
+    }
+
     // A single instance of a new type whose attributes getAttr reads.
     PyObject*
     createAttributeObject(const char* typeName,
@@ -381,6 +396,13 @@ namespace {
                                      "Every enclosing loop's variables by loop name: loops.<name>.t and so on, None outside that loop.");
     }
 
+    PyObject*
+    createUdimObject()
+    {
+        return createAttributeObject("NatronEngine.Udim", &udimGetAttr,
+                                     "The UDIM tile being rendered: udim.tile is its number from 1001, None outside a render for a tile.");
+    }
+
     void
     declare(PyObject* mainModule,
             const char* globalName,
@@ -410,6 +432,7 @@ ensureDeclared()
     declare(mainModule, kMainGlobalName, &createRFVObject);
     declare(mainModule, kMainLoopGlobalName, &createLoopObject);
     declare(mainModule, kMainLoopsGlobalName, &createLoopsObject);
+    declare(mainModule, kMainUdimGlobalName, &createUdimObject);
 }
 
 PyObject*
@@ -434,6 +457,18 @@ getLoopVariable(const std::string& loopName,
     const RenderContextPtr context = expressionContext();
     const RenderContextName name = loopName.empty() ? RenderContextName::loop(variable) : RenderContextName::loops(loopName, variable);
     const RenderContextValue* value = context ? context->find(name) : NULL;
+    if (!value) {
+        Py_RETURN_NONE;
+    }
+
+    return valueToPython(*value);
+}
+
+PyObject*
+getUdimVariable(const std::string& variable)
+{
+    const RenderContextPtr context = expressionContext();
+    const RenderContextValue* value = context ? context->find(RenderContextName(RenderContextName::udimTile().ns, variable)) : NULL;
     if (!value) {
         Py_RETURN_NONE;
     }

@@ -193,6 +193,12 @@ RenderContextName::choiceLabels(const std::string& name)
     return RenderContextName("choiceLabels", name);
 }
 
+RenderContextName
+RenderContextName::udimTile()
+{
+    return RenderContextName("udim", "tile");
+}
+
 namespace {
 U64
 bindingIdentity(const KnobIPtr& knob,

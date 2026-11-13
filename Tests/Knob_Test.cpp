@@ -39,10 +39,12 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
 
@@ -207,4 +209,147 @@ TEST_F(BaseTest, DuplicateOnHolderKeepsStringKnobPreferredRows)
     ASSERT_TRUE(bool(duplicateString));
     EXPECT_TRUE(duplicateString->isMultiLine());
     EXPECT_EQ(20, duplicateString->getPreferredRows());
+}
+
+namespace {
+const char* const kCascadeGradeID = "Grade";
+
+NodePtr
+createCascadeNode(const AppInstancePtr& app,
+                  const char* pluginID,
+                  const std::string& name = std::string())
+{
+    CreateNodeArgs args(pluginID, app->getProject());
+
+    if (!name.empty()) {
+        args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, name);
+    }
+
+    return app->createNode(args);
+}
+
+// The disable switch is a metadata knob, so a change reaching it also refreshes the input-related
+// data downstream.
+void
+disableFollows(const NodePtr& node,
+               const std::string& sourceName)
+{
+    KnobIPtr disable = node->getKnobByName(kDisableNodeKnobName);
+    ASSERT_TRUE(bool(disable));
+    ASSERT_NO_THROW(disable->setExpression(0, "int(" + sourceName + ".offset.getValue(0) > 1000)", false, true));
+}
+
+KnobDoubleBasePtr
+offsetOf(const NodePtr& node)
+{
+    return std::dynamic_pointer_cast<KnobDoubleBase>(node->getKnobByName("offset"));
+}
+} // anonymous namespace
+
+class KnobValueChangeCascade
+    : public BaseTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        getApp()->getProject()->reset(false, true);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        getApp()->getProject()->reset(false, true);
+        BaseTest::TearDown();
+    }
+};
+
+TEST_F(KnobValueChangeCascade, SingleChangeRefreshesDownstreamBeforeReturning)
+{
+    NodePtr source = createCascadeNode(getApp(), kCascadeGradeID, "Source");
+    NodePtr first = createCascadeNode(getApp(), kCascadeGradeID, "First");
+    NodePtr second = createCascadeNode(getApp(), kCascadeGradeID, "Second");
+    ASSERT_TRUE(source && first && second);
+    connectNodes(source, first, 0, true);
+    connectNodes(first, second, 0, true);
+    source->forceRefreshAllInputRelatedData();
+    ASSERT_FALSE(first->isInputRelatedDataDirty());
+    ASSERT_FALSE(second->isInputRelatedDataDirty());
+
+    KnobBoolPtr disable = std::dynamic_pointer_cast<KnobBool>(source->getKnobByName(kDisableNodeKnobName));
+    ASSERT_TRUE(bool(disable));
+    const U64 before = Node::getDownstreamWalkVisitCount();
+    disable->setValue(true);
+    const U64 visits = Node::getDownstreamWalkVisitCount() - before;
+
+    EXPECT_TRUE(first->isInputRelatedDataDirty());
+    EXPECT_TRUE(second->isInputRelatedDataDirty());
+    // Aborting, refreshing and finding the viewers each walk the three nodes at most once.
+    EXPECT_GE(visits, (U64)3);
+    EXPECT_LE(visits, (U64)9);
+}
+
+TEST_F(KnobValueChangeCascade, RefreshesDownstreamOfEveryDependent)
+{
+    NodePtr source = createCascadeNode(getApp(), kCascadeGradeID, "Source");
+    NodePtr dependentA = createCascadeNode(getApp(), kCascadeGradeID, "DependentA");
+    NodePtr dependentB = createCascadeNode(getApp(), kCascadeGradeID, "DependentB");
+    NodePtr tailA = createCascadeNode(getApp(), kCascadeGradeID, "TailA");
+    NodePtr tailB = createCascadeNode(getApp(), kCascadeGradeID, "TailB");
+    ASSERT_TRUE(source && dependentA && dependentB && tailA && tailB);
+    disableFollows(dependentA, "Source");
+    disableFollows(dependentB, "Source");
+    connectNodes(dependentA, tailA, 0, true);
+    connectNodes(dependentB, tailB, 0, true);
+    dependentA->forceRefreshAllInputRelatedData();
+    dependentB->forceRefreshAllInputRelatedData();
+    ASSERT_FALSE(tailA->isInputRelatedDataDirty());
+    ASSERT_FALSE(tailB->isInputRelatedDataDirty());
+
+    KnobDoubleBasePtr offset = offsetOf(source);
+    ASSERT_TRUE(bool(offset));
+    offset->setValue(1.);
+
+    EXPECT_TRUE(tailA->isInputRelatedDataDirty());
+    EXPECT_TRUE(tailB->isInputRelatedDataDirty());
+}
+
+TEST_F(KnobValueChangeCascade, FanOutWalksEachNodeOncePerWalk)
+{
+    const int kDependents = 50;
+    const int kChain = 3000;
+
+    NodePtr source = createCascadeNode(getApp(), kCascadeGradeID, "Source");
+    ASSERT_TRUE(bool(source));
+    std::vector<NodePtr> chain(1, source);
+    {
+        // Unbatched, finding each Dot a free numbered name scans every node per number tried.
+        const NodeCollection::NamingBatch namingBatch(getApp()->getProject());
+        for (int i = 0; i < kDependents; ++i) {
+            NodePtr dependent = createCascadeNode(getApp(), kCascadeGradeID, "Dependent" + std::to_string(i));
+            ASSERT_TRUE(bool(dependent));
+            disableFollows(dependent, "Source");
+            chain.push_back(dependent);
+        }
+        while ((int)chain.size() < kChain) {
+            NodePtr dot = createCascadeNode(getApp(), PLUGINID_NATRON_DOT);
+            ASSERT_TRUE(bool(dot));
+            chain.push_back(dot);
+        }
+    }
+    for (std::size_t i = 1; i < chain.size(); ++i) {
+        connectNodes(chain[i - 1], chain[i], 0, true);
+    }
+
+    KnobDoubleBasePtr offset = offsetOf(source);
+    ASSERT_TRUE(bool(offset));
+    const U64 refreshesBefore = KnobHelper::getListenerRefreshCount();
+    const U64 before = Node::getDownstreamWalkVisitCount();
+    offset->setValue(1.);
+    const U64 visits = Node::getDownstreamWalkVisitCount() - before;
+
+    EXPECT_EQ((U64)kDependents, KnobHelper::getListenerRefreshCount() - refreshesBefore);
+    // Aborting, refreshing and finding the viewers each visit a node once for the whole change,
+    // where a walk per dependent would visit about kDependents times as many.
+    EXPECT_GE(visits, (U64)kChain);
+    EXPECT_LE(visits, (U64)(3 * kChain));
+    EXPECT_TRUE(chain.back()->isInputRelatedDataDirty());
 }

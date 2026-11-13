@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <list>
+#include <mutex>
 #include <vector>
 
 #include "Engine/AppInstance.h"
@@ -41,6 +43,7 @@
 #include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NonTrappingMath.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
@@ -303,7 +306,240 @@ followSceneNodeRename(const KnobStringPtr& knob,
     }
 }
 
+namespace {
+// Evaluation contexts a pattern's matches are kept for at once.
+const std::size_t kPatternCacheEntries = 4;
+} // anonymous namespace
+
+struct PrimPatternCache::State {
+    struct Entry {
+        U64 context = 0;
+        ScenePayload upstream;
+        std::string pattern;
+        U64 filterKey = 0;
+        SceneLoadSetPtr loadSet;
+        // SceneOps::getLoadReach() of the pattern's prefixes on the stage the matches came from.
+        std::vector<std::string> loadReach;
+        SceneNodeAuthoring::PatternMatches matches;
+    };
+
+    mutable std::mutex mutex;
+    // Most recently used first.
+    std::list<Entry> entries;
+    U64 queryCount = 0;
+};
+
+PrimPatternCache::PrimPatternCache()
+    : _state(new State)
+{
+}
+
+PrimPatternCache::~PrimPatternCache()
+{
+}
+
+void
+PrimPatternCache::invalidate()
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    _state->entries.clear();
+}
+
+U64
+PrimPatternCache::getQueryCount() const
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    return _state->queryCount;
+}
+
+PrimPatternCache::State&
+PrimPatternCache::getState()
+{
+    return *_state;
+}
+
+namespace {
+bool
+borrowFor(const ScenePayload& upstream,
+          const SceneEvaluationContext& context,
+          SceneQueryPool::Lease* lease,
+          std::string* errorMessage)
+{
+    if (!lease->isValid()) {
+        *lease = SceneQueryPool::instance().borrow(upstream, context.loadSet, errorMessage);
+    }
+    if (!lease->getStage()) {
+        if (errorMessage->empty()) {
+            *errorMessage = EffectInstance::tr("USD could not compose the input scene.").toStdString();
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+bool
+isUnloadedPayload(const PXR_NS::UsdPrim& prim)
+{
+    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
+}
+} // anonymous namespace
+
 namespace SceneNodeAuthoring {
+bool
+matchPattern(PrimPatternCache* cache,
+             const ScenePayload& upstream,
+             const std::string& pattern,
+             const SceneEvaluationContext& context,
+             U64 filterKey,
+             const PatternFilter& filter,
+             SceneQueryPool::Lease* lease,
+             PatternMatches* matches,
+             std::string* errorMessage)
+{
+    *matches = PatternMatches();
+    PrimSelector::Reach reach;
+    if (!PrimSelector::getReach(pattern, &reach, errorMessage)) {
+        return false;
+    }
+    if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
+        return true;
+    }
+    PrimPatternCache::State& state = cache->getState();
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        for (std::list<PrimPatternCache::State::Entry>::iterator it = state.entries.begin(); it != state.entries.end(); ++it) {
+            if ((it->pattern != pattern) || (it->filterKey != filterKey) || !it->upstream.isSameStack(upstream)
+                || (it->upstream.getStackHash() != upstream.getStackHash())) {
+                continue;
+            }
+            const bool sameLoadSet = it->loadSet ? (context.loadSet && (*it->loadSet == *context.loadSet)) : !context.loadSet;
+            // Literal paths in a partial load set match by what is loaded above them.
+            if (!sameLoadSet && (reach.literalOnly || SceneOps::loadChangeReaches(it->loadSet.get(), context.loadSet.get(), it->loadReach))) {
+                continue;
+            }
+            *matches = it->matches;
+            if (context.reach) {
+                context.reach->add(it->loadReach);
+            }
+            PrimPatternCache::State::Entry entry = *it;
+            entry.context = context.id;
+            entry.upstream = upstream;
+            entry.loadSet = context.loadSet;
+            state.entries.erase(it);
+            for (std::list<PrimPatternCache::State::Entry>::iterator own = state.entries.begin(); own != state.entries.end(); ++own) {
+                if (own->context == context.id) {
+                    state.entries.erase(own);
+                    break;
+                }
+            }
+            state.entries.push_front(entry);
+
+            return true;
+        }
+        ++state.queryCount;
+    }
+
+    if (!borrowFor(upstream, context, lease, errorMessage)) {
+        if (context.reach) {
+            context.reach->add(reach.prefixes);
+        }
+
+        return false;
+    }
+    const PXR_NS::UsdStageRefPtr stage = lease->getStage();
+    const std::vector<std::string> loadReach = SceneOps::getLoadReach(stage, reach.prefixes);
+    if (context.reach) {
+        context.reach->add(loadReach);
+    }
+    const bool partial = !context.includesEverything();
+    std::vector<PXR_NS::SdfPath> found;
+    if (partial && reach.literalOnly) {
+        for (const std::string& literal : reach.literals) {
+            const PXR_NS::SdfPath path(literal);
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            if (prim) {
+                if (prim.IsActive() && prim.IsDefined() && !prim.IsAbstract() && (!filter || filter(prim))) {
+                    found.push_back(path);
+                }
+                continue;
+            }
+            if (filter) {
+                continue;
+            }
+            for (PXR_NS::SdfPath ancestor = path.GetParentPath(); !ancestor.IsEmpty() && !ancestor.IsAbsoluteRootPath(); ancestor = ancestor.GetParentPath()) {
+                const PXR_NS::UsdPrim above = stage->GetPrimAtPath(ancestor);
+                if (above) {
+                    if (above.IsActive() && isUnloadedPayload(above)) {
+                        found.push_back(path);
+                    }
+                    break;
+                }
+            }
+        }
+        std::sort(found.begin(), found.end());
+        found.erase(std::unique(found.begin(), found.end()), found.end());
+    } else {
+        std::vector<PXR_NS::SdfPath> selected;
+        if (!SceneOps::selectPrims(stage, pattern, &selected, errorMessage)) {
+            return false;
+        }
+        for (const PXR_NS::SdfPath& path : selected) {
+            if (!filter || filter(stage->GetPrimAtPath(path))) {
+                found.push_back(path);
+            }
+        }
+    }
+    matches->paths = found;
+    if (partial && found.empty()) {
+        matches->unsearched = SceneOps::countUnloadedPayloads(stage, reach.prefixes);
+    }
+
+    std::lock_guard<std::mutex> lock(state.mutex);
+    for (std::list<PrimPatternCache::State::Entry>::iterator it = state.entries.begin(); it != state.entries.end(); ++it) {
+        if (it->context == context.id) {
+            state.entries.erase(it);
+            break;
+        }
+    }
+    PrimPatternCache::State::Entry entry;
+    entry.context = context.id;
+    entry.upstream = upstream;
+    entry.pattern = pattern;
+    entry.filterKey = filterKey;
+    entry.loadSet = context.loadSet;
+    entry.loadReach = loadReach;
+    entry.matches = *matches;
+    state.entries.push_front(entry);
+    if (state.entries.size() > kPatternCacheEntries) {
+        state.entries.pop_back();
+    }
+
+    return true;
+} // matchPattern
+
+std::string
+describeNoMatch(const std::string& pattern,
+                const PatternMatches& matches,
+                const std::string& consequence)
+{
+    if (matches.unsearched > 0) {
+        return EffectInstance::tr("The prim pattern \"%1\" found 0 matches, %2 unloaded branches not searched; %3.")
+            .arg(QString::fromStdString(pattern))
+            .arg((qulonglong)matches.unsearched)
+            .arg(QString::fromStdString(consequence))
+            .toStdString();
+    }
+
+    return EffectInstance::tr("The prim pattern \"%1\" matches no prim; %2.")
+        .arg(QString::fromStdString(pattern))
+        .arg(QString::fromStdString(consequence))
+        .toStdString();
+}
+
 double
 getTimeCodesPerSecond(const SceneLayerEdit& edit)
 {

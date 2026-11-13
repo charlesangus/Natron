@@ -59,6 +59,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/RegisteredTabs.h"
+#include "Gui/SceneGraphPanel.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
 
@@ -182,14 +183,18 @@ restorePaneFromSerialization(TabWidget* pane,
 
     pane->setObjectName_mt_safe(availableName);
     pane->setAsAnchor(serialization.isAnchor);
-    const RegisteredTabs& tabs = pane->getGui()->getRegisteredTabs();
+    Gui* gui = pane->getGui();
     for (std::list<std::string>::const_iterator it = serialization.tabs.begin(); it != serialization.tabs.end(); ++it) {
+        const RegisteredTabs& tabs = gui->getRegisteredTabs();
         RegisteredTabs::const_iterator found = tabs.find(*it);
 
-        // A tab the current session does not have is skipped.
         if (found != tabs.end()) {
             TabWidget::moveTab(found->second.first, found->second.second, pane);
+        } else if (Gui::isExtraSceneGraphScriptName(*it)) {
+            SceneGraphPanel* panel = gui->addNewSceneGraphPanel(*it);
+            TabWidget::moveTab(panel, panel, pane);
         }
+        // Any other tab the current session does not have is skipped.
     }
     pane->makeCurrentTab(serialization.currentIndex);
 }
@@ -344,6 +349,9 @@ Gui::restoreLayout(bool wipePrevious,
         assert(floatingWindow);
         floatingWindow->move(QPoint((*it)->positionX, (*it)->positionY));
         floatingWindow->resize(std::min((*it)->width, screen.width()), std::min((*it)->height, screen.height()));
+    }
+    if (wipePrevious) {
+        removeSceneGraphPanelsOutsidePanes();
     }
 } // restoreLayout
 

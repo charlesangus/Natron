@@ -206,7 +206,7 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
                }
                else {
              */
-            QRectF selectedBbox = selected->mapToScene( selected->boundingRect() ).boundingRect();
+            QRectF selectedBbox = selected->mapToScene(selected->bodyRect()).boundingRect();
             QPointF selectedCenter = selectedBbox.center();
             double y = selectedCenter.y() - selectedNodeSize.height() / 2.
                        - NodeGui::DEFAULT_OFFSET_BETWEEN_NODES - createdNodeSize.height();
@@ -292,7 +292,7 @@ NodeGraph::moveNodesForIdealPosition(const NodeGuiPtr &node,
         } else {
             ///the created node is an output node and the selected node already has several outputs, create it aside
             QSize createdNodeSize = node->getSize();
-            QRectF selectedBbox = selected->mapToScene( selected->boundingRect() ).boundingRect();
+            QRectF selectedBbox = selected->mapToScene(selected->bodyRect()).boundingRect();
             QPointF selectedCenter = selectedBbox.center();
             double y = selectedCenter.y() + selectedBbox.height() / 2.
                        + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES;

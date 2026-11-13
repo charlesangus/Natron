@@ -46,6 +46,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
@@ -398,6 +399,41 @@ public:
      * Returns, committing nothing, once cancelled() turns true. See SceneStage::serviceLoads().
      **/
     bool serviceStageLoads(const std::function<bool()>& cancelled = std::function<bool()>());
+
+    /**
+     * @brief The scene as evaluated with a load set: evaluate sets *payload to the viewed node's
+     * output with nodes' patterns matched on that set, and *reach to where those patterns reach,
+     * returning false when it cannot. committed is told each load set the stage commits, under
+     * the viewer lock in the same step, and whether the scene must be evaluated again for it.
+     **/
+    typedef std::function<bool(const SceneLoadSetPtr& loadSet, ScenePayload* payload, SceneLoadReachPtr* reach)> LoadSetEvaluator;
+    typedef std::function<void(const SceneLoadSetPtr& loadSet, bool reevaluate)> LoadSetCommitted;
+
+    /**
+     * @brief Has serviceStageLoads() evaluate the scene for the load set a batch makes, once its
+     * files are open, when the patterns of the scene on the stage reach what the batch loads or
+     * unloads, and sync that scene in the same commit as the loads, so that a prim a node
+     * deactivates by pattern never shows while its payload comes in. A batch no pattern reaches
+     * evaluates nothing, as a load is no edit of the scene. committed is told to evaluate again
+     * when the stage's scene still matched on another set once the batch commits: its evaluation
+     * failed, it has live textures, which the worker renders first, or a sync came meanwhile. It
+     * is also told when a sync is dropped as evaluated for a set its patterns no longer match.
+     * Any thread.
+     **/
+    void setLoadSetEvaluator(const LoadSetEvaluator& evaluate,
+                             const LoadSetCommitted& committed);
+
+    // The hash of the load set the stage last committed (SceneLoadSet::getHash()).
+    U64 getCommittedLoadSetHash() const;
+
+    /**
+     * @brief The load set the payload of the next syncScene() was evaluated for and the reach of
+     * the patterns it matched, a null reach for none in particular. A payload whose patterns
+     * reach what changed between that set and the stage's is stale, the committed callback is
+     * told to evaluate it again, and that sync changes nothing.
+     **/
+    void setSyncEvaluatedFor(const SceneLoadSetPtr& loadSet,
+                             const SceneLoadReachPtr& reach);
 
     // How many load commits edited the stage, and how long the last batch held the viewer lock.
     U64 getStageLoadEditCount() const;
@@ -854,6 +890,17 @@ public:
     bool isSceneSynced() const;
 
     void setFrame(double frame, double framesPerSecond);
+
+    /**
+     * @brief What the payload of the next setScene() was evaluated for. See
+     * SceneViewportRenderer::setSyncEvaluatedFor().
+     **/
+    void setSceneEvaluatedFor(const SceneLoadSetPtr& loadSet,
+                              const SceneLoadReachPtr& reach);
+
+    // See SceneViewportRenderer::setLoadSetEvaluator().
+    void setLoadSetEvaluator(const SceneViewportRenderer::LoadSetEvaluator& evaluate,
+                             const SceneViewportRenderer::LoadSetCommitted& committed);
 
     // Shows message instead of a scene.
     void setError(const QString& message);

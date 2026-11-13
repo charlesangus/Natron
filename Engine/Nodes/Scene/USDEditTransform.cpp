@@ -167,6 +167,7 @@ struct USDEditTransform::Implementation {
     std::vector<PXR_NS::SdfPath> matches;
     std::vector<PXR_NS::TfToken> opNames;
     std::vector<PXR_NS::VtTokenArray> baseOrders;
+    PrimPatternCache patternMatches;
     // From the last evaluation, for the handles and the centre pivot button.
     ScenePayload lastUpstream;
     std::string handlePrim;
@@ -431,19 +432,34 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
     std::vector<PXR_NS::SdfPath> matches;
     std::vector<PXR_NS::TfToken> opNames;
     std::vector<PXR_NS::VtTokenArray> baseOrders;
+    SceneNodeAuthoring::PatternMatches noMatch;
     if (!upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
+        SceneQueryPool::Lease lease;
+        SceneNodeAuthoring::PatternMatches found;
+        const SceneNodeAuthoring::PatternFilter xformable = [](const PXR_NS::UsdPrim& prim) {
+            return prim.IsA<PXR_NS::UsdGeomXformable>();
+        };
+        if (!SceneNodeAuthoring::matchPattern(&_imp->patternMatches, upstream, pattern, args.context, 0, xformable, &lease, &found, errorMessage)) {
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        matches = found.paths;
+        noMatch = found;
         bool cached = false;
         {
             std::lock_guard<std::mutex> l(_imp->lock);
-            if (_imp->matchesValid && (_imp->matchedStack == upstream.getStackHash()) && (_imp->matchedPattern == pattern) && (_imp->matchedOpName == baseOpName)) {
-                matches = _imp->matches;
+            // The same prims of the same stack hold the same ops whatever else is loaded.
+            if (_imp->matchesValid && (_imp->matchedStack == upstream.getStackHash()) && (_imp->matchedOpName == baseOpName) && (_imp->matches == matches)) {
                 opNames = _imp->opNames;
                 baseOrders = _imp->baseOrders;
                 cached = true;
             }
         }
-        if (!cached) {
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+        if (!cached && !matches.empty()) {
+            if (!lease.isValid()) {
+                lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
+            }
             PXR_NS::UsdStageRefPtr stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {
@@ -453,14 +469,8 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
 
                 return eStatusFailed;
             }
-            std::vector<PXR_NS::UsdPrim> found;
-            if (!selectXformables(stage, pattern, &found, errorMessage)) {
-                setPersistentMessage(eMessageTypeError, *errorMessage);
-
-                return eStatusFailed;
-            }
-            for (const PXR_NS::UsdPrim& prim : found) {
-                matches.push_back(prim.GetPath());
+            for (const PXR_NS::SdfPath& path : matches) {
+                const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
                 opNames.push_back(PXR_NS::TfToken(getFreeOpName(prim, baseOpName)));
                 baseOrders.push_back(getAppendBaseOrder(prim));
             }
@@ -485,10 +495,11 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
         // Nothing to transform: the scene goes through untouched.
         *outputScene = upstream;
         if (!upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
-            setPersistentMessage(eMessageTypeWarning, tr("The prim pattern \"%1\" matches no prim that can hold a transform; "
-                                                         "the scene is passed through unchanged.")
-                                                          .arg(QString::fromStdString(pattern))
-                                                          .toStdString());
+            setPersistentMessage(eMessageTypeWarning,
+                                 SceneNodeAuthoring::describeNoMatch(pattern, noMatch,
+                                                                     tr("only prims that can hold a transform match, and the scene is "
+                                                                        "passed through unchanged")
+                                                                         .toStdString()));
         } else {
             clearPersistentMessage(false);
         }

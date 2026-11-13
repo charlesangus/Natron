@@ -28,7 +28,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <stdexcept>
+#include <unordered_map>
 
 // Qt includes
 #include <QDebug>
@@ -167,6 +169,8 @@ public:
     /* attributes */
     DopeSheet *q_ptr;
     DSTreeItemNodeMap treeItemNodeMap;
+    // The keys of treeItemNodeMap whose row is each node's, in that map's order.
+    std::unordered_map<const NodeGui*, std::set<QTreeWidgetItem*>> treeItemsByNodeGui;
     DopeSheetSelectionModel* selectionModel;
     std::vector<DopeSheetKey> keyframesClipboard;
     TimeLinePtr timeline;
@@ -178,6 +182,7 @@ DopeSheetPrivate::DopeSheetPrivate(DopeSheetEditor* editor,
                                    DopeSheet* qq)
     : q_ptr(qq)
     , treeItemNodeMap()
+    , treeItemsByNodeGui()
     , selectionModel(new DopeSheetSelectionModel(qq))
     , keyframesClipboard()
     , timeline()
@@ -409,6 +414,7 @@ DopeSheet::DopeSheet(Gui *gui,
 DopeSheet::~DopeSheet()
 {
     _imp->treeItemNodeMap.clear();
+    _imp->treeItemsByNodeGui.clear();
 }
 
 DSTreeItemNodeMap
@@ -467,7 +473,9 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
 
     DSNodePtr dsNode = createDSNode(nodeGui, nodeType);
 
-    _imp->treeItemNodeMap.insert( TreeItemAndDSNode(dsNode->getTreeItem(), dsNode) );
+    if (_imp->treeItemNodeMap.insert(TreeItemAndDSNode(dsNode->getTreeItem(), dsNode)).second) {
+        _imp->treeItemsByNodeGui[dsNode->getNodeGui().get()].insert(dsNode->getTreeItem());
+    }
 
     Q_EMIT nodeAdded( dsNode.get() );
 } // DopeSheet::addNode
@@ -475,18 +483,23 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
 void
 DopeSheet::removeNode(NodeGui *node)
 {
+    std::unordered_map<const NodeGui*, std::set<QTreeWidgetItem*>>::iterator rows = _imp->treeItemsByNodeGui.find(node);
+    if (rows == _imp->treeItemsByNodeGui.end()) {
+        return;
+    }
+    // A row only holds its node weakly, so one indexed under this address may be another node's
+    // that was destroyed there before.
     DSTreeItemNodeMap::iterator toRemove = _imp->treeItemNodeMap.end();
-
-    for (DSTreeItemNodeMap::iterator it = _imp->treeItemNodeMap.begin();
-         it != _imp->treeItemNodeMap.end();
-         ++it) {
-        if ( (*it).second->getNodeGui().get() == node ) {
-            toRemove = it;
-
-            break;
+    while (!rows->second.empty() && (toRemove == _imp->treeItemNodeMap.end())) {
+        DSTreeItemNodeMap::iterator row = _imp->treeItemNodeMap.find(*rows->second.begin());
+        rows->second.erase(rows->second.begin());
+        if ((row != _imp->treeItemNodeMap.end()) && (row->second->getNodeGui().get() == node)) {
+            toRemove = row;
         }
     }
-
+    if (rows->second.empty()) {
+        _imp->treeItemsByNodeGui.erase(rows);
+    }
     if ( toRemove == _imp->treeItemNodeMap.end() ) {
         return;
     }

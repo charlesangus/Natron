@@ -333,9 +333,19 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
     std::vector<RootMatches> roots;
     if (!isBlank(pattern)) {
         SceneQueryPool::Lease lease;
+        SceneNodeAuthoring::PatternMatches matched;
+        if (!SceneNodeAuthoring::matchPattern(&_patternMatches, upstream, pattern, args.context, 0, SceneNodeAuthoring::PatternFilter(), &lease, &matched, errorMessage)) {
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        const std::vector<PXR_NS::SdfPath>& found = matched.paths;
         PXR_NS::UsdStageRefPtr stage;
         if (!upstream.isEmpty()) {
-            lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+            // The bindings already on the matches' roots and the material are read on the stage.
+            if (!lease.isValid()) {
+                lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
+            }
             stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {
@@ -345,12 +355,6 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
 
                 return eStatusFailed;
             }
-        }
-        std::vector<PXR_NS::SdfPath> found;
-        if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
         }
         std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> rootIndices;
         QStringList skipped;
@@ -375,9 +379,9 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                             .arg(skipped.join(QLatin1String(", ")));
         }
         if (roots.empty()) {
-            warnings += tr("The prim pattern \"%1\" matches no prim to bind the material to; the scene is passed through "
-                           "unchanged.")
-                            .arg(QString::fromStdString(pattern));
+            warnings += QString::fromStdString(SceneNodeAuthoring::describeNoMatch(pattern, matched,
+                                                                                   tr("the scene is passed through unchanged")
+                                                                                       .toStdString()));
         } else if (isBlank(materialPath)) {
             warnings += tr("There is no material to bind: connect the Material input or set Material Path. The scene is "
                            "passed through unchanged.");

@@ -1539,6 +1539,38 @@ ViewerTab::onActiveInputDataKindChanged()
         if (Gui* gui = getGui()) {
             _imp->sceneViewport->setUndoHistory(gui->getUndoHistory());
         }
+        {
+            // Called on the viewport's load thread, which outlives neither the viewport nor this tab.
+            const std::weak_ptr<EffectInstance> viewer = _imp->viewerNode->shared_from_this();
+            const SceneViewportRenderer::LoadSetEvaluator evaluate = [viewer](const SceneLoadSetPtr& loadSet,
+                                                                              ScenePayload* payload,
+                                                                              SceneLoadReachPtr* reach) {
+                const EffectInstancePtr effect = viewer.lock();
+                ViewerInstance* instance = dynamic_cast<ViewerInstance*>(effect.get());
+                std::string error;
+
+                return instance && instance->evaluateSceneForLoadSet(loadSet, payload, reach, &error);
+            };
+            const SceneViewportRenderer::LoadSetCommitted committed = [this, viewer](const SceneLoadSetPtr& loadSet,
+                                                                                     bool reevaluate) {
+                const EffectInstancePtr effect = viewer.lock();
+                ViewerInstance* instance = dynamic_cast<ViewerInstance*>(effect.get());
+                if (!instance) {
+                    return;
+                }
+                // Set here rather than on the main thread, so an evaluation starting meanwhile
+                // already matches on what the stage now loads.
+                instance->setSceneLoadSet(loadSet);
+                if (!reevaluate) {
+                    return;
+                }
+                QMetaObject::invokeMethod(this, [this]() {
+                    if (_imp->viewerNode && isShowingScene()) {
+                        _imp->viewerNode->renderCurrentFrame(true);
+                    } }, Qt::QueuedConnection);
+            };
+            _imp->sceneViewport->setLoadSetEvaluator(evaluate, committed);
+        }
         QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
         QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
         refreshSceneRenderFromKnobs();
@@ -1612,7 +1644,9 @@ ViewerTab::onSceneEvaluated(int textureIndex)
     }
     ScenePayload scene;
     std::string error;
-    const bool ok = _imp->viewerNode->getLastEvaluatedScene(0, &scene, &error);
+    SceneLoadSetPtr loadSet;
+    SceneLoadReachPtr reach;
+    const bool ok = _imp->viewerNode->getLastEvaluatedScene(0, &scene, &error, &loadSet, &reach);
     if (!ok && error.empty()) {
         // Not evaluated yet: the evaluation the kind change started reports back here.
         return;
@@ -1631,6 +1665,7 @@ ViewerTab::onSceneEvaluated(int textureIndex)
         _imp->sceneLoadsNode = viewedNode;
         _imp->sceneViewport->cancelPendingLoads();
     }
+    _imp->sceneViewport->setSceneEvaluatedFor(loadSet, reach);
     _imp->sceneViewport->setScene(scene, getTimeLine()->currentFrame(), fps);
 }
 

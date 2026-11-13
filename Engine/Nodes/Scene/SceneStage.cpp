@@ -564,6 +564,15 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                          const LockedSection& writeLocked,
                          const std::function<bool()>& cancelled)
 {
+    return serviceLoads(readLocked, writeLocked, cancelled, LoadPreparer());
+}
+
+bool
+SceneStage::serviceLoads(const LockedSection& readLocked,
+                         const LockedSection& writeLocked,
+                         const std::function<bool()>& cancelled,
+                         const LoadPreparer& prepare)
+{
     std::map<PXR_NS::SdfPath, PendingLoadEnum> batch;
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector> exclusions;
     U64 generation = 0;
@@ -602,8 +611,10 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector> splitLoads;
     U64 composition = 0;
     bool walkCancelled = false;
+    PXR_NS::UsdStageLoadRules rules;
     readLocked([&]() {
         composition = _editCount;
+        rules = _stage->GetLoadRules();
         std::size_t visited = 0;
         for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
             const PXR_NS::UsdPrim prim = _stage->GetPrimAtPath(request.first);
@@ -699,8 +710,29 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
         return true;
     }
 
+    std::function<void()> commit;
+    U64 prepared = 0;
+    if (prepare) {
+        rules.LoadAndUnload(descendantPaths, unloads, PXR_NS::UsdLoadWithDescendants);
+        rules.LoadAndUnload(ownPaths, PXR_NS::SdfPathSet(), PXR_NS::UsdLoadWithoutDescendants);
+        readLocked([&]() { prepared = _editCount; });
+        commit = prepare(SceneOps::makeLoadSet(rules));
+        if (isCancelled()) {
+            return true;
+        }
+    }
+
+    bool requeue = false;
     writeLocked([&]() {
+        if (commit && (_editCount != prepared)) {
+            requeue = true;
+
+            return;
+        }
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        if (commit) {
+            commit();
+        }
         // A sync while the files were opening may have taken a prim away, or composed another
         // payload at its path, which was not asked for there and whose files are not open.
         const bool recomposed = (_editCount != composition);
@@ -728,7 +760,19 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
         }
         _lastLoadHoldMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     });
-    if (!splitLoads.empty()) {
+    if (requeue) {
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        // A request made meanwhile for one of the paths is the newer one.
+        for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
+            if (!_pendingLoads.insert(request).second) {
+                continue;
+            }
+            const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector>::const_iterator excluded = exclusions.find(request.first);
+            if (excluded != exclusions.end()) {
+                _pendingExclusions[request.first] = excluded->second;
+            }
+        }
+    } else if (!splitLoads.empty()) {
         std::lock_guard<std::mutex> lock(_loadMutex);
         if (_cancelGeneration == generation) {
             for (const std::pair<const PXR_NS::SdfPath, PXR_NS::SdfPathVector>& split : splitLoads) {
@@ -744,6 +788,30 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
 
     return true;
 } // SceneStage::serviceLoads
+
+SceneLoadSetPtr
+SceneStage::getLoadSet() const
+{
+    return _stage ? SceneOps::makeLoadSet(_stage->GetLoadRules()) : SceneLoadSetPtr();
+}
+
+bool
+SceneStage::applyLoadSet(const SceneLoadSetPtr& loadSet)
+{
+    _appliedLoadSet = loadSet;
+    if (!SceneOps::applyLoadSet(_stage, loadSet.get())) {
+        return false;
+    }
+    ++_loadEditCount;
+
+    return true;
+}
+
+const SceneLoadSetPtr&
+SceneStage::getAppliedLoadSet() const
+{
+    return _appliedLoadSet;
+}
 
 std::vector<SceneStage::LoadFailure>
 SceneStage::getLoadFailures() const

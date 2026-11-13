@@ -89,8 +89,6 @@
 
 #define NATRON_OCIO_ENV_IS_PREFERENCE_VAR_NAME "NATRON_OCIO_ENV_IS_PREFERENCE"
 
-#define NATRON_DEFAULT_APPEARANCE_VERSION 1
-
 #define NATRON_CUSTOM_HOST_NAME_ENTRY "Custom..."
 
 #define kGpuDeviceAutoID "auto"
@@ -100,8 +98,6 @@ NATRON_NAMESPACE_ENTER
 Settings::Settings()
     : KnobHolder(AppInstancePtr()) // < Settings are process wide and do not belong to a single AppInstance
     , _restoringSettings(false)
-    , _settingsExisted(false)
-    , _defaultAppearanceOutdated(false)
 {
 }
 
@@ -217,11 +213,6 @@ void
 Settings::initializeKnobsGeneral()
 {
     _generalTab = AppManager::createKnob<KnobPage>( this, tr("General") );
-
-    _natronSettingsExist = AppManager::createKnob<KnobBool>( this, tr("Existing settings") );
-    _natronSettingsExist->setName("existingSettings");
-    _natronSettingsExist->setSecretByDefault(true);
-    _generalTab->addKnob(_natronSettingsExist);
 
     _saveSettings = AppManager::createKnob<KnobBool>( this, tr("Save settings on change") );
     _saveSettings->setName("saveSettings");
@@ -858,11 +849,6 @@ Settings::initializeKnobsAppearance()
     //////////////APPEARANCE TAB/////////////////
     _appearanceTab = AppManager::createKnob<KnobPage>( this, tr("Appearance") );
 
-    _defaultAppearanceVersion = AppManager::createKnob<KnobInt>( this, tr("Appearance version") );
-    _defaultAppearanceVersion->setName("appearanceVersion");
-    _defaultAppearanceVersion->setSecretByDefault(true);
-    _appearanceTab->addKnob(_defaultAppearanceVersion);
-
     _systemFontChoice = AppManager::createKnob<KnobChoice>( this, tr("Font") );
     _systemFontChoice->setHintToolTip( tr("List of all fonts available on your system") );
     _systemFontChoice->setName("systemFont");
@@ -1493,6 +1479,16 @@ Settings::initializeKnobsNodeGraph()
                                             "hide them for the session."));
     _nodegraphTab->addKnob(_showExpressionLines);
 
+    _showGpuRegions = AppManager::createKnob<KnobBool>(this, tr("Show GPU Regions"));
+    _showGpuRegions->setName("showGpuRegions");
+    _showGpuRegions->setHintToolTip(tr("When checked, the node graph outlines the regions of the active viewer's last render "
+                                       "that stay resident on the GPU, marks each pipe where a region ends with a red X and "
+                                       "the reason, and fades nodes that computed no pixels in that render because their "
+                                       "image came from the cache or they passed their input through. With GPU compute off "
+                                       "or no GPU, it draws nothing. The \"Show GPU Regions\" action of the node graph "
+                                       "toggles the same setting."));
+    _nodegraphTab->addKnob(_showGpuRegions);
+
     _tabMenuSeparator = AppManager::createKnob<KnobSeparator>(this, tr("Tab menu"));
     _tabMenuSeparator->setName("tabMenuSeparator");
     _nodegraphTab->addKnob(_tabMenuSeparator);
@@ -1792,8 +1788,6 @@ Settings::setDefaultValues()
 {
     beginChanges();
 
-    _natronSettingsExist->setDefaultValue(false);
-
     // General
     _checkForUpdates->setDefaultValue(false);
     _autoSaveUnSavedProjects->setDefaultValue(true);
@@ -1890,6 +1884,7 @@ Settings::setDefaultValues()
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _showLinkLines->setDefaultValue(true);
     _showExpressionLines->setDefaultValue(true);
+    _showGpuRegions->setDefaultValue(false);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
     _useAntiAliasing->setDefaultValue(true);
 
@@ -1918,7 +1913,6 @@ Settings::setDefaultValues()
     _systemFontChoice->setDefaultValue(0);
     _fontSize->setDefaultValue(NATRON_FONT_SIZE_DEFAULT);
     //_qssFile
-    //_defaultAppearanceVersion
 
     // Appearance/Main Window
     _sunkenColor->setDefaultValue(0.12, 0);
@@ -2087,9 +2081,11 @@ Settings::setDefaultValues()
     _edgeDeepColor->setDefaultValue(0. / 255., 0); // Okabe-Ito blue
     _edgeDeepColor->setDefaultValue(114. / 255., 1);
     _edgeDeepColor->setDefaultValue(178. / 255., 2);
-    _edgeSceneColor->setDefaultValue(230. / 255., 0); // Okabe-Ito orange
-    _edgeSceneColor->setDefaultValue(159. / 255., 1);
-    _edgeSceneColor->setDefaultValue(0. / 255., 2);
+    // The USD 3D node colour (hue 180) made lighter and more saturated, with the hue pulled
+    // slightly towards green so it stays apart from the deep pipes' blue.
+    _edgeSceneColor->setDefaultValue(32. / 255., 0);
+    _edgeSceneColor->setDefaultValue(190. / 255., 1);
+    _edgeSceneColor->setDefaultValue(172. / 255., 2);
     _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
     _edgeRawColor->setDefaultValue(121. / 255., 1);
     _edgeRawColor->setDefaultValue(167. / 255., 2);
@@ -2433,26 +2429,12 @@ Settings::restoreSettings(bool useDefault)
         }
     }
 
-    _settingsExisted = false;
     try {
-        _settingsExisted = _natronSettingsExist->getValue();
-
-        if (!_settingsExisted && !useDefault) {
-            _natronSettingsExist->setValue(true);
-            saveSetting( _natronSettingsExist.get() );
-        }
-
-        int appearanceVersion = _defaultAppearanceVersion->getValue();
-        if ( _settingsExisted && (appearanceVersion < NATRON_DEFAULT_APPEARANCE_VERSION) ) {
-            _defaultAppearanceOutdated = true;
-            _defaultAppearanceVersion->setValue(NATRON_DEFAULT_APPEARANCE_VERSION);
-            saveSetting( _defaultAppearanceVersion.get() );
-        }
-
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
         appPTR->setNThreadsToRender( getNumberOfThreads() );
         appPTR->setUseThreadPool( _useThreadPool->getValue() );
         appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
+        ViewerInstance::setGpuPlacementOverlayEnabled(_showGpuRegions->getValue());
     } catch (std::logic_error&) {
         // ignore
     }
@@ -2601,6 +2583,8 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
+    } else if (k == _showGpuRegions.get()) {
+        ViewerInstance::setGpuPlacementOverlayEnabled(_showGpuRegions->getValue());
     } else if (k == _renderOnEditingFinished.get()) {
         const AppInstanceVec& apps = appPTR->getAppInstances();
         for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
@@ -3551,6 +3535,18 @@ Settings::isExpressionLinesVisible() const
 }
 
 bool
+Settings::isGpuRegionOverlayEnabled() const
+{
+    return _showGpuRegions->getValue();
+}
+
+void
+Settings::setGpuRegionOverlayEnabled(bool enabled)
+{
+    _showGpuRegions->setValue(enabled);
+}
+
+bool
 Settings::getEdgeKindColor(DataKindEnum kind,
                            float* r,
                            float* g,
@@ -3833,12 +3829,6 @@ bool
 Settings::useInputAForMergeAutoConnect() const
 {
     return _useInputAForMergeAutoConnect->getValue();
-}
-
-bool
-Settings::didSettingsExistOnStartup() const
-{
-    return _settingsExisted;
 }
 
 bool
@@ -4312,31 +4302,6 @@ void
 Settings::setOnProjectLoadedCB(const std::string& func)
 {
     _defaultOnProjectLoaded->setValue(func);
-}
-
-bool
-Settings::isDefaultAppearanceOutdated() const
-{
-    return _defaultAppearanceOutdated;
-}
-
-void
-Settings::restoreDefaultAppearance()
-{
-    std::vector<KnobIPtr> children = _appearanceTab->getChildren();
-
-    for (std::size_t i = 0; i < children.size(); ++i) {
-        KnobColor* isColorKnob = dynamic_cast<KnobColor*>( children[i].get() );
-        if ( isColorKnob && isColorKnob->isSimplified() ) {
-            isColorKnob->blockValueChanges();
-            for (int j = 0; j < isColorKnob->getDimension(); ++j) {
-                isColorKnob->resetToDefaultValue(j);
-            }
-            isColorKnob->unblockValueChanges();
-        }
-    }
-    _defaultAppearanceOutdated = false;
-    appPTR->reloadStylesheets();
 }
 
 std::string

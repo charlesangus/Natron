@@ -34,6 +34,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -41,6 +42,8 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OverlayImage.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/RenderScheduler.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
 #include "Serialization/SerializationFwd.h"
@@ -90,6 +93,132 @@ class CleanHashSnapshot; // Node.h
 
 typedef std::map<NodePtr, NodeRenderStats > RenderStatsMap;
 
+struct ShadowPlacement;
+
+/**
+ * @brief The GPU regions of one viewer render, as the cache-ignoring shadow plan placed them, for the GUI thread to read
+ * after the render is over. Nodes are held weakly because they may be gone by then, and a node with several tasks, or in
+ * several merged graphs, appears once. No regions and no node runs means there is nothing to draw.
+ **/
+struct GpuPlacementSnapshot {
+    // An input of a node, which is how the node graph finds a pipe.
+    struct Pipe {
+        NodeWPtr destNode;
+        int inputNb = -1;
+    };
+
+    struct Member {
+        NodeWPtr node;
+
+        // Some task of the node stayed out of every region in the shadow plan.
+        bool mixed = false;
+    };
+
+    // A pipe that ends a region. A region feeding the viewer has none for it: the viewer is not a task of the graph.
+    struct Exit {
+        Pipe pipe;
+        FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
+        std::string detail;
+
+        // The tasks reading this pipe differ on the reason, or on whether the pipe ends a region at all.
+        bool mixed = false;
+    };
+
+    struct Region {
+        std::vector<Member> members;
+        std::vector<Exit> exits;
+
+        // Pipes bringing an image in from the CPU. A pipe from another region is one of that region's exits instead.
+        std::vector<Pipe> entries;
+
+        // The real plan's region on these members did not run on the GPU, which only a real render can know.
+        bool fellBack = false;
+        std::string fallbackReason;
+        bool deviceLost = false;
+        int retries = 0;
+
+        // The merged graphs differ on whether or why this region fell back.
+        bool fallbackMixed = false;
+    };
+
+    std::vector<Region> regions;
+
+    // A node with a task in the real render, on the GPU or not.
+    struct NodeRun {
+        NodeWPtr node;
+
+        // Some task of the node computed pixels rather than taking them all from the cache or passing its input
+        // through.
+        bool ran = false;
+    };
+
+    // Empty when the snapshot does not come from a render that recorded which nodes computed pixels.
+    std::vector<NodeRun> nodeRuns;
+};
+
+typedef std::shared_ptr<const GpuPlacementSnapshot> GpuPlacementSnapshotPtr;
+
+/**
+ * @brief Gathers the graphs one viewer render builds, one per split RoI rect and one per A/B input, on its render thread,
+ * and merges them. Regions of different graphs that share a node become one region.
+ **/
+class GpuPlacementSnapshotBuilder {
+public:
+    // shadow must come from placing real.
+    void addGraph(const FrameGraph& real, const ShadowPlacement& shadow);
+
+    // For a graph placement left alone because there is no GPU, which contributes no region.
+    void addUnplacedGraph();
+
+    // As addUnplacedGraph(), keeping real's tasks so that finishGraph() can tell which of them ran.
+    void addUnplacedGraph(const FrameGraph& real);
+
+    /**
+     * @brief Called once the most recently added graph has rendered. renderedNodes are the nodes that computed pixels
+     * in it; null when the render did not record them.
+     **/
+    void finishGraph(EffectInstance::RenderRoIRetCode retCode,
+                     const std::vector<RegionFallback>& fallbacks,
+                     const std::unordered_set<const Node*>* renderedNodes = nullptr);
+
+    /**
+     * @brief The merged snapshot. Null when no graph was added, or one was aborted: a newer render has then been asked
+     * for, which may already have published, so this one must not overwrite it.
+     **/
+    GpuPlacementSnapshotPtr build() const;
+
+    // Whether some graph was added with a shadow plan, rather than left unplaced.
+    bool hasPlacedGraph() const;
+
+private:
+    struct TaskPlan {
+        NodeWPtr node;
+        int region = -1;
+        int realRegion = -1;
+        bool ran = false;
+        FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
+        std::string detail;
+    };
+
+    struct EdgePlan {
+        int source = -1;
+        int dest = -1;
+        int inputNb = -1;
+    };
+
+    struct GraphPlan {
+        std::vector<TaskPlan> tasks;
+        std::vector<EdgePlan> edges;
+        int regionCount = 0;
+        std::vector<RegionFallback> fallbacks;
+        bool recordsRuns = false;
+    };
+
+    std::vector<GraphPlan> _graphs;
+    bool _aborted = false;
+    bool _placed = false;
+};
+
 class ViewerArgs
 {
 public:
@@ -129,6 +258,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class ViewerCurrentFrameRequestScheduler;
+    friend class GpuPlacementPlanner;
 
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
@@ -227,6 +357,44 @@ public:
      * empty hook removes it.
      **/
     static void setSchedulerResultHookForTests(const SchedulerResultHook& hook);
+
+    /**
+     * @brief Whether viewer renders place a shadow plan and publish a snapshot. Off by default, for every viewer.
+     * Turning it on discards every earlier snapshot and asks each viewer for a dry run.
+     **/
+    static void setGpuPlacementOverlayEnabled(bool enabled);
+    static bool isGpuPlacementOverlayEnabled();
+
+    /**
+     * @brief Asks for a plan of the current frame and view, without rendering, on a thread of the viewer once the
+     * requests have paused. A burst of requests gives one plan. It does nothing while the overlay is off and it is held
+     * during playback, a paint stroke, tracking and a project load. May be called from any thread.
+     **/
+    void requestGpuPlacementDryRun();
+    static void requestGpuPlacementDryRunForEveryViewer();
+
+    /**
+     * @brief How many dry runs viewers have carried out in this process.
+     **/
+    static int getGpuPlacementDryRunCountForTests();
+
+    /**
+     * @brief Makes every viewer behave as if it were playing back.
+     **/
+    static void setGpuPlacementFrozenForTests(bool frozen);
+
+    void getRenderAgesForTests(int textureIndex, U64* renderAge, U64* displayAge) const;
+
+    /**
+     * @brief How many shadow plans viewer renders have placed in this process.
+     **/
+    static int getGpuShadowPlacementCountForTests();
+
+    /**
+     * @brief The placement of the last viewer render that reached the RenderScheduler or of the last dry run, null while
+     * the overlay is off or before either since it was turned on. May be called from any thread.
+     **/
+    GpuPlacementSnapshotPtr getGpuPlacementSnapshot() const;
 
 private:
     /**
@@ -472,9 +640,35 @@ public:
     /**
      * @brief What the last evaluation of a scene on the given texture's input produced. Returns
      * false when that input is not a scene or has not been evaluated yet, or when the evaluation
-     * failed, in which case *error carries the message. Either pointer may be null. MT-safe.
+     * failed, in which case *error carries the message. *loadSet and *reach get the load set it
+     * was evaluated with and the reach of the patterns it matched. Any pointer may be null.
+     * MT-safe.
      **/
-    bool getLastEvaluatedScene(int textureIndex, ScenePayload* scene, std::string* error) const;
+    bool getLastEvaluatedScene(int textureIndex,
+                               ScenePayload* scene,
+                               std::string* error,
+                               SceneLoadSetPtr* loadSet = nullptr,
+                               SceneLoadReachPtr* reach = nullptr) const;
+
+    /**
+     * @brief The payloads the viewer's scene evaluations include, which follow what its 3D view's
+     * stage loads: pattern nodes match only those. None until set. MT-safe.
+     **/
+    void setSceneLoadSet(const SceneLoadSetPtr& loadSet);
+
+    SceneLoadSetPtr getSceneLoadSet() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Evaluates the scene of the A input as the viewer would with loadSet in its place, for
+     * what a load about to be committed shows, at the current frame. getLastEvaluatedScene() is
+     * left as it is. *reach, when given, is set to the reach of the patterns the evaluation
+     * matched. Returns false when that input is not a scene or its evaluation fails, with *error
+     * set for a failure. For a thread other than the main one. MT-safe.
+     **/
+    bool evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                 ScenePayload* scene,
+                                 SceneLoadReachPtr* reach,
+                                 std::string* error);
 
     /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
@@ -599,11 +793,38 @@ Q_SIGNALS:
     // result. Emitted from the render thread.
     void sceneEvaluated(int textureIndex);
 
+    // getGpuPlacementSnapshot() changed. Emitted from the thread that published it, a render thread or the viewer's
+    // planner, and not during playback.
+    void gpuPlacementSnapshotChanged();
+
 private:
+    bool isGpuPlacementFrozen() const;
+    bool isGpuPlacementDryRunHeld() const;
+    void runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo);
+
+    struct GpuPlacementUiState;
+
+    // What a dry run reads of the UI context, false once it is gone.
+    bool readGpuPlacementUiState(GpuPlacementUiState* state) const;
+    bool getGpuPlacementRoI(int textureIndex,
+                            const RectD& rod,
+                            double par,
+                            unsigned int mipmapLevel,
+                            bool exact,
+                            RectI* roi) const;
+    void planGpuPlacementOfInput(int textureIndex,
+                                 SequenceTime time,
+                                 const GpuPlacementUiState& ui,
+                                 const AbortableRenderInfoPtr& abortInfo,
+                                 GpuPlacementSnapshotBuilder* builder);
+    void computeMipmapLevels(double zoomFactor, ViewerArgs* outArgs) const;
+
     /*******************************************
      ******OVERRIDDEN FROM EFFECT INSTANCE******
      *******************************************/
 
+    virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void quitBackgroundWork(bool blocking) OVERRIDE FINAL;
     virtual bool isOutput() const OVERRIDE FINAL
     {
         return true;
@@ -673,6 +894,7 @@ private:
                                               bool useTLS,
                                               const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
                                               const RenderStatsPtr& stats,
+                                              GpuPlacementSnapshotBuilder* placementBuilder,
                                               ViewerArgs& inArgs) WARN_UNUSED_RETURN;
 
     virtual void getRegionsOfInterest(double time,

@@ -78,6 +78,9 @@ public:
         // The borrowed payload's projections whose camera the stage lacks.
         std::vector<SceneProjectionCameras::Unresolved> getUnresolvedProjections() const;
 
+        // How many times the stage's payload inclusion has changed in its life.
+        U64 getLoadEditCount() const;
+
         // Gives the stage back now.
         void release();
 
@@ -101,6 +104,16 @@ public:
      * when OpenUSD is unusable.
      **/
     Lease borrow(const ScenePayload& payload, std::string* errorMessage);
+
+    /**
+     * @brief A stage composing payload with the payloads of loadSet included, every one for a
+     * null set, as borrow(payload) gives. Prefers an idle stage that already includes the same
+     * payloads, then the one whose load set differs least, and loads and unloads only the
+     * difference. A stage borrowed again with the set it was given back with loads nothing.
+     **/
+    Lease borrow(const ScenePayload& payload,
+                 const SceneLoadSetPtr& loadSet,
+                 std::string* errorMessage);
 
     // Drops every idle stage, and the layers only they kept open.
     void releaseIdle();

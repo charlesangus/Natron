@@ -39,6 +39,9 @@
         BENCH_GPU        1 when the display is a real GPU; otherwise frame-dependent budgets are
                          reported as not valid (llvmpipe and GitHub runners do not count, whatever
                          this says)
+        BENCH_SWITCH_NODES  USDEditTransforms off USDRead that node_switch selects in turn, with the
+                         Scene Graph panel following the selection (default 4); it then selects the
+                         first again, whose stage the panel keeps
         BENCH_LABEL      free text stored with each result
         BENCH_TIMEOUT_S  per-wait timeout (default 600)
         BENCH_HOLD_FILE  when set, populate_full and populate_pruned report "BEGIN populate" and wait up to
@@ -119,6 +122,7 @@ PICTURE_BUDGET_MS = 100.0
 FIRST_FRAME_BUDGET_MS = 2000.0
 ORBIT_BUDGET_FPS = 30.0
 HEARTBEAT_MS = 10
+SWITCH_NODES = int(os.environ.get("BENCH_SWITCH_NODES", "4"))
 TIMEOUT_S = float(os.environ.get("BENCH_TIMEOUT_S", "600"))
 SCENARIO_LIMIT_S = int(os.environ.get("BENCH_SCENARIO_LIMIT_S", "300"))
 OPEN_LIMIT_S = int(os.environ.get("BENCH_OPEN_LIMIT_S", "1800"))
@@ -142,7 +146,7 @@ ROW_ENV = {"root": "BENCH_ROOT", "branch": "BENCH_BRANCH", "sibling_row": "BENCH
 try:
     from PySide6.QtCore import QEvent, QMetaObject, QModelIndex, QPersistentModelIndex, QPoint, QPointF, QRect, Q_ARG, QTimer, Qt
     from PySide6.QtGui import QGuiApplication, QImage, QMouseEvent, QOffscreenSurface, QOpenGLContext
-    from PySide6.QtWidgets import QApplication, QTreeView
+    from PySide6.QtWidgets import QApplication, QComboBox, QTreeView
     import NatronEngine
 
     from heavy_scene_frame import frame_coverage
@@ -1091,6 +1095,48 @@ try:
         # The grabs and the comparison are this harness's cost, not the viewer's.
         heartbeat.start()
 
+    switch_nodes = []
+
+    def panel_shows(node):
+        p = panel()
+        return (str(p.property("natronSceneGraphNode") or "") == node.getScriptName()
+                and not p.property("natronSceneGraphSwitching") and hold(tree().model()).rowCount(QModelIndex()) > 0)
+
+    def action_node_switch(m):
+        require(view() is not None and shown(), "node_switch: a scene view is visible and showing the scene")
+        show_panel()
+        ok = yield ("until", lambda: panel().isVisible() and panel_shows(usd), TIMEOUT_S)
+        require(ok, "node_switch: the panel shows the viewed scene")
+        if not switch_nodes:
+            for i in range(SWITCH_NODES):
+                node = create("USDEditTransform", 200 + 150 * i, 150)
+                require(node.connectInput(0, usd), "node_switch: connect a USDEditTransform to USDRead")
+                switch_nodes.append(node)
+        follow = hold(panel().findChild(QComboBox, "sceneGraphFollow"))
+        require(follow is not None, "node_switch: the panel has a Follow chooser")
+        app.selectNode(usd, True)
+        follow.setCurrentIndex(1)
+        ok = yield ("until", lambda: panel_shows(usd), TIMEOUT_S)
+        require(ok, "node_switch: following the selection, the panel shows USDRead")
+        # Creating the nodes is not the switching the stall budget is about.
+        heartbeat.start()
+        times = []
+        composes = []
+        # The last switch returns to the first node, whose stage is kept.
+        for node in switch_nodes + switch_nodes[:1]:
+            composed = int(panel().property("natronSceneGraphComposeCount") or 0)
+            t0 = time.time() * 1000.0
+            app.selectNode(node, True)
+            ok = yield ("until", lambda n=node: panel_shows(n), TIMEOUT_S)
+            check(ok, "node_switch: the panel shows " + node.getScriptName())
+            times.append(round(time.time() * 1000.0 - t0, 1))
+            composes.append(int(panel().property("natronSceneGraphComposeCount") or 0) - composed)
+        m.values["switch_ms"] = times[:-1]
+        m.values["switch_max_ms"] = max(times[:-1])
+        m.values["cached_switch_ms"] = times[-1]
+        m.values["cached_switch_composes"] = composes[-1]
+        follow.setCurrentIndex(0)
+
     def action_noedit(m):
         def edits():
             stats = draw_stats()
@@ -1121,7 +1167,7 @@ try:
                "orbit10k": action_orbit10k, "boxes_shot": action_boxes_shot, "sibling_state": action_sibling_state,
                "sibling_shot": action_sibling_shot, "noedit": action_noedit, "draw_budget": action_draw_budget,
                "reveal_load_all": action_reveal_load_all, "reveal_wide": action_reveal_wide,
-               "reveal_cancel_paced": action_reveal_cancel_paced}
+               "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch}
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True):
         if not applicable:

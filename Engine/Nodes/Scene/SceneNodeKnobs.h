@@ -150,8 +150,9 @@ struct SceneCameraPathKnobs {
 
 /**
  * @brief The row a menu filled from a scene ends with when unsearched unloaded branches may hold
- * more entries: "N unloaded branches not searched". It names no entry, so picking it changes
- * nothing. noViewer says no viewer shows the node, so nothing inside a payload was searched.
+ * more entries: "N unloaded branches not searched". It names no entry, so it is disabled and the
+ * GUI never lets it be picked. noViewer says no viewer shows the node, so nothing inside a payload
+ * was searched.
  **/
 ChoiceOption makeSceneUnsearchedOption(std::size_t unsearched,
                                        bool noViewer);
@@ -211,12 +212,15 @@ private:
 /**
  * @brief A node's menu refreshes. Each runs on a worker, so the main thread never evaluates the
  * scene for a menu, and is applied on the main thread when it ends; until then the menu keeps its
- * entries. A refresh supersedes the one before it, whose result is then never applied.
+ * entries. A refresh supersedes the one before it, whose result is then never applied. A load
+ * change in a viewer runs the refresh again when it changes what the last one searched
+ * (followLoadChanges()).
  **/
 class SceneMenuRefresh {
 public:
     typedef std::function<void(const SceneMenuJob& job, SceneMenuJob::Result* result)> WorkFunc;
     typedef std::function<void(const std::shared_ptr<SceneMenuJob>& job)> ApplyFunc;
+    typedef std::function<std::shared_ptr<SceneMenuJob>()> RerunFunc;
 
     SceneMenuRefresh();
 
@@ -226,9 +230,16 @@ public:
     SceneMenuRefresh& operator=(const SceneMenuRefresh&) = delete;
 
     /**
+     * @brief The node's own refresh, which starts a refresh as the node does for any other
+     * reason. followLoadChanges() calls it. Main thread.
+     **/
+    void setRerun(const RerunFunc& rerun);
+
+    /**
      * @brief The context a refresh of effect's menus searches in: that of the viewer showing
      * effect (SceneNodeAuthoring::getShowingViewerContext()), else nothing loaded, with
-     * *noViewer set. Main thread.
+     * *noViewer set. It has a reach of its own, which gathers what the search depends on. Main
+     * thread.
      **/
     SceneEvaluationContext getContext(EffectInstance* effect,
                                       bool* noViewer) const;
@@ -237,11 +248,16 @@ public:
     U64 getMappedContextId() const;
 
     /**
-     * @brief Cancels the refresh still running and runs work on a worker. When work ends, apply
-     * is queued to the main thread with the job, while effect and this object live; it fills the
-     * menus when take() accepts the job. Main thread.
+     * @brief Cancels the refresh still running and runs work, which searches on context, on a
+     * worker. When work ends, apply is queued to the main thread with the job, while effect and
+     * this object live; it fills the menus when take() accepts the job. context's load set and
+     * reach are kept, for followLoadChanges() to tell whether a load changes what work found:
+     * work adds to the reach every prefix its result depends on. Called from followLoadChanges(),
+     * it starts nothing, returning null, when the load change does not reach what the last refresh
+     * searched. Main thread.
      **/
     std::shared_ptr<SceneMenuJob> start(EffectInstance* effect,
+                                        const SceneEvaluationContext& context,
                                         bool noViewer,
                                         const WorkFunc& work,
                                         const ApplyFunc& apply);
@@ -252,8 +268,20 @@ public:
      **/
     bool take(const std::shared_ptr<SceneMenuJob>& job);
 
-private:
+    /**
+     * @brief Runs a menu's refresh again (setRerun()) when the showing viewer's load set differs
+     * from the one its last refresh used on a payload in that refresh's reach, or when a viewer
+     * starts or stops showing its node. Returns the jobs started. Main thread.
+     **/
+    static std::vector<std::shared_ptr<SceneMenuJob>> followLoadChanges();
+
+    // Queues followLoadChanges() to the main thread, once for any number of calls before it runs. Any thread.
+    static void scheduleFollowLoadChanges();
+
+    // Defined where the refreshes are, which keep a registry of them.
     struct State;
+
+private:
     std::shared_ptr<State> _state;
 };
 

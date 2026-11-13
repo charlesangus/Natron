@@ -775,7 +775,7 @@ static bool
 sameChoiceOption(const ChoiceOption& a,
                  const ChoiceOption& b)
 {
-    return (a.id == b.id) && (a.label == b.label) && (a.tooltip == b.tooltip);
+    return (a.id == b.id) && (a.label == b.label) && (a.tooltip == b.tooltip) && (a.disabled == b.disabled);
 }
 
 void
@@ -1040,6 +1040,14 @@ KnobChoice::getNumEntries() const
     QMutexLocker l(&_entriesMutex);
 
     return (int)_entries.size();
+}
+
+bool
+KnobChoice::isEntryDisabled(int index) const
+{
+    QMutexLocker l(&_entriesMutex);
+
+    return (index >= 0) && (index < (int)_entries.size()) && _entries[index].disabled;
 }
 
 void

@@ -26,6 +26,7 @@
 #include "SceneNodeAuthoring.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <list>
@@ -277,19 +278,10 @@ SceneCameraPathKnobs::knobChanged(KnobI* k,
         const int index = menuKnob->getValue();
         if (((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonNatronGuiEdited))
             && (index >= 0) && (index < menuKnob->getNumEntries())) {
-            const std::string picked = menuKnob->getEntry(index).id;
-            if (!isSceneUnsearchedOption(picked)) {
-                pathKnob->setValue(picked);
-            } else {
-                // The note names no camera: the menu goes back to the path's entry.
-                const std::vector<ChoiceOption> entries = menuKnob->getEntries_mt_safe();
-                const std::string chosen = pathKnob->getValue();
-                for (std::size_t i = 0; i < entries.size(); ++i) {
-                    if (chosen.empty() ? !isSceneUnsearchedOption(entries[i].id) : (entries[i].id == chosen)) {
-                        menuKnob->setValue((int)i);
-                        break;
-                    }
-                }
+            const ChoiceOption picked = menuKnob->getEntry(index);
+            // A script can still set a disabled note row, which names no camera.
+            if (!picked.disabled) {
+                pathKnob->setValue(picked.id);
             }
         }
 
@@ -311,9 +303,12 @@ makeSceneUnsearchedOption(std::size_t unsearched,
     const QString tip = noViewer ? EffectInstance::tr("No viewer shows this node, so nothing inside a payload was searched. Show the node in a viewer and load these branches there to list what they hold.")
                                  : EffectInstance::tr("The viewer showing this node leaves these branches unloaded. Load them there to list what they hold.");
 
-    return ChoiceOption(kSceneMenuUnsearchedId,
+    ChoiceOption option(kSceneMenuUnsearchedId,
                         EffectInstance::tr("%1 unloaded branches not searched").arg((qulonglong)unsearched).toStdString(),
                         tip.toStdString());
+    option.disabled = true;
+
+    return option;
 }
 
 bool
@@ -380,11 +375,59 @@ struct SceneMenuRefresh::State {
     std::shared_ptr<SceneMenuJob> current;
     const U64 noViewerId = SceneEvaluationContext::makeId();
     const U64 mappedId = SceneEvaluationContext::makeId();
+    // The rest is main thread only.
+    RerunFunc rerun;
+    std::weak_ptr<EffectInstance> effect;
+    // What the latest refresh searched on, and its job.
+    bool searched = false;
+    SceneLoadSetPtr searchedLoadSet;
+    SceneLoadReachPtr searchedReach;
+    bool searchedNoViewer = false;
+    std::shared_ptr<SceneMenuJob> latest;
+    // Set while followLoadChanges() reruns the refresh.
+    bool followingLoad = false;
 };
+
+namespace {
+std::mutex menuRefreshRegistryLock;
+std::vector<std::weak_ptr<SceneMenuRefresh::State>> menuRefreshRegistry;
+std::atomic<bool> followLoadChangesPending(false);
+
+// Whether a refresh searching on loadSet, with no viewer when noViewer, may find other entries than the last one did.
+bool
+loadChangeReachesSearch(const SceneMenuRefresh::State& state,
+                        const SceneLoadSetPtr& loadSet,
+                        bool noViewer)
+{
+    if (noViewer != state.searchedNoViewer) {
+        return true;
+    }
+    const bool sameLoadSet = state.searchedLoadSet ? (loadSet && (*state.searchedLoadSet == *loadSet)) : !loadSet;
+    if (sameLoadSet) {
+        return false;
+    }
+    // A search still running, or cut short, has not gathered its whole reach.
+    if (!state.searchedReach || !state.latest || !state.latest->isDone() || state.latest->isCancelled()) {
+        return true;
+    }
+
+    return SceneOps::loadChangeReaches(state.searchedLoadSet.get(), loadSet.get(), state.searchedReach->getPrefixes());
+}
+} // anonymous namespace
 
 SceneMenuRefresh::SceneMenuRefresh()
     : _state(std::make_shared<State>())
 {
+    std::lock_guard<std::mutex> l(menuRefreshRegistryLock);
+
+    menuRefreshRegistry.erase(std::remove_if(menuRefreshRegistry.begin(), menuRefreshRegistry.end(), [](const std::weak_ptr<State>& state) { return state.expired(); }), menuRefreshRegistry.end());
+    menuRefreshRegistry.push_back(_state);
+}
+
+void
+SceneMenuRefresh::setRerun(const RerunFunc& rerun)
+{
+    _state->rerun = rerun;
 }
 
 SceneMenuRefresh::~SceneMenuRefresh()
@@ -406,6 +449,7 @@ SceneMenuRefresh::getContext(EffectInstance* effect,
     if (*noViewer) {
         context = SceneEvaluationContext(_state->noViewerId, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
     }
+    context.reach = std::make_shared<SceneLoadReach>();
 
     return context;
 }
@@ -418,11 +462,21 @@ SceneMenuRefresh::getMappedContextId() const
 
 std::shared_ptr<SceneMenuJob>
 SceneMenuRefresh::start(EffectInstance* effect,
+                        const SceneEvaluationContext& context,
                         bool noViewer,
                         const WorkFunc& work,
                         const ApplyFunc& apply)
 {
+    if (_state->followingLoad && _state->searched && !loadChangeReachesSearch(*_state, context.loadSet, noViewer)) {
+        return std::shared_ptr<SceneMenuJob>();
+    }
     std::shared_ptr<SceneMenuJob> job = std::make_shared<SceneMenuJob>(noViewer);
+    _state->effect = effect ? effect->weak_from_this() : std::weak_ptr<EffectInstance>();
+    _state->searched = true;
+    _state->searchedLoadSet = context.loadSet;
+    _state->searchedReach = context.reach;
+    _state->searchedNoViewer = noViewer;
+    _state->latest = job;
     {
         std::lock_guard<std::mutex> l(_state->lock);
         if (_state->current) {
@@ -469,6 +523,50 @@ SceneMenuRefresh::take(const std::shared_ptr<SceneMenuJob>& job)
     _state->current.reset();
 
     return true;
+}
+
+std::vector<std::shared_ptr<SceneMenuJob>>
+SceneMenuRefresh::followLoadChanges()
+{
+    followLoadChangesPending = false;
+    std::vector<std::shared_ptr<State>> states;
+    {
+        std::lock_guard<std::mutex> l(menuRefreshRegistryLock);
+        for (const std::weak_ptr<State>& weak : menuRefreshRegistry) {
+            if (const std::shared_ptr<State> state = weak.lock()) {
+                states.push_back(state);
+            }
+        }
+    }
+    std::vector<std::shared_ptr<SceneMenuJob>> jobs;
+    for (const std::shared_ptr<State>& state : states) {
+        // A refresh never run has nothing to follow; one whose node is gone has no one to rerun it.
+        if (!state->searched || !state->rerun || state->effect.expired()) {
+            continue;
+        }
+        state->followingLoad = true;
+        std::shared_ptr<SceneMenuJob> job;
+        try {
+            job = state->rerun();
+        } catch (...) {
+            job.reset();
+        }
+        state->followingLoad = false;
+        if (job) {
+            jobs.push_back(job);
+        }
+    }
+
+    return jobs;
+}
+
+void
+SceneMenuRefresh::scheduleFollowLoadChanges()
+{
+    if (!QCoreApplication::instance() || followLoadChangesPending.exchange(true)) {
+        return;
+    }
+    QMetaObject::invokeMethod(QCoreApplication::instance(), []() { followLoadChanges(); }, Qt::QueuedConnection);
 }
 
 std::string

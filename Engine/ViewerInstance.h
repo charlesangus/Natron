@@ -652,7 +652,8 @@ public:
 
     /**
      * @brief The payloads the viewer's scene evaluations include, which follow what its 3D view's
-     * stage loads: pattern nodes match only those. None until set. MT-safe.
+     * stage loads: pattern nodes match only those. None until set. A change queues the knob
+     * menus filled from the scene to follow it (SceneMenuRefresh::followLoadChanges()). MT-safe.
      **/
     void setSceneLoadSet(const SceneLoadSetPtr& loadSet);
 

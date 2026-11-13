@@ -43,6 +43,7 @@
 #include "SceneTestAuthoring.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -73,6 +74,7 @@
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_USING
 
@@ -1423,13 +1425,15 @@ TEST_F(SceneLoadSetCoverageTest, ACameraMenuOnACameraInputLoadsOnlyTheChosenCame
     EXPECT_EQ(0, menu->getValue());
     EXPECT_LE(city.openedBuildings(), 1);
 
-    // Picking the note leaves the camera path as it was.
+    // The note is disabled, and a script that sets it anyway leaves the camera path as it was.
+    EXPECT_TRUE(entries[1].disabled);
+    EXPECT_TRUE(menu->isEntryDisabled(1));
+    EXPECT_FALSE(menu->isEntryDisabled(0));
     menu->setValue(1);
     menu->onValueChanged(1, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     KnobString* path = dynamic_cast<KnobString*>(node->getKnobByName(kUSDProject3DParamCameraPath).get());
     ASSERT_TRUE(path != nullptr);
     EXPECT_EQ(std::string("/World/Block_0/B_0/Cam"), path->getValue());
-    EXPECT_EQ(0, menu->getValue());
 }
 
 TEST_F(SceneLoadSetCoverageTest, AVariantMenuOnAnUnloadedPrimNotesItsBranchAndOpensNoBuilding)
@@ -1454,6 +1458,7 @@ TEST_F(SceneLoadSetCoverageTest, AVariantMenuOnAnUnloadedPrimNotesItsBranchAndOp
     ASSERT_EQ((std::size_t)1, entries.size());
     EXPECT_EQ(std::string(kSceneMenuUnsearchedId), entries[0].id);
     EXPECT_EQ(std::string("1 unloaded branches not searched"), entries[0].label);
+    EXPECT_TRUE(sets->isEntryDisabled(0));
     EXPECT_EQ(0, city.openedBuildings());
 }
 
@@ -1548,4 +1553,54 @@ TEST_F(SceneLoadSetCoverageTest, ADiamondOfGraftsUnitesTheSetsOfItsRoutes)
 
     SceneEvaluationContext unrelated;
     EXPECT_FALSE(SceneNodeAuthoring::mapContextDownToNode(left->getEffectInstance().get(), joined->getEffectInstance().get(), viewer, 1., ViewIdx(0), &unrelated));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AViewerLoadReachingWhatAVariantMenuSearchedRefillsIt)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = variant(source, "/World/Block_0/B_0");
+    ASSERT_TRUE(source && node);
+    CreateNodeArgs viewerArgs(PLUGINID_NATRON_VIEWER, getApp()->getProject());
+    viewerArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr viewerNode = getApp()->createNode(viewerArgs);
+    ASSERT_TRUE(bool(viewerNode));
+    ViewerInstance* viewer = viewerNode->isEffectViewer();
+    ASSERT_TRUE(viewer != nullptr);
+    ASSERT_TRUE(viewerNode->connectInput(node, 0));
+    viewer->setSceneLoadSet(std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    USDVariant* effect = dynamic_cast<USDVariant*>(node->getEffectInstance().get());
+    KnobChoice* sets = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDVariantParamVariantSets).get());
+    KnobChoice* variants = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDVariantParamVariants).get());
+    ASSERT_TRUE(effect && sets && variants);
+
+    const std::shared_ptr<SceneMenuJob> first = effect->refreshVariantMenus();
+    first->wait();
+    EXPECT_FALSE(first->hasNoViewer());
+    ASSERT_TRUE(effect->applyVariantMenus(first));
+    EXPECT_EQ((std::vector<std::string> { kSceneMenuUnsearchedId }), entryIds(sets));
+    EXPECT_EQ(std::string("1 unloaded branches not searched"), sets->getEntry(0).label);
+
+    // Every refresh followLoadChanges() starts is waited for, any other node's included, so none
+    // outlives the test; only this node's own job fills its menus.
+    const auto follow = [effect]() {
+        bool applied = false;
+        for (const std::shared_ptr<SceneMenuJob>& job : SceneMenuRefresh::followLoadChanges()) {
+            job->wait();
+            applied = effect->applyVariantMenus(job) || applied;
+        }
+
+        return applied;
+    };
+
+    // The other block holds nothing the search read: the menu is left as it is.
+    viewer->setSceneLoadSet(loadingOnly({ "/World/Block_1" }));
+    EXPECT_FALSE(follow());
+    EXPECT_EQ((std::vector<std::string> { kSceneMenuUnsearchedId }), entryIds(sets));
+
+    // The building's own block: its variant set is found, and nothing is left unsearched.
+    viewer->setSceneLoadSet(loadingOnly({ "/World/Block_0" }));
+    EXPECT_TRUE(follow());
+    EXPECT_EQ((std::vector<std::string> { "look" }), entryIds(sets));
+    EXPECT_EQ((std::vector<std::string> { "plain", "tinted" }), entryIds(variants));
 }

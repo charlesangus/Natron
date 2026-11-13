@@ -100,6 +100,7 @@ USDVariant::USDVariant(NodePtr node)
     , _menuRefreshPending(false)
     , _syncingMenus(false)
 {
+    _menuRefresh.setRerun([this]() { return refreshVariantMenus(); });
 }
 
 USDVariant::~USDVariant()
@@ -179,14 +180,10 @@ USDVariant::knobChanged(KnobI* k,
         const int index = menu->getValue();
         if (!_syncingMenus && (index >= 0) && (index < menu->getNumEntries())) {
             const KnobStringPtr name = (k == variantSets.get()) ? variantSet : variant;
-            const std::string picked = menu->getEntry(index).id;
-            if (isSceneUnsearchedOption(picked)) {
-                // The note names nothing: the menu goes back to the name's entry.
-                _syncingMenus = true;
-                selectEntry(menu, name->getValue());
-                _syncingMenus = false;
-            } else {
-                name->setValue(picked);
+            const ChoiceOption picked = menu->getEntry(index);
+            // A script can still set a disabled note row, which names nothing.
+            if (!picked.disabled) {
+                name->setValue(picked.id);
             }
         }
 
@@ -270,6 +267,9 @@ USDVariant::refreshVariantMenus()
         // Its variant sets may be authored inside the payload left unloaded.
         if (!prim || (prim.HasAuthoredPayloads() && !prim.IsLoaded())) {
             result->unsearched = 1;
+            if (context.reach) {
+                context.reach->add(std::vector<std::string>(1, found.paths.front().GetString()));
+            }
 
             return;
         }
@@ -280,7 +280,7 @@ USDVariant::refreshVariantMenus()
         }
     };
 
-    return _menuRefresh.start(this, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyVariantMenus(job); });
+    return _menuRefresh.start(this, context, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyVariantMenus(job); });
 }
 
 bool

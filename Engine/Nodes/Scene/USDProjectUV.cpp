@@ -423,6 +423,7 @@ USDProjectUV::USDProjectUV(NodePtr node)
     , _imp(new Implementation())
     , _cameraMenuRefreshPending(false)
 {
+    _cameraMenuRefresh.setRerun([this]() { return refreshCameraMenu(); });
 }
 
 USDProjectUV::~USDProjectUV()
@@ -725,11 +726,15 @@ USDProjectUV::refreshCameraMenu()
         if (!context.hasSameLoadSet(viewerContext)) {
             context.id = _cameraMenuRefresh.getMappedContextId();
         }
-        context.reach.reset();
+        context.reach = std::make_shared<SceneLoadReach>();
     }
     SceneMenuRefresh::WorkFunc work = [input, time, context](const SceneMenuJob& job,
                                                              SceneMenuJob::Result* result) {
         result->lists.resize(1);
+        // The menu lists what the whole stage holds.
+        if (context.reach) {
+            context.reach->add(std::vector<std::string>(1, std::string("/")));
+        }
         ScenePayload scene;
         SceneQueryPool::Lease lease;
         if (!SceneNodeAuthoring::borrowMenuScene(input, time, context, job, &scene, &lease)) {
@@ -741,7 +746,7 @@ USDProjectUV::refreshCameraMenu()
         result->unsearched = SceneNodeAuthoring::countMenuUnsearched(lease.getStage(), context);
     };
 
-    return _cameraMenuRefresh.start(this, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyCameraMenu(job); });
+    return _cameraMenuRefresh.start(this, context, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyCameraMenu(job); });
 }
 
 bool

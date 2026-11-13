@@ -156,8 +156,6 @@ private:
     std::list<Serialization::KnobSerialization> _unmatchedKnobs;
     KnobStringWPtr _primPath;
     KnobChoiceWPtr _camera;
-    // The camera last chosen, which picking the menu's note row leaves chosen. Main thread.
-    ChoiceOption _chosenCamera;
     KnobIntWPtr _formatSize;
     KnobDoubleWPtr _formatPar;
     KnobChoiceWPtr _conformPolicy;

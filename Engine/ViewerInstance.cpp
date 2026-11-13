@@ -78,6 +78,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -6450,8 +6451,15 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
 void
 ViewerInstance::setSceneLoadSet(const SceneLoadSetPtr& loadSet)
 {
-    std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
-    _imp->sceneLoadSet = loadSet;
+    bool changed;
+    {
+        std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+        changed = _imp->sceneLoadSet ? (!loadSet || (*_imp->sceneLoadSet != *loadSet)) : bool(loadSet);
+        _imp->sceneLoadSet = loadSet;
+    }
+    if (changed) {
+        SceneMenuRefresh::scheduleFollowLoadChanges();
+    }
 }
 
 SceneLoadSetPtr

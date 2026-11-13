@@ -54,6 +54,7 @@ USDRenderSettings::USDRenderSettings(NodePtr node)
     : NativeEffectBase(node)
     , _cameraMenuRefreshPending(false)
 {
+    _cameraMenuRefresh.setRerun([this]() { return refreshCameraMenu(); });
 }
 
 USDRenderSettings::~USDRenderSettings()
@@ -229,23 +230,6 @@ USDRenderSettings::knobChanged(KnobI* k,
 {
     KnobChoicePtr camera = _camera.lock();
     if (camera && (k == camera.get())) {
-        const ChoiceOption active = camera->getActiveEntry();
-        if (!isSceneUnsearchedOption(active.id)) {
-            _chosenCamera = active;
-        } else if (!_chosenCamera.id.empty()) {
-            // The note names no camera: the camera chosen before it stays chosen.
-            const std::vector<ChoiceOption> entries = camera->getEntries_mt_safe();
-            std::size_t i = 0;
-            while ((i < entries.size()) && (entries[i].id != _chosenCamera.id)) {
-                ++i;
-            }
-            if (i < entries.size()) {
-                camera->setValue((int)i);
-            } else {
-                camera->setActiveEntry(_chosenCamera);
-            }
-        }
-
         return true;
     }
 
@@ -308,6 +292,10 @@ USDRenderSettings::refreshCameraMenu()
     SceneMenuRefresh::WorkFunc work = [input, time, context](const SceneMenuJob& job,
                                                              SceneMenuJob::Result* result) {
         result->lists.resize(1);
+        // The menu lists what the whole stage holds.
+        if (context.reach) {
+            context.reach->add(std::vector<std::string>(1, std::string("/")));
+        }
         ScenePayload scene;
         SceneQueryPool::Lease lease;
         if (!SceneNodeAuthoring::borrowMenuScene(input, time, context, job, &scene, &lease)) {
@@ -324,7 +312,7 @@ USDRenderSettings::refreshCameraMenu()
         result->unsearched = SceneNodeAuthoring::countMenuUnsearched(lease.getStage(), context);
     };
 
-    return _cameraMenuRefresh.start(this, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyCameraMenu(job); });
+    return _cameraMenuRefresh.start(this, context, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyCameraMenu(job); });
 }
 
 bool

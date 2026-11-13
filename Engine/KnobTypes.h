@@ -768,6 +768,9 @@ public:
 
     int getNumEntries() const;
 
+    // Whether entry index is a disabled option, which the GUI shows but never lets the user pick.
+    bool isEntryDisabled(int index) const;
+
     /// Can this type be animated?
     /// ChoiceParam animation may not be quite perfect yet,
     /// @see Curve::getValueAt() for the animation code.

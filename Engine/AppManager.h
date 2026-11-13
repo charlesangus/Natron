@@ -100,6 +100,7 @@ void evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
                                             const std::function<std::size_t()>& getAccountedMemory,
                                             const std::function<bool()>& evictOnce);
 
+class CacheDeviceTier;
 class CacheDiskTier;
 class CacheHostTier;
 struct AppManagerPrivate;
@@ -463,6 +464,13 @@ public:
      * settings would not select. No render may be running.
      **/
     std::unique_ptr<GpuContext> swapGpuContextForTests(std::unique_ptr<GpuContext> context);
+
+    /**
+     * @brief The image cache's tier of the GPU context's device, made and attached to the cache the first time it is
+     * asked for once the device is ready. Null without a ready device or an image cache. The caller holds the runtime
+     * through GpuContext::holdRuntime() while it uses the tier.
+     **/
+    std::shared_ptr<CacheDeviceTier> getDeviceCacheTier() const;
 
     /**
      * @brief Overrides the mode, whatever its source, until the next Settings change.

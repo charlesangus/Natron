@@ -117,6 +117,10 @@ public:
     // Created once the settings are loaded; destroyed with the private data.
     std::unique_ptr<GpuContext> gpuContext;
 
+    // Declared after gpuContext, so that it goes first: its images return their buffers to the runtime's pool.
+    std::mutex deviceTierMutex;
+    CacheDeviceTierPtr deviceTier;
+
     //The idea here is to keep track of the number of threads launched by Natron (except the ones of the global thread pool of QtConcurrent)
     //So that we can properly have an estimation of how much the cores of the CPU are used.
     //This method has advantages and drawbacks:
@@ -238,6 +242,9 @@ public:
     void tearDownGL();
 
     void setViewerCacheTileSize();
+
+    // Detaches the device tier from the image cache and empties it, before the GPU context it belongs to goes.
+    void dropDeviceTier();
 
     void handleCommandLineArgs(int argc, char** argv);
     void handleCommandLineArgsW(int argc, wchar_t** argv);

@@ -81,12 +81,14 @@ costOf(const CacheEntryHeader& header)
 CacheDeviceEntry::CacheDeviceEntry(const ImageKey& key,
                                    const std::shared_ptr<GpuDeviceImage>& image,
                                    const CacheEntryHeaderPtr& header,
-                                   std::size_t bytes)
+                                   std::size_t bytes,
+                                   const std::function<void()>& holderEvict)
     : AbstractCacheEntryBase()
     , _key(key)
     , _image(image)
     , _header(header)
     , _bytes(bytes)
+    , _holderEvict(holderEvict)
 {
 }
 
@@ -268,22 +270,25 @@ bool
 CacheDeviceTier::worthDownloading(const CacheDeviceEntry& entry)
 {
     const double bytes = (double)entry.image()->layout().pixelBytes();
-    const double downloadNs = GpuTransferModel::session().transferMs(0., bytes) * 1e6;
+    double downloadNs = GpuTransferModel::session().transferMs(0., bytes) * 1e6;
+    if (!std::isfinite(downloadNs)) {
+        downloadNs = bytes / GpuTransferModel::kUncalibratedDownloadBytesPerSecond * 1e9;
+    }
 
-    // No rates price the download at infinity, so nothing is downloaded before a render set them.
-    return std::isfinite(downloadNs) && ((double)costOf(*entry.header()) > downloadNs);
+    return (double)costOf(*entry.header()) > downloadNs;
 }
 
 CacheDeviceEntryPtr
 CacheDeviceTier::insert(const ImageKey& key,
                         const std::shared_ptr<GpuDeviceImage>& image,
-                        const CacheEntryHeaderPtr& header)
+                        const CacheEntryHeaderPtr& header,
+                        const std::function<void()>& holderEvict)
 {
 #ifdef NATRON_HAVE_GPU
     if (!image || !header || !_runtime || _runtime->isLost() || !image->isResident()) {
         return CacheDeviceEntryPtr();
     }
-    const CacheDeviceEntryPtr entry = std::make_shared<CacheDeviceEntry>(key, image, header, image->bytes());
+    const CacheDeviceEntryPtr entry = std::make_shared<CacheDeviceEntry>(key, image, header, image->bytes(), holderEvict);
     header->lastUse.store(CacheEviction::nowNs());
     // Freed off the lock: the last reference to an image returns its buffer to the pool.
     std::list<CacheDeviceEntryPtr> replaced;
@@ -307,16 +312,23 @@ CacheDeviceTier::insert(const ImageKey& key,
         if (old->header() != header) {
             old->header()->residency.fetch_and(kNotOnDevice);
         }
-        old->image()->clearEvictable();
+        if (old->image() != image) {
+            letGo(*old);
+        }
     }
 
     const std::weak_ptr<CacheDeviceTier> weakTier = shared_from_this();
     const std::weak_ptr<CacheDeviceEntry> weakEntry = entry;
-    image->setCached([weakTier, weakEntry] {
-        const CacheDeviceTierPtr tier = weakTier.lock();
-        const CacheDeviceEntryPtr evicted = weakEntry.lock();
-        if (tier && evicted) {
-            (void)tier->demote(evicted);
+    image->setCached([weakTier, weakEntry, holderEvict] {
+        {
+            const CacheDeviceTierPtr tier = weakTier.lock();
+            const CacheDeviceEntryPtr evicted = weakEntry.lock();
+            if (tier && evicted) {
+                (void)tier->demote(evicted);
+            }
+        }
+        if (holderEvict) {
+            holderEvict();
         }
     },
                      scoreOf(*entry), header);
@@ -326,6 +338,7 @@ CacheDeviceTier::insert(const ImageKey& key,
     (void)key;
     (void)image;
     (void)header;
+    (void)holderEvict;
 
     return CacheDeviceEntryPtr();
 #endif
@@ -416,7 +429,7 @@ CacheDeviceTier::demote(const CacheEntryPtr& entry)
     }
     header.residency.fetch_and(kNotOnDevice);
     // A render that pinned the image between the test above and the move keeps its own reference.
-    device->image()->clearEvictable();
+    letGo(*device);
 
     return true;
 }
@@ -470,8 +483,15 @@ CacheDeviceTier::dropAll()
 }
 
 void
+CacheDeviceTier::setRuntimeHold(const std::function<std::shared_ptr<void>()>& hold)
+{
+    _hold = hold;
+}
+
+void
 CacheDeviceTier::clear()
 {
+    const std::shared_ptr<void> held = _hold ? _hold() : std::shared_ptr<void>();
     Table dropped;
     {
         std::lock_guard<std::mutex> k(_lock);
@@ -481,9 +501,23 @@ CacheDeviceTier::clear()
     for (const Table::value_type& bucket : dropped) {
         for (const CacheDeviceEntryPtr& entry : bucket.second) {
             entry->header()->residency.fetch_and(kNotOnDevice);
-            entry->image()->clearEvictable();
+            letGo(*entry);
         }
     }
+}
+
+void
+CacheDeviceTier::letGo(const CacheDeviceEntry& entry)
+{
+#ifdef NATRON_HAVE_GPU
+    if (entry.holderEvict()) {
+        entry.image()->setEvictable(entry.holderEvict());
+    } else {
+        entry.image()->clearEvictable();
+    }
+#else
+    (void)entry;
+#endif
 }
 
 void

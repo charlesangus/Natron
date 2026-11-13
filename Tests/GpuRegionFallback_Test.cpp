@@ -58,6 +58,7 @@
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
 #include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -80,6 +81,11 @@
 #include "Engine/RenderStats.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/CacheDeviceTier.h"
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -188,6 +194,7 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        setGpuStripOverridesForTests(0, 0);
         _scheduler->setRegionBody(_savedBody);
         appPTR->clearAllCaches();
         getApp()->getProject()->reset(false, true);
@@ -430,6 +437,103 @@ protected:
         ASSERT_EQ(1u, run.graph.regions.size());
         ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
         expectMatchesCpu(root, run);
+    }
+
+    // Runs regions with runGpuRegion, keeping a copy of the report of the last one.
+    std::shared_ptr<RenderScheduler::RegionReport> recordRegionReports()
+    {
+        std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
+        _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
+                                         const FrameGraph& graph,
+                                         int region,
+                                         const RenderScheduler::CpuFallbackLease& leaseCpu,
+                                         std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                         RenderScheduler::RegionReport* report) {
+            const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, leaseCpu, rootPlanes, report);
+            if (report) {
+                *last = *report;
+            }
+
+            return code;
+        });
+
+        return last;
+    }
+
+    // A CheckerBoard read by three Grades in a row, each of which caches its output.
+    bool makeCachedGradeChain(std::vector<NodePtr>* grades)
+    {
+        NodePtr previous = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+        if (!previous) {
+            return false;
+        }
+        for (int i = 0; i < 3; ++i) {
+            NodePtr grade = makeGrade(1.1 + 0.1 * i, 0.05);
+            if (!grade) {
+                return false;
+            }
+            KnobBoolPtr forceCaching = std::dynamic_pointer_cast<KnobBool>(grade->getKnobByName("forceCaching"));
+            if (!forceCaching) {
+                return false;
+            }
+            forceCaching->setValue(true);
+            connectNodes(previous, grade, 0, true);
+            grades->push_back(grade);
+            previous = grade;
+        }
+
+        return true;
+    }
+
+    // Renders the chain ending at grades as one region, leaving in graph the frame's graph as it was submitted.
+    bool renderAsOneRegion(const std::vector<NodePtr>& grades,
+                           FrameGraph* graph,
+                           std::string* error)
+    {
+        FrameRun run;
+        if (!prepareFrame(grades.back(), &run, error)) {
+            return false;
+        }
+        placeOnGpu(&run, grades);
+        if (run.graph.regions.size() != 1) {
+            *error = std::to_string(run.graph.regions.size()) + " regions instead of one";
+
+            return false;
+        }
+        *graph = run.graph;
+        if (!render(&run)) {
+            *error = "the frame did not complete";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // The key renderRoI looks the RGBA output of task up by.
+    static ImageKey outputKey(const FrameGraph::Task& task)
+    {
+        return task.key.node->getEffectInstance()->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, false /*draft*/, task.cacheMipmapLevel).forEntry(task.key.mipmapLevel, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    }
+
+    // How many members of the only region of graph the device tier holds the output of.
+    static int membersInDeviceTier(const FrameGraph& graph)
+    {
+#ifdef NATRON_HAVE_GPU
+        const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+        int found = 0;
+        for (int member : graph.regions.front().members) {
+            if (tier && tier->find(outputKey(graph.tasks[member]))) {
+                ++found;
+            }
+        }
+
+        return found;
+#else
+        (void)graph;
+
+        return 0;
+#endif
     }
 
     RenderScheduler* _scheduler;
@@ -717,3 +821,101 @@ TEST_F(GpuRegionFallbackTest, DeviceLossSurfacesOnTheFrameResult)
     EXPECT_TRUE(fallbacks[0].deviceLost);
     EXPECT_TRUE(fallbacks[0].reason.empty());
 }
+
+#ifdef NATRON_HAVE_GPU
+TEST_F(GpuRegionFallbackTest, RegionRunWholePublishesEveryAdmittedMemberToTheDeviceTier)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameGraph graph;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(grades, &graph, &error)) << error;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    ASSERT_EQ(0, report->strips);
+    ASSERT_EQ(3u, graph.regions.front().members.size());
+
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+    // Elsewhere the root's download leaves its buffer to the transfer queue family, where compute may not read it.
+    const gpu::GpuDevice& device = appPTR->getGpuContext()->runtime()->device();
+    const bool downloadsStayReadable = device.queueFamily(gpu::QueueKind::Download) == device.queueFamily(gpu::QueueKind::Compute);
+    int expected = 0;
+    for (int member : graph.regions.front().members) {
+        const FrameGraph::Task& task = graph.tasks[member];
+        const std::string name = task.key.node->getScriptName_mt_safe();
+        ASSERT_TRUE(task.sharesCachedOutput) << name;
+        ASSERT_FALSE(task.isIdentity) << name;
+        const CacheDeviceEntryPtr entry = tier->find(outputKey(task));
+        if ((task.key.node == grades.back()) && !downloadsStayReadable) {
+            EXPECT_FALSE(entry) << name;
+            continue;
+        }
+        ++expected;
+        ASSERT_TRUE(bool(entry)) << name;
+        EXPECT_GT(entry->header()->recomputeCostNs.load(), 0.f) << name;
+    }
+    EXPECT_EQ(expected, report->publishedToDevice);
+    EXPECT_GE(report->plannedPeakDeviceBytes, report->wholePeakDeviceBytes);
+    EXPECT_LE(report->peakDeviceBytes, report->plannedPeakDeviceBytes);
+}
+
+TEST_F(GpuRegionFallbackTest, RegionRunAsStripsPublishesNothing)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    // A storage buffer range well under one 96x64 RGBA float image.
+    setGpuStripOverridesForTests(16384, 0);
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameGraph graph;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(grades, &graph, &error)) << error;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    ASSERT_GT(report->strips, 0);
+
+    EXPECT_EQ(0, report->publishedToDevice);
+    EXPECT_EQ(0, membersInDeviceTier(graph));
+    EXPECT_EQ(0u, report->plannedPeakDeviceBytes);
+}
+
+TEST_F(GpuRegionFallbackTest, RegionRunWithoutHeadroomPublishesNothing)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameGraph graph;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(grades, &graph, &error)) << error;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    ASSERT_EQ(0, report->strips);
+    const unsigned long long wholePeak = report->wholePeakDeviceBytes;
+    ASSERT_GT(wholePeak, 0u);
+
+    // Without the cleared caches, the second frame would read the outputs the first one stored.
+    appPTR->clearAllCaches();
+    gpu::GpuBufferPool& pool = appPTR->getGpuContext()->runtime()->pool();
+    const std::uint64_t budget = pool.budget();
+    pool.setUserBudget(wholePeak);
+    std::string retryError;
+    const bool rendered = renderAsOneRegion(grades, &graph, &retryError);
+    pool.setUserBudget(budget);
+    ASSERT_TRUE(rendered) << retryError;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    ASSERT_EQ(0, report->strips);
+
+    EXPECT_EQ(wholePeak, report->wholePeakDeviceBytes);
+    EXPECT_EQ(0, report->publishedToDevice);
+    EXPECT_EQ(0, membersInDeviceTier(graph));
+    EXPECT_EQ(report->wholePeakDeviceBytes, report->plannedPeakDeviceBytes);
+    EXPECT_LE(report->peakDeviceBytes, report->plannedPeakDeviceBytes);
+}
+#endif // NATRON_HAVE_GPU

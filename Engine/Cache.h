@@ -36,6 +36,7 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -504,6 +505,8 @@ private:
     // threads at the end, whose entry destructions charge it until they are joined.
     mutable CacheHostTier _hostTier;
     std::shared_ptr<CacheDiskTier> _diskTier;
+    // A tier is attached once its device is ready, which can be during renders, so readers take a copy.
+    mutable std::mutex _deviceTiersMutex;
     std::vector<CacheDeviceTierPtr> _deviceTiers;
     // A promotion reads its file off every lock. One that began before a clear finished may have
     // read a file the clear removed, and must not land in RAM the clear emptied.
@@ -610,7 +613,7 @@ public:
     virtual ~Cache()
     {
         // Detaching waits for demotions in flight, which must not reach a host table being torn down.
-        for (const CacheDeviceTierPtr& tier : _deviceTiers) {
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
             tier->attachHost(NULL);
             tier->clear();
         }
@@ -878,20 +881,39 @@ public:
     }
 
     /**
-     * @brief Puts the tier of a device above the host tier, which receives its demotions. Call before any render.
+     * @brief Puts the tier of a device above the host tier, which receives its demotions.
      **/
     void addDeviceTier(const CacheDeviceTierPtr& tier)
     {
         if (!tier) {
             return;
         }
-        _deviceTiers.push_back(tier);
         tier->setNext(&_hostTier);
         tier->attachHost(this);
+        std::lock_guard<std::mutex> k(_deviceTiersMutex);
+        _deviceTiers.push_back(tier);
     }
 
-    const std::vector<CacheDeviceTierPtr>& deviceTiers() const
+    /**
+     * @brief Detaches the tier and empties it, which must happen while its runtime is alive.
+     **/
+    void removeDeviceTier(const CacheDeviceTierPtr& tier)
     {
+        if (!tier) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> k(_deviceTiersMutex);
+            _deviceTiers.erase(std::remove(_deviceTiers.begin(), _deviceTiers.end(), tier), _deviceTiers.end());
+        }
+        tier->attachHost(NULL);
+        tier->clear();
+    }
+
+    std::vector<CacheDeviceTierPtr> deviceTiers() const
+    {
+        std::lock_guard<std::mutex> k(_deviceTiersMutex);
+
         return _deviceTiers;
     }
 
@@ -1350,7 +1372,7 @@ public:
     {
         const ClearUnderWay clearing(*this);
         // After the generation moved, so that a demotion that took its entry out first is refused by the host.
-        for (const CacheDeviceTierPtr& tier : _deviceTiers) {
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
             tier->clear();
         }
         const PublishPaused paused(*this);
@@ -1414,7 +1436,9 @@ public:
      **/
     void clearInRam()
     {
-        for (const CacheDeviceTierPtr& tier : _deviceTiers) {
+        // A demotion from a device tier already under way must not land in the RAM this empties.
+        const ClearUnderWay clearing(*this);
+        for (const CacheDeviceTierPtr& tier : deviceTiers()) {
             tier->clear();
         }
         const PublishPaused paused(*this);

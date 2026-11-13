@@ -325,6 +325,10 @@ FrameStore::evictToRam(const TaskKey& key)
         // A layer already downloaded keeps the RAM image it has.
         const bool inRam = entry->layers.find(it->first) != entry->layers.end();
         ImagePtr image = inRam ? ImagePtr() : (it->second ? it->second->evictToRam() : ImagePtr());
+        if (!inRam && !image && it->second) {
+            // The device tier may hold the image too, and have moved its pixels to RAM already.
+            image = it->second->downloadToRam();
+        }
         if (!inRam && !image) {
             // A failed eviction leaves the device image valid.
             ++it;

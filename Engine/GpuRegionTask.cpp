@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <list>
 #include <map>
@@ -47,6 +48,9 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheDeviceTier.h"
+#include "Engine/CacheRetention.h"
+#include "Engine/CacheTier.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuContext.h"
 #include "Engine/GpuMemberTiming.h"
@@ -291,6 +295,10 @@ struct Slot {
     // The root, handed to the viewer on the device, unless the region runs as strips, which download it.
     bool deviceRoot = false;
 
+    // An admitted member's output, kept on the device to the end of a region run whole and then cached in the device
+    // tier instead of being released.
+    bool publish = false;
+
     bool released = false;
 };
 
@@ -390,6 +398,14 @@ public:
         const EffectInstance::RenderRoIRetCode code = runPlanned(rootPlanes);
         reportIntervals();
         reportTimesByTask();
+        if (code == EffectInstance::eRenderRoIRetCodeOk) {
+            publishToDeviceTier();
+        }
+        if (_report) {
+            _report->wholePeakDeviceBytes = _wholePeakBytes;
+            _report->plannedPeakDeviceBytes = _plannedPeakBytes;
+            _report->peakDeviceBytes = _peakDeviceBytes;
+        }
 
         return code;
     }
@@ -1262,7 +1278,7 @@ private:
     void releaseSlotsReadLastBy(int position)
     {
         for (Slot& slot : _slots) {
-            if (slot.released || slot.keep || slot.download || (slot.lastRead != position)) {
+            if (slot.released || slot.keep || slot.download || slot.publish || (slot.lastRead != position)) {
                 continue;
             }
             slot.released = true;
@@ -2105,7 +2121,9 @@ private:
             }
             slot.downloaded = slot.downloadImage;
             slot.downloadImage.reset();
-            slot.handle = gpu::GpuBufferHandle();
+            if (!slot.publish) {
+                slot.handle = gpu::GpuBufferHandle();
+            }
         }
         if (_report) {
             _report->downloadMs += msBetween(begin, Clock::now());
@@ -2211,10 +2229,82 @@ private:
                 if (slot.keep) {
                     slot.download = true;
                 }
+                slot.publish = false;
             }
+        } else {
+            choosePublished(graph, limits);
         }
 
         return true;
+    }
+
+    // The cost the device tier would first score the member's output by: its node's last measured one.
+    float expectedCostNs(const Member& member) const
+    {
+        const NodePtr& node = _graph.tasks[member.task].key.node;
+        const CacheRetentionSignalsPtr retention = node ? node->getRetentionSignals() : CacheRetentionSignalsPtr();
+        const float remembered = retention ? retention->rememberedCostNs() : 0.f;
+
+        return (remembered > 0.f) ? remembered : CacheEviction::kUnmeasuredCostNs;
+    }
+
+    /**
+     * @brief Marks for the device tier the outputs of the admitted members, the most expensive per byte first, while
+     * the run's peak with them kept to its end stays under the strip budget, and while the run's peak without them
+     * plus what they hold after it does too, so that a repeat of the run still fits beside them. An output another
+     * region or the viewer keeps on the device costs neither. A downloaded output is one only where download and
+     * compute share a queue family: elsewhere the download leaves the range to the transfer family, and compute may
+     * not read it again.
+     **/
+    void choosePublished(const GpuStripGraph& graph,
+                         const GpuStripLimits& limits)
+    {
+        GpuStripGraph held = graph;
+        std::vector<RectI> rects;
+        for (const GpuStripSlot& slot : held.images) {
+            rects.push_back(slot.bounds);
+        }
+        const std::uint64_t basePeak = gpuStripCost(held, rects, limits).peakBytes;
+        _wholePeakBytes = basePeak;
+        _plannedPeakBytes = basePeak;
+        if (!appPTR || !appPTR->getDeviceCacheTier()) {
+            return;
+        }
+        const gpu::GpuDevice& device = _runtime.device();
+        const bool downloadsStayReadable = device.queueFamily(gpu::QueueKind::Download) == device.queueFamily(gpu::QueueKind::Compute);
+        std::vector<std::pair<double, int>> candidates;
+        for (std::size_t m = 0; m < _members.size(); ++m) {
+            const Member& member = _members[m];
+            if (member.identity || (member.outSlot < 0)) {
+                continue;
+            }
+            const FrameGraph::Task& task = _graph.tasks[member.task];
+            const Slot& slot = _slots[member.outSlot];
+            if (!task.sharesCachedOutput || task.isIdentity || slot.pinned || (slot.producer != (int)m) || (slot.download && !downloadsStayReadable)) {
+                continue;
+            }
+            const double bytes = (double)std::max<std::size_t>(1, slot.layout.deviceBytes());
+            candidates.push_back(std::make_pair((double)expectedCostNs(member) / bytes, member.outSlot));
+        }
+        std::stable_sort(candidates.begin(), candidates.end(), [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
+            return a.first > b.first;
+        });
+
+        std::uint64_t keptAfter = 0;
+        for (const std::pair<double, int>& candidate : candidates) {
+            const Slot& slot = _slots[candidate.second];
+            const bool keptAnyway = slot.keep && !slot.download;
+            const std::uint64_t after = keptAnyway ? 0 : limits.allocationBytes(slot.layout.deviceBytes());
+            held.images[candidate.second].held = true;
+            const std::uint64_t peak = gpuStripCost(held, rects, limits).peakBytes;
+            if ((peak > limits.budgetBytes) || (basePeak + keptAfter + after > limits.budgetBytes)) {
+                held.images[candidate.second].held = false;
+                continue;
+            }
+            keptAfter += after;
+            _slots[candidate.second].publish = true;
+            _plannedPeakBytes = peak;
+        }
     }
 
     static std::size_t rowBytes(const Slot& slot)
@@ -2981,7 +3071,9 @@ private:
     // Each output task goes to the store as one entry holding all its planes.
     bool storeOutputs(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
-        std::vector<GpuDeviceImagePtr> deviceImages(_slots.size());
+        _deviceImages.assign(_slots.size(), GpuDeviceImagePtr());
+        _holderEvicts.assign(_slots.size(), std::function<void()>());
+        std::vector<GpuDeviceImagePtr>& deviceImages = _deviceImages;
         std::vector<std::pair<ImageLayerDesc, int>> deviceRoots;
 
         for (const FrameGraph::Region::Output& output : _region.outputs) {
@@ -2991,7 +3083,7 @@ private:
             }
             std::map<ImageLayerDesc, ImagePtr> ramPlanes;
             std::map<ImageLayerDesc, DeviceImagePtr> devicePlanes;
-            std::vector<GpuDeviceImagePtr> created;
+            std::vector<int> created;
             for (int m : _taskMembers[_position[output.task]]) {
                 const Member& member = _members[m];
                 if (member.outSlot < 0) {
@@ -3026,7 +3118,7 @@ private:
                     }
                     if (!deviceImages[s]) {
                         deviceImages[s] = image;
-                        created.push_back(image);
+                        created.push_back(s);
                     }
                 }
                 devicePlanes[member.plane] = image;
@@ -3048,15 +3140,17 @@ private:
             const std::weak_ptr<FrameRenderContext> weakContext = _context;
             const std::weak_ptr<RenderStats> weakStats = _stats;
             const FrameStore::TaskKey key = task.key;
-            for (const GpuDeviceImagePtr& image : created) {
-                image->setEvictable([weakContext, weakStats, key]() {
-                    const FrameRenderContextPtr context = weakContext.lock();
-                    if (context && (context->getStore().evictToRam(key) > 0)) {
-                        if (const RenderStatsPtr stats = weakStats.lock()) {
-                            stats->noteEviction();
-                        }
+            const std::function<void()> evictFromStore = [weakContext, weakStats, key]() {
+                const FrameRenderContextPtr context = weakContext.lock();
+                if (context && (context->getStore().evictToRam(key) > 0)) {
+                    if (const RenderStatsPtr stats = weakStats.lock()) {
+                        stats->noteEviction();
                     }
-                });
+                }
+            };
+            for (int s : created) {
+                deviceImages[s]->setEvictable(evictFromStore);
+                _holderEvicts[s] = evictFromStore;
             }
         }
 
@@ -3076,14 +3170,16 @@ private:
                 deviceImages[s] = image;
                 const std::weak_ptr<GpuDeviceImage> weakImage = image;
                 const std::weak_ptr<RenderStats> weakStats = _stats;
-                image->setEvictable([weakImage, weakStats]() {
+                const std::function<void()> evictForViewer = [weakImage, weakStats]() {
                     const GpuDeviceImagePtr held = weakImage.lock();
                     if (held && held->evictToRam()) {
                         if (const RenderStatsPtr stats = weakStats.lock()) {
                             stats->noteEviction();
                         }
                     }
-                });
+                };
+                image->setEvictable(evictForViewer);
+                _holderEvicts[s] = evictForViewer;
             }
             rootDevicePlanes[root.first] = image;
         }
@@ -3091,6 +3187,75 @@ private:
 
         return true;
     } // storeOutputs
+
+    /**
+     * @brief Caches the published slots in the device tier under the keys renderRoI looks the members' outputs up by,
+     * at the device time reportTimesByTask() gave their task. One the store or the viewer also holds keeps their way
+     * of evicting it, which runs once the tier has demoted or dropped it.
+     **/
+    void publishToDeviceTier()
+    {
+        const CacheDeviceTierPtr tier = appPTR ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
+        if (!tier || (tier->runtime() != &_runtime)) {
+            return;
+        }
+        const AbortableRenderInfoPtr& abortInfo = _context->getAbortInfo();
+        const std::uint64_t renderSequence = abortInfo ? abortInfo->getRenderSequence() : 0;
+        const bool timed = _report && (_report->memberNs.size() == _region.members.size());
+        int published = 0;
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            Slot& slot = _slots[s];
+            if (!slot.publish || (slot.producer < 0) || !slot.handle) {
+                continue;
+            }
+            const Member& member = _members[slot.producer];
+            const FrameGraph::Task& task = _graph.tasks[member.task];
+            const NodePtr& node = task.key.node;
+            const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+            if (!effect) {
+                continue;
+            }
+            GpuDeviceImagePtr image = (s < _deviceImages.size()) ? _deviceImages[s] : GpuDeviceImagePtr();
+            if (!image) {
+                image = GpuDeviceImage::create(_runtime, slot.handle, slot.layout, _stats);
+            }
+            if (!image) {
+                continue;
+            }
+            const ParallelRenderArgsPtr frameArgs = _context->getArgs(NodeCtxKey(node, task.key.contextKey));
+            const bool draft = node->isDraftModeUsed() && frameArgs && frameArgs->draftMode;
+            const ImageKey key = effect->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, draft, task.cacheMipmapLevel)
+                                     .forEntry(slot.layout.mipmapLevel, member.plane, eImageBitDepthFloat);
+
+            const CacheEntryHeaderPtr header = std::make_shared<CacheEntryHeader>();
+            header->key = std::make_shared<const ImageKey>(key);
+            header->bounds = slot.layout.bounds;
+            header->bitmap.initialize(slot.layout.bounds);
+            header->bitmap.setTo1();
+            const double area = (double)slot.layout.bounds.area();
+            const long long ownNs = timed ? _report->memberNs[_position[member.task]] : 0;
+            const CacheRetentionSignalsPtr retention = node->getRetentionSignals();
+            if (ownNs > 0) {
+                header->recomputeCostNs.store(CacheEviction::costAfterRender(0.f, (double)ownNs, area, area));
+                if (retention) {
+                    retention->rememberCost(header->recomputeCostNs.load());
+                }
+            } else {
+                // A device without timestamp queries measures nothing, and an entry costing nothing would be demoted
+                // as a drop and ranked below every other.
+                header->recomputeCostNs.store(expectedCostNs(member));
+            }
+            if (retention) {
+                CacheRetention::noteStored(*header, retention, renderSequence);
+            }
+            if (tier->insert(key, image, header, (s < _holderEvicts.size()) ? _holderEvicts[s] : std::function<void()>())) {
+                ++published;
+            }
+        }
+        if (_report) {
+            _report->publishedToDevice = published;
+        }
+    }
 
     // Region::members order, as RegionReport::memberNs is read: each task's planes are added up.
     void reportTimesByTask()
@@ -3279,6 +3444,14 @@ private:
     std::vector<TransferStamps> _transferStamps;
 
     std::size_t _peakDeviceBytes = 0;
+
+    // The peaks gpuStripCost() gives the run whole without and with its published slots held, 0 for one run as strips.
+    std::uint64_t _wholePeakBytes = 0;
+    std::uint64_t _plannedPeakBytes = 0;
+
+    // By slot: the device image storeOutputs() made of it, and what makes the store or the viewer holding it evict it.
+    std::vector<GpuDeviceImagePtr> _deviceImages;
+    std::vector<std::function<void()>> _holderEvicts;
     NodePtr _failedNode;
     std::string _failure;
     FailureKind _failureKind;

@@ -330,6 +330,15 @@ public:
         int strips = 0;
         int stripsInFlight = 0;
 
+        // The device bytes the plan of a region run whole expects at most without and with its outputs kept for the
+        // device tier, both 0 for one run as strips; and what the region's buffers held at most.
+        unsigned long long wholePeakDeviceBytes = 0;
+        unsigned long long plannedPeakDeviceBytes = 0;
+        unsigned long long peakDeviceBytes = 0;
+
+        // The member outputs the region left in the device tier.
+        int publishedToDevice = 0;
+
         // The region fits the device whole and was stripped anyway, to overlap its transfers with its compute.
         bool overlapStrips = false;
 

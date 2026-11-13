@@ -368,7 +368,7 @@ gpuStripCost(const GpuStripGraph& graph,
         const GpuStripSlot& out = graph.images[member.outSlot];
         bufferOf[member.outSlot] = acquire(bufferBytes(rects[member.outSlot], out.nComps));
         for (std::size_t s = 0; s < nSlots; ++s) {
-            if ((bufferOf[s] >= 0) && !graph.images[s].interior && (uses[s].lastRead == (int)i)) {
+            if ((bufferOf[s] >= 0) && !graph.images[s].interior && !graph.images[s].held && (uses[s].lastRead == (int)i)) {
                 spare[bufferOf[s]] = true;
                 bufferOf[s] = -1;
             }

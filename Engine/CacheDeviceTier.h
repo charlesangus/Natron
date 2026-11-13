@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -86,7 +87,8 @@ public:
     CacheDeviceEntry(const ImageKey& key,
                      const std::shared_ptr<GpuDeviceImage>& image,
                      const CacheEntryHeaderPtr& header,
-                     std::size_t bytes);
+                     std::size_t bytes,
+                     const std::function<void()>& holderEvict = std::function<void()>());
 
     const ImageKey& getKey() const
     {
@@ -101,6 +103,12 @@ public:
     const CacheEntryHeaderPtr& header() const
     {
         return _header;
+    }
+
+    // How another holder of the image evicts it, which the image gets back once the tier lets it go.
+    const std::function<void()>& holderEvict() const
+    {
+        return _holderEvict;
     }
 
     virtual TileCacheFilePtr allocTile(std::size_t* dataOffset) OVERRIDE FINAL;
@@ -128,6 +136,7 @@ private:
     const std::shared_ptr<GpuDeviceImage> _image;
     const CacheEntryHeaderPtr _header;
     const std::size_t _bytes;
+    const std::function<void()> _holderEvict;
 };
 
 typedef std::shared_ptr<CacheDeviceEntry> CacheDeviceEntryPtr;
@@ -174,16 +183,27 @@ public:
     /**
      * @brief Caches image under key, sharing header, and sets the header's device bit. Replaces an entry of the same
      * key. Null when the image does not hold its pixels on the device or the device is lost.
+     *
+     * holderEvict is the eviction of another holder of the image, such as the frame store, which the tier's own
+     * replaces: when the pool takes the buffer it runs after the tier demoted or dropped the entry, or alone once the
+     * tier no longer has it, so that the holder still gets its pixels in RAM and the buffer is freed.
      **/
     CacheDeviceEntryPtr insert(const ImageKey& key,
                                const std::shared_ptr<GpuDeviceImage>& image,
-                               const CacheEntryHeaderPtr& header);
+                               const CacheEntryHeaderPtr& header,
+                               const std::function<void()>& holderEvict = std::function<void()>());
 
     /**
      * @brief The entry of key, marked used. Null for an entry whose image was downloaded since it was inserted: pin()
      * refuses such pixels, so the entry leaves the table and its header loses the device bit.
      **/
     CacheDeviceEntryPtr find(const ImageKey& key);
+
+    /**
+     * @brief What clear() takes a runtime token from, for a caller such as a cache clear that holds none. Set before
+     * the tier is attached to a cache.
+     **/
+    void setRuntimeHold(const std::function<std::shared_ptr<void>()>& hold);
 
     // Drops every entry and clears their device bits.
     void clear();
@@ -212,6 +232,9 @@ private:
 
     bool moveToHost(const CacheDeviceEntry& entry);
 
+    // Off _lock, since it takes the image's mutex.
+    static void letGo(const CacheDeviceEntry& entry);
+
     gpu::GpuRuntime* const _runtime;
     std::atomic<std::size_t> _usedBytes;
 
@@ -220,6 +243,8 @@ private:
 
     std::shared_mutex _hostMutex;
     const CacheDeviceHost* _host;
+
+    std::function<std::shared_ptr<void>()> _hold;
 };
 
 typedef std::shared_ptr<CacheDeviceTier> CacheDeviceTierPtr;

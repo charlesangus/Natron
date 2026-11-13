@@ -37,6 +37,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <system_error>
@@ -365,10 +366,32 @@ tileDirectory(const std::string& root,
 }
 
 namespace {
-    // Locks directory's lock file, made with the directory when missing. -1 when another node or
-    // process holds it, or it cannot be made.
+    /**
+     * The directories this process holds. Where flock() is emulated by POSIX record locks, as on
+     * NFS, a process never conflicts with its own locks and closing any descriptor of the file
+     * drops them all, so flock() alone cannot keep two holders of one process apart.
+     **/
+    std::mutex heldMutex;
+    std::set<std::string> heldDirectories;
+
+    bool
+    holdInProcess(const std::string& directory)
+    {
+        std::lock_guard<std::mutex> lock(heldMutex);
+
+        return heldDirectories.insert(directory).second;
+    }
+
+    void
+    releaseInProcess(const std::string& directory)
+    {
+        std::lock_guard<std::mutex> lock(heldMutex);
+
+        heldDirectories.erase(directory);
+    }
+
     int
-    lockDirectory(const std::string& directory)
+    lockDirectoryFile(const std::string& directory)
     {
         const std::string path = directory + "/.lock";
 
@@ -398,6 +421,44 @@ namespace {
         }
 
         return -1;
+    }
+
+    // Locks directory's lock file, made with the directory when missing, and holds directory in
+    // this process until unlockDirectory(). -1 when another node or process holds it, or it cannot
+    // be made.
+    int
+    lockDirectory(const std::string& directory)
+    {
+        if (!holdInProcess(directory)) {
+            return -1;
+        }
+        const int fd = lockDirectoryFile(directory);
+        if (fd < 0) {
+            releaseInProcess(directory);
+        }
+
+        return fd;
+    }
+
+    void
+    unlockDirectory(const std::string& directory,
+                    int fd)
+    {
+        if (fd < 0) {
+            return;
+        }
+        ::close(fd);
+        releaseInProcess(directory);
+    }
+
+    // pruneDeadProcessDirectories() judges a shared directory's age by its modification time,
+    // which reading the tiles in it never changes.
+    void
+    touchDirectory(const std::string& directory)
+    {
+        std::error_code ec;
+
+        std::filesystem::last_write_time(directory, std::filesystem::file_time_type::clock::now(), ec);
     }
 
     // Names that pruneDeadProcessDirectories() takes for the process's own, so that what a process
@@ -442,9 +503,7 @@ TileDirectoryClaim::TileDirectoryClaim(const std::string& path,
 
 TileDirectoryClaim::~TileDirectoryClaim()
 {
-    if (_lockFd >= 0) {
-        ::close(_lockFd);
-    }
+    unlockDirectory(_path, _lockFd);
 }
 
 std::shared_ptr<TileDirectoryClaim>
@@ -456,6 +515,8 @@ claimTileDirectory(const std::string& root,
         const std::string path = tileDirectory(root, nodeId, 0);
         const int fd = lockDirectory(path);
         if (fd >= 0) {
+            touchDirectory(path);
+
             return std::make_shared<TileDirectoryClaim>(path, true, fd);
         }
     }
@@ -466,6 +527,8 @@ claimTileDirectory(const std::string& root,
         const std::string path = tileDirectory(root, (n == 0) ? nodeId : (nodeId + "_" + std::to_string(n)), pid);
         const int fd = lockDirectory(path);
         if (fd >= 0) {
+            touchDirectory(path);
+
             return std::make_shared<TileDirectoryClaim>(path, false, fd);
         }
     }
@@ -528,7 +591,7 @@ pruneDeadProcessDirectories(const std::string& root,
         const std::filesystem::path aside = asideName(path);
         std::error_code renameError;
         std::filesystem::rename(path, aside, renameError);
-        ::close(fd);
+        unlockDirectory(path.string(), fd);
         if (!renameError) {
             std::filesystem::remove_all(aside, ec);
         }

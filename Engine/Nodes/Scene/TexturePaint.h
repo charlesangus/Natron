@@ -328,12 +328,14 @@ public:
      * @brief Puts strokes, a render of a session's strokes over base, in *buffer: the channels
      * not selected stay base's, and a texel is touched where a selected channel differs. Null
      * strokes, a render with nothing in it, leave base in *buffer with nothing touched. Takes
-     * base's contents.
+     * base's contents. False with *error set, *buffer unchanged, when strokes and base differ in
+     * size.
      **/
-    static void layStrokesOverBase(std::vector<float>& base,
+    static bool layStrokesOverBase(std::vector<float>& base,
                                    const std::vector<float>* strokes,
                                    const bool selected[4],
-                                   SessionBuffer* buffer);
+                                   SessionBuffer* buffer,
+                                   std::string* error) WARN_UNUSED_RETURN;
 
     /**
      * @brief The planes the node outputs at time and view: the colour plane, then the Layer
@@ -399,6 +401,33 @@ public:
      * the baker thread, or a bake's own worker, touches one.
      **/
     struct BakeOutputFiles {
+        /**
+         * @brief A file's device, inode, size and modification time. Renames and hard links,
+         * the only ways the node moves a file it wrote, change none of them; a file rewritten in
+         * place keeps its inode but not its modification time.
+         **/
+        struct FileIdentity {
+            std::uint64_t device = 0;
+            std::uint64_t inode = 0;
+            std::int64_t size = -1;
+            std::int64_t mtimeSeconds = 0;
+            std::int64_t mtimeNanoseconds = 0;
+            bool known = false;
+
+            bool operator==(const FileIdentity& other) const
+            {
+                return (known == other.known) && (device == other.device) && (inode == other.inode) && (size == other.size) && (mtimeSeconds == other.mtimeSeconds) && (mtimeNanoseconds == other.mtimeNanoseconds);
+            }
+
+            bool operator!=(const FileIdentity& other) const
+            {
+                return !(*this == other);
+            }
+
+            // The identity of the file at path, or an unknown one when it cannot be read.
+            static FileIdentity of(const std::string& path);
+        };
+
         struct Entry {
             std::string target;
             // What target held before the bake, while it is not at target.
@@ -406,10 +435,9 @@ public:
             // What the bake wrote, while the bake is undone.
             std::string stash;
             bool hasBackup = false;
-            // The device and inode of the file the bake wrote, which every swap moves by rename:
-            // a target that no longer has them was written by something else since.
-            std::uint64_t writtenDevice = 0;
-            std::uint64_t writtenInode = 0;
+            // The file the bake wrote, which every swap moves by rename: a target that no longer
+            // matches it was written by something else since.
+            FileIdentity written;
         };
         std::vector<Entry> entries;
         std::unordered_set<std::string> targets;
@@ -417,6 +445,8 @@ public:
         std::set<std::string> directories;
         std::string token;
         bool undone = false;
+        // Whether every entry's written identity is recorded.
+        bool sealed = false;
     };
 
     /**
@@ -428,8 +458,18 @@ public:
                                  const std::string& target,
                                  std::string* error) WARN_UNUSED_RETURN;
 
-    // Puts every target of *files back as it was before the bake, and deletes the backups.
+    /**
+     * @brief Puts every target of *files back as it was before the bake, and deletes the backups.
+     * Once *files is sealed, a target that is no longer the file the bake wrote is left as it is.
+     **/
     static void rollBackBakeOutputFiles(BakeOutputFiles* files);
+
+    /**
+     * @brief rollBackBakeOutputFiles() on a thread of its own, for a Bake Output whose completion
+     * was dropped, bumping *epoch before and after; returns at once.
+     **/
+    static void rollBackBakeOutputFilesDetached(const std::shared_ptr<BakeOutputFiles>& files,
+                                                const std::shared_ptr<std::atomic<std::uint64_t>>& epoch);
 
     // Records the identity of each file the bake wrote, once it has written them all.
     static void sealBakeOutputFiles(BakeOutputFiles* files);
@@ -662,14 +702,20 @@ private:
     // The key each view last asked for, so that one view's tiles do not evict another's.
     std::map<int, U64> _liveTileKeys;
     // Bumped by undo, redo and a Bake Output that is rolled back, so that no tile composed before
-    // over the files they changed is used again.
-    std::atomic<std::uint64_t> _tileEpoch;
+    // over the files they changed is used again. Shared with the threads that roll back a Bake
+    // Output whose completion was dropped, which must not keep the node alive.
+    const std::shared_ptr<std::atomic<std::uint64_t>> _tileEpoch;
     mutable std::mutex _tileDirectoryMutex;
     // The directory getTileDirectory() names, held until the node's cache id or the project's
     // saved state changes, and deleted with the node unless others can reuse it.
     mutable std::shared_ptr<TexturePaintCache::TileDirectoryClaim> _tileClaim;
     mutable std::string _tileClaimId;
     mutable bool _tileClaimSaved = false;
+    // The cache id and saved state no directory could be claimed for, so that every tile read
+    // does not try again.
+    mutable bool _tileClaimFailed = false;
+    mutable std::string _tileClaimFailedId;
+    mutable bool _tileClaimFailedSaved = false;
     mutable std::mutex _stampsMutex;
     mutable bool _stampsValid = false;
     mutable U64 _stampsSignature = 0;

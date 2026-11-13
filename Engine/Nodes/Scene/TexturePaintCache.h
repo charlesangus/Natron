@@ -132,8 +132,14 @@ std::string tileDirectory(const std::string& root,
                           long pid) WARN_UNUSED_RETURN;
 
 /**
- * @brief A tile directory held by one node of one process, by a lock on a file in it, so that no
- * other node or process uses or prunes it while it is held. Releasing it deletes nothing.
+ * @brief A tile directory held by one node of one process, so that no other node or process uses
+ * or prunes it while it is held. Releasing it deletes nothing.
+ *
+ * Within a process the directory is held in a registry of its own. Across processes it is held
+ * by flock() on a file in it, which keeps the processes of one host apart. Across hosts sharing
+ * the cache, exclusion holds only where the mount makes that lock one the server shares: NFS
+ * does, by POSIX record locks, unless mounted with nolock or local_lock; some other network file
+ * systems never do.
  **/
 class TileDirectoryClaim {
 public:
@@ -157,7 +163,8 @@ private:
 /**
  * @brief Claims the directory tileDirectory() names for nodeId under root: with shared, the one
  * any process names, when no other node or process holds it, else, and without shared, one of
- * this process alone that nothing else holds. Null when no directory can be made.
+ * this process alone that nothing else holds. The directory's modification time is set to now.
+ * Null when no directory can be made.
  **/
 std::shared_ptr<TileDirectoryClaim> claimTileDirectory(const std::string& root,
                                                        const std::string& nodeId,
@@ -171,7 +178,8 @@ void removeTileDirectory(std::shared_ptr<TileDirectoryClaim> claim);
 
 /**
  * @brief Deletes the directories under root that tileDirectory() named for a process that no
- * longer runs, and the shared ones nothing holds that have not changed for olderThanDays days.
+ * longer runs, and the shared ones nothing holds that have been neither changed nor claimed for
+ * olderThanDays days.
  **/
 void pruneDeadProcessDirectories(const std::string& root,
                                  int olderThanDays = 30);

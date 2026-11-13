@@ -127,20 +127,30 @@ renameInPath(const std::string& value,
     return out + value.substr(start);
 }
 
-// Puts suffix at the end of the first dot-separated part of path's file name.
+/**
+ * Puts suffix at the end of the first dot-separated part of path's file name, in place of the
+ * first of replaced that part already ends with, so that a paste of a paste does not pile up
+ * suffixes.
+ **/
 std::string
 suffixFileName(const std::string& path,
-               const std::string& suffix)
+               const std::string& suffix,
+               const std::vector<std::string>& replaced)
 {
     const std::size_t slash = path.find_last_of('/');
     const std::size_t nameStart = (slash == std::string::npos) ? 0 : slash + 1;
     const std::size_t dot = path.find('.', nameStart);
+    const std::size_t stemEnd = (dot == std::string::npos) ? path.size() : dot;
+    std::size_t cut = stemEnd;
 
-    if (dot == std::string::npos) {
-        return path + suffix;
+    for (const std::string& old : replaced) {
+        if (!old.empty() && (stemEnd - nameStart > old.size()) && (path.compare(stemEnd - old.size(), old.size(), old) == 0)) {
+            cut = stemEnd - old.size();
+            break;
+        }
     }
 
-    return path.substr(0, dot) + suffix + path.substr(dot);
+    return path.substr(0, cut) + suffix + path.substr(stemEnd);
 }
 
 std::vector<ChoiceOption>
@@ -333,7 +343,7 @@ planePurpose(const ImageLayerDesc& plane)
 
 TexturePaint::TexturePaint(NodePtr node)
     : NativeEffectBase(node)
-    , _tileEpoch(0)
+    , _tileEpoch(std::make_shared<std::atomic<std::uint64_t>>(0))
     , _sessionRenders(0)
 {
 }
@@ -636,14 +646,21 @@ TexturePaint::onEffectCreated(bool /*mayCreateFileDialog*/,
         const std::string to = getNode()->getScriptName_mt_safe();
         std::string qualified = getNode()->getFullyQualifiedName();
         std::replace(qualified.begin(), qualified.end(), '.', '_');
+        // The suffix a paste of the source gave it, when the source was pasted into this group.
+        const std::string group = qualified.substr(0, qualified.size() - std::min(qualified.size(), to.size()));
+        const std::vector<std::string> sourceSuffixes = { "_" + group + from, "_" + from };
         for (const KnobOutputFilePtr& knob : { _bakeInputsPath.lock(), _bakeOutputPath.lock() }) {
             if (!knob) {
                 continue;
             }
             const std::string value = knob->getValue();
+            // An empty path names none of the source's files.
+            if (value.empty()) {
+                continue;
+            }
             std::string renamed = renameInPath(value, from, to);
             if (renamed == value) {
-                renamed = suffixFileName(value, "_" + qualified);
+                renamed = suffixFileName(value, "_" + qualified, sourceSuffixes);
             }
             if (renamed != value) {
                 knob->setValue(renamed);
@@ -810,7 +827,7 @@ TexturePaint::getBakedFilesDigest() const
     for (const KnobIPtr& knob : bakeKnobs) {
         signature.appendU64(knob ? knob->getContentHash() : 0);
     }
-    signature.appendU64(_tileEpoch.load());
+    signature.appendU64(_tileEpoch->load());
     const U64 current = signature.finalize();
     {
         std::lock_guard<std::mutex> lock(_stampsMutex);
@@ -848,7 +865,7 @@ TexturePaint::getTileCacheKey(double time,
     if (getTextureMode() != eTextureModeAnimated) {
         hasher.appendDouble(getTextureTime(time));
     }
-    hasher.appendU64(_tileEpoch.load());
+    hasher.appendU64(_tileEpoch->load());
     RotoCurveContextPtr context = getNode()->getCurveContext();
     hasher.appendU64(context ? context->getContentHash() : 0);
     const KnobIPtr knobs[] = {
@@ -1073,33 +1090,46 @@ std::string
 TexturePaint::getTileDirectory() const
 {
     const std::string root = appPTR->getDiskCacheLocation().toStdString();
-    static std::once_flag pruned;
-    std::call_once(pruned, [root]() {
-        std::thread([root]() {
-            TexturePaintCache::pruneDeadProcessDirectories(root);
-        }).detach();
-    });
     AppInstancePtr app = getApp();
     const bool saved = app && app->getProject() && app->getProject()->hasProjectBeenSavedByUser();
     const NodePtr node = getNode();
     const std::string id = node ? node->getCacheID() : std::string();
     std::shared_ptr<TexturePaintCache::TileDirectoryClaim> previous;
     std::string directory;
+    bool claimed = false;
     {
         std::lock_guard<std::mutex> lock(_tileDirectoryMutex);
-        if (!_tileClaim || (_tileClaimId != id) || (_tileClaimSaved != saved)) {
+        const bool current = _tileClaim && (_tileClaimId == id) && (_tileClaimSaved == saved);
+        const bool failed = _tileClaimFailed && (_tileClaimFailedId == id) && (_tileClaimFailedSaved == saved);
+        if (!current && !failed) {
             std::shared_ptr<TexturePaintCache::TileDirectoryClaim> claim = TexturePaintCache::claimTileDirectory(root, id, saved);
             if (claim) {
                 previous.swap(_tileClaim);
                 _tileClaim = claim;
                 _tileClaimId = id;
                 _tileClaimSaved = saved;
+                _tileClaimFailed = false;
+                claimed = true;
+            } else {
+                _tileClaimFailed = true;
+                _tileClaimFailedId = id;
+                _tileClaimFailedSaved = saved;
             }
         }
-        directory = _tileClaim ? _tileClaim->getPath() : TexturePaintCache::tileDirectory(root, id, (long)::getpid());
+        const bool held = _tileClaim && (_tileClaimId == id) && (_tileClaimSaved == saved);
+        directory = held ? _tileClaim->getPath() : TexturePaintCache::tileDirectory(root, id, (long)::getpid());
     }
     if (previous && !previous->isShared()) {
         TexturePaintCache::removeTileDirectory(std::move(previous));
+    }
+    // After a claim, so that the prune never takes this process's own directory for an idle one.
+    if (claimed) {
+        static std::once_flag pruned;
+        std::call_once(pruned, [root]() {
+            std::thread([root]() {
+                TexturePaintCache::pruneDeadProcessDirectories(root);
+            }).detach();
+        });
     }
 
     return directory;
@@ -1363,7 +1393,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                 }
             }
         }
-    } rollBack = { run.undoFiles.get(), &_tileEpoch, true };
+    } rollBack = { run.undoFiles.get(), _tileEpoch.get(), true };
     InputScene scene;
     if (!openInputScene(run.input, run.time, run.view, run.fps, &scene, error)) {
         return false;
@@ -1529,7 +1559,7 @@ TexturePaint::restoreBakeOutputState(const BakeOutputState& state)
     }
     // Tiles composed over the undone bake's files must not be used again, whatever their key;
     // the next tile built deletes them.
-    ++_tileEpoch;
+    ++*_tileEpoch;
     syncSessionViews();
 }
 
@@ -1546,7 +1576,7 @@ TexturePaint::reapplyBakeOutputState(const BakeOutputState& state)
     if (record) {
         record->setValue(state.bakedRecord);
     }
-    ++_tileEpoch;
+    ++*_tileEpoch;
     syncSessionViews();
 }
 
@@ -1618,22 +1648,6 @@ keepFile(const std::string& from,
     return !ec;
 }
 
-bool
-fileIdentity(const std::string& path,
-             std::uint64_t* device,
-             std::uint64_t* inode)
-{
-    struct stat info;
-
-    if (::stat(path.c_str(), &info) != 0) {
-        return false;
-    }
-    *device = (std::uint64_t)info.st_dev;
-    *inode = (std::uint64_t)info.st_ino;
-
-    return true;
-}
-
 // The file moves of one swap, so that a failure part way through can put back what moved.
 class SwapJournal {
 public:
@@ -1701,6 +1715,25 @@ evictBakeTargets(const TexturePaint::BakeOutputFiles& files)
 }
 } // anon namespace
 
+TexturePaint::BakeOutputFiles::FileIdentity
+TexturePaint::BakeOutputFiles::FileIdentity::of(const std::string& path)
+{
+    FileIdentity identity;
+    struct stat info;
+
+    if (::stat(path.c_str(), &info) != 0) {
+        return identity;
+    }
+    identity.device = (std::uint64_t)info.st_dev;
+    identity.inode = (std::uint64_t)info.st_ino;
+    identity.size = (std::int64_t)info.st_size;
+    identity.mtimeSeconds = (std::int64_t)info.st_mtim.tv_sec;
+    identity.mtimeNanoseconds = (std::int64_t)info.st_mtim.tv_nsec;
+    identity.known = true;
+
+    return identity;
+}
+
 bool
 TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
                                const std::string& target,
@@ -1748,12 +1781,10 @@ void
 TexturePaint::sealBakeOutputFiles(BakeOutputFiles* files)
 {
     for (BakeOutputFiles::Entry& entry : files->entries) {
-        if (!fileIdentity(entry.target, &entry.writtenDevice, &entry.writtenInode)) {
-            entry.writtenDevice = 0;
-            entry.writtenInode = 0;
-        }
+        entry.written = BakeOutputFiles::FileIdentity::of(entry.target);
     }
     files->undone = false;
+    files->sealed = true;
 }
 
 void
@@ -1761,6 +1792,9 @@ TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files)
 {
     for (std::vector<BakeOutputFiles::Entry>::reverse_iterator it = files->entries.rbegin(); it != files->entries.rend(); ++it) {
         std::error_code ec;
+        if (files->sealed && (BakeOutputFiles::FileIdentity::of(it->target) != it->written)) {
+            continue;
+        }
         if (it->hasBackup) {
             moveFile(it->backup, it->target, ec);
         } else {
@@ -1772,6 +1806,23 @@ TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files)
     files->entries.clear();
     files->targets.clear();
     files->directories.clear();
+}
+
+void
+TexturePaint::rollBackBakeOutputFilesDetached(const std::shared_ptr<BakeOutputFiles>& files,
+                                              const std::shared_ptr<std::atomic<std::uint64_t>>& epoch)
+{
+    if (!files || !epoch) {
+        return;
+    }
+    ++*epoch;
+    // Thousands of files for an Animated output, maybe on a network file system: never on the
+    // main thread.
+    std::thread([files, epoch]() {
+        rollBackBakeOutputFiles(files.get());
+        // Tiles composed while the files were going back may have read the bake's.
+        ++*epoch;
+    }).detach();
 }
 
 bool
@@ -1788,9 +1839,8 @@ TexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
         // The bake's own files only: a later bake, or anything else, may have written the targets
         // since, and moving those away would lose them.
         for (const BakeOutputFiles::Entry& entry : files->entries) {
-            std::uint64_t device = 0;
-            std::uint64_t inode = 0;
-            if (fileIdentity(entry.target, &device, &inode) && ((device != entry.writtenDevice) || (inode != entry.writtenInode))) {
+            const BakeOutputFiles::FileIdentity current = BakeOutputFiles::FileIdentity::of(entry.target);
+            if (current.known && (current != entry.written)) {
                 *error = tr("%1 was written again after the bake, so the bake cannot be undone.").arg(QString::fromStdString(entry.target)).toStdString();
 
                 return false;
@@ -2902,22 +2952,19 @@ TexturePaint::enqueueBakeOutput(double time,
     // no record names and no undo step owns: they are put back as they were.
     struct Owner {
         std::shared_ptr<BakeOutputFiles> files;
-        std::weak_ptr<TexturePaint> node;
+        std::shared_ptr<std::atomic<std::uint64_t>> epoch;
         bool adopted = false;
         ~Owner()
         {
             if (adopted || !files || files->entries.empty()) {
                 return;
             }
-            rollBackBakeOutputFiles(files.get());
-            if (const std::shared_ptr<TexturePaint> self = node.lock()) {
-                ++self->_tileEpoch;
-            }
+            rollBackBakeOutputFilesDetached(files, epoch);
         }
     };
     std::shared_ptr<Owner> owner = std::make_shared<Owner>();
     owner->files = run->undoFiles;
-    owner->node = weakSelf();
+    owner->epoch = _tileEpoch;
     std::shared_ptr<std::string> failure = std::make_shared<std::string>();
     TexturePaintBaker::Bake bake;
     bake.label = tr("Baking output");
@@ -3232,24 +3279,29 @@ TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
             selected[c] = exists && (std::find(channels.begin(), channels.end(), names[(std::size_t)c]) != channels.end());
         }
     }
-    layStrokesOverBase(base, strokesEmpty ? NULL : &strokes, selected, buffer);
 
-    return true;
+    return layStrokesOverBase(base, strokesEmpty ? NULL : &strokes, selected, buffer, error);
 } // TexturePaint::renderSessionBufferFrom
 
-void
+bool
 TexturePaint::layStrokesOverBase(std::vector<float>& base,
                                  const std::vector<float>* strokes,
                                  const bool selected[4],
-                                 SessionBuffer* buffer)
+                                 SessionBuffer* buffer,
+                                 std::string* error)
 {
+    if (strokes && (strokes->size() != base.size())) {
+        *error = tr("The session's strokes rendered %1 values where its view rendered %2.").arg((qulonglong)strokes->size()).arg((qulonglong)base.size()).toStdString();
+
+        return false;
+    }
     const std::size_t count = base.size() / 4;
 
     buffer->touched.assign(count, 0);
-    if (!strokes || (strokes->size() != base.size())) {
+    if (!strokes) {
         buffer->rgba.swap(base);
 
-        return;
+        return true;
     }
     buffer->rgba = *strokes;
     for (std::size_t i = 0; i < count; ++i) {
@@ -3263,6 +3315,8 @@ TexturePaint::layStrokesOverBase(std::vector<float>& base,
             }
         }
     }
+
+    return true;
 }
 
 std::list<RotoLayerPtr>

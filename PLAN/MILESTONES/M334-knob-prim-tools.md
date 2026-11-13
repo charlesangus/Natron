@@ -32,7 +32,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
 
 ## Phase 334.1: On the knob
 
-- [ ] M334.P1.T1 — Selection menu on prim knobs
+- [x] M334.P1.T1 — Selection menu on prim knobs
   - files: `Gui/KnobGuiString.{h,cpp}`, `Gui/SceneSelectionActions.{h,cpp}`, `Tests/gui/scene_knob_tools.py`
   - approach: a small menu button on flagged knobs. Replace, Add and Remove take the current viewer selection and write one undo step. Select Matches evaluates the knob through `PrimSelector` and sets the selection set in viewer and panel. Share the write path with `dropPrimPaths`.
   - verify: GUI script on USDPrune — Add appends, Remove takes out, Replace swaps, each undoable; Select Matches on `/a/*` highlights those rows.
@@ -59,3 +59,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
   - size: L
 
 **Verification gate:** release gate green; GUI scripts pass under Xvfb; on one USDPrune, drag, each menu action, popup, armed pick and Apply To Node all round-trip through Undo; screenshots of the menu, popup and armed state shared before sign-off; accepted from the UAT AppImage.
+
+## Decisions
+
+- 2026-11-13 — P1.T1 implemented (d2f484280), unbuilt until the phase build. Select Matches uses `SceneOps::UnloadedSearch` on input 0, which loads payloads privately, so it searches everything and has no "unsearched" branches to report; matches under payloads the viewer hasn't loaded are selected in the viewer but have no panel rows.

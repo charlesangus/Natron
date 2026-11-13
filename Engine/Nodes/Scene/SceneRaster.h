@@ -30,6 +30,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -137,6 +138,9 @@ struct BakeArgs {
     int height = 0;
     // The UDIM tile the texture covers: tile 1001 + u + 10 * v spans [u, u + 1] x [v, v + 1].
     int udimTile = 1001;
+    // A second texture coordinate primvar, as a material's primvar reader names it, whose value at
+    // each texel BakeBuffers::readerSt holds; empty to skip it.
+    PXR_NS::TfToken readerStName;
 };
 
 struct BakeBuffers {
@@ -149,19 +153,36 @@ struct BakeBuffers {
     // The unit world-space normal of the face a covered texel lies on, pointing out of the mesh's
     // front side (its orientation, through the world transform); (0, 0, 0) where not covered.
     std::vector<PXR_NS::GfVec3f> worldNormal;
+    // Only when BakeArgs::readerStName was set: that primvar's value where a covered texel lies;
+    // (0, 0) where not covered or on a face the primvar has no value for.
+    std::vector<PXR_NS::GfVec2f> readerSt;
 };
 
 /**
  * @brief Rasterizes the mesh at args.primPath in its texture space: for each texel of the UDIM
  * tile, the world position and normal of the point the texel maps to. The primvar may be
  * vertex, varying, faceVarying or uniform, indexed or not. Where UV faces overlap, the later face
- * wins. False, with *errorMessage naming the prim, when the prim is not a mesh, the primvar is
- * missing or not 2D, its interpolation is constant, or the tile or size is invalid.
+ * wins. False, with *errorMessage naming the prim, when the prim is not a mesh, the primvar, or
+ * args.readerStName when set, is missing or not 2D, its interpolation is constant, or the tile or
+ * size is invalid.
  **/
 bool bakeUV(const PXR_NS::UsdStageRefPtr& stage,
             const BakeArgs& args,
             BakeBuffers* buffers,
             std::string* errorMessage) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Inserts into *tiles every UDIM tile a face of the mesh at primPath covers some area of,
+ * by the texture coordinate primvar stName (with or without its "primvars:" namespace). Faces
+ * outside the tile grid, u below 0 or from 10 on, or v below 0, are left out. False, with
+ * *errorMessage naming the prim, on bakeUV's errors about the mesh and the primvar.
+ **/
+bool udimTiles(const PXR_NS::UsdStageRefPtr& stage,
+               const PXR_NS::SdfPath& primPath,
+               const PXR_NS::TfToken& stName,
+               PXR_NS::UsdTimeCode time,
+               std::set<int>* tiles,
+               std::string* errorMessage) WARN_UNUSED_RETURN;
 } // namespace SceneRaster
 
 NATRON_NAMESPACE_EXIT

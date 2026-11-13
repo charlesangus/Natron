@@ -41,6 +41,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
+#include "Engine/Nodes/Scene/MaterialBake.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/TextureProjection.h"
@@ -270,6 +271,13 @@ composeTile(const TileArgs& args,
                 overlaps->push_back(MeshPair(args.meshes[(std::size_t)pair.first], args.meshes[(std::size_t)pair.second]));
             }
         }
+    }
+    if (!args.basePath.empty()) {
+        std::vector<float> base;
+        if (!MaterialBake::readBaseTile(args.basePath, args.size, &base, 0, error)) {
+            return false;
+        }
+        *rgba = std::move(base);
     }
 
     for (const PaintSession& session : sessions) {

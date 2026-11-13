@@ -38,6 +38,8 @@
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -45,6 +47,7 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
@@ -54,12 +57,18 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/MetadataView.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/MaterialBake.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/TexturePaint.h"
 #include "Engine/Nodes/Scene/TexturePaintView.h"
+#include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -983,4 +992,258 @@ TEST_F(TexturePaintTest, EachNodeBakesToItsOwnFiles)
     }
     EXPECT_EQ(std::string("[Project]/textures/") + first->getScriptName() + "_output.<UDIM>.exr",
               getKnob<KnobOutputFile>(first, kTexturePaintParamBakeOutputPath)->getValue());
+}
+
+namespace {
+// One quad on tile 1001 whose diffuseColor is the file tex.exr beside the scene, read through st.
+const char* const kTexturedQuad = R"usda(#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Quad" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Textured>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Textured"
+        {
+            token outputs:surface.connect = </World/Looks/Textured/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Looks/Textured/Texture.outputs:rgb>
+                token outputs:surface
+            }
+
+            def Shader "Texture"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @tex.exr@
+                float2 inputs:st.connect = </World/Looks/Textured/Reader.outputs:result>
+                float3 outputs:rgb
+            }
+
+            def Shader "Reader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                string inputs:varname = "st"
+                float2 outputs:result
+            }
+        }
+    }
+}
+)usda";
+
+// Sets where paint bakes its inputs to, in dir, and returns the file of tile 1001's diffuseColor.
+std::string
+setBakeInputsPath(const NodePtr& paint,
+                  const QTemporaryDir& dir)
+{
+    getKnob<KnobOutputFile>(paint, kTexturePaintParamBakeInputsPath)->setValue((dir.path() + QString::fromUtf8("/in.<UDIM>.exr")).toStdString());
+
+    return (dir.path() + QString::fromUtf8("/in.1001.exr")).toStdString();
+}
+
+bool
+bake(const NodePtr& paint,
+     std::vector<std::string>* files,
+     std::string* warning)
+{
+    std::string error;
+    const bool ok = getTexturePaint(paint)->bakeInputs(1., ViewIdx(0), files, warning, &error);
+
+    EXPECT_TRUE(ok) << error;
+
+    return ok;
+}
+
+// The texel of the baked file at path, size texels wide, under texture coordinates (s, t).
+BufferPixel
+bakedTexelAt(const std::string& path,
+             int size,
+             double s,
+             double t)
+{
+    BufferPixel pixel = { { 0.f, 0.f, 0.f, 0.f }, false };
+    std::vector<float> rgba;
+    bool resampled = true;
+    std::string error;
+
+    if (!MaterialBake::readBaseTile(path, size, &rgba, &resampled, &error)) {
+        ADD_FAILURE() << error;
+
+        return pixel;
+    }
+    EXPECT_FALSE(resampled) << path;
+    const int x = std::min(size - 1, std::max(0, (int)(s * size)));
+    const int y = std::min(size - 1, std::max(0, (int)(t * size)));
+    const std::size_t i = ((std::size_t)y * (std::size_t)size + (std::size_t)x) * 4;
+    for (int c = 0; c < 4; ++c) {
+        pixel.rgba[c] = rgba[i + (std::size_t)c];
+    }
+
+    return pixel;
+}
+} // anonymous namespace
+
+TEST_F(TexturePaintTest, ConstantDiffuseBakesIntoItsTile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeInputsPath(paint, dir);
+
+    std::vector<std::string> files;
+    std::string warning;
+    ASSERT_TRUE(bake(paint, &files, &warning));
+    EXPECT_TRUE(warning.empty()) << warning;
+    EXPECT_NE(files.end(), std::find(files.begin(), files.end(), red));
+    const std::string blue = (dir.path() + QString::fromUtf8("/in.1002.exr")).toStdString();
+    EXPECT_NE(files.end(), std::find(files.begin(), files.end(), blue));
+
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 1.f, 0.f, 0.f, 1.f, "red quad's tile");
+    expectColor(bakedTexelAt(blue, kSmallTile, 0.5, 0.5), 0.f, 0.f, 1.f, 1.f, "blue quad's tile");
+    EXPECT_EQ(files, getTexturePaint(paint)->getBakedInputFiles());
+
+    ImagePtr tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 1.f, 0.f, 0.f, 1.f, "the baked base");
+}
+
+TEST_F(TexturePaintTest, BakedInputsOfAnotherSizeResampleAndWarn)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    {
+        const std::string path = (dir.path() + QString::fromUtf8("/tex.exr")).toStdString();
+        OIIO::ImageSpec spec(kSmallTile, kSmallTile, 3, OIIO::TypeDesc::HALF);
+        std::vector<float> pixels;
+        for (int i = 0; i < kSmallTile * kSmallTile; ++i) {
+            pixels.insert(pixels.end(), { 0.25f, 0.5f, 0.75f });
+        }
+        OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+        ASSERT_TRUE(bool(out));
+        ASSERT_TRUE(out->open(path, spec)) << out->geterror();
+        ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data())) << out->geterror();
+        ASSERT_TRUE(out->close()) << out->geterror();
+    }
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedScene(dir, kTexturedQuad, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string base = setBakeInputsPath(paint, dir);
+
+    std::vector<std::string> files;
+    std::string warning;
+    ASSERT_TRUE(bake(paint, &files, &warning));
+    EXPECT_TRUE(warning.empty()) << warning;
+    expectColor(bakedTexelAt(base, kSmallTile, 0.5, 0.5), 0.25f, 0.5f, 0.75f, 1.f, "the texture");
+
+    getKnob<KnobChoice>(paint, kTexturePaintParamTileResolution)->setValueFromID("2K", 0);
+    ImagePtr tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.25, 0.25), 0.25f, 0.5f, 0.75f, 1.f, "the resampled texture");
+    QString message;
+    int type = -1;
+    paint->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("resampled"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromStdString(base))) << message.toStdString();
+}
+
+TEST_F(TexturePaintTest, ProjectedCardBakesItsPlate)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    ProjectPtr project = getApp()->getProject();
+    project->setAutoSetProjectFormatEnabled(true);
+    project->setOrAddProjectFormat(Format(0, 0, 2000, 1000, "wide2to1", 1.));
+
+    // A camera on +Z whose frame is exactly the 2 by 1 card at the origin.
+    NodePtr plate = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+    NodePtr projector = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPROJECT3D));
+    NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    NodePtr paint = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    ASSERT_TRUE(plate && camera && projector && card && paint);
+    KnobColorPtr color = getKnob<KnobColor>(plate, kConstantParamColor);
+    ASSERT_TRUE(bool(color));
+    const double plateColor[4] = { 0.25, 0.5, 0.75, 1. };
+    for (int c = 0; c < 4; ++c) {
+        color->setValue(plateColor[c], ViewSpec::all(), c);
+    }
+    getKnob<KnobDouble>(camera, kUSDCameraParamFocalLength)->setValue(50.);
+    getKnob<KnobDouble>(camera, kUSDCameraParamHorizontalAperture)->setValue(36.);
+    getKnob<KnobDouble>(camera, kUSDCameraParamVerticalAperture)->setValue(18.);
+    getKnob<KnobDouble>(camera, kSceneParamTranslate)->setValue(50. / 18., ViewSpec::all(), 2);
+    ASSERT_TRUE(projector->connectInput(plate, kUSDProject3DInputImage));
+    ASSERT_TRUE(projector->connectInput(camera, kUSDProject3DInputCamera));
+    ASSERT_TRUE(card->connectInput(projector, 0));
+    connectNodes(card, paint, 0, true);
+    useSmallTiles(paint);
+    const std::string base = setBakeInputsPath(paint, dir);
+
+    std::vector<std::string> files;
+    std::string warning;
+    ASSERT_TRUE(bake(paint, &files, &warning));
+    EXPECT_TRUE(warning.empty()) << warning;
+    ASSERT_NE(files.end(), std::find(files.begin(), files.end(), base));
+    for (double s : { 0.25, 0.5, 0.75 }) {
+        expectColor(bakedTexelAt(base, kSmallTile, s, 0.5), 0.25f, 0.5f, 0.75f, 1.f, "the plate");
+    }
+}
+
+TEST_F(TexturePaintTest, DeletedBakedInputReloadsAsMissing)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string base = setBakeInputsPath(paint, dir);
+    std::vector<std::string> files;
+    std::string warning;
+    ASSERT_TRUE(bake(paint, &files, &warning));
+    ASSERT_TRUE(bool(renderTile(paint)));
+    const std::string name = paint->getScriptName();
+
+    ProjectPtr project = getApp()->getProject();
+    const QString dirPath = dir.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("texture-paint-baked.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::remove(QString::fromStdString(base)));
+
+    session.reset();
+    paint.reset();
+    project->reset(false, true);
+    appPTR->clearAllCaches();
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    EXPECT_FALSE(bool(renderTile(loaded)));
+    QString message;
+    int type = -1;
+    loaded->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeError, type);
+    EXPECT_TRUE(message.contains(QString::fromStdString(base))) << message.toStdString();
 }

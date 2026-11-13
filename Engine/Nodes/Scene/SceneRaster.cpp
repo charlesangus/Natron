@@ -628,6 +628,12 @@ bakeUV(const UsdStageRefPtr& stage,
     if (!readTriangleTexCoords(mesh, args.stName, args.time, &data, &stCorners, &covered, errorMessage)) {
         return false;
     }
+    const bool wantReader = !args.readerStName.IsEmpty();
+    std::vector<GfVec2f> readerCorners;
+    std::vector<std::uint8_t> readerCovered;
+    if (wantReader && !readTriangleTexCoords(mesh, args.readerStName, args.time, &data, &readerCorners, &readerCovered, errorMessage)) {
+        return false;
+    }
 
     const float tileU = (float)((args.udimTile - 1001) % 10);
     const float tileV = (float)((args.udimTile - 1001) / 10);
@@ -648,6 +654,12 @@ bakeUV(const UsdStageRefPtr& stage,
             tri.depth[k] = 0.f;
             tri.st[k] = GfVec2f(0.f);
         }
+        if (wantReader && readerCovered[t]) {
+            tri.hasSt = true;
+            for (int k = 0; k < 3; ++k) {
+                tri.st[k] = readerCorners[t * 3 + k];
+            }
+        }
         if (!setRows(&tri, args.height)) {
             continue;
         }
@@ -664,15 +676,74 @@ bakeUV(const UsdStageRefPtr& stage,
     buffers->coverage.assign(numTexels, 0);
     buffers->worldPosition.assign(numTexels, GfVec3f(0.f));
     buffers->worldNormal.assign(numTexels, GfVec3f(0.f));
+    buffers->readerSt.clear();
+    if (wantReader) {
+        buffers->readerSt.assign(numTexels, GfVec2f(0.f));
+    }
 
-    rasterize(args.width, args.height, tris, [buffers](const RasterTriangle& tri, std::size_t i, const float w[3]) {
+    rasterize(args.width, args.height, tris, [buffers, wantReader](const RasterTriangle& tri, std::size_t i, const float w[3]) {
         buffers->coverage[i] = 1;
         buffers->worldPosition[i] = tri.world[0] * w[0] + tri.world[1] * w[1] + tri.world[2] * w[2];
         buffers->worldNormal[i] = tri.normal;
+        if (wantReader) {
+            buffers->readerSt[i] = tri.hasSt ? (tri.st[0] * w[0] + tri.st[1] * w[1] + tri.st[2] * w[2]) : GfVec2f(0.f);
+        }
     });
 
     return true;
 } // bakeUV
+
+bool
+udimTiles(const UsdStageRefPtr& stage,
+          const SdfPath& primPath,
+          const TfToken& stName,
+          UsdTimeCode time,
+          std::set<int>* tiles,
+          std::string* errorMessage)
+{
+    const UsdGeomMesh mesh(stage ? stage->GetPrimAtPath(primPath) : UsdPrim());
+
+    if (!mesh) {
+        *errorMessage = primPath.GetString() + " is not a mesh on the input scene.";
+
+        return false;
+    }
+    UsdGeomXformCache xformCache(time);
+    MeshData data;
+    readMesh(mesh, time, &xformCache, &data);
+    std::vector<GfVec2f> corners;
+    std::vector<std::uint8_t> covered;
+    if (!readTriangleTexCoords(mesh, stName, time, &data, &corners, &covered, errorMessage)) {
+        return false;
+    }
+
+    // A face whose edge lies on a tile boundary covers no area of the tile beyond it.
+    const double edge = 1e-5;
+    for (std::size_t t = 0; t < data.triangles.size(); ++t) {
+        if (!covered[t]) {
+            continue;
+        }
+        const GfVec2f* uv = &corners[t * 3];
+        const double minU = std::min({ uv[0][0], uv[1][0], uv[2][0] });
+        const double maxU = std::max({ uv[0][0], uv[1][0], uv[2][0] });
+        const double minV = std::min({ uv[0][1], uv[1][1], uv[2][1] });
+        const double maxV = std::max({ uv[0][1], uv[1][1], uv[2][1] });
+        if (!std::isfinite(minU) || !std::isfinite(maxU) || !std::isfinite(minV) || !std::isfinite(maxV)) {
+            continue;
+        }
+        const int firstU = std::max(0, (int)std::floor(minU + edge));
+        const int lastU = std::min(9, (int)std::floor(maxU - edge));
+        const int firstV = std::max(0, (int)std::floor(minV + edge));
+        const int lastV = (int)std::floor(maxV - edge);
+        for (int v = firstV; v <= lastV; ++v) {
+            for (int u = firstU; u <= lastU; ++u) {
+                tiles->insert(1001 + u + 10 * v);
+            }
+        }
+    }
+
+    return true;
+} // udimTiles
 } // namespace SceneRaster
 
 NATRON_NAMESPACE_EXIT

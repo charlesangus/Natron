@@ -50,6 +50,8 @@
 #define kTexturePaintParamBufferResolution "bufferResolution"
 #define kTexturePaintParamTextureMode "textureMode"
 #define kTexturePaintParamBakeInputsPath "bakeInputsPath"
+#define kTexturePaintParamBakeInputs "bakeInputs"
+#define kTexturePaintParamBakedInputs "bakedInputs"
 #define kTexturePaintParamBakeOutputPath "bakeOutputPath"
 #define kTexturePaintParamOutputTile "outputTile"
 
@@ -86,7 +88,8 @@ struct ExplicitCamera;
  * The output is the UDIM tile Output Tile names, at Tile Resolution: the colour plane, and the
  * Layer knob's plane when it is another one and a session has strokes. Tiles are baked from the
  * sessions on first use and cached on disk (TexturePaintCache), keyed by a hash of the strokes,
- * the sessions and their cameras, the scene and the knobs that shape the texture.
+ * the sessions and their cameras, the scene, the knobs that shape the texture and the Bake Inputs
+ * files, which once baked are the base the sessions are painted over.
  **/
 class TexturePaint
     : public NativeEffectBase {
@@ -265,6 +268,25 @@ public:
      **/
     std::list<ImageLayerDesc> getOutputPlanes(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Bake Inputs: bakes the look of the materials bound to the matched meshes at time
+     * into the Bake Inputs Path files (MaterialBake), one per UDIM tile they cover and material
+     * input, and makes them the base the strokes are painted over. *files receives the files
+     * written, *warning what the bake stood fallbacks in for. False with *error set on failure.
+     * Waits for the bake, which runs on a thread of its own so that live textures can render.
+     **/
+    bool bakeInputs(double time,
+                    ViewIdx view,
+                    std::vector<std::string>* files,
+                    std::string* warning,
+                    std::string* error);
+
+    /**
+     * @brief The Bake Inputs files the tiles are painted over, as the last bake wrote them:
+     * the file of each purpose at each tile, Bake Inputs Path expanded. Empty before any bake.
+     **/
+    std::vector<std::string> getBakedInputFiles() const WARN_UNUSED_RETURN;
+
 protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -301,6 +323,15 @@ private:
 
     bool sessionHasStrokes(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;
 
+    // Bake Inputs Path with [Project] expanded; false with *error set unless it is absolute.
+    bool getBakeInputsPattern(std::string* pattern, std::string* error) const WARN_UNUSED_RETURN;
+
+    // The purposes and UDIM tiles the last Bake Inputs wrote, from the saved record of it.
+    void getBakedInputs(std::vector<std::string>* purposes, std::vector<int>* tiles) const;
+
+    // The baked file of purpose at tile, empty when the last bake wrote none.
+    std::string getBakedInputPath(const std::string& purpose, int tile) const WARN_UNUSED_RETURN;
+
     // What the tiles of view are cached under, whatever the frame; changes with anything they depend on.
     U64 getTileCacheKey(ViewIdx view) const WARN_UNUSED_RETURN;
 
@@ -331,6 +362,10 @@ private:
     KnobChoiceWPtr _bufferResolution;
     KnobChoiceWPtr _textureMode;
     KnobOutputFileWPtr _bakeInputsPath;
+    KnobButtonWPtr _bakeInputs;
+    // What the last Bake Inputs wrote, saved with the project, so the tiles keep painting over
+    // those files and their cache key changes with each bake.
+    KnobStringWPtr _bakedInputs;
     KnobOutputFileWPtr _bakeOutputPath;
     KnobIntWPtr _outputTile;
 };

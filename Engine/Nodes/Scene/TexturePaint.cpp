@@ -27,9 +27,11 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <set>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -50,6 +52,9 @@
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/MaterialBake.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
@@ -95,6 +100,50 @@ resolutionFromChoice(const KnobChoicePtr& knob,
     }
 
     return 1024 << index;
+}
+
+// The input scene as a composed stage, held for as long as this is.
+struct InputScene {
+    ScenePayload scene;
+    SceneQueryPool::Lease lease;
+    PXR_NS::UsdStageRefPtr stage;
+    PXR_NS::UsdTimeCode time = PXR_NS::UsdTimeCode::Default();
+};
+
+// Leaves out->stage null when there is no input or its scene is empty.
+bool
+openInputScene(const EffectInstancePtr& input,
+               double time,
+               ViewIdx view,
+               double fps,
+               InputScene* out,
+               std::string* error)
+{
+    if (!input) {
+        return true;
+    }
+    if (input->evaluateScene(EffectInstance::EvaluateSceneArgs(time, view), &out->scene, error) != EffectInstance::eRenderRoIRetCodeOk) {
+        if (error->empty()) {
+            *error = QObject::tr("The input scene could not be evaluated.").toStdString();
+        }
+
+        return false;
+    }
+    if (out->scene.isEmpty()) {
+        return true;
+    }
+    out->lease = SceneQueryPool::instance().borrow(out->scene, error);
+    out->stage = out->lease.getStage();
+    if (!out->stage) {
+        if (error->empty()) {
+            *error = QObject::tr("USD could not compose the input scene.").toStdString();
+        }
+
+        return false;
+    }
+    out->time = PXR_NS::UsdTimeCode(SceneOps::frameToTimeCode(out->scene, time, fps));
+
+    return true;
 }
 
 const int kDefaultTileResolutionIndex = 2;
@@ -222,6 +271,26 @@ TexturePaint::initializeKnobs()
     bakeInputsPath->setAnimationEnabled(false);
     page->addKnob(bakeInputsPath);
     _bakeInputsPath = bakeInputsPath;
+
+    KnobButtonPtr bakeInputs = createKnob<KnobButton>(tr("Bake Inputs"));
+    bakeInputs->setName(kTexturePaintParamBakeInputs);
+    bakeInputs->setHintToolTip(tr("Bakes the look of the materials bound to the matched meshes, at the current frame, "
+                                  "into the Bake Inputs Path files: one per UDIM tile the meshes cover and material "
+                                  "input, diffuseColor always and each other UsdPreviewSurface input a material sets, "
+                                  "named with the input after the path's name. The strokes are then painted over "
+                                  "these files rather than over the constant colour; a file of another size than "
+                                  "Tile Resolution is resampled, and a file deleted since is an error.")
+                                   .toStdString());
+    page->addKnob(bakeInputs);
+    _bakeInputs = bakeInputs;
+
+    KnobStringPtr bakedInputs = createKnob<KnobString>(tr("Baked Inputs"));
+    bakedInputs->setName(kTexturePaintParamBakedInputs);
+    bakedInputs->setHintToolTip(tr("What the last Bake Inputs wrote: its count, purposes and UDIM tiles.").toStdString());
+    bakedInputs->setAnimationEnabled(false);
+    bakedInputs->setSecretByDefault(true);
+    page->addKnob(bakedInputs);
+    _bakedInputs = bakedInputs;
 
     KnobOutputFilePtr bakeOutputPath = createKnob<KnobOutputFile>(tr("Bake Output Path"));
     bakeOutputPath->setName(kTexturePaintParamBakeOutputPath);
@@ -467,8 +536,202 @@ TexturePaint::getTileCacheKey(ViewIdx view) const
     const NodePtr input = getNode()->getInput(0);
     hasher.appendU64(input ? input->getHashValue() : 0);
 
+    // The baked inputs are edited or deleted on disk without any knob changing.
+    const KnobIPtr bakeKnobs[] = { _bakedInputs.lock(), _bakeInputsPath.lock() };
+    for (const KnobIPtr& knob : bakeKnobs) {
+        hasher.appendU64(knob ? knob->getContentHash() : 0);
+    }
+    for (const std::string& path : getBakedInputFiles()) {
+        hasher.appendString(path);
+        std::error_code ec;
+        const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, ec);
+        if (ec) {
+            hasher.appendI64(-1);
+            continue;
+        }
+        hasher.appendI64((std::int64_t)modified.time_since_epoch().count());
+        const std::uintmax_t bytes = std::filesystem::file_size(path, ec);
+        hasher.appendU64(ec ? 0 : (U64)bytes);
+    }
+
     return hasher.finalize();
 }
+
+bool
+TexturePaint::getBakeInputsPattern(std::string* pattern,
+                                   std::string* error) const
+{
+    KnobOutputFilePtr knob = _bakeInputsPath.lock();
+
+    *pattern = knob ? knob->getValue() : std::string();
+    AppInstancePtr app = getApp();
+    if (app && app->getProject()) {
+        app->getProject()->canonicalizePath(*pattern);
+    }
+    if (pattern->empty() || !std::filesystem::path(*pattern).is_absolute()) {
+        *error = tr("Bake Inputs Path \"%1\" is not an absolute path once expanded: save the project first, or give an "
+                    "absolute path.")
+                     .arg(QString::fromStdString(*pattern))
+                     .toStdString();
+
+        return false;
+    }
+
+    return true;
+}
+
+void
+TexturePaint::getBakedInputs(std::vector<std::string>* purposes,
+                             std::vector<int>* tiles) const
+{
+    purposes->clear();
+    tiles->clear();
+    KnobStringPtr knob = _bakedInputs.lock();
+    const QStringList fields = QString::fromStdString(knob ? knob->getValue() : std::string()).split(QLatin1Char(';'));
+    if (fields.size() != 3) {
+        return;
+    }
+    for (const QString& purpose : fields[1].split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        purposes->push_back(purpose.toStdString());
+    }
+    for (const QString& tile : fields[2].split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        bool ok = false;
+        const int number = tile.toInt(&ok);
+        if (ok) {
+            tiles->push_back(number);
+        }
+    }
+}
+
+std::string
+TexturePaint::getBakedInputPath(const std::string& purpose,
+                                int tile) const
+{
+    std::vector<std::string> purposes;
+    std::vector<int> tiles;
+
+    getBakedInputs(&purposes, &tiles);
+    if ((std::find(purposes.begin(), purposes.end(), purpose) == purposes.end()) || (std::find(tiles.begin(), tiles.end(), tile) == tiles.end())) {
+        return std::string();
+    }
+    std::string pattern;
+    std::string error;
+    std::string path;
+    if (!getBakeInputsPattern(&pattern, &error) || !MaterialBake::purposePath(pattern, purpose, tile, &path, &error)) {
+        return std::string();
+    }
+
+    return path;
+}
+
+std::vector<std::string>
+TexturePaint::getBakedInputFiles() const
+{
+    std::vector<std::string> purposes;
+    std::vector<int> tiles;
+    std::vector<std::string> files;
+
+    getBakedInputs(&purposes, &tiles);
+    for (int tile : tiles) {
+        for (const std::string& purpose : purposes) {
+            const std::string path = getBakedInputPath(purpose, tile);
+            if (!path.empty()) {
+                files.push_back(path);
+            }
+        }
+    }
+
+    return files;
+}
+
+bool
+TexturePaint::bakeInputs(double time,
+                         ViewIdx view,
+                         std::vector<std::string>* files,
+                         std::string* warning,
+                         std::string* error)
+{
+    files->clear();
+    warning->clear();
+    error->clear();
+    std::string pattern;
+    if (!getBakeInputsPattern(&pattern, error)) {
+        return false;
+    }
+    KnobStringPtr uvPrimvar = _uvPrimvar.lock();
+    const std::string primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
+    const std::string expression = _primPattern.getExpression();
+    const int size = getTileResolution();
+    AppInstancePtr app = getApp();
+    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+    EffectInstancePtr input = getInput(0);
+
+    std::vector<MaterialBake::BakedFile> baked;
+    std::vector<std::string> warnings;
+    bool ok = false;
+    // Live textures render on threads of their own and never on the main thread, which waits here.
+    std::thread worker([&]() {
+        InputScene scene;
+        if (!openInputScene(input, time, view, fps, &scene, error)) {
+            return;
+        }
+        if (!scene.stage) {
+            *error = tr("There is no input scene to bake the look of.").toStdString();
+
+            return;
+        }
+        MaterialBake::TilesArgs args;
+        args.stage = scene.stage;
+        args.time = scene.time;
+        args.stName = PXR_NS::TfToken(primvar.empty() ? std::string("st") : primvar);
+        args.size = size;
+        args.pathPattern = pattern;
+        if (!TexturePaintCache::matchedMeshes(args.stage, expression, args.stName, &args.meshes, error)) {
+            return;
+        }
+        if (args.meshes.empty()) {
+            *error = tr("Prim Pattern matches no mesh with the primvar %1 to bake the look of.").arg(QString::fromStdString(args.stName.GetString())).toStdString();
+
+            return;
+        }
+        LiveTextureStore::instance().prepare(SceneOps::getLiveTextures(scene.scene), time);
+        std::unique_ptr<MaterialBake::Backend> backend = MaterialBake::createPreviewSurfaceBackend();
+        ok = MaterialBake::bakeTiles(*backend, args, &baked, &warnings, error);
+    });
+    worker.join();
+    if (!ok) {
+        if (error->empty()) {
+            *error = tr("The inputs could not be baked.").toStdString();
+        }
+
+        return false;
+    }
+
+    QStringList purposes;
+    QStringList tiles;
+    for (const MaterialBake::BakedFile& file : baked) {
+        files->push_back(file.path);
+        const QString purpose = QString::fromStdString(file.purpose);
+        if (!purposes.contains(purpose)) {
+            purposes.push_back(purpose);
+        }
+        const QString tile = QString::number(file.udimTile);
+        if (!tiles.contains(tile)) {
+            tiles.push_back(tile);
+        }
+    }
+    KnobStringPtr record = _bakedInputs.lock();
+    if (record) {
+        const QStringList previous = QString::fromStdString(record->getValue()).split(QLatin1Char(';'));
+        const int count = previous.isEmpty() ? 0 : previous.front().toInt();
+        record->setValue(QString::fromUtf8("%1;%2;%3").arg(count + 1).arg(purposes.join(QLatin1Char(','))).arg(tiles.join(QLatin1Char(','))).toStdString());
+    }
+    for (const std::string& line : warnings) {
+        *warning += (warning->empty() ? std::string() : std::string("\n")) + line;
+    }
+
+    return true;
+} // TexturePaint::bakeInputs
 
 bool
 TexturePaint::ensureTiles(double time,
@@ -507,34 +770,51 @@ TexturePaint::ensureTiles(double time,
     }
     note->clear();
 
-    ScenePayload scene;
-    EffectInstancePtr input = getInput(0);
-    if (input && (input->evaluateScene(EvaluateSceneArgs(time, view), &scene, error) != eRenderRoIRetCodeOk)) {
-        if (error->empty()) {
-            *error = tr("The input scene could not be evaluated.").toStdString();
+    // A base file deleted or unreadable since the bake is an error rather than the constant
+    // colour, which would paint over a look other than the one painted against.
+    std::vector<std::string> basePaths;
+    QStringList resampled;
+    for (const ImageLayerDesc& plane : planes) {
+        const std::string purpose = plane.isColorLayer() ? std::string(kTexturePaintPurposeDiffuseColor) : plane.getLayerID();
+        const std::string basePath = getBakedInputPath(purpose, tile);
+        basePaths.push_back(basePath);
+        if (basePath.empty()) {
+            continue;
         }
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(basePath, ec)) {
+            *error = tr("The baked input %1 is missing: bake the inputs again.").arg(QString::fromStdString(basePath)).toStdString();
 
+            return false;
+        }
+        std::string headerError;
+        const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(basePath, &headerError, FilePin::eDisk);
+        if (!header || header->subimages.empty()) {
+            *error = tr("The baked input %1 cannot be read: %2").arg(QString::fromStdString(basePath)).arg(QString::fromStdString(headerError)).toStdString();
+
+            return false;
+        }
+        const OIIO::ImageSpec& spec = header->subimages.front();
+        if ((spec.width != size) || (spec.height != size)) {
+            resampled.push_back(tr("%1 is %2x%3").arg(QString::fromStdString(basePath)).arg(spec.width).arg(spec.height));
+        }
+    }
+
+    InputScene scene;
+    EffectInstancePtr input = getInput(0);
+    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+    if (!openInputScene(input, time, view, fps, &scene, error)) {
         return false;
     }
-    SceneQueryPool::Lease lease;
     TexturePaintCache::TileArgs args;
     args.udimTile = tile;
     args.size = size;
     args.cancelled = [this]() -> bool {
         return aborted();
     };
-    if (input && !scene.isEmpty()) {
-        lease = SceneQueryPool::instance().borrow(scene, error);
-        args.stage = lease.getStage();
-        if (!args.stage) {
-            if (error->empty()) {
-                *error = tr("USD could not compose the input scene.").toStdString();
-            }
-
-            return false;
-        }
-        const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
-        args.time = PXR_NS::UsdTimeCode(SceneOps::frameToTimeCode(scene, time, fps));
+    if (scene.stage) {
+        args.stage = scene.stage;
+        args.time = scene.time;
         KnobStringPtr uvPrimvar = _uvPrimvar.lock();
         const std::string primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
         args.stName = PXR_NS::TfToken(primvar.empty() ? std::string("st") : primvar);
@@ -585,6 +865,7 @@ TexturePaint::ensureTiles(double time,
         }
         std::vector<float> rgba;
         std::vector<TexturePaintCache::MeshPair> overlaps;
+        args.basePath = basePaths[index - 1];
         if (!TexturePaintCache::composeTile(args, plane.isColorLayer(), layered, &rgba, overlapsFound ? 0 : &overlaps, error)) {
             return false;
         }
@@ -594,12 +875,18 @@ TexturePaint::ensureTiles(double time,
             for (const TexturePaintCache::MeshPair& pair : overlaps) {
                 pairs.push_back(tr("%1 and %2").arg(QString::fromUtf8(pair.first.GetString().c_str()), QString::fromUtf8(pair.second.GetString().c_str())));
             }
+            QStringList lines;
             if (!pairs.isEmpty()) {
-                *note = tr("The UV layouts of these meshes overlap in tile %1, so their paint lands on each other: %2.")
-                            .arg(tile)
-                            .arg(pairs.join(QString::fromUtf8("; ")))
-                            .toStdString();
+                lines.push_back(tr("The UV layouts of these meshes overlap in tile %1, so their paint lands on each other: %2.")
+                                    .arg(tile)
+                                    .arg(pairs.join(QString::fromUtf8("; "))));
             }
+            if (!resampled.isEmpty()) {
+                lines.push_back(tr("Baked inputs of another size than the Tile Resolution, %1, are resampled to it: %2.")
+                                    .arg(size)
+                                    .arg(resampled.join(QString::fromUtf8("; "))));
+            }
+            *note = lines.join(QLatin1Char('\n')).toStdString();
         }
         if (!TexturePaintCache::writeTile(path, size, rgba, *note, error)) {
             return false;
@@ -914,6 +1201,21 @@ TexturePaint::knobChanged(KnobI* k,
     const KnobStringPtr primPattern = _primPattern.getKnob();
     if (k && ((k == primPattern.get()) || (k == _uvPrimvar.lock().get()))) {
         syncSessionViews();
+    }
+    KnobButtonPtr bake = _bakeInputs.lock();
+    if (bake && (k == bake.get())) {
+        std::vector<std::string> files;
+        std::string warning;
+        std::string error;
+        if (!bakeInputs(time, ViewIdx(0), &files, &warning, &error)) {
+            setPersistentMessage(eMessageTypeError, error);
+        } else if (!warning.empty()) {
+            setPersistentMessage(eMessageTypeWarning, warning);
+        } else {
+            clearPersistentMessage(false);
+        }
+
+        return true;
     }
 
     return NativeEffectBase::knobChanged(k, reason, view, time, originatedFromMainThread);

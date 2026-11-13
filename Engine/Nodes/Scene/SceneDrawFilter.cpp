@@ -613,6 +613,26 @@ SceneDrawFilter::hidesLights() const
     return std::any_of(_lights.begin(), _lights.end(), held);
 }
 
+bool
+SceneDrawFilter::hidesEveryLight(const LightPredicate& counts) const
+{
+    if (!hidesLights()) {
+        return false;
+    }
+    bool any = false;
+    for (const Node* light : _lights) {
+        if (counts && !counts(*light->path)) {
+            continue;
+        }
+        if (light->output == eOutputShown) {
+            return false;
+        }
+        any = true;
+    }
+
+    return any;
+}
+
 HdSceneIndexPrim
 SceneDrawFilter::GetPrim(const SdfPath& primPath) const
 {

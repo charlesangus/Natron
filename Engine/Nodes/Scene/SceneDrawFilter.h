@@ -201,6 +201,13 @@ public:
     /** @brief Whether a Hidden row, or a reveal from one, keeps lights from Hydra. */
     bool hidesLights() const;
 
+    /**
+     * @brief Whether the input scene has a light that `counts` accepts (every one, if empty) and
+     * none of them is drawn: a scene whose lights the rules all keep from Hydra, as opposed to one
+     * that has none. Only the thread that changes the filter may call it.
+     */
+    bool hidesEveryLight(const LightPredicate& counts = LightPredicate()) const;
+
     const Rules& getRules() const { return _rules; }
     unsigned long long getInputAddedCount() const { return _inputAdded; }
     unsigned long long getInputRemovedCount() const { return _inputRemoved; }

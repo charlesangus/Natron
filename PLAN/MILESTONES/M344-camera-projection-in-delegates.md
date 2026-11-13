@@ -29,7 +29,7 @@ Make M234 - Camera Projection Nodes' `USDProject3D` render in Cycles and MoonRay
 
 ## Phase 344.1: Route
 
-- [ ] M344.P1.T1 — Hand-author both projection networks
+- [x] M344.P1.T1 — Hand-author both projection networks
   - files: scratch only; findings recorded in this file's `## Decisions`
   - approach: hand-author `.usda` materials for Cycles and MoonRay that reproduce `natronProject3D.glslfx`'s parameters on M234's test scene, with a file plate. Read `ProjectCameraMap`'s attributes first. Compare each against Storm. If a stock network can't match, specify the smallest fork node or DSO that does.
   - verify: each renderer's frame matches Storm within tolerance on interior pixels; the chosen network, or the required new node, is recorded with source citations.
@@ -61,3 +61,8 @@ Make M234 - Camera Projection Nodes' `USDProject3D` render in Cycles and MoonRay
 
 - 2026-11-05 — **Projection is in scope for delegates (user):** "absolutely, this is a core part of comp workflows".
 - 2026-11-05 — **Author native networks in the node, not a translation filter (cat-plan):** the parameters are already known at authoring time, and the result is plain USD a user can inspect.
+- 2026-11-13 — **P1.T1 spike result: stock nodes suffice in both delegates; no fork node or DSO.** Rendered in Storm, Cycles and MoonRay on four cases (crop on/off, Project On front/back, outside black/discard); interior pixels agree with Storm to mean ≤0.0002, p99 0.0005, max 0.01 for Cycles and 0.04 for MoonRay (≤0.03% of pixels over 0.01). Scenes and scripts in `.worktrees/m344/build/m344-spike/`.
+  - **Cycles:** `cycles_texture_coordinate` (use_transform, `ob_tfm` = inverse of the projector's u/v/w columns with plateTransform folded in) → Object → `separate_xyz` → two `math` divides → `combine_xyz` → `image_texture` (extension black, unassociated alpha, data colorspace); crop via `vector_math` multiply_add/floor/length + `math` less_than; w>0 via `math` greater_than; Project On via `geometry` True Normal and Backfacing; `emission` + `transparent_bsdf` → `mix_closure` → `outputs:cycles:surface` (terminal output named `Closure`/`Emission`). hdCycles takes `cycles_*` ids natively (src/hydra/material.cpp:619-621), sockets case-insensitive (:404, :467, :520).
+  - **MoonRay:** `ProjectCameraMap` is unusable: hdMoonray's coordsys binding is a stub (lib/hydramoonray/CoordSys.cc:63) and it can't express plateTransform. Stock maps instead: `AttributeMap`(position) → `TransformSpaceMap`(render→world) → `OpMap` dots/divides → `FloatToRgbMap` → `UsdUVTexture` (wrap black, raw); crop, w>0 and Project On via further `OpMap`s; `DwaEmissiveMaterial` → `outputs:moonray:surface`.
+  - **Motion blur:** neither delegate reads time samples on material networks (cycles hydra/material.cpp:282-307; hdMoonray Material.cc:203), so the projection is evaluated at the frame time.
+  - **For P2 (PM):** build Cycles from `geometry` Position + `vector_math` dots, as MoonRay does, rather than the `ob_tfm` trick. That handles orthographic projectors (G singular) and gives the depth for near/far clip. Geometry projection space and frame hold need the per-prim reference: read the world-space `natronReferencePoints*` primvar (or float3 primvar rows) through `cycles_attribute` / a MoonRay primitive-attribute map; P2.T1 settles which and records it.

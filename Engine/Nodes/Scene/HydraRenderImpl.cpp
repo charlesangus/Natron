@@ -2894,6 +2894,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             lastSamples = -1;
             lastConverged = false;
             engineFresh = true;
+            ++status.engines;
             needRestart = true;
             continue;
         }

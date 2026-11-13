@@ -43,6 +43,7 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIcon>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QKeySequence>
@@ -52,6 +53,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QPainter>
+#include <QPixmap>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QScrollBar>
@@ -355,8 +357,32 @@ public:
     }
 };
 
+// The mark in front of a draw state a node's rule sets: a diamond, as a node rather than the viewer
+// decides it.
+QIcon
+graphOriginIcon()
+{
+    static const QIcon icon = []() {
+        const int kSize = 20;
+        QPixmap pixmap(kSize, kSize);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(90, 180, 200));
+        const QPointF diamond[4] = { QPointF(kSize / 2., 2.), QPointF(kSize - 2., kSize / 2.), QPointF(kSize / 2., kSize - 2.), QPointF(2., kSize / 2.) };
+        painter.drawPolygon(diamond, 4);
+        painter.end();
+
+        return QIcon(pixmap);
+    }();
+
+    return icon;
+}
+
 // Edits the draw state column with a list of the states that opens with the editor. A state the
-// row inherits is drawn dimmed and in italics, so that the rows set stand out.
+// viewer sets reads plain, one a node's rule sets on the row has a diamond in front of it, and
+// one the row inherits is drawn dimmed and in italics, so that the rows set stand out.
 class DrawStateDelegate
     : public QStyledItemDelegate {
 public:
@@ -412,6 +438,13 @@ protected:
         if (index.data(SceneGraphModel::eDrawStateInheritedRole).toBool()) {
             option->palette.setColor(QPalette::Text, option->palette.color(QPalette::Disabled, QPalette::Text));
             option->palette.setColor(QPalette::HighlightedText, option->palette.color(QPalette::Disabled, QPalette::HighlightedText));
+        }
+        if (index.data(SceneGraphModel::eDrawStateOriginRole).toInt() == (int)eSceneDrawOriginGraphPolicy) {
+            const int kMarkSize = 10;
+            option->features |= QStyleOptionViewItem::HasDecoration;
+            option->icon = graphOriginIcon();
+            option->decorationSize = QSize(kMarkSize, kMarkSize);
+            option->decorationPosition = QStyleOptionViewItem::Left;
         }
     }
 };
@@ -514,6 +547,7 @@ struct SceneGraphPanel::Implementation {
 
     QToolButton* changedHereButton = nullptr;
     QToolButton* resetDrawStatesButton = nullptr;
+    QToolButton* bakeDrawStatesButton = nullptr;
     QTreeView* changedHereTree = nullptr;
     SceneChangedHereModel* changedHereModel = nullptr;
     SceneGraphStageSourcePtr changedHereSource;
@@ -944,11 +978,21 @@ struct SceneGraphPanel::Implementation {
             QObject::connect(viewport, &SceneViewport::sceneSynced, panel, &SceneGraphPanel::onSceneSynced);
             QObject::connect(viewport, &SceneViewport::stageLoadsChanged, panel, &SceneGraphPanel::onStageLoadsChanged);
             QObject::connect(viewport, &SceneViewport::selectionChanged, panel, &SceneGraphPanel::onViewportSelectionChanged);
-            QObject::connect(viewport, &SceneViewport::drawStatesChanged, panel, [this]() { model->refreshDrawStates(); });
+            QObject::connect(viewport, &SceneViewport::drawStatesChanged, panel, [this]() {
+                model->refreshDrawStates();
+                updateBakeButton();
+            });
         }
         linkDrawStates();
         viewerSource = viewport ? std::make_shared<ViewerStageSource>(viewport) : SceneGraphStageSourcePtr();
         applySource();
+    }
+
+    void updateBakeButton()
+    {
+        if (bakeDrawStatesButton) {
+            bakeDrawStatesButton->setEnabled(viewport && SceneSelectionActions::bakeBlocker(viewer.data()).isEmpty());
+        }
     }
 
     // The draw state column reads and edits the linked viewer, whatever node the panel shows.
@@ -957,6 +1001,7 @@ struct SceneGraphPanel::Implementation {
         if (resetDrawStatesButton) {
             resetDrawStatesButton->setEnabled(!viewport.isNull());
         }
+        updateBakeButton();
         if (!viewport) {
             model->setDrawStateAccess(SceneGraphModel::DrawStatesReader(), SceneGraphModel::DrawStateWriter());
 
@@ -1685,6 +1730,14 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->resetDrawStatesButton->setToolTip(tr("Clears every draw state set in the linked viewer, so that every prim is drawn as the graph says."));
     _imp->resetDrawStatesButton->setEnabled(false);
     filterLayout->addWidget(_imp->resetDrawStatesButton);
+    _imp->bakeDrawStatesButton = new QToolButton(this);
+    _imp->bakeDrawStatesButton->setObjectName(QString::fromUtf8("sceneGraphBakeDrawStates"));
+    _imp->bakeDrawStatesButton->setText(tr("Bake to Node"));
+    _imp->bakeDrawStatesButton->setToolTip(tr("Writes every draw state set in the linked viewer into a USDExpandHierarchy below the viewed node, "
+                                              "one rule per prim, and clears them from the viewer, which then views that node. The viewed node "
+                                              "takes the rules itself when it is a USDExpandHierarchy, and so does one directly below it."));
+    _imp->bakeDrawStatesButton->setEnabled(false);
+    filterLayout->addWidget(_imp->bakeDrawStatesButton);
     layout->addLayout(filterLayout);
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, this);
@@ -1789,6 +1842,11 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->resetDrawStatesButton, &QToolButton::clicked, this, [this]() {
         if (_imp->viewport) {
             _imp->viewport->clearDrawStates();
+        }
+    });
+    QObject::connect(_imp->bakeDrawStatesButton, &QToolButton::clicked, this, [this]() {
+        if (_imp->viewer) {
+            SceneSelectionActions::bakeToNode(_imp->gui, _imp->viewer.data());
         }
     });
     QObject::connect(_imp->changedHereButton, &QToolButton::toggled, this, [this]() {

@@ -1069,6 +1069,15 @@ public:
      **/
     void restoreSceneView(const Serialization::SceneViewSerialization& serialization);
 
+    /**
+     * @brief Every draw state this viewer sets, effective or remembered, in path order, as the last
+     * edit left them. Any thread; never waits on an edit.
+     **/
+    std::vector<std::pair<std::string, SceneDrawStates::Stored>> getSetDrawStates() const;
+
+    // Puts states in place of every draw state this viewer sets, as one edit. Main thread.
+    void replaceSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states);
+
 public Q_SLOTS:
     // Prim paths. A slot, so that scripts reach it through the meta object.
     void requestLoad(const QStringList& paths, bool withDescendants);

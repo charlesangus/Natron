@@ -7043,6 +7043,23 @@ SceneViewport::saveSceneView(Serialization::SceneViewSerialization* serializatio
     sceneViewToSerialization(states ? *states : SceneDrawStateQueue::SetStates(), rules, serialization);
 }
 
+std::vector<std::pair<std::string, SceneDrawStates::Stored>>
+SceneViewport::getSetDrawStates() const
+{
+    std::shared_ptr<const SceneDrawStateQueue::SetStates> states;
+    if (_imp->drawStates) {
+        states = _imp->drawStates->getSetStates();
+    }
+
+    return states ? *states : SceneDrawStateQueue::SetStates();
+}
+
+void
+SceneViewport::replaceSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states)
+{
+    editDrawStates([states](SceneDrawStates* drawStates) { return drawStates->replaceSetStates(states); }, states.size());
+}
+
 void
 SceneViewport::restoreSceneView(const Serialization::SceneViewSerialization& serialization)
 {

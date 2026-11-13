@@ -519,16 +519,32 @@ public:
                                     bool evict = true) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The hidden file beside path that the bake of process pid on this host writes, serial
-     * telling its writes apart, before renaming it over path.
+     * @brief The hidden file beside path that the bake of process pid, started at the given
+     * clock tick in the pid namespace space names, writes before renaming it over path; serial
+     * tells its writes apart.
      **/
     static std::string bakeTempPath(const std::string& path,
+                                    const std::string& space,
                                     long pid,
+                                    unsigned long long started,
                                     unsigned int serial) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Deletes the bakeTempPath() files in directory left by processes of this host that
-     * have ended, written before this process loaded the node.
+     * @brief A short hex token naming this boot's pid namespace of this process, or an empty
+     * string when it cannot be read.
+     **/
+    static const std::string& bakeProcessSpace() WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The start time of process pid in clock ticks since boot, as seen from this pid
+     * namespace; false when no such process runs.
+     **/
+    static bool processStartTime(long pid, unsigned long long* ticks) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Deletes the bakeTempPath() files in directory written in this process's pid
+     * namespace by processes that are no longer running, the pid now naming another process
+     * included.
      **/
     static void removeStaleBakeTemps(const std::string& directory);
 

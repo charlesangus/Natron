@@ -2913,11 +2913,18 @@ TEST_F(TexturePaintTest, AnUndoSubmittedAfterARollbackOfTheSameFileRunsAfterIt)
     EXPECT_FALSE(std::filesystem::exists(dir.path().toStdString() + "/.texturepaint-undo"));
 }
 
-TEST_F(TexturePaintTest, ABakeRemovesOnlyTheTemporaryFilesOfEndedProcessesOfThisHost)
+TEST_F(TexturePaintTest, ABakeRemovesOnlyTheTemporaryFilesOfEndedProcessesOfThisPidNamespace)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const std::string target = dir.path().toStdString() + "/texture.1001.exr";
+    const std::string& space = TexturePaint::bakeProcessSpace();
+    ASSERT_EQ(12u, space.size()) << "a short token, whatever the host name";
+    EXPECT_EQ(std::string::npos, space.find_first_not_of("0123456789abcdef")) << space;
+    const long self = (long)::getpid();
+    unsigned long long started = 0;
+    ASSERT_TRUE(TexturePaint::processStartTime(self, &started));
+
     const pid_t child = ::fork();
     ASSERT_GE(child, 0);
     if (child == 0) {
@@ -2926,26 +2933,24 @@ TEST_F(TexturePaintTest, ABakeRemovesOnlyTheTemporaryFilesOfEndedProcessesOfThis
     int status = 0;
     ASSERT_EQ(child, ::waitpid(child, &status, 0));
     const long ended = (long)child;
+    unsigned long long unused = 0;
+    ASSERT_FALSE(TexturePaint::processStartTime(ended, &unused));
 
-    const std::string stale = TexturePaint::bakeTempPath(target, ended, 1);
-    const std::string live = TexturePaint::bakeTempPath(target, (long)::getpid(), 2);
-    const std::string recent = TexturePaint::bakeTempPath(target, ended, 3);
-    const std::string otherHost = dir.path().toStdString() + "/.texture.1001.baking" + std::to_string(ended) + "_4@another-host.example.exr";
-    for (const std::string& path : { stale, live, recent, otherHost }) {
+    const std::string otherSpace = (space == "000000000000") ? std::string("ffffffffffff") : std::string("000000000000");
+    const std::string dead = TexturePaint::bakeTempPath(target, space, ended, started, 1);
+    const std::string earlierRun = TexturePaint::bakeTempPath(target, space, self, started + 1, 2);
+    const std::string live = TexturePaint::bakeTempPath(target, space, self, started, 3);
+    const std::string elsewhere = TexturePaint::bakeTempPath(target, otherSpace, ended, started, 4);
+    for (const std::string& path : { dead, earlierRun, live, elsewhere }) {
         std::ofstream(path.c_str()) << "partial";
         ASSERT_TRUE(std::filesystem::exists(path)) << path;
     }
-    EXPECT_NE(std::string::npos, stale.find("@")) << "the name carries the host: " << stale;
-    const std::filesystem::file_time_type longAgo = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
-    for (const std::string& path : { stale, live, otherHost }) {
-        std::filesystem::last_write_time(path, longAgo);
-    }
 
     TexturePaint::removeStaleBakeTemps(dir.path().toStdString());
-    EXPECT_FALSE(std::filesystem::exists(stale)) << "the process that wrote it has ended";
+    EXPECT_FALSE(std::filesystem::exists(dead)) << "the process that wrote it has ended";
+    EXPECT_FALSE(std::filesystem::exists(earlierRun)) << "this pid then named an earlier process, started at another time";
     EXPECT_TRUE(std::filesystem::exists(live)) << "this process may still rename it";
-    EXPECT_TRUE(std::filesystem::exists(recent)) << "written after this process loaded: its pid may be another process's";
-    EXPECT_TRUE(std::filesystem::exists(otherHost)) << "its pid names a process of another host";
+    EXPECT_TRUE(std::filesystem::exists(elsewhere)) << "its pid names a process of another pid namespace";
 }
 
 TEST_F(TexturePaintTest, ShuttingDownStopsEveryBakerAndPutsBackTheFilesOfABakeThatNeverLanded)
@@ -3422,11 +3427,13 @@ TEST_F(TexturePaintTest, AnUndoDroppedBeforeItsFileStepRunsLeavesTheFilesAndTheR
 namespace {
 /**
  * Drops paint's undo of command after its file step has run and before its result reaches the
- * main thread, then lets the step that puts the files back run.
+ * main thread, then lets the step that puts the files back run. target must hold mid-grey before
+ * the bake.
  **/
 void
 dropUndoAfterItsFileStep(const NodePtr& paint,
-                         const UndoCommandPtr& command)
+                         const UndoCommandPtr& command,
+                         const std::string& target)
 {
     TexturePaint* effect = getTexturePaint(paint);
     StepGate gate;
@@ -3436,6 +3443,11 @@ dropUndoAfterItsFileStep(const NodePtr& paint,
     (void)TexturePaintFileQueue::submit([](bool) { });
     gate.allowOne();
     ASSERT_TRUE(gate.waitUntilArrived(2, 30000));
+    const BufferPixel undone = bakedTexelAt(target, kSmallTile, 0.5, 0.5);
+    const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.f };
+    for (int c = 0; c < 4; ++c) {
+        ASSERT_NEAR(grey[c], undone.rgba[c], 1e-3) << "the undo's step put back the file before the bake, channel " << c;
+    }
     effect->quitBackgroundWork(true);
     ASSERT_TRUE(drainBaker(effect));
     gate.open();
@@ -3462,7 +3474,7 @@ TEST_F(TexturePaintTest, AnUndoDroppedAfterItsFileStepRanPutsTheFilesBack)
     command->redo();
     const std::string record = getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue();
 
-    dropUndoAfterItsFileStep(paint, command);
+    dropUndoAfterItsFileStep(paint, command, red);
     expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the bake, which the dropped undo put back");
     EXPECT_EQ(record, getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue());
     EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
@@ -3505,7 +3517,7 @@ TEST_F(TexturePaintTest, AnUndoDroppedAfterItsFileStepRanThatCannotPutTheFilesBa
 
     {
         FailReverses failing;
-        dropUndoAfterItsFileStep(paint, command);
+        dropUndoAfterItsFileStep(paint, command, red);
         EXPECT_TRUE(pumpUntil([&]() { return getKnob<KnobString>(paint, kTexturePaintParamBakedOutput)->getValue() == before; }, 30000)) << "the record follows the files";
     }
     expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.5f, 0.5f, 0.5f, 1.f, "the file before the bake, which the undo left");

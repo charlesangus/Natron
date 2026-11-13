@@ -28,21 +28,23 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <thread>
 #include <vector>
 
-#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1553,41 +1555,101 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
 }
 
 namespace {
-// Taken as the library loads, before any bake of this process began.
-const std::filesystem::file_time_type kLoadedAt = std::filesystem::file_time_type::clock::now();
+const std::size_t kBakeSpaceDigits = 12;
 
-const std::string&
-bakeHostName()
+struct BakeProcess {
+    std::string space;
+    unsigned long long started = 0;
+    bool known = false;
+};
+
+const BakeProcess&
+bakeProcess()
 {
-    static const std::string host = []() {
-        char name[256] = {};
-        std::string found = (::gethostname(name, sizeof(name) - 1) == 0) ? std::string(name) : std::string();
-        // The name ends a file name, after the only '@' in it.
-        std::replace(found.begin(), found.end(), '/', '_');
-        std::replace(found.begin(), found.end(), '@', '_');
+    static const BakeProcess process = []() {
+        BakeProcess found;
+        std::string boot;
+        std::ifstream bootFile("/proc/sys/kernel/random/boot_id");
+        std::getline(bootFile, boot);
+        char link[256] = {};
+        const ssize_t length = ::readlink("/proc/self/ns/pid", link, sizeof(link) - 1);
+        if (boot.empty() || (length <= 0)) {
+            return found;
+        }
+        // FNV-1a: only a tag telling namespaces apart, so a short slice of it is enough.
+        std::uint64_t hash = 14695981039346656037ull;
+        for (const char c : boot + "/" + std::string(link, (std::size_t)length)) {
+            hash ^= (unsigned char)c;
+            hash *= 1099511628211ull;
+        }
+        char digits[17] = {};
+        std::snprintf(digits, sizeof(digits), "%016llx", (unsigned long long)hash);
+        found.space.assign(digits, kBakeSpaceDigits);
+        found.known = TexturePaint::processStartTime((long)::getpid(), &found.started);
 
-        return found.empty() ? std::string("localhost") : found;
+        return found;
     }();
 
-    return host;
-}
-
-bool
-isProcessAlive(long pid)
-{
-    return (pid > 0) && ((::kill((pid_t)pid, 0) == 0) || (errno == EPERM));
+    return process;
 }
 } // anon namespace
 
+const std::string&
+TexturePaint::bakeProcessSpace()
+{
+    static const std::string empty;
+
+    return bakeProcess().known ? bakeProcess().space : empty;
+}
+
+bool
+TexturePaint::processStartTime(long pid,
+                               unsigned long long* ticks)
+{
+    if (pid <= 0) {
+        return false;
+    }
+    std::ifstream file("/proc/" + std::to_string(pid) + "/stat");
+    std::string stat;
+    if (!std::getline(file, stat)) {
+        return false;
+    }
+    // The command name before ')' may itself hold spaces and parentheses.
+    const std::size_t close = stat.rfind(')');
+    if (close == std::string::npos) {
+        return false;
+    }
+    std::istringstream fields(stat.substr(close + 1));
+    std::string field;
+    // Field 22 of the line is the 20th after the command name.
+    for (int i = 0; i < 20; ++i) {
+        if (!(fields >> field)) {
+            return false;
+        }
+    }
+    if (field.empty() || (field.find_first_not_of("0123456789") != std::string::npos)) {
+        return false;
+    }
+    try {
+        *ticks = std::stoull(field);
+    } catch (...) {
+        return false;
+    }
+
+    return true;
+}
+
 std::string
 TexturePaint::bakeTempPath(const std::string& path,
+                           const std::string& space,
                            long pid,
+                           unsigned long long started,
                            unsigned int serial)
 {
     const std::filesystem::path target(path);
     std::filesystem::path temp = target;
 
-    temp.replace_filename("." + target.stem().string() + ".baking" + std::to_string(pid) + "_" + std::to_string(serial) + "@" + bakeHostName() + target.extension().string());
+    temp.replace_filename("." + target.stem().string() + ".baking" + std::to_string(pid) + "_" + std::to_string(started) + "_" + std::to_string(serial) + "@" + space + target.extension().string());
 
     return temp.string();
 }
@@ -1595,7 +1657,10 @@ TexturePaint::bakeTempPath(const std::string& path,
 void
 TexturePaint::removeStaleBakeTemps(const std::string& directory)
 {
-    const std::string& host = bakeHostName();
+    const std::string& space = bakeProcessSpace();
+    if (space.empty()) {
+        return;
+    }
     std::error_code ec;
 
     for (std::filesystem::directory_iterator it(directory.empty() ? std::string(".") : directory, ec), end; !ec && (it != end); it.increment(ec)) {
@@ -1605,23 +1670,27 @@ TexturePaint::removeStaleBakeTemps(const std::string& directory)
         if ((name.empty() || (name[0] != '.')) || (baking == std::string::npos) || (baking == 0)) {
             continue;
         }
+        // A pid of another namespace names another process, whatever it is here.
         const std::string rest = name.substr(at + 1);
-        // On another host the pid names another process; the extension follows the host name.
-        const bool ownHost = (rest == host) || ((rest.compare(0, host.size() + 1, host + ".") == 0) && (rest.find('.', host.size() + 1) == std::string::npos));
-        const std::string serials = name.substr(baking + 7, at - baking - 7);
-        const std::size_t underscore = serials.find('_');
-        if (!ownHost || (underscore == std::string::npos) || (underscore == 0) || (underscore + 1 == serials.size()) || (serials.find_first_not_of("0123456789_") != std::string::npos) || (serials.find('_', underscore + 1) != std::string::npos)) {
+        if ((rest.compare(0, space.size(), space) != 0) || ((rest.size() > space.size()) && ((rest[space.size()] != '.') || (rest.find('.', space.size() + 1) != std::string::npos)))) {
+            continue;
+        }
+        const std::string numbers = name.substr(baking + 7, at - baking - 7);
+        const std::size_t first = numbers.find('_');
+        const std::size_t second = (first == std::string::npos) ? std::string::npos : numbers.find('_', first + 1);
+        if ((first == 0) || (second == std::string::npos) || (second == first + 1) || (second + 1 == numbers.size()) || (numbers.find_first_not_of("0123456789_") != std::string::npos) || (numbers.find('_', second + 1) != std::string::npos)) {
             continue;
         }
         long pid = 0;
+        unsigned long long recorded = 0;
         try {
-            pid = std::stol(serials.substr(0, underscore));
+            pid = std::stol(numbers.substr(0, first));
+            recorded = std::stoull(numbers.substr(first + 1, second - first - 1));
         } catch (...) {
             continue;
         }
-        std::error_code timed;
-        const std::filesystem::file_time_type written = std::filesystem::last_write_time(it->path(), timed);
-        if (timed || isProcessAlive(pid) || (written >= kLoadedAt)) {
+        unsigned long long running = 0;
+        if (processStartTime(pid, &running) && (running == recorded)) {
             continue;
         }
         std::error_code removed;
@@ -1660,7 +1729,7 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
             continue;
         }
         static std::atomic<unsigned int> written(0);
-        const std::string temp = bakeTempPath(path, (long)::getpid(), ++written);
+        const std::string temp = bakeTempPath(path, bakeProcess().space, (long)::getpid(), bakeProcess().started, ++written);
         std::error_code ec;
         if (!TexturePaintCache::writeTile(temp, run.size, *rgba, std::string(), error, true)) {
             std::filesystem::remove(temp, ec);
@@ -2360,7 +2429,8 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
                             }
                             const KnobStringPtr record = self->_bakedOutput.lock();
                             const std::string current = record ? record->getValue() : std::string();
-                            if ((*flag == swapped) && (current == (swapped ? kept.bakedRecord : kept.record))) {
+                            const bool followed = (*flag == swapped) && (current == (swapped ? kept.bakedRecord : kept.record));
+                            if (followed) {
                                 *flag = !swapped;
                                 if (swapped) {
                                     self->restoreBakeOutputState(kept);
@@ -2368,7 +2438,15 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
                                     self->reapplyBakeOutputState(kept);
                                 }
                             }
-                            self->setPersistentMessage(eMessageTypeError, (swapped ? TexturePaint::tr("An undo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays undone, as its files are.") : TexturePaint::tr("A redo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays redone, as its files are.")).arg(QString::fromStdString(failure)).toStdString()); }, Qt::QueuedConnection);
+                            QString message;
+                            if (!followed) {
+                                message = swapped ? TexturePaint::tr("An undo of Bake Output stopped after moving its files, which could not be moved back (%1).") : TexturePaint::tr("A redo of Bake Output stopped after moving its files, which could not be moved back (%1).");
+                            } else if (swapped) {
+                                message = TexturePaint::tr("An undo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays undone, as its files are.");
+                            } else {
+                                message = TexturePaint::tr("A redo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays redone, as its files are.");
+                            }
+                            self->setPersistentMessage(eMessageTypeError, message.arg(QString::fromStdString(failure)).toStdString()); }, Qt::QueuedConnection);
                     });
                 }
             }

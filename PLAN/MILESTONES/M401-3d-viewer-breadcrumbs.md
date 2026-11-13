@@ -57,31 +57,31 @@ Viewer Stage's lazy loading and M332 - Scene Graph Points' multiple panels.
 
 ## Phase 401.1: The bar
 
-- [ ] M401.P1.T1 — Breadcrumb bar above the 3D view
+- [x] M401.P1.T1 — Breadcrumb bar above the 3D view
   - files: new `Gui/SceneBreadcrumbBar.{h,cpp}`, `Gui/CMakeLists.txt`, `Gui/ViewerTab.cpp` (`viewerSubContainerLayout`, near the `SceneViewport` insertion), `Gui/SceneViewport.cpp` (HUD path text), new `Tests/gui/scene_breadcrumbs.py`
   - approach: a `QWidget` strip inserted above the `SceneViewport` and shown and hidden with it. It listens to `selectionChanged` and renders the current (last) path as `/` plus one flat button per segment, with a "+N" badge when several prims are selected (the badge does nothing until M401.P2.T1). Click calls `select({path}, Replace)`, Shift-click calls `Add`, and `/` clears. Each refresh checks which segments exist through `readStage` and greys missing ones. When the bar is too narrow, the middle segments collapse into a "…" button whose menu lists them. Remove only the path part of the HUD string (`SceneViewport.cpp` ~5186-5194). Keep a test hook that returns the segment texts and states.
   - verify: GUI script under Xvfb — select `/geo/group_1/a_thing/mesh` (build the hierarchy with the existing scene fixtures), check that the segments read `geo, group_1, a_thing, mesh`; click `group_1` and the viewport selection is `/geo/group_1`; Shift-click adds; `/` clears; prune the prim and check the trailing segments are greyed; narrow the viewer to 1920x1080 split width and check the "…" elision appears; the HUD no longer contains the path.
   - size: M
 
-- [ ] M401.P1.T2 — Chevron children and sibling popups
+- [x] M401.P1.T2 — Chevron children and sibling popups
   - files: `Gui/SceneBreadcrumbBar.cpp`, new `Gui/ScenePrimListPopup.{h,cpp}`, `Gui/SceneGraphModel.{h,cpp}` (export `childPredicate()` and the type-icon lookup), `Tests/gui/scene_breadcrumbs.py`
   - approach: a chevron after each segment (and after `/`) opens a popup with a filter field over a lazy `QAbstractListModel` that fetches child names in batches through `readStage`, using `GetFilteredChildrenNames(childPredicate())`, with the panel's type icons. Right-click on a segment opens the same popup over that prim's parent, with the segment's prim highlighted (siblings). Picking a row selects it. A prim with `HasAuthoredPayloads() && !IsLoaded()` gets a "Not loaded" row whose Load button calls `SceneViewport::requestLoad({path}, false)`, and the list refreshes when the stage's edit count changes.
   - verify: GUI script — the chevron on `group_1` lists its children; right-click lists `group_1, group_2`, and choosing `group_2` selects `/geo/group_2`; the filter narrows a 10k-child fixture without the main thread stalling past the viewer stall budget; on an unloaded payload, the "Not loaded" row's Load fills the list.
   - size: M
 
-- [ ] M401.P1.T3 — Segment menu, tooltips and double-click frame
+- [x] M401.P1.T3 — Segment menu, tooltips and double-click frame
   - files: `Gui/SceneBreadcrumbBar.cpp`, `Tests/gui/scene_breadcrumbs.py`
   - approach: the segment context menu holds Siblings (opens M401.P1.T2's popup), Copy Path (that segment's path), Copy Selected Paths (newline-joined) and Frame (select, then `SceneViewport::frameSelection()`). Double-click on a segment does the same as Frame. The tooltip reads type name, kind and loaded state from the prim at hover time through `readStage`, and on a missing segment says "Not in this scene".
   - verify: GUI script — Copy Path puts `/geo/group_1` on the clipboard; Copy Selected Paths with two selected gives both lines; double-click selects and changes the camera (framing happened); a tooltip's text names the prim's type.
   - size: M
 
-- [ ] M401.P1.T4 — Drag paths onto knobs
+- [x] M401.P1.T4 — Drag paths onto knobs
   - files: `Gui/SceneBreadcrumbBar.cpp`, `Tests/gui/scene_breadcrumbs_drag.py`
   - approach: start a drag from a segment past the drag threshold carrying that path, and from the "+N" badge carrying every selected path. Build the `QMimeData` exactly as `SceneGraphModel::mimeData` does: `primPathsMimeType()` and newline-joined `setText`. Expose the mime builder to the test hook. Knob drop targets (`KnobLineEdit::dropEvent` → `KnobGuiString::dropPrimPaths`) stay unchanged.
   - verify: GUI script after `Tests/gui/scene_graph_drag.py` — the bar's mime for the `group_1` segment, dropped on a USDPrune pattern knob, writes `/geo/group_1`; the badge's mime with two selected writes both to the pattern knob, and a path knob takes one, the same as a Scene Graph drag.
   - size: M
 
-- [ ] M401.P1.T5 — Show In Scene Graph
+- [x] M401.P1.T5 — Show In Scene Graph
   - files: `Gui/SceneBreadcrumbBar.cpp`, `Gui/SceneGraphPanel.{h,cpp}`, `Gui/Gui40.cpp` (panel lookup and creation), `Tests/gui/scene_breadcrumbs_show_in_graph.py`
   - approach: add `SceneGraphPanel::revealPaths(paths)`, which expands the ancestors (lazy, and without forcing payload loads), selects and scrolls to the prim. Add Show In Scene Graph to the segment menu. It picks the first panel following this viewer, otherwise opens a new panel following this viewer through M332 - Scene Graph Points' panel creation. It raises the panel and calls `revealPaths`. It never changes a pin silently: if multiple panels aren't available, it asks "Unpin the Scene Graph from <node> to show this prim?" and unpins only on Yes.
   - verify: GUI script — with the panel closed, the action opens a panel showing the prim selected and visible; with the only panel pinned to another node, a second viewer-following panel opens and the pinned one keeps its pin and node (or, without multiple panels, the unpin question appears and No leaves the pin unchanged).
@@ -89,13 +89,13 @@ Viewer Stage's lazy loading and M332 - Scene Graph Points' multiple panels.
 
 ## Phase 401.2: Multi-selection and pickwalk
 
-- [ ] M401.P2.T1 — "+N" dropdown with Level grouping
+- [x] M401.P2.T1 — "+N" dropdown with Level grouping
   - files: `Gui/SceneBreadcrumbBar.cpp`, new `Gui/SceneBreadcrumbListPopup.{h,cpp}`, `Tests/gui/scene_breadcrumbs_multi.py`
   - approach: the badge toggles a popup under the bar: a `QListView` over a model of selected paths, with a delegate that paints each row as breadcrumbs and hit-tests segments, so there is no widget per row and huge selections stay fast. The Level spinner (0 = off, full paths) groups rows by their ancestor at that depth, shown as `/geo/group_1 (14)`, computed incrementally off the selection list with no stage read. Clicking a segment in a row selects that prim. Dragging a row carries its path (a grouped row carries its ancestor) with the same mime as M401.P1.T4.
   - verify: GUI script — with 20 prims across two groups selected, the dropdown lists 20 rows; Level 2 shows `/geo/group_1 (14)` and `/geo/group_2 (6)`; clicking `group_2` in a row selects only `/geo/group_2`; 100k selected paths open the popup within the stall budget.
   - size: L
 
-- [ ] M401.P2.T2 — Pickwalk shortcuts
+- [x] M401.P2.T2 — Pickwalk shortcuts
   - files: `Gui/GuiApplicationManager10.cpp` (`registerKeybind` in a 3D-viewer group), `Gui/ActionShortcuts.h` (IDs and descriptions), `Gui/SceneViewport.{h,cpp}`, `Tests/gui/scene_pickwalk.py`
   - approach: register Pickwalk Parent (Alt+Left), Child (Alt+Right), Previous Sibling (Alt+Up) and Next Sibling (Alt+Down), active while the 3D view or the bar has focus. Each walks every selected prim through `readStage` with `childPredicate()`, merges duplicates, and keeps the walked current prim last. Child goes to the remembered last child for that parent (a small per-viewport map filled on Parent walks), else the first. Siblings wrap. Ends that have nowhere to go leave the prim in place. Check the registry has no conflicting binding in the groups active over the viewer.
   - verify: GUI script — from `/geo/group_1/a_thing/mesh`, Alt+Left twice gives `/geo/group_1`, Alt+Right gives back `a_thing`, Alt+Down from `group_1` gives `group_2` and wraps from the last; with two prims selected, Alt+Left merges siblings into one parent; the keys appear in the shortcut editor and can be rebound.
@@ -108,3 +108,4 @@ Viewer Stage's lazy loading and M332 - Scene Graph Points' multiple panels.
 - 2026-11-12 — P2.T1 implemented (0e126172f): one-pass grouping over `QStringView`s into the stored paths; the popup hides during a row drag and closes after; `selectPaths` accepts paths the stage lacks, so the 100k case uses synthetic paths.
 - 2026-11-13 — Phase 2 implemented (0e126172f, 83ed9a2a5). The gate's binding-count test was updated for the four pickwalk keys (bd9bc2cbd). Gate run 43382042162: ctest green, GUI 14 of 160 checks failed. Fixes in 3431bda7c: the bar and child popup waited on `isSceneSynced()`, which includes the engine's frame, and now gate on a new `isStageSynced()`; Show In Scene Graph docked its panel over the viewer it came from. Harness fixes: click menu entries, frame distinct prims, rebind the primary field, and focus via a real click. **Show In Scene Graph places a closed or new panel in the first pane that isn't the viewer's (PM call); an open panel stays put.** A screenshot goes to F4's UAT.
 - 2026-11-13 — Gate run 43417013167 on 0682e5a6e: `scene_breadcrumbs.py` failed because a deactivated (pruned) prim still returns a valid `UsdPrim`; the bar now uses the Scene Graph panel's on-stage rule (6e397b84b). A `USDRenderMoonRayTest` segfault in the task-graph leg passed on its rerun. Re-gating (run 43441206714).
+- 2026-11-13 — Gate green (run 43441206714 on 6e397b84b): build, both ctest legs and all seven breadcrumb and scene-graph GUI scripts. Rebasing onto F4 (M329 - Viewer Draw States landed there); the rebased branch re-gates before the PR merges.

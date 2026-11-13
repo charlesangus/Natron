@@ -5114,7 +5114,15 @@ SceneViewport::paintGL()
     if (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId) {
         // Storm draws on the GUI thread, for most of a second a frame on software GL, so scripts
         // need its start to tell a stall before the frame from the frame itself.
-        setProperty("natronSceneStormPaintStartMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
+        const qlonglong startMs = QDateTime::currentMSecsSinceEpoch();
+        setProperty("natronSceneStormPaintStartMs", QVariant::fromValue<qlonglong>(startMs));
+        // Several frames can begin between two polls; the list lets a poller find the first.
+        QVariantList starts = property("natronSceneStormPaintStarts").toList();
+        starts.append(QVariant::fromValue<qlonglong>(startMs));
+        while (starts.size() > 16) {
+            starts.removeFirst();
+        }
+        setProperty("natronSceneStormPaintStarts", starts);
         setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(property("natronSceneStormPaints").toULongLong() + 1));
     }
     const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);

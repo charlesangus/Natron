@@ -13,7 +13,7 @@ A heartbeat, a 5 ms Qt timer on the main thread, records the gap between its tic
 GUI thread blocked on a lock burns no CPU, so a CPU-time budget would hide it). Starting once Storm
 has drawn the scene, the longest gap, including the script's own menu work, must stay under 100 ms
 in every phase. On the switch to Storm a gap in which a Storm frame began counts only up to the
-frame's start (natronSceneStormPaintStartMs, natronSceneStormPaints): Storm draws on the GUI thread,
+frame's start (natronSceneStormPaintStarts, natronSceneStormPaints): Storm draws on the GUI thread,
 and on software GL one frame of this scene takes most of a second however little was edited since,
 so what the switch must keep short is the work before the frame. That frame is timed after the
 switch as the longest of three synchronous repaints, with the heartbeat stopped, and reported. The
@@ -36,7 +36,7 @@ NATRON_TEST_MESHES for that machine.
 View properties read: natronSceneRenderer, natronSceneSynced, natronSceneShown, natronSceneError,
 natronSceneRendererError, natronSceneMaxSamples, natronSceneSamples, natronSceneDrawnSamples,
 natronSceneRefineConverged, natronSceneRefineFrames, natronSceneUploadMs, natronSceneEngineCount,
-natronSceneEngineHeld, natronSceneLastPaintMs, natronSceneStormPaintStartMs, natronSceneStormPaints.
+natronSceneEngineHeld, natronSceneLastPaintMs, natronSceneStormPaintStarts, natronSceneStormPaints.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -305,9 +305,10 @@ try:
             gap = (now - beat["last"]) * 1000.0
             beat["raw_max"][beat["phase"]] = max(beat["raw_max"].get(beat["phase"], 0.0), gap)
             if beat["phase"] in TO_PAINT_START and storm_paints > beat["storm_paints"]:
-                # The property holds the latest frame's start, so with two frames in one gap the
-                # first counts against it: stricter, never looser.
-                start_ms = float(view_prop("natronSceneStormPaintStartMs", now_wall_ms))
+                # Trim to the earliest frame that began inside this gap, not the latest.
+                starts = [float(t) for t in view_prop("natronSceneStormPaintStarts", [])
+                          if float(t) >= beat["last_wall_ms"]]
+                start_ms = min(starts) if starts else float(view_prop("natronSceneStormPaintStartMs", now_wall_ms))
                 gap = min(gap, max(0.0, start_ms - beat["last_wall_ms"]))
                 beat["paints_in_gap"] = max(beat["paints_in_gap"], storm_paints - beat["storm_paints"])
             if gap > beat["max"].get(beat["phase"], 0.0):

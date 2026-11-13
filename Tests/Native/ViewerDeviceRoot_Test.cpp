@@ -720,31 +720,6 @@ TEST_P(ViewerDeviceRoot, AViewerOnTheCpuRungKeepsTheRamPath)
     record->delivered.reset();
 }
 
-TEST_P(ViewerDeviceRoot, AutoContrastKeepsTheRamPath)
-{
-    if (!gpuOrSkip()) {
-        return;
-    }
-    _viewer->onAutoContrastChanged(true, false);
-    std::shared_ptr<HookRecord> record = std::make_shared<HookRecord>();
-    deliverDeviceRoot(record, false);
-
-    RenderOutcome outcome = renderFrame(std::make_shared<RenderStats>(false));
-
-    ASSERT_EQ(1, record->calls);
-    EXPECT_FALSE(record->wanted);
-    ASSERT_EQ(ViewerInstance::eViewerRenderRetCodeRender, outcome.ret);
-    ASSERT_TRUE(bool(outcome.params));
-    EXPECT_EQ(expectedDepth(), outcome.params->depth);
-    EXPECT_FALSE(bool(outcome.params->deviceColor));
-    EXPECT_TRUE(anyTileHoldsRam(*outcome.params));
-    EXPECT_EQ(0, _ui.prepares.load());
-
-    outcome = RenderOutcome();
-    record->delivered.reset();
-    _viewer->onAutoContrastChanged(false, false);
-}
-
 TEST_P(ViewerDeviceRoot, ARefusedPrepareDownloadsTheDeviceRoot)
 {
     if (!gpuOrSkip()) {

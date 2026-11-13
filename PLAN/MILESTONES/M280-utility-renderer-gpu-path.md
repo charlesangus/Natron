@@ -83,3 +83,4 @@ GPU for downstream GPU nodes and the viewer.
 - 2026-11-01 — **GPU out-of-memory falls back to CPU in Auto, with a warning (user).**
 - 2026-11-01 — **Resident output in this milestone (user):** matches 2026-10-10-gpu-residency-from-day-one.
 - 2026-11-01 — **No compute-shader BVH (user):** GPUs without ray-tracing hardware use the CPU path.
+- 2026-11-12 — P1.T1 implemented (fd227125d); F7 took main (0c83f0148, one HydraRenderImpl conflict: main's publish/finished rule kept with the Utility delegate's whole-frame rule on top) and is merged into this branch. lavapipe's driver library names all three extensions; whether it sets the feature bits prints on the first test run.

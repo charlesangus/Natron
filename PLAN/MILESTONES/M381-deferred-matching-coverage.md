@@ -116,7 +116,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 
 ## Phase 381.4: Borrowers outside an evaluation
 
-- [ ] M381.P4.T1 — USDRender reads only its settings chain
+- [x] M381.P4.T1 — USDRender reads only its settings chain
   - files: `Engine/Nodes/Scene/USDRender.cpp` (~:273, `readActiveSettings` ~:334, `deriveOutputMetadata` ~:552), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: `readActiveSettings` reads `renderSettingsPrimPath` with none loaded, then `withPaths` on the settings prim and its camera target. The settings-prim menu uses `eRuleAll` on `/Render`. `deriveOutputMetadata` stays everything (render output); check which thread runs it and report a main-thread stall in `## Decisions`.
   - verify: `getRegionOfDefinition` on the city opens 0 buildings with unchanged resolution.
@@ -140,6 +140,12 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: refresh returns before the worker ends; 0 buildings opened; the row count is right.
   - size: L
 
+- [ ] M381.P4.T6 — USDRender output metadata without a main-thread full load
+  - files: `Engine/Nodes/Scene/USDRender.cpp` (`deriveOutputMetadata`), `Engine/Nodes/NativeEffectBase.cpp` (~:509 `getMetadata`), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
+  - approach: `deriveOutputMetadata` borrows everything and is reached on the main thread (`refreshMetadataSideEffects` → `getMetadata`, the viewer tab and node graph), so the first derive after each change stalls the UI on a heavy scene. Find what it actually reads (settings, products, AOVs, camera) and read only those chains through `withPaths`; anything that truly needs the whole stage moves to the render thread, with the metadata refreshed when it arrives.
+  - verify: test — deriving the output metadata of a USDRender over the city with nothing loaded opens at most the settings and camera chain and gives the same metadata as with everything loaded.
+  - size: M
+
 - [ ] M381.P4.T5 — No implicit everything borrow
   - files: `Engine/Nodes/Scene/SceneQueryPool.h` (~:106) and every remaining caller
   - approach: delete `SceneQueryPool::borrow(payload, err)`; every caller names its set, with an explicit everything plus a reason for USDWrite, render metadata and Search Unloaded. Add an owner table to the `SceneQueryPool.h` doc.
@@ -156,3 +162,4 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 - 2026-11-13 — P3.T1 implemented (1094c6953). It exposed a pre-existing F4 bug from M331 - Deferred Pattern Matching: `evaluateScene` passes the caller's context unchanged to every input, but load sets and reach are in the viewer's (output) paths, so a pattern node upstream of a graft, a reference source or a material input matches nothing inside payloads and is never re-evaluated by a load (stale). Consultant design adopted: inputs evaluate on their own context through identity-by-default virtuals at the input-evaluation boundary, path-changing nodes map load sets down and reach back up, unknown mappings fall back to a superset (P3.T6, P3.T7, before P3.T2). P3.T1's parity test was vacuous (it loaded `/World/Block_0` on a `/Grp` stage) and is rewritten in P3.T7.
 - 2026-11-13 — Camera inputs that aren't composed into the output read on `withPaths(none, {camera})` rather than the viewer's set (PM call): the viewer's set says nothing about a separate camera branch.
 - 2026-11-13 — P3.T7 implemented (100056752). USD probe (pxr 26.08): a referencing prim's own load rule decides both the payloads above the referenced prim and its own payload, confirming "S's ancestors get T's self rule". The P3.T6 identity shortcut now also requires the same reach object, since a mapped input whose set equals the caller's would otherwise return unmapped reach. autoRename maps conservatively (a root picks up every `D/X_n` rule), over-loading on collisions; accepted as a correct superset (PM). USDReference with no Source Prim reads its source with everything loaded. `graftMaterialInput` is mapped in P3.T2.
+- 2026-11-13 — P4.T1 implemented (94f26acf1). `deriveOutputMetadata` stays an everything borrow but is reached on the main thread (`refreshMetadataSideEffects` → `getMetadata`, the viewer tab, the node graph), a UI stall on heavy scenes; P4.T6 added to remove it (PM, per "UI never stalls"). `prepareRender` keeps everything (render thread; the camera fallback needs the whole stage).

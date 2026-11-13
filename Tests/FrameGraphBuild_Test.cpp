@@ -938,3 +938,72 @@ TEST_F(FrameGraphBuild, ContextChainCrossesKeys)
         }
     }
 }
+
+TEST_F(FrameGraphBuild, DiamondKeepsInputNumbers)
+{
+    const AppInstancePtr app = getApp();
+
+    NodePtr top = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "NbTop");
+    NodePtr left = createNamedNode(app, PLUGINID_NATRON_GRADE, "NbLeft");
+    NodePtr right = createNamedNode(app, PLUGINID_NATRON_GRADE, "NbRight");
+    NodePtr join = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "NbJoin");
+    ASSERT_TRUE(top && left && right && join);
+    ASSERT_TRUE(left->connectInput(top, 0));
+    ASSERT_TRUE(right->connectInput(top, 0));
+    ASSERT_TRUE(join->connectInput(left, 0));
+    ASSERT_TRUE(join->connectInput(right, 1));
+
+    std::shared_ptr<FrameRequestMap> request;
+    FrameGraph graph;
+    ASSERT_TRUE(buildTaskGraph(join, &request, &graph));
+
+    for (const FrameGraph::Task& task : graph.tasks) {
+        EXPECT_EQ(task.dependencies.size(), task.dependencyInputNbs.size()) << task.key.node->getScriptName();
+    }
+    const std::vector<int> joinTasks = tasksOf(graph, join);
+    ASSERT_EQ(1u, joinTasks.size());
+    const FrameGraph::Task& joinTask = graph.tasks[joinTasks.front()];
+    ASSERT_EQ(2u, joinTask.dependencies.size());
+    for (std::size_t e = 0; e < joinTask.dependencies.size(); ++e) {
+        const NodePtr& input = graph.tasks[joinTask.dependencies[e]].key.node;
+        EXPECT_EQ(input == left ? 0 : 1, joinTask.dependencyInputNbs[e]) << input->getScriptName();
+    }
+
+    const std::vector<int> topTasks = tasksOf(graph, top);
+    ASSERT_EQ(1u, topTasks.size());
+    EXPECT_EQ(2u, graph.tasks[topTasks.front()].consumerTasks.size());
+    for (const std::vector<int>& tasks : { tasksOf(graph, left), tasksOf(graph, right) }) {
+        ASSERT_EQ(1u, tasks.size());
+        ASSERT_EQ(1u, graph.tasks[tasks.front()].dependencyInputNbs.size());
+        EXPECT_EQ(0, graph.tasks[tasks.front()].dependencyInputNbs.front());
+    }
+}
+
+TEST_F(FrameGraphBuild, DuplicateEdgesKeepBothInputNumbers)
+{
+    const AppInstancePtr app = getApp();
+
+    NodePtr source = createNamedNode(app, PLUGINID_NATRON_CONSTANT, "DupSource");
+    NodePtr merge = createNamedNode(app, PLUGINID_NATRON_NATIVE_MERGE, "DupMerge");
+    ASSERT_TRUE(source && merge);
+    ASSERT_TRUE(merge->connectInput(source, 0));
+    ASSERT_TRUE(merge->connectInput(source, 1));
+
+    std::shared_ptr<FrameRequestMap> request;
+    FrameGraph graph;
+    ASSERT_TRUE(buildTaskGraph(merge, &request, &graph));
+
+    const std::vector<int> mergeTasks = tasksOf(graph, merge);
+    const std::vector<int> sourceTasks = tasksOf(graph, source);
+    ASSERT_EQ(1u, mergeTasks.size());
+    ASSERT_EQ(1u, sourceTasks.size());
+    const FrameGraph::Task& mergeTask = graph.tasks[mergeTasks.front()];
+    ASSERT_EQ(2u, mergeTask.dependencies.size());
+    EXPECT_EQ(sourceTasks.front(), mergeTask.dependencies[0]);
+    EXPECT_EQ(sourceTasks.front(), mergeTask.dependencies[1]);
+    ASSERT_EQ(2u, mergeTask.dependencyInputNbs.size());
+    std::vector<int> numbers = mergeTask.dependencyInputNbs;
+    std::sort(numbers.begin(), numbers.end());
+    EXPECT_EQ((std::vector<int> { 0, 1 }), numbers);
+    EXPECT_EQ(2, graph.tasks[sourceTasks.front()].consumers);
+}

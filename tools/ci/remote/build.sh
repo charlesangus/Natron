@@ -5,8 +5,8 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage]
-#                            [--cmake-arg <arg>]... [--gui "<script> ..."]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
+#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
@@ -16,6 +16,12 @@
 #                        the -DDEBUG traps. It behaves as --no-appimage.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
+#   --scheduler <legacy|taskgraph> -> implies --tests; runs only that scheduler's
+#                        ctest leg and smoke test instead of both, which halves the
+#                        wait of an intermediate fix build. Without it both legs
+#                        run. A milestone's verification gate must run without it.
+#                        The smoke renders of the two schedulers are compared
+#                        only when both legs ran.
 #   --record-goldens  -> implies --tests; also records the native and Cycles golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest)
@@ -36,6 +42,12 @@
 #                        timeout is a fixed 120 minutes, which fits about five
 #                        seeds on the debug preset, so at most 5 seeds are
 #                        accepted.
+#   --repeat-test <name>:<N> -> implies --tests; after its normal ctest run, each ctest
+#                        leg runs the one ctest case matching the regex <name> N times
+#                        under background ctest load (`tools/ci/local/test.sh repeat
+#                        <name> <N>`), stopping at the first failure. The log is
+#                        ctest-<scheduler>-repeat.log next to the ctest log. <name>
+#                        must not contain a colon or whitespace.
 #   --no-appimage     -> skip packaging and downloading the AppImage.
 #   --cmake-arg <arg> -> pass <arg> to the remote cmake configure, e.g.
 #                        --cmake-arg -DNATRON_GPU=OFF. Repeatable. The args reach
@@ -73,7 +85,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -110,6 +122,8 @@ RUN_TESTS=false
 RECORD_GOLDENS=false
 WANT_APPIMAGE=true
 SHUFFLE_SEEDS=""
+REPEAT_TEST=""
+SCHEDULERS="legacy,taskgraph"
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
 FROM_RUN=""
@@ -147,6 +161,17 @@ while [[ $# -gt 0 ]]; do
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
+        --scheduler)
+            if [[ $# -eq 0 || ( "$1" != "legacy" && "$1" != "taskgraph" ) ]]; then
+                echo "build.sh: --scheduler needs legacy or taskgraph, got '${1:-}'" >&2
+                usage
+                exit 1
+            fi
+            SCHEDULERS="$1"
+            shift
+            RUN_TESTS=true
+            BUILD_OPTION=true
+            ;;
         --shuffle-seeds)
             if [[ $# -eq 0 ]]; then
                 echo "build.sh: --shuffle-seeds needs a comma-separated list of seeds" >&2
@@ -154,6 +179,17 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             SHUFFLE_SEEDS="$1"
+            shift
+            RUN_TESTS=true
+            BUILD_OPTION=true
+            ;;
+        --repeat-test)
+            if [[ $# -eq 0 || ! "$1" =~ ^[^:[:space:]]+:[1-9][0-9]*$ ]]; then
+                echo "build.sh: --repeat-test needs <name>:<N> (no colon or whitespace in name, N a positive integer), got '${1:-}'" >&2
+                usage
+                exit 1
+            fi
+            REPEAT_TEST="$1"
             shift
             RUN_TESTS=true
             BUILD_OPTION=true
@@ -311,7 +347,16 @@ if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "build.sh: warning: uncommitted changes are not part of the remote build" >&2
 fi
 
-TOKEN="${PRESET}-${HEAD_SHA:0:8}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+TOKEN="#$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+
+LABEL="$(gh pr list --head "${BRANCH}" --state open --json title --jq '.[0].title // empty' 2>/dev/null || true)"
+LABEL="${LABEL:-${BRANCH}}"
+
+# A ref whose workflow predates the repeat_test input rejects it, so send it only when used.
+REPEAT_ARGS=()
+if [[ -n "${REPEAT_TEST}" ]]; then
+    REPEAT_ARGS=(-f "repeat_test=${REPEAT_TEST}")
+fi
 
 echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token=${TOKEN} =="
 gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
@@ -320,7 +365,10 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "record_goldens=${RECORD_GOLDENS}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
+    ${REPEAT_ARGS[@]+"${REPEAT_ARGS[@]}"} \
+    -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
+    -f "label=${LABEL}" \
     -f "token=${TOKEN}" \
     -f "gui_scripts=${GUI_SCRIPTS}" \
     -f "from_run=${FROM_RUN}" \
@@ -472,7 +520,7 @@ if [[ -n "${GUI_SCRIPTS}" ]]; then
         else
             echo "build.sh: run ${RUN_ID} uploaded no output for ${script}" >&2
         fi
-        conclusion="$(awk -F'\t' -v job="gui (${name})" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
+        conclusion="$(awk -F'\t' -v job="GUI · ${name}" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
         detail=""
         if [[ -f "${dir}/results.txt" ]]; then
             detail="$(grep -c '^PASS' "${dir}/results.txt" || true) passed, $(grep -c '^FAIL' "${dir}/results.txt" || true) failed"

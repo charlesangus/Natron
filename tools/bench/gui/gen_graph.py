@@ -24,16 +24,16 @@ import random
 
 import NatronEngine
 
-GRADE = "net.sf.openfx.GradePlugin"
-BLUR = "net.sf.cimg.CImgBlur"
-TRANSFORM = "net.sf.openfx.TransformPlugin"
-COLORCORRECT = "net.sf.openfx.ColorCorrectPlugin"
+GRADE = "Grade"
+BLUR = "Blur"
+TRANSFORM = "Transform"
+COLORCORRECT = "ColorCorrect"
 MERGE = "Merge"
-SOURCE = "net.sf.openfx.CheckerBoardPlugin"
-GROUP = "fr.inria.built-in.Group"
-GROUP_INPUT = "fr.inria.built-in.Input"
-GROUP_OUTPUT = "fr.inria.built-in.Output"
-BACKDROP = "fr.inria.built-in.BackDrop"
+SOURCE = "CheckerBoard"
+GROUP = "Group"
+GROUP_INPUT = "Input"
+GROUP_OUTPUT = "Output"
+BACKDROP = "Backdrop"
 
 KIND_PREFIX = {GRADE: "Grade", BLUR: "Blur", TRANSFORM: "Transform", COLORCORRECT: "ColorCorrect", MERGE: "Merge"}
 PROCESSING = frozenset(KIND_PREFIX)
@@ -203,6 +203,8 @@ class _Builder(object):
         for i in range(inner):
             stream = self._filter(stream, group, gname)
             stream.setPosition(0.0, (i + 1) * ROW_H)
+        if g_out.getInput(0) is not None:
+            g_out.disconnectInput(0)
         self._connect(g_out, 0, stream)
         g_out.setPosition(0.0, (inner + 1) * ROW_H)
         return group, inner

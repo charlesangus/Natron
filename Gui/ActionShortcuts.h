@@ -222,7 +222,7 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutDescActionCloseTab "Close Tab"
 
 #define kShortcutIDActionColorTrackball "colorTrackball"
-#define kShortcutDescActionColorTrackball "Engage Colour Trackball (C/S/T/V modes)"
+#define kShortcutDescActionColorTrackball "Engage Global Mode on the Hovered or Last-Touched Knob"
 
 /////////VIEWER SHORTCUTS
 #define kShortcutIDActionLuminance "luminance"
@@ -520,6 +520,9 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionGraphShowLinkLines "showLinkLines"
 #define kShortcutDescActionGraphShowLinkLines "Show Link Lines"
+
+#define kShortcutIDActionGraphShowGpuRegions "showGpuRegions"
+#define kShortcutDescActionGraphShowGpuRegions "Show GPU Regions"
 
 #define kShortcutIDActionGraphNavigateUpstream "navigateUp"
 #define kShortcutDescActionGraphNavigateUpstream "Navigate Tree Upward"

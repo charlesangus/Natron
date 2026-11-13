@@ -28,17 +28,23 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <list>
 #include <map>
 #include <set>
-#include <list>
-#include <vector>
 #include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QBrush>
 #include <QColor>
+#include <QFont>
+#include <QLineF>
 #include <QMutex>
 #include <QPainterPath>
+#include <QPen>
 #include <QRectF>
 #include <QSize>
 GCC_ONLY_DIAG_OFF(class-memaccess)
@@ -61,34 +67,37 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-struct NodeGuiIndicatorPrivate;
+class NodeGuiDecorations;
 
+/**
+ * @brief A badge drawn at a corner or edge of a node. Badges are not scene items of their own: a
+ * node's badges are all drawn, hit and given tooltips by its NodeGuiDecorations item.
+ **/
 class NodeGuiIndicator
 {
 public:
-
-    NodeGuiIndicator(NodeGraph* graph,
-                     int depth,
-                     const QString & text,
-                     const QPointF & topLeft,
+    /**
+     * @brief A badge filled with a radial gradient, showing a letter.
+     **/
+    NodeGuiIndicator(NodeGuiDecorations* layer,
+                     const QString& text,
+                     const QPointF& topLeft,
                      int width,
                      int height,
-                     const QGradientStops & gradient,
-                     const QColor & textColor,
-                     QGraphicsItem* parent);
+                     const QGradientStops& gradient,
+                     const QColor& textColor);
 
     /**
      * @brief A badge of the given diameter filled with fill, showing icon stroked in iconColor. The icon
      * is a vector path centred on (0,0) that fits in the badge: it scales with the graph and stays crisp
      * at any zoom and device pixel ratio.
      **/
-    NodeGuiIndicator(int depth,
+    NodeGuiIndicator(NodeGuiDecorations* layer,
                      const QPainterPath& icon,
                      const QPointF& center,
                      double diameter,
                      const QColor& fill,
-                     const QColor& iconColor,
-                     QGraphicsItem* parent);
+                     const QColor& iconColor);
 
     ~NodeGuiIndicator();
 
@@ -101,8 +110,116 @@ public:
     void refreshPosition(const QPointF & center);
 
 private:
+    NodeGuiDecorations* _layer;
+    std::size_t _index;
+};
 
-    std::unique_ptr<NodeGuiIndicatorPrivate> _imp;
+/**
+ * @brief Draws all of a node's badges as one scene item, in the order they were added. Each badge
+ * keeps the look, hit area and tooltip it had as separate ellipse, text and path items.
+ **/
+class NodeGuiDecorations
+    : public QGraphicsItem {
+public:
+    enum {
+        Type = UserType + 2
+    };
+
+    struct Badge {
+        bool active = false;
+        QString toolTip;
+        QRectF ellipseRect;
+        QBrush ellipseBrush;
+        QPen ellipsePen;
+        QGradientStops gradStops;
+        bool hasText = false;
+        QString text;
+        QPointF textPos;
+        QBrush textBrush;
+        QRectF textRect;
+        bool hasIcon = false;
+        QPainterPath icon;
+        QPen iconPen;
+        QPointF iconPos;
+    };
+
+    NodeGuiDecorations(NodeGraph* graph,
+                       QGraphicsItem* parent);
+
+    virtual ~NodeGuiDecorations();
+
+    std::size_t addBadge(const Badge& badge);
+
+    Badge& badge(std::size_t index)
+    {
+        return _badges[index];
+    }
+
+    const QFont& textFont() const
+    {
+        return _textFont;
+    }
+
+    // Call after changing a badge's geometry or activity.
+    void badgeGeometryChanged();
+
+    /**
+     * @brief Sets this item's tooltip to that of the topmost active badge meeting pathLocal, or
+     * clears it, so the scene shows what the badge's own item would have shown.
+     **/
+    void refreshToolTipAt(const QPainterPath& pathLocal);
+
+    // Whether path, in local coordinates, meets a badge other than through its letter.
+    bool collidesWithPathIgnoringText(const QPainterPath& path) const;
+
+    virtual int type() const OVERRIDE FINAL
+    {
+        return Type;
+    }
+
+    virtual bool collidesWithPath(const QPainterPath& path, Qt::ItemSelectionMode mode = Qt::IntersectsItemShape) const OVERRIDE FINAL;
+    virtual QRectF boundingRect() const OVERRIDE FINAL;
+    virtual QPainterPath shape() const OVERRIDE FINAL;
+    virtual void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) OVERRIDE FINAL;
+
+private:
+    NodeGraph* _graph;
+    std::vector<Badge> _badges;
+    QFont _textFont;
+    int _textFontHeight;
+    QRectF _boundingRect;
+    // The areas of the active badges' ellipses, letters and icons, each as its own item had it.
+    std::vector<QPainterPath> _parts;
+    std::vector<QPainterPath> _partsWithoutText;
+};
+
+/**
+ * @brief The two diagonals drawn over a disabled node, as one scene item.
+ **/
+class NodeGuiDisabledCross
+    : public QGraphicsItem {
+public:
+    NodeGuiDisabledCross(NodeGraph* graph,
+                         QGraphicsItem* parent,
+                         const QPen& pen);
+
+    virtual ~NodeGuiDisabledCross();
+
+    // First is drawn first, as the first of the two former line items was.
+    void setLines(const QLineF& first, const QLineF& second);
+
+    virtual bool collidesWithPath(const QPainterPath& path, Qt::ItemSelectionMode mode = Qt::IntersectsItemShape) const OVERRIDE FINAL;
+    virtual QRectF boundingRect() const OVERRIDE FINAL;
+    virtual QPainterPath shape() const OVERRIDE FINAL;
+    virtual void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) OVERRIDE FINAL;
+
+private:
+    NodeGraph* _graph;
+    QPen _pen;
+    QLineF _lines[2];
+    QPainterPath _parts[2];
+    QRectF _boundingRect;
+    QPainterPath _shape;
 };
 
 ///A richer text item which allows text alignmenent
@@ -199,6 +316,10 @@ public:
     /*Returns true if the bounding box of the node intersects the given rectangle in scene coordinates.*/
     bool intersects(const QRectF & rect) const;
 
+    // The node's place among the nodes of its depth, as NodeGraphStacking hands them out.
+    std::uint64_t getStackingSerial() const { return _stackingSerial; }
+    void setStackingSerial(std::uint64_t serial);
+
     /*returns a QPainterPath indicating the global shape of the node.
        This must be provided so the QGraphicsView framework recognises the
        item correctly.*/
@@ -270,6 +391,9 @@ public:
 
 
     QSize getSize() const;
+
+    // The laid-out body size that resize() takes: no outline pen, no magnify scale.
+    QRectF bodyRect() const;
 
     /*Returns an edge if the node has an edge close to the
        point pt. pt is in scene coord.*/
@@ -469,6 +593,10 @@ public:
      **/
     void refreshEdgesDataKindPen(bool force);
 
+    // Runs the refreshes, NodeGraph::DeferredRefreshEnum flags, this node left to a node refresh
+    // batch.
+    void runDeferredRefreshes(int refreshes);
+
 protected:
 
     virtual int getBaseDepth() const { return 20; }
@@ -527,6 +655,9 @@ public Q_SLOTS:
      * disabledKnobToggled(), which only fires when that value actually changes.
      **/
     void onTimelineTimeChanged(SequenceTime time, int reason);
+
+    // Registers the node with its graph for frame changes once its Disable knob is animated.
+    void refreshFrameDependency();
 
     /**
      * @brief Updates the position of the items contained by the node to fit into
@@ -588,6 +719,9 @@ public Q_SLOTS:
     void setVisibleSettingsPanel(bool b, bool minimized = false, bool hideUnmodified = false);
 
     void refreshRenderingIndicator();
+
+    // Queues refreshRenderingIndicator() on the graph when a render starts or ends here.
+    void onRenderingStateChanged();
 
     void beginEditKnobs();
 
@@ -685,15 +819,18 @@ private:
 
     void refreshPositionEnd(double x, double y);
 
-    void refreshAttachedEdgesAndLinks();
+    // The navigator thumbnail shows node bodies, so any change to their bounds or look calls this.
+    void invalidateGraphNavigator();
+
+    void refreshAttachedEdgesAndLinks(bool refreshEdgesNow = true);
 
     void setNameItemHtml(const QString & name, const QString & label);
+
+    void setNameItemHtmlNow(const QString& name, const QString& label);
 
     void togglePreview_internal(bool refreshPreview = true);
 
     void ensurePreviewCreated();
-
-    void setAboveItem(QGraphicsItem* item);
 
     void populateMenu();
 
@@ -764,9 +901,21 @@ private:
     int _previewW, _previewH;
     QGraphicsSimpleTextItem* _persistentMessage;
     NodeGraphRectItem* _stateIndicator;
+    bool _stateIndicatorSelected; //< the selection refreshStateIndicator() last showed
+    std::uint64_t _stackingSerial = 0;
+
+    QGraphicsItem* edgeParent() const;
+
+    void refreshEdgesDataKindPenNow(bool force);
+
+    // While initialize() runs or a node refresh batch is open, the name item is laid out once, at
+    // their end, from the last name and label it was given.
+    bool _initializingGui = false;
+    bool _nameItemHtmlDeferred = false;
+    QString _deferredName, _deferredLabel;
     NodeGuiIndicatorPtr _streamIssuesWarning;
-    QGraphicsLineItem* _disabledTopLeftBtmRight;
-    QGraphicsLineItem* _disabledBtmLeftTopRight;
+    NodeGuiDisabledCross* _disabledCross;
+    NodeGuiDecorations* _indicatorLayer;
     /*the graphical input arrows*/
     std::vector<Edge*> _inputEdges;
     Edge* _outputEdge;
@@ -784,6 +933,21 @@ private:
     bool _hasUserColor;
     QColor _userColor;
     bool _nameItemHasUserFontColor; //< the label has a font colour the user picked, which wins over body contrast
+    // The inputs setNameItemHtml() last laid the name item out from.
+    struct NameItemInputs {
+        QString name, label, channelsExtraLabel;
+        bool framed;
+        bool antialias;
+        QFont applicationFont;
+        QColor userFontColor;
+
+        bool operator==(const NameItemInputs& o) const
+        {
+            return name == o.name && label == o.label && channelsExtraLabel == o.channelsExtraLabel && framed == o.framed && antialias == o.antialias && applicationFont == o.applicationFont;
+        }
+    };
+    bool _nameItemInputsSet;
+    NameItemInputs _nameItemInputs;
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;
 

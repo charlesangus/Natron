@@ -184,7 +184,7 @@ protected:
         std::size_t pixels = 0;
         std::size_t allZero = 0;
         std::size_t greenAlphaZero = 0;
-        RectI box(INT_MAX, INT_MAX, INT_MIN, INT_MIN);
+        RectI box;
         const int width = window.width();
         for (std::size_t p = 0; p * 4 < cpu.size(); ++p) {
             bool any = false;
@@ -203,10 +203,7 @@ protected:
             greenAlphaZero += (g[1] == 0.f && g[3] == 0.f);
             const int x = window.x1 + (int)(p % width);
             const int y = window.y1 + (int)(p / width);
-            box.x1 = std::min(box.x1, x);
-            box.y1 = std::min(box.y1, y);
-            box.x2 = std::max(box.x2, x + 1);
-            box.y2 = std::max(box.y2, y + 1);
+            box.merge(x, y, x + 1, y + 1);
         }
         std::string cpuModel = "unknown";
         std::ifstream cpuinfo("/proc/cpuinfo");
@@ -423,6 +420,38 @@ TEST_F(NativeLensCorrectGpuTest, HugePositionsMatchTheCpu)
     // The image is small, so a render stops at its region; a partial mix takes it out to the corners.
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     expectParity(source, node, "scale 0.1 to fisheye, mix");
+}
+
+// The GPU reads the Source over the region the CPU asks for, which for a small window is a small part
+// of it, and renders that window as the CPU does.
+TEST_F(NativeLensCorrectGpuTest, SmallWindowsReadWhatTheCpuReads)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    const RectI sourcePixels = paritySourceWindow(source, kTime, 0);
+    const RectI window(37, 5, 53, 17);
+    // Correct, distort, and a fisheye reprojected both ways; renders cost seconds on a software device.
+    for (const int setup : { 0, 1, 4, 5 }) {
+        const std::string what = kSetups[setup].what;
+        NodePtr node = makeLensCorrect(source, kSetups[setup]);
+        ASSERT_TRUE(bool(node)) << what;
+        const EffectInstancePtr effect = node->getEffectInstance();
+        RectD rod;
+        bool isProjectFormat = false;
+        ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat)) << what;
+        RoIMap rois;
+        effect->getRegionsOfInterest_public(kTime, RenderScale::identity, rod, window.toCanonical_noClipping(0, 1.), ViewIdx(0), &rois);
+        const RoIMap::const_iterator cpu = rois.find(source->getEffectInstance());
+        ASSERT_TRUE(cpu != rois.end()) << what;
+        const RectI gpuRoI = effectOf(node)->getGpuInputRoI(kLensCorrectInputSource, kTime, ViewIdx(0), window, RenderScale::identity);
+        EXPECT_EQ(cpu->second.toPixelEnclosing(0u, 1.), gpuRoI) << what;
+        EXPECT_TRUE(gpuRoI.contains(window)) << what;
+        if (setup <= 1) {
+            EXPECT_LT(gpuRoI.intersect(sourcePixels).area(), sourcePixels.area() / 2) << what << ": [" << gpuRoI.x1 << "," << gpuRoI.y1 << "," << gpuRoI.x2 << "," << gpuRoI.y2 << ")";
+        }
+        expectParityOver(node, window, what + ", small window", 0);
+    }
 }
 
 // An alpha Source stays one channel under "All": renderEndToEnd() compares RGBA, so the kernel runs

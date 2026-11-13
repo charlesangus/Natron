@@ -206,6 +206,7 @@ ExtentKnobs::createKnobs(const KnobPagePtr& page)
 
     KnobDoublePtr size = AppManager::createKnob<KnobDouble>(_effect, EffectInstance::tr("Size"), 2);
     size->setName(kNativeGeneratorParamSize);
+    size->setValueRole(eValueRoleSize);
     size->setHintToolTip(EffectInstance::tr("Width and height of the size rectangle."));
     size->setSpatial(true);
     size->setCanAutoFoldDimensions(true);

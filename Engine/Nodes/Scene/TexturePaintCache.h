@@ -171,6 +171,18 @@ std::shared_ptr<TileDirectoryClaim> claimTileDirectory(const std::string& root,
                                                        bool shared) WARN_UNUSED_RETURN;
 
 /**
+ * @brief While set, claims lock with POSIX record locks, fcntl(F_SETLK), as flock() becomes on
+ * NFS, so that tests on a local disk exercise what keeps claims of one process apart there.
+ **/
+void setRecordLocksForTesting(bool recordLocks);
+
+/**
+ * @brief Forgets the directories this process holds, without unlocking them: for a child process
+ * made by fork(), which inherits its parent's registry but none of its record locks.
+ **/
+void forgetProcessClaimsForTesting();
+
+/**
  * @brief Deletes claim's directory and releases claim: the directory is moved aside at once, so
  * that a later claim of its name starts empty, and deleted in the background.
  **/

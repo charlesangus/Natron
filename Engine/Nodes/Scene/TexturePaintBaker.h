@@ -24,10 +24,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -197,6 +199,54 @@ private:
     std::chrono::steady_clock::time_point _lastProgress;
     double _lastFraction;
     QString _lastLabel;
+};
+
+/**
+ * @brief The one thread of the process that puts back the files of Bake Outputs whose completion
+ * was dropped. Each bake that writes files takes a sequence number and claims each file before
+ * backing it up; it settles its claims once its undo step owns the files or once they are put
+ * back. A queued rollback waits until no newer bake that claimed one of its files is unsettled,
+ * so the rollbacks of bakes that wrote the same file run newest first, each putting back what the
+ * next older one wrote. A claim waits while a rollback that may run touches the file, so a new
+ * bake backs up what the rollback put back rather than what it is putting back.
+ **/
+class TexturePaintRollbacks {
+public:
+    // shuttingDown: shutdown() has begun, and what outlives the application must not be touched.
+    typedef std::function<void(bool shuttingDown)> Work;
+
+    // A new sequence number, larger than every one given before.
+    static std::uint64_t newSequence();
+
+    /**
+     * @brief Records that the bake of sequence is about to back up target, once no rollback that
+     * may run touches it. False, recording nothing, when cancelled() turns true while waiting.
+     **/
+    static bool claim(std::uint64_t sequence,
+                      const std::string& target,
+                      const std::function<bool()>& cancelled);
+
+    // Drops every claim of sequence. Safe to call more than once.
+    static void settle(std::uint64_t sequence);
+
+    /**
+     * @brief Queues work, the rollback of the bake of sequence, which settles once work returns.
+     * Returns at once. After shutdown(), runs work on the caller, with shuttingDown.
+     **/
+    static void enqueue(std::uint64_t sequence,
+                        const Work& work);
+
+    /**
+     * @brief Runs every queued rollback, newest first whatever the claims, then stops the thread
+     * and waits for it. Called once, while the application shuts down.
+     **/
+    static void shutdown();
+
+    // Runs on the rollback thread before each rollback; an empty hook removes it.
+    static void setBeforeWorkHookForTesting(const std::function<void()>& hook);
+
+    // Whether no rollback is queued or running.
+    static bool isIdleForTesting();
 };
 
 NATRON_NAMESPACE_EXIT

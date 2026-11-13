@@ -26,6 +26,10 @@
 #include "TexturePaintBaker.h"
 
 #include <algorithm>
+#include <condition_variable>
+#include <map>
+#include <set>
+#include <thread>
 #include <vector>
 
 #include "Engine/AppManager.h"
@@ -242,6 +246,272 @@ TexturePaintBaker::onWorkDone()
             Q_EMIT idle();
         }
     }
+}
+
+namespace {
+struct RollbackJob {
+    std::uint64_t sequence = 0;
+    TexturePaintRollbacks::Work work;
+};
+
+struct RollbackState {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::uint64_t lastSequence = 0;
+    // The files each unsettled bake claimed.
+    std::map<std::uint64_t, std::set<std::string>> claims;
+    std::vector<RollbackJob> queued;
+    bool busy = false;
+    // The sequence of the rollback running, while busy.
+    std::uint64_t running = 0;
+    std::thread thread;
+    std::thread::id threadId;
+    bool threadRunning = false;
+    bool stopping = false;
+    std::function<void()> beforeWorkHook;
+    // Serialises the rollbacks run on their callers once the thread is gone.
+    std::mutex lateMutex;
+};
+
+// Never destroyed: a rollback can be dropped during static destruction, after shutdown().
+RollbackState&
+rollbackState()
+{
+    static RollbackState* state = new RollbackState();
+
+    return *state;
+}
+
+bool
+touches(const RollbackState& s,
+        std::uint64_t sequence,
+        const std::string& target)
+{
+    const std::map<std::uint64_t, std::set<std::string>>::const_iterator it = s.claims.find(sequence);
+
+    return (it != s.claims.end()) && (it->second.count(target) > 0);
+}
+
+// Whether no newer unsettled bake claimed a file the bake of sequence claimed. Locked.
+bool
+mayRun(const RollbackState& s,
+       std::uint64_t sequence)
+{
+    if (s.stopping) {
+        return true;
+    }
+    const std::map<std::uint64_t, std::set<std::string>>::const_iterator own = s.claims.find(sequence);
+    if (own == s.claims.end()) {
+        return true;
+    }
+    for (std::map<std::uint64_t, std::set<std::string>>::const_iterator it = s.claims.upper_bound(sequence); it != s.claims.end(); ++it) {
+        for (const std::string& target : own->second) {
+            if (it->second.count(target)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+// The newest queued rollback that may run, or -1. Locked.
+int
+nextRollback(const RollbackState& s)
+{
+    int best = -1;
+
+    for (std::size_t i = 0; i < s.queued.size(); ++i) {
+        if (((best < 0) || (s.queued[i].sequence > s.queued[(std::size_t)best].sequence)) && mayRun(s, s.queued[i].sequence)) {
+            best = (int)i;
+        }
+    }
+
+    return best;
+}
+
+// Whether the rollback running, or one that may run next, touches target. Locked.
+bool
+rollbackTouches(const RollbackState& s,
+                const std::string& target)
+{
+    if (s.busy && touches(s, s.running, target)) {
+        return true;
+    }
+    for (const RollbackJob& job : s.queued) {
+        if (touches(s, job.sequence, target) && mayRun(s, job.sequence)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+runWork(const TexturePaintRollbacks::Work& work,
+        bool shuttingDown)
+{
+    if (!work) {
+        return;
+    }
+    // A rollback is file moves that report through error codes; nothing may end the thread.
+    try {
+        work(shuttingDown);
+    } catch (...) {
+    }
+}
+
+void
+rollbackLoop()
+{
+    RollbackState& s = rollbackState();
+    std::unique_lock<std::mutex> lock(s.mutex);
+
+    for (;;) {
+        int index = nextRollback(s);
+        while (index < 0) {
+            if (s.stopping && s.queued.empty()) {
+                s.threadRunning = false;
+                s.changed.notify_all();
+
+                return;
+            }
+            s.changed.wait(lock);
+            index = nextRollback(s);
+        }
+        RollbackJob job = std::move(s.queued[(std::size_t)index]);
+        s.queued.erase(s.queued.begin() + index);
+        s.busy = true;
+        s.running = job.sequence;
+        const bool shuttingDown = s.stopping;
+        const std::function<void()> hook = s.beforeWorkHook;
+        lock.unlock();
+        if (hook) {
+            hook();
+        }
+        runWork(job.work, shuttingDown);
+        job.work = TexturePaintRollbacks::Work();
+        lock.lock();
+        s.busy = false;
+        s.claims.erase(job.sequence);
+        s.changed.notify_all();
+    }
+}
+} // anon namespace
+
+std::uint64_t
+TexturePaintRollbacks::newSequence()
+{
+    RollbackState& s = rollbackState();
+    std::lock_guard<std::mutex> lock(s.mutex);
+
+    return ++s.lastSequence;
+}
+
+bool
+TexturePaintRollbacks::claim(std::uint64_t sequence,
+                             const std::string& target,
+                             const std::function<bool()>& cancelled)
+{
+    RollbackState& s = rollbackState();
+    std::unique_lock<std::mutex> lock(s.mutex);
+
+    while (rollbackTouches(s, target)) {
+        if (cancelled && cancelled()) {
+            return false;
+        }
+        // Timed, so that a cancellation is seen while a long rollback runs.
+        s.changed.wait_for(lock, std::chrono::milliseconds(50));
+    }
+    s.claims[sequence].insert(target);
+
+    return true;
+}
+
+void
+TexturePaintRollbacks::settle(std::uint64_t sequence)
+{
+    RollbackState& s = rollbackState();
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (!s.claims.erase(sequence)) {
+            return;
+        }
+    }
+    s.changed.notify_all();
+}
+
+void
+TexturePaintRollbacks::enqueue(std::uint64_t sequence,
+                               const Work& work)
+{
+    RollbackState& s = rollbackState();
+    {
+        std::unique_lock<std::mutex> lock(s.mutex);
+        const bool onThread = s.threadRunning && (std::this_thread::get_id() == s.threadId);
+        if (!s.stopping && !onThread) {
+            RollbackJob job;
+            job.sequence = sequence;
+            job.work = work;
+            s.queued.push_back(std::move(job));
+            if (!s.threadRunning) {
+                s.threadRunning = true;
+                s.thread = std::thread(rollbackLoop);
+                s.threadId = s.thread.get_id();
+            }
+            lock.unlock();
+            s.changed.notify_all();
+
+            return;
+        }
+        // Once stopping, the thread drains what it has, oldest claims last; a rollback queued
+        // later runs here after it.
+        if (!onThread) {
+            s.changed.wait(lock, [&s]() { return !s.threadRunning; });
+        }
+    }
+    {
+        std::lock_guard<std::mutex> late(s.lateMutex);
+        runWork(work, true);
+    }
+    settle(sequence);
+}
+
+void
+TexturePaintRollbacks::shutdown()
+{
+    RollbackState& s = rollbackState();
+    std::thread thread;
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (s.stopping) {
+            return;
+        }
+        s.stopping = true;
+        thread.swap(s.thread);
+    }
+    s.changed.notify_all();
+    if (thread.joinable()) {
+        thread.join();
+    }
+}
+
+void
+TexturePaintRollbacks::setBeforeWorkHookForTesting(const std::function<void()>& hook)
+{
+    RollbackState& s = rollbackState();
+    std::lock_guard<std::mutex> lock(s.mutex);
+
+    s.beforeWorkHook = hook;
+}
+
+bool
+TexturePaintRollbacks::isIdleForTesting()
+{
+    RollbackState& s = rollbackState();
+    std::lock_guard<std::mutex> lock(s.mutex);
+
+    return s.queued.empty() && !s.busy;
 }
 
 NATRON_NAMESPACE_EXIT

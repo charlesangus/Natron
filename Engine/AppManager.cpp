@@ -152,6 +152,7 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/TexturePaintBaker.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -537,6 +538,10 @@ AppManager::~AppManager()
 
     // No render is left to abort, and the watchdog thread reads this manager.
     AbortWatchdog::shutdown();
+
+    // The files of bakes the closed projects dropped go back before the statics the rollbacks
+    // use are destroyed, and none is cut off part way.
+    TexturePaintRollbacks::shutdown();
 
     {
         QMutexLocker k(&_imp->renderSchedulerMutex);

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -328,8 +329,9 @@ public:
      * @brief Puts strokes, a render of a session's strokes over base, in *buffer: the channels
      * not selected stay base's, and a texel is touched where a selected channel differs. Null
      * strokes, a render with nothing in it, leave base in *buffer with nothing touched. Takes
-     * base's contents. False with *error set, *buffer unchanged, when strokes and base differ in
-     * size.
+     * base's contents. The caller renders strokes and base over the same pixels; should their
+     * sizes differ anyway, returns false with *error set before reading either or writing
+     * *buffer.
      **/
     static bool layStrokesOverBase(std::vector<float>& base,
                                    const std::vector<float>* strokes,
@@ -402,9 +404,10 @@ public:
      **/
     struct BakeOutputFiles {
         /**
-         * @brief A file's device, inode, size and modification time. Renames and hard links,
-         * the only ways the node moves a file it wrote, change none of them; a file rewritten in
-         * place keeps its inode but not its modification time.
+         * @brief A file's device, inode, size and modification time. A rename or a hard link
+         * changes none of them; a file rewritten in place keeps its inode but not its
+         * modification time. Where the file system makes the node copy instead, the copy has an
+         * identity of its own, so a swap that moved files records their identity again.
          **/
         struct FileIdentity {
             std::uint64_t device = 0;
@@ -444,32 +447,47 @@ public:
         // Where the backups and stashes are, deleted with them.
         std::set<std::string> directories;
         std::string token;
+        // The bake's TexturePaintRollbacks sequence, given with its first claim; 0 before.
+        std::uint64_t sequence = 0;
         bool undone = false;
         // Whether every entry's written identity is recorded.
         bool sealed = false;
     };
 
     /**
-     * @brief Before target is written: adds it to *files and, when it exists, keeps what it holds
-     * as its backup, by a hard link so that the write's rename leaves the link holding it. False
-     * with *error set when it cannot be kept.
+     * @brief Before target is written: claims it with TexturePaintRollbacks, waiting for a
+     * rollback that touches it, adds it to *files and, when it exists, keeps what it holds as its
+     * backup, by a hard link so that the write's rename leaves the link holding it. False with
+     * *error set when it cannot be kept, or with *error empty when cancelled() turned true while
+     * waiting.
      **/
     static bool backUpBakeTarget(BakeOutputFiles* files,
                                  const std::string& target,
-                                 std::string* error) WARN_UNUSED_RETURN;
+                                 std::string* error,
+                                 const std::function<bool()>& cancelled = std::function<bool()>()) WARN_UNUSED_RETURN;
 
     /**
      * @brief Puts every target of *files back as it was before the bake, and deletes the backups.
-     * Once *files is sealed, a target that is no longer the file the bake wrote is left as it is.
+     * Once *files is sealed, a target that is no longer the file the bake wrote is left as it is,
+     * and its backup, what it held before the bake, is moved beside it as <name>.pre-bake rather
+     * than deleted; *kept receives where. With evict, drops the targets' cached headers. Leaves
+     * the claims of *files to the caller.
      **/
-    static void rollBackBakeOutputFiles(BakeOutputFiles* files);
+    static void rollBackBakeOutputFiles(BakeOutputFiles* files,
+                                        bool evict = true,
+                                        std::vector<std::string>* kept = 0);
 
     /**
-     * @brief rollBackBakeOutputFiles() on a thread of its own, for a Bake Output whose completion
-     * was dropped, bumping *epoch before and after; returns at once.
+     * @brief Queues rollBackBakeOutputFiles() on TexturePaintRollbacks, for a Bake Output whose
+     * completion was dropped, bumping *epoch before and after; returns at once. A target left
+     * as it is gets its backup kept and reported in the error log and as node's warning.
      **/
-    static void rollBackBakeOutputFilesDetached(const std::shared_ptr<BakeOutputFiles>& files,
-                                                const std::shared_ptr<std::atomic<std::uint64_t>>& epoch);
+    static void enqueueBakeOutputRollback(const std::shared_ptr<BakeOutputFiles>& files,
+                                          const std::shared_ptr<std::atomic<std::uint64_t>>& epoch,
+                                          const std::weak_ptr<TexturePaint>& node = std::weak_ptr<TexturePaint>());
+
+    // Drops the TexturePaintRollbacks claims of files, once an undo step owns them or they are put back.
+    static void settleBakeOutputFiles(const BakeOutputFiles& files);
 
     // Records the identity of each file the bake wrote, once it has written them all.
     static void sealBakeOutputFiles(BakeOutputFiles* files);
@@ -634,8 +652,12 @@ private:
     // The colour plane's base files as TexturePaintView::setBase() takes them.
     std::string getViewBaseFiles(double time) const WARN_UNUSED_RETURN;
 
-    // The directory the tiles of this node are cached in, named by its cache ID.
-    std::string getTileDirectory() const WARN_UNUSED_RETURN;
+    /**
+     * @brief The directory the tiles of this node are cached in, named by its cache ID, in
+     * *directory. False with *error set when it cannot be claimed: no tile is written to a
+     * directory nothing holds, and the claim is tried again after a while.
+     **/
+    bool getTileDirectory(std::string* directory, std::string* error) const WARN_UNUSED_RETURN;
 
     /**
      * @brief What the tiles of view are cached under; changes with anything they depend on. In
@@ -702,8 +724,8 @@ private:
     // The key each view last asked for, so that one view's tiles do not evict another's.
     std::map<int, U64> _liveTileKeys;
     // Bumped by undo, redo and a Bake Output that is rolled back, so that no tile composed before
-    // over the files they changed is used again. Shared with the threads that roll back a Bake
-    // Output whose completion was dropped, which must not keep the node alive.
+    // over the files they changed is used again. Shared with the rollback of a Bake Output whose
+    // completion was dropped, which must not keep the node alive.
     const std::shared_ptr<std::atomic<std::uint64_t>> _tileEpoch;
     mutable std::mutex _tileDirectoryMutex;
     // The directory getTileDirectory() names, held until the node's cache id or the project's
@@ -711,11 +733,12 @@ private:
     mutable std::shared_ptr<TexturePaintCache::TileDirectoryClaim> _tileClaim;
     mutable std::string _tileClaimId;
     mutable bool _tileClaimSaved = false;
-    // The cache id and saved state no directory could be claimed for, so that every tile read
-    // does not try again.
+    // The cache id and saved state no directory could be claimed for, and when to try again, so
+    // that every tile read does not.
     mutable bool _tileClaimFailed = false;
     mutable std::string _tileClaimFailedId;
     mutable bool _tileClaimFailedSaved = false;
+    mutable std::chrono::steady_clock::time_point _tileClaimRetry;
     mutable std::mutex _stampsMutex;
     mutable bool _stampsValid = false;
     mutable U64 _stampsSignature = 0;

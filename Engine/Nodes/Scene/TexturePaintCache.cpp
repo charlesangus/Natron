@@ -373,6 +373,23 @@ namespace {
      **/
     std::mutex heldMutex;
     std::set<std::string> heldDirectories;
+    std::atomic<bool> recordLocks(false);
+
+    // An exclusive lock on all of fd's file, without waiting.
+    bool
+    lockFileNow(int fd)
+    {
+        if (!recordLocks.load()) {
+            return ::flock(fd, LOCK_EX | LOCK_NB) == 0;
+        }
+        struct flock whole = {};
+        whole.l_type = F_WRLCK;
+        whole.l_whence = SEEK_SET;
+        whole.l_start = 0;
+        whole.l_len = 0;
+
+        return ::fcntl(fd, F_SETLK, &whole) == 0;
+    }
 
     bool
     holdInProcess(const std::string& directory)
@@ -405,7 +422,7 @@ namespace {
             if (fd < 0) {
                 return -1;
             }
-            if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            if (!lockFileNow(fd)) {
                 ::close(fd);
 
                 return -1;
@@ -537,6 +554,20 @@ claimTileDirectory(const std::string& root,
 }
 
 void
+setRecordLocksForTesting(bool locks)
+{
+    recordLocks = locks;
+}
+
+void
+forgetProcessClaimsForTesting()
+{
+    std::lock_guard<std::mutex> lock(heldMutex);
+
+    heldDirectories.clear();
+}
+
+void
 removeTileDirectory(std::shared_ptr<TileDirectoryClaim> claim)
 {
     if (!claim) {
@@ -584,9 +615,21 @@ pruneDeadProcessDirectories(const std::string& root,
     }
     // A shared directory a process holds is in use, however old.
     for (const std::filesystem::path& path : old) {
+        std::error_code lockError;
+        const bool hadLockFile = std::filesystem::exists(path / ".lock", lockError);
         const int fd = lockDirectory(path.string());
         if (fd < 0) {
             continue;
+        }
+        // A claim made and released since the scan touched the directory. Making the lock file,
+        // which every claim makes before its lock, touches it too, and says nothing of a claim.
+        if (hadLockFile) {
+            std::error_code timeError;
+            const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, timeError);
+            if (timeError || (std::filesystem::file_time_type::clock::now() - modified <= age)) {
+                unlockDirectory(path.string(), fd);
+                continue;
+            }
         }
         const std::filesystem::path aside = asideName(path);
         std::error_code renameError;

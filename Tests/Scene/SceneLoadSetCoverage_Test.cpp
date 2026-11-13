@@ -27,7 +27,11 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -40,15 +44,19 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDEditPrim.h"
+#include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDProjectUV.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDReference.h"
 #include "Engine/Nodes/Scene/USDSetAttribute.h"
 #include "Engine/Nodes/Scene/USDVariant.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -67,6 +75,11 @@ protected:
 
     NodePtr reader(const CarCity& city)
     {
+        return readerOf(city.rootPath());
+    }
+
+    NodePtr readerOf(const std::string& path)
+    {
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
 
         EXPECT_TRUE(bool(node));
@@ -74,9 +87,43 @@ protected:
             KnobFilePtr file = std::dynamic_pointer_cast<KnobFile>(node->getKnobByName(kUSDReadParamFile));
             EXPECT_TRUE(bool(file));
             if (file) {
-                file->setValue(city.rootPath());
+                file->setValue(path);
             }
         }
+
+        return node;
+    }
+
+    NodePtr merge(const std::vector<NodePtr>& inputs)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        for (std::size_t i = 0; i < inputs.size(); ++i) {
+            EXPECT_TRUE(node->connectInput(inputs[i], (int)i)) << i;
+        }
+
+        return node;
+    }
+
+    NodePtr xformPrim(const NodePtr& input,
+                      const std::string& path)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        KnobString* pathKnob = dynamic_cast<KnobString*>(node->getKnobByName(kSceneParamPrimPath).get());
+        EXPECT_TRUE(pathKnob != NULL);
+        if (pathKnob) {
+            pathKnob->setValue(path);
+        }
+        EXPECT_TRUE(node->connectInput(input, 0));
 
         return node;
     }
@@ -235,6 +282,87 @@ hasUVsUnloaded(const ScenePayload& payload,
     const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(path));
 
     return prim && prim.GetAttribute(PXR_NS::TfToken("primvars:st")).HasAuthoredValue();
+}
+
+/**
+ * @brief Writes, next to city's root layer, a layer sublayering it that adds links out of /World:
+ * on /World itself and on the Geo of /World/Block_0/B_0 and of /World/Block_1/B_0, inside their
+ * payloads, each to /Props/Lamp and to a prim no root holds. Adds the roots /Props and
+ * /materials. Returns its path.
+ **/
+std::string
+writeLinkedCity(const CarCity& city)
+{
+    const std::filesystem::path path = std::filesystem::path(city.rootPath()).parent_path() / "linked.usda";
+    std::ofstream file(path.string());
+    const std::string links = "rel lookAt = </Props/Lamp>\n        rel lost = </nowhere/Inside>\n";
+
+    file << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n    subLayers = [@./root.usda@]\n)\n"
+         << "over \"World\"\n{\n    rel lookAt = </Props/Lamp>\n    rel lost = </nowhere>\n";
+    for (int block = 0; block < 2; ++block) {
+        file << "    over \"Block_" << block << "\"\n    {\n        over \"B_0\"\n        {\n            over \"Geo\"\n            {\n"
+             << "                " << links << "            }\n        }\n    }\n";
+    }
+    file << "}\ndef Xform \"Props\"\n{\n    def Xform \"Lamp\"\n    {\n    }\n}\n"
+         << "def Scope \"materials\"\n{\n    def Material \"M\"\n    {\n    }\n}\n";
+
+    return path.string();
+}
+
+ScenePayload
+linkedCityPayload(const std::string& path)
+{
+    const PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path);
+
+    EXPECT_TRUE(bool(layer));
+
+    return SceneOps::appendLayer(ScenePayload(), layer, 1);
+}
+
+SceneReparentArgs
+graftUnderGroup(const ScenePayload& input)
+{
+    SceneReparentArgs args;
+
+    args.inputs.push_back(input);
+    args.destinationPath = "/Grp";
+    args.destinationType = "Xform";
+    args.ancestorType = "Xform";
+    args.passThroughRoot = "materials";
+    args.layerTag = "SceneLoadSetCoverageTest";
+
+    return args;
+}
+
+struct GraftReport {
+    ScenePayload output;
+    std::vector<std::string> grafts;
+    std::vector<std::string> unmapped;
+};
+
+// reparentRoots() as an evaluation in context runs it.
+GraftReport
+graftIn(const SceneEvaluationContext& context,
+        const SceneReparentArgs& args,
+        SceneGraftMemo* memo)
+{
+    GraftReport report;
+    std::vector<SceneRootGraft> grafts;
+    std::vector<SceneUnmappedLink> unmapped;
+    std::string error;
+    {
+        SceneEvaluationContext::Scope scope(context);
+        EXPECT_TRUE(SceneOps::reparentRoots(args, memo, &report.output, &grafts, &unmapped, &error)) << error;
+    }
+    for (const SceneRootGraft& graft : grafts) {
+        report.grafts.push_back(graft.sourcePath + " -> " + graft.graftedPath + (graft.passedThrough ? " passed" : "") + (graft.holdsGprim ? " gprim" : ""));
+    }
+    for (const SceneUnmappedLink& link : unmapped) {
+        report.unmapped.push_back(link.propertyPath + " -> " + link.targetPath);
+    }
+    std::sort(report.unmapped.begin(), report.unmapped.end());
+
+    return report;
 }
 } // anonymous namespace
 
@@ -468,4 +596,99 @@ TEST_F(SceneLoadSetCoverageTest, AProjectUVCameraInsideAPayloadResolvesWithOnlyI
     node->getPersistentMessage(&message, &type, false);
     EXPECT_FALSE(message.contains(QString::fromUtf8("No camera"))) << message.toStdString();
     EXPECT_TRUE(hasUVsUnloaded(payload, "/World/Ground"));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AMergeOfTheCityOpensNoBuildingWithNothingLoaded)
+{
+    CarCity city(2, 2);
+    const std::string linked = writeLinkedCity(city);
+    NodePtr first = reader(city);
+    NodePtr second = readerOf(linked);
+    ASSERT_TRUE(first && second);
+    NodePtr node = merge({ first, second });
+    ASSERT_TRUE(bool(node));
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AGraftOfTheCityOpensNoBuildingWithNothingLoaded)
+{
+    CarCity city(2, 2);
+    NodePtr source = readerOf(writeLinkedCity(city));
+    NodePtr node = xformPrim(source, "/Grp");
+    ASSERT_TRUE(source && node);
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AGraftEvaluatesTheSameOnALoadSetAsOnEverything)
+{
+    CarCity city(2, 2);
+    NodePtr source = readerOf(writeLinkedCity(city));
+    NodePtr node = xformPrim(source, "/Grp");
+    ASSERT_TRUE(source && node);
+
+    expectParity(node, loadingOnly({ "/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, GraftsAndUnmappedLinksOnALoadSetAreThoseOfEverythingItLoads)
+{
+    CarCity city(2, 2);
+    const SceneReparentArgs args = graftUnderGroup(linkedCityPayload(writeLinkedCity(city)));
+    SceneGraftMemo memo;
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+    const SceneEvaluationContext viewer(SceneEvaluationContext::makeId(), loadingOnly({ "/World/Block_0" }), reach);
+
+    const GraftReport loaded = graftIn(viewer, args, &memo);
+    EXPECT_EQ(2, city.openedBuildings());
+    const std::vector<std::string> prefixes = reach->getPrefixes();
+    for (const char* path : { "/World/Block_0/B_0", "/World/Block_1/B_0", "/materials" }) {
+        EXPECT_TRUE(std::find(prefixes.begin(), prefixes.end(), std::string(path)) != prefixes.end()) << path;
+    }
+    EXPECT_EQ(std::vector<std::string>({ "/Grp/World.lost -> /nowhere", "/Grp/World/Block_0/B_0/Geo.lost -> /nowhere/Inside" }), loaded.unmapped);
+
+    const GraftReport everything = graftIn(SceneEvaluationContext(), args, &memo);
+    EXPECT_EQ(everything.grafts, loaded.grafts);
+    EXPECT_EQ(std::vector<std::string>({ "/Grp/World.lost -> /nowhere", "/Grp/World/Block_0/B_0/Geo.lost -> /nowhere/Inside", "/Grp/World/Block_1/B_0/Geo.lost -> /nowhere/Inside" }), everything.unmapped);
+}
+
+TEST_F(SceneLoadSetCoverageTest, AViewerGraftAndARenderGraftKeepTheirOwnMemos)
+{
+    CarCity city(2, 2);
+    const SceneReparentArgs args = graftUnderGroup(linkedCityPayload(writeLinkedCity(city)));
+    SceneGraftMemo memo;
+    const SceneEvaluationContext viewer(SceneEvaluationContext::makeId(), loadingOnly({ "/World/Block_0" }), std::make_shared<SceneLoadReach>());
+    const SceneEvaluationContext render;
+
+    const GraftReport firstViewer = graftIn(viewer, args, &memo);
+    const GraftReport firstRender = graftIn(render, args, &memo);
+    // The two read different links, so neither can take the other's graft layer.
+    EXPECT_EQ(2u, memo.getInputReadCount());
+    EXPECT_EQ(2u, memo.getGraftLayerAuthorCount());
+    EXPECT_FALSE(firstViewer.output.isSameStack(firstRender.output));
+
+    for (int round = 0; round < 3; ++round) {
+        const GraftReport againViewer = graftIn(viewer, args, &memo);
+        const GraftReport againRender = graftIn(render, args, &memo);
+        EXPECT_TRUE(againViewer.output.isSameStack(firstViewer.output)) << round;
+        EXPECT_TRUE(againRender.output.isSameStack(firstRender.output)) << round;
+        EXPECT_EQ(2u, againViewer.unmapped.size()) << round;
+        EXPECT_EQ(3u, againRender.unmapped.size()) << round;
+    }
+    EXPECT_EQ(2u, memo.getInputReadCount());
+    EXPECT_EQ(2u, memo.getGraftLayerAuthorCount());
 }

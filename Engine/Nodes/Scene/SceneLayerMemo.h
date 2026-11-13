@@ -152,6 +152,12 @@ private:
  * layer per input. An unchanged input keeps its graft layer, so a stage synced to the result
  * recomposes only the roots of the input that changed. SceneOps::reparentRoots fills and reads it.
  *
+ * What it read and grafted is kept per evaluation context (SceneEvaluationContext::current()),
+ * a few contexts at once as SceneLayerMemo keeps them, so a viewer's and a render's evaluations
+ * do not evict each other. An input's roots and links are read on the context's load set; a
+ * context finding another's reads on the same load set, or its graft layer for the same links,
+ * takes them rather than reading or authoring again.
+ *
  * Free of pxr types so NativeEffectBase can hold one; implemented in SceneOps.cpp. MT-safe:
  * reparenting is serialized per memo.
  **/
@@ -166,6 +172,9 @@ public:
 
     // How many graft layers reparentRoots() has authored with this memo.
     U64 getGraftLayerAuthorCount() const;
+
+    // How many times reparentRoots() has composed an input to read its roots and links.
+    U64 getInputReadCount() const;
 
     // SceneOps' view of the memoized layers; defined in SceneOps.cpp.
     struct State;

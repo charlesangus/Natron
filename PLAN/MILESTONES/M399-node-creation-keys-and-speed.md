@@ -317,13 +317,13 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: one graph paint per creation; `tab_menu_create` CPU at 3000 within 20 ms of `create_by_shortcut`.
   - size: M
 
-- [ ] M399.P4.T18 — Make the panel build passes hold their budget
+- [x] M399.P4.T18 — Make the panel build passes hold their budget
   - files: `Gui/KnobGuiContainerHelper.cpp` (~:478, :488-574, :1142), `Gui/NodeGui.cpp` (~:731-860)
   - approach: move the first pass out of `startPanelBuild`, split `createPanel`, check the budget inside vector-knob init, and on undo or deactivate drop an unbuilt panel instead of building it.
   - verify: `panelBuildPass` p90 ≤ 10 ms; no `ensureKnobGuisCreated` in undo samples.
   - size: M
 
-- [ ] M399.P4.T19 — Positioning and connect cost at 3000
+- [x] M399.P4.T19 — Positioning and connect cost at 3000
   - files: `Gui/GuiAppInstance.cpp` (~:631-653), the Engine `replaceInput` path
   - approach: skip the viewer abort and the upstream refresh when no viewer depends on the node; bound `moveNodesForIdealPosition`.
   - verify: positioning median ≤ 2 ms at 3000.
@@ -335,7 +335,7 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: createNodeGui ≤ 5 ms at 3000.
   - size: M
 
-- [ ] M399.P4.T21 — Per-item cost in the graph paint at 3000
+- [x] M399.P4.T21 — Per-item cost in the graph paint at 3000
   - files: `Gui/NodeGraph*.cpp`
   - approach: cull to the exposed rect and avoid `isVisible` walks in `getGridItems`.
   - verify: a full graph paint ≤ 15 ms CPU at 3000.
@@ -347,7 +347,7 @@ Graph GUI Responsiveness merges, so re-grep them.
   - verify: the shortcut step includes the trailing paint; no `~NodeSettingsPanel` samples in the tab window.
   - size: S
 
-- [ ] M399.P4.T23 — Chain insert refreshes everything below once
+- [x] M399.P4.T23 — Chain insert refreshes everything below once
   - files: Engine `replaceInput`/refresh path, `Gui/NodeGraph05.cpp`
   - approach: `positioningConnect` is all of positioning at 3000 (median 7-8 ms, p90 8.5, max 27; `positioningMove` ~0). Inserting mid-chain refreshes every downstream node (the draft flag every render reads). Bound or defer that walk without changing what renders read. Consultant design (2026-11-12): in `refreshShownDownstreamInputRelatedData`, (a) a draft-flag worklist that stops where a node's flag is unchanged (exact: the flag is OR of the inputs' flags plus `supportsRenderQuality`); (b) dirty state from an edit-generation stamp checked upstream, memoized per generation, instead of eager marks; (c) refresh visible-panel and channel-message nodes from registries. Hashes untouched. Fallback: (a)+(c) with the eager dirty marks coalesced to the next idle, flushed before panel reads.
   - verify: positioning median ≤ 2 ms at 3000.
@@ -397,3 +397,4 @@ global-mode exit, and creation and tab-menu feel on this host.
 - 2026-11-12 — **Bench regression root cause and fix (808e50f42):** the tab menu warm-up (`tabtabtab_natron.py` `_warm_up`, from 345369cac) called `popup.winId()` on the hidden top-level popup. That made five of the main window's children native windows, the node graph's container among them. Qt's repaint throttle checks the top-level window's last composite, so a native child is never throttled, and every `repaint()` painted and composited at once (~34 ms under llvmpipe; 0 native children on M118). The warm-up now calls the unbound `QWidget.create(popup)`, which builds the window and backing store without making it native, so the warm first open is kept. A probe showed forced repaint at 33.7 ms median before the fix and 0.03 ms after. The rebuild is running, and the bench rerun against M118 follows. Real displays would also have composited each native child separately.
 - 2026-11-13 — **GUI bench rule result (Xvfb):** with the fix at 808e50f42 (release gate green, run 43366305359), the rerun of pan, zoom_step, rubber_band and select_all against the M118 AppImage in the same sitting shows 0 regressions. Per-event wall time matches M118 (rubber_band 0.29 against 0.28 ms, zoom_step 0.94 against 0.97 ms at 300 nodes), and the other gate ops were already within tolerance. Creation budgets are judged on a real display at UAT (user, 2026-11-12).
 - 2026-11-13 — PR #264 opened into main. Review round 1 (Claude reviewer) had 8 findings; 7 are fixed in 058be9bb2 and the optional TabMenuBridge flag fold is declined. The fixes: closing drops an unbuilt panel; undo during a pending build keeps it for redo; number keys rank the group's Viewers by focus recency; upstream-stamp memos drop only below an edit, with an epoch and a full drop on other graph changes; the cycle-check counter is published once per call; and a lost grab ends only the stroke. Gate re-running with the GUI scripts; the GUI bench re-runs after it, because the memo change touches the edit path.
+- 2026-11-13 — The new focus-recency GUI case exposed a crash that predates this milestone: a graph's last-selected Viewer was a raw pointer, left dangling when a Viewer inside a Group was destroyed. Fixed in e5e16797b with a weak pointer. Gate green: ctest and all eight GUI scripts (run 43401907152). The review round is closed on PR #264. P4.T18/T19/T21/T23 are checked off as implemented and gated. Their budget numbers, P4.T3's re-measure and the real-display budgets are judged at the round-4 UAT (`Natron-m399-node-creation-keys-and-speed.md` steps 13–17). The Xvfb GUI bench re-run after the review fixes is pending, because the natron-dev container is down; the 4-op rerun before the container broke was invalidated by host load.

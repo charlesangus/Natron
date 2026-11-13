@@ -52,7 +52,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: both modes open 0 buildings with nothing loaded; parity at L.
   - size: M
 
-- [ ] M381.P2.T3 — USDReference borrows only its paths
+- [x] M381.P2.T3 — USDReference borrows only its paths
   - files: `Engine/Nodes/Scene/USDReference.cpp` (~:93, ~:320, ~:360), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: `borrowStage` takes `withPaths(current, {path, sourcePrim})`.
   - verify: probe plus parity with the target inside a payload.

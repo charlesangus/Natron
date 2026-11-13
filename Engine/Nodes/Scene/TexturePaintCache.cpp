@@ -663,7 +663,8 @@ writeTile(const std::string& path,
           int size,
           const std::vector<float>& rgba,
           const std::string& note,
-          std::string* error)
+          std::string* error,
+          bool direct)
 {
     if ((size <= 0) || (rgba.size() != (std::size_t)size * (std::size_t)size * 4)) {
         return fail(error, "The tile to cache is malformed.");
@@ -698,6 +699,9 @@ writeTile(const std::string& path,
     const OiioWriteSupport::CancelCheck never = []() -> bool {
         return false;
     };
+    if (direct) {
+        return OiioWriteSupport::writeFile(path, parts, rows, never, error);
+    }
     // Written beside the target and renamed over it, so that a reader or a crash never meets a
     // partial file under the final name; the extension stays last for the writer to pick EXR.
     static std::atomic<unsigned> counter(0);

@@ -30,6 +30,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "Engine/AppManager.h"
@@ -385,6 +386,8 @@ struct FileQueueState {
     std::uint64_t lastId = 0;
     std::unordered_map<std::string, FileClaim> claims;
     std::unordered_map<std::uint64_t, std::string> ownerNames;
+    // Owners gone whose names stay until their last claim settles.
+    std::unordered_set<std::uint64_t> forgottenOwners;
 };
 
 // Never destroyed: a step can be submitted during static destruction, after shutdown().
@@ -600,7 +603,23 @@ TexturePaintFileQueue::setOwnerName(std::uint64_t owner,
     std::lock_guard<std::mutex> lock(s.mutex);
 
     s.ownerNames[owner] = name;
+    s.forgottenOwners.erase(owner);
 }
+
+namespace {
+bool
+ownerHoldsClaims(const FileQueueState& s,
+                 std::uint64_t owner)
+{
+    for (const std::pair<const std::string, FileClaim>& entry : s.claims) {
+        if (entry.second.owner == owner) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anon namespace
 
 void
 TexturePaintFileQueue::forgetOwner(std::uint64_t owner)
@@ -608,7 +627,12 @@ TexturePaintFileQueue::forgetOwner(std::uint64_t owner)
     FileQueueState& s = fileQueueState();
     std::lock_guard<std::mutex> lock(s.mutex);
 
-    s.ownerNames.erase(owner);
+    // A bake of owner still holding files can refuse another node's bake, naming owner.
+    if (ownerHoldsClaims(s, owner)) {
+        s.forgottenOwners.insert(owner);
+    } else {
+        s.ownerNames.erase(owner);
+    }
 }
 
 std::string
@@ -639,9 +663,18 @@ TexturePaintFileQueue::settle(std::uint64_t bake)
             ++it;
         }
     }
-    if (settled) {
-        s.changed.notify_all();
+    if (!settled) {
+        return;
     }
+    for (std::unordered_set<std::uint64_t>::iterator it = s.forgottenOwners.begin(); it != s.forgottenOwners.end();) {
+        if (ownerHoldsClaims(s, *it)) {
+            ++it;
+        } else {
+            s.ownerNames.erase(*it);
+            it = s.forgottenOwners.erase(it);
+        }
+    }
+    s.changed.notify_all();
 }
 
 void
@@ -716,6 +749,8 @@ TexturePaintFileQueue::restartForTesting()
 
     s.stopping = false;
     s.claims.clear();
+    s.ownerNames.clear();
+    s.forgottenOwners.clear();
     s.beforeWorkHook = std::function<void()>();
     s.changed.notify_all();
 }

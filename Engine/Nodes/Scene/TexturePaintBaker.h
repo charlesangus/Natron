@@ -292,6 +292,7 @@ public:
     static void setOwnerName(std::uint64_t owner,
                              const std::string& name);
 
+    // The name stays until the last claim of owner settles.
     static void forgetOwner(std::uint64_t owner);
 
     // Empty for an owner with no name.
@@ -321,7 +322,7 @@ public:
     // Whether the queue's thread exists.
     static bool isThreadRunningForTesting();
 
-    // Takes steps on a thread again after shutdown(), with no claim held and no hook.
+    // Takes steps on a thread again after shutdown(), with no claim held, no owner named and no hook.
     static void restartForTesting();
 };
 

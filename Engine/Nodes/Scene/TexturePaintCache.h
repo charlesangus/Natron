@@ -208,14 +208,16 @@ std::string tilePath(const std::string& directory,
 
 /**
  * @brief Writes rgba, size * size RGBA texels bottom-up, to path as half floats, with note
- * stored beside the pixels. The file appears complete or not at all. False with *error set on
- * failure.
+ * stored beside the pixels. The file appears complete or not at all, unless direct: then it is
+ * written straight to path, for a caller that already writes to a temporary file of its own.
+ * False with *error set on failure.
  **/
 bool writeTile(const std::string& path,
                int size,
                const std::vector<float>& rgba,
                const std::string& note,
-               std::string* error) WARN_UNUSED_RETURN;
+               std::string* error,
+               bool direct = false) WARN_UNUSED_RETURN;
 
 /**
  * @brief Whether path holds a cached tile of size, with *note the note it was written with.

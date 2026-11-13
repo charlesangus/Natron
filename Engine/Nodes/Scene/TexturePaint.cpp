@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -41,6 +42,7 @@
 #include <thread>
 #include <vector>
 
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1483,6 +1485,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
     const bool animated = getTextureMode() == eTextureModeAnimated;
     const double steps = (double)tiles.size() * (double)(run.lastFrame - run.firstFrame + 1);
     double stepsDone = 0.;
+    std::set<std::string> swept;
     for (int frame = run.firstFrame; frame <= run.lastFrame; ++frame) {
         const double frameTime = animated ? (double)frame : run.time;
         const std::string framePattern = expandFrame(run.pattern, run.viewNames, frame);
@@ -1525,6 +1528,10 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                 if (!MaterialBake::purposePath(framePattern, purpose.toStdString(), tile, &path, error)) {
                     return false;
                 }
+                const std::string directory = std::filesystem::path(path).parent_path().string();
+                if (swept.insert(directory).second) {
+                    removeStaleBakeTemps(directory);
+                }
                 if (!writeBakeTarget(run, path, std::make_shared<std::vector<float>>(std::move(rgba)), control, error)) {
                     return false;
                 }
@@ -1546,20 +1553,81 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
 }
 
 namespace {
-// Beside path, so that the rename over it never crosses file systems; hidden, and with path's
-// extension last, for the writer to pick the format by.
-std::string
-bakeTempPath(const std::string& path)
+// Taken as the library loads, before any bake of this process began.
+const std::filesystem::file_time_type kLoadedAt = std::filesystem::file_time_type::clock::now();
+
+const std::string&
+bakeHostName()
 {
-    static std::atomic<unsigned int> written(0);
+    static const std::string host = []() {
+        char name[256] = {};
+        std::string found = (::gethostname(name, sizeof(name) - 1) == 0) ? std::string(name) : std::string();
+        // The name ends a file name, after the only '@' in it.
+        std::replace(found.begin(), found.end(), '/', '_');
+        std::replace(found.begin(), found.end(), '@', '_');
+
+        return found.empty() ? std::string("localhost") : found;
+    }();
+
+    return host;
+}
+
+bool
+isProcessAlive(long pid)
+{
+    return (pid > 0) && ((::kill((pid_t)pid, 0) == 0) || (errno == EPERM));
+}
+} // anon namespace
+
+std::string
+TexturePaint::bakeTempPath(const std::string& path,
+                           long pid,
+                           unsigned int serial)
+{
     const std::filesystem::path target(path);
     std::filesystem::path temp = target;
 
-    temp.replace_filename("." + target.stem().string() + ".baking" + std::to_string((long)::getpid()) + "_" + std::to_string(++written) + target.extension().string());
+    temp.replace_filename("." + target.stem().string() + ".baking" + std::to_string(pid) + "_" + std::to_string(serial) + "@" + bakeHostName() + target.extension().string());
 
     return temp.string();
 }
-} // anon namespace
+
+void
+TexturePaint::removeStaleBakeTemps(const std::string& directory)
+{
+    const std::string& host = bakeHostName();
+    std::error_code ec;
+
+    for (std::filesystem::directory_iterator it(directory.empty() ? std::string(".") : directory, ec), end; !ec && (it != end); it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        const std::size_t at = name.rfind('@');
+        const std::size_t baking = (at == std::string::npos) ? std::string::npos : name.rfind(".baking", at);
+        if ((name.empty() || (name[0] != '.')) || (baking == std::string::npos) || (baking == 0)) {
+            continue;
+        }
+        const std::string rest = name.substr(at + 1);
+        // On another host the pid names another process; the extension follows the host name.
+        const bool ownHost = (rest == host) || ((rest.compare(0, host.size() + 1, host + ".") == 0) && (rest.find('.', host.size() + 1) == std::string::npos));
+        const std::string serials = name.substr(baking + 7, at - baking - 7);
+        const std::size_t underscore = serials.find('_');
+        if (!ownHost || (underscore == std::string::npos) || (underscore == 0) || (underscore + 1 == serials.size()) || (serials.find_first_not_of("0123456789_") != std::string::npos) || (serials.find('_', underscore + 1) != std::string::npos)) {
+            continue;
+        }
+        long pid = 0;
+        try {
+            pid = std::stol(serials.substr(0, underscore));
+        } catch (...) {
+            continue;
+        }
+        std::error_code timed;
+        const std::filesystem::file_time_type written = std::filesystem::last_write_time(it->path(), timed);
+        if (timed || isProcessAlive(pid) || (written >= kLoadedAt)) {
+            continue;
+        }
+        std::error_code removed;
+        std::filesystem::remove(it->path(), removed);
+    }
+}
 
 bool
 TexturePaint::writeBakeTarget(const BakeOutputRun& run,
@@ -1591,9 +1659,10 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
             }
             continue;
         }
-        const std::string temp = bakeTempPath(path);
+        static std::atomic<unsigned int> written(0);
+        const std::string temp = bakeTempPath(path, (long)::getpid(), ++written);
         std::error_code ec;
-        if (!TexturePaintCache::writeTile(temp, run.size, *rgba, std::string(), error)) {
+        if (!TexturePaintCache::writeTile(temp, run.size, *rgba, std::string(), error, true)) {
             std::filesystem::remove(temp, ec);
 
             return false;
@@ -2196,6 +2265,14 @@ TexturePaint::discardBakeOutputFiles(const BakeOutputFiles& files)
 }
 
 namespace {
+std::atomic<bool>&
+failReverseSwapsForTesting()
+{
+    static std::atomic<bool> fail(false);
+
+    return fail;
+}
+
 enum SwapCheckEnum {
     eSwapCheckPending,
     eSwapCheckGo,
@@ -2222,6 +2299,12 @@ struct BakeOutputSwap {
 };
 } // anon namespace
 
+void
+TexturePaint::setFailReverseSwapsForTesting(bool fail)
+{
+    failReverseSwapsForTesting() = fail;
+}
+
 bool
 TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& files,
                                     const BakeOutputState& state,
@@ -2239,6 +2322,9 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
         std::shared_ptr<BakeOutputFiles> files;
         std::shared_ptr<BakeOutputSwap> swap;
         std::shared_ptr<std::atomic<int>> pending;
+        std::weak_ptr<TexturePaint> node;
+        BakeOutputState state;
+        std::shared_ptr<bool> applied;
         bool undo = false;
         bool landed = false;
         ~Owner()
@@ -2248,28 +2334,60 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
                 if (!swap->phase.compare_exchange_strong(armed, eSwapPhaseDropped)) {
                     const std::shared_ptr<BakeOutputFiles> moved = files;
                     const std::shared_ptr<BakeOutputSwap> ran = swap;
-                    const bool reverse = !undo;
-                    (void)TexturePaintFileQueue::submit([moved, ran, reverse](bool shuttingDown) {
-                        if (ran->ok) {
-                            std::string ignored;
-                            (void)swapBakeOutputFiles(moved.get(), reverse, &ignored, !shuttingDown);
+                    const std::weak_ptr<TexturePaint> weak = node;
+                    const BakeOutputState kept = state;
+                    const std::shared_ptr<bool> flag = applied;
+                    const bool swapped = undo;
+                    (void)TexturePaintFileQueue::submit([moved, ran, weak, kept, flag, swapped](bool shuttingDown) {
+                        if (!ran->ok) {
+                            return;
                         }
+                        std::string failure;
+                        if (failReverseSwapsForTesting().load()) {
+                            failure = "the reverse swap was made to fail";
+                        } else if (swapBakeOutputFiles(moved.get(), !swapped, &failure, !shuttingDown)) {
+                            return;
+                        }
+                        QCoreApplication* app = QCoreApplication::instance();
+                        if (shuttingDown || !app) {
+                            return;
+                        }
+                        // The files stay as the swap left them: the node follows them, on the thread its state lives on.
+                        QMetaObject::invokeMethod(app, [weak, kept, flag, swapped, failure]() {
+                            const std::shared_ptr<TexturePaint> self = weak.lock();
+                            if (!self) {
+                                return;
+                            }
+                            const KnobStringPtr record = self->_bakedOutput.lock();
+                            const std::string current = record ? record->getValue() : std::string();
+                            if ((*flag == swapped) && (current == (swapped ? kept.bakedRecord : kept.record))) {
+                                *flag = !swapped;
+                                if (swapped) {
+                                    self->restoreBakeOutputState(kept);
+                                } else {
+                                    self->reapplyBakeOutputState(kept);
+                                }
+                            }
+                            self->setPersistentMessage(eMessageTypeError, (swapped ? TexturePaint::tr("An undo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays undone, as its files are.") : TexturePaint::tr("A redo of Bake Output stopped after moving its files, which could not be moved back (%1): the bake stays redone, as its files are.")).arg(QString::fromStdString(failure)).toStdString()); }, Qt::QueuedConnection);
                     });
                 }
             }
             --*pending;
         }
     };
+    const std::weak_ptr<TexturePaint> weak = weakSelf();
     std::shared_ptr<Owner> owner = std::make_shared<Owner>();
     owner->files = files;
     owner->swap = swap;
     owner->pending = _pendingBakeOutputs;
+    owner->node = weak;
+    owner->state = state;
+    owner->applied = applied;
     owner->undo = undo;
     ++*_pendingBakeOutputs;
 
     TexturePaintBaker::Bake bake;
     bake.label = undo ? tr("Undoing Bake Output") : tr("Redoing Bake Output");
-    const std::weak_ptr<TexturePaint> weak = weakSelf();
     bake.work = [weak, files, state, undo, applied, swap](TexturePaintBaker::Context& context) -> bool {
         QCoreApplication* app = QCoreApplication::instance();
         if (!app) {
@@ -2295,6 +2413,7 @@ TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& file
             swap->check = check;
             swap->checked.notify_all(); }, Qt::QueuedConnection);
         {
+            // Holds this baker, and every bake queued behind it, until the main loop runs the check.
             std::unique_lock<std::mutex> lock(swap->mutex);
             while (swap->check == eSwapCheckPending) {
                 if (context.cancelled()) {

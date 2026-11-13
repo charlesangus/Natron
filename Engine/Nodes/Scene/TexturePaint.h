@@ -518,6 +518,20 @@ public:
                                     std::string* error,
                                     bool evict = true) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The hidden file beside path that the bake of process pid on this host writes, serial
+     * telling its writes apart, before renaming it over path.
+     **/
+    static std::string bakeTempPath(const std::string& path,
+                                    long pid,
+                                    unsigned int serial) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Deletes the bakeTempPath() files in directory left by processes of this host that
+     * have ended, written before this process loaded the node.
+     **/
+    static void removeStaleBakeTemps(const std::string& directory);
+
     // Deletes the backups and stashes of files.
     static void discardBakeOutputFiles(const BakeOutputFiles& files);
 
@@ -552,12 +566,17 @@ public:
      * says why. *applied, which the undo step shares with every swap it queues, tells whether its
      * bake is applied as the swaps landed so far left it: a swap asking for the state it is in
      * already does nothing, so that the swap after a refused one leaves the files as they are. A
-     * swap the baker drops never moves the files, or puts back what it moved. Main thread.
+     * swap the baker drops never moves the files, or puts back what it moved; when they cannot
+     * be put back, the node takes the state the files are in and the persistent message says so.
+     * Main thread.
      **/
     bool enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& files,
                                const BakeOutputState& state,
                                bool undo,
                                const std::shared_ptr<bool>& applied);
+
+    // Makes putting back the files of a dropped undo or redo fail, as a full disk would.
+    static void setFailReverseSwapsForTesting(bool fail);
 
     // Bake Outputs that land hand their undo step to sink rather than pushing it, when set.
     void setUndoCommandSinkForTesting(const std::function<void(const UndoCommandPtr&)>& sink);

@@ -28,10 +28,14 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -41,9 +45,11 @@
 
 #include <OpenImageIO/imageio.h>
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 
 #include "BaseTest.h"
 
@@ -66,6 +72,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/TexturePaint.h"
+#include "Engine/Nodes/Scene/TexturePaintBaker.h"
 #include "Engine/Nodes/Scene/TexturePaintView.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
@@ -1525,4 +1532,183 @@ TEST_F(TexturePaintTest, ViewShowsTheBakedBase)
     ASSERT_TRUE(render(paint, next, ImageLayerDesc::getRGBAComponents(), &buffer));
     expectColor(pixelAt(buffer, 0.35, 0.5), 0.f, 1.f, 0.f, 1.f, "the baked output under the stroke");
     expectColor(pixelAt(buffer, 0.65, 0.5), right[0], right[1], right[2], 1.f, "the baked output away from it");
+}
+
+namespace {
+typedef std::chrono::steady_clock Clock;
+
+// Runs the main thread's event loop, where bakes land, until done() or timeoutMs passes.
+bool
+pumpUntil(const std::function<bool()>& done,
+          int timeoutMs)
+{
+    const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+
+    while (!done()) {
+        if (Clock::now() > deadline) {
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(2);
+    }
+
+    return true;
+}
+
+long
+millisSince(const Clock::time_point& start)
+{
+    return (long)std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+}
+} // anon namespace
+
+TEST_F(TexturePaintTest, QueuedSessionBakesFinishInOrder)
+{
+    TexturePaintBaker baker;
+    std::mutex mutex;
+    std::vector<int> worked;
+    std::vector<int> landed;
+
+    for (int i = 0; i < 3; ++i) {
+        TexturePaintBaker::Bake bake;
+        bake.label = QString::number(i);
+        bake.work = [&, i](TexturePaintBaker::Context& context) {
+            // Later bakes are quicker, so that only the queue keeps them in order.
+            QThread::msleep(60 - 20 * i);
+            context.progress(1., QString::number(i));
+            std::lock_guard<std::mutex> lock(mutex);
+            worked.push_back(i);
+
+            return true;
+        };
+        bake.completion = [&, i](bool ok) {
+            EXPECT_TRUE(ok);
+            std::lock_guard<std::mutex> lock(mutex);
+            landed.push_back(i);
+        };
+        ASSERT_TRUE(baker.enqueue(bake));
+    }
+    EXPECT_TRUE(baker.isBaking());
+    ASSERT_TRUE(pumpUntil([&]() { return !baker.isBaking(); }, 10000));
+    EXPECT_EQ((std::vector<int> { 0, 1, 2 }), worked);
+    EXPECT_EQ((std::vector<int> { 0, 1, 2 }), landed);
+    EXPECT_EQ(3u, baker.getGeneration());
+    baker.stop();
+}
+
+TEST_F(TexturePaintTest, EnqueueingABakeNeverBlocksTheMainThread)
+{
+    TexturePaintBaker baker;
+    std::atomic<bool> release(false);
+    long slowest = 0;
+
+    for (int i = 0; i < 5; ++i) {
+        TexturePaintBaker::Bake bake;
+        bake.work = [&](TexturePaintBaker::Context& context) {
+            while (!release.load() && !context.cancelled()) {
+                QThread::msleep(2);
+            }
+
+            return true;
+        };
+        const Clock::time_point start = Clock::now();
+        ASSERT_TRUE(baker.enqueue(bake));
+        slowest = std::max(slowest, millisSince(start));
+    }
+    EXPECT_LT(slowest, 50);
+    EXPECT_EQ(5, baker.getPendingCount());
+    release = true;
+    ASSERT_TRUE(pumpUntil([&]() { return !baker.isBaking(); }, 10000));
+    baker.stop();
+}
+
+TEST_F(TexturePaintTest, StoppingTheBakerCancelsTheRunningBakeAndDropsTheRest)
+{
+    TexturePaintBaker baker;
+    std::atomic<bool> started(false);
+    std::atomic<bool> sawCancel(false);
+    std::atomic<int> completions(0);
+
+    for (int i = 0; i < 3; ++i) {
+        TexturePaintBaker::Bake bake;
+        bake.work = [&](TexturePaintBaker::Context& context) {
+            started = true;
+            while (!context.cancelled()) {
+                QThread::msleep(2);
+            }
+            sawCancel = true;
+
+            return false;
+        };
+        bake.completion = [&](bool) { ++completions; };
+        ASSERT_TRUE(baker.enqueue(bake));
+    }
+    ASSERT_TRUE(pumpUntil([&]() { return started.load(); }, 10000));
+    const Clock::time_point start = Clock::now();
+    baker.stop();
+    EXPECT_LT(millisSince(start), 2000);
+    EXPECT_TRUE(sawCancel.load());
+    EXPECT_FALSE(baker.isBaking());
+    QCoreApplication::processEvents();
+    EXPECT_EQ(0, completions.load());
+}
+
+TEST_F(TexturePaintTest, DeletingTheNodeMidBakeCancelsItCleanly)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    ASSERT_TRUE(bool(node));
+    TexturePaint* effect = getTexturePaint(node);
+    ASSERT_TRUE(effect != nullptr);
+    std::atomic<bool> started(false);
+    std::atomic<bool> exited(false);
+    std::atomic<int> completions(0);
+    TexturePaintBaker::Bake bake;
+    bake.work = [&](TexturePaintBaker::Context& context) {
+        started = true;
+        while (!context.cancelled()) {
+            QThread::msleep(2);
+        }
+        exited = true;
+
+        return false;
+    };
+    bake.completion = [&](bool) { ++completions; };
+    ASSERT_TRUE(effect->getBaker()->enqueue(bake));
+    ASSERT_TRUE(effect->getBaker()->enqueue(bake));
+    ASSERT_TRUE(pumpUntil([&]() { return started.load(); }, 10000));
+
+    const Clock::time_point start = Clock::now();
+    node->destroyNode(false, false);
+    effect = nullptr;
+    node.reset();
+    EXPECT_LT(millisSince(start), 5000);
+    EXPECT_TRUE(exited.load());
+    QCoreApplication::processEvents();
+    EXPECT_EQ(0, completions.load());
+}
+
+TEST_F(TexturePaintTest, SessionBakeLandsAndBumpsTheGeneration)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "bake", kRedU, 0.5), 0., 1., 0.);
+
+    KnobIntPtr generation = getKnob<KnobInt>(paint, kTexturePaintParamBakeGeneration);
+    ASSERT_TRUE(bool(generation));
+    const int before = generation->getValue();
+    EXPECT_EQ(0u, effect->getBakeGeneration());
+    const Clock::time_point start = Clock::now();
+    ASSERT_TRUE(effect->enqueueSessionBake(session, 1., ViewIdx(0)));
+    EXPECT_LT(millisSince(start), 50);
+    EXPECT_TRUE(effect->isSessionBakePending(session));
+    ASSERT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 60000));
+    EXPECT_FALSE(effect->isSessionBakePending(session));
+    EXPECT_EQ(1u, effect->getBakeGeneration());
+    EXPECT_NE(before, generation->getValue());
+    ASSERT_TRUE(bool(renderTile(paint)));
 }

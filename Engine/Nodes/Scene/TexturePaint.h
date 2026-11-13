@@ -30,12 +30,16 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <QString>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -57,6 +61,7 @@
 #define kTexturePaintParamBakeOutputPath "bakeOutputPath"
 #define kTexturePaintParamBakeOutput "bakeOutput"
 #define kTexturePaintParamBakedOutput "bakedOutput"
+#define kTexturePaintParamBakeGeneration "bakeGeneration"
 #define kTexturePaintParamOutputTile "outputTile"
 
 /**
@@ -77,6 +82,8 @@
 #define kTexturePaintSessionParamFrozen "frozen"
 
 NATRON_NAMESPACE_ENTER
+
+class TexturePaintBaker;
 
 namespace SceneRaster {
 struct ExplicitCamera;
@@ -170,6 +177,9 @@ public:
     virtual void onCurveLayerCreated(const RotoLayerPtr& layer) OVERRIDE FINAL;
 
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
+    // Cancels the bake in progress and drops the queued ones, as the node is deleted or the project closes.
+    virtual void quitBackgroundWork(bool blocking) OVERRIDE FINAL;
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,
@@ -283,7 +293,8 @@ public:
      * into the Bake Inputs Path files (MaterialBake), one per UDIM tile they cover and material
      * input, and makes them the base the strokes are painted over. *files receives the files
      * written, *warning what the bake stood fallbacks in for. False with *error set on failure.
-     * Waits for the bake, which runs on a thread of its own so that live textures can render.
+     * Waits for the bake, which runs on a thread of its own so that live textures can render:
+     * for tests and scripts; the Bake Inputs button uses enqueueBakeInputs().
      **/
     bool bakeInputs(double time,
                     ViewIdx view,
@@ -345,10 +356,63 @@ public:
     // Undoes writeBakeOutput(): unfreezes state's sessions and sets the record back to state's.
     void restoreBakeOutputState(const BakeOutputState& state);
 
+    /**
+     * @brief The bakes below queue on the node's TexturePaintBaker, in order, and return at once;
+     * main thread. Each lands later on the main thread, where it changes the node as the
+     * synchronous bake of the same name does and bumps the bake generation, which refreshes the
+     * output. A bake that fails shows its error as the node's persistent message. False, with the
+     * message set, when it cannot be queued.
+     *
+     * A Bake Output pushes its undo step when it lands: the step names files and sessions that
+     * the bake changes, so it cannot exist, and cannot be undone, before then.
+     **/
+    bool enqueueBakeInputs(double time, ViewIdx view);
+    bool enqueueBakeOutput(double time, ViewIdx view);
+
+    /**
+     * @brief Projects session, a closed one, into the tile cache at time and view: every tile the
+     * meshes cover is baked, so rendering finds them cached. The session's strokes stay what is
+     * drawn until this lands.
+     **/
+    bool enqueueSessionBake(const RotoLayerPtr& session, double time, ViewIdx view);
+
+    // Whether a bake is queued, running, or landing.
+    bool isBaking() const WARN_UNUSED_RETURN;
+
+    // Whether a session bake queued for session has not landed yet. Main thread.
+    bool isSessionBakePending(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;
+
+    // How many bakes have landed successfully, since the node was created.
+    quint64 getBakeGeneration() const WARN_UNUSED_RETURN;
+
+    // The node's baker, created on first use. Main thread.
+    TexturePaintBaker* getBaker();
+
 protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
+    struct BakeControl {
+        std::function<bool()> cancelled;
+        std::function<void(double, const QString&)> progress;
+    };
+    struct BakeInputsRun;
+    struct BakeOutputRun;
+
+    bool prepareBakeInputs(double time, ViewIdx view, BakeInputsRun* run, std::string* error);
+    bool runBakeInputs(BakeInputsRun& run, const BakeControl& control, std::string* error);
+    void applyBakeInputs(BakeInputsRun& run, std::vector<std::string>* files, std::string* warning);
+
+    bool prepareBakeOutput(double time, ViewIdx view, const std::string& backupDirectory, BakeOutputRun* run, std::string* error);
+    bool runBakeOutput(BakeOutputRun& run, const BakeControl& control, std::string* error);
+    void applyBakeOutput(BakeOutputRun& run, BakeOutputState* state);
+
+    bool runSessionBake(double time, ViewIdx view, const BakeControl& control, std::string* error);
+
+    std::string makeBackupDirectory() const WARN_UNUSED_RETURN;
+    int sessionStrokeCount(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;
+    void landBake(bool ok);
+
     struct SessionView {
         RotoLayerWPtr session;
         NodePtr node;
@@ -423,7 +487,8 @@ private:
                      const std::list<ImageLayerDesc>& planes,
                      std::vector<std::string>* paths,
                      std::string* note,
-                     std::string* error);
+                     std::string* error,
+                     const std::function<bool()>& cancel = std::function<bool()>());
 
     // Views are looked up from render threads while the main thread creates them.
     mutable std::mutex _viewsMutex;
@@ -446,8 +511,13 @@ private:
     KnobButtonWPtr _bakeOutput;
     // What the last Bake Output wrote, as _bakedInputs is for Bake Inputs.
     KnobStringWPtr _bakedOutput;
+    // Set to the baker's generation as each bake lands, so that the node's hash changes and the output refreshes.
+    KnobIntWPtr _bakeGeneration;
     KnobIntWPtr _outputTile;
     std::atomic<int> _sessionRenders;
+    std::unique_ptr<TexturePaintBaker> _baker;
+    // Session bakes queued and not landed, by session; main thread.
+    std::map<const RotoLayer*, int> _pendingSessionBakes;
 };
 
 NATRON_NAMESPACE_EXIT

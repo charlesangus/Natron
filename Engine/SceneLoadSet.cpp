@@ -79,6 +79,62 @@ SceneLoadSet::none()
     return SceneLoadSet(std::vector<Entry>(1, Entry { std::string("/"), eRuleNone }));
 }
 
+SceneLoadSetPtr
+SceneLoadSet::withPaths(const SceneLoadSetPtr& base,
+                        const std::vector<std::string>& paths)
+{
+    if (!base || base->getEntries().empty()) {
+        return base;
+    }
+
+    std::map<std::string, RuleEnum> byPath;
+
+    for (const Entry& entry : base->getEntries()) {
+        byPath[entry.path] = entry.rule;
+    }
+
+    for (const std::string& path : paths) {
+        std::string::size_type end = 0;
+
+        while (end != std::string::npos) {
+            end = path.find('/', end + 1);
+            const std::string prefix = path.substr(0, end);
+            if (prefix.empty()) {
+                continue;
+            }
+
+            // The nearest rule at or above prefix decides; a subtree already loaded in full stays so.
+            bool includedInFull = false;
+            for (std::string at = prefix;;) {
+                const std::map<std::string, RuleEnum>::const_iterator it = byPath.find(at);
+                if (it != byPath.end()) {
+                    includedInFull = (it->second == eRuleAll);
+                    break;
+                }
+                const std::string::size_type slash = at.rfind('/');
+                if (slash == 0 || slash == std::string::npos) {
+                    at = "/";
+                    const std::map<std::string, RuleEnum>::const_iterator root = byPath.find(at);
+                    includedInFull = (root != byPath.end()) && (root->second == eRuleAll);
+                    break;
+                }
+                at.resize(slash);
+            }
+            if (!includedInFull) {
+                byPath[prefix] = eRuleOnly;
+            }
+        }
+    }
+
+    std::vector<Entry> entries;
+    entries.reserve(byPath.size());
+    for (const std::pair<const std::string, RuleEnum>& entry : byPath) {
+        entries.push_back(Entry { entry.first, entry.second });
+    }
+
+    return std::make_shared<const SceneLoadSet>(entries);
+}
+
 const std::vector<SceneLoadSet::Entry>&
 SceneLoadSet::getEntries() const
 {

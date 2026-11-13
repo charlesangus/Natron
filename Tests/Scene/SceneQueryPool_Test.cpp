@@ -42,6 +42,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
+#include "Tests/Scene/SceneTestAuthoring.h"
 
 NATRON_NAMESPACE_USING
 
@@ -190,4 +191,39 @@ TEST(SceneQueryPoolLoadSets, TheSameSetAgainChangesNoLoads)
         EXPECT_FALSE(lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/World/Block_0/B_1")).IsLoaded());
         EXPECT_TRUE(lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/World/Block_0/B_2")).IsLoaded());
     }
+}
+
+TEST(SceneQueryPoolLoadSets, WithPathsLoadsOnlyTheChainOfAKnownPath)
+{
+    CarCity city(2, 3);
+    SceneQueryPool pool(2);
+    std::string error;
+    const std::string car = carPath(0, 1);
+    const SceneLoadSetPtr none = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
+    const SceneLoadSetPtr set = SceneLoadSet::withPaths(none, std::vector<std::string>(1, car));
+
+    ASSERT_TRUE(bool(set));
+    EXPECT_EQ(*set, *SceneLoadSet::withPaths(none, std::vector<std::string>(1, car)));
+    EXPECT_FALSE(SceneLoadSet::withPaths(SceneLoadSetPtr(), std::vector<std::string>(1, car)));
+
+    PXR_NS::TfToken type;
+    std::vector<PXR_NS::TfToken> properties;
+    {
+        SceneQueryPool::Lease lease = pool.borrow(city.payload(), set, &error);
+        ASSERT_TRUE(lease.isValid()) << error;
+        EXPECT_EQ(city.openedBuildings(), 1);
+        const PXR_NS::UsdPrim prim = lease.getStage()->GetPrimAtPath(PXR_NS::SdfPath(car));
+        ASSERT_TRUE(bool(prim));
+        type = prim.GetTypeName();
+        properties = prim.GetPropertyNames();
+    }
+    pool.releaseIdle();
+
+    SceneQueryPool::Lease full = pool.borrow(city.payload(), SceneLoadSetPtr(), &error);
+    ASSERT_TRUE(full.isValid()) << error;
+    EXPECT_EQ(city.openedBuildings(), city.getNumBuildings());
+    const PXR_NS::UsdPrim reference = full.getStage()->GetPrimAtPath(PXR_NS::SdfPath(car));
+    ASSERT_TRUE(bool(reference));
+    EXPECT_EQ(type, reference.GetTypeName());
+    EXPECT_EQ(properties, reference.GetPropertyNames());
 }

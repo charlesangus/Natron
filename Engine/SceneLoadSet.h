@@ -80,6 +80,14 @@ public:
 
     const std::vector<Entry>& getEntries() const;
 
+    /**
+     * @brief base with the payload of every prim on the way to each of paths, and of the paths
+     * themselves, included and nothing below them. Null, as an empty set, includes everything
+     * already and comes back as it is.
+     **/
+    static std::shared_ptr<const SceneLoadSet> withPaths(const std::shared_ptr<const SceneLoadSet>& base,
+                                                         const std::vector<std::string>& paths);
+
     U64 getHash() const;
 
     bool operator==(const SceneLoadSet& other) const;

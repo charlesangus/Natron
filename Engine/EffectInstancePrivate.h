@@ -34,6 +34,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <QCoreApplication>
@@ -440,6 +441,10 @@ public:
     bool isDoingInstanceSafeRender; // true if this instance is rendering
     mutable QMutex renderClonesMutex;
     std::list<EffectInstancePtr> renderClonesPool;
+    // The id of each scene input context mapped onto another load set, by the id of the
+    // context it was mapped from and the input number. Kept on the main instance.
+    QMutex sceneInputContextIdsMutex;
+    std::map<std::pair<U64, int>, U64> sceneInputContextIds;
     bool mustSyncPrivateData; //!< true if the effect's knobs were changed but instanceChanged could not be called (e.g. when loading a PyPlug), so that syncPrivateData should be called before the main-thread time-invariant derivation calls the clip preferences
     mutable QMutex mustSyncPrivateDataMutex; //!< protects mustSyncPrivateData
 

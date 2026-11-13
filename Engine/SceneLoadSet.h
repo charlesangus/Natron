@@ -88,6 +88,14 @@ public:
     static std::shared_ptr<const SceneLoadSet> withPaths(const std::shared_ptr<const SceneLoadSet>& base,
                                                          const std::vector<std::string>& paths);
 
+    /**
+     * @brief The set including a prim's payload exactly when a or b does, the payload at a path
+     * and those below it decided apart (an eRuleOnly includes the one, not the others). Null when
+     * either includes everything.
+     **/
+    static std::shared_ptr<const SceneLoadSet> unite(const std::shared_ptr<const SceneLoadSet>& a,
+                                                     const std::shared_ptr<const SceneLoadSet>& b);
+
     U64 getHash() const;
 
     bool operator==(const SceneLoadSet& other) const;
@@ -162,6 +170,19 @@ struct SceneEvaluationContext {
     bool includesEverything() const
     {
         return !loadSet || loadSet->getEntries().empty();
+    }
+
+    // Whether loadSet includes the same payloads as other's, null and empty sets being one.
+    bool hasSameLoadSet(const SceneEvaluationContext& other) const
+    {
+        if (loadSet == other.loadSet) {
+            return true;
+        }
+        if (includesEverything() || other.includesEverything()) {
+            return includesEverything() && other.includesEverything();
+        }
+
+        return *loadSet == *other.loadSet;
     }
 
     // A new id, never 0 and never handed out before in this process.

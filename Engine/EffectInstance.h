@@ -1763,6 +1763,9 @@ public:
         std::map<int, ScenePayload> inputScenes;
         bool isRenderResponseToUserInteraction;
         SceneEvaluationContext context;
+        // The context of each input evaluated on another load set than context's, by input
+        // number (see getSceneInputContext()).
+        std::map<int, SceneEvaluationContext> inputContexts;
 
         SceneRenderActionArgs()
             : time(0)
@@ -1770,6 +1773,7 @@ public:
             , inputScenes()
             , isRenderResponseToUserInteraction(false)
             , context()
+            , inputContexts()
         {
         }
 
@@ -1778,6 +1782,13 @@ public:
          * not produce a scene.
          **/
         ScenePayload getInputScene(int inputNb) const;
+
+        /**
+         * @brief The context inputNb was evaluated on, which a node reading that input's scene
+         * borrows its stage with and adds the reach of its matches to: context unless the input
+         * evaluated on a load set of its own.
+         **/
+        const SceneEvaluationContext& getInputContext(int inputNb) const;
     };
 
 protected:
@@ -1825,6 +1836,40 @@ protected:
                                    std::string* /*errorMessage*/) WARN_UNUSED_RETURN
     {
         return eStatusReplyDefault;
+    }
+
+    /**
+     * @brief The context scene input inputNb evaluates on when this node evaluates on ctx: ctx
+     * itself by default. Load sets are on the paths of the node's output, so a node showing an
+     * input's prims at other paths (a graft, a wrap, a reference) maps ctx's set onto the
+     * input's paths, erring towards loading more, null when it cannot tell.
+     *
+     * Only the load set of the result counts. When it differs from ctx's, evaluateScene() gives
+     * the input an id kept for this node, inputNb and ctx's id, so that a node reached both
+     * through the mapping and directly memoizes each apart, and a reach of its own that
+     * mapSceneInputReach() brings back to ctx.
+     **/
+    virtual SceneEvaluationContext getSceneInputContext(int /*inputNb*/,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double /*time*/,
+                                                        ViewIdx /*view*/) const
+    {
+        return ctx;
+    }
+
+    /**
+     * @brief Sets *out to the reach in, gathered on input inputNb's paths, as paths of this node's
+     * output; *out starts empty. Called by evaluateScene() for an input that evaluated on a load
+     * set of its own, after renderScene() and with the node's own context current
+     * (SceneEvaluationContext::current()), so that it may map through what renderScene() memoized
+     * for that context. A path it cannot map should become a prefix above every place the input's
+     * prims can land, "/" at worst. The default copies in.
+     **/
+    virtual void mapSceneInputReach(int /*inputNb*/,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const
+    {
+        *out = in;
     }
 
     virtual StatusEnum getTransform(double /*time*/,

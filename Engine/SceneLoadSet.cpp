@@ -49,6 +49,69 @@ hashEntries(const std::vector<SceneLoadSet::Entry>& entries)
 }
 
 thread_local const SceneEvaluationContext* currentContext = nullptr;
+
+typedef std::map<std::string, SceneLoadSet::RuleEnum> RulesByPath;
+
+std::string
+parentPath(const std::string& path)
+{
+    const std::string::size_type slash = path.rfind('/');
+
+    return ((slash == 0) || (slash == std::string::npos)) ? std::string("/") : path.substr(0, slash);
+}
+
+// The rule of the nearest path at or above path, or null if none is.
+const SceneLoadSet::RuleEnum*
+nearestRule(const RulesByPath& rules,
+            const std::string& path)
+{
+    for (std::string at = path;;) {
+        const RulesByPath::const_iterator it = rules.find(at);
+        if (it != rules.end()) {
+            return &it->second;
+        }
+        if (at == "/") {
+            return nullptr;
+        }
+        at = parentPath(at);
+    }
+}
+
+// Whether a prim strictly below the paths of rules nearest above it has its payload included.
+bool
+includesBelow(const SceneLoadSet::RuleEnum* rule)
+{
+    return !rule || (*rule == SceneLoadSet::eRuleAll);
+}
+
+// Whether the prim at path, and a prim below it with no rule of its own, have their payloads included.
+void
+getInclusion(const RulesByPath& rules,
+             const std::string& path,
+             bool* self,
+             bool* below)
+{
+    const SceneLoadSet::RuleEnum* rule = nearestRule(rules, path);
+    const RulesByPath::const_iterator own = rules.find(path);
+
+    *below = includesBelow(rule);
+    if (own != rules.end()) {
+        *self = (own->second != SceneLoadSet::eRuleNone);
+    } else {
+        *self = *below;
+    }
+}
+
+SceneLoadSet::RuleEnum
+ruleFor(bool self,
+        bool below)
+{
+    if (below) {
+        return SceneLoadSet::eRuleAll;
+    }
+
+    return self ? SceneLoadSet::eRuleOnly : SceneLoadSet::eRuleNone;
+}
 } // anonymous namespace
 
 SceneLoadSet::SceneLoadSet()
@@ -130,6 +193,57 @@ SceneLoadSet::withPaths(const SceneLoadSetPtr& base,
     entries.reserve(byPath.size());
     for (const std::pair<const std::string, RuleEnum>& entry : byPath) {
         entries.push_back(Entry { entry.first, entry.second });
+    }
+
+    return std::make_shared<const SceneLoadSet>(entries);
+}
+
+SceneLoadSetPtr
+SceneLoadSet::unite(const SceneLoadSetPtr& a,
+                    const SceneLoadSetPtr& b)
+{
+    if (!a || a->getEntries().empty() || !b || b->getEntries().empty()) {
+        return SceneLoadSetPtr();
+    }
+    if ((a == b) || (*a == *b)) {
+        return a;
+    }
+
+    RulesByPath left, right;
+    for (const Entry& entry : a->getEntries()) {
+        left[entry.path] = entry.rule;
+    }
+    for (const Entry& entry : b->getEntries()) {
+        right[entry.path] = entry.rule;
+    }
+
+    // A prim's inclusion is decided by the nearest rule of either set at or above it, so the
+    // union only needs a rule on the paths either set has one on.
+    RulesByPath united;
+    for (const RulesByPath* rules : { &left, &right }) {
+        for (const std::pair<const std::string, RuleEnum>& entry : *rules) {
+            if (united.count(entry.first)) {
+                continue;
+            }
+            bool selfA, belowA, selfB, belowB;
+            getInclusion(left, entry.first, &selfA, &belowA);
+            getInclusion(right, entry.first, &selfB, &belowB);
+            united[entry.first] = ruleFor(selfA || selfB, belowA || belowB);
+        }
+    }
+
+    std::vector<Entry> entries;
+    entries.reserve(united.size());
+    for (const std::pair<const std::string, RuleEnum>& entry : united) {
+        const RuleEnum* inherited = (entry.first == "/") ? nullptr : nearestRule(united, parentPath(entry.first));
+        const bool inheritedAll = includesBelow(inherited);
+        const bool redundant = (inheritedAll && (entry.second == eRuleAll)) || (!inheritedAll && (entry.second == eRuleNone));
+        if (!redundant) {
+            entries.push_back(Entry { entry.first, entry.second });
+        }
+    }
+    if (entries.empty()) {
+        return SceneLoadSetPtr();
     }
 
     return std::make_shared<const SceneLoadSet>(entries);

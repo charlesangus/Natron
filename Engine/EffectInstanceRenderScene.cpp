@@ -29,6 +29,8 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -42,6 +44,14 @@ EffectInstance::SceneRenderActionArgs::getInputScene(int inputNb) const
     std::map<int, ScenePayload>::const_iterator found = inputScenes.find(inputNb);
 
     return (found == inputScenes.end()) ? ScenePayload() : found->second;
+}
+
+const SceneEvaluationContext&
+EffectInstance::SceneRenderActionArgs::getInputContext(int inputNb) const
+{
+    std::map<int, SceneEvaluationContext>::const_iterator found = inputContexts.find(inputNb);
+
+    return (found == inputContexts.end()) ? context : found->second;
 }
 
 namespace {
@@ -196,6 +206,27 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     actionArgs.isRenderResponseToUserInteraction = frameArgs->isRenderResponseToUserInteraction;
     actionArgs.context = args.context;
 
+    // The reach each input evaluated on a load set of its own gathered, on that input's paths.
+    std::vector<std::pair<int, SceneLoadReachPtr>> inputReaches;
+    const auto addInputReaches = [this, &args, &inputReaches]() {
+        SceneEvaluationContext::Scope contextScope(args.context);
+
+        for (const std::pair<int, SceneLoadReachPtr>& inputReach : inputReaches) {
+            const std::vector<std::string> prefixes = inputReach.second->getPrefixes();
+            if (prefixes.empty()) {
+                continue;
+            }
+            std::vector<std::string> mapped;
+            try {
+                mapSceneInputReach(inputReach.first, prefixes, &mapped);
+            } catch (...) {
+                // Unmapped, a load anywhere has to re-evaluate the node.
+                mapped.assign(1, std::string("/"));
+            }
+            args.context.reach->add(mapped);
+        }
+    };
+
     const int nInputs = getNInputs();
     for (int i = 0; i < nInputs; ++i) {
         EffectInstancePtr input = getInput(i);
@@ -206,9 +237,45 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
 
         NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), i);
 
+        SceneEvaluationContext inputContext;
+        try {
+            inputContext = getSceneInputContext(i, args.context, args.time, args.view);
+        } catch (const std::exception& e) {
+            setSceneError(errorMessage, getScriptName_mt_safe() + ": " + e.what());
+
+            return eRenderRoIRetCodeFailed;
+        } catch (...) {
+            setSceneError(errorMessage, getScriptName_mt_safe() + ": could not tell which payloads input " + std::to_string(i) + " needs");
+
+            return eRenderRoIRetCodeFailed;
+        }
+
         ScenePayload inputScene;
-        RenderRoIRetCode inputCode = input->evaluateScene(args, &inputScene, errorMessage);
+        RenderRoIRetCode inputCode;
+        if (inputContext.hasSameLoadSet(args.context)) {
+            inputCode = input->evaluateScene(args, &inputScene, errorMessage);
+        } else {
+            {
+                QMutexLocker locker(&_imp->sceneInputContextIdsMutex);
+                U64& id = _imp->sceneInputContextIds[std::make_pair(args.context.id, i)];
+                if (id == 0) {
+                    id = SceneEvaluationContext::makeId();
+                }
+                inputContext.id = id;
+            }
+            inputContext.reach.reset();
+            if (args.context.reach) {
+                inputContext.reach = std::make_shared<SceneLoadReach>();
+                inputReaches.push_back(std::make_pair(i, inputContext.reach));
+            }
+            actionArgs.inputContexts[i] = inputContext;
+            inputCode = input->evaluateScene(EvaluateSceneArgs(args.time, args.view, inputContext, args.abortInfo), &inputScene, errorMessage);
+        }
         if (inputCode != eRenderRoIRetCodeOk) {
+            if (inputCode == eRenderRoIRetCodeFailed) {
+                addInputReaches();
+            }
+
             return inputCode;
         }
         actionArgs.inputScenes[i] = inputScene;
@@ -238,6 +305,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     if (aborted()) {
         return eRenderRoIRetCodeAborted;
     }
+
+    addInputReaches();
 
     if (st != eStatusOK) {
         if (st == eStatusReplyDefault) {

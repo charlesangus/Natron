@@ -31,7 +31,9 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/KnobTypes.h"
@@ -40,12 +42,14 @@
 #include "Engine/Nodes/Scene/AuthoredKnobSet.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 #define kTestPluginIDSceneSource "test.natron.built-in.SceneSource"
 #define kTestPluginIDSceneOp "test.natron.built-in.SceneOp"
 #define kTestPluginIDSceneGeometry "test.natron.built-in.SceneGeometry"
 #define kTestPluginIDSceneAuthored "test.natron.built-in.SceneAuthored"
+#define kTestPluginIDSceneContextProbe "test.natron.built-in.SceneContextProbe"
 
 // What a failing SceneSource reports, so a test can find it in the action's message.
 #define kSceneTestSourceFailureMessage "SceneSource was set to fail"
@@ -453,6 +457,122 @@ private:
 
     KnobStringWPtr _primPath;
     SceneGraftMemo _graftMemo;
+};
+
+/**
+ * @brief Two optional scene inputs, passing the first one's scene through, that records the
+ * context of each evaluation and can stand for a node evaluating its inputs on other load sets,
+ * for the input context tests in Scene/SceneQueryPool_Test.cpp.
+ **/
+class SceneTestContextProbe
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new SceneTestContextProbe(n);
+    }
+
+    explicit SceneTestContextProbe(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    // The load set every input evaluates on, given the node's; unset, the node's own.
+    std::function<SceneLoadSetPtr(const SceneLoadSetPtr&)> inputLoadSet;
+    // Put before every path of an input's reach as it comes back.
+    std::string reachPrefix;
+    // Paths this node puts in the reach of each evaluation.
+    std::vector<std::string> reachToAdd;
+
+    std::vector<SceneEvaluationContext> getSeenContexts() const
+    {
+        std::lock_guard<std::mutex> lock(_seenMutex);
+
+        return _seen;
+    }
+
+    std::vector<SceneEvaluationContext> getSeenInputContexts() const
+    {
+        std::lock_guard<std::mutex> lock(_seenMutex);
+
+        return _seenInputs;
+    }
+
+    void clearSeen()
+    {
+        std::lock_guard<std::mutex> lock(_seenMutex);
+
+        _seen.clear();
+        _seenInputs.clear();
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "A", .kind = eDataKindScene, .optional = true },
+        InputSpec { .label = "B", .kind = eDataKindScene, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDSceneContextProbe,
+        .label = "Test Scene Context Probe",
+        .outputKind = eDataKindScene,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    virtual SceneEvaluationContext getSceneInputContext(int /*inputNb*/,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double /*time*/,
+                                                        ViewIdx /*view*/) const OVERRIDE FINAL
+    {
+        if (!inputLoadSet) {
+            return ctx;
+        }
+
+        return SceneEvaluationContext(ctx.id, inputLoadSet(ctx.loadSet), ctx.reach);
+    }
+
+    virtual void mapSceneInputReach(int /*inputNb*/,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const OVERRIDE FINAL
+    {
+        for (const std::string& path : in) {
+            out->push_back(reachPrefix + path);
+        }
+    }
+
+    virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
+                                   ScenePayload* outputScene,
+                                   std::string* /*errorMessage*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        {
+            std::lock_guard<std::mutex> lock(_seenMutex);
+
+            _seen.push_back(args.context);
+            for (int i = 0; i < 2; ++i) {
+                _seenInputs.push_back(args.getInputContext(i));
+            }
+        }
+        if (args.context.reach && !reachToAdd.empty()) {
+            args.context.reach->add(reachToAdd);
+        }
+        *outputScene = args.getInputScene(0);
+
+        return eStatusOK;
+    }
+
+    mutable std::mutex _seenMutex;
+    std::vector<SceneEvaluationContext> _seen;
+    std::vector<SceneEvaluationContext> _seenInputs;
 };
 
 NATRON_NAMESPACE_EXIT

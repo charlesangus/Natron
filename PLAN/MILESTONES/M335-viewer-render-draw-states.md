@@ -55,7 +55,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
 
 ## Phase 335.3: Viewer wiring
 
-- [ ] M335.P3.T4 — Headlight when every light is hidden
+- [x] M335.P3.T4 — Headlight when every light is hidden
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp` (worker draw-rule application from P2.T1), `Engine/Nodes/Scene/SceneDrawFilter.{h,cpp}`, `Tests/Scene/ProgressiveRender_Test.cpp`
   - approach: when the applied rules leave no scene light, add the same camera-attached headlight Storm's viewer uses (find how `SceneViewport` provides it) to the delegate's scene; remove it when any light returns or Render Everything is on. Offline engines never get it.
   - verify: Cycles progressive render with every light row Hidden is not black and brightness follows camera direction; unhiding one light removes the headlight; USDRender output unchanged.
@@ -73,7 +73,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
   - verify: the m335 script turns it on — every payload loads, the frame covers all assets, the toggle survives save and load; off — rules return, nothing unloads.
   - size: M
 
-- [ ] M335.P3.T3 — USDRender and USDWrite unaffected; Render Everything matches them
+- [x] M335.P3.T3 — USDRender and USDWrite unaffected; Render Everything matches them
   - files: `Tests/Scene/USDRenderCycles_Test.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: with a live `ProgressiveRender` holding rules in the same process, render through USDRender and write through USDWrite.
   - verify: output bit-identical to a run with no viewer; a fully loaded viewer stage's prim list equals USDRender's (default evaluation context).
@@ -90,3 +90,4 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
 - 2026-11-13 — Phase 1 build failures were test errors (a8f40dce3). `replaceRules` A→empty→A matches a fresh filter in what is drawn, but boxed prims Hydra has held stay held invisible rather than removed, as `SceneDrawFilter` is designed to (Storm flips visibility instead of rebuilding batches); "identical" in P1.T2's verify means the same drawn result and rules (PM). hdMoonray turns on its own white dome light ("defaultLight") when the scene has no lights, and maps UsdLux `normalize` (default false) so the test light was nearly black; the light checks now use a red key light. P3.T4 adds the camera headlight for both Cycles and MoonRay, replacing MoonRay's dome fallback, so every renderer matches Storm (PM, per the user's headlight choice).
 - 2026-11-13 — P2.T1 implemented (27cfa594b). Deltas are folded into the worker's rule copy (`applyToRules`) and the worker sends the difference with `replaceRules`, never paced; a change during a pass is caught by comparing `drawEdits`. Phase 1+2 build running.
 - 2026-11-13 — P3.T1 implemented (a7ee1b24b). Found: `SceneViewport::pickRect` has no delegate branch and calls `ensureEngine`, so a rectangle pick under Cycles/MoonRay builds a GL engine; outside this task, the script clicks single points. Follow-up to file as an E14 stub if confirmed.
+- 2026-11-13 — P3.T3 and P3.T4 implemented (03bbd3178). A scene with no lights at all never gets the headlight, as in Storm's viewer. The headlight is HdxTaskController's distant light, placed at the camera's view inverse. All tasks implemented; full gate running (the phase 1+2 build was cancelled as superseded).

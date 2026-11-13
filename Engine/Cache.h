@@ -58,6 +58,7 @@ GCC_DIAG_OFF(deprecated)
 GCC_DIAG_ON(deprecated)
 
 #include "Engine/AppManager.h" //for access to settings
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/CacheDiskTier.h"
 #include "Engine/CacheEntry.h"
 #include "Engine/CacheRetention.h"
@@ -402,7 +403,8 @@ Q_SIGNALS:
 template <typename EntryType>
 class Cache
     : public CacheAPI,
-      public CacheHostStorage {
+      public CacheHostStorage,
+      public CacheDeviceHost {
     friend class CacheCleanerThread;
 public:
 
@@ -502,6 +504,7 @@ private:
     // threads at the end, whose entry destructions charge it until they are joined.
     mutable CacheHostTier _hostTier;
     std::shared_ptr<CacheDiskTier> _diskTier;
+    std::vector<CacheDeviceTierPtr> _deviceTiers;
     // A promotion reads its file off every lock. One that began before a clear finished may have
     // read a file the clear removed, and must not land in RAM the clear emptied.
     std::atomic<std::uint64_t> _clearGeneration { 0 };
@@ -606,6 +609,12 @@ public:
 
     virtual ~Cache()
     {
+        // Detaching waits for demotions in flight, which must not reach a host table being torn down.
+        for (const CacheDeviceTierPtr& tier : _deviceTiers) {
+            tier->attachHost(NULL);
+            tier->clear();
+        }
+
         // Off _lock: joining the writers releases the entries they hold, which reach back into this.
         if (_diskTier) {
             _diskTier->shutdown();
@@ -866,6 +875,57 @@ public:
     const std::shared_ptr<CacheDiskTier>& diskTier() const
     {
         return _diskTier;
+    }
+
+    /**
+     * @brief Puts the tier of a device above the host tier, which receives its demotions. Call before any render.
+     **/
+    void addDeviceTier(const CacheDeviceTierPtr& tier)
+    {
+        if (!tier) {
+            return;
+        }
+        _deviceTiers.push_back(tier);
+        tier->setNext(&_hostTier);
+        tier->attachHost(this);
+    }
+
+    const std::vector<CacheDeviceTierPtr>& deviceTiers() const
+    {
+        return _deviceTiers;
+    }
+
+    virtual const CacheAPI* deviceHostCache() const OVERRIDE FINAL
+    {
+        return this;
+    }
+
+    virtual std::uint64_t deviceHostGeneration() const OVERRIDE FINAL
+    {
+        return _clearGeneration.load();
+    }
+
+    virtual void makeHostRoom(std::size_t bytes) const OVERRIDE FINAL
+    {
+        evictForPromotion(bytes);
+    }
+
+    virtual bool adoptFromDevice(const CacheEntryPtr& entry,
+                                 std::uint64_t generation) const OVERRIDE FINAL
+    {
+        const EntryTypePtr typed = std::dynamic_pointer_cast<EntryType>(entry);
+        if (!typed) {
+            return false;
+        }
+        QMutexLocker getlocker(&_getLock);
+        QMutexLocker locker(&_lock);
+        // A render can have made the entry again while the pixels were downloaded.
+        if (clearedSince(generation) || findInMemory<EntryType>(typed->getKey(), typed->getParams().get())) {
+            return false;
+        }
+        sealEntry(entry, true);
+
+        return true;
     }
 
 private:
@@ -1289,6 +1349,10 @@ public:
     void clear()
     {
         const ClearUnderWay clearing(*this);
+        // After the generation moved, so that a demotion that took its entry out first is refused by the host.
+        for (const CacheDeviceTierPtr& tier : _deviceTiers) {
+            tier->clear();
+        }
         const PublishPaused paused(*this);
         // Freed off the lock, after everything else.
         std::vector<CacheEntryPtr> droppedDemotions;
@@ -1350,6 +1414,9 @@ public:
      **/
     void clearInRam()
     {
+        for (const CacheDeviceTierPtr& tier : _deviceTiers) {
+            tier->clear();
+        }
         const PublishPaused paused(*this);
         std::vector<const AbstractCacheEntryBase*> abandonedPublishes;
 

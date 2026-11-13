@@ -34,6 +34,8 @@
 
 #include "Global/FloatingPointExceptions.h"
 
+#include "Engine/CacheDeviceTier.h"
+#include "Engine/CacheEntry.h"
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/RenderStats.h"
@@ -578,7 +580,15 @@ GpuContext::initialize()
         // imported, and they are worth splitting across several threads in large pieces.
         rtOptions.transfer.copyThreads = 4;
         rtOptions.transfer.stripBytes = VkDeviceSize(32) << 20;
+        // Not the hook target: a recreation holds its lock exclusively and may itself see the loss.
+        std::shared_ptr<std::atomic<gpu::GpuRuntime*>> lostRuntime = std::make_shared<std::atomic<gpu::GpuRuntime*>>(nullptr);
+        rtOptions.device.onDeviceLost = [lostRuntime] {
+            CacheDeviceTier::deviceLost(lostRuntime->load());
+        };
         gpu::GpuStatus status = gpu::GpuRuntime::create(rtOptions, runtime);
+        if (status) {
+            lostRuntime->store(runtime.get());
+        }
         const std::chrono::steady_clock::time_point created = std::chrono::steady_clock::now();
         if (!status) {
             failure = status.message.empty() ? "no usable Vulkan device" : status.message;
@@ -736,14 +746,59 @@ struct GpuDeviceImage::Imp {
     bool downloaded = false;
     ImagePtr evictedCopy;
     std::function<void()> onEvict;
+    bool cached = false;
+    double score = 0.;
+    std::weak_ptr<CacheEntryHeader> cachedHeader;
 #ifdef NATRON_HAVE_GPU
     gpu::GpuBufferHandle buffer;
 
     void markEvictableLocked()
     {
-        if (onEvict && buffer && (pins == 0) && !evicted) {
+        if (!onEvict || !buffer || (pins > 0) || evicted) {
+            return;
+        }
+        if (cached) {
+            buffer.markCached(onEvict, score);
+        } else {
             buffer.markEvictable(onEvict);
         }
+    }
+
+    bool downloadIntoLocked(Image& image)
+    {
+        if (!buffer || !runtime) {
+            return false;
+        }
+        if ((image.getBounds() != layout.bounds) || (image.getComponentsCount() != (unsigned int)layout.nComps())
+            || (image.getBitDepth() != eImageBitDepthFloat) || (image.getStorageMode() != eStorageModeRAM)) {
+            return false;
+        }
+        const std::size_t bytes = gpuHostTransferBytes(image);
+        if ((bytes == 0) || (bytes > buffer.size())) {
+            return false;
+        }
+        {
+            Image::WriteAccess access(&image);
+            unsigned char* data = access.pixelAt(layout.bounds.x1, layout.bounds.y1);
+            if (!data) {
+                return false;
+            }
+            gpu::StreamOptions options;
+            options.handoff = gpu::ComputeHandoff::Submit;
+            gpu::TimelineValue done;
+            if (!runtime->download(buffer.buffer(), 0, { data, bytes }, done, options) || !runtime->wait(done)) {
+                return false;
+            }
+        }
+        downloaded = true;
+        if (CacheEntryHeaderPtr header = cachedHeader.lock()) {
+            header->residency.fetch_and((unsigned char)~CacheEntryHeader::eResidencyDevice);
+        }
+        if (RenderStatsPtr s = stats.lock()) {
+            s->noteDownload(layout.pixelBytes());
+        }
+
+        return true;
     }
 
     ImagePtr downloadLocked()
@@ -752,29 +807,8 @@ struct GpuDeviceImage::Imp {
             return ImagePtr();
         }
         ImagePtr image = layout.newRamImage();
-        if (!image) {
+        if (!image || !downloadIntoLocked(*image)) {
             return ImagePtr();
-        }
-        const std::size_t bytes = gpuHostTransferBytes(*image);
-        if ((bytes == 0) || (bytes > buffer.size())) {
-            return ImagePtr();
-        }
-        {
-            Image::WriteAccess access(image.get());
-            unsigned char* data = access.pixelAt(layout.bounds.x1, layout.bounds.y1);
-            if (!data) {
-                return ImagePtr();
-            }
-            gpu::StreamOptions options;
-            options.handoff = gpu::ComputeHandoff::Submit;
-            gpu::TimelineValue done;
-            if (!runtime->download(buffer.buffer(), 0, { data, bytes }, done, options) || !runtime->wait(done)) {
-                return ImagePtr();
-            }
-        }
-        downloaded = true;
-        if (RenderStatsPtr s = stats.lock()) {
-            s->noteDownload(layout.pixelBytes());
         }
 
         return image;
@@ -938,9 +972,108 @@ GpuDeviceImage::setEvictable(const std::function<void()>& onEvict)
 #ifdef NATRON_HAVE_GPU
     std::lock_guard<std::mutex> k(_imp->mutex);
     _imp->onEvict = onEvict;
+    _imp->cached = false;
+    _imp->cachedHeader.reset();
     _imp->markEvictableLocked();
 #else
     Q_UNUSED(onEvict);
+#endif
+}
+
+void
+GpuDeviceImage::setCached(const std::function<void()>& onEvict,
+                          double score,
+                          const CacheEntryHeaderPtr& header)
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+    _imp->onEvict = onEvict;
+    _imp->cached = true;
+    _imp->score = score;
+    _imp->cachedHeader = header;
+    _imp->markEvictableLocked();
+#else
+    Q_UNUSED(onEvict);
+    Q_UNUSED(score);
+    Q_UNUSED(header);
+#endif
+}
+
+void
+GpuDeviceImage::setCachedScore(double score)
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+    _imp->score = score;
+    if (_imp->cached && _imp->buffer && (_imp->pins == 0) && !_imp->evicted) {
+        _imp->buffer.setCachedScore(score);
+    }
+#else
+    Q_UNUSED(score);
+#endif
+}
+
+void
+GpuDeviceImage::clearEvictable()
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+    _imp->onEvict = nullptr;
+    _imp->cached = false;
+    _imp->cachedHeader.reset();
+    if (_imp->buffer) {
+        _imp->buffer.clearEvictable();
+    }
+#endif
+}
+
+bool
+GpuDeviceImage::isResident() const
+{
+#ifdef NATRON_HAVE_GPU
+    std::lock_guard<std::mutex> k(_imp->mutex);
+
+    return _imp->buffer && !_imp->evicted && !_imp->downloaded;
+#else
+    return false;
+#endif
+}
+
+bool
+GpuDeviceImage::isPinned() const
+{
+    std::lock_guard<std::mutex> k(_imp->mutex);
+
+    return _imp->pins > 0;
+}
+
+bool
+GpuDeviceImage::evictInto(const ImagePtr& target)
+{
+#ifdef NATRON_HAVE_GPU
+    if (!target) {
+        return false;
+    }
+    gpu::GpuBufferHandle freed;
+    {
+        std::lock_guard<std::mutex> k(_imp->mutex);
+        if ((_imp->pins > 0) || _imp->evicted || _imp->downloaded) {
+            return false;
+        }
+        if (!_imp->downloadIntoLocked(*target)) {
+            return false;
+        }
+        _imp->evicted = true;
+        _imp->evictedCopy = target;
+        _imp->onEvict = nullptr;
+        std::swap(freed, _imp->buffer);
+    }
+
+    return true;
+#else
+    Q_UNUSED(target);
+
+    return false;
 #endif
 }
 

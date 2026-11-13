@@ -53,6 +53,9 @@ class GpuRuntime;
 
 NATRON_NAMESPACE_ENTER
 
+struct CacheEntryHeader;
+typedef std::shared_ptr<CacheEntryHeader> CacheEntryHeaderPtr;
+
 /**
  * @brief What the setting and the NATRON_GPU environment variable resolve to. Force accepts the explicitly
  * selected device even when it is CPU-type, such as lavapipe; Auto and Force never pick a CPU device on their own.
@@ -316,6 +319,35 @@ public:
      * thread that needs the memory and must make the image's holder evict it to RAM.
      **/
     void setEvictable(const std::function<void()>& onEvict);
+
+    /**
+     * @brief Like setEvictable(), for pixels a cache can recompute: the pool takes these before any evictable image,
+     * lowest score first. header is the cache entry's, whose device bit a download clears, since pin() refuses the
+     * pixels from then on.
+     **/
+    void setCached(const std::function<void()>& onEvict,
+                   double score,
+                   const CacheEntryHeaderPtr& header);
+
+    void setCachedScore(double score);
+
+    /**
+     * @brief Undoes setCached() and setEvictable(): the pool no longer reclaims the buffer.
+     **/
+    void clearEvictable();
+
+    /**
+     * @brief Whether pin() would return the buffer: not evicted and not downloaded.
+     **/
+    bool isResident() const;
+
+    bool isPinned() const;
+
+    /**
+     * @brief Like evictToRam(), into target, which must be an allocated float RAM image of the layout's bounds and
+     * layer. Fails while the image is pinned, evicted or downloaded.
+     **/
+    bool evictInto(const ImagePtr& target);
 
 private:
     GpuDeviceImage();

@@ -723,6 +723,28 @@ Image::Image(const ImageKey& key,
     allocateMemory();
 }
 
+Image::Image(const ImageKey& key,
+             const ImageParamsPtr& params,
+             const CacheAPI* cache,
+             const CacheEntryHeaderPtr& header)
+    : CacheEntryHelper<unsigned char, ImageKey, ImageParams>(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, cache)
+    , _header(header ? header : std::make_shared<CacheEntryHeader>())
+    , _bounds(_header->bounds)
+    , _useBitmap(true)
+    , _keepSharedBitmap(true)
+{
+    _bitDepth = params->getBitDepth();
+    _depthBytesSize = getSizeOfForBitDepth(_bitDepth);
+    _nbComponents = params->getComponents().getNumComponents();
+    _rod = params->getRoD();
+    _header->bounds = params->getBounds();
+    _par = params->getPixelAspectRatio();
+    _fielding = params->getFieldingOrder();
+    if (cache && !_header->key) {
+        _header->key = std::make_shared<const ImageKey>(getKey());
+    }
+}
+
 /*This constructor can be used to allocate a local Image. The deallocation should
    then be handled by the user. Note that no view number is passed in parameter
    as it is not needed.*/
@@ -796,7 +818,9 @@ Image::onMemoryAllocated(bool /*diskRestoration*/)
 {
     // A restored entry starts unrendered too, because the file may hold a partial render. diskRestore then writes the
     // file's bitmap over this one.
-    if (_cache || _useBitmap) {
+    const bool keep = _keepSharedBitmap && (_header->bitmap.getBounds() == _bounds);
+    _keepSharedBitmap = false;
+    if ((_cache || _useBitmap) && !keep) {
         _header->bitmap.initialize(_bounds);
     }
 }

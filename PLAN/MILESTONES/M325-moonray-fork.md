@@ -80,3 +80,4 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
   - Gate running; it also rebuilds the dev image.
 - 2026-11-13 — Gate green (run 43430041370 on 52c110e64, dev image rebuilt). PR #272 into main opened; review round 1 by a Claude reviewer (Codex exhausted).
 - 2026-11-13 — Review round 1 closed: README pin rule added (4790c2b6c). Declined in this PR, since any `build-moonray.sh` edit forces a dev-image rebuild: drop the dead `-DBUILD_MATERIALX_SHADERS=OFF`, fix the header's stale materialx_shaders reason (~:12), reword the SOURCE text so the unpatched upstream submodules don't read as forks (~:196), and delete or justify the `check_origin` comment (~:58). For the next milestone that edits the script.
+- 2026-11-13 — PR #272 merged into main (b59ff3fdf) after CI green on the rebased head. Done.

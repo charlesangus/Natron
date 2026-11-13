@@ -32,7 +32,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <iterator>
+#include <set>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -46,6 +48,7 @@
 #include <pxr/imaging/hf/pluginDesc.h>
 
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
+#include "Tests/Scene/DelegateDrawFilterProbe.h"
 
 NATRON_NAMESPACE_USING
 
@@ -167,4 +170,35 @@ TEST(MoonRayDelegate, CreatesHeadlessRenderDelegate)
     const PXR_NS::TfTokenVector& rprims = delegate->GetSupportedRprimTypes();
     EXPECT_TRUE(std::find(rprims.begin(), rprims.end(), PXR_NS::HdPrimTypeTokens->mesh) != rprims.end());
     EXPECT_FALSE(delegate->GetRenderSettingDescriptors().empty());
+}
+
+// hdMoonray reads HdVisibilitySchema if a prim held invisible leaves the primId AOV, which this
+// test prints; a Hidden row removes the prim, so it leaves either way.
+TEST(MoonRayDelegate, DrawFilterHidesPrimsAndLights)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    using namespace DelegateDrawFilterProbe;
+    const Scenario scenario = runScenario(Probe::eKindMoonRay);
+    ASSERT_TRUE(scenario.engineMade);
+    ASSERT_EQ(std::string(), scenario.seeded.error);
+    ASSERT_EQ(std::string(), scenario.aBoxed.error);
+    ASSERT_EQ(std::string(), scenario.bHidden.error);
+    ASSERT_EQ(std::string(), scenario.lightHidden.error);
+
+    const std::set<std::string> all { meshA(), meshB(), meshC() };
+    EXPECT_EQ(all, scenario.seeded.paths);
+
+    const bool boxedGone = scenario.aBoxed.paths.count(meshA()) == 0;
+    std::cout << "MoonRay respects HdVisibilitySchema: " << ((boxedGone && (scenario.heldInvisibleAfterBox > 0)) ? "yes" : "no")
+              << " (prim held invisible: " << scenario.heldInvisibleAfterBox << ", BBox prim absent from primId: " << (boxedGone ? "yes" : "no") << ")" << std::endl;
+    EXPECT_GT(scenario.heldInvisibleAfterBox, 0u);
+    EXPECT_EQ((std::set<std::string> { meshB(), meshC() }), scenario.aBoxed.paths);
+    EXPECT_EQ((std::set<std::string> { meshC() }), scenario.bHidden.paths);
+    EXPECT_EQ((std::set<std::string> { meshC() }), scenario.lightHidden.paths);
+
+    std::cout << "MoonRay frame means: lit " << scenario.bHidden.mean << ", light hidden " << scenario.lightHidden.mean << std::endl;
+    EXPECT_GT(scenario.bHidden.mean, 0.);
+    EXPECT_LT(scenario.lightHidden.mean, scenario.bHidden.mean);
 }

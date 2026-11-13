@@ -1841,9 +1841,10 @@ TEST_F(GpuResidencyTest, StripsMatchTheWholeRegionExactly)
     EXPECT_EQ(0, fallbacksOf(tiled));
     EXPECT_EQ(1, tiled.stats->getGpuRegionsRun());
     EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
-    // One upload of the source and one download of the second Grade per strip.
+    // One upload of the source per strip, and three downloads: the second Grade's, and the first Grade's and the
+    // Blur's for the host tier.
     EXPECT_GT(tiled.stats->getUploadCount(), 2);
-    EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+    EXPECT_EQ(3 * tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
     EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * ((tiled.stats->getGpuPipelinedRegions() > 0) ? kGpuStripMaxInFlight : 1));
 
     const std::vector<float> tiledPixels = rootPixels(tiled);
@@ -2219,7 +2220,8 @@ TEST_F(GpuResidencyTest, PipelinedStripsMatchTheWholeRegionExactly)
         EXPECT_EQ((on && canPipeline()) ? 1 : 0, tiled.stats->getGpuPipelinedRegions());
         EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
         EXPECT_GT(tiled.stats->getUploadCount(), 2);
-        EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+        // The second Grade's download, and the first Grade's and the Blur's for the host tier, per strip.
+        EXPECT_EQ(3 * tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
         EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * (on ? kGpuStripMaxInFlight : 1));
 
         const std::vector<float> tiledPixels = rootPixels(tiled);
@@ -2988,7 +2990,8 @@ TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
         EXPECT_GT(report.strips, 1);
         EXPECT_LE(report.stripsInFlight, 1);
         EXPECT_EQ((unsigned long long)report.strips, report.uploadsImported + report.uploadsStaged);
-        EXPECT_EQ((unsigned long long)report.strips, report.downloadsImported + report.downloadsStaged);
+        // The Grade's download and the Blur's for the host tier, per strip.
+        EXPECT_EQ(2ull * report.strips, report.downloadsImported + report.downloadsStaged);
         // Even on the first frame, each strip's download finds the chunks of its rows prepared.
         EXPECT_EQ(0u, report.importsAtDownload) << "a strip download imported its rows itself";
         EXPECT_EQ(0u, report.downloadsStaged);

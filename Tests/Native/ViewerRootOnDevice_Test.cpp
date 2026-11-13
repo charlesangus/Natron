@@ -734,9 +734,10 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     EXPECT_EQ(1, run.stats->getGpuRegionsRun());
     EXPECT_GT(report.strips, 1);
     const std::size_t rootBytes = (std::size_t)ramRoot->getBounds().area() * 4 * sizeof(float);
-    EXPECT_EQ(rootBytes, report.downloadBytes);
+    // The root, and the Grade and the Blur of the same size for the host tier.
+    EXPECT_EQ(3 * rootBytes, report.downloadBytes);
     EXPECT_GT(run.stats->getDownloadCount(), 0);
-    EXPECT_EQ((unsigned long long)rootBytes, run.stats->getDownloadBytes());
+    EXPECT_EQ((unsigned long long)(3 * rootBytes), run.stats->getDownloadBytes());
     EXPECT_EQ(1, legacyFallbacksOf(run, kStripsReason));
     EXPECT_TRUE(run.context->takeRootDevicePlanes().empty());
 

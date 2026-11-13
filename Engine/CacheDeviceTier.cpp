@@ -38,6 +38,7 @@
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/GpuRegionStrips.h"
 #endif
 
 NATRON_NAMESPACE_ENTER
@@ -627,6 +628,16 @@ CacheDeviceTier::promote(const CacheEntryPtr& entry)
     }
     // Fitting only by evicting working buffers would make the next region run as strips, or fall back.
     if (layout.deviceBytes() > budget()) {
+        return false;
+    }
+    // A region binds a device input whole in every strip, so one larger than a kernel may bind would leave the region
+    // no strip to run, where uploading it from RAM lets it run as strips.
+    std::uint64_t maxBuffer = _runtime->device().info().maxStorageBufferRange;
+    const std::uint64_t rangeOverride = gpuStripMaxBufferOverride();
+    if (rangeOverride != 0) {
+        maxBuffer = (maxBuffer != 0) ? std::min(maxBuffer, rangeOverride) : rangeOverride;
+    }
+    if ((maxBuffer != 0) && ((std::uint64_t)gpu::GpuBufferPool::sizeClass(layout.deviceBytes()) > maxBuffer)) {
         return false;
     }
     gpu::GpuBufferHandle handle;

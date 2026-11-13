@@ -60,7 +60,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
 
 ## Phase 334.3: Select Matches on loaded prims
 
-- [ ] M334.P3.T1 — Select Matches searches loaded prims and offers to load the rest
+- [x] M334.P3.T1 — Select Matches searches loaded prims and offers to load the rest
   - files: `Gui/SceneSelectionActions.{h,cpp}`, `Gui/KnobGuiString.cpp`, `Tests/gui/scene_knob_tools.py`
   - approach: replace the private everything search with matching on the viewer's loaded stage through `matchPattern` with the viewer's evaluation context, reporting "N unloaded branches not searched". The report offers to load those payloads in the viewer (through the viewer's normal payload load request, which the user can undo by unloading), after which the search re-runs and selects inside them. Never loads anything without that action.
   - verify: GUI script — on a payload scene with nothing loaded, Select Matches selects only loaded matches and reports the unsearched count with no payload loaded; taking the load action loads the matching payloads and selects the matches inside them.
@@ -74,3 +74,4 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
 - 2026-11-13 — Select Matches searches only what the viewer has loaded, reports unsearched unloaded branches, and lets the user load those payloads from there to select inside them (user); P3.T1 replaces the P1.T1 private everything search.
 - 2026-11-13 — P2.T1 implemented (965ec29ce). `UsdObjectCollectionExpressionEvaluator` can't take a custom predicate library, so the walk uses its `PathExprEval` type with the collection predicates plus `loaded` and `active`, and that type's `IncrementalSearcher`. Expression mode tests inactive prims (so `{active:false}` finds anything) but never descends below them. Typing an expression sets the viewer selection; the message line sits under the field. `%` (collection references) is rejected by the shared parser.
 - 2026-11-13 — P3.T1 first pass (e97bd1d2c) matched on the viewer's stage and polled for load completion; PM correction in progress: match the node's input under the viewer's load rules (a USDPrune's output hides its own matches), and re-search on `sceneSynced` instead of polling.
+- 2026-11-13 — P3.T1 corrected (5a9ae6a87). The viewer is the active one if its scene reaches the node, else the first other viewer that does (no recency tracking exists). Full milestone gate running; the phase-1 build was cancelled as superseded.

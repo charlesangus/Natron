@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Scene/USDEditPrim.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDReference.h"
 #include "Engine/Nodes/Scene/USDSetAttribute.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
@@ -136,6 +137,31 @@ protected:
             modeKnob->setValueFromID(mode, 0);
             schemaKnob->setValueFromID("Camera", 0);
             targetKnob->setValue(target);
+        }
+        EXPECT_TRUE(node->connectInput(input, 0));
+
+        return node;
+    }
+
+    NodePtr reference(const NodePtr& input,
+                      const CarCity& city,
+                      const std::string& target,
+                      const std::string& sourcePrim)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREFERENCE));
+
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        KnobFile* fileKnob = dynamic_cast<KnobFile*>(node->getKnobByName(kUSDReferenceParamFile).get());
+        KnobString* primKnob = dynamic_cast<KnobString*>(node->getKnobByName(kSceneParamPrimPath).get());
+        KnobString* sourcePrimKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDReferenceParamSourcePrim).get());
+        EXPECT_TRUE(fileKnob && primKnob && sourcePrimKnob);
+        if (fileKnob && primKnob && sourcePrimKnob) {
+            fileKnob->setValue(city.rootPath());
+            primKnob->setValue(target);
+            sourcePrimKnob->setValue(sourcePrim);
         }
         EXPECT_TRUE(node->connectInput(input, 0));
 
@@ -254,4 +280,38 @@ TEST_F(SceneLoadSetCoverageTest, AnEditPrimEvaluatesTheSameOnALoadSetAsOnEveryth
 
     expectParity(edit, loadingOnly({ "/World/Block_0" }));
     expectParity(define, loadingOnly({ "/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AReferenceOpensNoBuildingOffItsTargetChain)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr outside = reference(source, city, "/World/Block_0/Added", "/World");
+    NodePtr inside = reference(source, city, "/World/Block_0/B_0/Added", "/World");
+    ASSERT_TRUE(source && outside && inside);
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+
+    std::string error;
+    ScenePayload payload;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              outside->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+    EXPECT_EQ(0, city.openedBuildings());
+
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              inside->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+    EXPECT_LE(city.openedBuildings(), 1);
+}
+
+TEST_F(SceneLoadSetCoverageTest, AReferenceEvaluatesTheSameOnALoadSetAsOnEverything)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr inside = reference(source, city, "/World/Block_0/B_0/Added", "/World");
+    ASSERT_TRUE(source && inside);
+
+    expectParity(inside, loadingOnly({ "/World/Block_0" }));
 }

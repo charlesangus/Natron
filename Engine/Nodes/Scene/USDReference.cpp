@@ -42,6 +42,7 @@
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -84,13 +85,19 @@ findInputSourcePrim(const PXR_NS::UsdStageRefPtr& stage,
     return path;
 }
 
-// Composes upstream, or returns null with *errorMessage set.
+// Composes upstream with the payloads on the way to paths loaded on top of the evaluation's
+// load set, or returns null with *errorMessage set.
 bool
 borrowStage(const ScenePayload& payload,
+            const SceneEvaluationContext& context,
+            const std::vector<std::string>& paths,
             SceneQueryPool::Lease* lease,
             std::string* errorMessage)
 {
-    *lease = SceneQueryPool::instance().borrow(payload, errorMessage);
+    if (context.reach) {
+        context.reach->add(paths);
+    }
+    *lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::withPaths(context.loadSet, paths), errorMessage);
     if (lease->getStage()) {
         return true;
     }
@@ -318,7 +325,13 @@ USDReference::renderScene(const SceneRenderActionArgs& args,
         source = args.getInputScene(1);
         if (!source.isEmpty()) {
             SceneQueryPool::Lease lease;
-            if (!borrowStage(source, &lease, errorMessage)) {
+            std::vector<std::string> sourcePaths;
+            if (!sourcePrim.empty()) {
+                sourcePaths.push_back(sourcePrim);
+            } else if (!source.getMetadata().defaultPrim.empty()) {
+                sourcePaths.push_back("/" + source.getMetadata().defaultPrim);
+            }
+            if (!borrowStage(source, args.context, sourcePaths, &lease, errorMessage)) {
                 setPersistentMessage(eMessageTypeError, *errorMessage);
 
                 return eStatusFailed;
@@ -358,7 +371,7 @@ USDReference::renderScene(const SceneRenderActionArgs& args,
     }
     if (!upstream.isEmpty()) {
         SceneQueryPool::Lease lease;
-        if (!borrowStage(upstream, &lease, errorMessage)) {
+        if (!borrowStage(upstream, args.context, { path.GetString() }, &lease, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;

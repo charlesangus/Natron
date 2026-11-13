@@ -63,6 +63,8 @@ namespace {
         GfVec3f world[3];
         float depth[3];
         GfVec3f normal;
+        GfVec2f st[3];
+        bool hasSt = false;
         std::int32_t prim;
         int firstRow;
         int lastRow;
@@ -241,6 +243,7 @@ namespace {
         GfVec4d clip;
         GfVec3d world;
         double depth;
+        GfVec2d st;
     };
 
     ClipVertex
@@ -253,6 +256,7 @@ namespace {
         v.clip = a.clip + (b.clip - a.clip) * t;
         v.world = a.world + (b.world - a.world) * t;
         v.depth = a.depth + (b.depth - a.depth) * t;
+        v.st = a.st + (b.st - a.st) * t;
 
         return v;
     }
@@ -289,6 +293,7 @@ namespace {
                       int width,
                       int height,
                       std::int32_t prim,
+                      const GfVec2f* st,
                       std::vector<RasterTriangle>* tris)
     {
         std::vector<ClipVertex> polygon(3);
@@ -298,6 +303,7 @@ namespace {
             polygon[i].clip = p * viewProjection;
             polygon[i].world = GfVec3d(world[i]);
             polygon[i].depth = -(p * view)[2];
+            polygon[i].st = st ? GfVec2d(st[i]) : GfVec2d(0.);
         }
         clipPolygon(&polygon, [](const GfVec4d& c) { return c[3] + c[2]; });
         clipPolygon(&polygon, [](const GfVec4d& c) { return c[3] - c[2]; });
@@ -317,6 +323,7 @@ namespace {
                 tri.invW[k] = (float)(1. / c[3]);
                 tri.world[k] = GfVec3f(corners[k]->world);
                 tri.depth[k] = (float)corners[k]->depth;
+                tri.st[k] = GfVec2f(corners[k]->st);
             }
             if (!valid || !setRows(&tri, height)) {
                 continue;
@@ -324,6 +331,7 @@ namespace {
             if ((std::max({ tri.x[0], tri.x[1], tri.x[2] }) < 0.5) || (std::min({ tri.x[0], tri.x[1], tri.x[2] }) > width - 0.5)) {
                 continue;
             }
+            tri.hasSt = (st != nullptr);
             tri.prim = prim;
             tris->push_back(tri);
         }
@@ -373,6 +381,96 @@ namespace {
 
         return false;
     }
+    // The mesh's texture coordinates at the three corners of each of its triangles, flattened
+    // through the primvar's indices and interpolation (vertex, varying, faceVarying or uniform).
+    // (*valid)[t] is 0 for a triangle whose corners the primvar does not cover. False, with *error
+    // naming the problem, when the primvar is missing, not 2D, or has one value for the whole mesh.
+    bool
+    readTriangleTexCoords(const UsdGeomMesh& mesh,
+                          const TfToken& stName,
+                          UsdTimeCode time,
+                          MeshData* data,
+                          std::vector<GfVec2f>* corners,
+                          std::vector<std::uint8_t>* valid,
+                          std::string* error)
+    {
+        const std::string primName = mesh.GetPath().GetString();
+        const UsdGeomPrimvar primvar = UsdGeomPrimvarsAPI(mesh.GetPrim()).GetPrimvar(stName);
+        const std::string primvarName = stName.GetString();
+        VtVec2fArray st;
+
+        if (!primvar || !primvar.HasValue()) {
+            *error = primName + " has no " + primvarName + " primvar.";
+
+            return false;
+        }
+        if (!readTexCoords(primvar, time, &st)) {
+            *error = "The " + primvarName + " primvar of " + primName + " is not a 2D texture coordinate.";
+
+            return false;
+        }
+        const TfToken interpolation = primvar.GetInterpolation();
+        if ((interpolation == UsdGeomTokens->constant) || (primvar.GetElementSize() != 1)) {
+            *error = "The " + primvarName + " primvar of " + primName + " has one value for the whole mesh, which maps no area.";
+
+            return false;
+        }
+
+        VtVec2fArray faceVaryingSt;
+        if (interpolation == UsdGeomTokens->faceVarying) {
+            HdMeshUtil util(&data->topology, mesh.GetPath());
+            VtValue triangulated;
+            const HdMeshComputationResult result = util.ComputeTriangulatedFaceVaryingPrimvar(st.cdata(), (int)st.size(), HdTypeFloatVec2, &triangulated);
+            if (result == HdMeshComputationResult::Success) {
+                faceVaryingSt = triangulated.Get<VtVec2fArray>();
+            } else if (result == HdMeshComputationResult::Unchanged) {
+                faceVaryingSt = st;
+            }
+            if (faceVaryingSt.size() != data->triangles.size() * 3) {
+                *error = "The faceVarying " + primvarName + " primvar of " + primName + " does not match its faces.";
+
+                return false;
+            }
+        }
+
+        corners->assign(data->triangles.size() * 3, GfVec2f(0.f));
+        valid->assign(data->triangles.size(), 0);
+        for (std::size_t t = 0; t < data->triangles.size(); ++t) {
+            const GfVec3i& tri = data->triangles[t];
+            bool ok = validTriangle(tri, data->worldPoints.size());
+            for (int k = 0; (k < 3) && ok; ++k) {
+                if (interpolation == UsdGeomTokens->faceVarying) {
+                    (*corners)[t * 3 + k] = faceVaryingSt[t * 3 + k];
+                    continue;
+                }
+                const std::size_t index = (interpolation == UsdGeomTokens->uniform)
+                    ? (std::size_t)HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(data->primitiveParams[t])
+                    : (std::size_t)tri[k];
+                ok = index < st.size();
+                if (ok) {
+                    (*corners)[t * 3 + k] = st[index];
+                }
+            }
+            (*valid)[t] = ok ? 1 : 0;
+        }
+
+        return true;
+    }
+
+    // The UDIM tile holding (u, v), 0 outside the 10-wide tile grid.
+    std::int32_t
+    udimTileOf(float u,
+               float v)
+    {
+        const float tu = std::floor(u);
+        const float tv = std::floor(v);
+
+        if (!(tu >= 0.f) || !(tu < 10.f) || !(tv >= 0.f) || !(tv < 1000.f)) {
+            return 0;
+        }
+
+        return 1001 + (std::int32_t)tu + 10 * (std::int32_t)tv;
+    }
 } // anonymous namespace
 
 bool
@@ -386,9 +484,29 @@ renderCamera(const UsdStageRefPtr& stage,
 
         return false;
     }
-    const double aspect = args.width * args.pixelAspect / args.height;
-    if (!HydraRender::cameraFrustum(stage, args.cameraPath, args.time, aspect, args.fit, &buffers->frustum, errorMessage)) {
-        return false;
+    if (args.explicitCamera) {
+        const ExplicitCamera& cam = *args.explicitCamera;
+        if (!(cam.viewHeight > 0.) || !(cam.aspect > 0.) || !(cam.nearClip > 0.) || !(cam.farClip > cam.nearClip)) {
+            *errorMessage = "The explicit camera has an empty view or an invalid clip range.";
+
+            return false;
+        }
+        const double halfHeight = cam.viewHeight * 0.5;
+        GfFrustum frustum;
+        GfMatrix4d cameraToWorld;
+        for (int r = 0; r < 4; ++r) {
+            cameraToWorld.SetRow(r, GfVec4d(cam.cameraToWorld[r * 4], cam.cameraToWorld[r * 4 + 1], cam.cameraToWorld[r * 4 + 2], cam.cameraToWorld[r * 4 + 3]));
+        }
+        frustum.SetPositionAndRotationFromMatrix(cameraToWorld);
+        frustum.SetProjectionType(cam.orthographic ? GfFrustum::Orthographic : GfFrustum::Perspective);
+        frustum.SetWindow(GfRange2d(GfVec2d(-halfHeight * cam.aspect, -halfHeight), GfVec2d(halfHeight * cam.aspect, halfHeight)));
+        frustum.SetNearFar(GfRange1d(cam.nearClip, cam.farClip));
+        buffers->frustum = frustum;
+    } else {
+        const double aspect = args.width * args.pixelAspect / args.height;
+        if (!HydraRender::cameraFrustum(stage, args.cameraPath, args.time, aspect, args.fit, &buffers->frustum, errorMessage)) {
+            return false;
+        }
     }
     const GfMatrix4d view = buffers->frustum.ComputeViewMatrix();
     const GfMatrix4d viewProjection = view * buffers->frustum.ComputeProjectionMatrix();
@@ -400,6 +518,7 @@ renderCamera(const UsdStageRefPtr& stage,
     buffers->meshPaths.clear();
     std::set<SdfPath> seen;
     std::vector<RasterTriangle> tris;
+    const bool wantSt = !args.stName.IsEmpty();
     UsdGeomXformCache xformCache(args.time);
     for (const SdfPath& root : roots) {
         const UsdPrim start = stage->GetPrimAtPath(root);
@@ -415,12 +534,18 @@ renderCamera(const UsdStageRefPtr& stage,
             readMesh(mesh, args.time, &xformCache, &data);
             const std::int32_t index = (std::int32_t)buffers->meshPaths.size();
             buffers->meshPaths.push_back(prim.GetPath());
-            for (const GfVec3i& t : data.triangles) {
+            std::vector<GfVec2f> corners;
+            std::vector<std::uint8_t> covered;
+            std::string ignored;
+            const bool hasSt = wantSt && readTriangleTexCoords(mesh, args.stName, args.time, &data, &corners, &covered, &ignored);
+            for (std::size_t ti = 0; ti < data.triangles.size(); ++ti) {
+                const GfVec3i& t = data.triangles[ti];
                 if (!validTriangle(t, data.worldPoints.size())) {
                     continue;
                 }
                 const GfVec3f world[3] = { data.worldPoints[t[0]], data.worldPoints[t[1]], data.worldPoints[t[2]] };
-                addCameraTriangle(world, view, viewProjection, args.width, args.height, index, &tris);
+                const bool triangleHasSt = hasSt && covered[ti];
+                addCameraTriangle(world, view, viewProjection, args.width, args.height, index, triangleHasSt ? &corners[ti * 3] : nullptr, &tris);
             }
         }
     }
@@ -431,13 +556,29 @@ renderCamera(const UsdStageRefPtr& stage,
     buffers->depth.assign(numPixels, std::numeric_limits<float>::infinity());
     buffers->primIndex.assign(numPixels, -1);
     buffers->worldPosition.assign(numPixels, GfVec3f(0.f));
+    buffers->st.clear();
+    buffers->udimTile.clear();
+    if (wantSt) {
+        buffers->st.assign(numPixels, GfVec2f(0.f));
+        buffers->udimTile.assign(numPixels, 0);
+    }
 
-    rasterize(args.width, args.height, tris, [buffers](const RasterTriangle& tri, std::size_t i, const float w[3]) {
+    rasterize(args.width, args.height, tris, [buffers, wantSt](const RasterTriangle& tri, std::size_t i, const float w[3]) {
         const float depth = w[0] * tri.depth[0] + w[1] * tri.depth[1] + w[2] * tri.depth[2];
         if (depth < buffers->depth[i]) {
             buffers->depth[i] = depth;
             buffers->primIndex[i] = tri.prim;
             buffers->worldPosition[i] = tri.world[0] * w[0] + tri.world[1] * w[1] + tri.world[2] * w[2];
+            if (wantSt) {
+                if (tri.hasSt) {
+                    const GfVec2f st = tri.st[0] * w[0] + tri.st[1] * w[1] + tri.st[2] * w[2];
+                    buffers->st[i] = st;
+                    buffers->udimTile[i] = udimTileOf(st[0], st[1]);
+                } else {
+                    buffers->st[i] = GfVec2f(0.f);
+                    buffers->udimTile[i] = 0;
+                }
+            }
         }
     });
 
@@ -468,45 +609,14 @@ bakeUV(const UsdStageRefPtr& stage,
 
         return false;
     }
-    const UsdGeomPrimvar primvar = UsdGeomPrimvarsAPI(mesh.GetPrim()).GetPrimvar(args.stName);
-    const std::string primvarName = args.stName.GetString();
-    VtVec2fArray st;
-    if (!primvar || !primvar.HasValue()) {
-        *errorMessage = primName + " has no " + primvarName + " primvar.";
-
-        return false;
-    }
-    if (!readTexCoords(primvar, args.time, &st)) {
-        *errorMessage = "The " + primvarName + " primvar of " + primName + " is not a 2D texture coordinate.";
-
-        return false;
-    }
-    const TfToken interpolation = primvar.GetInterpolation();
-    if ((interpolation == UsdGeomTokens->constant) || (primvar.GetElementSize() != 1)) {
-        *errorMessage = "The " + primvarName + " primvar of " + primName + " has one value for the whole mesh, which maps no area.";
-
-        return false;
-    }
-
     UsdGeomXformCache xformCache(args.time);
     MeshData data;
     readMesh(mesh, args.time, &xformCache, &data);
 
-    VtVec2fArray faceVaryingSt;
-    if (interpolation == UsdGeomTokens->faceVarying) {
-        HdMeshUtil util(&data.topology, args.primPath);
-        VtValue triangulated;
-        const HdMeshComputationResult result = util.ComputeTriangulatedFaceVaryingPrimvar(st.cdata(), (int)st.size(), HdTypeFloatVec2, &triangulated);
-        if (result == HdMeshComputationResult::Success) {
-            faceVaryingSt = triangulated.Get<VtVec2fArray>();
-        } else if (result == HdMeshComputationResult::Unchanged) {
-            faceVaryingSt = st;
-        }
-        if (faceVaryingSt.size() != data.triangles.size() * 3) {
-            *errorMessage = "The faceVarying " + primvarName + " primvar of " + primName + " does not match its faces.";
-
-            return false;
-        }
+    std::vector<GfVec2f> stCorners;
+    std::vector<std::uint8_t> covered;
+    if (!readTriangleTexCoords(mesh, args.stName, args.time, &data, &stCorners, &covered, errorMessage)) {
+        return false;
     }
 
     const float tileU = (float)((args.udimTile - 1001) % 10);
@@ -515,29 +625,10 @@ bakeUV(const UsdStageRefPtr& stage,
     tris.reserve(data.triangles.size());
     for (std::size_t t = 0; t < data.triangles.size(); ++t) {
         const GfVec3i& corners = data.triangles[t];
-        if (!validTriangle(corners, data.worldPoints.size())) {
+        if (!covered[t]) {
             continue;
         }
-        GfVec2f uv[3];
-        bool valid = true;
-        for (int k = 0; (k < 3) && valid; ++k) {
-            std::size_t index = 0;
-            if (interpolation == UsdGeomTokens->faceVarying) {
-                uv[k] = faceVaryingSt[t * 3 + k];
-                continue;
-            } else if (interpolation == UsdGeomTokens->uniform) {
-                index = (std::size_t)HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(data.primitiveParams[t]);
-            } else {
-                index = (std::size_t)corners[k];
-            }
-            valid = index < st.size();
-            if (valid) {
-                uv[k] = st[index];
-            }
-        }
-        if (!valid) {
-            continue;
-        }
+        const GfVec2f* uv = &stCorners[t * 3];
         RasterTriangle tri;
         for (int k = 0; k < 3; ++k) {
             tri.x[k] = (uv[k][0] - tileU) * (double)args.width;
@@ -545,6 +636,7 @@ bakeUV(const UsdStageRefPtr& stage,
             tri.invW[k] = 1.f;
             tri.world[k] = data.worldPoints[corners[k]];
             tri.depth[k] = 0.f;
+            tri.st[k] = GfVec2f(0.f);
         }
         if (!setRows(&tri, args.height)) {
             continue;

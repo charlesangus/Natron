@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,8 +51,29 @@ NATRON_NAMESPACE_ENTER
  * pixel whose centre is (x + 0.5, y + 0.5), y = 0 at the bottom.
  **/
 namespace SceneRaster {
+// A camera given by its pose and lens rather than by a prim, as the Viewer's own camera is.
+struct ExplicitCamera {
+    // Camera to world, row-major as a GfMatrix4d (translation in the last row); the camera looks
+    // down its -Z with +Y up, as a UsdGeomCamera does. Any scale in it is ignored.
+    double cameraToWorld[16] = { 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1. };
+    // Perspective: the height the view spans at distance 1 in front of the camera (2 * tan(fovY / 2)).
+    // Orthographic: the height, in world units, the view spans.
+    double viewHeight = 1.;
+    // The view's width over its height; the buffers' size is taken as it is, with no fit applied.
+    double aspect = 1.;
+    bool orthographic = false;
+    double nearClip = 0.1;
+    double farClip = 10000.;
+};
+
 struct CameraArgs {
     PXR_NS::SdfPath cameraPath;
+    // When set, the camera is this, and cameraPath, pixelAspect and fit are ignored. When not set,
+    // the camera is the prim at cameraPath.
+    std::optional<ExplicitCamera> explicitCamera;
+    // The texture coordinate primvar, with or without its "primvars:" namespace, whose per-pixel
+    // value CameraBuffers::st and udimTile hold; empty to skip them.
+    PXR_NS::TfToken stName;
     PXR_NS::UsdTimeCode time = PXR_NS::UsdTimeCode::Default();
     int width = 0;
     int height = 0;
@@ -74,6 +96,11 @@ struct CameraBuffers {
     std::vector<std::int32_t> primIndex;
     // The world-space position of the nearest surface; (0, 0, 0) where nothing was drawn.
     std::vector<PXR_NS::GfVec3f> worldPosition;
+    // Only when CameraArgs::stName was set: the interpolated st of the nearest surface and its UDIM
+    // tile, 1001 + floor(u) + 10 * floor(v). A pixel with nothing drawn, or whose mesh has no usable
+    // st, holds (0, 0) and tile 0, as does one whose st lies outside the tile grid.
+    std::vector<PXR_NS::GfVec2f> st;
+    std::vector<std::int32_t> udimTile;
     // Every mesh drawn, in traversal order.
     std::vector<PXR_NS::SdfPath> meshPaths;
     // The frustum the buffers were drawn through, conformed to the buffers' aspect.
@@ -83,7 +110,8 @@ struct CameraBuffers {
 /**
  * @brief Draws the meshes of args.prims as the camera at args.cameraPath sees them: a z-buffer of
  * depth, mesh and world position per pixel. Triangles are clipped to the camera's near and far
- * planes. False, with *errorMessage set, when there is no camera at the path or the size is empty.
+ * planes. False, with *errorMessage set, when there is no camera at the path, the explicit camera
+ * is degenerate, or the size is empty.
  **/
 bool renderCamera(const PXR_NS::UsdStageRefPtr& stage,
                   const CameraArgs& args,

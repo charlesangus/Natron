@@ -385,3 +385,94 @@ TEST(SceneRaster, AMissingStFailsNamingThePrim)
     EXPECT_FALSE(SceneRaster::bakeUV(stage, bakeArgs("/group", 8), &buffers, &error));
     EXPECT_NE(std::string::npos, error.find("/group")) << error;
 }
+
+namespace {
+// kCamera as an explicit camera: it sees 1 unit of height at distance 1.
+SceneRaster::ExplicitCamera
+explicitCameraLikeKCamera()
+{
+    SceneRaster::ExplicitCamera cam;
+
+    cam.cameraToWorld[14] = 10.;
+    cam.viewHeight = 1.;
+    cam.aspect = 1.;
+    cam.nearClip = 1.;
+    cam.farClip = 1000.;
+
+    return cam;
+}
+} // anonymous namespace
+
+TEST(SceneRaster, AnExplicitCameraMatchesTheSameCameraGivenByPath)
+{
+    const double z[4] = { 0., 0., 3., 3. };
+    PXR_NS::UsdStageRefPtr stage = openStage(std::string(kCamera) + quad("card", -2., -2., 2., 2., z) + quad("far", -1., -1., 1., 1., kFlat));
+    ASSERT_TRUE(bool(stage));
+
+    SceneRaster::CameraBuffers byPath;
+    SceneRaster::CameraBuffers byMatrix;
+    std::string error;
+    ASSERT_TRUE(SceneRaster::renderCamera(stage, cameraArgs(64), &byPath, &error)) << error;
+    SceneRaster::CameraArgs args = cameraArgs(64);
+    args.cameraPath = PXR_NS::SdfPath("/doesNotExist");
+    args.explicitCamera = explicitCameraLikeKCamera();
+    ASSERT_TRUE(SceneRaster::renderCamera(stage, args, &byMatrix, &error)) << error;
+
+    ASSERT_EQ(byPath.primIndex.size(), byMatrix.primIndex.size());
+    int drawn = 0;
+    for (std::size_t i = 0; i < byPath.primIndex.size(); ++i) {
+        ASSERT_EQ(byPath.primIndex[i], byMatrix.primIndex[i]) << i;
+        if (byPath.primIndex[i] >= 0) {
+            ++drawn;
+            EXPECT_NEAR(byPath.depth[i], byMatrix.depth[i], 1e-3) << i;
+        }
+    }
+    EXPECT_GT(drawn, 0);
+    EXPECT_TRUE(byMatrix.st.empty());
+}
+
+TEST(SceneRaster, TheUVBufferAtAQuadsCornersMatchesItsSt)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(quad("card", -2., -2., 2., 2., kFlat, kVertexSt));
+    ASSERT_TRUE(bool(stage));
+
+    SceneRaster::CameraArgs args = cameraArgs(100);
+    args.explicitCamera = explicitCameraLikeKCamera();
+    args.stName = PXR_NS::TfToken("st");
+    SceneRaster::CameraBuffers buffers;
+    std::string error;
+    ASSERT_TRUE(SceneRaster::renderCamera(stage, args, &buffers, &error)) << error;
+    ASSERT_EQ((std::size_t)10000, buffers.st.size());
+    ASSERT_EQ((std::size_t)10000, buffers.udimTile.size());
+
+    // The quad covers pixels 30 to 69, a texel of 0.025 in st.
+    const int corners[4][2] = { { 30, 30 }, { 69, 30 }, { 69, 69 }, { 30, 69 } };
+    const float expected[4][2] = { { 0.f, 0.f }, { 1.f, 0.f }, { 1.f, 1.f }, { 0.f, 1.f } };
+    for (int c = 0; c < 4; ++c) {
+        const std::size_t i = corners[c][0] + corners[c][1] * 100;
+        EXPECT_NEAR(expected[c][0], buffers.st[i][0], 0.0126) << c;
+        EXPECT_NEAR(expected[c][1], buffers.st[i][1], 0.0126) << c;
+        EXPECT_EQ(1001, buffers.udimTile[i]) << c;
+    }
+    EXPECT_EQ(0, buffers.udimTile[0]);
+}
+
+TEST(SceneRaster, TheUVBufferNamesTheUDIMTileOfAQuadInTile1002)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(quad("card", -2., -2., 2., 2., kFlat,
+                                                  "    texCoord2f[] primvars:st = [(1, 0), (2, 0), (2, 1), (1, 1)] (\n"
+                                                  "        interpolation = \"vertex\"\n"
+                                                  "    )\n"));
+    ASSERT_TRUE(bool(stage));
+
+    SceneRaster::CameraArgs args = cameraArgs(100);
+    args.explicitCamera = explicitCameraLikeKCamera();
+    args.stName = PXR_NS::TfToken("st");
+    SceneRaster::CameraBuffers buffers;
+    std::string error;
+    ASSERT_TRUE(SceneRaster::renderCamera(stage, args, &buffers, &error)) << error;
+    const std::size_t centre = 50 + 50 * 100;
+    EXPECT_EQ(1002, buffers.udimTile[centre]);
+    EXPECT_NEAR(1.5, buffers.st[centre][0], 0.02);
+    EXPECT_NEAR(0.5, buffers.st[centre][1], 0.02);
+}

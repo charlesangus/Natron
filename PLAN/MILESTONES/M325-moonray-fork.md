@@ -42,13 +42,13 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
 
 ## Phase 325.2: Pin and render context
 
-- [ ] M325.P2.T1 — build-moonray.sh pins the fork and patches nothing
+- [x] M325.P2.T1 — build-moonray.sh pins the fork and patches nothing
   - files: `tools/ci/local/build-moonray.sh`, `tools/ci/local/Dockerfile`
   - approach: replace the version-tag clone with `NATRON_MOONRAY_REPO`/`NATRON_MOONRAY_COMMIT`, fetched by SHA and checked. `fetch_submodule` reads the full `.gitmodules` URL, not just the basename, and fails on any host other than charlesangus or dreamworksanimation. Delete every sed block and the Python edit, keeping the post-install greps as checks. SOURCE lists the URL and commit of the super-repo and each submodule and says there are no build-time patches.
   - verify: `rg -n 'sed -i|python3 -' tools/ci/local/build-moonray.sh` shows no source edits; at the phase build the image builds and `MoonRayDelegate`, `USDRenderMoonRay` and `MoonRayAovs` pass with no test changes.
   - size: M
 
-- [ ] M325.P2.T2 — hdMoonray reads the `moonray` render context
+- [x] M325.P2.T2 — hdMoonray reads the `moonray` render context
   - files: fork `lib/hydramoonray/RenderDelegate.{h,cc}`, then the gitlink bump in the super fork and `NATRON_MOONRAY_COMMIT`; `Tests/Scene/USDRenderMoonRay_Test.cpp`
   - approach: override `GetMaterialRenderContexts() const` to return `{TfToken("moonray")}`. PM step: push it and bump the gitlink and pinned commit before the phase build. Test one material with both `outputs:moonray:surface` (a DwaBaseMaterial in one colour) and a universal UsdPreviewSurface (another colour), plus a universal-only material.
   - verify: gtest — the first material renders the moonray colour and the universal-only one its preview colour.
@@ -56,7 +56,7 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
 
 ## Phase 325.3: Record
 
-- [ ] M325.P3.T1 — Docs follow the fork
+- [x] M325.P3.T1 — Docs follow the fork
   - files: `tools/ci/local/README.md`, the M345, M354 and M347 milestone notes on the override (plan-scoped: PM files an inbox note instead of editing other milestones)
   - approach: describe the forks, their branch and the pin; say no build-time patches remain.
   - verify: no doc in the repo mentions build-time MoonRay patches.
@@ -72,3 +72,9 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
   - drops the six subdirectories the Natron build doesn't use;
   - points arras4_core, moonray, mcrt_dataio and hdMoonray at the forks (gitlinks 036936259, ffb02edaa, fe9dc6364, 5bcbe1d74) and makes the other 16 submodule URLs absolute upstream URLs;
   - drops `moonray/materialx_shaders`. Its repository isn't public upstream, so recursive init failed on it, and it only built under `BUILD_MATERIALX_SHADERS`.
+- 2026-11-13 — Phases 2 and 3 done:
+  - 52c110e64: pin by commit, no patches. All ten former patches are confirmed in the forks. The `moonray_sdr_plugins` drop and the IsSupported fix now apply unconditionally.
+  - 02fcdb159: README.
+  - hdMoonray 5f378826b reads the `moonray` render context; openmoonray 25f332c10 is the new pin.
+  - M345/M347/M354's notes on the override go through the inbox.
+  - Gate running; it also rebuilds the dev image.

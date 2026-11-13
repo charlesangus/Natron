@@ -893,6 +893,11 @@ public:
     // visible view, taken in by the engine, so that the next paint shows it.
     bool isSceneSynced() const;
 
+    // Whether the stage tryReadStage() reads is the one the last setScene(), setError() or
+    // clearScene() asked for. Unlike isSceneSynced(), this does not wait for the engine's frame, so
+    // readers of the stage are not left waiting on a frame that announces nothing when it ends.
+    bool isStageSynced() const;
+
     void setFrame(double frame, double framesPerSecond);
 
     /**

@@ -708,11 +708,18 @@ Gui::showPrimsInSceneGraph(ViewerTab* viewer, const QStringList& paths)
         created = true;
     }
     TabWidget* pane = target->getParentPane();
+    // Raised in the viewer's own pane, the panel would hide the viewer and the bar that asked.
+    TabWidget* viewerPane = viewer->getParentPane();
     if (!pane) {
-        pane = viewer->getParentPane();
+        for (TabWidget* other : getPanes()) {
+            if (other && (other != viewerPane)) {
+                pane = other;
+                break;
+            }
+        }
     }
-    if (!pane && !getPanes().empty()) {
-        pane = getPanes().front();
+    if (!pane) {
+        pane = viewerPane;
     }
     if (pane) {
         if (!target->getParentPane()) {

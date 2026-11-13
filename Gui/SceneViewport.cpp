@@ -6375,6 +6375,12 @@ SceneViewport::isSceneSynced() const
     return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame());
 }
 
+bool
+SceneViewport::isStageSynced() const
+{
+    return _imp->syncedSerial == _imp->requestedSerial;
+}
+
 void
 SceneViewport::startBackgroundFrame()
 {

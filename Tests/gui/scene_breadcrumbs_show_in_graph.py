@@ -2,7 +2,8 @@
 
 Graph: USDRead(a small hierarchy) -> Viewer1, and a second USDRead nothing views. Checks:
   - with the Scene Graph panel closed, Show In Scene Graph on group_1 opens a panel that follows
-    the viewer, with /geo/group_1 selected and its row visible, and the payload under it unloaded;
+    the viewer, with /geo/group_1 selected and its row visible, and the payload under it unloaded,
+    in a pane other than the viewer's, so the viewer and its bar stay shown;
   - with the only panel pinned to the second USDRead, Show In Scene Graph on another segment opens
     a second panel that follows the viewer and shows the prim, while the first keeps its pin and node;
   - a second use picks that panel again instead of opening a third.
@@ -105,14 +106,14 @@ try:
         return None
 
     def show_in_graph(text):
-        """Right-clicks the segment and triggers Show In Scene Graph in its menu."""
+        """Right-clicks the segment and clicks Show In Scene Graph in its menu."""
         QTest.mouseClick(segment_button(text), Qt.RightButton)
         menus = [m for m in bar().findChildren(QMenu, "breadcrumbSegmentMenu") if m.isVisible()]
         require(len(menus) == 1, "a right-click on %s opens its menu" % (text,))
         for a in menus[0].actions():
             if a.objectName() == "breadcrumbShowInSceneGraph":
                 require(a.isEnabled(), "Show In Scene Graph is enabled on %s" % (text,))
-                a.trigger()
+                QTest.mouseClick(menus[0], Qt.LeftButton, Qt.NoModifier, menus[0].actionGeometry(a).center())
                 return
         require(False, "the segment menu has Show In Scene Graph")
 
@@ -202,6 +203,7 @@ try:
         check(row_visible(first, GROUP), "the group_1 row is visible in the panel")
         check(row_state(first, PAYLOAD) == STATE_UNLOADED,
               "showing the prim loads no payload (state %r)" % (row_state(first, PAYLOAD),))
+        check(bar() is not None, "the viewer and its bar stay shown beside the opened panel")
         yield ("sleep", SETTLE_MS)
         shot("scene_breadcrumbs_show_in_graph_opened.png")
 

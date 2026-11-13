@@ -233,7 +233,7 @@ ScenePrimListModel::fetchBatch()
         return;
     }
     SceneViewportRenderer& renderer = _imp->viewport->getRenderer();
-    if (!renderer.hasScene() || !_imp->viewport->isSceneSynced()) {
+    if (!renderer.hasScene() || !_imp->viewport->isStageSynced()) {
         _imp->waitingForStage = true;
         Q_EMIT stateChanged();
         return;

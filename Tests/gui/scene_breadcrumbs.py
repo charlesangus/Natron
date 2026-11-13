@@ -2,7 +2,8 @@
 
 Graph: USDRead(a generated hierarchy) -> USDPrune -> Viewer1. The hierarchy has
 /geo/group_1/a_thing/mesh, /geo/group_1/b_thing, /geo/group_2, a path of long names, /big with
-10000 children and /pay, a prim whose payload is not loaded. The prune starts out removing
+10000 children and /pay, a prim whose payload is not loaded. b_thing and group_2's cube sit apart
+from the mesh, so the scene, group_1 and a_thing each frame differently. The prune starts out removing
 nothing; the script then makes it remove the mesh.
 
 Checks:
@@ -53,6 +54,11 @@ LONG_NAMES = ["a_long_segment_name_%d_for_the_bar" % i for i in range(1, 7)] + [
 LONG_PATH = "/" + "/".join(LONG_NAMES)
 
 
+def translate(x, y, z, indent):
+    return ('%sdouble3 xformOp:translate = (%g, %g, %g)\n%suniform token[] xformOpOrder = ["xformOp:translate"]\n'
+            % (indent, x, y, z, indent))
+
+
 def write_scene(directory):
     os.makedirs(directory, exist_ok=True)
     with open(os.path.join(directory, "pay_payload.usda"), "w") as f:
@@ -66,9 +72,9 @@ def write_scene(directory):
         f.write('def Xform "geo"\n{\n')
         f.write('    def Xform "group_1"\n    {\n')
         f.write('        def Xform "a_thing"\n        {\n            def Cube "mesh"\n            {\n                double size = 1\n            }\n        }\n')
-        f.write('        def Cube "b_thing"\n        {\n            double size = 1\n        }\n')
+        f.write('        def Cube "b_thing"\n        {\n            double size = 1\n%s        }\n' % translate(4, 0, 0, "            "))
         f.write('    }\n')
-        f.write('    def Xform "group_2"\n    {\n        def Cube "c_thing"\n        {\n            double size = 1\n        }\n    }\n')
+        f.write('    def Xform "group_2"\n    {\n        def Cube "c_thing"\n        {\n            double size = 1\n%s        }\n    }\n' % translate(0, 0, -8, "            "))
         f.write('}\n')
         f.write('def Scope "big"\n{\n')
         for i in range(BIG_COUNT):
@@ -196,6 +202,11 @@ try:
             if a.objectName() == name:
                 return a
         return None
+
+    def choose(name):
+        """Clicks the menu's entry, as a user does: QAction.trigger() would leave the menu open."""
+        m = segment_menu()
+        QTest.mouseClick(m, Qt.LeftButton, Qt.NoModifier, m.actionGeometry(menu_action(name)).center())
 
     def camera():
         v = view()
@@ -330,7 +341,7 @@ try:
         check(all(menu_action(n).isEnabled() for n in ("breadcrumbSiblings", "breadcrumbCopyPath", "breadcrumbCopySelectedPaths", "breadcrumbFrame")),
               "every entry of a present segment's menu is enabled")
         shot("scene_breadcrumbs_menu.png")
-        menu_action("breadcrumbSiblings").trigger()
+        choose("breadcrumbSiblings")
         ok = yield ("until", lambda: popup() is not None and bool(popup().property("natronPopupComplete")), POLL_TIMEOUT_S)
         require(ok, "Siblings opens a popup")
         p = popup()
@@ -354,7 +365,7 @@ try:
         QTest.mouseClick(segment_button("group_1"), Qt.RightButton)
         ok = yield ("until", lambda: menu_action("breadcrumbCopyPath") is not None, POLL_TIMEOUT_S)
         require(ok, "the menu opens on group_1")
-        menu_action("breadcrumbCopyPath").trigger()
+        choose("breadcrumbCopyPath")
         check(str(clipboard.text()) == GROUP, "Copy Path puts /geo/group_1 on the clipboard (got %r)" % (clipboard.text(),))
         ok = yield ("until", lambda: segment_menu() is None, POLL_TIMEOUT_S)
         check(ok, "choosing an entry closes the menu")
@@ -366,7 +377,7 @@ try:
         QTest.mouseClick(segment_button("group_1"), Qt.RightButton)
         ok = yield ("until", lambda: menu_action("breadcrumbCopySelectedPaths") is not None, POLL_TIMEOUT_S)
         require(ok, "the menu opens on group_1 with two selected")
-        menu_action("breadcrumbCopySelectedPaths").trigger()
+        choose("breadcrumbCopySelectedPaths")
         check(str(clipboard.text()).split("\n") == [MESH, GROUP], "Copy Selected Paths puts both paths on the clipboard, one per line (got %r)" % (clipboard.text(),))
         ok = yield ("until", lambda: segment_menu() is None, POLL_TIMEOUT_S)
 
@@ -402,7 +413,7 @@ try:
         QTest.mouseClick(segment_button("a_thing"), Qt.RightButton)
         ok = yield ("until", lambda: menu_action("breadcrumbFrame") is not None, POLL_TIMEOUT_S)
         require(ok, "the menu opens on a_thing")
-        menu_action("breadcrumbFrame").trigger()
+        choose("breadcrumbFrame")
         ok = yield ("until", lambda: selection() == ["/geo/group_1/a_thing"], POLL_TIMEOUT_S)
         check(ok, "Frame selects the prim (got %r)" % (selection(),))
         ok = yield ("until", moved, POLL_TIMEOUT_S)
@@ -453,13 +464,15 @@ try:
 
         select([MESH])
         ok = yield ("until", lambda: texts() == ["geo", "group_1", "a_thing", "mesh"], POLL_TIMEOUT_S)
+        require(ok, "the bar shows the mesh's path before the prune (got %r, selection %r)" % (texts(), selection()))
         prune.getParam("primPattern").setValue(MESH)
         ok = yield ("until", lambda: states() == ["present", "present", "present", "missing"], POLL_TIMEOUT_S)
-        check(ok, "pruning the mesh greys the mesh alone (got %r)" % (states(),))
+        check(ok, "pruning the mesh greys the mesh alone (got %r for %r, selection %r)" % (states(), texts(), selection()))
         yield ("sleep", SETTLE_MS)
         mesh_button = segment_button("mesh")
-        check(mesh_button is not None and str(mesh_button.property("natronBreadcrumbState")) == "missing", "the greyed segment is still shown")
-        check(segment_button("a_thing").isEnabled(), "the ancestors stay clickable")
+        require(mesh_button is not None and str(mesh_button.property("natronBreadcrumbState")) == "missing", "the greyed segment is still shown")
+        ancestor = segment_button("a_thing")
+        check(ancestor is not None and ancestor.isEnabled(), "the ancestors stay clickable")
         shot("scene_breadcrumbs_pruned.png")
         QTest.mouseClick(mesh_button, Qt.LeftButton)
         yield ("sleep", SETTLE_MS)
@@ -473,7 +486,7 @@ try:
         require(ok, "a right-click on the missing segment opens its menu")
         check(not menu_action("breadcrumbSiblings").isEnabled() and not menu_action("breadcrumbFrame").isEnabled(),
               "Siblings and Frame are disabled for a missing segment")
-        menu_action("breadcrumbCopyPath").trigger()
+        choose("breadcrumbCopyPath")
         check(str(clipboard.text()) == MESH, "Copy Path works on the missing segment (got %r)" % (clipboard.text(),))
         ok = yield ("until", lambda: segment_menu() is None, POLL_TIMEOUT_S)
         check(selection() == [MESH], "the missing segment's menu leaves the selection (got %r)" % (selection(),))

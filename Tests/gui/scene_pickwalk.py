@@ -11,7 +11,7 @@ Checks:
   - with the mesh and /geo/group_2/c_thing selected, Alt+Left selects a_thing and group_2, and a
     second one selects group_1 and /geo, the current prim staying last; with a_thing and b_thing
     selected, Alt+Left merges them into their one parent, group_1;
-  - a key press with focus on the breadcrumb bar's background walks too;
+  - a click on the breadcrumb bar's background leaves the focus with the 3D view, whose keys walk;
   - the four Pickwalk rows are in the Shortcut Editor's 3DViewer group with their Alt bindings, and
     rebinding Pickwalk Parent to Alt+Shift+Left moves the walk to the new key and frees Alt+Left.
 
@@ -50,8 +50,9 @@ def write_scene(directory):
 
 try:
     import NatronEngine
-    from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, Qt
+    from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, QPoint, Qt
     from PySide6.QtTest import QTest
+    from shiboken6 import getCppPointer
     from PySide6.QtWidgets import QApplication, QLineEdit, QMainWindow, QPushButton, QTreeWidget
 
     from guitest import OUT, check, finish, menu_of, plugin_problem, report, require, run, shot, viewer_up, widgets_of
@@ -178,10 +179,19 @@ try:
         ok = yield ("until", lambda: selection() == [MESH], POLL_TIMEOUT_S)
         b = bar()
         require(b is not None, "the breadcrumb bar is visible")
-        b.setFocus()
+        # The view had the focus from the start, so it is taken away for the click to have to give it
+        # back. The window may not be the active one under Xvfb, so the focus is read from the window
+        # rather than the application, and the key goes to the widget that holds it.
+        v.clearFocus()
+        background = QPoint(b.width() - 4, b.height() // 2)
+        require(b.childAt(background) is None, "the bar's right end is its bare background")
+        QTest.mouseClick(b, Qt.LeftButton, Qt.NoModifier, background)
         QApplication.processEvents()
-        check(QApplication.focusWidget() is v, "the bar's focus goes to the 3D view")
-        yield from walk("Alt+Left with the bar focused walks", Qt.Key_Left, [THING], widget=b)
+        focused = b.window().focusWidget()
+        check(focused is not None and getCppPointer(focused) == getCppPointer(v), "a click on the bar's background gives the 3D view the focus (got %r)"
+              % (focused.metaObject().className() if focused is not None else None,))
+        if focused is not None:
+            yield from walk("Alt+Left with the bar clicked walks", Qt.Key_Left, [THING], widget=focused)
 
         panel = open_preferences()
         require(panel is not None, "the Preferences panel opens")
@@ -210,10 +220,10 @@ try:
         QApplication.processEvents()
         yield ("sleep", 300)
         shot("scene_pickwalk_shortcuts.png")
-        fields = [w for w in panel.findChildren(QLineEdit) if w.isVisible()]
+        fields = [w for w in panel.findChildren(QLineEdit) if w.isVisible() and w.placeholderText() == "Type to set shortcut"]
         validate = [w for w in panel.findChildren(QPushButton) if w.text() == "Validate" and w.isVisible()]
-        require(len(fields) >= 1 and len(validate) == 1, "found the binding field and its Validate button")
-        field = fields[-1]
+        require(len(fields) == 1 and len(validate) == 1, "found the primary binding field and its Validate button")
+        field = fields[0]
         field.setFocus()
         field.clear()
         QTest.keyClick(field, Qt.Key_Left, Qt.AltModifier | Qt.ShiftModifier)

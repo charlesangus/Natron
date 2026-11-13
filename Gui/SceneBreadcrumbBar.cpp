@@ -282,7 +282,7 @@ SceneBreadcrumbBar::refresh()
 void
 SceneBreadcrumbBar::readStates(QList<Segment>& segments)
 {
-    if (segments.isEmpty() || !_imp->viewport || !_imp->viewport->getRenderer().hasScene() || !_imp->viewport->isSceneSynced()) {
+    if (segments.isEmpty() || !_imp->viewport || !_imp->viewport->getRenderer().hasScene() || !_imp->viewport->isStageSynced()) {
         return;
     }
     const bool read = _imp->viewport->getRenderer().tryReadStage([&segments](const SceneStage* stage) {
@@ -467,7 +467,7 @@ SceneBreadcrumbBar::segmentToolTip(const Segment& segment) const
     QString type;
     QString kind;
     QString loaded;
-    if (_imp->viewport && _imp->viewport->getRenderer().hasScene() && _imp->viewport->isSceneSynced()) {
+    if (_imp->viewport && _imp->viewport->getRenderer().hasScene() && _imp->viewport->isStageSynced()) {
         // A read an edit keeps out leaves the state the last refresh found.
         _imp->viewport->getRenderer().tryReadStage([&](const SceneStage* stage) {
             const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();

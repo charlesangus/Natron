@@ -236,6 +236,10 @@ public:
     // A Bezier's shape keys
     DSKnob(QTreeWidgetItem* nameItem,
            const BezierPtr& bezier);
+
+    // A stroke's painted frame
+    DSKnob(QTreeWidgetItem* nameItem,
+           const RotoStrokeItemPtr& stroke);
     ~DSKnob();
 
     QTreeWidgetItem * getTreeItem() const;
@@ -251,6 +255,9 @@ public:
     // Set only for a shape row
     BezierPtr getBezier() const;
     bool isShape() const;
+
+    // Set only for a painted frame row, whose single key shows the stroke's Lifetime frame and edits nothing
+    bool isPaintedFrame() const;
 
     // The curve the row's keys live on: the driver curve on a driver row; null for a shape row
     CurvePtr getCurve(int dimension) const;
@@ -357,6 +364,14 @@ public:
 
     // Set for a shape key, addressed by the Bezier and the key's time for the same reason
     BezierWPtr bezier;
+
+    // Painted frame keys can be selected but never move, paste, delete or change interpolation
+    bool isDisplayOnly() const
+    {
+        DSKnobPtr knobContext = context.lock();
+
+        return knobContext && knobContext->isPaintedFrame();
+    }
 };
 
 typedef DopeSheetKeyPtr DopeSheetKeyPtr;
@@ -479,6 +494,7 @@ private Q_SLOTS:
     void onNodeNameEditDialogFinished();
     void onCurveContextItemsChanged();
     void onShapeKeyframesChanged();
+    void onPaintedFrameChanged();
     void onItemKnobKeyframesChanged();
 
 private:

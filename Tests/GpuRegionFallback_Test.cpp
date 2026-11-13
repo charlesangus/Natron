@@ -884,6 +884,55 @@ TEST_F(GpuRegionFallbackTest, RegionRunAsStripsPublishesNothing)
     EXPECT_EQ(0u, report->plannedPeakDeviceBytes);
 }
 
+TEST_F(GpuRegionFallbackTest, RegionRunAsStripsAdmitsEveryAdmittedMemberToTheHostTier)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    setGpuStripOverridesForTests(16384, 0);
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameGraph graph;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(grades, &graph, &error)) << error;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    ASSERT_GT(report->strips, 0);
+    ASSERT_EQ(3u, graph.regions.front().members.size());
+
+    const RectI window(0, 0, kWidth, kHeight);
+    std::vector<float> lastOutput;
+    int hits = 0;
+    for (int member : graph.regions.front().members) {
+        const FrameGraph::Task& task = graph.tasks[member];
+        std::list<ImagePtr> cached;
+        ASSERT_TRUE(appPTR->peekImage(outputKey(task), &cached)) << task.key.node->getScriptName_mt_safe();
+        ASSERT_FALSE(cached.empty());
+        ++hits;
+        EXPECT_GT(cached.front()->getEntryHeader()->recomputeCostNs.load(), 0.f);
+        if (task.key.node == grades.back()) {
+            lastOutput = readRgba(cached.front(), window);
+        }
+    }
+    EXPECT_EQ(hits, report->admittedToHost);
+    ASSERT_FALSE(lastOutput.empty());
+
+    // The reference is rendered from nothing, so that it is not read back from the entry under test.
+    appPTR->clearAllCaches();
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderNodePlanesDirect(grades.back(), kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_EQ(planes.front().pixels.size(), lastOutput.size());
+    float worst = 0.f;
+    bool nonZero = false;
+    for (std::size_t i = 0; i < lastOutput.size(); ++i) {
+        worst = std::max(worst, std::fabs(planes.front().pixels[i] - lastOutput[i]));
+        nonZero = nonZero || (lastOutput[i] != 0.f);
+    }
+    EXPECT_TRUE(nonZero);
+    EXPECT_LE(worst, kTolerance);
+}
+
 TEST_F(GpuRegionFallbackTest, RegionRunWithoutHeadroomPublishesNothing)
 {
     if (!gpuOrSkip()) {

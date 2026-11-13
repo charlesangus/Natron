@@ -339,6 +339,9 @@ public:
         // The member outputs the region left in the device tier.
         int publishedToDevice = 0;
 
+        // The member outputs the region read back to RAM and admitted to the host tier.
+        int admittedToHost = 0;
+
         // The region fits the device whole and was stripped anyway, to overlap its transfers with its compute.
         bool overlapStrips = false;
 

@@ -101,6 +101,7 @@ void evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
                                             const std::function<bool()>& evictOnce);
 
 class CacheDeviceTier;
+class CacheDeviceHost;
 class CacheDiskTier;
 class CacheHostTier;
 struct AppManagerPrivate;
@@ -410,6 +411,13 @@ public:
     void checkCacheFreeMemoryIsGoodEnough();
 
     CacheHostTier& getNodeCacheHostTier() const;
+
+    /**
+     * @brief The image cache as what a render admits an image it made outside the cache to the host tier through: the
+     * image is made with deviceHostCache() as its cache and put in the table with adoptFromDevice(). Null without an
+     * image cache.
+     **/
+    const CacheDeviceHost* getNodeCacheHost() const;
     // Null when the node cache has no disk tier.
     std::shared_ptr<CacheDiskTier> getNodeCacheDiskTier() const;
 

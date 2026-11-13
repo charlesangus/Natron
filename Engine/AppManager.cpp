@@ -3139,6 +3139,12 @@ AppManager::getNodeCacheHostTier() const
     return _imp->_nodeCache->hostTier();
 }
 
+const CacheDeviceHost*
+AppManager::getNodeCacheHost() const
+{
+    return _imp->_nodeCache.get();
+}
+
 std::shared_ptr<CacheDiskTier>
 AppManager::getNodeCacheDiskTier() const
 {

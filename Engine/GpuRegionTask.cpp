@@ -37,6 +37,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -299,6 +300,9 @@ struct Slot {
     // tier instead of being released.
     bool publish = false;
 
+    // The download image is made as an entry of the host tier, which takes it once the run is done.
+    bool admitHost = false;
+
     bool released = false;
 };
 
@@ -400,6 +404,7 @@ public:
         reportTimesByTask();
         if (code == EffectInstance::eRenderRoIRetCodeOk) {
             publishToDeviceTier();
+            admitToHostTier();
         }
         if (_report) {
             _report->wholePeakDeviceBytes = _wholePeakBytes;
@@ -1639,13 +1644,21 @@ private:
         };
         std::vector<Destination> destinations;
 
+        const CacheDeviceHost* host = appPTR ? appPTR->getNodeCacheHost() : nullptr;
+        _hostGeneration = host ? host->deviceHostGeneration() : 0;
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
             if (!slot.download || slot.pinned) {
                 continue;
             }
             const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
-            slot.downloadImage = slot.layout.newRamImage();
+            if (host && !slot.publish && (slot.producer >= 0) && isCachedOutput(slot.producer)) {
+                slot.downloadImage = newHostEntryImage(*host, _members[slot.producer], slot);
+                slot.admitHost = bool(slot.downloadImage);
+            }
+            if (!slot.downloadImage) {
+                slot.downloadImage = slot.layout.newRamImage();
+            }
             if (!slot.downloadImage) {
                 return fail(producerTask, "cannot allocate the downloaded image");
             }
@@ -2238,6 +2251,116 @@ private:
         return true;
     }
 
+    // Whether the member's output is one renderRoI would cache under its own key, rather than a pass-through or
+    // an output another member of the region owns.
+    bool isCachedOutput(int m) const
+    {
+        const Member& member = _members[m];
+        if (member.identity || (member.outSlot < 0)) {
+            return false;
+        }
+        const FrameGraph::Task& task = _graph.tasks[member.task];
+        const Slot& slot = _slots[member.outSlot];
+
+        return task.sharesCachedOutput && !task.isIdentity && !slot.pinned && (slot.producer == m);
+    }
+
+    // The key renderRoI looks the member's output up by, whichever tier it is cached in.
+    ImageKey cacheKeyOf(const Member& member,
+                        const Slot& slot) const
+    {
+        const FrameGraph::Task& task = _graph.tasks[member.task];
+        const NodePtr& node = task.key.node;
+        const EffectInstancePtr effect = node->getEffectInstance();
+        const ParallelRenderArgsPtr frameArgs = _context->getArgs(NodeCtxKey(node, task.key.contextKey));
+        const bool draft = node->isDraftModeUsed() && frameArgs && frameArgs->draftMode;
+
+        return effect->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, draft, task.cacheMipmapLevel)
+            .forEntry(slot.layout.mipmapLevel, member.plane, eImageBitDepthFloat);
+    }
+
+    // Marks the header as that of a fully rendered cache entry of the member's output, charged the device time of its
+    // task. A device without timestamp queries measures nothing, and an entry costing nothing would be demoted as a
+    // drop and ranked below every other.
+    void stampCacheHeader(CacheEntryHeader& header,
+                          const Member& member,
+                          const Slot& slot,
+                          const ImageKey& key) const
+    {
+        const NodePtr& node = _graph.tasks[member.task].key.node;
+        const AbortableRenderInfoPtr& abortInfo = _context->getAbortInfo();
+        const std::uint64_t renderSequence = abortInfo ? abortInfo->getRenderSequence() : 0;
+        const bool timed = _report && (_report->memberNs.size() == _region.members.size());
+        header.key = std::make_shared<const ImageKey>(key);
+        header.bounds = slot.layout.bounds;
+        header.bitmap.initialize(slot.layout.bounds);
+        header.bitmap.setTo1();
+        const double area = (double)slot.layout.bounds.area();
+        const long long ownNs = timed ? _report->memberNs[_position[member.task]] : 0;
+        const CacheRetentionSignalsPtr retention = node->getRetentionSignals();
+        if (ownNs > 0) {
+            header.recomputeCostNs.store(CacheEviction::costAfterRender(0.f, (double)ownNs, area, area));
+            if (retention) {
+                retention->rememberCost(header.recomputeCostNs.load());
+            }
+        } else {
+            header.recomputeCostNs.store(expectedCostNs(member));
+        }
+        if (retention) {
+            CacheRetention::noteStored(header, retention, renderSequence);
+        }
+    }
+
+    // A RAM image of the slot's layout that the host tier will hold under the member's cache key, so that it needs no
+    // copy; null when it cannot be allocated.
+    ImagePtr newHostEntryImage(const CacheDeviceHost& host,
+                               const Member& member,
+                               const Slot& slot) const
+    {
+        const GpuImageLayout& layout = slot.layout;
+        if (layout.pixelBytes() == 0) {
+            return ImagePtr();
+        }
+        host.makeHostRoom(layout.pixelBytes());
+        try {
+            const ImageParamsPtr params = Image::makeParams(layout.rod, layout.bounds, layout.par, layout.mipmapLevel, false,
+                                                            layout.layer, eImageBitDepthFloat, layout.fielding, eStorageModeRAM);
+            const ImagePtr image = std::make_shared<Image>(cacheKeyOf(member, slot), params, host.deviceHostCache());
+            image->allocateMemory();
+
+            return image;
+        } catch (const std::bad_alloc&) {
+            return ImagePtr();
+        }
+    }
+
+    /**
+     * @brief Hands the host tier the images read back for it, unless the key was cached meanwhile or the cache was
+     * cleared since they were allocated.
+     **/
+    void admitToHostTier()
+    {
+        const CacheDeviceHost* host = appPTR ? appPTR->getNodeCacheHost() : nullptr;
+        if (!host) {
+            return;
+        }
+        int admitted = 0;
+        for (Slot& slot : _slots) {
+            if (!slot.admitHost || !slot.downloaded || (slot.producer < 0)) {
+                continue;
+            }
+            const Member& member = _members[slot.producer];
+            const ImagePtr& image = slot.downloaded;
+            stampCacheHeader(*image->getEntryHeader(), member, slot, image->getKey());
+            if (host->adoptFromDevice(image, _hostGeneration)) {
+                ++admitted;
+            }
+        }
+        if (_report) {
+            _report->admittedToHost = admitted;
+        }
+    }
+
     // The cost the device tier would first score the member's output by: its node's last measured one.
     float expectedCostNs(const Member& member) const
     {
@@ -2274,13 +2397,12 @@ private:
         const bool downloadsStayReadable = device.queueFamily(gpu::QueueKind::Download) == device.queueFamily(gpu::QueueKind::Compute);
         std::vector<std::pair<double, int>> candidates;
         for (std::size_t m = 0; m < _members.size(); ++m) {
-            const Member& member = _members[m];
-            if (member.identity || (member.outSlot < 0)) {
+            if (!isCachedOutput((int)m)) {
                 continue;
             }
-            const FrameGraph::Task& task = _graph.tasks[member.task];
+            const Member& member = _members[m];
             const Slot& slot = _slots[member.outSlot];
-            if (!task.sharesCachedOutput || task.isIdentity || slot.pinned || (slot.producer != (int)m) || (slot.download && !downloadsStayReadable)) {
+            if (slot.download && !downloadsStayReadable) {
                 continue;
             }
             const double bytes = (double)std::max<std::size_t>(1, slot.layout.deviceBytes());
@@ -3199,9 +3321,6 @@ private:
         if (!tier || (tier->runtime() != &_runtime)) {
             return;
         }
-        const AbortableRenderInfoPtr& abortInfo = _context->getAbortInfo();
-        const std::uint64_t renderSequence = abortInfo ? abortInfo->getRenderSequence() : 0;
-        const bool timed = _report && (_report->memberNs.size() == _region.members.size());
         int published = 0;
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
@@ -3209,12 +3328,6 @@ private:
                 continue;
             }
             const Member& member = _members[slot.producer];
-            const FrameGraph::Task& task = _graph.tasks[member.task];
-            const NodePtr& node = task.key.node;
-            const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
-            if (!effect) {
-                continue;
-            }
             GpuDeviceImagePtr image = (s < _deviceImages.size()) ? _deviceImages[s] : GpuDeviceImagePtr();
             if (!image) {
                 image = GpuDeviceImage::create(_runtime, slot.handle, slot.layout, _stats);
@@ -3222,32 +3335,9 @@ private:
             if (!image) {
                 continue;
             }
-            const ParallelRenderArgsPtr frameArgs = _context->getArgs(NodeCtxKey(node, task.key.contextKey));
-            const bool draft = node->isDraftModeUsed() && frameArgs && frameArgs->draftMode;
-            const ImageKey key = effect->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, draft, task.cacheMipmapLevel)
-                                     .forEntry(slot.layout.mipmapLevel, member.plane, eImageBitDepthFloat);
-
+            const ImageKey key = cacheKeyOf(member, slot);
             const CacheEntryHeaderPtr header = std::make_shared<CacheEntryHeader>();
-            header->key = std::make_shared<const ImageKey>(key);
-            header->bounds = slot.layout.bounds;
-            header->bitmap.initialize(slot.layout.bounds);
-            header->bitmap.setTo1();
-            const double area = (double)slot.layout.bounds.area();
-            const long long ownNs = timed ? _report->memberNs[_position[member.task]] : 0;
-            const CacheRetentionSignalsPtr retention = node->getRetentionSignals();
-            if (ownNs > 0) {
-                header->recomputeCostNs.store(CacheEviction::costAfterRender(0.f, (double)ownNs, area, area));
-                if (retention) {
-                    retention->rememberCost(header->recomputeCostNs.load());
-                }
-            } else {
-                // A device without timestamp queries measures nothing, and an entry costing nothing would be demoted
-                // as a drop and ranked below every other.
-                header->recomputeCostNs.store(expectedCostNs(member));
-            }
-            if (retention) {
-                CacheRetention::noteStored(*header, retention, renderSequence);
-            }
+            stampCacheHeader(*header, member, slot, key);
             if (tier->insert(key, image, header, (s < _holderEvicts.size()) ? _holderEvicts[s] : std::function<void()>())) {
                 ++published;
             }
@@ -3448,6 +3538,9 @@ private:
     // The peaks gpuStripCost() gives the run whole without and with its published slots held, 0 for one run as strips.
     std::uint64_t _wholePeakBytes = 0;
     std::uint64_t _plannedPeakBytes = 0;
+
+    // The host tier's generation when the download images were allocated.
+    std::uint64_t _hostGeneration = 0;
 
     // By slot: the device image storeOutputs() made of it, and what makes the store or the viewer holding it evict it.
     std::vector<GpuDeviceImagePtr> _deviceImages;

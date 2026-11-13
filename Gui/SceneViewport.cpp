@@ -962,6 +962,7 @@ struct SceneViewportRenderer::Implementation {
     mutable std::mutex refineListenerMutex;
     std::function<void()> refineListener;
     std::atomic<int> maxSamples { 0 };
+    std::atomic<bool> renderEverything { false };
     // The delegate the refinement was last given; needs stageMutex held exclusively. A release
     // from the main thread, which holds no lock, asks the next render to forget it.
     std::string refineRenderer;
@@ -5130,6 +5131,18 @@ SceneViewportRenderer::getMaxSamples() const
 }
 
 void
+SceneViewportRenderer::setRenderEverything(bool on)
+{
+    if (_imp->renderEverything.exchange(on) == on) {
+        return;
+    }
+    if (on) {
+        requestStageLoad(std::vector<std::string>(1, "/"), true);
+    }
+    _imp->progressive->setRenderEverything(on);
+}
+
+void
 SceneViewportRenderer::setRefinementPaused(bool paused)
 {
     if (paused) {
@@ -7296,6 +7309,13 @@ SceneViewport::setMaxSamples(int samples)
 {
     _imp->renderer.setMaxSamples(samples);
     publishRefineState();
+    update();
+}
+
+void
+SceneViewport::setRenderEverything(bool on)
+{
+    _imp->renderer.setRenderEverything(on);
     update();
 }
 

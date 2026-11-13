@@ -11,7 +11,10 @@ the worker on the switch. It checks:
   - clicks over a grid of the view (picked from the Cycles primId AOV and the boxes) find prims
     below B1 and none below another building;
   - BBox on B1 while Cycles renders reaches the rules (ruleCount) and the overlay (one more box),
-    and B1's prims leave the frame: a later sweep picks no prim below any building.
+    and B1's prims leave the frame: a later sweep picks no prim below any building;
+  - Render Everything on loads every payload and the sweep picks prims below all four buildings;
+    off brings the draw rules back (no prim picked, every building boxed) and unloads nothing;
+    on again it is still on after the project is saved and reopened.
 
 If the Renderer submenu has no available Cycles entry the run is skipped (exit 0).
 
@@ -313,6 +316,53 @@ try:
         unrequested = [payload_of(r) for r in BOXED if payload_of(r) in opened_payloads()]
         check(len(unrequested) == 0, "unrequested payloads stay unloaded (%d open: %r)" % (len(unrequested), unrequested))
         shot("m335-cycles-all-boxed.png")
+
+        section("Render Everything")
+        render_everything = viewer.getParam("renderEverything")
+        require(render_everything is not None, "the viewer has a Render Everything knob")
+        check(render_everything.getValue() is False, "Render Everything starts off")
+        restarts = num("natronSceneRestartCount")
+        render_everything.set(True)
+        every_payload = sorted(payload_of(r) for r in ROWS)
+        ok = yield ("until", lambda: opened_payloads() == every_payload and not num("natronSceneLoadsPending", 0),
+                    LOAD_TIMEOUT_S)
+        check(ok, "every payload loads (%r)" % (opened_payloads(),))
+        ok = yield ("until", lambda: num("natronSceneRestartCount") > restarts, POLL_TIMEOUT_S)
+        check(ok, "the change restarts the delegate (restarts %r -> %r)" % (restarts, num("natronSceneRestartCount")))
+        ok = yield ("until", cycles_refined, REFINE_TIMEOUT_S)
+        check(ok, "Cycles draws the whole scene (samples %r)" % (num("natronSceneSamples"),))
+        paths = yield from sweep_until("render everything",
+                                       lambda p: all(prims_below(p, r) for r in ROWS), 8)
+        for r in ROWS:
+            check(bool(prims_below(paths, r)), "clicks pick prims below %s (%r)" % (r, prims_below(paths, r)[:3]))
+
+        section("Render Everything off")
+        restarts = num("natronSceneRestartCount")
+        render_everything.set(False)
+        ok = yield ("until", lambda: num("natronSceneRestartCount") > restarts, POLL_TIMEOUT_S)
+        check(ok, "the change restarts the delegate (restarts %r -> %r)" % (restarts, num("natronSceneRestartCount")))
+        ok = yield ("until", cycles_refined, REFINE_TIMEOUT_S)
+        check(ok, "Cycles draws the frame under the draw states (samples %r)" % (num("natronSceneSamples"),))
+        check(int(draw_stats().get("ruleCount", 0)) == len(ROWS), "the rules are still held (%r)" % (draw_stats().get("ruleCount"),))
+        paths = yield from sweep_until("render everything off", lambda p: not any(prims_below(p, r) for r in ROWS), 5)
+        check(not any(prims_below(paths, r) for r in ROWS),
+              "every building is boxed again, no prim picked (%r)" % (sorted(p for r in ROWS for p in prims_below(paths, r))[:5],))
+        check(opened_payloads() == every_payload, "turning it off unloads nothing (%r)" % (opened_payloads(),))
+
+        section("Render Everything survives save and load")
+        render_everything.set(True)
+        ok = yield ("until", lambda: render_everything.getValue() is True, POLL_TIMEOUT_S)
+        require(ok, "Render Everything is on before saving")
+        project_path = os.path.join(OUT, "m335_render_draw_states.ntpz")
+        require(app.saveProjectAs(project_path), "save the project to " + project_path)
+        require(app.resetProject(), "reset the project (close it, keep the window)")
+        yield ("sleep", SETTLE_MS)
+        require(app.loadProject(project_path) is not None, "reopen " + project_path)
+        ok = yield ("until", lambda: app.getNode("Viewer1") is not None, LOAD_TIMEOUT_S)
+        require(ok, "the viewer is back after reopening")
+        reloaded = app.getNode("Viewer1").getParam("renderEverything")
+        check(reloaded is not None and reloaded.getValue() is True,
+              "Render Everything is still on after reopening (%r)" % (reloaded.getValue() if reloaded is not None else None,))
 
     run(steps())
 except Exception:

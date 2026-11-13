@@ -68,6 +68,7 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , sceneRenderRowLayout(NULL)
     , maxSamplesBox(NULL)
     , refinementPausedButton(NULL)
+    , renderEverythingButton(NULL)
     , refineSamplesLabel(NULL)
     , layerChoice(NULL)
     , alphaChannelChoice(NULL)

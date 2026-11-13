@@ -338,7 +338,7 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
     const EdgeAware::ParallelFor parallel = [&cancel, nThreads](int count, const std::function<void(int)>& body) {
         parallelForCancellable(count, nThreads, cancel, body);
     };
-    const std::function<bool()> cancelled = [&cancel]() { return cancel.check(); };
+    const std::function<bool()> waitCancelled = wholeFrameWaitCancelled(*this, cancel);
     const int width = full.width();
     const int height = full.height();
 
@@ -353,9 +353,9 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
         RectI overlap;
         if (PassExec::intersectRects(args.roi, full, &overlap) && !PassExec::isEmptyRect(overlap)) {
             const std::string key = wholeFrameKey(*this, sourceInput, args.time, args.view, args.mappedScale, full, it->first.getLayerID(), nComps);
-            mapResult = _map.get(key, cancelled, [&]() -> WholeFrameCache::Result {
+            mapResult = _map.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
                 if (cancel.check()) {
-                    return WholeFrameCache::Result();
+                    return WholeFrameCache::Job();
                 }
                 ImagePtr src;
                 ImageLayerDesc sourceLayer;
@@ -365,10 +365,10 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
                     src = getImage(sourceInput, args.time, args.mappedScale, args.view, NULL, &sourceLayer, true /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &sourceRoI);
                 }
                 if (cancel.check()) {
-                    return WholeFrameCache::Result();
+                    return WholeFrameCache::Job();
                 }
                 if (src && !PassExec::isFloatImage(src)) {
-                    return WholeFrameCache::Result();
+                    return WholeFrameCache::Job();
                 }
                 std::shared_ptr<Image::ReadAccess> srcAccess;
                 RectI srcBounds;
@@ -379,18 +379,28 @@ ContrastTexture::renderOp(const RenderActionArgs& args,
                     srcNComps = (int)src->getComponentsCount();
                 }
                 // The whole source, top-down, in the output plane's layout.
-                std::vector<float> image((std::size_t)width * height * nComps, 0.f);
+                auto image = std::make_shared<std::vector<float>>((std::size_t)width * height * nComps, 0.f);
                 parallel(height, [&](int r) {
                     const int y = full.y2 - 1 - r;
-                    PassExec::readSourceRow(src.get(), srcAccess.get(), srcBounds, srcNComps, full.x1, y, width, nComps, &image[(std::size_t)r * width * nComps]);
+                    PassExec::readSourceRow(src.get(), srcAccess.get(), srcBounds, srcNComps, full.x1, y, width, nComps, &(*image)[(std::size_t)r * width * nComps]);
                 });
-                auto map = std::make_shared<std::vector<float>>((std::size_t)width * height);
-                CT::computeMap(image.data(), width, height, nComps, ctPlan, map->data(), parallel);
                 if (cancel.check()) {
-                    return WholeFrameCache::Result();
+                    return WholeFrameCache::Job();
                 }
 
-                return map;
+                return [image, width, height, nComps, ctPlan, nThreads](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                    RenderCancellation jobCancel(jobCancelled);
+                    const EdgeAware::ParallelFor jobParallel = [&jobCancel, nThreads](int count, const std::function<void(int)>& body) {
+                        parallelForCancellable(count, nThreads, jobCancel, body);
+                    };
+                    auto map = std::make_shared<std::vector<float>>((std::size_t)width * height);
+                    CT::computeMap(image->data(), width, height, nComps, ctPlan, map->data(), jobParallel);
+                    if (jobCancel.check()) {
+                        return WholeFrameCache::Result();
+                    }
+
+                    return map;
+                };
             });
             if (!mapResult) {
                 return eStatusFailed;

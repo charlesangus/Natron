@@ -258,10 +258,8 @@ private:
     std::string _profilesKey;
     std::vector<NoiseProfiles::Profile> _profiles;
 
-    std::mutex _frameMutex;
-    bool _frameValid;
-    std::string _frameKey;
-    std::shared_ptr<const std::vector<float>> _frame;
+    // The wavelet denoise of the whole frame, which every window crops.
+    WholeFrameCache _waveletFrame;
 
     // Compute Variance's red, green and blue measurement of the whole frame.
     WholeFrameCache _varianceFrame;

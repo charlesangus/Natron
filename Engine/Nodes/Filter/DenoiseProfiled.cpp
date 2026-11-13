@@ -208,10 +208,7 @@ DenoiseProfiled::DenoiseProfiled(NodePtr node)
     , _profilesValid(false)
     , _profilesKey()
     , _profiles()
-    , _frameMutex()
-    , _frameValid(false)
-    , _frameKey()
-    , _frame()
+    , _waveletFrame(kDenoiseProfiledFrameWavelets)
     , _varianceFrame(kDenoiseProfiledFrameVariance)
     , _message()
 {
@@ -713,11 +710,7 @@ DenoiseProfiled::purgeCaches()
         _profilesValid = false;
         _profiles.clear();
     }
-    {
-        std::lock_guard<std::mutex> lock(_frameMutex);
-        _frameValid = false;
-        _frame.reset();
-    }
+    _waveletFrame.clear();
     _varianceFrame.clear();
 }
 
@@ -929,7 +922,7 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     RenderCancellation cancel(this);
     const ParallelFor parallel = RawNodeSupport::makeParallelFor(&cancel, nThreads);
-    const std::function<bool()> cancelled = [&cancel]() { return cancel.check(); };
+    const std::function<bool()> waitCancelled = wholeFrameWaitCancelled(*this, cancel);
 
     ImagePtr mask;
     if (plan.applyMask && (plan.maskChannel >= 0)) {
@@ -997,7 +990,7 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
         if (cancel.check()) {
             return eStatusFailed;
         }
-        const WholeFrameCache::Result measured = _varianceFrame.get(key, cancelled, [&]() -> WholeFrameCache::Result {
+        const WholeFrameCache::Result measured = _varianceFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
             measureJob.lock();
             const ProcessedPlanes measurePlanes(measureJob);
             const int bw = rodPixel.width();
@@ -1006,26 +999,29 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             std::vector<float> filled(planeSize * measurePlanes.count());
             fillBuffer(measureJob, measurePlanes, rodPixel, Boundary::Zero, nThreads, cancel, filled.data());
             if (cancel.check()) {
-                return WholeFrameCache::Result();
+                return WholeFrameCache::Job();
             }
-            std::vector<float> rgb(planeSize * 3);
+            auto rgb = std::make_shared<std::vector<float>>(planeSize * 3);
             parallel(bh, [&](int y) {
                 const std::size_t first = (std::size_t)y * bw;
                 for (std::size_t i = first; i < first + (std::size_t)bw; ++i) {
                     for (int c = 0; c < 3; ++c) {
-                        rgb[3 * i + c] = filled[(std::size_t)measurePlanes.planeOfChannel[c] * planeSize + i];
+                        (*rgb)[3 * i + c] = filled[(std::size_t)measurePlanes.planeOfChannel[c] * planeSize + i];
                     }
                 }
             });
             if (cancel.check()) {
-                return WholeFrameCache::Result();
-            }
-            const Vec3d v = measureVariance(rgb.data(), planeSize, s, cancelled);
-            if (cancel.check()) {
-                return WholeFrameCache::Result();
+                return WholeFrameCache::Job();
             }
 
-            return std::make_shared<const std::vector<float>>(std::vector<float> { (float)v[0], (float)v[1], (float)v[2] });
+            return [rgb, planeSize, s](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                const Vec3d v = measureVariance(rgb->data(), planeSize, s, jobCancelled);
+                if (jobCancelled()) {
+                    return WholeFrameCache::Result();
+                }
+
+                return std::make_shared<const std::vector<float>>(std::vector<float> { (float)v[0], (float)v[1], (float)v[2] });
+            };
         });
         if (!measured) {
             return eStatusFailed;
@@ -1078,11 +1074,11 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             if (cancel.check()) {
                 return eStatusOK;
             }
-            std::vector<float> rgb(planeSize * 3);
+            auto rgb = std::make_shared<std::vector<float>>(planeSize * 3);
             parallel(bh, [&](int y) {
                 for (int c = 0; c < 3; ++c) {
                     const float* plane = filled.data() + (std::size_t)fillPlanes.planeOfChannel[c] * planeSize + (std::size_t)y * bw;
-                    float* line = rgb.data() + (std::size_t)y * bw * 3;
+                    float* line = rgb->data() + (std::size_t)y * bw * 3;
                     for (int x = 0; x < bw; ++x) {
                         line[3 * x + c] = plane[x];
                     }
@@ -1102,24 +1098,30 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             if (isWavelets(s.mode)) {
                 const std::string key = std::to_string(RawNodeSupport::frameKey(getRenderHash(), args.time, args.view)) + '|' + std::to_string(renderScale) + '|' + layerIds[j]
                     + '|' + std::to_string(bufferRect.x1) + ',' + std::to_string(bufferRect.y1) + ',' + std::to_string(bw) + ',' + std::to_string(bh);
-                std::lock_guard<std::mutex> lock(_frameMutex);
-                if (!_frameValid || (_frameKey != key)) {
-                    RawNodeSupport::noteFrameComputed(kDenoiseProfiledFrameWavelets, RawNodeSupport::frameKey(getRenderHash(), args.time, args.view));
-                    _frame.reset();
-                    std::shared_ptr<std::vector<float>> computed = std::make_shared<std::vector<float>>(planeSize * 3);
-                    denoiseWavelets(rgb.data(), bw, bh, (r.fullSize > 0) ? r.fullSize : std::max(bw, bh), s, renderScale, computed->data(), parallel);
-                    _frame = std::move(computed);
-                    _frameKey = key;
-                    _frameValid = !cancel.check();
+                const int fullSize = (r.fullSize > 0) ? r.fullSize : std::max(bw, bh);
+                frame = _waveletFrame.get(key, waitCancelled, [&]() -> WholeFrameCache::Job {
+                    return [rgb, bw, bh, planeSize, fullSize, s, renderScale, nThreads](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                        RenderCancellation jobCancel(jobCancelled);
+                        const ParallelFor jobParallel = RawNodeSupport::makeParallelFor(&jobCancel, nThreads);
+                        auto computed = std::make_shared<std::vector<float>>(planeSize * 3);
+                        denoiseWavelets(rgb->data(), bw, bh, fullSize, s, renderScale, computed->data(), jobParallel);
+                        if (jobCancel.check()) {
+                            return WholeFrameCache::Result();
+                        }
+
+                        return computed;
+                    };
+                });
+                if (!frame) {
+                    return cancel.check() ? eStatusOK : eStatusFailed;
                 }
-                frame = _frame;
                 out = frame->data();
                 outStride = bw;
                 outX = wx;
                 outY = wy;
             } else {
                 denoised.resize((std::size_t)ww * wh * 3);
-                denoiseNlm(rgb.data(), bw, bh, wx, wy, ww, wh, s, renderScale, denoised.data(), parallel);
+                denoiseNlm(rgb->data(), bw, bh, wx, wy, ww, wh, s, renderScale, denoised.data(), parallel);
                 out = denoised.data();
             }
             if (cancel.check()) {
@@ -1319,7 +1321,7 @@ DenoiseProfiled::renderOpGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     // The wavelets run over the whole frame for every strip; there is no device frame cache to
-    // share them through, as the CPU path's _frame does.
+    // share them through, as the CPU path's _waveletFrame does.
     const gpu::GpuStatus status = isWavelets(s.mode) ? DenoiseProfiledGpu::recordWavelets(ctx, divided, bufferRect, r.fullSize, s, renderScale, filtered)
                                                      : DenoiseProfiledGpu::recordNlm(ctx, divided, bufferRect, window, s, renderScale, filtered);
     if (!status) {

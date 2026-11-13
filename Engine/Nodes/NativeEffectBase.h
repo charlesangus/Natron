@@ -82,6 +82,12 @@ class RenderCancellation {
 public:
     explicit RenderCancellation(const EffectInstance* effect);
 
+    /**
+     * @brief The cancellation of work that runs outside a render, such as a WholeFrameCache job:
+     * cancelled is asked in place of the effect, on the thread that built this.
+     **/
+    explicit RenderCancellation(std::function<bool()> cancelled);
+
     RenderCancellation(const RenderCancellation&) = delete;
     RenderCancellation& operator=(const RenderCancellation&) = delete;
 
@@ -93,6 +99,7 @@ public:
 
 private:
     const EffectInstance* _effect;
+    std::function<bool()> _asked;
     std::thread::id _owner;
     std::atomic<bool> _cancelled;
 };

@@ -28,15 +28,19 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <list>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -87,79 +91,137 @@ bool wholeFrameFitsGpu(const RectI& frame,
                        int floatsPerPixel,
                        std::uint64_t maxScratchBytes) WARN_UNUSED_RETURN;
 
+class RenderCancellation;
+
 /**
- * @brief The last few whole-frame results a node keeps between the windows of its frames.
- * Concurrent windows asking for the same key wait for the one computing it and then share its
- * result; callers with other keys compute alongside it.
+ * @brief The wait cancellation of a render calling WholeFrameCache::get() on this thread:
+ * cancel's answer, or the render being superseded, in which case it is aborted so that it leaves
+ * its thread to the newer request (EffectInstance::abortIfSuperseded()). Must be asked on the
+ * thread that built cancel.
+ **/
+std::function<bool()> wholeFrameWaitCancelled(const EffectInstance& effect,
+                                              RenderCancellation& cancel) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The last few whole-frame results a node keeps between the windows of its frames, and the
+ * jobs computing them. A job runs on a thread of the cache, not on the render that asked for it,
+ * so a render can stop waiting without stopping the job: concurrent and later callers asking for
+ * the same key join the running job and share its result; callers with other keys compute
+ * alongside it.
+ *
+ * A job is cancelled once no caller waits on it: right away when a caller then asks for another
+ * key, or after the cache's orphan grace otherwise, so that a render replaced by one asking for
+ * the same key (a viewer pan) does not lose the job between the two.
  **/
 class WholeFrameCache {
 public:
     using Result = std::shared_ptr<const std::vector<float>>;
 
+    using Cancelled = std::function<bool()>;
+
     /**
-     * @brief Computes the result over the whole frame. A null result (a cancelled render) is
-     * passed on and not kept.
+     * @brief Computes the result over the whole frame, on a thread of the cache. jobCancelled
+     * answers true once no caller wants the result any more, and the job should then return null
+     * soon. A null result is passed on and not kept. A job outlives the render that prepared it,
+     * so it holds everything it reads, by value.
      **/
-    using Compute = std::function<Result()>;
+    using Job = std::function<Result(const Cancelled& jobCancelled)>;
+
+    /**
+     * @brief Runs on the caller's thread, under its render, and gathers what the job reads, such
+     * as the source images, which only a render can fetch. Gives no job when it cannot (cancelled,
+     * no source).
+     **/
+    using Prepare = std::function<Job()>;
 
     /**
      * @brief Finished results kept by default. Two frames rendered in parallel (a Write, or a
      * viewer and a thumbnail) each keep theirs while the other publishes, and a third and fourth
      * cover deeper frame-parallel renders. An entry is the size of one plane of the frame at most
      * (ContrastTexture's map: one float a pixel, 33 MB at 3840x2160), and results still being
-     * computed are held by their callers, not counted.
+     * computed are held by their jobs, not counted.
      **/
     static constexpr std::size_t kDefaultCapacity = 4;
 
     /**
-     * @brief what names the result to RawNodeSupport::noteFrameComputed(), which every compute
-     * calls, so tests can count computes. capacity is the number of finished results kept, at
-     * least one.
+     * @brief How long a job with no caller waiting on it goes on by default, enough for a viewer
+     * request replacing another to reach the cache.
+     **/
+    static constexpr std::chrono::milliseconds kDefaultOrphanGrace = std::chrono::milliseconds(500);
+
+    /**
+     * @brief what names the result to RawNodeSupport::noteFrameComputed(), which every job calls
+     * when it returns, so tests can count computes. capacity is the number of finished results
+     * kept, at least one. orphanGrace is how long a job no caller waits on goes on.
      **/
     explicit WholeFrameCache(const char* what,
-                             std::size_t capacity = kDefaultCapacity);
+                             std::size_t capacity = kDefaultCapacity,
+                             std::chrono::milliseconds orphanGrace = kDefaultOrphanGrace);
 
     /**
-     * @brief The result kept under key, or the one compute returns, kept under key in place of
-     * the least recently used one when the cache is full. compute runs outside the cache's lock,
-     * once for any number of concurrent callers with the same key. When it returns null, the
-     * callers waiting on it compute again with their own compute, so one cancelled render does
-     * not cancel another; an exception from compute is passed on to its caller alone.
+     * @brief Cancels the running jobs and waits for them to return.
+     **/
+    ~WholeFrameCache();
+
+    WholeFrameCache(const WholeFrameCache&) = delete;
+    WholeFrameCache& operator=(const WholeFrameCache&) = delete;
+
+    /**
+     * @brief The result kept under key, or the one the job running for key returns, or else the
+     * one of the job prepare gives, started on a thread of the cache. A finished result is kept
+     * under key in place of the least recently used one when the cache is full. When a job the
+     * caller joined returns null, the caller prepares its own, so one cancelled job does not fail
+     * another render; an exception from a job is passed on to the callers waiting on it.
      *
-     * cancelled is the caller's render cancellation. It is asked before the caller takes the
-     * compute on, and every few milliseconds while it waits on another caller's compute, never
-     * under the cache's lock; once it answers true the caller returns null at once and leaves the
-     * compute to the caller running it. The caller running compute is not interrupted by it.
+     * cancelled is the caller's cancellation. It is asked before the caller prepares a job, and
+     * every few milliseconds while it waits, never under the cache's lock; once it answers true
+     * the caller returns null at once and the job goes on for the other callers waiting on it.
      **/
     Result get(const std::string& key,
-               const std::function<bool()>& cancelled,
-               const Compute& compute);
+               const Cancelled& cancelled,
+               const Prepare& prepare);
 
     /**
-     * @brief Forgets the results, as purgeCaches() and Clear Caches ask. A compute running across
-     * it still hands its result to the callers waiting on it but does not keep it.
+     * @brief The result kept under key, without waiting or computing; null when none is.
+     **/
+    Result kept(const std::string& key);
+
+    /**
+     * @brief Forgets the results, as purgeCaches() and Clear Caches ask, and cancels the jobs no
+     * caller waits on. A job running across it still hands its result to the callers waiting on
+     * it but does not keep it.
      **/
     void clear();
 
 private:
-    struct InFlight {
-        bool done = false;
-        Result result;
-    };
+    struct Flight;
+    struct Running;
 
+    Result keptResult(const std::string& key);
+    std::shared_ptr<Flight> runningFlight(const std::string& key) const;
+    void cancelOrphans(const std::string& except);
+    void leave(const std::shared_ptr<Flight>& flight);
+    bool orphanExpired(const std::shared_ptr<Flight>& flight);
+    std::shared_ptr<Flight> start(const std::string& key,
+                                  Job job);
     void finish(const std::string& key,
-                const std::shared_ptr<InFlight>& flight,
+                const std::shared_ptr<Flight>& flight,
                 const Result& result,
+                const std::exception_ptr& error,
                 std::uint64_t generation);
+    void reapFinished();
 
     const char* _what;
     const std::size_t _capacity;
+    const std::chrono::milliseconds _orphanGrace;
     std::mutex _mutex;
     std::condition_variable _finished;
     // Most recently used first.
     std::list<std::pair<std::string, Result>> _results;
-    std::map<std::string, std::shared_ptr<InFlight>> _computing;
+    std::map<std::string, std::shared_ptr<Flight>> _computing;
+    std::list<std::shared_ptr<Running>> _running;
     std::uint64_t _generation;
+    bool _closing;
 };
 
 NATRON_NAMESPACE_EXIT

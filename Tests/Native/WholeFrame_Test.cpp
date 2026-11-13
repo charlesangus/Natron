@@ -30,6 +30,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -79,6 +80,98 @@ resultOf(float value)
 const std::function<bool()> never = []() { return false; };
 // The cancellation of a render already aborted.
 const std::function<bool()> always = []() { return true; };
+
+// A prepare whose job is compute, which ignores the job's cancellation.
+template <typename Compute>
+WholeFrameCache::Prepare
+jobOf(Compute compute)
+{
+    return [compute]() -> WholeFrameCache::Job {
+        return [compute](const WholeFrameCache::Cancelled&) -> WholeFrameCache::Result {
+            return compute();
+        };
+    };
+}
+
+// The time from now until done answers true, polled every millisecond, or timeout.
+std::chrono::steady_clock::duration
+timeUntil(const std::function<bool()>& done,
+          std::chrono::milliseconds timeout = std::chrono::milliseconds(5000))
+{
+    const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    while (!done() && (std::chrono::steady_clock::now() - begin < timeout)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    return std::chrono::steady_clock::now() - begin;
+}
+
+// How soon a waiter whose render is cancelled returns: the cache asks every 10 ms.
+constexpr std::chrono::milliseconds kPromptReturn(20);
+
+/**
+ * @brief A job that runs until release() or until it is cancelled, and records which.
+ **/
+class HeldJob {
+public:
+    WholeFrameCache::Prepare prepare(float value)
+    {
+        return [this, value]() -> WholeFrameCache::Job {
+            ++_prepares;
+
+            return [this, value](const WholeFrameCache::Cancelled& jobCancelled) -> WholeFrameCache::Result {
+                ++_runs;
+                _running = true;
+                // Bounded, so a job never cancelled fails the expectations instead of hanging.
+                const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+                while (!_released && (std::chrono::steady_clock::now() - begin < std::chrono::seconds(10))) {
+                    if (jobCancelled()) {
+                        _cancelled = true;
+                        _running = false;
+
+                        return WholeFrameCache::Result();
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                _running = false;
+
+                return resultOf(value);
+            };
+        };
+    }
+
+    void release()
+    {
+        _released = true;
+    }
+
+    int prepares() const
+    {
+        return _prepares;
+    }
+
+    int runs() const
+    {
+        return _runs;
+    }
+
+    bool running() const
+    {
+        return _running;
+    }
+
+    bool cancelled() const
+    {
+        return _cancelled;
+    }
+
+private:
+    std::atomic<int> _prepares { 0 };
+    std::atomic<int> _runs { 0 };
+    std::atomic<bool> _running { false };
+    std::atomic<bool> _released { false };
+    std::atomic<bool> _cancelled { false };
+};
 
 TEST_F(WholeFrameTest, FiniteRegionPassesUnchanged)
 {
@@ -163,13 +256,13 @@ TEST_F(WholeFrameTest, ConcurrentWindowsComputeOnce)
                 std::unique_lock<std::mutex> lock(startMutex);
                 startCondition.wait(lock, [&]() { return started; });
             }
-            results[i] = cache.get("frame", never, [&]() {
-                ++computes;
-                // Long enough that every other thread arrives while this one computes.
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            results[i] = cache.get("frame", never, jobOf([&]() {
+                                       ++computes;
+                                       // Long enough that every other thread arrives while this one computes.
+                                       std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-                return resultOf(1.f);
-            });
+                                       return resultOf(1.f);
+                                   }));
         });
     }
     {
@@ -194,11 +287,11 @@ TEST_F(WholeFrameTest, KeyChangeRecomputes)
     WholeFrameCache cache("wholeFrameTest", 1);
     int computes = 0;
     auto compute = [&](float value) {
-        return [&computes, value]() {
+        return jobOf([&computes, value]() {
             ++computes;
 
             return resultOf(value);
-        };
+        });
     };
 
     WholeFrameCache::Result a = cache.get("a", never, compute(1.f));
@@ -218,11 +311,11 @@ TEST_F(WholeFrameTest, KeyChangeRecomputes)
     EXPECT_EQ(4, computes);
 
     // A cancelled compute is passed on and not kept.
-    EXPECT_FALSE(bool(cache.get("c", never, [&computes]() {
-        ++computes;
+    EXPECT_FALSE(bool(cache.get("c", never, jobOf([&computes]() {
+                                    ++computes;
 
-        return WholeFrameCache::Result();
-    })));
+                                    return WholeFrameCache::Result();
+                                }))));
     EXPECT_EQ(5, computes);
     cache.get("c", never, compute(3.f));
     EXPECT_EQ(6, computes);
@@ -233,11 +326,11 @@ TEST_F(WholeFrameTest, KeepsTheMostRecentlyUsedResults)
     WholeFrameCache cache("wholeFrameTest", 2);
     int computes = 0;
     auto compute = [&computes](float value) {
-        return [&computes, value]() {
+        return jobOf([&computes, value]() {
             ++computes;
 
             return resultOf(value);
-        };
+        });
     };
 
     const WholeFrameCache::Result a = cache.get("a", never, compute(1.f));
@@ -264,23 +357,23 @@ TEST_F(WholeFrameTest, OtherKeysComputeAlongside)
     bool bComputed = false;
 
     std::thread a([&]() {
-        cache.get("a", never, [&]() {
-            std::unique_lock<std::mutex> lock(mutex);
-            aComputing = true;
-            changed.notify_all();
-            // Bounded, so a cache that serialises keys fails the expectation below instead of hanging.
-            changed.wait_for(lock, std::chrono::seconds(10), [&]() { return bComputed; });
+        cache.get("a", never, jobOf([&]() {
+                      std::unique_lock<std::mutex> lock(mutex);
+                      aComputing = true;
+                      changed.notify_all();
+                      // Bounded, so a cache that serialises keys fails the expectation below instead of hanging.
+                      changed.wait_for(lock, std::chrono::seconds(10), [&]() { return bComputed; });
 
-            return resultOf(1.f);
-        });
+                      return resultOf(1.f);
+                  }));
     });
     {
         std::unique_lock<std::mutex> lock(mutex);
         changed.wait(lock, [&]() { return aComputing; });
     }
-    const WholeFrameCache::Result b = cache.get("b", never, [&]() {
-        return resultOf(2.f);
-    });
+    const WholeFrameCache::Result b = cache.get("b", never, jobOf([&]() {
+                                                    return resultOf(2.f);
+                                                }));
     {
         std::lock_guard<std::mutex> lock(mutex);
         bComputed = bool(b);
@@ -302,118 +395,218 @@ TEST_F(WholeFrameTest, CancelledComputeLetsWaitersRecompute)
     WholeFrameCache::Result cancelled = resultOf(0.f);
 
     std::thread first([&]() {
-        cancelled = cache.get("frame", never, [&]() {
-            ++computes;
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                started = true;
-            }
-            changed.notify_all();
-            // Long enough that the second caller is waiting on this compute when it is cancelled.
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        cancelled = cache.get("frame", never, jobOf([&]() {
+                                  ++computes;
+                                  {
+                                      std::lock_guard<std::mutex> lock(mutex);
+                                      started = true;
+                                  }
+                                  changed.notify_all();
+                                  // Long enough that the second caller is waiting on this compute when it is cancelled.
+                                  std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-            return WholeFrameCache::Result();
-        });
+                                  return WholeFrameCache::Result();
+                              }));
     });
     {
         std::unique_lock<std::mutex> lock(mutex);
         changed.wait(lock, [&]() { return started; });
     }
-    const WholeFrameCache::Result second = cache.get("frame", never, [&]() {
-        ++computes;
+    const WholeFrameCache::Result second = cache.get("frame", never, jobOf([&]() {
+                                                         ++computes;
 
-        return resultOf(2.f);
-    });
+                                                         return resultOf(2.f);
+                                                     }));
     first.join();
 
     EXPECT_FALSE(bool(cancelled));
     ASSERT_TRUE(bool(second));
     EXPECT_EQ(2.f, (*second)[0]);
     EXPECT_EQ(2, computes.load());
-    EXPECT_EQ(second.get(), cache.get("frame", never, [&]() {
-                                     ++computes;
+    EXPECT_EQ(second.get(), cache.get("frame", never, jobOf([&]() {
+                                          ++computes;
 
-                                     return resultOf(3.f);
-                                 })
+                                          return resultOf(3.f);
+                                      }))
                                 .get());
     EXPECT_EQ(2, computes.load());
 }
 
-TEST_F(WholeFrameTest, CancelledWaiterReturnsPromptly)
+TEST_F(WholeFrameTest, CancelledWaiterReturnsPromptlyWhileTheJobRuns)
 {
+    HeldJob held;
     WholeFrameCache cache("wholeFrameTest");
-    std::atomic<int> computes(0);
-    std::mutex mutex;
-    std::condition_variable changed;
-    bool started = false;
-    bool release = false;
 
-    std::thread first([&]() {
-        cache.get("frame", never, [&]() {
-            ++computes;
-            std::unique_lock<std::mutex> lock(mutex);
-            started = true;
-            changed.notify_all();
-            // Bounded, so a waiter that never returns fails the expectations below instead of hanging.
-            changed.wait_for(lock, std::chrono::seconds(10), [&]() { return release; });
-
-            return resultOf(1.f);
-        });
+    WholeFrameCache::Result first;
+    std::thread firstCaller([&]() {
+        first = cache.get("frame", never, held.prepare(1.f));
     });
-    {
-        std::unique_lock<std::mutex> lock(mutex);
-        changed.wait(lock, [&]() { return started; });
-    }
+    ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
 
-    // Aborted while it waits on the compute above.
+    // A render replaced by a newer request waits on the same job, then is cancelled.
     std::atomic<bool> aborted(false);
-    std::atomic<int> asked(0);
-    std::thread abort([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(30));
-        aborted = true;
+    std::atomic<bool> returned(false);
+    WholeFrameCache::Result waited = resultOf(0.f);
+    std::thread waiter([&]() {
+        waited = cache.get("frame", [&]() { return aborted.load(); }, held.prepare(2.f));
+        returned = true;
     });
-    const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-    const std::function<bool()> abortedSoon = [&]() {
-        ++asked;
-
-        return aborted.load();
-    };
-    const WholeFrameCache::Result waited = cache.get("frame", abortedSoon, [&]() {
-        ++computes;
-
-        return resultOf(2.f);
-    });
-    const std::chrono::steady_clock::duration took = std::chrono::steady_clock::now() - begin;
-    abort.join();
-
-    // Already aborted on entry: returns before looking at the cache.
-    const WholeFrameCache::Result late = cache.get("frame", always, [&]() {
-        ++computes;
-
-        return resultOf(3.f);
-    });
-
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        release = true;
-    }
-    changed.notify_all();
-    first.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    EXPECT_FALSE(returned.load());
+    aborted = true;
+    const std::chrono::steady_clock::duration lag = timeUntil([&]() { return returned.load(); });
+    waiter.join();
 
     EXPECT_FALSE(bool(waited));
-    EXPECT_FALSE(bool(late));
-    EXPECT_GT(asked.load(), 1);
-    EXPECT_LT(took, std::chrono::seconds(2));
-    EXPECT_EQ(1, computes.load());
-    // The computing caller was not interrupted and its result is kept.
-    const WholeFrameCache::Result kept = cache.get("frame", never, [&]() {
-        ++computes;
+    EXPECT_LT(lag, kPromptReturn) << std::chrono::duration_cast<std::chrono::microseconds>(lag).count() << " us";
+    // The other caller still waits on the job, which goes on.
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    EXPECT_TRUE(held.running());
+    EXPECT_FALSE(held.cancelled());
 
-        return resultOf(4.f);
+    // Already aborted on entry: returns before looking at the cache.
+    EXPECT_FALSE(bool(cache.get("frame", always, held.prepare(3.f))));
+
+    held.release();
+    firstCaller.join();
+    ASSERT_TRUE(bool(first));
+    EXPECT_EQ(1.f, (*first)[0]);
+    EXPECT_EQ(1, held.prepares());
+    EXPECT_EQ(1, held.runs());
+    const WholeFrameCache::Result kept = cache.get("frame", never, held.prepare(4.f));
+    EXPECT_EQ(first.get(), kept.get());
+    EXPECT_EQ(1, held.prepares());
+}
+
+TEST_F(WholeFrameTest, SecondWaiterReusesTheRunningJob)
+{
+    HeldJob held;
+    std::atomic<int> hooked(0);
+    WholeFrameCache cache("wholeFrameTest");
+    RawNodeSupport::setFrameComputedHookForTests([&](const char* what, U64 /*key*/) {
+        if (std::string(what) == "wholeFrameTest") {
+            ++hooked;
+        }
     });
-    ASSERT_TRUE(bool(kept));
-    EXPECT_EQ(1.f, (*kept)[0]);
-    EXPECT_EQ(1, computes.load());
+
+    WholeFrameCache::Result first;
+    std::thread firstCaller([&]() {
+        first = cache.get("frame", never, held.prepare(1.f));
+    });
+    ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+    WholeFrameCache::Result second;
+    std::thread secondCaller([&]() {
+        second = cache.get("frame", never, held.prepare(2.f));
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    held.release();
+    firstCaller.join();
+    secondCaller.join();
+    RawNodeSupport::setFrameComputedHookForTests(std::function<void(const char*, U64)>());
+
+    ASSERT_TRUE(bool(first));
+    EXPECT_EQ(first.get(), second.get());
+    EXPECT_EQ(1, held.prepares());
+    EXPECT_EQ(1, held.runs());
+    EXPECT_EQ(1, hooked.load());
+}
+
+// A viewer pan replaces the render waiting on the job with one asking for the same key.
+TEST_F(WholeFrameTest, ReplacingRenderReusesTheOrphanedJob)
+{
+    HeldJob held;
+    WholeFrameCache cache("wholeFrameTest");
+
+    std::atomic<bool> aborted(false);
+    std::thread replaced([&]() {
+        EXPECT_FALSE(bool(cache.get("frame", [&]() { return aborted.load(); }, held.prepare(1.f))));
+    });
+    ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+    aborted = true;
+    replaced.join();
+
+    WholeFrameCache::Result result;
+    std::thread replacing([&]() {
+        result = cache.get("frame", never, held.prepare(2.f));
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    held.release();
+    replacing.join();
+
+    ASSERT_TRUE(bool(result));
+    EXPECT_EQ(1.f, (*result)[0]);
+    EXPECT_FALSE(held.cancelled());
+    EXPECT_EQ(1, held.prepares());
+    EXPECT_EQ(1, held.runs());
+}
+
+TEST_F(WholeFrameTest, LastWaiterLeavingCancelsTheJob)
+{
+    {
+        HeldJob held;
+        WholeFrameCache cache("wholeFrameTest", WholeFrameCache::kDefaultCapacity, std::chrono::milliseconds(0));
+        std::atomic<bool> aborted(false);
+        std::atomic<bool> stayed(false);
+        // Two waiters: the job goes on while one of them is left.
+        std::thread first([&]() {
+            EXPECT_FALSE(bool(cache.get("frame", [&]() { return aborted.load(); }, held.prepare(1.f))));
+        });
+        ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+        std::thread second([&]() {
+            EXPECT_FALSE(bool(cache.get("frame", [&]() { return stayed.load(); }, held.prepare(2.f))));
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        aborted = true;
+        first.join();
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        EXPECT_FALSE(held.cancelled());
+        EXPECT_TRUE(held.running());
+
+        stayed = true;
+        second.join();
+        EXPECT_LT(timeUntil([&]() { return held.cancelled(); }), std::chrono::seconds(1));
+        EXPECT_EQ(1, held.runs());
+    }
+    {
+        // An edit asks for another key: the old key's job, which no one waits on, stops at once.
+        HeldJob held;
+        WholeFrameCache cache("wholeFrameTest", WholeFrameCache::kDefaultCapacity, std::chrono::seconds(60));
+        std::atomic<bool> aborted(false);
+        std::thread old([&]() {
+            EXPECT_FALSE(bool(cache.get("old", [&]() { return aborted.load(); }, held.prepare(1.f))));
+        });
+        ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+        aborted = true;
+        old.join();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        EXPECT_FALSE(held.cancelled());
+
+        const WholeFrameCache::Result edited = cache.get("new", never, jobOf([]() { return resultOf(2.f); }));
+        ASSERT_TRUE(bool(edited));
+        EXPECT_LT(timeUntil([&]() { return held.cancelled(); }), std::chrono::seconds(1));
+        EXPECT_EQ(1, held.runs());
+    }
+}
+
+TEST_F(WholeFrameTest, DestroyingTheCacheStopsItsJobs)
+{
+    HeldJob held;
+    std::unique_ptr<WholeFrameCache> cache = std::make_unique<WholeFrameCache>("wholeFrameTest", WholeFrameCache::kDefaultCapacity, std::chrono::seconds(60));
+    std::atomic<bool> aborted(false);
+    std::thread caller([&]() {
+        EXPECT_FALSE(bool(cache->get("frame", [&]() { return aborted.load(); }, held.prepare(1.f))));
+    });
+    ASSERT_LT(timeUntil([&]() { return held.running(); }), std::chrono::seconds(5));
+    aborted = true;
+    caller.join();
+
+    const std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    cache.reset();
+    const std::chrono::steady_clock::duration took = std::chrono::steady_clock::now() - begin;
+
+    EXPECT_TRUE(held.cancelled());
+    EXPECT_FALSE(held.running());
+    EXPECT_LT(took, std::chrono::seconds(1));
 }
 
 TEST_F(WholeFrameTest, GpuFitBoundaries)

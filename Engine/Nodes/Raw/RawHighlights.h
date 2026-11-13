@@ -44,6 +44,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Image/WholeFrame.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 
 #define PLUGINID_NATRON_RAWHIGHLIGHTS "RawHighlights"
@@ -254,22 +255,16 @@ private:
     KnobChoiceWPtr _maskView;
     RawNodeSupport::OwnedMessage _message;
 
-    // The chrominance of Inpaint Opposed, for the source and settings its key names.
-    std::mutex _chromaMutex;
-    bool _chromaValid;
-    U64 _chromaKey;
-    std::array<float, 3> _chroma;
-
-    // The Reconstruct Color or Segmentation Based mosaic of the whole source, or the downsampled
-    // Guided Laplacians reconstruction, for the source and settings its key names.
-    std::mutex _frameMutex;
-    bool _frameValid;
-    U64 _frameKey;
-    std::shared_ptr<const std::vector<float>> _frame;
-    // The photosite mask of a segmentation mask view, guarded by _frameMutex.
-    U64 _maskFrameKey;
-    int _maskFrameView;
-    std::shared_ptr<const std::vector<float>> _maskFrame;
+    // The chrominance of Inpaint Opposed, three floats.
+    WholeFrameCache _chromaFrame;
+    // The Reconstruct Color mosaic of the whole source.
+    WholeFrameCache _inpaintFrame;
+    // The Segmentation Based mosaic of the whole source.
+    WholeFrameCache _segmentsFrame;
+    // The Segmentation Based mosaic of a mask view, followed by its photosite mask.
+    WholeFrameCache _segmentsMaskFrame;
+    // The downsampled Guided Laplacians reconstruction.
+    WholeFrameCache _laplacianFrame;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -1882,6 +1882,13 @@ public:
        in the engine function.*/
     bool aborted() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief When the render running on this thread can be aborted and a newer request has
+     * replaced it (AbortableRenderInfo::isSuperseded()), aborts it and returns true. For a wait
+     * the render would spend on a result that the newer request asks for itself: the render
+     * then leaves its thread to that request instead of finishing for feedback.
+     **/
+    bool abortIfSuperseded() const WARN_UNUSED_RETURN;
 
     /** @brief Returns the image computed by the input 'inputNb' at the given time and scale for the given view.
      * @param dontUpscale If the image is retrieved is downscaled but the plug-in doesn't support the user of

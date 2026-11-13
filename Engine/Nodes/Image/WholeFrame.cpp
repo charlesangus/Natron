@@ -36,6 +36,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
 #include "Engine/RectD.h"
 
@@ -88,7 +89,7 @@ wholeFramePixels(const EffectInstance& effect,
 }
 
 namespace {
-// How often a caller waiting on another's compute asks whether its own render was aborted.
+// How often a caller waiting on a job asks whether its own render was cancelled.
 constexpr std::chrono::milliseconds kCancelPoll(10);
 
 void
@@ -140,103 +141,306 @@ wholeFrameFitsGpu(const RectI& frame,
     return (floats <= UINT32_MAX) && (floats <= maxScratchBytes / sizeof(float));
 }
 
+std::function<bool()>
+wholeFrameWaitCancelled(const EffectInstance& effect,
+                        RenderCancellation& cancel)
+{
+    return [&effect, &cancel]() {
+        return cancel.check() || effect.abortIfSuperseded();
+    };
+}
+
+struct WholeFrameCache::Flight {
+    // Set under the cache's lock; read by the job without it.
+    std::atomic<bool> cancelled { false };
+    std::atomic<int> waiters { 0 };
+    std::atomic<std::int64_t> orphanedAt { 0 };
+    // Guarded by the cache's lock.
+    bool done = false;
+    Result result;
+    std::exception_ptr error;
+};
+
+struct WholeFrameCache::Running {
+    std::shared_ptr<Flight> flight;
+    std::thread thread;
+};
+
+namespace {
+std::int64_t
+steadyNow()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+} // anonymous namespace
+
 WholeFrameCache::WholeFrameCache(const char* what,
-                                 std::size_t capacity)
+                                 std::size_t capacity,
+                                 std::chrono::milliseconds orphanGrace)
     : _what(what)
     , _capacity(std::max<std::size_t>(capacity, 1))
+    , _orphanGrace(std::max(orphanGrace, std::chrono::milliseconds(0)))
     , _mutex()
     , _finished()
     , _results()
     , _computing()
+    , _running()
     , _generation(0)
+    , _closing(false)
 {
+}
+
+WholeFrameCache::~WholeFrameCache()
+{
+    std::list<std::shared_ptr<Running>> running;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _closing = true;
+        for (const std::shared_ptr<Running>& job : _running) {
+            job->flight->cancelled = true;
+        }
+        running.swap(_running);
+    }
+    for (const std::shared_ptr<Running>& job : running) {
+        if (job->thread.joinable()) {
+            job->thread.join();
+        }
+    }
+}
+
+WholeFrameCache::Result
+WholeFrameCache::keptResult(const std::string& key)
+{
+    for (std::list<std::pair<std::string, Result>>::iterator it = _results.begin(); it != _results.end(); ++it) {
+        if (it->first == key) {
+            _results.splice(_results.begin(), _results, it);
+
+            return _results.front().second;
+        }
+    }
+
+    return Result();
+}
+
+std::shared_ptr<WholeFrameCache::Flight>
+WholeFrameCache::runningFlight(const std::string& key) const
+{
+    const std::map<std::string, std::shared_ptr<Flight>>::const_iterator it = _computing.find(key);
+
+    if ((it == _computing.end()) || it->second->done || it->second->cancelled) {
+        return std::shared_ptr<Flight>();
+    }
+
+    return it->second;
+}
+
+void
+WholeFrameCache::cancelOrphans(const std::string& except)
+{
+    for (std::map<std::string, std::shared_ptr<Flight>>::const_iterator it = _computing.begin(); it != _computing.end(); ++it) {
+        if ((it->first != except) && (it->second->waiters == 0)) {
+            it->second->cancelled = true;
+        }
+    }
+}
+
+void
+WholeFrameCache::leave(const std::shared_ptr<Flight>& flight)
+{
+    flight->orphanedAt = steadyNow();
+    if ((--flight->waiters == 0) && !flight->done && (_orphanGrace.count() == 0)) {
+        flight->cancelled = true;
+    }
+}
+
+bool
+WholeFrameCache::orphanExpired(const std::shared_ptr<Flight>& flight)
+{
+    if (flight->cancelled) {
+        return true;
+    }
+    if (flight->waiters > 0) {
+        return false;
+    }
+    const std::int64_t grace = std::chrono::duration_cast<std::chrono::nanoseconds>(_orphanGrace).count();
+    if (steadyNow() - flight->orphanedAt.load() < grace) {
+        return false;
+    }
+    // A caller joining takes the lock to count itself, so the job is cancelled only if none did.
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (flight->waiters == 0) {
+        flight->cancelled = true;
+    }
+
+    return flight->cancelled;
+}
+
+std::shared_ptr<WholeFrameCache::Flight>
+WholeFrameCache::start(const std::string& key,
+                       Job job)
+{
+    const std::shared_ptr<Flight> flight = std::make_shared<Flight>();
+    flight->orphanedAt = steadyNow();
+    _computing[key] = flight;
+    const std::shared_ptr<Running> running = std::make_shared<Running>();
+    running->flight = flight;
+    const std::uint64_t generation = _generation;
+    running->thread = std::thread([this, key, flight, generation, job = std::move(job)]() {
+        const Cancelled jobCancelled = [this, &flight]() { return orphanExpired(flight); };
+        Result result;
+        std::exception_ptr error;
+        try {
+            result = job(jobCancelled);
+        } catch (...) {
+            error = std::current_exception();
+        }
+        if (!error) {
+            RawNodeSupport::noteFrameComputed(_what, (U64)std::hash<std::string>()(key));
+        }
+        finish(key, flight, result, error, generation);
+    });
+    _running.push_back(running);
+
+    return flight;
+}
+
+void
+WholeFrameCache::reapFinished()
+{
+    std::list<std::shared_ptr<Running>> finished;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        for (std::list<std::shared_ptr<Running>>::iterator it = _running.begin(); it != _running.end();) {
+            if ((*it)->flight->done) {
+                finished.push_back(*it);
+                it = _running.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    // A finished job's thread is past its last use of the cache's lock, so these joins are short.
+    for (const std::shared_ptr<Running>& job : finished) {
+        if (job->thread.joinable()) {
+            job->thread.join();
+        }
+    }
 }
 
 WholeFrameCache::Result
 WholeFrameCache::get(const std::string& key,
-                     const std::function<bool()>& cancelled,
-                     const Compute& compute)
+                     const Cancelled& cancelled,
+                     const Prepare& prepare)
 {
     const auto isCancelled = [&cancelled]() { return cancelled && cancelled(); };
 
     if (isCancelled()) {
         return Result();
     }
+    reapFinished();
+
+    bool prepared = false;
     std::unique_lock<std::mutex> lock(_mutex);
-
     for (;;) {
-        for (std::list<std::pair<std::string, Result>>::iterator it = _results.begin(); it != _results.end(); ++it) {
-            if (it->first == key) {
-                _results.splice(_results.begin(), _results, it);
-
-                return _results.front().second;
-            }
+        if (const Result kept = keptResult(key)) {
+            return kept;
         }
-        const std::map<std::string, std::shared_ptr<InFlight>>::const_iterator computing = _computing.find(key);
-        if (computing == _computing.end()) {
-            break;
-        }
-        const std::shared_ptr<InFlight> flight = computing->second;
-        while (!_finished.wait_for(lock, kCancelPoll, [&flight]() { return flight->done; })) {
-            // cancelled may take locks of its own, so it is not asked under the cache's.
-            lock.unlock();
-            const bool stop = isCancelled();
-            lock.lock();
-            if (stop) {
+        std::shared_ptr<Flight> flight = runningFlight(key);
+        if (!flight) {
+            if (prepared || _closing) {
                 return Result();
             }
+            lock.unlock();
+            // prepare may render inputs and take locks of its own.
+            Job job = prepare ? prepare() : Job();
+            prepared = true;
+            lock.lock();
+            if (!job) {
+                return Result();
+            }
+            if (const Result kept = keptResult(key)) {
+                return kept;
+            }
+            flight = runningFlight(key);
+            if (!flight) {
+                if (_closing) {
+                    return Result();
+                }
+                cancelOrphans(key);
+                flight = start(key, std::move(job));
+            }
+        }
+        ++flight->waiters;
+        bool stop = false;
+        while (!flight->done) {
+            if (_finished.wait_for(lock, kCancelPoll, [&flight]() { return flight->done; })) {
+                break;
+            }
+            // cancelled may take locks of its own, so it is not asked under the cache's.
+            lock.unlock();
+            stop = isCancelled();
+            lock.lock();
+            if (stop) {
+                break;
+            }
+        }
+        leave(flight);
+        if (stop) {
+            return Result();
+        }
+        if (flight->error) {
+            std::rethrow_exception(flight->error);
         }
         if (flight->result) {
             return flight->result;
         }
+        if (prepared) {
+            return Result();
+        }
         lock.unlock();
-        const bool stop = isCancelled();
+        stop = isCancelled();
         lock.lock();
         if (stop) {
             return Result();
         }
     }
-    const std::shared_ptr<InFlight> flight = std::make_shared<InFlight>();
-    _computing[key] = flight;
-    const std::uint64_t generation = _generation;
-    lock.unlock();
-
-    Result result;
-    try {
-        result = compute();
-    } catch (...) {
-        finish(key, flight, Result(), generation);
-        throw;
-    }
-    RawNodeSupport::noteFrameComputed(_what, (U64)std::hash<std::string>()(key));
-    finish(key, flight, result, generation);
-
-    return result;
 }
 
 void
 WholeFrameCache::finish(const std::string& key,
-                        const std::shared_ptr<InFlight>& flight,
+                        const std::shared_ptr<Flight>& flight,
                         const Result& result,
+                        const std::exception_ptr& error,
                         std::uint64_t generation)
 {
     {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        if (result && (generation == _generation)) {
+        if (result && !error && (generation == _generation)) {
             _results.emplace_front(key, result);
             while (_results.size() > _capacity) {
                 _results.pop_back();
             }
         }
         flight->result = result;
+        flight->error = error;
         flight->done = true;
-        const std::map<std::string, std::shared_ptr<InFlight>>::iterator it = _computing.find(key);
+        const std::map<std::string, std::shared_ptr<Flight>>::iterator it = _computing.find(key);
         if ((it != _computing.end()) && (it->second == flight)) {
             _computing.erase(it);
         }
     }
     _finished.notify_all();
+}
+
+WholeFrameCache::Result
+WholeFrameCache::kept(const std::string& key)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return keptResult(key);
 }
 
 void
@@ -246,6 +450,7 @@ WholeFrameCache::clear()
 
     _results.clear();
     ++_generation;
+    cancelOrphans(std::string());
 }
 
 NATRON_NAMESPACE_EXIT

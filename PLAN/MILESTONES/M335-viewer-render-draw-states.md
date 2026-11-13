@@ -19,7 +19,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
 - Draw changes made while a delegate is active reach the worker and the box overlay; a Storm engine made later starts from the current rules.
 - The worker applies changes all at once, never as a paced reveal (each reveal step would restart the delegate). A burst of changes causes one restart (20 ms quiet, 100 ms cap).
 - Turning Render Everything off restores the rules without rebuilding the engine and unloads nothing ("closing a row never unloads").
-- Lights follow M329 - Viewer Draw States: only Hidden rows remove them.
+- Lights follow M329 - Viewer Draw States: only Hidden rows remove them. When Hidden rows remove every scene light, delegate viewer renders fall back to a headlight, as Storm does (user).
 
 **Assumptions:**
 - Render Everything matches USDRender because the viewer's evaluation load set follows its stage's load rules (`Engine/SceneLoadSet.h` `SceneEvaluationContext`).
@@ -27,7 +27,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
 
 ## Phase 335.1: Filter on delegate engines
 
-- [ ] M335.P1.T1 — Move the filter into Engine and make it opt-in
+- [x] M335.P1.T1 — Move the filter into Engine and make it opt-in
   - files: `Gui/SceneDrawFilter.{h,cpp}` → `Engine/Nodes/Scene/SceneDrawFilter.{h,cpp}`, `Gui/CMakeLists.txt` (~:25), Engine CMake, `Gui/SceneViewport.cpp` (~:1561-1600), `Engine/Nodes/Scene/HydraRenderImpl.cpp` (`newEngine` ~:282, `RenderThread::renderEngine` ~:1134)
   - approach: the filter is registered for every renderer today (`SceneDrawFilter.cpp` ~:256-270) but nobody seeds it on delegate engines. `appendFilter` (~:67) returns its input unless an RAII `SceneDrawFilter::EngineScope` is active; the scope records the instance id itself so it works on whichever thread builds the engine (Cycles builds inside `tbb::task_arena::execute`, `CyclesAovs.cpp` ~:668, so the per-thread `takeAppendedInstanceId` is unreliable there). `newEngine` takes a `wantFilter` flag; offline engines pass false.
   - verify: `Tests/SceneDrawFilter_Test.cpp` gains: a scoped Cycles engine has a filter `find()` locates, an unscoped one has none; existing cases pass.
@@ -55,6 +55,12 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
 
 ## Phase 335.3: Viewer wiring
 
+- [ ] M335.P3.T4 — Headlight when every light is hidden
+  - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp` (worker draw-rule application from P2.T1), `Engine/Nodes/Scene/SceneDrawFilter.{h,cpp}`, `Tests/Scene/ProgressiveRender_Test.cpp`
+  - approach: when the applied rules leave no scene light, add the same camera-attached headlight Storm's viewer uses (find how `SceneViewport` provides it) to the delegate's scene; remove it when any light returns or Render Everything is on. Offline engines never get it.
+  - verify: Cycles progressive render with every light row Hidden is not black and brightness follows camera direction; unhiding one light removes the headlight; USDRender output unchanged.
+  - size: M
+
 - [ ] M335.P3.T1 — Draw changes reach the worker and the overlay while a delegate is active
   - files: `Gui/SceneViewport.cpp` (`applyPendingDrawDeltas` ~:3096, `serviceDrawFilter` ~:1753, `switchRenderer` ~:1110-1125, `renderProgressive` ~:4661)
   - approach: today `applyPendingDrawDeltas` does nothing without a Storm engine and choosing a delegate drops that engine, so `drawRules` and `boxes->setRules` go stale under Cycles. Without a Storm engine, still fold queued deltas into `drawRules`, `boxes->setRules` and `progressive->applyDrawDeltas`. On a delegate switch call `setDrawRules(drawRules)`. The delegate paint path services the queue too.
@@ -78,3 +84,5 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
 ## Decisions
 
 - 2026-11-13 — Elaborated after the claim (consultant). No `Deps` on M364 - Delegate Cancel Responsiveness: the filter is applied on the worker thread between renders, which holds whether the worker renders the shared stage or its own. But M364's worker builds its `SceneStage` with the default `LoadAll`; whichever of F4 and F9 merges second must make the worker snapshot carry the viewer stage's `UsdStageLoadRules`, or delegate renders open every payload.
+- 2026-11-13 — P1.T1 implemented (037de0a43). Both `newEngine` call sites pass `wantFilter=false` for now; P2.T1 flips the viewer worker to true. The scope is process-wide (a static mutex), so scoped engine builds serialise.
+- 2026-11-13 — Delegate viewer renders fall back to a headlight when Hidden rows remove every scene light, as Storm does (user); P3.T4 added. Turning Render Everything off unloads nothing (PM, per "closing a row never unloads").

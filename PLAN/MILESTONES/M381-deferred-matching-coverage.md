@@ -22,11 +22,11 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 **Assumptions:**
 - Every converted borrower adds its reach, or a load won't re-evaluate it (`ViewerInstance.cpp` ~:3655).
 - Parity means "the same once opened with L".
-- Load-set owner rule (pending user confirmation, see `## Decisions`): a borrower uses the load set of the evaluation it serves; outside an evaluation, the viewer that asked or that shows the node; known-path readers load only the payloads on those paths.
+- Load-set owner rule (user): a borrower uses the load set of the evaluation it serves; outside an evaluation, the viewer that asked or that shows the node; known-path readers load only the payloads on those paths.
 
 ## Phase 381.1: Probe and closure
 
-- [ ] M381.P1.T1 — Heavy-scene probe and parity helper
+- [x] M381.P1.T1 — Heavy-scene probe and parity helper
   - files: `Tests/Scene/SceneTestAuthoring.cpp`, new `Tests/Scene/SceneLoadSetCoverage_Test.cpp` (CarCity moved out of `Tests/Scene/ScenePatternContext_Test.cpp` ~:67), test CMake
   - approach: `openedBuildings()` counts the building files `SdfLayer::Find` returns. `expectParity(node, L)` evaluates once in a viewer context with L and once in the default context, opens both with `SceneOps::getLoadRules(L)`, and compares composed prims and properties.
   - verify: the probe reads 0 after `borrow(p, none)` and all buildings after `borrow(p)`; parity passes on USDPrune.
@@ -139,3 +139,5 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 ## Decisions
 
 - 2026-11-13 — Elaborated after the claim (consultant). The stub's list was confirmed and extended: USDEditPrim Create mode, USDReference, `SceneReparentNode::renderWrap`, `graftMaterial`, and four main-thread knob-menu refreshes that evaluate fully loaded. `SceneGraftMemo` and USDEditTransform's last result hold one state each, so they become per-context.
+- 2026-11-13 — Load-set owner (user): a borrower uses the load set of the evaluation it serves (viewer, a Scene Graph panel's own, or everything for renders, USDWrite and scripts). Outside an evaluation it uses the viewer that asked or that shows the node: the most recently active viewer whose scene input reaches the node, else no load set plus the "N unloaded branches not searched" note. Known-path readers load only the payloads on those paths. Rejected: a showing panel supplies the set (zero or several panels, results depend on which is open); everything for menus and buttons (main-thread stalls).
+- 2026-11-13 — P1.T1 implemented (578518139). `expectParity` composes fully loaded, so `openedBuildings()` is meaningless after a parity check in the same test.

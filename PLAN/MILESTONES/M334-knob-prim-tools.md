@@ -58,8 +58,17 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
   - verify: GUI script — `//{kind:component}` lists only components and highlights in the viewer; Apply To Node writes that text; the panel reports unsearched unloaded branches; the main thread stays within the stall budget on the flat file.
   - size: L
 
+## Phase 334.3: Select Matches on loaded prims
+
+- [ ] M334.P3.T1 — Select Matches searches loaded prims and offers to load the rest
+  - files: `Gui/SceneSelectionActions.{h,cpp}`, `Gui/KnobGuiString.cpp`, `Tests/gui/scene_knob_tools.py`
+  - approach: replace the private everything search with matching on the viewer's loaded stage through `matchPattern` with the viewer's evaluation context, reporting "N unloaded branches not searched". The report offers to load those payloads in the viewer (through the viewer's normal payload load request, which the user can undo by unloading), after which the search re-runs and selects inside them. Never loads anything without that action.
+  - verify: GUI script — on a payload scene with nothing loaded, Select Matches selects only loaded matches and reports the unsearched count with no payload loaded; taking the load action loads the matching payloads and selects the matches inside them.
+  - size: M
+
 **Verification gate:** release gate green; GUI scripts pass under Xvfb; on one USDPrune, drag, each menu action, popup, armed pick and Apply To Node all round-trip through Undo; screenshots of the menu, popup and armed state shared before sign-off; accepted from the UAT AppImage.
 
 ## Decisions
 
 - 2026-11-13 — P1.T1 implemented (d2f484280), unbuilt until the phase build. Select Matches uses `SceneOps::UnloadedSearch` on input 0, which loads payloads privately, so it searches everything and has no "unsearched" branches to report; matches under payloads the viewer hasn't loaded are selected in the viewer but have no panel rows.
+- 2026-11-13 — Select Matches searches only what the viewer has loaded, reports unsearched unloaded branches, and lets the user load those payloads from there to select inside them (user); P3.T1 replaces the P1.T1 private everything search.

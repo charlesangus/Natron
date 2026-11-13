@@ -95,3 +95,4 @@ GPU for downstream GPU nodes and the viewer.
     - #15: `USDRender_Test.cpp:1292/1298` and `NatronUtility_Test.cpp:853/859` still call the removed hook; move them to the `swapGpuContextForTests` pattern.
   - Not started: #10, the strict interop requirement in `natron_utility_viewer.py`, which must not turn lavapipe CI red.
   - Then: un-WIP the commit message, syntax-check, gate, re-review.
+- 2026-11-13 — PR #270 review fixes finished (b3380b12b): finding #2 exposed Free GPU Memory emptying the pool before the Utility engine returned its buffers, now fixed; #10's viewer check requires the GL hand-off only where one can be built. Gating with `natron_utility_viewer.py`.

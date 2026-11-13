@@ -2342,6 +2342,9 @@ namespace {
 
     std::atomic<int> gProgressiveLive(0);
 
+    std::mutex gBeforeSyncHookMutex;
+    std::function<void()> gBeforeSyncHook;
+
     int
     intOf(const VtValue& value,
           int fallback)
@@ -2455,9 +2458,10 @@ struct ProgressiveRender::Implementation {
     typedef std::chrono::steady_clock Clock;
 
     std::mutex* const stageLock;
-    const std::function<UsdStageRefPtr()> stageOf;
+    const std::function<bool(SceneStageSnapshot*)> snapshotOf;
     const std::function<void()> listener;
     const float background;
+    SceneWriteBarrier::ParticipantId participant = 0;
 
     // Guards the requests, the status and the frame; never held while taking stageLock.
     mutable std::mutex mutex;
@@ -2482,8 +2486,11 @@ struct ProgressiveRender::Implementation {
     std::shared_ptr<const Frame> frame;
     int defaultMaxSamples = 0;
 
-    // The worker's; engineMutex guards the engine against pick().
+    // The worker's; engineMutex guards them against pick() and barrier writes. The stage is made
+    // on the first pass and kept until the worker ends, as an engine binds the first stage it
+    // renders for good; declared ahead of the engine, which is subscribed to its notices.
     std::mutex engineMutex;
+    std::unique_ptr<SceneStage> workerStage;
     EnginePtr engine;
     std::string engineRenderer;
     // The settings the engine was made under, and the AOV its depth is read from.
@@ -2512,11 +2519,11 @@ struct ProgressiveRender::Implementation {
     std::thread worker;
 
     Implementation(std::mutex* stageLock_,
-                   const std::function<UsdStageRefPtr()>& stage_,
+                   const std::function<bool(SceneStageSnapshot*)>& snapshot_,
                    const std::function<void()>& listener_,
                    float background_)
         : stageLock(stageLock_)
-        , stageOf(stage_)
+        , snapshotOf(snapshot_)
         , listener(listener_)
         , background(background_)
     {
@@ -2537,10 +2544,11 @@ struct ProgressiveRender::Implementation {
 
     // Must not throw: it ends the worker. The engine's stage scene index stays subscribed to the
     // stage's notices until it is gone, its destructor does not revoke them and delivery holds no
-    // reference to it, so it may only die while no edit of the stage can be under way.
+    // reference to it, so it may only die while no edit of the stage can be under way: the
+    // worker's stage is edited by the worker under engineMutex, and its shared file layers only
+    // by a barrier write, which holds engineMutex through the worker's quiesce.
     void dropEngine()
     {
-        std::lock_guard<std::mutex> stageGuard(*stageLock);
         std::lock_guard<std::mutex> l(engineMutex);
         if (engine && paused) {
             try {
@@ -2801,6 +2809,8 @@ ProgressiveRender::Implementation::run()
     }
     lock.unlock();
     dropEngine();
+    std::lock_guard<std::mutex> l(engineMutex);
+    workerStage.reset();
 }
 
 // Returns with lock held. Its record of the render's progress dies with a failure, as the engine does.
@@ -2833,7 +2843,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     while (!quit) {
         workingRenderer = renderer;
         workingEdits = sceneEdits;
-        const bool idle = renderer.empty() || (renderer == kRenderDelegateStormId) || !hasView || !stageOf;
+        const bool idle = renderer.empty() || (renderer == kRenderDelegateStormId) || !hasView || !snapshotOf;
         if (idle || (renderer != engineRenderer)) {
             if (engine) {
                 lock.unlock();
@@ -2995,11 +3005,25 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             continue;
         }
 
-        const View v = view;
-        const int cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
-        const std::uint64_t passGeneration = generation;
-        const std::uint64_t restartIndex = status.restarts;
         lock.unlock();
+        View v;
+        int cap = 0;
+        std::uint64_t passGeneration = 0;
+        std::uint64_t restartIndex = 0;
+        SceneStageSnapshot snapshot;
+        bool hasStage = false;
+        {
+            // Only for the snapshot. The caller edits its stage and bumps the generation under
+            // stageLock, so the generation read with the snapshot is the one it was taken under.
+            std::lock_guard<std::mutex> stageGuard(*stageLock);
+            hasStage = snapshotOf(&snapshot);
+            lock.lock();
+            v = view;
+            cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
+            passGeneration = generation;
+            restartIndex = status.restarts;
+            lock.unlock();
+        }
 
         const bool readsRestart = firstPass;
         bool rendered = false;
@@ -3010,11 +3034,25 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::string renderFailure;
         std::string sessionFailure;
         std::shared_ptr<Frame> read;
-        {
-            std::unique_lock<std::mutex> stageGuard(*stageLock);
-            const UsdStageRefPtr stage = stageOf();
-            if (stage) {
-                std::lock_guard<std::mutex> l(engineMutex);
+        if (hasStage) {
+            {
+                std::function<void()> hook;
+                {
+                    std::lock_guard<std::mutex> l(gBeforeSyncHookMutex);
+                    hook = gBeforeSyncHook;
+                }
+                if (hook) {
+                    hook();
+                }
+            }
+            std::lock_guard<std::mutex> l(engineMutex);
+            if (!workerStage) {
+                workerStage.reset(new SceneStage);
+            }
+            const LiveTextureStore::ExportAbortScope exportAbort([this]() { return quitting.load(); });
+            (void)workerStage->syncTo(snapshot);
+            const UsdStageRefPtr stage = workerStage->getStage();
+            if (stage && engine) {
                 if (!samplesKey.IsEmpty() && (cap > 0) && (cap != appliedCap)) {
                     // A change of a setting restarts the delegate's render.
                     engine->SetRendererSetting(samplesKey, VtValue(cap));
@@ -3039,7 +3077,6 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 if (readsRestart) {
                     before = engine->GetRenderStats();
                 }
-                const LiveTextureStore::ExportAbortScope exportAbort([this]() { return quitting.load(); });
                 if (renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure)) {
                     rendered = true;
                     converged = engine->IsConverged();
@@ -3167,13 +3204,18 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 } // ProgressiveRender::Implementation::refine
 
 ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
-                                     const std::function<UsdStageRefPtr()>& stage,
+                                     const std::function<bool(SceneStageSnapshot*)>& snapshot,
                                      const std::function<void()>& listener,
                                      float background)
-    : _imp(new Implementation(stageLock, stage, listener, background))
+    : _imp(new Implementation(stageLock, snapshot, listener, background))
 {
     ++gProgressiveLive;
     Implementation* imp = _imp.get();
+    // The worker's stage composes the caller's layers read from files outside any ReadScope: a
+    // reload waits for the pass under way and keeps the next one out until it is done.
+    std::mutex* engineMutex = &_imp->engineMutex;
+    _imp->participant = SceneWriteBarrier::registerParticipant([engineMutex]() { engineMutex->lock(); },
+                                                               [engineMutex]() { engineMutex->unlock(); });
     _imp->cyclesHolder = CyclesThreads::instance().addHolder([imp]() {
         std::lock_guard<std::mutex> l(imp->mutex);
         imp->wake.notify_all();
@@ -3192,6 +3234,7 @@ ProgressiveRender::~ProgressiveRender()
     if (_imp->worker.joinable()) {
         _imp->worker.join();
     }
+    SceneWriteBarrier::unregisterParticipant(_imp->participant);
     CyclesThreads::instance().removeHolder(_imp->cyclesHolder);
     --gProgressiveLive;
 }
@@ -3334,8 +3377,11 @@ ProgressiveRender::pick(const Frame& frame,
                         int x,
                         int y)
 {
-    std::lock_guard<std::mutex> stageGuard(*_imp->stageLock);
-    std::lock_guard<std::mutex> l(_imp->engineMutex);
+    // A pass under way holds the engine: the pick gives up rather than wait for it.
+    std::unique_lock<std::mutex> l(_imp->engineMutex, std::try_to_lock);
+    if (!l.owns_lock()) {
+        return std::string();
+    }
     UsdImagingGLEngine* engine = _imp->engine.get();
 
     if (!engine || !_imp->engineHasView) {
@@ -3384,6 +3430,14 @@ int
 ProgressiveRender::getLiveCount()
 {
     return gProgressiveLive.load();
+}
+
+void
+ProgressiveRender::setBeforeSyncHook(const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> l(gBeforeSyncHookMutex);
+
+    gBeforeSyncHook = hook;
 }
 } // namespace HydraRender
 

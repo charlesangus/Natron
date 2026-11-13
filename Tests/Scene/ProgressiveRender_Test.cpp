@@ -152,6 +152,7 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        ProgressiveRender::setBeforeSyncHook(std::function<void()>());
         hold(false);
         _render.reset();
         _stage.reset();
@@ -163,14 +164,22 @@ protected:
     // it, as the viewer's sync does.
     void sync(const ScenePayload& payload)
     {
-        bool edited = false;
-        {
-            std::lock_guard<std::mutex> lock(_stageLock);
-            edited = _stage->sync(payload);
-        }
-        if (edited && _render) {
+        std::lock_guard<std::mutex> lock(_stageLock);
+        if (_stage->sync(payload) && _render) {
             _render->invalidate();
         }
+    }
+
+    // What a render takes the stage it renders from, as the viewer's does.
+    std::function<bool(SceneStageSnapshot*)> snapshotOfStage()
+    {
+        SceneStage* stage = _stage.get();
+
+        return [stage](SceneStageSnapshot* into) {
+            *into = stage->getSnapshot();
+
+            return true;
+        };
     }
 
     // A render of the stage, with nothing set yet, whose listener is heard().
@@ -184,8 +193,7 @@ protected:
             _published.clear();
             _calls = 0;
         }
-        SceneStage* stage = _stage.get();
-        _render.reset(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, [this]() { heard(); }, 0.05f));
+        _render.reset(new ProgressiveRender(&_stageLock, snapshotOfStage(), [this]() { heard(); }, 0.05f));
         _listened = _render.get();
     }
 
@@ -658,8 +666,7 @@ TEST_F(ProgressiveRenderTest, CyclesSessionsShareTheLastCountAskedFor)
     const U64 restartsBefore = _render->getRestartCount();
     const std::uint64_t buildsBefore = HydraRender::getEngineBuildCount();
 
-    SceneStage* stage = _stage.get();
-    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, [stage]() { return stage->getStage(); }, std::function<void()>(), 0.05f));
+    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, snapshotOfStage(), std::function<void()>(), 0.05f));
     second->setRenderer(kRenderDelegateCyclesId);
     second->setThreads([]() { return 3; });
     second->setView(_view);
@@ -730,4 +737,157 @@ TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverT
     EXPECT_EQ(7, _render->getMaxSamples());
     EXPECT_EQ(7, frames.back()->samples);
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
+}
+
+namespace {
+// A worker's sync made slow on purpose, once armed, and what the test saw of the stage lock
+// meanwhile.
+struct SlowSync {
+    std::atomic<bool> armed { false };
+    std::atomic<bool> entered { false };
+    std::atomic<bool> inside { false };
+};
+
+// Takes and drops the stage lock every couple of milliseconds until stopped, recording the
+// longest wait for it; joined when it goes, however the test ends.
+class LockProbe {
+public:
+    explicit LockProbe(std::mutex* lock)
+        : _thread([this, lock]() {
+            while (!_stop) {
+                const std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+                {
+                    std::lock_guard<std::mutex> l(*lock);
+                }
+                const long long waited = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - asked).count();
+                if (waited > _longest.load()) {
+                    _longest = waited;
+                }
+                ++_taken;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        })
+    {
+    }
+
+    ~LockProbe()
+    {
+        stop();
+    }
+
+    void stop()
+    {
+        _stop = true;
+        if (_thread.joinable()) {
+            _thread.join();
+        }
+    }
+
+    // In milliseconds.
+    double longest() const
+    {
+        return _longest.load() / 1000.;
+    }
+
+    int taken() const
+    {
+        return _taken.load();
+    }
+
+private:
+    std::atomic<bool> _stop { false };
+    // In microseconds.
+    std::atomic<long long> _longest { 0 };
+    std::atomic<int> _taken { 0 };
+    std::thread _thread;
+};
+} // anon namespace
+
+// The worker holds the stage lock only to take its snapshot: through a slow sync of its own stage,
+// and the passes that follow, the stage lock is free within 50 ms whenever it is asked for, and a
+// holder of it does not keep the sync from ending. The edit still reaches the frames.
+TEST_F(ProgressiveRenderTest, TheStageLockIsFreeWhileTheWorkerSyncsAndRenders)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::chrono::milliseconds kSlow(800);
+    const double kPromptMs = 50.;
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+
+    std::shared_ptr<SlowSync> slow = std::make_shared<SlowSync>();
+    ProgressiveRender::setBeforeSyncHook([slow, kSlow]() {
+        if (!slow->armed.exchange(false)) {
+            return;
+        }
+        slow->inside = true;
+        slow->entered = true;
+        std::this_thread::sleep_for(kSlow);
+        slow->inside = false;
+    });
+    const std::size_t mark = publishedCount();
+    const double kBack = 4.;
+    slow->armed = true;
+    sync(movedNear(_base, kBack, 0x5104ULL));
+    ASSERT_TRUE(waitUntil([&slow]() { return slow->entered.load(); }, "the worker's sync"));
+
+    {
+        const std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> held(_stageLock);
+        const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - asked).count();
+        EXPECT_LT(waited, kPromptMs) << "the worker's sync holds the stage lock";
+        // Held from here for the length of the sync: the sync ends all the same.
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (slow->inside && (std::chrono::steady_clock::now() < end)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        EXPECT_FALSE(slow->inside.load()) << "the worker's sync waits for the stage lock";
+    }
+
+    LockProbe probe(&_stageLock);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> after;
+    const bool finished = collectUntilDone(mark, &after);
+    probe.stop();
+    ASSERT_TRUE(finished);
+    EXPECT_GT(probe.taken(), 0);
+    EXPECT_LT(probe.longest(), kPromptMs) << "a pass holds the stage lock";
+    ASSERT_FALSE(after.empty());
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.back()), 1e-4f);
+}
+
+// A drag preview set on the caller's stage reaches the worker's stage with the snapshot, and
+// clearing it brings the prim back.
+TEST_F(ProgressiveRenderTest, ThePreviewTransformsReachTheRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    const float rest = windowDepth(_view.frustum, kNearDistance);
+    EXPECT_NEAR(rest, centreDepth(*frames.back()), 1e-4f);
+
+    const double kBack = 3.;
+    PXR_NS::GfMatrix4d delta(1.);
+    delta.SetTranslate(PXR_NS::GfVec3d(0., 0., -kBack));
+    std::size_t mark = publishedCount();
+    {
+        std::lock_guard<std::mutex> lock(_stageLock);
+        ASSERT_TRUE(_stage->setPreviewTransforms(std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>>(1, std::make_pair(std::string("/World/Near"), delta)), 0.));
+        _render->invalidate();
+    }
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*frames.back()), 1e-4f);
+
+    mark = publishedCount();
+    {
+        std::lock_guard<std::mutex> lock(_stageLock);
+        _stage->clearPreviewTransforms();
+        _render->invalidate();
+    }
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    EXPECT_NEAR(rest, centreDepth(*frames.back()), 1e-4f);
 }

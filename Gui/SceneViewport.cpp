@@ -1831,7 +1831,15 @@ SceneViewportRenderer::SceneViewportRenderer()
     _imp->participant = SceneWriteBarrier::registerParticipant([stageMutex]() { stageMutex->lock(); },
                                                                [stageMutex]() { stageMutex->unlock(); });
     Implementation* imp = _imp.get();
-    _imp->progressive.reset(new HydraRender::ProgressiveRender(stageMutex, [imp]() { return imp->currentStage(); }, [imp]() {
+    const auto snapshot = [imp](SceneStageSnapshot* into) {
+        if (!imp->shown || !imp->sceneStage) {
+            return false;
+        }
+        *into = imp->sceneStage->getSnapshot();
+
+        return true;
+    };
+    _imp->progressive.reset(new HydraRender::ProgressiveRender(stageMutex, snapshot, [imp]() {
         std::function<void()> listener;
         {
             std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
@@ -1845,8 +1853,6 @@ SceneViewportRenderer::SceneViewportRenderer()
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
-    // Its worker reads the stage's layers under stageMutex: joined while the barrier still holds
-    // writes back for it.
     _imp->progressive.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
@@ -3126,8 +3132,8 @@ SceneViewportRenderer::pick(int x,
                 }
             }
         }
-        // From the AOVs of the last pass, of the size of the view when it rendered; it takes the
-        // viewer lock itself.
+        // From the AOVs of the last pass, of the size of the view when it rendered; empty while a
+        // pass holds them.
         const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
         if (!frame || (frame->width <= 0) || (frame->height <= 0)) {
             return guidePath;

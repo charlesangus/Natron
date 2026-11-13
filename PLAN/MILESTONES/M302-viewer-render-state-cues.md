@@ -33,6 +33,7 @@ Make the UI say truthfully what the renderer is doing. The viewer gets a coloure
 - 2026-11-01 — **Coloured viewer border, stale and current states only (user).**
 - 2026-11-01 — **The border delay is a user preference (user);** default 150 ms (planner).
 - 2026-11-01 — **Dots mean real execution, coloured by device (user).**
+- 2026-11-12 — Member UAT moves to F6's Feature UAT (user, 2026-11-12): the screenshot approval and GPU dot colour check are collected at F6 - Unified Tiered Cache's UAT; the milestone merges into F6 once its automated gate and review round pass.
 
 ## Phase 302.1: Viewer stale state
 

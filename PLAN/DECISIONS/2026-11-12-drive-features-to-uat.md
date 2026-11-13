@@ -1,0 +1,3 @@
+# Drive in-flight Features to UAT
+
+User, 2026-11-12: after the in-flight milestones are through, bosley-native-nodes keeps claiming the todo members of F4 - Heavy Scene Viewer, F6 - Unified Tiered Cache, F7 - Natron Utility Core, F8 - Motion Vectors, F9 - Delegate Projection, F10 - Viewer Polish, F11 - Texture Painting and F15 - Native Geometry, with four lanes, until each Feature is ready and parked at its Feature UAT. Members merge into their Feature branch once their automated gate and review round pass; member UAT and screenshot gate lines are collected at the Feature UAT (consistent with 2026-11-05-feature-grouping). M53 - Projected Texture Painting's hold is lifted.

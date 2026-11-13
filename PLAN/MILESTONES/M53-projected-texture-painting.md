@@ -210,3 +210,4 @@ Before M53.P5.T4, merge the current tips of M233 - Live Node Textures, M52 - USD
 - 2026-11-02 — The 2026-10-28 open items (Camera input vs menu, Project On, occlusion modes) are moot: TexturePaint paints through the view camera, and camera projection belongs to the Paint-Through Inputs stub.
 - 2026-11-02 — Branch state at the redesign (audit): phases 53.1–53.2 committed and pushed on milestone/m53-projected-texture-painting (14 ahead of main); the branch merged an M233 - Live Node Textures that has since been rewritten and an older M52 - USD Layer-Stack Completion, so it needs both re-merged before Phase 53.4 (PM).
 - 2026-11-02 — On hold until the in-flight milestones are through; no new work starts before then (user).
+- 2026-11-12 — Hold lifted (user, 2026-11-12): resume the remaining tasks once a lane frees up; UAT and screenshots are collected at F11 - Texture Painting's UAT.

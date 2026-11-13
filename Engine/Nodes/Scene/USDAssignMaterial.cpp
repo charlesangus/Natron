@@ -57,6 +57,8 @@ const int kMaxClashesNamed = 3;
 struct RootMatches {
     PXR_NS::SdfPath root;
     std::vector<PXR_NS::SdfPath> paths;
+    // Native instance roots below the paths whose upstream direct binding is kept.
+    std::vector<PXR_NS::SdfPath> excludes;
     std::vector<PXR_NS::TfToken> existingBindings;
 };
 
@@ -245,14 +247,19 @@ readProjectionPlacement(const PXR_NS::UsdStageRefPtr& stage,
     for (const RootMatches& matches : roots) {
         for (const PXR_NS::SdfPath& path : matches.paths) {
             for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(stage->GetPrimAtPath(path), PXR_NS::UsdTraverseInstanceProxies())) {
-                if (!prim.IsA<PXR_NS::UsdGeomGprim>() || !seen.insert(prim.GetPath()).second) {
+                if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
+                    continue;
+                }
+                // A proxy of a noted instance is placed through its root below, which must still see
+                // it to check it for deformation and offsets.
+                if (prim.IsInstanceProxy() && instanceRoots.count(getInstanceRoot(prim))) {
+                    continue;
+                }
+                if (!seen.insert(prim.GetPath()).second) {
                     continue;
                 }
                 if (prim.IsInstanceProxy()) {
-                    // A proxy of a noted instance is placed through its root below.
-                    if (!instanceRoots.count(getInstanceRoot(prim))) {
-                        appendPath(prim.GetPath(), &placement.instanced);
-                    }
+                    appendPath(prim.GetPath(), &placement.instanced);
                     continue;
                 }
                 if (isUnderAny(prim.GetPath(), prototypes)) {
@@ -628,6 +635,9 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                     noteInstance(below.GetPath(), PXR_NS::SdfPath());
                 }
             }
+            if (matched.IsInstance() && instances[instanceIndices[path]].alreadyBound) {
+                continue;
+            }
             const std::pair<std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash>::iterator, bool> inserted = rootIndices.emplace(root, roots.size());
             if (inserted.second) {
                 RootMatches matches;
@@ -636,6 +646,39 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                 roots.push_back(matches);
             }
             roots[inserted.first->second].paths.push_back(path);
+        }
+        for (InstanceBinding& instance : instances) {
+            if (instance.alreadyBound) {
+                // A stronger collection binding from an ancestor would win over the kept direct binding.
+                for (RootMatches& matches : roots) {
+                    for (const PXR_NS::SdfPath& path : matches.paths) {
+                        if (instance.root.HasPrefix(path)) {
+                            matches.excludes.push_back(instance.root);
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            if (instance.wholeInstanceMatched) {
+                continue;
+            }
+            bool everyGprimMatched = true;
+            for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange(stage->GetPrimAtPath(instance.root), PXR_NS::UsdTraverseInstanceProxies())) {
+                if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
+                    continue;
+                }
+                bool covered = false;
+                for (const PXR_NS::SdfPath& match : instance.narrowMatches) {
+                    covered = covered || prim.GetPath().HasPrefix(match);
+                }
+                if (!covered) {
+                    everyGprimMatched = false;
+                    break;
+                }
+            }
+            // Binding the whole instance then reaches nothing the pattern left out.
+            instance.wholeInstanceMatched = everyGprimMatched;
         }
         if (!skipped.isEmpty()) {
             warnings += tr("These matches lie inside the Materials Scope /%1 and are skipped: %2")
@@ -822,6 +865,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
         for (const RootMatches& matches : roots) {
             SceneNodeAuthoring::SceneCollectionBinding rootBinding = binding;
             rootBinding.includes = matches.paths;
+            rootBinding.excludes = matches.excludes;
             rootBinding.existingBindings = matches.existingBindings;
             if (!SceneNodeAuthoring::authorCollectionBinding(stage->OverridePrim(matches.root), rootBinding, error)) {
                 return false;
@@ -864,6 +908,10 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
         facts.appendString(matches.root.GetString());
         facts.appendU64(matches.paths.size());
         for (const PXR_NS::SdfPath& path : matches.paths) {
+            facts.appendString(path.GetString());
+        }
+        facts.appendU64(matches.excludes.size());
+        for (const PXR_NS::SdfPath& path : matches.excludes) {
             facts.appendString(path.GetString());
         }
         facts.appendU64(matches.existingBindings.size());

@@ -375,6 +375,8 @@ bool graftSharedMaterial(const ScenePayload& material,
 struct SceneCollectionBinding {
     // The prims the collection includes, its expansion rule expandPrims taking their descendants.
     std::vector<PXR_NS::SdfPath> includes;
+    // Prims under the includes the collection leaves out, with their descendants.
+    std::vector<PXR_NS::SdfPath> excludes;
     std::string materialPath;
     // Names both the collection (collection:<name>) and the binding; a single identifier.
     std::string bindingName;
@@ -395,7 +397,8 @@ std::vector<PXR_NS::TfToken> getCollectionBindingNames(const PXR_NS::UsdPrim& pr
 
 /**
  * @brief Binds binding.materialPath to the prims binding.includes names, on root: applies
- * UsdCollectionAPI collection:<name> including them (expandPrims) and UsdShadeMaterialBindingAPI,
+ * UsdCollectionAPI collection:<name> including them (expandPrims) and excluding binding.excludes,
+ * and UsdShadeMaterialBindingAPI,
  * authors material:binding:collection[:<purpose>]:<name> = [collection, material] with
  * bindMaterialAs = binding.strength, and writes root's propertyOrder with that binding first, then
  * binding.existingBindings, so it is the strongest collection binding on root. Returns false with

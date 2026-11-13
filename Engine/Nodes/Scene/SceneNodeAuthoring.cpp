@@ -652,7 +652,8 @@ authorCollectionBinding(const PXR_NS::UsdPrim& root,
     const PXR_NS::UsdShadeMaterialBindingAPI bindingAPI = PXR_NS::UsdShadeMaterialBindingAPI::Apply(root);
     bool authored = collection && bindingAPI
         && collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims))
-        && collection.CreateIncludesRel().SetTargets(binding.includes);
+        && collection.CreateIncludesRel().SetTargets(binding.includes)
+        && (binding.excludes.empty() || collection.CreateExcludesRel().SetTargets(binding.excludes));
     PXR_NS::TfToken relName;
     if (authored) {
         relName = bindingAPI.GetCollectionBindingRel(name, binding.purpose).GetName();

@@ -39,8 +39,9 @@ binding does not carry from an ancestor onto the prims of a native instance in S
 so matches inside native instances, and ancestors of them, are bound directly on their
 instance roots, and the instances are never de-instanced. Each instance projects from
 its own placement, written as a frame primvar on its root. An instance root that already
-has a direct binding from upstream keeps it, with a warning. A match below the instance
-root makes the whole instance take the material, with a warning. A gprim offset from its
+has a direct binding from upstream keeps it, with a warning: an ancestor match leaves it
+out of the node's collection. A match below the instance root makes the whole instance
+take the material, with a warning when the matches leave some of its gprims out. A gprim offset from its
 instance root projects shifted by that offset, with a warning. A sticky or held
 projection on a deforming instanced mesh stays rigid, with a warning. The instances of a
 point instancer are not supported: they share their prototype's placement, so each shows

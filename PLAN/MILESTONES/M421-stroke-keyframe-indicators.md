@@ -50,7 +50,7 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 
 ## Phase 421.2: Dope sheet and test
 
-- [ ] M421.P2.T1 — Painted Frame row
+- [x] M421.P2.T1 — Painted Frame row
   - files: `Gui/DopeSheet.{h,cpp}`, `Gui/DopeSheetView.cpp`, `Gui/DopeSheetEditorUndoRedo.cpp`, `Global/Enums.h`
   - approach: add `eDopeSheetItemTypePaintedFrame`, a `DSKnob` backed by a `RotoStrokeItemPtr` whose `getKeyFrames()` is `{lifeTimeFrame}`, refreshed on that knob's valueChanged. The stroke's item row stays visible with no animated knobs. Move, delete, paste and interpolation skip these keys.
   - verify: syntax-check; the row draws at the painted frame and refuses a drag (P2.T2).
@@ -70,3 +70,4 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 - 2026-11-13 — **Dope sheet (PM):** a display-only Painted Frame row. Moving it would mean writing `lifeTimeFrame` with undo across Lifetime modes, so it stays out unless the user asks.
 - 2026-11-13 — P1.T1 implemented (93229108c). Markers update one event-loop turn after a signal (coalesced), so GUI scripts process events before reading `keyframeMarkerTimes()`. After undoing a Bezier delete its markers return if it is still selected.
 - 2026-11-13 — P1.T2 implemented (3c58df3a5). The current stroke comes from `GuiAppInstance::getActiveRotoDrawingStroke`; a stroke painted while the panel is closed isn't adopted as current on reopen (confirm at UAT).
+- 2026-11-13 — P2.T1 implemented (18beb7da2); painted-frame keys are filtered at the DopeSheet model entry points, so no command sees them. P1.T3: no stale path found in the code; P2.T2's item-knob section decides.

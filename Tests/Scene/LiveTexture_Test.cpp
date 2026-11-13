@@ -540,9 +540,10 @@ TEST_F(LiveTextureTest, TheTextureHoldsTheOverscanAroundTheFormat)
 
     // A recorded window is the one rendered, whatever the image's own.
     LiveTextureStore::instance().clear();
-    source.windows.assign(1, LiveTextureWindow());
-    source.windows[0].format = window.format;
-    source.windows[0].window = window.format;
+    LiveTextureWindow recorded;
+    recorded.format = window.format;
+    recorded.window = window.format;
+    source.windows = std::make_shared<std::vector<LiveTextureWindow>>(1, recorded);
     ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.)) << LiveTextureStore::instance().getFailure(uri);
     const LiveTextureBufferConstPtr formatOnly = LiveTextureStore::instance().find(uri);
     ASSERT_TRUE(bool(formatOnly));
@@ -587,9 +588,10 @@ TEST_F(LiveTextureTest, TransparentTexelsTakeTheColourOfTheNearestCoveredOnes)
     source.contentHash = constant->getEffectInstance()->getHash();
     source.firstFrame = 1.;
     source.lastFrame = 1.;
-    source.windows.assign(1, LiveTextureWindow());
-    source.windows[0].format = RectI(format.x1, format.y1, format.x2, format.y2);
-    source.windows[0].window = source.windows[0].format;
+    LiveTextureWindow formatOnly;
+    formatOnly.format = RectI(format.x1, format.y1, format.x2, format.y2);
+    formatOnly.window = formatOnly.format;
+    source.windows = std::make_shared<std::vector<LiveTextureWindow>>(1, formatOnly);
     const std::string uri = source.getUri(1.);
 
     ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.)) << LiveTextureStore::instance().getFailure(uri);
@@ -900,6 +902,55 @@ TEST_F(LiveTextureUdimTest, AFailedTileShowsMagentaAndIsTriedAgain)
     EXPECT_TRUE(store.getFailure(source.getUri(1.)).empty());
     EXPECT_EQ(1, effect->renders(1001));
     EXPECT_EQ(2, effect->renders(1011));
+}
+
+// The lowest tile sizes the whole set in Storm, so its stand-in takes the size of a tile that has one.
+TEST_F(LiveTextureUdimTest, AnUnsizedLowestTileStandsInAtTheSizeOfAnotherTile)
+{
+    UdimTilesTestEffect* effect = NULL;
+    NodePtr node = createTiles(&effect);
+    NodePtr consumer = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(effect != NULL);
+    ASSERT_TRUE(bool(consumer));
+    effect->setFormatFailing(1001);
+    const LiveTextureSource source = udimSource(node, consumer);
+
+    EXPECT_EQ(1, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    EXPECT_EQ(0, effect->renders(1001));
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const LiveTextureBufferConstPtr magenta = store.find(source.getTileUri(1., 1001));
+    ASSERT_TRUE(bool(magenta));
+    const RectI known = UdimTilesTestEffect::tileFormat(1002);
+    EXPECT_EQ(known.width(), magenta->getWidth());
+    EXPECT_EQ(known.height(), magenta->getHeight());
+    EXPECT_FLOAT_EQ(1.f, magenta->getRow(0)[0]);
+    EXPECT_FLOAT_EQ(0.f, magenta->getRow(0)[1]);
+    EXPECT_FLOAT_EQ(1.f, magenta->getRow(0)[2]);
+    EXPECT_FALSE(store.getFailure(source.getTileUri(1., 1001)).empty());
+    EXPECT_NE(std::string::npos, messageOf(consumer).find("UDIM tile 1001")) << messageOf(consumer);
+}
+
+TEST_F(LiveTextureUdimTest, AFailedTileOfASharedSetRendersOnceAndWarnsEveryConsumer)
+{
+    UdimTilesTestEffect* effect = NULL;
+    NodePtr node = createTiles(&effect);
+    NodePtr first = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr second = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(effect != NULL);
+    ASSERT_TRUE(first && second);
+    effect->setFailing(1011, true);
+    LiveTextureSourceList sources;
+    sources.push_back(udimSource(node, first));
+    sources.push_back(udimSource(node, second));
+    ASSERT_EQ(sources[0].getUri(1.), sources[1].getUri(1.));
+
+    EXPECT_EQ(1, prepareOffMainThread(sources, 1.));
+    EXPECT_EQ(1, effect->renders(1001));
+    EXPECT_EQ(1, effect->renders(1002));
+    EXPECT_EQ(1, effect->renders(1011));
+    for (const NodePtr& consumer : { first, second }) {
+        EXPECT_NE(std::string::npos, messageOf(consumer).find("UDIM tile 1011")) << consumer->getScriptName() << ": " << messageOf(consumer);
+    }
 }
 
 TEST_F(LiveTextureUdimTest, TilesAboveWhatUsdReadsAreWarned)

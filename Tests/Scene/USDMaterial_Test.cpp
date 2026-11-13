@@ -28,8 +28,10 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <map>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -40,6 +42,7 @@
 
 #include "BaseTest.h"
 #include "SceneTestEffect.h"
+#include "UdimTilesTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -703,6 +706,43 @@ TEST_F(USDMaterialTest, AMalformedTileDeclarationWarnsAndFallsBackToASingleTextu
     EXPECT_EQ(std::string::npos, assetPathOf(texture).find(kLiveTextureUdimToken));
     EXPECT_TRUE(material->hasPersistentMessage());
     EXPECT_NE(std::string::npos, warningOf(material).find("Diffuse Color")) << warningOf(material);
+}
+
+// The warnings of a prepare() reach the material once, and its next evaluation clears its messages.
+TEST_F(USDMaterialTest, LiveTextureWarningsSurviveTheNextEvaluation)
+{
+    registerUdimTilesTestEffectOnce();
+    NodePtr tiles = node(kUdimTilesTestPluginID, "Tiles1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1", { tiles });
+    ASSERT_TRUE(tiles && material);
+    UdimTilesTestEffect* effect = dynamic_cast<UdimTilesTestEffect*>(tiles->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    std::map<int, std::string> byFrame;
+    byFrame[2] = std::string();
+    effect->setTilesByFrame(byFrame);
+    effect->setFailing(1011, true);
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              material->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+        << error;
+    const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+    ASSERT_EQ((std::size_t)1, sources.size());
+    EXPECT_EQ((std::vector<int> { 1001, 1002, 1011 }), sources[0].tiles);
+    EXPECT_NE(std::string::npos, warningOf(material).find("frame 2")) << warningOf(material);
+
+    int numFailed = -1;
+    std::thread worker([&]() { numFailed = LiveTextureStore::instance().prepare(sources, 1.); });
+    worker.join();
+    EXPECT_EQ(1, numFailed);
+    EXPECT_NE(std::string::npos, warningOf(material).find("UDIM tile 1011")) << warningOf(material);
+
+    ASSERT_TRUE(bool(compose(material)));
+    const std::string warning = warningOf(material);
+    EXPECT_NE(std::string::npos, warning.find("UDIM tile 1011")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("frame 2")) << warning;
+    LiveTextureStore::instance().clear();
 }
 
 TEST_F(USDMaterialTest, TheEmissiveMaterialAuthorsAUdimPathWithoutATransform)

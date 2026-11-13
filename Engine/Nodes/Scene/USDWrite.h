@@ -60,8 +60,8 @@ NATRON_NAMESPACE_ENTER
  * layer. Asset paths are written relative to the output file, or absolute.
  *
  * Live textures (natron:// URIs a USDMaterial's image inputs author) are rendered, with Export
- * Live Textures, to OpenEXR files in <file's base name>_textures beside it, one per frame for an
- * image that changes over time, and the paths point at them; without it they are written as they
+ * Live Textures, to OpenEXR files in <file name>_textures beside it, one per frame for an image
+ * that changes over time and one per UDIM tile, and the paths point at them; without it they are written as they
  * are, with a warning that only the Natron session that wrote them can read them.
  **/
 class USDWrite

@@ -615,10 +615,61 @@ struct LiveTextureExport {
     double frame = 0.;
     // For a UDIM set, holds kLiveTextureUdimToken where each tile's file has its tile number.
     QString path;
-    // The file name every file of the source starts with, before its tile and frame.
-    QString stem;
     bool needed = false;
 };
+
+// What sets a tile file's name apart from any other texture's: <stem>.udim.<tile>[.<frame>].exr.
+#define kTileFileMarker ".udim."
+
+// The file in a textures directory listing the tile files exports to it wrote, one name a line.
+#define kTileManifestName ".natron-udim-tiles"
+
+// The tile files a manifest lists, by name; none when it cannot be read.
+std::set<QString>
+readTileManifest(const QString& manifest)
+{
+    std::set<QString> names;
+    QFile file(manifest);
+
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return names;
+    }
+    const QStringList lines = QString::fromUtf8(file.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString& line : lines) {
+        names.insert(line.trimmed());
+    }
+
+    return names;
+}
+
+// Writes names to manifest, or removes it when there are none. False when it cannot.
+bool
+writeTileManifest(const QString& manifest,
+                  const std::set<QString>& names)
+{
+    if (names.empty()) {
+        return !QFileInfo::exists(manifest) || QFile::remove(manifest);
+    }
+    QFile file(manifest);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        return false;
+    }
+    QByteArray text;
+    for (const QString& name : names) {
+        text += name.toUtf8() + '\n';
+    }
+
+    return file.write(text) == text.size();
+}
+
+// Whether name, an entry of a manifest, is a tile file directly in its directory.
+bool
+isTileFileName(const QString& name)
+{
+    static const QRegularExpression tileFile(QString::fromUtf8("^[^/\\\\]+") + QRegularExpression::escape(QString::fromUtf8(kTileFileMarker)) + QString::fromUtf8("[0-9]{4}(\\.-?[0-9]+)?\\.exr$"));
+
+    return tileFile.match(name).hasMatch();
+}
 
 // Letters, digits, '_', '-' and '.' kept, anything else '_': a node's name as a file name.
 QString
@@ -638,9 +689,9 @@ fileNameOf(const std::string& name)
 /**
  * @brief Every URI sources author over their frames, keyed to the file in directory it is
  * exported to: <node>_<layer>.exr for a source that does not vary, else <node>_<layer>.<frame>.exr,
- * the frame padded to 4 digits. A UDIM set has a file per tile, <node>_<layer>.<tile>.exr or
- * <node>_<layer>.<tile>.<frame>.exr, which its path names with the token for the tile. The tiles
- * are those the set declares at that frame.
+ * the frame padded to 4 digits. A UDIM set has a file per tile, <node>_<layer>.udim.<tile>.exr or
+ * <node>_<layer>.udim.<tile>.<frame>.exr, which its path names with the token for the tile. The
+ * tiles are those the set declares at that frame.
  **/
 std::map<std::string, LiveTextureExport>
 planLiveTextureExports(const LiveTextureSourceList& sources,
@@ -657,8 +708,7 @@ planLiveTextureExports(const LiveTextureSourceList& sources,
             LiveTextureExport e;
             e.source = source;
             e.frame = frame;
-            e.stem = stemName;
-            const QString base = source.isUdim() ? stem + QLatin1Char('.') + QString::fromUtf8(kLiveTextureUdimToken) : stem;
+            const QString base = source.isUdim() ? stem + QString::fromUtf8(kTileFileMarker kLiveTextureUdimToken) : stem;
             e.path = source.varying ? QString::fromUtf8("%1.%2.exr").arg(base).arg((int)source.getSourceFrame(frame), 4, 10, QLatin1Char('0')) : base + QString::fromUtf8(".exr");
             exports.insert(std::make_pair(source.getUri(frame), e));
         }
@@ -1096,8 +1146,8 @@ USDWrite::initializeKnobs()
     KnobBoolPtr exportLiveTextures = createKnob<KnobBool>(tr("Export Live Textures"));
     exportLiveTextures->setName(kUSDWriteParamExportLiveTextures);
     exportLiveTextures->setHintToolTip(tr("Renders the images a USDMaterial's image inputs feed the scene to OpenEXR files in "
-                                          "<file name>_textures beside the file, one per frame for an image that changes over "
-                                          "time, and points the materials at them. Off, the file names the images as only this "
+                                          "<file name>_textures beside the file (scene.usda_textures for scene.usda), one per frame for an "
+                                          "image that changes over time and one per UDIM tile, and points the materials at them. Off, the file names the images as only this "
                                           "Natron session can read them."));
     exportLiveTextures->setDefaultValue(true);
     exportLiveTextures->setAnimationEnabled(false);
@@ -1275,12 +1325,14 @@ USDWrite::writeFrameRange(int firstFrame,
 
     KnobBoolPtr exportLiveTexturesKnob = _exportLiveTextures.lock();
     const bool exportLiveTextures = exportLiveTexturesKnob && exportLiveTexturesKnob->getValue();
-    const QString texturesDir = QDir(outputDir).filePath(outputInfo.completeBaseName() + QString::fromUtf8("_textures"));
+    // The whole file name, so that scene.usda and scene.usdc beside it keep their textures apart.
+    const QString texturesDir = QDir(outputDir).filePath(outputInfo.fileName() + QString::fromUtf8("_textures"));
     std::map<std::string, LiveTextureExport> liveTextures = planLiveTextureExports(SceneOps::getLiveTextures(scene), texturesDir);
     // natron:// URIs written as they are, which only this session resolves.
     std::set<std::string> unexportedLiveTextures;
     // natron:// URIs no live texture of the scene authors, such as those of a file written earlier.
     std::set<std::string> staleLiveTextures;
+    std::set<std::string> missingTilesWarnings;
 
     PXR_NS::TfErrorMark mark;
     // What is written, the file itself first, then, in layered mode, the sidecars beside it: the
@@ -1417,6 +1469,9 @@ USDWrite::writeFrameRange(int firstFrame,
 
                         return assetPath;
                     }
+                    if (live->second.source.isUdim() && !live->second.source.missingTilesWarning.empty()) {
+                        missingTilesWarnings.insert(live->second.source.missingTilesWarning);
+                    }
                     if (!exportLiveTextures) {
                         unexportedLiveTextures.insert(assetPath);
 
@@ -1495,22 +1550,39 @@ USDWrite::writeFrameRange(int firstFrame,
             }
         }
     }
+    QStringList tileWarnings;
+    // A <UDIM> path is resolved by looking for each tile's file on disk, so a file left by an
+    // earlier export, of a tile the set no longer declares or that failed this time, would show.
+    // Only the tile files exports to texturesDir recorded are removed: never a file of the user's.
+    const QString tileManifest = QDir(texturesDir).filePath(QString::fromUtf8(kTileManifestName));
+    const std::set<QString> recordedTiles = readTileManifest(tileManifest);
+    std::set<QString> writtenTiles;
+    // Recorded before the files naming them are written, so that a later export removes them even
+    // if this one fails.
+    const auto recordWrittenTiles = [&]() {
+        if (writtenTiles.empty()) {
+            return;
+        }
+        std::set<QString> names = recordedTiles;
+        names.insert(writtenTiles.begin(), writtenTiles.end());
+        writeTileManifest(tileManifest, names);
+    };
+    const auto failAfterTiles = [&](const QString& message) {
+        recordWrittenTiles();
+
+        return fail(message);
+    };
     // Before the files that name them, so that a failure leaves the earlier files whole, and after
     // the scene's layers are let go: a render may need to write to a scene of its own.
-    QStringList tileWarnings;
-    // The names of the files written in texturesDir, and the stems of the UDIM sets among them.
-    std::set<QString> writtenTextures;
-    std::set<QString> udimStems;
     for (const std::pair<const std::string, LiveTextureExport>& live : liveTextures) {
         if (!live.second.needed) {
             continue;
         }
         if (!QDir().mkpath(texturesDir)) {
-            return fail(tr("Cannot create the directory %1.").arg(texturesDir));
+            return failAfterTiles(tr("Cannot create the directory %1.").arg(texturesDir));
         }
         LiveTextureStore& store = LiveTextureStore::instance();
         if (live.second.source.isUdim()) {
-            udimStems.insert(live.second.stem);
             store.prepare(LiveTextureSourceList(1, live.second.source), live.second.frame);
             for (const int tile : live.second.source.getTiles(live.second.frame)) {
                 const std::string tileUri = live.second.source.getTileUri(live.second.frame, tile);
@@ -1527,9 +1599,9 @@ USDWrite::writeFrameRange(int firstFrame,
                 tilePath.replace(QString::fromUtf8(kLiveTextureUdimToken), QString::number(tile));
                 std::string tileError;
                 if (!writeLiveTextureFile(tileBuffer, tilePath, &tileError)) {
-                    return fail(tr("Cannot write %1: %2").arg(tilePath).arg(QString::fromStdString(tileError)));
+                    return failAfterTiles(tr("Cannot write %1: %2").arg(tilePath).arg(QString::fromStdString(tileError)));
                 }
-                writtenTextures.insert(QFileInfo(tilePath).fileName());
+                writtenTiles.insert(QFileInfo(tilePath).fileName());
             }
             continue;
         }
@@ -1541,32 +1613,17 @@ USDWrite::writeFrameRange(int firstFrame,
         if (!buffer) {
             const std::string failure = store.getFailure(live.first);
 
-            return fail(tr("The live texture %1 could not be rendered%2").arg(QString::fromStdString(live.first)).arg(failure.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(failure)));
+            return failAfterTiles(tr("The live texture %1 could not be rendered%2").arg(QString::fromStdString(live.first)).arg(failure.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(failure)));
         }
         std::string writeError;
         if (!writeLiveTextureFile(buffer, live.second.path, &writeError)) {
-            return fail(tr("Cannot write %1: %2").arg(live.second.path).arg(QString::fromStdString(writeError)));
-        }
-        writtenTextures.insert(QFileInfo(live.second.path).fileName());
-    }
-    // A <UDIM> path is resolved by looking for each tile's file on disk, so a file left by an
-    // earlier export, of a tile the set no longer declares or that failed this time, would show.
-    if (!udimStems.empty()) {
-        const QDir textures(texturesDir);
-        const QStringList names = textures.entryList(QDir::Files | QDir::Hidden | QDir::System);
-        for (const QString& stem : udimStems) {
-            const QRegularExpression tileFile(QString::fromUtf8("^") + QRegularExpression::escape(stem) + QString::fromUtf8("\\.[0-9]{4}(\\.-?[0-9]+)?\\.exr$"));
-            for (const QString& name : names) {
-                if (!tileFile.match(name).hasMatch() || (writtenTextures.count(name) != 0)) {
-                    continue;
-                }
-                if (!QFile::remove(textures.filePath(name))) {
-                    tileWarnings.push_back(tr("%1 is left from an earlier export and could not be removed, so it shows as a tile of its set.")
-                                               .arg(textures.filePath(name)));
-                }
-            }
+            return failAfterTiles(tr("Cannot write %1: %2").arg(live.second.path).arg(QString::fromStdString(writeError)));
         }
     }
+    for (const std::string& missing : missingTilesWarnings) {
+        tileWarnings.push_back(QString::fromStdString(missing));
+    }
+    recordWrittenTiles();
     // Layers already open on the files, such as a USDRead's of them, would go on showing what
     // they held before: they are reloaded in place, through the barrier, so every stage composing
     // them sees the new content.
@@ -1602,6 +1659,20 @@ USDWrite::writeFrameRange(int firstFrame,
         keep.insert(QDir::cleanPath(w.path));
     }
     const QStringList removedSidecars = removeStaleSidecars(outputInfo, keep);
+    std::set<QString> keptTiles = writtenTiles;
+    for (const QString& name : recordedTiles) {
+        if ((writtenTiles.count(name) != 0) || !isTileFileName(name)) {
+            continue;
+        }
+        const QString stale = QDir(texturesDir).filePath(name);
+        if (QFileInfo::exists(stale) && !QFile::remove(stale)) {
+            keptTiles.insert(name);
+            tileWarnings.push_back(tr("%1 is left from an earlier export and could not be removed, so it shows as a tile of its set.").arg(stale));
+        }
+    }
+    if ((recordedTiles != keptTiles) && !writeTileManifest(tileManifest, keptTiles)) {
+        tileWarnings.push_back(tr("%1 could not be written, so the next export may leave this one's tile files behind.").arg(tileManifest));
+    }
     std::string reloadError;
     if (!reloadOpenLayers(replaced, &reloadError)) {
         return fail(tr("%1 was written, but the scene could not read it again: %2").arg(outputPath).arg(QString::fromStdString(reloadError)));

@@ -164,15 +164,20 @@ struct LiveTextureSource {
     double lastFrame = 0.;
     // Filled by SceneNodeAuthoring::recordLiveTexture: one window per frame from firstFrame when
     // varying, else one. A texture is rendered over the window its layer authored coordinates for.
-    std::vector<LiveTextureWindow> windows;
+    // Shared, as the copies of a source made for each of its frames read the same windows.
+    std::shared_ptr<const std::vector<LiveTextureWindow>> windows;
     // The UDIM tiles the source declares (kNatronMetadataKeyUdimTiles), sorted and without
-    // duplicates; empty for a single texture. Each tile is rendered over the format the source has
-    // under that tile, without the overscan, and windows are not read.
+    // duplicates; empty for a single texture. With frameTiles, every tile any frame declares. Each
+    // tile is rendered over the format the source has under that tile, without the overscan, and
+    // windows are not read.
     std::vector<int> tiles;
-    // Filled by SceneNodeAuthoring::recordLiveTexture for a varying UDIM source: the tiles declared
-    // at each frame from firstFrame, as windows are, empty where a frame declares none or does not
-    // parse. Otherwise empty, and tiles holds the set at every frame.
-    std::vector<std::vector<int>> frameTiles;
+    // Filled by SceneNodeAuthoring::getLiveTextureSource for a varying UDIM source: the tiles
+    // declared at each frame from firstFrame, as windows are, empty where a frame declares none or
+    // does not parse. Otherwise null, and tiles holds the set at every frame. Shared as windows are.
+    std::shared_ptr<const std::vector<std::vector<int>>> frameTiles;
+    // For a varying UDIM source, the warning naming the frames that declare no tiles, or whose
+    // declaration does not parse, where the set shows nothing; empty when every frame has tiles.
+    std::string missingTilesWarning;
 
     // The last tile USD and Storm look for: tiles above it are rendered but never read.
     static constexpr int kLastUsdUdimTile = 1100;
@@ -192,7 +197,7 @@ struct LiveTextureSource {
     std::string getTileUri(double frame,
                            int tile) const;
 
-    // The tiles of a UDIM set at frame: those recorded for it in frameTiles, else tiles.
+    // The tiles of a UDIM set at frame: those frameTiles holds for it, else tiles.
     const std::vector<int>& getTiles(double frame) const;
 
     // The tiles at frame above kLastUsdUdimTile, which nothing reading the set through USD sees.
@@ -259,8 +264,9 @@ public:
      * magenta, so the set still finds it and shows what is missing, and is tried again on the next
      * call; its consumer gets a warning naming the tile. A stand-in whose tile's format is not
      * known takes another tile's format, else the source's outside any tile. Tiles above
-     * LiveTextureSource::kLastUsdUdimTile are rendered and warned about. A texture that fails is
-     * tried once per call, however many sources name it.
+     * LiveTextureSource::kLastUsdUdimTile are rendered and warned about, and so are the frames a
+     * set's missingTilesWarning names. A texture that fails is tried once per call, however many
+     * sources name it.
      *
      * Returns how many textures, counting each tile, it could not render.
      **/

@@ -34,6 +34,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
@@ -99,7 +100,8 @@ public:
     }
 
     // Declares tiles instead of the default set at the frames the map names, and makes the
-    // node vary over time, as a source whose tile coverage changes does.
+    // node vary over time, as a source whose tile coverage changes does. An empty list
+    // declares nothing at its frame.
     void setTilesByFrame(const std::map<int, std::string>& tiles)
     {
         {
@@ -118,6 +120,17 @@ public:
         } else {
             _failing.erase(tile);
         }
+    }
+
+    // A failing tile throws while its region is read, so its format is never known and no
+    // render is asked of it.
+    void setFormatFailing(int tile)
+    {
+        {
+            std::lock_guard<std::mutex> locker(_mutex);
+            _formatFailing.insert(tile);
+        }
+        getNode()->markHashDirty();
     }
 
     int renders(int tile) const
@@ -159,6 +172,10 @@ public:
             h.appendI64(it->first);
             h.appendI64(it->second);
         }
+        h.appendU64(_formatFailing.size());
+        for (std::set<int>::const_iterator it = _formatFailing.begin(); it != _formatFailing.end(); ++it) {
+            h.appendI64(*it);
+        }
         h.appendU64(_tilesByFrame.size());
         for (std::map<int, std::string>::const_iterator it = _tilesByFrame.begin(); it != _tilesByFrame.end(); ++it) {
             h.appendI64(it->first);
@@ -197,7 +214,14 @@ public:
                                              ViewIdx /*view*/,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        const RectI format = tileFormat(currentTile());
+        const int tile = currentTile();
+        {
+            std::lock_guard<std::mutex> locker(_mutex);
+            if (_formatFailing.count(tile)) {
+                throw std::runtime_error("the region of UDIM tile " + std::to_string(tile) + " cannot be read");
+            }
+        }
+        const RectI format = tileFormat(tile);
         rod->x1 = format.x1;
         rod->y1 = format.y1;
         rod->x2 = format.x2;
@@ -230,7 +254,9 @@ protected:
             }
         }
         ImageMetadata m;
-        m.set(kNatronMetadataKeyUdimTiles, ImageMetadata::Value(tiles));
+        if (!tiles.empty()) {
+            m.set(kNatronMetadataKeyUdimTiles, ImageMetadata::Value(tiles));
+        }
 
         return m;
     }
@@ -298,6 +324,7 @@ private:
     std::map<int, int> _strokes;
     std::map<int, int> _renders;
     std::set<int> _failing;
+    std::set<int> _formatFailing;
     std::map<int, std::string> _tilesByFrame;
 };
 

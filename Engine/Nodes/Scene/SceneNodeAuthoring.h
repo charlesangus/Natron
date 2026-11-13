@@ -104,8 +104,11 @@ std::string getAnchoredFilePath(const KnobFilePtr& knob);
  * authors them through recordLiveTexture().
  *
  * With udimError not null, the source's tiles are read from the connected image's
- * kNatronMetadataKeyUdimTiles metadata at the consumer's current time. A declaration that does not
- * parse leaves the source a single texture and sets udimError to the reason, empty otherwise. With
+ * kNatronMetadataKeyUdimTiles metadata: a static image's at the consumer's current time held to
+ * the frame range, a varying image's at every frame of the range. A varying image is a UDIM set
+ * when any frame declares tiles; its frameTiles then hold each frame's, and its
+ * missingTilesWarning names the frames without. With no tiles, a declaration that does not parse
+ * leaves the source a single texture and sets udimError to the reason, empty otherwise. With
  * udimError null, tiles are not read and the source is always a single texture.
  **/
 bool getLiveTextureSource(const EffectInstance& consumer,
@@ -122,15 +125,16 @@ void appendLiveTextureSource(const LiveTextureSource& source,
  * @brief Records source as authored in edit's layer, over edit's frames, and returns it as
  * recorded: its getUri(frame) is what the layer authors at frame, and its getWindow(frame) where
  * that texture lies over the image, found without rendering. A varying UDIM source's
- * getTiles(frame) is then the set its image declares at frame, which can differ between frames.
+ * getTiles(frame) is the set its image declares at frame, which can differ between frames.
  **/
 LiveTextureSource recordLiveTexture(const SceneLayerEdit& edit,
                                     const LiveTextureSource& source);
 
 /**
  * @brief What a consumer of source says of its live texture at time, on every evaluation: the
- * store's reason it could not be rendered, a UDIM set's failed tiles showing magenta, and the
- * tiles above what USD reads. A consumer's LiveTextureStore::prepare() warns once, and an
+ * store's reason it could not be rendered, a UDIM set's failed tiles showing magenta, the tiles
+ * above what USD reads and the frames without tiles. time is held to the source's frames, as its
+ * URIs are. A consumer's LiveTextureStore::prepare() warns once, and an
  * evaluation clears its messages, so the consumer repeats these.
  **/
 std::vector<std::string> getLiveTextureWarnings(const LiveTextureSource& source,

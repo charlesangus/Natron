@@ -49,11 +49,14 @@ resolve to one texture per tile, each rendered from the image under that tile.
 The texture coordinates reach the texture unchanged, with no `UsdTransform2d`,
 because the integer part of the UVs picks the tile. Changing the set of tiles
 gives the set a new path; an image that changes over time can declare other
-tiles at each frame. Tiles above 1100 are rendered but never read, and the node
+tiles at each frame, and is a set when it declares tiles at any frame of the
+project's range. A frame at which it declares none, or whose declaration does not
+parse, shows nothing, and the node warns, naming those frames. Tiles above 1100 are rendered but never read, and the node
 warns about them. A tile that cannot be rendered shows magenta, with a warning. Storm
 sizes a whole set from its lowest tile, so the tiles should share a size; the
-others are resampled to it. A declaration that does not parse is ignored, the
-input is read as a single texture, and the node warns, naming the input. A
+others are resampled to it. When no frame declares tiles, a declaration that does
+not parse is ignored, the input is read as a single texture, and the node warns,
+naming the input. A
 texture file path containing `<UDIM>` is checked for warnings by resolving its
 tiles.
 

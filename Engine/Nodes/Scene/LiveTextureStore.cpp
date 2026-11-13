@@ -542,11 +542,11 @@ LiveTextureSource::getTiles(double frame) const
 {
     const double index = getRecordedIndex(frame);
 
-    if ((index < 0.) || (index >= (double)frameTiles.size())) {
+    if (!frameTiles || (index < 0.) || (index >= (double)frameTiles->size())) {
         return tiles;
     }
 
-    return frameTiles[(std::size_t)index];
+    return (*frameTiles)[(std::size_t)index];
 }
 
 std::vector<int>
@@ -581,11 +581,11 @@ LiveTextureSource::getWindow(double frame) const
 {
     const double index = getRecordedIndex(frame);
 
-    if ((index < 0.) || (index >= (double)windows.size())) {
+    if (!windows || (index < 0.) || (index >= (double)windows->size())) {
         return LiveTextureWindow();
     }
 
-    return windows[(std::size_t)index];
+    return (*windows)[(std::size_t)index];
 }
 
 void
@@ -1003,6 +1003,9 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         const std::string beyond = source.getTilesBeyondUsdWarning(frame);
         if (!beyond.empty()) {
             warn(source, beyond);
+        }
+        if (source.isUdim() && !source.missingTilesWarning.empty()) {
+            warn(source, source.missingTilesWarning);
         }
     }
 

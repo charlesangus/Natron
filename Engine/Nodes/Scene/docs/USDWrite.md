@@ -39,20 +39,25 @@ written file resolves from the file's own folder.
 
 Export Live Textures (on by default) writes the images USDMaterial's image
 inputs feed the scene (its `natron://` live textures, which only the running
-Natron session can read) to OpenEXR files in a `name_textures` folder beside
-`name.usda`, and points the texture paths at them, following Asset Paths. Each
-is `<node>_<layer>.exr` for an image that does not change over time, and
-`<node>_<layer>.####.exr`, one per frame of the range with its frame number, for
-one that does, the path time-sampled per frame. A UDIM set, an image whose source
-declares its tiles, is written as a file per declared tile,
-`<node>_<layer>.<tile>.exr` (`<node>_<layer>.<tile>.####.exr` when it changes over
-time, with the tiles it declares at each frame), each rendered for its tile, and its
-path becomes the matching `<UDIM>` path, such as
-`./name_textures/<node>_<layer>.<UDIM>.exr`. A tile that cannot be rendered is named
-in a warning and its file is not written. Since a `<UDIM>` path finds its tiles by
-looking for their files, tile files of the set left by an earlier export that this
-one does not write, such as a tile no longer declared or one that failed, are
-removed. A texture spans the image's
+Natron session can read) to OpenEXR files in a folder named after the whole file
+name, `name.usda_textures` beside `name.usda`, so `name.usda` and `name.usdc` in
+one folder keep their textures apart, and points the texture paths at them,
+following Asset Paths. Each is `<node>_<layer>.exr` for an image that does not
+change over time, and `<node>_<layer>.####.exr`, one per frame of the range with
+its frame number, for one that does, the path time-sampled per frame. A UDIM set,
+an image whose source declares its tiles at any frame, is written as a file per
+declared tile, `<node>_<layer>.udim.<tile>.exr`
+(`<node>_<layer>.udim.<tile>.####.exr` when it changes over time, with the tiles
+it declares at each frame), each rendered for its tile, and its path becomes the
+matching `<UDIM>` path, such as `./name.usda_textures/<node>_<layer>.udim.<UDIM>.exr`.
+A frame at which the set declares no tiles, or a declaration that does not parse,
+has no files, so the set shows nothing there, and a warning names those frames. A
+tile that cannot be rendered is named in a warning and its file is not written.
+Since a `<UDIM>` path finds its tiles by looking for their files, the export lists
+the tile files it writes in `.natron-udim-tiles` in the textures folder, and once
+the USD files are written it removes the tile files an earlier export listed that
+this one did not write, such as a tile no longer declared or one that failed. A
+file it did not write is never removed. A texture spans the image's
 format and its data beyond it, overscan included. The files are half-float RGBA, ZIP-compressed, with straight colour rather than
 premultiplied, of the project's first view. They are written before the USD files,
 so a texture that fails leaves the earlier USD files as they were. Off, the

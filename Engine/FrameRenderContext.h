@@ -132,6 +132,12 @@ public:
     void putDevice(const TaskKey& key, std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers, const RectI& renderedRoI, int consumers);
 
     /**
+     * @brief Like put(), with a device copy of some of the layers too, so that a device consumer reads those in place
+     * and a RAM one never waits on a download.
+     **/
+    void put(const TaskKey& key, std::map<ImageLayerDesc, ImagePtr> layers, std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers, const RectI& renderedRoI, int consumers);
+
+    /**
      * @brief Appends to out the image of each needed layer, in order, if all of them are stored for key and both
      * their bounds and the RoI rendered for key contain pixelRoI. Returns false and leaves out untouched otherwise.
      * A layer stored only in device memory is downloaded once and kept in RAM for the later finds.

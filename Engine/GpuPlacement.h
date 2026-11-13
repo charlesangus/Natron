@@ -85,8 +85,8 @@ struct PlacementInputs {
 double taskPixelCount(const FrameGraph::Task& task);
 
 /**
- * @brief Whether region moves no image between the devices: every external input is already on the GPU, and no output
- * is consumed on the CPU, the root counting as consumed on the CPU unless rootOnDevice.
+ * @brief Whether region moves no image between the devices: every external input is already on the GPU, or served from
+ * the device tier, and no output is consumed on the CPU, the root counting as consumed on the CPU unless rootOnDevice.
  **/
 bool regionTransfersAreFree(const FrameGraph& graph,
                             const FrameGraph::Region& region,

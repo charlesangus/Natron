@@ -363,6 +363,9 @@ protected:
 
             return native && native->canRenderOnGpu(query);
         };
+        inputs.isCached = [](const FrameGraph::Task& task) {
+            return task.servedFromCache;
+        };
         placeGraph(run->graph, inputs);
     }
 
@@ -966,5 +969,164 @@ TEST_F(GpuRegionFallbackTest, RegionRunWithoutHeadroomPublishesNothing)
     EXPECT_EQ(0, membersInDeviceTier(graph));
     EXPECT_EQ(report->wholePeakDeviceBytes, report->plannedPeakDeviceBytes);
     EXPECT_LE(report->peakDeviceBytes, report->plannedPeakDeviceBytes);
+}
+
+class GpuDeviceServeTest
+    : public GpuRegionFallbackTest {
+protected:
+    // Renders the chain as one region, so that the device tier holds the first two grades, then edits the last one and
+    // plans the next frame as the viewer would, pruned behind its cache hits. False with a reason when the device tier
+    // does not serve the middle grade.
+    bool planAfterEditingTheLast(const std::vector<NodePtr>& grades,
+                                 FrameRun* run,
+                                 std::string* error)
+    {
+        FrameGraph first;
+        if (!renderAsOneRegion(grades, &first, error)) {
+            return false;
+        }
+        if (membersInDeviceTier(first) < 2) {
+            *error = "the first frame left fewer than two grades in the device tier";
+
+            return false;
+        }
+        if (!setKnobValues(grades.back(), "multiply", { 0.7, 0.8, 0.9, 1. })) {
+            *error = "could not edit the last grade";
+
+            return false;
+        }
+        if (!prepareFrame(grades.back(), run, error)) {
+            return false;
+        }
+        RenderScheduler::pruneBehindCacheHits(run->graph, run->context);
+        placeOnGpu(run, grades);
+        run->stats->setTrackRenderRoICalls(true);
+
+        for (const FrameGraph::Task& task : run->graph.tasks) {
+            if (task.key.node == grades[1]) {
+                if (!task.servedFromCache || (task.servedTier != EffectInstance::OutputCacheTier::Device)) {
+                    *error = "the middle grade is not served from the device tier";
+
+                    return false;
+                }
+
+                return true;
+            }
+        }
+        *error = "the middle grade has no task";
+
+        return false;
+    }
+
+    static int renderRoICallsOf(const FrameRun& run,
+                                const NodePtr& node)
+    {
+        int calls = 0;
+        const std::string name = node->getScriptName_mt_safe();
+        for (const std::pair<const std::tuple<std::string, double, int>, int>& call : run.stats->getRenderRoICalls()) {
+            if (std::get<0>(call.first) == name) {
+                calls += call.second;
+            }
+        }
+
+        return calls;
+    }
+
+    // Compares the root of run with a render of root from empty caches.
+    void expectMatchesColdRender(const NodePtr& root,
+                                 const FrameRun& run)
+    {
+        appPTR->clearAllCaches();
+        expectMatchesCpu(root, run);
+    }
+};
+
+TEST_F(GpuDeviceServeTest, EditingTheLastNodeRunsOnlyItAndReadsTheRestFromTheDevice)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(planAfterEditingTheLast(grades, &run, &error)) << error;
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(1u, run.graph.regions.front().members.size());
+    EXPECT_EQ(grades.back(), run.graph.tasks[run.graph.regions.front().members.front()].key.node);
+
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+
+    const std::map<std::string, int> gpuTasks = run.stats->getGpuTasksPerNode();
+    ASSERT_EQ(1u, gpuTasks.size());
+    EXPECT_EQ(grades.back()->getScriptName_mt_safe(), gpuTasks.begin()->first);
+    EXPECT_EQ(0, renderRoICallsOf(run, grades[0]));
+    EXPECT_EQ(0, renderRoICallsOf(run, grades[1]));
+    // Only the root comes back to RAM.
+    EXPECT_EQ(0, run.stats->getUploadCount());
+    expectMatchesColdRender(grades.back(), run);
+}
+
+TEST_F(GpuDeviceServeTest, DeviceEntryGoneBeforeTheTaskRunsIsRenderedInstead)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(planAfterEditingTheLast(grades, &run, &error)) << error;
+
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+    tier->clear();
+
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    EXPECT_GT(renderRoICallsOf(run, grades[1]), 0);
+    expectMatchesColdRender(grades.back(), run);
+}
+
+TEST_F(GpuDeviceServeTest, HostHitReadOnTheGpuIsPromotedToTheDeviceTier)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    // Run as strips, the region leaves its outputs in the host tier alone.
+    setGpuStripOverridesForTests(16384, 0);
+    FrameGraph first;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(grades, &first, &error)) << error;
+    ASSERT_EQ(0, membersInDeviceTier(first));
+    setGpuStripOverridesForTests(0, 0);
+
+    ASSERT_TRUE(setKnobValues(grades.back(), "multiply", { 0.7, 0.8, 0.9, 1. }));
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(grades.back(), &run, &error)) << error;
+    RenderScheduler::pruneBehindCacheHits(run.graph, run.context);
+    placeOnGpu(&run, grades);
+    const FrameGraph::Task* middle = nullptr;
+    for (const FrameGraph::Task& task : run.graph.tasks) {
+        if (task.key.node == grades[1]) {
+            middle = &task;
+        }
+    }
+    ASSERT_TRUE(middle);
+    ASSERT_TRUE(middle->servedFromCache);
+    ASSERT_EQ(EffectInstance::OutputCacheTier::Memory, middle->servedTier);
+    const ImageKey middleKey = outputKey(*middle);
+
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+    EXPECT_TRUE(bool(tier->find(middleKey)));
+    std::list<ImagePtr> cached;
+    EXPECT_TRUE(appPTR->peekImage(middleKey, &cached));
+    expectMatchesColdRender(grades.back(), run);
 }
 #endif // NATRON_HAVE_GPU

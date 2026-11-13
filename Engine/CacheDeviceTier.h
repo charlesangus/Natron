@@ -175,6 +175,12 @@ public:
     virtual std::size_t budget() const override final;
     virtual std::size_t used() const override final;
     virtual bool demote(const CacheEntryPtr& entry) override final;
+
+    /**
+     * @brief Uploads a float RAM image of the host tier and caches the copy under its key, sharing its header, so that
+     * the host entry stays. True when the tier holds a resident entry of the key afterwards. False for an image with
+     * no header, one that would only fit by evicting working buffers, and when the device is lost. Off any cache lock.
+     **/
     virtual bool promote(const CacheEntryPtr& entry) override final;
 
     // Null host makes every demotion a drop.
@@ -198,6 +204,13 @@ public:
      * refuses such pixels, so the entry leaves the table and its header loses the device bit.
      **/
     CacheDeviceEntryPtr find(const ImageKey& key);
+
+    /**
+     * @brief Moves the entry's pixels to RAM for a reader that needs them there, whatever the cost rule would say: the
+     * entry leaves the tier, and the image, sharing its header, joins the host tier unless one of its key is there
+     * already. Null when the pixels could not be read back, as while a render pins them or once the device is lost.
+     **/
+    ImagePtr downloadToHost(const CacheDeviceEntryPtr& entry);
 
     /**
      * @brief An unallocated image of key's entry sharing its header, for a lookup that must not count as a use: the
@@ -239,7 +252,11 @@ private:
 
     void dropAll();
 
-    bool moveToHost(const CacheDeviceEntry& entry);
+    // The RAM image evictInto() filled, null when nothing was read back; adopted tells whether the host tier took it.
+    ImagePtr moveToHost(const CacheDeviceEntry& entry,
+                        bool* adopted);
+
+    CacheDeviceEntryPtr entryOf(const ImageKey& key) const;
 
     // Off _lock, since it takes the image's mutex.
     static void letGo(const CacheDeviceEntry& entry);

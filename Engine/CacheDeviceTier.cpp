@@ -345,21 +345,25 @@ CacheDeviceTier::insert(const ImageKey& key,
 }
 
 CacheDeviceEntryPtr
-CacheDeviceTier::find(const ImageKey& key)
+CacheDeviceTier::entryOf(const ImageKey& key) const
 {
-    CacheDeviceEntryPtr found;
-    {
-        std::lock_guard<std::mutex> k(_lock);
-        const Table::const_iterator it = _table.find(key.getHash());
-        if (it != _table.end()) {
-            for (const CacheDeviceEntryPtr& entry : it->second) {
-                if (entry->getKey() == key) {
-                    found = entry;
-                    break;
-                }
+    std::lock_guard<std::mutex> k(_lock);
+    const Table::const_iterator it = _table.find(key.getHash());
+    if (it != _table.end()) {
+        for (const CacheDeviceEntryPtr& entry : it->second) {
+            if (entry->getKey() == key) {
+                return entry;
             }
         }
     }
+
+    return CacheDeviceEntryPtr();
+}
+
+CacheDeviceEntryPtr
+CacheDeviceTier::find(const ImageKey& key)
+{
+    const CacheDeviceEntryPtr found = entryOf(key);
     if (!found) {
         return found;
     }
@@ -380,19 +384,7 @@ ImagePtr
 CacheDeviceTier::peekStub(const ImageKey& key,
                           const CacheAPI* cache) const
 {
-    CacheDeviceEntryPtr found;
-    {
-        std::lock_guard<std::mutex> k(_lock);
-        const Table::const_iterator it = _table.find(key.getHash());
-        if (it != _table.end()) {
-            for (const CacheDeviceEntryPtr& entry : it->second) {
-                if (entry->getKey() == key) {
-                    found = entry;
-                    break;
-                }
-            }
-        }
-    }
+    const CacheDeviceEntryPtr found = entryOf(key);
     if (!found || !(found->header()->residency.load() & CacheEntryHeader::eResidencyDevice) || !found->image()->isResident()) {
         return ImagePtr();
     }
@@ -455,7 +447,8 @@ CacheDeviceTier::demote(const CacheEntryPtr& entry)
     }
     CacheEntryHeader& header = *device->header();
     const bool resident = device->image()->isResident();
-    if (resident && worthDownloading(*device) && moveToHost(*device)) {
+    bool adopted = false;
+    if (resident && worthDownloading(*device) && moveToHost(*device, &adopted) && adopted) {
         header.residency.fetch_or(CacheEntryHeader::eResidencyHost);
     }
     header.residency.fetch_and(kNotOnDevice);
@@ -465,12 +458,40 @@ CacheDeviceTier::demote(const CacheEntryPtr& entry)
     return true;
 }
 
-bool
-CacheDeviceTier::moveToHost(const CacheDeviceEntry& entry)
+ImagePtr
+CacheDeviceTier::downloadToHost(const CacheDeviceEntryPtr& entry)
 {
+    if (!entry) {
+        return ImagePtr();
+    }
+    // Lost to a concurrent demotion or clear: the image still has its pixels, on the device or in the copy an
+    // eviction left.
+    if (!take(entry.get())) {
+        return entry->image()->downloadToRam();
+    }
+    CacheEntryHeader& header = *entry->header();
+    bool adopted = false;
+    ImagePtr image = moveToHost(*entry, &adopted);
+    if (adopted) {
+        header.residency.fetch_or(CacheEntryHeader::eResidencyHost);
+    }
+    if (!image) {
+        image = entry->image()->evictToRam();
+    }
+    header.residency.fetch_and(kNotOnDevice);
+    letGo(*entry);
+
+    return image;
+}
+
+ImagePtr
+CacheDeviceTier::moveToHost(const CacheDeviceEntry& entry,
+                            bool* adopted)
+{
+    *adopted = false;
     std::shared_lock<std::shared_mutex> k(_hostMutex);
     if (!_host) {
-        return false;
+        return ImagePtr();
     }
     const std::uint64_t generation = _host->deviceHostGeneration();
     const GpuImageLayout& layout = entry.image()->layout();
@@ -482,19 +503,73 @@ CacheDeviceTier::moveToHost(const CacheDeviceEntry& entry)
         image = std::make_shared<Image>(entry.getKey(), params, _host->deviceHostCache(), entry.header());
         image->allocateMemory();
     } catch (const std::bad_alloc&) {
-        return false;
+        return ImagePtr();
     }
     if (!entry.image()->evictInto(image)) {
-        return false;
+        return ImagePtr();
     }
+    *adopted = _host->adoptFromDevice(image, generation);
 
-    return _host->adoptFromDevice(image, generation);
+    return image;
 }
 
 bool
-CacheDeviceTier::promote(const CacheEntryPtr& /*entry*/)
+CacheDeviceTier::promote(const CacheEntryPtr& entry)
 {
+#ifdef NATRON_HAVE_GPU
+    const ImagePtr host = std::dynamic_pointer_cast<Image>(entry);
+    if (!host || !host->getEntryHeader() || !_runtime || _runtime->isLost() || (host->getStorageMode() != eStorageModeRAM)
+        || (host->getBitDepth() != eImageBitDepthFloat) || !host->isAllocated()) {
+        return false;
+    }
+    const ImageKey key = host->getKey();
+    const CacheDeviceEntryPtr existing = entryOf(key);
+    if (existing && existing->image()->isResident()) {
+        return true;
+    }
+
+    GpuImageLayout layout;
+    layout.layer = host->getComponents();
+    layout.rod = host->getRoD();
+    layout.bounds = host->getBounds();
+    layout.mipmapLevel = host->getMipmapLevel();
+    layout.par = host->getPixelAspectRatio();
+    layout.fielding = host->getFieldingOrder();
+    layout.key = key;
+    const std::size_t bytes = gpuHostTransferBytes(*host);
+    if ((layout.nComps() != (int)host->getComponentsCount()) || (bytes == 0) || (bytes > layout.deviceBytes())) {
+        return false;
+    }
+    // Fitting only by evicting working buffers would make the next region run as strips, or fall back.
+    if (layout.deviceBytes() > budget()) {
+        return false;
+    }
+    gpu::GpuBufferHandle handle;
+    if (!_runtime->acquire(layout.deviceBytes(), handle)) {
+        return false;
+    }
+    {
+        Image::ReadAccess access = host->getReadRights();
+        const unsigned char* data = access.pixelAt(layout.bounds.x1, layout.bounds.y1);
+        if (!data) {
+            return false;
+        }
+        gpu::StreamOptions options;
+        options.handoff = gpu::ComputeHandoff::Submit;
+        gpu::TimelineValue done;
+        // upload() only reads the host range.
+        if (!_runtime->upload({ const_cast<unsigned char*>(data), bytes }, handle.buffer(), 0, done, options) || !_runtime->wait(done)) {
+            return false;
+        }
+    }
+    const GpuDeviceImagePtr image = GpuDeviceImage::create(*_runtime, handle, layout, RenderStatsPtr());
+
+    return image && insert(key, image, host->getEntryHeader());
+#else
+    (void)entry;
+
     return false;
+#endif
 }
 
 void

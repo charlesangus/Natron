@@ -51,8 +51,10 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/CacheRetention.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/GpuContext.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
@@ -1351,6 +1353,124 @@ failTaskWithReason(const EffectInstancePtr& effect,
     appPTR->writeToErrorLog_mt_safe(name, QDateTime::currentDateTime(), QString::fromUtf8("Render task failed: the node %1").arg(QString::fromUtf8(reason)));
 }
 
+// Whether a region reads the task's output on the device, and whether a task or the frame's future reads it in RAM.
+void
+consumerDevices(const FrameGraph& graph,
+                const FrameGraph::Task& task,
+                bool* onGpu,
+                bool* onCpu)
+{
+    *onGpu = false;
+    *onCpu = task.consumers == 0;
+    for (const int consumer : task.consumerTasks) {
+        if (graph.tasks[consumer].regionId >= 0) {
+            *onGpu = true;
+        } else {
+            *onCpu = true;
+        }
+    }
+}
+
+/**
+ * @brief Gives the task the device tier's entries of its layers without rendering it: as device layers when a region
+ * reads them, which it then does in place, and otherwise moved to the host tier as planes. False, with both maps left
+ * empty, when an entry left the tier or the device was lost since the plan, so that the task renders instead.
+ **/
+bool
+serveFromDeviceTier(const FrameRenderContext& context,
+                    const FrameGraph& graph,
+                    const FrameGraph::Task& task,
+                    const EffectInstancePtr& effect,
+                    std::map<ImageLayerDesc, ImagePtr>* planes,
+                    std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers)
+{
+#ifdef NATRON_HAVE_GPU
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::shared_ptr<void> held = gpu ? gpu->holdRuntime() : std::shared_ptr<void>();
+    const CacheDeviceTierPtr tier = held ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
+    if (!tier || task.components.empty()) {
+        return false;
+    }
+    const ParallelRenderArgsPtr frameArgs = context.getArgs(NodeCtxKey(task.key.node, task.key.contextKey));
+    const bool draft = task.key.node->isDraftModeUsed() && frameArgs && frameArgs->draftMode;
+    const ImageKey base = effect->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, draft, task.cacheMipmapLevel);
+
+    std::map<ImageLayerDesc, CacheDeviceEntryPtr> entries;
+    for (const ImageLayerDesc& layer : task.components) {
+        const CacheDeviceEntryPtr entry = tier->find(base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat));
+        if (!entry) {
+            return false;
+        }
+        // A consumer of the store gets exactly the channels it asked for, over all of what the task renders.
+        const GpuDeviceImagePtr& image = entry->image();
+        if ((image->runtime() != tier->runtime()) || (image->layout().layer.getChannels() != layer.getChannels()) || !image->bounds().contains(task.renderedRoI)) {
+            return false;
+        }
+        entries[layer] = entry;
+    }
+
+    bool onGpu = false;
+    bool onCpu = false;
+    consumerDevices(graph, task, &onGpu, &onCpu);
+    std::map<ImageLayerDesc, ImagePtr> ram;
+    std::map<ImageLayerDesc, DeviceImagePtr> device;
+    for (const std::pair<const ImageLayerDesc, CacheDeviceEntryPtr>& entry : entries) {
+        // A RAM consumer beside a region downloads from the store, after or instead of the region's read in place.
+        if (onGpu) {
+            device[entry.first] = entry.second->image();
+            continue;
+        }
+        const ImagePtr image = tier->downloadToHost(entry.second);
+        if (!image) {
+            return false;
+        }
+        ram[entry.first] = image;
+    }
+    planes->swap(ram);
+    deviceLayers->swap(device);
+
+    return true;
+#else
+    (void)context;
+    (void)graph;
+    (void)task;
+    (void)effect;
+    (void)planes;
+    (void)deviceLayers;
+
+    return false;
+#endif
+} // serveFromDeviceTier
+
+// Uploads the cached planes a region is about to read into the device tier, so that the region reads them in place and
+// the next frame is served from the device.
+void
+promoteForGpu(const std::map<ImageLayerDesc, ImagePtr>& planes,
+              std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers)
+{
+#ifdef NATRON_HAVE_GPU
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::shared_ptr<void> held = gpu ? gpu->holdRuntime() : std::shared_ptr<void>();
+    const CacheDeviceTierPtr tier = held ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
+    if (!tier) {
+        return;
+    }
+    for (const std::pair<const ImageLayerDesc, ImagePtr>& plane : planes) {
+        const ImagePtr& image = plane.second;
+        if (!image || !image->getCacheAPI() || !image->getEntryHeader() || !tier->promote(image)) {
+            continue;
+        }
+        const CacheDeviceEntryPtr entry = tier->find(image->getKey());
+        if (entry) {
+            (*deviceLayers)[plane.first] = entry->image();
+        }
+    }
+#else
+    (void)planes;
+    (void)deviceLayers;
+#endif
+}
+
 } // namespace
 
 EffectInstance::RenderRoIRetCode
@@ -1406,9 +1526,24 @@ RenderScheduler::executeTask(const FramePtr& frame,
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeFailed;
     std::map<ImageLayerDesc, ImagePtr> planes;
+    std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
     EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+    bool servedInPlace = false;
 
-    if (effect) {
+    if (effect && task.servedFromCache && (task.servedTier == EffectInstance::OutputCacheTier::Device)) {
+        ProfileSink& sink = profileSink();
+        const std::chrono::steady_clock::time_point serveStart = sink.isEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+        servedInPlace = serveFromDeviceTier(*frame->context, frame->graph, task, effect, &planes, &deviceLayers);
+        if (servedInPlace) {
+            retCode = EffectInstance::eRenderRoIRetCodeOk;
+            if (sink.isEnabled()) {
+                const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - serveStart).count();
+                sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, true, false, EffectInstance::eRenderCacheStateHit));
+            }
+        }
+    }
+
+    if (effect && !servedInPlace) {
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
         ProfileSink& sink = profileSink();
@@ -1465,9 +1600,22 @@ RenderScheduler::executeTask(const FramePtr& frame,
         const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
         // The consumers of a task of an aborted frame never run, so its planes would only be held until it finishes.
         if ((task.consumers > 0) && !(abortInfo && abortInfo->isAborted())) {
-            store.put(task.key, planes, task.renderedRoI, task.consumers);
+            if (task.servedFromCache && !servedInPlace) {
+                bool onGpu = false;
+                bool onCpu = false;
+                consumerDevices(frame->graph, task, &onGpu, &onCpu);
+                if (onGpu) {
+                    promoteForGpu(planes, &deviceLayers);
+                }
+            }
+            if (deviceLayers.empty()) {
+                store.put(task.key, planes, task.renderedRoI, task.consumers);
+            } else {
+                store.put(task.key, planes, std::move(deviceLayers), task.renderedRoI, task.consumers);
+            }
         }
-        if (frame->context->getStats()) {
+        // A task served in place ran nothing.
+        if (frame->context->getStats() && !servedInPlace) {
             frame->context->getStats()->incTasksRun();
         }
     }

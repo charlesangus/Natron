@@ -109,6 +109,25 @@ FrameStore::putDevice(const TaskKey& key,
 }
 
 void
+FrameStore::put(const TaskKey& key,
+                std::map<ImageLayerDesc, ImagePtr> layers,
+                std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers,
+                const RectI& renderedRoI,
+                int consumers)
+{
+    if (consumers <= 0) {
+        return;
+    }
+
+    std::shared_ptr<Entry> entry = std::make_shared<Entry>();
+    entry->layers = std::move(layers);
+    entry->deviceLayers = std::move(deviceLayers);
+    entry->renderedRoI = renderedRoI;
+    entry->consumersLeft = consumers;
+    putEntry(key, entry);
+}
+
+void
 FrameStore::putEntry(const TaskKey& key,
                      const std::shared_ptr<Entry>& entry)
 {

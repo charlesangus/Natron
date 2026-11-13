@@ -49,6 +49,7 @@
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/Nodes/Scene/Utility/GpuTracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
+#include "Engine/Nodes/Scene/Utility/UtilityGpuLimits.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 
 #include "utility_raygen_spirv.h"
@@ -59,17 +60,9 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-std::atomic<gpu::GpuRuntime*> gTestRuntime { nullptr };
-
 // The application's GPU starts on a thread of its own at launch; a frame asked for that early waits for it.
 const std::chrono::seconds kGpuInitWait(10);
 } // anon namespace
-
-void
-setUtilityGpuRuntimeForTesting(gpu::GpuRuntime* runtime)
-{
-    gTestRuntime.store(runtime);
-}
 
 UtilityGpu
 acquireUtilityGpu()
@@ -77,12 +70,6 @@ acquireUtilityGpu()
     UtilityGpu result;
 
 #ifdef NATRON_HAVE_GPU
-    if (gpu::GpuRuntime* runtime = gTestRuntime.load()) {
-        result.runtime = runtime;
-
-        return result;
-    }
-
     GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
 
     if (!context) {
@@ -111,6 +98,25 @@ acquireUtilityGpu()
     return result;
 }
 
+std::uint64_t
+utilityGpuBudget()
+{
+#ifdef NATRON_HAVE_GPU
+    GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
+
+    if (!context || context->isInitializing()) {
+        return 0;
+    }
+
+    const std::shared_ptr<void> hold = context->holdRuntime();
+    gpu::GpuRuntime* runtime = hold ? context->runtime() : nullptr;
+
+    return (runtime && !runtime->isLost()) ? runtime->pool().budget() : 0;
+#else
+    return 0;
+#endif
+}
+
 #ifdef NATRON_HAVE_GPU
 
 namespace {
@@ -119,12 +125,12 @@ static_assert(sizeof(KernelShadeParams) == utility_shade_flat_push_bytes);
 static_assert(utility_raygen_storage_buffers == 1 && utility_shade_flat_storage_buffers == 11);
 static_assert(sizeof(KernelGeometryRecord) == 16);
 
-const std::size_t kRayArrays = 8;
-const std::size_t kHitArrays = 3;
+const std::size_t kRayArrays = kUtilityRayArrays;
+const std::size_t kHitArrays = kUtilityHitArrays;
 
-// Vulkan guarantees 65535 workgroups along x, and the ray generation and shading kernels take a batch in
-// one dispatch.
-const std::uint64_t kMaxBatchRays = 65535ull * 64ull;
+// Bounds how long a stop waits for the batch in flight, which on an integrated GPU or lavapipe is the
+// time of this many rays.
+const std::uint64_t kMaxBatchRays = std::min<std::uint64_t>(kUtilityMaxDispatchRays, std::uint64_t(1) << 18);
 
 // Vulkan has no zero-sized buffer, and a scene without colours or triangles still binds all of them.
 const VkDeviceSize kMinTableBytes = 16;
@@ -133,17 +139,7 @@ Tracer::Status
 classify(const gpu::GpuStatus& status,
          const gpu::GpuDevice& device)
 {
-    if (device.isLost() || status.result == VK_ERROR_DEVICE_LOST) {
-        return Tracer::Status::DeviceLost;
-    }
-    if (status.result == VK_ERROR_OUT_OF_DEVICE_MEMORY || status.result == VK_ERROR_OUT_OF_HOST_MEMORY) {
-        return Tracer::Status::OutOfMemory;
-    }
-    if (status.result == VK_ERROR_FEATURE_NOT_PRESENT) {
-        return Tracer::Status::Unsupported;
-    }
-
-    return Tracer::Status::Failed;
+    return classifyUtilityGpuStatus(status, device);
 }
 
 gpu::GpuKernelDesc
@@ -162,10 +158,12 @@ shadeFlatDesc()
     };
 }
 
-// The host-visible buffers of one batch, kept from frame to frame and grown when a batch outgrows them.
-struct BatchOutputs {
+// The host-visible copies of what a batch's film reads, kept from frame to frame and grown when a batch
+// outgrows them. Only the arrays the film reads exist.
+struct BatchReadback {
     std::size_t capacity = 0;
-    gpu::GpuBuffer hitIds;
+    WavefrontAovs aovs { false, false, false, false };
+    gpu::GpuBuffer hitGeometry;
     gpu::GpuBuffer color;
     gpu::GpuBuffer depth;
     gpu::GpuBuffer primId;
@@ -175,11 +173,18 @@ struct BatchOutputs {
 struct ShadeTableBuffers {
     std::uint64_t version = 0;
     bool valid = false;
-    gpu::GpuBuffer geometries;
-    gpu::GpuBuffer colors;
-    gpu::GpuBuffer triangles;
-    gpu::GpuBuffer instanceIds;
+    gpu::GpuBufferHandle geometries;
+    gpu::GpuBufferHandle colors;
+    gpu::GpuBufferHandle triangles;
+    gpu::GpuBufferHandle instanceIds;
 };
+
+bool
+sameAovs(const WavefrontAovs& a,
+         const WavefrontAovs& b)
+{
+    return a.color == b.color && a.depth == b.depth && a.primId == b.primId && a.instanceId == b.instanceId;
+}
 } // anon namespace
 
 struct WavefrontGpu::Implementation {
@@ -220,23 +225,39 @@ struct WavefrontGpu::Implementation {
         return true;
     }
 
-    bool upload(const void* data,
+    // Records a copy of `data` into a device-local buffer from the pool, through a staging buffer the context
+    // holds until its work is done.
+    bool upload(gpu::GpuRecordContext& ctx,
+                const void* data,
                 std::size_t bytes,
                 const char* what,
-                gpu::GpuBuffer& out)
+                gpu::GpuBufferHandle& out)
     {
-        if (!stage(bytes, what, out)) {
+        out = gpu::GpuBufferHandle();
+        if (gpu::GpuStatus s = pool.acquire(std::max<VkDeviceSize>(bytes, kMinTableBytes), out); !s) {
+            return fail("WavefrontGpu could not hold the " + std::to_string(bytes) + " bytes of " + what, s);
+        }
+        if (!bytes) {
+            return true;
+        }
+
+        std::shared_ptr<gpu::GpuBuffer> staging = std::make_shared<gpu::GpuBuffer>();
+
+        if (!stage(bytes, what, *staging)) {
             return false;
         }
-        if (bytes) {
-            std::memcpy(out.mapped(), data, bytes);
+        std::memcpy(staging->mapped(), data, bytes);
+        if (gpu::GpuStatus s = ctx.copyBuffer(*staging, 0, out.buffer(), 0, bytes); !s) {
+            return fail(std::string("WavefrontGpu could not upload its ") + what, s);
         }
+        ctx.hold(std::move(staging));
 
         return true;
     }
 
     bool uploadTables(std::uint64_t version);
-    bool reserveOutputs(std::size_t rays);
+    bool reserveReadback(std::size_t rays,
+                         const WavefrontAovs& aovs);
     bool renderBatch(const WavefrontFrame& frame,
                      const WavefrontRect& rect,
                      gpu::GpuRecordContext& ctx,
@@ -260,9 +281,10 @@ struct WavefrontGpu::Implementation {
     // Set while unusable.
     Outcome unusable;
     Outcome outcome;
+    bool sceneFailed = false;
     WavefrontShadeTables shadeTables;
     ShadeTableBuffers tables;
-    BatchOutputs outputs;
+    BatchReadback readback;
 };
 
 bool
@@ -271,16 +293,25 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
     if (tables.valid && tables.version == version) {
         return true;
     }
-    tables.valid = false;
+    tables = ShadeTableBuffers();
 
     const KernelShadeBuffers source = shadeTables.buffers();
+    std::unique_ptr<gpu::GpuRecordContext> ctx;
+    ShadeTableBuffers next;
 
-    if (!upload(source.geometries, source.geometryCount * sizeof(KernelGeometryRecord), "geometry records", tables.geometries)
-        || !upload(source.colors, source.colorCount * 4 * sizeof(float), "colours", tables.colors)
-        || !upload(source.triangles, source.triangleIndexCount * sizeof(std::int32_t), "triangle indices", tables.triangles)
-        || !upload(source.instanceIds, source.instanceCount * sizeof(std::int32_t), "instance ids", tables.instanceIds)) {
+    if (gpu::GpuStatus s = gpu::GpuRecordContext::create(registry, ctx, &pool); !s) {
+        return fail("WavefrontGpu could not create a record context", s);
+    }
+    if (!upload(*ctx, source.geometries, source.geometryCount * sizeof(KernelGeometryRecord), "geometry records", next.geometries)
+        || !upload(*ctx, source.colors, source.colorCount * 4 * sizeof(float), "colours", next.colors)
+        || !upload(*ctx, source.triangles, source.triangleIndexCount * sizeof(std::int32_t), "triangle indices", next.triangles)
+        || !upload(*ctx, source.instanceIds, source.instanceCount * sizeof(std::int32_t), "instance ids", next.instanceIds)) {
         return false;
     }
+    if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
+        return fail("WavefrontGpu could not upload its shading tables", s);
+    }
+    tables = std::move(next);
     tables.version = version;
     tables.valid = true;
 
@@ -288,22 +319,27 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version)
 }
 
 bool
-WavefrontGpu::Implementation::reserveOutputs(std::size_t rays)
+WavefrontGpu::Implementation::reserveReadback(std::size_t rays,
+                                              const WavefrontAovs& aovs)
 {
-    if (outputs.capacity >= rays) {
+    if (readback.capacity >= rays && sameAovs(readback.aovs, aovs)) {
         return true;
     }
-    outputs = BatchOutputs();
-    if (!stage(kHitArrays * rays * sizeof(std::uint32_t), "hit ids", outputs.hitIds)
-        || !stage(rays * 4 * sizeof(float), "shaded colour", outputs.color)
-        || !stage(rays * sizeof(float), "depth", outputs.depth)
-        || !stage(rays * sizeof(std::int32_t), "prim ids", outputs.primId)
-        || !stage(rays * sizeof(std::int32_t), "instance ids", outputs.instanceId)) {
-        outputs = BatchOutputs();
+    readback = BatchReadback();
+    if (!aovs.any()) {
+        return true;
+    }
+    if (!stage(rays * sizeof(std::uint32_t), "hit geometry ids", readback.hitGeometry)
+        || (aovs.color && !stage(rays * 4 * sizeof(float), "shaded colour", readback.color))
+        || (aovs.depth && !stage(rays * sizeof(float), "depth", readback.depth))
+        || (aovs.primId && !stage(rays * sizeof(std::int32_t), "prim ids", readback.primId))
+        || (aovs.instanceId && !stage(rays * sizeof(std::int32_t), "instance ids", readback.instanceId))) {
+        readback = BatchReadback();
 
         return false;
     }
-    outputs.capacity = rays;
+    readback.capacity = rays;
+    readback.aovs = aovs;
 
     return true;
 }
@@ -337,25 +373,44 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 {
     const std::size_t count = static_cast<std::size_t>(rect.width) * rect.height;
     const std::array<std::uint32_t, 3> threads = { static_cast<std::uint32_t>(count), 1, 1 };
+    WavefrontAovs aovs = film.aovs();
 
-    if (!reserveOutputs(count)) {
+    if (deviceColor) {
+        aovs.color = false;
+    }
+    if (!reserveReadback(count, aovs)) {
         return false;
     }
 
     gpu::GpuBuffer* rays = nullptr;
     gpu::GpuBuffer* hitValues = nullptr;
-    gpu::GpuBuffer* color = &outputs.color;
+    gpu::GpuBuffer* hitIds = nullptr;
+    gpu::GpuBuffer* color = nullptr;
+    gpu::GpuBuffer* depth = nullptr;
+    gpu::GpuBuffer* primId = nullptr;
+    gpu::GpuBuffer* instanceId = nullptr;
+    const std::string rayCount = std::to_string(count) + " rays";
 
     if (gpu::GpuStatus s = ctx.scratch(kRayArrays * count * sizeof(float), rays); !s) {
-        return fail("WavefrontGpu could not hold a batch of " + std::to_string(count) + " rays", s);
+        return fail("WavefrontGpu could not hold a batch of " + rayCount, s);
     }
     if (gpu::GpuStatus s = ctx.scratch(kHitArrays * count * sizeof(float), hitValues); !s) {
-        return fail("WavefrontGpu could not hold the hits of " + std::to_string(count) + " rays", s);
+        return fail("WavefrontGpu could not hold the hits of " + rayCount, s);
     }
-    if (deviceColor) {
-        if (gpu::GpuStatus s = ctx.scratch(count * 4 * sizeof(float), color); !s) {
-            return fail("WavefrontGpu could not hold the colours of " + std::to_string(count) + " rays", s);
-        }
+    if (gpu::GpuStatus s = ctx.scratch(kHitArrays * count * sizeof(std::uint32_t), hitIds); !s) {
+        return fail("WavefrontGpu could not hold the hit ids of " + rayCount, s);
+    }
+    if (gpu::GpuStatus s = ctx.scratch(count * 4 * sizeof(float), color); !s) {
+        return fail("WavefrontGpu could not hold the colours of " + rayCount, s);
+    }
+    if (gpu::GpuStatus s = ctx.scratch(count * sizeof(float), depth); !s) {
+        return fail("WavefrontGpu could not hold the depths of " + rayCount, s);
+    }
+    if (gpu::GpuStatus s = ctx.scratch(count * sizeof(std::int32_t), primId); !s) {
+        return fail("WavefrontGpu could not hold the prim ids of " + rayCount, s);
+    }
+    if (gpu::GpuStatus s = ctx.scratch(count * sizeof(std::int32_t), instanceId); !s) {
+        return fail("WavefrontGpu could not hold the instance ids of " + rayCount, s);
     }
 
     const KernelRayGenParams rayGenParams = makeRayGenParams(frame, rect);
@@ -365,7 +420,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         return fail("WavefrontGpu could not generate rays", s);
     }
     ctx.computeBarrier();
-    if (gpu::GpuStatus s = tracer.recordIntersect(ctx, *rays, static_cast<std::uint32_t>(count), *hitValues, outputs.hitIds); !s) {
+    if (gpu::GpuStatus s = tracer.recordIntersect(ctx, *rays, static_cast<std::uint32_t>(count), *hitValues, *hitIds); !s) {
         return fail("WavefrontGpu could not intersect", s);
     }
     ctx.computeBarrier();
@@ -374,38 +429,63 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     const std::array<gpu::GpuBinding, 11> shadeBindings = {
         gpu::GpuBinding::storage(0, *rays),
         gpu::GpuBinding::storage(1, *hitValues),
-        gpu::GpuBinding::storage(2, outputs.hitIds),
-        gpu::GpuBinding::storage(3, tables.geometries),
-        gpu::GpuBinding::storage(4, tables.colors),
-        gpu::GpuBinding::storage(5, tables.triangles),
-        gpu::GpuBinding::storage(6, tables.instanceIds),
+        gpu::GpuBinding::storage(2, *hitIds),
+        gpu::GpuBinding::storage(3, tables.geometries.buffer()),
+        gpu::GpuBinding::storage(4, tables.colors.buffer()),
+        gpu::GpuBinding::storage(5, tables.triangles.buffer()),
+        gpu::GpuBinding::storage(6, tables.instanceIds.buffer()),
         gpu::GpuBinding::storage(7, *color),
-        gpu::GpuBinding::storage(8, outputs.depth),
-        gpu::GpuBinding::storage(9, outputs.primId),
-        gpu::GpuBinding::storage(10, outputs.instanceId),
+        gpu::GpuBinding::storage(8, *depth),
+        gpu::GpuBinding::storage(9, *primId),
+        gpu::GpuBinding::storage(10, *instanceId),
     };
 
     if (gpu::GpuStatus s = ctx.dispatchBindings(shadeKernel, shadeBindings, std::as_bytes(std::span(&shadeParams, 1)), threads); !s) {
         return fail("WavefrontGpu could not shade", s);
     }
     if (deviceColor) {
-        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(ctx, outputs.hitIds, *color, rect.x, rect.y, rect.width, rect.height); !s) {
+        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(ctx, *hitIds, *color, rect.x, rect.y, rect.width, rect.height); !s) {
             return fail("WavefrontGpu could not write a batch's colours to the film", s);
         }
     }
+
+    // The geometry array comes first in the hit ids, as Kernels/UtilityTypes.slang lays them out.
+    const struct {
+        bool wanted;
+        const gpu::GpuBuffer* source;
+        gpu::GpuBuffer* target;
+        VkDeviceSize bytes;
+    } copies[] = {
+        { aovs.any(), hitIds, &readback.hitGeometry, count * sizeof(std::uint32_t) },
+        { aovs.color, color, &readback.color, count * 4 * sizeof(float) },
+        { aovs.depth, depth, &readback.depth, count * sizeof(float) },
+        { aovs.primId, primId, &readback.primId, count * sizeof(std::int32_t) },
+        { aovs.instanceId, instanceId, &readback.instanceId, count * sizeof(std::int32_t) },
+    };
+
+    for (const auto& copy : copies) {
+        if (!copy.wanted) {
+            continue;
+        }
+        if (gpu::GpuStatus s = ctx.copyBuffer(*copy.source, 0, *copy.target, 0, copy.bytes); !s) {
+            return fail("WavefrontGpu could not read a batch back", s);
+        }
+    }
     if (gpu::GpuStatus s = ctx.submitAndWait(); !s) {
-        return fail("WavefrontGpu could not render a batch of " + std::to_string(count) + " rays", s);
+        return fail("WavefrontGpu could not render a batch of " + rayCount, s);
+    }
+    if (!aovs.any()) {
+        return true;
     }
 
     WavefrontTile tile;
 
     tile.rect = rect;
-    // The geometry array comes first in the hit ids, as Kernels/UtilityTypes.slang lays them out.
-    tile.hitGeometry = static_cast<const std::uint32_t*>(outputs.hitIds.mapped());
-    tile.color = deviceColor ? nullptr : static_cast<const float*>(outputs.color.mapped());
-    tile.depth = static_cast<const float*>(outputs.depth.mapped());
-    tile.primId = static_cast<const std::int32_t*>(outputs.primId.mapped());
-    tile.instanceId = static_cast<const std::int32_t*>(outputs.instanceId.mapped());
+    tile.hitGeometry = static_cast<const std::uint32_t*>(readback.hitGeometry.mapped());
+    tile.color = aovs.color ? static_cast<const float*>(readback.color.mapped()) : nullptr;
+    tile.depth = aovs.depth ? static_cast<const float*>(readback.depth.mapped()) : nullptr;
+    tile.primId = aovs.primId ? static_cast<const std::int32_t*>(readback.primId.mapped()) : nullptr;
+    tile.instanceId = aovs.instanceId ? static_cast<const std::int32_t*>(readback.instanceId.mapped()) : nullptr;
     film.writeTile(tile);
 
     return true;
@@ -462,6 +542,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     Implementation& imp = *_imp;
 
     imp.outcome = Tracer::Outcome();
+    imp.sceneFailed = false;
     if (!imp.usable) {
         imp.outcome = imp.unusable;
 
@@ -472,6 +553,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
         if (imp.outcome.status == Tracer::Status::Ok) {
             return imp.stopped();
         }
+        imp.sceneFailed = imp.outcome.status != Tracer::Status::Stopped;
 
         return false;
     }
@@ -504,7 +586,9 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
         }
 
         const std::uint64_t bindable = std::min(ctx->maxScratchBytes(), ctx->maxStorageBufferBytes()) / (kRayArrays * sizeof(float));
-        const std::uint64_t batchRays = std::min(bindable, kMaxBatchRays);
+        // A row too wide for the latency cap still goes in one batch, so that any width renders.
+        const std::uint64_t wanted = std::max(kMaxBatchRays, static_cast<std::uint64_t>(window.width));
+        const std::uint64_t batchRays = std::min({ bindable, kUtilityMaxDispatchRays, wanted });
         const std::uint64_t rows = std::min<std::uint64_t>(batchRays / static_cast<std::uint64_t>(window.width), window.height - row);
 
         if (rows == 0) {
@@ -532,6 +616,18 @@ Tracer::Outcome
 WavefrontGpu::status() const
 {
     return _imp->outcome.status == Tracer::Status::Ok && !_imp->usable ? _imp->unusable : _imp->outcome;
+}
+
+bool
+WavefrontGpu::sceneFailed() const
+{
+    return _imp->sceneFailed;
+}
+
+bool
+WavefrontGpu::deviceLost() const
+{
+    return _imp->device.isLost();
 }
 
 std::string

@@ -60,6 +60,16 @@ struct WavefrontFrame {
     WavefrontRect window;
 };
 
+// The outputs a film takes in tiles. An executor may leave the arrays of the others null.
+struct WavefrontAovs {
+    bool color = true;
+    bool depth = true;
+    bool primId = true;
+    bool instanceId = true;
+
+    bool any() const { return color || depth || primId || instanceId; }
+};
+
 // Shaded pixels of one tile, in rows from its bottom. Where hitGeometry is Tracer::kNoHit the other
 // arrays hold nothing.
 struct WavefrontTile {
@@ -89,6 +99,12 @@ public:
     virtual UtilityRenderBuffer* deviceColor() const
     {
         return nullptr;
+    }
+
+    // What writeTile() reads, the colour included even when deviceColor() may take it instead.
+    virtual WavefrontAovs aovs() const
+    {
+        return WavefrontAovs();
     }
 };
 

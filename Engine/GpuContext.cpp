@@ -25,6 +25,7 @@
 #include <cstring>
 #include <exception>
 #include <shared_mutex>
+#include <vector>
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDebug>
@@ -82,6 +83,30 @@ GpuContext::setReadyHookForTesting(const ReadyHook& hook)
 
     slot.hook = hook;
     readyHookOn.store(bool(hook));
+}
+
+namespace {
+struct LossReleasers {
+    std::mutex mutex;
+    std::vector<GpuContext::LossReleaser> releasers;
+};
+
+LossReleasers&
+lossReleasers()
+{
+    static LossReleasers* list = new LossReleasers;
+
+    return *list;
+}
+}
+
+void
+GpuContext::addLossReleaser(const LossReleaser& release)
+{
+    LossReleasers& list = lossReleasers();
+    std::lock_guard<std::mutex> l(list.mutex);
+
+    list.releasers.push_back(release);
 }
 
 struct GpuContext::Shared {
@@ -262,6 +287,18 @@ GpuContext::runtime() const
     return nullptr;
 }
 
+std::uint64_t
+GpuContext::generation() const
+{
+#ifdef NATRON_HAVE_GPU
+    if (gpu::GpuRuntime* rt = runtime()) {
+        return rt->generation();
+    }
+#endif
+
+    return 0;
+}
+
 std::shared_ptr<void>
 GpuContext::holdRuntime()
 {
@@ -303,6 +340,18 @@ GpuContext::recoverIfLost()
     }
     if (!rt->isLost()) {
         return true;
+    }
+    {
+        // Copied out, so that a releaser may take holdMutex, through a token it drops, or register another.
+        std::vector<LossReleaser> releasers;
+        {
+            LossReleasers& list = lossReleasers();
+            std::lock_guard<std::mutex> l(list.mutex);
+            releasers = list.releasers;
+        }
+        for (const LossReleaser& release : releasers) {
+            release();
+        }
     }
     std::lock_guard<std::mutex> k(_shared->holdMutex);
     if (_shared->timedOutForSession) {

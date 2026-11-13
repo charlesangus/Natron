@@ -99,6 +99,9 @@
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuDevice.h"
 #include "Engine/Gpu/GpuRecord.h"
+#include "Engine/AppManager.h"
+#include "Engine/GpuContext.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/RectI.h"
@@ -224,6 +227,24 @@ private:
     bool _stopTried = false;
     bool _stopped = false;
 };
+
+#ifdef NATRON_HAVE_GPU
+struct DeviceFallback {
+    std::uint64_t generation = 0;
+    std::uint64_t budget = 0;
+};
+
+std::mutex gDeviceFallbacksMutex;
+std::map<const void*, DeviceFallback> gDeviceFallbacks;
+
+void
+forgetDeviceFallback(const void* owner)
+{
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+
+    gDeviceFallbacks.erase(owner);
+}
+#endif
 
 typedef std::map<std::string, VtValue> RendererSettings;
 std::mutex gSettingsMutex;
@@ -553,6 +574,16 @@ public:
     static RenderThread& cpu()
     {
         static RenderThread* thread = new RenderThread(false);
+#ifdef NATRON_HAVE_GPU
+        // A Natron Utility engine idle since its device was lost would keep it from recovering.
+        static std::once_flag releaser;
+        std::call_once(releaser, []() {
+            GpuContext::addLossReleaser([]() {
+                RenderThread& lost = cpu();
+                (void)lost.post([&lost]() { lost.releaseLostUtilityGpu(); }, false);
+            });
+        });
+#endif
 
         return *thread;
     }
@@ -722,6 +753,27 @@ public:
     {
         while (!_engines.empty()) {
             releaseEngine(_engines.begin()->first);
+        }
+    }
+
+    // Has every Natron Utility engine give back what it keeps on the GPU. The engines and their stages stay,
+    // so that the next render only builds the GPU's side again.
+    void releaseUtilityGpu()
+    {
+        for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (it->second.engine && (it->second.renderer == kRenderDelegateUtilityId)) {
+                (void)it->second.engine->InvokeRendererCommand(TfToken(kUtilityCommandReleaseGpu));
+                it->second.rendered = false;
+            }
+        }
+    }
+
+    void releaseLostUtilityGpu()
+    {
+        for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (it->second.engine && (it->second.renderer == kRenderDelegateUtilityId)) {
+                (void)it->second.engine->InvokeRendererCommand(TfToken(kUtilityCommandReleaseLostGpu));
+            }
         }
     }
 
@@ -1413,6 +1465,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             if ((device != utilityStats.end()) && device->second.IsHolding<std::string>()) {
                 entry.device = device->second.UncheckedGet<std::string>();
             }
+#ifdef NATRON_HAVE_GPU
+            if (entry.device.rfind("GPU", 0) == 0) {
+                forgetDeviceFallback(request.owner);
+            }
+#endif
             if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
                 entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + fallback->second.UncheckedGet<std::string>();
             }
@@ -2447,8 +2504,21 @@ recordDeviceWindow(const Request& request,
     const std::shared_ptr<DeviceFrame> frame = deviceFrameOf(request.owner);
     UtilityDeviceResource film;
     {
-        const std::lock_guard<std::mutex> frameLock(frame->mutex);
-        if (!frame->valid || !(frame->key == key)) {
+        // A strip waiting for the one that renders must still see its own abort.
+        std::unique_lock<std::mutex> frameLock(frame->mutex, std::try_to_lock);
+        while (!frameLock.owns_lock()) {
+            if (request.aborted && request.aborted()) {
+                *error = "The render was cancelled while it waited for its frame.";
+
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            (void)frameLock.try_lock();
+        }
+        if (frame->valid) {
+            frame->film.releaseIfLost();
+        }
+        if (!frame->valid || !(frame->key == key) || !frame->film.device()) {
             // The engine's next frame goes into this film when nothing else holds it.
             frame->valid = false;
             frame->film = UtilityDeviceResource();
@@ -2466,6 +2536,7 @@ recordDeviceWindow(const Request& request,
                 };
             }
             const int threadBudget = AppTLS::currentThreadBudget();
+            bool fellBack = false;
             const bool ran = thread.runAndWait([&]() {
                 // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
                 AppTLS::ThreadBudgetScope budget(threadBudget);
@@ -2490,6 +2561,7 @@ recordDeviceWindow(const Request& request,
                     const VtValue resource = buffer->GetResource(false);
                     if (!resource.IsHolding<UtilityDeviceResource>()) {
                         *error = entry->rendererName + " did not leave its frame on the GPU.";
+                        fellBack = true;
 
                         return;
                     }
@@ -2504,6 +2576,13 @@ recordDeviceWindow(const Request& request,
                 }
             },
                                                error, whileWaiting);
+            if (ran && fellBack) {
+                GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+                const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+                DeviceFallback& fallback = gDeviceFallbacks[request.owner];
+                fallback.generation = gpu ? gpu->generation() : 0;
+                fallback.budget = utilityGpuBudget();
+            }
             if (!ran || !ok) {
                 return false;
             }
@@ -2540,6 +2619,19 @@ recordDeviceWindow(const Request& request,
 } // recordDeviceWindow
 #endif // NATRON_HAVE_GPU
 
+#ifdef NATRON_HAVE_GPU
+bool
+deviceFrameFellBack(const void* owner,
+                    std::uint64_t generation,
+                    std::uint64_t budget)
+{
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+    const std::map<const void*, DeviceFallback>::const_iterator found = gDeviceFallbacks.find(owner);
+
+    return (found != gDeviceFallbacks.end()) && (found->second.generation == generation) && (found->second.budget == budget);
+}
+#endif
+
 void
 release(const void* owner)
 {
@@ -2548,6 +2640,7 @@ release(const void* owner)
         const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
         gDeviceFrames.erase(owner);
     }
+    forgetDeviceFallback(owner);
 #endif
     RenderThread& storm = RenderThread::storm();
     RenderThread& cpu = RenderThread::cpu();
@@ -2564,10 +2657,17 @@ releaseAll()
         const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
         gDeviceFrames.clear();
     }
+    {
+        // The memory given back may be what the delegates fell back for.
+        const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+        gDeviceFallbacks.clear();
+    }
 #endif
     RenderThread& thread = RenderThread::storm();
+    RenderThread& cpu = RenderThread::cpu();
 
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
+    (void)cpu.post([&cpu]() { cpu.releaseUtilityGpu(); }, false);
 }
 
 void

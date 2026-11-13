@@ -29,8 +29,10 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 
 #include <pxr/imaging/hd/renderDelegate.h>
@@ -59,8 +61,14 @@
 #define kUtilityDeviceGpu "gpu"
 #define kUtilityDeviceCpu "cpu"
 
+// The renderer command that has the delegate give back what it keeps on the GPU, as Free GPU Memory asks.
+#define kUtilityCommandReleaseGpu "releaseGpu"
+// The renderer command that has the delegate drop what it keeps on a lost GPU, so that the device can recover.
+#define kUtilityCommandReleaseLostGpu "releaseLostGpu"
+
 NATRON_NAMESPACE_ENTER
 
+class UtilityRenderBuffer;
 class WavefrontGpu;
 
 /**
@@ -84,6 +92,37 @@ public:
     WavefrontGpu* gpuExecutor(std::string* unavailable);
     // Gives the device's memory back, or lets the application recreate a lost device.
     void dropGpuExecutor();
+
+    /**
+     * @brief Remembers that scene version ran out of GPU memory under budget, so that Auto renders it on
+     * the CPU straight away, without building it on the device for every frame, until either changes.
+     * Frame thread only, like gpuExecutor().
+     **/
+    void rememberGpuOutOfMemory(std::uint64_t version,
+                                std::uint64_t budget,
+                                const std::string& message);
+    // True with *message set when version and budget are those remembered.
+    bool gpuOutOfMemory(std::uint64_t version,
+                        std::uint64_t budget,
+                        std::string* message) const;
+
+    /**
+     * @brief Ends the running frame and gives back everything the delegate keeps on the GPU: the executor,
+     * with its scene, and the device films of the buffers, read back to the host first. The next frame
+     * builds them again. MT-safe; not from the frame thread.
+     **/
+    void releaseGpu();
+
+    /**
+     * @brief Drops the executor when its device is lost, so that its hold no longer keeps the application
+     * from recovering the device. Does nothing while a frame runs, since that frame drops it itself. MT-safe;
+     * not from the frame thread.
+     **/
+    void releaseGpuIfLost();
+
+    // The render buffers releaseGpu() reaches. MT-safe.
+    void addBuffer(UtilityRenderBuffer* buffer);
+    void removeBuffer(UtilityRenderBuffer* buffer);
 
     // What GetRenderStats() reports of the last frame. MT-safe.
     void setFrameReport(const std::string& device,
@@ -123,6 +162,12 @@ private:
 #ifdef NATRON_HAVE_GPU
     std::unique_ptr<WavefrontGpu> _gpu;
 #endif
+    bool _outOfMemory = false;
+    std::uint64_t _outOfMemoryVersion = 0;
+    std::uint64_t _outOfMemoryBudget = 0;
+    std::string _outOfMemoryMessage;
+    std::mutex _buffersMutex;
+    std::set<UtilityRenderBuffer*> _buffers;
     mutable std::mutex _reportMutex;
     std::string _reportDevice;
     std::string _reportWarning;
@@ -178,6 +223,9 @@ public:
     virtual bool IsStopped() const OVERRIDE;
     virtual bool Stop(bool blocking = true) OVERRIDE;
     virtual bool Restart() OVERRIDE;
+    virtual PXR_NS::HdCommandDescriptors GetCommandDescriptors() const OVERRIDE;
+    virtual bool InvokeCommand(const PXR_NS::TfToken& command,
+                               const PXR_NS::HdCommandArgs& args = PXR_NS::HdCommandArgs()) OVERRIDE;
 
 private:
     void construct();

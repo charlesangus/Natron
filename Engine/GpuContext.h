@@ -191,12 +191,26 @@ public:
     std::shared_ptr<void> holdRuntime();
 
     /**
+     * @brief The runtime's GpuRuntime::generation(), which a recovery changes; 0 while unavailable. Needs no hold.
+     **/
+    std::uint64_t generation() const;
+
+    /**
      * @brief Recreates the runtime when it was lost and no holdRuntime() token is alive. A failed recreation is not
      * tried again for a few seconds, since every render start asks. A loss caused by a timed-out GPU operation is
      * never recovered: the first call after it logs once that GPU compute is off for the session. Returns whether the
      * runtime is usable.
      **/
     bool recoverIfLost();
+
+    /**
+     * @brief Adds a function every recoverIfLost() of a lost runtime calls first, before it counts the holdRuntime()
+     * tokens, for a holder that keeps the runtime's memory only to reuse it and can let go of it. It may run on any
+     * thread that asks for recovery, so it must not wait for other work: what it cannot drop at once, it drops later,
+     * and a later recoverIfLost() succeeds. Releasers stay for the process.
+     **/
+    typedef std::function<void()> LossReleaser;
+    static void addLossReleaser(const LossReleaser& release);
 
     /**
      * @brief Destroys the device buffers the runtime's pool keeps free for reuse. Buffers in use, by a render or a

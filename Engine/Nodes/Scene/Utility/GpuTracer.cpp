@@ -34,6 +34,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -46,6 +47,7 @@
 #include "Engine/Gpu/GpuKernel.h"
 #include "Engine/Gpu/GpuKernelRegistry.h"
 #include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Nodes/Scene/Utility/UtilityGpuLimits.h"
 
 #include "utility_intersect_spirv.h"
 #include "utility_occluded_spirv.h"
@@ -68,11 +70,9 @@ static_assert(sizeof(KernelIntersectParams) == utility_intersect_push_bytes);
 static_assert(sizeof(KernelIntersectParams) == utility_occluded_push_bytes);
 static_assert(utility_intersect_storage_buffers == 4 && utility_occluded_storage_buffers == 4);
 
-const std::size_t kRayArrays = 8;
-const std::size_t kHitArrays = 3;
-
-// Vulkan guarantees 65535 workgroups along x, so longer batches go in several dispatches.
-const std::uint64_t kMaxDispatchRays = 65535ull * 64ull;
+const std::size_t kRayArrays = kUtilityRayArrays;
+const std::size_t kHitArrays = kUtilityHitArrays;
+const std::uint64_t kMaxDispatchRays = kUtilityMaxDispatchRays;
 
 // Bounds the host-visible memory one trace call stages.
 const std::size_t kMaxRaysPerSubmit = std::size_t(1) << 20;
@@ -111,17 +111,7 @@ GpuTracer::Status
 classify(const gpu::GpuStatus& status,
          const gpu::GpuDevice& device)
 {
-    if (device.isLost() || status.result == VK_ERROR_DEVICE_LOST) {
-        return GpuTracer::Status::DeviceLost;
-    }
-    if (status.result == VK_ERROR_OUT_OF_DEVICE_MEMORY || status.result == VK_ERROR_OUT_OF_HOST_MEMORY) {
-        return GpuTracer::Status::OutOfMemory;
-    }
-    if (status.result == VK_ERROR_FEATURE_NOT_PRESENT) {
-        return GpuTracer::Status::Unsupported;
-    }
-
-    return GpuTracer::Status::Failed;
+    return classifyUtilityGpuStatus(status, device);
 }
 
 // GfMatrix4d maps row vectors with its translation in the last row; the structure wants the transpose.
@@ -263,6 +253,7 @@ struct GpuTracer::Implementation {
         }
         geometries.clear();
         placements.clear();
+        uncompacted.clear();
 
         return abandonUpdate(failed);
     }
@@ -288,6 +279,8 @@ struct GpuTracer::Implementation {
     bool usable = false;
 
     std::map<UtilityScene::GeometryId, GeometryEntryPtr> geometries;
+    // Built but not yet compacted, because the update that built them was stopped first.
+    std::set<UtilityScene::GeometryId> uncompacted;
     std::vector<Placement> placements;
     SceneStatePtr scene;
     std::uint64_t version = 0;
@@ -609,6 +602,12 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
         }
     }
 
+    // The builds of one submission share a scratch buffer that grows only when a build outsizes it, and the
+    // scratch a build needs grows with its triangles, so the largest goes first.
+    std::stable_sort(builds.begin(), builds.end(), [](const PendingBuild& a, const PendingBuild& b) {
+        return a.entry->triangleCount > b.entry->triangleCount;
+    });
+
     if (!builds.empty() || !refits.empty()) {
         std::unique_ptr<gpu::GpuRecordContext> ctx;
 
@@ -645,30 +644,41 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
         }
         for (PendingBuild& build : builds) {
             imp.geometries[build.id] = std::move(build.entry);
+            imp.uncompacted.insert(build.id);
             ++imp.counters.geometryBuilds;
         }
         for (const PendingRefit& refit : refits) {
             refit.entry->pointsVersion = refit.source->pointsVersion;
             ++imp.counters.geometryRefits;
         }
+    }
 
-        // Compaction gets its own submission: the copy replaces each structure as it is recorded, so it
-        // has to have run before anything is built over them.
-        if (!builds.empty() && !wasStopped(stop)) {
-            if (gpu::GpuStatus s = imp.createContext(ctx); !s) {
-                return imp.abandonUpdate(imp.failure("GpuTracer could not create a record context", s));
-            }
-            for (const PendingBuild& build : builds) {
-                GeometryEntry& entry = *imp.geometries[build.id];
+    for (auto it = imp.uncompacted.begin(); it != imp.uncompacted.end();) {
+        const auto entry = imp.geometries.find(*it);
 
-                if (gpu::GpuStatus s = entry.blas.compact(*ctx, imp.pool); !s && classify(s, imp.device) != Status::OutOfMemory) {
-                    return imp.abandonUpdate(imp.failure("GpuTracer could not compact a geometry's structure", s));
-                }
-            }
-            if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
-                return imp.abandonSubmission("GpuTracer could not compact its geometry", s);
+        it = (entry == imp.geometries.end() || !entry->second->blas) ? imp.uncompacted.erase(it) : std::next(it);
+    }
+    // Compaction gets its own submission: the copy replaces each structure as it is recorded, so it has to have
+    // run before anything is built over them. A stopped update leaves the list for the next one.
+    if (!imp.uncompacted.empty() && !wasStopped(stop)) {
+        std::unique_ptr<gpu::GpuRecordContext> ctx;
+
+        if (gpu::GpuStatus s = imp.createContext(ctx); !s) {
+            return imp.abandonUpdate(imp.failure("GpuTracer could not create a record context", s));
+        }
+        for (const UtilityScene::GeometryId id : imp.uncompacted) {
+            GeometryEntry& entry = *imp.geometries[id];
+
+            if (gpu::GpuStatus s = entry.blas.compact(*ctx, imp.pool); !s && classify(s, imp.device) != Status::OutOfMemory) {
+                return imp.abandonUpdate(imp.failure("GpuTracer could not compact a geometry's structure", s));
             }
         }
+        if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
+            return imp.abandonSubmission("GpuTracer could not compact its geometry", s);
+        }
+        // A structure the pool had no room to compact into stays as built.
+        imp.uncompacted.clear();
+        geometryReplaced = true;
     }
     const bool geometryRefitted = !refits.empty();
 

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -137,7 +138,7 @@ protected:
             { QStringLiteral("files"), QJsonArray { QStringLiteral("model.onnx") } },
             { QStringLiteral("url"), QUrl::fromLocalFile(QString::fromStdString(path)).toString() },
             { QStringLiteral("sha256"), QString::fromStdString(sha256OfFile(path)) },
-            { QStringLiteral("size"), (int)model.size() },
+            { QStringLiteral("size"), (qint64)std::filesystem::file_size(path) },
             { QStringLiteral("weightsLicence"), QStringLiteral("MIT") },
             { QStringLiteral("trainingDataLicence"), QStringLiteral("none") },
             { QStringLiteral("osaid"), QStringLiteral("Open Source AI") },

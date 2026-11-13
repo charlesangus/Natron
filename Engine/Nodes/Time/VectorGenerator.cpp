@@ -28,9 +28,15 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include <QString>
+
+#include "Engine/Ai/ModelDownloader.h"
+#include "Engine/Ai/ModelRegistry.h"
+#include "Engine/Ai/OrtLoader.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -135,13 +141,14 @@ initPackedFrame(int srcComps,
     out->frame.image.rowElements = (std::ptrdiff_t)width * nComps;
 }
 
-// Overlays the frame's pixels, through the matching curve, on a frame from initPackedFrame() for the
+// Overlays the frame's pixels, through the matching curve unless matching is off, on a frame from initPackedFrame() for the
 // image's components. A frame's region can move over a sequence, so every frame is read at the same
 // pixel coordinates for the vectors to be measured between the same positions.
 void
 packImage(const Image& image,
           const RectI& window,
           const ParallelFor& parallel,
+          bool matching,
           PackedFrame* out)
 {
     const int width = window.width();
@@ -163,11 +170,25 @@ packImage(const Image& image,
         float* dst = dstBase + ((std::ptrdiff_t)(y - window.y1) * width + (read.x1 - window.x1)) * nComps;
         for (int x = read.x1; x < read.x2; ++x) {
             for (int c = 0; c < nComps; ++c) {
-                dst[c] = vectorGeneratorMatchingValue(src[c]);
+                dst[c] = matching ? vectorGeneratorMatchingValue(src[c]) : src[c];
             }
             src += srcComps;
             dst += nComps;
         }
+    });
+}
+
+// Converts the frame's rgb, in place, from the working space to the model's.
+void
+convertToModelSpace(const OcioProcessor& processor,
+                    int width,
+                    int height,
+                    const ParallelFor& parallel,
+                    PackedFrame* frame)
+{
+    float* const base = frame->pixels.data();
+    parallel(height, [&](int row) {
+        ModelColourspaceKnobs::apply(processor, base + (std::ptrdiff_t)row * width * 3, (std::size_t)width);
     });
 }
 
@@ -311,6 +332,15 @@ VectorGenerator::VectorGenerator(NodePtr node)
 
 VectorGenerator::~VectorGenerator()
 {
+    _colourspace.unwatchConfig();
+}
+
+ModelDownloader*&
+VectorGenerator::downloaderForTesting()
+{
+    static ModelDownloader* downloader = nullptr;
+
+    return downloader;
 }
 
 const ImageLayerDesc&
@@ -352,17 +382,26 @@ VectorGenerator::initializeKnobs()
     KnobChoicePtr methodKnob = createKnob<KnobChoice>(tr("Method").toStdString());
     methodKnob->setName(kVectorGeneratorParamMethod);
     methodKnob->setHintToolTip(tr("How the motion is estimated.").toStdString());
+    _downloader = downloaderForTesting() ? downloaderForTesting() : ModelDownloader::process();
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kVectorGeneratorMethodDIS, tr("DIS").toStdString(),
                                        tr("Dense inverse search with variational refinement: fast, and good on most plates.").toStdString()));
         options.push_back(ChoiceOption(kVectorGeneratorMethodTVL1, tr("TV-L1").toStdString(),
                                        tr("A global variational solve: slower, with sharper motion edges and less drift on flat areas.").toStdString()));
+        options.push_back(ChoiceOption(kVectorGeneratorMethodNeural, tr("Neural").toStdString(),
+                                       tr("An optical-flow neural network, run on the CPU: it follows large and thin motion the other methods lose. "
+                                          "It needs the optical-flow model installed (Preferences > AI Models) and AI enabled. Quality and Flow Channels "
+                                          "do not apply to it.")
+                                           .toStdString()));
         methodKnob->populateChoices(options);
     }
     methodKnob->setDefaultValue((int)eFlowMethodDIS);
     page->addKnob(methodKnob);
     _method = methodKnob;
+
+    _model = ModelKnob::create(this, page, AiModelTask::eOpticalFlow, _downloader);
+    _colourspace.create(this, page, []() { return std::optional<AiColourSpace>(AiColourSpace::eSrgb); });
 
     KnobChoicePtr qualityKnob = createKnob<KnobChoice>(tr("Quality").toStdString());
     qualityKnob->setName(kVectorGeneratorParamQuality);
@@ -482,6 +521,8 @@ VectorGenerator::initializeKnobs()
 
     addStageKnobs(page);
 
+    _colourspace.watchConfig();
+
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
     if (project) {
@@ -501,14 +542,86 @@ VectorGenerator::refreshSmoothingEnabled()
 }
 
 void
+VectorGenerator::refreshMethodKnobs()
+{
+    KnobChoicePtr method = _method.lock();
+    const bool neural = method && (method->getValue() == (int)eFlowMethodNeural);
+
+    if (_model) {
+        if (KnobChoicePtr model = _model->modelKnob()) {
+            model->setSecret(!neural);
+        }
+        if (KnobButtonPtr download = _model->downloadKnob()) {
+            download->setSecret(!neural);
+        }
+    }
+    if (KnobIPtr space = getKnobByName(kModelColourspaceParam)) {
+        space->setSecret(!neural);
+    }
+    if (KnobChoicePtr quality = _quality.lock()) {
+        quality->setAllDimensionsEnabled(!neural);
+    }
+    if (KnobChoicePtr channels = _flowChannels.lock()) {
+        channels->setAllDimensionsEnabled(!neural);
+    }
+}
+
+void
 VectorGenerator::onKnobsLoaded()
 {
+    _colourspace.refreshMenus();
     refreshSmoothingEnabled();
+    refreshMethodKnobs();
+}
+
+void
+VectorGenerator::onEffectCreated(bool /*mayCreateFileDialog*/,
+                                 const CreateNodeArgs& args)
+{
+    if (_model) {
+        _model->onEffectCreated(args);
+    }
+    refreshMethodKnobs();
+}
+
+void
+VectorGenerator::appendNodeContentHash(ContentHasher& h) const
+{
+    _colourspace.appendHash(h);
+}
+
+void
+VectorGenerator::purgeCaches()
+{
+    std::lock_guard<std::mutex> locker(_sessionMutex);
+    _session.reset();
+    _sessionPath.clear();
+}
+
+std::shared_ptr<InferenceSession>
+VectorGenerator::neuralSession(const std::string& path,
+                               std::string* message)
+{
+    std::lock_guard<std::mutex> locker(_sessionMutex);
+    if (_session && (_sessionPath == path)) {
+        return _session;
+    }
+    try {
+        _session = InferenceSession::open(path, AiSessionOptions::fromPreferences(AiGraphOptimization::eAll));
+        _sessionPath = path;
+    } catch (const AiError& e) {
+        _session.reset();
+        _sessionPath.clear();
+        const std::shared_ptr<const OrtLoader> loader = OrtLoader::process();
+        *message = (loader && !loader->available()) ? loader->unavailableReason() : std::string(e.what());
+    }
+
+    return _session;
 }
 
 bool
 VectorGenerator::knobChanged(KnobI* k,
-                             ValueChangedReasonEnum /*reason*/,
+                             ValueChangedReasonEnum reason,
                              ViewSpec /*view*/,
                              double /*time*/,
                              bool /*originatedFromMainThread*/)
@@ -516,6 +629,17 @@ VectorGenerator::knobChanged(KnobI* k,
     if (k == _temporalSmoothing.lock().get()) {
         refreshSmoothingEnabled();
 
+        return true;
+    }
+    if (k == _method.lock().get()) {
+        refreshMethodKnobs();
+
+        return true;
+    }
+    if (_model && _model->knobChanged(k)) {
+        return true;
+    }
+    if (_colourspace.knobChanged(k, reason)) {
         return true;
     }
     if (k == _outputs.lock().get()) {
@@ -598,7 +722,7 @@ VectorGenerator::settingsAt(double time,
 {
     Settings s;
     if (KnobChoicePtr knob = _method.lock()) {
-        s.params.method = (FlowMethod)std::clamp(knob->getValueAtTime(time, 0, view), (int)eFlowMethodDIS, (int)eFlowMethodTVL1);
+        s.params.method = (FlowMethod)std::clamp(knob->getValueAtTime(time, 0, view), (int)eFlowMethodDIS, (int)eFlowMethodNeural);
     }
     if (KnobChoicePtr knob = _quality.lock()) {
         s.params.quality = (FlowQuality)std::clamp(knob->getValueAtTime(time, 0, view), (int)eFlowQualityFast, (int)eFlowQualityFine);
@@ -842,6 +966,7 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
     }
 
     const Settings s = settingsAt(args.time, args.view);
+    const bool neural = (s.params.method == eFlowMethodNeural);
     // Solving only for the planes asked for stays consistent with a later request for the others:
     // a direction's result does not depend on whether the other one was solved.
     const bool wantForward = s.forward && (forwardPlane || confidencePlane);
@@ -888,6 +1013,42 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
         updateFormatMessage(formatMessage);
         if (!formatOk) {
             return eStatusFailed;
+        }
+
+        FlowEstimateParams params = s.params;
+        ModelColourspaceKnobs::Conversion conversion;
+        if (neural) {
+            std::string error;
+            const std::optional<ModelKnob::Resolved> resolved = _model ? _model->resolve(&error) : std::optional<ModelKnob::Resolved>();
+            if (!resolved) {
+                if (error.find("Preferences") == std::string::npos) {
+                    error += " The model manager is in Preferences > AI Models.";
+                }
+                updateFormatMessage(tr("The Neural method needs the optical-flow model: %1").arg(QString::fromStdString(error)).toStdString());
+
+                return eStatusFailed;
+            }
+            if (resolved->files.empty()) {
+                updateFormatMessage(tr("The model %1 lists no ONNX file.").arg(QString::fromStdString(resolved->entry->id)).toStdString());
+
+                return eStatusFailed;
+            }
+            std::string openError;
+            const std::shared_ptr<InferenceSession> session = neuralSession(resolved->files.front(), &openError);
+            if (!session) {
+                updateFormatMessage(openError);
+
+                return eStatusFailed;
+            }
+            conversion = _colourspace.conversion(args.time);
+            if (!conversion.error.empty()) {
+                updateFormatMessage(conversion.error);
+
+                return eStatusFailed;
+            }
+            const std::shared_ptr<FlowNeuralModel> model = std::make_shared<FlowNeuralModel>();
+            model->session = session;
+            params.neural = model;
         }
 
         ImageLayerDesc matteLayer;
@@ -938,8 +1099,11 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
                 PackedFrame& frame = packed[slots[i]];
                 initPackedFrame(image ? (int)image->getComponentsCount() : storage.getNumComponents(), window, &frame);
                 if (image) {
-                    packImage(*image, window, parallel, &frame);
+                    packImage(*image, window, parallel, !neural, &frame);
                     image.reset();
+                    if (neural && (frame.frame.image.nComps == 3)) {
+                        convertToModelSpace(conversion.toModel, window.width(), window.height(), parallel, &frame);
+                    }
                 }
                 if (hasMatte) {
                     RectI matteRoI;
@@ -967,9 +1131,14 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
                 std::vector<float>().swap(packed[index].matte);
             };
             const FlowEstimateStatus status = s.smoothing
-                ? estimateFlowSmoothed(framePointers, s.smoothingStrength, s.params, context, result, releaseFrame)
-                : estimateFlow(framePointers[kMaxOffset - 1], *framePointers[kMaxOffset], framePointers[kMaxOffset + 1], s.params, context, result);
+                ? estimateFlowSmoothed(framePointers, s.smoothingStrength, params, context, result, releaseFrame)
+                : estimateFlow(framePointers[kMaxOffset - 1], *framePointers[kMaxOffset], framePointers[kMaxOffset + 1], params, context, result);
             if (status == eFlowEstimateAborted) {
+                return eStatusFailed;
+            }
+            if (status == eFlowEstimateModelError) {
+                updateFormatMessage(tr("The optical-flow model failed: %1").arg(QString::fromStdString(result.error)).toStdString());
+
                 return eStatusFailed;
             }
             if (status == eFlowEstimateFormatMismatch) {
@@ -1189,6 +1358,10 @@ bool
 VectorGenerator::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
+    // The model runs on the CPU, which ends a GPU region.
+    if (settingsAt(query.time, query.view).params.method == eFlowMethodNeural) {
+        return false;
+    }
     if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask) {
         return false;
     }

@@ -59,6 +59,7 @@ const struct
     { AiModelTask::eDenoiseLinear, "denoise-linear" },
     { AiModelTask::eUpscale2x, "upscale-2x" },
     { AiModelTask::eUpscale4x, "upscale-4x" },
+    { AiModelTask::eOpticalFlow, "optical-flow" },
 };
 
 const char* const kBuiltinManifestResource = ":/Ai/ai_models.json";

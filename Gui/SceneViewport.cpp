@@ -1853,6 +1853,8 @@ SceneViewportRenderer::SceneViewportRenderer()
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
+    // Ahead of the rest: until it returns its worker may call the snapshot, which reads
+    // stageMutex and the stage. It does not wait for the delegate to stop.
     _imp->progressive.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.

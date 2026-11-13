@@ -2340,10 +2340,25 @@ namespace {
     // The niceness of the worker, which the threads the delegate starts from it inherit.
     const int kRefineNice = 10;
 
-    std::atomic<int> gProgressiveLive(0);
-
     std::mutex gBeforeSyncHookMutex;
     std::function<void()> gBeforeSyncHook;
+
+    // The workers alive and the ProgressiveRenders alive: the workers beyond those are the
+    // detached ones still ending. Never destroyed, as a worker may end during static destruction.
+    struct WorkerCounts {
+        std::mutex mutex;
+        std::condition_variable ended;
+        int workers = 0;
+        int renders = 0;
+    };
+
+    WorkerCounts&
+    workerCounts()
+    {
+        static WorkerCounts* counts = new WorkerCounts;
+
+        return *counts;
+    }
 
     int
     intOf(const VtValue& value,
@@ -2463,6 +2478,12 @@ struct ProgressiveRender::Implementation {
     const float background;
     SceneWriteBarrier::ParticipantId participant = 0;
 
+    // Held by the worker through each call of what the caller owns: stageLock, snapshotOf,
+    // listener and threadsOf. The destructor sets detached under it, after which the worker calls
+    // none of them, as the caller may be gone. Taken before stageLock and mutex.
+    std::mutex callerMutex;
+    bool detached = false;
+
     // Guards the requests, the status and the frame; never held while taking stageLock.
     mutable std::mutex mutex;
     std::condition_variable wake;
@@ -2508,6 +2529,8 @@ struct ProgressiveRender::Implementation {
     TfToken samplesKey;
     int appliedCap = 0;
     bool paused = false;
+    // StopRenderer() stopped the delegate's threads for an edit; the next pass restarts them.
+    bool rendererStopped = false;
     View engineView;
     bool engineHasView = false;
     // The count the engine's Cycles session was opened under, and the one the worker last asked
@@ -2562,7 +2585,28 @@ struct ProgressiveRender::Implementation {
         samplesKey = TfToken();
         appliedCap = 0;
         paused = false;
+        rendererStopped = false;
         engineHasView = false;
+    }
+
+    // Under mutex, and again on return. The delegate's render is of before an edit: one that can
+    // stop its threads does so now instead of rendering on through the quiet time. Called from
+    // the worker only, as no delegate promises that Stop() is safe beside a Render() on another
+    // thread. One that cannot stop keeps its engine: the sync that brings the edit resets its
+    // render, while a new engine would make every edit, a camera move included, a full sync.
+    void interruptRender(std::unique_lock<std::mutex>& lock)
+    {
+        if (!engine || rendererStopped || paused) {
+            return;
+        }
+        lock.unlock();
+        {
+            std::lock_guard<std::mutex> l(engineMutex);
+            if (engine->IsStopRendererSupported()) {
+                rendererStopped = engine->StopRenderer();
+            }
+        }
+        lock.lock();
     }
 
     // Makes the engine of id, on the worker; false with *error set if the delegate cannot start.
@@ -2732,23 +2776,66 @@ struct ProgressiveRender::Implementation {
     // mutex: the count's change notifies this.
     void askThreads(const std::function<int()>& threads)
     {
-        const int wanted = threads ? std::max(0, threads()) : 0;
-        if (wanted != askedThreads) {
+        const int wanted = threadsWanted(threads);
+        if ((wanted >= 0) && (wanted != askedThreads)) {
             askedThreads = wanted;
             CyclesThreads::instance().ask(wanted);
         }
     }
 
+    // What threads gives, 0 without one, -1 once the caller is gone.
+    int threadsWanted(const std::function<int()>& threads)
+    {
+        std::lock_guard<std::mutex> caller(callerMutex);
+        if (detached) {
+            return -1;
+        }
+
+        return threads ? std::max(0, threads()) : 0;
+    }
+
+    // Without mutex. May throw what the listener throws.
+    void callListener()
+    {
+        std::lock_guard<std::mutex> caller(callerMutex);
+        if (!detached && listener) {
+            listener();
+        }
+    }
+
     void notifyListener()
     {
-        if (!listener) {
-            return;
-        }
         try {
-            listener();
+            callListener();
         } catch (...) {
             qWarning("A progressive render listener threw.");
         }
+    }
+
+    // Without mutex: what each pass reads under the stage lock. False, taking nothing, once the
+    // caller is gone.
+    bool takeSnapshot(SceneStageSnapshot* snapshot,
+                      bool* hasStage,
+                      View* v,
+                      int* cap,
+                      std::uint64_t* passGeneration,
+                      std::uint64_t* restartIndex)
+    {
+        std::lock_guard<std::mutex> caller(callerMutex);
+        if (detached) {
+            return false;
+        }
+        // The caller edits its stage and bumps the generation under stageLock, so the generation
+        // read with the snapshot is the one it was taken under.
+        std::lock_guard<std::mutex> stageGuard(*stageLock);
+        *hasStage = snapshotOf(snapshot);
+        std::lock_guard<std::mutex> l(mutex);
+        *v = view;
+        *cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
+        *passGeneration = generation;
+        *restartIndex = status.restarts;
+
+        return true;
     }
 
     // Under mutex, and again on return. The delegate of id failed in an iteration begun at edits;
@@ -2812,6 +2899,26 @@ ProgressiveRender::Implementation::run()
     std::lock_guard<std::mutex> l(engineMutex);
     workerStage.reset();
 }
+
+namespace {
+    // The worker's thread: renders until told to quit, then lets go of what the render registered,
+    // last of all the implementation, which may be the last reference to it.
+    void
+    runWorker(std::shared_ptr<ProgressiveRender::Implementation> imp)
+    {
+        imp->run();
+        // The stage it composed is gone: no reload has to wait for it.
+        SceneWriteBarrier::unregisterParticipant(imp->participant);
+        CyclesThreads::instance().removeHolder(imp->cyclesHolder);
+        imp.reset();
+        WorkerCounts& counts = workerCounts();
+        {
+            std::lock_guard<std::mutex> l(counts.mutex);
+            --counts.workers;
+        }
+        counts.ended.notify_all();
+    }
+} // anon namespace
 
 // Returns with lock held. Its record of the render's progress dies with a failure, as the engine does.
 void
@@ -2881,7 +2988,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             const bool cycles = CyclesAovs::isCycles(id);
             int threads = 0;
             if (MoonRayAovs::isMoonRay(id)) {
-                threads = threadsFn ? std::max(0, threadsFn()) : 0;
+                threads = std::max(0, threadsWanted(threadsFn));
             }
             if (cycles) {
                 askThreads(threadsFn);
@@ -2980,7 +3087,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             const Clock::time_point now = Clock::now();
             const Clock::time_point due = std::min(lastPending + kRestartQuiet, firstPending + kRestartMaxWait);
             if (now < due) {
-                wake.wait_until(lock, due);
+                interruptRender(lock);
+                if (!quit) {
+                    wake.wait_until(lock, due);
+                }
                 continue;
             }
             pending = false;
@@ -3012,17 +3122,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::uint64_t restartIndex = 0;
         SceneStageSnapshot snapshot;
         bool hasStage = false;
-        {
-            // Only for the snapshot. The caller edits its stage and bumps the generation under
-            // stageLock, so the generation read with the snapshot is the one it was taken under.
-            std::lock_guard<std::mutex> stageGuard(*stageLock);
-            hasStage = snapshotOf(&snapshot);
+        if (!takeSnapshot(&snapshot, &hasStage, &v, &cap, &passGeneration, &restartIndex)) {
             lock.lock();
-            v = view;
-            cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
-            passGeneration = generation;
-            restartIndex = status.restarts;
-            lock.unlock();
+            break;
         }
 
         const bool readsRestart = firstPass;
@@ -3053,6 +3155,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             (void)workerStage->syncTo(snapshot);
             const UsdStageRefPtr stage = workerStage->getStage();
             if (stage && engine) {
+                if (rendererStopped) {
+                    (void)engine->RestartRenderer();
+                    rendererStopped = false;
+                }
                 if (!samplesKey.IsEmpty() && (cap > 0) && (cap != appliedCap)) {
                     // A change of a setting restarts the delegate's render.
                     engine->SetRendererSetting(samplesKey, VtValue(cap));
@@ -3194,7 +3300,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         status.converged = done;
         if (publish && listener) {
             lock.unlock();
-            listener();
+            callListener();
             lock.lock();
         }
         if (!done) {
@@ -3209,10 +3315,11 @@ ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
                                      float background)
     : _imp(new Implementation(stageLock, snapshot, listener, background))
 {
-    ++gProgressiveLive;
     Implementation* imp = _imp.get();
     // The worker's stage composes the caller's layers read from files outside any ReadScope: a
-    // reload waits for the pass under way and keeps the next one out until it is done.
+    // reload waits for the delegate call under way and keeps the next one out until it is done.
+    // It cannot cut that call short: the call reads the very layers the reload edits, and the
+    // reload delivers its change notices to the worker's stage and the engine on its own thread.
     std::mutex* engineMutex = &_imp->engineMutex;
     _imp->participant = SceneWriteBarrier::registerParticipant([engineMutex]() { engineMutex->lock(); },
                                                                [engineMutex]() { engineMutex->unlock(); });
@@ -3220,7 +3327,13 @@ ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
         std::lock_guard<std::mutex> l(imp->mutex);
         imp->wake.notify_all();
     });
-    _imp->worker = std::thread([this]() { _imp->run(); });
+    WorkerCounts& counts = workerCounts();
+    {
+        std::lock_guard<std::mutex> l(counts.mutex);
+        ++counts.workers;
+        ++counts.renders;
+    }
+    _imp->worker = std::thread(runWorker, _imp);
 }
 
 ProgressiveRender::~ProgressiveRender()
@@ -3231,12 +3344,19 @@ ProgressiveRender::~ProgressiveRender()
         _imp->quitting = true;
         _imp->wake.notify_all();
     }
-    if (_imp->worker.joinable()) {
-        _imp->worker.join();
+    {
+        // Waits only for a call into the caller under way, never for the delegate.
+        std::lock_guard<std::mutex> caller(_imp->callerMutex);
+        _imp->detached = true;
     }
-    SceneWriteBarrier::unregisterParticipant(_imp->participant);
-    CyclesThreads::instance().removeHolder(_imp->cyclesHolder);
-    --gProgressiveLive;
+    WorkerCounts& counts = workerCounts();
+    {
+        std::lock_guard<std::mutex> l(counts.mutex);
+        --counts.renders;
+    }
+    if (_imp->worker.joinable()) {
+        _imp->worker.detach();
+    }
 }
 
 void
@@ -3429,7 +3549,24 @@ ProgressiveRender::pick(const Frame& frame,
 int
 ProgressiveRender::getLiveCount()
 {
-    return gProgressiveLive.load();
+    WorkerCounts& counts = workerCounts();
+    std::lock_guard<std::mutex> l(counts.mutex);
+
+    return counts.workers;
+}
+
+bool
+ProgressiveRender::waitForDetachedWorkers(int timeoutMs)
+{
+    WorkerCounts& counts = workerCounts();
+    std::unique_lock<std::mutex> l(counts.mutex);
+
+    if (counts.ended.wait_for(l, std::chrono::milliseconds(std::max(0, timeoutMs)), [&counts]() { return counts.workers <= counts.renders; })) {
+        return true;
+    }
+    qWarning("%d progressive render workers are still ending after %d ms.", counts.workers - counts.renders, timeoutMs);
+
+    return false;
 }
 
 void
@@ -3452,6 +3589,12 @@ void
 releaseCpuRenderEngines()
 {
     HydraRender::releaseAllCpuEngines();
+}
+
+bool
+waitForViewerRenderWorkers(int timeoutMs)
+{
+    return HydraRender::ProgressiveRender::waitForDetachedWorkers(timeoutMs);
 }
 } // namespace SceneCaches
 

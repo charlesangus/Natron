@@ -341,10 +341,18 @@ std::string contextDescription(std::string* error);
  * stage's edits, and then syncs its stage to the snapshot and renders it without that lock. A
  * sync of a large scene or a long Render() so never holds up the caller, and the engine,
  * subscribed to the worker's stage alone, can be dropped without it. The lock is taken before
- * the class's own, never while holding one of them.
+ * the class's own, never while holding one of them but the one the destructor waits on for a
+ * call into the caller.
  *
  * The worker's stage shares the caller's layers read from files, which a layer reload edits in
- * place: the worker is a SceneWriteBarrier participant whose quiesce waits for the pass under way.
+ * place: the worker is a SceneWriteBarrier participant whose quiesce waits for the delegate call
+ * under way, the sync of the worker's stage or a Render(), as both read those layers.
+ *
+ * An edit interrupts the delegate's render at once where the delegate can stop its threads
+ * (IsStopRendererSupported()); one that cannot, such as Cycles or MoonRay, is reset by the sync
+ * that brings the edit. A change of renderer or of settings drops the engine on the worker as soon
+ * as the delegate call under way returns. No setter waits for the worker, and neither does the
+ * destructor.
  **/
 class ProgressiveRender {
 public:
@@ -406,14 +414,21 @@ public:
      * that a snapshot and the edit count read with it agree; the other setters need no lock.
      * They may be called with *stageLock held. listener is called on the
      * worker after each frame is published and when the delegate fails. background is the linear
-     * grey the colour is composited over.
+     * grey the colour is composited over. None of snapshot, listener, setThreads()' function or
+     * *stageLock is used once the destructor returns.
      **/
     ProgressiveRender(std::mutex* stageLock,
                       const std::function<bool(SceneStageSnapshot*)>& snapshot,
                       const std::function<void()>& listener,
                       float background);
 
-    // Stops the delegate's threads and drops the engine, on the worker, then joins it.
+    /**
+     * @brief Tells the worker to end and returns without waiting for it: the worker finishes the
+     * delegate call under way, drops the engine and its stage and ends on its own, keeping alive
+     * what it uses. Waits only for a call of the snapshot, the listener or the threads function
+     * under way, so it must not run while the caller holds *stageLock or inside the listener.
+     * waitForDetachedWorkers() waits for the workers so ended.
+     **/
     ~ProgressiveRender();
 
     /**
@@ -470,8 +485,16 @@ public:
                      int x,
                      int y);
 
-    // How many workers are alive in the process, for leak checks.
+    // How many workers are alive in the process, those still ending after their render went
+    // included, for leak checks.
     static int getLiveCount();
+
+    /**
+     * @brief Waits up to timeoutMs for every worker whose render was destroyed to end; false, with
+     * a warning, if some still run then. For process exit, ahead of the teardown of what the
+     * delegates use, and for tests. MT-safe.
+     **/
+    static bool waitForDetachedWorkers(int timeoutMs);
 
     /**
      * @brief For tests: hook is called on every worker after it took its snapshot and before it
@@ -482,7 +505,7 @@ public:
     struct Implementation;
 
 private:
-    std::unique_ptr<Implementation> _imp;
+    std::shared_ptr<Implementation> _imp;
 };
 } // namespace HydraRender
 

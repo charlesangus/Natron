@@ -34,6 +34,9 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -49,6 +52,9 @@
 #include "BaseTest.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/MoonRayRuntime.h"
+#include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -70,6 +76,8 @@ const int kSize = 32;
 const int kSamples = 256;
 const float kNearDistance = 9.f;
 const std::chrono::seconds kTimeout(120);
+// How long a destroyed render's worker may take to stop its delegate and end.
+const int kEndMs = 60000;
 
 typedef HydraRender::ProgressiveRender ProgressiveRender;
 
@@ -134,6 +142,79 @@ centreDepth(const ProgressiveRender::Frame& frame)
 {
     return frame.depth[(std::size_t)(frame.height / 2) * (std::size_t)frame.width + (std::size_t)(frame.width / 2)];
 }
+
+// base with grids meshes of size by size quads inside /World/Near, which hides them: a scene a
+// delegate's first sync takes long enough on for an edit to come while it runs.
+ScenePayload
+heavyScene(const ScenePayload& base,
+           int grids,
+           int size)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestHeavy");
+    PXR_NS::VtIntArray counts((std::size_t)size * (std::size_t)size, 4);
+    PXR_NS::VtIntArray indices;
+    indices.reserve(counts.size() * 4);
+    const int row = size + 1;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const int corner = y * row + x;
+            indices.push_back(corner);
+            indices.push_back(corner + 1);
+            indices.push_back(corner + row + 1);
+            indices.push_back(corner + row);
+        }
+    }
+    for (int g = 0; g < grids; ++g) {
+        const float z = (grids > 1) ? -0.5f + (float)g / (float)(grids - 1) : 0.f;
+        PXR_NS::VtVec3fArray points;
+        points.reserve((std::size_t)row * (std::size_t)row);
+        for (int y = 0; y < row; ++y) {
+            for (int x = 0; x < row; ++x) {
+                points.push_back(PXR_NS::GfVec3f((float)x / (float)size - 0.5f, (float)y / (float)size - 0.5f, z));
+            }
+        }
+        PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath("/World/HeavyGrid_" + std::to_string(g)));
+        prim->SetSpecifier(PXR_NS::SdfSpecifierDef);
+        prim->SetTypeName("Mesh");
+        PXR_NS::SdfAttributeSpec::New(prim, "points", PXR_NS::SdfValueTypeNames->Point3fArray)->SetDefaultValue(PXR_NS::VtValue(points));
+        PXR_NS::SdfAttributeSpec::New(prim, "faceVertexCounts", PXR_NS::SdfValueTypeNames->IntArray)->SetDefaultValue(PXR_NS::VtValue(counts));
+        PXR_NS::SdfAttributeSpec::New(prim, "faceVertexIndices", PXR_NS::SdfValueTypeNames->IntArray)->SetDefaultValue(PXR_NS::VtValue(indices));
+        PXR_NS::SdfAttributeSpec::New(prim, "subdivisionScheme", PXR_NS::SdfValueTypeNames->Token, PXR_NS::SdfVariabilityUniform)->SetDefaultValue(PXR_NS::VtValue(PXR_NS::TfToken("none")));
+    }
+
+    return SceneOps::appendLayer(base, layer, 0x4ea7700ULL);
+}
+
+bool
+moonRayAvailable()
+{
+    return bool(PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hd_moonray"));
+}
+
+// The bundled gtest has no GTEST_SKIP, so the test returns early on false.
+bool
+moonRayOrSkip()
+{
+    if (moonRayAvailable()) {
+        return true;
+    }
+    const char* reason = "OpenUSD has no hd_moonray plug-in registered; this build image predates the "
+                         "MoonRay render delegate (tools/ci/local/build-moonray.sh), or the CPU lacks an instruction set MoonRay needs (MoonRayRuntime::cpuRunsMoonRay)";
+    const char* require = std::getenv("NATRON_TEST_REQUIRE_MOONRAY");
+    if (require && (std::strcmp(require, "1") == 0) && MoonRayRuntime::cpuRunsMoonRay()) {
+        ADD_FAILURE() << "NATRON_TEST_REQUIRE_MOONRAY=1 but " << reason;
+    } else {
+        std::printf("[  SKIPPED ] %s\n", reason);
+    }
+
+    return false;
+}
+
+long long
+millisecondsSince(const std::chrono::steady_clock::time_point& from)
+{
+    return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - from).count();
+}
 } // anon namespace
 
 class ProgressiveRenderTest
@@ -155,6 +236,8 @@ protected:
         ProgressiveRender::setBeforeSyncHook(std::function<void()>());
         hold(false);
         _render.reset();
+        // A worker still ending would hold a Cycles session of its thread count into the next test.
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
         _stage.reset();
         HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
         BaseTest::TearDown();
@@ -188,6 +271,8 @@ protected:
         hold(false);
         _listened = nullptr;
         _render.reset();
+        // The worker of the one before could otherwise meet the fault hook a test sets next.
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
         {
             std::lock_guard<std::mutex> lock(_signalMutex);
             _published.clear();
@@ -197,9 +282,10 @@ protected:
         _listened = _render.get();
     }
 
-    // Starts a Cycles render of the fixture through its camera, kSize pixels square, with a render
-    // settings prim's settings.
-    bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>())
+    // Starts a render of the fixture by renderer, Cycles unless given, through its camera, kSize
+    // pixels square, with a render settings prim's settings.
+    bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>(),
+               const std::string& renderer = kRenderDelegateCyclesId)
     {
         if (!_stage->isValid()) {
             ADD_FAILURE() << "OpenUSD could not open a stage";
@@ -220,7 +306,7 @@ protected:
         _view.time = PXR_NS::UsdTimeCode::Default();
         newRender();
         _render->setSettings(settings);
-        _render->setRenderer(kRenderDelegateCyclesId);
+        _render->setRenderer(renderer);
         _render->setThreads([]() { return 2; });
         _render->setView(_view);
 
@@ -323,6 +409,84 @@ protected:
         return finished;
     }
 
+    // Sets settings, which makes the engine again, and returns once its first pass over the heavy
+    // scene has been under way for a while. False, with a failure, if no such pass began.
+    bool heavyPass(const std::map<std::string, PXR_NS::VtValue>& settings)
+    {
+        std::shared_ptr<std::atomic<std::uint64_t>> seen = std::make_shared<std::atomic<std::uint64_t>>(0);
+        const std::uint64_t builds = HydraRender::getEngineBuildCount();
+        ProgressiveRender::setBeforeSyncHook([seen]() { *seen = HydraRender::getEngineBuildCount(); });
+        _render->setSettings(settings);
+        const bool began = waitUntil([seen, builds]() { return seen->load() > builds; }, "a pass of a new engine");
+        ProgressiveRender::setBeforeSyncHook(std::function<void()>());
+        // Into the delegate's sync of the heavy scene, past the hook.
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+        return began;
+    }
+
+    // A settings change, a change of renderer to other and the render's destruction, each made
+    // while renderer is in its first pass over a heavy scene, return on this thread within 50 ms,
+    // and the frames that follow the first two are of the change.
+    void interruptsMidPass(const std::string& renderer,
+                           const std::string& samplesKey,
+                           const std::string& other)
+    {
+        const long long kReturnMs = 50;
+        const int liveBefore = ProgressiveRender::getLiveCount();
+        std::map<std::string, PXR_NS::VtValue> settings;
+        settings[samplesKey] = PXR_NS::VtValue(2);
+        ASSERT_TRUE(start(settings, renderer));
+        sync(heavyScene(_base, 24, 160));
+
+        settings[samplesKey] = PXR_NS::VtValue(64);
+        ASSERT_TRUE(heavyPass(settings));
+        settings[samplesKey] = PXR_NS::VtValue(3);
+        std::chrono::steady_clock::time_point asked = std::chrono::steady_clock::now();
+        std::size_t mark = publishedCount();
+        _render->setSettings(settings);
+        EXPECT_LT(millisecondsSince(asked), kReturnMs) << "a settings change waited for the pass";
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+        ASSERT_TRUE(collectUntilDone(mark, &frames));
+        ASSERT_FALSE(frames.empty());
+        EXPECT_EQ(3, _render->getMaxSamples());
+        EXPECT_EQ(3, frames.back()->maxSamples);
+
+        settings[samplesKey] = PXR_NS::VtValue(4);
+        ASSERT_TRUE(heavyPass(settings));
+        asked = std::chrono::steady_clock::now();
+        _render->setRenderer(other);
+        EXPECT_LT(millisecondsSince(asked), kReturnMs) << "a renderer change waited for the pass";
+        if (other.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            const ProgressiveRender::Status status = _render->getStatus();
+            EXPECT_FALSE(status.active);
+            EXPECT_TRUE(status.error.empty()) << status.error;
+            EXPECT_TRUE(_render->getFrame() == nullptr) << "a frame of the renderer left was shown";
+        } else {
+            std::string error;
+            EXPECT_TRUE(waitUntil([this, &error]() {
+                const ProgressiveRender::Status status = _render->getStatus();
+                error = status.error;
+                const std::shared_ptr<const ProgressiveRender::Frame> frame = _render->getFrame();
+
+                return !error.empty() || (frame && (frame->restart == status.restarts));
+            },
+                                  "a frame of the other renderer"));
+            EXPECT_TRUE(error.empty()) << error;
+        }
+
+        _render->setRenderer(renderer);
+        settings[samplesKey] = PXR_NS::VtValue(5);
+        ASSERT_TRUE(heavyPass(settings));
+        asked = std::chrono::steady_clock::now();
+        _listened = nullptr;
+        _render.reset();
+        EXPECT_LT(millisecondsSince(asked), kReturnMs) << "destroying the render waited for the pass";
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
+        EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
+    }
+
     std::mutex _stageLock;
     std::unique_ptr<SceneStage> _stage;
     std::unique_ptr<ProgressiveRender> _render;
@@ -392,6 +556,7 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
 
     EXPECT_EQ(liveBefore + 1, ProgressiveRender::getLiveCount());
     _render.reset();
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
 }
 
@@ -579,6 +744,8 @@ TEST_F(ProgressiveRenderTest, AnEditDuringAFailingPassDoesNotHideTheFailure)
     EXPECT_FALSE(armed.load());
     EXPECT_NE(std::string::npos, _render->getStatus().error.find("texture commit failed")) << _render->getStatus().error;
     _render.reset();
+    // The hook reads this test's locals, which a worker still ending could call it on.
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     RenderDelegates::setRenderFaultHook(nullptr);
 }
 
@@ -621,6 +788,8 @@ TEST_F(ProgressiveRenderTest, AFailureRetriesAtTheNextSceneEditAndNotAtAMove)
     EXPECT_FALSE(frames.empty());
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
     _render.reset();
+    // The hook reads this test's locals, which a worker still ending could call it on.
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     RenderDelegates::setRenderFaultHook(nullptr);
 }
 
@@ -890,4 +1059,25 @@ TEST_F(ProgressiveRenderTest, ThePreviewTransformsReachTheRender)
     }
     ASSERT_TRUE(collectUntilDone(mark, &frames));
     EXPECT_NEAR(rest, centreDepth(*frames.back()), 1e-4f);
+}
+
+TEST_F(ProgressiveRenderTest, CyclesReturnsAtOnceFromChangesMidPass)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    // The fixed sampling without its samples, which would override the test's.
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    interruptsMidPass(kRenderDelegateCyclesId, "cycles:samples", moonRayAvailable() ? std::string(kMoonRayRendererId) : std::string());
+}
+
+TEST_F(ProgressiveRenderTest, MoonRayReturnsAtOnceFromChangesMidPass)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const bool cycles = bool(PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hdCycles"));
+    interruptsMidPass(kMoonRayRendererId, MoonRaySettings::samplesKey(), cycles ? std::string(kRenderDelegateCyclesId) : std::string());
 }

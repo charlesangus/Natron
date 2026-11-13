@@ -534,6 +534,11 @@ AppManager::~AppManager()
     ///Caches may have launched some threads to delete images, wait for them to be done
     QThreadPool::globalInstance()->waitForDone();
 
+    // The viewers closed above left their delegates to stop on their own threads, which still use
+    // OpenUSD and the delegates' libraries. Bounded, so a stuck delegate cannot hang
+    // the exit.
+    (void)SceneCaches::waitForViewerRenderWorkers(30000);
+
     // No render is left to abort, and the watchdog thread reads this manager.
     AbortWatchdog::shutdown();
 

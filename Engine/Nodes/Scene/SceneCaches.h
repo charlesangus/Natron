@@ -58,6 +58,13 @@ void releaseRenderEngines();
 void releaseCpuRenderEngines();
 
 /**
+ * @brief Waits up to timeoutMs for the viewers' background render workers that outlived their
+ * viewer to end: they stop their delegates on their own, after the viewer has gone. False, with a
+ * warning, if some still run then. MT-safe.
+ **/
+bool waitForViewerRenderWorkers(int timeoutMs);
+
+/**
  * @brief Drops every rendered live texture; the consumers that need one render it again. MT-safe.
  **/
 void releaseLiveTextures();

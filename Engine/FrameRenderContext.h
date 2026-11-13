@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <list>
 #include <map>
 #include <memory>
@@ -286,15 +287,18 @@ public:
     bool isRotoPaintTreeNode(const Node* node) const;
 
     /**
-     * @brief Records that node's output in this frame holds pixels computed for it, by its own effect or by the nodes
-     * an identity one passes through, rather than taken from a cache. Thread safe.
+     * @brief Records that node's output at time and view in this frame holds pixels computed for it, by its own effect
+     * or by the nodes an identity one passes through, rather than taken from a cache. Lock free: the mark is kept on
+     * the node (see Node::stampFreshOutput()). It is per (node, time, view), not per consumer, so in a diamond the
+     * consumer that took the output from the cache after the other one's pull computed it sees it fresh too.
      **/
-    void noteFreshOutput(const Node* node) const;
+    void noteFreshOutput(const Node* node, double time, ViewIdx view) const;
 
     /**
-     * @brief Whether noteFreshOutput() was called for node. Thread safe.
+     * @brief Whether noteFreshOutput() was called for node at time and view in this frame. Lock free; it can miss a
+     * fresh output when the node is rendered for many frames or times at once, never report a cached one.
      **/
-    bool hasFreshOutput(const Node* node) const;
+    bool hasFreshOutput(const Node* node, double time, ViewIdx view) const;
 
     const AbortableRenderInfoPtr& getAbortInfo() const
     {
@@ -375,8 +379,10 @@ private:
     // Effects share the holder of their render clones, so a clone finds the args of its node.
     std::unordered_map<const TLSHolderBase*, ParallelRenderArgsPtr> _argsByHolder;
     std::unordered_set<const Node*> _rotoPaintTreeNodes;
-    mutable std::mutex _freshOutputsMutex;
-    mutable std::unordered_set<const Node*> _freshOutputs;
+    std::uint64_t freshOutputKey(double time, ViewIdx view) const;
+
+    // Unique among the frames of the session, so a node's fresh-output marks from an older frame never match.
+    const std::uint64_t _freshOutputFrameId;
     std::shared_ptr<FrameRequestMap> _request;
     AbortableRenderInfoPtr _abortInfo;
     RenderStatsPtr _stats;

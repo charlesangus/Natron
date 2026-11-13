@@ -1371,7 +1371,7 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
             layers->insert(std::make_pair(*comp, *image));
         }
         if (freshInput) {
-            *freshInput = frameContext && frameContext->hasFreshOutput(inputNode.get());
+            *freshInput = frameContext && frameContext->hasFreshOutput(inputNode.get(), args->time, args->view);
         }
 
         return eRenderRoIRetCodeOk;
@@ -1392,14 +1392,14 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     if (code != eRenderRoIRetCodeOk) {
         return code;
     }
-    bool fresh = (frameContext && frameContext->hasFreshOutput(inputNode.get())) || (!fromStore && passedFresh);
+    bool fresh = (frameContext && frameContext->hasFreshOutput(inputNode.get(), args->time, args->view)) || (!fromStore && passedFresh);
     if (!fromStore && executed && (layers->size() > layersBefore)) {
         fresh = true;
         if (inputNode) {
             inputNode->noteExecution(Node::eExecutionDeviceCpu);
         }
         if (frameContext) {
-            frameContext->noteFreshOutput(inputNode.get());
+            frameContext->noteFreshOutput(inputNode.get(), args->time, args->view);
         }
     }
     if (freshInput) {
@@ -2328,21 +2328,6 @@ EffectInstance::NotifyRenderingStarted_RAII::~NotifyRenderingStarted_RAII()
                 isGroupNode->getNode()->notifyRenderingEnded();
             }
         }
-    }
-}
-
-EffectInstance::NotifyInputNRenderingStarted_RAII::NotifyInputNRenderingStarted_RAII(Node* node,
-                                                                                     int inputNumber)
-    : _node(node)
-    , _inputNumber(inputNumber)
-{
-    _didEmit = node->notifyInputNIsRendering(inputNumber);
-}
-
-EffectInstance::NotifyInputNRenderingStarted_RAII::~NotifyInputNRenderingStarted_RAII()
-{
-    if (_didEmit) {
-        _node->notifyInputNIsFinishedRendering(_inputNumber);
     }
 }
 

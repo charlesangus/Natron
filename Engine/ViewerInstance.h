@@ -256,6 +256,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class ViewerCurrentFrameRequestScheduler;
     friend class GpuPlacementPlanner;
+    friend struct ViewerInstanceTestAccess;
 
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
@@ -542,13 +543,6 @@ public:
      * A render that failed counts as shown, so a failure with nothing newer queued is not stale.
      **/
     bool isStale() const;
-
-    /**
-     * @brief Stand in for a render request starting and for it reaching the display, so that a
-     * test can drive the stale state without rendering. Returns the age of the request.
-     **/
-    U64 requestRenderForTests(int textureIndex, bool canAbort, bool isSequential);
-    void renderShownForTests(int textureIndex, U64 renderAge);
 
     void setDisplayChannels(DisplayChannelsEnum channels, bool bothInputs);
 

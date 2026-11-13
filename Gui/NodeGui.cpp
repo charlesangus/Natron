@@ -462,8 +462,6 @@ NodeGui::initialize(NodeGraph* dag,
     // Emitted from render threads; the indicators are refreshed in batches on the graph's timer.
     QObject::connect(internalNode.get(), SIGNAL(renderingStarted()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect(internalNode.get(), SIGNAL(renderingEnded()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
-    QObject::connect(internalNode.get(), SIGNAL(inputNIsRendering(int)), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
-    QObject::connect(internalNode.get(), SIGNAL(inputNIsFinishedRendering(int)), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect(internalNode.get(), SIGNAL(executionCountChanged()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect(internalNode.get(), SIGNAL(inputExecutionCountChanged()), this, SLOT(onRenderingStateChanged()), Qt::QueuedConnection);
     QObject::connect( internalNode.get(), SIGNAL(knobsLinksChanged()), this, SLOT(onKnobsLinksChanged()) );
@@ -2874,10 +2872,8 @@ NodeGui::refreshStateIndicator()
 
     bool showIndicator = true;
     QBrush brush = _stateIndicator->brush();
-    const bool cpu = _ranOnCpu || (node->getIsNodeRenderingCounter() >= 1);
-    const bool gpu = _ranOnGpu;
     bool isSelected = getIsSelected();
-    if (cpu && gpu) {
+    if (_ranOnCpu && _ranOnGpu) {
         QLinearGradient split(0., 0., 1., 0.);
         split.setCoordinateMode(QGradient::ObjectBoundingMode);
         split.setColorAt(0., cpuExecutionColor());
@@ -2885,9 +2881,9 @@ NodeGui::refreshStateIndicator()
         split.setColorAt(0.5, gpuExecutionColor());
         split.setColorAt(1., gpuExecutionColor());
         brush = QBrush(split);
-    } else if (cpu) {
+    } else if (_ranOnCpu) {
         brush = QBrush(cpuExecutionColor());
-    } else if (gpu) {
+    } else if (_ranOnGpu) {
         brush = QBrush(gpuExecutionColor());
     } else if (isSelected) {
         brush = QBrush(Qt::white);
@@ -2958,7 +2954,7 @@ NodeGui::refreshRenderingIndicator()
     for (std::size_t i = 0; i < _inputEdges.size(); ++i) {
         const bool executed = node->takeInputExecutionCount(i) > 0;
         latched = latched || executed;
-        if (executed || (node->getIsInputNRenderingCounter(i) >= 1)) {
+        if (executed) {
             _inputEdges[i]->turnOnRenderingColor();
         } else {
             _inputEdges[i]->turnOffRenderingColor();

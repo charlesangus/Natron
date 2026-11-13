@@ -343,8 +343,8 @@ ViewerTab::onStaleBorderTimeout()
     }
 }
 
-// Playback flips the viewer stale and current once per frame, and a frame slower than the delay
-// would flash the border, so playback keeps it hidden whatever the delay is.
+// Each played frame turns the viewer stale then current, so with frames slower than the delay the
+// border would flash on every one.
 void
 ViewerTab::refreshStaleBorder()
 {

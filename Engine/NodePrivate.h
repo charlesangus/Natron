@@ -246,9 +246,9 @@ public:
         , lastRenderStartedSlotCallTime()
         , renderStartedCounter(0)
         , executionCounts()
-        , inputIsRenderingCounter(0)
-        , inputExecutionCounts()
-        , lastInputNRenderStartedSlotCallTime()
+        , inputExecutionCounts(nullptr)
+        , inputExecutionCountBlocks()
+        , freshOutputStamps()
         , nodeIsDequeuing(false)
         , actionsQueued(false)
         , renderStartsHeldByEdits(0)
@@ -312,7 +312,6 @@ public:
     {
         ///Initialize timers
         gettimeofday(&lastRenderStartedSlotCallTime, 0);
-        gettimeofday(&lastInputNRenderStartedSlotCallTime, 0);
     }
 
     void abortPreview_non_blocking();
@@ -531,13 +530,32 @@ public:
     bool keyframesDisplayedOnTimeline;
 
     ///This is to avoid the slots connected to the main-thread to be called too much
-    QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & lastInputNRenderStartedSlotCallTime
+    QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & renderStartedCounter
     timeval lastRenderStartedSlotCallTime;
     int renderStartedCounter;
     std::atomic<int> executionCounts[2];
-    std::vector<int> inputIsRenderingCounter;
-    std::vector<int> inputExecutionCounts;
-    timeval lastInputNRenderStartedSlotCallTime;
+
+    struct InputExecutionCounts {
+        explicit InputExecutionCounts(int n)
+            : size(n)
+            , counts(new std::atomic<int>[n]())
+        {
+        }
+
+        const int size;
+        const std::unique_ptr<std::atomic<int>[]> counts;
+    };
+
+    // Render threads read the counts with no lock, so a node gaining inputs publishes a larger block rather than
+    // resizing one a reader may hold; the replaced blocks live as long as the node. Grown on the main thread only.
+    std::atomic<InputExecutionCounts*> inputExecutionCounts;
+    std::vector<std::unique_ptr<InputExecutionCounts>> inputExecutionCountBlocks;
+
+    // Each holds the key of a (frame, time, view) the node's output was computed for (see
+    // FrameRenderContext::noteFreshOutput()). Two keys sharing a slot overwrite each other, which can only miss a
+    // fresh output, never invent one.
+    static constexpr std::size_t kFreshOutputSlots = 8;
+    std::atomic<std::uint64_t> freshOutputStamps[kFreshOutputSlots];
 
     ///True when the node is dequeuing the connectionQueue and no render should be started 'til it is empty
     bool nodeIsDequeuing;

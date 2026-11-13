@@ -1432,15 +1432,9 @@ public:
 
     void purgeAllInstancesCaches();
 
-    bool notifyInputNIsRendering(int inputNb);
-
-    void notifyInputNIsFinishedRendering(int inputNb);
-
     bool notifyRenderingStarted();
 
     void notifyRenderingEnded();
-
-    int getIsInputNRenderingCounter(int inputNb) const;
 
     int getIsNodeRenderingCounter() const;
 
@@ -1472,6 +1466,17 @@ public:
      * @brief Like takeExecutionCount(), for the reads noteInputExecution() recorded on input inputNb.
      **/
     int takeInputExecutionCount(int inputNb);
+
+    /**
+     * @brief Records key, made by FrameRenderContext from a frame, a time and a view, as one this node's output was
+     * computed for. Lock free, safe from any render thread.
+     **/
+    void stampFreshOutput(std::uint64_t key) const;
+
+    /**
+     * @brief Whether stampFreshOutput() recorded key and no other key took its place since. Lock free.
+     **/
+    bool hasFreshOutputStamp(std::uint64_t key) const;
 
     /**
      * @brief forwarded to the live instance
@@ -2689,10 +2694,6 @@ Q_SIGNALS:
     void previewImageChanged(double);
 
     void previewRefreshRequested(double);
-
-    void inputNIsRendering(int inputNb);
-
-    void inputNIsFinishedRendering(int inputNb);
 
     void renderingStarted();
 

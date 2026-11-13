@@ -408,6 +408,10 @@ public:
 
         // How many times the region was run again on the GPU after running out of device memory.
         int retries = 0;
+
+        // Per member, in Region::members order: whether device work recording it was submitted, in any run of the
+        // region, those before a retry or a CPU fallback included. Empty when nothing was submitted.
+        std::vector<char> memberRanOnDevice;
     };
 
     /**

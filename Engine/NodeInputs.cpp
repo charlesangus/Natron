@@ -523,16 +523,17 @@ Node::initializeInputs()
         }
     }
     {
-        QMutexLocker l(&_imp->lastRenderStartedMutex);
-        _imp->inputIsRenderingCounter.resize(inputCount);
-        _imp->inputExecutionCounts.resize(inputCount);
+        const Implementation::InputExecutionCounts* counts = _imp->inputExecutionCounts.load(std::memory_order_acquire);
+        if ((inputCount > 0) && (!counts || (counts->size < inputCount))) {
+            _imp->inputExecutionCountBlocks.push_back(std::make_unique<Implementation::InputExecutionCounts>(inputCount));
+            _imp->inputExecutionCounts.store(_imp->inputExecutionCountBlocks.back().get(), std::memory_order_release);
+        }
     }
     {
         QMutexLocker l(&_imp->inputsMutex);
         oldInputs = _imp->inputs;
 
         std::vector<bool> oldInputsVisibility = _imp->inputsVisibility;
-        _imp->inputIsRenderingCounter.resize(inputCount);
         _imp->inputs.resize(inputCount);
         _imp->guiInputs.resize(inputCount);
         _imp->inputsVisibility.resize(inputCount);

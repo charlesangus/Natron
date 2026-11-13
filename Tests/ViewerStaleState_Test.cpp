@@ -35,6 +35,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "ViewerInstanceTestAccess.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/Node.h"
@@ -81,9 +82,9 @@ TEST_F(ViewerStaleStateTest, CurrentUntilARenderIsRequested)
 
 TEST_F(ViewerStaleStateTest, StaleFromRequestUntilShown)
 {
-    const U64 age = viewer->requestRenderForTests(0, true, false);
+    const U64 age = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
     EXPECT_TRUE(viewer->isStale());
-    viewer->renderShownForTests(0, age);
+    ViewerInstanceTestAccess::renderShown(viewer, 0, age);
     EXPECT_FALSE(viewer->isStale());
     drain();
     ASSERT_EQ(2u, transitions.size());
@@ -93,11 +94,11 @@ TEST_F(ViewerStaleStateTest, StaleFromRequestUntilShown)
 
 TEST_F(ViewerStaleStateTest, AbortedRenderStaysStaleUntilTheNewerOneLands)
 {
-    const U64 aborted = viewer->requestRenderForTests(0, true, false);
-    const U64 newer = viewer->requestRenderForTests(0, true, false);
+    const U64 aborted = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
+    const U64 newer = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
     (void)aborted;
     EXPECT_TRUE(viewer->isStale());
-    viewer->renderShownForTests(0, newer);
+    ViewerInstanceTestAccess::renderShown(viewer, 0, newer);
     EXPECT_FALSE(viewer->isStale());
     drain();
     EXPECT_EQ(2u, transitions.size());
@@ -105,10 +106,10 @@ TEST_F(ViewerStaleStateTest, AbortedRenderStaysStaleUntilTheNewerOneLands)
 
 TEST_F(ViewerStaleStateTest, LateOlderRenderDoesNotMakeItStaleAgain)
 {
-    const U64 older = viewer->requestRenderForTests(0, true, false);
-    const U64 newer = viewer->requestRenderForTests(0, true, false);
-    viewer->renderShownForTests(0, newer);
-    viewer->renderShownForTests(0, older);
+    const U64 older = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
+    const U64 newer = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
+    ViewerInstanceTestAccess::renderShown(viewer, 0, newer);
+    ViewerInstanceTestAccess::renderShown(viewer, 0, older);
     EXPECT_FALSE(viewer->isStale());
     drain();
     EXPECT_EQ(2u, transitions.size());
@@ -117,19 +118,19 @@ TEST_F(ViewerStaleStateTest, LateOlderRenderDoesNotMakeItStaleAgain)
 TEST_F(ViewerStaleStateTest, FailedRenderWithNothingNewerIsCurrent)
 {
     // A failed render reports through the same call as a shown one.
-    const U64 age = viewer->requestRenderForTests(0, false, false);
+    const U64 age = ViewerInstanceTestAccess::requestRender(viewer, 0, false, false);
     EXPECT_TRUE(viewer->isStale());
-    viewer->renderShownForTests(0, age);
+    ViewerInstanceTestAccess::renderShown(viewer, 0, age);
     EXPECT_FALSE(viewer->isStale());
 }
 
 TEST_F(ViewerStaleStateTest, WipeIsStaleIfEitherInputIs)
 {
-    const U64 a = viewer->requestRenderForTests(0, true, false);
-    const U64 b = viewer->requestRenderForTests(1, true, false);
-    viewer->renderShownForTests(0, a);
+    const U64 a = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
+    const U64 b = ViewerInstanceTestAccess::requestRender(viewer, 1, true, false);
+    ViewerInstanceTestAccess::renderShown(viewer, 0, a);
     EXPECT_TRUE(viewer->isStale());
-    viewer->renderShownForTests(1, b);
+    ViewerInstanceTestAccess::renderShown(viewer, 1, b);
     EXPECT_FALSE(viewer->isStale());
     drain();
     // One transition each way: input B kept the viewer stale while A landed.
@@ -145,8 +146,8 @@ TEST_F(ViewerStaleStateTest, RenderThreadTransitionIsDeliveredOnTheMainThread)
         receiver = std::this_thread::get_id();
     });
     std::thread worker([this]() {
-        const U64 age = viewer->requestRenderForTests(0, true, false);
-        viewer->renderShownForTests(0, age);
+        const U64 age = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
+        ViewerInstanceTestAccess::renderShown(viewer, 0, age);
     });
     worker.join();
     EXPECT_TRUE(transitions.empty());
@@ -159,19 +160,19 @@ TEST_F(ViewerStaleStateTest, PausedViewerStaysStaleUntilARefreshLands)
 {
     viewer->setViewerPaused(true, true);
     // A paused viewer still takes the request but never uploads its image, so no display age follows.
-    const U64 pausedRequest = viewer->requestRenderForTests(0, true, false);
+    const U64 pausedRequest = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
     (void)pausedRequest;
     EXPECT_TRUE(viewer->isStale());
     viewer->setViewerPaused(false, true);
     EXPECT_TRUE(viewer->isStale());
-    const U64 refresh = viewer->requestRenderForTests(0, true, false);
-    viewer->renderShownForTests(0, refresh);
+    const U64 refresh = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
+    ViewerInstanceTestAccess::renderShown(viewer, 0, refresh);
     EXPECT_FALSE(viewer->isStale());
 }
 
 TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageIsCurrentWhenNothingIsNewer)
 {
-    const U64 age = viewer->requestRenderForTests(0, true, false);
+    const U64 age = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
     EXPECT_TRUE(viewer->isStale());
     viewer->renderEndedWithoutImage(0, age);
     EXPECT_FALSE(viewer->isStale());
@@ -179,8 +180,8 @@ TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageIsCurrentWhenNothingIsNewer)
 
 TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageStaysStaleWhileANewerOneIsQueued)
 {
-    const U64 aborted = viewer->requestRenderForTests(0, true, false);
-    const U64 newer = viewer->requestRenderForTests(0, true, false);
+    const U64 aborted = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
+    const U64 newer = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
     viewer->renderEndedWithoutImage(0, aborted);
     EXPECT_TRUE(viewer->isStale());
     viewer->renderEndedWithoutImage(0, newer);
@@ -191,8 +192,8 @@ TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageStaysStaleWhileANewerOneIsQu
 
 TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageOnOneInputLeavesTheOtherStale)
 {
-    const U64 a = viewer->requestRenderForTests(0, true, false);
-    const U64 b = viewer->requestRenderForTests(1, true, false);
+    const U64 a = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
+    const U64 b = ViewerInstanceTestAccess::requestRender(viewer, 1, true, false);
     viewer->renderEndedWithoutImage(0, a);
     EXPECT_TRUE(viewer->isStale());
     viewer->renderEndedWithoutImage(1, b);
@@ -201,14 +202,14 @@ TEST_F(ViewerStaleStateTest, RenderEndedWithoutImageOnOneInputLeavesTheOtherStal
 
 TEST_F(ViewerStaleStateTest, RenderFailedOutsideTheRenderIsCurrent)
 {
-    const U64 age = viewer->requestRenderForTests(0, false, false);
+    const U64 age = ViewerInstanceTestAccess::requestRender(viewer, 0, false, false);
     viewer->renderFailed(0, age);
     EXPECT_FALSE(viewer->isStale());
 }
 
 TEST_F(ViewerStaleStateTest, SettlingTwiceKeepsTheViewerCurrent)
 {
-    const U64 age = viewer->requestRenderForTests(0, true, false);
+    const U64 age = ViewerInstanceTestAccess::requestRender(viewer, 0, true, false);
     viewer->renderEndedWithoutImage(0, age);
     viewer->renderFailed(0, age);
     EXPECT_FALSE(viewer->isStale());

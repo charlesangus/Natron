@@ -2803,6 +2803,8 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
 
 
         if ( (status[i] == eViewerRenderRetCodeFail) || (status[i] == eViewerRenderRetCodeBlack) ) {
+            // The texture is cleared whatever renders are still running, so this counts as shown and an older
+            // running render must not draw over it; a newer request still has a higher age and stays stale.
             _imp->checkAndUpdateDisplayAge(i, abortInfo->getRenderAge());
             disconnectTextureRequest(i, status[i] == eViewerRenderRetCodeFail);
         } else {
@@ -3936,7 +3938,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                         placementBuilder->finishGraph(retCode, future->getRegionFallbacks(), frameContext ? &renderedNodes : nullptr);
                     }
                     layers = future->getRootPlanes();
-                    inputFresh = frameContext && frameContext->hasFreshOutput(inArgs.activeInputToRender->getNode().get());
+                    inputFresh = frameContext && frameContext->hasFreshOutput(inArgs.activeInputToRender->getNode().get(), inArgs.params->time, view);
                     if (const SchedulerResultHook hook = schedulerResultHook()) {
                         hook(frameContext, &layers);
                     }
@@ -6616,14 +6618,6 @@ ViewerInstance::isStale() const
     return _imp->isStale();
 }
 
-U64
-ViewerInstance::requestRenderForTests(int textureIndex,
-                                      bool canAbort,
-                                      bool isSequential)
-{
-    return _imp->createNewRenderRequest(textureIndex, canAbort, isSequential)->getRenderAge();
-}
-
 void
 ViewerInstance::renderFailed(int textureIndex,
                              U64 renderAge)
@@ -6637,13 +6631,6 @@ ViewerInstance::renderEndedWithoutImage(int textureIndex,
                                         U64 renderAge)
 {
     _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
-}
-
-void
-ViewerInstance::renderShownForTests(int textureIndex,
-                                    U64 renderAge)
-{
-    _imp->checkAndUpdateDisplayAge(textureIndex, renderAge);
 }
 
 void

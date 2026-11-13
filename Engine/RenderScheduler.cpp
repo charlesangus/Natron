@@ -1401,8 +1401,9 @@ RenderScheduler::noteTaskRanOnCpu(const FrameRenderContext& context,
     }
     if (task.isIdentity || !executed) {
         for (int d : task.dependencies) {
-            if (context.hasFreshOutput(graph.tasks[d].key.node.get())) {
-                context.noteFreshOutput(task.key.node.get());
+            const FrameStore::TaskKey& input = graph.tasks[d].key;
+            if (context.hasFreshOutput(input.node.get(), input.time, input.view)) {
+                context.noteFreshOutput(task.key.node.get(), task.key.time, task.key.view);
                 break;
             }
         }
@@ -1410,7 +1411,7 @@ RenderScheduler::noteTaskRanOnCpu(const FrameRenderContext& context,
         return;
     }
     task.key.node->noteExecution(Node::eExecutionDeviceCpu);
-    context.noteFreshOutput(task.key.node.get());
+    context.noteFreshOutput(task.key.node.get(), task.key.time, task.key.view);
 }
 
 void
@@ -1593,26 +1594,32 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             sink.append(lines);
         }
         deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
-        if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost && report.cpuFallback.empty()) {
+        if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost) {
             const std::vector<int>& members = frame->graph.regions[region].members;
-            // memberNs is 0 for a member that recorded no device work, an identity one or one served from a store.
-            std::vector<Node*> ran;
-            for (std::size_t i = 0; (i < members.size()) && (i < report.memberNs.size()); ++i) {
-                const NodePtr& memberNode = frame->graph.tasks[members[i]].key.node;
-                if (memberNode && (report.memberNs[i] > 0)) {
-                    memberNode->noteExecution(Node::eExecutionDeviceGpu);
-                    frame->context->noteFreshOutput(memberNode.get());
-                    ran.push_back(memberNode.get());
+            // Members read one another on the device, where no pull lights their edges; members come after their
+            // inputs, so an input's output is known fresh before its consumers are looked at.
+            for (std::size_t i = 0; (i < members.size()) && (i < report.memberRanOnDevice.size()); ++i) {
+                const FrameGraph::Task& member = frame->graph.tasks[members[i]];
+                if (!member.key.node) {
+                    continue;
                 }
-            }
-            // Members read one another on the device, where no pull lights their edges.
-            for (Node* member : ran) {
-                const int inputs = member->getNInputs();
-                for (int i = 0; i < inputs; ++i) {
-                    const NodePtr input = member->getInput(i);
-                    if (input && frame->context->hasFreshOutput(input.get())) {
-                        member->noteInputExecution(i);
+                const bool ran = report.memberRanOnDevice[i] != 0;
+                bool freshInput = false;
+                for (std::size_t k = 0; (k < member.dependencies.size()) && (k < member.dependencyInputNbs.size()); ++k) {
+                    const FrameStore::TaskKey& input = frame->graph.tasks[member.dependencies[k]].key;
+                    if ((member.dependencyInputNbs[k] < 0) || !frame->context->hasFreshOutput(input.node.get(), input.time, input.view)) {
+                        continue;
                     }
+                    freshInput = true;
+                    if (ran || member.isIdentity) {
+                        member.key.node->noteInputExecution(member.dependencyInputNbs[k]);
+                    }
+                }
+                if (ran) {
+                    member.key.node->noteExecution(Node::eExecutionDeviceGpu);
+                }
+                if (ran || (member.isIdentity && freshInput)) {
+                    frame->context->noteFreshOutput(member.key.node.get(), member.key.time, member.key.view);
                 }
             }
         }

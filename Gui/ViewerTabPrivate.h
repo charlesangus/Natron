@@ -169,6 +169,8 @@ struct ViewerTabPrivate
     QTimer mustSetUpPlaybackButtonsTimer;
     QTimer staleBorderTimer;
     bool viewerStale = false;
+    // Follows the viewer engine's start and finish signals, which only playback emits: a single-frame
+    // render goes through the current-frame scheduler, which emits neither.
     bool playbackRunning = false;
 
     /*frame seeker*/

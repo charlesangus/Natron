@@ -1084,23 +1084,6 @@ public:
     };
     typedef std::shared_ptr<NotifyRenderingStarted_RAII> NotifyRenderingStarted_RAIIPtr;
 
-    class NotifyInputNRenderingStarted_RAII
-    {
-        Node* _node;
-        int _inputNumber;
-        bool _didEmit;
-
-public:
-
-        NotifyInputNRenderingStarted_RAII(Node* node,
-                                          int inputNumber);
-
-        ~NotifyInputNRenderingStarted_RAII();
-    };
-    typedef std::shared_ptr<NotifyInputNRenderingStarted_RAII> NotifyInputNRenderingStarted_RAIIPtr;
-
-
-
     /**
      * @brief Sets render preferences for the rendering of a frame for the current thread.
      * This is thread-local storage. This is NOT local to a call to renderRoI

@@ -846,7 +846,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                     // What a consumer takes from this node then flows from the input that ran.
                     const FrameRenderContext* frameContext = AppTLS::currentFrameContext();
                     if (frameContext) {
-                        frameContext->noteFreshOutput(thisNode.get());
+                        frameContext->noteFreshOutput(thisNode.get(), args.time, args.view);
                     }
                 }
                 outputLayers->insert(identityLayers.begin(), identityLayers.end());

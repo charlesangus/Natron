@@ -385,7 +385,7 @@ future core work has solid ground to build on.
 | M218 | VectorGenerator GPU | done | M217, M124 | | E18 | F8 | | [M218-vectorgenerator-gpu.md](PLAN/MILESTONES/M218-vectorgenerator-gpu.md) |
 | M219 | Curves Follow Vectors | done | M217, M146 | | E18 | F8 | | [M219-curves-follow-vectors.md](PLAN/MILESTONES/M219-curves-follow-vectors.md) |
 | M220 | SplineWarp Follow Vectors | done | M219, M148 | bosley-native-nodes | E18 | F8 | | [M220-splinewarp-follow-vectors.md](PLAN/MILESTONES/M220-splinewarp-follow-vectors.md) |
-| M221 | Neural Optical Flow | doing | M217, M203, M204 | bosley-native-nodes | E16 | F8 | | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
+| M221 | Neural Optical Flow | doing | M217, M203, M204 | bosley-native-nodes | E16 | F8 | response | [M221-neural-optical-flow.md](PLAN/MILESTONES/M221-neural-optical-flow.md) |
 | M222 | User Control Of GPU Placement | todo | M132 |  | E5 | | | [M222-user-control-of-gpu-placement.md](PLAN/MILESTONES/M222-user-control-of-gpu-placement.md) |
 | M223 | Read And Write Knob Cleanup | done | M167 | bosley-native-nodes | E3 | | | [M223-read-and-write-knob-cleanup.md](PLAN/MILESTONES/M223-read-and-write-knob-cleanup.md) |
 | M224 | Fluid Roto And RotoPaint Interaction | done | M146, M117 | misty-marten | E6 | | | [M224-fluid-roto-and-rotopaint-interaction.md](PLAN/MILESTONES/M224-fluid-roto-and-rotopaint-interaction.md) |
@@ -546,6 +546,7 @@ future core work has solid ground to build on.
 | F22 | Native VDB | open |  |  | feature/f22-native-vdb | An OpenVDB volume primitive in native geometry, bridged to USD, with conversion, SDF ops and a volume wrangle. |
 
 # Open questions
+- **M221 - Neural Optical Flow (PM, 2026-11-12):** the SEA-RAFT weights (`MemorySlices/Tartan-C-T-TSKH-spring540x960-M`, `model.safetensors`, BSD-3, GPL-compatible) can't be downloaded here: HuggingFace's CDN `us.aws.cdn.hf.co` is unreachable from the sandbox. Either allow that host, or drop the file at `/tmp/m221-model/spring-M.safetensors` (dev host). Also confirm the training-data licence strings for the manifest (TartanAir CC BY 4.0 confirmed; KITTI, FlyingThings3D/Chairs, Sintel, HD1K, Spring sites unreachable). The archive will need uploading to a fork release by you. P2.T1 (node integration on the fixture model) continues meanwhile.
 - **Nucleon 1.0 must-land list (user, 2026-11-10: "I'll decide later"):** which Features and milestones must be on `main` before 1.0. M396 - Release 1.0 Cut is held, not eligible for pickup, until the user names them; they are then added to its `Deps`.
 - **Site repo setup for E21 - Nucleon 1.0 Release (user action, after the `opennucleon` org exists):** in `opennucleon/opennucleon.github.io`, enable Pages from the `gh-pages` branch, add a deploy key with write access, and store its private half as the OpenNucleon secret `SITE_DEPLOY_KEY`. M392 - Docs Publishing needs this. Once M388 - Docs Site Scaffold merges, add its `Docs` job to `main`'s required checks.
 - **M382 - Nucleon Logo And Artwork (PM, 2026-11-10):** pick one of the four logo concepts (nucleus, orbital, N monogram, node graph), sent as one PNG per concept and background, with notes for the first refinement round.

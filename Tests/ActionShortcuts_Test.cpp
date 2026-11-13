@@ -381,19 +381,18 @@ TEST(Viewer3DNavigationPresetTest, DefaultKeyBindingsAreUnambiguous)
         }
         EXPECT_EQ(1, found) << drawKey.actionID;
     }
-    // Only the draw keys take the vertical arrows in the 3D viewer.
+    // A binding matches only with exactly its modifiers, so a non-draw action may share a
+    // vertical arrow with a draw key provided the modifiers differ.
     for (const Viewer3DKeyBinding& k : keys) {
         const std::string id(k.actionID);
-        bool isDrawKey = false;
         for (const DrawKey& drawKey : drawKeys) {
-            isDrawKey = isDrawKey || (id == drawKey.actionID);
+            if (id == drawKey.actionID) {
+                continue;
+            }
+            EXPECT_FALSE(k.key == drawKey.key && k.modifiers == drawKey.modifiers)
+                << id << " collides with " << drawKey.actionID;
+            EXPECT_FALSE(k.altKey == drawKey.key && k.altModifiers == drawKey.modifiers)
+                << id << " collides with " << drawKey.actionID << " on its second binding";
         }
-        if (isDrawKey) {
-            continue;
-        }
-        EXPECT_NE(int(Qt::Key_Up), int(k.key)) << id;
-        EXPECT_NE(int(Qt::Key_Down), int(k.key)) << id;
-        EXPECT_NE(int(Qt::Key_Up), int(k.altKey)) << id;
-        EXPECT_NE(int(Qt::Key_Down), int(k.altKey)) << id;
     }
 }

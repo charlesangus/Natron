@@ -534,7 +534,8 @@ try:
         display2 = widget_of(V2, ("ComboBox",), "display device")
         require(display2 is not None, "found Viewer2's Display menu")
         report("NOTE Display menu items %r, current %r" % (combo_items(display2), combo_current(display2)))
-        chosen = choose_other(display2)
+        # The first other entry can be the very display Project default resolves to, which shows the same pixels.
+        chosen = choose_other(display2, preferred=("rec.1886", "gamma 2.2"))
         if chosen is None:
             report("NOTE only one display in the config; Viewer2's Display cannot change")
         else:

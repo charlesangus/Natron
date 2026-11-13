@@ -926,6 +926,21 @@ ViewerInstance::initializeKnobs()
     }
 } // ViewerInstance::initializeKnobs
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+const double kLockGrey = 0x11 / 255.;
+
+bool
+isLockGrey(const Node& node)
+{
+    double r, g, b;
+    node.getUserColor(&r, &g, &b);
+
+    return node.hasUserColor() && (std::abs(r - kLockGrey) < 1e-3) && (std::abs(g - kLockGrey) < 1e-3) && (std::abs(b - kLockGrey) < 1e-3);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 std::string
 ViewerInstance::getLockedInput(int inputNb) const
 {
@@ -985,23 +1000,19 @@ ViewerInstance::refreshLockDecoration()
         label->setValue(updated.toStdString());
     }
 
-    const double grey = 0x11 / 255.;
     if (anyLock) {
         if (!_imp->lockColourApplied) {
             _imp->colourBeforeLock = node->hasUserColor();
             if (_imp->colourBeforeLock) {
                 node->getUserColor(&_imp->savedColour[0], &_imp->savedColour[1], &_imp->savedColour[2]);
             }
-            node->setColor(grey, grey, grey);
+            node->setColor(kLockGrey, kLockGrey, kLockGrey);
             _imp->lockColourApplied = true;
         }
     } else if (_imp->lockColourApplied) {
         _imp->lockColourApplied = false;
-        double r, g, b;
-        node->getUserColor(&r, &g, &b);
         // A colour other than the grey set on lock was chosen by the user meanwhile.
-        const bool stillGrey = node->hasUserColor() && (std::abs(r - grey) < 1e-3) && (std::abs(g - grey) < 1e-3) && (std::abs(b - grey) < 1e-3);
-        if (stillGrey) {
+        if (isLockGrey(*node)) {
             if (_imp->colourBeforeLock) {
                 node->setColor(_imp->savedColour[0], _imp->savedColour[1], _imp->savedColour[2]);
             } else {
@@ -1011,6 +1022,21 @@ ViewerInstance::refreshLockDecoration()
     }
 }
 
+bool
+ViewerInstance::getColourToSave(bool* hasColour,
+                                double* rgb) const
+{
+    NodePtr node = getNode();
+    if (!_imp->lockColourApplied || !node || !isLockGrey(*node)) {
+        return false;
+    }
+    *hasColour = _imp->colourBeforeLock;
+    for (int i = 0; i < 3; ++i) {
+        rgb[i] = _imp->savedColour[i];
+    }
+
+    return true;
+}
 bool
 ViewerInstance::knobChanged(KnobI* k,
                             ValueChangedReasonEnum reason,

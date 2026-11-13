@@ -604,6 +604,19 @@ public:
     void setLockedInput(int inputNb, const std::string& nodeName);
 
     /**
+     * @brief Brings the node's lock lines and colour in line with the locks. Main thread only.
+     **/
+    void refreshLockDecoration();
+
+    /**
+     * @brief While the lock colour is on the node, the colour the node has apart from it: returns
+     * true with *hasColour false when it has none. Returns false, leaving the outputs alone, when
+     * the node's colour is not the lock colour. Saving writes this so the lock grey is never
+     * stored as the node's own colour.
+     **/
+    bool getColourToSave(bool* hasColour, double* rgb) const;
+
+    /**
      * @brief The data kind the A input delivers, as the graph resolves it, which decides whether
      * the viewer shows a 2D image or a scene. eDataKindImage when A has nothing connected, and
      * eDataKindPolymorphic when the input is ambiguous. MT-safe.
@@ -872,8 +885,6 @@ private:
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.
     bool refreshResolvedLayers();
-
-    void refreshLockDecoration();
 
     void requestRenderFromKnob();
     void redrawOrRenderForColorChange();

@@ -1,7 +1,8 @@
 """Painting on a UV-mapped quad in the Viewer's 3D view, orbiting, and the texture the node outputs.
 
-Graph: USDRead(texture-paint-quad.usda) into TexturePaint into Viewer1, TexturePaint's panel open,
-Viewer 3D Navigation set to the Nuke preset (Ctrl+left tumbles). A plain left drag paints a Solid
+Graph: USDRead(texture-paint-quad.usda) into TexturePaint and into Viewer1, so the 3D view shows the
+scene, with TexturePaint's panel open, which makes it the node the view paints into, and TexturePaint
+into a Write. Viewer 3D Navigation set to the Nuke preset (Ctrl+left tumbles). A plain left drag paints a Solid
 stroke in pure red through the view camera. A Ctrl+left drag tumbles the camera, which closes the
 session and queues its bake; the node's hidden bakeGeneration knob counts the bakes that landed.
 Once it has, the node's output (UDIM tile 1001) is rendered through a Write to a PNG and read back:
@@ -28,9 +29,9 @@ MIN_RED_TEXELS = 100
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt
     from PySide6.QtGui import QImage, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow
 
     from guitest import (FIXTURES, OUT, check, finish, menu_of, plugin_problem, report, require, run, section, shot,
                          viewer_up, widgets_of)
@@ -91,6 +92,23 @@ try:
         mouse(v, QEvent.MouseButtonRelease, start + delta, Qt.LeftButton, Qt.NoButton, modifiers)
         QApplication.processEvents()
 
+    def node_graph_view():
+        views = [w for w in widgets_of("NodeGraph") if w.isVisible()]
+        return views[0] if views else None
+
+    def panel_of(node):
+        label = node.getLabel()
+        for panel in widgets_of("NodeSettingsPanel"):
+            try:
+                if not panel.isVisible():
+                    continue
+                for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
+                    if w.text() == label:
+                        return panel
+            except RuntimeError:
+                continue
+        return None
+
     def free_camera():
         v = view()
         return list(v.property("natronSceneFreeCamera") or []) if v is not None else []
@@ -132,12 +150,20 @@ try:
 
     def steps():
         require(paint.connectInput(0, usd), "connect TexturePaint to the USDRead")
-        require(viewer.connectInput(0, paint), "connect the Viewer to TexturePaint")
+        require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         require(write.connectInput(0, paint), "connect the Write to TexturePaint")
-        paint.getParam("strokeColorButton").set(1., 0., 0.)
+        colour = paint.getParam("strokeColorButton")
+        for dim, value in enumerate((1., 0., 0.)):
+            colour.setValue(value, dim)
         paint.getParam("bakeOutputPath").setValue(bake_pattern)
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
+        graph = node_graph_view()
+        require(graph is not None, "the node graph is on screen")
+        app.selectNode(paint, True)
+        QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(paint) is not None, POLL_TIMEOUT_S)
+        require(ok, "open TexturePaint's settings panel")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         v = view()
         require(ok, "the scene view shows the scene (%r)" % (v.property("natronSceneError") if v else None,))

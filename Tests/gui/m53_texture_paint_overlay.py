@@ -1,7 +1,8 @@
 """A TexturePaint painted in the Viewer's 3D view shows its unbaked strokes, a brush ring and the paint
 toolbars, and the buffer goes once the bake lands.
 
-Graph: USDRead(scene-reference.usda) into TexturePaint into Viewer1, TexturePaint's settings panel open.
+Graph: USDRead(scene-reference.usda) into TexturePaint and into Viewer1, so the 3D view shows the scene,
+with TexturePaint's settings panel open, which makes it the node the view paints into.
 A plain left drag in the scene view paints a stroke through the view's camera. While the session is
 open (unbaked) the view's natronScenePaintOverlayDrawn property is true and a screenshot shows the
 buffer over the view, the brush ring at the cursor (natronScenePaintBrushRing: x, y, radius) and the
@@ -25,10 +26,10 @@ STARTUP_TIMEOUT_S = 60.0
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
 
     from guitest import (FIXTURES, check, finish, plugin_problem, report, require, run, section, shot, viewer_up,
                          widgets_of)
@@ -58,6 +59,23 @@ try:
         return (v is not None and bool(v.property("natronSceneSynced")) and bool(v.property("natronSceneShown"))
                 and not v.property("natronSceneError"))
 
+    def node_graph_view():
+        views = [w for w in widgets_of("NodeGraph") if w.isVisible()]
+        return views[0] if views else None
+
+    def panel_of(node):
+        label = node.getLabel()
+        for panel in widgets_of("NodeSettingsPanel"):
+            try:
+                if not panel.isVisible():
+                    continue
+                for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
+                    if w.text() == label:
+                        return panel
+            except RuntimeError:
+                continue
+        return None
+
     def mouse(v, kind, pos, button, buttons):
         QApplication.sendEvent(v, QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons,
                                               Qt.NoModifier))
@@ -75,9 +93,15 @@ try:
 
     def steps():
         require(paint.connectInput(0, usd), "connect TexturePaint to the USDRead")
-        require(viewer.connectInput(0, paint), "connect the Viewer to TexturePaint")
+        require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
+        graph = node_graph_view()
+        require(graph is not None, "the node graph is on screen")
+        app.selectNode(paint, True)
+        QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: panel_of(paint) is not None, POLL_TIMEOUT_S)
+        require(ok, "open TexturePaint's settings panel")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         v = view()
         require(ok, "the scene view shows the scene (%r)" % (v.property("natronSceneError") if v else None,))

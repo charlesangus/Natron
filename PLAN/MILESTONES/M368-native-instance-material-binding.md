@@ -21,7 +21,7 @@ Projection reaches native instanced prims through a direct material binding on t
 
 ## Phase 368.1: Spike
 
-- [ ] M368.P1.T1 — Prove a direct binding and primvar reach Storm instances
+- [x] M368.P1.T1 — Prove a direct binding and primvar reach Storm instances
   - files: `tools/spikes/storm-projection/` (`gen.py`, a new `run-instances.sh`), `## Decisions` here
   - approach: generate a scene with two native instances of one card, bind the projection material directly on each instance root with a different `natronProjectionFrame` primvar on each, and render through Storm under llvmpipe. Also try a held reference-points primvar on an instance root for the deforming case.
   - verify: each instance shows its own projection; the result for the deforming case is recorded in `## Decisions`.
@@ -52,3 +52,4 @@ Projection reaches native instanced prims through a direct material binding on t
 ## Decisions
 
 - 2026-11-07 — A direct binding on native instance roots, as a follow-up in F9 - Delegate Projection (user): collection bindings from an ancestor don't reach native instances in Storm.
+- 2026-11-12 — **P1.T1 spike (258786d08, `run-instances.sh`):** Storm honours a direct `material:binding` on each native instance root (projection shader, not lit grey), and a constant `natronProjectionFrame` matrix primvar on the root reaches the shader per instance, so each instance projects from its own frame. A constant `natronReferencePoints` on the root is read per instance too, but it is one point, not per-vertex: instances share prototype points, so per-vertex sticky reference points can only live in the prototype, shared by every instance. P2.T2 therefore authors the frame primvar per instance root, and keeps sticky projection on instances rigid with the existing warning unless all instances of a prototype share one reference pose.

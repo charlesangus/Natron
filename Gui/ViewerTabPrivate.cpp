@@ -59,6 +59,7 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , viewerSubContainer(NULL)
     , viewerSubContainerLayout(NULL)
     , sceneViewport(NULL)
+    , sceneBreadcrumbBar(NULL)
     , mainLayout(NULL)
     , firstSettingsRow(NULL)
     , secondSettingsRow(NULL)

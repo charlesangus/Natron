@@ -7446,6 +7446,12 @@ SceneViewport::select(const QStringList& paths,
 }
 
 void
+SceneViewport::selectPaths(const QStringList& paths)
+{
+    select(paths, eSelectionModeReplace);
+}
+
+void
 SceneViewport::setSelection(const QStringList& paths)
 {
     if (paths == getSelection()) {
@@ -8204,11 +8210,8 @@ SceneViewport::paintGL()
                 hud += tr(" (paused)");
             }
         }
-        const std::vector<std::string>& selected = _imp->renderer.getSelectedPrims();
-        if (selected.size() == 1) {
-            hud += tr(" | %1").arg(QString::fromStdString(selected.back()));
-        } else if (selected.size() > 1) {
-            hud += tr(" | %1 (+%2)").arg(QString::fromStdString(selected.back())).arg(selected.size() - 1);
+        if (property("natronSceneHud").toString() != hud) {
+            setProperty("natronSceneHud", hud);
         }
         painter.setPen(QColor(200, 200, 200));
         painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, hud);

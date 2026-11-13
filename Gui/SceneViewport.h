@@ -1070,6 +1070,9 @@ public:
     void restoreSceneView(const Serialization::SceneViewSerialization& serialization);
 
 public Q_SLOTS:
+    // Replaces the selection. A slot, so that scripts reach it through the meta object.
+    void selectPaths(const QStringList& paths);
+
     // Prim paths. A slot, so that scripts reach it through the meta object.
     void requestLoad(const QStringList& paths, bool withDescendants);
 

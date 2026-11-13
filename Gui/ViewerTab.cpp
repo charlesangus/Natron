@@ -72,6 +72,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneBreadcrumbBar.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
@@ -1481,7 +1482,10 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         _imp->sceneViewport->hide();
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
-        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport, 1);
+        _imp->sceneBreadcrumbBar = new SceneBreadcrumbBar(_imp->sceneViewport, _imp->viewerSubContainer);
+        _imp->sceneBreadcrumbBar->hide();
+        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneBreadcrumbBar);
+        _imp->viewerSubContainerLayout->insertWidget(index + 2, _imp->sceneViewport, 1);
         // The USDEditTransform whose settings panel was opened last.
         const std::function<NodePtr()> openEditNode = [this]() -> NodePtr {
             Gui* gui = getGui();
@@ -1586,9 +1590,11 @@ ViewerTab::onActiveInputDataKindChanged()
     }
     if (scene) {
         _imp->viewer->hide();
+        _imp->sceneBreadcrumbBar->show();
         _imp->sceneViewport->show();
         onSceneEvaluated(0);
     } else {
+        _imp->sceneBreadcrumbBar->hide();
         _imp->sceneViewport->hide();
         // Lets go of the scene's layers; the viewport keeps its stage and engine for the next one.
         _imp->sceneViewport->clearScene();

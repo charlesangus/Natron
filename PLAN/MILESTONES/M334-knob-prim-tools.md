@@ -44,7 +44,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
   - verify: GUI script — opening on `/a /b` shows both checked; OK with no change leaves an expression knob's text intact; Search Unloaded on the city finds a match inside an unloaded payload without loading it on the viewer.
   - size: M
 
-- [ ] M334.P1.T3 — Armed viewer pick
+- [x] M334.P1.T3 — Armed viewer pick
   - files: `Gui/KnobGuiString.cpp`, `Gui/SceneViewport.{h,cpp}`, `Gui/SceneGraphPanel.cpp`, `Tests/gui/scene_armed_pick.py`
   - approach: Pick puts the viewer and panel into a visible armed state for that knob. Selecting works as usual, Enter writes one undo step, Esc cancels. Show the armed knob in a viewer banner; `M326 - Legible Viewer Warning Banner` isn't a dependency, so use the existing viewer overlay text.
   - verify: GUI script — pick two prims, Enter writes both; Esc leaves the knob unchanged; deleting the node cancels the mode.

@@ -7091,6 +7091,21 @@ EffectInstance::getPaintTreeSource() const
     return node ? node->getInput(0) : NodePtr();
 }
 
+NodePtr
+EffectInstance::getPaintTreeSourceFor(const RotoDrawableItem& /*item*/) const
+{
+    return getPaintTreeSource();
+}
+
+NodePtr
+EffectInstance::getPaintTreeRevealSource(const RotoDrawableItem& /*item*/,
+                                         int inputNb) const
+{
+    NodePtr node = getNode();
+
+    return node ? node->getInput(inputNb) : NodePtr();
+}
+
 RotoCurveContextPtr
 EffectInstance::createGeometryCurveContext(const NodePtr& node) const
 {

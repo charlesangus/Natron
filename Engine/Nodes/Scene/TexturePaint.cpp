@@ -25,22 +25,36 @@
 
 #include "TexturePaint.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/CreateNodeArgs.h"
+#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
+#include "Engine/Nodes/Scene/TexturePaintView.h"
+#include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
 const int kResolutionCount = 4;
+
+static_assert((1024 << (kResolutionCount - 1)) == TexturePaintView::kPaintSpaceSize,
+              "Every Buffer Resolution must be the paint space at a mipmap level.");
 
 std::vector<ChoiceOption>
 resolutionOptions()
@@ -340,9 +354,316 @@ TexturePaint::addSession(const SceneRaster::ExplicitCamera& camera)
     context->clearSelection(RotoItem::eSelectionReasonOther);
     RotoLayerPtr layer = context->addLayer();
     setSessionCamera(layer, camera);
+    (void)getSessionView(layer);
 
     return layer;
 }
+
+RotoLayerPtr
+TexturePaint::getSessionOf(const RotoItem& item)
+{
+    RotoLayerPtr layer = item.getParentLayer();
+
+    while (layer && (layer->getHierarchyLevel() > 1)) {
+        layer = layer->getParentLayer();
+    }
+    if (!layer || (layer->getHierarchyLevel() != 1) || !sessionKnob<KnobBool>(layer, kTexturePaintSessionParamFrozen)) {
+        return RotoLayerPtr();
+    }
+
+    return layer;
+}
+
+bool
+TexturePaint::isPaintTreeRoot(const RotoLayer& layer) const
+{
+    return (layer.getHierarchyLevel() == 1) && layer.getHostKnobByName(kTexturePaintSessionParamFrozen);
+}
+
+NodePtr
+TexturePaint::findSessionView(const RotoLayer* session) const
+{
+    std::lock_guard<std::mutex> lock(_viewsMutex);
+    std::map<const RotoLayer*, SessionView>::const_iterator found = _views.find(session);
+
+    return ((found != _views.end()) && !found->second.session.expired()) ? found->second.node : NodePtr();
+}
+
+NodePtr
+TexturePaint::getPaintTreeSourceFor(const RotoDrawableItem& item) const
+{
+    RotoLayerPtr session = getSessionOf(item);
+
+    return session ? findSessionView(session.get()) : NodePtr();
+}
+
+NodePtr
+TexturePaint::getPaintTreeRevealSource(const RotoDrawableItem& item,
+                                       int /*inputNb*/) const
+{
+    return getPaintTreeSourceFor(item);
+}
+
+void
+TexturePaint::syncSessionView(const RotoLayerPtr& session,
+                              const NodePtr& viewNode)
+{
+    TexturePaintView* view = viewNode ? dynamic_cast<TexturePaintView*>(viewNode->getEffectInstance().get()) : 0;
+    SceneRaster::ExplicitCamera camera;
+
+    if (!view || !getSessionCamera(session, &camera)) {
+        return;
+    }
+    view->beginChanges();
+    view->setCamera(camera);
+    view->setPrimPattern(_primPattern.getExpression());
+    KnobStringPtr uvPrimvar = _uvPrimvar.lock();
+    view->setUvPrimvar(uvPrimvar ? uvPrimvar->getValue() : std::string("st"));
+    view->endChanges();
+
+    const NodePtr scene = getNode()->getInput(0);
+    if (viewNode->getInput(0) != scene) {
+        viewNode->disconnectInput(0);
+        if (scene) {
+            viewNode->connectInputBase(scene, 0);
+        }
+    }
+}
+
+NodePtr
+TexturePaint::ensureSessionView(const RotoLayerPtr& session,
+                                bool* created)
+{
+    *created = false;
+    if (!session || (session->getHierarchyLevel() != 1) || !sessionKnob<KnobBool>(session, kTexturePaintSessionParamFrozen)) {
+        return NodePtr();
+    }
+    NodePtr viewNode = findSessionView(session.get());
+    if (!viewNode) {
+        AppInstancePtr app = getApp();
+        if (!app) {
+            return NodePtr();
+        }
+        CreateNodeArgs args(PLUGINID_NATRON_TEXTUREPAINTVIEW, NodeCollectionPtr());
+        args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
+        args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);
+        args.setProperty<bool>(kCreateNodeArgsPropTrustPluginID, true);
+        args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName,
+                                      getNode()->getScriptName_mt_safe() + "_" + session->getScriptName() + "_View");
+        args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+        viewNode = app->createNode(args);
+        if (!viewNode) {
+            return NodePtr();
+        }
+        std::lock_guard<std::mutex> lock(_viewsMutex);
+        for (std::map<const RotoLayer*, SessionView>::iterator it = _views.begin(); it != _views.end();) {
+            if (it->second.session.expired()) {
+                _views.erase(it++);
+            } else {
+                ++it;
+            }
+        }
+        SessionView entry;
+        entry.session = session;
+        entry.node = viewNode;
+        _views[session.get()] = entry;
+        *created = true;
+    }
+    syncSessionView(session, viewNode);
+
+    return viewNode;
+} // TexturePaint::ensureSessionView
+
+NodePtr
+TexturePaint::getSessionView(const RotoLayerPtr& session)
+{
+    bool created = false;
+    NodePtr viewNode = ensureSessionView(session, &created);
+
+    if (created) {
+        RotoContextPtr context = getNode()->getRotoContext();
+        if (context) {
+            context->refreshRotoPaintTree();
+        }
+    }
+
+    return viewNode;
+}
+
+void
+TexturePaint::syncSessionViews()
+{
+    std::vector<std::pair<RotoLayerPtr, NodePtr>> views;
+    {
+        std::lock_guard<std::mutex> lock(_viewsMutex);
+        for (std::map<const RotoLayer*, SessionView>::const_iterator it = _views.begin(); it != _views.end(); ++it) {
+            RotoLayerPtr session = it->second.session.lock();
+            if (session) {
+                views.push_back(std::make_pair(session, it->second.node));
+            }
+        }
+    }
+    for (const std::pair<RotoLayerPtr, NodePtr>& view : views) {
+        syncSessionView(view.first, view.second);
+    }
+}
+
+void
+TexturePaint::onInputChanged(int inputNo)
+{
+    syncSessionViews();
+    NativeEffectBase::onInputChanged(inputNo);
+}
+
+bool
+TexturePaint::knobChanged(KnobI* k,
+                          ValueChangedReasonEnum reason,
+                          ViewSpec view,
+                          double time,
+                          bool originatedFromMainThread)
+{
+    const KnobStringPtr primPattern = _primPattern.getKnob();
+    if (k && ((k == primPattern.get()) || (k == _uvPrimvar.lock().get()))) {
+        syncSessionViews();
+    }
+
+    return NativeEffectBase::knobChanged(k, reason, view, time, originatedFromMainThread);
+}
+
+void
+TexturePaint::getSessionBufferSize(const RotoLayerPtr& session,
+                                   int* width,
+                                   int* height) const
+{
+    SceneRaster::ExplicitCamera camera;
+    const double aspect = getSessionCamera(session, &camera) ? camera.aspect : 1.;
+    const RectD bounds = TexturePaintView::paintSpaceBounds(aspect);
+    const RectI pixels = bounds.toPixelEnclosing(TexturePaintView::bufferMipmapLevel(getBufferResolution()), 1.);
+
+    *width = pixels.width();
+    *height = pixels.height();
+}
+
+namespace {
+// The plane image holds over pixels as 4 floats per pixel, zero where it has no data.
+bool
+readPlane(const ImagePtr& image,
+          const RectI& pixels,
+          std::vector<float>* rgba,
+          std::string* error)
+{
+    const std::size_t width = (std::size_t)pixels.width();
+
+    rgba->assign(width * (std::size_t)pixels.height() * 4, 0.f);
+    if (!image) {
+        return true;
+    }
+    if (image->getBitDepth() != eImageBitDepthFloat) {
+        *error = QObject::tr("The paint buffer did not render in floating point.").toStdString();
+
+        return false;
+    }
+    const int nComps = (int)image->getComponentsCount();
+    const RectI area = pixels.intersect(image->getBounds());
+    if (area.isNull()) {
+        return true;
+    }
+    Image::ReadAccess access(image.get());
+    for (int y = area.y1; y < area.y2; ++y) {
+        for (int x = area.x1; x < area.x2; ++x) {
+            const float* in = reinterpret_cast<const float*>(access.pixelAt(x, y));
+            if (!in) {
+                continue;
+            }
+            float* out = rgba->data() + ((std::size_t)(y - pixels.y1) * width + (std::size_t)(x - pixels.x1)) * 4;
+            for (int c = 0; (c < nComps) && (c < 4); ++c) {
+                out[c] = in[c];
+            }
+        }
+    }
+
+    return true;
+}
+} // anon namespace
+
+bool
+TexturePaint::renderSessionBuffer(const RotoLayerPtr& session,
+                                  const ImageLayerDesc& plane,
+                                  double time,
+                                  ViewIdx view,
+                                  SessionBuffer* buffer,
+                                  std::string* error)
+{
+    NodePtr viewNode = getSessionView(session);
+
+    if (!viewNode) {
+        *error = tr("The layer is not a session of this node.").toStdString();
+
+        return false;
+    }
+    SceneRaster::ExplicitCamera camera;
+    (void)getSessionCamera(session, &camera);
+    const unsigned int level = TexturePaintView::bufferMipmapLevel(getBufferResolution());
+    const RectI pixels = TexturePaintView::paintSpaceBounds(camera.aspect).toPixelEnclosing(level, 1.);
+    const std::size_t count = (std::size_t)pixels.width() * (std::size_t)pixels.height();
+
+    buffer->width = pixels.width();
+    buffer->height = pixels.height();
+
+    RectI rendered;
+    std::vector<float> base;
+    if (!readPlane(renderNodeImage(viewNode, time, view, level, pixels, plane, &rendered), pixels, &base, error)) {
+        return false;
+    }
+    buffer->touched.assign(count, 0);
+
+    KnobLayerSelect* layerKnob = dynamic_cast<KnobLayerSelect*>(getNode()->getLayerKnob().get());
+    const std::string target = layerKnob ? layerKnob->getLayer() : std::string(kNatronColorLayerID);
+    const bool painted = (ImageLayerDesc::isColorLayer(target) && plane.isColorLayer()) || (target == plane.getLayerID());
+
+    // The top of the session's strokes is the merge of its last item in render order.
+    NodePtr top;
+    if (painted) {
+        RotoCurveContextPtr context = getNode()->getCurveContext();
+        const std::list<RotoDrawableItemPtr> items = context ? context->getCurvesByRenderOrder(false) : std::list<RotoDrawableItemPtr>();
+        for (const RotoDrawableItemPtr& item : items) {
+            if (item && (getSessionOf(*item) == session) && item->getMergeNode()) {
+                top = item->getMergeNode();
+            }
+        }
+    }
+    if (!top) {
+        buffer->rgba.swap(base);
+
+        return true;
+    }
+    if (!readPlane(renderNodeImage(top, time, view, level, pixels, plane, &rendered), pixels, &buffer->rgba, error)) {
+        return false;
+    }
+
+    bool selected[4] = { true, true, true, true };
+    const std::vector<std::string> channels = layerKnob ? layerKnob->getChannels() : std::vector<std::string>();
+    if (!channels.empty()) {
+        const std::vector<std::string>& names = plane.getChannels();
+        for (int c = 0; c < 4; ++c) {
+            const bool exists = (std::size_t)c < names.size();
+            selected[c] = exists && (std::find(channels.begin(), channels.end(), names[(std::size_t)c]) != channels.end());
+        }
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        float* out = buffer->rgba.data() + i * 4;
+        const float* in = base.data() + i * 4;
+        for (int c = 0; c < 4; ++c) {
+            if (!selected[c]) {
+                out[c] = in[c];
+            } else if (out[c] != in[c]) {
+                buffer->touched[i] = 1;
+            }
+        }
+    }
+
+    return true;
+} // TexturePaint::renderSessionBuffer
 
 std::list<RotoLayerPtr>
 TexturePaint::getSessions() const
@@ -424,6 +745,14 @@ TexturePaint::setSessionCamera(const RotoLayerPtr& layer,
     }
     if (farClip) {
         farClip->setValue(camera.farClip);
+    }
+
+    RotoCurveContextPtr context = layer ? layer->getContext() : RotoCurveContextPtr();
+    NodePtr host = context ? context->getNode() : NodePtr();
+    TexturePaint* effect = host ? dynamic_cast<TexturePaint*>(host->getEffectInstance().get()) : 0;
+    NodePtr viewNode = effect ? effect->findSessionView(layer.get()) : NodePtr();
+    if (viewNode) {
+        effect->syncSessionView(layer, viewNode);
     }
 }
 

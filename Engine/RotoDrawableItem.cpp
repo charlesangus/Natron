@@ -470,6 +470,15 @@ findPreviousOfItemInLayer(RotoLayer* layer,
         }
     }
 
+    {
+        RotoCurveContextPtr context = layer->getContext();
+        NodePtr host = context ? context->getNode() : NodePtr();
+        EffectInstancePtr hostEffect = host ? host->getEffectInstance() : EffectInstancePtr();
+        if (hostEffect && hostEffect->isPaintTreeRoot(*layer)) {
+            return 0;
+        }
+    }
+
     //Item was still not found, find in great parent layer
     RotoLayerPtr parentLayer = layer->getParentLayer();
     if (!parentLayer) {
@@ -758,7 +767,8 @@ RotoDrawableItem::refreshNodesConnections()
         return;
     }
     RotoDrawableItem* previous = findPreviousInHierarchy();
-    NodePtr rotoPaintInput = getContext()->getNode()->getEffectInstance()->getPaintTreeSource();
+    EffectInstancePtr hostEffect = getContext()->getNode()->getEffectInstance();
+    NodePtr rotoPaintInput = hostEffect->getPaintTreeSourceFor(*this);
     NodePtr upstreamNode = previous ? previous->getMergeNode() : rotoPaintInput;
     RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(this);
     RotoStrokeType type;
@@ -818,7 +828,7 @@ RotoDrawableItem::refreshNodesConnections()
         if ( ( (type == eRotoStrokeTypeReveal) ||
                ( type == eRotoStrokeTypeClone) ) && ( reveal_i > 0) ) {
             shouldUseUpstreamForReveal = false;
-            revealInput = getContext()->getNode()->getInput(reveal_i - 1);
+            revealInput = hostEffect->getPaintTreeRevealSource(*this, reveal_i - 1);
         }
         if (!revealInput && shouldUseUpstreamForReveal) {
             if (type != eRotoStrokeTypeSolid) {

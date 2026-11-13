@@ -28,7 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <list>
+#include <map>
+#include <mutex>
+#include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -115,13 +120,35 @@ public:
         return eCurveContextKindPaint;
     }
 
-    // The scene input is not an image the strokes could merge over.
+    // The internal paint nodes take their mask from the strokes, not from a render of this node.
+    virtual bool isRotoPaintNode() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return LayerKnobSpec(LayerKnobSpec::eKindLayerSelect, LayerKnobSpec::eRoleTarget, true);
+    }
+
+    // The scene input is not an image the strokes could merge over: each session's own view is.
     virtual NodePtr getPaintTreeSource() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return NodePtr();
     }
 
+    virtual NodePtr getPaintTreeSourceFor(const RotoDrawableItem& item) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual NodePtr getPaintTreeRevealSource(const RotoDrawableItem& item, int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isPaintTreeRoot(const RotoLayer& layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual void onCurveLayerCreated(const RotoLayerPtr& layer) OVERRIDE FINAL;
+
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual Route route(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -166,9 +193,63 @@ public:
     static bool isSessionFrozen(const RotoLayerPtr& layer) WARN_UNUSED_RETURN;
     static void setSessionFrozen(const RotoLayerPtr& layer, bool frozen);
 
+    // The session item is painted in: the layer under the base layer it is in. Null outside one.
+    static RotoLayerPtr getSessionOf(const RotoItem& item) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief A session's paint buffer: Buffer Resolution on the view's longer side, the other
+     * following the session camera's aspect, as 4 floats per pixel (the plane's channels in
+     * order, zero past them), row-major and bottom-up.
+     **/
+    struct SessionBuffer {
+        int width = 0;
+        int height = 0;
+        std::vector<float> rgba;
+        // 1 where the strokes changed the view; paint of exactly the view's value reads as 0.
+        std::vector<std::uint8_t> touched;
+    };
+
+    // The size renderSessionBuffer() gives session's buffer at the current Buffer Resolution.
+    void getSessionBufferSize(const RotoLayerPtr& session, int* width, int* height) const;
+
+    /**
+     * @brief Renders session's strokes over its view into *buffer, for plane. The strokes paint
+     * the Layer knob's plane, and of it only the channels the knob selects; any other plane, or
+     * channel, is the view's, untouched. Independent of the node's own output. Main thread: the
+     * session's view is created on first use. False with *error set when it cannot be rendered.
+     **/
+    bool renderSessionBuffer(const RotoLayerPtr& session,
+                             const ImageLayerDesc& plane,
+                             double time,
+                             ViewIdx view,
+                             SessionBuffer* buffer,
+                             std::string* error);
+
+    // The view session's strokes are painted over, created on first use. Main thread.
+    NodePtr getSessionView(const RotoLayerPtr& session);
+
 private:
+    struct SessionView {
+        RotoLayerWPtr session;
+        NodePtr node;
+    };
+
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
+
+    NodePtr findSessionView(const RotoLayer* session) const WARN_UNUSED_RETURN;
+
+    // Creates session's view if it has none and brings it in step; *created tells which.
+    NodePtr ensureSessionView(const RotoLayerPtr& session, bool* created);
+
+    void syncSessionView(const RotoLayerPtr& session, const NodePtr& viewNode);
+
+    // Brings every view in step after a change to the scene input or a knob they copy.
+    void syncSessionViews();
+
+    // Views are looked up from render threads while the main thread creates them.
+    mutable std::mutex _viewsMutex;
+    std::map<const RotoLayer*, SessionView> _views;
 
     PrimSelector _primPattern;
     KnobStringWPtr _uvPrimvar;

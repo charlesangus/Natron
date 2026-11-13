@@ -36,6 +36,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -44,10 +45,15 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/TexturePaint.h"
+#include "Engine/Nodes/Scene/TexturePaintView.h"
+#include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
@@ -166,11 +172,235 @@ paintedCamera()
 
     return camera;
 }
+
+// Two quads filling the height of viewCamera(): red on x in [-2, 0], blue on x in [0, 2].
+const char* const kTwoQuads = R"usda(#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Red" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2, -2, 0), (0, -2, 0), (0, 2, 0), (-2, 2, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Red>
+    }
+
+    def Mesh "Blue" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, -2, 0), (2, -2, 0), (2, 2, 0), (0, 2, 0)]
+        texCoord2f[] primvars:st = [(1, 0), (2, 0), (2, 1), (1, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Blue>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Looks/Red/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (1, 0, 0)
+                token outputs:surface
+            }
+        }
+
+        def Material "Blue"
+        {
+            token outputs:surface.connect = </World/Looks/Blue/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 0, 1)
+                token outputs:surface
+            }
+        }
+    }
+}
+)usda";
+
+// Orthographic, at z = 5 looking down -Z, 4 units high and 6 wide: the quads fill the middle
+// two thirds of the view, red at u = 1/3 and blue at u = 2/3 on the centre line.
+SceneRaster::ExplicitCamera
+viewCamera()
+{
+    SceneRaster::ExplicitCamera camera;
+
+    camera.cameraToWorld[14] = 5.;
+    camera.viewHeight = 4.;
+    camera.aspect = 1.5;
+    camera.orthographic = true;
+    camera.nearClip = 0.1;
+    camera.farClip = 100.;
+
+    return camera;
+}
+
+const double kRedU = 1. / 3.;
+const double kBlueU = 2. / 3.;
+
+struct BufferPixel {
+    float rgba[4];
+    bool touched;
+};
+
+// The buffer pixel under normalized view coordinates (u, v).
+BufferPixel
+pixelAt(const TexturePaint::SessionBuffer& buffer,
+        double u,
+        double v)
+{
+    const int x = std::min(buffer.width - 1, std::max(0, (int)(u * buffer.width)));
+    const int y = std::min(buffer.height - 1, std::max(0, (int)(v * buffer.height)));
+    const std::size_t i = (std::size_t)y * (std::size_t)buffer.width + (std::size_t)x;
+    BufferPixel pixel;
+
+    for (int c = 0; c < 4; ++c) {
+        pixel.rgba[c] = buffer.rgba[i * 4 + (std::size_t)c];
+    }
+    pixel.touched = buffer.touched[i] != 0;
+
+    return pixel;
+}
+
+void
+expectColor(const BufferPixel& pixel,
+            float r,
+            float g,
+            float b,
+            float a,
+            const char* what)
+{
+    EXPECT_NEAR(r, pixel.rgba[0], 1e-3) << what;
+    EXPECT_NEAR(g, pixel.rgba[1], 1e-3) << what;
+    EXPECT_NEAR(b, pixel.rgba[2], 1e-3) << what;
+    EXPECT_NEAR(a, pixel.rgba[3], 1e-3) << what;
+}
 } // anonymous namespace
 
 class TexturePaintTest
     : public BaseTest {
 protected:
+    virtual void TearDown() OVERRIDE
+    {
+        SceneQueryPool::instance().releaseIdle();
+        BaseTest::TearDown();
+    }
+
+    /**
+     * A TexturePaint over a USDRead of kTwoQuads, written into dir, with one session through
+     * viewCamera(). Null after a gtest failure.
+     **/
+    NodePtr createPaintedQuads(const QTemporaryDir& dir,
+                               RotoLayerPtr* session)
+    {
+        const QString path = dir.path() + QString::fromUtf8("/quads.usda");
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || (file.write(kTwoQuads) < 0)) {
+            ADD_FAILURE() << "could not write " << path.toStdString();
+
+            return NodePtr();
+        }
+        file.close();
+
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        NodePtr paint = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+        KnobFilePtr fileKnob = reader ? getKnob<KnobFile>(reader, kUSDReadParamFile) : KnobFilePtr();
+        if (!fileKnob || !getTexturePaint(paint)) {
+            ADD_FAILURE() << "USDRead or TexturePaint is not registered";
+
+            return NodePtr();
+        }
+        fileKnob->setValue(path.toStdString());
+        connectNodes(reader, paint, 0, true);
+        *session = getTexturePaint(paint)->addSession(viewCamera());
+        if (!*session) {
+            ADD_FAILURE() << "no session";
+
+            return NodePtr();
+        }
+
+        return paint;
+    }
+
+    /**
+     * A stroke of type in session, across normalized view point (u, v), large enough to cover
+     * the pixel there, shown at every frame.
+     **/
+    RotoStrokeItemPtr addBrushStroke(const NodePtr& paint,
+                                     const RotoLayerPtr& session,
+                                     RotoStrokeType type,
+                                     const std::string& name,
+                                     double u,
+                                     double v)
+    {
+        RotoContextPtr context = paint->getRotoContext();
+        RotoStrokeItemPtr stroke(new RotoStrokeItem(type, context, name, RotoLayerPtr()));
+
+        stroke->createNodes();
+        context->addItem(session, 0, stroke, RotoItem::eSelectionReasonOther);
+        KnobChoicePtr lifeTime = std::dynamic_pointer_cast<KnobChoice>(stroke->getKnobByName("lifeTime"));
+        if (lifeTime) {
+            lifeTime->setValue(0);
+        }
+        stroke->getBrushSizeKnob()->setValue(400.);
+        stroke->getBrushHardnessKnob()->setValue(1.);
+
+        double x = 0.;
+        double y = 0.;
+        TexturePaintView::viewToPaintSpace(viewCamera().aspect, u, v, &x, &y);
+        stroke->appendPoint(true, RotoPoint(x - 20., y, 1., 1.));
+        stroke->appendPoint(false, RotoPoint(x, y, 1., 2.));
+        stroke->appendPoint(false, RotoPoint(x + 20., y, 1., 3.));
+        stroke->setStrokeFinished();
+        context->refreshRotoPaintTree();
+
+        return stroke;
+    }
+
+    static void setColor(const RotoStrokeItemPtr& stroke,
+                         double r,
+                         double g,
+                         double b)
+    {
+        KnobColorPtr color = stroke->getColorKnob();
+        color->setValue(r, ViewSpec::all(), 0);
+        color->setValue(g, ViewSpec::all(), 1);
+        color->setValue(b, ViewSpec::all(), 2);
+    }
+
+    static bool render(const NodePtr& paint,
+                       const RotoLayerPtr& session,
+                       const ImageLayerDesc& plane,
+                       TexturePaint::SessionBuffer* buffer)
+    {
+        std::string error;
+        const bool ok = getTexturePaint(paint)->renderSessionBuffer(session, plane, 1., ViewIdx(0), buffer, &error);
+
+        EXPECT_TRUE(ok) << error;
+        EXPECT_EQ((std::size_t)buffer->width * (std::size_t)buffer->height * 4, buffer->rgba.size());
+        EXPECT_EQ((std::size_t)buffer->width * (std::size_t)buffer->height, buffer->touched.size());
+
+        return ok && !buffer->rgba.empty();
+    }
+
     RotoStrokeItemPtr addStroke(const RotoContextPtr& context,
                                 const RotoLayerPtr& layer,
                                 const std::string& name,
@@ -295,3 +525,142 @@ TEST_F(TexturePaintTest, SessionsStrokesAndKnobsSurviveSaveAndLoad)
     ASSERT_TRUE(bool(baseLayer));
     EXPECT_FALSE(TexturePaint::getSessionCamera(baseLayer, &unused));
 } // TEST_F(TexturePaintTest, SessionsStrokesAndKnobsSurviveSaveAndLoad)
+
+TEST_F(TexturePaintTest, ViewShowsTheMeshesThroughTheSessionCamera)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+
+    TexturePaint::SessionBuffer buffer;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &buffer));
+    expectColor(pixelAt(buffer, kRedU, 0.5), 1.f, 0.f, 0.f, 1.f, "red quad");
+    expectColor(pixelAt(buffer, kBlueU, 0.5), 0.f, 0.f, 1.f, 1.f, "blue quad");
+    expectColor(pixelAt(buffer, 0.05, 0.5), 0.f, 0.f, 0.f, 0.f, "no mesh");
+    for (std::uint8_t touched : buffer.touched) {
+        ASSERT_EQ(0, touched);
+    }
+}
+
+TEST_F(TexturePaintTest, SolidStrokeFillsTheBufferAndEraserRemovesIt)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+
+    RotoStrokeItemPtr solid = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5);
+    setColor(solid, 0., 1., 0.);
+    TexturePaint::SessionBuffer painted;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &painted));
+    const BufferPixel stroked = pixelAt(painted, kRedU, 0.5);
+    expectColor(stroked, 0.f, 1.f, 0.f, 1.f, "under the stroke");
+    EXPECT_TRUE(stroked.touched);
+    const BufferPixel away = pixelAt(painted, kBlueU, 0.5);
+    expectColor(away, 0.f, 0.f, 1.f, 1.f, "away from the stroke");
+    EXPECT_FALSE(away.touched);
+
+    addBrushStroke(paint, session, eRotoStrokeTypeEraser, "eraser", kRedU, 0.5);
+    TexturePaint::SessionBuffer erased;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &erased));
+    expectColor(pixelAt(erased, kRedU, 0.5), 1.f, 0.f, 0.f, 1.f, "erased back to the view");
+    EXPECT_FALSE(pixelAt(erased, kBlueU, 0.5).touched);
+}
+
+TEST_F(TexturePaintTest, CloneCopiesTheViewByItsOffset)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+
+    RotoStrokeItemPtr clone = addBrushStroke(paint, session, eRotoStrokeTypeClone, "clone", kRedU, 0.5);
+    double redX = 0., blueX = 0., y = 0.;
+    TexturePaintView::viewToPaintSpace(viewCamera().aspect, kRedU, 0.5, &redX, &y);
+    TexturePaintView::viewToPaintSpace(viewCamera().aspect, kBlueU, 0.5, &blueX, &y);
+    // A clone stroke at p shows its source at p - translate.
+    KnobDoublePtr translate = clone->getBrushCloneTranslateKnob();
+    translate->setValue(redX - blueX, ViewSpec::all(), 0);
+    translate->setValue(0., ViewSpec::all(), 1);
+
+    TexturePaint::SessionBuffer buffer;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &buffer));
+    const BufferPixel cloned = pixelAt(buffer, kRedU, 0.5);
+    expectColor(cloned, 0.f, 0.f, 1.f, 1.f, "blue cloned onto red");
+    EXPECT_TRUE(cloned.touched);
+    expectColor(pixelAt(buffer, kBlueU, 0.5), 0.f, 0.f, 1.f, 1.f, "the source itself");
+}
+
+TEST_F(TexturePaintTest, StrokeOnColorLeavesAnotherPlaneUntouched)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+
+    RotoStrokeItemPtr solid = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5);
+    setColor(solid, 0., 1., 0.);
+
+    TexturePaint::SessionBuffer color;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &color));
+    EXPECT_TRUE(pixelAt(color, kRedU, 0.5).touched);
+
+    const std::vector<std::string> channels = { "R", "G", "B" };
+    const ImageLayerDesc diffuse("diffuse", "diffuse", "RGB", channels);
+    TexturePaint::SessionBuffer other;
+    ASSERT_TRUE(render(paint, session, diffuse, &other));
+    EXPECT_EQ(color.width, other.width);
+    EXPECT_EQ(color.height, other.height);
+    for (std::uint8_t touched : other.touched) {
+        ASSERT_EQ(0, touched);
+    }
+    expectColor(pixelAt(other, kRedU, 0.5), 0.f, 0.f, 0.f, 0.f, "nothing painted on diffuse");
+}
+
+TEST_F(TexturePaintTest, BufferSizeFollowsBufferResolutionNotTheViewer)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    TexturePaint* effect = getTexturePaint(paint);
+    addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5);
+
+    // 2K by default: 2048 on the longer side, 2048 / 1.5 rounded up on the other.
+    TexturePaint::SessionBuffer defaultSize;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &defaultSize));
+    EXPECT_EQ(2048, defaultSize.width);
+    EXPECT_EQ(1366, defaultSize.height);
+
+    ProjectPtr project = getApp()->getProject();
+    project->setOrAddProjectFormat(Format(0, 0, 640, 360, "small", 1.));
+    TexturePaint::SessionBuffer small;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &small));
+    EXPECT_EQ(defaultSize.width, small.width);
+    EXPECT_EQ(defaultSize.height, small.height);
+    EXPECT_EQ(pixelAt(defaultSize, kRedU, 0.5).touched, pixelAt(small, kRedU, 0.5).touched);
+
+    project->setOrAddProjectFormat(Format(0, 0, 3840, 2160, "large", 1.));
+    TexturePaint::SessionBuffer large;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &large));
+    EXPECT_EQ(defaultSize.width, large.width);
+    EXPECT_EQ(defaultSize.height, large.height);
+
+    getKnob<KnobChoice>(paint, kTexturePaintParamBufferResolution)->setValueFromID("1K", 0);
+    int width = 0;
+    int height = 0;
+    effect->getSessionBufferSize(session, &width, &height);
+    EXPECT_EQ(1024, width);
+    EXPECT_EQ(683, height);
+    TexturePaint::SessionBuffer oneK;
+    ASSERT_TRUE(render(paint, session, ImageLayerDesc::getRGBAComponents(), &oneK));
+    EXPECT_EQ(1024, oneK.width);
+    EXPECT_EQ(683, oneK.height);
+    EXPECT_TRUE(pixelAt(oneK, kRedU, 0.5).touched);
+}

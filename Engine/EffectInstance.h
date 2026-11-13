@@ -616,6 +616,29 @@ public:
     virtual NodePtr getPaintTreeSource() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The node the bottom of the tree holding item merges over, which an Eraser stroke
+     * restores: getPaintTreeSource() by default. A host whose strokes form several trees, each
+     * over its own image, overrides it along with isPaintTreeRoot().
+     **/
+    virtual NodePtr getPaintTreeSourceFor(const RotoDrawableItem& item) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The node a Clone or Reveal stroke reads when its Source is the host's input inputNb
+     * rather than the strokes below it: that input by default.
+     **/
+    virtual NodePtr getPaintTreeRevealSource(const RotoDrawableItem& item, int inputNb) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether the strokes under layer form a tree of their own, merged over
+     * getPaintTreeSourceFor(item) rather than over the strokes below layer. False by default: every
+     * stroke of the context is one tree.
+     **/
+    virtual bool isPaintTreeRoot(const RotoLayer& /*layer*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief The columns and context-menu actions a curve host adds to its panel's curve list, or
      * null for none. Owned by the effect. Only read when getCurveContextKind() is not None.
      **/

@@ -90,7 +90,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: a USDPrune `/World//car*` above USDXformPrim `/Grp`, viewer L={/Grp/World/Block_0}: parity, only Block_0 opens, and loading `/Grp/World/Block_1` re-evaluates the prune; the same through wrap mode, an autoRename collision (superset parity), the AssignMaterial material input and the USDReference source; reach comes back in `/Grp` paths. `AGraftEvaluatesTheSameOnALoadSetAsOnEverything` is rewritten to load `/Grp/World/Block_0` with an upstream pattern node.
   - size: L
 
-- [ ] M381.P3.T2 — `graftMaterial` on the evaluation context
+- [x] M381.P3.T2 — `graftMaterial` on the evaluation context
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.cpp` (~:765), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: the current context with reach of the grafted roots. Also map grafts through `graftMaterialInput` (the geometry Material input) the way P3.T7 maps `graftSharedMaterial`.
   - verify: probe plus parity on a material input that has a payload.

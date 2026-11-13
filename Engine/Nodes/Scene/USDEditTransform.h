@@ -36,6 +36,7 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/SceneLoadSet.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
@@ -117,10 +118,16 @@ public:
 
     /**
      * @brief Whether the node transforms the prim at primPath on the scene its last evaluation
-     * read: the pattern selects it and it can hold a transform. A pattern changed since that
-     * evaluation is evaluated on the same scene. False before any evaluation.
+     * in context read: the pattern selects it and it can hold a transform. A pattern changed
+     * since that evaluation is matched on the same scene and on context's load set, so no
+     * payload outside it is opened. False before any evaluation in context. Each context keeps
+     * its own result, so viewers asking in turn do not evict each other.
      **/
-    bool transformsPrim(const std::string& primPath) const;
+    bool transformsPrim(const std::string& primPath,
+                        const SceneEvaluationContext& context) const;
+
+    // How many times a stage was read to find the matches or the ops they hold.
+    U64 getStageReadCount() const;
 
     const SceneTransformKnobs& getTransformKnobs() const
     {

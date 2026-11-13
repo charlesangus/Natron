@@ -26,6 +26,7 @@
 #include "USDEditTransform.h"
 
 #include <algorithm>
+#include <list>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -131,47 +132,56 @@ getAppendBaseOrder(const PXR_NS::UsdPrim& prim)
 
     return result;
 } // getAppendBaseOrder
+} // anonymous namespace
 
-// The prims of stage that pattern selects and that can hold a transform, in stage order.
-bool
-selectXformables(const PXR_NS::UsdStageRefPtr& stage,
-                 const std::string& pattern,
-                 std::vector<PXR_NS::UsdPrim>* prims,
-                 std::string* errorMessage)
-{
-    prims->clear();
-    std::vector<PXR_NS::SdfPath> found;
-    if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
-        return false;
-    }
-    for (const PXR_NS::SdfPath& path : found) {
-        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
-        if (prim.IsA<PXR_NS::UsdGeomXformable>()) {
-            prims->push_back(prim);
-        }
-    }
-
-    return true;
-}
+namespace {
+// Evaluation contexts a result is kept for at once.
+const std::size_t kContextResults = 4;
 } // anonymous namespace
 
 struct USDEditTransform::Implementation {
+    // What the last evaluation in one context found, for the handles, the centre pivot button
+    // and the viewers asking which prims the node transforms.
+    struct Result {
+        U64 context = 0;
+        ScenePayload upstream;
+        // The matches of matchedPattern on the stack whose hash is matchedStack, the op name each
+        // gets (from matchedOpName) and the op order an Append-mode op goes after on each, kept so
+        // that an evaluation that changes none of them does not read the stage again.
+        bool matchesValid = false;
+        U64 matchedStack = 0;
+        std::string matchedPattern;
+        std::string matchedOpName;
+        std::vector<PXR_NS::SdfPath> matches;
+        std::vector<PXR_NS::TfToken> opNames;
+        std::vector<PXR_NS::VtTokenArray> baseOrders;
+        std::string handlePrim;
+        std::string handleOp;
+    };
+
     mutable std::mutex lock;
-    // The matches of matchedPattern on the stack whose hash is matchedStack, the op name each gets
-    // (from matchedOpName) and the op order an Append-mode op goes after on each, kept so that an
-    // evaluation that changes none of them does not read the stage again.
-    bool matchesValid = false;
-    U64 matchedStack = 0;
-    std::string matchedPattern;
-    std::string matchedOpName;
-    std::vector<PXR_NS::SdfPath> matches;
-    std::vector<PXR_NS::TfToken> opNames;
-    std::vector<PXR_NS::VtTokenArray> baseOrders;
+    // Most recently evaluated first.
+    std::list<Result> results;
+    U64 opReadCount = 0;
     PrimPatternCache patternMatches;
-    // From the last evaluation, for the handles and the centre pivot button.
-    ScenePayload lastUpstream;
-    std::string handlePrim;
-    std::string handleOp;
+
+    // The result of context, or null. Call with lock held.
+    const Result* find(U64 context) const
+    {
+        for (const Result& result : results) {
+            if (result.context == context) {
+                return &result;
+            }
+        }
+
+        return nullptr;
+    }
+
+    // The result of the latest evaluation in any context, or null. Call with lock held.
+    const Result* latest() const
+    {
+        return results.empty() ? nullptr : &results.front();
+    }
 };
 
 USDEditTransform::USDEditTransform(NodePtr node)
@@ -302,21 +312,35 @@ USDEditTransform::getMatchedPrims(std::vector<std::string>* primPaths,
 
     primPaths->clear();
     opNames->clear();
-    for (std::size_t i = 0; (i < _imp->matches.size()) && (i < _imp->opNames.size()); ++i) {
-        primPaths->push_back(_imp->matches[i].GetString());
-        opNames->push_back(_imp->opNames[i].GetString());
+    const Implementation::Result* result = _imp->latest();
+    for (std::size_t i = 0; result && (i < result->matches.size()) && (i < result->opNames.size()); ++i) {
+        primPaths->push_back(result->matches[i].GetString());
+        opNames->push_back(result->opNames[i].GetString());
     }
 }
 
+U64
+USDEditTransform::getStageReadCount() const
+{
+    std::lock_guard<std::mutex> l(_imp->lock);
+
+    return _imp->patternMatches.getQueryCount() + _imp->opReadCount;
+}
+
 bool
-USDEditTransform::transformsPrim(const std::string& primPath) const
+USDEditTransform::transformsPrim(const std::string& primPath,
+                                 const SceneEvaluationContext& context) const
 {
     const std::string pattern = _primPattern.getExpression();
     ScenePayload upstream;
     {
         std::lock_guard<std::mutex> l(_imp->lock);
-        if (_imp->matchesValid && (_imp->matchedPattern == pattern)) {
-            for (const PXR_NS::SdfPath& path : _imp->matches) {
+        const Implementation::Result* result = _imp->find(context.id);
+        if (!result) {
+            return false;
+        }
+        if (result->matchesValid && (result->matchedPattern == pattern)) {
+            for (const PXR_NS::SdfPath& path : result->matches) {
                 if (path.GetString() == primPath) {
                     return true;
                 }
@@ -324,20 +348,25 @@ USDEditTransform::transformsPrim(const std::string& primPath) const
 
             return false;
         }
-        upstream = _imp->lastUpstream;
+        upstream = result->upstream;
     }
     if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
         return false;
     }
     std::string error;
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, &error);
-    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-    std::vector<PXR_NS::UsdPrim> found;
-    if (!stage || !selectXformables(stage, pattern, &found, &error)) {
+    SceneQueryPool::Lease lease;
+    SceneNodeAuthoring::PatternMatches found;
+    const SceneNodeAuthoring::PatternFilter xformable = [](const PXR_NS::UsdPrim& prim) {
+        return prim.IsA<PXR_NS::UsdGeomXformable>();
+    };
+    // The pattern cache is the one renderScene() fills, so a pattern already matched in this
+    // context on this load set is taken without a query.
+    SceneEvaluationContext asking(context.id, context.loadSet);
+    if (!SceneNodeAuthoring::matchPattern(&_imp->patternMatches, upstream, pattern, asking, 0, xformable, &lease, &found, &error)) {
         return false;
     }
-    for (const PXR_NS::UsdPrim& prim : found) {
-        if (prim.GetPath().GetString() == primPath) {
+    for (const PXR_NS::SdfPath& path : found.paths) {
+        if (path.GetString() == primPath) {
             return true;
         }
     }
@@ -351,11 +380,12 @@ USDEditTransform::getHandleTarget(std::string* primPath,
 {
     std::lock_guard<std::mutex> l(_imp->lock);
 
-    if (_imp->handlePrim.empty()) {
+    const Implementation::Result* result = _imp->latest();
+    if (!result || result->handlePrim.empty()) {
         return false;
     }
-    *primPath = _imp->handlePrim;
-    *opName = _imp->handleOp;
+    *primPath = result->handlePrim;
+    *opName = result->handleOp;
 
     return true;
 }
@@ -367,9 +397,12 @@ USDEditTransform::centrePivot(std::string* errorMessage)
     std::vector<PXR_NS::SdfPath> matches;
     {
         std::lock_guard<std::mutex> l(_imp->lock);
-        upstream = _imp->lastUpstream;
-        if (_imp->matchesValid) {
-            matches = _imp->matches;
+        const Implementation::Result* result = _imp->latest();
+        if (result) {
+            upstream = result->upstream;
+            if (result->matchesValid) {
+                matches = result->matches;
+            }
         }
     }
     KnobDoublePtr pivot = _pivot.lock();
@@ -450,9 +483,10 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
         {
             std::lock_guard<std::mutex> l(_imp->lock);
             // The same prims of the same stack hold the same ops whatever else is loaded.
-            if (_imp->matchesValid && (_imp->matchedStack == upstream.getStackHash()) && (_imp->matchedOpName == baseOpName) && (_imp->matches == matches)) {
-                opNames = _imp->opNames;
-                baseOrders = _imp->baseOrders;
+            const Implementation::Result* previous = _imp->find(args.context.id);
+            if (previous && previous->matchesValid && (previous->matchedStack == upstream.getStackHash()) && (previous->matchedOpName == baseOpName) && (previous->matches == matches)) {
+                opNames = previous->opNames;
+                baseOrders = previous->baseOrders;
                 cached = true;
             }
         }
@@ -461,6 +495,10 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
                 lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
             }
             PXR_NS::UsdStageRefPtr stage = lease.getStage();
+            {
+                std::lock_guard<std::mutex> l(_imp->lock);
+                ++_imp->opReadCount;
+            }
             if (!stage) {
                 if (errorMessage->empty()) {
                     *errorMessage = tr("USD could not compose the input scene.").toStdString();
@@ -479,16 +517,28 @@ USDEditTransform::renderScene(const SceneRenderActionArgs& args,
 
     {
         std::lock_guard<std::mutex> l(_imp->lock);
-        _imp->lastUpstream = upstream;
-        _imp->matchesValid = !upstream.isEmpty() && !PrimSelector::isBlank(pattern);
-        _imp->matchedStack = upstream.getStackHash();
-        _imp->matchedPattern = pattern;
-        _imp->matchedOpName = baseOpName;
-        _imp->matches = matches;
-        _imp->opNames = opNames;
-        _imp->baseOrders = baseOrders;
-        _imp->handlePrim = matches.empty() ? std::string() : matches.front().GetString();
-        _imp->handleOp = opNames.empty() ? std::string() : opNames.front().GetString();
+        Implementation::Result result;
+        result.context = args.context.id;
+        result.upstream = upstream;
+        result.matchesValid = !upstream.isEmpty() && !PrimSelector::isBlank(pattern);
+        result.matchedStack = upstream.getStackHash();
+        result.matchedPattern = pattern;
+        result.matchedOpName = baseOpName;
+        result.matches = matches;
+        result.opNames = opNames;
+        result.baseOrders = baseOrders;
+        result.handlePrim = matches.empty() ? std::string() : matches.front().GetString();
+        result.handleOp = opNames.empty() ? std::string() : opNames.front().GetString();
+        for (std::list<Implementation::Result>::iterator it = _imp->results.begin(); it != _imp->results.end(); ++it) {
+            if (it->context == result.context) {
+                _imp->results.erase(it);
+                break;
+            }
+        }
+        _imp->results.push_front(std::move(result));
+        while (_imp->results.size() > kContextResults) {
+            _imp->results.pop_back();
+        }
     }
 
     if (matches.empty()) {

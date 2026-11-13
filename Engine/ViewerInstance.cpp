@@ -6462,6 +6462,12 @@ ViewerInstance::getSceneLoadSet() const
     return _imp->sceneLoadSet;
 }
 
+SceneEvaluationContext
+ViewerInstance::getSceneEvaluationContext() const
+{
+    return SceneEvaluationContext(_imp->sceneContextId, getSceneLoadSet());
+}
+
 bool
 ViewerInstance::evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
                                         ScenePayload* scene,

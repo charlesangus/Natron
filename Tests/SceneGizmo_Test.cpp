@@ -631,19 +631,19 @@ TEST_F(SceneTransformOwnerTest, AReplaceTransformOwnsThePrimsItsTypePredicateSel
     setMode("replace");
     setPattern("//{isa:Mesh}");
     evaluate();
-    EXPECT_EQ(_transform, findSceneTransformOwner(_transform, "/Box"));
+    EXPECT_EQ(_transform, findSceneTransformOwner(_transform, "/Box", SceneEvaluationContext()));
 
     // A predicate the mesh fails leaves the cube's own transform as the owner.
     setPattern("//{isa:Camera}");
     evaluate();
-    EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box"));
+    EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box", SceneEvaluationContext()));
 
     // A pattern edited since the last evaluation is judged on the scene that evaluation read.
     setPattern("/Box{isa:Mesh}");
-    EXPECT_EQ(_transform, findSceneTransformOwner(_transform, "/Box"));
+    EXPECT_EQ(_transform, findSceneTransformOwner(_transform, "/Box", SceneEvaluationContext()));
 
     // An Append-mode transform composes over the cube's, which stays the owner.
     setMode("append");
     evaluate();
-    EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box"));
+    EXPECT_EQ(_cube, findSceneTransformOwner(_transform, "/Box", SceneEvaluationContext()));
 }

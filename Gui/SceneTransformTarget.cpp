@@ -524,16 +524,18 @@ createEditNode(const NodePtr& viewed,
 // it matches, so for those prims it is the only node whose writes show.
 bool
 replacesTransformOf(const NodePtr& node,
-                    const std::string& primPath)
+                    const std::string& primPath,
+                    const SceneEvaluationContext& context)
 {
     USDEditTransform* edit = toEditTransform(node);
 
-    return edit && (edit->getMode() == USDEditTransform::eModeReplace) && edit->transformsPrim(primPath);
+    return edit && (edit->getMode() == USDEditTransform::eModeReplace) && edit->transformsPrim(primPath, context);
 }
 
 NodePtr
 findOwner(const NodePtr& node,
           const std::string& primPath,
+          const SceneEvaluationContext& context,
           std::set<Node*>* visited)
 {
     if (!node || primPath.empty() || !visited->insert(node.get()).second) {
@@ -542,7 +544,7 @@ findOwner(const NodePtr& node,
     std::string inputPath = primPath;
     int inputs = node->getNInputs();
     if (!node->isNodeDisabled()) {
-        if (replacesTransformOf(node, primPath)) {
+        if (replacesTransformOf(node, primPath, context)) {
             return node;
         }
         TransformKnobs knobs;
@@ -563,7 +565,7 @@ findOwner(const NodePtr& node,
         }
     }
     for (int i = 0; i < inputs; ++i) {
-        NodePtr found = findOwner(node->getInput(i), inputPath, visited);
+        NodePtr found = findOwner(node->getInput(i), inputPath, context, visited);
         if (found) {
             return found;
         }
@@ -604,11 +606,12 @@ applySceneKnobEdits(const NodePtr& node,
 
 NodePtr
 findSceneTransformOwner(const NodePtr& viewed,
-                        const std::string& primPath)
+                        const std::string& primPath,
+                        const SceneEvaluationContext& context)
 {
     std::set<Node*> visited;
 
-    return findOwner(viewed, primPath, &visited);
+    return findOwner(viewed, primPath, context, &visited);
 }
 
 SceneTransformPolicyTarget::SceneTransformPolicyTarget(const Context& context)
@@ -624,6 +627,7 @@ SceneTransformPolicyTarget::commit(const SceneTransformDrag& drag)
     if (!viewed || drag.prims.empty()) {
         return false;
     }
+    const SceneEvaluationContext evaluation = _context.evaluationContext ? _context.evaluationContext() : SceneEvaluationContext();
     UndoHistory* history = _context.undoHistory ? _context.undoHistory() : nullptr;
     const Settings::Viewer3DTransformTargetEnum policy = appPTR->getCurrentSettings()->getViewer3DTransformTarget();
     const GfMatrix4d delta = SceneTransformWidget::loadMatrix(drag.delta);
@@ -644,7 +648,7 @@ SceneTransformPolicyTarget::commit(const SceneTransformDrag& drag)
         std::vector<const SceneTransformPrim*> unowned;
         std::vector<std::pair<NodePtr, std::vector<const SceneTransformPrim*>>> replacing;
         for (const SceneTransformPrim* prim : rest) {
-            NodePtr owner = findSceneTransformOwner(viewed, prim->path);
+            NodePtr owner = findSceneTransformOwner(viewed, prim->path, evaluation);
             if (toEditTransform(owner)) {
                 std::size_t i = 0;
                 while ((i < replacing.size()) && (replacing[i].first != owner)) {

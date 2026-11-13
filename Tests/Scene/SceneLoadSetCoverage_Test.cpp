@@ -56,6 +56,7 @@
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCube.h"
 #include "Engine/Nodes/Scene/USDEditPrim.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDProjectUV.h"
@@ -212,6 +213,27 @@ protected:
             modeKnob->setValueFromID(mode, 0);
             schemaKnob->setValueFromID("Camera", 0);
             targetKnob->setValue(target);
+        }
+        EXPECT_TRUE(node->connectInput(input, 0));
+
+        return node;
+    }
+
+    NodePtr editTransform(const NodePtr& input,
+                          const std::string& pattern)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        KnobString* patternKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDEditTransformParamPrimPattern).get());
+        KnobChoice* modeKnob = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDEditTransformParamMode).get());
+        EXPECT_TRUE(patternKnob && modeKnob);
+        if (patternKnob && modeKnob) {
+            patternKnob->setValue(pattern);
+            modeKnob->setValueFromID("replace", 0);
         }
         EXPECT_TRUE(node->connectInput(input, 0));
 
@@ -1162,4 +1184,62 @@ TEST_F(SceneLoadSetCoverageTest, AUSDRenderReadsItsResolutionOpeningOnlyTheCamer
     ASSERT_EQ(eStatusOK, render->getEffectInstance()->getRegionOfDefinition(render->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
     EXPECT_EQ(RectD(0., 0., 320., 200.), rod);
     EXPECT_LE(city.openedBuildings(), 1);
+}
+
+TEST_F(SceneLoadSetCoverageTest, AnEditTransformKeepsEachContextsMatchesApart)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = editTransform(source, "/World//car*");
+    ASSERT_TRUE(source && node);
+    USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+    ASSERT_TRUE(edit != nullptr);
+    const SceneEvaluationContext none(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    const SceneEvaluationContext block(SceneEvaluationContext::makeId(), loadingOnly({ "/World/Block_0" }));
+    const std::string car = carPath(0, 0);
+
+    for (int round = 0; round < 2; ++round) {
+        for (const SceneEvaluationContext* context : { &none, &block }) {
+            std::string error;
+            ScenePayload payload;
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                      node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), *context), &payload, &error))
+                << error;
+        }
+    }
+    EXPECT_FALSE(edit->transformsPrim(car, none));
+    EXPECT_TRUE(edit->transformsPrim(car, block));
+
+    // A pattern changed since: each context matches it on its own load set, once.
+    KnobString* patternKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDEditTransformParamPrimPattern).get());
+    ASSERT_TRUE(patternKnob != nullptr);
+    patternKnob->setValue(std::string("/World/Block_0//car*"));
+    const U64 before = edit->getStageReadCount();
+    for (int round = 0; round < 3; ++round) {
+        EXPECT_FALSE(edit->transformsPrim(car, none));
+        EXPECT_TRUE(edit->transformsPrim(car, block));
+    }
+    EXPECT_EQ(before + 2, edit->getStageReadCount());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AnEditTransformsStaleMatchesOnNothingLoadedOpenNoBuilding)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = editTransform(source, "/World/Block_0/B_0/car*");
+    ASSERT_TRUE(source && node);
+    USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+    ASSERT_TRUE(edit != nullptr);
+    const SceneEvaluationContext none(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    std::string error;
+    ScenePayload payload;
+
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), none), &payload, &error))
+        << error;
+    KnobString* patternKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDEditTransformParamPrimPattern).get());
+    ASSERT_TRUE(patternKnob != nullptr);
+    patternKnob->setValue(std::string("/World//car*"));
+    EXPECT_FALSE(edit->transformsPrim(carPath(0, 0), none));
+    EXPECT_EQ(0, city.openedBuildings());
 }

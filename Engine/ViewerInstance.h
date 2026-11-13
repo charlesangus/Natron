@@ -659,6 +659,13 @@ public:
     SceneLoadSetPtr getSceneLoadSet() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief Who the viewer's scene evaluations are for: its id, which keeps the nodes' memoized
+     * layers and matches for it apart from other evaluators', and its current load set. Without
+     * a reach. MT-safe.
+     **/
+    SceneEvaluationContext getSceneEvaluationContext() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Evaluates the scene of the A input as the viewer would with loadSet in its place, for
      * what a load about to be committed shows, at the current frame. getLastEvaluatedScene() is
      * left as it is. *reach, when given, is set to the reach of the patterns the evaluation

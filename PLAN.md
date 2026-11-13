@@ -455,7 +455,7 @@ future core work has solid ground to build on.
 | M322 | NVIDIA Exit Deadlock Fix | doing | - | bosley-native-nodes | E14 | | uat | [M322-nvidia-exit-deadlock-fix.md](PLAN/MILESTONES/M322-nvidia-exit-deadlock-fix.md) |
 | M323 | SplineWarp Map Input | todo | M274 |  | E3 | | | [M323-splinewarp-map-input.md](PLAN/MILESTONES/M323-splinewarp-map-input.md) |
 | M324 | SplineWarp STMap And IDistort Outputs | todo | M274 |  | E3 | | | [M324-splinewarp-stmap-idistort-outputs.md](PLAN/MILESTONES/M324-splinewarp-stmap-idistort-outputs.md) |
-| M325 | MoonRay Fork | todo | M252 |  | E9 | | | [M325-moonray-fork.md](PLAN/MILESTONES/M325-moonray-fork.md) |
+| M325 | MoonRay Fork | doing | M252 | bosley-native-nodes | E9 | | | [M325-moonray-fork.md](PLAN/MILESTONES/M325-moonray-fork.md) |
 | M326 | Legible Viewer Warning Banner | done | - | misty-marten | E10 | F10 | | [M326-legible-viewer-warning-banner.md](PLAN/MILESTONES/M326-legible-viewer-warning-banner.md) |
 | M338 | Viewer Input Keys And Locks | done | - | misty-marten | E10 | F10 | | [M338-viewer-input-keys-and-locks.md](PLAN/MILESTONES/M338-viewer-input-keys-and-locks.md) |
 | M339 | File Knob Reload Button Cleanup | done | M52 | misty-marten | E10 | F10 | | [M339-file-knob-reload-button-cleanup.md](PLAN/MILESTONES/M339-file-knob-reload-button-cleanup.md) |

@@ -146,7 +146,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: test — deriving the output metadata of a USDRender over the city with nothing loaded opens at most the settings and camera chain and gives the same metadata as with everything loaded.
   - size: M
 
-- [ ] M381.P4.T7 — The showing viewer's context mapped down to the node
+- [x] M381.P4.T7 — The showing viewer's context mapped down to the node
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}` (`getShowingViewerContext`), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: the viewer's load set is in the viewer's paths, but Centre Pivot (P4.T3) and the knob menus (P4.T4) use it on the node directly. Walk the input chain from the viewer down to the node and apply each node's `getSceneInputContext` (P3.T6/T7), so a graft between the node and the viewer maps the set as an evaluation would. With several routes, unite the results.
   - verify: test — a USDVariant above a USDXformPrim `/Grp`, viewer loading `/Grp/World/Block_0`: the variant menu searches `/World/Block_0` loaded and reports the other blocks unsearched; Centre Pivot through the same graft uses the mapped set.
@@ -177,3 +177,4 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 - 2026-11-13 — P4.T1 implemented (94f26acf1). `deriveOutputMetadata` stays an everything borrow but is reached on the main thread (`refreshMetadataSideEffects` → `getMetadata`, the viewer tab, the node graph), a UI stall on heavy scenes; P4.T6 added to remove it (PM, per "UI never stalls"). `prepareRender` keeps everything (render thread; the camera fallback needs the whole stage).
 - 2026-11-13 — P4.T3 implemented (034216bd8). The viewer is the active one if it is downstream, else the first downstream viewer (no recency tracker exists). If that viewer's context has no stored result, the job uses the latest result. A knob-driven button: the gate adds an Xvfb press of Centre Pivot on the city (ctest alone doesn't cover it).
 - 2026-11-13 — P4.T4 implemented (9a40064f2). Gaps found and given tasks (PM): the showing viewer's context isn't mapped through path-changing nodes between the node and the viewer (affects P4.T3 too; P4.T7); menus don't refresh when the viewer loads a branch, and the note row is selectable-but-ignored because `ChoiceOption` has no disabled flag (P4.T8). Each refresh runs on its own detached thread, superseded jobs cancelled by their abort flag.
+- 2026-11-13 — P4.T7 implemented (ff16fe245): `mapContextDownToNode` walks from the viewer's input to the node. The mapped context keeps the viewer's id (evaluations derive their own ids privately), so Centre Pivot may fall back to the node's latest result.

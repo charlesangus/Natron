@@ -134,7 +134,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: centre equals the fully loaded centre when L covers the matches; probe reads 0; a second press cancels the first.
   - size: M
 
-- [ ] M381.P4.T4 — Knob menus fill off the main thread
+- [x] M381.P4.T4 — Knob menus fill off the main thread
   - files: `Engine/Nodes/Scene/USDVariant.cpp` (~:237), `Engine/Nodes/Scene/USDProjectUV.cpp` (~:716), `Engine/Nodes/Scene/USDProject3D.cpp` (~:317), `Engine/Nodes/Scene/USDRenderSettings.cpp` (~:292), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: today they run queued on the main thread and call `evaluateScene` with the default (everything) context. Evaluate on a worker with the showing viewer's context, add a disabled "N unloaded branches not searched" row, fill on the main thread.
   - verify: refresh returns before the worker ends; 0 buildings opened; the row count is right.
@@ -144,6 +144,18 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - files: `Engine/Nodes/Scene/USDRender.cpp` (`deriveOutputMetadata`), `Engine/Nodes/NativeEffectBase.cpp` (~:509 `getMetadata`), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: `deriveOutputMetadata` borrows everything and is reached on the main thread (`refreshMetadataSideEffects` → `getMetadata`, the viewer tab and node graph), so the first derive after each change stalls the UI on a heavy scene. Find what it actually reads (settings, products, AOVs, camera) and read only those chains through `withPaths`; anything that truly needs the whole stage moves to the render thread, with the metadata refreshed when it arrives.
   - verify: test — deriving the output metadata of a USDRender over the city with nothing loaded opens at most the settings and camera chain and gives the same metadata as with everything loaded.
+  - size: M
+
+- [ ] M381.P4.T7 — The showing viewer's context mapped down to the node
+  - files: `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}` (`getShowingViewerContext`), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
+  - approach: the viewer's load set is in the viewer's paths, but Centre Pivot (P4.T3) and the knob menus (P4.T4) use it on the node directly. Walk the input chain from the viewer down to the node and apply each node's `getSceneInputContext` (P3.T6/T7), so a graft between the node and the viewer maps the set as an evaluation would. With several routes, unite the results.
+  - verify: test — a USDVariant above a USDXformPrim `/Grp`, viewer loading `/Grp/World/Block_0`: the variant menu searches `/World/Block_0` loaded and reports the other blocks unsearched; Centre Pivot through the same graft uses the mapped set.
+  - size: M
+
+- [ ] M381.P4.T8 — Menus follow viewer loads, and the note row is disabled
+  - files: `Engine/Nodes/Scene/SceneNodeAuthoring.{h,cpp}` (`SceneMenuRefresh`), `Engine/ChoiceOption.h` (or wherever `ChoiceOption` lives), `Gui/KnobGuiChoice.cpp`, `Gui/ComboBox.cpp`, the four menu nodes, `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
+  - approach: a load change in the showing viewer whose paths meet a menu's recorded reach re-runs that menu's refresh (use the reach the job recorded, mapped up per P3.T6). `ChoiceOption` gains a disabled flag that `KnobGuiChoice`/`ComboBox` honour, and the "N unloaded branches not searched" row uses it instead of being selectable-and-ignored.
+  - verify: test — loading Block_0 in the viewer refills the variant menu with B_0's variant set and drops the note's count; the note row is disabled in the combo box (GUI check in an existing scene GUI script, or a gtest on `ChoiceOption` plus `ComboBox` if a widget test exists).
   - size: M
 
 - [ ] M381.P4.T5 — No implicit everything borrow
@@ -164,3 +176,4 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 - 2026-11-13 — P3.T7 implemented (100056752). USD probe (pxr 26.08): a referencing prim's own load rule decides both the payloads above the referenced prim and its own payload, confirming "S's ancestors get T's self rule". The P3.T6 identity shortcut now also requires the same reach object, since a mapped input whose set equals the caller's would otherwise return unmapped reach. autoRename maps conservatively (a root picks up every `D/X_n` rule), over-loading on collisions; accepted as a correct superset (PM). USDReference with no Source Prim reads its source with everything loaded. `graftMaterialInput` is mapped in P3.T2.
 - 2026-11-13 — P4.T1 implemented (94f26acf1). `deriveOutputMetadata` stays an everything borrow but is reached on the main thread (`refreshMetadataSideEffects` → `getMetadata`, the viewer tab, the node graph), a UI stall on heavy scenes; P4.T6 added to remove it (PM, per "UI never stalls"). `prepareRender` keeps everything (render thread; the camera fallback needs the whole stage).
 - 2026-11-13 — P4.T3 implemented (034216bd8). The viewer is the active one if it is downstream, else the first downstream viewer (no recency tracker exists). If that viewer's context has no stored result, the job uses the latest result. A knob-driven button: the gate adds an Xvfb press of Centre Pivot on the city (ctest alone doesn't cover it).
+- 2026-11-13 — P4.T4 implemented (9a40064f2). Gaps found and given tasks (PM): the showing viewer's context isn't mapped through path-changing nodes between the node and the viewer (affects P4.T3 too; P4.T7); menus don't refresh when the viewer loads a branch, and the note row is selectable-but-ignored because `ChoiceOption` has no disabled flag (P4.T8). Each refresh runs on its own detached thread, superseded jobs cancelled by their abort flag.

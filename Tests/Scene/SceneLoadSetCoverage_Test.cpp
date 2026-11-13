@@ -29,14 +29,18 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <optional>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QString>
 
 #include "BaseTest.h"
@@ -49,6 +53,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
@@ -1169,16 +1176,36 @@ TEST_F(SceneLoadSetCoverageTest, AViewerGraftAndARenderGraftKeepTheirOwnMemos)
     EXPECT_EQ(2u, memo.getGraftLayerAuthorCount());
 }
 
+namespace {
+// A layer over city whose active render settings prim renders 320x200 through the camera inside
+// the first building.
+std::string
+writeRenderSettingsWrapper(const CarCity& city)
+{
+    const std::string wrapper = (std::filesystem::path(city.rootPath()).parent_path() / "withSettings.usda").string();
+    std::ofstream out(wrapper);
+
+    out << "#usda 1.0\n(\n    subLayers = [@" << city.rootPath() << "@]\n    renderSettingsPrimPath = \"/Render/Settings\"\n)\n"
+        << "def Scope \"Render\"\n{\n    def RenderSettings \"Settings\"\n    {\n"
+        << "        rel camera = </World/Block_0/B_0/Cam>\n        int2 resolution = (320, 200)\n    }\n}\n";
+
+    return wrapper;
+}
+
+std::string
+primIdKeyOf(const std::string& path)
+{
+    char key[32];
+    std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
+
+    return key;
+}
+} // anonymous namespace
+
 TEST_F(SceneLoadSetCoverageTest, AUSDRenderReadsItsResolutionOpeningOnlyTheCamerasBuilding)
 {
     CarCity city(2, 2);
-    const std::string wrapper = (std::filesystem::path(city.rootPath()).parent_path() / "withSettings.usda").string();
-    {
-        std::ofstream out(wrapper);
-        out << "#usda 1.0\n(\n    subLayers = [@" << city.rootPath() << "@]\n    renderSettingsPrimPath = \"/Render/Settings\"\n)\n"
-            << "def Scope \"Render\"\n{\n    def RenderSettings \"Settings\"\n    {\n"
-            << "        rel camera = </World/Block_0/B_0/Cam>\n        int2 resolution = (320, 200)\n    }\n}\n";
-    }
+    const std::string wrapper = writeRenderSettingsWrapper(city);
     NodePtr source = readerOf(wrapper);
     NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
     ASSERT_TRUE(source && render);
@@ -1188,6 +1215,48 @@ TEST_F(SceneLoadSetCoverageTest, AUSDRenderReadsItsResolutionOpeningOnlyTheCamer
     ASSERT_EQ(eStatusOK, render->getEffectInstance()->getRegionOfDefinition(render->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
     EXPECT_EQ(RectD(0., 0., 320., 200.), rod);
     EXPECT_LE(city.openedBuildings(), 1);
+}
+
+TEST_F(SceneLoadSetCoverageTest, AUSDRendersOutputMetadataOpensNoBuildingOnTheMainThreadAndArrivesWhole)
+{
+    CarCity city(2, 2);
+    const std::string wrapper = writeRenderSettingsWrapper(city);
+    NodePtr source = readerOf(wrapper);
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(source && render);
+    ASSERT_TRUE(render->connectInput(source, 0));
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(render->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+
+    // The table names every drawable prim, the buildings' included, which the main thread never opens.
+    const ImageMetadata provisional = effect->getOutputMetadata(1., ViewIdx(0));
+    EXPECT_EQ(0, city.openedBuildings());
+    EXPECT_TRUE(provisional.empty());
+    // Not cached: asking again still opens nothing.
+    EXPECT_TRUE(effect->getOutputMetadata(1., ViewIdx(0)).empty());
+    EXPECT_EQ(0, city.openedBuildings());
+
+    const U64 revision = render->getMetadataRevision();
+    const ImageMetadata whole = std::async(std::launch::async, [effect]() { return effect->getOutputMetadata(1., ViewIdx(0)); }).get();
+    std::vector<std::string> expected(1, "/World/Ground");
+    for (int b = 0; b < 2; ++b) {
+        for (int n = 0; n < 2; ++n) {
+            const std::string building = "/World/Block_" + std::to_string(b) + "/B_" + std::to_string(n);
+            expected.push_back(building + "/Geo");
+            expected.push_back(building + "/Panel");
+        }
+    }
+    EXPECT_EQ(expected.size(), whole.size());
+    for (const std::string& path : expected) {
+        EXPECT_EQ(std::optional<std::string>(path), whole.getString(primIdKeyOf(path))) << path;
+    }
+
+    // The main thread is served the stored table, and the readers it gave the empty one are told to ask again.
+    EXPECT_EQ(whole, effect->getOutputMetadata(1., ViewIdx(0)));
+    EXPECT_EQ(revision, render->getMetadataRevision());
+    QCoreApplication::processEvents();
+    EXPECT_LT(revision, render->getMetadataRevision());
+    EXPECT_EQ(whole, effect->getOutputMetadata(1., ViewIdx(0)));
 }
 
 TEST_F(SceneLoadSetCoverageTest, AnEditTransformKeepsEachContextsMatchesApart)

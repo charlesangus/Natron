@@ -30,8 +30,12 @@
 
 #include <atomic>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
+#include <utility>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -218,10 +222,22 @@ private:
     // pixel aspect ratio, the project's format without one.
     void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;
 
+    // The primId table of the output at time and view (every key under kUSDRenderMetadataPrimIdPrefix)
+    // under the node's hash, when a render or a reader off the main thread has stored it. Without
+    // one, noteMiss records that a reader was given none, so that the store tells it to ask again.
+    bool findPrimIdTable(U64 hash, double time, ViewIdx view, bool noteMiss, ImageMetadata* table);
+    void storePrimIdTable(U64 hash, double time, ViewIdx view, const ImageMetadata& table);
+
     KnobChoiceWPtr _settingsPrim;
     KnobBoolWPtr _headlight;
     KnobChoiceWPtr _renderer;
     std::atomic<bool> _settingsPrimMenuRefreshPending;
+    std::mutex _primIdTablesMutex;
+    // Under _primIdTablesMutex: the tables of the node's hash _primIdTablesHash, and the frames
+    // whose readers were given none.
+    U64 _primIdTablesHash;
+    std::map<std::pair<double, int>, ImageMetadata> _primIdTables;
+    std::set<std::pair<double, int>> _primIdTablesMissed;
 };
 
 NATRON_NAMESPACE_EXIT

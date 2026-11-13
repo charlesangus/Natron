@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <list>
@@ -580,13 +581,23 @@ TEST_F(USDRenderNodeTest, ThePrimsResolutionIsTheFormat)
     EXPECT_EQ(32., rod.y2);
 }
 
+namespace {
+// The output metadata as a reader off the main thread derives it: the main thread is only served
+// the primId table a render or such a reader stored.
+ImageMetadata
+outputMetadataOffTheMainThread(NativeEffectBase* effect)
+{
+    return std::async(std::launch::async, [effect]() { return effect->getOutputMetadata(1., ViewIdx(0)); }).get();
+}
+} // anonymous namespace
+
 TEST_F(USDRenderNodeTest, MetadataMapsEveryPrimIdToItsPath)
 {
     NodePtr node = createRender();
     ASSERT_TRUE(node != nullptr);
     NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect);
-    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    const ImageMetadata metadata = outputMetadataOffTheMainThread(effect);
     for (const char* path : { "/World/Box", "/World/Ball" }) {
         char key[32];
         std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
@@ -602,7 +613,7 @@ TEST_F(USDRenderNodeTest, MetadataNamesInstancerPrototypesAndSkipsGuides)
     ASSERT_TRUE(node != nullptr);
     NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect);
-    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    const ImageMetadata metadata = outputMetadataOffTheMainThread(effect);
     auto lookup = [&metadata](const char* path) {
         char key[32];
         std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));

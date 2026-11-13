@@ -30,8 +30,10 @@
 #include <string>
 #include <vector>
 
+#include <QCoreApplication>
 #include <QMetaObject>
 #include <QStringList>
+#include <QThread>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -98,6 +100,10 @@ primIdKey(std::uint32_t hash)
 USDRender::USDRender(NodePtr node)
     : NativeEffectBase(node)
     , _settingsPrimMenuRefreshPending(false)
+    , _primIdTablesMutex()
+    , _primIdTablesHash(0)
+    , _primIdTables()
+    , _primIdTablesMissed()
 {
 }
 
@@ -570,29 +576,20 @@ USDRender::getRegionsOfInterest(double /*time*/,
 {
 }
 
-ImageMetadata
-USDRender::deriveOutputMetadata(double time,
-                                ViewIdx view)
-{
-    // Every prim Storm can draw, so that each primId.id value a render gives has its entry: the
-    // output's metadata needs every payload open, which the settings reads above do not.
-    ImageMetadata metadata;
-    EffectInstancePtr input = getInput(0);
-    ScenePayload scene;
-    std::string error;
+namespace {
+// How many frames' primId tables are kept under one hash.
+const std::size_t kMaxPrimIdTables = 64;
 
-    if (!input || (input->evaluateScene(EvaluateSceneArgs(time, view), &scene, &error) != eRenderRoIRetCodeOk) || scene.isEmpty()) {
-        return metadata;
-    }
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-    PXR_NS::UsdStageRefPtr stage = lease.getStage();
-    if (!stage) {
-        return metadata;
-    }
+// Every prim Storm can draw, so that each primId.id value a render gives has its entry.
+ImageMetadata
+primIdTableOf(const PXR_NS::UsdStageRefPtr& stage)
+{
+    ImageMetadata table;
     // Point instancer prototypes are commonly authored as class or over prims, which the default traversal skips but Storm draws
     // through the instancer, so every prim is visited. The render draws the default and proxy purposes only (HydraRender leaves
     // showGuides and showRender off), so guide- and render-purpose prims get no entry.
     const PXR_NS::UsdPrimRange all(stage->GetPseudoRoot(), PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimAllPrimsPredicate));
+
     for (const PXR_NS::UsdPrim& prim : all) {
         if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
             continue;
@@ -602,7 +599,111 @@ USDRender::deriveOutputMetadata(double time,
             continue;
         }
         const std::string path = prim.GetPath().GetString();
-        metadata.setString(primIdKey(HydraRender::primPathHash(path)), path);
+        table.setString(primIdKey(HydraRender::primPathHash(path)), path);
+    }
+
+    return table;
+}
+
+bool
+onMainThread()
+{
+    const QCoreApplication* app = QCoreApplication::instance();
+
+    return app && (QThread::currentThread() == app->thread());
+}
+} // anon namespace
+
+bool
+USDRender::findPrimIdTable(U64 hash,
+                           double time,
+                           ViewIdx view,
+                           bool noteMiss,
+                           ImageMetadata* table)
+{
+    const std::pair<double, int> key(time, view.value());
+    std::lock_guard<std::mutex> locker(_primIdTablesMutex);
+
+    if (hash == _primIdTablesHash) {
+        std::map<std::pair<double, int>, ImageMetadata>::const_iterator found = _primIdTables.find(key);
+        if (found != _primIdTables.end()) {
+            *table = found->second;
+
+            return true;
+        }
+    } else if (noteMiss) {
+        _primIdTablesHash = hash;
+        _primIdTables.clear();
+        _primIdTablesMissed.clear();
+    }
+    if (noteMiss) {
+        _primIdTablesMissed.insert(key);
+    }
+
+    return false;
+}
+
+void
+USDRender::storePrimIdTable(U64 hash,
+                            double time,
+                            ViewIdx view,
+                            const ImageMetadata& table)
+{
+    const std::pair<double, int> key(time, view.value());
+    bool missed;
+    {
+        std::lock_guard<std::mutex> locker(_primIdTablesMutex);
+        if (hash != _primIdTablesHash) {
+            _primIdTablesHash = hash;
+            _primIdTables.clear();
+            _primIdTablesMissed.clear();
+        }
+        if (_primIdTables.size() >= kMaxPrimIdTables) {
+            _primIdTables.clear();
+        }
+        _primIdTables[key] = table;
+        missed = _primIdTablesMissed.erase(key) > 0;
+    }
+    if (missed) {
+        QMetaObject::invokeMethod(this, [this]() { invalidateOutputMetadata(); }, Qt::QueuedConnection);
+    }
+}
+
+ImageMetadata
+USDRender::deriveOutputMetadata(double time,
+                                ViewIdx view)
+{
+    // The table names every drawable prim, which needs every payload of the input scene open: that
+    // is never done on the main thread, which is served the table a render or another thread stored
+    // and, until one has, an empty provisional answer.
+    ImageMetadata metadata;
+    const NodePtr node = getNode();
+    const U64 hash = node ? node->getHashValue() : 0;
+    const bool mainThread = onMainThread();
+
+    if (findPrimIdTable(hash, time, view, mainThread, &metadata)) {
+        return metadata;
+    }
+    if (mainThread) {
+        markOutputMetadataProvisional();
+
+        return metadata;
+    }
+    EffectInstancePtr input = getInput(0);
+    ScenePayload scene;
+    std::string error;
+    if (!input || (input->evaluateScene(EvaluateSceneArgs(time, view), &scene, &error) != eRenderRoIRetCodeOk) || scene.isEmpty()) {
+        return metadata;
+    }
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    if (!stage) {
+        return metadata;
+    }
+    metadata = primIdTableOf(stage);
+    // A table of a scene that moved while it was read must not be served under the newer hash.
+    if (node && (node->getHashValue() == hash)) {
+        storePrimIdTable(hash, time, view, metadata);
     }
 
     return metadata;
@@ -663,9 +764,19 @@ USDRender::prepareRender(double time,
     };
 
     // The render draws every prim, and the camera fallback looks through all of them.
+    const NodePtr node = getNode();
+    const U64 hash = node ? node->getHashValue() : 0;
     ActiveSettings active;
     if (!readActiveSettings(time, view, true, &active, error)) {
         return false;
+    }
+    // The output's primId table, which the main thread is never given the whole stage to read.
+    ImageMetadata primIds;
+    if (node && !findPrimIdTable(hash, time, view, false, &primIds)) {
+        primIds = primIdTableOf(active.stage);
+        if (node->getHashValue() == hash) {
+            storePrimIdTable(hash, time, view, primIds);
+        }
     }
     const PXR_NS::UsdStageRefPtr& stage = active.stage;
     const QString primPath = active.prim ? QString::fromStdString(active.prim.GetPath().GetString()) : QString();

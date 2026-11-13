@@ -82,7 +82,6 @@ struct GuiApplicationManagerPrivate
     ///we couldn't handle at that time
     QString _openFileRequest;
     AppShortcuts _actionShortcuts;
-    bool _shortcutsChangedVersion;
     QString _fontFamily;
     int _fontSize;
     NodeClipBoard _nodeCB;

@@ -414,6 +414,22 @@ public:
 
     void removeNode(NodeGui* node);
 
+    /**
+     * @brief While one lives, removeNode() leaves recentring the curves to the end of the
+     * outermost one, which does it once if removeNode() was called.
+     **/
+    class RemovalBatch {
+    public:
+        explicit RemovalBatch(CurveEditor* editor);
+        ~RemovalBatch();
+
+        RemovalBatch(const RemovalBatch&) = delete;
+        RemovalBatch& operator=(const RemovalBatch&) = delete;
+
+    private:
+        CurveEditor* _editor;
+    };
+
     void setTreeWidgetWidth(int width);
 
     void centerOn(const std::vector<CurvePtr> & curves);

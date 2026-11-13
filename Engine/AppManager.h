@@ -919,6 +919,10 @@ PyObject* getMainModule();
  **/
 bool interpretPythonScript(const std::string& script, std::string* error, std::string* output);
 
+/**
+ * @brief For tests: how many scripts interpretPythonScript() has run.
+ **/
+U64 getInterpretedScriptsCount();
 
 //void compilePyScript(const std::string& script,PyObject** code);
 

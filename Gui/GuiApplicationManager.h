@@ -242,8 +242,6 @@ public:
 
     void notifyShortcutChanged(KeyBoundAction* action);
 
-    bool isShorcutVersionUpToDate() const;
-
     virtual void showErrorLog() OVERRIDE FINAL;
     virtual QString getAppFont() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual int getAppFontSize() const OVERRIDE FINAL WARN_UNUSED_RETURN;

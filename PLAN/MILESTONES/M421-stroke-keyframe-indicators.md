@@ -30,7 +30,7 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 
 ## Phase 421.1: Derived roto markers
 
-- [ ] M421.P1.T1 — Roto markers as a derived set per panel
+- [x] M421.P1.T1 — Roto markers as a derived set per panel
   - files: `Engine/TimeLineKeyFrames.h`, `Gui/GuiAppInstance.{h,cpp}`, `Gui/RotoPanel.{h,cpp}`
   - approach: add `setPanelKeyframeIndicators(const void* owner, std::vector<SequenceTime>)` and `clearPanelKeyframeIndicators(owner)`, merged by `sortedKeysWithExtras`. RotoPanel recomputes the union of selected Beziers' keys on a coalesced queued call and publishes it, clearing it on panel close and in its destructor, replacing the `setItemKey`/`removeItemKey`/`setVisibleItemKeyframes` counting. This also fixes `onSettingsPanelClosed`'s `std::set<std::set<double>>` dedup, which drops one of two identical key sets and leaves a ghost marker.
   - verify: syntax-check; `rg "KeyframeIndicator" Gui/RotoPanel.cpp` shows only the new calls; existing `m261_roto_keys_editors.py` and `m305_keyframe_markers.py` still pass at the gate.
@@ -68,3 +68,4 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 
 - 2026-11-13 — **Stroke indicators (user):** show "the actual frame that was painted for current/selected strokes": each current or selected stroke gets one indicator at the frame it was painted on, on the timeline and in the dope sheet. Filed as a follow-up and picked up at once (user: not a regression, so not in F10).
 - 2026-11-13 — **Dope sheet (PM):** a display-only Painted Frame row. Moving it would mean writing `lifeTimeFrame` with undo across Lifetime modes, so it stays out unless the user asks.
+- 2026-11-13 — P1.T1 implemented (93229108c). Markers update one event-loop turn after a signal (coalesced), so GUI scripts process events before reading `keyframeMarkerTimes()`. After undoing a Bezier delete its markers return if it is still selected.

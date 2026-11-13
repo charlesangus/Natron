@@ -116,6 +116,18 @@ public:
     int getUnloadedBranchCount() const;
 
     /**
+     * @brief The paths of the branches getUnloadedBranchCount() counts, in the order the walk
+     * passed them.
+     **/
+    QStringList getUnloadedBranchPaths() const;
+
+    /**
+     * @brief How many of paths name a prim of stage whose payload is still unloaded. Called with
+     * stage's lock held.
+     **/
+    static int countUnloaded(const SceneStage* stage, const QStringList& paths);
+
+    /**
      * @brief Adds to found the paths of the prims the expression matches, or without one those
      * whose names satisfy matches, until budgetMs is spent, or found holds cap paths with another
      * prim to match next, or no prim is left. At least one prim is looked at. Called with stage's

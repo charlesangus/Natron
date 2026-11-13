@@ -1964,6 +1964,7 @@ struct SceneGraphPrimWalk::Implementation {
     const SceneStage* stage = nullptr;
     U64 editCount = 0;
     int unloadedBranches = 0;
+    QStringList unloadedPaths;
     bool hasExpression = false;
     WalkExpressionEval eval;
     // Valid from the walk's start on stage; it holds where the depth-first search is.
@@ -1986,6 +1987,7 @@ SceneGraphPrimWalk::start()
     _imp->next = SdfPath::AbsoluteRootPath();
     _imp->stage = nullptr;
     _imp->unloadedBranches = 0;
+    _imp->unloadedPaths.clear();
 }
 
 void
@@ -2052,6 +2054,31 @@ SceneGraphPrimWalk::getUnloadedBranchCount() const
     return _imp->unloadedBranches;
 }
 
+QStringList
+SceneGraphPrimWalk::getUnloadedBranchPaths() const
+{
+    return _imp->unloadedPaths;
+}
+
+int
+SceneGraphPrimWalk::countUnloaded(const SceneStage* stage,
+                                  const QStringList& paths)
+{
+    if (!stage) {
+        return 0;
+    }
+    const UsdStageRefPtr& usdStage = stage->getStage();
+    int count = 0;
+    for (const QString& path : paths) {
+        const UsdPrim prim = usdStage->GetPrimAtPath(SdfPath(path.toStdString()));
+        if (prim && prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
 void
 SceneGraphPrimWalk::step(const SceneStage* stage,
                          int budgetMs,
@@ -2078,6 +2105,7 @@ SceneGraphPrimWalk::step(const SceneStage* stage,
         _imp->stage = stage;
         _imp->editCount = stage->getEditCount();
         _imp->unloadedBranches = 0;
+        _imp->unloadedPaths.clear();
         if (_imp->hasExpression) {
             _imp->searcher = _imp->eval.MakeIncrementalSearcher(WalkPrimOfPath { UsdStageWeakPtr(usdStage) });
         }
@@ -2115,6 +2143,7 @@ SceneGraphPrimWalk::step(const SceneStage* stage,
             }
             if (descend && prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
                 ++_imp->unloadedBranches;
+                _imp->unloadedPaths << QString::fromStdString(prim.GetPath().GetString());
             }
         }
         prim = nextPrimOfWalk(prim, descend);

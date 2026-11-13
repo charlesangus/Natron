@@ -15,6 +15,10 @@ Checks:
   - a USDXformPrim's Prim Path menu offers only Replace, Pick in Viewer and Select Matches, and Replace writes the
     first selected prim.
 
+  - on a payload scene with nothing loaded, Select Matches selects only the loaded matches and reports the
+    unloaded branches not searched while no payload loads; its "Load and select" button loads the payloads and
+    selects the matches inside them.
+
 Shot: scene-knob-tools-matches.png (after Select Matches).
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
@@ -34,12 +38,37 @@ BOX = "/World/Box"
 BALL = "/World/Ball"
 CAM = "/World/Cam"
 
+STATE_UNLOADED = 1
+BLOCK0_B0 = "/World/Block0/B0"
+UNLOADED_GEO = "/World/Block0/B0/Floor/Geo"
+PLAIN = "/World/Plain"
+
+
+def write_city(directory):
+    """Writes a stage with one payload prim, B0, under /World/Block0; returns the root layer's path."""
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, "b0.usda"), "w") as f:
+        f.write('#usda 1.0\n(\n    defaultPrim = "Building"\n)\n'
+                'def Xform "Building"\n{\n'
+                '    def Xform "Floor"\n    {\n'
+                '        def Cube "Geo"\n        {\n            double size = 1\n        }\n'
+                '    }\n}\n')
+    path = os.path.join(directory, "payload_city.usda")
+    with open(path, "w") as f:
+        f.write('#usda 1.0\n(\n    defaultPrim = "World"\n    upAxis = "Y"\n)\ndef Xform "World"\n{\n'
+                '    def Cube "Plain"\n    {\n        double size = 0.5\n    }\n'
+                '    def Xform "Block0"\n    {\n'
+                '        def Xform "B0" (\n            prepend payload = @./b0.usda@\n        )\n        {\n        }\n'
+                '    }\n}\n')
+    return path
+
+
 try:
     import NatronEngine
     from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt
-    from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QTreeView
+    from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMenu, QPushButton, QTreeView
 
-    from guitest import (FIXTURES, any_panel_open, check, class_name, close_all_panels, finish, menu_of,
+    from guitest import (FIXTURES, OUT, any_panel_open, check, class_name, close_all_panels, finish, menu_of,
                          plugin_problem, require, run, shot, viewer_up, widgets_of)
 
     PATH_ROLE = Qt.UserRole + 1
@@ -183,6 +212,24 @@ try:
     def value():
         return str(pattern.getValue())
 
+    def offer_widget(name, cls):
+        for w in QApplication.allWidgets():
+            try:
+                if isinstance(w, cls) and w.objectName() == name and w.isVisible():
+                    return hold(w)
+            except RuntimeError:
+                continue
+        return None
+
+    def find_path(tree, path, parent=QModelIndex()):
+        for index in rows(tree, parent):
+            p = path_of(index)
+            if p == path:
+                return index
+            if path.startswith(p + "/"):
+                return find_path(tree, path, index)
+        return QModelIndex()
+
     def steps():
         require(prune.connectInput(0, usd), "connect the USDPrune to the USDRead")
         viewer.disconnectInput(0)
@@ -237,6 +284,47 @@ try:
         check(ok, "Select Matches on /World/* selects Box, Ball and Cam (got %r)" % (viewer_selection(),))
         yield ("sleep", SETTLE_MS)
         shot("scene-knob-tools-matches.png")
+
+        # A payload scene with nothing loaded.
+        city = write_city(os.path.join(OUT, "scene_knob_tools_city"))
+        usd2 = app.createNode("USDRead")
+        require(usd2 is not None, "create the second USDRead", plugin_problem("USDRead"))
+        usd2.getParam("filename").setValue(city)
+        usd2.setPosition(450, 0)
+        prune.disconnectInput(0)
+        require(prune.connectInput(0, usd2), "connect the USDPrune to the payload scene")
+        ok = yield ("until", lambda: panel_tree() is not None and find_path(panel_tree(), BLOCK0_B0).isValid(),
+                    POLL_TIMEOUT_S)
+        require(ok, "the Scene Graph panel lists the payload scene")
+        check(int(find_path(panel_tree(), BLOCK0_B0).data(Qt.UserRole + 3)) == STATE_UNLOADED,
+              "the viewer lists B0 with its payload unloaded")
+        pattern.setValue(PLAIN + " //Geo")
+        edits_before = view().property("natronSceneLoadEdits")
+        trigger(menu, "knobPrimSelectMatches")
+        ok = yield ("until", lambda: offer_widget("knobPrimSelectMatchesLoad", QPushButton) is not None, POLL_TIMEOUT_S)
+        require(ok, "Select Matches offers to load the unloaded branches")
+        report = offer_widget("knobPrimSelectMatchesReport", QLabel)
+        check(report is not None and "1 unloaded branch not searched" in report.text(),
+              "the report counts the unloaded branch not searched (got %r)" % (report.text() if report else None,))
+        check(viewer_selection() == [PLAIN],
+              "Select Matches selects only the loaded matches (got %r)" % (viewer_selection(),))
+        check(int(find_path(panel_tree(), BLOCK0_B0).data(Qt.UserRole + 3)) == STATE_UNLOADED,
+              "no payload is loaded by the search")
+        check(view().property("natronSceneLoadEdits") == edits_before,
+              "the search made no load edit on the viewer's stage (%r -> %r)"
+              % (edits_before, view().property("natronSceneLoadEdits")))
+        yield ("sleep", SETTLE_MS)
+        shot("scene-knob-tools-load-offer.png")
+        offer_widget("knobPrimSelectMatchesLoad", QPushButton).click()
+        ok = yield ("until", lambda: UNLOADED_GEO in viewer_selection(), POLL_TIMEOUT_S)
+        check(ok and PLAIN in viewer_selection(),
+              "Load and select selects the match inside the payload besides the loaded one (got %r)" % (viewer_selection(),))
+        check(view().property("natronSceneLoadEdits") > edits_before, "Load and select loaded the payload in the viewer")
+        check(offer_widget("knobPrimSelectMatchesLoad", QPushButton) is None, "the offer is gone once the payload is loaded")
+        prune.disconnectInput(0)
+        require(prune.connectInput(0, usd), "connect the USDPrune back to the first scene")
+        ok = yield ("until", lambda: bool(world_children(panel_tree())) and BOX in world_children(panel_tree()), POLL_TIMEOUT_S)
+        require(ok, "the Scene Graph panel lists the first scene again")
 
         close_all_panels()
         ok = yield ("until", lambda: not any_panel_open(), POLL_TIMEOUT_S)

@@ -28,16 +28,21 @@
 // Before Qt's OpenGL headers.
 #include "Gui/SceneViewport.h"
 
+#include <climits>
 #include <list>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <QElapsedTimer>
 #include <QEvent>
+#include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPointF>
 #include <QPointer>
+#include <QPushButton>
 #include <QRectF>
 #include <QRegularExpression>
 #include <QSet>
@@ -54,6 +59,8 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Plugin.h"
 #include "Engine/ViewerInstance.h"
@@ -64,6 +71,7 @@
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/SceneGraphModel.h"
 #include "Gui/SceneGraphPanel.h"
 #include "Gui/TabMenuBridge.h"
 #include "Gui/UndoHistory.h"
@@ -668,6 +676,205 @@ currentSelection(Gui* gui)
     return panel ? panel->getSelection() : QStringList();
 }
 
+namespace {
+    constexpr int kMatchStepMs = 8;
+    constexpr int kLoadPollMs = 100;
+    constexpr int kLoadWaitMs = 30000;
+    constexpr int kOfferMs = 60000;
+
+    // The "Load and select" report in the status bar, if one is up.
+    QPointer<QWidget> g_loadOffer;
+
+    void
+    dropLoadOffer()
+    {
+        QWidget* offer = g_loadOffer.data();
+        if (!offer) {
+            return;
+        }
+        if (QStatusBar* bar = qobject_cast<QStatusBar*>(offer->parentWidget())) {
+            bar->removeWidget(offer);
+        }
+        offer->hide();
+        offer->deleteLater();
+        g_loadOffer.clear();
+    }
+
+    SceneViewport*
+    selectionViewport(Gui* gui)
+    {
+        ViewerTab* viewer = selectionViewer(gui);
+
+        return viewer ? viewer->getSceneViewport() : nullptr;
+    }
+
+    // The viewport is the selection viewer's, resolved on this tick, so its renderer is alive.
+    bool
+    tryReadViewerStage(SceneViewport* viewport,
+                       const std::function<void(const SceneStage* stage)>& read)
+    {
+        SceneWriteBarrier::ReadScope scope;
+
+        return viewport->getRenderer().tryReadStage(read);
+    }
+
+    void startMatchSearch(Gui* gui, const std::string& expression, const QString& label);
+
+    // Loads paths in the viewer as the Scene Graph panel's Load does, and searches again once they are
+    // loaded, or after a wait if one never loads.
+    void
+    loadAndSearch(Gui* gui,
+                  const QStringList& paths,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        SceneViewport* viewport = selectionViewport(gui);
+        if (!viewport) {
+            showHint(gui, tr("Select Matches: there is no viewer to load in."));
+
+            return;
+        }
+        const int generation = ++g_matchSearchGeneration;
+        viewport->requestLoad(paths, true);
+        showHint(gui, tr("Select Matches: loading %1 unloaded branches.").arg(paths.size()));
+        std::shared_ptr<QElapsedTimer> waited(new QElapsedTimer);
+        waited->start();
+        QTimer* timer = new QTimer(gui);
+        timer->setInterval(kLoadPollMs);
+        QObject::connect(timer, &QTimer::timeout, timer, [gui, timer, paths, expression, label, generation, waited]() {
+            SceneViewport* current = selectionViewport(gui);
+            if ((generation != g_matchSearchGeneration) || !current) {
+                timer->deleteLater();
+
+                return;
+            }
+            int remaining = 0;
+            if (!tryReadViewerStage(current, [&](const SceneStage* stage) { remaining = SceneGraphPrimWalk::countUnloaded(stage, paths); })) {
+                return;
+            }
+            if ((remaining > 0) && (waited->elapsed() < kLoadWaitMs)) {
+                return;
+            }
+            timer->deleteLater();
+            startMatchSearch(gui, expression, label);
+        });
+        timer->start();
+    }
+
+    void
+    showLoadOffer(Gui* gui,
+                  const QString& report,
+                  const QStringList& paths,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        dropLoadOffer();
+        QStatusBar* bar = gui ? gui->statusBar() : nullptr;
+        if (!bar) {
+            return;
+        }
+        QWidget* offer = new QWidget(bar);
+        offer->setObjectName(QStringLiteral("knobPrimSelectMatchesOffer"));
+        offer->setProperty("natronSelectMatchesUnloaded", paths.size());
+        QHBoxLayout* layout = new QHBoxLayout(offer);
+        layout->setContentsMargins(0, 0, 0, 0);
+        QLabel* text = new QLabel(report, offer);
+        text->setObjectName(QStringLiteral("knobPrimSelectMatchesReport"));
+        QPushButton* button = new QPushButton(tr("Load and select"), offer);
+        button->setObjectName(QStringLiteral("knobPrimSelectMatchesLoad"));
+        button->setToolTip(tr("Loads these payloads in the viewer, then selects the matches inside them. Unload them in the Scene Graph panel."));
+        layout->addWidget(text);
+        layout->addWidget(button);
+        bar->addPermanentWidget(offer);
+        g_loadOffer = offer;
+        QTimer::singleShot(kOfferMs, offer, [offer]() {
+            if (g_loadOffer.data() == offer) {
+                dropLoadOffer();
+            }
+        });
+        QObject::connect(button, &QPushButton::clicked, offer, [gui, paths, expression, label]() {
+            dropLoadOffer();
+            loadAndSearch(gui, paths, expression, label);
+        });
+    }
+
+    struct MatchSearch {
+        SceneGraphPrimWalk walk;
+        QStringList found;
+    };
+
+    // Walks the viewer's stage in short slices under its read lock, so the UI and the viewer's own
+    // frames and syncs go on between them, then selects what matched.
+    void
+    startMatchSearch(Gui* gui,
+                     const std::string& expression,
+                     const QString& label)
+    {
+        dropLoadOffer();
+        if (!selectionViewport(gui)) {
+            showHint(gui, tr("Select Matches: there is no viewer to search."));
+
+            return;
+        }
+        std::shared_ptr<MatchSearch> search(new MatchSearch);
+        QString parseError;
+        if (!search->walk.setExpression(QString::fromStdString(expression), &parseError)) {
+            showHint(gui, tr("Select Matches: %1").arg(parseError));
+
+            return;
+        }
+        search->walk.start();
+        const int generation = ++g_matchSearchGeneration;
+        QTimer* timer = new QTimer(gui);
+        timer->setInterval(0);
+        QObject::connect(timer, &QTimer::timeout, timer, [gui, timer, search, generation, expression, label]() {
+            SceneViewport* viewport = selectionViewport(gui);
+            if ((generation != g_matchSearchGeneration) || !viewport) {
+                timer->deleteLater();
+
+                return;
+            }
+            bool shown = false;
+            if (!tryReadViewerStage(viewport, [&](const SceneStage* stage) {
+                    shown = (stage != nullptr);
+                    search->walk.step(stage, kMatchStepMs, INT_MAX, [](const QString&) { return false; }, &search->found);
+                })) {
+                return;
+            }
+            if (!shown) {
+                timer->deleteLater();
+                showHint(gui, tr("Select Matches: the viewer shows no scene."));
+
+                return;
+            }
+            if (!search->walk.isOver()) {
+                return;
+            }
+            timer->deleteLater();
+            const QStringList matches = search->found;
+            const QStringList unloaded = search->walk.getUnloadedBranchPaths();
+            QString report;
+            if (matches.isEmpty()) {
+                report = tr("Select Matches: nothing loaded matches the %1.").arg(label);
+            } else {
+                report = tr("Select Matches: %1 prims selected.").arg(matches.size());
+            }
+            if (!unloaded.isEmpty()) {
+                report += (unloaded.size() == 1) ? tr(" 1 unloaded branch not searched.")
+                                                 : tr(" %1 unloaded branches not searched.").arg(unloaded.size());
+            }
+            if (!matches.isEmpty()) {
+                viewport->setSelection(matches);
+            }
+            showHint(gui, report);
+            if (!unloaded.isEmpty()) {
+                showLoadOffer(gui, report, unloaded, expression, label);
+            }
+        });
+        timer->start();
+    }
+} // anonymous namespace
+
 void
 selectMatches(Gui* gui,
               const KnobStringPtr& knob)
@@ -677,8 +884,6 @@ selectMatches(Gui* gui,
     }
     const std::string expression = knob->getValue(0);
     const QString label = QString::fromStdString(knob->getLabel());
-    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
-    NodePtr node = effect ? effect->getNode() : NodePtr();
     if (PrimSelector::isBlank(expression)) {
         showHint(gui, tr("Select Matches: the %1 is empty.").arg(label));
 
@@ -690,55 +895,7 @@ selectMatches(Gui* gui,
 
         return;
     }
-    if (!node || !node->getInput(0)) {
-        showHint(gui, tr("Select Matches: the node has no scene on its input."));
-
-        return;
-    }
-    const int generation = ++g_matchSearchGeneration;
-    std::shared_ptr<SceneOps::UnloadedSearch> search = SceneOps::UnloadedSearch::start(node->getEffectInstance(), 0, expression);
-    QTimer* timer = new QTimer(gui);
-    timer->setInterval(50);
-    QObject::connect(timer, &QTimer::timeout, timer, [gui, timer, search, generation, label]() {
-        if (generation != g_matchSearchGeneration) {
-            timer->deleteLater();
-
-            return;
-        }
-        const SceneOps::UnloadedSearch::StatusEnum status = search->getStatus();
-        if (status == SceneOps::UnloadedSearch::eStatusRunning) {
-            return;
-        }
-        timer->deleteLater();
-        if (status == SceneOps::UnloadedSearch::eStatusFailed) {
-            showHint(gui, tr("Select Matches: %1").arg(QString::fromStdString(search->getError())));
-
-            return;
-        }
-        if (status != SceneOps::UnloadedSearch::eStatusDone) {
-            return;
-        }
-        QStringList matches;
-        for (const std::string& path : search->getMatches()) {
-            matches << QString::fromStdString(path);
-        }
-        if (matches.isEmpty()) {
-            showHint(gui, tr("Select Matches: nothing matches the %1.").arg(label));
-
-            return;
-        }
-        ViewerTab* viewer = selectionViewer(gui);
-        SceneViewport* viewport = viewer ? viewer->getSceneViewport() : nullptr;
-        if (viewport) {
-            viewport->setSelection(matches);
-        } else {
-            for (SceneGraphPanel* panel : gui->getSceneGraphPanels()) {
-                panel->showSelection(matches);
-            }
-        }
-        showHint(gui, tr("Select Matches: %1 prims selected.").arg(matches.size()));
-    });
-    timer->start();
+    startMatchSearch(gui, expression, label);
 }
 
 QString

@@ -100,9 +100,12 @@ std::string editPrimPathsText(KnobString::PrimPathHintEnum hint,
 QStringList currentSelection(Gui* gui);
 
 /**
- * @brief Selects in the viewer and the Scene Graph panel the prims the value of knob matches in
- * the scene of its node's first input, payloads included. The search runs off the UI thread; the
- * selection is set when it ends, and the status bar says what it found or why it did not.
+ * @brief Selects in the viewer the prims the value of knob matches among the prims its stage has
+ * loaded. The search walks the stage in short slices between UI events; the selection is set when
+ * it ends, and the status bar says what it found or why it did not. Unloaded branches it could not
+ * search are reported with a "Load and select" button in the status bar: it loads those payloads
+ * in the viewer, as the Scene Graph panel's Load does, and searches again. Nothing is loaded
+ * otherwise.
  **/
 void selectMatches(Gui* gui,
                    const KnobStringPtr& knob);

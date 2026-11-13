@@ -580,6 +580,7 @@ KnobGuiString::createWidget(QHBoxLayout* layout)
             QObject::connect(pickAction, &QAction::triggered, this, [this]() { armPrimPick(); });
             QAction* matchesAction = _primToolsMenu->addAction(tr("Select Matches"));
             matchesAction->setObjectName(QString::fromUtf8("knobPrimSelectMatches"));
+            matchesAction->setToolTip(tr("Selects the prims this knob matches among the ones the viewer has loaded. Unloaded branches are reported, and can be loaded from there."));
             QObject::connect(matchesAction, SIGNAL(triggered()), this, SLOT(onSelectMatches()));
             QObject::connect(_primToolsButton, SIGNAL(clicked()), this, SLOT(onPrimToolsClicked()));
             QObject::connect(_primToolsMenu, &QMenu::aboutToShow, this, [this]() {

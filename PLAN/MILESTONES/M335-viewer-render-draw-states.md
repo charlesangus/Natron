@@ -67,7 +67,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
   - verify: new `Tests/gui/m335_render_draw_states.py` on a generated four-asset payload city under build/: one asset Load All, the rest BBox, Cycles — picked prims cover only that asset, unrequested payloads stay 0, boxes drawn > 0 over the frame; BBox another row and its prims leave the frame.
   - size: L
 
-- [ ] M335.P3.T2 — Render Everything knob and button
+- [x] M335.P3.T2 — Render Everything knob and button
   - files: `Engine/ViewerInstance.h` (~:85, `kViewerParamRenderEverything`), `Engine/ViewerInstance.cpp` (~:946-957), `Engine/ViewerInstancePrivate.h` (~:555), `Gui/ViewerTab.cpp` (~:877-909, 1754, 1864), `Gui/SceneViewport.{h,cpp}` (beside `setMaxSamples` ~:5099, `requestStageLoad` ~:3344)
   - approach: KnobBool shown as a checkable button. On: `requestStageLoad({"/"}, true, {})` and `progressive->setRenderEverything(true)`. Tooltip says it loads every payload.
   - verify: the m335 script turns it on — every payload loads, the frame covers all assets, the toggle survives save and load; off — rules return, nothing unloads.

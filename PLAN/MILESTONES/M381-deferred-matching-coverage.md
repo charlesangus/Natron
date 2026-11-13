@@ -72,7 +72,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 
 ## Phase 381.3: Borrowers inside an evaluation
 
-- [ ] M381.P3.T1 — Merge and graft on the evaluation context
+- [x] M381.P3.T1 — Merge and graft on the evaluation context
   - files: `Engine/Nodes/Scene/SceneOps.cpp` (`readInput` ~:2145, `rootHoldsGprim` ~:2215, ~:2490), `Engine/Nodes/Scene/SceneLayerMemo.h` (`SceneGraftMemo` ~:158), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: borrow with `SceneEvaluationContext::current()` and add reach for the link prims and the passed-through root. Read `getLinks(input)` on the context set with reach rather than through `withPaths`. `SceneGraftMemo` keeps one slot per context.
   - verify: USDMerge on the city opens 0 buildings; parity of grafts and unmapped links; a viewer graft and a render graft don't evict each other.

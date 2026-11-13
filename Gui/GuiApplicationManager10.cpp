@@ -1170,8 +1170,9 @@ GuiApplicationManager::releaseSceneViewEngines()
         const std::list<ViewerTab*> viewers = gui->getViewersList_mt_safe();
         for (ViewerTab* viewer : viewers) {
             SceneViewport* view = viewer->getSceneViewport();
-            // Other delegates hold host memory, not the GPU's.
-            if (view && RenderDelegates::isStorm(view->getRenderer().getActiveRendererId())) {
+            // Other delegates hold host memory, not the GPU's, but the Storm engine kept behind
+            // one does.
+            if (view && (RenderDelegates::isStorm(view->getRenderer().getActiveRendererId()) || view->getRenderer().hasEngine())) {
                 view->releaseEngine();
             }
         }

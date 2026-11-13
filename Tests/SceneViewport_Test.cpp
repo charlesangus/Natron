@@ -1414,8 +1414,8 @@ TEST_F(SceneViewportStorm, PaintSkipsWhileTheViewerLockIsHeld)
     EXPECT_NE(SceneViewportRenderer::eRenderStatusBusy, _renderer.renderIfIdle(_fbo->handle(), kSize, kSize));
 }
 
-// Switching the viewer to a delegate that cannot load drops the Storm engine and shows the
-// loader's error instead of a frame; switching back makes one Storm engine again.
+// Switching the viewer to a delegate that cannot load shows the loader's error instead of a
+// frame and keeps the Storm engine; switching back draws with that engine.
 TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
 {
     if (_skip) {
@@ -1428,9 +1428,9 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     const U64 engines = _renderer.getEngineCount();
 
     _renderer.setRendererId(stub);
-    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_TRUE(_renderer.hasEngine());
     EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
-    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     EXPECT_EQ(engines, _renderer.getEngineCount());
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
     EXPECT_EQ(0, countNonBackground(_fbo->toImage()));
@@ -1440,6 +1440,59 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     EXPECT_GT(countNonBackground(render()), 0);
     ASSERT_TRUE(_renderer.hasEngine());
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
+    EXPECT_EQ(engines, _renderer.getEngineCount());
+}
+
+// The Storm engine kept while another delegate renders still hears the stage: edits made away
+// from Storm show on the first frame back, drawn by the same engine, as a renderer seeing the
+// edited scene for the first time draws it. Releasing the Storm engine alone leaves the other
+// delegate chosen, and the next Storm frame makes a new engine.
+TEST_F(SceneViewportStorm, TheStormEngineKeptBehindAnotherRendererFollowsItsEdits)
+{
+    if (_skip) {
+        return;
+    }
+    const std::string stub = "NatronTestStubRendererPlugin";
+    const ScenePayload reference = referenceScene();
+    (void)render();
+    ASSERT_TRUE(_renderer.hasEngine());
+    const U64 engines = _renderer.getEngineCount();
+
+    _renderer.setRendererId(stub);
+    (void)_renderer.render(_fbo->handle(), kSize, kSize);
+    const ScenePayload scene = editedScene(reference, 1., 0);
+    std::string error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    (void)_renderer.render(_fbo->handle(), kSize, kSize);
+
+    _renderer.setRendererId(kRenderDelegateStormId);
+    const QImage back = render();
+    EXPECT_EQ(engines, _renderer.getEngineCount());
+
+    SceneViewportRenderer fresh;
+    ASSERT_TRUE(fresh.setScene(scene, 1., 24., &error)) << error;
+    fresh.setFreeCamera(_renderer.getFreeCamera());
+    fresh.setDrawMode(SceneViewportRenderer::eDrawModeUnshaded);
+    fresh.setShowGrid(false);
+    fresh.setShowGuides(false);
+    bool converged = false;
+    for (int i = 0; i < 4 && !converged; ++i) {
+        converged = fresh.render(_fbo->handle(), kSize, kSize);
+    }
+    const QImage expected = _fbo->toImage();
+    fresh.releaseGL();
+    // A few edge pixels may round differently; a stale prim covers hundreds.
+    EXPECT_LE(countDifferentPixels(back, expected), 40);
+    // The edit cube's centre: x = 128 + 128 / (10 tan 22.5), y = 128 + 128 * 3 / (10 tan 22.5).
+    const int px = int(std::lround(128. + 128. / (10. * 0.41421356237)));
+    EXPECT_GT(pixel(back, px, 221).g, pixel(back, px, 221).r + 40) << pixel(back, px, 221);
+
+    _renderer.setRendererId(stub);
+    _renderer.releaseStormEngine();
+    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_EQ(stub, _renderer.getActiveRendererId());
+    _renderer.setRendererId(kRenderDelegateStormId);
+    EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(engines + 1, _renderer.getEngineCount());
 }
 
@@ -1470,7 +1523,7 @@ TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
     EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
     EXPECT_EQ(stub, _renderer.getActiveRendererId());
     EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
-    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
 
     // The prim gone, Storm again.

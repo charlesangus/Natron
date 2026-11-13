@@ -768,8 +768,10 @@ struct SceneViewportRenderer::Implementation {
     }
 
     /**
-     * @brief Renders with renderer from the next render on: a change destroys the engine, so it
-     * needs the context of render() current. Needs stageMutex.
+     * @brief Renders with renderer from the next render on. The Storm engine stays while another
+     * delegate renders: it keeps queueing the stage's change notices, so going back to Storm
+     * applies only the edits made since, where a new engine would populate the whole stage on the
+     * main thread. Needs stageMutex.
      **/
     void switchRenderer(const std::string& renderer)
     {
@@ -780,9 +782,6 @@ struct SceneViewportRenderer::Implementation {
         rendererError.clear();
         refineError.clear();
         uploadedFrame.reset();
-        // No Hgi to collect with: the engine's own goes with it, collecting as it does.
-        StormGLSection section;
-        engine.reset();
         // The last delegate's refinement engine goes; another has its own default cap, and starts
         // refining.
         progressive->setRenderer(std::string());
@@ -2880,7 +2879,6 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     // the renderer it has and leaves the switch to followSceneRenderer(), outside Qt's paint.
     const std::string effective = _imp->effectiveRenderer();
     if (followScene) {
-        StormGLStateGuard guard;
         _imp->switchRenderer(effective);
     }
     _imp->rendererSwitchPending = (effective != _imp->rendererId);
@@ -3273,6 +3271,15 @@ SceneViewportRenderer::releaseGL()
     _imp->refineWidth = 0;
     _imp->refineHeight = 0;
     _imp->uploadedFrame.reset();
+}
+
+void
+SceneViewportRenderer::releaseStormEngine()
+{
+    std::lock_guard<std::mutex> lock(_imp->stageMutex);
+    StormGLSection section;
+
+    _imp->engine.reset();
 }
 
 void
@@ -4151,16 +4158,7 @@ SceneViewport::onSynced(U64 serial,
 void
 SceneViewport::followSceneRenderer()
 {
-    // Dropping the old engine needs its context, which a view not yet shown has not made: it has
-    // no engine then either.
-    const bool current = _imp->glInitialized && context();
-    if (current) {
-        makeCurrent();
-    }
     const bool changed = _imp->renderer.followSceneRenderer();
-    if (current) {
-        doneCurrent();
-    }
     if (changed) {
         publishState();
         publishActiveRenderer();
@@ -4372,10 +4370,7 @@ SceneViewport::setLightingMode(SceneViewportRenderer::LightingModeEnum mode)
 void
 SceneViewport::setRendererId(const QString& id)
 {
-    // Dropping the old engine needs its context.
-    makeCurrent();
     _imp->renderer.setRendererId(id.toStdString());
-    doneCurrent();
     publishState();
     update();
     _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
@@ -5052,12 +5047,21 @@ SceneViewport::releaseEngine()
 {
     // The engine's GL objects belong to this widget's context, and releaseGL() takes the viewer
     // lock, so the worker is not syncing into the stage the engine listens to while it goes.
+    // Another delegate's render holds host memory and keeps going; only the Storm engine kept
+    // behind it goes.
+    const bool storm = RenderDelegates::isStorm(_imp->renderer.getActiveRendererId());
     if (_imp->glInitialized && context()) {
         makeCurrent();
-        _imp->renderer.releaseGL();
+        if (storm) {
+            _imp->renderer.releaseGL();
+        } else {
+            _imp->renderer.releaseStormEngine();
+        }
         doneCurrent();
     }
-    _imp->renderer.releaseRefinement();
+    if (storm) {
+        _imp->renderer.releaseRefinement();
+    }
     if (_imp->requestedLiveTextures) {
         // Free GPU Memory emptied the store too, and only the worker's sync renders textures.
         requestSync(_imp->requestedPayload, _imp->requestedError);

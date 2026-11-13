@@ -15,7 +15,10 @@ has drawn the scene, the longest gap, including the script's own menu work, must
 in every phase. The screenshot is taken after the heartbeat stops. Steps:
   - picks Cycles in the view's Renderer submenu and, as soon as the view reports Cycles and while
     Cycles has published no frame (the first sync), sets the settings node's cyclesSamples;
-  - picks Storm, then Cycles, again before the sync finishes, and sets cyclesSamples to a new value;
+  - picks Storm and waits for its frame, which must come from the Storm engine of the first draw
+    (natronSceneEngineCount unchanged, natronSceneEngineHeld): it was kept while Cycles rendered,
+    so going back costs a frame, not a sync of the whole scene on the main thread; then picks
+    Cycles again and sets cyclesSamples to a new value;
   - disconnects the Viewer (a reset) while Cycles is syncing, reconnects it, and re-picks Cycles if
     the view came back on Storm;
   - waits for the render to converge and checks the final frame is Cycles' at the last
@@ -27,7 +30,8 @@ NATRON_TEST_MESHES for that machine.
 
 View properties read: natronSceneRenderer, natronSceneSynced, natronSceneShown, natronSceneError,
 natronSceneRendererError, natronSceneMaxSamples, natronSceneSamples, natronSceneDrawnSamples,
-natronSceneRefineConverged, natronSceneRefineFrames, natronSceneUploadMs.
+natronSceneRefineConverged, natronSceneRefineFrames, natronSceneUploadMs, natronSceneEngineCount,
+natronSceneEngineHeld, natronSceneLastPaintMs.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -338,6 +342,8 @@ try:
             return
         require(samples is not None, "the USDRenderSettings has a cyclesSamples parameter")
 
+        storm_engines = num("natronSceneEngineCount", 0)
+
         section("first sync")
         timer.start()
         phase("start Cycles")
@@ -360,8 +366,15 @@ try:
 
         section("renderer switches")
         phase("switch to Storm")
+        painted = num("natronSceneLastPaintMs", 0)
         ok = yield from pick_renderer("Storm")
         check(ok, "the Renderer submenu has a Storm entry")
+        ok = yield ("until", lambda: prop("natronSceneRenderer") == STORM_ID and num("natronSceneLastPaintMs", 0) > painted,
+                    POLL_TIMEOUT_S)
+        check(ok, "the view draws a Storm frame (%r)" % (prop("natronSceneRenderer"),))
+        check(storm_engines > 0 and num("natronSceneEngineCount", 0) == storm_engines and bool(prop("natronSceneEngineHeld")),
+              "the Storm frame comes from the engine kept since the first draw (engines %r -> %r, held %r)"
+              % (storm_engines, num("natronSceneEngineCount", 0), prop("natronSceneEngineHeld")))
         phase("back to Cycles")
         ok = yield from pick_renderer("Cycles")
         check(ok, "the Renderer submenu has a Cycles entry again")

@@ -49,8 +49,8 @@ CELLS = ["/World"] + BLOCKS + BUILDINGS
 STATE_NONE, STATE_UNLOADED, STATE_LOADING, STATE_LOADED, STATE_FAILED = range(5)
 
 try:
-    from PySide6.QtCore import Q_ARG, QMetaObject, QModelIndex, Qt
-    from PySide6.QtWidgets import QTreeView
+    from PySide6.QtCore import Q_ARG, QMetaObject, QModelIndex, Qt, QTimer
+    from PySide6.QtWidgets import QApplication, QMessageBox, QTreeView
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
@@ -237,7 +237,27 @@ try:
             return f.read().decode("utf-8", "replace")
 
     def reopen(label):
-        require(app.resetProject(), "%s: reset the project (close it, keep the window)" % label)
+        # Showing the Scene Graph panel splits a pane and moves a tab, which are project edits, so
+        # the reset asks whether to save them. The saved project is the one under test: discard.
+        asked = []
+
+        def discard_save_question():
+            box = QApplication.activeModalWidget()
+            if isinstance(box, QMessageBox) and box.button(QMessageBox.StandardButton.Discard) is not None:
+                asked.append(box.text())
+                box.button(QMessageBox.StandardButton.Discard).click()
+
+        answer = QTimer()
+        answer.timeout.connect(discard_save_question)
+        answer.start(200)
+        try:
+            reset = app.resetProject()
+        finally:
+            answer.stop()
+            answer = None
+        if asked:
+            report("NOTE %s: discarded the layout edits (%r)" % (label, asked[0]))
+        require(reset, "%s: reset the project (close it, keep the window)" % label)
         forget_widgets()
         yield ("sleep", SETTLE_MS)
         require(app.loadProject(project_path) is not None, "%s: reopen %s" % (label, project_path))

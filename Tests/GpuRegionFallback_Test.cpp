@@ -892,9 +892,7 @@ TEST_F(GpuRegionFallbackTest, RegionRunAsStripsPublishesNothing)
     EXPECT_EQ(0u, report->plannedPeakDeviceBytes);
 }
 
-// Interior members never exist whole in RAM or on the device when stripped, so only the region's outputs, which are
-// downloaded anyway, reach the host tier.
-TEST_F(GpuRegionFallbackTest, RegionRunAsStripsAdmitsItsOutputsToTheHostTier)
+TEST_F(GpuRegionFallbackTest, RegionRunAsStripsAdmitsEveryCachedMemberToTheHostTier)
 {
     if (!gpuOrSkip()) {
         return;
@@ -913,22 +911,21 @@ TEST_F(GpuRegionFallbackTest, RegionRunAsStripsAdmitsItsOutputsToTheHostTier)
     const RectI window(0, 0, kWidth, kHeight);
     std::vector<float> lastOutput;
     int hits = 0;
-    for (const FrameGraph::Region::Output& output : graph.regions.front().outputs) {
-        if (!output.isRoot && (output.externalConsumers <= 0)) {
-            continue;
-        }
-        const FrameGraph::Task& task = graph.tasks[output.task];
-        ASSERT_TRUE(task.sharesCachedOutput) << task.key.node->getScriptName_mt_safe();
+    for (int member : graph.regions.front().members) {
+        const FrameGraph::Task& task = graph.tasks[member];
+        const std::string name = task.key.node->getScriptName_mt_safe();
+        ASSERT_TRUE(task.sharesCachedOutput) << name;
+        ASSERT_FALSE(task.isIdentity) << name;
         std::list<ImagePtr> cached;
-        ASSERT_TRUE(appPTR->peekImage(outputKey(task), &cached)) << task.key.node->getScriptName_mt_safe();
-        ASSERT_FALSE(cached.empty());
+        ASSERT_TRUE(appPTR->peekImage(outputKey(task), &cached)) << name;
+        ASSERT_FALSE(cached.empty()) << name;
         ++hits;
-        EXPECT_GT(cached.front()->getEntryHeader()->recomputeCostNs.load(), 0.f);
+        EXPECT_GT(cached.front()->getEntryHeader()->recomputeCostNs.load(), 0.f) << name;
         if (task.key.node == grades.back()) {
             lastOutput = readRgba(cached.front(), window);
         }
     }
-    EXPECT_EQ(1, hits);
+    EXPECT_EQ(3, hits);
     EXPECT_EQ(hits, report->admittedToHost);
     ASSERT_FALSE(lastOutput.empty());
 
@@ -1109,8 +1106,8 @@ TEST_F(GpuDeviceServeTest, HostHitReadOnTheGpuIsPromotedToTheDeviceTier)
     }
     std::vector<NodePtr> grades;
     ASSERT_TRUE(makeCachedGradeChain(&grades));
-    // Run as strips with the middle grade as its root, the region leaves the middle grade's output in the host tier
-    // alone.
+    // Run as strips with the middle grade as its root, the region leaves the middle grade's output in the host tier and
+    // nothing in the device tier.
     setGpuStripOverridesForTests(gpu::kMinSizeClass, 0);
     FrameGraph first;
     std::string error;
@@ -1140,6 +1137,55 @@ TEST_F(GpuDeviceServeTest, HostHitReadOnTheGpuIsPromotedToTheDeviceTier)
     EXPECT_TRUE(bool(tier->find(middleKey)));
     std::list<ImagePtr> cached;
     EXPECT_TRUE(appPTR->peekImage(middleKey, &cached));
+    expectMatchesColdRender(grades.back(), run);
+}
+
+TEST_F(GpuDeviceServeTest, EditingTheLastNodeAfterAStrippedFrameRunsOnlyItAndReadsTheRestFromTheHostTier)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    // Left on for the edited frame too, which is how a device too small to run the chain whole renders both.
+    setGpuStripOverridesForTests(gpu::kMinSizeClass, 0);
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameGraph first;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(grades, &first, &error)) << error;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    ASSERT_GT(report->strips, 0);
+    ASSERT_EQ(3, report->admittedToHost);
+    ASSERT_EQ(0, membersInDeviceTier(first));
+
+    ASSERT_TRUE(setKnobValues(grades.back(), "multiply", { 0.7, 0.8, 0.9, 1. }));
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(grades.back(), &run, &error)) << error;
+    RenderScheduler::pruneBehindCacheHits(run.graph, run.context);
+    placeOnGpu(&run, grades);
+    run.stats->setTrackRenderRoICalls(true);
+    bool middleFound = false;
+    for (const FrameGraph::Task& task : run.graph.tasks) {
+        if (task.key.node == grades[1]) {
+            middleFound = true;
+            EXPECT_TRUE(task.servedFromCache);
+            EXPECT_EQ(EffectInstance::OutputCacheTier::Memory, task.servedTier);
+        }
+    }
+    ASSERT_TRUE(middleFound);
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_EQ(1u, run.graph.regions.front().members.size());
+    EXPECT_EQ(grades.back(), run.graph.tasks[run.graph.regions.front().members.front()].key.node);
+
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    EXPECT_GT(report->strips, 0);
+
+    const std::map<std::string, int> gpuTasks = run.stats->getGpuTasksPerNode();
+    ASSERT_EQ(1u, gpuTasks.size());
+    EXPECT_EQ(grades.back()->getScriptName_mt_safe(), gpuTasks.begin()->first);
+    EXPECT_EQ(0, renderRoICallsOf(run, grades[0]));
+    EXPECT_EQ(0, renderRoICallsOf(run, grades[1]));
     expectMatchesColdRender(grades.back(), run);
 }
 

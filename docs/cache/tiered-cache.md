@@ -989,6 +989,19 @@ tier would mean assembling it in a new buffer of full size, which is the very al
 publishes nothing to the device tier. Its region outputs reach RAM whole, as downloaded `Image`s (`:3007-3012`), and the
 host tier's ordinary admission is where they belong.
 
+The interior members go there too. Caching only the region outputs would leave a downstream edit after a stripped frame
+re-running every interior member upstream of it, and strips are the only path on a low-VRAM device. Once a run comes back
+stripped, `planHostDownloads` also marks for download every admitted (`isCachedOutput`), non-identity member that
+nothing reads after the region. Each one is assembled in RAM strip by strip, in an image allocated as a host-tier entry,
+and `admitToHostTier` admits it after the run under the same key and cost as a region output (`cacheKeyOf`,
+`stampCacheHeader`, `CacheDeviceHost::adoptFromDevice`). A downloaded slot is `interior` to the strip planner, which keeps
+its rows on the device until the end of each strip instead of recycling them, so the strips are planned again with the
+downloads included. When they no longer fit, the members are left out cheapest per byte first (`expectedCostNs` over
+device bytes, as in publishing), by a binary search over how many of the ranked members are kept. A run with none kept
+falls back to the plan made without them, so the extra downloads never fail a run. The same applies when a region that was
+stripped only to hide its transfers would come back whole with the extra downloads. When no host entry can be allocated
+for one of these members, it is not downloaded. A run planned whole is unchanged and publishes to the device tier.
+
 ### The viewer root
 
 When the viewer can take a device root, `plan()` marks the root's slots `deviceRoot` (`:967-986`, unless an identity root

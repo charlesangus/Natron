@@ -303,6 +303,10 @@ struct Slot {
     // The download image is made as an entry of the host tier, which takes it once the run is done.
     bool admitHost = false;
 
+    // Downloaded from a stripped run only for the host tier, read by nothing after the region: when no host entry can
+    // be allocated for it, it is not downloaded at all.
+    bool hostOnly = false;
+
     // For a member output grown from a partial entry of the device tier: that entry's image, pinned until the run is
     // drained, which the member's buffer is copied from before the member renders the rest, and the entry's bitmap.
     GpuDeviceImagePtr cachedPart;
@@ -1782,6 +1786,10 @@ private:
                 slot.downloadImage = newHostEntryImage(*host, _members[slot.producer], slot);
                 slot.admitHost = bool(slot.downloadImage);
             }
+            if (!slot.downloadImage && slot.hostOnly) {
+                slot.download = false;
+                continue;
+            }
             if (!slot.downloadImage) {
                 slot.downloadImage = slot.layout.newRamImage();
             }
@@ -2328,7 +2336,8 @@ private:
      * moves enough bytes for pipelined strips to hide its transfer behind its kernels, and otherwise fills it with
      * the strips it runs as. A stripped output never exists whole on the device, so every
      * output read after the region is downloaded and stored in RAM, including those another region would have read on
-     * the device.
+     * the device, and the device tier gets none of them. The host tier gets them instead, and the other cacheable
+     * outputs too, as far as the strips still fit with them downloaded: see planHostDownloads().
      **/
     bool planStrips(std::vector<GpuStrip>* strips)
     {
@@ -2356,7 +2365,11 @@ private:
 
         const GpuStripGraph graph = stripGraph();
         int rows = 0;
-        switch (planGpuStrips(graph, limits, strips, &rows, &_inFlight, &_overlapped)) {
+        const GpuStripResult result = planGpuStrips(graph, limits, strips, &rows, &_inFlight, &_overlapped);
+        if (result == GpuStripResult::Strips) {
+            planHostDownloads(graph, limits, strips, &rows);
+        }
+        switch (result) {
         case GpuStripResult::Whole:
             _stripRows = std::max(0, gpuStripBands(graph).height());
             break;
@@ -2393,6 +2406,91 @@ private:
 
         return true;
     }
+
+    /**
+     * @brief Marks for download to the host tier the cacheable outputs of a stripped run that nothing reads after the
+     * region, so that an edit downstream of them finds them there, and re-plans the strips with them downloaded, which
+     * keeps their rows on the device to the end of each strip. When the strips no longer fit with all of them, the
+     * least expensive per byte are left out first, down to none, which is the plan already made.
+     **/
+    void planHostDownloads(const GpuStripGraph& graph,
+                           const GpuStripLimits& limits,
+                           std::vector<GpuStrip>* strips,
+                           int* rows)
+    {
+        if (!appPTR || !appPTR->getNodeCacheHost()) {
+            return;
+        }
+        std::vector<std::pair<double, int>> ranked;
+        for (std::size_t m = 0; m < _members.size(); ++m) {
+            if (!isCachedOutput((int)m)) {
+                continue;
+            }
+            const Member& member = _members[m];
+            const Slot& slot = _slots[member.outSlot];
+            if (slot.keep || slot.download) {
+                continue;
+            }
+            const double bytes = (double)std::max<std::size_t>(1, slot.layout.deviceBytes());
+            ranked.push_back(std::make_pair((double)expectedCostNs(member) / bytes, member.outSlot));
+        }
+        if (ranked.empty()) {
+            return;
+        }
+        std::stable_sort(ranked.begin(), ranked.end(), [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
+            return a.first > b.first;
+        });
+
+        struct Plan {
+            std::vector<GpuStrip> strips;
+            int rows = 0;
+            int inFlight = 1;
+            bool overlapped = false;
+        };
+        // A region stripped only to hide its transfers may come back whole with more to download, and a whole run
+        // would keep none of them.
+        const auto planWith = [&](std::size_t count,
+                                  Plan* plan) {
+            GpuStripGraph extended = graph;
+            for (std::size_t k = 0; k < count; ++k) {
+                extended.images[ranked[k].second].interior = true;
+            }
+
+            return planGpuStrips(extended, limits, &plan->strips, &plan->rows, &plan->inFlight, &plan->overlapped) == GpuStripResult::Strips;
+        };
+
+        Plan best;
+        std::size_t kept = ranked.size();
+        if (!planWith(kept, &best)) {
+            // Each download only adds rows kept on the device, so fewer of them fit whenever more do.
+            std::size_t lo = 0;
+            std::size_t hi = ranked.size() - 1;
+            while (lo < hi) {
+                const std::size_t mid = lo + (hi - lo + 1) / 2;
+                Plan candidate;
+                if (planWith(mid, &candidate)) {
+                    lo = mid;
+                    best = std::move(candidate);
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            kept = lo;
+        }
+        if (kept == 0) {
+            return;
+        }
+        strips->swap(best.strips);
+        *rows = best.rows;
+        _inFlight = best.inFlight;
+        _overlapped = best.overlapped;
+        for (std::size_t k = 0; k < kept; ++k) {
+            Slot& slot = _slots[ranked[k].second];
+            slot.download = true;
+            slot.hostOnly = true;
+            slot.downloadAt = std::max(0, std::max(slot.producer, slot.lastRead));
+        }
+    } // planHostDownloads
 
     // Whether the member's output is one renderRoI would cache under its own key, rather than a pass-through or
     // an output another member of the region owns.

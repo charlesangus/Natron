@@ -59,7 +59,8 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 public:
     enum ColorTrackballFeedbackEnum {
         eColorTrackballFeedbackCrosshairReveal = 0,
-        eColorTrackballFeedbackWidgetCursor
+        eColorTrackballFeedbackWidgetCursor,
+        eColorTrackballFeedbackCrosshairOnly
     };
 
     enum ColorTrackballWheelWidthEnum {
@@ -290,6 +291,9 @@ public:
     bool isLinkLinesVisible() const;
     bool isExpressionLinesVisible() const;
 
+    bool isGpuRegionOverlayEnabled() const;
+    void setGpuRegionOverlayEnabled(bool enabled);
+
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
 
@@ -423,11 +427,6 @@ public:
      **/
     std::string getDefaultOCIOConfigSourceForNewProjects() const;
 
-    /**
-     * @brief Returns true if the QSettings existed prior to loading the settings
-     **/
-    bool didSettingsExistOnStartup() const;
-
     bool isAggressiveCachingEnabled() const;
 
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
@@ -510,9 +509,6 @@ public:
 
     bool isCopyInputImageForPluginRenderEnabled() const;
 
-    bool isDefaultAppearanceOutdated() const;
-    void restoreDefaultAppearance();
-
     std::string getUserStyleSheetFilePath() const;
 
 #ifdef NATRON_DOCUMENTATION_ONLINE
@@ -575,8 +571,6 @@ private:
 
     bool tryLoadOpenColorIOConfig();
 
-
-    KnobBoolPtr _natronSettingsExist;
     KnobBoolPtr _saveSettings;
 
 
@@ -717,6 +711,7 @@ private:
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _showLinkLines;
     KnobBoolPtr _showExpressionLines;
+    KnobBoolPtr _showGpuRegions;
     KnobBoolPtr _usePluginIconsInNodeGraph;
     KnobBoolPtr _useAntiAliasing;
     KnobSeparatorPtr _tabMenuSeparator;
@@ -747,7 +742,6 @@ private:
     KnobChoicePtr _systemFontChoice;
     KnobIntPtr _fontSize;
     KnobFilePtr _qssFile;
-    KnobIntPtr _defaultAppearanceVersion;
 
     // Appearance/Main Window
     KnobPagePtr _guiColorsTab;
@@ -822,8 +816,6 @@ private:
     KnobColorPtr _expressionLineColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
-    bool _settingsExisted;
-    bool _defaultAppearanceOutdated;
 };
 
 NATRON_NAMESPACE_EXIT

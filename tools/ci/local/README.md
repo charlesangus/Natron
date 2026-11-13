@@ -272,9 +272,21 @@ Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 This is also what re-execs you into the dev container (see "Getting a
 shell" below) -- you don't need to start one yourself first.
 
-`ninja` parallelism defaults to `-j3`, overridable via `NATRON_BUILD_JOBS`,
-e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
+`ninja` parallelism defaults to the smaller of `nproc - 1` and the memory
+available where the compiler runs divided by 2 GiB, at least 1. That memory is
+the smaller of `MemAvailable` and the container's cgroup limit (the cap
+`memcap.sh` applies, including `NATRON_DEV_MEMORY`). The build banner names the
+source. It is overridable via `NATRON_BUILD_JOBS`, e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
 core count shouldn't dictate memory pressure.
+
+Concurrent links are limited by a ninja pool, since the large test executables
+(Tests, GuiTests) link at about 1 GB each in debug and several at once get
+OOM-killed. Its default is total memory (the smaller of `MemTotal` and the cgroup
+limit, so it does not drift with `MemAvailable`) divided by 6 GiB, at least 1
+and at most the compile job count; the banner prints it next to the compile
+jobs. Override it with `NATRON_LINK_JOBS=<n>`. The depth is baked into the
+generated build files, so a changed value (including a changed derived one)
+reconfigures the tree.
 
 Edits to `Global/Enums.h` or `Global/GlobalDefines.h` recompile essentially
 every translation unit (~380 objects); batch such changes rather than
@@ -338,7 +350,7 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
 ```
 [NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
   [GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n> GTEST_REPEAT=<n>] \
-  tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+  tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
 ```
 
 - `ctest` runs against the build dir. By default (`NATRON_CTEST_JOBS` unset)
@@ -351,6 +363,14 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
   that carry the M2-era `tools/ci/smoke_test.py` addition -- it is not on
   `RB-2.6`, and `test.sh` will tell you plainly and exit if it's missing on
   your checkout.
+- `startup` starts the built `App/Natron` under a GLX-capable Xvfb on software
+  GL (`Tests/gui/run-gui-test.sh Tests/gui/debug_startup.py`) and fails unless
+  the main window is exposed. Run it against `debug`: that build arms the
+  floating-point traps for the whole process, which Mesa's llvmpipe trips
+  while compiling its shaders unless the GL init path disarms them around the
+  driver calls, and no ctest case ever starts the GUI. A SIGFPE shows up as
+  exit status 136. `check-startup.sh` cannot take this role, as it needs a
+  staged bundle and a debug build is not packaged in the container.
 - `NATRON_RENDER_SCHEDULER` selects the render scheduler for `ctest` and
   `smoke`; unset leaves Natron's default. It is forwarded into the container
   when set.

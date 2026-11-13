@@ -10,6 +10,8 @@
 
 #include <unistd.h>
 
+#include "Global/FloatingPointExceptions.h"
+
 namespace gpu {
 
 void
@@ -417,7 +419,7 @@ GpuRuntime::create(const GpuRuntimeOptions& options, std::unique_ptr<GpuRuntime>
         if (const char* env = std::getenv("NATRON_GPU_FAULT")) {
             GpuFaultPlan plan;
             if (!GpuFaultPlan::parse(env, plan)) {
-                return { VK_ERROR_INITIALIZATION_FAILED, "NATRON_GPU_FAULT must be lost@N or oom@N with N >= 1" };
+                return { VK_ERROR_INITIALIZATION_FAILED, "NATRON_GPU_FAULT must be lost@N, oom@N, lost@region:N or oom@region:N with N >= 1" };
             }
             dev.fault = plan;
         }
@@ -453,6 +455,12 @@ GpuRuntime::build()
     generation_.store(++nextGeneration, std::memory_order_release);
     if (GpuStatus s = GpuDevice::create(options_.device, device_); !s) {
         return s;
+    }
+    if (device_->info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+        // lavapipe compiles shaders on whichever thread drives it, with Mesa's compilers raising float
+        // exceptions. Disarmed before the transfer threads start, as they inherit this thread's float environment;
+        // the caller decides whether the device is kept and so whether the whole process follows.
+        boost_adaptbx::floating_point::disarm_trapping_for_thread();
     }
     if (GpuStatus s = GpuTransfer::create(*device_, options_.transfer, transfer_); !s) {
         teardown();

@@ -32,6 +32,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_set>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -166,10 +167,52 @@ public:
     bool checkIfNodeLabelExists(const std::string & n, const Node* caller) const;
 
     /**
+     * @brief Returns n if no other node of the group has it as script-name (label if label is
+     * true), else the first free of base, base_2, base_3, ... where base is n without an
+     * "_<digits>" suffix.
+     **/
+    std::string findAvailableNodeName(const std::string& n, bool label, const Node* caller) const;
+
+    /**
+     * @brief While one exists, the name checks of this collection look the names up in an
+     * index instead of scanning its nodes, and the searches for a free numbered name start
+     * past the numbers already found taken. Open one around the creation of many nodes.
+     **/
+    class NamingBatch {
+        NodeCollectionPtr _collection;
+
+    public:
+        explicit NamingBatch(const NodeCollectionPtr& collection);
+        ~NamingBatch();
+    };
+
+    /**
+     * @brief Called by a node whose script-name, label or cache ID changed, with the names it
+     * gave up, so that an open NamingBatch keeps up.
+     **/
+    void notifyNodeNamesChanged(const NodePtr& node, const std::string& oldScriptName, const std::string& oldLabel);
+
+    /**
+     * @brief Called by a node of the collection that is deactivated, freeing its names.
+     **/
+    void notifyNodeNamesFreed(const Node* node);
+
+    /**
+     * @brief For tests: how many times a name check scanned all the nodes of a collection.
+     **/
+    static U64 getNodeNameScanCount();
+
+    /**
      * @brief Returns a pointer to a node whose name is the same as the name given in parameter.
      * If no such node could be found, NULL is returned.
      **/
     NodePtr getNodeByName(const std::string & name) const;
+
+    /**
+     * @brief Appends the activated nodes of this collection having one of the given script-names,
+     * in no particular order.
+     **/
+    void getActivatedNodesNamed(const std::unordered_set<std::string>& names, NodesList* nodes) const;
 
     /**
      * @brief Given a fully specified name, e.g: Group1.Group2.Blur1.1, this function extracts the first node name (starting from the left)
@@ -377,6 +420,14 @@ public:
 
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
     virtual void purgeCaches() OVERRIDE FINAL;
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+    virtual void appendExtraHashSources(std::vector<NodePtr>* sources) const OVERRIDE FINAL;
+    virtual void appendHashLeafDependents(std::vector<NodePtr>* leaves) const OVERRIDE FINAL;
+
+    // What feeds the Output: rendered directly, the group is an identity of it.
+    virtual EffectInstancePtr getInternalIdentitySource() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual StatusEnum getRegionOfDefinition(U64 hash, double time, const RenderScale& scale, ViewIdx view, RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
 
     NodePtr getOutputNode(bool useGuiConnexions) const;
 
@@ -415,6 +466,17 @@ public:
 Q_SIGNALS:
 
     void graphEditableChanged(bool);
+
+protected:
+    virtual bool isIdentity(double time,
+                            const RenderScale& scale,
+                            const RectI& roi,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
+    virtual void addProducedPlanes(double time, ViewIdx view, std::list<ImageLayerDesc>* planes) OVERRIDE FINAL;
 
 private:
 

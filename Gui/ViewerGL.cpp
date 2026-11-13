@@ -1366,14 +1366,13 @@ ViewerGL::getImageRectangleDisplayed(const RectI & imageRoDPixel, // in pixel co
 
     ///to clip against the user roi however clip it against the mipmaplevel of the zoomFactor+proxy
 
-    RectD userRoI;
-    bool userRoiEnabled;
-    {
-        QMutexLocker l(&_imp->userRoIMutex);
-        userRoiEnabled = _imp->userRoIEnabled;
-        userRoI = _imp->userRoI;
-    }
-    if (userRoiEnabled) {
+    // The knobs, not the drawn RoI: a knob edit renders before the drawn RoI follows it.
+    if (isUserRegionOfInterestEnabled()) {
+        const RectD userRoI = getUserRegionOfInterest();
+        // A zero-width RoI off the pixel grid would enclose a one-pixel strip.
+        if (userRoI.isNull()) {
+            return RectI();
+        }
         ///If the user roi is enabled, we want to render the smallest enclosing rectangle in order to avoid black borders.
         const RectI userRoIpixel = userRoI.toPixelEnclosing(mipmapLevel, par);
 
@@ -4032,16 +4031,11 @@ ViewerGL::getUserRegionOfInterest() const
     KnobDoublePtr bottomLeft = node ? node->getKnobByNameAndType<KnobDouble>(kViewerParamUserRoIBottomLeft) : KnobDoublePtr();
     KnobDoublePtr size = node ? node->getKnobByNameAndType<KnobDouble>(kViewerParamUserRoISize) : KnobDoublePtr();
     if (bottomLeft && size) {
-        const double width = size->getValue(0);
-        const double height = size->getValue(1);
-        if ((width > 0.) && (height > 0.)) {
-            const double x1 = bottomLeft->getValue(0);
-            const double y1 = bottomLeft->getValue(1);
+        const double x1 = bottomLeft->getValue(0);
+        const double y1 = bottomLeft->getValue(1);
 
-            return RectD(x1, y1, x1 + width, y1 + height);
-        }
+        return RectD(x1, y1, x1 + size->getValue(0), y1 + size->getValue(1));
     }
-    // An empty knob RoI was never set: the drawn one is the default made from the format.
     QMutexLocker l(&_imp->userRoIMutex);
 
     return _imp->userRoI;

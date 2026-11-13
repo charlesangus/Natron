@@ -142,6 +142,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionGraphRearrangeNodes);
     (void)QT_TR_NOOP(kShortcutDescActionGraphRemoveNodes);
     (void)QT_TR_NOOP(kShortcutDescActionGraphShowLinkLines);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphShowGpuRegions);
     (void)QT_TR_NOOP(kShortcutDescActionGraphNavigateUpstream);
     (void)QT_TR_NOOP(kShortcutDescActionGraphNavigateDownstram);
     (void)QT_TR_NOOP(kShortcutDescActionGraphSelectUp);

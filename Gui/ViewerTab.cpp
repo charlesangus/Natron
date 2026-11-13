@@ -135,10 +135,27 @@ struct ViewerKnobValues {
     }
 };
 
+// The display, view and look menus can hold a name the config lacks, which only the entry ID keeps.
+KnobChoicePtr
+displayTransformKnob(const KnobIPtr& knob)
+{
+    const std::string name = knob->getName();
+    if ((name != kViewerParamDisplay) && (name != kViewerParamView) && (name != kViewerParamLook)) {
+        return KnobChoicePtr();
+    }
+
+    return std::dynamic_pointer_cast<KnobChoice>(knob);
+}
+
 ViewerKnobValues
 readViewerKnob(const KnobIPtr& knob)
 {
     ViewerKnobValues values;
+    if (KnobChoicePtr choice = displayTransformKnob(knob)) {
+        values.strings.push_back(choice->getActiveEntry().id);
+
+        return values;
+    }
     const int nDims = knob->getDimension();
 
     for (int i = 0; i < nDims; ++i) {
@@ -163,6 +180,13 @@ writeViewerKnob(const KnobIPtr& knob,
 {
     const ViewerKnobValues current = readViewerKnob(knob);
 
+    if (KnobChoicePtr choice = displayTransformKnob(knob)) {
+        if (!values.strings.empty() && (values != current)) {
+            ViewerInstance::selectDisplayTransformEntry(choice, values.strings[0]);
+        }
+
+        return;
+    }
     for (std::size_t i = 0; i < values.strings.size() && i < current.strings.size(); ++i) {
         if (values.strings[i] != current.strings[i]) {
             dynamic_cast<KnobStringBase*>(knob.get())->setValue(values.strings[i], ViewSpec::all(), (int)i);
@@ -1364,6 +1388,22 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                 }
             });
         }
+        // The Project default entries name the project's viewer display and view, which a viewer following them shows.
+        const char* const projectKnobNames[] = { "viewerDisplay", "viewerView" };
+        for (const char* knobName : projectKnobNames) {
+            KnobIPtr knob = project ? project->getKnobByName(knobName) : KnobIPtr();
+            KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+            if (handler) {
+                QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
+                    // Closing a project resets these knobs after its nodes are gone, while the tab waits for its deferred deletion.
+                    ProjectPtr p = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
+                    if (p && _imp->viewerNode && !p->isLoadingProject() && !p->isProjectClosing()) {
+                        _imp->viewerNode->onProjectDisplayTransformChanged();
+                        refreshDisplayTransformMenus();
+                    }
+                });
+            }
+        }
     }
 
     // The toolbar shows the viewer node's knobs, and follows them whoever sets them.
@@ -1527,13 +1567,13 @@ ViewerTab::refreshSceneDisplayTransform()
     ProjectPtr project = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
     if (colorManagement) {
-        // The look is left out: Hydra's OpenColorIO 2 path sets the look name as the display
-        // (v26.08 hdx/colorCorrectionTask.cpp), which would break the whole transform.
         getDisplayTransform(&transform.display, &transform.view, nullptr);
         transform.config = colorManagement->getConfig();
         transform.colorSpace = project->getWorkingColorSpace();
     }
     if (_imp->viewerNode) {
+        // As the 2D viewer takes it: a look the config does not list is none.
+        _imp->viewerNode->getResolvedDisplayTransform(nullptr, nullptr, &transform.look);
         transform.gain = _imp->viewerNode->getGain();
         transform.gamma = _imp->viewerNode->getGamma();
     }
@@ -1716,13 +1756,7 @@ ViewerTab::refreshWipeAndRoIFromKnobs()
     _imp->viewer->setWipeControls(center, _imp->viewerValue<double>(kViewerParamWipeAmount, 1.),
                                   _imp->viewerValue<double>(kViewerParamWipeAngle, 0.));
 
-    const double width = _imp->viewerValue<double>(kViewerParamUserRoISize, 0., 0);
-    const double height = _imp->viewerValue<double>(kViewerParamUserRoISize, 0., 1);
-    if ((width > 0.) && (height > 0.)) {
-        const double x1 = _imp->viewerValue<double>(kViewerParamUserRoIBottomLeft, 0., 0);
-        const double y1 = _imp->viewerValue<double>(kViewerParamUserRoIBottomLeft, 0., 1);
-        _imp->viewer->setUserRoI(RectD(x1, y1, x1 + width, y1 + height));
-    }
+    _imp->viewer->setUserRoI(_imp->viewer->getUserRegionOfInterest());
 
     const bool roiEnabled = _imp->viewerValue<bool>(kViewerParamEnableUserRoI, false);
     {

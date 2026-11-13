@@ -1375,7 +1375,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
 {
     static const std::set<std::string> processAllLayers = {
         // Transform and distortion
-        "net.sf.openfx.DirBlur",
         "net.sf.openfx.Card3D",
         "net.sf.openfx.SpriteSheet",
         "fr.inria.openfx.OIIOResize",
@@ -1390,14 +1389,9 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         // Time
         "net.sf.openfx.Deinterlace",
         // Filter
-        "net.sf.cimg.CImgMedian",
         "net.sf.cimg.CImgErodeSmooth",
-        "net.sf.cimg.CImgBilateral",
-        "net.sf.cimg.CImgBilateralGuided",
-        "net.sf.cimg.CImgGuided",
         "net.sf.cimg.CImgDenoise",
         "net.sf.cimg.CImgSmooth",
-        "net.sf.cimg.CImgRollingGuidance",
         "net.sf.cimg.CImgSharpenInvDiff",
         "net.sf.cimg.CImgSharpenShock",
         "eu.cimg.Inpaint",
@@ -1405,7 +1399,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "eu.cimg.Distance",
         "eu.cimg.CImgMatrix3x3",
         "eu.cimg.CImgMatrix5x5",
-        "net.sf.openfx.GodRays",
         "net.fxarena.openfx.Oilpaint",
         "net.fxarena.openfx.Charcoal",
         "net.fxarena.openfx.Edges",

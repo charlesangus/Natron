@@ -28,8 +28,10 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <unordered_map>
 
 #include <QDebug>
 
@@ -62,6 +64,8 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
                                      std::list<std::pair<std::string, NodeGuiPtr> > *newNodes)
 {
     if ( !clipboard.isEmpty() ) {
+        std::optional<NodeRefreshBatch> refreshBatch;
+        refreshBatch.emplace(_publicInterface);
         double xmax = std::numeric_limits<double>::lowest();
         double xmin = std::numeric_limits<double>::max();
         double ymin = std::numeric_limits<double>::max();
@@ -99,28 +103,35 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         std::map<std::string, std::string> oldNewScriptNamesMapping;
         {
             CreatingNodeTreeFlag_RAII createNodeTree( _publicInterface->getGui()->getApp() );
+            const NodeCollection::NamingBatch namingBatch(group.lock());
+            const NodeStackingBatch stackingBatch(_publicInterface);
             const std::list<Serialization::NodeSerializationPtr>& internalNodesClipBoard = clipboard.nodes;
             std::list<Serialization::NodeSerializationPtr>::const_iterator itOther = internalNodesClipBoard.begin();
             std::list<NodePtr>::const_iterator itSource = clipboard.sourceNodes.begin();
-            for (; itOther != internalNodesClipBoard.end(); ++itOther) {
-                NodePtr sourceNode;
-                if (itSource != clipboard.sourceNodes.end()) {
-                    sourceNode = *itSource;
-                    ++itSource;
-                }
-                const std::string& oldScriptName = (*itOther)->scriptName;
-                NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), 0, &oldNewScriptNamesMapping);
+            {
+                // Closed before the connections and links below, which read the pasted nodes' Python
+                // variables.
+                const Node::PythonDeclarationBatch pythonDeclarationBatch;
+                for (; itOther != internalNodesClipBoard.end(); ++itOther) {
+                    NodePtr sourceNode;
+                    if (itSource != clipboard.sourceNodes.end()) {
+                        sourceNode = *itSource;
+                        ++itSource;
+                    }
+                    const std::string& oldScriptName = (*itOther)->scriptName;
+                    NodeGuiPtr node = pasteNode(*itOther, sourceNode, offset, group.lock(), std::string(), 0, &oldNewScriptNamesMapping);
 
-                if (!node) {
-                    missingNodePlugins.insert((*itOther)->pluginID);
-                    continue;
-                }
-                newNodes->push_back( std::make_pair(oldScriptName, node) );
-                newNodesList.push_back(node);
-                newNodesMap.push_back( std::make_pair( *itOther, node->getNode() ) );
+                    if (!node) {
+                        missingNodePlugins.insert((*itOther)->pluginID);
+                        continue;
+                    }
+                    newNodes->push_back(std::make_pair(oldScriptName, node));
+                    newNodesList.push_back(node);
+                    newNodesMap.push_back(std::make_pair(*itOther, node->getNode()));
 
-                const std::string& newScriptName = node->getNode()->getScriptName();
-                oldNewScriptNamesMapping[oldScriptName] = newScriptName;
+                    const std::string& newScriptName = node->getNode()->getScriptName();
+                    oldNewScriptNamesMapping[oldScriptName] = newScriptName;
+                }
             }
             if (internalNodesClipBoard.size() != newNodes->size()) {
                 std::ostringstream message;
@@ -158,11 +169,26 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         }
 
         if (newNodesList.size() > 1) {
-            ///Only compute datas if we're pasting more than 1 node
-            _publicInterface->getGui()->getApp()->getProject()->forceComputeInputDependentDataOnAllTrees();
+            // Only what is downstream of a pasted node can depend on it, and the batch reaches that
+            // from the pasted nodes, so a paste costs what was pasted, whatever the project's size.
+            NodesList pasted;
+            for (NodesGuiList::const_iterator it = newNodesList.begin(); it != newNodesList.end(); ++it) {
+                const NodePtr& node = (*it)->getNode();
+                pasted.push_back(node);
+                if (NodeGroup* isGroup = dynamic_cast<NodeGroup*>(node->getEffectInstance().get())) {
+                    isGroup->getNodes_recursive(pasted, true);
+                }
+            }
+            Node::InputEditBatch batch(_publicInterface->getGui()->getApp());
+            for (NodesList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+                (*it)->refreshInputRelatedDataAfterInputChange();
+            }
         } else if (newNodesList.size() == 1) {
             newNodesList.front()->getNode()->getEffectInstance()->refreshMetadataSideEffects();
         }
+
+        // The data kinds the edges are coloured by are final once the metadata is refreshed.
+        refreshBatch.reset();
 
         // Now that meta-datas are refreshed, compute preview
         for (NodesGuiList::const_iterator it = newNodesList.begin(); it!=newNodesList.end(); ++it) {
@@ -174,19 +200,6 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
         }
     }
 } // pasteNodesInternal
-
-// Trim underscore followed by digits at the end of baseName (see #732).
-static
-void trimNumber(std::string &baseName)
-{
-    std::size_t found_underscore = baseName.rfind('_');
-    if (found_underscore != std::string::npos && found_underscore != (baseName.size() - 1)) {
-        std::size_t found_nondigit = baseName.find_last_not_of("0123456789");
-        if (found_nondigit == found_underscore) {
-            baseName.erase(found_underscore);
-        }
-    }
-}
 
 NodeGuiPtr
 NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalSerialization,
@@ -223,30 +236,10 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
         // We pasted the node in the same group, give it another label.
         // If the label is available, use it as is.
         // Else look for a similar name by adding a (different) number suffix.
-        std::string name = internalSerialization->label;
-        if ( grp->checkIfNodeLabelExists( name, n.get() ) ) {
-            std::string baseName = name;
-            trimNumber(baseName);
-            int no = 1;
-            do {
-                name = baseName;
-                if (no > 1) {
-                    name += '_';
-                    std::stringstream ss;
-                    ss << no;
-                    name += ss.str();
-                }
-                ++no;
-            } while ( grp->checkIfNodeLabelExists( name, n.get() ) );
-        }
-        n->setLabel(name);
+        n->setLabel(grp->findAvailableNodeName(internalSerialization->label, true, n.get()));
     } else {
         //If we paste the node in a different graph, it can keep its scriptname/label
     }
-
-    //All nodes that are reachable via expressions
-    NodesList allNodes;
-    _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
 
     if (internalSerialization->layout.hasPosition && !offset.isNull()) {
         double x, y;
@@ -293,6 +286,11 @@ NodeGraphPrivate::pasteNode(const Serialization::NodeSerializationPtr& internalS
                 sourceCollection = sourceNode->getGroup();
             }
         }
+        // All nodes that are reachable via expressions
+        NodesList allNodes;
+        _publicInterface->getGui()->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
+
+        const NodeCollection::NamingBatch namingBatch(collection);
         std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>> newNodesMap;
         std::list<std::pair<std::string, NodeGuiPtr>> newNodes;
         for (std::list<Serialization::NodeSerializationPtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
@@ -330,6 +328,13 @@ NodeGraphPrivate::restoreConnections(const std::list<Serialization::NodeSerializ
     ///For all nodes restore its connections
     std::list<Serialization::NodeSerializationPtr>::const_iterator itSer = serializations.begin();
 
+    // The first new node with each script-name.
+    std::unordered_map<std::string, NodePtr> newNodesByName;
+    for (std::list<std::pair<std::string, NodeGuiPtr>>::const_iterator it = newNodes.begin(); it != newNodes.end(); ++it) {
+        NodePtr node = it->second->getNode();
+        newNodesByName.insert(std::make_pair(node->getScriptName(), node));
+    }
+
     assert( serializations.size() == newNodes.size() );
     for (std::list<std::pair<std::string, NodeGuiPtr> >::const_iterator it = newNodes.begin();
          it != newNodes.end(); ++it, ++itSer) {
@@ -355,12 +360,9 @@ NodeGraphPrivate::restoreConnections(const std::list<Serialization::NodeSerializ
 
             ///find a node  containing the same name. It should not match exactly because there's already
             /// the "-copy" that was added to its name
-            for (std::list<std::pair<std::string, NodeGuiPtr> >::const_iterator it3 = newNodes.begin();
-                 it3 != newNodes.end(); ++it3) {
-                if (it3->second->getNode()->getScriptName() == inputScriptName) {
-                    NodeCollection::connectNodes( index, it3->second->getNode(), it->second->getNode() );
-                    break;
-                }
+            std::unordered_map<std::string, NodePtr>::const_iterator foundInput = newNodesByName.find(inputScriptName);
+            if (foundInput != newNodesByName.end()) {
+                NodeCollection::connectNodes(index, foundInput->second, it->second->getNode());
             }
         }
     }

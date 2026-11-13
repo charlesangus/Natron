@@ -972,6 +972,9 @@ Param::_addAsDependencyOf(int fromExprDimension,
     KnobIPtr expressionKnob = param->_knob.lock();
     KnobIPtr getValueCallerKnob = _knob.lock();
 
+    if (!expressionKnob || !getValueCallerKnob) {
+        return;
+    }
     if ( (fromExprDimension < 0) || ( fromExprDimension >= expressionKnob->getDimension() ) ) {
         return;
     }

@@ -86,7 +86,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QScrollArea, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -362,6 +362,9 @@ try:
             return None
         if hasattr(p, "getLayer"):
             return p.getLayer()
+        if name in ("display", "view", "look"):
+            option = str(p.getOption(p.get()))
+            return "" if option in ("projectDefault", "none") else option
         v = p.get()
         if hasattr(v, "x") and hasattr(v, "y"):
             return (v.x, v.y)
@@ -757,8 +760,94 @@ try:
         ok = yield ("until", lambda: abs((spin_value(fps_box(V1)) or 0.0) - 12.0) < 0.01, POLL_TIMEOUT_S)
         check(ok, "Viewer1's fps box shows the panel's 12 (%r)" % (spin_value(fps_box(V1)),))
         check(abs((knob_value(viewer2, "desiredFps") or 0.0) - 12.0) > 1e-6, "Viewer2's Desired Fps did not move")
+
+        display1 = widget_of(V1, ("ComboBox",), "display device")
+        require(display1 is not None, "found Viewer1's Display menu")
+        toolbar_displays = combo_items(display1)
+        panel_display = None
+        for c in children_of(panel, ("ComboBox",)):
+            items = combo_items(c)
+            if items and items[0].startswith("Project default") and items == toolbar_displays:
+                panel_display = c
+        check(toolbar_displays and toolbar_displays[0].startswith("Project default"),
+              "the toolbar's Display menu starts with the Project default entry (%r)" % (toolbar_displays,))
+        check(panel_display is not None, "the panel's Display lists the same choices as the toolbar's, Project default first "
+              "(toolbar %r, panel menus %r)" % (toolbar_displays, [combo_items(c) for c in children_of(panel, ("ComboBox",))]))
+        if panel_display is not None:
+            area = panel_display.parentWidget()
+            while area is not None and not area.inherits("QScrollArea"):
+                area = area.parentWidget()
+            if isinstance(area, QScrollArea):
+                area.ensureWidgetVisible(panel_display, 50, 200)
+            else:
+                report("NOTE the panel's Display menu has no scroll area to bring it into view")
+            yield ("sleep", SETTLE_MS)
+        gt.shot("m164-viewer-panel-dropdowns.png")
+        others = [d for d in toolbar_displays[1:] if d != combo_current(display1)]
+        if panel_display is not None and others:
+            set_combo_index(panel_display, toolbar_displays.index(others[0]))
+            ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == others[0])
+            check(ok, "choosing %r in the panel's Display sets the knob (got %r)" % (others[0], knob_value(viewer1, "display")))
+            ok = yield ("until", lambda: combo_current(display1) == others[0], POLL_TIMEOUT_S)
+            check(ok, "Viewer1's toolbar Display follows the panel (shows %r)" % (combo_current(display1),))
+            view_items = combo_items(widget_of(V1, ("ComboBox",), "How the image is rendered"))
+            panel_views = [combo_items(c) for c in children_of(panel, ("ComboBox",))
+                           if combo_items(c) and combo_items(c)[0].startswith("Project default") and c is not panel_display]
+            check(view_items in panel_views, "the panel's View lists the toolbar's views of the new display (toolbar %r, panel %r)"
+                  % (view_items, panel_views))
+
+            check(view_items and view_items[0].startswith("Project default"),
+                  "the toolbar's View menu starts with the Project default entry (%r)" % (view_items,))
+            set_combo_index(display1, 0)
+            ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == "")
+            check(ok, "choosing Project default in the toolbar's Display makes the knob follow the project (got %r)"
+                  % (knob_value(viewer1, "display"),))
+            check(str(viewer1.getParam("display").getOption(viewer1.getParam("display").get())) == "projectDefault",
+                  "the toolbar's Project default is the panel's Project default entry")
+            ok = yield ("until", lambda: combo_current(display1).startswith("Project default"), POLL_TIMEOUT_S)
+            check(ok, "Viewer1's toolbar Display shows Project default (shows %r)" % (combo_current(display1),))
+            require(trigger("undo"), "undo the toolbar's Project default choice")
+            ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == others[0])
+            check(ok, "undo restores the display %r (got %r)" % (others[0], knob_value(viewer1, "display")))
+            require(trigger("redo"), "redo the toolbar's Project default choice")
+            ok = yield from knobs_until(lambda: knob_value(viewer1, "display") == "")
+            check(ok, "redo makes the display follow the project again (got %r)" % (knob_value(viewer1, "display"),))
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
+
+        gt.section("python-roi")
+        roi_off = yield from settle_px(V2)
+        require(roi_off is not None, "Viewer2 settles before its RoI is turned on")
+        require(knob_value(viewer2, "enableRegionOfInterest") is False, "Viewer2's RoI starts off")
+        viewer2.getParam("enableRegionOfInterest").set(True)
+        ok = yield from knobs_until(lambda: all(v > 0 for v in (knob_value(viewer2, "userRoISize") or (0.0, 0.0))))
+        check(ok, "turning the RoI on from Python fills its size straight away (got %r)" % (roi_of(viewer2),))
+        filled = roi_of(viewer2)
+        roi_on = yield from settle_px(V2)
+        require(roi_on is not None, "Viewer2 settles with the RoI the toggle filled in")
+        report("NOTE the filled RoI %r shows %r, the whole image %r" % (filled, roi_on, roi_off))
+        viewer2.getParam("userRoIBottomLeft").set(-FAR, -FAR)
+        viewer2.getParam("userRoISize").set(2 * FAR, 2 * FAR)
+        ok = yield from px_until(V2, lambda p: same_px(p, roi_off))
+        check(ok, "an RoI set from Python to cover everything shows the whole image (screen %r, want %r)"
+              % (viewer_px(V2), roi_off))
+        viewer2.getParam("userRoISize").set(0.0, 2 * FAR)
+        ok = yield from px_until(V2, lambda p: p is not None and not same_px(p, roi_off))
+        empty = viewer_px(V2)
+        check(ok, "a zero-width RoI set from Python shows none of the image, not the RoI drawn before it (screen %r)"
+              % (empty,))
+        viewer2.getParam("userRoISize").set(1.0, 1.0)
+        ok = yield from px_until(V2, lambda p: same_px(p, empty))
+        check(ok, "shrinking the RoI from Python to a far corner re-renders without the image (screen %r, want %r)"
+              % (viewer_px(V2), empty))
+        viewer2.getParam("userRoIBottomLeft").set(*filled["userRoIBottomLeft"])
+        viewer2.getParam("userRoISize").set(*filled["userRoISize"])
+        ok = yield from px_until(V2, lambda p: same_px(p, roi_on))
+        check(ok, "the RoI the toggle rendered with is the one it filled in: setting those values again shows the same "
+              "screen (screen %r, want %r)" % (viewer_px(V2), roi_on))
+        viewer2.getParam("enableRegionOfInterest").set(False)
+        ok = yield from px_until(V2, lambda p: same_px(p, roi_off))
+        check(ok, "turning the RoI off from Python shows the whole image again")
 
         gt.section("save-reload")
         saved1 = snap(viewer1)

@@ -368,12 +368,17 @@ NativeRead::initializeKnobs()
     _inputSpace.create(this, page, inputSpace, [this]() { return automaticInputSpace(); });
     AppInstancePtr app = getApp();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    if (project) {
-        // A render thread can drop the last reference and destroy this effect while the project emits on the
-        // main thread, before ~QObject has disconnected the slot, so the slot holds the effect alive or skips.
-        std::weak_ptr<EffectInstance> self = weak_from_this();
-        QObject::connect(project.get(), &Project::fileColorSpacesChanged, this, [this, self]() {
-            if (EffectInstancePtr alive = self.lock()) {
+    NodePtr node = getNode();
+    if (project && node) {
+        // A render can keep this effect alive after its node is destroyed, and refreshing the menu then
+        // reaches the node, so the node scopes the connection. A render thread may also drop the last
+        // reference while the project emits on the main thread, so the slot holds the node, and through
+        // it this effect, or skips once the node no longer holds this effect.
+        NodeWPtr weakNode = node;
+        QObject::connect(project.get(), &Project::fileColorSpacesChanged, node.get(), [this, weakNode]() {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
                 _inputSpace.sourceChanged();
             }
         });

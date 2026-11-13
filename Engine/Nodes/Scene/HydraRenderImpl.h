@@ -130,7 +130,9 @@ struct Request {
     // The render delegate's plug-in id. One that is not installed or cannot render here fails the
     // render with an error naming it, before any engine is made: there is no fallback.
     std::string renderer = kRenderDelegateStormId;
-    // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
+    // Polled on the calling thread while any delegate renders; true cancels the render, Storm's
+    // between its passes, the others' at once. A request without one renders until its delegate
+    // converges, however long that takes.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
     // calling task; any count when 0. Cycles and MoonRay take it when an engine is made. Every

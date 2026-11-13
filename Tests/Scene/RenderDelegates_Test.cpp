@@ -27,12 +27,26 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
+#include <pxr/base/plug/registry.h>
+
+#include "CyclesTestUtils.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/ScenePayload.h"
@@ -43,7 +57,135 @@ NATRON_NAMESPACE_USING
 // with a library that does not exist.
 namespace {
 const char* const kStubId = "NatronTestStubRendererPlugin";
+
+// The dev image's /usr/local glvnd lists only NVIDIA; the system directory holds Mesa. Set before
+// the first EGL use, as the render thread's context is made once.
+void
+pointEGLAtMesa()
+{
+    if (!std::getenv("__EGL_VENDOR_LIBRARY_FILENAMES") && !std::getenv("__EGL_VENDOR_LIBRARY_DIRS") && (::access("/usr/share/glvnd/egl_vendor.d", F_OK) == 0) && (::access("/usr/local/share/glvnd/egl_vendor.d", F_OK) == 0)) {
+        ::setenv("__EGL_VENDOR_LIBRARY_DIRS", "/usr/share/glvnd/egl_vendor.d", 1);
+    }
 }
+
+// True when the test must stop: no 4.5 context could be made, which fails the test only under
+// NATRON_TEST_REQUIRE_GL=1.
+bool
+skipWithoutGL()
+{
+    pointEGLAtMesa();
+    std::string error;
+    if (!HydraRender::contextDescription(&error).empty()) {
+        return false;
+    }
+    const char* require = std::getenv("NATRON_TEST_REQUIRE_GL");
+    if (require && (std::strcmp(require, "1") == 0)) {
+        ADD_FAILURE() << error << " (NATRON_TEST_REQUIRE_GL=1)";
+
+        return true;
+    }
+    std::printf("[  SKIPPED ] Storm: %s\n", error.c_str());
+
+    return true;
+}
+
+// The bundled gtest has no GTEST_SKIP, so the test returns early on false;
+// NATRON_TEST_REQUIRE_MOONRAY=1 turns that skip into a failure.
+bool
+moonRayOrSkip()
+{
+    if (PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hd_moonray")) {
+        return true;
+    }
+    const char* reason = "OpenUSD has no hd_moonray plug-in registered; this build image predates the "
+                         "MoonRay render delegate (tools/ci/local/build-moonray.sh), or the CPU lacks AVX2";
+    const char* require = std::getenv("NATRON_TEST_REQUIRE_MOONRAY");
+    if (require && (std::strcmp(require, "1") == 0)) {
+        ADD_FAILURE() << "NATRON_TEST_REQUIRE_MOONRAY=1 but " << reason;
+    } else {
+        std::printf("[  SKIPPED ] %s\n", reason);
+    }
+
+    return false;
+}
+
+// A request for the reference scene through its camera, size x size, with renderer. False after a
+// gtest failure.
+bool
+referenceRequest(const void* owner,
+                 const std::string& renderer,
+                 int size,
+                 HydraRender::Request* request)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda");
+    if (!stage) {
+        ADD_FAILURE() << "the reference scene did not open";
+
+        return false;
+    }
+    request->owner = owner;
+    request->scene = SceneOps::appendLayer(ScenePayload(), stage->GetRootLayer(), 1);
+    request->time = PXR_NS::UsdTimeCode(1.);
+    request->width = size;
+    request->height = size;
+    request->renderer = renderer;
+    std::string error;
+    if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath("/World/Cam"), request->time, 1., HydraRender::eFitModeFill, &request->frustum, &error)) {
+        ADD_FAILURE() << error;
+
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Renders request offline and aborts it once abortAtPass of its delegate's Render() calls have
+ * begun, each held passMs first by the render fault hook so that the abort lands inside a pass.
+ * Expects the render to be cancelled within a second of the abort, the delegate's engine torn down
+ * by then, and prints the time it took.
+ **/
+void
+expectAbortReturnsPromptly(const char* label,
+                           HydraRender::Request request,
+                           int abortAtPass,
+                           int passMs)
+{
+    typedef std::chrono::steady_clock Clock;
+    std::atomic<int> passes(0);
+    RenderDelegates::setRenderFaultHook([&passes, passMs]() {
+        ++passes;
+        if (passMs > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(passMs));
+        }
+    });
+    Clock::time_point abortedAt;
+    bool abortSeen = false;
+    int passesAtAbort = 0;
+    request.aborted = [&]() {
+        if (!abortSeen && (passes.load() >= abortAtPass)) {
+            abortSeen = true;
+            abortedAt = Clock::now();
+            passesAtAbort = passes.load();
+        }
+
+        return abortSeen;
+    };
+    HydraRender::Result result;
+    std::string error;
+    const bool rendered = HydraRender::render(request, &result, &error);
+    const Clock::time_point returnedAt = Clock::now();
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_FALSE(rendered) << label << " finished a render that was aborted";
+    ASSERT_TRUE(abortSeen) << label << " ended before it was aborted: " << error;
+    EXPECT_NE(std::string::npos, error.find("cancelled")) << error;
+    const double seconds = std::chrono::duration<double>(returnedAt - abortedAt).count();
+    std::printf("[ ABORT    ] %s: render() returned %.3f s after the abort, its engine torn down\n", label, seconds);
+    EXPECT_LT(seconds, 1.) << label;
+    EXPECT_LE(passes.load(), passesAtAbort + 1) << label << " began passes after the abort";
+}
+} // anon namespace
 
 TEST(RenderDelegates, StormIsListedFirstAndAvailable)
 {
@@ -113,4 +255,54 @@ TEST(RenderDelegates, RenderingWithAnUnavailableRendererIsAnErrorAndMakesNoEngin
     EXPECT_FALSE(HydraRender::renderWindow(request, window, &pixels, nullptr, &error));
     EXPECT_NE(std::string::npos, error.find(kStubId)) << error;
     EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+}
+
+// Storm renders up to several passes on its GL thread; an abort inside one stops it before the next.
+TEST(RenderDelegates, AbortingAStormRenderMidPassReturnsWithinASecond)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(referenceRequest(&owner, kRenderDelegateStormId, 64, &request));
+    expectAbortReturnsPromptly("Storm", request, 1, 400);
+    HydraRender::release(&owner);
+}
+
+// Cycles has no stop: the engine is destroyed on its render thread, which cancels the session and
+// joins its threads, before render() returns.
+TEST(RenderDelegates, AbortingACyclesRenderMidPassReturnsWithinASecond)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, CyclesTestUtils::fixedSampling(1000000));
+    static const int owner = 0;
+    HydraRender::Request request;
+    if (referenceRequest(&owner, kRenderDelegateCyclesId, 64, &request)) {
+        expectAbortReturnsPromptly("Cycles", request, 2, 0);
+    }
+    HydraRender::release(&owner);
+    EXPECT_EQ(0u, HydraRender::getCpuEngineCount());
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
+}
+
+// MoonRay has no stop either: destroying the engine ends its Arras session's render process.
+TEST(RenderDelegates, AbortingAMoonRayRenderMidPassReturnsWithinASecond)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["moonray:sceneVariable:pixel_samples"] = PXR_NS::VtValue(4096);
+    HydraRender::setRendererSettings(kMoonRayRendererId, settings);
+    static const int owner = 0;
+    HydraRender::Request request;
+    if (referenceRequest(&owner, kMoonRayRendererId, 64, &request)) {
+        expectAbortReturnsPromptly("MoonRay", request, 2, 0);
+    }
+    HydraRender::release(&owner);
+    EXPECT_EQ(0u, HydraRender::getCpuEngineCount());
+    HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
 }

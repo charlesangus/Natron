@@ -135,9 +135,6 @@ renderGuarded(UsdImagingGLEngine* engine,
 // How long a render of another delegate waits between its passes, polling for convergence.
 const std::chrono::milliseconds kConvergencePoll(10);
 
-// How long a render with no abort callback may take to converge.
-const std::chrono::seconds kUnabortableRenderLimit(600);
-
 // The GPU memory the engines may hold together by default.
 const std::size_t kDefaultMemoryBudget = (std::size_t)2 << 30;
 
@@ -682,12 +679,10 @@ public:
      * *threads. While another holder's sessions live under another count it waits for that holder
      * to drop them at its next boundary, letting barrier writes through, until cancelled.
      **/
-    bool openCyclesSession(const HydraRender::Request& request,
-                           const std::atomic<bool>* cancel,
+    bool openCyclesSession(const std::atomic<bool>* cancel,
                            int* threads,
                            std::string* error)
     {
-        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
         for (;;) {
             dropCyclesEnginesUnlessMadeFor(CyclesThreads::instance().count());
             if (CyclesThreads::instance().open(threads)) {
@@ -697,11 +692,6 @@ public:
             }
             if (cancel && cancel->load()) {
                 *error = "The Cycles render was cancelled.";
-
-                return false;
-            }
-            if (!request.aborted && (std::chrono::steady_clock::now() - started > kUnabortableRenderLimit)) {
-                *error = "Cycles' threads were not released by the other renders within " + std::to_string(kUnabortableRenderLimit.count()) + " seconds.";
 
                 return false;
             }
@@ -736,8 +726,8 @@ public:
     }
 
     // Renders request with its owner's engine, or reuses the engine's last render of the same
-    // request; null with *error set on failure. cancel, when set, stops a render of a delegate
-    // other than Storm between its passes.
+    // request; null with *error set on failure. cancel, when set, stops the render before it
+    // starts and between its passes.
     EngineEntry* renderEngine(const HydraRender::Request& request,
                               const std::atomic<bool>* cancel,
                               std::string* error);
@@ -1058,6 +1048,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                            const std::atomic<bool>* cancel,
                            std::string* error)
 {
+    if (cancel && cancel->load()) {
+        *error = "The render was cancelled.";
+
+        return nullptr;
+    }
     if (_gl && !ensureContext(error)) {
         return nullptr;
     }
@@ -1128,7 +1123,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         MoonRayAovs::registerSceneIndices();
         LiveTextureSceneIndex::registerSceneIndices();
         int threads = 0;
-        if (cycles && !openCyclesSession(request, cancel, &threads, error)) {
+        if (cycles && !openCyclesSession(cancel, &threads, error)) {
             return nullptr;
         }
         std::string startError;
@@ -1236,6 +1231,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     std::string renderFailure;
     if (_gl) {
         for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
+            if (cancel && cancel->load()) {
+                break;
+            }
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
                 break;
             }
@@ -1244,6 +1242,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             }
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (renderFailure.empty() && cancel && cancel->load()) {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+            // Unlike the path tracers' engines, Storm's runs nothing between passes and takes no
+            // live texture through shared memory, so the next render goes on with it.
+            return nullptr;
+        }
     } else {
         // A path tracer renders on threads of its own and converges when it is done; each Render()
         // syncs the stage's changes into it. MoonRay's log is taken off the console for the
@@ -1252,8 +1256,6 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         if (MoonRayAovs::isMoonRay(renderer)) {
             log.reset(new MoonRayAovs::LogCapture);
         }
-        // Without an abort callback nothing could stop a delegate that never converges.
-        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
         for (;;) {
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
                 break;
@@ -1267,13 +1269,6 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             const std::string failure = log ? MoonRayAovs::sessionFailure(engine->GetRenderStats(), log->notices()) : std::string();
             if (!failure.empty()) {
                 *error = failure;
-                entry.engine.reset();
-                entry.rendered = false;
-
-                return nullptr;
-            }
-            if (!request.aborted && (std::chrono::steady_clock::now() - started > kUnabortableRenderLimit)) {
-                *error = "The " + entry.rendererName + " render did not converge within " + std::to_string(kUnabortableRenderLimit.count()) + " seconds.";
                 entry.engine.reset();
                 entry.rendered = false;
 
@@ -2021,6 +2016,28 @@ namespace {
         return storm ? &RenderThread::storm() : &RenderThread::cpu();
     }
 
+    /**
+     * Polls request's abort callback into *cancel while the render thread runs the request, and
+     * once now, so a request aborted while it was queued renders nothing. The callback runs on the
+     * calling thread only: Natron's abort state is the calling render's, held in its thread.
+     **/
+    std::function<void()>
+    pollAborted(const Request& request,
+                std::atomic<bool>* cancel)
+    {
+        if (!request.aborted) {
+            return std::function<void()>();
+        }
+        const std::function<void()> poll = [&request, cancel]() {
+            if (request.aborted()) {
+                *cancel = true;
+            }
+        };
+        poll();
+
+        return poll;
+    }
+
     // Waits for thread's queue to drain, then reads how many engines it holds.
     std::size_t
     drainedEngineCount(RenderThread& thread)
@@ -2053,14 +2070,7 @@ render(const Request& request,
     RenderThread& thread = *routed;
     bool ok = false;
     std::atomic<bool> cancel(false);
-    std::function<void()> whileWaiting;
-    if (request.aborted && !thread.usesGl()) {
-        whileWaiting = [&request, &cancel]() {
-            if (request.aborted()) {
-                cancel = true;
-            }
-        };
-    }
+    const std::function<void()> whileWaiting = pollAborted(request, &cancel);
     const bool ran = thread.runAndWait([&]() {
         const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
         try {
@@ -2097,9 +2107,11 @@ withRender(const Request& request,
     }
     bool ok = false;
     RenderThread& thread = *routed;
+    std::atomic<bool> cancel(false);
+    const std::function<void()> whileWaiting = pollAborted(request, &cancel);
     const bool ran = thread.runAndWait([&]() {
         try {
-            EngineEntry* entry = thread.renderEngine(request, nullptr, error);
+            EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             if (entry) {
                 EntryAccess access(thread, *entry);
                 ok = job(access, error);
@@ -2109,7 +2121,7 @@ withRender(const Request& request,
             ok = false;
         }
     },
-                                       error);
+                                       error, whileWaiting);
 
     return ran && ok;
 }
@@ -2164,14 +2176,7 @@ renderWindow(const Request& request,
     RenderThread& thread = *routed;
     bool ok = false;
     std::atomic<bool> cancel(false);
-    std::function<void()> whileWaiting;
-    if (request.aborted && !thread.usesGl()) {
-        whileWaiting = [&request, &cancel]() {
-            if (request.aborted()) {
-                cancel = true;
-            }
-        };
-    }
+    const std::function<void()> whileWaiting = pollAborted(request, &cancel);
     const bool ran = thread.runAndWait([&]() {
         const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
         try {

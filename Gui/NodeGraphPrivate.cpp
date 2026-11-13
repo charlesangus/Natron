@@ -92,7 +92,7 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _detailsVisible(false)
     , _deltaSinceMousePress(0, 0)
     , _hasMovedOnce(false)
-    , lastSelectedViewer(0)
+    , lastSelectedViewer()
     , isDoingPreviewRender(false)
     , autoScrollTimer()
     , refreshRenderStateTimer()

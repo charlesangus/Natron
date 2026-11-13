@@ -51,6 +51,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPainter>
 #include <QPen>
 #include <QPointF>
+#include <QPointer>
 #include <QRegion>
 #include <QStyleOptionGraphicsItem>
 #include <QTimer>
@@ -408,7 +409,9 @@ public:
     // the undo, Alt's snap-back and Escape all work from these rather than from one delta.
     std::map<NodeGuiPtr, QPointF> _dragPickupPositions;
     bool _hasMovedOnce;
-    ViewerTab* lastSelectedViewer;
+    // Weak because a Viewer destroyed outright has already dropped its node when its tab goes,
+    // so neither the tab removal nor the tab's destructor can tell which group's graph to clear.
+    QPointer<ViewerTab> lastSelectedViewer;
     QPixmap unlockIcon;
 
     /// True while the scene is rendered into the navigator thumbnail

@@ -474,10 +474,10 @@ namespace {
 } // anonymous namespace
 
 bool
-renderCamera(const UsdStageRefPtr& stage,
-             const CameraArgs& args,
-             CameraBuffers* buffers,
-             std::string* errorMessage)
+cameraFrustum(const UsdStageRefPtr& stage,
+              const CameraArgs& args,
+              GfFrustum* frustum,
+              std::string* errorMessage)
 {
     if ((args.width <= 0) || (args.height <= 0)) {
         *errorMessage = "The camera raster size is empty.";
@@ -492,21 +492,31 @@ renderCamera(const UsdStageRefPtr& stage,
             return false;
         }
         const double halfHeight = cam.viewHeight * 0.5;
-        GfFrustum frustum;
         GfMatrix4d cameraToWorld;
         for (int r = 0; r < 4; ++r) {
             cameraToWorld.SetRow(r, GfVec4d(cam.cameraToWorld[r * 4], cam.cameraToWorld[r * 4 + 1], cam.cameraToWorld[r * 4 + 2], cam.cameraToWorld[r * 4 + 3]));
         }
-        frustum.SetPositionAndRotationFromMatrix(cameraToWorld);
-        frustum.SetProjectionType(cam.orthographic ? GfFrustum::Orthographic : GfFrustum::Perspective);
-        frustum.SetWindow(GfRange2d(GfVec2d(-halfHeight * cam.aspect, -halfHeight), GfVec2d(halfHeight * cam.aspect, halfHeight)));
-        frustum.SetNearFar(GfRange1d(cam.nearClip, cam.farClip));
-        buffers->frustum = frustum;
-    } else {
-        const double aspect = args.width * args.pixelAspect / args.height;
-        if (!HydraRender::cameraFrustum(stage, args.cameraPath, args.time, aspect, args.fit, &buffers->frustum, errorMessage)) {
-            return false;
-        }
+        *frustum = GfFrustum();
+        frustum->SetPositionAndRotationFromMatrix(cameraToWorld);
+        frustum->SetProjectionType(cam.orthographic ? GfFrustum::Orthographic : GfFrustum::Perspective);
+        frustum->SetWindow(GfRange2d(GfVec2d(-halfHeight * cam.aspect, -halfHeight), GfVec2d(halfHeight * cam.aspect, halfHeight)));
+        frustum->SetNearFar(GfRange1d(cam.nearClip, cam.farClip));
+
+        return true;
+    }
+    const double aspect = args.width * args.pixelAspect / args.height;
+
+    return HydraRender::cameraFrustum(stage, args.cameraPath, args.time, aspect, args.fit, frustum, errorMessage);
+} // cameraFrustum
+
+bool
+renderCamera(const UsdStageRefPtr& stage,
+             const CameraArgs& args,
+             CameraBuffers* buffers,
+             std::string* errorMessage)
+{
+    if (!cameraFrustum(stage, args, &buffers->frustum, errorMessage)) {
+        return false;
     }
     const GfMatrix4d view = buffers->frustum.ComputeViewMatrix();
     const GfMatrix4d viewProjection = view * buffers->frustum.ComputeProjectionMatrix();

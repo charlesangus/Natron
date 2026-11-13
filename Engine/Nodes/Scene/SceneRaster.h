@@ -108,6 +108,16 @@ struct CameraBuffers {
 };
 
 /**
+ * @brief The frustum renderCamera draws args through: the explicit camera as it is, or the camera
+ * at args.cameraPath conformed per args.fit to width * pixelAspect / height. False, with
+ * *errorMessage set, on the same camera and size errors as renderCamera.
+ **/
+bool cameraFrustum(const PXR_NS::UsdStageRefPtr& stage,
+                   const CameraArgs& args,
+                   PXR_NS::GfFrustum* frustum,
+                   std::string* errorMessage) WARN_UNUSED_RETURN;
+
+/**
  * @brief Draws the meshes of args.prims as the camera at args.cameraPath sees them: a z-buffer of
  * depth, mesh and world position per pixel. Triangles are clipped to the camera's near and far
  * planes. False, with *errorMessage set, when there is no camera at the path, the explicit camera

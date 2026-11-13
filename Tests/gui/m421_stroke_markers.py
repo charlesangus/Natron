@@ -445,13 +445,13 @@ try:
         yield from expect(tag + ": two strokes and the Bezier selected", [1, 5, 12, 20], st)
         for name in (a, b):
             param_of(st, name, "opacity").setValueAtTime(0.5, ITEM_KEY_FRAME, 0)
-        bez.setOpacity(0.5, ITEM_KEY_FRAME)
+        param_of(st, st.bezier, "opacity").setValueAtTime(0.5, ITEM_KEY_FRAME, 0)
         yield from expect(tag + ": item opacity keyed at %d on both strokes and the Bezier" % ITEM_KEY_FRAME,
                           [1, 5, ITEM_KEY_FRAME, 12, 20], st)
         timeline_shot("m421-%s-timeline-item-knob-key.png" % tag)
         for name in (a, b):
             param_of(st, name, "opacity").removeAnimation(0)
-        bez.getOpacityParam().removeAnimation(0)
+        param_of(st, st.bezier, "opacity").removeAnimation(0)
         yield from expect(tag + ": item opacity keys removed", [1, 5, 12, 20], st)
         clear_selection(st)
         layer = st.ctx.createLayer()

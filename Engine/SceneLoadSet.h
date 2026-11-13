@@ -78,6 +78,9 @@ public:
     // No payload included.
     static SceneLoadSet none();
 
+    // Every payload included, named so a borrower that needs the whole scene says so.
+    static std::shared_ptr<const SceneLoadSet> everything();
+
     const std::vector<Entry>& getEntries() const;
 
     /**

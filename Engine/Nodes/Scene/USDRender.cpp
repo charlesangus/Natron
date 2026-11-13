@@ -345,7 +345,7 @@ USDRender::readActiveSettings(double time,
     }
     auto borrowStage = [active, error](const SceneLoadSetPtr& loadSet) {
         active->lease.release();
-        active->lease = loadSet ? SceneQueryPool::instance().borrow(active->scene, loadSet, error) : SceneQueryPool::instance().borrow(active->scene, error);
+        active->lease = SceneQueryPool::instance().borrow(active->scene, loadSet, error);
         active->stage = active->lease.getStage();
         if (!active->stage && error->empty()) {
             *error = tr("USD could not compose the input scene.").toStdString();
@@ -355,7 +355,8 @@ USDRender::readActiveSettings(double time,
     };
     const std::string chosenPrim = settingsPrimOverride();
     if (everything) {
-        if (!borrowStage(SceneLoadSetPtr())) {
+        // A render draws the whole scene.
+        if (!borrowStage(SceneLoadSet::everything())) {
             return false;
         }
     } else {
@@ -695,7 +696,8 @@ USDRender::deriveOutputMetadata(double time,
     if (!input || (input->evaluateScene(EvaluateSceneArgs(time, view), &scene, &error) != eRenderRoIRetCodeOk) || scene.isEmpty()) {
         return metadata;
     }
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+    // Built off the main thread for the render output, which has no viewer to take a set from.
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), &error);
     PXR_NS::UsdStageRefPtr stage = lease.getStage();
     if (!stage) {
         return metadata;

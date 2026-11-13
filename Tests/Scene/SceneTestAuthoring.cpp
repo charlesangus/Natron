@@ -165,7 +165,7 @@ sceneTestReadSourceValue(const ScenePayload& payload,
                          std::string* errorMessage)
 {
     *value = 0;
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, errorMessage);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), errorMessage);
     if (!lease.isValid()) {
         return false;
     }

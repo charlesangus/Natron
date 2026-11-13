@@ -613,7 +613,7 @@ TEST_F(SceneLoadSetCoverageTest, TheProbeCountsTheBuildingsOpenInTheProcess)
     }
     pool.releaseIdle();
     {
-        SceneQueryPool::Lease lease = pool.borrow(payload, &error);
+        SceneQueryPool::Lease lease = pool.borrow(payload, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
         EXPECT_EQ(6, city.openedBuildings());
     }

@@ -141,13 +141,6 @@ isSameLoadSet(const SceneLoadSetPtr& a,
 
 SceneQueryPool::Lease
 SceneQueryPool::borrow(const ScenePayload& payload,
-                       std::string* errorMessage)
-{
-    return borrow(payload, SceneLoadSetPtr(), errorMessage);
-}
-
-SceneQueryPool::Lease
-SceneQueryPool::borrow(const ScenePayload& payload,
                        const SceneLoadSetPtr& requested,
                        std::string* errorMessage)
 {

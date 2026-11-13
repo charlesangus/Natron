@@ -146,7 +146,7 @@ protected:
         EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
                   node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
             << error;
-        *lease = SceneQueryPool::instance().borrow(payload, &error);
+        *lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
         EXPECT_TRUE(lease->isValid()) << error;
 
         return lease->getStage();

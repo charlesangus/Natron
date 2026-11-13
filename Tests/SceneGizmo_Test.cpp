@@ -518,7 +518,7 @@ TEST_F(SceneGizmoDragTest, DraggingAnArrowSetsTranslateAsOneUndoableEdit)
               _transform->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
         << error;
     {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
         PXR_NS::UsdStageRefPtr stage = lease.getStage();
         ASSERT_TRUE(bool(stage)) << error;
         const PXR_NS::GfMatrix4d world = PXR_NS::UsdGeomXformable(stage->GetPrimAtPath(PXR_NS::SdfPath("/Thing"))).ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.));

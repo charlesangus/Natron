@@ -143,6 +143,12 @@ SceneLoadSet::none()
 }
 
 SceneLoadSetPtr
+SceneLoadSet::everything()
+{
+    return std::make_shared<const SceneLoadSet>();
+}
+
+SceneLoadSetPtr
 SceneLoadSet::withPaths(const SceneLoadSetPtr& base,
                         const std::vector<std::string>& paths)
 {

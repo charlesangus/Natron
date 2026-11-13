@@ -208,7 +208,7 @@ TEST_F(SceneIntegrationTest, ReferenceSceneThroughTheActionComposesWithItsBounds
               dot->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
         << error;
 
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
     ASSERT_TRUE(lease.isValid()) << error;
     PXR_NS::UsdStageRefPtr stage = lease.getStage();
     ASSERT_TRUE(bool(stage));
@@ -285,7 +285,7 @@ TEST_F(SceneIntegrationTest, CreatedPrimsGroupUnderTheRigNextToTheReadScene)
     EXPECT_EQ(SceneMetadata::eUpAxisY, payload.getMetadata().upAxis);
     EXPECT_EQ(std::string("World"), payload.getMetadata().defaultPrim);
 
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
     ASSERT_TRUE(lease.isValid()) << error;
     PXR_NS::UsdStageRefPtr stage = lease.getStage();
     ASSERT_TRUE(bool(stage));

@@ -61,6 +61,7 @@
 #include <QOpenGLContext>
 #include <QPainter>
 #include <QPointer>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QUndoCommand>
@@ -7402,6 +7403,13 @@ SceneViewport::pickwalk(PickwalkEnum direction)
             return;
         }
         const Usd_PrimFlagsPredicate predicate = childPredicate();
+        struct SiblingList {
+            std::vector<QString> paths;
+            QHash<QString, std::size_t> index;
+        };
+        std::map<SdfPath, SiblingList> siblingLists;
+        std::vector<QString> targets;
+        targets.reserve(std::size_t(selection.size()));
         for (const QString& path : selection) {
             QString target = path;
             const std::string pathString = path.toStdString();
@@ -7416,46 +7424,63 @@ SceneViewport::pickwalk(PickwalkEnum direction)
                     }
                     break;
                 case ePickwalkChild: {
-                    const UsdPrimSiblingRange children = prim.GetFilteredChildren(predicate);
-                    const QString last = remembered.value(path);
-                    QString first;
-                    bool lastListed = false;
-                    for (const UsdPrim& child : children) {
-                        const QString childPath = QString::fromStdString(child.GetPath().GetString());
-                        if (first.isEmpty()) {
-                            first = childPath;
-                        }
-                        if (childPath == last) {
-                            lastListed = true;
-                            break;
+                    const std::string last = remembered.value(path).toStdString();
+                    UsdPrim child;
+                    if (SdfPath::IsValidPathString(last)) {
+                        const SdfPath lastPath(last);
+                        if (lastPath.GetParentPath() == prim.GetPath()) {
+                            child = usdStage->GetPrimAtPath(lastPath);
                         }
                     }
-                    if (lastListed) {
-                        target = last;
-                    } else if (!first.isEmpty()) {
-                        target = first;
+                    if (!child || !predicate(child)) {
+                        const UsdPrimSiblingRange children = prim.GetFilteredChildren(predicate);
+                        child = children.empty() ? UsdPrim() : *children.begin();
+                    }
+                    if (child) {
+                        target = QString::fromStdString(child.GetPath().GetString());
                     }
                     break;
                 }
                 case ePickwalkPrevSibling:
                 case ePickwalkNextSibling: {
                     const UsdPrim container = parent ? parent : usdStage->GetPseudoRoot();
-                    std::vector<QString> siblings;
-                    for (const UsdPrim& sibling : container.GetFilteredChildren(predicate)) {
-                        siblings.push_back(QString::fromStdString(sibling.GetPath().GetString()));
+                    auto found = siblingLists.find(container.GetPath());
+                    if (found == siblingLists.end()) {
+                        SiblingList list;
+                        for (const UsdPrim& sibling : container.GetFilteredChildren(predicate)) {
+                            list.index.insert(QString::fromStdString(sibling.GetPath().GetString()), list.paths.size());
+                            list.paths.push_back(QString::fromStdString(sibling.GetPath().GetString()));
+                        }
+                        found = siblingLists.emplace(container.GetPath(), std::move(list)).first;
                     }
-                    const auto it = std::find(siblings.begin(), siblings.end(), path);
-                    if (it != siblings.end()) {
-                        const std::ptrdiff_t count = std::ptrdiff_t(siblings.size());
+                    const SiblingList& siblings = found->second;
+                    const auto it = siblings.index.constFind(path);
+                    if (it != siblings.index.constEnd()) {
+                        const std::ptrdiff_t count = std::ptrdiff_t(siblings.paths.size());
                         const std::ptrdiff_t step = (direction == ePickwalkNextSibling) ? 1 : -1;
-                        target = siblings[std::size_t((std::ptrdiff_t(it - siblings.begin()) + step + count) % count)];
+                        target = siblings.paths[std::size_t((std::ptrdiff_t(it.value()) + step + count) % count)];
                     }
                     break;
                 }
                 }
             }
-            walked.removeAll(target);
-            walked.push_back(target);
+            targets.push_back(target);
+        }
+        // Prims that walk onto the same target keep its last place, so the prim walked from the
+        // current one stays last and current.
+        QSet<QString> placed;
+        placed.reserve(int(targets.size()));
+        std::vector<QString> ordered;
+        ordered.reserve(targets.size());
+        for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
+            if (!placed.contains(*it)) {
+                placed.insert(*it);
+                ordered.push_back(*it);
+            }
+        }
+        walked.reserve(int(ordered.size()));
+        for (auto it = ordered.rbegin(); it != ordered.rend(); ++it) {
+            walked.push_back(*it);
         }
     });
     if (!read) {

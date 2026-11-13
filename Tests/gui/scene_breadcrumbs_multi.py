@@ -12,7 +12,9 @@ Checks:
   - a second click on the badge closes an open popup rather than opening it again;
   - with 100000 paths selected (paths the stage does not have: the list never reads the stage), the
     badge opens a popup of 100000 rows and Level 1 groups them into "/many (100000)", with the main
-    thread within the stall budget throughout.
+    thread within the stall budget throughout;
+  - with those paths and one prim of the stage selected, Alt+Left moves only that prim, keeps it
+    last, and takes at most PICKWALK_BUDGET_MS.
 
 Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
 """
@@ -40,6 +42,7 @@ POPUP_NAME = "sceneBreadcrumbListPopup"
 HEARTBEAT_MS = 10
 HEARTBEAT_BUDGET_MS = 100.0
 HEARTBEAT_BLOCKED_BUDGET_MS = 400.0
+PICKWALK_BUDGET_MS = 2000
 
 
 def write_scene(directory):
@@ -231,8 +234,8 @@ try:
         require(ok, "the badge opens the popup again")
         yield ("sleep", SETTLE_MS)
         QTest.mouseClick(badge(b), Qt.LeftButton)
-        yield ("sleep", SETTLE_MS)
-        check(popup_of(window) is None, "a second click on the badge closes the popup")
+        ok = yield ("until", lambda: popup_of(window) is None, POLL_TIMEOUT_S)
+        check(ok, "a second click on the badge closes the popup")
         p = popup_of(window)
         if p is not None:
             p.close()
@@ -265,6 +268,25 @@ try:
         shot("scene_breadcrumbs_multi_many.png")
         p.close()
         yield ("until", lambda: popup_of(window) is None, POLL_TIMEOUT_S)
+
+        # The walk merges prims landing on one target, so its cost grows with the selection.
+        walk_from = MANY + [SELECTED[0]]
+        select(walk_from)
+        ok = yield ("until", lambda: len(selection()) == len(walk_from), LOAD_TIMEOUT_S)
+        require(ok, "%d paths and %s are selected" % (MANY_COUNT, SELECTED[0]))
+        walked = MANY + [GROUP_1]
+        worst_ms = 0.0
+        deadline = time.monotonic() + POLL_TIMEOUT_S
+        while selection() != walked and time.monotonic() < deadline:
+            started = time.monotonic()
+            QTest.keyClick(view(), Qt.Key_Left, Qt.AltModifier)
+            worst_ms = max(worst_ms, (time.monotonic() - started) * 1000.0)
+            yield ("sleep", 50)
+        check(selection() == walked,
+              "Alt+Left over %d selected paths moves only %s, to its parent, and keeps it last" % (MANY_COUNT, SELECTED[0]))
+        report("NOTE Alt+Left over %d selected paths: %.1f ms" % (MANY_COUNT + 1, worst_ms))
+        check(worst_ms <= PICKWALK_BUDGET_MS,
+              "Alt+Left over %d selected paths takes at most %d ms (%.1f ms)" % (MANY_COUNT + 1, PICKWALK_BUDGET_MS, worst_ms))
         select([])
 
     run(steps())

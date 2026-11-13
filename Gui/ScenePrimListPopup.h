@@ -43,7 +43,8 @@ class SceneViewport;
  * @brief The names of one prim's children, read from the stage a batch at a time as the view asks
  * for more, so a prim with any number of children lists without a long read on the main thread.
  * Never waits for the stage: a read that an edit keeps out is tried again shortly. The list starts
- * over when the stage is edited, synced or loaded into.
+ * over when a sync edits the stage, a load edits it, or the viewer starts or stops showing one;
+ * a sync that changes nothing leaves it.
  **/
 class ScenePrimListModel : public QAbstractListModel {
     GCC_DIAG_SUGGEST_OVERRIDE_OFF

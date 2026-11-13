@@ -78,7 +78,9 @@ readEditKey(SceneViewport* viewport)
         const SceneViewportRenderer& renderer = viewport->getRenderer();
         key[0] = renderer.getStageEditCount();
         key[1] = renderer.getStageLoadEditCount();
-        key[2] = renderer.getStageSyncSerial();
+        // A sync that re-evaluated upstream but edited nothing leaves the children as they were;
+        // the viewer only shows its one stage, so whether it shows one is the stage's identity.
+        key[2] = renderer.hasScene() ? 1 : 0;
     }
 
     return key;

@@ -693,7 +693,6 @@ Gui::showPrimsInSceneGraph(ViewerTab* viewer, const QStringList& paths)
             break;
         }
     }
-    bool created = false;
     if (!target) {
         // A closed panel that follows the viewer is brought back rather than adding another.
         for (SceneGraphPanel* panel : panels) {
@@ -703,11 +702,7 @@ Gui::showPrimsInSceneGraph(ViewerTab* viewer, const QStringList& paths)
             }
         }
     }
-    if (!target) {
-        target = addNewSceneGraphPanel();
-        created = true;
-    }
-    TabWidget* pane = target->getParentPane();
+    TabWidget* pane = target ? target->getParentPane() : nullptr;
     // Raised in the viewer's own pane, the panel would hide the viewer and the bar that asked.
     TabWidget* viewerPane = viewer->getParentPane();
     if (!pane) {
@@ -721,37 +716,22 @@ Gui::showPrimsInSceneGraph(ViewerTab* viewer, const QStringList& paths)
     if (!pane) {
         pane = viewerPane;
     }
-    if (pane) {
-        if (!target->getParentPane()) {
-            pane->appendTab(target, target);
-            getApp()->triggerAutoSave();
-        }
+    if (!pane) {
+        return nullptr;
+    }
+    if (!target) {
+        target = addNewSceneGraphPanel();
+    }
+    if (!target->getParentPane()) {
+        pane->appendTab(target, target);
+        getApp()->triggerAutoSave();
+    }
+    if (pane != viewerPane) {
         pane->setCurrentWidget(target);
-        target->revealPaths(paths);
-
-        return target;
     }
-    if (created) {
-        removeSceneGraphPanel(target);
-    }
+    target->revealPaths(paths);
 
-    for (SceneGraphPanel* panel : panels) {
-        const NodePtr pinned = panel->getPinnedNode();
-        if (!pinned || !panel->getParentPane()) {
-            continue;
-        }
-        const std::string question = tr("Unpin the Scene Graph from %1 to show this prim?").arg(QString::fromStdString(pinned->getLabel_mt_safe())).toStdString();
-        if (questionDialog(tr("Show In Scene Graph").toStdString(), question, false) != eStandardButtonYes) {
-            return nullptr;
-        }
-        panel->pinNode(NodePtr());
-        panel->getParentPane()->setCurrentWidget(panel);
-        panel->revealPaths(paths);
-
-        return panel;
-    }
-
-    return nullptr;
+    return target;
 }
 
 void

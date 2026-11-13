@@ -74,7 +74,7 @@ public:
         eStateUnknown
     };
 
-    // One step of the path. More kinds of segment (a "+N" badge) extend this.
+    // One step of the path.
     struct Segment {
         QString text;
         // The prim the segment stands for, the segment's own path from the root.
@@ -130,7 +130,8 @@ private:
     QStringList dragPaths(const QString& segmentPath) const;
     void startDrag(QToolButton* button);
     const Segment* segmentAt(const QString& path) const;
-    void readStates(QList<Segment>& segments);
+    // False when the stage is there but could not be read, leaving the segments' states unknown.
+    bool readStates(QList<Segment>& segments);
     QToolButton* makeButton(const QString& name, const QString& text);
     QToolButton* makeChevron(const QString& name, const QString& path);
     void openPopup(const QString& listedPath, const QString& highlightName, QWidget* anchor);

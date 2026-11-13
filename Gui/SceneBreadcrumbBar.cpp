@@ -87,7 +87,7 @@ primOnStage(const UsdStageRefPtr& usdStage,
         return UsdPrim();
     }
     const UsdPrim prim = usdStage->GetPrimAtPath(SdfPath(path));
-    if (!prim || !prim.IsActive() || !prim.IsDefined() || prim.IsAbstract()) {
+    if (!prim || !childPredicate()(prim)) {
         return UsdPrim();
     }
 
@@ -130,6 +130,8 @@ struct SceneBreadcrumbBar::Private {
     QPointer<QToolButton> pressButton;
     QPoint pressPos;
     bool rebuilding = false;
+    bool built = false;
+    int builtMore = 0;
 };
 
 SceneBreadcrumbBar::SceneBreadcrumbBar(SceneViewport* viewport, QWidget* parent)
@@ -290,16 +292,38 @@ SceneBreadcrumbBar::refresh()
         segment.path = path;
         segments.push_back(segment);
     }
-    readStates(segments);
+    if (!readStates(segments)) {
+        // A stage that could not be read keeps the states last read for the same path, so the
+        // segments do not drop to the text label until the read is retried.
+        for (int i = 0; i < segments.size() && i < _imp->segments.size(); ++i) {
+            if (segments[i].path != _imp->segments[i].path) {
+                break;
+            }
+            segments[i].state = _imp->segments[i].state;
+        }
+    }
+    // Rebuilding replaces the buttons, which would lose a press or drag under way on one.
+    if (_imp->built && (getMoreCount() == _imp->builtMore) && (segments.size() == _imp->segments.size())) {
+        bool same = true;
+        for (int i = 0; same && i < segments.size(); ++i) {
+            same = (segments[i].path == _imp->segments[i].path) && (segments[i].state == _imp->segments[i].state);
+        }
+        if (same) {
+            return;
+        }
+    }
     _imp->segments = segments;
     rebuild();
 }
 
-void
+bool
 SceneBreadcrumbBar::readStates(QList<Segment>& segments)
 {
-    if (segments.isEmpty() || !_imp->viewport || !_imp->viewport->getRenderer().hasScene() || !_imp->viewport->isStageSynced()) {
-        return;
+    if (segments.isEmpty() || !_imp->viewport || !_imp->viewport->getRenderer().hasScene()) {
+        return true;
+    }
+    if (!_imp->viewport->isStageSynced()) {
+        return false;
     }
     const bool read = _imp->viewport->getRenderer().tryReadStage([&segments](const SceneStage* stage) {
         const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();
@@ -313,6 +337,8 @@ SceneBreadcrumbBar::readStates(QList<Segment>& segments)
     if (!read) {
         _imp->retryTimer.start();
     }
+
+    return read;
 }
 
 void
@@ -365,6 +391,8 @@ SceneBreadcrumbBar::rebuild()
     const int more = getMoreCount();
     _imp->moreButton->setVisible(more > 0);
     _imp->moreButton->setText(QStringLiteral("+%1").arg(more));
+    _imp->built = true;
+    _imp->builtMore = more;
     _imp->rebuilding = false;
 
     layoutButtons();
@@ -425,7 +453,11 @@ SceneBreadcrumbBar::layoutButtons()
             QAction* action = menu->addAction(segment.text);
             action->setEnabled(segment.state == eStatePresent);
             const Segment copy = segment;
-            QObject::connect(action, &QAction::triggered, this, [this, copy]() { clickSegment(copy); });
+            QObject::connect(action, &QAction::triggered, this, [this, copy]() {
+                // The modifiers recorded are the press on "...", not the ones held on the entry.
+                _imp->pressModifiers = QGuiApplication::keyboardModifiers();
+                clickSegment(copy);
+            });
         }
     }
 

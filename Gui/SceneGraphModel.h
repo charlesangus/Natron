@@ -41,7 +41,8 @@
 
 #include "Global/GlobalDefines.h"
 
-// Free of USD, like SceneViewport.h: the panel's header includes it.
+// Only pxr.h's namespace macros and forward declarations, like SceneViewport.h: the panel's header
+// includes this one, and the USD headers stay out of it.
 
 PXR_NAMESPACE_OPEN_SCOPE
 class Usd_PrimFlagsPredicate;

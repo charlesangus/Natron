@@ -14,7 +14,7 @@ Checks:
   - a "+1" badge shows when two prims are selected;
   - the chevron on group_1 lists its children with the scene graph's icons; a right-click on group_1
     opens a menu of Siblings, Copy Path, Copy Selected Paths and Frame, and Siblings lists group_1 and
-    group_2 with group_1 marked, and picking group_2 selects /geo/group_2;
+    group_2 with group_1 marked, and a click on the group_2 row selects /geo/group_2;
   - Copy Path puts /geo/group_1 on the clipboard, Copy Selected Paths with two prims selected puts both
     lines there, and a double-click on group_1 selects it and moves the free camera (framing);
   - a hover on group_1 shows a tooltip naming its type, kind and loaded state;
@@ -25,7 +25,7 @@ Checks:
     changes nothing, its tooltip says "Not in this scene" and its menu still copies its path, with
     Siblings and Frame disabled;
   - split to half the screen's width, a path of long names folds its middle segments into a "..."
-    button whose menu lists them, first and last stay.
+    button whose menu lists them, first and last stay, and an entry of that menu selects its prim.
 
 Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
 """
@@ -351,9 +351,11 @@ try:
         check(selection() == [GROUP], "opening the popup leaves the selection (got %r)" % (selection(),))
         yield ("sleep", SETTLE_MS)
         shot("scene_breadcrumbs_siblings.png")
-        QMetaObject.invokeMethod(p, "pick", Qt.DirectConnection, Q_ARG("QString", "group_2"))
+        siblings_view = hold(p.findChild(QListView, "scenePrimListView"))
+        sibling_rect = siblings_view.visualRect(siblings_view.model().index(1, 0))
+        QTest.mouseClick(siblings_view.viewport(), Qt.LeftButton, Qt.NoModifier, sibling_rect.center())
         ok = yield ("until", lambda: selection() == [SIBLING], POLL_TIMEOUT_S)
-        check(ok, "picking group_2 selects /geo/group_2 (got %r)" % (selection(),))
+        check(ok, "a click on the group_2 row selects /geo/group_2 (got %r)" % (selection(),))
         ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
         check(ok, "a pick closes the popup")
 
@@ -517,6 +519,11 @@ try:
         check(menu is not None and [str(a.text()) for a in menu.actions()] == folded and len(folded) > 0,
               "the \"...\" menu lists the folded segments (got %r)" % (folded,))
         shot("scene_breadcrumbs_elided.png")
+        folded_paths = [str(s["path"]) for s in segments() if s["elided"]]
+        if menu is not None and folded_paths:
+            menu.actions()[0].trigger()
+            ok = yield ("until", lambda: selection() == [folded_paths[0]], POLL_TIMEOUT_S)
+            check(ok, "the \"...\" menu's first entry selects %s (got %r)" % (folded_paths[0], selection()))
 
     run(steps())
 except Exception:

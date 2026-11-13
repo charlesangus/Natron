@@ -102,13 +102,13 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: a relationship inside a payload is retargeted once that payload loads; probe reads 0.
   - size: M
 
-- [ ] M381.P3.T4 — USDProject3D camera through the closure
+- [x] M381.P3.T4 — USDProject3D camera through the closure
   - files: `Engine/Nodes/Scene/USDProject3D.cpp` (`renderScene` ~:459), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: named camera through `withPaths`; with none named, context set plus reach "/".
   - verify: a camera inside a payload resolves while only its building opens.
   - size: M
 
-- [ ] M381.P3.T5 — USDRead metrics correction on the context
+- [x] M381.P3.T5 — USDRead metrics correction on the context
   - files: `Engine/Nodes/Scene/USDRead.cpp` (~:443), `Engine/Nodes/Scene/SceneOps.cpp` (~:1204), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: the current context with reach "/".
   - verify: Match Up Axis on the city opens 0 buildings; parity at L, including a reset-stack prim inside a payload.

@@ -210,7 +210,9 @@ try:
     def steps():
         require(prune.connectInput(0, usd), "connect the USDPrune to the USDRead")
         viewer.disconnectInput(0)
-        require(viewer.connectInput(0, prune), "connect the Viewer to the USDPrune")
+        # The viewer shows the USDRead, not the USDPrune: the prims the pattern names are pruned from the
+        # prune's output, and the panel would then have no row to select for them.
+        require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)

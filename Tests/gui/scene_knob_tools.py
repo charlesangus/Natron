@@ -238,7 +238,9 @@ try:
     def steps():
         require(prune.connectInput(0, usd), "connect the USDPrune to the USDRead")
         viewer.disconnectInput(0)
-        require(viewer.connectInput(0, prune), "connect the Viewer to the USDPrune")
+        # The viewer shows the USDRead while the pattern is edited: the prims the pattern names are pruned
+        # from the prune's output, and the panel would then have no row to select for them.
+        require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
@@ -296,8 +298,11 @@ try:
         require(usd2 is not None, "create the second USDRead", plugin_problem("USDRead"))
         usd2.getParam("filename").setValue(city)
         usd2.setPosition(450, 0)
+        pattern.setValue(CAM)
         prune.disconnectInput(0)
         require(prune.connectInput(0, usd2), "connect the USDPrune to the payload scene")
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, prune), "connect the Viewer to the USDPrune")
         ok = yield ("until", lambda: panel_tree() is not None and find_path(panel_tree(), BLOCK0_B0).isValid(),
                     POLL_TIMEOUT_S)
         require(ok, "the Scene Graph panel lists the payload scene")
@@ -337,6 +342,7 @@ try:
               "(got %r)" % (viewer_selection(),))
         check(offer_widget("knobPrimSelectMatchesLoad", QPushButton) is None,
               "the search of the input uses the viewer's loads, so nothing is left to offer")
+        pattern.setValue(CAM)
         prune.disconnectInput(0)
         require(prune.connectInput(0, usd), "connect the USDPrune back to the first scene")
         ok = yield ("until", lambda: bool(world_children(panel_tree())) and BOX in world_children(panel_tree()), POLL_TIMEOUT_S)

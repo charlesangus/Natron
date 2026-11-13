@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -40,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
@@ -51,6 +53,7 @@
 #include "Engine/OverlayImage.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
+#include "Engine/Settings.h"
 
 #ifdef NATRON_HAVE_GPU
 #include <array>
@@ -588,6 +591,31 @@ void
 VectorGenerator::appendNodeContentHash(ContentHasher& h) const
 {
     _colourspace.appendHash(h);
+
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    const bool aiEnabled = settings && settings->isAiEnabled();
+    h.appendBool(aiEnabled);
+    const KnobChoicePtr method = _method.lock();
+    if (!aiEnabled || !_model || !method || (method->getValue() != (int)eFlowMethodNeural)) {
+        return;
+    }
+    std::string ignored;
+    const std::optional<ModelKnob::Resolved> resolved = _model->resolve(&ignored);
+    if (!resolved || resolved->files.empty()) {
+        h.appendString(std::string());
+
+        return;
+    }
+    // The registry's resolution is cached per model id, so the file itself is what shows a reinstall.
+    const std::string& path = resolved->files.front();
+    std::error_code sizeError;
+    std::error_code timeError;
+    const std::uintmax_t size = std::filesystem::file_size(path, sizeError);
+    const auto mtime = std::filesystem::last_write_time(path, timeError);
+    h.appendString(path);
+    h.appendString(resolved->entry->sha256);
+    h.appendU64(sizeError ? 0 : (U64)size);
+    h.appendI64(timeError ? 0 : (std::int64_t)mtime.time_since_epoch().count());
 }
 
 void
@@ -596,22 +624,26 @@ VectorGenerator::purgeCaches()
     std::lock_guard<std::mutex> locker(_sessionMutex);
     _session.reset();
     _sessionPath.clear();
+    _sessionOptions = AiSessionOptions();
 }
 
 std::shared_ptr<InferenceSession>
 VectorGenerator::neuralSession(const std::string& path,
                                std::string* message)
 {
+    const AiSessionOptions options = AiSessionOptions::fromPreferences(AiGraphOptimization::eAll);
     std::lock_guard<std::mutex> locker(_sessionMutex);
-    if (_session && (_sessionPath == path)) {
+    if (_session && (_sessionPath == path) && !(options < _sessionOptions) && !(_sessionOptions < options)) {
         return _session;
     }
     try {
-        _session = InferenceSession::open(path, AiSessionOptions::fromPreferences(AiGraphOptimization::eAll));
+        _session = InferenceSession::open(path, options);
         _sessionPath = path;
+        _sessionOptions = options;
     } catch (const AiError& e) {
         _session.reset();
         _sessionPath.clear();
+        _sessionOptions = AiSessionOptions();
         const std::shared_ptr<const OrtLoader> loader = OrtLoader::process();
         *message = (loader && !loader->available()) ? loader->unavailableReason() : std::string(e.what());
     }
@@ -1021,8 +1053,9 @@ VectorGenerator::renderOp(const RenderActionArgs& args,
             std::string error;
             const std::optional<ModelKnob::Resolved> resolved = _model ? _model->resolve(&error) : std::optional<ModelKnob::Resolved>();
             if (!resolved) {
-                if (error.find("Preferences") == std::string::npos) {
-                    error += " The model manager is in Preferences > AI Models.";
+                static const std::string hint = " The model manager is in Preferences > AI Models.";
+                if (error.size() < hint.size() || error.compare(error.size() - hint.size(), hint.size(), hint) != 0) {
+                    error += hint;
                 }
                 updateFormatMessage(tr("The Neural method needs the optical-flow model: %1").arg(QString::fromStdString(error)).toStdString());
 

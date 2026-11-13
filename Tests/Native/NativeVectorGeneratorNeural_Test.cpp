@@ -28,7 +28,6 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <iterator>
 #include <list>
 #include <memory>
@@ -114,12 +113,13 @@ protected:
         NativeTimeNodeTest::TearDown();
     }
 
-    // Lists flow-constant.onnx, packed as an optical-flow package, as the only model of the
-    // registry the nodes created next use; installs it when asked. Returns why inference cannot
-    // run, or an empty string.
-    std::string useFlowModel(bool install)
+    // Lists a flow fixture, packed as an optical-flow package, as the only model of the registry the
+    // nodes created next use; installs it when asked. Returns why inference cannot run, or an empty
+    // string.
+    std::string useFlowModel(bool install,
+                             const char* fixture = "flow-constant.onnx")
     {
-        std::ifstream onnx(NATRON_TESTS_FIXTURES_DIR "/ai/flow-constant.onnx", std::ios::binary);
+        std::ifstream onnx(std::string(NATRON_TESTS_FIXTURES_DIR "/ai/") + fixture, std::ios::binary);
         const std::string model((std::istreambuf_iterator<char>(onnx)), std::istreambuf_iterator<char>());
         EXPECT_FALSE(model.empty());
         const std::string config = std::string(R"json({ "id": ")json") + kFlowPackage + R"json(", "name": "test flow", "task": "optical-flow", "backend": "onnx" })json";
@@ -162,10 +162,13 @@ protected:
         return ort->available() ? std::string() : "ONNX Runtime is unavailable: " + ort->unavailableReason();
     }
 
-    NodePtr createNeuralGenerator()
+    NodePtr createNeuralGenerator(NodePtr* sourceOut = nullptr)
     {
         NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMovingTexture), 1);
         EXPECT_TRUE(bool(source));
+        if (sourceOut) {
+            *sourceOut = source;
+        }
         NodePtr node = createOver(PLUGINID_NATRON_VECTORGENERATOR, PLUGIN_MAJOR_NATRON_VECTORGENERATOR, source);
         EXPECT_TRUE(bool(node));
         EXPECT_TRUE(node && setKnobValue(node, kVectorGeneratorParamMethod, kVectorGeneratorMethodNeural));
@@ -196,13 +199,6 @@ protected:
         return (type == eMessageTypeError) ? message.toStdString() : std::string();
     }
 
-    // This gtest has no GTEST_SKIP: a skipped case prints why, records it in the XML report and passes.
-    static void reportSkip(const std::string& reason)
-    {
-        std::cerr << "SKIPPED: " << ::testing::UnitTest::GetInstance()->current_test_info()->name() << ": " << reason << std::endl;
-        ::testing::Test::RecordProperty("skipped", reason);
-    }
-
     QTemporaryDir _models;
     QTemporaryDir _packages;
     std::unique_ptr<ModelDownloader> _downloader;
@@ -210,12 +206,7 @@ protected:
 
 TEST_F(NativeVectorGeneratorNeuralTest, ForwardAndBackwardComeFromTheModel)
 {
-    const std::string unavailable = useFlowModel(true);
-    if (!unavailable.empty()) {
-        reportSkip(unavailable);
-
-        return;
-    }
+    ASSERT_EQ(std::string(), useFlowModel(true));
     NodePtr node = createNeuralGenerator();
     ASSERT_TRUE(bool(node));
 
@@ -230,14 +221,59 @@ TEST_F(NativeVectorGeneratorNeuralTest, ForwardAndBackwardComeFromTheModel)
     EXPECT_EQ(std::string(), errorOf(node));
 }
 
+TEST_F(NativeVectorGeneratorNeuralTest, EachDirectionAsksTheModelInItsOwnOrder)
+{
+    ASSERT_EQ(std::string(), useFlowModel(true, "flow-order.onnx"));
+    NodePtr source;
+    NodePtr node = createNeuralGenerator(&source);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(bool(source));
+
+    // The model's flow follows the second frame's brightness minus the first's. A black next frame
+    // makes the forward flow negative while the backward one, towards a frame as bright as the
+    // frame itself, stays near zero; a black previous frame does the opposite.
+    ASSERT_TRUE(setKnobValues(source, kMovingTextureParamBlackFrame, { 4. }));
+    RenderedPlane forward;
+    RenderedPlane backward;
+    std::string error;
+    ASSERT_TRUE(renderPlane(node, forwardLayer(), &forward, &error)) << error << errorOf(node);
+    ASSERT_TRUE(renderPlane(node, backwardLayer(), &backward, &error)) << error << errorOf(node);
+    EXPECT_LT(meanOfChannel(forward, 0, kMargin), -0.1);
+    EXPECT_LT(meanOfChannel(forward, 1, kMargin), -0.1);
+    EXPECT_LT(std::fabs(meanOfChannel(backward, 0, kMargin)), 0.25 * std::fabs(meanOfChannel(forward, 0, kMargin)));
+
+    ASSERT_TRUE(setKnobValues(source, kMovingTextureParamBlackFrame, { 2. }));
+    ASSERT_TRUE(renderPlane(node, forwardLayer(), &forward, &error)) << error << errorOf(node);
+    ASSERT_TRUE(renderPlane(node, backwardLayer(), &backward, &error)) << error << errorOf(node);
+    EXPECT_LT(meanOfChannel(backward, 0, kMargin), -0.1);
+    EXPECT_LT(meanOfChannel(backward, 1, kMargin), -0.1);
+    EXPECT_LT(std::fabs(meanOfChannel(forward, 0, kMargin)), 0.25 * std::fabs(meanOfChannel(backward, 0, kMargin)));
+}
+
+TEST_F(NativeVectorGeneratorNeuralTest, TheModelsPositionFieldReachesTheOutputPixelForPixel)
+{
+    ASSERT_EQ(std::string(), useFlowModel(true, "flow-position.onnx"));
+    NodePtr node = createNeuralGenerator();
+    ASSERT_TRUE(bool(node));
+
+    RenderedPlane forward;
+    std::string error;
+    ASSERT_TRUE(renderPlane(node, forwardLayer(), &forward, &error)) << error << errorOf(node);
+    const int width = forward.window.width();
+    const int height = forward.window.height();
+    const std::size_t nComps = forward.channels.size();
+    for (int y = kMargin; y < height - kMargin; ++y) {
+        for (int x = kMargin; x < width - kMargin; ++x) {
+            const float* pixel = &forward.pixels[((std::size_t)y * width + x) * nComps];
+            ASSERT_NEAR((float)x, pixel[0], 1e-3f) << x << "," << y;
+            ASSERT_NEAR((float)y, pixel[1], 1e-3f) << x << "," << y;
+        }
+    }
+}
+
 TEST_F(NativeVectorGeneratorNeuralTest, ConfidenceIsTheRoundTripOfTheModelsTwoDirections)
 {
-    const std::string unavailable = useFlowModel(true);
-    if (!unavailable.empty()) {
-        reportSkip(unavailable);
-
-        return;
-    }
+    ASSERT_EQ(std::string(), useFlowModel(true));
     NodePtr node = createNeuralGenerator();
     ASSERT_TRUE(bool(node));
 

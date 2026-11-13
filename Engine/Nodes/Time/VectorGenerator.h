@@ -36,6 +36,7 @@
 #include <mutex>
 #include <string>
 
+#include "Engine/Ai/InferenceSession.h"
 #include "Engine/Ai/ModelKnob.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Flow/FlowEstimate.h"
@@ -257,7 +258,6 @@ private:
 
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
 
-    // Closes the optical-flow model's session, as Clear Caches does.
     virtual void purgeCaches() OVERRIDE FINAL;
 
     virtual bool knobChanged(KnobI* k,
@@ -332,7 +332,7 @@ private:
     // The model, colourspace and quality controls follow whether the method is Neural.
     void refreshMethodKnobs();
 
-    // The session of the model at path, kept while the path stays the same. Null with message set
+    // The session of the model at path, kept while the path and the Preferences' session options stay the same. Null with message set
     // when it cannot be opened.
     std::shared_ptr<InferenceSession> neuralSession(const std::string& path,
                                                     std::string* message);
@@ -352,6 +352,7 @@ private:
     std::mutex _sessionMutex;
     std::shared_ptr<InferenceSession> _session;
     std::string _sessionPath;
+    AiSessionOptions _sessionOptions;
     std::mutex _formatMessageMutex;
     std::string _postedFormatMessage;
 };

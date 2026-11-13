@@ -48,22 +48,37 @@ const float kFlowDy = -1.5f;
 typedef std::vector<std::vector<int64_t>> Shapes;
 
 std::shared_ptr<InferenceSession>
-openFlow()
+openFlow(const char* name = "flow-constant.onnx")
 {
-    return InferenceSession::open(AiTest::modelPath("flow-constant.onnx"), AiTest::cpuOptions(), AiTest::loader());
+    return InferenceSession::open(AiTest::modelPath(name), AiTest::cpuOptions(), AiTest::loader());
 }
 
 OpticalFlowFrame
 makeFrame(int width,
-          int height)
+          int height,
+          float gain = 1.f)
 {
     OpticalFlowFrame frame;
 
     for (int c = 0; c < 3; ++c) {
-        frame.channel[c] = FlowPlane(width, height, 0.25f * (float)(c + 1));
+        frame.channel[c] = FlowPlane(width, height, gain * 0.25f * (float)(c + 1));
     }
 
     return frame;
+}
+
+// What flow-order.onnx makes of the frames makeFrame(gain) gives it: the mean of the second frame's
+// model input minus the first's, which is where the model's input scale and its 1/255 gain cancel.
+float
+meanWrapped(float gain)
+{
+    float sum = 0.f;
+
+    for (int c = 0; c < 3; ++c) {
+        sum += opticalFlowWrapRange(gain * 0.25f * (float)(c + 1));
+    }
+
+    return sum / 3.f;
 }
 
 // Records the shape of every run's first input.
@@ -103,6 +118,25 @@ expectField(const FlowField& field,
         for (int x = 0; x < width; ++x) {
             ASSERT_NEAR(dx, field.u.at(x, y), 1e-4f) << x << "," << y;
             ASSERT_NEAR(dy, field.v.at(x, y), 1e-4f) << x << "," << y;
+        }
+    }
+}
+
+void
+expectPositionField(const FlowField& field,
+                    int width,
+                    int height,
+                    float scaleX,
+                    float scaleY,
+                    float offset,
+                    int margin)
+{
+    ASSERT_EQ(width, field.width);
+    ASSERT_EQ(height, field.height);
+    for (int y = margin; y < height - margin; ++y) {
+        for (int x = margin; x < width - margin; ++x) {
+            ASSERT_NEAR(scaleX * ((float)x + offset), field.u.at(x, y), 1e-3f) << x << "," << y;
+            ASSERT_NEAR(scaleY * ((float)y + offset), field.v.at(x, y), 1e-3f) << x << "," << y;
         }
     }
 }
@@ -240,6 +274,47 @@ TEST_F(AiOpticalFlow, ThePairRunsTwiceAndBothDirectionsReturn)
     expectField(pair.forward, 48, 32, kFlowDx, kFlowDy);
     expectField(pair.backward, 48, 32, kFlowDx, kFlowDy);
     EXPECT_EQ(2u, recorder.runs().size());
+}
+
+TEST_F(AiOpticalFlow, EachDirectionRunsTheModelInItsOwnOrder)
+{
+    OpticalFlowSpec spec;
+    spec.minSize = 8;
+    const OpticalFlowFrame dark = makeFrame(32, 24, 1.f);
+    const OpticalFlowFrame bright = makeFrame(32, 24, 3.f);
+    const float step = meanWrapped(3.f) - meanWrapped(1.f);
+    ASSERT_GT(step, 0.1f);
+
+    const OpticalFlowPair pair = estimateOpticalFlowPair(openFlow("flow-order.onnx"), dark, bright, spec);
+
+    expectField(pair.forward, 32, 24, step, 2.f * step);
+    expectField(pair.backward, 32, 24, -step, -2.f * step);
+    expectField(estimateOpticalFlow(openFlow("flow-order.onnx"), dark, bright, spec), 32, 24, step, 2.f * step);
+    expectField(estimateOpticalFlow(openFlow("flow-order.onnx"), bright, dark, spec), 32, 24, -step, -2.f * step);
+}
+
+TEST_F(AiOpticalFlow, TheCropKeepsEveryPixelAtItsOwnPosition)
+{
+    OpticalFlowSpec spec;
+    spec.minSize = 8;
+
+    expectPositionField(estimateOpticalFlow(openFlow("flow-position.onnx"), makeFrame(37, 21), makeFrame(37, 21), spec), 37, 21, 1.f, 1.f, 0.f, 0);
+
+    spec.minSize = 128;
+    expectPositionField(estimateOpticalFlow(openFlow("flow-position.onnx"), makeFrame(20, 12), makeFrame(20, 12), spec), 20, 12, 1.f, 1.f, 0.f, 0);
+}
+
+TEST_F(AiOpticalFlow, ADownscaledPositionFieldKeepsItsAlignmentAtFullSize)
+{
+    OpticalFlowSpec spec;
+    spec.maxInferenceSize = 100;
+    spec.minSize = 8;
+
+    // The run is 100 x 50 and its column c reads 4 * c at full size, centred on full-size pixel
+    // 4 * c + 1.5, so pixel x reads x - 1.5.
+    const FlowField field = estimateOpticalFlow(openFlow("flow-position.onnx"), makeFrame(400, 200), makeFrame(400, 200), spec);
+
+    expectPositionField(field, 400, 200, 1.f, 1.f, -1.5f, 4);
 }
 
 TEST_F(AiOpticalFlow, FramesOfDifferentSizesAreRefused)

@@ -61,6 +61,37 @@ reflect(int index,
     return index < size ? index : period - index;
 }
 
+// Averages each output sample's span of source samples along one axis, the fractional ends weighted by
+// their coverage. Point-sampling a large reduction would alias.
+FlowPlane
+boxReduce(const FlowPlane& src,
+          int width,
+          int height)
+{
+    FlowPlane out(width, height);
+    const bool alongX = (width != src.width);
+    const double factor = alongX ? (double)src.width / (double)width : (double)src.height / (double)height;
+    const int srcSize = alongX ? src.width : src.height;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const int index = alongX ? x : y;
+            const double begin = index * factor;
+            const double end = std::min((index + 1) * factor, (double)srcSize);
+            double sum = 0.;
+            double weight = 0.;
+            for (int i = (int)begin; (double)i < end; ++i) {
+                const double w = std::min(end, (double)(i + 1)) - std::max(begin, (double)i);
+                sum += w * (alongX ? src.at(i, y) : src.at(x, i));
+                weight += w;
+            }
+            out.at(x, y) = (float)(sum / weight);
+        }
+    }
+
+    return out;
+}
+
 FlowPlane
 resample(const FlowPlane& src,
          int width,
@@ -69,14 +100,21 @@ resample(const FlowPlane& src,
     if (src.width == width && src.height == height) {
         return src;
     }
+    FlowPlane reduced = src;
+    if (src.width > 2 * width) {
+        reduced = boxReduce(reduced, width, reduced.height);
+    }
+    if (src.height > 2 * height) {
+        reduced = boxReduce(reduced, reduced.width, height);
+    }
     FlowPlane out(width, height);
-    const float sx = (float)src.width / (float)width;
-    const float sy = (float)src.height / (float)height;
+    const float sx = (float)reduced.width / (float)width;
+    const float sy = (float)reduced.height / (float)height;
     for (int y = 0; y < height; ++y) {
         const float fy = ((float)y + 0.5f) * sy - 0.5f;
         float* row = out.row(y);
         for (int x = 0; x < width; ++x) {
-            row[x] = src.sample(((float)x + 0.5f) * sx - 0.5f, fy);
+            row[x] = reduced.sample(((float)x + 0.5f) * sx - 0.5f, fy);
         }
     }
 

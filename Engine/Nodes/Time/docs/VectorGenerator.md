@@ -56,8 +56,8 @@ to 1, and values above 1 keep rising more slowly. The curve has no control.
 `method` Neural runs an optical-flow neural network instead of a classical solve. It follows large and
 thin motion the other methods lose. The model is the one installed for the `optical-flow` task, picked
 by `model` and downloaded with `downloadModel` (or in Preferences > AI Models); both are shown only for
-Neural. It runs on the CPU, so the node ends a GPU region, and each frame costs two model runs per
-direction pair. Large frames are run downscaled to fit the model and the vectors scaled back to full size.
+Neural. It runs on the CPU, so the node ends a GPU region, and each frame pair costs two model runs
+(forward and backward), and temporal smoothing multiplies the pairs. Large frames are run downscaled to fit the model and the vectors scaled back to full size.
 
 `modelColourspace` is the OpenColorIO colourspace the Source is converted to before the model, as on the
 other neural nodes; it defaults to the one the model was trained in (sRGB) and is shown only for Neural.

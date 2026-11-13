@@ -189,6 +189,69 @@ def flow_constant():
                  [helper.make_tensor_value_info("flow", TensorProto.FLOAT, [1, 2, "height", "width"])],
                  [tail, tail_end, head, offset])
 
+# flow-order.onnx's gain per unit of brightness difference: dx and dy per 1 of (mean image2 - mean image1)
+# at the model's 0..255 input scale.
+FLOW_ORDER_GAIN_DX = 1.0 / 255.0
+FLOW_ORDER_GAIN_DY = 2.0 / 255.0
+
+
+def flow_order():
+    # The flow is the same everywhere and equals gain * (mean of image2 - mean of image1), so
+    # feeding the images in the other order flips its sign.
+    zero = helper.make_tensor("zero", TensorProto.FLOAT, [1], [0.0])
+    gain = helper.make_tensor("gain", TensorProto.FLOAT, [1, 2, 1, 1], [FLOW_ORDER_GAIN_DX, FLOW_ORDER_GAIN_DY])
+    tail = helper.make_tensor("tail_start", TensorProto.INT64, [1], [2])
+    tail_end = helper.make_tensor("tail_end", TensorProto.INT64, [1], [4])
+    head = helper.make_tensor("flow_head", TensorProto.INT64, [2], [1, 2])
+    return model("flow_order",
+                 [helper.make_node("Shape", ["image1"], ["dims"]),
+                  helper.make_node("Slice", ["dims", "tail_start", "tail_end"], ["size"]),
+                  helper.make_node("Concat", ["flow_head", "size"], ["flow_dims"], axis=0),
+                  helper.make_node("ConstantOfShape", ["flow_dims"], ["zeros"], value=zero),
+                  helper.make_node("ReduceMean", ["image1"], ["mean1"], axes=[1, 2, 3], keepdims=1),
+                  helper.make_node("ReduceMean", ["image2"], ["mean2"], axes=[1, 2, 3], keepdims=1),
+                  helper.make_node("Sub", ["mean2", "mean1"], ["difference"]),
+                  helper.make_node("Mul", ["difference", "gain"], ["scaled"]),
+                  helper.make_node("Add", ["zeros", "scaled"], ["flow"])],
+                 [image_value("image1", TensorProto.FLOAT), image_value("image2", TensorProto.FLOAT)],
+                 [helper.make_tensor_value_info("flow", TensorProto.FLOAT, [1, 2, "height", "width"])],
+                 [tail, tail_end, head, gain])
+
+
+def flow_position():
+    # dx is the column and dy the row of each pixel of the padded input, so a flow cropped at the
+    # wrong offset, or read from the wrong channel, differs from the pixel's own coordinates.
+    zero = helper.make_tensor("zero_f", TensorProto.FLOAT, [], [0.0])
+    one = helper.make_tensor("one_f", TensorProto.FLOAT, [], [1.0])
+    height_start = helper.make_tensor("height_start", TensorProto.INT64, [1], [2])
+    height_end = helper.make_tensor("height_end", TensorProto.INT64, [1], [3])
+    width_start = helper.make_tensor("width_start", TensorProto.INT64, [1], [3])
+    width_end = helper.make_tensor("width_end", TensorProto.INT64, [1], [4])
+    axes = helper.make_tensor("squeeze_axes", TensorProto.INT64, [1], [0])
+    column_shape = helper.make_tensor("column_shape", TensorProto.INT64, [4], [1, 1, 1, -1])
+    row_shape = helper.make_tensor("row_shape", TensorProto.INT64, [4], [1, 1, -1, 1])
+    only_x = helper.make_tensor("only_x", TensorProto.FLOAT, [1, 2, 1, 1], [1.0, 0.0])
+    only_y = helper.make_tensor("only_y", TensorProto.FLOAT, [1, 2, 1, 1], [0.0, 1.0])
+    return model("flow_position",
+                 [helper.make_node("Shape", ["image1"], ["dims"]),
+                  helper.make_node("Slice", ["dims", "height_start", "height_end"], ["height_1"]),
+                  helper.make_node("Slice", ["dims", "width_start", "width_end"], ["width_1"]),
+                  helper.make_node("Squeeze", ["height_1", "squeeze_axes"], ["height"]),
+                  helper.make_node("Squeeze", ["width_1", "squeeze_axes"], ["width"]),
+                  helper.make_node("Cast", ["height"], ["height_f"], to=TensorProto.FLOAT),
+                  helper.make_node("Cast", ["width"], ["width_f"], to=TensorProto.FLOAT),
+                  helper.make_node("Range", ["zero_f", "width_f", "one_f"], ["columns"]),
+                  helper.make_node("Range", ["zero_f", "height_f", "one_f"], ["rows"]),
+                  helper.make_node("Reshape", ["columns", "column_shape"], ["columns_4d"]),
+                  helper.make_node("Reshape", ["rows", "row_shape"], ["rows_4d"]),
+                  helper.make_node("Mul", ["columns_4d", "only_x"], ["x_part"]),
+                  helper.make_node("Mul", ["rows_4d", "only_y"], ["y_part"]),
+                  helper.make_node("Add", ["x_part", "y_part"], ["flow"])],
+                 [image_value("image1", TensorProto.FLOAT), image_value("image2", TensorProto.FLOAT)],
+                 [helper.make_tensor_value_info("flow", TensorProto.FLOAT, [1, 2, "height", "width"])],
+                 [zero, one, height_start, height_end, width_start, width_end, axes, column_shape, row_shape,
+                  only_x, only_y])
+
 
 MODELS = {
     "identity.onnx": lambda: identity(TensorProto.FLOAT, "identity"),
@@ -200,6 +263,8 @@ MODELS = {
     "upscale4-nearest.onnx": lambda: upscale_nearest(4),
     "slow-loop.onnx": slow_loop,
     "flow-constant.onnx": flow_constant,
+    "flow-order.onnx": flow_order,
+    "flow-position.onnx": flow_position,
     "seg-segnext-encoder.onnx": segnext_encoder,
     "seg-segnext-decoder.onnx": segnext_decoder,
     "seg-sam-encoder.onnx": sam_encoder,

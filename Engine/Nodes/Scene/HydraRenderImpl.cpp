@@ -90,6 +90,7 @@
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
@@ -276,14 +277,22 @@ typedef std::unique_ptr<UsdImagingGLEngine, EngineDeleter> EnginePtr;
 
 /**
  * A new engine of parameters. A Cycles one (cycles), whose session the caller has opened, is made
- * so that its CPU device renders on threads threads, and closes the session when it goes.
+ * so that its CPU device renders on threads threads, and closes the session when it goes. Only an
+ * engine made with wantFilter gets a SceneDrawFilter; the viewer's draw states mean nothing to
+ * the others.
  **/
 EnginePtr
 newEngine(const UsdImagingGLEngine::Parameters& parameters,
           bool cycles,
-          int threads)
+          int threads,
+          bool wantFilter)
 {
     EnginePtr engine(nullptr, EngineDeleter { cycles });
+    std::unique_ptr<SceneDrawFilter::EngineScope> scope;
+    if (wantFilter) {
+        SceneDrawFilter::registerForAllRenderers();
+        scope.reset(new SceneDrawFilter::EngineScope);
+    }
     const std::function<void()> make = [&]() { engine.reset(new UsdImagingGLEngine(parameters)); };
 
     if (!cycles) {
@@ -1131,7 +1140,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         std::string startError;
         {
             TfErrorMark mark;
-            entry.engine = newEngine(parameters, cycles, threads);
+            entry.engine = newEngine(parameters, cycles, threads, false);
             ++gEngineBuilds;
             // The engine reports a delegate it could not start as coding errors and renders nothing.
             if (entry.engine->GetCurrentRendererId() != TfToken(renderer)) {
@@ -2566,7 +2575,7 @@ struct ProgressiveRender::Implementation {
         EnginePtr made;
         {
             TfErrorMark mark;
-            made = newEngine(parameters, cycles, threads);
+            made = newEngine(parameters, cycles, threads, false);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;

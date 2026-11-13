@@ -38,8 +38,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Global/GlobalDefines.h"
-#include "Gui/SceneDrawFilter.h"
 
 #ifdef emit
 #define NATRON_SCENEDRAWBOXES_RESTORE_EMIT

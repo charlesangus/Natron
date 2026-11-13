@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -110,8 +111,23 @@ public:
     // Must run before the render index it is to reach is constructed.
     static void registerForAllRenderers();
 
-    // The renderInstanceId of the last filter appended on this thread, and forgets it.
-    static std::string takeAppendedInstanceId();
+    // An engine built while one of these lives gets a filter; any other engine gets none. The
+    // render index builds its scene index chain inside the engine's constructor, which can run on
+    // a thread other than the one holding the scope (Cycles builds in a TBB arena), so the scope
+    // is process-wide and holds a lock: one engine at a time is built under a scope.
+    class EngineScope {
+    public:
+        EngineScope();
+        ~EngineScope();
+        EngineScope(const EngineScope&) = delete;
+        EngineScope& operator=(const EngineScope&) = delete;
+
+        // The renderInstanceId of the filter the engine built under this scope got, or empty.
+        std::string getInstanceId() const;
+
+    private:
+        std::unique_lock<std::mutex> _lock;
+    };
 
     static WeakPtr find(const std::string& renderInstanceId);
 

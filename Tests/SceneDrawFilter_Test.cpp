@@ -34,7 +34,9 @@
 
 #include <gtest/gtest.h>
 
-#include "Gui/SceneDrawFilter.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 
 #ifdef emit
 #define NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
@@ -52,6 +54,7 @@
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/unitTestNullRenderDelegate.h>
 #include <pxr/imaging/hd/visibilitySchema.h>
+#include <pxr/usdImaging/usdImagingGL/engine.h>
 #ifdef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #define emit
@@ -1210,8 +1213,58 @@ TEST_F(SceneDrawFilterTest, RegisteringTwiceIsHarmless)
     SceneDrawFilter::registerForAllRenderers();
     SceneDrawFilter::registerForAllRenderers();
 
-    EXPECT_TRUE(SceneDrawFilter::takeAppendedInstanceId().empty());
     EXPECT_FALSE(get_pointer(SceneDrawFilter::find("no such engine")));
+}
+
+namespace {
+std::unique_ptr<UsdImagingGLEngine>
+makeCyclesEngine()
+{
+    UsdImagingGLEngine::Parameters parameters;
+    parameters.rendererPluginId = TfToken(kRenderDelegateCyclesId);
+    parameters.gpuEnabled = false;
+    CyclesAovs::registerSceneIndices();
+    std::unique_ptr<UsdImagingGLEngine> engine;
+    CyclesAovs::withThreadBudget(2, [&]() { engine.reset(new UsdImagingGLEngine(parameters)); });
+
+    return engine;
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, ACyclesEngineBuiltUnderAScopeHasAFilterFindCanLocate)
+{
+    if (!RenderDelegates::unavailableMessage(kRenderDelegateCyclesId).empty()) {
+        return;
+    }
+    SceneDrawFilter::registerForAllRenderers();
+    std::string id;
+    std::unique_ptr<UsdImagingGLEngine> engine;
+    {
+        const SceneDrawFilter::EngineScope scope;
+        engine = makeCyclesEngine();
+        id = scope.getInstanceId();
+    }
+    ASSERT_TRUE(engine != nullptr);
+    ASSERT_EQ(TfToken(kRenderDelegateCyclesId), engine->GetCurrentRendererId());
+
+    EXPECT_FALSE(id.empty());
+    EXPECT_TRUE(get_pointer(SceneDrawFilter::find(id)) != nullptr);
+}
+
+TEST_F(SceneDrawFilterTest, ACyclesEngineBuiltWithoutAScopeHasNoFilter)
+{
+    if (!RenderDelegates::unavailableMessage(kRenderDelegateCyclesId).empty()) {
+        return;
+    }
+    SceneDrawFilter::registerForAllRenderers();
+    std::unique_ptr<UsdImagingGLEngine> engine = makeCyclesEngine();
+    ASSERT_TRUE(engine != nullptr);
+
+    {
+        const SceneDrawFilter::EngineScope scope;
+        EXPECT_TRUE(scope.getInstanceId().empty());
+    }
+    EXPECT_TRUE(SceneDrawFilter::EngineScope().getInstanceId().empty());
 }
 
 TEST_F(SceneDrawFilterTest, ABoxedRowMasksTheNativeInstancesBelowItAndKeepsTheirInstancer)

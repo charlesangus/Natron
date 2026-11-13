@@ -136,6 +136,7 @@
 #define emit
 #endif
 
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Gui/ActionShortcuts.h"
 #include "Gui/GLContextLoss.h"
 #include "Gui/GuiApplicationManager.h"
@@ -143,7 +144,6 @@
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
 #include "Gui/SceneDrawBoxes.h"
-#include "Gui/SceneDrawFilter.h"
 #include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
@@ -1557,13 +1557,15 @@ struct SceneViewportRenderer::Implementation {
         // loads, which need not be Storm.
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
+        std::string filterInstanceId;
         try {
             SceneDrawFilter::registerForAllRenderers();
-            (void)SceneDrawFilter::takeAppendedInstanceId();
             CyclesAovs::registerSceneIndices();
             {
                 TfErrorMark mark;
+                const SceneDrawFilter::EngineScope scope;
                 engine.reset(new UsdImagingGLEngine(parameters));
+                filterInstanceId = scope.getInstanceId();
                 ++engineCount;
                 ++engineConstructionCount;
                 if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
@@ -1596,7 +1598,7 @@ struct SceneViewportRenderer::Implementation {
 
             return false;
         }
-        drawFilter = SceneDrawFilter::find(SceneDrawFilter::takeAppendedInstanceId());
+        drawFilter = SceneDrawFilter::find(filterInstanceId);
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
             filter->seedRules(drawRules);
         }

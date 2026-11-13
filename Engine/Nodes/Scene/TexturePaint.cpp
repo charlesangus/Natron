@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -40,6 +41,9 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
+#include <QCoreApplication>
 #include <QString>
 #include <QStringList>
 
@@ -80,6 +84,7 @@
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/TimeLine.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -88,6 +93,38 @@ const int kResolutionCount = 4;
 
 static_assert((1024 << (kResolutionCount - 1)) == TexturePaintView::kPaintSpaceSize,
               "Every Buffer Resolution must be the paint space at a mipmap level.");
+
+// Whole-name matches only, so that renaming Paint1 leaves Paint10's paths alone; a name may be
+// followed by '_', as in the default paths.
+std::string
+renameInPath(const std::string& value,
+             const std::string& from,
+             const std::string& to)
+{
+    if (from.empty() || (from == to)) {
+        return value;
+    }
+    const auto partOfName = [](char c, bool allowUnderscore) {
+        return std::isalnum((unsigned char)c) || (allowUnderscore && (c == '_'));
+    };
+    std::string out;
+    std::size_t start = 0;
+    for (std::size_t at = value.find(from); at != std::string::npos; at = value.find(from, at + 1)) {
+        if (at < start) {
+            continue;
+        }
+        const std::size_t end = at + from.size();
+        const bool boundedBefore = (at == 0) || !partOfName(value[at - 1], true);
+        const bool boundedAfter = (end == value.size()) || !partOfName(value[end], false);
+        if (!boundedBefore || !boundedAfter) {
+            continue;
+        }
+        out += value.substr(start, at - start) + to;
+        start = end;
+    }
+
+    return out + value.substr(start);
+}
 
 std::vector<ChoiceOption>
 resolutionOptions()
@@ -287,6 +324,28 @@ TexturePaint::TexturePaint(NodePtr node)
 TexturePaint::~TexturePaint()
 {
     TexturePaintBaker::retire(std::move(_baker));
+
+    std::string directory;
+    bool perProcess = false;
+    {
+        std::lock_guard<std::mutex> lock(_tileDirectoryMutex);
+        directory = _tileDirectory;
+        perProcess = _tileDirectoryPerProcess;
+    }
+    if (directory.empty()) {
+        return;
+    }
+    // A saved project's tiles outlive its closing, for the next session to reuse; a deleted
+    // node's, or an unsaved project's, which nothing can name again, do not.
+    const AppInstancePtr app = getApp();
+    const bool closing = !app || !app->getProject() || app->getProject()->isProjectClosing();
+    if (closing && !perProcess) {
+        return;
+    }
+    std::thread([directory]() {
+        std::error_code ec;
+        std::filesystem::remove_all(directory, ec);
+    }).detach();
 }
 
 const NodeSpec*
@@ -555,6 +614,24 @@ TexturePaint::onEffectCreated(bool /*mayCreateFileDialog*/,
         syncStrokeLifetimes();
 
         return;
+    }
+
+    const Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    const ProjectPtr project = getApp() ? getApp()->getProject() : ProjectPtr();
+    // A paste or duplicate copies the path knobs too; it would bake over its source's files.
+    if (serialization && project && !project->isLoadingProject()) {
+        const std::string from = serialization->scriptName;
+        const std::string to = getNode()->getScriptName_mt_safe();
+        for (const KnobOutputFilePtr& knob : { _bakeInputsPath.lock(), _bakeOutputPath.lock() }) {
+            if (!knob) {
+                continue;
+            }
+            const std::string value = knob->getValue();
+            const std::string renamed = renameInPath(value, from, to);
+            if (renamed != value) {
+                knob->setValue(renamed);
+            }
+        }
     }
 
     // A loaded node's sessions get their views now, so its tiles render before any session is added.
@@ -972,10 +1049,23 @@ TexturePaint::getViewBaseFiles(double time) const
 std::string
 TexturePaint::getTileDirectory() const
 {
+    const std::string root = appPTR->getDiskCacheLocation().toStdString();
+    static std::once_flag pruned;
+    std::call_once(pruned, [root]() {
+        std::thread([root]() {
+            TexturePaintCache::pruneDeadProcessDirectories(root);
+        }).detach();
+    });
     AppInstancePtr app = getApp();
-    const std::string projectFile = (app && app->getProject()) ? (app->getProject()->getProjectPath() + app->getProject()->getProjectFilename()).toStdString() : std::string();
+    const bool saved = app && app->getProject() && app->getProject()->hasProjectBeenSavedByUser();
+    const std::string directory = TexturePaintCache::tileDirectory(root, getNode()->getCacheID(), saved ? 0 : (long)::getpid());
+    {
+        std::lock_guard<std::mutex> lock(_tileDirectoryMutex);
+        _tileDirectory = directory;
+        _tileDirectoryPerProcess = !saved;
+    }
 
-    return TexturePaintCache::tileDirectory(appPTR->getDiskCacheLocation().toStdString(), projectFile, getNode()->getFullyQualifiedName());
+    return directory;
 }
 
 std::vector<std::string>
@@ -1024,8 +1114,6 @@ struct TexturePaint::BakeOutputRun {
     int lastFrame = 1;
     std::vector<std::string> viewNames;
     std::string pattern;
-    std::string backupDirectory;
-    std::string previousRecord;
     std::string primvar;
     std::string expression;
     int size = 0;
@@ -1036,7 +1124,7 @@ struct TexturePaint::BakeOutputRun {
     // The sessions with strokes that were not frozen when the bake began, with their stroke counts then.
     std::vector<std::pair<RotoLayerPtr, int>> sessions;
     std::vector<std::string> files;
-    std::vector<std::pair<std::string, std::string>> backups;
+    std::shared_ptr<BakeOutputFiles> undoFiles;
     QStringList tileNames;
 };
 
@@ -1183,20 +1271,17 @@ TexturePaint::bakeInputs(double time,
 bool
 TexturePaint::prepareBakeOutput(double time,
                                 ViewIdx view,
-                                const std::string& backupDirectory,
                                 BakeOutputRun* run,
                                 std::string* error)
 {
     if (!getBakeOutputPattern(&run->pattern, error)) {
         return false;
     }
-    KnobStringPtr record = _bakedOutput.lock();
     KnobStringPtr uvPrimvar = _uvPrimvar.lock();
     run->time = getTextureTime(time);
     run->view = view;
     getBakeFrames(&run->firstFrame, &run->lastFrame);
-    run->backupDirectory = backupDirectory;
-    run->previousRecord = record ? record->getValue() : std::string();
+    run->undoFiles = std::make_shared<BakeOutputFiles>();
     run->primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
     run->expression = _primPattern.getExpression();
     run->size = getTileResolution();
@@ -1225,6 +1310,17 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                             const BakeControl& control,
                             std::string* error)
 {
+    // A bake that does not finish leaves the files as they were.
+    struct RollBack {
+        TexturePaint::BakeOutputFiles* files;
+        bool armed;
+        ~RollBack()
+        {
+            if (armed && files) {
+                TexturePaint::rollBackBakeOutputFiles(files);
+            }
+        }
+    } rollBack = { run.undoFiles.get(), true };
     InputScene scene;
     if (!openInputScene(run.input, run.time, run.view, run.fps, &scene, error)) {
         return false;
@@ -1283,16 +1379,8 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
                 if (!MaterialBake::purposePath(framePattern, purpose.toStdString(), tile, &path, error)) {
                     return false;
                 }
-                std::error_code ec;
-                if (!run.backupDirectory.empty() && !run.previousRecord.empty() && std::filesystem::is_regular_file(path, ec)) {
-                    const std::string copy = run.backupDirectory + "/" + std::to_string(run.backups.size()) + "_" + std::filesystem::path(path).filename().string();
-                    std::filesystem::create_directories(run.backupDirectory, ec);
-                    if (!std::filesystem::copy_file(path, copy, std::filesystem::copy_options::overwrite_existing, ec)) {
-                        *error = tr("%1 cannot be kept to undo the bake: %2").arg(QString::fromStdString(path)).arg(QString::fromStdString(ec.message())).toStdString();
-
-                        return false;
-                    }
-                    run.backups.push_back(std::make_pair(path, copy));
+                if (run.undoFiles && !backUpBakeTarget(run.undoFiles.get(), path, error)) {
+                    return false;
                 }
                 if (!TexturePaintCache::writeTile(path, run.size, rgba, std::string(), error)) {
                     return false;
@@ -1305,6 +1393,7 @@ TexturePaint::runBakeOutput(BakeOutputRun& run,
             stepsDone += 1.;
         }
     }
+    rollBack.armed = false;
 
     return true;
 }
@@ -1313,7 +1402,9 @@ void
 TexturePaint::applyBakeOutput(BakeOutputRun& run,
                               BakeOutputState* state)
 {
-    state->record = run.previousRecord;
+    KnobStringPtr record = _bakedOutput.lock();
+    // Read as the bake lands rather than as it was queued: an earlier bake may have landed since.
+    state->record = record ? record->getValue() : std::string();
     state->frozen.clear();
     // A session painted on while the bake ran has strokes the files lack: it stays live.
     for (const std::pair<RotoLayerPtr, int>& entry : run.sessions) {
@@ -1322,9 +1413,8 @@ TexturePaint::applyBakeOutput(BakeOutputRun& run,
             state->frozen.push_back(entry.first);
         }
     }
-    KnobStringPtr record = _bakedOutput.lock();
     if (record) {
-        state->bakedRecord = nextBakeRecord(run.previousRecord, run.purposes, run.tileNames, run.firstFrame, run.lastFrame);
+        state->bakedRecord = nextBakeRecord(state->record, run.purposes, run.tileNames, run.firstFrame, run.lastFrame);
         record->setValue(state->bakedRecord);
     }
     syncSessionViews();
@@ -1333,16 +1423,16 @@ TexturePaint::applyBakeOutput(BakeOutputRun& run,
 bool
 TexturePaint::writeBakeOutput(double time,
                               ViewIdx view,
-                              const std::string& backupDirectory,
                               std::vector<std::string>* files,
-                              std::vector<std::pair<std::string, std::string>>* backups,
+                              std::shared_ptr<BakeOutputFiles>* undoFiles,
                               BakeOutputState* state,
                               std::string* error)
 {
     files->clear();
+    undoFiles->reset();
     error->clear();
     BakeOutputRun run;
-    if (!prepareBakeOutput(time, view, backupDirectory, &run, error)) {
+    if (!prepareBakeOutput(time, view, &run, error)) {
         return false;
     }
     bool ok = false;
@@ -1351,8 +1441,6 @@ TexturePaint::writeBakeOutput(double time,
         ok = runBakeOutput(run, BakeControl(), error);
     });
     worker.join();
-    *files = run.files;
-    *backups = run.backups;
     if (!ok) {
         if (error->empty()) {
             *error = tr("The painted texture could not be baked.").toStdString();
@@ -1360,6 +1448,8 @@ TexturePaint::writeBakeOutput(double time,
 
         return false;
     }
+    *files = run.files;
+    *undoFiles = run.undoFiles;
     applyBakeOutput(run, state);
 
     return true;
@@ -1411,32 +1501,304 @@ TexturePaint::syncStrokeLifetimes()
     }
 }
 
-std::string
-TexturePaint::makeBackupDirectory() const
-{
-    static std::atomic<unsigned int> bakes(0);
-
-    return getTileDirectory() + "/undo/" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(++bakes);
-}
-
 UndoCommandPtr
 TexturePaint::bakeOutput(double time,
                          ViewIdx view,
                          std::vector<std::string>* files,
                          std::string* error)
 {
-    const std::string backupDirectory = makeBackupDirectory();
-    std::vector<std::pair<std::string, std::string>> backups;
+    std::shared_ptr<BakeOutputFiles> undoFiles;
     BakeOutputState state;
 
-    if (!writeBakeOutput(time, view, backupDirectory, files, &backups, &state, error)) {
-        std::error_code ec;
-        std::filesystem::remove_all(backupDirectory, ec);
-
+    if (!writeBakeOutput(time, view, files, &undoFiles, &state, error)) {
         return UndoCommandPtr();
     }
 
-    return std::make_shared<TexturePaintBakeOutputUndoCommand>(getNode(), state, *files, backups, backupDirectory);
+    return std::make_shared<TexturePaintBakeOutputUndoCommand>(getNode(), state, undoFiles);
+}
+
+namespace {
+// A rename, or a copy and delete where the two paths are on different file systems.
+bool
+moveFile(const std::string& from,
+         const std::string& to,
+         std::error_code& ec)
+{
+    ec.clear();
+    std::filesystem::rename(from, to, ec);
+    if (ec == std::errc::cross_device_link) {
+        ec.clear();
+        if (std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec)) {
+            std::filesystem::remove(from, ec);
+        }
+    }
+
+    return !ec;
+}
+
+// Makes to hold what from holds: a hard link, or a copy where the file system has none.
+bool
+keepFile(const std::string& from,
+         const std::string& to,
+         std::error_code& ec)
+{
+    std::error_code ignored;
+    std::filesystem::remove(to, ignored);
+    ec.clear();
+    std::filesystem::create_hard_link(from, to, ec);
+    if (ec) {
+        ec.clear();
+        std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
+    }
+
+    return !ec;
+}
+
+// The file moves of one swap, so that a failure part way through can put back what moved.
+class SwapJournal {
+public:
+    bool move(const std::string& from,
+              const std::string& to,
+              std::string* error)
+    {
+        std::error_code ec;
+        if (!moveFile(from, to, ec)) {
+            *error = QCoreApplication::translate("TexturePaint", "%1 cannot be moved to %2: %3").arg(QString::fromStdString(from)).arg(QString::fromStdString(to)).arg(QString::fromStdString(ec.message())).toStdString();
+
+            return false;
+        }
+        _steps.push_back(Step { from, to, false });
+
+        return true;
+    }
+
+    bool keep(const std::string& from,
+              const std::string& to,
+              std::string* error)
+    {
+        std::error_code ec;
+        if (!keepFile(from, to, ec)) {
+            *error = QCoreApplication::translate("TexturePaint", "%1 cannot be kept to undo the bake: %2").arg(QString::fromStdString(from)).arg(QString::fromStdString(ec.message())).toStdString();
+
+            return false;
+        }
+        _steps.push_back(Step { from, to, true });
+
+        return true;
+    }
+
+    void revert()
+    {
+        for (std::vector<Step>::reverse_iterator it = _steps.rbegin(); it != _steps.rend(); ++it) {
+            std::error_code ec;
+            if (it->kept) {
+                std::filesystem::remove(it->to, ec);
+            } else {
+                moveFile(it->to, it->from, ec);
+            }
+        }
+        _steps.clear();
+    }
+
+private:
+    struct Step {
+        std::string from;
+        std::string to;
+        bool kept;
+    };
+    std::vector<Step> _steps;
+};
+
+void
+evictBakeTargets(const TexturePaint::BakeOutputFiles& files)
+{
+    std::vector<std::string> paths;
+
+    for (const TexturePaint::BakeOutputFiles::Entry& entry : files.entries) {
+        paths.push_back(entry.target);
+    }
+    OiioReadSupport::evictHeaders(paths);
+}
+} // anon namespace
+
+bool
+TexturePaint::backUpBakeTarget(BakeOutputFiles* files,
+                               const std::string& target,
+                               std::string* error)
+{
+    for (const BakeOutputFiles::Entry& entry : files->entries) {
+        if (entry.target == target) {
+            return true;
+        }
+    }
+    if (files->token.empty()) {
+        static std::atomic<unsigned int> bakes(0);
+        files->token = std::to_string((long)::getpid()) + "_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "_" + std::to_string(++bakes);
+    }
+    const std::filesystem::path path(target);
+    // Beside the target, on its file system, so that every swap is a rename.
+    const std::filesystem::path directory = path.parent_path() / ".texturepaint-undo" / files->token;
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    if (ec) {
+        *error = tr("%1 cannot be kept to undo the bake: %2").arg(QString::fromStdString(directory.string())).arg(QString::fromStdString(ec.message())).toStdString();
+
+        return false;
+    }
+    files->directories.insert(directory.string());
+    BakeOutputFiles::Entry entry;
+    const std::string name = path.filename().string();
+    const std::string index = std::to_string(files->entries.size());
+    entry.target = target;
+    entry.backup = (directory / ("b" + index + "_" + name)).string();
+    entry.stash = (directory / ("s" + index + "_" + name)).string();
+    if (std::filesystem::is_regular_file(path, ec)) {
+        if (!keepFile(target, entry.backup, ec)) {
+            *error = tr("%1 cannot be kept to undo the bake: %2").arg(QString::fromStdString(target)).arg(QString::fromStdString(ec.message())).toStdString();
+
+            return false;
+        }
+        entry.hasBackup = true;
+    }
+    files->entries.push_back(entry);
+
+    return true;
+}
+
+void
+TexturePaint::rollBackBakeOutputFiles(BakeOutputFiles* files)
+{
+    for (std::vector<BakeOutputFiles::Entry>::reverse_iterator it = files->entries.rbegin(); it != files->entries.rend(); ++it) {
+        std::error_code ec;
+        if (it->hasBackup) {
+            moveFile(it->backup, it->target, ec);
+        } else {
+            std::filesystem::remove(it->target, ec);
+        }
+    }
+    evictBakeTargets(*files);
+    discardBakeOutputFiles(*files);
+    files->entries.clear();
+    files->directories.clear();
+}
+
+bool
+TexturePaint::swapBakeOutputFiles(BakeOutputFiles* files,
+                                  bool undo,
+                                  std::string* error)
+{
+    SwapJournal journal;
+    std::vector<bool> backedUp(files->entries.size());
+
+    for (std::size_t i = 0; i < files->entries.size(); ++i) {
+        const BakeOutputFiles::Entry& entry = files->entries[i];
+        std::error_code ec;
+        const bool targetExists = std::filesystem::is_regular_file(entry.target, ec);
+        bool ok = true;
+        if (undo) {
+            backedUp[i] = entry.hasBackup;
+            if (!targetExists) {
+                *error = tr("%1 is missing, so the bake cannot be undone.").arg(QString::fromStdString(entry.target)).toStdString();
+                ok = false;
+            } else if (entry.hasBackup) {
+                // A link first, then a rename over the target: the target never goes missing.
+                ok = journal.keep(entry.target, entry.stash, error) && journal.move(entry.backup, entry.target, error);
+            } else {
+                ok = journal.move(entry.target, entry.stash, error);
+            }
+        } else {
+            backedUp[i] = targetExists;
+            if (targetExists) {
+                ok = journal.keep(entry.target, entry.backup, error) && journal.move(entry.stash, entry.target, error);
+            } else {
+                ok = journal.move(entry.stash, entry.target, error);
+            }
+        }
+        if (!ok) {
+            journal.revert();
+            evictBakeTargets(*files);
+
+            return false;
+        }
+    }
+    for (std::size_t i = 0; i < files->entries.size(); ++i) {
+        files->entries[i].hasBackup = backedUp[i];
+    }
+    evictBakeTargets(*files);
+
+    return true;
+}
+
+void
+TexturePaint::discardBakeOutputFiles(const BakeOutputFiles& files)
+{
+    for (const std::string& directory : files.directories) {
+        std::error_code ec;
+        std::filesystem::remove_all(directory, ec);
+        // Only removed once no other bake's backups are in it.
+        std::filesystem::remove(std::filesystem::path(directory).parent_path(), ec);
+    }
+}
+
+bool
+TexturePaint::enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& files,
+                                    const BakeOutputState& state,
+                                    bool undo)
+{
+    if (!files) {
+        return false;
+    }
+    std::shared_ptr<std::string> failure = std::make_shared<std::string>();
+    TexturePaintBaker::Bake bake;
+    bake.label = undo ? tr("Undoing Bake Output") : tr("Redoing Bake Output");
+    const std::weak_ptr<TexturePaint> weak = weakSelf();
+    bake.work = [files, undo, failure](TexturePaintBaker::Context& /*context*/) -> bool {
+        return swapBakeOutputFiles(files.get(), undo, failure.get());
+    };
+    bake.completion = [weak, state, undo, failure](bool ok) {
+        const std::shared_ptr<TexturePaint> self = weak.lock();
+        if (!self) {
+            return;
+        }
+        if (!ok) {
+            self->setPersistentMessage(eMessageTypeError, failure->empty() ? tr("The files of the bake could not be swapped.").toStdString() : *failure);
+
+            return;
+        }
+        if (undo) {
+            self->restoreBakeOutputState(state);
+        } else {
+            self->reapplyBakeOutputState(state);
+        }
+    };
+    if (!getBaker()->enqueue(bake)) {
+        setPersistentMessage(eMessageTypeError, tr("The files of the bake could not be swapped: the node no longer bakes.").toStdString());
+
+        return false;
+    }
+
+    return true;
+}
+
+void
+TexturePaint::enqueueBakeOutputDiscard(const std::shared_ptr<BakeOutputFiles>& files)
+{
+    if (!files) {
+        return;
+    }
+    TexturePaintBaker::Bake bake;
+    bake.label = tr("Discarding Bake Output backups");
+    bake.work = [files](TexturePaintBaker::Context& /*context*/) -> bool {
+        discardBakeOutputFiles(*files);
+
+        return true;
+    };
+    // Never makes a baker: with none, no swap of files is queued for the discard to follow.
+    if (!_baker || !_baker->enqueue(bake)) {
+        std::thread([files]() {
+            discardBakeOutputFiles(*files);
+        }).detach();
+    }
 }
 
 namespace {
@@ -2369,9 +2731,8 @@ TexturePaint::enqueueBakeOutput(double time,
 {
     std::shared_ptr<BakeOutputRun> run = std::make_shared<BakeOutputRun>();
     std::string error;
-    const std::string backupDirectory = makeBackupDirectory();
 
-    if (!prepareBakeOutput(time, view, backupDirectory, run.get(), &error)) {
+    if (!prepareBakeOutput(time, view, run.get(), &error)) {
         setPersistentMessage(eMessageTypeError, error);
 
         return false;
@@ -2390,12 +2751,8 @@ TexturePaint::enqueueBakeOutput(double time,
 
         return self->runBakeOutput(*run, control, failure.get());
     };
-    bake.completion = [weak, run, failure, backupDirectory](bool ok) {
+    bake.completion = [weak, run, failure](bool ok) {
         const std::shared_ptr<TexturePaint> self = weak.lock();
-        if (!ok || !self) {
-            std::error_code ec;
-            std::filesystem::remove_all(backupDirectory, ec);
-        }
         if (!self) {
             return;
         }
@@ -2409,7 +2766,7 @@ TexturePaint::enqueueBakeOutput(double time,
         self->applyBakeOutput(*run, &state);
         self->clearPersistentMessage(false);
         self->landBake(true);
-        self->pushUndoCommand(std::make_shared<TexturePaintBakeOutputUndoCommand>(self->getNode(), state, run->files, run->backups, backupDirectory));
+        self->pushUndoCommand(std::make_shared<TexturePaintBakeOutputUndoCommand>(self->getNode(), state, run->undoFiles));
     };
 
     return getBaker()->enqueue(bake);
@@ -2539,11 +2896,13 @@ TexturePaint::getSessionBufferSize(const RotoLayerPtr& session,
 namespace {
 /**
  * The plane image holds over pixels as 4 floats per pixel, zero outside rendered, the part of
- * pixels the render covered. A missing image fails, with *error empty when abortInfo was aborted:
- * a buffer of zeros would be cached as paint that erased the texture.
+ * pixels the render covered. ok is renderNodeImageIfAny()'s result: with a null image it means the
+ * node has nothing over pixels, all zeros. A failed render fails, with *error empty when abortInfo
+ * was aborted: a buffer of zeros would be cached as paint that erased the texture.
  **/
 bool
-readPlane(const ImagePtr& image,
+readPlane(bool ok,
+          const ImagePtr& image,
           const RectI& pixels,
           const RectI& rendered,
           const AbortableRenderInfoPtr& abortInfo,
@@ -2553,7 +2912,12 @@ readPlane(const ImagePtr& image,
     const std::size_t width = (std::size_t)pixels.width();
 
     rgba->clear();
-    if (!image) {
+    if (ok && !image) {
+        rgba->assign(width * (std::size_t)pixels.height() * 4, 0.f);
+
+        return true;
+    }
+    if (!ok || !image) {
         if (abortInfo && abortInfo->isAborted()) {
             error->clear();
         } else {
@@ -2635,10 +2999,12 @@ TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
 
     RectI rendered;
     std::vector<float> base;
-    const ImagePtr baseImage = renderNodeImage(viewNode, time, view, level, pixels, plane, &rendered, abortInfo);
-    if (!readPlane(baseImage, pixels, rendered, abortInfo, &base, error)) {
+    ImagePtr baseImage;
+    const bool baseOk = renderNodeImageIfAny(viewNode, time, view, level, pixels, plane, &baseImage, &rendered, abortInfo);
+    if (!readPlane(baseOk, baseImage, pixels, rendered, abortInfo, &base, error)) {
         return false;
     }
+    baseImage.reset();
     buffer->touched.assign(count, 0);
 
     KnobLayerSelect* layerKnob = dynamic_cast<KnobLayerSelect*>(getNode()->getLayerKnob().get());
@@ -2666,10 +3032,12 @@ TexturePaint::renderSessionBufferFrom(const NodePtr& viewNode,
 
         return false;
     }
-    const ImagePtr strokesImage = renderNodeImage(top, time, view, level, pixels, plane, &rendered, abortInfo);
-    if (!readPlane(strokesImage, pixels, rendered, abortInfo, &buffer->rgba, error)) {
+    ImagePtr strokesImage;
+    const bool strokesOk = renderNodeImageIfAny(top, time, view, level, pixels, plane, &strokesImage, &rendered, abortInfo);
+    if (!readPlane(strokesOk, strokesImage, pixels, rendered, abortInfo, &buffer->rgba, error)) {
         return false;
     }
+    strokesImage.reset();
 
     bool selected[4] = { true, true, true, true };
     const std::vector<std::string> channels = layerKnob ? layerKnob->getChannels() : std::vector<std::string>();

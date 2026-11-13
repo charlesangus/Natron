@@ -108,8 +108,9 @@ typedef std::pair<PXR_NS::SdfPath, PXR_NS::SdfPath> MeshPair;
  * mesh cannot be baked, a buffer cannot be rendered, or a projection fails; false with *error
  * empty once args.cancelled returns true.
  *
- * Memory: the tile, plus while a session is projected its buffer and one projection of the
- * tile's size; with overlaps, an index per texel too.
+ * Memory: the tile, plus a band of one mesh's layout at a time (about 6.5 MB per 1K of tile
+ * width), and while a session is projected its buffer, a float mask of it and the camera's depth;
+ * with overlaps, two bytes per texel more.
  **/
 bool composeTile(const TileArgs& args,
                  bool colour,
@@ -119,13 +120,20 @@ bool composeTile(const TileArgs& args,
                  std::string* error) WARN_UNUSED_RETURN;
 
 /**
- * @brief The directory the tiles of one node are cached in: under root, named by a digest of
- * the project file and the node's fully qualified name, so that nodes whose content hashes
- * agree but whose relative paths resolve elsewhere never share files.
+ * @brief The directory the tiles of one node are cached in: under root, named by the node's
+ * cache id, which no other node shares, so that nodes whose content hashes agree but whose
+ * relative paths resolve elsewhere never share files. pid is that of the process when the
+ * project is unsaved, whose files no later process can name; 0 otherwise.
  **/
 std::string tileDirectory(const std::string& root,
-                          const std::string& projectFile,
-                          const std::string& nodeName) WARN_UNUSED_RETURN;
+                          const std::string& nodeId,
+                          long pid) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Deletes the directories under root that tileDirectory() named for a process that no
+ * longer runs.
+ **/
+void pruneDeadProcessDirectories(const std::string& root);
 
 /**
  * @brief The file in directory caching plane of tile under key; frame is empty for a texture

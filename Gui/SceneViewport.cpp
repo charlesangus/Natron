@@ -64,6 +64,7 @@
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDebug>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
@@ -3867,7 +3868,7 @@ struct SceneViewport::Implementation {
     // render fails, the fallback it had.
     struct PaintJobEntry {
         RotoLayerPtr session;
-        NodePtr viewNode;
+        NodeWPtr viewNode;
         bool render = false;
         bool hasFallback = false;
         PaintOverlay fallback;
@@ -3896,6 +3897,13 @@ struct SceneViewport::Implementation {
     QFutureWatcher<PaintJob>* paintJobWatcher = nullptr;
     bool paintJobRunning = false;
     bool paintJobAgain = false;
+    AbortableRenderInfoPtr paintJobAbort;
+    void abortPaintJob()
+    {
+        if (paintJobAbort) {
+            paintJobAbort->setAborted();
+        }
+    }
     // Bumped when the painted node changes, so a refresh of the previous one is dropped.
     unsigned paintEpoch = 0;
     unsigned paintJobEpoch = 0;
@@ -4061,6 +4069,7 @@ SceneViewport::SceneViewport(QWidget* parent)
     QObject::connect(_imp->paintJobWatcher, &QFutureWatcher<Implementation::PaintJob>::finished, this, [this]() {
         Implementation::PaintJob job = _imp->paintJobWatcher->result();
         _imp->paintJobRunning = false;
+        _imp->paintJobAbort.reset();
         if (_imp->paintJobEpoch == _imp->paintEpoch) {
             _imp->applyPaintJob(&job);
             update();
@@ -4159,6 +4168,16 @@ SceneViewport::~SceneViewport()
     _imp->queueChanged.notify_all();
     if (_imp->worker.joinable()) {
         _imp->worker.join();
+    }
+    // The overlay job holds no pointer to the viewport, so one a render ignoring the abort keeps
+    // past the bound is left to finish on its own rather than stalling the close.
+    _imp->abortPaintJob();
+    if (_imp->paintJobRunning) {
+        const QFuture<Implementation::PaintJob> future = _imp->paintJobWatcher->future();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!future.isFinished() && (std::chrono::steady_clock::now() < deadline)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
     }
     GLContextLoss::releaseNow(this);
 }
@@ -5414,6 +5433,7 @@ SceneViewport::followPaintNode()
     _imp->paintConnections.clear();
     _imp->paintOverlays.clear();
     ++_imp->paintEpoch;
+    _imp->abortPaintJob();
     _imp->paintHostNode = node;
     _imp->bakeFraction = 0.;
     _imp->bakeLabel.clear();
@@ -5461,6 +5481,7 @@ SceneViewport::refreshPaintOverlays()
     TexturePaint* effect = _imp->getPaintNode(&node);
     if (!effect) {
         ++_imp->paintEpoch;
+        _imp->abortPaintJob();
         if (!_imp->paintOverlays.empty()) {
             _imp->paintOverlays.clear();
             update();
@@ -5470,6 +5491,7 @@ SceneViewport::refreshPaintOverlays()
     }
     if (_imp->paintJobRunning) {
         _imp->paintJobAgain = true;
+        _imp->abortPaintJob();
 
         return;
     }
@@ -5505,7 +5527,7 @@ SceneViewport::refreshPaintOverlays()
         }
         if (!planes.empty() && TexturePaint::getSessionCamera(session, &entry.camera)) {
             entry.viewNode = effect->getSessionView(session);
-            entry.render = (bool)entry.viewNode;
+            entry.render = !entry.viewNode.expired();
         }
         anyRender |= entry.render;
         job.push_back(std::move(entry));
@@ -5520,15 +5542,26 @@ SceneViewport::refreshPaintOverlays()
     const ImageLayerDesc plane = planes.back();
     _imp->paintJobRunning = true;
     _imp->paintJobEpoch = _imp->paintEpoch;
-    _imp->paintJobWatcher->setFuture(QtConcurrent::run([node, time, view, plane, job = std::move(job)]() mutable {
-        TexturePaint* texturePaint = dynamic_cast<TexturePaint*>(node->getEffectInstance().get());
+    const AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    _imp->paintJobAbort = abortInfo;
+    const NodeWPtr weakNode = node;
+    _imp->paintJobWatcher->setFuture(QtConcurrent::run([weakNode, abortInfo, time, view, plane, job = std::move(job)]() mutable {
         for (Implementation::PaintJobEntry& entry : job) {
-            if (!entry.render || !texturePaint) {
+            if (!entry.render || abortInfo->isAborted()) {
                 continue;
             }
             TexturePaint::SessionBuffer buffer;
             std::string error;
-            if (texturePaint->renderSessionBufferFrom(entry.viewNode, entry.session, plane, time, view, &buffer, &error)) {
+            bool ok = false;
+            {
+                // Held for the render alone, so that a node deleted meanwhile goes as soon as it ends.
+                const NodePtr paintNode = weakNode.lock();
+                const NodePtr viewNode = entry.viewNode.lock();
+                const EffectInstancePtr effect = paintNode ? paintNode->getEffectInstance() : EffectInstancePtr();
+                TexturePaint* texturePaint = dynamic_cast<TexturePaint*>(effect.get());
+                ok = texturePaint && viewNode && texturePaint->renderSessionBufferFrom(viewNode, entry.session, plane, time, view, &buffer, &error, abortInfo);
+            }
+            if (ok) {
                 entry.image = overlayImage(buffer);
             }
         }

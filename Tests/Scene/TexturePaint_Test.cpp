@@ -42,6 +42,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 #include <gtest/gtest.h>
 
 #include <OpenImageIO/imageio.h>
@@ -59,6 +61,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
@@ -77,6 +80,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/TexturePaint.h"
 #include "Engine/Nodes/Scene/TexturePaintBaker.h"
+#include "Engine/Nodes/Scene/TexturePaintCache.h"
 #include "Engine/Nodes/Scene/TexturePaintView.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
@@ -92,6 +96,8 @@
 #include "Engine/RotoUndoCommand.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/ViewIdx.h"
+
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_USING
 
@@ -1437,6 +1443,48 @@ TEST_F(TexturePaintTest, NewStrokesLeaveFrozenSessionsUnrendered)
     expectColor(texelAt(tile, 0.5, 0.5), 1.f, 1.f, 0.f, 1.f, "the live stroke");
 }
 
+namespace {
+typedef std::chrono::steady_clock Clock;
+
+// Runs the main thread's event loop, where bakes land, until done() or timeoutMs passes.
+bool
+pumpUntil(const std::function<bool()>& done,
+          int timeoutMs)
+{
+    const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+
+    while (!done()) {
+        if (Clock::now() > deadline) {
+            return false;
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(2);
+    }
+
+    return true;
+}
+
+long
+millisSince(const Clock::time_point& start)
+{
+    return (long)std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+}
+
+// Undoes or redoes a Bake Output command, whose files move on the baker, and waits for it to land.
+void
+undoBakeOutput(const NodePtr& paint,
+               const UndoCommandPtr& command,
+               bool undo)
+{
+    if (undo) {
+        command->undo();
+    } else {
+        command->redo();
+    }
+    EXPECT_TRUE(pumpUntil([&]() { return !getTexturePaint(paint)->isBaking(); }, 30000));
+}
+} // anon namespace
+
 TEST_F(TexturePaintTest, UndoingABakeBringsItsSessionsBackLive)
 {
     QTemporaryDir dir;
@@ -1456,7 +1504,7 @@ TEST_F(TexturePaintTest, UndoingABakeBringsItsSessionsBackLive)
     command->redo();
     ASSERT_TRUE(bool(renderTile(paint)));
 
-    command->undo();
+    undoBakeOutput(paint, command, true);
     EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
     EXPECT_TRUE(effect->getBakedOutputFiles().empty());
     appPTR->clearAllCaches();
@@ -1471,7 +1519,7 @@ TEST_F(TexturePaintTest, UndoingABakeBringsItsSessionsBackLive)
     ASSERT_TRUE(bool(tile));
     expectColor(texelAt(tile, 0.5, 0.5), 1.f, 0.f, 1.f, 1.f, "a stroke after the undo");
 
-    command->redo();
+    undoBakeOutput(paint, command, false);
     EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
     EXPECT_FALSE(effect->getBakedOutputFiles().empty());
 }
@@ -1537,34 +1585,6 @@ TEST_F(TexturePaintTest, ViewShowsTheBakedBase)
     expectColor(pixelAt(buffer, 0.35, 0.5), 0.f, 1.f, 0.f, 1.f, "the baked output under the stroke");
     expectColor(pixelAt(buffer, 0.65, 0.5), right[0], right[1], right[2], 1.f, "the baked output away from it");
 }
-
-namespace {
-typedef std::chrono::steady_clock Clock;
-
-// Runs the main thread's event loop, where bakes land, until done() or timeoutMs passes.
-bool
-pumpUntil(const std::function<bool()>& done,
-          int timeoutMs)
-{
-    const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
-
-    while (!done()) {
-        if (Clock::now() > deadline) {
-            return false;
-        }
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
-        QThread::msleep(2);
-    }
-
-    return true;
-}
-
-long
-millisSince(const Clock::time_point& start)
-{
-    return (long)std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
-}
-} // anon namespace
 
 TEST_F(TexturePaintTest, QueuedSessionBakesFinishInOrder)
 {
@@ -2016,15 +2036,15 @@ TEST_F(TexturePaintTest, RedoingABakeOutputRestoresItsFilesWithoutBaking)
     std::string error;
     ASSERT_TRUE(MaterialBake::readBaseTile(red, kSmallTile, &baked, &resampled, &error)) << error;
 
-    command->undo();
+    undoBakeOutput(paint, command, true);
     EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+    EXPECT_FALSE(std::filesystem::exists(red)) << "the bake made the file, so its undo takes it away";
     // Something else takes the place of the bake's file while it is undone.
-    std::error_code ec;
-    std::filesystem::remove(red, ec);
-    ASSERT_FALSE(std::filesystem::exists(red));
+    const float grey[3] = { 0.5f, 0.5f, 0.5f };
+    writeSplitTexture(red, grey, grey);
 
     const int renders = effect->getSessionRenderCount();
-    command->redo();
+    undoBakeOutput(paint, command, false);
     EXPECT_EQ(renders, effect->getSessionRenderCount()) << "redo does not render a session";
     EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
     EXPECT_EQ(files, effect->getBakedOutputFiles());
@@ -2033,4 +2053,134 @@ TEST_F(TexturePaintTest, RedoingABakeOutputRestoresItsFilesWithoutBaking)
     EXPECT_EQ(0u, countDifferences(baked, restored, 0.f));
     expectColor(texelAt(renderTile(paint), 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the redone bake");
     EXPECT_EQ(renders, effect->getSessionRenderCount()) << "the redone bake's tiles come from its files";
+
+    undoBakeOutput(paint, command, true);
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.5f, 0.5f, 0.5f, 1.f, "the file the redo replaced");
+}
+
+TEST_F(TexturePaintTest, UndoingAFirstBakeOutputBringsBackTheFilesItReplaced)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    const std::string red = setBakeOutputPath(paint, dir);
+    const std::string blue = (dir.path() + QString::fromUtf8("/out.1002.exr")).toStdString();
+    const float left[3] = { 0.25f, 0.5f, 0.75f };
+    const float right[3] = { 0.75f, 0.5f, 0.25f };
+    writeSplitTexture(red, left, right);
+    ASSERT_FALSE(std::filesystem::exists(blue));
+    TexturePaint* effect = getTexturePaint(paint);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "solid", kRedU, 0.5), 0., 1., 0.);
+
+    std::vector<std::string> files;
+    UndoCommandPtr command = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(command));
+    command->redo();
+    ASSERT_TRUE(std::filesystem::exists(blue));
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the bake over the old file");
+
+    undoBakeOutput(paint, command, true);
+    EXPECT_FALSE(TexturePaint::isSessionFrozen(session));
+    EXPECT_TRUE(effect->getBakedOutputFiles().empty());
+    EXPECT_FALSE(std::filesystem::exists(blue)) << "the file the bake made";
+    expectColor(bakedTexelAt(red, kSmallTile, 0.1, 0.5), left[0], left[1], left[2], 1.f, "the old file's left half");
+    expectColor(bakedTexelAt(red, kSmallTile, 0.9, 0.5), right[0], right[1], right[2], 1.f, "the old file's right half");
+
+    undoBakeOutput(paint, command, false);
+    EXPECT_TRUE(TexturePaint::isSessionFrozen(session));
+    EXPECT_TRUE(std::filesystem::exists(blue));
+    expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "the redone bake");
+}
+
+TEST_F(TexturePaintTest, ACachedTileAppearsWholeOrNotAtAll)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const int size = 8;
+    const std::vector<float> rgba((std::size_t)size * size * 4, 0.5f);
+    const std::string path = (dir.path() + QString::fromUtf8("/tile.1001.exr")).toStdString();
+    std::string error;
+    ASSERT_TRUE(TexturePaintCache::writeTile(path, size, rgba, "note", &error)) << error;
+    std::string note;
+    EXPECT_TRUE(TexturePaintCache::readTileNote(path, size, &note));
+    EXPECT_EQ("note", note);
+
+    // A directory in the way makes the write fail at its last step, once the pixels are written.
+    const std::string blocked = (dir.path() + QString::fromUtf8("/blocked.1001.exr")).toStdString();
+    ASSERT_TRUE(std::filesystem::create_directory(blocked));
+    error.clear();
+    EXPECT_FALSE(TexturePaintCache::writeTile(blocked, size, rgba, "note", &error));
+    EXPECT_FALSE(error.empty());
+    EXPECT_TRUE(std::filesystem::is_directory(blocked));
+
+    std::vector<std::string> names;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(dir.path().toStdString())) {
+        names.push_back(entry.path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    EXPECT_EQ((std::vector<std::string> { "blocked.1001.exr", "tile.1001.exr" }), names) << "no partial file is left";
+}
+
+TEST_F(TexturePaintTest, PastedNodeBakesToItsOwnFiles)
+{
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    ASSERT_TRUE(bool(getTexturePaint(source)));
+    const std::string sourceName = source->getScriptName();
+    KnobOutputFilePtr sourceOutput = getKnob<KnobOutputFile>(source, kTexturePaintParamBakeOutputPath);
+    sourceOutput->setValue("/shots/" + sourceName + "/" + sourceName + "_out.<UDIM>.exr");
+    const std::string sourceInputs = getKnob<KnobOutputFile>(source, kTexturePaintParamBakeInputsPath)->getValue();
+    ASSERT_NE(std::string::npos, sourceInputs.find(sourceName));
+
+    Serialization::NodeSerializationPtr serialization = std::make_shared<Serialization::NodeSerialization>();
+    source->toSerialization(serialization.get());
+    CreateNodeArgs args(serialization->pluginID, source->getGroup());
+    args.setProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization, serialization);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, serialization->pluginMajorVersion, 0);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, serialization->pluginMinorVersion, 1);
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+    args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr copy = getApp()->createNode(args);
+    ASSERT_TRUE(bool(getTexturePaint(copy)));
+    const std::string copyName = copy->getScriptName();
+    ASSERT_NE(sourceName, copyName);
+
+    EXPECT_EQ("/shots/" + copyName + "/" + copyName + "_out.<UDIM>.exr", getKnob<KnobOutputFile>(copy, kTexturePaintParamBakeOutputPath)->getValue());
+    const std::string copyInputs = getKnob<KnobOutputFile>(copy, kTexturePaintParamBakeInputsPath)->getValue();
+    EXPECT_NE(sourceInputs, copyInputs);
+    EXPECT_NE(std::string::npos, copyInputs.find(copyName)) << copyInputs;
+    EXPECT_EQ("/shots/" + sourceName + "/" + sourceName + "_out.<UDIM>.exr", sourceOutput->getValue()) << "the source keeps its paths";
+}
+
+TEST_F(TexturePaintTest, NodesAndProcessesCacheTilesApart)
+{
+    NodePtr first = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    NodePtr second = createNode(QString::fromUtf8(PLUGINID_NATRON_TEXTUREPAINT));
+    ASSERT_TRUE(first && second);
+    EXPECT_NE(first->getCacheID(), second->getCacheID());
+    const std::string root = "/cache";
+    const std::string id = first->getCacheID();
+    EXPECT_NE(TexturePaintCache::tileDirectory(root, id, 0), TexturePaintCache::tileDirectory(root, second->getCacheID(), 0));
+    EXPECT_NE(TexturePaintCache::tileDirectory(root, id, 100), TexturePaintCache::tileDirectory(root, id, 101));
+    EXPECT_NE(TexturePaintCache::tileDirectory(root, id, 0), TexturePaintCache::tileDirectory(root, id, 100));
+
+    // Above the kernel's largest pid, so that no process can have it.
+    const long deadPid = 4194305;
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string cache = dir.path().toStdString();
+    const std::string dead = TexturePaintCache::tileDirectory(cache, id, deadPid);
+    const std::string mine = TexturePaintCache::tileDirectory(cache, id, (long)::getpid());
+    const std::string saved = TexturePaintCache::tileDirectory(cache, id, 0);
+    for (const std::string& path : { dead, mine, saved }) {
+        ASSERT_TRUE(std::filesystem::create_directories(path)) << path;
+    }
+    TexturePaintCache::pruneDeadProcessDirectories(cache);
+    EXPECT_FALSE(std::filesystem::exists(dead));
+    EXPECT_TRUE(std::filesystem::exists(mine));
+    EXPECT_TRUE(std::filesystem::exists(saved));
 }

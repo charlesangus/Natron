@@ -29,9 +29,6 @@
 #include "Global/Macros.h"
 
 #include <memory>
-#include <string>
-#include <utility>
-#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Scene/TexturePaint.h"
@@ -42,19 +39,18 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The undo step of a TexturePaint Bake Output, which the bake has done already. Undoing it
- * puts back the output files an earlier bake had written, from copies the command owns, unfreezes
- * the sessions it froze and sets the bake record back, so those sessions render from their
- * strokes again. Undoing also copies the files the bake wrote aside, and redoing puts those
- * copies back and freezes the same sessions again, so a redo never bakes.
+ * puts back what the output files held before the bake, unfreezes the sessions it froze and sets
+ * the bake record back, so those sessions render from their strokes again; a file the bake
+ * created goes. Redoing puts the bake's files back and freezes the same sessions again, so a
+ * redo never bakes. Both swap the files by renames on the node's baker and change the node once
+ * that lands, so neither waits on the disk.
  **/
 class TexturePaintBakeOutputUndoCommand
     : public UndoCommand {
 public:
     TexturePaintBakeOutputUndoCommand(const NodePtr& node,
                                       const TexturePaint::BakeOutputState& state,
-                                      const std::vector<std::string>& files,
-                                      const std::vector<std::pair<std::string, std::string>>& backups,
-                                      const std::string& backupDirectory);
+                                      const std::shared_ptr<TexturePaint::BakeOutputFiles>& files);
 
     virtual ~TexturePaintBakeOutputUndoCommand();
 
@@ -66,14 +62,7 @@ private:
 
     NodeWPtr _node;
     TexturePaint::BakeOutputState _state;
-    // The files the bake wrote.
-    std::vector<std::string> _files;
-    // (file the bake wrote, copy of it taken when the bake was undone) pairs.
-    std::vector<std::pair<std::string, std::string>> _stashed;
-    bool _redoable;
-    // (output file, copy of it before the bake) pairs.
-    std::vector<std::pair<std::string, std::string>> _backups;
-    std::string _backupDirectory;
+    std::shared_ptr<TexturePaint::BakeOutputFiles> _files;
     bool _firstRedo;
 };
 

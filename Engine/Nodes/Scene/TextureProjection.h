@@ -112,6 +112,22 @@ bool project(const PXR_NS::UsdStageRefPtr& stage,
              const Args& args,
              Result* result,
              std::string* errorMessage) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Lays paint, projected as project() projects it, over the args.width x args.height
+ * premultiplied RGBA texels of *rgba, mesh after mesh in the order given (args.meshPath is
+ * ignored): where a mesh's texel sees the image, it becomes rgba * (1 - m) + p, m and p being
+ * mask and paint sampled there. mask is one float per image pixel. The camera's depth is drawn
+ * once for every mesh, and each mesh is laid out a band of rows at a time, so the only buffer as
+ * large as the tile is the caller's. No edge dilation. project()'s errors, plus a null rgba.
+ **/
+bool projectOver(const PXR_NS::UsdStageRefPtr& stage,
+                 const SourceImage& paint,
+                 const float* mask,
+                 const Args& args,
+                 const std::vector<PXR_NS::SdfPath>& meshes,
+                 float* rgba,
+                 std::string* errorMessage) WARN_UNUSED_RETURN;
 } // namespace TextureProjection
 
 NATRON_NAMESPACE_EXIT

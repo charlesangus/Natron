@@ -30,6 +30,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -175,6 +176,39 @@ bool bakeUV(const PXR_NS::UsdStageRefPtr& stage,
             const BakeArgs& args,
             BakeBuffers* buffers,
             std::string* errorMessage) WARN_UNUSED_RETURN;
+
+/**
+ * @brief A mesh laid out in its texture space as bakeUV() lays it out, read from the stage once,
+ * so that the tile can be baked a band of rows at a time: a band's buffers are all that is held,
+ * however large the tile.
+ **/
+class UVLayout {
+public:
+    UVLayout();
+    ~UVLayout();
+
+    UVLayout(const UVLayout&) = delete;
+    UVLayout& operator=(const UVLayout&) = delete;
+
+    // Reads the mesh as bakeUV() does, with its errors. The stage is only read here.
+    bool prepare(const PXR_NS::UsdStageRefPtr& stage,
+                 const BakeArgs& args,
+                 std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief bakeUV()'s buffers over rows [firstRow, firstRow + rowCount) of the tile alone:
+     * buffers->height is rowCount, and element x + y * width is texel (x, firstRow + y) of the
+     * tile. False with *errorMessage empty when args.cancelled returned true.
+     **/
+    bool bakeRows(int firstRow,
+                  int rowCount,
+                  BakeBuffers* buffers,
+                  std::string* errorMessage) const WARN_UNUSED_RETURN;
+
+private:
+    struct Data;
+    std::unique_ptr<Data> _data;
+};
 
 /**
  * @brief Inserts into *tiles every UDIM tile a face of the mesh at primPath covers some area of,

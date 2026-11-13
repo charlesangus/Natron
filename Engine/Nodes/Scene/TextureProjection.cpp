@@ -105,6 +105,118 @@ namespace {
             }
         }
     }
+
+    // The camera an image was painted through, and the depth it saw when occlusion is wanted.
+    struct Viewer {
+        SceneRaster::CameraBuffers zbuffer;
+        PXR_NS::GfMatrix4d viewMatrix;
+        PXR_NS::GfMatrix4d viewProjection;
+        PXR_NS::GfVec3d eye;
+        PXR_NS::GfVec3d towardCamera;
+        bool perspective = true;
+        bool occlusion = true;
+        bool cullBackFaces = true;
+        double bias = 0.;
+        int imageWidth = 0;
+        int imageHeight = 0;
+
+        bool
+        prepare(const PXR_NS::UsdStageRefPtr& stage,
+                const SourceImage& image,
+                const Args& args,
+                std::string* errorMessage)
+        {
+            if (!image.rgba || (image.width <= 0) || (image.height <= 0) || !(image.pixelAspect > 0.)) {
+                *errorMessage = "The image to project is empty.";
+
+                return false;
+            }
+            if (!stage) {
+                *errorMessage = "There is no scene to project onto.";
+
+                return false;
+            }
+            SceneRaster::CameraArgs cameraArgs;
+            cameraArgs.cameraPath = args.cameraPath;
+            cameraArgs.explicitCamera = args.explicitCamera;
+            cameraArgs.time = args.time;
+            cameraArgs.width = image.width;
+            cameraArgs.height = image.height;
+            cameraArgs.pixelAspect = image.pixelAspect;
+            cameraArgs.fit = args.fit;
+            cameraArgs.cancelled = args.cancelled;
+
+            PXR_NS::GfFrustum frustum;
+            if (args.occlusion) {
+                if (!SceneRaster::renderCamera(stage, cameraArgs, &zbuffer, errorMessage)) {
+                    return false;
+                }
+                frustum = zbuffer.frustum;
+                // Only the depth is read.
+                std::vector<std::int32_t>().swap(zbuffer.primIndex);
+                std::vector<PXR_NS::GfVec3f>().swap(zbuffer.worldPosition);
+                std::vector<PXR_NS::GfVec2f>().swap(zbuffer.st);
+                std::vector<std::int32_t>().swap(zbuffer.udimTile);
+            } else if (!SceneRaster::cameraFrustum(stage, cameraArgs, &frustum, errorMessage)) {
+                return false;
+            }
+            viewMatrix = frustum.ComputeViewMatrix();
+            viewProjection = viewMatrix * frustum.ComputeProjectionMatrix();
+            perspective = frustum.GetProjectionType() == PXR_NS::GfFrustum::Perspective;
+            eye = frustum.GetPosition();
+            towardCamera = -frustum.ComputeViewDirection();
+            occlusion = args.occlusion;
+            cullBackFaces = !args.projectBackFaces;
+            bias = args.depthBias;
+            imageWidth = image.width;
+            imageHeight = image.height;
+
+            return true;
+        }
+
+        // Where in the image the point lies, when the camera sees it.
+        bool
+        sees(const PXR_NS::GfVec3f& position,
+             const PXR_NS::GfVec3f& faceNormal,
+             double* fx,
+             double* fy) const
+        {
+            const PXR_NS::GfVec3d world(position);
+            const PXR_NS::GfVec4d p(world[0], world[1], world[2], 1.);
+            const double depth = -(p * viewMatrix)[2];
+            if (!(depth > 0.)) {
+                return false;
+            }
+            const PXR_NS::GfVec3d normal(faceNormal);
+            if (cullBackFaces && (PXR_NS::GfDot(normal, perspective ? (eye - world) : towardCamera) <= 0.)) {
+                return false;
+            }
+            const PXR_NS::GfVec4d clip = p * viewProjection;
+            if (clip[3] <= 0.) {
+                return false;
+            }
+            const double ndcX = clip[0] / clip[3];
+            const double ndcY = clip[1] / clip[3];
+            if ((ndcX < -1.) || (ndcX > 1.) || (ndcY < -1.) || (ndcY > 1.)) {
+                return false;
+            }
+            if (occlusion) {
+                const int zx = std::clamp((int)std::floor((ndcX * 0.5 + 0.5) * zbuffer.width), 0, zbuffer.width - 1);
+                const int zy = std::clamp((int)std::floor((ndcY * 0.5 + 0.5) * zbuffer.height), 0, zbuffer.height - 1);
+                const float nearest = zbuffer.depth[(std::size_t)zx + (std::size_t)zy * (std::size_t)zbuffer.width];
+                if ((double)nearest < depth * (1. - bias)) {
+                    return false;
+                }
+            }
+            *fx = (ndcX * 0.5 + 0.5) * imageWidth;
+            *fy = (ndcY * 0.5 + 0.5) * imageHeight;
+
+            return true;
+        }
+    };
+
+    // Rows per band of a mesh's layout: a band's bake buffers stay a few tens of megabytes at 8K.
+    const int kBandRows = 256;
 } // anonymous namespace
 
 bool
@@ -114,42 +226,11 @@ project(const PXR_NS::UsdStageRefPtr& stage,
         Result* result,
         std::string* errorMessage)
 {
-    if (!image.rgba || (image.width <= 0) || (image.height <= 0) || !(image.pixelAspect > 0.)) {
-        *errorMessage = "The image to project is empty.";
+    Viewer viewer;
 
+    if (!viewer.prepare(stage, image, args, errorMessage)) {
         return false;
     }
-    if (!stage) {
-        *errorMessage = "There is no scene to project onto.";
-
-        return false;
-    }
-
-    SceneRaster::CameraArgs cameraArgs;
-    cameraArgs.cameraPath = args.cameraPath;
-    cameraArgs.explicitCamera = args.explicitCamera;
-    cameraArgs.time = args.time;
-    cameraArgs.width = image.width;
-    cameraArgs.height = image.height;
-    cameraArgs.pixelAspect = image.pixelAspect;
-    cameraArgs.fit = args.fit;
-    cameraArgs.cancelled = args.cancelled;
-
-    SceneRaster::CameraBuffers zbuffer;
-    PXR_NS::GfFrustum frustum;
-    if (args.occlusion) {
-        if (!SceneRaster::renderCamera(stage, cameraArgs, &zbuffer, errorMessage)) {
-            return false;
-        }
-        frustum = zbuffer.frustum;
-    } else if (!SceneRaster::cameraFrustum(stage, cameraArgs, &frustum, errorMessage)) {
-        return false;
-    }
-    const PXR_NS::GfMatrix4d viewMatrix = frustum.ComputeViewMatrix();
-    const PXR_NS::GfMatrix4d viewProjection = viewMatrix * frustum.ComputeProjectionMatrix();
-    const bool perspective = frustum.GetProjectionType() == PXR_NS::GfFrustum::Perspective;
-    const PXR_NS::GfVec3d eye = frustum.GetPosition();
-    const PXR_NS::GfVec3d towardCamera = -frustum.ComputeViewDirection();
 
     SceneRaster::BakeArgs bakeArgs;
     bakeArgs.primPath = args.meshPath;
@@ -167,9 +248,6 @@ project(const PXR_NS::UsdStageRefPtr& stage,
     const Resampler::SourceImage source(image.rgba, RectI(0, 0, image.width, image.height), 4);
     const int width = args.width;
     const int height = args.height;
-    const double bias = args.depthBias;
-    const bool occlusion = args.occlusion;
-    const bool cullBackFaces = !args.projectBackFaces;
     result->width = width;
     result->height = height;
     result->rgba.assign((std::size_t)width * (std::size_t)height * 4, 0.f);
@@ -186,38 +264,10 @@ project(const PXR_NS::UsdStageRefPtr& stage,
         }
         for (int x = 0; x < width; ++x) {
             const std::size_t i = (std::size_t)x + (std::size_t)y * (std::size_t)width;
-            if (!bake.coverage[i]) {
+            double fx, fy;
+            if (!bake.coverage[i] || !viewer.sees(bake.worldPosition[i], bake.worldNormal[i], &fx, &fy)) {
                 continue;
             }
-            const PXR_NS::GfVec3d world(bake.worldPosition[i]);
-            const PXR_NS::GfVec4d p(world[0], world[1], world[2], 1.);
-            const double depth = -(p * viewMatrix)[2];
-            if (!(depth > 0.)) {
-                continue;
-            }
-            const PXR_NS::GfVec3d normal(bake.worldNormal[i]);
-            if (cullBackFaces && (PXR_NS::GfDot(normal, perspective ? (eye - world) : towardCamera) <= 0.)) {
-                continue;
-            }
-            const PXR_NS::GfVec4d clip = p * viewProjection;
-            if (clip[3] <= 0.) {
-                continue;
-            }
-            const double ndcX = clip[0] / clip[3];
-            const double ndcY = clip[1] / clip[3];
-            if ((ndcX < -1.) || (ndcX > 1.) || (ndcY < -1.) || (ndcY > 1.)) {
-                continue;
-            }
-            if (occlusion) {
-                const int zx = std::clamp((int)std::floor((ndcX * 0.5 + 0.5) * zbuffer.width), 0, zbuffer.width - 1);
-                const int zy = std::clamp((int)std::floor((ndcY * 0.5 + 0.5) * zbuffer.height), 0, zbuffer.height - 1);
-                const float nearest = zbuffer.depth[(std::size_t)zx + (std::size_t)zy * (std::size_t)zbuffer.width];
-                if ((double)nearest < depth * (1. - bias)) {
-                    continue;
-                }
-            }
-            const double fx = (ndcX * 0.5 + 0.5) * image.width;
-            const double fy = (ndcY * 0.5 + 0.5) * image.height;
             Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, source, false, &result->rgba[i * 4]);
             result->coverage[i] = 1;
         }
@@ -234,6 +284,95 @@ project(const PXR_NS::UsdStageRefPtr& stage,
 
     return true;
 } // project
+
+bool
+projectOver(const PXR_NS::UsdStageRefPtr& stage,
+            const SourceImage& paint,
+            const float* mask,
+            const Args& args,
+            const std::vector<PXR_NS::SdfPath>& meshes,
+            float* rgba,
+            std::string* errorMessage)
+{
+    if (!rgba || !mask) {
+        *errorMessage = "There is no texture to project onto.";
+
+        return false;
+    }
+    if ((args.width <= 0) || (args.height <= 0)) {
+        *errorMessage = "The texture size is empty.";
+
+        return false;
+    }
+    Viewer viewer;
+    if (!viewer.prepare(stage, paint, args, errorMessage)) {
+        return false;
+    }
+
+    const RectI bounds(0, 0, paint.width, paint.height);
+    const Resampler::SourceImage paintSource(paint.rgba, bounds, 4);
+    const Resampler::SourceImage maskSource(mask, bounds, 1);
+    const int width = args.width;
+    for (const PXR_NS::SdfPath& mesh : meshes) {
+        SceneRaster::BakeArgs bakeArgs;
+        bakeArgs.primPath = mesh;
+        bakeArgs.stName = args.stName;
+        bakeArgs.time = args.time;
+        bakeArgs.width = args.width;
+        bakeArgs.height = args.height;
+        bakeArgs.udimTile = args.udimTile;
+        bakeArgs.cancelled = args.cancelled;
+        SceneRaster::UVLayout layout;
+        if (!layout.prepare(stage, bakeArgs, errorMessage)) {
+            return false;
+        }
+        SceneRaster::BakeBuffers bake;
+        for (int firstRow = 0; firstRow < args.height; firstRow += kBandRows) {
+            const int rows = std::min(kBandRows, args.height - firstRow);
+            if (!layout.bakeRows(firstRow, rows, &bake, errorMessage)) {
+                return false;
+            }
+            std::atomic<bool> stop(false);
+            parallelForOnGlobalPool(rows, maxThreads(), [&](int y) {
+                if (stop.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                if (args.cancelled && args.cancelled()) {
+                    stop = true;
+
+                    return;
+                }
+                float* row = rgba + (std::size_t)(firstRow + y) * (std::size_t)width * 4;
+                for (int x = 0; x < width; ++x) {
+                    const std::size_t i = (std::size_t)x + (std::size_t)y * (std::size_t)width;
+                    double fx, fy;
+                    if (!bake.coverage[i] || !viewer.sees(bake.worldPosition[i], bake.worldNormal[i], &fx, &fy)) {
+                        continue;
+                    }
+                    float m = 0.f;
+                    float p[4] = { 0.f, 0.f, 0.f, 0.f };
+                    Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, maskSource, false, &m);
+                    if (m <= 0.f) {
+                        continue;
+                    }
+                    Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, paintSource, false, p);
+                    const float keep = std::max(0.f, 1.f - m);
+                    float* out = row + (std::size_t)x * 4;
+                    for (int c = 0; c < 4; ++c) {
+                        out[c] = out[c] * keep + p[c];
+                    }
+                }
+            });
+            if (stop.load()) {
+                errorMessage->clear();
+
+                return false;
+            }
+        }
+    }
+
+    return true;
+} // projectOver
 } // namespace TextureProjection
 
 NATRON_NAMESPACE_EXIT

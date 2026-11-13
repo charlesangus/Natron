@@ -615,14 +615,30 @@ renderCamera(const UsdStageRefPtr& stage,
     return true;
 } // renderCamera
 
+struct UVLayout::Data {
+    BakeArgs args;
+    bool wantReader = false;
+    // In tile pixels, rows over the whole tile.
+    std::vector<RasterTriangle> tris;
+};
+
+UVLayout::UVLayout()
+    : _data(new Data)
+{
+}
+
+UVLayout::~UVLayout()
+{
+}
+
 bool
-bakeUV(const UsdStageRefPtr& stage,
-       const BakeArgs& args,
-       BakeBuffers* buffers,
-       std::string* errorMessage)
+UVLayout::prepare(const UsdStageRefPtr& stage,
+                  const BakeArgs& args,
+                  std::string* errorMessage)
 {
     const std::string primName = args.primPath.GetString();
 
+    _data->tris.clear();
     if ((args.width <= 0) || (args.height <= 0)) {
         *errorMessage = "The texture size is empty.";
 
@@ -657,7 +673,7 @@ bakeUV(const UsdStageRefPtr& stage,
 
     const float tileU = (float)((args.udimTile - 1001) % 10);
     const float tileV = (float)((args.udimTile - 1001) / 10);
-    std::vector<RasterTriangle> tris;
+    std::vector<RasterTriangle>& tris = _data->tris;
     tris.reserve(data.triangles.size());
     for (std::size_t t = 0; t < data.triangles.size(); ++t) {
         const GfVec3i& corners = data.triangles[t];
@@ -689,10 +705,43 @@ bakeUV(const UsdStageRefPtr& stage,
         tri.prim = 0;
         tris.push_back(tri);
     }
+    _data->args = args;
+    _data->wantReader = wantReader;
 
-    const std::size_t numTexels = (std::size_t)args.width * (std::size_t)args.height;
+    return true;
+} // UVLayout::prepare
+
+bool
+UVLayout::bakeRows(int firstRow,
+                   int rowCount,
+                   BakeBuffers* buffers,
+                   std::string* errorMessage) const
+{
+    const BakeArgs& args = _data->args;
+    const bool wantReader = _data->wantReader;
+
+    firstRow = std::max(0, firstRow);
+    rowCount = std::max(0, std::min(rowCount, args.height - firstRow));
+
+    // Shifting by a whole number of rows moves every centre test by exactly that much, so a band
+    // draws the texels the whole tile would.
+    std::vector<RasterTriangle> band;
+    for (const RasterTriangle& source : _data->tris) {
+        if ((source.lastRow < firstRow) || (source.firstRow >= firstRow + rowCount)) {
+            continue;
+        }
+        RasterTriangle tri = source;
+        for (int k = 0; k < 3; ++k) {
+            tri.y[k] -= (double)firstRow;
+        }
+        if (setRows(&tri, rowCount)) {
+            band.push_back(tri);
+        }
+    }
+
+    const std::size_t numTexels = (std::size_t)args.width * (std::size_t)rowCount;
     buffers->width = args.width;
-    buffers->height = args.height;
+    buffers->height = rowCount;
     buffers->coverage.assign(numTexels, 0);
     buffers->worldPosition.assign(numTexels, GfVec3f(0.f));
     buffers->worldNormal.assign(numTexels, GfVec3f(0.f));
@@ -701,7 +750,7 @@ bakeUV(const UsdStageRefPtr& stage,
         buffers->readerSt.assign(numTexels, GfVec2f(0.f));
     }
 
-    const bool drawn = rasterize(args.width, args.height, tris, args.cancelled, [buffers, wantReader](const RasterTriangle& tri, std::size_t i, const float w[3]) {
+    const bool drawn = rasterize(args.width, rowCount, band, args.cancelled, [buffers, wantReader](const RasterTriangle& tri, std::size_t i, const float w[3]) {
         buffers->coverage[i] = 1;
         buffers->worldPosition[i] = tri.world[0] * w[0] + tri.world[1] * w[1] + tri.world[2] * w[2];
         buffers->worldNormal[i] = tri.normal;
@@ -716,7 +765,18 @@ bakeUV(const UsdStageRefPtr& stage,
     }
 
     return true;
-} // bakeUV
+} // UVLayout::bakeRows
+
+bool
+bakeUV(const UsdStageRefPtr& stage,
+       const BakeArgs& args,
+       BakeBuffers* buffers,
+       std::string* errorMessage)
+{
+    UVLayout layout;
+
+    return layout.prepare(stage, args, errorMessage) && layout.bakeRows(0, args.height, buffers, errorMessage);
+}
 
 bool
 udimTiles(const UsdStageRefPtr& stage,

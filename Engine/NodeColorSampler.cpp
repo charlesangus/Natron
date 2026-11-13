@@ -97,6 +97,7 @@ renderLayer(const NodePtr& node,
             const RectI& pixelRect,
             const ImageLayerDesc& layer,
             const RectI* window,
+            bool emptyIsResult,
             RectI* roi,
             ImagePtr* image)
 {
@@ -138,7 +139,9 @@ renderLayer(const NodePtr& node,
         *roi = pixelRect.intersect(rod.toPixelEnclosing(mipmapLevel, par));
     }
     if (roi->isNull()) {
-        return false;
+        image->reset();
+
+        return emptyIsResult;
     }
 
     FrameRequestMap request;
@@ -195,6 +198,7 @@ renderNodeImageImpl(const NodePtr& node,
                     const RectI* window,
                     RectI* renderedRect,
                     const AbortableRenderInfoPtr& abortInfoArg,
+                    bool emptyIsResult,
                     bool* rendered)
 {
     *rendered = false;
@@ -223,7 +227,7 @@ renderNodeImageImpl(const NodePtr& node,
 
     RectI roi;
     ImagePtr image;
-    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, &roi, &image);
+    *rendered = renderLayer(node, abortInfo, time, view, mipmapLevel, pixelRect, layer, window, emptyIsResult, &roi, &image);
 
     // The main thread's TLS also holds the state of whatever action is running on it, so only a
     // worker thread, which owns nothing else, is cleaned up as the tracker does.
@@ -254,7 +258,28 @@ renderNodeImage(const NodePtr& node,
 {
     bool rendered;
 
-    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, abortInfo, &rendered);
+    return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, abortInfo, false, &rendered);
+}
+
+bool
+renderNodeImageIfAny(const NodePtr& node,
+                     double time,
+                     ViewIdx view,
+                     unsigned int mipmapLevel,
+                     const RectI& pixelRect,
+                     const ImageLayerDesc& layer,
+                     ImagePtr* image,
+                     RectI* renderedRect,
+                     const AbortableRenderInfoPtr& abortInfo)
+{
+    bool rendered;
+
+    *image = renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, abortInfo, true, &rendered);
+    if (rendered && !*image && renderedRect) {
+        *renderedRect = RectI();
+    }
+
+    return rendered;
 }
 
 bool
@@ -311,7 +336,7 @@ renderNodeImageOverWindow(const NodePtr& node,
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, AbortableRenderInfoPtr(), &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, renderedRect, AbortableRenderInfoPtr(), false, &rendered);
 
     return rendered;
 }

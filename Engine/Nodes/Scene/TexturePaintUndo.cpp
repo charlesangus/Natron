@@ -25,11 +25,9 @@
 
 #include "TexturePaintUndo.h"
 
-#include <filesystem>
-#include <system_error>
+#include <thread>
 
 #include <QCoreApplication>
-#include <QString>
 
 #include "Engine/Node.h"
 
@@ -37,24 +35,30 @@ NATRON_NAMESPACE_ENTER
 
 TexturePaintBakeOutputUndoCommand::TexturePaintBakeOutputUndoCommand(const NodePtr& node,
                                                                      const TexturePaint::BakeOutputState& state,
-                                                                     const std::vector<std::string>& files,
-                                                                     const std::vector<std::pair<std::string, std::string>>& backups,
-                                                                     const std::string& backupDirectory)
+                                                                     const std::shared_ptr<TexturePaint::BakeOutputFiles>& files)
     : UndoCommand(QCoreApplication::translate("TexturePaint", "Bake Output").toStdString())
     , _node(node)
     , _state(state)
     , _files(files)
-    , _redoable(true)
-    , _backups(backups)
-    , _backupDirectory(backupDirectory)
     , _firstRedo(true)
 {
 }
 
 TexturePaintBakeOutputUndoCommand::~TexturePaintBakeOutputUndoCommand()
 {
-    std::error_code ec;
-    std::filesystem::remove_all(_backupDirectory, ec);
+    if (!_files) {
+        return;
+    }
+    std::shared_ptr<TexturePaint> paint = getPaint();
+    if (paint) {
+        paint->enqueueBakeOutputDiscard(_files);
+
+        return;
+    }
+    const std::shared_ptr<TexturePaint::BakeOutputFiles> files = _files;
+    std::thread([files]() {
+        TexturePaint::discardBakeOutputFiles(*files);
+    }).detach();
 }
 
 std::shared_ptr<TexturePaint>
@@ -69,27 +73,10 @@ void
 TexturePaintBakeOutputUndoCommand::undo()
 {
     std::shared_ptr<TexturePaint> paint = getPaint();
-    if (!paint) {
-        return;
+
+    if (paint) {
+        (void)paint->enqueueBakeOutputSwap(_files, _state, true);
     }
-    // What the bake wrote is about to be overwritten with the files it replaced.
-    _stashed.clear();
-    _redoable = true;
-    const std::string stashDirectory = _backupDirectory + "/redo";
-    std::error_code ec;
-    std::filesystem::create_directories(stashDirectory, ec);
-    for (const std::string& file : _files) {
-        const std::string copy = stashDirectory + "/" + std::to_string(_stashed.size()) + "_" + std::filesystem::path(file).filename().string();
-        if (std::filesystem::copy_file(file, copy, std::filesystem::copy_options::overwrite_existing, ec)) {
-            _stashed.push_back(std::make_pair(file, copy));
-        } else {
-            _redoable = false;
-        }
-    }
-    for (const std::pair<std::string, std::string>& backup : _backups) {
-        std::filesystem::copy_file(backup.second, backup.first, std::filesystem::copy_options::overwrite_existing, ec);
-    }
-    paint->restoreBakeOutputState(_state);
 }
 
 void
@@ -98,26 +85,13 @@ TexturePaintBakeOutputUndoCommand::redo()
     // The bake was done before the command was pushed.
     if (_firstRedo) {
         _firstRedo = false;
+
         return;
     }
     std::shared_ptr<TexturePaint> paint = getPaint();
-    if (!paint) {
-        return;
+    if (paint) {
+        (void)paint->enqueueBakeOutputSwap(_files, _state, false);
     }
-    if (!_redoable) {
-        paint->setPersistentMessage(eMessageTypeError, QCoreApplication::translate("TexturePaint", "The files of this bake could not be kept when it was undone, so it cannot be redone: bake the output again.").toStdString());
-
-        return;
-    }
-    for (const std::pair<std::string, std::string>& stashed : _stashed) {
-        std::error_code ec;
-        if (!std::filesystem::copy_file(stashed.second, stashed.first, std::filesystem::copy_options::overwrite_existing, ec)) {
-            paint->setPersistentMessage(eMessageTypeError, QCoreApplication::translate("TexturePaint", "%1 cannot be put back: %2").arg(QString::fromStdString(stashed.first)).arg(QString::fromStdString(ec.message())).toStdString());
-
-            return;
-        }
-    }
-    paint->reapplyBakeOutputState(_state);
 }
 
 NATRON_NAMESPACE_EXIT

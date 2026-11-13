@@ -26,15 +26,22 @@
 #include "TexturePaintCache.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cerrno>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <set>
 #include <string>
 #include <system_error>
 #include <vector>
+
+#include <signal.h>
+#include <unistd.h>
 
 #include <OpenImageIO/imageio.h>
 
@@ -105,37 +112,8 @@ namespace {
         return false;
     }
 
-    // Lays the projection of mask, the touched texels as alpha, over *rgba: what is below is scaled
-    // by what the mask leaves of it.
-    void
-    attenuateBelow(const TextureProjection::Result& mask,
-                   std::vector<float>* rgba)
-    {
-        const std::size_t count = mask.rgba.size() / 4;
-
-        for (std::size_t i = 0; i < count; ++i) {
-            const float a = mask.rgba[i * 4 + 3];
-            if (a <= 0.f) {
-                continue;
-            }
-            const float keep = std::max(0.f, 1.f - a);
-            float* out = rgba->data() + i * 4;
-            for (int c = 0; c < 4; ++c) {
-                out[c] *= keep;
-            }
-        }
-    }
-
-    void
-    addOver(const TextureProjection::Result& paint,
-            std::vector<float>* rgba)
-    {
-        const std::size_t n = std::min(paint.rgba.size(), rgba->size());
-
-        for (std::size_t i = 0; i < n; ++i) {
-            (*rgba)[i] += paint.rgba[i];
-        }
-    }
+    // Rows per band when meshes are laid out to colour the tile or find overlaps.
+    const int kBandRows = 256;
 } // anon namespace
 
 PXR_NS::GfVec3f
@@ -213,21 +191,39 @@ composeTile(const TileArgs& args,
         return fail(error, "The tile is empty.");
     }
     const std::size_t count = (std::size_t)args.size * (std::size_t)args.size;
+    const bool hasBase = !args.basePath.empty();
 
-    rgba->assign(count * 4, 0.f);
     if (overlaps) {
         overlaps->clear();
+    }
+    if (hasBase) {
+        if (!MaterialBake::readBaseTile(args.basePath, args.size, rgba, 0, error)) {
+            return false;
+        }
+        if (rgba->size() != count * 4) {
+            return fail(error, args.basePath + " was read at the wrong size.");
+        }
+    } else {
+        rgba->assign(count * 4, 0.f);
     }
     if (args.meshes.empty()) {
         return true;
     }
 
-    {
-        std::vector<std::int32_t> owner;
-        std::set<std::pair<std::int32_t, std::int32_t>> pairs;
+    const bool paintMeshes = colour && !hasBase;
+    if (paintMeshes || overlaps) {
+        // The index of the last mesh covering each texel, plus one; 0 for none.
+        std::vector<std::uint16_t> owner16;
+        std::vector<std::uint32_t> owner32;
+        const bool wide = args.meshes.size() >= 0xffff;
         if (overlaps) {
-            owner.assign(count, -1);
+            if (wide) {
+                owner32.assign(count, 0);
+            } else {
+                owner16.assign(count, 0);
+            }
         }
+        std::set<std::pair<std::uint32_t, std::uint32_t>> pairs;
         for (std::size_t m = 0; m < args.meshes.size(); ++m) {
             if (isCancelled(args, error)) {
                 return false;
@@ -240,45 +236,54 @@ composeTile(const TileArgs& args,
             bake.height = args.size;
             bake.udimTile = args.udimTile;
             bake.cancelled = args.cancelled;
-            SceneRaster::BakeBuffers buffers;
-            if (!SceneRaster::bakeUV(args.stage, bake, &buffers, error)) {
+            SceneRaster::UVLayout layout;
+            if (!layout.prepare(args.stage, bake, error)) {
                 return false;
             }
-            if (buffers.coverage.size() != count) {
-                return fail(error, args.meshes[m].GetString() + " was baked at the wrong size.");
-            }
-            const PXR_NS::GfVec3f color = colour ? meshBaseColor(args.stage->GetPrimAtPath(args.meshes[m]), args.time) : PXR_NS::GfVec3f(0.f);
-            for (std::size_t i = 0; i < count; ++i) {
-                if (!buffers.coverage[i]) {
-                    continue;
+            const PXR_NS::GfVec3f color = paintMeshes ? meshBaseColor(args.stage->GetPrimAtPath(args.meshes[m]), args.time) : PXR_NS::GfVec3f(0.f);
+            const std::uint32_t self = (std::uint32_t)m + 1;
+            SceneRaster::BakeBuffers buffers;
+            for (int firstRow = 0; firstRow < args.size; firstRow += kBandRows) {
+                const int rows = std::min(kBandRows, args.size - firstRow);
+                if (!layout.bakeRows(firstRow, rows, &buffers, error)) {
+                    return false;
                 }
-                if (overlaps) {
-                    if ((owner[i] >= 0) && (owner[i] != (std::int32_t)m)) {
-                        pairs.insert(std::make_pair(owner[i], (std::int32_t)m));
+                const std::size_t offset = (std::size_t)firstRow * (std::size_t)args.size;
+                const std::size_t texels = (std::size_t)rows * (std::size_t)args.size;
+                if (buffers.coverage.size() != texels) {
+                    return fail(error, args.meshes[m].GetString() + " was baked at the wrong size.");
+                }
+                for (std::size_t j = 0; j < texels; ++j) {
+                    if (!buffers.coverage[j]) {
+                        continue;
                     }
-                    owner[i] = (std::int32_t)m;
-                }
-                if (colour) {
-                    float* out = rgba->data() + i * 4;
-                    out[0] = color[0];
-                    out[1] = color[1];
-                    out[2] = color[2];
-                    out[3] = 1.f;
+                    const std::size_t i = offset + j;
+                    if (overlaps) {
+                        const std::uint32_t previous = wide ? owner32[i] : (std::uint32_t)owner16[i];
+                        if ((previous != 0) && (previous != self)) {
+                            pairs.insert(std::make_pair(previous - 1, self - 1));
+                        }
+                        if (wide) {
+                            owner32[i] = self;
+                        } else {
+                            owner16[i] = (std::uint16_t)self;
+                        }
+                    }
+                    if (paintMeshes) {
+                        float* out = rgba->data() + i * 4;
+                        out[0] = color[0];
+                        out[1] = color[1];
+                        out[2] = color[2];
+                        out[3] = 1.f;
+                    }
                 }
             }
         }
         if (overlaps) {
-            for (const std::pair<std::int32_t, std::int32_t>& pair : pairs) {
-                overlaps->push_back(MeshPair(args.meshes[(std::size_t)pair.first], args.meshes[(std::size_t)pair.second]));
+            for (const std::pair<std::uint32_t, std::uint32_t>& pair : pairs) {
+                overlaps->push_back(MeshPair(args.meshes[pair.first], args.meshes[pair.second]));
             }
         }
-    }
-    if (!args.basePath.empty()) {
-        std::vector<float> base;
-        if (!MaterialBake::readBaseTile(args.basePath, args.size, &base, 0, error)) {
-            return false;
-        }
-        *rgba = std::move(base);
     }
 
     for (const PaintSession& session : sessions) {
@@ -304,21 +309,18 @@ composeTile(const TileArgs& args,
         }
 
         // The buffer holds the view under its strokes too; only what the strokes changed lands.
-        std::vector<float> mask(texels * 4, 0.f);
-        std::vector<float> masked(texels * 4, 0.f);
+        std::vector<float> mask(texels, 0.f);
         for (std::size_t j = 0; j < texels; ++j) {
-            if (!buffer.touched[j]) {
-                continue;
-            }
-            mask[j * 4 + 3] = 1.f;
-            for (int c = 0; c < 4; ++c) {
-                masked[j * 4 + (std::size_t)c] = buffer.rgba[j * 4 + (std::size_t)c];
+            if (buffer.touched[j]) {
+                mask[j] = 1.f;
+            } else {
+                std::fill_n(buffer.rgba.begin() + (std::ptrdiff_t)(j * 4), 4, 0.f);
             }
         }
-        buffer.rgba.clear();
-        buffer.rgba.shrink_to_fit();
+        std::vector<std::uint8_t>().swap(buffer.touched);
 
         TextureProjection::SourceImage source;
+        source.rgba = buffer.rgba.data();
         source.width = buffer.width;
         source.height = buffer.height;
         source.pixelAspect = 1.;
@@ -334,31 +336,8 @@ composeTile(const TileArgs& args,
         project.projectBackFaces = false;
         project.edgeDilation = 0;
         project.cancelled = args.cancelled;
-
-        for (const PXR_NS::SdfPath& mesh : args.meshes) {
-            if (isCancelled(args, error)) {
-                return false;
-            }
-            project.meshPath = mesh;
-            {
-                TextureProjection::Result result;
-                source.rgba = mask.data();
-                if (!TextureProjection::project(args.stage, source, project, &result, error)) {
-                    return false;
-                }
-                if (result.rgba.size() != count * 4) {
-                    return fail(error, "A session was projected at the wrong size.");
-                }
-                attenuateBelow(result, rgba);
-            }
-            {
-                TextureProjection::Result result;
-                source.rgba = masked.data();
-                if (!TextureProjection::project(args.stage, source, project, &result, error)) {
-                    return false;
-                }
-                addOver(result, rgba);
-            }
+        if (!TextureProjection::projectOver(args.stage, source, mask.data(), project, args.meshes, rgba->data(), error)) {
+            return false;
         }
     }
 
@@ -367,15 +346,47 @@ composeTile(const TileArgs& args,
 
 std::string
 tileDirectory(const std::string& root,
-              const std::string& projectFile,
-              const std::string& nodeName)
+              const std::string& nodeId,
+              long pid)
 {
-    ContentHasher hasher;
+    std::string name = fileSafe(nodeId);
 
-    hasher.appendString(projectFile);
-    hasher.appendString(nodeName);
+    if (pid > 0) {
+        name += "_p" + std::to_string(pid);
+    }
 
-    return root + "/TexturePaint/" + hex(hasher.finalize());
+    return root + "/TexturePaint/" + name;
+}
+
+void
+pruneDeadProcessDirectories(const std::string& root)
+{
+    std::error_code ec;
+    std::vector<std::filesystem::path> dead;
+
+    for (std::filesystem::directory_iterator it(root + "/TexturePaint", ec), end; !ec && (it != end); it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        const std::size_t mark = name.rfind("_p");
+        if ((mark == std::string::npos) || (mark + 2 >= name.size())) {
+            continue;
+        }
+        const std::string digits = name.substr(mark + 2);
+        if (!std::all_of(digits.begin(), digits.end(), [](char c) { return std::isdigit((unsigned char)c) != 0; })) {
+            continue;
+        }
+        const long pid = std::strtol(digits.c_str(), 0, 10);
+        if ((pid <= 0) || (pid == (long)::getpid())) {
+            continue;
+        }
+        // EPERM means the process exists under another user.
+        if ((::kill((pid_t)pid, 0) == 0) || (errno == EPERM)) {
+            continue;
+        }
+        dead.push_back(it->path());
+    }
+    for (const std::filesystem::path& path : dead) {
+        std::filesystem::remove_all(path, ec);
+    }
 }
 
 std::string
@@ -435,8 +446,23 @@ writeTile(const std::string& path,
     const OiioWriteSupport::CancelCheck never = []() -> bool {
         return false;
     };
-    if (!OiioWriteSupport::writeFile(path, parts, rows, never, error)) {
+    // Written beside the target and renamed over it, so that a reader or a crash never meets a
+    // partial file under the final name; the extension stays last for the writer to pick EXR.
+    static std::atomic<unsigned> counter(0);
+    const std::filesystem::path target(path);
+    std::filesystem::path temp = target;
+    temp.replace_filename(target.stem().string() + ".tmp" + std::to_string((long)::getpid()) + "_" + std::to_string(++counter) + target.extension().string());
+    if (!OiioWriteSupport::writeFile(temp.string(), parts, rows, never, error)) {
+        std::filesystem::remove(temp, ec);
+
         return false;
+    }
+    std::filesystem::rename(temp, target, ec);
+    if (ec) {
+        std::error_code ignored;
+        std::filesystem::remove(temp, ignored);
+
+        return fail(error, "Could not write " + path + ": " + ec.message());
     }
     OiioReadSupport::evictHeaders(std::vector<std::string>(1, path));
 

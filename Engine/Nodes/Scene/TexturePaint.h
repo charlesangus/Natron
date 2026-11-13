@@ -36,6 +36,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -377,17 +378,59 @@ public:
     };
 
     /**
+     * @brief The files one Bake Output wrote and what its undo step swaps them with. Backups and
+     * stashes sit in a hidden directory beside each target, so that every swap is a rename. Only
+     * the baker thread, or a bake's own worker, touches one.
+     **/
+    struct BakeOutputFiles {
+        struct Entry {
+            std::string target;
+            // What target held before the bake, while it is not at target.
+            std::string backup;
+            // What the bake wrote, while the bake is undone.
+            std::string stash;
+            bool hasBackup = false;
+        };
+        std::vector<Entry> entries;
+        // Where the backups and stashes are, deleted with them.
+        std::set<std::string> directories;
+        std::string token;
+    };
+
+    /**
+     * @brief Before target is written: adds it to *files and, when it exists, keeps what it holds
+     * as its backup, by a hard link so that the write's rename leaves the link holding it. False
+     * with *error set when it cannot be kept.
+     **/
+    static bool backUpBakeTarget(BakeOutputFiles* files,
+                                 const std::string& target,
+                                 std::string* error) WARN_UNUSED_RETURN;
+
+    // Puts every target of *files back as it was before the bake, and deletes the backups.
+    static void rollBackBakeOutputFiles(BakeOutputFiles* files);
+
+    /**
+     * @brief Undoing, moves each target to its stash and its backup, if any, to the target;
+     * redoing, the reverse, backing up whatever is at the target by then. A failure puts back
+     * what it moved and returns false with *error set.
+     **/
+    static bool swapBakeOutputFiles(BakeOutputFiles* files,
+                                    bool undo,
+                                    std::string* error) WARN_UNUSED_RETURN;
+
+    // Deletes the backups and stashes of files.
+    static void discardBakeOutputFiles(const BakeOutputFiles& files);
+
+    /**
      * @brief Bake Output without its undo step: writes the files, sets the record and freezes the
-     * sessions with strokes, which *state receives along with the record as it was. When
-     * backupDirectory is set, output files a previous bake wrote are first copied there, into
-     * *backups as (file, copy) pairs. False with *error set on failure, nothing changed but the
-     * files written.
+     * sessions with strokes, which *state receives along with the record as it was. *undoFiles
+     * receives what the undo step swaps, the targets that existed before backed up. False with
+     * *error set on failure, the files put back as they were and nothing changed.
      **/
     bool writeBakeOutput(double time,
                          ViewIdx view,
-                         const std::string& backupDirectory,
                          std::vector<std::string>* files,
-                         std::vector<std::pair<std::string, std::string>>* backups,
+                         std::shared_ptr<BakeOutputFiles>* undoFiles,
                          BakeOutputState* state,
                          std::string* error);
 
@@ -395,6 +438,18 @@ public:
     void restoreBakeOutputState(const BakeOutputState& state);
     // Puts back what restoreBakeOutputState() removed, without baking: the record and the frozen sessions of state.
     void reapplyBakeOutputState(const BakeOutputState& state);
+
+    /**
+     * @brief Queues swapBakeOutputFiles() on the baker; once it lands, restores (undo) or
+     * reapplies the state on the main thread, or shows why the files could not be swapped as the
+     * persistent message, state unchanged. Main thread.
+     **/
+    bool enqueueBakeOutputSwap(const std::shared_ptr<BakeOutputFiles>& files,
+                               const BakeOutputState& state,
+                               bool undo);
+
+    // Queues discardBakeOutputFiles() behind any swap of files; main thread.
+    void enqueueBakeOutputDiscard(const std::shared_ptr<BakeOutputFiles>& files);
 
     /**
      * @brief The bakes below queue on the node's TexturePaintBaker, in order, and return at once;
@@ -452,13 +507,12 @@ private:
     bool runBakeInputs(BakeInputsRun& run, const BakeControl& control, std::string* error);
     void applyBakeInputs(BakeInputsRun& run, std::vector<std::string>* files, std::string* warning);
 
-    bool prepareBakeOutput(double time, ViewIdx view, const std::string& backupDirectory, BakeOutputRun* run, std::string* error);
+    bool prepareBakeOutput(double time, ViewIdx view, BakeOutputRun* run, std::string* error);
     bool runBakeOutput(BakeOutputRun& run, const BakeControl& control, std::string* error);
     void applyBakeOutput(BakeOutputRun& run, BakeOutputState* state);
 
     bool runSessionBake(double time, ViewIdx view, const BakeControl& control, std::string* error);
 
-    std::string makeBackupDirectory() const WARN_UNUSED_RETURN;
     // Makes the strokes' lifetime knobs count when Animated and not otherwise, in the stroke tree.
     void syncStrokeLifetimes();
     // The frames a bake covers: the project range when Animated, else the pinned frame alone.
@@ -519,7 +573,7 @@ private:
     // The colour plane's base files as TexturePaintView::setBase() takes them.
     std::string getViewBaseFiles(double time) const WARN_UNUSED_RETURN;
 
-    // The directory the tiles of this node are cached in.
+    // The directory the tiles of this node are cached in, named by its cache ID.
     std::string getTileDirectory() const WARN_UNUSED_RETURN;
 
     /**
@@ -586,6 +640,10 @@ private:
     std::map<int, U64> _liveTileKeys;
     // Bumped by undo, redo and reloadBakedFiles(), so that no tile composed before is used again.
     std::atomic<std::uint64_t> _tileEpoch;
+    mutable std::mutex _tileDirectoryMutex;
+    // The last directory getTileDirectory() named, deleted with the node.
+    mutable std::string _tileDirectory;
+    mutable bool _tileDirectoryPerProcess = false;
     mutable std::mutex _stampsMutex;
     mutable bool _stampsValid = false;
     mutable U64 _stampsSignature = 0;

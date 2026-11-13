@@ -199,7 +199,9 @@ private:
     struct ActiveSettings;
 
     // False with *error set to the message the node shows if the scene or its prim cannot be read.
-    bool readActiveSettings(double time, ViewIdx view, ActiveSettings* active, std::string* error) const;
+    // Without everything, only the settings prim and the camera it targets have their payloads
+    // open on the stage; the render asks for everything.
+    bool readActiveSettings(double time, ViewIdx view, bool everything, ActiveSettings* active, std::string* error) const;
 
     // The render of time, view and level as the node's settings and input scene make it. False with
     // *error set to the message the node shows if it cannot render.

@@ -62,6 +62,7 @@
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDReference.h"
+#include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDSetAttribute.h"
 #include "Engine/Nodes/Scene/USDVariant.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
@@ -1140,4 +1141,25 @@ TEST_F(SceneLoadSetCoverageTest, AViewerGraftAndARenderGraftKeepTheirOwnMemos)
     }
     EXPECT_EQ(2u, memo.getInputReadCount());
     EXPECT_EQ(2u, memo.getGraftLayerAuthorCount());
+}
+
+TEST_F(SceneLoadSetCoverageTest, AUSDRenderReadsItsResolutionOpeningOnlyTheCamerasBuilding)
+{
+    CarCity city(2, 2);
+    const std::string wrapper = (std::filesystem::path(city.rootPath()).parent_path() / "withSettings.usda").string();
+    {
+        std::ofstream out(wrapper);
+        out << "#usda 1.0\n(\n    subLayers = [@" << city.rootPath() << "@]\n    renderSettingsPrimPath = \"/Render/Settings\"\n)\n"
+            << "def Scope \"Render\"\n{\n    def RenderSettings \"Settings\"\n    {\n"
+            << "        rel camera = </World/Block_0/B_0/Cam>\n        int2 resolution = (320, 200)\n    }\n}\n";
+    }
+    NodePtr source = readerOf(wrapper);
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(source && render);
+    ASSERT_TRUE(render->connectInput(source, 0));
+
+    RectD rod;
+    ASSERT_EQ(eStatusOK, render->getEffectInstance()->getRegionOfDefinition(render->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
+    EXPECT_EQ(RectD(0., 0., 320., 200.), rod);
+    EXPECT_LE(city.openedBuildings(), 1);
 }

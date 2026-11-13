@@ -55,6 +55,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 
 #include <pxr/usd/usd/primRange.h>
 
@@ -270,7 +271,11 @@ USDRender::refreshSettingsPrimMenu()
     ScenePayload scene;
     std::string error;
     if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+        // Render settings prims live under /Render, which is all this reads.
+        const SceneLoadSetPtr renderOnly = std::make_shared<const SceneLoadSet>(std::vector<SceneLoadSet::Entry> {
+            SceneLoadSet::Entry { std::string("/"), SceneLoadSet::eRuleNone },
+            SceneLoadSet::Entry { std::string("/Render"), SceneLoadSet::eRuleAll } });
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, renderOnly, &error);
         const PXR_NS::UsdStageRefPtr stage = lease.getStage();
         const PXR_NS::UsdPrim render = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/Render")) : PXR_NS::UsdPrim();
         if (render) {
@@ -308,6 +313,7 @@ struct USDRender::ActiveSettings {
 bool
 USDRender::readActiveSettings(double time,
                               ViewIdx view,
+                              bool everything,
                               ActiveSettings* active,
                               std::string* error) const
 {
@@ -331,21 +337,49 @@ USDRender::readActiveSettings(double time,
     if (active->scene.isEmpty()) {
         return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
     }
-    active->lease = SceneQueryPool::instance().borrow(active->scene, error);
-    active->stage = active->lease.getStage();
-    if (!active->stage) {
-        if (error->empty()) {
+    auto borrowStage = [active, error](const SceneLoadSetPtr& loadSet) {
+        active->lease.release();
+        active->lease = loadSet ? SceneQueryPool::instance().borrow(active->scene, loadSet, error) : SceneQueryPool::instance().borrow(active->scene, error);
+        active->stage = active->lease.getStage();
+        if (!active->stage && error->empty()) {
             *error = tr("USD could not compose the input scene.").toStdString();
         }
 
-        return false;
+        return bool(active->stage);
+    };
+    const std::string chosenPrim = settingsPrimOverride();
+    if (everything) {
+        if (!borrowStage(SceneLoadSetPtr())) {
+            return false;
+        }
+    } else {
+        // Only the settings prim and its camera are read: the stage metadata naming the active prim needs no payload, and
+        // the prim and the camera it targets are opened one after the other, as the second is learned from the first.
+        const SceneLoadSetPtr nothing = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
+        std::string primPath = chosenPrim;
+        if (!borrowStage(nothing)) {
+            return false;
+        }
+        if (primPath.empty() && active->stage->HasAuthoredMetadata(PXR_NS::UsdRenderTokens->renderSettingsPrimPath)) {
+            active->stage->GetMetadata(PXR_NS::UsdRenderTokens->renderSettingsPrimPath, &primPath);
+        }
+        if (!primPath.empty() && PXR_NS::SdfPath::IsValidPathString(primPath)) {
+            if (!borrowStage(SceneLoadSet::withPaths(nothing, { primPath }))) {
+                return false;
+            }
+            const PXR_NS::UsdRenderSettings found = RenderSettingsPrim::activePrim(active->stage, chosenPrim, nullptr);
+            const PXR_NS::SdfPath camera = found ? RenderSettingsPrim::standardAttributes(found).camera : PXR_NS::SdfPath();
+            if (!camera.IsEmpty() && !borrowStage(SceneLoadSet::withPaths(nothing, { primPath, camera.GetString() }))) {
+                return false;
+            }
+        }
     }
     AppInstancePtr app = getApp();
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
     active->time = PXR_NS::UsdTimeCode(SceneOps::frameToTimeCode(active->scene, time, fps));
 
     std::string primError;
-    active->prim = RenderSettingsPrim::activePrim(active->stage, settingsPrimOverride(), &primError);
+    active->prim = RenderSettingsPrim::activePrim(active->stage, chosenPrim, &primError);
     if (!active->prim && !primError.empty()) {
         return failWith(primError);
     }
@@ -382,7 +416,7 @@ USDRender::activeRenderer(double time,
         return true;
     }
     ActiveSettings active;
-    if (!readActiveSettings(time, view, &active, error)) {
+    if (!readActiveSettings(time, view, false, &active, error)) {
         return false;
     }
     *rendererId = active.renderer;
@@ -441,7 +475,7 @@ USDRender::outputFormat(double time,
     ActiveSettings active;
     std::string error;
 
-    if (readActiveSettings(time, view, &active, &error) && active.prim) {
+    if (readActiveSettings(time, view, false, &active, &error) && active.prim) {
         const int width = active.standard.resolution[0];
         const int height = active.standard.resolution[1];
         const double aspect = active.standard.pixelAspectRatio;
@@ -540,7 +574,8 @@ ImageMetadata
 USDRender::deriveOutputMetadata(double time,
                                 ViewIdx view)
 {
-    // Every prim Storm can draw, so that each primId.id value a render gives has its entry.
+    // Every prim Storm can draw, so that each primId.id value a render gives has its entry: the
+    // output's metadata needs every payload open, which the settings reads above do not.
     ImageMetadata metadata;
     EffectInstancePtr input = getInput(0);
     ScenePayload scene;
@@ -627,8 +662,9 @@ USDRender::prepareRender(double time,
         return false;
     };
 
+    // The render draws every prim, and the camera fallback looks through all of them.
     ActiveSettings active;
-    if (!readActiveSettings(time, view, &active, error)) {
+    if (!readActiveSettings(time, view, true, &active, error)) {
         return false;
     }
     const PXR_NS::UsdStageRefPtr& stage = active.stage;

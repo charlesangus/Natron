@@ -103,6 +103,9 @@ struct GpuDeviceInfo {
     bool externalMemoryHost = false;
     bool memoryBudget = false;
     bool pushDescriptor = false;
+    // Acceleration structures, ray queries and buffer device address are all present and enabled; see
+    // GpuDevice::supportsRayQuery().
+    bool rayQuery = false;
 
     // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
     uint64_t maxStorageBufferRange = 0;
@@ -181,6 +184,11 @@ public:
     VkDevice device() const { return device_; }
     VmaAllocator allocator() const { return allocator_; }
     uint32_t queueFamily(QueueKind kind) const;
+
+    // True when the device exposes VK_KHR_acceleration_structure, VK_KHR_ray_query and
+    // VK_KHR_deferred_host_operations with bufferDeviceAddress, and they were enabled, which also makes VMA allocate
+    // with device addresses. NATRON_GPU_NO_RAY_QUERY=1 forces false.
+    bool supportsRayQuery() const { return info_.rayQuery; }
 
     bool isLost() const { return lost_.load(std::memory_order_acquire); }
 

@@ -349,7 +349,7 @@ Graph GUI Responsiveness merges, so re-grep them.
 
 - [ ] M399.P4.T23 — Chain insert refreshes everything below once
   - files: Engine `replaceInput`/refresh path, `Gui/NodeGraph05.cpp`
-  - approach: `positioningConnect` is all of positioning at 3000 (median 7-8 ms, p90 8.5, max 27; `positioningMove` ~0). Inserting mid-chain refreshes every downstream node (the draft flag every render reads). Bound or defer that walk without changing what renders read.
+  - approach: `positioningConnect` is all of positioning at 3000 (median 7-8 ms, p90 8.5, max 27; `positioningMove` ~0). Inserting mid-chain refreshes every downstream node (the draft flag every render reads). Bound or defer that walk without changing what renders read. Consultant design (2026-11-12): in `refreshShownDownstreamInputRelatedData`, (a) a draft-flag worklist that stops where a node's flag is unchanged (exact: the flag is OR of the inputs' flags plus `supportsRenderQuality`); (b) dirty state from an edit-generation stamp checked upstream, memoized per generation, instead of eager marks; (c) refresh visible-panel and channel-message nodes from registries. Hashes untouched. Fallback: (a)+(c) with the eager dirty marks coalesced to the next idle, flushed before panel reads.
   - verify: positioning median ≤ 2 ms at 3000.
   - size: L
 

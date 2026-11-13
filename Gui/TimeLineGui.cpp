@@ -955,6 +955,9 @@ TimeLineGui::onFrameChanged(SequenceTime,
 void
 TimeLineGui::seek(SequenceTime time)
 {
+    if (!_imp->gui || !_imp->viewer) {
+        return;
+    }
     if ( time != _imp->timeline->currentFrame() ) {
         _imp->gui->getApp()->setLastViewerUsingTimeline( _imp->viewer->getNode() );
         _imp->seekingTimeline = true;
@@ -1004,6 +1007,9 @@ TimeLineGui::mousePressEvent(QMouseEvent* e)
 void
 TimeLineGui::mouseMoveEvent(QMouseEvent* e)
 {
+    if (!_imp->gui || !_imp->viewer) {
+        return;
+    }
     int mouseMoveXprev = _imp->mouseMoveX;
 
     _imp->lastMouseEventWidgetCoord = e->position().toPoint();
@@ -1093,6 +1099,12 @@ TimeLineGui::leaveEvent(QEvent* e)
 void
 TimeLineGui::mouseReleaseEvent(QMouseEvent* e)
 {
+    if (!_imp->gui || !_imp->viewer) {
+        _imp->state = eTimelineStateIdle;
+        QOpenGLWidget::mouseReleaseEvent(e);
+
+        return;
+    }
     if (_imp->state == eTimelineStateSelectingZoomRange) {
         // - if the last selected frame is the same as the first selected frame, zoom on the PROJECT range
         //   (NOT the playback range as in the following, and NOT adding margins as centerOn() does)
@@ -1151,6 +1163,9 @@ TimeLineGui::mouseReleaseEvent(QMouseEvent* e)
 void
 TimeLineGui::wheelEvent(QWheelEvent* e)
 {
+    if (!_imp->gui) {
+        return;
+    }
     if (e->angleDelta().x() != 0) {
         return;
     }
@@ -1238,6 +1253,9 @@ TimeLineGui::getVisibleRange(SequenceTime* left,
 QVariantList
 TimeLineGui::keyframeMarkerTimes() const
 {
+    if (!_imp->gui) {
+        return QVariantList();
+    }
     std::list<SequenceTime> keys;
     std::list<SequenceTime> userKeys;
     _imp->gui->getApp()->getKeyframes(&keys);

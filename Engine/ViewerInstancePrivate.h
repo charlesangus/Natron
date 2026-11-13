@@ -142,6 +142,9 @@ public:
         , viewerParamsAlphaLayer( ImageLayerDesc::getRGBAComponents() )
         , viewerParamsAlphaChannelName("a")
         , knobWritesFromSetter(0)
+        , lockColourApplied(false)
+        , colourBeforeLock(false)
+        , savedColour{0., 0., 0.}
         , knobRenderRequests(0)
         , knobEditDepth(0)
         , knobEditRenderPending(false)
@@ -512,6 +515,9 @@ public:
     // Main thread only. Non-zero while a ViewerInstance setter writes knobs: the setter applies the
     // change itself, so knobChanged() must not apply it a second time.
     int knobWritesFromSetter;
+    bool lockColourApplied; // the grey lock colour was set by refreshLockDecoration
+    bool colourBeforeLock; // the node had a user colour before the first lock
+    double savedColour[3];
     unsigned int knobRenderRequests; // main thread only
     // Main thread only. Non-zero inside beginKnobEdits()/endKnobEdits(), which hold the knobs'
     // render requests back to one at the outermost end.

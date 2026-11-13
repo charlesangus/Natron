@@ -280,6 +280,7 @@ struct GuiAppInstancePrivate
         std::vector<SequenceTime> keys = nodeKeys;
         keys.insert(keys.end(), timelineKeyframes.begin(), timelineKeyframes.end());
         std::sort(keys.begin(), keys.end());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
 
         return keys;
     }

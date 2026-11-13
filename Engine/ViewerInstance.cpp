@@ -33,6 +33,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring> // for std::memcpy
+#include <iterator> // size
 #include <limits>
 #include <list>
 #include <memory>
@@ -779,7 +780,8 @@ ViewerInstance::initializeKnobs()
         k.inputs[i] = input;
     }
 
-    for (int i = 0; i < getNInputs(); ++i) {
+    const int nLockable = std::min<int>(getNInputs(), static_cast<int>(std::size(k.lockedInputs)));
+    for (int i = 0; i < nLockable; ++i) {
         const std::string lockName = kViewerParamLockedInputPrefix + std::to_string(i + 1);
         KnobStringPtr lock = createViewerKnob<KnobString>(this, page, tr("Locked Input %1").arg(i + 1), lockName.c_str(),
                                                           tr("The script name of the node this input is locked to, empty for none."));
@@ -927,7 +929,7 @@ ViewerInstance::initializeKnobs()
 std::string
 ViewerInstance::getLockedInput(int inputNb) const
 {
-    if ((inputNb < 0) || (inputNb >= getNInputs())) {
+    if ((inputNb < 0) || (inputNb >= getNInputs()) || (inputNb >= static_cast<int>(std::size(_imp->knobs.lockedInputs)))) {
         return std::string();
     }
     KnobStringPtr knob = _imp->knobs.lockedInputs[inputNb].lock();
@@ -939,7 +941,7 @@ void
 ViewerInstance::setLockedInput(int inputNb,
                                const std::string& nodeName)
 {
-    if ((inputNb < 0) || (inputNb >= getNInputs())) {
+    if ((inputNb < 0) || (inputNb >= getNInputs()) || (inputNb >= static_cast<int>(std::size(_imp->knobs.lockedInputs)))) {
         return;
     }
     KnobStringPtr knob = _imp->knobs.lockedInputs[inputNb].lock();
@@ -957,10 +959,14 @@ void
 ViewerInstance::refreshLockDecoration()
 {
     NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
     QString lockLines;
     bool anyLock = false;
 
-    for (int i = 0; i < getNInputs(); ++i) {
+    const int nLockable = std::min<int>(getNInputs(), static_cast<int>(std::size(_imp->knobs.lockedInputs)));
+    for (int i = 0; i < nLockable; ++i) {
         const std::string name = getLockedInput(i);
         if (name.empty()) {
             continue;
@@ -979,11 +985,29 @@ ViewerInstance::refreshLockDecoration()
         label->setValue(updated.toStdString());
     }
 
+    const double grey = 0x11 / 255.;
     if (anyLock) {
-        const double grey = 0x11 / 255.;
-        node->setColor(grey, grey, grey);
-    } else {
-        node->resetColor();
+        if (!_imp->lockColourApplied) {
+            _imp->colourBeforeLock = node->hasUserColor();
+            if (_imp->colourBeforeLock) {
+                node->getUserColor(&_imp->savedColour[0], &_imp->savedColour[1], &_imp->savedColour[2]);
+            }
+            node->setColor(grey, grey, grey);
+            _imp->lockColourApplied = true;
+        }
+    } else if (_imp->lockColourApplied) {
+        _imp->lockColourApplied = false;
+        double r, g, b;
+        node->getUserColor(&r, &g, &b);
+        // A colour other than the grey set on lock was chosen by the user meanwhile.
+        const bool stillGrey = node->hasUserColor() && (std::abs(r - grey) < 1e-3) && (std::abs(g - grey) < 1e-3) && (std::abs(b - grey) < 1e-3);
+        if (stillGrey) {
+            if (_imp->colourBeforeLock) {
+                node->setColor(_imp->savedColour[0], _imp->savedColour[1], _imp->savedColour[2]);
+            } else {
+                node->resetColor();
+            }
+        }
     }
 }
 

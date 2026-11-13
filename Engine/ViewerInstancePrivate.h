@@ -31,6 +31,7 @@
 #include "ViewerInstance.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -64,6 +65,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class GpuPlacementPlanner;
 
 struct AbortableRenderInfo_CompareAge
 {
@@ -274,6 +276,31 @@ public:
         Q_EMIT mustRedrawViewer();
     }
 
+    // Which state of the overlay and of the graph a plan was started against.
+    struct GpuPlacementStamp {
+        U64 overlayGeneration = 0;
+        U64 graphEdits = 0;
+
+        bool operator==(const GpuPlacementStamp&) const = default;
+    };
+
+    GpuPlacementStamp currentGpuPlacementStamp() const;
+
+    // Whether a dry run already planned the current state of the graph.
+    bool hasDryRunGpuPlacement() const;
+
+    /**
+     * @brief Returns whether this changed what getGpuPlacementSnapshot() returns, by more than the identity of the
+     * snapshot.
+     *
+     * The regions shown come from the dry run of the current state, which plans the whole displayed frame. A real
+     * render only adds what it alone can know, which nodes computed pixels and which regions fell back, because what
+     * it placed may cover only the tiles it had to render. It stands in for the regions until the dry run publishes.
+     **/
+    bool publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder,
+                             const GpuPlacementStamp& stamp,
+                             bool isDryRun);
+
 public:
 
     virtual void lock(const FrameEntryPtr& entry) OVERRIDE FINAL
@@ -465,6 +492,23 @@ public:
     std::string viewerParamsAlphaID;
     ImageLayerDesc viewerParamsAlphaLayer;
     std::string viewerParamsAlphaChannelName;
+
+    std::mutex gpuPlacementPublishMutex;
+    mutable std::mutex gpuPlacementSnapshotMutex;
+    GpuPlacementSnapshotPtr gpuPlacementSnapshot;
+    GpuPlacementStamp gpuPlacementSnapshotStamp;
+    GpuPlacementSnapshotPtr gpuPlacementRegions;
+    GpuPlacementStamp gpuPlacementRegionsStamp;
+    bool gpuPlacementRegionsFromDryRun = false;
+    bool gpuPlacementRegionsPlaced = false;
+    GpuPlacementSnapshotPtr gpuPlacementRun;
+    GpuPlacementStamp gpuPlacementRunStamp;
+    std::atomic<U64> gpuPlacementGraphEdits { 0 };
+    std::shared_ptr<GpuPlacementPlanner> gpuPlacementPlanner;
+
+    // Held by the planner while it reads uiContext and by the main thread while it writes it, so that closing the
+    // viewer waits only for such a read rather than for a whole dry run.
+    mutable std::mutex gpuPlacementUiContextMutex;
 
     // Main thread only. Non-zero while a ViewerInstance setter writes knobs: the setter applies the
     // change itself, so knobChanged() must not apply it a second time.

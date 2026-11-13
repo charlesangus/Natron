@@ -33,11 +33,15 @@
 #include <cctype> // isspace
 #include <cmath> // floor
 #include <cstddef>
+#include <deque>
 #include <map>
 #include <random>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <tuple>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <QDataStream>
@@ -119,6 +123,13 @@ std::atomic<int> gExpressionMetadataDependencies { 0 };
 // Lets a node keep what it gathered from KnobHelper::appendHashedMetadataSources() until an edit
 // able to alter it moves this. Starts past the 0 of a node not yet filled.
 std::atomic<U64> gHashedMetadataSourcesGeneration { 1 };
+
+// Moves when a Python name an expression function is reached by may stop leading to it: a node
+// renamed or deleted, or a parameter removed from Python. A kept function is used only while the
+// generation it was resolved under is current.
+std::atomic<U64> gExpressionFunctionsGeneration { 1 };
+std::atomic<U64> gExpressionFunctionsResolved { 0 };
+std::atomic<U64> gExpressionScriptsRun { 0 };
 } // anon namespace
 
 using std::make_pair; using std::pair;
@@ -254,7 +265,6 @@ findMaster(const KnobIPtr & knob,
         masterNodeNameFullToFind = masterNodeNameToFind;
     }
     for (NodesList::const_iterator it2 = allNodes.begin(); it2 != allNodes.end(); ++it2) {
-        qDebug() << "Trying node" << (*it2)->getScriptName().c_str() << '/' << (*it2)->getFullyQualifiedName().c_str();
         if ( (*it2)->getFullyQualifiedName() == masterNodeNameFullToFind ) {
             masterNode = *it2;
             break;
@@ -264,7 +274,6 @@ findMaster(const KnobIPtr & knob,
         qDebug() << "Link slave/master for" << knob->getName().c_str() << "could not find master node" << masterNodeNameFullToFind.c_str() << "trying without the group name (Natron project files before 2.3.16)...";
 
         for (NodesList::const_iterator it2 = allNodes.begin(); it2 != allNodes.end(); ++it2) {
-            qDebug() << "Trying node" << (*it2)->getScriptName().c_str() << '/' << (*it2)->getFullyQualifiedName().c_str();
             if ( (*it2)->getScriptName() == masterNodeNameToFind ) {
                 masterNode = *it2;
                 qDebug() << "Got node" << (*it2)->getFullyQualifiedName().c_str();
@@ -296,7 +305,6 @@ findMaster(const KnobIPtr & knob,
         ///now that we have the master node, find the corresponding knob
         const std::vector<KnobIPtr> & otherKnobs = masterNode->getKnobs();
         for (std::size_t j = 0; j < otherKnobs.size(); ++j) {
-            qDebug() << "Trying knob" << otherKnobs[j]->getName().c_str();
             // The other knob doesn't need to be persistent (it may be a pushbutton)
             if (otherKnobs[j]->getName() == masterKnobName) {
                 return otherKnobs[j];
@@ -456,14 +464,29 @@ struct Expr
     // node's: the expression is then refused rather than evaluated.
     std::string metadataCycle;
 
+    // The function the expression is evaluated by, so that an evaluation calls it rather than
+    // compiling a script. A strong reference, only touched with the GIL held.
+    PyObject* function;
+    U64 functionGeneration;
+
     // Python the holder evaluates itself, whose reads are this dimension's dependencies while it
     // has no expression (see KnobHelper::setReadDependencyExpression()).
     std::string readDependencyExpression;
 
-    //PyObject* code;
+    // The deactivated nodes, with the names they had, that alone made the expression invalid. Its
+    // text, function and listeners were left as they were, so once they are all back under those
+    // names nothing needs to run again.
+    std::vector<std::pair<NodeWPtr, std::string>> missingNodes;
 
     Expr()
-        : expression(), originalExpression(), exprInvalid(), hasRet(false) /*, code(0)*/ {}
+        : expression()
+        , originalExpression()
+        , exprInvalid()
+        , hasRet(false)
+        , function(0)
+        , functionGeneration(0)
+    {
+    }
 };
 
 struct KnobHelperPrivate
@@ -721,7 +744,7 @@ struct KnobHelperPrivate
     // registerRFVListeners() for the variable the dimension's driver falls back to, if any.
     void registerDriverRFVListeners(int dimension);
 
-    std::string declarePythonVariables(bool addTab, int dimension);
+    std::string declarePythonVariables(bool addTab, int dimension, const std::string& expression);
 
     bool shouldUseGuiCurve() const
     {
@@ -751,6 +774,19 @@ KnobHelper::~KnobHelper()
     }
     gExpressionMetadataDependencies.fetch_sub((int)metadataDependencies);
     KnobHelper::moveHashedMetadataSourcesGeneration();
+    // Once Python is finalized its objects are gone with it.
+    if (Py_IsInitialized()) {
+        bool holdsFunction = false;
+        for (std::size_t i = 0; i < _imp->expressions.size(); ++i) {
+            holdsFunction |= (_imp->expressions[i].function != 0);
+        }
+        if (holdsFunction) {
+            PythonGILLocker pgl;
+            for (std::size_t i = 0; i < _imp->expressions.size(); ++i) {
+                Py_CLEAR(_imp->expressions[i].function);
+            }
+        }
+    }
 }
 
 void
@@ -888,7 +924,13 @@ KnobHelper::deleteKnob()
         if (aliasKnob.get() == this) {
             knob->setKnobAsAliasOfThis(aliasKnob, false);
         }
+        KnobHelper* isHelper = dynamic_cast<KnobHelper*>(knob.get());
         for (int i = 0; i < knob->getDimension(); ++i) {
+            if (isHelper) {
+                // Restoring the nodes it was missing would not bring this parameter back.
+                QMutexLocker k(&isHelper->_imp->expressionMutex);
+                isHelper->_imp->expressions[i].missingNodes.clear();
+            }
             knob->setExpressionInvalid( i, false, tr("%1: parameter does not exist").arg( QString::fromUtf8( getName().c_str() ) ).toStdString() );
             knob->unSlave(i, false);
         }
@@ -896,7 +938,14 @@ KnobHelper::deleteKnob()
 
     KnobHolder* holder = getHolder();
     if ( holder && holder->getApp() ) {
-        holder->getApp()->recheckInvalidExpressions();
+        std::set<std::string> names;
+        names.insert(getName());
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
+        NodePtr node = effect ? effect->getNode() : NodePtr();
+        if (node) {
+            names.insert(node->getScriptName_mt_safe());
+        }
+        holder->getApp()->recheckInvalidExpressionsReferencing(names);
     }
 
     for (int i = 0; i < getDimension(); ++i) {
@@ -2937,9 +2986,50 @@ extractAllOcurrences(const std::string& str,
     return true;
 }
 
+// Adds the identifiers in the Python source to names, strings and comments included, and returns
+// whether the source can reach the local variables of its function other than by naming them:
+// by evaluating text, by walking the stack or the frame of a running function, or by a module
+// or non-ASCII character that could do either without the telltale name being written out.
+static bool
+readExpressionNames(const std::string& source,
+                    std::unordered_set<std::string>* names)
+{
+    static const std::unordered_set<std::string> kScopeInspectors = {
+        "eval", "exec", "compile", "locals", "vars", "dir", "globals",
+        "_getframe", "currentframe", "stack", "getouterframes", "getframeinfo", "trace",
+        "f_locals", "f_back", "f_globals", "tb_frame", "gi_frame", "cr_frame", "ag_frame",
+        "__globals__", "__builtins__", "__import__", "__subclasses__",
+        "builtins", "importlib", "inspect", "sys", "gc", "traceback", "ctypes", "runpy", "pdb"
+    };
+    bool inspectsScope = false;
+    std::size_t i = 0;
+
+    while (i < source.size()) {
+        if ((unsigned char)source[i] >= 0x80) {
+            // Python folds look-alike characters in an identifier to its ASCII spelling.
+            inspectsScope = true;
+        }
+        if (!isIdentifierCharacter(source[i])) {
+            ++i;
+            continue;
+        }
+        std::size_t end = i + 1;
+        while ((end < source.size()) && isIdentifierCharacter(source[end])) {
+            ++end;
+        }
+        std::string name = source.substr(i, end - i);
+        i = end;
+        inspectsScope = inspectsScope || (kScopeInspectors.find(name) != kScopeInspectors.end());
+        names->insert(std::move(name));
+    }
+
+    return inspectsScope;
+}
+
 std::string
 KnobHelperPrivate::declarePythonVariables(bool addTab,
-                                          int dim)
+                                          int dim,
+                                          const std::string& expression)
 {
     if (!holder) {
         throw std::runtime_error("This parameter cannot have an expression");
@@ -2977,7 +3067,21 @@ KnobHelperPrivate::declarePythonVariables(bool addTab,
         collectionScriptName = appID;
     }
     if (collection) {
-        NodesList siblings = collection->getNodes();
+        // Each declaration is compiled with the expression, so declaring every sibling would make
+        // setting one expression cost as much as the graph is large, and setting one per node
+        // quadratic. The declarations are locals: only the expression's own text can name them,
+        // unless it inspects its scope.
+        std::unordered_set<std::string> mentioned;
+        const bool declareAll = readExpressionNames(expression, &mentioned);
+        if (effect) {
+            mentioned.insert(effect->getNode()->getScriptName_mt_safe());
+        }
+        NodesList siblings;
+        if (declareAll) {
+            siblings = collection->getNodes();
+        } else {
+            collection->getActivatedNodesNamed(mentioned, &siblings);
+        }
         for (NodesList::iterator it = siblings.begin(); it != siblings.end(); ++it) {
             if ( (*it)->isActivated() && !(*it)->getParentMultiInstance() ) {
                 std::string scriptName = (*it)->getScriptName_mt_safe();
@@ -3279,7 +3383,7 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension,
 
     std::string declarations;
     try {
-        declarations = declarePythonVariables(false, dimension);
+        declarations = declarePythonVariables(false, dimension, expressionCopy);
     } catch (const std::exception& e) {
         if (!readOnly) {
             throw;
@@ -3288,14 +3392,26 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension,
 
         return;
     }
-    std::stringstream ss;
-    ss << "frame=0\n";
-    ss << "view=0\n";
-    ss << declarations << '\n';
+    std::stringstream body;
+    body << "frame=0\n";
+    body << "view=0\n";
+    body << declarations << '\n';
     if (!readOnly) {
-        ss << expressionCopy << '\n';
+        body << expressionCopy << '\n';
     }
-    ss << script;
+    body << script;
+
+    // Run in a function, as the evaluation is: at module scope the node names would stay in
+    // __main__, and an expression naming a removed node would then find its dead wrapper there
+    // and validate, instead of failing with a NameError.
+    static const char* const kFunctionName = "NatronRegisterExpressionListeners";
+    std::stringstream ss;
+    ss << "def " << kFunctionName << "():\n";
+    std::string line;
+    while (std::getline(body, line)) {
+        ss << "    " << line << '\n';
+    }
+    ss << kFunctionName << "()\n";
     script = ss.str();
     ///This will register the listeners
     std::string error;
@@ -3316,17 +3432,243 @@ KnobHelperPrivate::parseListenersFromExpression(int dimension,
     }
 } // KnobHelperPrivate::parseListenersFromExpression
 
+namespace {
+
+// Holds a new reference until released, the GIL being held for its whole life.
+class PyObjectRef {
+    PyObject* _object;
+
+public:
+    PyObjectRef()
+        : _object(0)
+    {
+    }
+
+    ~PyObjectRef()
+    {
+        Py_XDECREF(_object);
+    }
+
+    void reset(PyObject* object)
+    {
+        Py_XDECREF(_object);
+        _object = object;
+    }
+
+    PyObject* get() const
+    {
+        return _object;
+    }
+
+    PyObject* release()
+    {
+        PyObject* object = _object;
+        _object = 0;
+
+        return object;
+    }
+};
+
+bool
+isPythonIdentifierStart(char c)
+{
+    return c == '_' || ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z'));
+}
+
+bool
+isPythonIdentifierChar(char c)
+{
+    return isPythonIdentifierStart(c) || ((c >= '0') && (c <= '9'));
+}
+
+// A new reference to names[0].names[1]... from __main__, or null with no Python error set.
+PyObject*
+lookupMainAttributes(const std::vector<std::string>& names)
+{
+    // The first name is a global of __main__; builtins are left to the script.
+    PyObject* object = PyDict_GetItemString(PyModule_GetDict(NATRON_PYTHON_NAMESPACE::getMainModule()), names[0].c_str());
+    if (!object) {
+        return 0;
+    }
+    Py_INCREF(object);
+    for (std::size_t n = 1; n < names.size(); ++n) {
+        PyObject* attr = PyObject_GetAttrString(object, names[n].c_str());
+        Py_DECREF(object);
+        if (!attr) {
+            PyErr_Clear();
+
+            return 0;
+        }
+        object = attr;
+    }
+
+    return object;
+}
+
+// The function an expression of the form "ret = a.b.c" names, found the way the script
+// "ret = a.b.c(frame, view)" finds it from __main__, or null (with no Python error set) if the
+// expression has another form or a name does not resolve.
+PyObject*
+resolveExpressionFunction(const std::string& expr)
+{
+    static const std::string retPrefix("ret = ");
+
+    if (expr.compare(0, retPrefix.size(), retPrefix) != 0) {
+        return 0;
+    }
+    std::vector<std::string> names;
+    std::size_t i = retPrefix.size();
+    for (;;) {
+        if ((i >= expr.size()) || !isPythonIdentifierStart(expr[i])) {
+            return 0;
+        }
+        std::size_t end = i + 1;
+        while ((end < expr.size()) && isPythonIdentifierChar(expr[end])) {
+            ++end;
+        }
+        names.push_back(expr.substr(i, end - i));
+        if (end == expr.size()) {
+            break;
+        }
+        if (expr[end] != '.') {
+            return 0;
+        }
+        i = end + 1;
+    }
+
+    PyObject* object = lookupMainAttributes(names);
+    if (!object) {
+        return 0;
+    }
+    if (!PyCallable_Check(object)) {
+        Py_DECREF(object);
+
+        return 0;
+    }
+
+    return object;
+}
+
+std::string
+pythonParameterPath(KnobHolder* holder,
+                    const std::string& knobName)
+{
+    const std::string appID = holder->getApp()->getAppIDString();
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
+    if (effect) {
+        NodePtr node = effect->getNode();
+        assert(node);
+
+        return appID + "." + node->getFullyQualifiedName() + "." + knobName;
+    }
+
+    return appID + "." + knobName;
+}
+
+std::vector<std::string>
+splitPythonAttributePath(const std::string& path)
+{
+    std::vector<std::string> names;
+    std::size_t start = 0;
+    for (std::size_t dot = path.find('.'); dot != std::string::npos; dot = path.find('.', start)) {
+        names.push_back(path.substr(start, dot - start));
+        start = dot + 1;
+    }
+    names.push_back(path.substr(start));
+
+    return names;
+}
+
+std::string
+expressionFunctionName(int dimension)
+{
+    std::stringstream ss;
+    ss << "expression" << dimension;
+
+    return ss.str();
+}
+
+// (frame, view) as the script "f(<time>, <view>)" written by a std::ostream passes them: the
+// time rounded to 6 significant digits, an int when it reads as one. Null when the time does
+// not read as a number literal (inf, nan).
+PyObject*
+makeExpressionArguments(double time,
+                        int view)
+{
+    std::ostringstream timeStream;
+    timeStream << time;
+    const std::string timeText = timeStream.str();
+    const char* buf = timeText.c_str();
+    const int n = (int)timeText.size();
+    if (n == 0) {
+        return 0;
+    }
+    bool isInt = true;
+    for (int c = 0; c < n; ++c) {
+        if (!((buf[c] >= '0') && (buf[c] <= '9')) && (buf[c] != '-')) {
+            isInt = false;
+        }
+        if ((buf[c] == 'n') || (buf[c] == 'N') || (buf[c] == 'i') || (buf[c] == 'I')) {
+            return 0;
+        }
+    }
+    PyObject* frame;
+    if (isInt) {
+        frame = PyLong_FromString(buf, 0, 10);
+    } else {
+        // Read the way Python reads the literal.
+        const double rounded = PyOS_string_to_double(buf, 0, 0);
+        if ((rounded == -1.0) && PyErr_Occurred()) {
+            return 0;
+        }
+        frame = PyFloat_FromDouble(rounded);
+    }
+    if (!frame) {
+        return 0;
+    }
+    PyObject* viewObj = PyLong_FromLong(view);
+    if (!viewObj) {
+        Py_DECREF(frame);
+
+        return 0;
+    }
+    PyObject* args = PyTuple_New(2);
+    if (!args) {
+        Py_DECREF(frame);
+        Py_DECREF(viewObj);
+
+        return 0;
+    }
+    PyTuple_SET_ITEM(args, 0, frame); // steals
+    PyTuple_SET_ITEM(args, 1, viewObj);
+
+    return args;
+}
+
+} // anon namespace
+
 std::string
 KnobHelper::validateExpression(const std::string& expression,
                                int dimension,
                                bool hasRetVariable,
                                std::string* resultAsString)
 {
+    return validateExpressionInternal(expression, dimension, hasRetVariable, resultAsString, 0);
+}
+
+std::string
+KnobHelper::validateExpressionInternal(const std::string& expression,
+                                       int dimension,
+                                       bool hasRetVariable,
+                                       std::string* resultAsString,
+                                       PyObject** function)
+{
 
 #ifdef NATRON_RUN_WITHOUT_PYTHON
     throw std::invalid_argument("NATRON_RUN_WITHOUT_PYTHON is defined");
 #endif
     PythonGILLocker pgl;
+    PyObjectRef definedFunction;
 
     if ( expression.empty() ) {
         throw std::invalid_argument("empty expression");;
@@ -3375,25 +3717,8 @@ KnobHelper::validateExpression(const std::string& expression,
         throw std::runtime_error("This parameter cannot have an expression");
     }
 
-    std::string appID = getHolder()->getApp()->getAppIDString();
-    std::string exprFuncPrefix;
-    EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
-    if (effect) {
-        NodePtr node = effect->getNode();
-        assert(node);
-        std::string nodeName = node->getFullyQualifiedName();
-        std::string nodeFullName = appID + "." + nodeName;
-        exprFuncPrefix = nodeFullName + "." + getName() + ".";
-    } else {
-        exprFuncPrefix = appID + "." + getName() + ".";
-    }
-
-    std::string exprFuncName;
-    {
-        std::stringstream tmpSs;
-        tmpSs << "expression" << dimension;
-        exprFuncName = tmpSs.str();
-    }
+    const std::string exprFuncPrefix = pythonParameterPath(holder, getName()) + ".";
+    const std::string exprFuncName = expressionFunctionName(dimension);
 
     exprCpy.append("\n    return ret\n");
 
@@ -3401,8 +3726,7 @@ KnobHelper::validateExpression(const std::string& expression,
 
     std::stringstream ss;
     ss << "def "  << exprFuncName << "(frame, view):\n";
-    ss << _imp->declarePythonVariables(true, dimension);
-
+    ss << _imp->declarePythonVariables(true, dimension, expression);
 
     std::string script = ss.str();
     script.append(exprCpy);
@@ -3415,19 +3739,27 @@ KnobHelper::validateExpression(const std::string& expression,
    {
         EXPR_RECURSION_LEVEL();
 
-        if ( !NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, 0) ) {
-            throw std::runtime_error(error);
+        {
+            std::stringstream callSs;
+            callSs << '\n'
+                   << funcExecScript << '(' << getCurrentTime() << ", " << getCurrentView() << ")\n";
+            script.append(callSs.str());
         }
-
-        std::stringstream ss;
-        ss << funcExecScript << '(' << getCurrentTime() << ", " <<  getCurrentView() << ")\n";
         bool evaluated;
         {
             PyRFV::ExpressionScope rfvScope(this, getCurrentTime(), getCurrentView());
-            evaluated = NATRON_PYTHON_NAMESPACE::interpretPythonScript(ss.str(), &error, 0);
+            evaluated = NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, 0);
         }
         if (!evaluated) {
             throw std::runtime_error(error);
+        }
+        if (function) {
+            // The script bound the function it defined to its name in __main__.
+            PyObject* defined = PyDict_GetItemString(PyModule_GetDict(NATRON_PYTHON_NAMESPACE::getMainModule()), exprFuncName.c_str());
+            if (defined) {
+                Py_INCREF(defined);
+                definedFunction.reset(defined);
+            }
         }
 
         PyObject *ret = PyObject_GetAttrString(NATRON_PYTHON_NAMESPACE::getMainModule(), "ret"); //get our ret variable created above
@@ -3476,9 +3808,12 @@ KnobHelper::validateExpression(const std::string& expression,
         }
     }
 
+    if (function) {
+        *function = definedFunction.release();
+    }
 
     return funcExecScript;
-} // KnobHelper::validateExpression
+} // KnobHelper::validateExpressionInternal
 
 bool
 KnobHelper::checkInvalidExpressions()
@@ -3496,7 +3831,7 @@ KnobHelper::checkInvalidExpressions()
     bool isInvalid = false;
 
     for (int i = 0; i < ndims; ++i) {
-        if ( !exprToReapply[i].first.empty() ) {
+        if (!exprToReapply[i].first.empty() && !restoreExpressionOfReturnedNodes(i)) {
             setExpressionInternal(i, exprToReapply[i].first, exprToReapply[i].second, true, false);
         }
         std::string err;
@@ -3506,6 +3841,94 @@ KnobHelper::checkInvalidExpressions()
     }
 
     return !isInvalid;
+}
+
+bool
+KnobHelper::restoreExpressionOfReturnedNodes(int dimension)
+{
+#ifdef NATRON_RUN_WITHOUT_PYTHON
+
+    return false;
+#else
+    KnobHolder* holder = getHolder();
+    if (!holder || !holder->getApp()) {
+        return false;
+    }
+    std::vector<std::pair<NodeWPtr, std::string>> missingNodes;
+    std::string original;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        missingNodes = _imp->expressions[dimension].missingNodes;
+        original = _imp->expressions[dimension].originalExpression;
+    }
+    if (missingNodes.empty()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < missingNodes.size(); ++i) {
+        NodePtr node = missingNodes[i].first.lock();
+        if (!node || !node->isActivated() || (node->getFullyQualifiedName() != missingNodes[i].second)) {
+            return false;
+        }
+    }
+
+    PythonGILLocker pgl;
+    PyObjectRef function;
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        const Expr& e = _imp->expressions[dimension];
+        if (e.missingNodes.empty() || (e.originalExpression != original) || !e.function) {
+            return false;
+        }
+        Py_INCREF(e.function);
+        function.reset(e.function);
+    }
+    // The parameter's object may have been declared again while the expression was invalid.
+    PyObjectRef parameter;
+    parameter.reset(lookupMainAttributes(splitPythonAttributePath(pythonParameterPath(holder, getName()))));
+    if (!parameter.get() || (PyObject_SetAttrString(parameter.get(), expressionFunctionName(dimension).c_str(), function.get()) != 0)) {
+        PyErr_Clear();
+
+        return false;
+    }
+    clearExpressionsResults(dimension);
+    setExpressionInvalid(dimension, true, std::string());
+
+    return true;
+#endif
+}
+
+void
+KnobHelper::setExpressionMissingNode(int dimension,
+                                     const NodePtr& node,
+                                     const std::string& error)
+{
+    if (!node || (dimension < 0) || (dimension >= getDimension())) {
+        return;
+    }
+    const std::string nodeName = node->getFullyQualifiedName();
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        Expr& e = _imp->expressions[dimension];
+        if (e.originalExpression.empty()) {
+            return;
+        }
+        if (e.exprInvalid.empty()) {
+            e.missingNodes.clear();
+            e.missingNodes.push_back(std::make_pair(NodeWPtr(node), nodeName));
+        } else if (!e.missingNodes.empty()) {
+            bool known = false;
+            for (std::size_t i = 0; i < e.missingNodes.size(); ++i) {
+                if (e.missingNodes[i].first.lock() == node) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                e.missingNodes.push_back(std::make_pair(NodeWPtr(node), nodeName));
+            }
+        }
+    }
+    setExpressionInvalid(dimension, false, error);
 }
 
 bool
@@ -3532,12 +3955,26 @@ KnobHelper::setExpressionInvalid(int dimension,
                                  bool valid,
                                  const std::string& error)
 {
-    KnobContentWrite write;
     int ndims = getDimension();
 
     if ( (dimension < 0) || (dimension >= ndims) ) {
         return;
     }
+    // Every read of a failing expression lands here. Were a repeat counted as a content write, no
+    // metadata derived while one runs could be stored, and each read of the node's hash or metadata
+    // would derive it again with everything upstream of it.
+    {
+        QMutexLocker k(&_imp->expressionMutex);
+        // A failed evaluation leaves the record: with a node it reads gone, failing is expected.
+        if (valid) {
+            _imp->expressions[dimension].missingNodes.clear();
+        }
+        const std::string& current = _imp->expressions[dimension].exprInvalid;
+        if ((current == error) && (current.empty() == valid)) {
+            return;
+        }
+    }
+    KnobContentWrite write;
     bool wasValid;
     {
         QMutexLocker k(&_imp->expressionMutex);
@@ -3613,9 +4050,11 @@ KnobHelper::setExpressionInternal(int dimension,
     std::string exprResult;
     std::string exprCpy;
     std::string exprInvalid;
+    PyObject* function = 0;
+    const U64 functionGeneration = gExpressionFunctionsGeneration.load();
     ExpressionReadRecorder validationReads(this);
     try {
-        exprCpy = validateExpression(expression, dimension, hasRetVariable, &exprResult);
+        exprCpy = validateExpressionInternal(expression, dimension, hasRetVariable, &exprResult, &function);
     } catch (const std::exception &e) {
         exprInvalid = e.what();
         exprCpy = expression;
@@ -3632,10 +4071,11 @@ KnobHelper::setExpressionInternal(int dimension,
         _imp->expressions[dimension].expression = exprCpy;
         _imp->expressions[dimension].originalExpression = expression;
         _imp->expressions[dimension].exprInvalid = exprInvalid;
-
-        ///This may throw an exception upon failure
-        //NATRON_PYTHON_NAMESPACE::compilePyScript(exprCpy, &_imp->expressions[dimension].code);
+        std::swap(function, _imp->expressions[dimension].function);
+        // Without a function the first evaluation looks it up.
+        _imp->expressions[dimension].functionGeneration = _imp->expressions[dimension].function ? functionGeneration : 0;
     }
+    Py_XDECREF(function);
 
     if ( getHolder() ) {
         //Parse listeners of the expression, to keep track of dependencies to indicate them to the user.
@@ -3810,6 +4250,65 @@ KnobHelper::moveHashedMetadataSourcesGeneration()
 }
 
 void
+KnobHelper::restoreExpressionFunctions()
+{
+#ifndef NATRON_RUN_WITHOUT_PYTHON
+    KnobHolder* holder = getHolder();
+    if (!holder || !holder->getApp()) {
+        return;
+    }
+    PythonGILLocker pgl;
+    const int ndims = getDimension();
+    for (int i = 0; i < ndims; ++i) {
+        std::string original;
+        bool hasRet = false;
+        PyObjectRef function;
+        {
+            QMutexLocker k(&_imp->expressionMutex);
+            const Expr& e = _imp->expressions[i];
+            if (!e.exprInvalid.empty()) {
+                continue;
+            }
+            original = e.originalExpression;
+            hasRet = e.hasRet;
+            Py_XINCREF(e.function);
+            function.reset(e.function);
+        }
+        if (original.empty()) {
+            continue;
+        }
+        if (function.get()) {
+            PyObjectRef parameter;
+            parameter.reset(lookupMainAttributes(splitPythonAttributePath(pythonParameterPath(holder, getName()))));
+            if (parameter.get() && (PyObject_SetAttrString(parameter.get(), expressionFunctionName(i).c_str(), function.get()) == 0)) {
+                continue;
+            }
+            PyErr_Clear();
+        }
+        setExpressionInternal(i, original, hasRet, false, false);
+    }
+#endif
+}
+
+void
+KnobHelper::moveExpressionFunctionsGeneration()
+{
+    gExpressionFunctionsGeneration.fetch_add(1);
+}
+
+U64
+KnobHelper::getExpressionFunctionsResolvedCount()
+{
+    return gExpressionFunctionsResolved.load();
+}
+
+U64
+KnobHelper::getExpressionScriptsRunCount()
+{
+    return gExpressionScriptsRun.load();
+}
+
+void
 KnobHelper::appendHashedMetadataSources(int dimension,
                                         std::vector<NodePtr>* sources,
                                         std::set<std::pair<const KnobI*, int>>* visited) const
@@ -3958,43 +4457,28 @@ KnobHelper::removeExpressionDependencies(int dimension,
             if (!other) {
                 continue;
             }
-            ListenerDimsMap otherListeners;
-            {
-                QReadLocker otherMastersLocker(&other->_imp->mastersMutex);
-                otherListeners = other->_imp->listeners;
-            }
-
-            for (ListenerDimsMap::iterator it = otherListeners.begin(); it != otherListeners.end(); ++it) {
-                KnobIPtr knob = it->first.lock();
-                if (knob.get() == this) {
-                    //erase from the dimensions vector
-                    assert( dimension < (int)it->second.size() );
-                    it->second[dimension].isListening = false;
-
-                    //if it has no longer has a reference to this knob, erase it
-                    bool hasReference = false;
-                    for (std::size_t d = 0; d < it->second.size(); ++d) {
-                        if (it->second[d].isListening) {
-                            hasReference = true;
-                            break;
-                        }
-                    }
-                    if (!hasReference) {
-                        otherListeners.erase(it);
-                    }
-
-                    break;
-                }
-            }
-
             if ( getHolder() ) {
                 getHolder()->onKnobSlaved(thisShared, otherKnob, dimension, false, true);
             }
 
+            // In place: a driver read by many knobs would otherwise copy all of its listeners for
+            // each of them that stops reading it.
+            QWriteLocker otherMastersLocker(&other->_imp->mastersMutex);
+            ListenerDimsMap::iterator listener = other->_imp->listeners.find(thisShared);
+            if (listener != other->_imp->listeners.end()) {
+                assert(dimension < (int)listener->second.size());
+                listener->second[dimension].isListening = false;
 
-            {
-                QWriteLocker otherMastersLocker(&other->_imp->mastersMutex);
-                other->_imp->listeners = otherListeners;
+                bool hasReference = false;
+                for (std::size_t d = 0; d < listener->second.size(); ++d) {
+                    if (listener->second[d].isListening) {
+                        hasReference = true;
+                        break;
+                    }
+                }
+                if (!hasReference) {
+                    other->_imp->listeners.erase(listener);
+                }
             }
         }
     }
@@ -4100,6 +4584,7 @@ KnobHelper::clearExpression(int dimension,
     KnobContentWrite write;
     PythonGILLocker pgl;
     bool hadExpression;
+    PyObject* function = 0;
     {
         QMutexLocker k(&_imp->expressionMutex);
         hadExpression = !_imp->expressions[dimension].originalExpression.empty();
@@ -4107,9 +4592,11 @@ KnobHelper::clearExpression(int dimension,
         _imp->expressions[dimension].originalExpression.clear();
         _imp->expressions[dimension].exprInvalid.clear();
         _imp->expressions[dimension].metadataCycle.clear();
-        // Py_XDECREF(_imp->expressions[dimension].code); //< new ref
-        //_imp->expressions[dimension].code = 0;
+        _imp->expressions[dimension].missingNodes.clear();
+        std::swap(function, _imp->expressions[dimension].function);
+        _imp->expressions[dimension].functionGeneration = 0;
     }
+    Py_XDECREF(function);
     removeExpressionDependencies(dimension, NULL);
     if (hadExpression) {
         moveHashedMetadataSourcesGeneration();
@@ -4143,6 +4630,20 @@ KnobHelper::expressionChanged(int dimension)
     pushStateToLinkGroups(dimension, getCurrentTime(), ViewIdx(0), eValueChangedReasonNatronInternalEdited);
 }
 
+static std::string
+describePythonException(PyObject* type,
+                        PyObject* value)
+{
+    PyObject* text = value ? PyObject_Str(value) : NULL;
+    PyObject* typeName = type ? PyObject_GetAttrString(type, "__name__") : NULL;
+    PyErr_Clear();
+    const std::string what = (typeName ? NATRON_PYTHON_NAMESPACE::PyStringToStdString(typeName) : std::string("Error")) + (text ? (": " + NATRON_PYTHON_NAMESPACE::PyStringToStdString(text)) : std::string());
+    Py_XDECREF(typeName);
+    Py_XDECREF(text);
+
+    return what;
+}
+
 static bool
 catchErrors(PyObject* mainModule,
             std::string* error)
@@ -4150,6 +4651,15 @@ catchErrors(PyObject* mainModule,
     PythonGILLocker pgl;
 
     if ( PyErr_Occurred() ) {
+        PyObject* type = NULL;
+        PyObject* value = NULL;
+        PyObject* traceback = NULL;
+        PyErr_Fetch(&type, &value, &traceback);
+        PyErr_NormalizeException(&type, &value, &traceback);
+        // An empty error means a valid expression, and PyErr_Print() leaves no text to read when
+        // stderr is not catchErr: always in background mode, or if a script replaced sys.stderr.
+        *error = describePythonException(type, value);
+        PyErr_Restore(type, value, traceback);
         PyErr_Print();
         ///Gui session, do stdout, stderr redirection
         if ( PyObject_HasAttrString(mainModule, "catchErr") ) {
@@ -4158,7 +4668,10 @@ catchErrors(PyObject* mainModule,
             if (errCatcher) {
                 errorObj = PyObject_GetAttrString(errCatcher, "value"); //get the  stderr from our catchErr object, new ref
                 assert(errorObj);
-                *error = NATRON_PYTHON_NAMESPACE::PyStringToStdString(errorObj);
+                const std::string caught = NATRON_PYTHON_NAMESPACE::PyStringToStdString(errorObj);
+                if (!caught.empty()) {
+                    *error = caught;
+                }
                 PyObject* unicode = PyUnicode_FromString("");
                 PyObject_SetAttrString(errCatcher, "value", unicode);
                 Py_DECREF(errorObj);
@@ -4182,22 +4695,89 @@ KnobHelper::executeExpression(double time,
                               std::string* error) const
 {
     std::string expr;
+    PyObject* function = 0;
+    bool resolve = false;
+    const U64 generation = gExpressionFunctionsGeneration.load();
     {
         QMutexLocker k(&_imp->expressionMutex);
-        if (!_imp->expressions[dimension].metadataCycle.empty()) {
+        Expr& e = _imp->expressions[dimension];
+        if (!e.metadataCycle.empty()) {
             *ret = 0;
-            *error = _imp->expressions[dimension].metadataCycle;
+            *error = e.metadataCycle;
 
             return false;
         }
-        expr = _imp->expressions[dimension].expression;
-    }
-    std::stringstream ss;
+        // Validation failed, so what is stored is the text as typed, not a call of a defined
+        // function. Only a recheck can bring it back; running it would report a meaningless error.
+        if (!e.exprInvalid.empty() && (e.expression == e.originalExpression)) {
+            *ret = 0;
+            *error = e.exprInvalid;
 
-    ss << expr << '(' << time << ", " <<  view << ")\n";
+            return false;
+        }
+        expr = e.expression;
+        if (e.functionGeneration == generation) {
+            // Null when the lookup under this generation failed.
+            function = e.function;
+            Py_XINCREF(function);
+        } else {
+            resolve = true;
+        }
+    }
+    PyObjectRef functionRef;
+    functionRef.reset(function);
+
+    if (resolve) {
+        function = resolveExpressionFunction(expr);
+        gExpressionFunctionsResolved.fetch_add(1);
+        Py_XINCREF(function);
+        functionRef.reset(function);
+        PyObject* previous = function;
+        {
+            QMutexLocker k(&_imp->expressionMutex);
+            Expr& e = _imp->expressions[dimension];
+            // Unless the expression was replaced meanwhile.
+            if (e.expression == expr) {
+                std::swap(previous, e.function);
+                e.functionGeneration = generation;
+            } else {
+                previous = 0;
+                Py_XDECREF(function);
+            }
+        }
+        Py_XDECREF(previous);
+    }
+
+    // The arguments the script below would pass: the time as written by a stream, so a Python
+    // int when that reads as one.
+    PyObjectRef args;
+    if (function) {
+        args.reset(makeExpressionArguments(time, view));
+        if (!args.get()) {
+            PyErr_Clear();
+        }
+    }
 
     const ExpressionTimeScope timeScope(time);
     PyRFV::ExpressionScope rfvScope(this, time, view);
+
+    if (function && args.get()) {
+        PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
+        PyErr_Clear();
+        *ret = PyObject_Call(function, args.get(), 0);
+        if (!*ret) {
+            catchErrors(mainModule, error);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    gExpressionScriptsRun.fetch_add(1);
+    std::stringstream ss;
+
+    ss << expr << '(' << time << ", " << view << ")\n";
 
     return executeExpression(ss.str(), ret, error);
 }
@@ -4257,12 +4837,7 @@ fetchPythonError()
         PyObject* traceback = NULL;
         PyErr_Fetch(&type, &value, &traceback);
         PyErr_NormalizeException(&type, &value, &traceback);
-        PyObject* text = value ? PyObject_Str(value) : NULL;
-        PyObject* typeName = type ? PyObject_GetAttrString(type, "__name__") : NULL;
-        PyErr_Clear();
-        what = (typeName ? NATRON_PYTHON_NAMESPACE::PyStringToStdString(typeName) : std::string("Error")) + (text ? (": " + NATRON_PYTHON_NAMESPACE::PyStringToStdString(text)) : std::string());
-        Py_XDECREF(typeName);
-        Py_XDECREF(text);
+        what = describePythonException(type, value);
         Py_XDECREF(type);
         Py_XDECREF(value);
         Py_XDECREF(traceback);
@@ -4297,7 +4872,7 @@ KnobHelper::compileExpressionSource(const std::string& source,
     Py_DECREF(code);
     std::string declarations;
     try {
-        declarations = _imp->declarePythonVariables(true, 0);
+        declarations = _imp->declarePythonVariables(true, 0, source);
     } catch (const std::exception& e) {
         *error = e.what();
 
@@ -5371,62 +5946,194 @@ KnobHelper::getKeyFrameIndex(ViewSpec view,
     return curve->keyFrameIndex(time);
 }
 
+namespace {
+
+// The knob refreshListenersAfterValueChange() is notifying: the refresh its own notification
+// asks for is part of the pass already under way.
+thread_local const KnobHelper* tListenersRefreshKnob = 0;
+std::atomic<U64> gListenerRefreshes { 0 };
+
+class ListenersRefreshKnobScope {
+    const KnobHelper* const _previous;
+
+public:
+    explicit ListenersRefreshKnobScope(const KnobHelper* knob)
+        : _previous(tListenersRefreshKnob)
+    {
+        tListenersRefreshKnob = knob;
+    }
+
+    ~ListenersRefreshKnobScope()
+    {
+        tListenersRefreshKnob = _previous;
+    }
+};
+
+struct ListenerRefresh {
+    KnobIPtr knob; // Null for the knob the change started at.
+    KnobHelper* helper;
+    double time;
+    // The dimension arguments with which it is reached; -1 for all.
+    std::set<int> arrivals;
+    std::vector<std::size_t> children;
+    std::set<std::size_t> childSet;
+    // (master, dimension, master dimension) of the non-expression links to clone from.
+    std::set<std::tuple<std::size_t, int, int>> clones;
+    int pendingParents;
+    bool done;
+
+    ListenerRefresh()
+        : knob()
+        , helper(0)
+        , time(0.)
+        , arrivals()
+        , children()
+        , childSet()
+        , clones()
+        , pendingParents(0)
+        , done(false)
+    {
+    }
+};
+
+} // anon namespace
+
+U64
+KnobHelper::getListenerRefreshCount()
+{
+    return gListenerRefreshes.load();
+}
+
 void
 KnobHelper::refreshListenersAfterValueChange(ViewSpec view,
                                              ValueChangedReasonEnum reason,
                                              int dimension)
 {
-    ListenerDimsMap listeners;
-
-    getListeners(listeners);
-
-    if ( listeners.empty() ) {
+    if (tListenersRefreshKnob == this) {
         return;
     }
 
-    double time = getCurrentTime();
-    for (ListenerDimsMap::iterator it = listeners.begin(); it != listeners.end(); ++it) {
-        KnobHelper* slaveKnob = dynamic_cast<KnobHelper*>( it->first.lock().get() );
-        if (!slaveKnob) {
+    // Every knob reached from this one, each refreshed once after the ones it is reached from,
+    // instead of once per path to it.
+    std::vector<ListenerRefresh> refreshes(1);
+    refreshes[0].helper = this;
+    refreshes[0].arrivals.insert(dimension);
+    // The knob the change started at is entered again if it listens to itself, one dimension
+    // reading another.
+    std::map<const KnobHelper*, std::size_t> indices;
+    std::deque<std::size_t> toExpand(1, 0);
+    std::vector<bool> queued(1, true);
+
+    while (!toExpand.empty()) {
+        const std::size_t master = toExpand.front();
+        toExpand.pop_front();
+        queued[master] = false;
+        KnobHelper* masterKnob = refreshes[master].helper;
+        const std::set<int> arrivals = refreshes[master].arrivals;
+        const bool allDimensions = arrivals.count(-1) > 0;
+
+        ListenerDimsMap listeners;
+        masterKnob->getListeners(listeners);
+        if (listeners.empty()) {
             continue;
         }
-
-
-        std::set<int> dimensionsToEvaluate;
-        for (std::size_t i = 0; i < it->second.size(); ++i) {
-            if ( it->second[i].isListening && ( (it->second[i].targetDim == dimension) || (it->second[i].targetDim == -1) || (dimension == -1) ) ) {
-                dimensionsToEvaluate.insert(i);
-                if (!it->second[i].isExpr) {
-                    ///We still want to clone the master's dimension because otherwise we couldn't edit the curve e.g in the curve editor
-                    ///For example we use it for roto knobs where selected beziers have their knobs slaved to the gui knobs
-                    slaveKnob->clone(this, i, it->second[i].targetDim);
+        const double time = masterKnob->getCurrentTime();
+        for (ListenerDimsMap::iterator it = listeners.begin(); it != listeners.end(); ++it) {
+            KnobIPtr slave = it->first.lock();
+            KnobHelper* slaveKnob = dynamic_cast<KnobHelper*>(slave.get());
+            if (!slaveKnob) {
+                continue;
+            }
+            std::vector<int> matched;
+            for (std::size_t i = 0; i < it->second.size(); ++i) {
+                if (it->second[i].isListening && (allDimensions || (it->second[i].targetDim == -1) || arrivals.count(it->second[i].targetDim))) {
+                    matched.push_back((int)i);
                 }
             }
-        }
+            if (matched.empty()) {
+                continue;
+            }
 
-        if ( dimensionsToEvaluate.empty() ) {
-            continue;
+            std::size_t index;
+            std::map<const KnobHelper*, std::size_t>::iterator found = indices.find(slaveKnob);
+            if (found != indices.end()) {
+                index = found->second;
+            } else {
+                index = refreshes.size();
+                indices[slaveKnob] = index;
+                refreshes.push_back(ListenerRefresh());
+                queued.push_back(false);
+                refreshes[index].knob = slave;
+                refreshes[index].helper = slaveKnob;
+                refreshes[index].time = time;
+            }
+            ListenerRefresh& refresh = refreshes[index];
+            for (std::size_t m = 0; m < matched.size(); ++m) {
+                if (!it->second[matched[m]].isExpr) {
+                    ///We still want to clone the master's dimension because otherwise we couldn't edit the curve e.g in the curve editor
+                    ///For example we use it for roto knobs where selected beziers have their knobs slaved to the gui knobs
+                    refresh.clones.insert(std::make_tuple(master, matched[m], it->second[matched[m]].targetDim));
+                }
+            }
+            if ((index != master) && refreshes[master].childSet.insert(index).second) {
+                refreshes[master].children.push_back(index);
+                ++refresh.pendingParents;
+            }
+            const int arrival = (matched.size() > 1) ? -1 : matched.front();
+            if (refresh.arrivals.insert(arrival).second && !queued[index] && !slaveKnob->isListenersNotificationBlocked()) {
+                queued[index] = true;
+                toExpand.push_back(index);
+            }
         }
+    }
 
-        int dimChanged;
-        if (dimensionsToEvaluate.size() > 1) {
-            dimChanged = -1;
+    if (refreshes.size() == 1) {
+        return;
+    }
+
+    for (std::size_t r = 1; r < refreshes.size(); ++r) {
+        for (int i = 0; i < refreshes[r].helper->getDimension(); ++i) {
+            refreshes[r].helper->clearExpressionsResults(i);
+        }
+    }
+
+    std::vector<std::size_t> ready(1, 0);
+    std::size_t next = 1;
+    for (;;) {
+        std::size_t r;
+        if (!ready.empty()) {
+            r = ready.back();
+            ready.pop_back();
         } else {
-            dimChanged = *dimensionsToEvaluate.begin();
+            // What is left is reached through a cycle: in the order found.
+            while ((next < refreshes.size()) && refreshes[next].done) {
+                ++next;
+            }
+            if (next == refreshes.size()) {
+                break;
+            }
+            r = next;
         }
-
-        for (int i = 0; i < slaveKnob->getDimension(); ++i) {
-            slaveKnob->clearExpressionsResults(i);
+        refreshes[r].done = true;
+        if (r != 0) {
+            ListenerRefresh& refresh = refreshes[r];
+            // A clone also refreshes the knob's listeners, which this pass does.
+            const ListenersRefreshKnobScope scope(refresh.helper);
+            for (std::set<std::tuple<std::size_t, int, int>>::const_iterator it = refresh.clones.begin(); it != refresh.clones.end(); ++it) {
+                refresh.helper->clone(refreshes[std::get<0>(*it)].helper, std::get<1>(*it), std::get<2>(*it));
+            }
+            const int dimChanged = (refresh.arrivals.size() == 1) ? *refresh.arrivals.begin() : -1;
+            ++gListenerRefreshes;
+            refresh.helper->evaluateValueChangeInternal(dimChanged, refresh.time, view, eValueChangedReasonSlaveRefresh, reason);
         }
-
-
-        slaveKnob->evaluateValueChangeInternal(dimChanged, time, view, eValueChangedReasonSlaveRefresh, reason);
-
-        //call recursively
-        if ( !slaveKnob->isListenersNotificationBlocked() ) {
-            slaveKnob->refreshListenersAfterValueChange(view, reason, dimChanged);
+        // Reversed so the first listener is refreshed first.
+        const std::vector<std::size_t>& children = refreshes[r].children;
+        for (std::vector<std::size_t>::const_reverse_iterator it = children.rbegin(); it != children.rend(); ++it) {
+            if (!refreshes[*it].done && (--refreshes[*it].pendingParents == 0)) {
+                ready.push_back(*it);
+            }
         }
-    } // for all listeners
+    }
 } // KnobHelper::refreshListenersAfterValueChange
 
 void
@@ -9345,6 +10052,8 @@ KnobHolder::endChanges(bool discardRendering)
         return true;
     }
 
+    // Every holder the change reaches through its listeners ends its changes inside this one.
+    Node::ValueChangeCascade cascade;
 
     bool thisChangeSignificant = false;
     bool thisBracketHadChange = false;

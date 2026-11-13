@@ -31,6 +31,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 #include <QApplication>
@@ -106,7 +107,6 @@ NodeGraph::switchInputs1and2ForSelectedNodes()
 void
 NodeGraph::centerOnItem(QGraphicsItem* item)
 {
-    _imp->_refreshOverlays = true;
     centerOn(item);
 }
 
@@ -238,12 +238,15 @@ pasteOntoNode(NodeGraph* graph,
     const QPointF entryPosBefore = entryGui->getPos_mt_safe();
     graph->moveNodesForIdealPosition(entryGui, targetGui, true);
     const QPointF delta = entryGui->getPos_mt_safe() - entryPosBefore;
-    for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
-        if (*it == entryGui) {
-            continue;
+    {
+        const NodeStackingBatch stackingBatch(graph);
+        for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+            if (*it == entryGui) {
+                continue;
+            }
+            const QPointF pos = (*it)->getPos_mt_safe();
+            (*it)->setPosition(pos.x() + delta.x(), pos.y() + delta.y());
         }
-        const QPointF pos = (*it)->getPos_mt_safe();
-        (*it)->setPosition(pos.x() + delta.x(), pos.y() + delta.y());
     }
 
     // Node creation re-routes one input of each of the target's outputs to the node it placed,
@@ -276,7 +279,7 @@ pasteOntoNode(NodeGraph* graph,
     if (entryGui != exitGui) {
         QRectF pastedRect;
         for (NodesGuiList::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
-            pastedRect |= (*it)->mapToScene((*it)->boundingRect()).boundingRect();
+            pastedRect |= (*it)->mapToScene((*it)->bodyRect()).boundingRect();
         }
         for (std::map<NodePtr, int>::const_iterator it = targetOutputs.begin(); it != targetOutputs.end(); ++it) {
             NodeGuiIPtr outputGuiI = it->first->getNodeGui();
@@ -318,7 +321,7 @@ void
 NodeGraph::pasteCliboard(const NodeClipBoard& clipboard,
                          std::list<std::pair<std::string, NodeGuiPtr> >* newNodes)
 {
-    QPointF position = _imp->_root->mapFromScene( mapToScene( mapFromGlobal( QCursor::pos() ) ) );
+    QPointF position = mapToScene(mapFromGlobal(QCursor::pos()));
 
     _imp->pasteNodesInternal(clipboard, position, false, newNodes);
 }
@@ -367,12 +370,12 @@ NodeGraph::pasteNodeClipBoards(const QPointF& pos)
 
     const NodesGuiList selectionBeforePaste = _imp->_selection;
     if (selectionBeforePaste.empty()) {
-        _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), true, &newNodes);
+        _imp->pasteNodesInternal(cb, pos, true, &newNodes);
 
         return true;
     }
 
-    _imp->pasteNodesInternal(cb, _imp->_root->mapFromScene(pos), false, &newNodes);
+    _imp->pasteNodesInternal(cb, pos, false, &newNodes);
     if (newNodes.empty() || (newNodes.size() != cb.nodes.size())) {
         return true;
     }
@@ -409,7 +412,7 @@ NodeGraph::duplicateSelectedNodes(const QPointF& pos)
     NodeClipBoard tmpClipboard;
     _imp->copyNodesInternal(_imp->_selection, tmpClipboard);
     std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
-    _imp->pasteNodesInternal(tmpClipboard, _imp->_root->mapFromScene(pos), true, &newNodes);
+    _imp->pasteNodesInternal(tmpClipboard, pos, true, &newNodes);
 }
 
 void
@@ -434,8 +437,12 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
     double ymin = std::numeric_limits<int>::max();
     double ymax = std::numeric_limits<int>::min();
     NodesGuiList nodesToCopy = _imp->_selection;
+    std::unordered_set<NodeGui*> nodesToCopySet;
+    for (NodesGuiList::const_iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
+        nodesToCopySet.insert(it->get());
+    }
     for (NodesGuiList::iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
-        QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+        QRectF bbox = (*it)->mapToScene((*it)->bodyRect()).boundingRect();
         if ( ( bbox.x() + bbox.width() ) > xmax ) {
             xmax = ( bbox.x() + bbox.width() );
         }
@@ -455,8 +462,7 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
         if (isBd) {
             NodesGuiList nodesWithinBD = getNodesWithinBackdrop(*it);
             for (NodesGuiList::iterator it2 = nodesWithinBD.begin(); it2 != nodesWithinBD.end(); ++it2) {
-                NodesGuiList::iterator found = std::find(nodesToCopy.begin(), nodesToCopy.end(), *it2);
-                if ( found == nodesToCopy.end() ) {
+                if (nodesToCopySet.insert(it2->get()).second) {
                     nodesToCopy.push_back(*it2);
                 }
             }
@@ -485,23 +491,26 @@ NodeGraph::createLinkedNodes(const QPointF& scenePos)
     std::list<NodeGuiPtr> newNodesList;
     std::map<std::string, std::string> oldNewScriptNamesMapping;
     std::list<std::pair<NodePtr, NodePtr>> linkedNodes;
-    for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
-        NodePtr sourceNode = (*it)->getNode();
-        Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
-        sourceNode->toSerialization(internalSerialization.get());
-        NodeGuiPtr copy = _imp->pasteNode(internalSerialization, sourceNode, offset,
-                                          _imp->group.lock(), std::string(), &linkedNodes, &oldNewScriptNamesMapping);
-        if (!copy) {
-            continue;
+    {
+        const NodeCollection::NamingBatch namingBatch(_imp->group.lock());
+        const NodeStackingBatch stackingBatch(this);
+        for (NodesGuiList::iterator it = nodesToCopy.begin(); it != nodesToCopy.end(); ++it) {
+            NodePtr sourceNode = (*it)->getNode();
+            Serialization::NodeSerializationPtr internalSerialization = std::make_shared<Serialization::NodeSerialization>();
+            sourceNode->toSerialization(internalSerialization.get());
+            NodeGuiPtr copy = _imp->pasteNode(internalSerialization, sourceNode, offset,
+                                              _imp->group.lock(), std::string(), &linkedNodes, &oldNewScriptNamesMapping);
+            if (!copy) {
+                continue;
+            }
+
+            newNodes.push_back(std::make_pair(internalSerialization->scriptName, copy));
+            newNodesList.push_back(copy);
+            serializations.push_back(internalSerialization);
+
+            oldNewScriptNamesMapping[internalSerialization->scriptName] = copy->getNode()->getScriptName();
         }
-
-        newNodes.push_back(std::make_pair(internalSerialization->scriptName, copy));
-        newNodesList.push_back(copy);
-        serializations.push_back(internalSerialization);
-
-        oldNewScriptNamesMapping[internalSerialization->scriptName] = copy->getNode()->getScriptName();
     }
-
 
     assert( serializations.size() == newNodes.size() );
     ///restore connections
@@ -610,24 +619,16 @@ void
 NodeGraph::deleteNodePermanantly(const NodeGuiPtr& n)
 {
     assert(n);
-    NodesGuiList::iterator it = std::find(_imp->_nodesTrash.begin(), _imp->_nodesTrash.end(), n);
-
-    if ( it != _imp->_nodesTrash.end() ) {
-        _imp->_nodesTrash.erase(it);
-    }
+    _imp->_nodesTrash.remove(n.get());
 
     {
         QMutexLocker l(&_imp->_nodesMutex);
-        NodesGuiList::iterator it = std::find(_imp->_nodes.begin(), _imp->_nodes.end(), n);
-        if ( it != _imp->_nodes.end() ) {
-            _imp->_nodes.erase(it);
-        }
+        _imp->_nodes.remove(n.get());
     }
+    invalidateNavigatorContent();
 
-    NodesGuiList::iterator found = std::find(_imp->_selection.begin(), _imp->_selection.end(), n);
-    if ( found != _imp->_selection.end() ) {
+    if (_imp->_selection.remove(n.get())) {
         n->setUserSelected(false);
-        _imp->_selection.erase(found);
     }
     // A node destroyed outright never passes through moveToTrash, so its loop block goes here.
     scheduleLoopBlockRefresh(true);
@@ -658,7 +659,6 @@ NodeGraph::centerOnAllNodes()
     double xmax = std::numeric_limits<int>::min();
     double ymin = std::numeric_limits<int>::max();
     double ymax = std::numeric_limits<int>::min();
-    //_imp->_root->setPos(0,0);
 
     if ( _imp->_selection.empty() ) {
         QMutexLocker l(&_imp->_nodesMutex);
@@ -685,11 +685,10 @@ NodeGraph::centerOnAllNodes()
             }
         }
     }
-    // Move the scene so that topleft of the viewing area is at 0,0, and avoid issues
-    // when topleft has negative coords.
-    moveRootInternal(-xmin, -ymin);
-    QRectF bbox( 0, 0, (xmax - xmin), (ymax - ymin) );
-    setAlignment(Qt::AlignRight|Qt::AlignVCenter);
+    if (xmin > xmax) {
+        return;
+    }
+    QRectF bbox(xmin, ymin, (xmax - xmin), (ymax - ymin));
     fitInView(bbox, Qt::KeepAspectRatio);
 
     double currentZoomFactor = transform().mapRect( QRectF(0, 0, 1, 1) ).width();
@@ -697,13 +696,12 @@ NodeGraph::centerOnAllNodes()
     //we want to fit at scale 1 at most
     if (currentZoomFactor > 1.) {
         double scaleFactor = 1. / currentZoomFactor;
-        setTransformationAnchor(QGraphicsView::AnchorViewCenter);
         scale(scaleFactor, scaleFactor);
-        setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     }
 
-    _imp->_refreshOverlays = true;
-    update();
+    // A new view transform already repaints the viewport.
+    refreshDetailLevel();
+    refreshOverlays();
 } // NodeGraph::centerOnAllNodes
 
 static QString

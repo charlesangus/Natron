@@ -156,7 +156,6 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         _wrap.reset();
-        _out.reset();
         getApp()->getProject()->reset(false, true);
         BaseTest::TearDown();
     }
@@ -206,9 +205,8 @@ protected:
         NodePtr crop = createNode(QString::fromUtf8(PLUGINID_NATRON_CROP));
         NodePtr bg = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
         _wrap = createNode(QString::fromUtf8(kLightWrapID));
-        _out = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-        EXPECT_TRUE(fg && crop && bg && _wrap && _out);
-        if (!fg || !crop || !bg || !_wrap || !_out) {
+        EXPECT_TRUE(fg && crop && bg && _wrap);
+        if (!fg || !crop || !bg || !_wrap) {
             return false;
         }
         setDoubles(fg, kConstantParamColor, { 0.5, 0.5, 0.5, 1. });
@@ -222,11 +220,12 @@ protected:
         connectNodes(fg, crop, 0, true);
         connectNodes(crop, _wrap, 0, true);
         connectNodes(bg, _wrap, 1, true);
-        // Not connectNodes: its check reads getInput, which resolves a group input to the node
-        // feeding the group's Output, so it never equals the group itself.
-        EXPECT_TRUE(getApp()->getProject()->connectNodes(0, _wrap, _out));
-        EXPECT_EQ(_wrap, _out->getRealInput(0));
-        EXPECT_EQ(inner("Dot4"), _out->getInput(0));
+        NodeGroupPtr wrapGroup = std::dynamic_pointer_cast<NodeGroup>(_wrap->getEffectInstance());
+        EXPECT_NE(nullptr, wrapGroup.get());
+        if (!wrapGroup) {
+            return false;
+        }
+        EXPECT_EQ(inner("Dot4"), wrapGroup->getOutputNodeInput(false));
 
         setDoubles(_wrap, "intensity", { 10. });
         setDoubles(_wrap, "fgblur", { 4., 4. });
@@ -263,9 +262,6 @@ protected:
     }
 
     NodePtr _wrap;
-    // A group renders nothing of its own, so the output is read where a consumer pulls it: through
-    // a Dot below the group, which reaches the node feeding the group's Output.
-    NodePtr _out;
 };
 
 // The signal path from the inputs to the output, in order, with the channel that carries the wrap
@@ -352,7 +348,7 @@ TEST_F(LightWrapRenderTest, OutputHasAWrapBandInsideTheForegroundEdge)
     }
     RenderedPlane out;
     std::string error;
-    ASSERT_TRUE(renderRGBA(_out, &out, &error)) << error;
+    ASSERT_TRUE(renderRGBA(_wrap, &out, &error)) << error;
 
     const float band = sample(out, kBandX, kMidY, eR);
     EXPECT_GT(band, 0.05f) << "no wrap band inside the foreground edge";
@@ -398,7 +394,7 @@ TEST_F(LightWrapRenderTest, TogglesChangeWhatTheInnerSwitchesRender)
 
     RenderedPlane out;
     std::string error;
-    ASSERT_TRUE(renderRGBA(_out, &out, &error)) << error;
+    ASSERT_TRUE(renderRGBA(_wrap, &out, &error)) << error;
     const float r = sample(out, kBandX, kMidY, eR);
     EXPECT_GT(r, 0.05f) << "no wrap band with useConstant on";
     // The white constant wraps grey: green matches red, where the orange background gave less.

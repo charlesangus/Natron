@@ -680,13 +680,14 @@ TEST_F(CacheDeviceTierTest, PromotedEntryDownloadsOnceTheHostDroppedItsCopy)
     ASSERT_TRUE(bool(entry));
     EXPECT_FALSE(onHost(*entry->header()));
 
+    // The host tier only evicts entries nothing else references.
+    host.reset();
     ASSERT_TRUE(cache.evictLRUInMemoryEntry());
+    cache.waitForDeleterThread();
     {
         std::list<ImagePtr> found;
         ASSERT_FALSE(cache.peek(key, &found) && (found.front()->getStorageMode() == eStorageModeRAM)) << "the host kept its copy";
     }
-    host.reset();
-    cache.waitForDeleterThread();
 
     ASSERT_TRUE(tier->demote(entry));
     EXPECT_TRUE(onHost(*entry->header())) << "the demotion dropped the pixels the host no longer had";

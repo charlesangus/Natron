@@ -175,7 +175,7 @@ future core work has solid ground to build on.
 | M329 | Viewer Draw States | doing | M327, M328 | bosley-native-nodes | E9 | F4 | | [M329-viewer-draw-states.md](PLAN/MILESTONES/M329-viewer-draw-states.md) |
 | M330 | Graph Draw Policy | todo | M329 |  | E9 | F4 | | [M330-graph-draw-policy.md](PLAN/MILESTONES/M330-graph-draw-policy.md) |
 | M331 | Deferred Pattern Matching | doing | M52, M327, M328 | bosley-native-nodes | E9 | F4 | | [M331-deferred-pattern-matching.md](PLAN/MILESTONES/M331-deferred-pattern-matching.md) |
-| M332 | Scene Graph Points | doing | M328 | bosley-native-nodes | E9 | F4 | | [M332-scene-graph-points.md](PLAN/MILESTONES/M332-scene-graph-points.md) |
+| M332 | Scene Graph Points | done | M328 | bosley-native-nodes | E9 | F4 | | [M332-scene-graph-points.md](PLAN/MILESTONES/M332-scene-graph-points.md) |
 | M333 | Prim Inspector | done | M232 | misty-marten | E9 | F4 | | [M333-prim-inspector.md](PLAN/MILESTONES/M333-prim-inspector.md) |
 | M334 | Knob Prim Tools | todo | M52, M232, M331 |  | E9 | F4 | | [M334-knob-prim-tools.md](PLAN/MILESTONES/M334-knob-prim-tools.md) |
 | M335 | Viewer Render Draw States | todo | M254, M329 |  | E9 | F4 | | [M335-viewer-render-draw-states.md](PLAN/MILESTONES/M335-viewer-render-draw-states.md) |

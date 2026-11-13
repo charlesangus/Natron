@@ -76,6 +76,7 @@
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -135,6 +136,8 @@
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
+#include "Gui/SceneDrawFilter.h"
+#include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGuides.h"
 #include "Gui/SceneTransformTarget.h"
@@ -475,6 +478,22 @@ const GLenum StormGLStateGuard::kCaps[StormGLStateGuard::kNumCaps] = {
     GL_DEPTH_CLAMP, GL_TEXTURE_CUBE_MAP_SEAMLESS, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_RASTERIZER_DISCARD
 };
 
+// Published so that a harness can hold the viewer to display states never editing the stage.
+class StageNoticeCounter
+    : public TfWeakBase {
+public:
+    void onObjectsChanged(const UsdNotice::ObjectsChanged& notice)
+    {
+        ++count;
+        resyncedPaths += notice.GetResyncedPaths().size();
+        infoOnlyPaths += notice.GetChangedInfoOnlyPaths().size();
+    }
+
+    std::atomic<U64> count { 0 };
+    std::atomic<U64> resyncedPaths { 0 };
+    std::atomic<U64> infoOnlyPaths { 0 };
+};
+
 /**
  * The threads a viewer's Cycles engine asks for, on its worker: the budget the thread preferences
  * give one effect, less a core for the interface. It is the budget with the pool idle, not
@@ -621,11 +640,50 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> shown;
     std::atomic<U64> stageEditCount { 0 };
     std::atomic<U64> stageLoadEditCount { 0 };
+    // What serviceStageLoads() evaluates a batch's scene with. Under loadSetMutex too: the load
+    // set the stage last committed, what the next sync's payload was evaluated for, and what the
+    // payload on the stage was evaluated for. A null reach is for nothing in particular, and for
+    // the stage's payload, one any load change may alter.
+    std::mutex loadSetMutex;
+    SceneViewportRenderer::LoadSetEvaluator loadSetEvaluator;
+    SceneViewportRenderer::LoadSetCommitted loadSetCommitted;
+    std::atomic<U64> committedLoadSetHash { SceneLoadSet::none().getHash() };
+    SceneLoadSetPtr committedLoadSet = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
+    SceneLoadSetPtr syncLoadSet;
+    SceneLoadReachPtr syncReach;
+    SceneLoadSetPtr shownLoadSet;
+    SceneLoadReachPtr shownReach = std::make_shared<SceneLoadReach>();
     std::atomic<U64> stageSyncSerial { 0 };
     // The counts the engine last took in, by whichever render.
     std::atomic<U64> absorbedEditCount { 0 };
     std::atomic<U64> absorbedLoadEditCount { 0 };
     std::atomic<std::size_t> absorbedParamsKey { 0 };
+
+    // Draw state deltas from the main thread, queued because applying one sends Hydra notices that
+    // it must not wait for. drawRules is what a filter on a new engine starts from. drawMutex is
+    // never held across a Hydra call, so the main thread's post cannot block on one.
+    struct QueuedDrawDelta {
+        SceneDrawDelta delta;
+        std::size_t revealBatch;
+        std::chrono::steady_clock::time_point startedAt;
+    };
+    mutable std::mutex drawMutex;
+    std::vector<QueuedDrawDelta> drawQueue;
+    DrawFilterStats drawStats;
+    std::atomic<U64> drawPosted { 0 };
+    std::atomic<U64> drawApplied { 0 };
+    std::atomic<U64> drawAbsorbed { 0 };
+    // A reveal shows one step per presented image; drawRevealStepDue says that image has been seen.
+    std::atomic<bool> drawRevealing { false };
+    std::atomic<bool> drawRevealStepDue { true };
+    std::size_t drawRevealBatch = 0;
+    SceneDrawFilter::Rules drawRules;
+    SceneDrawFilter::WeakPtr drawFilter;
+    std::atomic<bool> everyLightHidden { false };
+    StageNoticeCounter stageNotices;
+    bool stageNoticesRegistered = false;
+    const std::unique_ptr<SceneDrawTiming> drawTiming { SceneDrawTiming::enabledByEnvironment() ? new SceneDrawTiming : nullptr };
+
     std::atomic<bool> zUp;
     std::atomic<double> metersPerUnit;
     std::atomic<double> timeCodesPerSecond;
@@ -698,6 +756,7 @@ struct SceneViewportRenderer::Implementation {
         int height = 0;
         GfFrustum frustum;
         UsdImagingGLRenderParams params;
+        LightingModeEnum lightingMode = eLightingModeScene;
         OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
         double gain = 1.;
         double gamma = 1.;
@@ -1054,15 +1113,43 @@ struct SceneViewportRenderer::Implementation {
         case eLightingModeAuto: {
             const std::shared_ptr<const StageSummary> summary = getStageSummary();
 
-            return summary && summary->hasLights;
+            return summary && summary->hasLights && !everyLightHidden;
         }
         case eLightingModeScene:
-            return true;
+            return !everyLightHidden;
         case eLightingModeHeadlight:
             return false;
         }
 
         return false;
+    }
+
+    // Hydra holds no light of the stage once every one is under a Hidden row, and nothing lights
+    // the scene then. A stage with no light at all stays dark under Scene Lights, as hiding a mesh
+    // must not light it. The headlight is a light in the filter's input too, so only stage prims
+    // count, or adding it would reverse this on the next pass. Needs stageMutex and the engine.
+    bool hidesEveryLight() const
+    {
+        const SceneDrawFilter* filter = get_pointer(drawFilter);
+        if (!filter || !filter->hidesLights()) {
+            return false;
+        }
+        const std::shared_ptr<const StageSummary> summary = getStageSummary();
+        const UsdStageRefPtr stage = currentStage();
+        if (!summary || !summary->hasLights || !stage) {
+            return false;
+        }
+
+        return !filter->hasDrawnLights([&stage](const SdfPath& light) {
+            return bool(stage->GetPrimAtPath(light));
+        });
+    }
+
+    // Needs stageMutex and the engine. The main thread reads the result for its render params,
+    // and may touch neither the filter nor the stage.
+    void refreshLightsHidden()
+    {
+        everyLightHidden = hidesEveryLight();
     }
 
     // The project frame mapped by seconds, as SceneOps::frameToTimeCode.
@@ -1345,6 +1432,8 @@ struct SceneViewportRenderer::Implementation {
         UsdImagingGLEngine::Parameters parameters;
         parameters.rendererPluginId = TfToken(rendererId);
         try {
+            SceneDrawFilter::registerForAllRenderers();
+            (void)SceneDrawFilter::takeAppendedInstanceId();
             CyclesAovs::registerSceneIndices();
             {
                 TfErrorMark mark;
@@ -1380,6 +1469,10 @@ struct SceneViewportRenderer::Implementation {
             engineFailedToStart("unknown exception");
 
             return false;
+        }
+        drawFilter = SceneDrawFilter::find(SceneDrawFilter::takeAppendedInstanceId());
+        if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
+            filter->seedRules(drawRules);
         }
         engineHeld = true;
 
@@ -1421,6 +1514,9 @@ struct SceneViewportRenderer::Implementation {
         StormGLSection section;
 
         engine.reset();
+        drawFilter = SceneDrawFilter::WeakPtr();
+        drawRevealing = false;
+        everyLightHidden = false;
         engineHeld = false;
         backgroundFrame.imageKept = false;
     }
@@ -1433,6 +1529,12 @@ struct SceneViewportRenderer::Implementation {
             absorbedLoadEditCount = sceneStage->getLoadEditCount();
         }
         absorbedParamsKey = paramsKey(params);
+        drawAbsorbed = drawApplied.load();
+        if (!stageNoticesRegistered && sceneStage && sceneStage->getStage()) {
+            stageNoticesRegistered = true;
+            TfNotice::Register(TfCreateWeakPtr(&stageNotices), &StageNoticeCounter::onObjectsChanged, UsdStageWeakPtr(sceneStage->getStage()));
+        }
+        refreshDrawStats();
     }
 
     // The render params a paint draws with, lit as the stage's summary says.
@@ -1465,6 +1567,96 @@ struct SceneViewportRenderer::Implementation {
         add(params.ocioColorSpace.Hash());
 
         return key;
+    }
+
+    // Needs stageMutex. Reads the filter, which only the thread holding the engine may touch.
+    void refreshDrawStats()
+    {
+        SceneDrawFilter* filter = get_pointer(drawFilter);
+        std::lock_guard<std::mutex> lock(drawMutex);
+        drawStats.filterBound = (filter != nullptr);
+        drawStats.revealing = drawRevealing;
+        drawStats.ruleCount = drawRules.size();
+        if (!filter) {
+            return;
+        }
+        drawStats.inputAdded = filter->getInputAddedCount();
+        drawStats.inputRemoved = filter->getInputRemovedCount();
+        drawStats.inputDirtied = filter->getInputDirtiedCount();
+        drawStats.hiddenSent = filter->getHiddenSentCount();
+        drawStats.shownSent = filter->getShownSentCount();
+        drawStats.visibilitySent = filter->getVisibilitySentCount();
+        drawStats.heldInvisible = filter->getHeldInvisibleCount();
+        if (drawStats.inputAdded != 0) {
+            // The harness compares this with its own wall clock, and the filter keeps a steady one.
+            const auto sinceAdded = SceneDrawFilter::Clock::now() - filter->getLastInputAddedTime();
+            const auto addedAt = std::chrono::system_clock::now() - std::chrono::duration_cast<std::chrono::system_clock::duration>(sinceAdded);
+            drawStats.lastInputAddedEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(addedAt.time_since_epoch()).count();
+        }
+    }
+
+    // Needs stageMutex, the GL context current and an engine, between renders: the notices reach the
+    // render index directly.
+    void serviceDrawFilter()
+    {
+        std::vector<QueuedDrawDelta> queued;
+        U64 posted = 0;
+        {
+            std::lock_guard<std::mutex> lock(drawMutex);
+            queued.swap(drawQueue);
+            posted = drawPosted;
+        }
+        SceneDrawFilter* filter = get_pointer(drawFilter);
+        SceneDrawTiming* timing = drawTiming.get();
+        const U64 appliedBefore = drawApplied;
+        unsigned long long hiddenBefore = 0;
+        unsigned long long shownBefore = 0;
+        if (timing && (!queued.empty() || (filter && filter->isRevealing() && drawRevealStepDue))) {
+            timing->applyStarting();
+            if (filter) {
+                hiddenBefore = filter->getHiddenSentCount();
+                shownBefore = filter->getShownSentCount();
+            }
+        }
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        // One call for the lot, so a prim that several queued edits touch reaches Hydra once, or not
+        // at all if it ends where it started.
+        std::vector<const SceneDrawDelta*> deltas;
+        deltas.reserve(queued.size());
+        for (const QueuedDrawDelta& entry : queued) {
+            SceneDrawFilter::applyToRules(entry.delta, &drawRules);
+            drawRevealBatch = entry.revealBatch;
+            deltas.push_back(&entry.delta);
+        }
+        if (!queued.empty()) {
+            if (filter) {
+                filter->applyDeltas(deltas, drawRevealBatch);
+            }
+            drawRevealStepDue = true;
+        }
+        std::size_t stepped = 0;
+        if (filter && filter->isRevealing() && drawRevealStepDue.exchange(false)) {
+            stepped = filter->stepReveal(drawRevealBatch);
+        }
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+        drawRevealing = filter && filter->isRevealing();
+        drawApplied = posted;
+        if (!queued.empty() || (stepped != 0)) {
+            std::lock_guard<std::mutex> lock(drawMutex);
+            drawStats.lastApplyMs = ms;
+        }
+        if (timing && (!queued.empty() || (stepped != 0))) {
+            std::chrono::steady_clock::time_point startedAt = start;
+            for (const QueuedDrawDelta& entry : queued) {
+                startedAt = (std::min)(startedAt, entry.startedAt);
+            }
+            timing->applied(appliedBefore + 1, posted, startedAt, start, end,
+                            filter ? (filter->getHiddenSentCount() - hiddenBefore) : 0,
+                            filter ? (filter->getShownSentCount() - shownBefore) : 0, stepped != 0);
+        }
+        refreshLightsHidden();
+        refreshDrawStats();
     }
 
     // The GL state both kinds of frame start from.
@@ -2247,6 +2439,32 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
 
             return false;
         }
+        SceneLoadSetPtr evaluatedFor;
+        SceneLoadReachPtr reach;
+        SceneLoadSetPtr committedLoadSet;
+        SceneViewportRenderer::LoadSetCommitted committed;
+        {
+            std::lock_guard<std::mutex> loadSetLock(_imp->loadSetMutex);
+            evaluatedFor.swap(_imp->syncLoadSet);
+            reach.swap(_imp->syncReach);
+            committedLoadSet = _imp->committedLoadSet;
+            committed = _imp->loadSetCommitted;
+        }
+        if (reach && !payload.isEmpty() && SceneOps::loadChangeReaches(evaluatedFor.get(), committedLoadSet.get(), reach->getPrefixes())) {
+            // Its patterns did not match on what the stage loads now: evaluated again for that.
+            if (committed) {
+                committed(committedLoadSet, true);
+            }
+
+            return true;
+        }
+        {
+            // Matches made for evaluatedFor hold for the committed set, which the next load
+            // change is measured from.
+            std::lock_guard<std::mutex> loadSetLock(_imp->loadSetMutex);
+            _imp->shownLoadSet = committedLoadSet;
+            _imp->shownReach = payload.isEmpty() ? std::make_shared<SceneLoadReach>() : reach;
+        }
         if ((serial != 0) && (serial > _imp->previewClearAfter.load())) {
             // In the same step as the sync, so no frame shows the scene without the drag.
             _imp->clearPreviewLocked();
@@ -2408,7 +2626,75 @@ SceneViewportRenderer::needsBackgroundFrame() const
     }
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
-        || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()));
+        || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
+        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue);
+}
+
+void
+SceneViewportRenderer::postDrawDelta(const SceneDrawDelta& delta,
+                                     std::size_t revealBatch,
+                                     std::chrono::steady_clock::time_point startedAt)
+{
+    if (_imp->drawTiming && (startedAt == std::chrono::steady_clock::time_point())) {
+        startedAt = std::chrono::steady_clock::now();
+    }
+    std::lock_guard<std::mutex> lock(_imp->drawMutex);
+    _imp->drawQueue.push_back(Implementation::QueuedDrawDelta { delta, revealBatch, startedAt });
+    ++_imp->drawPosted;
+}
+
+void
+SceneViewportRenderer::applyPendingDrawDeltas()
+{
+    // Before the viewer lock, the order every reader takes them in.
+    SceneWriteBarrier::ReadScope read;
+    {
+        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        // Without an engine the queue waits for the frame that makes one.
+        if (_imp->engine) {
+            StormGLStateGuard guard;
+            StormGLSection section;
+            section.collectWith(_imp->engine->GetHgi());
+            _imp->serviceDrawFilter();
+        }
+    }
+    if (_imp->exclusiveOwed.exchange(false) && _imp->readEnded) {
+        _imp->readEnded();
+    }
+}
+
+bool
+SceneViewportRenderer::isDrawRevealing() const
+{
+    return _imp->drawRevealing;
+}
+
+void
+SceneViewportRenderer::noteDrawRevealPresented()
+{
+    _imp->drawRevealStepDue = true;
+}
+
+SceneViewportRenderer::DrawFilterStats
+SceneViewportRenderer::getDrawFilterStats() const
+{
+    std::lock_guard<std::mutex> lock(_imp->drawMutex);
+    DrawFilterStats stats = _imp->drawStats;
+    stats.posted = _imp->drawPosted;
+    stats.absorbed = _imp->drawAbsorbed;
+    stats.stageEdits = _imp->stageEditCount;
+    stats.stageLoadEdits = _imp->stageLoadEditCount;
+    stats.stageNotices = _imp->stageNotices.count;
+    stats.resyncedPaths = _imp->stageNotices.resyncedPaths;
+    stats.infoOnlyPaths = _imp->stageNotices.infoOnlyPaths;
+
+    return stats;
+}
+
+SceneDrawTiming*
+SceneViewportRenderer::drawTiming() const
+{
+    return _imp->drawTiming.get();
 }
 
 bool
@@ -2435,6 +2721,7 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     frame.height = height;
     frame.frustum = _imp->computeFrustum(width, height);
     frame.params = _imp->currentRenderParams();
+    frame.lightingMode = _imp->lightingMode;
     frame.displayProcessor = _imp->displayProcessor;
     frame.gain = _imp->displayTransform.gain;
     frame.gamma = _imp->displayTransform.gamma;
@@ -2483,9 +2770,13 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         return;
     }
     section.collectWith(_imp->engine->GetHgi());
+    _imp->serviceDrawFilter();
+    frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
 
     const UsdStageRefPtr stage = _imp->currentStage();
+    SceneDrawTiming* timing = _imp->drawTiming.get();
+    const bool timed = timing && timing->frameStarting(std::chrono::steady_clock::now());
     bool converged = false;
     int passes = 0;
     std::string what;
@@ -2497,6 +2788,14 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
             RenderDelegates::runRenderFaultHook();
             _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
             converged = _imp->engine->IsConverged();
+            // The first render is what puts the stage's lights into Hydra, and so into the filter.
+            _imp->refreshLightsHidden();
+            const bool lit = _imp->usesSceneLights(frame.lightingMode);
+            if (lit != frame.params.enableSceneLights) {
+                frame.params.enableSceneLights = lit;
+                _imp->setLights(lit);
+                converged = false;
+            }
         }
     } catch (const std::exception& e) {
         failed = true;
@@ -2513,6 +2812,14 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     }
     if (passes == 0) {
         return;
+    }
+    if (timed) {
+        // Only the render thread waits here, and the image could not be shown before the GPU is
+        // done with it anyway; the wait separates GPU time left after submission from the CPU's.
+        const std::chrono::steady_clock::time_point renderEnd = std::chrono::steady_clock::now();
+        glFinish();
+        const double gpuTailMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - renderEnd).count();
+        timing->frameEnded(renderEnd, passes, gpuTailMs, false);
     }
     _imp->drawGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
     _imp->noteStageAbsorbed(frame.params);
@@ -2583,15 +2890,90 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
         return false;
     }
     Implementation* imp = _imp.get();
+    LoadSetEvaluator evaluate;
+    LoadSetCommitted committed;
+    {
+        std::lock_guard<std::mutex> lock(imp->loadSetMutex);
+        evaluate = imp->loadSetEvaluator;
+        committed = imp->loadSetCommitted;
+    }
+    const std::shared_ptr<bool> restart = std::make_shared<bool>(false);
+    SceneStage::LoadPreparer prepare;
+    if (evaluate) {
+        prepare = [imp, evaluate, restart](const SceneLoadSetPtr& loadSet) -> std::function<void()> {
+            SceneLoadSetPtr shownLoadSet;
+            SceneLoadReachPtr shownReach;
+            {
+                std::lock_guard<std::mutex> lock(imp->loadSetMutex);
+                shownLoadSet = imp->shownLoadSet;
+                shownReach = imp->shownReach;
+            }
+            if (shownReach && !SceneOps::loadChangeReaches(shownLoadSet.get(), loadSet.get(), shownReach->getPrefixes())) {
+                return std::function<void()>();
+            }
+            ScenePayload payload;
+            SceneLoadReachPtr reach;
+            if (!evaluate(loadSet, &payload, &reach) || !SceneOps::getLiveTextures(payload).empty()) {
+                return std::function<void()>();
+            }
 
+            return [imp, payload, reach, loadSet, restart]() {
+                {
+                    std::lock_guard<std::mutex> lock(imp->loadSetMutex);
+                    imp->shownLoadSet = loadSet;
+                    imp->shownReach = payload.isEmpty() ? std::make_shared<SceneLoadReach>() : reach;
+                }
+                SceneMetadata before = imp->sceneStage->getPayload().getMetadata();
+                SceneMetadata after = payload.getMetadata();
+                before.renderSettingsPrimPath.clear();
+                after.renderSettingsPrimPath.clear();
+                StageChangePaths changes(imp->sceneStage->getStage());
+                if (imp->sceneStage->sync(payload)) {
+                    *restart = changes.outsideRender || !changes.any || (before != after);
+                }
+                const SceneMetadata& metadata = payload.getMetadata();
+                imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
+                imp->metersPerUnit = metadata.metersPerUnit;
+                imp->timeCodesPerSecond = metadata.timeCodesPerSecond;
+                imp->shown = !payload.isEmpty();
+                imp->stageEditCount = imp->sceneStage->getEditCount();
+            };
+        };
+    }
     const bool serviced = stage->serviceLoads([imp](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
-        section(); }, [imp, stage](const std::function<void()>& section) {
+        section(); }, [imp, stage, committed](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         const std::unique_lock<std::shared_mutex> lock = imp->lockExclusive();
         section();
-        imp->stageLoadEditCount = stage->getLoadEditCount(); }, cancelled);
+        imp->stageLoadEditCount = stage->getLoadEditCount();
+        const SceneLoadSetPtr committedLoadSet = stage->getLoadSet();
+        if (!committedLoadSet) {
+            return;
+        }
+        imp->committedLoadSetHash = committedLoadSet->getHash();
+        bool reevaluate = false;
+        {
+            std::lock_guard<std::mutex> loadSetLock(imp->loadSetMutex);
+            if (!imp->committedLoadSet || (*imp->committedLoadSet != *committedLoadSet)) {
+                // Also catches a scene the batch could not evaluate, and one synced while it
+                // was being prepared.
+                reevaluate = !imp->shownReach || SceneOps::loadChangeReaches(imp->shownLoadSet.get(), committedLoadSet.get(), imp->shownReach->getPrefixes());
+                if (!reevaluate) {
+                    imp->shownLoadSet = committedLoadSet;
+                }
+            }
+            imp->committedLoadSet = committedLoadSet;
+        }
+        // Under the lock, so that a scene synced after the commit was evaluated with this set or
+        // is found stale against it.
+        if (committed) {
+            committed(committedLoadSet, reevaluate);
+        } }, cancelled, prepare);
+    if (*restart) {
+        imp->progressive->invalidate();
+    }
     if (cancelled && cancelled()) {
         return serviced;
     }
@@ -2600,6 +2982,32 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
     imp->refreshStageSummary();
 
     return serviced;
+}
+
+void
+SceneViewportRenderer::setLoadSetEvaluator(const LoadSetEvaluator& evaluate,
+                                           const LoadSetCommitted& committed)
+{
+    std::lock_guard<std::mutex> lock(_imp->loadSetMutex);
+
+    _imp->loadSetEvaluator = evaluate;
+    _imp->loadSetCommitted = committed;
+}
+
+U64
+SceneViewportRenderer::getCommittedLoadSetHash() const
+{
+    return _imp->committedLoadSetHash;
+}
+
+void
+SceneViewportRenderer::setSyncEvaluatedFor(const SceneLoadSetPtr& loadSet,
+                                           const SceneLoadReachPtr& reach)
+{
+    std::lock_guard<std::mutex> lock(_imp->loadSetMutex);
+
+    _imp->syncLoadSet = loadSet;
+    _imp->syncReach = reach;
 }
 
 U64
@@ -3571,6 +3979,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         return eRenderStatusDone;
     }
     section.collectWith(_imp->engine->GetHgi());
+    _imp->serviceDrawFilter();
     {
         std::string what;
         bool failed = false;
@@ -3594,13 +4003,16 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
     _imp->sceneLit = _imp->usesSceneLights();
-    const UsdImagingGLRenderParams params = _imp->renderParams();
+    UsdImagingGLRenderParams params = _imp->renderParams();
     const bool kept = _imp->takeBackgroundImage(fbo, width, height, frustum, params);
     Implementation::bindFrameTarget(fbo, width, height);
     bool converged = kept;
     if (!kept) {
         Implementation::clearFrameTarget(_imp->backgroundShown);
         _imp->setCamera(frustum, width, height, _imp->sceneLit);
+        SceneDrawTiming* timing = _imp->drawTiming.get();
+        const bool timed = timing && timing->frameStarting(std::chrono::steady_clock::now());
+        int passes = 0;
         for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
             std::string what;
             bool failed = false;
@@ -3620,7 +4032,20 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
 
                 return eRenderStatusDone;
             }
+            ++passes;
             converged = _imp->engine->IsConverged();
+            _imp->refreshLightsHidden();
+            const bool lit = _imp->usesSceneLights();
+            if (lit != _imp->sceneLit) {
+                _imp->sceneLit = lit;
+                params.enableSceneLights = lit;
+                _imp->setLights(lit);
+                converged = false;
+            }
+        }
+        if (timed) {
+            // The main thread waits for this render, so the GPU is left to finish on its own.
+            timing->frameEnded(std::chrono::steady_clock::now(), passes, -1., true);
         }
         // A kept image was graded by the frame that left it.
         _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
@@ -4515,6 +4940,8 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 struct SceneViewport::Implementation {
     SceneViewportRenderer renderer;
+    SceneDrawStates drawStates;
+    std::size_t drawRevealBatch = 0;
     QString error;
     bool glInitialized = false;
     // The delegate rendering as of the last rendererChanged().
@@ -4712,6 +5139,11 @@ struct SceneViewport::Implementation {
     double pendingFrame = 0.;
     double pendingFramesPerSecond = 0.;
     U64 pendingSerial = 0;
+    SceneLoadSetPtr pendingLoadSet;
+    SceneLoadReachPtr pendingReach;
+    // Main thread: what the next requestSync()'s payload was evaluated for.
+    SceneLoadSetPtr requestedLoadSet;
+    SceneLoadReachPtr requestedReach;
 
     // Main thread: the last request made, the last one synced, and the error the last request
     // shows once synced. A request whose payload shows live textures leaves the renderer at the
@@ -4995,6 +5427,14 @@ SceneViewport::SceneViewport(QWidget* parent)
     // framebuffer's content between paints; not checked against Qt's source.
     setUpdateBehavior(QOpenGLWidget::PartialUpdate);
 
+    if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
+        // A trace is read after its frame has been shown, so its record changes once more.
+        const auto republish = [this]() {
+            setProperty("natronSceneDrawTimings", _imp->renderer.drawTiming()->records());
+        };
+        timing->setTraceReadCallback([this, republish]() { QMetaObject::invokeMethod(this, republish, Qt::QueuedConnection); });
+    }
+
     _imp->wheelMoveTimer = new QTimer(this);
     _imp->wheelMoveTimer->setSingleShot(true);
     _imp->wheelMoveTimer->setInterval(300);
@@ -5078,6 +5518,8 @@ SceneViewport::SceneViewport(QWidget* parent)
             U64 framingId = 0;
             std::vector<std::string> framingSelection;
             bool pivot = false;
+            SceneLoadSetPtr loadSet;
+            SceneLoadReachPtr reach;
             {
                 std::unique_lock<std::mutex> lock(imp->queueMutex);
                 imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending || (imp->pendingFramingId != 0) || imp->pendingPivot; });
@@ -5090,6 +5532,8 @@ SceneViewport::SceneViewport(QWidget* parent)
                     imp->pending = ScenePayload();
                     imp->hasPending = false;
                     serial = imp->pendingSerial;
+                    loadSet.swap(imp->pendingLoadSet);
+                    reach.swap(imp->pendingReach);
                     liveTextures.swap(imp->pendingLiveTextures);
                     frame = imp->pendingFrame;
                     framesPerSecond = imp->pendingFramesPerSecond;
@@ -5103,6 +5547,7 @@ SceneViewport::SceneViewport(QWidget* parent)
             if (sync) {
                 std::string error;
                 bool ok;
+                imp->renderer.setSyncEvaluatedFor(loadSet, reach);
                 if (liveTextures.empty()) {
                     ok = imp->renderer.syncScene(payload, &error, serial);
                 } else {
@@ -5179,7 +5624,11 @@ SceneViewport::requestSync(const ScenePayload& payload,
         _imp->pendingFrame = _imp->frame;
         _imp->pendingFramesPerSecond = _imp->framesPerSecond;
         _imp->pendingSerial = ++_imp->requestedSerial;
+        _imp->pendingLoadSet = payload.isEmpty() ? SceneLoadSetPtr() : _imp->requestedLoadSet;
+        _imp->pendingReach = payload.isEmpty() ? SceneLoadReachPtr() : _imp->requestedReach;
     }
+    _imp->requestedLoadSet.reset();
+    _imp->requestedReach.reset();
     // A frame of the stage this sync replaces is not worth the rest of its passes.
     _imp->renderer.stopBackgroundFrame();
     _imp->queueChanged.notify_one();
@@ -5304,6 +5753,9 @@ SceneViewport::startBackgroundFrame()
 void
 SceneViewport::onBackgroundFrameDone()
 {
+    if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
+        timing->frameDone(std::chrono::steady_clock::now());
+    }
     _imp->backgroundFrameRunning = false;
     if (!_imp->rendererSwitchRunning) {
         _imp->composingTimer->stop();
@@ -5477,6 +5929,13 @@ toStdPaths(const QStringList& paths)
 
     return result;
 }
+
+// Read only while draw timing is on, so the change costs the main thread nothing otherwise.
+std::chrono::steady_clock::time_point
+drawChangeStart(const SceneViewportRenderer& renderer)
+{
+    return renderer.drawTiming() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+}
 } // anonymous namespace
 
 void
@@ -5490,6 +5949,100 @@ SceneViewport::requestLoad(const QStringList& paths,
     }
     _imp->loadWake.notify_one();
     publishState();
+}
+
+void
+SceneViewport::publishDrawStats()
+{
+    const SceneViewportRenderer::DrawFilterStats stats = _imp->renderer.getDrawFilterStats();
+    QVariantMap published;
+    published[QString::fromUtf8("filterBound")] = stats.filterBound;
+    published[QString::fromUtf8("revealing")] = stats.revealing;
+    published[QString::fromUtf8("lastApplyMs")] = stats.lastApplyMs;
+    published[QString::fromUtf8("ruleCount")] = QVariant::fromValue<qulonglong>(stats.ruleCount);
+    published[QString::fromUtf8("posted")] = QVariant::fromValue<qulonglong>(stats.posted);
+    published[QString::fromUtf8("absorbed")] = QVariant::fromValue<qulonglong>(stats.absorbed);
+    published[QString::fromUtf8("inputAdded")] = QVariant::fromValue<qulonglong>(stats.inputAdded);
+    published[QString::fromUtf8("inputRemoved")] = QVariant::fromValue<qulonglong>(stats.inputRemoved);
+    published[QString::fromUtf8("inputDirtied")] = QVariant::fromValue<qulonglong>(stats.inputDirtied);
+    published[QString::fromUtf8("hiddenSent")] = QVariant::fromValue<qulonglong>(stats.hiddenSent);
+    published[QString::fromUtf8("shownSent")] = QVariant::fromValue<qulonglong>(stats.shownSent);
+    published[QString::fromUtf8("visibilitySent")] = QVariant::fromValue<qulonglong>(stats.visibilitySent);
+    published[QString::fromUtf8("heldInvisible")] = QVariant::fromValue<qulonglong>(stats.heldInvisible);
+    published[QString::fromUtf8("lastInputAddedEpochMs")] = QVariant::fromValue<qlonglong>(stats.lastInputAddedEpochMs);
+    published[QString::fromUtf8("stageEdits")] = QVariant::fromValue<qulonglong>(stats.stageEdits);
+    published[QString::fromUtf8("stageLoadEdits")] = QVariant::fromValue<qulonglong>(stats.stageLoadEdits);
+    published[QString::fromUtf8("stageNotices")] = QVariant::fromValue<qulonglong>(stats.stageNotices);
+    published[QString::fromUtf8("resyncedPaths")] = QVariant::fromValue<qulonglong>(stats.resyncedPaths);
+    published[QString::fromUtf8("infoOnlyPaths")] = QVariant::fromValue<qulonglong>(stats.infoOnlyPaths);
+    setProperty("natronSceneDrawStats", published);
+}
+
+void
+SceneViewport::sendDrawDelta(const SceneDrawDelta& delta,
+                             std::chrono::steady_clock::time_point startedAt)
+{
+    if (!delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()) {
+        _imp->renderer.postDrawDelta(delta, _imp->drawRevealBatch, startedAt);
+        if (_imp->usesRenderThread) {
+            Implementation* imp = _imp.get();
+            _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
+        }
+    }
+    for (const SceneDrawLoadRequest& load : delta.loads) {
+        requestLoad(QStringList(QString::fromStdString(load.path)), load.withDescendants);
+    }
+    publishState();
+    update();
+}
+
+bool
+SceneViewport::setDrawState(const QString& path,
+                            const QString& state)
+{
+    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
+    const std::string pathString = path.toStdString();
+    SceneDrawStateEnum parsed = eSceneDrawStateFull;
+    if (!sceneDrawStateFromName(state.toStdString(), &parsed) || !SdfPath::IsValidPathString(pathString) || !SdfPath(pathString).IsAbsoluteRootOrPrimPath()) {
+        return false;
+    }
+    sendDrawDelta(_imp->drawStates.setState(pathString, parsed), startedAt);
+
+    return true;
+}
+
+void
+SceneViewport::clearDrawState(const QString& path)
+{
+    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
+    sendDrawDelta(_imp->drawStates.clearState(path.toStdString()), startedAt);
+}
+
+void
+SceneViewport::clearDrawStates()
+{
+    const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
+    sendDrawDelta(_imp->drawStates.clearAllStates(), startedAt);
+}
+
+QString
+SceneViewport::resolvedDrawState(const QString& path) const
+{
+    return QString::fromUtf8(sceneDrawStateName(_imp->drawStates.resolve(path.toStdString()).state));
+}
+
+void
+SceneViewport::setDrawRevealBatch(int prims)
+{
+    _imp->drawRevealBatch = std::size_t((std::max)(prims, 0));
+}
+
+void
+SceneViewport::setDrawTimingTrace(bool trace)
+{
+    if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
+        timing->setTraceNext(trace);
+    }
 }
 
 void
@@ -5548,6 +6101,21 @@ SceneViewport::setFrame(double frame,
 }
 
 void
+SceneViewport::setSceneEvaluatedFor(const SceneLoadSetPtr& loadSet,
+                                    const SceneLoadReachPtr& reach)
+{
+    _imp->requestedLoadSet = loadSet;
+    _imp->requestedReach = reach;
+}
+
+void
+SceneViewport::setLoadSetEvaluator(const SceneViewportRenderer::LoadSetEvaluator& evaluate,
+                                   const SceneViewportRenderer::LoadSetCommitted& committed)
+{
+    _imp->renderer.setLoadSetEvaluator(evaluate, committed);
+}
+
+void
 SceneViewport::setError(const QString& message)
 {
     // Shown at once; the stage lets go of the scene's layers once the worker syncs it empty. The
@@ -5581,6 +6149,7 @@ SceneViewport::publishState()
     setProperty("natronSceneLoadsPending", _imp->renderer.hasPendingStageLoads());
     setProperty("natronSceneLoadEdits", QVariant::fromValue<qulonglong>(_imp->renderer.getStageLoadEditCount()));
     setProperty("natronSceneLoadHoldMs", _imp->renderer.getLastStageLoadHoldMs());
+    publishDrawStats();
     {
         QVariantList failures;
         for (const std::pair<std::string, std::string>& failure : _imp->renderer.getStageLoadFailures()) {
@@ -6626,6 +7195,10 @@ SceneViewport::paintGL()
         return;
     }
     _imp->presentedScene = _imp->renderer.hasScene();
+    if (_imp->renderer.isDrawRevealing()) {
+        _imp->renderer.noteDrawRevealPresented();
+        update();
+    }
     if (_imp->renderer.hasPendingRendererSwitch()) {
         // A sync landed between the last one followed and this paint.
         QTimer::singleShot(0, this, [this]() { followSceneRenderer(); });
@@ -6634,6 +7207,15 @@ SceneViewport::paintGL()
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();
     publishTransformState();
+    publishDrawStats();
+    if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
+        if (timing->presented(_imp->renderer.getDrawFilterStats().absorbed, std::chrono::steady_clock::now())) {
+            setProperty("natronSceneDrawTimings", timing->records());
+        }
+    }
+    // A paint gets here only once the frame has taken in every delta posted so far, unlike the stats,
+    // which also change on the way to the screen.
+    setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(_imp->renderer.getDrawFilterStats().absorbed));
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());

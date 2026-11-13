@@ -33,9 +33,12 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -354,6 +357,52 @@ PXR_NS::GfMatrix4d composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
 PXR_NS::GfVec3d decomposeRotationMatrix(const PXR_NS::GfMatrix4d& rotation,
                                         SceneRotateOrderEnum rotateOrder,
                                         const PXR_NS::GfVec3d& hint);
+
+// What matchPattern() found.
+struct PatternMatches {
+    std::vector<PXR_NS::SdfPath> paths;
+    /**
+     * In an evaluation that leaves payloads unloaded, when nothing matched: how many unloaded
+     * payloads lie where the pattern could match and were not searched.
+     **/
+    std::size_t unsearched = 0;
+};
+
+// Whether a prim the pattern selects is one the node acts on.
+typedef std::function<bool(const PXR_NS::UsdPrim& prim)> PatternFilter;
+
+/**
+ * @brief The prims pattern selects on upstream composed with context's load set that filter (if
+ * set) keeps, in SceneOps::selectPrims() order. A union of plain prim paths in an evaluation that leaves payloads unloaded
+ * is not searched for: a path matches when its prim exists, or when the prim above it that
+ * exists is an unloaded payload and there is no filter, so a render loading that payload
+ * finds the node's edit on it. filterKey stands for what filter keeps, so cache, which
+ * remembers the matches per context, can tell when they still hold: for the same upstream,
+ * pattern and filterKey, and a load set equal to the remembered one or changed only where the
+ * pattern cannot reach, they are taken without a query. A stage is borrowed into *lease, with
+ * context's load set, when there is none yet and one is needed; a caller reading the stage
+ * afterwards borrows it the same way when *lease is still empty. The pattern's reach goes to
+ * context's reach, when set. Returns false with *errorMessage set when pattern does not parse or
+ * the stage does not compose.
+ **/
+bool matchPattern(PrimPatternCache* cache,
+                  const ScenePayload& upstream,
+                  const std::string& pattern,
+                  const SceneEvaluationContext& context,
+                  U64 filterKey,
+                  const PatternFilter& filter,
+                  SceneQueryPool::Lease* lease,
+                  PatternMatches* matches,
+                  std::string* errorMessage);
+
+/**
+ * @brief The warning a node gives when pattern matches nothing, saying how many unloaded
+ * branches were not searched when there are some. consequence finishes the sentence, such as
+ * "the scene is passed through unchanged".
+ **/
+std::string describeNoMatch(const std::string& pattern,
+                            const PatternMatches& matches,
+                            const std::string& consequence);
 
 } // namespace SceneNodeAuthoring
 

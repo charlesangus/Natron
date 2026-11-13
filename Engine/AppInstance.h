@@ -613,6 +613,13 @@ Q_SIGNALS:
 
     void pluginsPopulated();
 
+    /**
+     * @brief Emitted by EffectInstance::evaluate() for a change that calls for a new render of a
+     * node and of what is downstream of it, made by the user, a script or the node itself. From
+     * whichever thread evaluates, usually the main thread.
+     **/
+    void nodeEvaluated();
+
 protected:
     virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect);
     virtual void createNodeGui(const NodePtr& /*node*/,

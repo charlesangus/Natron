@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -44,6 +45,7 @@
 #include <OpenColorIO/OpenColorIO.h>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
@@ -57,6 +59,8 @@ class QWheelEvent;
 NATRON_NAMESPACE_ENTER
 
 class SceneStage;
+struct SceneDrawDelta;
+class SceneDrawTiming;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -250,6 +254,50 @@ public:
     bool needsBackgroundFrame() const;
 
     /**
+     * @brief Queues a draw state change for this renderer's engine; needsBackgroundFrame() holds
+     * until a frame has taken it in. revealBatch 0 shows everything in one go. startedAt is when the
+     * change was asked for, for drawTiming(). Main thread; takes no lock a frame or a sync holds.
+     **/
+    void postDrawDelta(const SceneDrawDelta& delta,
+                       std::size_t revealBatch,
+                       std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::time_point());
+
+    /** @brief Render thread. Sends what postDrawDelta() queued to the engine's filter. */
+    void applyPendingDrawDeltas();
+
+    bool isDrawRevealing() const;
+
+    /** @brief The image of the last reveal step is on screen, so the next step may go. */
+    void noteDrawRevealPresented();
+
+    struct DrawFilterStats {
+        bool filterBound = false;
+        bool revealing = false;
+        double lastApplyMs = 0.;
+        std::size_t ruleCount = 0;
+        unsigned long long posted = 0;
+        unsigned long long absorbed = 0;
+        unsigned long long inputAdded = 0;
+        unsigned long long inputRemoved = 0;
+        unsigned long long inputDirtied = 0;
+        unsigned long long hiddenSent = 0;
+        unsigned long long shownSent = 0;
+        // Of hiddenSent and shownSent, those sent as a visibility change.
+        unsigned long long visibilitySent = 0;
+        unsigned long long heldInvisible = 0;
+        long long lastInputAddedEpochMs = 0;
+        unsigned long long stageEdits = 0;
+        unsigned long long stageLoadEdits = 0;
+        unsigned long long stageNotices = 0;
+        unsigned long long resyncedPaths = 0;
+        unsigned long long infoOnlyPaths = 0;
+    };
+    DrawFilterStats getDrawFilterStats() const;
+
+    // Null unless NATRON_DRAW_STATE_TIMING is 1.
+    SceneDrawTiming* drawTiming() const;
+
+    /**
      * @brief Copies what renderBackgroundFrame() needs for a width x height frame. False when no
      * such frame is needed, or a sync holds the viewer lock; the sync's end is the time to retry.
      * Not to be called while a background frame runs.
@@ -294,6 +342,41 @@ public:
      * Returns, committing nothing, once cancelled() turns true. See SceneStage::serviceLoads().
      **/
     bool serviceStageLoads(const std::function<bool()>& cancelled = std::function<bool()>());
+
+    /**
+     * @brief The scene as evaluated with a load set: evaluate sets *payload to the viewed node's
+     * output with nodes' patterns matched on that set, and *reach to where those patterns reach,
+     * returning false when it cannot. committed is told each load set the stage commits, under
+     * the viewer lock in the same step, and whether the scene must be evaluated again for it.
+     **/
+    typedef std::function<bool(const SceneLoadSetPtr& loadSet, ScenePayload* payload, SceneLoadReachPtr* reach)> LoadSetEvaluator;
+    typedef std::function<void(const SceneLoadSetPtr& loadSet, bool reevaluate)> LoadSetCommitted;
+
+    /**
+     * @brief Has serviceStageLoads() evaluate the scene for the load set a batch makes, once its
+     * files are open, when the patterns of the scene on the stage reach what the batch loads or
+     * unloads, and sync that scene in the same commit as the loads, so that a prim a node
+     * deactivates by pattern never shows while its payload comes in. A batch no pattern reaches
+     * evaluates nothing, as a load is no edit of the scene. committed is told to evaluate again
+     * when the stage's scene still matched on another set once the batch commits: its evaluation
+     * failed, it has live textures, which the worker renders first, or a sync came meanwhile. It
+     * is also told when a sync is dropped as evaluated for a set its patterns no longer match.
+     * Any thread.
+     **/
+    void setLoadSetEvaluator(const LoadSetEvaluator& evaluate,
+                             const LoadSetCommitted& committed);
+
+    // The hash of the load set the stage last committed (SceneLoadSet::getHash()).
+    U64 getCommittedLoadSetHash() const;
+
+    /**
+     * @brief The load set the payload of the next syncScene() was evaluated for and the reach of
+     * the patterns it matched, a null reach for none in particular. A payload whose patterns
+     * reach what changed between that set and the stage's is stale, the committed callback is
+     * told to evaluate it again, and that sync changes nothing.
+     **/
+    void setSyncEvaluatedFor(const SceneLoadSetPtr& loadSet,
+                             const SceneLoadReachPtr& reach);
 
     // How many load commits edited the stage, and how long the last batch held the viewer lock.
     U64 getStageLoadEditCount() const;
@@ -745,6 +828,17 @@ public:
 
     void setFrame(double frame, double framesPerSecond);
 
+    /**
+     * @brief What the payload of the next setScene() was evaluated for. See
+     * SceneViewportRenderer::setSyncEvaluatedFor().
+     **/
+    void setSceneEvaluatedFor(const SceneLoadSetPtr& loadSet,
+                              const SceneLoadReachPtr& reach);
+
+    // See SceneViewportRenderer::setLoadSetEvaluator().
+    void setLoadSetEvaluator(const SceneViewportRenderer::LoadSetEvaluator& evaluate,
+                             const SceneViewportRenderer::LoadSetCommitted& committed);
+
     // Shows message instead of a scene.
     void setError(const QString& message);
 
@@ -895,6 +989,23 @@ public Q_SLOTS:
     // Drops the load requests no batch has taken yet; a batch under way finishes.
     void cancelPendingLoads();
 
+    /**
+     * @brief This viewer's draw state on a prim path, by script name: bbox, children, full, loadAll
+     * or hidden. False if the path or the name is not one. Never edits a stage or waits on Hydra.
+     **/
+    bool setDrawState(const QString& path, const QString& state);
+    void clearDrawState(const QString& path);
+    void clearDrawStates();
+    // The state a path resolves to, effective or inherited.
+    QString resolvedDrawState(const QString& path) const;
+    // What a change shows goes out this many prims per frame; 0 shows it at once.
+    void setDrawRevealBatch(int prims);
+    /**
+     * @brief With NATRON_DRAW_STATE_TIMING=1, traces the frames of the changes that follow, until
+     * called with false. Every presented change publishes its record to natronSceneDrawTimings.
+     **/
+    void setDrawTimingTrace(bool trace);
+
 Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
@@ -1001,6 +1112,8 @@ private:
 
     // Main thread: starts the frame that takes in a stage change, if one is due and can start.
     void startBackgroundFrame();
+    void sendDrawDelta(const SceneDrawDelta& delta, std::chrono::steady_clock::time_point startedAt);
+    void publishDrawStats();
 
     void onBackgroundFrameDone();
 

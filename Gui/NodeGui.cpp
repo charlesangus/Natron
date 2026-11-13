@@ -2292,6 +2292,7 @@ NodeGui::setUserSelected(bool b)
     }
     if (_graph) {
         _graph->scheduleLoopBlockRefresh(false);
+        _graph->scheduleSelectionChanged();
     }
     if (_settingsPanel) {
         _settingsPanel->setSelected(b);

@@ -120,7 +120,10 @@ NodeGraph::NodeGraph(Gui* gui,
     }
 
     QObject::connect( &_imp->autoScrollTimer, SIGNAL(timeout()), this, SLOT(onAutoScrollTimerTriggered()) );
-
+    if (gui) {
+        QObject::connect(this, &NodeGraph::selectionChanged, gui, &Gui::nodeSelectionChanged);
+        QObject::connect(this, &NodeGraph::topologyChanged, gui, &Gui::nodeGraphTopologyChanged);
+    }
 
     setMouseTracking(true);
     setCacheMode(CacheBackground);
@@ -296,6 +299,18 @@ NodeGraph::scheduleLoopBlockRefresh(bool topology)
     if (topology) {
         Q_EMIT topologyChanged();
     }
+}
+
+void
+NodeGraph::scheduleSelectionChanged()
+{
+    if (_imp->_selectionChangeScheduled) {
+        return;
+    }
+    _imp->_selectionChangeScheduled = true;
+    QMetaObject::invokeMethod(this, [this]() {
+        _imp->_selectionChangeScheduled = false;
+        Q_EMIT selectionChanged(); }, Qt::QueuedConnection);
 }
 
 void

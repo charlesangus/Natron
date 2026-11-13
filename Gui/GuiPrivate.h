@@ -175,6 +175,7 @@ public:
     CurveEditor *_curveEditor;
     ProgressPanel* _progressPanel;
     SceneGraphPanel* _sceneGraphPanel;
+    std::list<SceneGraphPanel*> _extraSceneGraphPanels;
 
     // The dope sheet
     DopeSheetEditor *_dopeSheetEditor;

@@ -155,6 +155,7 @@ void
 Gui::restoreDefaultLayout()
 {
     createDefaultLayoutInternal(true);
+    removeSceneGraphPanelsOutsidePanes();
 }
 
 void

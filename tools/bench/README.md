@@ -365,7 +365,8 @@ loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or
 against the scene-graph budgets. Frame rate and time to first frame need a real GPU: without
 `BENCH_GPU=1`, or on a software renderer, they are measured but marked `not_valid`. Stall and
 unrequested-payload checks are valid under llvmpipe. The scenarios are the harness's `ACTIONS` table
-(`open`, `edit`, `orbit`, `load`, `twirl`); `BENCH_SCENARIOS` picks and orders them.
+(`open`, `edit`, `orbit`, `load`, `twirl`, `node_switch`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
+and orders them.
 
 `open` reports `first_frame_ms`, from setting the file to the first frame finished after the scene
 reached the viewer.
@@ -382,6 +383,67 @@ in its tree (`BENCH_TWIRL_PATH`; `/World/Block0/B1` on the city), tumbling the v
 loaded and the result is on screen. The stall budget covers the time from the twirl on, not the
 docking. It reports `twirl_ms`, `twirl_rows`, `twirl_mouse_moves`, `twirl_move_gap_ms` and the same
 `load_hold_ms`, `load_edits` and `load_failures`.
+
+`node_switch`, after `open` (on the flat file for the design's budget), docks the Scene Graph panel,
+sets it to follow the node selection and selects `BENCH_SWITCH_NODES` (default 4) USDEditTransforms
+off USDRead in turn, each read into a stage of the panel's own, then the first again, whose stage the
+panel keeps. The stall budget covers the switching, not the docking or the node creation. It reports
+`switch_ms` per switch (each includes the selection's 150 ms settle), `switch_max_ms`,
+`cached_switch_ms` and `cached_switch_composes`, which is 0 when the kept stage is reused.
+
+The draw state scenarios drive the viewer's `setDrawState`, `clearDrawState` and `setDrawRevealBatch`
+and act on rows `heavy_scene_rows.py` picks, or the fixture's own (`BENCH_ROOT`, `BENCH_BRANCH`,
+`BENCH_SIBLING_ROW`, `BENCH_WIDE_ROW`, `BENCH_REVEAL_BRANCH` override them). Each carries `filter_bound`, judged: a viewer
+whose engine lost the filter fails rather than reporting a cheap nothing.
+
+| Scenario | What it does | Reports |
+| --- | --- | --- |
+| `populate_full`, `populate_pruned` | Open the file, in place of `open`; pruned sets `bbox` on the root first | `first_frame_ms`, `prims_added_upstream`, `prims_added_ms`, `hidden_sent` |
+| `load_all` | Loads the root with descendants; `BENCH_LOAD_ALL=1` picks rows from the loaded scene | `load_ms`, `prims_added_upstream`, `load_hold_ms` |
+| `prune_restore` | `bbox` then clear on the branch | `prune_*` and `restore_*`: `apply_ms`, `frame_ms`, `total_ms`; hidden and shown notices |
+| `sibling_state` | The same on one row among many, twice | `sibling_*`; `sibling_resynced_paths` budget 0 |
+| `reveal` | Row `bbox`, then `full` at `BENCH_REVEAL_BATCH` prims per frame, up to `BENCH_REVEAL_MAX_S` | `reveal_prims`, `reveal_frames`, `reveal_fps`, `reveal_worst_frame_ms`, `reveal_complete` |
+| `reveal_cancel` | Starts a reveal at 50 prims per frame, then `bbox` after three frames' worth | `cancel_total_ms`, `cancel_was_active`, `cancel_stopped` |
+| `noedit` | Sets, clears, reveals and cancels on the branch | `stage_edits`, budget 0, counting stage change notices and edit counts |
+| `sibling_shot` | Screen grabs around one change on the sibling row, the branch and the root as control | `*_shot_changed_*`, `*_shot_frame_coverage`, `shot_reading`; `control_changed_pixels` at least 1 |
+| `orbit10k`, `boxes_shot` | `bbox` on the root, then an orbit or a grab with only boxes drawn | `orbit_fps`, `boxes_first_drawn_ms`; skipped until the viewer publishes `natronSceneDrawBoxes` |
+| `draw_budget` | `bbox` then clear on the sibling row and on the widest row, `BENCH_BUDGET_REPEATS` times (default 2), then once more each with a trace | `draw_changes`, one entry per change; `sibling_picture_ms_max`, `wide_picture_ms_max`; `traced_stall_ms` |
+
+`frame_ms` is `total_ms` less `apply_ms`: from the call to the image that shows the change, without the
+render thread's time sending notices. `total_ms` is polled every 50 ms, so it bounds the time rather
+than measuring it. Frame figures are valid only on a real GPU, like the rest.
+
+The 100 ms budget covers both the main-thread stall and the time from a change to the image that
+shows it. `time_to_picture_ms` is judged on the worst untraced change of `prune_restore`,
+`sibling_state` and `draw_budget` (and per row of `draw_budget`, as `time_to_picture_<row>_ms`); it is
+valid only with `NATRON_DRAW_STATE_TIMING=1` on a real GPU. With that variable set the viewer keeps a
+record per frame that takes in a change, from the slot call to the paint that presents it, and
+publishes the last 256 as `natronSceneDrawTimings`; without it the viewer does none of this. Each
+change's timings then gain the parts of `picture_ms`, each starting where the one before ends:
+
+| Field | From, to |
+| --- | --- |
+| `queue_ms` | the slot call, the render thread's apply |
+| `apply_ms` | the filter's notices to the render index (its Hydra prim inserts and removals included) |
+| `wait_frame_ms` | the apply, the start of the frame's render calls |
+| `render_ms` | the engine's render calls: Hydra sync, draw item regather, batch rebuild, GL submission |
+| `gpu_tail_ms` | the GPU finishing after the last call; the render thread waits for it only in this mode |
+| `handoff_ms` | the frame's arrival on the main thread |
+| `present_ms` | the paint that shows it |
+
+with `render_passes`, `rendered_on_paint` (the frame was rendered by the paint itself, so there is no
+GPU tail or handoff), `coalesced_changes` (changes taken in by the same frame), `hidden_sent` and
+`shown_sent`. A traced change runs `TraceCollector` and `HdPerfLog` from its apply to the end of its
+frame and adds `stages_ms` and `stage_counts` (render-thread wall time and calls per scope:
+`sync` for `HdRenderIndex::SyncAll`, `regather` for `HdSt_RenderPass::_UpdateDrawItems`, `batchRebuild`
+for `HdStCommandBuffer::_RebuildDrawBatches`, `executeDraw` for `HdStCommandBuffer::ExecuteDraw`, and
+the others in `Gui/SceneDrawTiming.cpp`'s table; nested scopes are counted in both), `counter_deltas` and
+`counter_values` (HdPerfLog's `rebuildBatches`, `drawItemsFetched` and the like), `trace_collect_ms`,
+and `trace_thread_found` (false: the scopes were summed over every thread). The viewer reads a trace on
+a thread of its own after the frame, so `trace_collect_ms` is in none of the other parts; the record
+says `tracePending` until then, and `draw_budget` waits for it before the next change. Tracing slows
+the change, so traced changes and their stall are never judged.
+`sibling_shot` skips while payloads are unloaded, as nothing is drawn for the control to change.
 
 Every record carries `gl_renderer`, `gl_vendor`, `peak_rss_mb`, `peak_rss_gb` and
 `mem_available_min_gb`. `heavy_scene_watchdog.sh` watches the run from outside Natron, so a hung run
@@ -402,7 +464,21 @@ DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh gate
 
 `gate` runs, one fresh process each: flat open; city open with a one-building load, a one-block load
 with descendants, and 30 blocks with descendants at once, the mouse moving throughout; a city twirl;
-then Lobby's building, block and twirl runs, and Island's building and twirl runs last, skipped under
-`ISLAND_MIN_RAM_GB`. The results go to `build/bench-gpu/heavy-scene-gate.jsonl`. The script's header
+the draw state scenarios on flat, on the fully loaded city and on Lobby, with `populate_pruned` runs of
+their own on flat and the city; then Lobby's building, block and twirl runs, and Island's building and twirl runs last, skipped under
+`ISLAND_MIN_RAM_GB`. Each scene's draw run ends with `draw_budget` and runs with
+`NATRON_DRAW_STATE_TIMING=1`, so the gate holds the budget records and its `prune_restore` and
+`sibling_state` times to picture are valid; the timing costs a `glFinish` on every frame that takes in
+a change, reveal steps included. The results go to `build/bench-gpu/heavy-scene-gate.jsonl`.
+
+```
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh budget /path/to/Natron.AppImage
+```
+
+`budget` runs only `draw_budget`, with `NATRON_DRAW_STATE_TIMING=1`, for a budget table without the gate: on flat after `populate_full`, on
+the city and Lobby after `populate_full` and `load_all`, and on Island after `populate_full`, under its
+RAM guard. Both modes end with `heavy_scene_budget_table.py`'s table: each scene's stall and time to
+picture against 100 ms, one line per change with the parts above, and each traced change's stages and
+counters. The results go to `build/bench-gpu/heavy-scene-budget.jsonl`. The script's header
 lists its environment; `SCENE_DIR`, `LOBBY_DIR` and `ISLAND_DIR` say where the scenes are, and Docker
 is only needed while the fixtures are missing.

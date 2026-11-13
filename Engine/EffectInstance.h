@@ -46,6 +46,7 @@
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderStats.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -948,17 +949,29 @@ public:
         // is the same at every time.
         double time;
         ViewIdx view;
+        // Who the scene is for, and which payloads it is matched against.
+        SceneEvaluationContext context;
+        // Lets a call made outside of a render, which has no abort flag of its own, be aborted:
+        // every node it evaluates checks it between steps. Inside a render the render's flag
+        // is checked instead.
+        AbortableRenderInfoPtr abortInfo;
 
         EvaluateSceneArgs()
             : time(0)
             , view(0)
+            , context()
+            , abortInfo()
         {
         }
 
         EvaluateSceneArgs(double time_,
-                          ViewIdx view_)
+                          ViewIdx view_,
+                          const SceneEvaluationContext& context_ = SceneEvaluationContext(),
+                          const AbortableRenderInfoPtr& abortInfo_ = AbortableRenderInfoPtr())
             : time(time_)
             , view(view_)
+            , context(context_)
+            , abortInfo(abortInfo_)
         {
         }
     };
@@ -1716,12 +1729,14 @@ public:
         // The payload of each connected input that produces a scene, by input number.
         std::map<int, ScenePayload> inputScenes;
         bool isRenderResponseToUserInteraction;
+        SceneEvaluationContext context;
 
         SceneRenderActionArgs()
             : time(0)
             , view(0)
             , inputScenes()
             , isRenderResponseToUserInteraction(false)
+            , context()
         {
         }
 

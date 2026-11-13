@@ -34,11 +34,14 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <QtCore/QObject>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/SceneLoadSet.h"
 #include "Gui/SceneGraphModel.h"
 
 NATRON_NAMESPACE_ENTER
@@ -46,7 +49,12 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief A node's scene, evaluated on a worker into a stage of its own. A stage leased from the
  * query pool would be bound to the thread that leased it, and a view may hold this one for as
- * long as it shows the node.
+ * long as it shows the node. Without loadPayloads the stage opens with no payload loaded, and
+ * requestLoad() loads them from the same worker, which hands the files to a thread of their own,
+ * opened with no lock held and given up on once the source is stopped, as the viewer's stage
+ * does. The node is evaluated in a context of the source's own, with the payloads
+ * its stage includes, so that the pattern nodes upstream load no more than the stage shows; a
+ * batch of loads or unloads commits along with the node evaluated again for the new set.
  **/
 class SceneNodeStageSource
     : public SceneGraphStageSource,
@@ -57,11 +65,13 @@ public:
 
     SceneNodeStageSource(const NodePtr& node,
                          QObject* context,
-                         const SyncedFunc& synced);
+                         const SyncedFunc& synced,
+                         bool loadPayloads = true);
 
     ~SceneNodeStageSource() override;
 
-    // Asks the worker to quit after the evaluation it is running, without waiting for it.
+    // Asks the worker to quit, aborting the evaluation it is running, without waiting for it.
+    // Nothing is called on context from then on.
     void requestStop();
 
     // Whether the worker has quit, so destroying the source waits for nothing.
@@ -80,16 +90,55 @@ public:
     // Evaluates the node again at time.
     void request(double time);
 
+    // How many evaluations reached the stage. An evaluation still running when stop is asked for
+    // is dropped.
+    U64 getComposeCount() const;
+
+    // Called on context's thread after each batch of payload loads or unloads.
+    void setLoadsChanged(const std::function<void()>& loadsChanged);
+
+    // Loads the payloads of paths, each prim's own or also those below it, on the worker.
+    void requestLoad(const QStringList& paths,
+                     bool withDescendants);
+
+    void requestUnload(const QStringList& paths);
+
+    // Stops sources on a thread of their own, so that whoever lets them go waits for no worker.
+    static void reap(const std::vector<std::shared_ptr<SceneNodeStageSource>>& sources);
+
+    // Waits until every source handed to reap() has stopped. For the app's shutdown.
+    static void joinReaped();
+
 private:
+    struct LoadRequest {
+        QStringList paths;
+        bool load = true;
+        bool withDescendants = false;
+    };
+
     void run();
 
+    void serviceLoads(const std::vector<LoadRequest>& requests);
+
+    void postToContext(const std::function<void()>& call);
+
     NodeWPtr _node;
+    // Null once stop is asked for, so that a worker posting then cannot reach a destroyed context.
     QObject* _context;
+    std::mutex _contextMutex;
+    const AbortableRenderInfoPtr _abortInfo;
     SyncedFunc _synced;
+    const bool _loadPayloads;
+    const U64 _contextId;
+    // Worker only: the set the stage includes, and the time of the last evaluation.
+    SceneLoadSetPtr _loadSet;
+    double _time = 0.;
     mutable std::mutex _stageMutex;
     std::unique_ptr<SceneStage> _stage;
     std::atomic<bool> _shown { false };
     std::atomic<U64> _editCount { 0 };
+    std::atomic<U64> _composeCount { 0 };
+    std::function<void()> _loadsChanged;
     std::atomic<bool> _stopRequested { false };
     std::atomic<bool> _finished { false };
     std::mutex _queueMutex;
@@ -97,6 +146,7 @@ private:
     bool _pending = false;
     bool _quit = false;
     double _pendingTime = 0.;
+    std::vector<LoadRequest> _loadRequests;
     std::thread _worker;
 };
 

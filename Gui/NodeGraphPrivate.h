@@ -182,6 +182,7 @@ public:
     QGraphicsItem* _root; ///< this is the parent of all items in the graph
     QGraphicsItem* _nodeRoot; ///< this is the parent of all nodes
     LoopBlockOverlay* _loopBlocks;
+    bool _selectionChangeScheduled = false;
     QGraphicsSimpleTextItem* _cacheSizeText;
     bool cacheSizeHidden;
     QTimer _refreshCacheTextTimer;

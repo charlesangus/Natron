@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Usage: tools/bench/heavy_scene_gpu_host.sh gate <Natron.AppImage> [results.jsonl]
+#        tools/bench/heavy_scene_gpu_host.sh budget <Natron.AppImage> [results.jsonl]
 #        tools/bench/heavy_scene_gpu_host.sh fixtures
 #
 # Heavy scene runs on a host with a real GPU and a desktop session. One JSON line per scenario goes
@@ -17,7 +18,22 @@
 #               city twirl      open, then one building twirled open in the Scene Graph panel
 #               lobby           the same building, block and twirl runs on Lobby's own rows
 #               island          building and twirl, last, and only with RAM to spare
-#   fixtures  Only makes the fixtures; needs neither a display nor an AppImage.
+#             and what the viewer draw states have to pass:
+#               draw flat pruned   populate_pruned
+#               draw flat          populate_full, prune_restore, sibling_state, noedit, reveal_cancel,
+#                                  reveal, sibling_shot, orbit10k, boxes_shot, draw_budget
+#               draw city pruned   populate_pruned, then load_all under the pruned root
+#               draw city          populate_full, load_all, then the flat run's scenarios
+#               draw lobby         as draw city, on Lobby's own rows
+#               draw island        populate_full, prune_restore, noedit, draw_budget, under island's
+#                                  RAM guard
+#             The draw runs other than pruned ones set NATRON_DRAW_STATE_TIMING=1.
+#   budget    Only where a draw state change's time goes, with NATRON_DRAW_STATE_TIMING=1, one process
+#             per scene: draw_budget on the sibling and the widest row, after populate_full on flat,
+#             populate_full and load_all on city and Lobby, and populate_full on Island under its RAM
+#             guard. Ends with heavy_scene_budget_table.py's table of the results: time to picture and
+#             stall against 100 ms per row, the untraced critical path, and the traced stages.
+#   fixtures Only makes the fixtures; needs neither a display nor an AppImage.
 #
 # A scenario that outlasts its limit gets a timed_out record and ends its process, so the run moves
 # on: BENCH_SCENARIO_LIMIT_S (default 300) for a load or a twirl, BENCH_OPEN_LIMIT_S (default 1800) for
@@ -59,6 +75,7 @@ set -u
 
 usage() {
     echo "usage: $0 gate <Natron.AppImage> [results.jsonl]" >&2
+    echo "       $0 budget <Natron.AppImage> [results.jsonl]" >&2
     echo "       $0 fixtures" >&2
     exit 2
 }
@@ -66,7 +83,7 @@ usage() {
 [ $# -ge 1 ] || usage
 MODE="$1"
 case "$MODE" in
-    gate) [ $# -ge 2 ] || usage ;;
+    gate | budget) [ $# -ge 2 ] || usage ;;
     fixtures) ;;
     *) usage ;;
 esac
@@ -249,34 +266,85 @@ for ((block = 2; block < 2 + ${GATE_LARGE_BLOCKS:-30}; block++)); do
     LARGE_BLOCKS="$LARGE_BLOCKS${LARGE_BLOCKS:+,}/World/Block$block"
 done
 
+# 24 GB is twice an estimate of 12 GB, from a per-element tally outside Natron: about 3.5 GB of
+# composed stages with their geometry read, 2 GB of instance transforms for 31M point instances,
+# 2 GB of buffers for 37M points and 152M face vertices, 3.5 GB for 119k meshes at Hydra's cost per
+# prim, 1 GB of Natron. Doubled because Island has never been loaded in Natron to measure it.
+ISLAND_MIN_RAM_GB="${ISLAND_MIN_RAM_GB:-24}"
+
+# Prints why Island cannot run, or nothing when it can.
+island_unfit() {
+    local available_gb=$(($(meminfo_kb MemAvailable) / 1048576))
+    if [ ! -f "$ISLAND" ]; then
+        echo "not found by name under '$ISLAND_SRC', $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR or ISLAND_DIR)"
+    elif [ "$available_gb" -lt "$ISLAND_MIN_RAM_GB" ]; then
+        echo "$available_gb GB available, under the $ISLAND_MIN_RAM_GB GB estimated for it (set ISLAND_MIN_RAM_GB to override)"
+    else
+        echo "island: $available_gb GB available, $ISLAND_MIN_RAM_GB GB wanted (about 12 GB estimated, doubled)" >&2
+    fi
+}
+
+# The timing records cost the render thread a glFinish per change, so only these runs turn them on.
+budget_runs() {
+    local reason
+    launch budget-flat flat "$FIXTURE_DIR/heavy_flat.usdc" populate_full,draw_budget NATRON_DRAW_STATE_TIMING=1
+    launch budget-city city "$CITY" populate_full,load_all,draw_budget BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
+    if [ -f "$LOBBY" ]; then
+        launch budget-lobby scene "$LOBBY" populate_full,load_all,draw_budget BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
+    else
+        record_skip budget-lobby "not found by name under '$LOBBY_SRC', $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR or LOBBY_DIR)"
+    fi
+    reason="$(island_unfit)"
+    if [ -z "$reason" ]; then
+        launch budget-island scene "$ISLAND" populate_full,draw_budget NATRON_DRAW_STATE_TIMING=1
+    else
+        record_skip budget-island "$reason"
+    fi
+}
+
+summarize() {
+    if command -v python3 > /dev/null 2>&1; then
+        python3 tools/bench/heavy_scene_budget_table.py "$RESULT"
+    fi
+    echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted)"' "$RESULT") did not finish, $(grep -c '"result": "skipped"' "$RESULT") skipped)"
+}
+
+if [ "$MODE" = budget ]; then
+    budget_runs
+    summarize
+    exit 0
+fi
+
 launch gate-flat flat "$FIXTURE_DIR/heavy_flat.usdc" open
 launch gate-city-building city "$CITY" open,load
 launch gate-city-block city "$CITY" open,load BENCH_LOAD_DESCENDANTS=1
 launch gate-city-larger city "$CITY" open,load BENCH_LOAD_PATHS="$LARGE_BLOCKS" BENCH_LOAD_DESCENDANTS=1
 launch gate-city-twirl city "$CITY" open,twirl
 
+# The gate's draw runs carry draw_budget and the timing records the time to picture is judged on, so
+# the budget runs need not repeat them.
+DRAW_SCENARIOS="prune_restore,sibling_state,noedit,reveal_cancel,reveal,sibling_shot,orbit10k,boxes_shot,draw_budget"
+launch gate-draw-flat-pruned flat "$FIXTURE_DIR/heavy_flat.usdc" populate_pruned
+launch gate-draw-flat flat "$FIXTURE_DIR/heavy_flat.usdc" "populate_full,$DRAW_SCENARIOS" NATRON_DRAW_STATE_TIMING=1
+launch gate-draw-city-pruned city "$CITY" populate_pruned,load_all BENCH_LOAD_ALL=1
+launch gate-draw-city city "$CITY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
+
 if [ -f "$LOBBY" ]; then
     launch gate-lobby-building scene "$LOBBY" open,load
     launch gate-lobby-block scene "$LOBBY" open,load BENCH_LOAD_DESCENDANTS=1
     launch gate-lobby-twirl scene "$LOBBY" open,twirl
+    launch gate-draw-lobby scene "$LOBBY" "populate_full,load_all,$DRAW_SCENARIOS" BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
 else
     record_skip gate-lobby "not found by name under '$LOBBY_SRC', $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR or LOBBY_DIR)"
 fi
 
-# 24 GB is twice an estimate of 12 GB, from a per-element tally outside Natron: about 3.5 GB of
-# composed stages with their geometry read, 2 GB of instance transforms for 31M point instances,
-# 2 GB of buffers for 37M points and 152M face vertices, 3.5 GB for 119k meshes at Hydra's cost per
-# prim, 1 GB of Natron. Doubled because Island has never been loaded in Natron to measure it.
-ISLAND_MIN_RAM_GB="${ISLAND_MIN_RAM_GB:-24}"
-AVAILABLE_GB=$(($(meminfo_kb MemAvailable) / 1048576))
-if [ ! -f "$ISLAND" ]; then
-    record_skip gate-island "not found by name under '$ISLAND_SRC', $SCENE_SEARCH_DEPTH levels deep (set SCENE_DIR or ISLAND_DIR)"
-elif [ "$AVAILABLE_GB" -ge "$ISLAND_MIN_RAM_GB" ]; then
-    echo "island: $AVAILABLE_GB GB available, $ISLAND_MIN_RAM_GB GB wanted (about 12 GB estimated, doubled)"
+ISLAND_REASON="$(island_unfit)"
+if [ -z "$ISLAND_REASON" ]; then
     launch gate-island-building scene "$ISLAND" open,load
     launch gate-island-twirl scene "$ISLAND" open,twirl
+    launch gate-draw-island scene "$ISLAND" populate_full,prune_restore,noedit,draw_budget NATRON_DRAW_STATE_TIMING=1
 else
-    record_skip gate-island "$AVAILABLE_GB GB available, under the $ISLAND_MIN_RAM_GB GB estimated for it (set ISLAND_MIN_RAM_GB to override)"
+    record_skip gate-island "$ISLAND_REASON"
 fi
 
-echo "results: $RESULT ($(wc -l < "$RESULT") lines: $(grep -c '"result": "pass"' "$RESULT") pass, $(grep -c '"result": "fail"' "$RESULT") fail, $(grep -c -E '"result": "(timed_out|out_of_memory|aborted)"' "$RESULT") did not finish, $(grep -c '"result": "skipped"' "$RESULT") skipped)"
+summarize

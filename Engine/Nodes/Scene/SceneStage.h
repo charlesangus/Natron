@@ -39,6 +39,7 @@
 
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
@@ -154,6 +155,37 @@ public:
                       const LockedSection& writeLocked,
                       const std::function<bool()>& cancelled = std::function<bool()>());
 
+    /**
+     * @brief What a batch commits along with its loads. Called once the batch's files are open,
+     * with no lock held, with the load set the stage has once the batch commits. The function it
+     * returns runs under writeLocked before the loads, in the same step, so a listener never sees
+     * the loads without it; an empty one commits the loads alone. If the stage is synced again
+     * after the call, the batch is put back to be serviced again rather than commit what was
+     * prepared for a stack no longer applied.
+     **/
+    using LoadPreparer = std::function<std::function<void()>(const SceneLoadSetPtr& loadSet)>;
+
+    bool serviceLoads(const LockedSection& readLocked,
+                      const LockedSection& writeLocked,
+                      const std::function<bool()>& cancelled,
+                      const LoadPreparer& prepare);
+
+    /**
+     * @brief The payloads the stage includes, as a load set. Reads the stage, so it is serialized
+     * as any read of getStage() is.
+     **/
+    SceneLoadSetPtr getLoadSet() const;
+
+    /**
+     * @brief Makes the stage include the payloads of loadSet, every one for a null set, with no
+     * load request involved. Returns whether anything was loaded or unloaded. For stages nothing
+     * requests loads on, such as query stages.
+     **/
+    bool applyLoadSet(const SceneLoadSetPtr& loadSet);
+
+    // The set the last applyLoadSet() applied, null before any.
+    const SceneLoadSetPtr& getAppliedLoadSet() const;
+
     struct LoadFailure {
         PXR_NS::SdfPath prim;
         std::string error;
@@ -205,6 +237,7 @@ private:
     bool _servicingLoads = false;
     std::atomic<U64> _loadEditCount { 0 };
     std::atomic<double> _lastLoadHoldMs { 0. };
+    SceneLoadSetPtr _appliedLoadSet;
 };
 
 NATRON_NAMESPACE_EXIT

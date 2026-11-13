@@ -3805,6 +3805,9 @@ EffectInstance::evaluate(bool isSignificant,
     }
     if (isSignificant) {
         node->refreshPreviewsRecursivelyDownstream(time);
+        if (AppInstancePtr app = getApp()) {
+            Q_EMIT app->nodeEvaluated();
+        }
     }
 } // evaluate
 

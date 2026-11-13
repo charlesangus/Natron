@@ -49,9 +49,16 @@ class SceneGraphModel;
  * node graph, or the scene of a pinned node. When the rows are the viewer's prims, selecting rows
  * selects the prims in the viewer and the viewer's selection selects the rows. A name filter
  * lists the matching prims instead of the tree. Below the tree, a ScenePrimInspector on the current
- * prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs. On the
- * viewer's stage, twirling open a row of an unloaded payload loads that payload alone, and the row
- * menu loads and unloads the selection; closing a row never unloads.
+ * prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs.
+ * Twirling open a row of an unloaded payload loads that payload alone, and the row menu loads and
+ * unloads the selection, on the stage the rows are read from; closing a row never unloads.
+ *
+ * A node the viewer does not show is read on a worker into a stage of the panel's own, opened with
+ * no payload loaded; the rows of the stage left stay up, greyed, until it is read. The stages of
+ * the last few nodes shown are kept, so that going back to one reads nothing unless the node was
+ * edited after its stage was read. The open rows and the row at the top of the tree carry over from node to node:
+ * a row whose prim is missing reopens when it comes back, and an unloaded payload row stays
+ * closed until twirled.
  *
  * Scripts find its widgets by object name: sceneGraphTree, sceneGraphChangedHereTree,
  * sceneGraphResults, sceneGraphFilter, sceneGraphPin, sceneGraphFollow, sceneGraphNode,
@@ -61,8 +68,10 @@ class SceneGraphModel;
  * the tree as it was. It mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow
  * ("viewer" or "selection"), natronSceneGraphNode, natronSceneGraphHasScene,
  * natronSceneGraphFilterBusy, natronSceneGraphStageEditCount, natronSceneGraphStageNotices,
- * natronSceneGraphChangedHereOnly, natronSceneGraphChangedHereBusy, natronSceneGraphChangedHereCount
- * and natronSceneGraphChangedHereRows properties.
+ * natronSceneGraphChangedHereOnly, natronSceneGraphChangedHereBusy, natronSceneGraphChangedHereCount,
+ * natronSceneGraphChangedHereRows, natronSceneGraphComposeCount (evaluations that reached a stage
+ * of the panel's own), natronSceneGraphSwitching, natronSceneGraphCachedStages,
+ * natronSceneGraphTimersActive and natronSceneGraphTopPath properties.
  **/
 class SceneGraphPanel
     : public QWidget,

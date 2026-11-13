@@ -40,6 +40,7 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OverlayImage.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
 
@@ -452,9 +453,35 @@ public:
     /**
      * @brief What the last evaluation of a scene on the given texture's input produced. Returns
      * false when that input is not a scene or has not been evaluated yet, or when the evaluation
-     * failed, in which case *error carries the message. Either pointer may be null. MT-safe.
+     * failed, in which case *error carries the message. *loadSet and *reach get the load set it
+     * was evaluated with and the reach of the patterns it matched. Any pointer may be null.
+     * MT-safe.
      **/
-    bool getLastEvaluatedScene(int textureIndex, ScenePayload* scene, std::string* error) const;
+    bool getLastEvaluatedScene(int textureIndex,
+                               ScenePayload* scene,
+                               std::string* error,
+                               SceneLoadSetPtr* loadSet = nullptr,
+                               SceneLoadReachPtr* reach = nullptr) const;
+
+    /**
+     * @brief The payloads the viewer's scene evaluations include, which follow what its 3D view's
+     * stage loads: pattern nodes match only those. None until set. MT-safe.
+     **/
+    void setSceneLoadSet(const SceneLoadSetPtr& loadSet);
+
+    SceneLoadSetPtr getSceneLoadSet() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Evaluates the scene of the A input as the viewer would with loadSet in its place, for
+     * what a load about to be committed shows, at the current frame. getLastEvaluatedScene() is
+     * left as it is. *reach, when given, is set to the reach of the patterns the evaluation
+     * matched. Returns false when that input is not a scene or its evaluation fails, with *error
+     * set for a failure. For a thread other than the main one. MT-safe.
+     **/
+    bool evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                 ScenePayload* scene,
+                                 SceneLoadReachPtr* reach,
+                                 std::string* error);
 
     /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest

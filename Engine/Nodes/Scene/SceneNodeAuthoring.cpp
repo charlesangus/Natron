@@ -762,7 +762,17 @@ namespace {
                 return false;
             }
 
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
+            // Only the roots grafted are searched for the material, so a load under one of them
+            // is all that can change what is found.
+            const SceneEvaluationContext& materialContext = args.inputContexts.empty() ? SceneEvaluationContext::current() : args.inputContexts.front();
+            if (materialContext.reach) {
+                std::vector<std::string> rootPaths;
+                for (const SceneRootGraft& root : grafts) {
+                    rootPaths.push_back(root.sourcePath);
+                }
+                materialContext.reach->add(rootPaths);
+            }
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, materialContext.loadSet, errorMessage);
             const PXR_NS::UsdStageRefPtr stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {
@@ -810,6 +820,7 @@ namespace {
 
 bool
 graftMaterialInput(const ScenePayload& material,
+                   const SceneEvaluationContext& materialContext,
                    const std::string& primPath,
                    const std::string& layerTag,
                    SceneGraftMemo* memo,
@@ -821,8 +832,25 @@ graftMaterialInput(const ScenePayload& material,
     args.inputs.push_back(material);
     args.destinationPath = primPath;
     args.layerTag = layerTag;
+    args.inputContexts.push_back(materialContext);
 
     return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+SceneEvaluationContext
+getMaterialInputContext(const SceneEvaluationContext& ctx,
+                        const std::string& primPath)
+{
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, primPath, std::string(), false));
+}
+
+void
+mapMaterialInputReach(SceneGraftMemo* memo,
+                      const std::string& primPath,
+                      const std::vector<std::string>& in,
+                      std::vector<std::string>* out)
+{
+    SceneOps::mapGraftReach(memo, 0, primPath, std::string(), in, out);
 }
 
 bool

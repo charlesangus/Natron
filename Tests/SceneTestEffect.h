@@ -103,7 +103,7 @@ bool sceneTestAuthorFactOp(const SceneLayerEdit& edit, int value, int sourceValu
 // The source value the stack composes, read through SceneQueryPool; 0 if none.
 bool sceneTestReadSourceValue(const ScenePayload& payload, int* value, std::string* errorMessage);
 // SceneTestGeometry's scene: material grafted under a cube at primPath bound to it.
-bool sceneTestRenderGeometry(SceneTestGeometry* effect, const ScenePayload& material, const std::string& primPath, SceneGraftMemo* memo, ScenePayload* output, std::string* errorMessage);
+bool sceneTestRenderGeometry(SceneTestGeometry* effect, const ScenePayload& material, const SceneEvaluationContext& materialContext, const std::string& primPath, SceneGraftMemo* memo, ScenePayload* output, std::string* errorMessage);
 
 /**
  * @brief A scene source: defines kSceneTestPrimPath carrying its "value" knob, or fails with
@@ -452,7 +452,7 @@ private:
             return eStatusFailed;
         }
 
-        return sceneTestRenderGeometry(this, args.getInputScene(0), primPath->getValue(), &_graftMemo, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
+        return sceneTestRenderGeometry(this, args.getInputScene(0), args.getInputContext(0), primPath->getValue(), &_graftMemo, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
     }
 
     KnobStringWPtr _primPath;

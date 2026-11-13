@@ -28,9 +28,11 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -50,6 +52,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
+#include "Engine/Nodes/Scene/USDCube.h"
 #include "Engine/Nodes/Scene/USDEditPrim.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDProjectUV.h"
@@ -415,6 +418,61 @@ setString(const NodePtr& node,
     ASSERT_TRUE(knob != NULL) << name;
     knob->setValue(value);
 }
+
+// /Lib/A and /Lib/B, each a payload file holding one material, in a directory of their own.
+class PayloadMaterials {
+public:
+    PayloadMaterials()
+    {
+        static std::atomic<int> counter(0);
+
+        _dir = std::filesystem::temp_directory_path() / ("scene_payload_materials_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+        std::filesystem::create_directories(_dir);
+        _dir = std::filesystem::canonical(_dir);
+        std::ofstream root(rootPath());
+        root << "#usda 1.0\n(\n    defaultPrim = \"Lib\"\n)\ndef Xform \"Lib\"\n{\n";
+        for (const char* name : { "A", "B" }) {
+            const std::string file = (_dir / (std::string(name) + ".usda")).string();
+            std::ofstream payload(file);
+            payload << "#usda 1.0\n(\n    defaultPrim = \"Holder\"\n)\ndef Xform \"Holder\"\n{\n    def Material \"M\"\n    {\n    }\n}\n";
+            root << "    def Xform \"" << name << "\" (\n        prepend payload = @./" << name << ".usda@\n    )\n    {\n    }\n";
+            _payloadPaths.push_back(file);
+        }
+        root << "}\n";
+    }
+
+    ~PayloadMaterials()
+    {
+        std::error_code ignored;
+
+        std::filesystem::remove_all(_dir, ignored);
+    }
+
+    PayloadMaterials(const PayloadMaterials&) = delete;
+    PayloadMaterials& operator=(const PayloadMaterials&) = delete;
+
+    std::string rootPath() const
+    {
+        return (_dir / "root.usda").string();
+    }
+
+    int openedPayloads() const
+    {
+        int count = 0;
+
+        for (const std::string& path : _payloadPaths) {
+            if (PXR_NS::SdfLayer::Find(path)) {
+                ++count;
+            }
+        }
+
+        return count;
+    }
+
+private:
+    std::filesystem::path _dir;
+    std::vector<std::string> _payloadPaths;
+};
 } // anonymous namespace
 
 TEST_F(SceneLoadSetCoverageTest, TheProbeCountsTheBuildingsOpenInTheProcess)
@@ -778,12 +836,48 @@ TEST_F(SceneLoadSetCoverageTest, AnAssignedMaterialInputReachesTheScopeItIsGraft
     const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
 
     evaluateAsViewer(node, loaded, reach);
+    EXPECT_EQ(0, materialCity.openedBuildings());
     const std::vector<std::string> prefixes = reach->getPrefixes();
     EXPECT_TRUE(reachesUnder(prefixes, "/materials/World"));
     EXPECT_TRUE(SceneOps::loadChangeReaches(loaded.get(), loadingOnly({ "/World/Block_0", "/materials/World/Block_0" }).get(), prefixes));
 
     expectParity(node, loaded);
     expectParity(node, loadingOnly({ "/materials/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AGeometryMaterialInputOpensOnlyThePayloadsTheGraftLoadsAndReachesThem)
+{
+    PayloadMaterials materials;
+    NodePtr material = readerOf(materials.rootPath());
+    ASSERT_TRUE(bool(material));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCUBE));
+    ASSERT_TRUE(bool(node));
+    setString(node, kSceneParamPrimPath, "/Cube");
+    ASSERT_TRUE(node->connectInput(material, 0));
+    const SceneLoadSetPtr loaded = loadingOnly({ "/Cube/Lib/A" });
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+
+    evaluateAsViewer(node, loaded, reach);
+    EXPECT_EQ(1, materials.openedPayloads());
+    const std::vector<std::string> prefixes = reach->getPrefixes();
+    EXPECT_TRUE(reachesUnder(prefixes, "/Cube/Lib"));
+    EXPECT_TRUE(SceneOps::loadChangeReaches(loaded.get(), loadingOnly({ "/Cube/Lib/A", "/Cube/Lib/B" }).get(), prefixes));
+
+    expectParity(node, loaded);
+}
+
+TEST_F(SceneLoadSetCoverageTest, AGeometryMaterialInputWithNothingLoadedOpensNoPayload)
+{
+    PayloadMaterials materials;
+    NodePtr material = readerOf(materials.rootPath());
+    ASSERT_TRUE(bool(material));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCUBE));
+    ASSERT_TRUE(bool(node));
+    setString(node, kSceneParamPrimPath, "/Cube");
+    ASSERT_TRUE(node->connectInput(material, 0));
+
+    evaluateAsViewer(node, loadingOnly({}), std::make_shared<SceneLoadReach>());
+    EXPECT_EQ(0, materials.openedPayloads());
 }
 
 TEST_F(SceneLoadSetCoverageTest, AReferencedSourceInputOpensOnlyWhatTheTargetLoadsAndReachesIt)

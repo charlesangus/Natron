@@ -180,13 +180,14 @@ sceneTestReadSourceValue(const ScenePayload& payload,
 bool
 sceneTestRenderGeometry(SceneTestGeometry* effect,
                         const ScenePayload& material,
+                        const SceneEvaluationContext& materialContext,
                         const std::string& primPath,
                         SceneGraftMemo* memo,
                         ScenePayload* output,
                         std::string* errorMessage)
 {
     SceneMaterialGraft graft;
-    if (!SceneNodeAuthoring::graftMaterialInput(material, primPath, effect->getScriptName_mt_safe(), memo, &graft, errorMessage)) {
+    if (!SceneNodeAuthoring::graftMaterialInput(material, materialContext, primPath, effect->getScriptName_mt_safe(), memo, &graft, errorMessage)) {
         return false;
     }
     const std::string materialPath = graft.materialPath;

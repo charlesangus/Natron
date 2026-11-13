@@ -223,15 +223,28 @@ authorValue(const PXR_NS::UsdAttribute& attribute,
  * primPath and its missing ancestors typeless: the geometry's own layer, stacked on
  * graft->payload, gives them their types and binds the prim with authorMaterialBinding().
  * graft->materialPath is the grafted path of material's first UsdShadeMaterial, depth first.
+ * materialContext is the context material was evaluated on (getMaterialInputContext()).
  * Returns false with *errorMessage set when primPath is not an absolute prim path, a root of
  * material is at primPath itself, or authoring fails.
  **/
 bool graftMaterialInput(const ScenePayload& material,
+                        const SceneEvaluationContext& materialContext,
                         const std::string& primPath,
                         const std::string& layerTag,
                         SceneGraftMemo* memo,
                         SceneMaterialGraft* graft,
                         std::string* errorMessage);
+
+/**
+ * @brief The context the material input of graftMaterialInput() is evaluated on, for an output
+ * evaluated on ctx, and the reach that input gathers as output paths, for the geometry at primPath.
+ **/
+SceneEvaluationContext getMaterialInputContext(const SceneEvaluationContext& ctx,
+                                               const std::string& primPath);
+void mapMaterialInputReach(SceneGraftMemo* memo,
+                           const std::string& primPath,
+                           const std::vector<std::string>& in,
+                           std::vector<std::string>* out);
 
 /**
  * @brief Whether shader is a USDProject3D projection: its glslfx source is the projection shader.

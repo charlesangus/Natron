@@ -36,13 +36,17 @@
 #include "BaseTest.h"
 #include "SceneTestAuthoring.h"
 
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDSetAttribute.h"
 #include "Engine/SceneLoadSet.h"
+#include "Engine/ScenePayload.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
 
@@ -90,6 +94,27 @@ protected:
 
         return node;
     }
+
+    NodePtr setAttribute(const NodePtr& input,
+                         const std::string& pattern)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSETATTRIBUTE));
+
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        KnobString* patternKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDSetAttributeParamPrimPattern).get());
+        KnobString* nameKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDSetAttributeParamAttributeName).get());
+        EXPECT_TRUE(patternKnob && nameKnob);
+        if (patternKnob && nameKnob) {
+            patternKnob->setValue(pattern);
+            nameKnob->setValue(std::string("tag"));
+        }
+        EXPECT_TRUE(node->connectInput(input, 0));
+
+        return node;
+    }
 };
 
 TEST_F(SceneLoadSetCoverageTest, TheProbeCountsTheBuildingsOpenInTheProcess)
@@ -123,4 +148,52 @@ TEST_F(SceneLoadSetCoverageTest, APruneEvaluatesTheSameOnALoadSetAsOnEverything)
     ASSERT_TRUE(source && node);
 
     expectParity(node, loadingOnly({ "/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, ASetAttributeOnABuildingOpensNoBuildingWithNothingLoaded)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = setAttribute(source, "/World/Block_0/B_0");
+    ASSERT_TRUE(source && node);
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, ASetAttributeEvaluatesTheSameOnALoadSetAsOnEverything)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = setAttribute(source, "/World/Block_0//car*");
+    ASSERT_TRUE(source && node);
+
+    expectParity(node, loadingOnly({ "/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, ASetAttributeThatFindsNothingSaysHowManyBranchesWereNotSearched)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = setAttribute(source, "/World//car*");
+    ASSERT_TRUE(source && node);
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("0 matches, 4 unloaded branches not searched"))) << message.toStdString();
+    EXPECT_EQ(0, city.openedBuildings());
 }

@@ -208,6 +208,10 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DCycleTool);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DToggleSpace);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DTogglePivot);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkParent);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkChild);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkPrevSibling);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkNextSibling);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -509,6 +513,11 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DDrawFull, kShortcutDescActionViewer3DDrawFull, Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DDrawLoadAll, kShortcutDescActionViewer3DDrawLoadAll, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DDrawParentBBox, kShortcutDescActionViewer3DDrawParentBBox, Qt::NoModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
+        // Maya's pickwalk, on Alt: the plain arrows step frames and set draw states.
+        { kShortcutIDActionViewer3DPickwalkParent, kShortcutDescActionViewer3DPickwalkParent, Qt::AltModifier, Qt::Key_Left, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickwalkChild, kShortcutDescActionViewer3DPickwalkChild, Qt::AltModifier, Qt::Key_Right, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickwalkPrevSibling, kShortcutDescActionViewer3DPickwalkPrevSibling, Qt::AltModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickwalkNextSibling, kShortcutDescActionViewer3DPickwalkNextSibling, Qt::AltModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

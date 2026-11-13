@@ -51,6 +51,7 @@
 #include <QElapsedTimer>
 #include <QFocusEvent>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
@@ -147,6 +148,7 @@
 #include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneDrawTiming.h"
 #include "Gui/SceneGizmo.h"
+#include "Gui/SceneGraphModel.h"
 #include "Gui/SceneGuides.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneTransformWidget.h"
@@ -5273,6 +5275,29 @@ isTransformKey(Qt::KeyboardModifiers modifiers,
         || matchesKeyBinding(kShortcutIDActionViewer3DToggleSpace, modifiers, key) || matchesKeyBinding(kShortcutIDActionViewer3DTogglePivot, modifiers, key);
 }
 
+// The pickwalk step a key is bound to, -1 for none.
+int
+pickwalkForKey(Qt::KeyboardModifiers modifiers,
+               int key)
+{
+    static const struct {
+        const char* actionID;
+        int direction;
+    } kPickwalkKeys[] = {
+        { kShortcutIDActionViewer3DPickwalkParent, SceneViewport::ePickwalkParent },
+        { kShortcutIDActionViewer3DPickwalkChild, SceneViewport::ePickwalkChild },
+        { kShortcutIDActionViewer3DPickwalkPrevSibling, SceneViewport::ePickwalkPrevSibling },
+        { kShortcutIDActionViewer3DPickwalkNextSibling, SceneViewport::ePickwalkNextSibling },
+    };
+    for (const auto& entry : kPickwalkKeys) {
+        if (matchesKeyBinding(entry.actionID, modifiers, key)) {
+            return entry.direction;
+        }
+    }
+
+    return -1;
+}
+
 // Whether a mouse binding of the 3D viewer needs Space held.
 bool
 bindingsUseSpace()
@@ -5722,6 +5747,9 @@ struct SceneViewport::Implementation {
     // a scene requested after the write is synced: the last request made before it.
     bool lockedMoveAwaitsSync = false;
     U64 lockedMoveSerial = 0;
+
+    // The child each parent's last Parent walk came from, which Child walks back to.
+    QHash<QString, QString> pickwalkChildren;
 
     // Ends a run of wheel steps on the locked camera, once the wheel rests, as one move.
     QTimer* wheelMoveTimer = nullptr;
@@ -7352,6 +7380,88 @@ SceneViewport::frameSelection()
 }
 
 bool
+SceneViewport::pickwalk(PickwalkEnum direction)
+{
+    const QStringList selection = getSelection();
+    if (selection.isEmpty() || !_imp->renderer.hasScene()) {
+        return true;
+    }
+    QStringList walked;
+    QHash<QString, QString> remembered = _imp->pickwalkChildren;
+    const bool read = _imp->renderer.tryReadStage([&](const SceneStage* stage) {
+        const UsdStageRefPtr usdStage = stage ? stage->getStage() : UsdStageRefPtr();
+        if (!usdStage) {
+            walked = selection;
+
+            return;
+        }
+        const Usd_PrimFlagsPredicate predicate = childPredicate();
+        for (const QString& path : selection) {
+            QString target = path;
+            const std::string pathString = path.toStdString();
+            const UsdPrim prim = SdfPath::IsValidPathString(pathString) ? usdStage->GetPrimAtPath(SdfPath(pathString)) : UsdPrim();
+            if (prim) {
+                const UsdPrim parent = prim.GetParent();
+                switch (direction) {
+                case ePickwalkParent:
+                    if (parent && !parent.IsPseudoRoot()) {
+                        target = QString::fromStdString(parent.GetPath().GetString());
+                        remembered.insert(target, path);
+                    }
+                    break;
+                case ePickwalkChild: {
+                    const UsdPrimSiblingRange children = prim.GetFilteredChildren(predicate);
+                    const QString last = remembered.value(path);
+                    QString first;
+                    bool lastListed = false;
+                    for (const UsdPrim& child : children) {
+                        const QString childPath = QString::fromStdString(child.GetPath().GetString());
+                        if (first.isEmpty()) {
+                            first = childPath;
+                        }
+                        if (childPath == last) {
+                            lastListed = true;
+                            break;
+                        }
+                    }
+                    if (lastListed) {
+                        target = last;
+                    } else if (!first.isEmpty()) {
+                        target = first;
+                    }
+                    break;
+                }
+                case ePickwalkPrevSibling:
+                case ePickwalkNextSibling: {
+                    const UsdPrim container = parent ? parent : usdStage->GetPseudoRoot();
+                    std::vector<QString> siblings;
+                    for (const UsdPrim& sibling : container.GetFilteredChildren(predicate)) {
+                        siblings.push_back(QString::fromStdString(sibling.GetPath().GetString()));
+                    }
+                    const auto it = std::find(siblings.begin(), siblings.end(), path);
+                    if (it != siblings.end()) {
+                        const std::ptrdiff_t count = std::ptrdiff_t(siblings.size());
+                        const std::ptrdiff_t step = (direction == ePickwalkNextSibling) ? 1 : -1;
+                        target = siblings[std::size_t((std::ptrdiff_t(it - siblings.begin()) + step + count) % count)];
+                    }
+                    break;
+                }
+                }
+            }
+            walked.removeAll(target);
+            walked.push_back(target);
+        }
+    });
+    if (!read) {
+        return false;
+    }
+    _imp->pickwalkChildren = remembered;
+    select(walked, eSelectionModeReplace);
+
+    return true;
+}
+
+bool
 SceneViewport::pickMustWait()
 {
     // The engine is busy for as long as a background frame runs, and a stage change not yet taken
@@ -8695,6 +8805,7 @@ SceneViewport::event(QEvent* e)
             || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key()) || drawKeyFor(k->modifiers(), k->key())
+            || (pickwalkForKey(k->modifiers(), k->key()) >= 0)
             || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
             e->accept();
 
@@ -8789,6 +8900,14 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     }
     if (matchesKeyBinding(kShortcutIDActionViewer3DTogglePivot, e->modifiers(), e->key())) {
         setTransformPivot((_imp->renderer.getTransformPivot() == SceneTransform::ePivotCurrentPrim) ? SceneTransform::ePivotSelectionCentre : SceneTransform::ePivotCurrentPrim);
+        e->accept();
+
+        return;
+    }
+    const int pickwalkStep = pickwalkForKey(e->modifiers(), e->key());
+    if (pickwalkStep >= 0) {
+        // A busy stage drops the press: the key repeats, and the user sees nothing to wait for.
+        pickwalk(PickwalkEnum(pickwalkStep));
         e->accept();
 
         return;

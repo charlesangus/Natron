@@ -123,6 +123,11 @@ SceneBreadcrumbBar::SceneBreadcrumbBar(SceneViewport* viewport, QWidget* parent)
     _imp->viewport = viewport;
     setObjectName(QStringLiteral("sceneBreadcrumbBar"));
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    if (viewport) {
+        // A click on the bar's background leaves the keys with the 3D view, pickwalk's included.
+        setFocusProxy(viewport);
+        setFocusPolicy(Qt::ClickFocus);
+    }
 
     _imp->layout = new QHBoxLayout(this);
     _imp->layout->setContentsMargins(4, 1, 4, 1);

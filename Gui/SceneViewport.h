@@ -943,6 +943,22 @@ public:
 
     void frameSelection();
 
+    enum PickwalkEnum {
+        ePickwalkParent,
+        ePickwalkChild,
+        ePickwalkPrevSibling,
+        ePickwalkNextSibling
+    };
+
+    /**
+     * @brief Moves every selected prim one step through the stage by the children the scene graph
+     * lists, and merges prims that land on one: the current prim stays last. A prim with nowhere
+     * to go stays; siblings wrap. Child takes the child last left by a Parent walk of the same
+     * parent, else the first. Returns false, changing nothing, when the stage is busy, as reading
+     * it must not wait on the stage's writers.
+     **/
+    bool pickwalk(PickwalkEnum direction);
+
     // The prim drawn at pos (widget coordinates), empty for none. If the scene can't be picked
     // without waiting, sets busy instead: an empty result then says nothing about pos.
     QString pickPrimAt(const QPoint& pos, bool* busy = nullptr);

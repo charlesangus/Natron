@@ -955,6 +955,12 @@ SceneGraphModel::hasOwedReads() const
     return _imp->settleOwed || !_imp->owedFetches.empty();
 }
 
+bool
+SceneGraphModel::isChanging() const
+{
+    return _imp->changing > 0;
+}
+
 void
 SceneGraphModel::retryOwedReads()
 {

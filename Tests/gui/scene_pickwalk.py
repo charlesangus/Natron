@@ -182,14 +182,19 @@ try:
         # The view had the focus from the start, so it is taken away for the click to have to give it
         # back. The window may not be the active one under Xvfb, so the focus is read from the window
         # rather than the application, and the key goes to the widget that holds it.
-        v.clearFocus()
+        view().clearFocus()
         background = QPoint(b.width() - 4, b.height() // 2)
         require(b.childAt(background) is None, "the bar's right end is its bare background")
         QTest.mouseClick(b, Qt.LeftButton, Qt.NoModifier, background)
         QApplication.processEvents()
-        focused = b.window().focusWidget()
-        check(focused is not None and getCppPointer(focused) == getCppPointer(v), "a click on the bar's background gives the 3D view the focus (got %r)"
-              % (focused.metaObject().className() if focused is not None else None,))
+        # The focus widget's wrapper dies with the window's, so both are held, and the view is found
+        # again rather than trusted from before the click.
+        window = hold(bar().window())
+        focused = hold(window.focusWidget())
+        focused_class = str(focused.metaObject().className()) if focused is not None else None
+        current_view = view()
+        check(focused is not None and current_view is not None and getCppPointer(focused) == getCppPointer(current_view),
+              "a click on the bar's background gives the 3D view the focus (got %r)" % (focused_class,))
         if focused is not None:
             yield from walk("Alt+Left with the bar clicked walks", Qt.Key_Left, [THING], widget=focused)
 
@@ -237,7 +242,7 @@ try:
         panel.close()
         QApplication.processEvents()
 
-        v.setFocus()
+        view().setFocus()
         QApplication.processEvents()
         select([MESH])
         ok = yield ("until", lambda: selection() == [MESH], POLL_TIMEOUT_S)

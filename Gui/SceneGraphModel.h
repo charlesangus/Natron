@@ -233,6 +233,10 @@ public:
     // Whether a read that found the stage busy has yet to happen.
     bool hasOwedReads() const;
 
+    // Whether the model is adding, removing or resetting rows, so that a view's selection is
+    // changing because rows came or went rather than because the user picked rows.
+    bool isChanging() const;
+
     /**
      * @brief Adds rows a SceneGraphPathRowsBuilder read, without touching the stage, so that
      * indexOfPath() finds their paths without reading them. A parent whose children differ from what

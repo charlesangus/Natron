@@ -2204,7 +2204,9 @@ SceneGraphPanel::onViewportSelectionChanged(const QStringList& paths)
 void
 SceneGraphPanel::onTreeSelectionChanged()
 {
-    if (_imp->syncingSelection) {
+    // Rows removed by an edit of the stage leave the selection: a selected prim that is gone is
+    // kept, as selectTreeRows() keeps one it cannot show, so that its return restores it.
+    if (_imp->syncingSelection || _imp->model->isChanging()) {
         return;
     }
     _imp->treeSelectionOwed = false;

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -245,12 +246,22 @@ GPU_TEST_F(GpuAccelTest, CompactionShrinksOrKeepsTheSize)
 
 GPU_TEST_F(GpuAccelTest, SizesOverTheBudgetReturnOutOfMemory)
 {
-    GpuBufferPoolOptions tiny;
-    tiny.overrideBudgetBytes = 256;
-    GpuBufferPool small(*dev, tiny);
-
     GpuAccelSizes sizes;
     GpuStatus s = GpuBlas::querySizes(*dev, quad.triangles(), {}, sizes);
+    ASSERT_TRUE(s.ok()) << s.message;
+    const VkDeviceSize blasBytes = sizes.structureBytes;
+    s = GpuTlas::querySizes(*dev, 2, sizes);
+    ASSERT_TRUE(s.ok()) << s.message;
+    const VkDeviceSize tlasBytes = sizes.structureBytes;
+    ASSERT_GT(std::min(blasBytes, tlasBytes), 1u);
+
+    // Structure sizes are the driver's choice (lavapipe packs the quad BLAS into 208 bytes), so the budget derives
+    // from them rather than from a fixed byte count.
+    GpuBufferPoolOptions tiny;
+    tiny.overrideBudgetBytes = std::min(blasBytes, tlasBytes) - 1;
+    GpuBufferPool small(*dev, tiny);
+
+    s = GpuBlas::querySizes(*dev, quad.triangles(), {}, sizes);
     ASSERT_TRUE(s.ok()) << s.message;
     ASSERT_GT(sizes.structureBytes, small.budget());
 

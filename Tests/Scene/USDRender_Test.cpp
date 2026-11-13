@@ -1456,6 +1456,9 @@ protected:
 
             return false;
         }
+        // A root nobody consumes asks for every plane it produces, and a task of several planes stays on the CPU;
+        // the viewer narrows its root to the plane it shows the same way.
+        graph.tasks.front().components = std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents());
 
         std::set<const Node*> onGpu;
 

@@ -78,3 +78,4 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
   - hdMoonray 5f378826b reads the `moonray` render context; openmoonray 25f332c10 is the new pin.
   - M345/M347/M354's notes on the override go through the inbox.
   - Gate running; it also rebuilds the dev image.
+- 2026-11-13 — Gate green (run 43430041370 on 52c110e64, dev image rebuilt). PR #272 into main opened; review round 1 by a Claude reviewer (Codex exhausted).

@@ -31,11 +31,14 @@
 #include <cassert>
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <tuple>
 #include <unordered_set>
 
 #include <QReadWriteLock>
@@ -563,6 +566,115 @@ EffectInstance::getHash() const
     NodePtr n = _node.lock();
 
     return n->getHashValue();
+}
+
+namespace {
+struct UdimTileVersionKey {
+    const Node* node;
+    int tile;
+    double time;
+    int view;
+
+    bool operator<(const UdimTileVersionKey& other) const
+    {
+        return std::tie(node, tile, time, view) < std::tie(other.node, other.tile, other.time, other.view);
+    }
+};
+
+struct UdimTileVersionWalk {
+    std::map<UdimTileVersionKey, U64> versions;
+    std::set<UdimTileVersionKey> inProgress;
+};
+
+thread_local UdimTileVersionWalk* currentUdimTileVersionWalk = nullptr;
+
+class UdimTileVersionWalkScope {
+public:
+    UdimTileVersionWalkScope()
+        : _owned()
+    {
+        if (!currentUdimTileVersionWalk) {
+            _owned.emplace();
+            currentUdimTileVersionWalk = &*_owned;
+        }
+    }
+
+    ~UdimTileVersionWalkScope()
+    {
+        if (_owned) {
+            currentUdimTileVersionWalk = nullptr;
+        }
+    }
+
+    bool isOutermost() const
+    {
+        return _owned.has_value();
+    }
+
+    UdimTileVersionWalk& walk() const
+    {
+        return *currentUdimTileVersionWalk;
+    }
+
+private:
+    std::optional<UdimTileVersionWalk> _owned;
+};
+
+U64
+udimTileVersionOf(const Node& node,
+                  int tile,
+                  double time,
+                  ViewIdx view)
+{
+    EffectInstancePtr effect = node.getEffectInstance();
+    if (!effect) {
+        return 0;
+    }
+    UdimTileVersionWalkScope scope;
+    if (scope.isOutermost()) {
+        // Refreshed once here: the hashes read deeper in the walk are then the stored ones.
+        (void)node.getContentHash();
+    }
+    UdimTileVersionWalk& walk = scope.walk();
+    const UdimTileVersionKey key = { &node, tile, time, view.value() };
+    std::map<UdimTileVersionKey, U64>::const_iterator found = walk.versions.find(key);
+    if (found != walk.versions.end()) {
+        return found->second;
+    }
+    if (!walk.inProgress.insert(key).second) {
+        return node.getStoredContentHash();
+    }
+    const U64 version = effect->getUdimTileHash(tile, time, view);
+    walk.inProgress.erase(key);
+    walk.versions[key] = version;
+
+    return version;
+}
+} // anonymous namespace
+
+U64
+udimTileVersion(const NodePtr& node,
+                int tile,
+                double time,
+                ViewIdx view)
+{
+    return node ? udimTileVersionOf(*node, tile, time, view) : 0;
+}
+
+U64
+EffectInstance::getUdimTileHash(int tile,
+                                double time,
+                                ViewIdx view)
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return 0;
+    }
+    const std::function<U64(const Node&)> inputVersion = [tile, time, view](const Node& input) -> U64 {
+        return udimTileVersionOf(input, tile, time, view);
+    };
+
+    return node->computeContentHashOverInputs(inputVersion);
 }
 
 namespace {

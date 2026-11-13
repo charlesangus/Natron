@@ -873,6 +873,7 @@ protected:
         dynamic_cast<KnobStringBase*>(modify->getKnobByName("key1").get())->setValue(std::string(kNatronMetadataKeyUdimTiles));
         dynamic_cast<KnobChoice*>(modify->getKnobByName("type1").get())->setValue((int)MetadataModify::eValueTypeString);
         dynamic_cast<KnobStringBase*>(modify->getKnobByName("stringValue1").get())->setValue(std::string("1001,1002"));
+        material->disconnectInput(kUSDMaterialInputDiffuseColor);
         EXPECT_TRUE(material->connectInput(modify, kUSDMaterialInputDiffuseColor));
 
         return material;

@@ -2034,20 +2034,12 @@ OutputSchedulerThread::renderFromCurrentFrame(bool enableRenderStats,
 void
 OutputSchedulerThread::notifyRenderFailure(const std::string& errorMessage)
 {
-    ///Abort all ongoing rendering
-    OutputSchedulerThreadStartArgsPtr args = _imp->runArgs.lock();
-
-    assert(args);
-
+    assert(_imp->runArgs.lock());
 
     ///Handle failure: for viewers we make it black and don't display the error message which is irrelevant
     handleRenderFailure(errorMessage);
 
     _imp->engine->abortRenderingNoRestart();
-
-    if (args->isBlocking) {
-        waitForAbortToComplete_enforce_blocking();
-    }
 }
 
 OutputSchedulerThreadStartArgsPtr
@@ -3576,29 +3568,6 @@ RenderEngine::waitForAbortToComplete_not_main_thread()
 }
 
 void
-RenderEngine::waitForAbortToComplete_enforce_blocking()
-{
-    if (_imp->scheduler) {
-        _imp->scheduler->waitForAbortToComplete_enforce_blocking();
-    }
-
-    if (_imp->currentFrameScheduler) {
-        _imp->currentFrameScheduler->waitForAbortToComplete_enforce_blocking();
-    }
-}
-
-void
-RenderEngine::onWatcherEngineAbortedEmitted()
-{
-    assert(_imp->engineWatcher);
-    if (!_imp->engineWatcher) {
-        return;
-    }
-    _imp->engineWatcher.reset();
-    Q_EMIT engineAborted();
-}
-
-void
 RenderEngine::onWatcherEngineQuitEmitted()
 {
     assert(_imp->engineWatcher);
@@ -3607,16 +3576,6 @@ RenderEngine::onWatcherEngineQuitEmitted()
     }
     _imp->engineWatcher.reset();
     Q_EMIT engineQuit();
-}
-
-void
-RenderEngine::waitForAbortToComplete_main_thread()
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    assert(!_imp->engineWatcher);
-    _imp->engineWatcher.reset( new RenderEngineWatcher(this) );
-    QObject::connect( _imp->engineWatcher.get(), SIGNAL(taskFinished(int,GenericWatcherCallerArgsPtr)), this, SLOT(onWatcherEngineAbortedEmitted()) );
-    _imp->engineWatcher->scheduleBlockingTask(RenderEngineWatcher::eBlockingTaskWaitForAbort);
 }
 
 bool
@@ -3645,7 +3604,8 @@ RenderEngine::hasThreadsAlive() const
     }
     bool currentFrameSchedulerRunning = false;
     if (_imp->currentFrameScheduler) {
-        currentFrameSchedulerRunning = _imp->currentFrameScheduler->isRunning();
+        // The render itself may run on the backup thread after the scheduler thread has stopped.
+        currentFrameSchedulerRunning = _imp->currentFrameScheduler->isRunning() || _imp->currentFrameScheduler->isBackupThreadRunning();
     }
 
     return schedulerRunning || currentFrameSchedulerRunning;
@@ -4116,10 +4076,16 @@ ViewerCurrentFrameRequestScheduler::ViewerCurrentFrameRequestScheduler(ViewerIns
 
 ViewerCurrentFrameRequestScheduler::~ViewerCurrentFrameRequestScheduler()
 {
-    // Should've been stopped before anyway
-    if (_imp->backupThread.quitThread(false)) {
-        _imp->backupThread.waitForAbortToComplete_enforce_blocking();
-    }
+    // The viewer may already be destroyed, so only the backup thread is quit here: quitting this thread would call
+    // back into the viewer. Joining it before _imp goes keeps a render from outliving the scheduler.
+    _imp->backupThread.quitThread(false);
+    _imp->backupThread.wait();
+}
+
+bool
+ViewerCurrentFrameRequestScheduler::isBackupThreadRunning() const
+{
+    return _imp->backupThread.isRunning();
 }
 
 GenericSchedulerThread::TaskQueueBehaviorEnum
@@ -4288,6 +4254,9 @@ ViewerCurrentFrameRequestScheduler::onAbortRequested(bool keepOldestRender)
 void
 ViewerCurrentFrameRequestScheduler::onQuitRequested(bool allowRestarts)
 {
+    // quitThread aborts only while this thread is active, but the render itself may be running on the backup thread
+    // after this one went idle; it must be told to stop or joining the backup waits for the whole render.
+    _imp->viewer->markAllOnGoingRendersAsAborted(false);
     _imp->backupThread.quitThread(allowRestarts);
 }
 
@@ -4524,6 +4493,9 @@ ViewerCurrentFrameRequestRendererBackup::ViewerCurrentFrameRequestRendererBackup
 
 ViewerCurrentFrameRequestRendererBackup::~ViewerCurrentFrameRequestRendererBackup()
 {
+    // Joined before ~GenericSchedulerThread, which would otherwise let run() call the pure tasksQueueBehaviour().
+    quitThread(false);
+    wait();
 }
 
 GenericSchedulerThread::ThreadStateEnum

@@ -184,7 +184,7 @@ public:
 
     void abortTracking();
 
-    void abortTracking_blocking();
+    bool waitForTrackingAbortToComplete_not_main_thread();
 
     bool isCurrentlyTracking() const;
 

@@ -47,6 +47,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <clocale>
 #include <csignal>
@@ -3129,6 +3130,9 @@ AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
         return;
     }
     _imp->renderSchedulerMode = (int)mode;
+
+    // Real renders in legacy mode keep the last placement, so nothing else would clear the regions of the old mode.
+    ViewerInstance::requestGpuPlacementDryRunForEveryViewer();
 }
 
 void
@@ -3917,6 +3921,16 @@ NATRON_PYTHON_NAMESPACE::ensureScriptHasModuleImport(const std::string& moduleNa
 
 #endif
 
+namespace {
+std::atomic<U64> gInterpretedScripts { 0 };
+}
+
+U64
+NATRON_PYTHON_NAMESPACE::getInterpretedScriptsCount()
+{
+    return gInterpretedScripts.load();
+}
+
 bool
 NATRON_PYTHON_NAMESPACE::interpretPythonScript(const std::string& script,
                                                std::string* error,
@@ -3926,6 +3940,7 @@ NATRON_PYTHON_NAMESPACE::interpretPythonScript(const std::string& script,
 
     return true;
 #endif
+    gInterpretedScripts.fetch_add(1);
     PythonGILLocker pgl;
     PyObject* mainModule = NATRON_PYTHON_NAMESPACE::getMainModule();
     int status = -1;

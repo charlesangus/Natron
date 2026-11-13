@@ -2784,7 +2784,9 @@ NodeGui::hideGui()
         it->arrow->hide();
     }
     NodePtr node = getNode();
-    _panelOpenedBeforeDeactivate = isSettingsPanelVisible();
+    // A node whose panel is still waiting to be built would have had it open: redo queues it again.
+    const bool panelBuildQueued = _graph->cancelPanelBuild(shared_from_this());
+    _panelOpenedBeforeDeactivate = isSettingsPanelVisible() || (panelBuildQueued && !_panelCreated);
     // Finishing a panel still being built only to close it would stall the undo: it is dropped, and built
     // again when the node is shown.
     if (!dropUnbuiltPanel() && _panelOpenedBeforeDeactivate) {

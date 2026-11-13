@@ -665,7 +665,9 @@ Node::initializeInputs()
         _imp->effect->addAcceptedComponents(-1, &_imp->outputComponents);
     }
     _imp->inputsInitialized = true;
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    absorbGraphChangeOfOwnSources(upstreamStampGeneration, true);
 
     Q_EMIT inputsInitialized();
 } // Node::initializeInputs
@@ -840,10 +842,19 @@ Node::isNodeUpstream(const Node* input,
     std::vector<const Node*> stack;
     visited.insert(this);
     stack.push_back(this);
+    // Published once per check: a shared counter written per node would bounce its cache line
+    // between the threads checking at once.
+    struct VisitCount {
+        U64 visits = 0;
+        ~VisitCount()
+        {
+            cycleCheckVisits.fetch_add(visits, std::memory_order_relaxed);
+        }
+    } visitCount;
     while (!stack.empty()) {
         const Node* current = stack.back();
         stack.pop_back();
-        cycleCheckVisits.fetch_add(1, std::memory_order_relaxed);
+        ++visitCount.visits;
         std::vector<NodePtr> dependencies;
         {
             QMutexLocker l(&current->_imp->inputsMutex);
@@ -1381,7 +1392,10 @@ Node::connectOutput(bool useGuiValues,
             _imp->guiOutputs.push_back(output);
         }
     }
+    // The output's inputs have been set to this node already; only their sources have changed.
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    output->absorbGraphChangeOfOwnSources(upstreamStampGeneration, true);
     Q_EMIT outputsChanged();
 }
 
@@ -1568,7 +1582,9 @@ Node::disconnectOutput(bool useGuiValues,
         }
     }
 
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    output->absorbGraphChangeOfOwnSources(upstreamStampGeneration, true);
     //Will just refresh the gui
     Q_EMIT outputsChanged();
 
@@ -1896,7 +1912,9 @@ void
 Node::onInputChanged(int inputNb,
                      bool isInputA)
 {
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    absorbGraphChangeOfOwnSources(upstreamStampGeneration, true);
     acceptOwnGraphChangeOfEdit(this);
     // A destroy deferred until the node's renders quit can finish after its app is gone.
     AppInstancePtr app = getApp();

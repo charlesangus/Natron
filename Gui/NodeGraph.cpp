@@ -566,6 +566,27 @@ NodeGraph::schedulePanelBuild(const NodeGuiPtr& node)
     }
 }
 
+bool
+NodeGraph::cancelPanelBuild(const NodeGuiPtr& node)
+{
+    if (!node) {
+        return false;
+    }
+    bool found = false;
+    for (std::vector<NodeGuiWPtr>* list : { &_imp->panelBuildsPending, &_imp->panelBuildsPosted }) {
+        for (std::vector<NodeGuiWPtr>::iterator it = list->begin(); it != list->end();) {
+            if (it->lock() == node) {
+                it = list->erase(it);
+                found = true;
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    return found;
+}
+
 static const int kPanelBuildPaintWaitMs = 250;
 
 void

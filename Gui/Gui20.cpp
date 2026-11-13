@@ -488,7 +488,10 @@ Gui::removeViewerTab(ViewerTab* tab,
 
     ViewerTab* lastSelectedViewer = graph->getLastSelectedViewer();
 
-    if (lastSelectedViewer == tab) {
+    ViewerTab* recentViewer = (lastSelectedViewer == tab) ? graph->mostRecentlyFocusedViewer(tab) : 0;
+    if (recentViewer) {
+        graph->setLastSelectedViewer(recentViewer);
+    } else if (lastSelectedViewer == tab) {
         bool foundOne = false;
         NodesList nodes;
         if (collection) {

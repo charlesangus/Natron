@@ -380,6 +380,77 @@ TEST_F(GraphScalingConnectTest, AnInsertRefreshesTheVisiblePanelsBelowItAtOnce)
     shown->noteSettingsPanelVisibility(false);
 }
 
+TEST_F(GraphScalingConnectTest, UpstreamStampsAreWorkedOutOnlyBelowAnEditWhateverTheOpenPanels)
+{
+    const AppInstancePtr app = getApp();
+    std::vector<NodePtr> chain;
+    buildChain(app, &chain);
+    ASSERT_EQ(kChainLength, (int)chain.size());
+
+    // Side nodes with an open panel along the whole chain, all above the inserts below.
+    const int kPanels = 16;
+    std::vector<NodePtr> shown;
+    for (int i = 0; i < kPanels; ++i) {
+        NodePtr side = createNamedNode(app, PLUGINID_NATRON_GRADE, "ShownPanel" + std::to_string(i));
+        ASSERT_TRUE(bool(side));
+        ASSERT_TRUE(side->connectInput(chain[(kChainLength - 100) * i / kPanels], 0));
+        shown.push_back(side);
+    }
+    NodePtr shownBelow = createNamedNode(app, PLUGINID_NATRON_GRADE, "ShownPanelBelow");
+    ASSERT_TRUE(bool(shownBelow));
+    ASSERT_TRUE(shownBelow->connectInput(chain[kChainLength - 2], 0));
+
+    // Connects a new node at row, then inserts it above row + 1, returning the upstream-stamp
+    // visits of the two edits.
+    auto insertAt = [&app, &chain](int row, const std::string& name) -> U64 {
+        NodePtr inserted = createNamedNode(app, PLUGINID_NATRON_GRADE, name);
+        EXPECT_TRUE(bool(inserted));
+        if (!inserted) {
+            return 0;
+        }
+        const U64 before = Node::getUpstreamStampWalkVisitCount();
+        EXPECT_TRUE(inserted->connectInput(chain[row], 0));
+        EXPECT_TRUE(chain[row + 1]->replaceInput(inserted, 0));
+
+        return Node::getUpstreamStampWalkVisitCount() - before;
+    };
+
+    shown.front()->noteSettingsPanelVisibility(true);
+    shownBelow->noteSettingsPanelVisibility(true);
+    // The first edit after the panels open works their stamps out once.
+    insertAt(kChainLength - 60, "Warmup");
+    const U64 onePanel = insertAt(kChainLength - 30, "OnePanel");
+
+    for (const NodePtr& side : shown) {
+        side->noteSettingsPanelVisibility(true);
+    }
+    insertAt(kChainLength - 45, "WarmupAll");
+    const U64 allPanels = insertAt(kChainLength - 25, "AllPanels");
+
+    // The memos above the edit are kept, so each edit works out the stamps of only the few nodes
+    // between it and the open panel below it, however long the chain and however many panels.
+    EXPECT_LE(onePanel, (U64)64);
+    EXPECT_LE(allPanels, (U64)64);
+
+    // The panel below was refreshed at once and the rest of the chain below is left dirty, as
+    // without the memos.
+    EXPECT_FALSE(shownBelow->isInputRelatedDataDirty());
+    EXPECT_TRUE(chain.back()->isInputRelatedDataDirty());
+    for (const NodePtr& side : shown) {
+        EXPECT_FALSE(side->isInputRelatedDataDirty());
+    }
+    EXPECT_FALSE(chain[kChainLength - 100]->isInputRelatedDataDirty());
+
+    // An edit above an open panel still reaches it through the kept memos.
+    shownBelow->noteSettingsPanelVisibility(false);
+    insertAt(kChainLength - 20, "AbovePanelBelow");
+    EXPECT_TRUE(shownBelow->isInputRelatedDataDirty());
+
+    for (const NodePtr& side : shown) {
+        side->noteSettingsPanelVisibility(false);
+    }
+}
+
 TEST_F(GraphScalingConnectTest, ReconnectingAFanOutInOneBatchRefreshesWhatIsBelowOnce)
 {
     const AppInstancePtr app = getApp();

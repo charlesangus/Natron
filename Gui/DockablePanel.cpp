@@ -1013,11 +1013,22 @@ DockablePanel::setClosedInternal(bool c)
     }
 
     // Opening and closing add and remove the node from the editors, which a panel still being built
-    // has yet to do.
+    // has yet to do. Finishing a build only to close it would stall whatever closes it, such as the
+    // open-panel limit during a burst of creations, so such a panel is dropped and built afresh when
+    // next opened.
     NodeSettingsPanel* isBuildingNodePanel = dynamic_cast<NodeSettingsPanel*>(this);
     if (isBuildingNodePanel) {
         NodeGuiPtr nodeGui = isBuildingNodePanel->getNode();
         if (nodeGui) {
+            if (c && nodeGui->dropUnbuiltPanel()) {
+                {
+                    QMutexLocker l(&_imp->_isClosedMutex);
+                    _imp->_isClosed = true;
+                }
+                Q_EMIT closeChanged(true);
+
+                return;
+            }
             nodeGui->ensurePanelCreated();
         }
     }

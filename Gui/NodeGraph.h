@@ -307,6 +307,12 @@ public:
      **/
     void schedulePanelBuild(const NodeGuiPtr& node);
 
+    // Takes the node out of the schedulePanelBuild() queue; returns whether it was queued.
+    bool cancelPanelBuild(const NodeGuiPtr& node);
+
+    // The activated Viewer of this graph's group whose tab was focused last, other than excluded.
+    ViewerTab* mostRecentlyFocusedViewer(const ViewerTab* excluded) const;
+
 Q_SIGNALS:
 
     /**

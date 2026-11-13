@@ -223,6 +223,27 @@ std::vector<NodeWPtr> inputEditBatchEdited;
 // Each edit takes the next value as the stamp of the nodes it edits. Main thread only.
 U64 inputEditGeneration = 0;
 
+// A memoized upstream stamp holds while stored under the current epoch, and the memos agree with
+// the graph as of upstreamStampGraphGeneration. A graph change not taken in by a node whose
+// sources it changed moves the epoch, dropping them all. Main thread only.
+U64 upstreamStampEpoch = 1;
+U64 upstreamStampGraphGeneration = 0;
+
+// The walk dropping the memos below a node cannot step from a precomp's output node to the nodes
+// below the precomp, which are in another app, so once one has been read as a source every drop
+// drops them all.
+bool upstreamStampsReadAPrecompOutput = false;
+
+std::atomic<U64> upstreamStampWalkVisits { 0 };
+
+bool
+isOnMainThread()
+{
+    QCoreApplication* app = QCoreApplication::instance();
+
+    return app && (QThread::currentThread() == app->thread());
+}
+
 // A cached data kind or downstream requirement counts only if stored under the current epoch.
 // Moving it drops every cache at once, which an InputEditBatch does instead of walking from each
 // node it invalidates; the walk at its end then reaches each node once.
@@ -10206,6 +10227,7 @@ Node::appendInputEditSources(std::vector<NodePtr>* sources) const
         } else if (PrecompNode* isPrecomp = dynamic_cast<PrecompNode*>(input->getEffectInstance().get())) {
             NodePtr output = isPrecomp->getOutputNode();
             if (output) {
+                upstreamStampsReadAPrecompOutput = true;
                 sources->push_back(std::move(output));
             }
         }
@@ -10224,8 +10246,13 @@ U64
 Node::getUpstreamInputEditStamp() const
 {
     const U64 graphGeneration = LoopEnd::getGraphGeneration();
-    auto memoized = [graphGeneration](const Node* node) {
-        return (node->_imp->upstreamInputEditStampEditGeneration == inputEditGeneration) && (node->_imp->upstreamInputEditStampGraphGeneration == graphGeneration);
+    if (graphGeneration != upstreamStampGraphGeneration) {
+        ++upstreamStampEpoch;
+        upstreamStampGraphGeneration = graphGeneration;
+    }
+    const U64 epoch = upstreamStampEpoch;
+    auto memoized = [epoch](const Node* node) {
+        return node->_imp->upstreamInputEditStampEpoch == epoch;
     };
 
     if (memoized(this)) {
@@ -10241,7 +10268,9 @@ Node::getUpstreamInputEditStamp() const
         U64 newest;
     };
     std::vector<Frame> stack;
-    auto push = [&stack](const Node* node) {
+    U64 visits = 0;
+    auto push = [&stack, &visits](const Node* node) {
+        ++visits;
         node->_imp->upstreamInputEditStampComputing = true;
         stack.push_back(Frame { node, std::vector<NodePtr>(), 0, 0 });
         node->appendInputEditSources(&stack.back().sources);
@@ -10264,16 +10293,104 @@ Node::getUpstreamInputEditStamp() const
         const Node* done = frame.node;
         result = frame.newest;
         done->_imp->upstreamInputEditStamp = result;
-        done->_imp->upstreamInputEditStampEditGeneration = inputEditGeneration;
-        done->_imp->upstreamInputEditStampGraphGeneration = graphGeneration;
+        done->_imp->upstreamInputEditStampEpoch = epoch;
         done->_imp->upstreamInputEditStampComputing = false;
         stack.pop_back();
         if (!stack.empty()) {
             stack.back().newest = std::max(stack.back().newest, result);
         }
     }
+    upstreamStampWalkVisits.fetch_add(visits, std::memory_order_relaxed);
 
     return result;
+}
+
+U64
+Node::getUpstreamStampWalkVisitCount()
+{
+    return upstreamStampWalkVisits.load();
+}
+
+U64
+Node::getUpstreamInputEditStampGraphGeneration()
+{
+    if (!isOnMainThread()) {
+        return 0;
+    }
+    const U64 graphGeneration = LoopEnd::getGraphGeneration();
+
+    return (graphGeneration == upstreamStampGraphGeneration) ? graphGeneration : 0;
+}
+
+void
+Node::absorbGraphChangeOfOwnSources(U64 generation,
+                                    bool sourcesChanged) const
+{
+    if ((generation == 0) || !isOnMainThread() || (upstreamStampGraphGeneration != generation) || (LoopEnd::getGraphGeneration() != generation + 1)) {
+        return;
+    }
+    upstreamStampGraphGeneration = generation + 1;
+    if (sourcesChanged) {
+        invalidateUpstreamInputEditStampsFromHere();
+    }
+}
+
+void
+Node::invalidateUpstreamInputEditStampsFromHere() const
+{
+    if (upstreamStampsReadAPrecompOutput) {
+        ++upstreamStampEpoch;
+
+        return;
+    }
+
+    // The reverse of appendInputEditSources(). No memo is stored before those of its sources, and
+    // each drop goes on to everything below, so below a node whose memo is already dropped every
+    // memo is too, and the walk stops there.
+    std::vector<const Node*> stack(1, this);
+    std::vector<NodePtr> keepAlive;
+    while (!stack.empty()) {
+        const Node* node = stack.back();
+        stack.pop_back();
+        if (node->_imp->upstreamInputEditStampEpoch != upstreamStampEpoch) {
+            continue;
+        }
+        node->_imp->upstreamInputEditStampEpoch = 0;
+
+        auto pushNode = [&stack, &keepAlive](NodePtr dependent) {
+            if (dependent) {
+                stack.push_back(dependent.get());
+                keepAlive.push_back(std::move(dependent));
+            }
+        };
+        {
+            QMutexLocker l(&node->_imp->outputsMutex);
+            for (const NodeWPtr& output : node->_imp->guiOutputs) {
+                pushNode(output.lock());
+            }
+            for (const NodeWPtr& output : node->_imp->outputs) {
+                pushNode(output.lock());
+            }
+        }
+        NodesList children;
+        node->getChildrenMultiInstance(&children);
+        for (NodePtr& child : children) {
+            pushNode(std::move(child));
+        }
+        if (NodeGroup* isGroup = dynamic_cast<NodeGroup*>(node->_imp->effect.get())) {
+            std::vector<NodePtr> groupInputs;
+            isGroup->getInputs(&groupInputs, false);
+            isGroup->getInputs(&groupInputs, true);
+            for (NodePtr& groupInput : groupInputs) {
+                pushNode(std::move(groupInput));
+            }
+        }
+        if (NodeGroup* parentGroup = dynamic_cast<NodeGroup*>(node->getGroup().get())) {
+            if (parentGroup->getOutputNode(false).get() == node) {
+                pushNode(parentGroup->getNode());
+            }
+        }
+    }
 }
 
 void
@@ -10528,6 +10645,7 @@ Node::refreshShownDownstreamInputRelatedData(const std::vector<NodePtr>& edited)
 
     for (const NodePtr& node : edited) {
         node->_imp->inputEditStamp = ++inputEditGeneration;
+        node->invalidateUpstreamInputEditStampsFromHere();
     }
 
     // The draft flag is the one piece of this data a render reads; it only reads the inputs'

@@ -15,6 +15,8 @@ that the expected Viewer's input 0 is the selected node:
   d  inside a Group that has its own Viewer while the root graph has one: the Group's is used;
   e  inside a Group with no Viewer: exactly one is made there, and a second press reuses it;
   f  the only Viewer was deleted with the Delete key (it sits in the undo trash): one is made;
+  g  inside a Group with three Viewers, the newest deleted after the middle one and then the root
+     one were focused: the middle one is used, not the first created;
   c  a project saved and reloaded with one Viewer (last, since it resets the project).
 
 Widget wrappers are looked up again after every yield: a wrapper kept across one can outlive its
@@ -142,6 +144,20 @@ try:
         QTest.keyClick(graph_of(group), key)
         QApplication.processEvents()
 
+    def click_viewer(viewer, group=None):
+        """Makes viewer's tab current in its pane and clicks its image, which focuses that Viewer."""
+        pane, i = find_tab(viewer_tab_label(viewer, group))
+        if pane is None:
+            return False
+        pane.setCurrentIndex(i)
+        QApplication.processEvents()
+        shown = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
+        if len(shown) != 1:
+            return False
+        QTest.mouseClick(shown[0], Qt.LeftButton, Qt.NoModifier, shown[0].rect().center())
+        QApplication.processEvents()
+        return True
+
     def select_only(node, group=None):
         app.clearSelection()
         if group is not None:
@@ -252,6 +268,33 @@ try:
         if made:
             check(input_name(made[0]) == source.getScriptName(),
                   "f: the new Viewer's input 0 is %s (got %r)" % (source.getScriptName(), input_name(made[0])))
+
+        gt.section("g-recently-focused-viewer")
+        gt.require(show_graph_tab("Node Graph") and focus_graph(), "g: the root graph is focused before the Group is made")
+        gt.require(len(viewers_in()) == 1, "g: the root graph holds one Viewer")
+        root_viewer = viewers_in()[0]
+        multi = create("Group", 1200, 0)
+        yield ("sleep", SETTLE_MS)
+        first = create(VIEWER, 0, 300, multi)
+        focused = create(VIEWER, 300, 300, multi)
+        newest = create(VIEWER, 600, 300, multi)
+        multi_source = create(SOURCE, 0, 0, multi)
+        yield ("sleep", SETTLE_MS)
+        gt.require(click_viewer(focused, multi), "g: clicked the image of %s, the only Viewer shown"
+                   % viewer_tab_label(focused, multi))
+        yield ("sleep", SETTLE_MS)
+        gt.require(click_viewer(root_viewer), "g: clicked the image of the root Viewer, the only Viewer shown")
+        yield ("sleep", SETTLE_MS)
+        newest.destroy()
+        yield ("sleep", SETTLE_MS)
+        gt.require(len(viewers_in(multi)) == 2, "g: %s holds two Viewers after deleting the newest"
+                   % multi.getLabel())
+        gt.require(show_graph_tab(multi.getLabel()), "g: %s's graph is the current tab" % multi.getLabel())
+        select_only(multi_source, multi)
+        press(Qt.Key_1, multi)
+        yield ("sleep", SETTLE_MS)
+        check_reused("g", focused, multi_source, multi, count=2)
+        check(input_name(first) != multi_source.getScriptName(), "g: the first-created Viewer was left alone")
 
         gt.section("c-reloaded-project")
         destroy_viewers()

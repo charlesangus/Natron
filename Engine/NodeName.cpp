@@ -438,7 +438,9 @@ Node::setNameInternal(const std::string& name,
         GraphEditRecorder::onNodeRenamed(this);
     }
     // A loop lists its LoopBegins by script name.
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    absorbGraphChangeOfOwnSources(upstreamStampGeneration, false);
     std::string fullySpecifiedName = getFullyQualifiedName();
 
     if (collection) {

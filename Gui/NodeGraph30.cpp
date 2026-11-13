@@ -100,6 +100,23 @@ NodeGraph::isUsableViewerTab(ViewerTab* tab) const
     return collection && collection->getNodeGraph() == this;
 }
 
+ViewerTab*
+NodeGraph::mostRecentlyFocusedViewer(const ViewerTab* excluded) const
+{
+    Gui* gui = getGui();
+    if (!gui) {
+        return 0;
+    }
+    const std::list<ViewerTab*> viewers = gui->getViewersByRecentFocus();
+    for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+        if ((*it != excluded) && isUsableViewerTab(*it)) {
+            return *it;
+        }
+    }
+
+    return 0;
+}
+
 InspectorNodePtr
 NodeGraph::findViewerInGroup()
 {
@@ -109,6 +126,8 @@ NodeGraph::findViewerInGroup()
         found = getLastSelectedViewer();
     } else if (isUsableViewerTab(gui->getActiveViewer())) {
         found = gui->getActiveViewer();
+    } else {
+        found = mostRecentlyFocusedViewer(0);
     }
 
     InspectorNodePtr viewerNode;

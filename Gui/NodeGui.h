@@ -285,6 +285,10 @@ public:
     // filled over several passes of the event loop.
     void buildDeferredPanel();
 
+    // Throws away a buildDeferredPanel() panel whose knob GUIs are still being built, leaving the node
+    // with no panel; returns whether it did.
+    bool dropUnbuiltPanel();
+
     virtual void destroyGui() OVERRIDE FINAL;
 
     ~NodeGui() OVERRIDE;
@@ -782,7 +786,6 @@ protected:
 private:
     void startPanelBuild(bool incremental);
     void dockPendingPanel();
-    bool dropUnbuiltPanel();
     void connectSettingsPanel();
     void schedulePanelTail();
     void runPanelTail(bool all);

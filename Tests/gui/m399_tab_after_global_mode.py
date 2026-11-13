@@ -18,7 +18,8 @@ node graph, exits, and then brings the pointer to the graph either by leaving it
 and coming back (a fresh Enter) or by a move that stays inside it (no Enter). It then checks
 that no override cursor is left, that a probe key reaches the graph, and that a real Tab opens
 the tab menu, which is closed with Esc before the next case. A baseline without global mode runs
-first, so a harness problem is not mistaken for the bug.
+first, so a harness problem is not mistaken for the bug. A last case takes the stroke's grab
+away mid-stroke from inside the application and checks that only the stroke ends.
 
 Widget wrappers are looked up again after every yield: a wrapper kept across one can outlive its
 C++ object, and children found through a collected parent's wrapper die with it.
@@ -437,6 +438,41 @@ try:
                     if missed:
                         failing.append("%s (%s)" % (tag, "/".join(missed)))
                     yield from recover(tag)
+
+        tag = "lost grab"
+        gt.section(tag)
+        node = nodes["value"]
+        knob = TARGETS[0][2]
+        on = yield from engage(tag, node, knob)
+        if on:
+            start = graph_point()
+            yield from move(start)
+            xin.button(1, True)
+            yield ("sleep", 60)
+            for k in range(1, 6):
+                xin.move(QPoint(start.x() + 4 * k, start.y() - 2 * k))
+                yield ("sleep", STROKE_STEP_MS)
+            grabber = QWidget.mouseGrabber()
+            if check(grabber is not None, "%s: the stroke grabs the pointer" % tag):
+                QApplication.sendEvent(grabber, QEvent(QEvent.UngrabMouse))
+            grabber = None
+            QApplication.processEvents()
+            check(engaged(), "%s: losing the grab inside the application keeps global mode" % tag)
+            check(QWidget.mouseGrabber() is None, "%s: the stroke's grab is given back" % tag)
+            before = val(node, knob)
+            for k in range(6, 11):
+                xin.move(QPoint(start.x() + 4 * k, start.y() - 2 * k))
+                yield ("sleep", STROKE_STEP_MS)
+            check(val(node, knob) == before, "%s: the stroke ended, so moving the held pointer edits nothing" % tag)
+            xin.button(1, False)
+            yield ("sleep", POINTER_MS)
+            check(engaged(), "%s: global mode is still engaged after the release" % tag)
+            before = val(node, knob)
+            yield from stroke()
+            check(val(node, knob) != before, "%s: a new stroke edits %s" % (tag, knob))
+        else:
+            failing.append(tag + " (did not engage)")
+        yield from recover(tag)
 
         gt.section("summary")
         report("NOTE failing paths: %s" % (", ".join(failing) if failing else "none"))

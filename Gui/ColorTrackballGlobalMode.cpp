@@ -1207,9 +1207,9 @@ ColorTrackballGlobalMode::offerFeedbackSetting()
     return _feedback.offer(settings->getColorTrackballFeedback(), _strokeActive);
 }
 
-// Brings the cursor, the graphic and the hints in line with the feedback in effect; every
-// path in and out of the mode ends here, which is what keeps the override cursor stack
-// balanced.
+// Brings the cursor, the graphic and the hints in line with the feedback in effect. The
+// override cursors are held or let go to match the wanted state rather than pushed per call,
+// so calling this any number of times, from any path, leaves their stack balanced.
 void
 ColorTrackballGlobalMode::applyFeedback()
 {
@@ -1605,11 +1605,16 @@ ColorTrackballGlobalMode::eventFilter(QObject* watched,
     case QEvent::MouseButtonDblClick:
         return handleMousePress(watched, static_cast<QMouseEvent*>(event));
 
-    // Losing the stroke's grab or the application's focus ends the mode, not only the stroke: the
-    // user is elsewhere, and keys pressed on return must reach the widget under the pointer.
+    // A grab taken by another of the application's widgets, a popup say, ends only the stroke.
+    // Losing it to another application, like losing the focus, ends the mode as well: the user
+    // is elsewhere, and keys pressed on return must reach the widget under the pointer.
     case QEvent::UngrabMouse:
         if (watched == _grabbed.data()) {
-            exit();
+            endStrokeWithoutRelease();
+            releaseStrokeGrab();
+            if (QGuiApplication::applicationState() != Qt::ApplicationActive) {
+                exit();
+            }
         }
         break;
 

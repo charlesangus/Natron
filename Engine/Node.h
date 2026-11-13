@@ -2200,6 +2200,12 @@ public:
     static U64 getCycleCheckVisitCount();
 
     /**
+     * @brief The number of nodes whose newest upstream input-edit stamp has been worked out rather
+     * than read from its memo, since startup. For tests.
+     **/
+    static U64 getUpstreamStampWalkVisitCount();
+
+    /**
      * @brief While one lives on this thread, the walks finding the outputs whose renders to abort
      * share what they visited, so deactivating many nodes walks what is downstream of them once.
      * Open one only around removing nodes: connecting a node inside it would hide the new output.
@@ -2589,6 +2595,19 @@ private:
 
     // The newest input-edit stamp of any node upstream of this one, memoized. Main thread only.
     U64 getUpstreamInputEditStamp() const;
+
+    // The graph generation the memoized upstream stamps agree with, read just before a graph change
+    // for absorbGraphChangeOfOwnSources(); 0 when they have yet to take in an earlier change, or
+    // off the main thread.
+    static U64 getUpstreamInputEditStampGraphGeneration();
+
+    // Takes in the one graph change made since generation, which could change no node's sources
+    // but this one's, so that only the memos below this node are dropped. Without it, or when
+    // anything else changed the graph as well, the next read drops every memo.
+    void absorbGraphChangeOfOwnSources(U64 generation, bool sourcesChanged) const;
+
+    // Drops the memoized upstream stamp of this node and of every node it reaches downstream.
+    void invalidateUpstreamInputEditStampsFromHere() const;
 
     // The viewers below the edit of this node's inputs being ended, found when it aborted their
     // renders. False if the graph has changed since then, or if this is not that edit.

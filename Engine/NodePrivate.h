@@ -290,8 +290,7 @@ public:
         , inputEditStamp(0)
         , inputRelatedDataRefreshedAt(0)
         , upstreamInputEditStamp(0)
-        , upstreamInputEditStampEditGeneration(0)
-        , upstreamInputEditStampGraphGeneration(0)
+        , upstreamInputEditStampEpoch(0)
         , upstreamInputEditStampComputing(false)
         , duringPaintStrokeCreation(false)
         , lastStrokeMovementMutex()
@@ -608,10 +607,10 @@ public:
     bool draftModeUsed, mustComputeInputRelatedData;
     // Main thread only. An edit of this node (its inputs, or the metadata it derives from them)
     // leaves every node below it dirty: a node is dirty while an edit stamp upstream of it is
-    // later than its last refresh. The newest stamp upstream is memoized for one input-edit
-    // generation and one graph generation, which every edit and connection move.
+    // later than its last refresh. The newest stamp upstream is memoized until an edit or a
+    // connection upstream drops it, or a graph change the memos cannot tell the reach of drops all.
     U64 inputEditStamp, inputRelatedDataRefreshedAt;
-    mutable U64 upstreamInputEditStamp, upstreamInputEditStampEditGeneration, upstreamInputEditStampGraphGeneration;
+    mutable U64 upstreamInputEditStamp, upstreamInputEditStampEpoch;
     mutable bool upstreamInputEditStampComputing;
     bool duringPaintStrokeCreation; // protected by lastStrokeMovementMutex
     mutable QMutex lastStrokeMovementMutex;

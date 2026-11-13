@@ -216,7 +216,8 @@ sceneTestRenderGeometry(SceneTestGeometry* effect,
 }
 
 CarCity::CarCity(int blocks,
-                 int buildingsPerBlock)
+                 int buildingsPerBlock,
+                 bool authorExtentsHints)
 {
     static std::atomic<int> counter(0);
 
@@ -247,7 +248,11 @@ CarCity::CarCity(int blocks,
                          << "        uniform token[] xformOpOrder = [\"!resetXformStack!\", \"xformOp:translate\"]\n    }\n";
             }
             building << "}\n";
-            root << "        def Xform \"B_" << n << "\" (\n            prepend payload = @./buildings/" << name << "@\n        )\n        {\n        }\n";
+            root << "        def Xform \"B_" << n << "\" (\n            prepend payload = @./buildings/" << name << "@\n        )\n        {\n";
+            if (authorExtentsHints) {
+                root << "            float3[] extentsHint = [(0, 0, 0), (2, 4, 6)]\n";
+            }
+            root << "        }\n";
             _buildingPaths.push_back(file);
         }
         root << "    }\n";

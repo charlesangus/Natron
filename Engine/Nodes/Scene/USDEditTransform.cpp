@@ -29,7 +29,11 @@
 #include <list>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <QCoreApplication>
+#include <QMetaObject>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -42,6 +46,8 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+#include "Engine/ViewerInstance.h"
+#include <pxr/usd/usdGeom/modelAPI.h>
 
 NATRON_NAMESPACE_ENTER
 
@@ -164,6 +170,8 @@ struct USDEditTransform::Implementation {
     std::list<Result> results;
     U64 opReadCount = 0;
     PrimPatternCache patternMatches;
+    // The request whose result the button applies. Under lock.
+    std::shared_ptr<CentrePivotJob> pivotJob;
 
     // The result of context, or null. Call with lock held.
     const Result* find(U64 context) const
@@ -296,9 +304,23 @@ USDEditTransform::knobChanged(KnobI* k,
     if (!button || (k != button.get())) {
         return false;
     }
-    std::string error;
-    if (!centrePivot(&error)) {
-        message(eMessageTypeWarning, error);
+    // Several viewers can show the node: the one the user works in, else any that does.
+    std::list<ViewerInstance*> viewers;
+    Node::getViewersDownstreamOf(std::list<NodePtr>(1, getNode()), &viewers);
+    ViewerInstance* shown = viewers.empty() ? nullptr : viewers.front();
+    AppInstancePtr app = getApp();
+    NodePtr active = app ? app->getActiveViewerNode() : NodePtr();
+    for (ViewerInstance* viewer : viewers) {
+        if (active && (viewer->getNode() == active)) {
+            shown = viewer;
+            break;
+        }
+    }
+    if (shown) {
+        const SceneEvaluationContext context = shown->getSceneEvaluationContext();
+        startCentrePivot(&context);
+    } else {
+        startCentrePivot(nullptr);
     }
 
     return true;
@@ -390,52 +412,246 @@ USDEditTransform::getHandleTarget(std::string* primPath,
     return true;
 }
 
-bool
-USDEditTransform::centrePivot(std::string* errorMessage)
+CentrePivotJob::StateEnum
+CentrePivotJob::wait() const
 {
+    std::unique_lock<std::mutex> l(_lock);
+
+    _done.wait(l, [this]() { return _state != eStateRunning; });
+
+    return _state;
+}
+
+CentrePivotJob::StateEnum
+CentrePivotJob::getState() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _state;
+}
+
+void
+CentrePivotJob::getCentre(double* x,
+                          double* y,
+                          double* z) const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    *x = _centre[0];
+    *y = _centre[1];
+    *z = _centre[2];
+}
+
+std::string
+CentrePivotJob::getError() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _error;
+}
+
+void
+CentrePivotJob::finish(StateEnum state,
+                       const double* centre,
+                       const std::string& error)
+{
+    {
+        std::lock_guard<std::mutex> l(_lock);
+        _state = state;
+        if (centre) {
+            std::copy(centre, centre + 3, _centre);
+        }
+        _error = error;
+    }
+    _done.notify_all();
+}
+
+namespace {
+struct CentreSnapshot {
     ScenePayload upstream;
     std::vector<PXR_NS::SdfPath> matches;
+    SceneLoadSetPtr loadSet;
+    double timeCode = 0.;
+    std::string failure;
+};
+
+// Adds to range the extentsHint of every prim at or under prim whose payload stage left
+// unloaded, in prim's local space; counts the ones with no hint in *unmeasured.
+void
+addUnloadedHints(const PXR_NS::UsdPrim& prim,
+                 const PXR_NS::UsdTimeCode time,
+                 const CentrePivotJob& job,
+                 PXR_NS::GfRange3d* range,
+                 int* unmeasured)
+{
+    PXR_NS::UsdGeomXformCache xforms(time);
+    // The default predicate leaves unloaded prims out, and they are the ones wanted.
+    const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
+    PXR_NS::UsdPrimRange prims(prim, predicate);
+    for (PXR_NS::UsdPrimRange::iterator it = prims.begin(); it != prims.end(); ++it) {
+        if (job.isCancelled()) {
+            return;
+        }
+        const PXR_NS::UsdPrim& at = *it;
+        if (!at.HasPayload() || at.IsLoaded()) {
+            continue;
+        }
+        it.PruneChildren();
+        PXR_NS::VtVec3fArray hint;
+        const PXR_NS::UsdAttribute attribute = PXR_NS::UsdGeomModelAPI(at).GetExtentsHintAttr();
+        // Pairs of min and max, one per purpose: default, render, proxy, guide.
+        if (!attribute || !attribute.Get(&hint, time) || (hint.size() < 2)) {
+            ++*unmeasured;
+            continue;
+        }
+        bool resets = false;
+        const PXR_NS::GfMatrix4d toPrim = (at.GetPath() == prim.GetPath()) ? PXR_NS::GfMatrix4d(1.) : xforms.ComputeRelativeTransform(at, prim, &resets);
+        for (std::size_t i = 0; (i + 1 < hint.size()) && (i < 6); i += 2) {
+            const PXR_NS::GfRange3d box(PXR_NS::GfVec3d(hint[i]), PXR_NS::GfVec3d(hint[i + 1]));
+            range->UnionWith(PXR_NS::GfBBox3d(box, toPrim).ComputeAlignedRange());
+        }
+    }
+}
+
+void
+computeCentre(const CentreSnapshot& snapshot,
+              CentrePivotJob* job,
+              bool noViewer)
+{
+    const std::string note = noViewer ? QCoreApplication::translate("USDEditTransform", "No viewer shows this node, so its unloaded branches were not searched.").toStdString() : std::string();
+    const auto fail = [&](const std::string& message) {
+        job->finish(CentrePivotJob::eStateFailed, nullptr, note.empty() ? message : (message + " " + note));
+    };
+    if (!snapshot.failure.empty()) {
+        fail(snapshot.failure);
+
+        return;
+    }
+    std::string borrowError;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(snapshot.upstream, snapshot.loadSet, &borrowError);
+    PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    if (!stage) {
+        fail(borrowError);
+
+        return;
+    }
+    const PXR_NS::UsdTimeCode time(snapshot.timeCode);
+    PXR_NS::UsdGeomBBoxCache bboxes(time, { PXR_NS::UsdGeomTokens->default_, PXR_NS::UsdGeomTokens->render, PXR_NS::UsdGeomTokens->proxy }, true);
+    PXR_NS::GfRange3d range;
+    int unmeasured = 0;
+    for (const PXR_NS::SdfPath& path : snapshot.matches) {
+        if (job->isCancelled()) {
+            job->finish(CentrePivotJob::eStateFailed, nullptr, std::string());
+
+            return;
+        }
+        // A match inside a payload the load set leaves unloaded is not on the stage.
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+        if (!prim) {
+            ++unmeasured;
+            continue;
+        }
+        if (!prim.HasPayload() || prim.IsLoaded()) {
+            range.UnionWith(bboxes.ComputeUntransformedBound(prim).ComputeAlignedRange());
+        }
+        addUnloadedHints(prim, time, *job, &range, &unmeasured);
+    }
+    if (job->isCancelled()) {
+        job->finish(CentrePivotJob::eStateFailed, nullptr, std::string());
+
+        return;
+    }
+    // Given back before the job ends: the pool must not hold a stage for a result nobody uses.
+    lease.release();
+    if (range.IsEmpty()) {
+        std::string message = QCoreApplication::translate("USDEditTransform", "The matched prims have no bounds to centre the pivot on.").toStdString();
+        if (unmeasured > 0) {
+            message += " " + QCoreApplication::translate("USDEditTransform", "%1 matches could not be measured: they are unloaded and author no extentsHint.").arg(unmeasured).toStdString();
+        }
+        fail(message);
+
+        return;
+    }
+    const PXR_NS::GfVec3d centre = range.GetMidpoint();
+    const double values[3] = { centre[0], centre[1], centre[2] };
+    job->finish(CentrePivotJob::eStateDone, values, std::string());
+}
+} // anonymous namespace
+
+std::shared_ptr<CentrePivotJob>
+USDEditTransform::startCentrePivot(const SceneEvaluationContext* context)
+{
+    std::shared_ptr<CentrePivotJob> job = std::make_shared<CentrePivotJob>();
+    auto snapshot = std::make_shared<CentreSnapshot>();
     {
         std::lock_guard<std::mutex> l(_imp->lock);
-        const Implementation::Result* result = _imp->latest();
+        if (_imp->pivotJob) {
+            _imp->pivotJob->cancel();
+        }
+        _imp->pivotJob = job;
+        // The viewer's result when it evaluated the node, else the latest: the matches are
+        // what the load set was searched for, and the same stage serves any context.
+        const Implementation::Result* result = context ? _imp->find(context->id) : nullptr;
+        if (!result) {
+            result = _imp->latest();
+        }
         if (result) {
-            upstream = result->upstream;
+            snapshot->upstream = result->upstream;
             if (result->matchesValid) {
-                matches = result->matches;
+                snapshot->matches = result->matches;
             }
         }
     }
-    KnobDoublePtr pivot = _pivot.lock();
-    std::string borrowError;
-    SceneQueryPool::Lease lease;
-    if (!upstream.isEmpty() && !matches.empty()) {
-        lease = SceneQueryPool::instance().borrow(upstream, &borrowError);
+    if (context) {
+        snapshot->loadSet = context->loadSet;
+    } else {
+        snapshot->loadSet = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
     }
-    PXR_NS::UsdStageRefPtr stage = lease.getStage();
-    if (!pivot || !stage || matches.empty()) {
-        *errorMessage = tr("The pattern matches no prim to centre the pivot on.").toStdString();
+    if (snapshot->upstream.isEmpty() || snapshot->matches.empty()) {
+        snapshot->failure = tr("The pattern matches no prim to centre the pivot on.").toStdString();
+    } else {
+        AppInstancePtr app = getApp();
+        const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+        snapshot->timeCode = SceneOps::frameToTimeCode(snapshot->upstream, getCurrentTime(), fps);
+    }
 
-        return false;
-    }
-    AppInstancePtr app = getApp();
-    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
-    const double timeCode = SceneOps::frameToTimeCode(upstream, getCurrentTime(), fps);
-    PXR_NS::UsdGeomBBoxCache bboxes(PXR_NS::UsdTimeCode(timeCode), { PXR_NS::UsdGeomTokens->default_, PXR_NS::UsdGeomTokens->render, PXR_NS::UsdGeomTokens->proxy }, true);
-    PXR_NS::GfRange3d range;
-    for (const PXR_NS::SdfPath& path : matches) {
-        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
-        if (prim) {
-            range.UnionWith(bboxes.ComputeUntransformedBound(prim).ComputeAlignedRange());
+    const bool noViewer = !context;
+    NodeWPtr weakNode = getNode();
+    std::thread([job, snapshot, noViewer, weakNode]() {
+        computeCentre(*snapshot, job.get(), noViewer);
+        if (QCoreApplication::instance()) {
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [job, weakNode]() {
+                NodePtr node = weakNode.lock();
+                USDEditTransform* effect = node ? dynamic_cast<USDEditTransform*>(node->getEffectInstance().get()) : nullptr;
+                if (effect) {
+                    effect->applyCentrePivot(job);
+                } }, Qt::QueuedConnection);
+        } }).detach();
+
+    return job;
+}
+
+bool
+USDEditTransform::applyCentrePivot(const std::shared_ptr<CentrePivotJob>& job)
+{
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (job->isCancelled() || (_imp->pivotJob != job)) {
+            return false;
         }
+        _imp->pivotJob.reset();
     }
-    // Given back before the knobs change: setting them may evaluate the graph on this thread.
-    lease.release();
-    if (range.IsEmpty()) {
-        *errorMessage = tr("The matched prims have no bounds to centre the pivot on.").toStdString();
+    KnobDoublePtr pivot = _pivot.lock();
+    if (!pivot || (job->getState() == CentrePivotJob::eStateRunning)) {
+        return false;
+    }
+    if (job->getState() == CentrePivotJob::eStateFailed) {
+        message(eMessageTypeWarning, job->getError());
 
         return false;
     }
-    const PXR_NS::GfVec3d centre = range.GetMidpoint();
+    double centre[3];
+    job->getCentre(&centre[0], &centre[1], &centre[2]);
     // One undoable edit for the three values.
     setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
     for (int d = 0; d < 3; ++d) {
@@ -444,7 +660,7 @@ USDEditTransform::centrePivot(std::string* errorMessage)
     setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
 
     return true;
-} // USDEditTransform::centrePivot
+}
 
 StatusEnum
 USDEditTransform::renderScene(const SceneRenderActionArgs& args,

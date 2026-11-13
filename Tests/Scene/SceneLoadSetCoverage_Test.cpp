@@ -1243,3 +1243,113 @@ TEST_F(SceneLoadSetCoverageTest, AnEditTransformsStaleMatchesOnNothingLoadedOpen
     EXPECT_FALSE(edit->transformsPrim(carPath(0, 0), none));
     EXPECT_EQ(0, city.openedBuildings());
 }
+
+namespace {
+std::shared_ptr<CentrePivotJob>
+centreIn(USDEditTransform* edit,
+         const NodePtr& node,
+         const SceneEvaluationContext* context)
+{
+    if (context) {
+        std::string error;
+        ScenePayload payload;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), *context), &payload, &error))
+            << error;
+    }
+
+    return edit->startCentrePivot(context);
+}
+} // anonymous namespace
+
+TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnLoadedPrimsEqualsTheFullyLoadedCentre)
+{
+    CarCity city(2, 2, true);
+    NodePtr source = reader(city);
+    NodePtr node = editTransform(source, "/World/Block_0/B_*");
+    ASSERT_TRUE(source && node);
+    USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+    ASSERT_TRUE(edit != nullptr);
+    const SceneEvaluationContext block(SceneEvaluationContext::makeId(), loadingOnly({ "/World/Block_0" }));
+    const SceneEvaluationContext everything(SceneEvaluationContext::makeId(), SceneLoadSetPtr());
+
+    std::shared_ptr<CentrePivotJob> covered = centreIn(edit, node, &block);
+    std::shared_ptr<CentrePivotJob> full = centreIn(edit, node, &everything);
+    ASSERT_EQ(CentrePivotJob::eStateDone, covered->wait()) << covered->getError();
+    ASSERT_EQ(CentrePivotJob::eStateDone, full->wait()) << full->getError();
+    double a[3], b[3];
+    covered->getCentre(&a[0], &a[1], &a[2]);
+    full->getCentre(&b[0], &b[1], &b[2]);
+    for (int d = 0; d < 3; ++d) {
+        EXPECT_DOUBLE_EQ(b[d], a[d]) << d;
+    }
+    // The loaded content fills the box around the origin, not the hint authored beside it.
+    EXPECT_DOUBLE_EQ(0., a[0]);
+    EXPECT_DOUBLE_EQ(0., a[1]);
+    EXPECT_DOUBLE_EQ(0., a[2]);
+}
+
+TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnNothingLoadedUsesExtentsHintsAndOpensNoBuilding)
+{
+    CarCity city(2, 2, true);
+    NodePtr source = reader(city);
+    NodePtr node = editTransform(source, "/World/Block_0/B_*");
+    ASSERT_TRUE(source && node);
+    USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+    ASSERT_TRUE(edit != nullptr);
+    const SceneEvaluationContext none(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+
+    std::shared_ptr<CentrePivotJob> job = centreIn(edit, node, &none);
+    ASSERT_EQ(CentrePivotJob::eStateDone, job->wait()) << job->getError();
+    double centre[3];
+    job->getCentre(&centre[0], &centre[1], &centre[2]);
+    EXPECT_DOUBLE_EQ(1., centre[0]);
+    EXPECT_DOUBLE_EQ(2., centre[1]);
+    EXPECT_DOUBLE_EQ(3., centre[2]);
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnUnloadedPrimsWithoutHintsFailsAndOpensNoBuilding)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = editTransform(source, "/World/Block_0/B_*");
+    ASSERT_TRUE(source && node);
+    USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+    ASSERT_TRUE(edit != nullptr);
+    const SceneEvaluationContext none(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+
+    std::shared_ptr<CentrePivotJob> job = centreIn(edit, node, &none);
+    EXPECT_EQ(CentrePivotJob::eStateFailed, job->wait());
+    EXPECT_FALSE(job->getError().empty());
+    EXPECT_EQ(0, city.openedBuildings());
+}
+
+TEST_F(SceneLoadSetCoverageTest, ASecondCentrePivotRequestCancelsTheFirst)
+{
+    CarCity city(2, 2, true);
+    NodePtr source = reader(city);
+    NodePtr node = editTransform(source, "/World/Block_0/B_*");
+    ASSERT_TRUE(source && node);
+    USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+    ASSERT_TRUE(edit != nullptr);
+    KnobDoublePtr pivot = edit->getPivotKnob();
+    ASSERT_TRUE(bool(pivot));
+    const SceneEvaluationContext none(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+
+    std::shared_ptr<CentrePivotJob> first = centreIn(edit, node, &none);
+    std::shared_ptr<CentrePivotJob> second = edit->startCentrePivot(&none);
+    EXPECT_TRUE(first->isCancelled());
+    EXPECT_FALSE(second->isCancelled());
+    first->wait();
+    second->wait();
+
+    EXPECT_FALSE(edit->applyCentrePivot(first));
+    for (int d = 0; d < 3; ++d) {
+        EXPECT_DOUBLE_EQ(0., pivot->getValue(d)) << d;
+    }
+    EXPECT_TRUE(edit->applyCentrePivot(second));
+    EXPECT_DOUBLE_EQ(1., pivot->getValue(0));
+    EXPECT_DOUBLE_EQ(2., pivot->getValue(1));
+    EXPECT_DOUBLE_EQ(3., pivot->getValue(2));
+}

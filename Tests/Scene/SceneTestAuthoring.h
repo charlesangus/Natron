@@ -45,8 +45,11 @@ NATRON_NAMESPACE_ENTER
 // files sit in a directory of their own so that no other test has their layers open.
 class CarCity {
 public:
+    // authorExtentsHints puts an extentsHint of (0, 0, 0) to (2, 4, 6) on every building prim,
+    // outside its payload, which its loaded content does not fill.
     CarCity(int blocks,
-            int buildingsPerBlock);
+            int buildingsPerBlock,
+            bool authorExtentsHints = false);
 
     ~CarCity();
 

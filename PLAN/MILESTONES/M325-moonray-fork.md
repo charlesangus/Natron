@@ -28,7 +28,7 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
 
 ## Phase 325.1: Fork
 
-- [ ] M325.P1.T1 — Carry each submodule patch as a commit on the four submodule forks
+- [x] M325.P1.T1 — Carry each submodule patch as a commit on the four submodule forks
   - files: forks `charlesangus/arras4_core`, `charlesangus/moonray`, `charlesangus/mcrt_dataio`, `charlesangus/hdMoonray`, branch `natron/v2026.29.1` from each gitlink commit at `d96c6e30`
   - approach: PM step first: `gh repo fork dreamworksanimation/<repo> --clone=false` for each. The agent clones into /tmp, finds where `hd_*.sessiondef` comes from, and writes one commit per sed block with the script's comment as the message; the PM pushes.
   - verify: applying the script's blocks to a clean upstream checkout and diffing against the fork tip shows nothing outside the commits; every "did not apply" grep in the script passes on the fork.
@@ -67,3 +67,4 @@ Fork the MoonRay sources Natron builds (openmoonray and the submodules we patch:
 ## Decisions
 
 - 2026-11-12 — **Elaborated (consultant, PM engineering calls):** fork the five patched repos only (the other six are fetched unpatched from dreamworksanimation); pin by commit, since archive tarballs drop submodules and commit IDs already hash content, with SOURCE listing each repo; branch `natron/v2026.29.1`, following Cycles' `natron/deep-5.2`. The patch set is ten edits, not the four the stub named. Forking under charlesangus follows the user's 2026-11-04 instruction ("fork moonray, similar to cycles").
+- 2026-11-12 — **P1.T1 done, pushed:** `natron/v2026.29.1` on charlesangus/arras4_core 036936259 (base 17c49f1), moonray ffb02edaa (eef67ae), mcrt_dataio fe9dc6364 (7d52281), hdMoonray 5bcbe1d74 (986121d; five code commits plus the sessiondef templates). Sed output and the fork tips diff clean; the sessiondef log-level edit lives in `sessions/hd_{single,multi}.sessiondef.in`, which `configure_file` installs. The IsSupported edit is applied unconditionally (USD 26.08). The super-repo's `.gitmodules` URLs are relative, so P1.T2 must make the six unpatched submodules absolute dreamworksanimation URLs, or a fork of openmoonray would look for them under charlesangus.

@@ -32,7 +32,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: the probe reads 0 after `borrow(p, none)` and all buildings after `borrow(p)`; parity passes on USDPrune.
   - size: M
 
-- [ ] M381.P1.T2 — Load set for known-path reads
+- [x] M381.P1.T2 — Load set for known-path reads
   - files: `Engine/SceneLoadSet.{h,cpp}`, `Tests/Scene/SceneQueryPool_Test.cpp`
   - approach: `SceneLoadSet::withPaths(base, paths)` = base plus `eRuleOnly` on each ancestor of each path; a null base stays null.
   - verify: `withPaths(none, {/World/Block_0/B_1/car_0})` opens one building, and that prim composes the same as with everything loaded.

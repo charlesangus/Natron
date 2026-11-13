@@ -33,7 +33,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
   - verify: `Tests/SceneDrawFilter_Test.cpp` gains: a scoped Cycles engine has a filter `find()` locates, an unscoped one has none; existing cases pass.
   - size: M
 
-- [ ] M335.P1.T2 — `SceneDrawFilter::replaceRules(const Rules&)`
+- [x] M335.P1.T2 — `SceneDrawFilter::replaceRules(const Rules&)`
   - files: `Engine/Nodes/Scene/SceneDrawFilter.{h,cpp}`, `Tests/SceneDrawFilter_Test.cpp`
   - approach: move from the current rules to a target by sending only the differing hide, show and visibility notices. Empty rules show everything. Used for Render Everything on/off without rebuilding the engine.
   - verify: A → empty → A sends notices only for changed prims, ends identical to a filter seeded with A, and no-op calls send nothing.

@@ -112,7 +112,7 @@ try:
         return True
 
     def viewer_tab_label(viewer, group=None):
-        return viewer.getLabel() if group is None else "%s.%s" % (group.getLabel(), viewer.getLabel())
+        return viewer.getLabel() if group is None else "%s/%s" % (group.getLabel(), viewer.getLabel())
 
     def activate_main_window():
         win = main_window()

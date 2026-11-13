@@ -213,6 +213,9 @@ try:
                    if shown is None or shown > frame or shown < frame - 1]
             check(not off, "run %d: every refresh shows the timeline's frame or the one before it (%d off: %r)"
                   % (run_index, len(off), off[:8]))
+            repeats = [(round(b[0], 3), b[3]) for a, b in zip(refresh_events, refresh_events[1:]) if a[3] == b[3]]
+            check(not repeats, "run %d: no frame is refreshed twice in a row (%d repeats: %r)"
+                  % (run_index, len(repeats), repeats[:8]))
             check(geo_frame() == app.timelineGetTime(),
                   "run %d: after playback stops the view shows the timeline's frame (%r, %d)"
                   % (run_index, geo_frame(), app.timelineGetTime()))

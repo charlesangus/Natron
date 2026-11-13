@@ -86,3 +86,12 @@ GPU for downstream GPU nodes and the viewer.
 - 2026-11-12 — P1.T1 implemented (fd227125d); F7 took main (0c83f0148, one HydraRenderImpl conflict: main's publish/finished rule kept with the Utility delegate's whole-frame rule on top) and is merged into this branch. lavapipe's driver library names all three extensions; whether it sets the feature bits prints on the first test run.
 - 2026-11-13 — P2.T2 (e95fc6253), the Device menu and node warnings (b2a644320), and P3.T1 (7bbb2f936) implemented. Auto also falls back to the CPU on a lost device (PM call, as for out-of-memory). The device that rendered shows as an info persistent message on USDRender. The colour film stays on the device while depth, primId and instance id still read back per batch. P3.T2 and the once-per-frame strip fix are in progress.
 - 2026-11-13 — Gate green (run 43419744078 on 6f19477d5): build, both ctest legs and `natron_utility_viewer.py` 84/84. The stripped-region test now caps the strip buffer so the region really strips. PR #270 is open into F7 and under review. Screenshot sign-off and the AMD/NVIDIA check go to F7's UAT.
+- 2026-11-13 — **Handoff (session restart):** the PR #270 review fixes are local WIP commit 42bba1830 on the branch, also pushed as `wip/m280-review-fixes` and not on the PR branch yet. It does not build yet.
+  - Done: findings 3–7, 9, 11–14.
+  - Partial:
+    - #1: the film keeps its hold, because `GpuRuntime::recreate` invalidates handles. Loss releasers (`GpuContext::addLossReleaser`) release films, interop and the delegate instead.
+    - #2: ctest left.
+    - #8: rewrite `USDRender::canRenderOnGpu` (~938) to be non-blocking and use `HydraRender::deviceFrameFellBack(owner, gpu->generation(), utilityGpuBudget())`.
+    - #15: `USDRender_Test.cpp:1292/1298` and `NatronUtility_Test.cpp:853/859` still call the removed hook; move them to the `swapGpuContextForTests` pattern.
+  - Not started: #10, the strict interop requirement in `natron_utility_viewer.py`, which must not turn lavapipe CI red.
+  - Then: un-WIP the commit message, syntax-check, gate, re-review.

@@ -38,6 +38,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -84,6 +85,10 @@
 #define kTexturePaintSessionParamFrozen "frozen"
 
 NATRON_NAMESPACE_ENTER
+
+namespace TexturePaintCache {
+class TileDirectoryClaim;
+}
 
 class TexturePaintBaker;
 class TexturePaintInteract;
@@ -308,7 +313,7 @@ public:
     /**
      * @brief renderSessionBuffer() over viewNode, which must be session's view. Any thread. With
      * abortInfo, its setAborted() stops the render, which then returns false with *error empty.
-     * A view that renders nothing is an error, never an empty buffer.
+     * A view that renders nothing is transparent black; strokes that render nothing paint nothing.
      **/
     bool renderSessionBufferFrom(const NodePtr& viewNode,
                                  const RotoLayerPtr& session,
@@ -318,6 +323,17 @@ public:
                                  SessionBuffer* buffer,
                                  std::string* error,
                                  const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
+
+    /**
+     * @brief Puts strokes, a render of a session's strokes over base, in *buffer: the channels
+     * not selected stay base's, and a texel is touched where a selected channel differs. Null
+     * strokes, a render with nothing in it, leave base in *buffer with nothing touched. Takes
+     * base's contents.
+     **/
+    static void layStrokesOverBase(std::vector<float>& base,
+                                   const std::vector<float>* strokes,
+                                   const bool selected[4],
+                                   SessionBuffer* buffer);
 
     /**
      * @brief The planes the node outputs at time and view: the colour plane, then the Layer
@@ -390,11 +406,17 @@ public:
             // What the bake wrote, while the bake is undone.
             std::string stash;
             bool hasBackup = false;
+            // The device and inode of the file the bake wrote, which every swap moves by rename:
+            // a target that no longer has them was written by something else since.
+            std::uint64_t writtenDevice = 0;
+            std::uint64_t writtenInode = 0;
         };
         std::vector<Entry> entries;
+        std::unordered_set<std::string> targets;
         // Where the backups and stashes are, deleted with them.
         std::set<std::string> directories;
         std::string token;
+        bool undone = false;
     };
 
     /**
@@ -409,10 +431,15 @@ public:
     // Puts every target of *files back as it was before the bake, and deletes the backups.
     static void rollBackBakeOutputFiles(BakeOutputFiles* files);
 
+    // Records the identity of each file the bake wrote, once it has written them all.
+    static void sealBakeOutputFiles(BakeOutputFiles* files);
+
     /**
      * @brief Undoing, moves each target to its stash and its backup, if any, to the target;
-     * redoing, the reverse, backing up whatever is at the target by then. A failure puts back
-     * what it moved and returns false with *error set.
+     * redoing, the reverse, backing up whatever is at the target by then. Asking for the state
+     * the files are already in moves nothing and succeeds. Undoing refuses, moving nothing, when
+     * a target is no longer the file the bake wrote. A failure puts back what it moved and
+     * returns false with *error set.
      **/
     static bool swapBakeOutputFiles(BakeOutputFiles* files,
                                     bool undo,
@@ -482,12 +509,6 @@ public:
 
     // The node's baker, created on first use. Main thread.
     TexturePaintBaker* getBaker();
-
-    /**
-     * @brief Reads the baked files' modification stamps again, so that tiles are composed afresh
-     * over files edited outside the node. The stamps are otherwise read once per bake record.
-     **/
-    void reloadBakedFiles();
 
 protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -595,7 +616,7 @@ private:
                     std::string* error,
                     const std::function<bool()>& cancelled);
 
-    // Deletes the cached tiles no view or reader still uses. Under _tilesMutex.
+    // Deletes the cached tiles no view, reader or build still uses. Without _tilesMutex held.
     void removeUnusedTiles(const std::string& directory);
 
     /**
@@ -636,14 +657,19 @@ private:
     std::map<std::string, std::shared_ptr<TileBuild>> _tileBuilds;
     // How many ensureTiles() leases hold the files of each key.
     std::map<U64, int> _tileReaders;
+    // The keys whose files removeUnusedTiles() is deleting.
+    std::set<U64> _pruningKeys;
     // The key each view last asked for, so that one view's tiles do not evict another's.
     std::map<int, U64> _liveTileKeys;
-    // Bumped by undo, redo and reloadBakedFiles(), so that no tile composed before is used again.
+    // Bumped by undo, redo and a Bake Output that is rolled back, so that no tile composed before
+    // over the files they changed is used again.
     std::atomic<std::uint64_t> _tileEpoch;
     mutable std::mutex _tileDirectoryMutex;
-    // The last directory getTileDirectory() named, deleted with the node.
-    mutable std::string _tileDirectory;
-    mutable bool _tileDirectoryPerProcess = false;
+    // The directory getTileDirectory() names, held until the node's cache id or the project's
+    // saved state changes, and deleted with the node unless others can reuse it.
+    mutable std::shared_ptr<TexturePaintCache::TileDirectoryClaim> _tileClaim;
+    mutable std::string _tileClaimId;
+    mutable bool _tileClaimSaved = false;
     mutable std::mutex _stampsMutex;
     mutable bool _stampsValid = false;
     mutable U64 _stampsSignature = 0;

@@ -29,18 +29,24 @@
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <OpenImageIO/imageio.h>
@@ -358,20 +364,146 @@ tileDirectory(const std::string& root,
     return root + "/TexturePaint/" + name;
 }
 
+namespace {
+    // Locks directory's lock file, made with the directory when missing. -1 when another node or
+    // process holds it, or it cannot be made.
+    int
+    lockDirectory(const std::string& directory)
+    {
+        const std::string path = directory + "/.lock";
+
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            std::error_code ec;
+            std::filesystem::create_directories(directory, ec);
+            if (ec) {
+                return -1;
+            }
+            const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+            if (fd < 0) {
+                return -1;
+            }
+            if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+                ::close(fd);
+
+                return -1;
+            }
+            // The holder before may have moved the directory aside to delete it between the open and
+            // the lock, leaving this lock on a file under another name.
+            struct stat held;
+            struct stat named;
+            if ((::fstat(fd, &held) == 0) && (::stat(path.c_str(), &named) == 0) && (held.st_dev == named.st_dev) && (held.st_ino == named.st_ino)) {
+                return fd;
+            }
+            ::close(fd);
+        }
+
+        return -1;
+    }
+
+    // Names that pruneDeadProcessDirectories() takes for the process's own, so that what a process
+    // that died left aside is deleted with the rest of its directories.
+    std::filesystem::path
+    asideName(const std::filesystem::path& path)
+    {
+        static std::atomic<unsigned int> count(0);
+
+        return path.parent_path() / (".removing_" + std::to_string(++count) + "_p" + std::to_string((long)::getpid()));
+    }
+
+    // Moves path aside and deletes it in the background, releasing claim once it is moved, or once it
+    // is deleted when it cannot be moved.
+    void
+    removeAside(const std::filesystem::path& path,
+                std::shared_ptr<TileDirectoryClaim> claim)
+    {
+        const std::filesystem::path aside = asideName(path);
+        std::error_code ec;
+
+        std::filesystem::rename(path, aside, ec);
+        const std::filesystem::path doomed = ec ? path : aside;
+        if (!ec) {
+            claim.reset();
+        }
+        std::thread([doomed, claim]() {
+            std::error_code ignored;
+            std::filesystem::remove_all(doomed, ignored);
+        }).detach();
+    }
+} // anon namespace
+
+TileDirectoryClaim::TileDirectoryClaim(const std::string& path,
+                                       bool shared,
+                                       int lockFd)
+    : _path(path)
+    , _shared(shared)
+    , _lockFd(lockFd)
+{
+}
+
+TileDirectoryClaim::~TileDirectoryClaim()
+{
+    if (_lockFd >= 0) {
+        ::close(_lockFd);
+    }
+}
+
+std::shared_ptr<TileDirectoryClaim>
+claimTileDirectory(const std::string& root,
+                   const std::string& nodeId,
+                   bool shared)
+{
+    if (shared) {
+        const std::string path = tileDirectory(root, nodeId, 0);
+        const int fd = lockDirectory(path);
+        if (fd >= 0) {
+            return std::make_shared<TileDirectoryClaim>(path, true, fd);
+        }
+    }
+    const long pid = (long)::getpid();
+    // A node of this process can still hold the first name: one deleted, whose cache id another
+    // node took before its effect was destroyed.
+    for (int n = 0; n < 64; ++n) {
+        const std::string path = tileDirectory(root, (n == 0) ? nodeId : (nodeId + "_" + std::to_string(n)), pid);
+        const int fd = lockDirectory(path);
+        if (fd >= 0) {
+            return std::make_shared<TileDirectoryClaim>(path, false, fd);
+        }
+    }
+
+    return std::shared_ptr<TileDirectoryClaim>();
+}
+
 void
-pruneDeadProcessDirectories(const std::string& root)
+removeTileDirectory(std::shared_ptr<TileDirectoryClaim> claim)
+{
+    if (!claim) {
+        return;
+    }
+    const std::filesystem::path path(claim->getPath());
+
+    removeAside(path, std::move(claim));
+}
+
+void
+pruneDeadProcessDirectories(const std::string& root,
+                            int olderThanDays)
 {
     std::error_code ec;
     std::vector<std::filesystem::path> dead;
+    std::vector<std::filesystem::path> old;
+    const std::filesystem::file_time_type now = std::filesystem::file_time_type::clock::now();
+    const std::filesystem::file_time_type::duration age = std::chrono::hours(24 * (long)olderThanDays);
 
     for (std::filesystem::directory_iterator it(root + "/TexturePaint", ec), end; !ec && (it != end); it.increment(ec)) {
         const std::string name = it->path().filename().string();
         const std::size_t mark = name.rfind("_p");
-        if ((mark == std::string::npos) || (mark + 2 >= name.size())) {
-            continue;
-        }
-        const std::string digits = name.substr(mark + 2);
-        if (!std::all_of(digits.begin(), digits.end(), [](char c) { return std::isdigit((unsigned char)c) != 0; })) {
+        const std::string digits = ((mark == std::string::npos) || (mark + 2 >= name.size())) ? std::string() : name.substr(mark + 2);
+        if (digits.empty() || !std::all_of(digits.begin(), digits.end(), [](char c) { return std::isdigit((unsigned char)c) != 0; })) {
+            std::error_code timeError;
+            const std::filesystem::file_time_type modified = std::filesystem::last_write_time(it->path(), timeError);
+            if (!timeError && (now - modified > age)) {
+                old.push_back(it->path());
+            }
             continue;
         }
         const long pid = std::strtol(digits.c_str(), 0, 10);
@@ -386,6 +518,20 @@ pruneDeadProcessDirectories(const std::string& root)
     }
     for (const std::filesystem::path& path : dead) {
         std::filesystem::remove_all(path, ec);
+    }
+    // A shared directory a process holds is in use, however old.
+    for (const std::filesystem::path& path : old) {
+        const int fd = lockDirectory(path.string());
+        if (fd < 0) {
+            continue;
+        }
+        const std::filesystem::path aside = asideName(path);
+        std::error_code renameError;
+        std::filesystem::rename(path, aside, renameError);
+        ::close(fd);
+        if (!renameError) {
+            std::filesystem::remove_all(aside, ec);
+        }
     }
 }
 
@@ -509,43 +655,38 @@ readTile(const std::string& path,
     return OiioReadSupport::decode(path, 0, 0, 4, window, rgba->data(), rowFloats, error, FilePin::eDisk);
 }
 
-void
-removeStaleTiles(const std::string& directory,
-                 const std::set<U64>& keep)
+std::map<U64, std::vector<std::string>>
+listTiles(const std::string& directory)
 {
-    std::vector<std::string> prefixes;
-    for (U64 key : keep) {
-        prefixes.push_back(hex(key) + "_");
-    }
+    std::map<U64, std::vector<std::string>> tiles;
     std::error_code ec;
-    std::vector<std::filesystem::path> stale;
 
     for (std::filesystem::directory_iterator it(directory, ec), end; !ec && (it != end); it.increment(ec)) {
         const std::string name = it->path().filename().string();
-        if (!it->is_regular_file(ec)) {
+        if ((name.size() < 17) || (name[16] != '_') || !it->is_regular_file(ec)) {
             continue;
         }
-        bool kept = false;
-        for (const std::string& prefix : prefixes) {
-            if (name.compare(0, prefix.size(), prefix) == 0) {
-                kept = true;
-                break;
-            }
+        const std::string digits = name.substr(0, 16);
+        if (!std::all_of(digits.begin(), digits.end(), [](char c) { return std::isxdigit((unsigned char)c) != 0; })) {
+            continue;
         }
-        if (!kept) {
-            stale.push_back(it->path());
-        }
+        tiles[(U64)std::strtoull(digits.c_str(), 0, 16)].push_back(it->path().string());
     }
-    for (const std::filesystem::path& path : stale) {
+
+    return tiles;
+}
+
+void
+removeTiles(const std::vector<std::string>& paths)
+{
+    if (paths.empty()) {
+        return;
+    }
+    for (const std::string& path : paths) {
+        std::error_code ec;
         std::filesystem::remove(path, ec);
     }
-    if (!stale.empty()) {
-        std::vector<std::string> paths;
-        for (const std::filesystem::path& path : stale) {
-            paths.push_back(path.string());
-        }
-        OiioReadSupport::evictHeaders(paths);
-    }
+    OiioReadSupport::evictHeaders(paths);
 }
 } // namespace TexturePaintCache
 

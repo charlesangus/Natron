@@ -120,8 +120,11 @@ TexturePaintBaker::stop(bool allowRestart)
 {
     requestStop(allowRestart);
     waitForThreadToQuit_enforce_blocking();
-    std::lock_guard<std::mutex> lock(_mutex);
-    _finished.clear();
+    std::deque<Finished> dropped;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        dropped.swap(_finished);
+    }
 }
 
 void
@@ -193,9 +196,16 @@ TexturePaintBaker::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
     }
     appPTR->getAppTLS()->cleanupTLSForThread();
     if (task) {
+        // The scheduler still holds the task after this returns, so everything that could hold a
+        // last reference moves to the main thread's queue and the task is left empty.
+        Finished done;
+        std::swap(done.bake, task->bake);
+        done.keepAlive.swap(task->keepAlive);
+        done.epoch = task->epoch;
+        done.ok = ok;
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            _finished.push_back(std::make_pair(task, ok));
+            _finished.push_back(std::move(done));
         }
         Q_EMIT workDone();
     }
@@ -207,27 +217,27 @@ void
 TexturePaintBaker::onWorkDone()
 {
     for (;;) {
-        std::pair<std::shared_ptr<Task>, bool> done;
+        Finished done;
         {
             std::lock_guard<std::mutex> lock(_mutex);
             if (_finished.empty()) {
                 return;
             }
-            done = _finished.front();
+            done = std::move(_finished.front());
             _finished.pop_front();
         }
         // A dropped result is still taken off the queue, so that what it keeps alive is released here.
-        if (_stopped.load() || (done.first->epoch != _epoch.load())) {
+        if (_stopped.load() || (done.epoch != _epoch.load())) {
             continue;
         }
-        if (done.second) {
+        if (done.ok) {
             ++_generation;
         }
-        if (done.first->bake.completion) {
-            done.first->bake.completion(done.second);
+        if (done.bake.completion) {
+            done.bake.completion(done.ok);
         }
         const int left = --_pending;
-        Q_EMIT bakeFinished(done.second, _generation.load());
+        Q_EMIT bakeFinished(done.ok, _generation.load());
         if (left <= 0) {
             Q_EMIT idle();
         }

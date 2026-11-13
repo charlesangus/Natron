@@ -29,6 +29,7 @@
 #include <memory>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 #include <QString>
 
@@ -185,8 +186,14 @@ private:
     std::atomic<int> _epoch;
 
     mutable std::mutex _mutex;
+    struct Finished {
+        Bake bake;
+        std::vector<std::shared_ptr<void>> keepAlive;
+        int epoch = 0;
+        bool ok = false;
+    };
     // Bakes whose work returned, oldest first, awaiting their completion on the main thread.
-    std::deque<std::pair<std::shared_ptr<Task>, bool>> _finished;
+    std::deque<Finished> _finished;
     std::chrono::steady_clock::time_point _lastProgress;
     double _lastFraction;
     QString _lastLabel;

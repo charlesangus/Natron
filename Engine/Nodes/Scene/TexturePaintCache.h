@@ -30,6 +30,8 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -130,10 +132,49 @@ std::string tileDirectory(const std::string& root,
                           long pid) WARN_UNUSED_RETURN;
 
 /**
- * @brief Deletes the directories under root that tileDirectory() named for a process that no
- * longer runs.
+ * @brief A tile directory held by one node of one process, by a lock on a file in it, so that no
+ * other node or process uses or prunes it while it is held. Releasing it deletes nothing.
  **/
-void pruneDeadProcessDirectories(const std::string& root);
+class TileDirectoryClaim {
+public:
+    TileDirectoryClaim(const std::string& path, bool shared, int lockFd);
+    ~TileDirectoryClaim();
+
+    TileDirectoryClaim(const TileDirectoryClaim&) = delete;
+    TileDirectoryClaim& operator=(const TileDirectoryClaim&) = delete;
+
+    const std::string& getPath() const { return _path; }
+
+    // Whether the directory is the one tileDirectory() names for any process, to be reused.
+    bool isShared() const { return _shared; }
+
+private:
+    std::string _path;
+    bool _shared;
+    int _lockFd;
+};
+
+/**
+ * @brief Claims the directory tileDirectory() names for nodeId under root: with shared, the one
+ * any process names, when no other node or process holds it, else, and without shared, one of
+ * this process alone that nothing else holds. Null when no directory can be made.
+ **/
+std::shared_ptr<TileDirectoryClaim> claimTileDirectory(const std::string& root,
+                                                       const std::string& nodeId,
+                                                       bool shared) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Deletes claim's directory and releases claim: the directory is moved aside at once, so
+ * that a later claim of its name starts empty, and deleted in the background.
+ **/
+void removeTileDirectory(std::shared_ptr<TileDirectoryClaim> claim);
+
+/**
+ * @brief Deletes the directories under root that tileDirectory() named for a process that no
+ * longer runs, and the shared ones nothing holds that have not changed for olderThanDays days.
+ **/
+void pruneDeadProcessDirectories(const std::string& root,
+                                 int olderThanDays = 30);
 
 /**
  * @brief The file in directory caching plane of tile under key; frame is empty for a texture
@@ -170,8 +211,10 @@ bool readTile(const std::string& path,
               std::vector<float>* rgba,
               std::string* error) WARN_UNUSED_RETURN;
 
-// Deletes the files in directory that were not cached under one of the keys in keep.
-void removeStaleTiles(const std::string& directory, const std::set<U64>& keep);
+// The tile files in directory, by the key they were cached under, partly written ones included.
+std::map<U64, std::vector<std::string>> listTiles(const std::string& directory) WARN_UNUSED_RETURN;
+
+void removeTiles(const std::vector<std::string>& paths);
 } // namespace TexturePaintCache
 
 NATRON_NAMESPACE_EXIT

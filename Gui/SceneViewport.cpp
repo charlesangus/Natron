@@ -56,6 +56,7 @@
 #include <QPointer>
 #include <QSignalBlocker>
 #include <QTabletEvent>
+#include <QThread>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QWheelEvent>
@@ -3867,7 +3868,7 @@ struct SceneViewport::Implementation {
     // One session of a refresh: rendered on the worker when render is set, else, or when the
     // render fails, the fallback it had.
     struct PaintJobEntry {
-        RotoLayerPtr session;
+        RotoLayerWPtr session;
         NodeWPtr viewNode;
         bool render = false;
         bool hasFallback = false;
@@ -4171,16 +4172,10 @@ SceneViewport::~SceneViewport()
     if (_imp->worker.joinable()) {
         _imp->worker.join();
     }
-    // The overlay job holds no pointer to the viewport, so one a render ignoring the abort keeps
-    // past the bound is left to finish on its own rather than stalling the close.
+    // The overlay job holds nothing of the viewport, so it is only told to stop: it finishes on
+    // its pool thread after the viewport is gone, and its watcher, destroyed with the viewport,
+    // drops its result.
     _imp->abortPaintJob();
-    if (_imp->paintJobRunning) {
-        const QFuture<Implementation::PaintJob> future = _imp->paintJobWatcher->future();
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (!future.isFinished() && (std::chrono::steady_clock::now() < deadline)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-    }
     GLContextLoss::releaseNow(this);
 }
 
@@ -5391,6 +5386,19 @@ encodeDisplay(float linear)
     return table[(std::size_t)(c * 4096.f + 0.5f)];
 }
 
+// Drops held on the main thread, which the teardown of a node or roto item its last reference
+// ends expects.
+void
+releaseOnMainThread(std::shared_ptr<void> held)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+
+    if (!held || !app || (QThread::currentThread() == app->thread())) {
+        return;
+    }
+    QMetaObject::invokeMethod(app, [held = std::move(held)]() mutable { held.reset(); }, Qt::QueuedConnection);
+}
+
 QImage
 overlayImage(const TexturePaint::SessionBuffer& buffer)
 {
@@ -5555,12 +5563,18 @@ SceneViewport::refreshPaintOverlays()
             std::string error;
             bool ok = false;
             {
-                // Held for the render alone, so that a node deleted meanwhile goes as soon as it ends.
-                const NodePtr paintNode = weakNode.lock();
-                const NodePtr viewNode = entry.viewNode.lock();
-                const EffectInstancePtr effect = paintNode ? paintNode->getEffectInstance() : EffectInstancePtr();
+                // Held for the render alone, so that a node deleted meanwhile goes as soon as it
+                // ends, and released on the main thread in case these are the last references.
+                NodePtr paintNode = weakNode.lock();
+                NodePtr viewNode = entry.viewNode.lock();
+                RotoLayerPtr session = entry.session.lock();
+                EffectInstancePtr effect = paintNode ? paintNode->getEffectInstance() : EffectInstancePtr();
                 TexturePaint* texturePaint = dynamic_cast<TexturePaint*>(effect.get());
-                ok = texturePaint && viewNode && texturePaint->renderSessionBufferFrom(viewNode, entry.session, plane, time, view, &buffer, &error, abortInfo);
+                ok = texturePaint && viewNode && session && texturePaint->renderSessionBufferFrom(viewNode, session, plane, time, view, &buffer, &error, abortInfo);
+                releaseOnMainThread(std::move(session));
+                releaseOnMainThread(std::move(effect));
+                releaseOnMainThread(std::move(viewNode));
+                releaseOnMainThread(std::move(paintNode));
             }
             if (ok) {
                 entry.image = overlayImage(buffer);

@@ -495,7 +495,7 @@ SceneStage::requestLoad(const PXR_NS::SdfPathVector& paths,
         if (path.IsAbsoluteRootOrPrimPath()) {
             _pendingLoads[path] = withDescendants ? ePendingLoadWithDescendants : ePendingLoadOwn;
             if (withDescendants && !excluded.empty()) {
-                _pendingExclusions[path] = excluded;
+                _pendingExclusions[path] = PXR_NS::SdfPathSet(excluded.begin(), excluded.end());
             } else {
                 _pendingExclusions.erase(path);
             }
@@ -525,7 +525,9 @@ SceneStage::cancelPendingLoads()
 
     _pendingLoads.clear();
     _pendingExclusions.clear();
-    ++_cancelGeneration;
+    if (_servicingLoads) {
+        _allCancelledWhileServicing = true;
+    }
 }
 
 void
@@ -539,8 +541,10 @@ SceneStage::cancelPendingLoads(const PXR_NS::SdfPathVector& paths)
             _pendingLoads.erase(found);
             _pendingExclusions.erase(path);
         }
+        if (_servicingLoads) {
+            _cancelledWhileServicing.insert(path);
+        }
     }
-    ++_cancelGeneration;
 }
 
 bool
@@ -574,8 +578,7 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                          const LoadPreparer& prepare)
 {
     std::map<PXR_NS::SdfPath, PendingLoadEnum> batch;
-    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector> exclusions;
-    U64 generation = 0;
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> exclusions;
     {
         std::lock_guard<std::mutex> lock(_loadMutex);
         if (_pendingLoads.empty()) {
@@ -583,7 +586,8 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
         }
         batch.swap(_pendingLoads);
         exclusions.swap(_pendingExclusions);
-        generation = _cancelGeneration;
+        _cancelledWhileServicing.clear();
+        _allCancelledWhileServicing = false;
         _servicingLoads = true;
     }
     struct ServicingScope {
@@ -593,6 +597,7 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
         {
             std::lock_guard<std::mutex> lock(stage->_loadMutex);
             stage->_servicingLoads = false;
+            stage->_cancelledWhileServicing.clear();
         }
     } servicingScope { this };
     if (!_stage) {
@@ -606,9 +611,14 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     // The payloads a descendant load names are the unloaded ones found below its path, not the path
     // itself: it is how one whose file does not open stays out of the batch.
     PXR_NS::SdfPathSet unloads;
+    struct SplitLoad {
+        // The request whose walk found the payload.
+        PXR_NS::SdfPath request;
+        PXR_NS::SdfPathSet excluded;
+    };
     // The payloads loaded on their own for having an excluded subtree, with the exclusions below
     // each, which a request for their descendants takes once they are loaded.
-    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector> splitLoads;
+    std::map<PXR_NS::SdfPath, SplitLoad> splitLoads;
     U64 composition = 0;
     bool walkCancelled = false;
     PXR_NS::UsdStageLoadRules rules;
@@ -631,9 +641,9 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                 }
                 break;
             case ePendingLoadWithDescendants: {
-                const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector>::const_iterator excludedFound = exclusions.find(request.first);
-                const PXR_NS::SdfPathVector noExclusions;
-                const PXR_NS::SdfPathVector& excluded = (excludedFound != exclusions.end()) ? excludedFound->second : noExclusions;
+                const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet>::const_iterator excludedFound = exclusions.find(request.first);
+                const PXR_NS::SdfPathSet noExclusions;
+                const PXR_NS::SdfPathSet& excluded = (excludedFound != exclusions.end()) ? excludedFound->second : noExclusions;
                 // The predicate leaves IsLoaded out, or the walk would not see what it looks for.
                 const PXR_NS::UsdPrimRange range(prim, PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
                 for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
@@ -643,23 +653,22 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                         return;
                     }
                     const PXR_NS::SdfPath& path = it->GetPath();
-                    if (std::find(excluded.begin(), excluded.end(), path) != excluded.end()) {
+                    if (!excluded.empty() && (excluded.count(path) != 0)) {
                         it.PruneChildren();
                         continue;
                     }
                     if (isUnloadedPayload(*it)) {
-                        PXR_NS::SdfPathVector below;
-                        for (const PXR_NS::SdfPath& candidate : excluded) {
-                            if ((candidate != path) && candidate.HasPrefix(path)) {
-                                below.push_back(candidate);
-                            }
+                        // SdfPath order puts a path's descendants right after it.
+                        PXR_NS::SdfPathSet below;
+                        for (PXR_NS::SdfPathSet::const_iterator candidate = excluded.upper_bound(path); (candidate != excluded.end()) && candidate->HasPrefix(path); ++candidate) {
+                            below.insert(*candidate);
                         }
                         if (below.empty()) {
                             opened.descendantLoads[path] = getPayloadAssets(*it);
                         } else {
                             // Loading its nested payloads would load the excluded ones too.
                             opened.ownLoads[path] = getPayloadAssets(*it);
-                            splitLoads[path] = below;
+                            splitLoads[path] = SplitLoad { request.first, std::move(below) };
                         }
                         // Its children do not compose until it is loaded.
                         it.PruneChildren();
@@ -762,14 +771,17 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     });
     if (requeue) {
         std::lock_guard<std::mutex> lock(_loadMutex);
-        // A cancel since the batch was taken withdrew these requests; requeueing would revive them.
-        if (_cancelGeneration == generation) {
-            // A request made meanwhile for one of the paths is the newer one.
+        if (!_allCancelledWhileServicing) {
             for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
+                // A cancel since the batch was taken withdrew the request; requeueing would revive it.
+                if ((request.second != ePendingUnload) && (_cancelledWhileServicing.count(request.first) != 0)) {
+                    continue;
+                }
+                // A request made meanwhile for one of the paths is the newer one.
                 if (!_pendingLoads.insert(request).second) {
                     continue;
                 }
-                const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector>::const_iterator excluded = exclusions.find(request.first);
+                const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet>::const_iterator excluded = exclusions.find(request.first);
                 if (excluded != exclusions.end()) {
                     _pendingExclusions[request.first] = excluded->second;
                 }
@@ -777,14 +789,17 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
         }
     } else if (!splitLoads.empty()) {
         std::lock_guard<std::mutex> lock(_loadMutex);
-        if (_cancelGeneration == generation) {
-            for (const std::pair<const PXR_NS::SdfPath, PXR_NS::SdfPathVector>& split : splitLoads) {
-                // A newer request for the path, or a load that failed or went, says otherwise.
-                if ((ownPaths.count(split.first) == 0) || (_pendingLoads.count(split.first) != 0)) {
+        if (!_allCancelledWhileServicing) {
+            for (std::pair<const PXR_NS::SdfPath, SplitLoad>& split : splitLoads) {
+                // A load that failed or went, a cancel of the payload or of the request that found it,
+                // or a newer request for either, says otherwise. A newer request for the one that
+                // found it walks again, past the payload now loaded, with its own exclusions.
+                if ((ownPaths.count(split.first) == 0) || (_cancelledWhileServicing.count(split.first) != 0) || (_cancelledWhileServicing.count(split.second.request) != 0)
+                    || (_pendingLoads.count(split.first) != 0) || (_pendingLoads.count(split.second.request) != 0)) {
                     continue;
                 }
                 _pendingLoads[split.first] = ePendingLoadWithDescendants;
-                _pendingExclusions[split.first] = split.second;
+                _pendingExclusions[split.first] = std::move(split.second.excluded);
             }
         }
     }

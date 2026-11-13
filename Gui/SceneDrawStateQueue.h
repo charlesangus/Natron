@@ -35,6 +35,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -54,7 +55,7 @@ struct SceneDrawChange {
 
 /**
  * @brief A viewer's draw states and the edits made to them. An edit runs on the calling thread
- * when none is waiting and few rows are stored; otherwise it runs on a worker, so that clearing or
+ * when none is waiting and few rows are stored or brought in; otherwise it runs on a worker, so that clearing or
  * setting many rows does not stall the interface. Each edit's change is delivered through post()
  * in the order the edits were made. Not a QObject: post() decides the thread deliveries run on.
  **/
@@ -64,6 +65,7 @@ public:
     typedef std::function<void(const SceneDrawChange&)> Deliver;
     // Runs a function later on the thread that edits, in the order given.
     typedef std::function<void(const std::function<void()>&)> Post;
+    typedef std::vector<std::pair<std::string, SceneDrawStates::Stored>> SetStates;
 
     static const std::size_t kDefaultInlineRows = 2000;
 
@@ -74,7 +76,14 @@ public:
     // Waits for the edit under way on the worker; the ones not started are dropped.
     ~SceneDrawStateQueue();
 
-    void edit(const Edit& edit, std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::time_point());
+    /**
+     * @brief Queues an edit. rows is how many rows the edit itself brings, such as the states a
+     * replaceSetStates() puts in: above the inline limit it goes to the worker however few rows are
+     * stored now.
+     **/
+    void edit(const Edit& edit,
+              std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::time_point(),
+              std::size_t rows = 0);
 
     // False, without calling read, while the worker edits.
     bool tryRead(const std::function<void(const SceneDrawStates&)>& read) const;
@@ -84,6 +93,9 @@ public:
 
     // Edits made and not yet delivered.
     int getOutstandingCount() const;
+
+    // SceneDrawStates::getSetStates() as the last edit run left them. Any thread; never waits on an edit.
+    std::shared_ptr<const SetStates> getSetStates() const;
 
     // The stage has taken every load asked for so far: none is left for a later edit to cancel.
     void forgetIssuedLoads();
@@ -102,9 +114,13 @@ private:
     std::size_t _inlineRows;
     mutable std::mutex _statesMutex;
     SceneDrawStates _states;
-    // The loads asked for that the stage may not have taken yet, by path; under _statesMutex.
-    std::map<std::string, SceneDrawLoadRequest> _issued;
+    typedef std::map<std::string, SceneDrawLoadRequest, SceneDrawStates::PathLess> IssuedMap;
+    // The loads asked for that the stage may not have taken yet, by path, a subtree's together;
+    // under _statesMutex.
+    IssuedMap _issued;
     std::atomic<bool> _forgetIssued { false };
+    mutable std::mutex _setStatesMutex;
+    std::shared_ptr<const SetStates> _setStates;
     // Only the editing thread touches it.
     int _outstanding = 0;
     std::mutex _jobsMutex;

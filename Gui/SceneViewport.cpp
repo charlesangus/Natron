@@ -689,7 +689,31 @@ struct SceneViewportRenderer::Implementation {
     // orders them against loadStage being set, so that none falls between.
     std::mutex earlyLoadsMutex;
     std::vector<SceneDrawLoadRequest> earlyLoads;
+    // The stage's load rules as its last load commit left them, for saving without the stage lock.
+    std::mutex loadRulesMutex;
+    SceneLoadRules loadRules;
+    bool loadRulesMade = false;
     SceneWriteBarrier::ParticipantId participant = 0;
+
+    // With the stage lock held exclusively, which also orders the writes of loadRulesMade.
+    void publishLoadRules()
+    {
+        SceneLoadRules rules;
+        for (const std::pair<SdfPath, UsdStageLoadRules::Rule>& rule : sceneStage->getStage()->GetLoadRules().GetRules()) {
+            SceneLoadRuleEnum saved = eSceneLoadRuleNone;
+            if (rule.second == UsdStageLoadRules::AllRule) {
+                saved = eSceneLoadRuleAll;
+            } else if (rule.second == UsdStageLoadRules::OnlyRule) {
+                saved = eSceneLoadRuleOnly;
+            } else if (rule.first.IsAbsoluteRootPath()) {
+                continue;
+            }
+            rules[rule.first.GetString()] = saved;
+        }
+        std::lock_guard<std::mutex> lock(loadRulesMutex);
+        loadRules.swap(rules);
+        loadRulesMade = true;
+    }
 
     // Written by sync on whichever thread runs it, read by the main thread.
     std::atomic<bool> shown;
@@ -2861,6 +2885,9 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
 
             return false;
         }
+        if (!_imp->loadRulesMade) {
+            _imp->publishLoadRules();
+        }
         SceneLoadSetPtr evaluatedFor;
         SceneLoadReachPtr reach;
         SceneLoadSetPtr committedLoadSet;
@@ -3388,6 +3415,22 @@ SceneViewportRenderer::hasPendingStageLoads() const
     return stage && stage->hasPendingLoads();
 }
 
+bool
+SceneViewportRenderer::hasOutstandingStageLoads() const
+{
+    const SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        std::lock_guard<std::mutex> lock(_imp->earlyLoadsMutex);
+        stage = _imp->loadStage;
+        if (!stage) {
+            return !_imp->earlyLoads.empty();
+        }
+    }
+
+    return stage->hasOutstandingLoads();
+}
+
 void
 SceneViewportRenderer::stopBackgroundFrame()
 {
@@ -3467,6 +3510,9 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
         const std::unique_lock<std::shared_mutex> lock = imp->lockExclusive();
         section();
         imp->stageLoadEditCount = stage->getLoadEditCount();
+        if (stage->isValid()) {
+            imp->publishLoadRules();
+        }
         const SceneLoadSetPtr committedLoadSet = stage->getLoadSet();
         if (!committedLoadSet) {
             return;
@@ -3561,32 +3607,10 @@ SceneViewportRenderer::getStageLoadFailures() const
 bool
 SceneViewportRenderer::getStageLoadRules(SceneLoadRules* rules) const
 {
-    rules->clear();
-    bool made = false;
-    {
-        // readStage() reads only a shown stage; the rules outlive the scene shown.
-        SceneWriteBarrier::ReadScope readScope;
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
-        if (_imp->sceneStage && _imp->sceneStage->isValid()) {
-            made = true;
-            for (const std::pair<SdfPath, UsdStageLoadRules::Rule>& rule : _imp->sceneStage->getStage()->GetLoadRules().GetRules()) {
-                SceneLoadRuleEnum saved = eSceneLoadRuleNone;
-                if (rule.second == UsdStageLoadRules::AllRule) {
-                    saved = eSceneLoadRuleAll;
-                } else if (rule.second == UsdStageLoadRules::OnlyRule) {
-                    saved = eSceneLoadRuleOnly;
-                } else if (rule.first.IsAbsoluteRootPath()) {
-                    continue;
-                }
-                (*rules)[rule.first.GetString()] = saved;
-            }
-        }
-    }
-    if (_imp->exclusiveOwed.exchange(false) && _imp->readEnded) {
-        _imp->readEnded();
-    }
+    std::lock_guard<std::mutex> lock(_imp->loadRulesMutex);
+    *rules = _imp->loadRules;
 
-    return made;
+    return _imp->loadRulesMade;
 }
 
 U64
@@ -6688,17 +6712,85 @@ drawKeyRows(const SceneDrawStates& states,
 } // anonymous namespace
 
 void
-SceneViewport::editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit)
+SceneViewport::editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit,
+                              std::size_t rows)
 {
     if (!_imp->drawStates) {
         return;
     }
     const std::chrono::steady_clock::time_point startedAt = drawChangeStart(_imp->renderer);
-    // Nothing the stage still waits on came from an earlier change, so no change can cancel it.
-    if (!_imp->renderer.hasPendingStageLoads()) {
+    // Nothing the stage still waits on or services came from an earlier change, so no change can
+    // cancel it. A batch being serviced still takes cancels, for its follow-up loads.
+    if (!_imp->renderer.hasOutstandingStageLoads()) {
         _imp->drawStates->forgetIssuedLoads();
     }
-    _imp->drawStates->edit(edit, startedAt);
+    _imp->drawStates->edit(edit, startedAt, rows);
+}
+
+void
+SceneViewport::editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits)
+{
+    if (!edits.empty()) {
+        editDrawStates([edits](SceneDrawStates* states) { return states->editRows(edits); });
+    }
+}
+
+namespace {
+std::vector<std::string>
+drawStatePaths(const QStringList& paths)
+{
+    std::vector<std::string> valid;
+    for (const QString& path : paths) {
+        const std::string pathString = path.toStdString();
+        if (isDrawStatePath(pathString)) {
+            valid.push_back(pathString);
+        }
+    }
+
+    return valid;
+}
+} // anonymous namespace
+
+bool
+SceneViewport::setDrawStateOnRows(const QStringList& paths,
+                                  const QString& state)
+{
+    SceneDrawStateEnum parsed = eSceneDrawStateFull;
+    if (!sceneDrawStateFromName(state.toStdString(), &parsed)) {
+        return false;
+    }
+    const std::vector<std::string> rows = drawStatePaths(paths);
+    if (rows.size() != std::size_t(paths.size())) {
+        return false;
+    }
+    std::vector<SceneDrawRowEdit> edits;
+    for (const std::string& row : rows) {
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, row, parsed });
+    }
+    editDrawStateRows(edits);
+
+    return true;
+}
+
+void
+SceneViewport::clearDrawStatesBelowRows(const QStringList& paths)
+{
+    std::vector<SceneDrawRowEdit> edits;
+    for (const std::string& row : drawStatePaths(paths)) {
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, row, eSceneDrawStateFull });
+    }
+    editDrawStateRows(edits);
+}
+
+void
+SceneViewport::resetDrawStatesToGraphOnRows(const QStringList& paths)
+{
+    std::vector<SceneDrawRowEdit> edits;
+    for (const std::string& row : drawStatePaths(paths)) {
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, row, eSceneDrawStateFull });
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClear, row, eSceneDrawStateFull });
+    }
+    editDrawStateRows(edits);
 }
 
 bool
@@ -6745,8 +6837,7 @@ SceneViewport::resetDrawStatesToGraph(const QString& path)
 
         return;
     }
-    editDrawStates([pathString](SceneDrawStates* states) { return states->clearStatesBelow(pathString); });
-    editDrawStates([pathString](SceneDrawStates* states) { return states->clearState(pathString); });
+    resetDrawStatesToGraphOnRows(QStringList(path));
 }
 
 void
@@ -6822,9 +6913,9 @@ SceneViewport::forgetRestoredLoads()
 void
 SceneViewport::saveSceneView(Serialization::SceneViewSerialization* serialization) const
 {
-    std::vector<std::pair<std::string, SceneDrawStates::Stored>> states;
+    std::shared_ptr<const SceneDrawStateQueue::SetStates> states;
     if (_imp->drawStates) {
-        _imp->drawStates->read([&states](const SceneDrawStates& read) { states = read.getSetStates(); });
+        states = _imp->drawStates->getSetStates();
     }
     SceneLoadRules rules;
     _imp->renderer.getStageLoadRules(&rules);
@@ -6846,7 +6937,7 @@ SceneViewport::saveSceneView(Serialization::SceneViewSerialization* serializatio
             rules[failure.first] = eSceneLoadRuleOnly;
         }
     }
-    sceneViewToSerialization(states, rules, serialization);
+    sceneViewToSerialization(states ? *states : SceneDrawStateQueue::SetStates(), rules, serialization);
 }
 
 void
@@ -6855,7 +6946,7 @@ SceneViewport::restoreSceneView(const Serialization::SceneViewSerialization& ser
     std::vector<std::pair<std::string, SceneDrawStates::Stored>> states;
     SceneLoadRules rules;
     sceneViewFromSerialization(serialization, &states, &rules);
-    editDrawStates([states](SceneDrawStates* drawStates) { return drawStates->replaceSetStates(states); });
+    editDrawStates([states](SceneDrawStates* drawStates) { return drawStates->replaceSetStates(states); }, states.size());
     {
         std::lock_guard<std::mutex> lock(_imp->restoredLoadsMutex);
         _imp->restoredLoads = rules;
@@ -8654,12 +8745,18 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
     if (const DrawKey* drawKey = drawKeyFor(e->modifiers(), e->key())) {
         if (_imp->drawStates) {
             const QStringList selection = getSelection();
-            std::vector<std::string> rows;
-            _imp->drawStates->read([&](const SceneDrawStates& states) { rows = drawKeyRows(states, selection, drawKey->toParent); });
+            const bool toParent = drawKey->toParent;
             const SceneDrawStateEnum state = drawKey->state;
-            for (const std::string& row : rows) {
-                editDrawStates([row, state](SceneDrawStates* states) { return states->setState(row, state); });
-            }
+            // The rows are found as the edit runs, so the key never waits on an edit under way and
+            // acts on the states the edits before it left.
+            editDrawStates([selection, toParent, state](SceneDrawStates* states) {
+                std::vector<SceneDrawRowEdit> edits;
+                for (const std::string& row : drawKeyRows(*states, selection, toParent)) {
+                    edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, row, state });
+                }
+
+                return states->editRows(edits);
+            });
         }
         e->accept();
 

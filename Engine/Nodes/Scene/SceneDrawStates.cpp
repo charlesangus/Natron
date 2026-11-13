@@ -373,12 +373,14 @@ SceneDrawStates::effectsUnder(const std::string& root,
 
 SceneDrawDelta
 SceneDrawStates::applyEdit(const std::string& root,
-                           const std::string& retryLoad,
+                           const std::vector<std::string>& retryLoads,
                            const Effects& before,
                            std::size_t visited) const
 {
     SceneDrawDelta delta;
     delta.visited = visited;
+    delta.roots.push_back(root);
+    const std::set<std::string> retried(retryLoads.begin(), retryLoads.end());
     const Effects afterEffects = effectsUnder(root, &delta.visited);
     const std::vector<Effect>& was = before.rows;
     const std::vector<Effect>& after = afterEffects.rows;
@@ -389,7 +391,13 @@ SceneDrawStates::applyEdit(const std::string& root,
     const PathLess less;
     std::size_t b = 0;
     std::size_t a = 0;
-    bool retryBelow = false;
+    // The retried load with descendants whose subtree the walk is in, if any; rows come in path order.
+    std::string retryBelow;
+    const auto noteRetry = [&retried, &retryBelow](const Effect& effect) {
+        if ((effect.load == eLoadWithDescendants) && (retried.count(effect.path) != 0) && (retryBelow.empty() || !isBelow(effect.path, retryBelow))) {
+            retryBelow = effect.path;
+        }
+    };
     while ((b < was.size()) || (a < after.size())) {
         if ((a == after.size()) || ((b < was.size()) && less(was[b].path, after[a].path))) {
             if (was[b].rule != eRuleNone) {
@@ -401,7 +409,7 @@ SceneDrawStates::applyEdit(const std::string& root,
                 appendRule(&delta, after[a]);
             }
             appendLoad(&delta, after[a]);
-            retryBelow = retryBelow || ((after[a].path == retryLoad) && (after[a].load == eLoadWithDescendants));
+            noteRetry(after[a]);
             ++a;
         } else {
             if (was[b].rule != after[a].rule) {
@@ -409,11 +417,11 @@ SceneDrawStates::applyEdit(const std::string& root,
             }
             // Setting the row again asks again: an earlier load of it may have been cancelled. A load
             // with descendants asks for its whole subtree, and what it excludes it no longer covers.
-            const bool retried = (after[a].path == retryLoad) || (retryBelow && isBelow(after[a].path, retryLoad));
-            if ((was[b].load != after[a].load) || (was[b].excluded != after[a].excluded) || retried) {
+            const bool again = (retried.count(after[a].path) != 0) || (!retryBelow.empty() && isBelow(after[a].path, retryBelow));
+            if ((was[b].load != after[a].load) || (was[b].excluded != after[a].excluded) || again) {
                 appendLoad(&delta, after[a]);
             }
-            retryBelow = retryBelow || ((after[a].path == retryLoad) && (after[a].load == eLoadWithDescendants));
+            noteRetry(after[a]);
             ++b;
             ++a;
         }
@@ -422,62 +430,127 @@ SceneDrawStates::applyEdit(const std::string& root,
     return delta;
 }
 
+std::string
+SceneDrawStates::rootOf(const SceneDrawRowEdit& edit) const
+{
+    if ((edit.kind != SceneDrawRowEdit::eKindSet) || ((edit.state != eSceneDrawStateFull) && (edit.state != eSceneDrawStateLoadAll))) {
+        return edit.path;
+    }
+    // Drawing the row switches the ancestors that block it to Children: the topmost one is the root.
+    Frame frame { std::string(), eFrameDrawn, false, kNoRequest };
+    for (const std::string& ancestor : ancestorsOf(edit.path)) {
+        SceneDrawStateEnum ancestorState = eSceneDrawStateFull;
+        const bool found = lookUp(_states, _policy, ancestor, &ancestorState);
+        if (found ? stops(ancestorState) : (frame.kind == eFrameExpanded)) {
+            return ancestor;
+        }
+        frame = descend(frame, ancestor, found, ancestorState);
+    }
+
+    return edit.path;
+}
+
+void
+SceneDrawStates::applyRowEdit(const SceneDrawRowEdit& edit)
+{
+    switch (edit.kind) {
+    case SceneDrawRowEdit::eKindSet:
+        if ((edit.state == eSceneDrawStateFull) || (edit.state == eSceneDrawStateLoadAll)) {
+            Frame frame { std::string(), eFrameDrawn, false, kNoRequest };
+            for (const std::string& ancestor : ancestorsOf(edit.path)) {
+                SceneDrawStateEnum ancestorState = eSceneDrawStateFull;
+                const bool found = lookUp(_states, _policy, ancestor, &ancestorState);
+                if (found ? stops(ancestorState) : (frame.kind == eFrameExpanded)) {
+                    _states[ancestor] = Stored { eSceneDrawStateChildren, false };
+                    ancestorState = eSceneDrawStateChildren;
+                    frame = descend(frame, ancestor, true, ancestorState);
+                } else {
+                    frame = descend(frame, ancestor, found, ancestorState);
+                }
+            }
+        }
+        _states[edit.path] = Stored { edit.state, true };
+        break;
+    case SceneDrawRowEdit::eKindClear:
+        _states.erase(edit.path);
+        break;
+    case SceneDrawRowEdit::eKindClearBelow: {
+        const StateMap::iterator first = _states.upper_bound(edit.path);
+        StateMap::iterator last = first;
+        while ((last != _states.end()) && isBelow(last->first, edit.path)) {
+            ++last;
+        }
+        _states.erase(first, last);
+        break;
+    }
+    }
+}
+
+SceneDrawDelta
+SceneDrawStates::editRows(const std::vector<SceneDrawRowEdit>& edits)
+{
+    // States change only inside each edit's root, so an edit's root as the states stand before the
+    // first is the same as, or holds, its root once the edits before it are made.
+    std::vector<std::string> roots;
+    roots.reserve(edits.size());
+    for (const SceneDrawRowEdit& edit : edits) {
+        roots.push_back(rootOf(edit));
+    }
+    const PathLess less;
+    std::sort(roots.begin(), roots.end(), less);
+    std::vector<std::string> covering;
+    for (const std::string& root : roots) {
+        if (covering.empty() || ((root != covering.back()) && !isBelow(root, covering.back()))) {
+            covering.push_back(root);
+        }
+    }
+    std::size_t visited = 0;
+    std::vector<Effects> before;
+    before.reserve(covering.size());
+    for (const std::string& root : covering) {
+        before.push_back(effectsUnder(root, &visited));
+    }
+    std::vector<std::string> retryLoads;
+    for (const SceneDrawRowEdit& edit : edits) {
+        applyRowEdit(edit);
+        if (edit.kind == SceneDrawRowEdit::eKindSet) {
+            retryLoads.push_back(edit.path);
+        }
+    }
+    SceneDrawDelta delta;
+    for (std::size_t i = 0; i < covering.size(); ++i) {
+        SceneDrawDelta part = applyEdit(covering[i], retryLoads, before[i], 0);
+        delta.drawn.insert(delta.drawn.end(), part.drawn.begin(), part.drawn.end());
+        delta.expanded.insert(delta.expanded.end(), part.expanded.begin(), part.expanded.end());
+        delta.boxed.insert(delta.boxed.end(), part.boxed.begin(), part.boxed.end());
+        delta.hidden.insert(delta.hidden.end(), part.hidden.begin(), part.hidden.end());
+        delta.cleared.insert(delta.cleared.end(), part.cleared.begin(), part.cleared.end());
+        delta.loads.insert(delta.loads.end(), part.loads.begin(), part.loads.end());
+        delta.roots.push_back(covering[i]);
+        visited += part.visited;
+    }
+    delta.visited = visited;
+
+    return delta;
+}
+
 SceneDrawDelta
 SceneDrawStates::setState(const std::string& path,
                           SceneDrawStateEnum state)
 {
-    std::string root = path;
-    std::vector<std::string> switched;
-    if ((state == eSceneDrawStateFull) || (state == eSceneDrawStateLoadAll)) {
-        Frame frame { std::string(), eFrameDrawn, false, kNoRequest };
-        for (const std::string& ancestor : ancestorsOf(path)) {
-            SceneDrawStateEnum ancestorState = eSceneDrawStateFull;
-            const bool found = lookUp(_states, _policy, ancestor, &ancestorState);
-            if (found ? stops(ancestorState) : (frame.kind == eFrameExpanded)) {
-                if (switched.empty()) {
-                    root = ancestor;
-                }
-                switched.push_back(ancestor);
-                ancestorState = eSceneDrawStateChildren;
-                frame = descend(frame, ancestor, true, ancestorState);
-            } else {
-                frame = descend(frame, ancestor, found, ancestorState);
-            }
-        }
-    }
-    std::size_t visited = 0;
-    const Effects before = effectsUnder(root, &visited);
-    for (const std::string& ancestor : switched) {
-        _states[ancestor] = Stored { eSceneDrawStateChildren, false };
-    }
-    _states[path] = Stored { state, true };
-
-    return applyEdit(root, path, before, visited);
+    return editRows(std::vector<SceneDrawRowEdit>(1, SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, path, state }));
 }
 
 SceneDrawDelta
 SceneDrawStates::clearState(const std::string& path)
 {
-    std::size_t visited = 0;
-    const Effects before = effectsUnder(path, &visited);
-    _states.erase(path);
-
-    return applyEdit(path, std::string(), before, visited);
+    return editRows(std::vector<SceneDrawRowEdit>(1, SceneDrawRowEdit { SceneDrawRowEdit::eKindClear, path, eSceneDrawStateFull }));
 }
 
 SceneDrawDelta
 SceneDrawStates::clearStatesBelow(const std::string& path)
 {
-    std::size_t visited = 0;
-    const Effects before = effectsUnder(path, &visited);
-    const StateMap::iterator first = _states.upper_bound(path);
-    StateMap::iterator last = first;
-    while ((last != _states.end()) && isBelow(last->first, path)) {
-        ++last;
-    }
-    _states.erase(first, last);
-
-    return applyEdit(path, std::string(), before, visited);
+    return editRows(std::vector<SceneDrawRowEdit>(1, SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, path, eSceneDrawStateFull }));
 }
 
 SceneDrawDelta
@@ -487,7 +560,7 @@ SceneDrawStates::clearAllStates()
     const Effects before = effectsUnder("/", &visited);
     _states.clear();
 
-    return applyEdit("/", std::string(), before, visited);
+    return applyEdit("/", std::vector<std::string>(), before, visited);
 }
 
 SceneDrawDelta
@@ -498,7 +571,7 @@ SceneDrawStates::setPolicyState(const std::string& path,
     const Effects before = effectsUnder(path, &visited);
     _policy[path] = state;
 
-    return applyEdit(path, std::string(), before, visited);
+    return applyEdit(path, std::vector<std::string>(), before, visited);
 }
 
 SceneDrawDelta
@@ -508,7 +581,7 @@ SceneDrawStates::clearPolicyState(const std::string& path)
     const Effects before = effectsUnder(path, &visited);
     _policy.erase(path);
 
-    return applyEdit(path, std::string(), before, visited);
+    return applyEdit(path, std::vector<std::string>(), before, visited);
 }
 
 bool
@@ -565,8 +638,14 @@ SceneDrawStates::storedCount() const
 std::vector<SceneDrawLoadRequest>
 SceneDrawStates::wantedLoads() const
 {
+    return wantedLoadsUnder("/");
+}
+
+std::vector<SceneDrawLoadRequest>
+SceneDrawStates::wantedLoadsUnder(const std::string& root) const
+{
     std::size_t visited = 0;
-    const Effects effects = effectsUnder("/", &visited);
+    const Effects effects = effectsUnder(root, &visited);
     std::vector<SceneDrawLoadRequest> loads;
 
     for (const Effect& effect : effects.rows) {
@@ -591,7 +670,7 @@ SceneDrawStates::replaceSetStates(const std::vector<std::pair<std::string, Store
     const Effects before = effectsUnder("/", &visited);
     _states = StateMap(states.begin(), states.end());
 
-    return applyEdit("/", std::string(), before, visited);
+    return applyEdit("/", std::vector<std::string>(), before, visited);
 }
 
 const char*

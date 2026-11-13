@@ -26,6 +26,7 @@
 #include "SceneDrawStateQueue.h"
 
 #include <algorithm>
+#include <set>
 #include <utility>
 
 NATRON_NAMESPACE_ENTER
@@ -52,6 +53,31 @@ SceneDrawStateQueue::~SceneDrawStateQueue()
     }
 }
 
+namespace {
+bool
+isBelow(const std::string& path,
+        const std::string& ancestor)
+{
+    if (ancestor == "/") {
+        return path.size() > 1;
+    }
+
+    return (path.size() > ancestor.size()) && (path[ancestor.size()] == '/') && (path.compare(0, ancestor.size(), ancestor) == 0);
+}
+
+// Empty for the root.
+std::string
+parentOf(const std::string& path)
+{
+    if (path.empty() || (path == "/")) {
+        return std::string();
+    }
+    const std::size_t slash = path.rfind('/');
+
+    return (slash == 0) ? std::string("/") : path.substr(0, slash);
+}
+} // anonymous namespace
+
 SceneDrawChange
 SceneDrawStateQueue::run(const Edit& edit,
                          std::chrono::steady_clock::time_point startedAt)
@@ -64,29 +90,65 @@ SceneDrawStateQueue::run(const Edit& edit,
     }
     if (!change.delta.isEmpty() && !_issued.empty()) {
         // A row the edit boxed, hid or cleared may have been all that asked for a load still queued.
-        std::map<std::string, SceneDrawLoadRequest> wanted;
-        for (SceneDrawLoadRequest& load : _states.wantedLoads()) {
-            std::string path = load.path;
-            wanted.emplace(std::move(path), std::move(load));
+        // Only loads at or below the edit's roots can have changed, and those of an issued load above
+        // a root, whose exclusions may have: the check widens each root to its topmost issued ancestor.
+        const SceneDrawStates::PathLess less;
+        // A delta that names no roots may have changed anything.
+        const std::vector<std::string> named = change.delta.roots.empty() ? std::vector<std::string>(1, std::string("/")) : change.delta.roots;
+        std::vector<std::string> roots;
+        for (const std::string& root : named) {
+            std::string widest = root;
+            for (std::string ancestor = parentOf(root); !ancestor.empty(); ancestor = parentOf(ancestor)) {
+                if (_issued.count(ancestor) != 0) {
+                    widest = ancestor;
+                }
+            }
+            roots.push_back(widest);
         }
-        for (std::map<std::string, SceneDrawLoadRequest>::iterator it = _issued.begin(); it != _issued.end();) {
-            const std::map<std::string, SceneDrawLoadRequest>::const_iterator found = wanted.find(it->first);
-            if (found == wanted.end()) {
-                change.cancelledLoads.push_back(it->first);
-                it = _issued.erase(it);
+        std::sort(roots.begin(), roots.end(), less);
+        std::set<std::string> asked;
+        for (const SceneDrawLoadRequest& load : change.delta.loads) {
+            asked.insert(load.path);
+        }
+        std::string covered;
+        for (const std::string& root : roots) {
+            if (!covered.empty() && ((root == covered) || isBelow(root, covered))) {
                 continue;
             }
-            const SceneDrawLoadRequest& want = found->second;
-            const bool differs = (want.withDescendants != it->second.withDescendants) || (want.excluded != it->second.excluded);
-            const bool asked = std::any_of(change.delta.loads.begin(), change.delta.loads.end(), [&want](const SceneDrawLoadRequest& load) { return load.path == want.path; });
-            if (differs && !asked) {
-                change.delta.loads.push_back(want);
+            covered = root;
+            IssuedMap::iterator it = _issued.lower_bound(root);
+            if ((it == _issued.end()) || ((it->first != root) && !isBelow(it->first, root))) {
+                continue;
             }
-            ++it;
+            std::map<std::string, SceneDrawLoadRequest> wanted;
+            for (SceneDrawLoadRequest& load : _states.wantedLoadsUnder(root)) {
+                std::string path = load.path;
+                wanted.emplace(std::move(path), std::move(load));
+            }
+            while ((it != _issued.end()) && ((it->first == root) || isBelow(it->first, root))) {
+                const std::map<std::string, SceneDrawLoadRequest>::const_iterator found = wanted.find(it->first);
+                if (found == wanted.end()) {
+                    change.cancelledLoads.push_back(it->first);
+                    it = _issued.erase(it);
+                    continue;
+                }
+                const SceneDrawLoadRequest& want = found->second;
+                const bool differs = (want.withDescendants != it->second.withDescendants) || (want.excluded != it->second.excluded);
+                if (differs && (asked.count(want.path) == 0)) {
+                    change.delta.loads.push_back(want);
+                    asked.insert(want.path);
+                }
+                ++it;
+            }
         }
     }
     for (const SceneDrawLoadRequest& load : change.delta.loads) {
         _issued[load.path] = load;
+    }
+    std::shared_ptr<const SetStates> setStates = std::make_shared<const SetStates>(_states.getSetStates());
+    {
+        std::lock_guard<std::mutex> lock(_setStatesMutex);
+        _setStates.swap(setStates);
     }
 
     return change;
@@ -94,9 +156,10 @@ SceneDrawStateQueue::run(const Edit& edit,
 
 void
 SceneDrawStateQueue::edit(const Edit& edit,
-                          std::chrono::steady_clock::time_point startedAt)
+                          std::chrono::steady_clock::time_point startedAt,
+                          std::size_t rows)
 {
-    if (_outstanding == 0) {
+    if ((_outstanding == 0) && (rows <= _inlineRows)) {
         std::unique_lock<std::mutex> lock(_statesMutex);
         if (_states.storedCount() <= _inlineRows) {
             const SceneDrawChange change = run(edit, startedAt);
@@ -168,6 +231,14 @@ int
 SceneDrawStateQueue::getOutstandingCount() const
 {
     return _outstanding;
+}
+
+std::shared_ptr<const SceneDrawStateQueue::SetStates>
+SceneDrawStateQueue::getSetStates() const
+{
+    std::lock_guard<std::mutex> lock(_setStatesMutex);
+
+    return _setStates ? _setStates : std::make_shared<const SetStates>();
 }
 
 void

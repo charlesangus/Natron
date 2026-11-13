@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <list>
 #include <string>
 #include <utility>
@@ -814,4 +815,103 @@ TEST(SceneDrawStates, LoadRuleNamesReadBack)
     }
     SceneLoadRuleEnum parsed = eSceneLoadRuleAll;
     EXPECT_FALSE(sceneLoadRuleFromName("All", &parsed));
+}
+
+namespace {
+SceneDrawRowEdit
+setRow(const std::string& path,
+       SceneDrawStateEnum state)
+{
+    return SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, path, state };
+}
+
+SceneDrawRowEdit
+clearRow(const std::string& path)
+{
+    return SceneDrawRowEdit { SceneDrawRowEdit::eKindClear, path, eSceneDrawStateFull };
+}
+
+SceneDrawRowEdit
+clearBelowRow(const std::string& path)
+{
+    return SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, path, eSceneDrawStateFull };
+}
+} // anon namespace
+
+TEST(SceneDrawStates, EditingManyRowsGivesOneDeltaOverTheirRoots)
+{
+    SceneDrawStates states;
+
+    const SceneDrawDelta delta = states.editRows({ setRow("/b", eSceneDrawStateBBox), setRow("/a", eSceneDrawStateBBox), setRow("/a/c", eSceneDrawStateHidden) });
+
+    EXPECT_EQ((Paths { "/a", "/b" }), delta.boxed);
+    EXPECT_TRUE(delta.hidden.empty()) << "a row below a box is only remembered";
+    EXPECT_EQ((Paths { "/a", "/b" }), delta.roots);
+    expectState(states, "/a/c", eSceneDrawStateBBox, eSceneDrawOriginInherited, true);
+}
+
+TEST(SceneDrawStates, ResettingALoadAllRowAsOneEditAsksForNoLoad)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/a/box", eSceneDrawStateBBox);
+    SceneDrawStates halves = states;
+    ASSERT_EQ(1u, halves.clearStatesBelow("/a").loads.size()) << "the first half alone asks for the load";
+
+    const SceneDrawDelta delta = states.editRows({ clearBelowRow("/a"), clearRow("/a") });
+
+    EXPECT_TRUE(delta.loads.empty());
+    EXPECT_NE(std::find(delta.cleared.begin(), delta.cleared.end(), "/a/box"), delta.cleared.end());
+    EXPECT_EQ(0u, states.storedCount());
+}
+
+TEST(SceneDrawStates, AnEditLaterInTheListSeesTheEarlierOnes)
+{
+    SceneDrawStates states;
+
+    const SceneDrawDelta delta = states.editRows({ setRow("/w", eSceneDrawStateBBox), setRow("/w/x", eSceneDrawStateFull) });
+
+    expectState(states, "/w", eSceneDrawStateChildren, eSceneDrawOriginViewer);
+    expectState(states, "/w/x", eSceneDrawStateFull, eSceneDrawOriginViewer);
+    expectState(states, "/w/y", eSceneDrawStateBBox, eSceneDrawOriginInherited);
+    EXPECT_EQ(Paths { "/w" }, delta.expanded);
+    EXPECT_EQ(Paths { "/w/x" }, delta.drawn);
+    EXPECT_EQ(Paths { "/w" }, delta.roots);
+}
+
+TEST(SceneDrawStates, AnEditUndoneLaterInTheListLeavesNoDelta)
+{
+    SceneDrawStates states;
+
+    EXPECT_TRUE(states.editRows({ setRow("/a", eSceneDrawStateHidden), clearRow("/a") }).isEmpty());
+    EXPECT_TRUE(states.editRows(std::vector<SceneDrawRowEdit>()).isEmpty());
+}
+
+TEST(SceneDrawStates, EditingManyRowsAsksAgainForEachRowsLoad)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/b", eSceneDrawStateLoadAll);
+
+    const SceneDrawDelta delta = states.editRows({ setRow("/a", eSceneDrawStateLoadAll), setRow("/b", eSceneDrawStateLoadAll) });
+
+    ASSERT_EQ(2u, delta.loads.size());
+    EXPECT_EQ("/a", delta.loads[0].path);
+    EXPECT_EQ("/b", delta.loads[1].path);
+}
+
+TEST(SceneDrawStates, WantedLoadsUnderARowListOnlyItsSubtree)
+{
+    SceneDrawStates states;
+    states.setState("/a", eSceneDrawStateLoadAll);
+    states.setState("/a/box", eSceneDrawStateBBox);
+    states.setState("/b", eSceneDrawStateLoadAll);
+
+    const std::vector<SceneDrawLoadRequest> loads = states.wantedLoadsUnder("/a");
+
+    ASSERT_EQ(1u, loads.size());
+    EXPECT_EQ("/a", loads[0].path);
+    EXPECT_EQ(Paths { "/a/box" }, loads[0].excluded);
+    EXPECT_EQ(2u, states.wantedLoads().size());
+    EXPECT_TRUE(states.wantedLoadsUnder("/a/box").empty());
 }

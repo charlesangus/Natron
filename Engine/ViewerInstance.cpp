@@ -457,9 +457,12 @@ ViewerInstance::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr
 Serialization::SceneViewSerialization
 ViewerInstance::getLoadedSceneView() const
 {
-    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+    Serialization::SceneViewSerialization view;
 
-    return _loadedSceneView ? *_loadedSceneView : Serialization::SceneViewSerialization();
+    // A tab that went, or another one, saves the view as it last was: that is the view to restore.
+    sceneViewToSerialization(&view);
+
+    return view;
 }
 
 void

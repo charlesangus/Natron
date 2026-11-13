@@ -2105,10 +2105,8 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
         action->setCheckable(true);
         action->setChecked(shownState.isValid() && (shownState.toInt() == state));
         QObject::connect(action, &QAction::triggered, this, [drawViewer, selection, name]() {
-            for (const QString& path : selection) {
-                if (drawViewer) {
-                    drawViewer->setDrawState(path, name);
-                }
+            if (drawViewer) {
+                drawViewer->setDrawStateOnRows(selection, name);
             }
         });
     }
@@ -2117,20 +2115,16 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
     clearBelow->setObjectName(QString::fromUtf8("sceneGraphDrawStateClearBelow"));
     clearBelow->setToolTip(tr("Clears the states of the rows below; the row keeps its own."));
     QObject::connect(clearBelow, &QAction::triggered, this, [drawViewer, selection]() {
-        for (const QString& path : selection) {
-            if (drawViewer) {
-                drawViewer->clearDrawStatesBelow(path);
-            }
+        if (drawViewer) {
+            drawViewer->clearDrawStatesBelowRows(selection);
         }
     });
     QAction* resetRow = drawMenu->addAction(tr("Reset to Graph"));
     resetRow->setObjectName(QString::fromUtf8("sceneGraphDrawStateReset"));
     resetRow->setToolTip(tr("Clears the state of the row and of every row below it."));
     QObject::connect(resetRow, &QAction::triggered, this, [drawViewer, selection]() {
-        for (const QString& path : selection) {
-            if (drawViewer) {
-                drawViewer->resetDrawStatesToGraph(path);
-            }
+        if (drawViewer) {
+            drawViewer->resetDrawStatesToGraphOnRows(selection);
         }
     });
     QAction* chosen = menu.exec(view->viewport()->mapToGlobal(pos));

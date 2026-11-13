@@ -343,6 +343,12 @@ TEST_F(SceneDrawStatesOutputTest, ViewerStatesAndLoadsLeaveEveryOutputAsItWas)
     Serialization::NodeSerialization viewerSaved;
     _viewerNode->toSerialization(&viewerSaved);
     EXPECT_FALSE(viewerSaved.sceneView.isEmpty());
+    // A viewer tab opened now restores what the saver saves, not nothing.
+    std::vector<std::pair<std::string, SceneDrawStates::Stored>> reopened;
+    SceneLoadRules reopenedRules;
+    sceneViewFromSerialization(_viewer->getLoadedSceneView(), &reopened, &reopenedRules);
+    EXPECT_EQ(reopened.size(), states.getSetStates().size());
+    EXPECT_EQ(reopenedRules, rules);
     for (const NodePtr& node : { _reader, _writer, _render }) {
         Serialization::NodeSerialization saved;
         node->toSerialization(&saved);

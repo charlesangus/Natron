@@ -136,7 +136,9 @@ public:
     /**
      * @brief Hides at once what the delta hides. What it shows goes out now if revealBatch is 0, and
      * otherwise through stepReveal(). A reveal under way carries on under the new rules: what they
-     * hide goes at once, what it announced and they still show stays, and the rest of it stops.
+     * hide goes at once and what it announced and they still show stays. At or below a changed row,
+     * the change's own reveal takes the place of what was left of it there; elsewhere the rules
+     * have not changed, so what is left there still comes, after what this delta shows.
      *
      * With a non-zero revealBatch, what the delta's loads bring in joins a reveal as it arrives
      * instead of reaching Hydra all at once, until a delta with revealBatch 0 comes.

@@ -394,6 +394,9 @@ public:
 
     bool hasPendingStageLoads() const;
 
+    // Whether a load request waits, before the stage exists too, or a batch is being serviced.
+    bool hasOutstandingStageLoads() const;
+
     /**
      * @brief Services the pending requests, opening their files with the viewer lock released.
      * Returns, committing nothing, once cancelled() turns true. See SceneStage::serviceLoads().
@@ -444,8 +447,9 @@ public:
     std::vector<std::pair<std::string, std::string>> getStageLoadFailures() const;
 
     /**
-     * @brief The stage's payload load rules, kept while no scene is shown, the root's left out
-     * when it loads nothing. False before the first sync has made the stage. Any thread.
+     * @brief The stage's payload load rules as its last load commit left them, kept while no scene
+     * is shown, the root's left out when it loads nothing. False before the first sync has made
+     * the stage. Any thread; never waits on the stage lock.
      **/
     bool getStageLoadRules(SceneLoadRules* rules) const;
 
@@ -1052,7 +1056,8 @@ public:
     /**
      * @brief This viewer's set draw states and its stage's load set, as a project saves them. A
      * payload whose load failed is kept, so that a file found again loads on reopening, and so are
-     * the loads a restore still waits on. Any thread; waits for a draw state edit under way.
+     * the loads a restore still waits on. Saves the states as the last edit left them and the load
+     * rules as the last load commit did, so it waits on neither. Any thread.
      **/
     void saveSceneView(Serialization::SceneViewSerialization* serialization) const;
 
@@ -1083,6 +1088,14 @@ public Q_SLOTS:
     void clearDrawStatesBelow(const QString& path);
     // Clears path and the rows below it, which then follow the graph's policy or the default.
     void resetDrawStatesToGraph(const QString& path);
+    /**
+     * @brief The same edits on many rows, made as one edit with one change, so nothing is drawn or
+     * loaded between rows. setDrawStateOnRows() is false, and edits nothing, if a path or the
+     * name is not one.
+     **/
+    bool setDrawStateOnRows(const QStringList& paths, const QString& state);
+    void clearDrawStatesBelowRows(const QStringList& paths);
+    void resetDrawStatesToGraphOnRows(const QStringList& paths);
     void clearDrawStates();
     // The state a path resolves to, effective or inherited. Waits for an edit under way.
     QString resolvedDrawState(const QString& path) const;
@@ -1207,7 +1220,9 @@ private:
 
     // Main thread: starts the frame that takes in a stage change, if one is due and can start.
     void startBackgroundFrame();
-    void editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit);
+    // rows: how many rows the edit brings in, which sends a large one to the worker.
+    void editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit, std::size_t rows = 0);
+    void editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits);
     void deliverDrawChange(const SceneDrawChange& change);
     void wakeLoadsAskedBeforeStage();
     // A restore's load set stops standing in for loads the stage has yet to take.

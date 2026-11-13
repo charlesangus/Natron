@@ -2037,6 +2037,43 @@ TEST(SceneDrawStateQueue, AStateChangeCancelsTheQueuedLoadsNoRowAsksForAnyMore)
     EXPECT_TRUE(delivered[4].cancelledLoads.empty());
 }
 
+TEST(SceneDrawStateQueue, AnEditSaidToTouchManyRowsRunsOffTheCaller)
+{
+    PostedRuns posted;
+    std::vector<SceneDrawChange> delivered;
+    SceneDrawStateQueue queue(posted.post(), [&delivered](const SceneDrawChange& change) { delivered.push_back(change); }, 2);
+
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/A", eSceneDrawStateBBox); }, std::chrono::steady_clock::time_point(), 3);
+
+    ASSERT_TRUE(posted.waitFor(1));
+    EXPECT_TRUE(delivered.empty());
+    posted.runAll();
+    ASSERT_EQ(delivered.size(), std::size_t(1));
+    EXPECT_TRUE(contains(delivered[0].delta.boxed, "/World/A"));
+}
+
+TEST(SceneDrawStateQueue, OnlyTheQueuedLoadsUnderADeltasRootsAreChecked)
+{
+    PostedRuns posted;
+    std::vector<SceneDrawChange> delivered;
+    SceneDrawStateQueue queue(posted.post(), [&delivered](const SceneDrawChange& change) { delivered.push_back(change); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/A", eSceneDrawStateLoadAll); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/C", eSceneDrawStateLoadAll); });
+
+    queue.edit([](SceneDrawStates* states) {
+        SceneDrawDelta delta = states->setState("/World/A", eSceneDrawStateBBox);
+        delta.roots = { "/World/C" };
+
+        return delta;
+    });
+    ASSERT_EQ(delivered.size(), std::size_t(3));
+    EXPECT_TRUE(delivered[2].cancelledLoads.empty());
+
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/C", eSceneDrawStateBBox); });
+    ASSERT_EQ(delivered.size(), std::size_t(4));
+    EXPECT_EQ(delivered[3].cancelledLoads, std::vector<std::string>({ "/World/C" }));
+}
+
 TEST_F(SceneViewportStorm, ADrawStateChangeReachesTheFilterAndLoadsOnlyWhatItAsksFor)
 {
     if (_skip) {

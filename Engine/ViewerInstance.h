@@ -278,8 +278,8 @@ public:
     typedef std::function<void(Serialization::SceneViewSerialization*)> SceneViewSaver;
 
     /**
-     * @brief The draw states and loads of the 3D view as the project was opened with them, until
-     * setSceneViewSaver() is called. Main thread.
+     * @brief The draw states and loads of the 3D view as the project was opened with them, or once
+     * setSceneViewSaver() is called, as the saver saves them. Main thread.
      **/
     Serialization::SceneViewSerialization getLoadedSceneView() const;
 

@@ -125,10 +125,17 @@ public:
 
     void requestUnload(const PXR_NS::SdfPathVector& paths);
 
-    // Drops the requests no serviceLoads() has taken yet.
+    /**
+     * @brief Drops the requests no serviceLoads() has taken yet. A batch being serviced commits what
+     * it has opened but puts none of its requests back and asks for none of its follow-up loads.
+     **/
     void cancelPendingLoads();
 
-    // Drops the load requests at paths no serviceLoads() has taken yet; unloads stay.
+    /**
+     * @brief Drops the load requests at paths no serviceLoads() has taken yet; unloads stay. A batch
+     * being serviced puts back none of these paths' requests, and asks for no follow-up load of a
+     * payload at one of them or of a request made at one of them. Other paths are left alone.
+     **/
     void cancelPendingLoads(const PXR_NS::SdfPathVector& paths);
 
     bool hasPendingLoads() const;
@@ -239,9 +246,11 @@ private:
     mutable std::mutex _loadMutex;
     std::map<PXR_NS::SdfPath, PendingLoadEnum> _pendingLoads;
     // The excluded subtrees of the pending loads with descendants that have any.
-    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathVector> _pendingExclusions;
-    // Moves on every cancel, so a batch does not ask again for what was cancelled while it ran.
-    U64 _cancelGeneration = 0;
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> _pendingExclusions;
+    // The load requests cancelled since the batch being serviced was taken, so that the batch does
+    // not ask again for them; a cancel of every request sets the flag instead.
+    PXR_NS::SdfPathSet _cancelledWhileServicing;
+    bool _allCancelledWhileServicing = false;
     std::map<PXR_NS::SdfPath, std::string> _loadFailures;
     bool _servicingLoads = false;
     std::atomic<U64> _loadEditCount { 0 };

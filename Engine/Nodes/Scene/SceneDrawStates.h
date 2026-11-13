@@ -87,6 +87,9 @@ struct SceneDrawDelta {
     // The rule on these paths is gone; the nearest rule above now decides them.
     std::vector<std::string> cleared;
     std::vector<SceneDrawLoadRequest> loads;
+    // The subtrees the edit looked at: nothing outside them changed, and no load outside them is
+    // wanted or unwanted because of it.
+    std::vector<std::string> roots;
     // Stored states this edit looked at, which bounds what it cost.
     std::size_t visited = 0;
 
@@ -108,6 +111,21 @@ struct SceneDrawDelta {
  * Children row's subtree, whose unset children are boxes the model cannot name: the Children row
  * loads on its own and the rows drawn below it load by their own requests.
  */
+// One row's edit in SceneDrawStates::editRows().
+struct SceneDrawRowEdit {
+    enum KindEnum {
+        eKindSet,
+        eKindClear,
+        // SceneDrawStates::clearStatesBelow().
+        eKindClearBelow
+    };
+
+    KindEnum kind;
+    std::string path;
+    // For eKindSet.
+    SceneDrawStateEnum state;
+};
+
 class SceneDrawStates {
 public:
     SceneDrawDelta setState(const std::string& path, SceneDrawStateEnum state);
@@ -115,6 +133,11 @@ public:
     /** @brief Forgets every state set below the row, remembered ones too. The row's own stays. */
     SceneDrawDelta clearStatesBelow(const std::string& path);
     SceneDrawDelta clearAllStates();
+    /**
+     * @brief Makes the edits in order, as one edit with one delta: what an edit undoes of an earlier
+     * one in the list is never in the delta, nor asked to load.
+     **/
+    SceneDrawDelta editRows(const std::vector<SceneDrawRowEdit>& edits);
 
     SceneDrawDelta setPolicyState(const std::string& path, SceneDrawStateEnum state);
     SceneDrawDelta clearPolicyState(const std::string& path);
@@ -125,6 +148,11 @@ public:
     std::size_t storedCount() const;
     // Every load the rows ask for as they stand, in path order; visits every stored row.
     std::vector<SceneDrawLoadRequest> wantedLoads() const;
+    /**
+     * @brief The loads the rows at and below root ask for, in path order; visits only those rows. A
+     * load asked for above root that covers it is not listed.
+     **/
+    std::vector<SceneDrawLoadRequest> wantedLoadsUnder(const std::string& root) const;
 
     struct PathLess {
         bool operator()(const std::string& a, const std::string& b) const;
@@ -172,7 +200,10 @@ public:
 
 private:
     Effects effectsUnder(const std::string& root, std::size_t* visited) const;
-    SceneDrawDelta applyEdit(const std::string& root, const std::string& retryLoad, const Effects& before, std::size_t visited) const;
+    // The subtree a row edit changes, given the states as they stand.
+    std::string rootOf(const SceneDrawRowEdit& edit) const;
+    void applyRowEdit(const SceneDrawRowEdit& edit);
+    SceneDrawDelta applyEdit(const std::string& root, const std::vector<std::string>& retryLoads, const Effects& before, std::size_t visited) const;
 
     std::map<std::string, Stored, PathLess> _states;
     std::map<std::string, SceneDrawStateEnum, PathLess> _policy;

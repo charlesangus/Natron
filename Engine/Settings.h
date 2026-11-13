@@ -291,6 +291,9 @@ public:
     bool isLinkLinesVisible() const;
     bool isExpressionLinesVisible() const;
 
+    bool isGpuRegionOverlayEnabled() const;
+    void setGpuRegionOverlayEnabled(bool enabled);
+
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
 
@@ -366,7 +369,6 @@ public:
     int getCheckerboardTileSize() const;
     void getCheckerboardColor1(double* r, double* g, double* b, double* a) const;
     void getCheckerboardColor2(double* r, double* g, double* b, double* a) const;
-    bool isAutoWipeEnabled() const;
     bool isAutoProxyEnabled() const;
     unsigned int getAutoProxyMipmapLevel() const;
     int getMaxOpenedNodesViewerContext() const;
@@ -688,7 +690,6 @@ private:
     KnobIntPtr _checkerboardTileSize;
     KnobColorPtr _checkerboardColor1;
     KnobColorPtr _checkerboardColor2;
-    KnobBoolPtr _autoWipe;
     KnobBoolPtr _autoProxyWhenScrubbingTimeline;
     KnobChoicePtr _autoProxyLevel;
     KnobIntPtr _maximumNodeViewerUIOpened;
@@ -710,6 +711,7 @@ private:
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _showLinkLines;
     KnobBoolPtr _showExpressionLines;
+    KnobBoolPtr _showGpuRegions;
     KnobBoolPtr _usePluginIconsInNodeGraph;
     KnobBoolPtr _useAntiAliasing;
     KnobSeparatorPtr _tabMenuSeparator;

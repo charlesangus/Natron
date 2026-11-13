@@ -156,9 +156,9 @@ public:
     void centerOnItem(QGraphicsItem* item);
 
     /**
-     * @brief Redraws the loop blocks once control returns to the event loop; topology also
-     * recomputes which nodes form each block, after a connection or a node came or went, and
-     * emits topologyChanged.
+     * @brief Redraws the loop blocks once control returns to the event loop; topology also recomputes
+     * which nodes form each block, maps the GPU regions onto the nodes again and redraws them, after a
+     * connection or a node came or went, and emits topologyChanged.
      **/
     void scheduleLoopBlockRefresh(bool topology);
 
@@ -197,6 +197,37 @@ public:
     void setLastSelectedViewer(ViewerTab* tab);
 
     ViewerTab* getLastSelectedViewer() const;
+
+    /**
+     * @brief The viewer the input keys act on, or NULL if this graph holds none.
+     **/
+    ViewerTab* getViewerForInputKeys();
+
+    /**
+     * @brief The graph node of that viewer, creating a viewer if there is none.
+     **/
+    NodeGuiPtr getOrCreateViewerForInputKeys();
+
+    /**
+     * @brief The selection when it is a single node a viewer input can pipe from, otherwise NULL.
+     **/
+    NodeGuiPtr getSelectionForViewerInput() const;
+
+    /**
+     * @brief Pipes the input from source unless it already does, then shows it on the given side.
+     **/
+    void pipeViewerInput(const NodeGuiPtr& viewerGui, int inputNB, const NodeGuiPtr& source, bool isASide);
+
+    /**
+     * @brief Pipes the input from the node it is locked to and shows it on the given side. A lock
+     * whose node can no longer be found is cleared.
+     * @returns True if the input was recalled, false if the input is not locked.
+     **/
+    bool recallLockedViewerInput(const NodeGuiPtr& viewerGui, int inputNB, bool isASide);
+
+    void lockViewerInputToSelection(int inputNB);
+
+    void unlockViewerInput(int inputNB);
 
     /**
      * @brief Given the node, it tries to move it to the ideal position
@@ -373,6 +404,8 @@ public Q_SLOTS:
     void onNodeNameEditDialogFinished();
 
     void toggleAutoTurbo();
+
+    void toggleGpuRegionOverlay();
 
     void onGroupNameChanged(const QString& name);
     void onGroupScriptNameChanged(const QString& name);

@@ -625,7 +625,7 @@ protected:
             gpu.insert(gpuNodes[i].get());
         }
         PlacementInputs inputs;
-        inputs.canRenderOnGpu = [gpu](const FrameGraph::Task& task) {
+        inputs.canRenderOnGpu = [gpu](const FrameGraph::Task& task, GpuRefusal*) {
             return gpu.count(task.key.node.get()) > 0;
         };
         placeGraph(*graph, inputs);

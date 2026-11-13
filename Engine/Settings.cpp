@@ -1282,13 +1282,6 @@ Settings::initializeKnobsViewers()
     _checkerboardColor2->setHintToolTip( tr("The second color used by the checkerboard.") );
     _viewersTab->addKnob(_checkerboardColor2);
 
-    _autoWipe = AppManager::createKnob<KnobBool>( this, tr("Automatically enable wipe") );
-    _autoWipe->setName("autoWipeForViewer");
-    _autoWipe->setHintToolTip( tr("When checked, the wipe tool of the viewer will be automatically enabled "
-                                  "when the mouse is hovering the viewer and changing an input of a viewer." ) );
-    _viewersTab->addKnob(_autoWipe);
-
-
     _autoProxyWhenScrubbingTimeline = AppManager::createKnob<KnobBool>( this, tr("Automatically enable proxy when scrubbing the timeline") );
     _autoProxyWhenScrubbingTimeline->setName("autoProxyScrubbing");
     _autoProxyWhenScrubbingTimeline->setHintToolTip( tr("When checked, the proxy mode will be at least at the level "
@@ -1478,6 +1471,16 @@ Settings::initializeKnobsNodeGraph()
                                             "its expressions read. The \"Show Link Lines\" action of the node graph can still "
                                             "hide them for the session."));
     _nodegraphTab->addKnob(_showExpressionLines);
+
+    _showGpuRegions = AppManager::createKnob<KnobBool>(this, tr("Show GPU Regions"));
+    _showGpuRegions->setName("showGpuRegions");
+    _showGpuRegions->setHintToolTip(tr("When checked, the node graph outlines the regions of the active viewer's last render "
+                                       "that stay resident on the GPU, marks each pipe where a region ends with a red X and "
+                                       "the reason, and fades nodes that computed no pixels in that render because their "
+                                       "image came from the cache or they passed their input through. With GPU compute off "
+                                       "or no GPU, it draws nothing. The \"Show GPU Regions\" action of the node graph "
+                                       "toggles the same setting."));
+    _nodegraphTab->addKnob(_showGpuRegions);
 
     _tabMenuSeparator = AppManager::createKnob<KnobSeparator>(this, tr("Tab menu"));
     _tabMenuSeparator->setName("tabMenuSeparator");
@@ -1853,7 +1856,6 @@ Settings::setDefaultValues()
     _checkerboardColor2->setDefaultValue(0., 1);
     _checkerboardColor2->setDefaultValue(0., 2);
     _checkerboardColor2->setDefaultValue(0., 3);
-    _autoWipe->setDefaultValue(true);
     _autoProxyWhenScrubbingTimeline->setDefaultValue(true);
     _autoProxyLevel->setDefaultValue(1);
     _maximumNodeViewerUIOpened->setDefaultValue(2);
@@ -1874,6 +1876,7 @@ Settings::setDefaultValues()
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _showLinkLines->setDefaultValue(true);
     _showExpressionLines->setDefaultValue(true);
+    _showGpuRegions->setDefaultValue(false);
     _usePluginIconsInNodeGraph->setDefaultValue(true);
     _useAntiAliasing->setDefaultValue(true);
 
@@ -2423,6 +2426,7 @@ Settings::restoreSettings(bool useDefault)
         appPTR->setNThreadsToRender( getNumberOfThreads() );
         appPTR->setUseThreadPool( _useThreadPool->getValue() );
         appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
+        ViewerInstance::setGpuPlacementOverlayEnabled(_showGpuRegions->getValue());
     } catch (std::logic_error&) {
         // ignore
     }
@@ -2571,6 +2575,8 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
+    } else if (k == _showGpuRegions.get()) {
+        ViewerInstance::setGpuPlacementOverlayEnabled(_showGpuRegions->getValue());
     } else if (k == _renderOnEditingFinished.get()) {
         const AppInstanceVec& apps = appPTR->getAppInstances();
         for (AppInstanceVec::const_iterator it = apps.begin(); it != apps.end(); ++it) {
@@ -2681,12 +2687,6 @@ Settings::getCheckerboardColor2(double* r,
     *g = _checkerboardColor2->getValue(1);
     *b = _checkerboardColor2->getValue(2);
     *a = _checkerboardColor2->getValue(3);
-}
-
-bool
-Settings::isAutoWipeEnabled() const
-{
-    return _autoWipe->getValue();
 }
 
 bool
@@ -3518,6 +3518,18 @@ bool
 Settings::isExpressionLinesVisible() const
 {
     return _showExpressionLines->getValue();
+}
+
+bool
+Settings::isGpuRegionOverlayEnabled() const
+{
+    return _showGpuRegions->getValue();
+}
+
+void
+Settings::setGpuRegionOverlayEnabled(bool enabled)
+{
+    _showGpuRegions->setValue(enabled);
 }
 
 bool

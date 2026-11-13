@@ -502,6 +502,9 @@ GenericSchedulerThread::startTask(const GenericThreadStartArgsPtr& inArgs)
     }
 
     if ( !isRunning() ) {
+        // A waiter takes eThreadStateStopped for a thread with nothing left to join. Until run() first sets the state,
+        // that would let an owner destroy this object under a thread about to make virtual calls on it.
+        _imp->setThreadState(eThreadStateActive);
         start();
     } else {
         ///Wake up the thread with a start request

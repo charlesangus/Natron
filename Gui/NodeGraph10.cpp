@@ -50,6 +50,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include "Gui/BackdropGui.h"
 #include "Gui/Edge.h"
+#include "Gui/GpuOverlay.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -414,6 +415,9 @@ NodeGraph::noteNodeGeometryChanged(NodeGui* node)
         return;
     }
     NodeGraphLowDetailLayer::applyDetailLevel(node, true, _imp->lowDetail);
+    if (_imp->_gpuRegions) {
+        _imp->_gpuRegions->noteNodeChanged(node);
+    }
     repaintLowDetailItem(node);
     if (_imp->itemGridDirty) {
         return;
@@ -434,6 +438,12 @@ NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
         return;
     }
     NodeGraphLowDetailLayer::applyDetailLevel(edge, false, _imp->lowDetail);
+    if (_imp->_gpuRegions) {
+        _imp->_gpuRegions->noteNodeChanged(owner);
+        if (edge->hasSource()) {
+            _imp->_gpuRegions->noteNodeChanged(edge->getSource().get());
+        }
+    }
     repaintLowDetailItem(edge);
     if (_imp->itemGridDirty) {
         return;
@@ -708,10 +718,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         ///disconnect previous connection
         NodePtr outputNode = nearbyEdge->getDest()->getNode();
         assert(outputNode);
-        int inputNb = outputNode->inputIndex(inputNode);
-        if (inputNb == -1) {
-            return;
-        }
+        const int inputNb = nearbyEdge->getInputNumber();
 
         CreateNodeArgs args( PLUGINID_NATRON_DOT, _imp->group.lock() );
         args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
@@ -733,12 +740,11 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         assert(guiApp);
         ProjectPtr project = guiApp->getProject();
         assert(project);
-        bool ok = project->disconnectNodes(inputNode, outputNode);
-        if (!ok) {
+        if (outputNode->disconnectInput(inputNb) < 0) {
             return;
         }
 
-        ok = project->connectNodes(0, inputNode, dotNode);
+        bool ok = project->connectNodes(0, inputNode, dotNode);
         if (!ok) {
             return;
         }

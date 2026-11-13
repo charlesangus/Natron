@@ -302,15 +302,14 @@ addInitialPrims(CreateNodeArgs& args,
     }
 }
 
-// Pushes the edit of node's prim knob; false when there is nothing to change.
+// Pushes the edit of node's prim knob to text; false when there is nothing to change.
 bool
-pushSet(Gui* gui,
-        const NodePtr& node,
-        const KnobStringPtr& knob,
-        const QStringList& paths)
+pushText(Gui* gui,
+         const NodePtr& node,
+         const KnobStringPtr& knob,
+         const std::string& text)
 {
     UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
-    const std::string text = SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths);
 
     if (!history || (text == knob->getValue(0))) {
         return false;
@@ -319,6 +318,31 @@ pushSet(Gui* gui,
     history->push(new SetPrimKnobCommand(knob, text, label), UndoScope(UndoScope::holderForNode(node)));
 
     return true;
+}
+
+bool
+pushSet(Gui* gui,
+        const NodePtr& node,
+        const KnobStringPtr& knob,
+        const QStringList& paths)
+{
+    return pushText(gui, node, knob, SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths));
+}
+
+KnobStringPtr
+firstPatternKnob(const NodePtr& node)
+{
+    if (!node) {
+        return KnobStringPtr();
+    }
+    for (const KnobIPtr& knob : node->getKnobs()) {
+        KnobStringPtr string = std::dynamic_pointer_cast<KnobString>(knob);
+        if (string && (string->getPrimPathHint() == KnobString::ePrimPathHintPattern)) {
+            return string;
+        }
+    }
+
+    return KnobStringPtr();
 }
 
 // The first input of node that isn't a mask and can take a scene; -1 when it has none.
@@ -754,6 +778,43 @@ setOnCurrentNode(Gui* gui,
     }
     NodePtr node = currentNode(gui);
     pushSet(gui, node, primKnob(node), paths);
+
+    return true;
+}
+
+QString
+applyPatternBlocker(Gui* gui)
+{
+    NodePtr node = currentNode(gui);
+
+    if (!node) {
+        return tr("Apply To Node: open the settings of the node to apply the expression to.");
+    }
+    KnobStringPtr knob = firstPatternKnob(node);
+    const QString name = QString::fromStdString(node->getLabel());
+    if (!knob) {
+        return tr("Apply To Node: %1 has no prim pattern.").arg(name);
+    }
+    if (!knob->isEnabled(0) || knob->isSlave(0)) {
+        return tr("Apply To Node: the %1 of %2 can't be edited.").arg(QString::fromStdString(knob->getLabel()), name);
+    }
+
+    return QString();
+}
+
+bool
+applyPatternToCurrentNode(Gui* gui,
+                          const std::string& expression)
+{
+    const QString blocker = applyPatternBlocker(gui);
+
+    if (!blocker.isEmpty()) {
+        showHint(gui, blocker);
+
+        return false;
+    }
+    NodePtr node = currentNode(gui);
+    pushText(gui, node, firstPatternKnob(node), expression);
 
     return true;
 }

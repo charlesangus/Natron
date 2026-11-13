@@ -120,6 +120,18 @@ QString setOnNodeBlocker(Gui* gui, const QStringList& paths);
 bool setOnCurrentNode(Gui* gui, const QStringList& paths);
 
 /**
+ * @brief Why an expression can't be applied to the current node now, or empty when it can: the
+ * node needs a prim pattern knob that can be edited.
+ **/
+QString applyPatternBlocker(Gui* gui);
+
+/**
+ * @brief Writes expression, as it is, into the first prim pattern knob of currentNode(gui) as one
+ * undo step. When it can't, shows why in the status bar and returns false.
+ **/
+bool applyPatternToCurrentNode(Gui* gui, const std::string& expression);
+
+/**
  * @brief Why a node can't be created after viewed now, or empty when it can.
  **/
 QString createBlocker(Gui* gui, const NodePtr& viewed);

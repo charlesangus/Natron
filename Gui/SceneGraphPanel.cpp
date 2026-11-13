@@ -100,6 +100,14 @@ const int kFilterCap = 1000;
 // How long one step of the filter walk may hold the stage, in milliseconds.
 const int kFilterStepMs = 8;
 
+// Whether the filter's text is a path expression rather than a name: an absolute path, a
+// predicate or a collection reference, none of which a prim name holds.
+bool
+isExpressionFilter(const QString& text)
+{
+    return text.startsWith(QLatin1Char('/')) || text.contains(QLatin1Char('%')) || text.contains(QLatin1Char('{'));
+}
+
 // How many paths of a viewer selection are shown in the tree.
 const int kShownSelectionCap = 2000;
 
@@ -428,6 +436,9 @@ struct SceneGraphPanel::Implementation {
     QLabel* status = nullptr;
     QString armedPick;
     QLineEdit* filter = nullptr;
+    QToolButton* applyButton = nullptr;
+    // Beside the field: why the expression is invalid, or the unloaded branches not searched.
+    QLabel* filterMessage = nullptr;
     QStackedWidget* stack = nullptr;
     QTreeView* tree = nullptr;
     QListView* results = nullptr;
@@ -503,6 +514,10 @@ struct SceneGraphPanel::Implementation {
     QStringList filterMatches;
     int filterCap = kFilterCap;
     bool filterCapped = false;
+    QString filterError;
+    // Set while the walk an edit of the expression started is under way: its matches become the
+    // selection as they are found. A walk restarted by an edit of the stage leaves the selection be.
+    bool filterSelects = false;
 
     QTimer inspectorRefresh;
 
@@ -662,6 +677,9 @@ struct SceneGraphPanel::Implementation {
         panel->setProperty("natronSceneGraphChangedHereCount", model->getChangedHereCount());
         panel->setProperty("natronSceneGraphChangedHereRows", changedHereModel->getRowCount());
         panel->setProperty("natronSceneGraphFilterBusy", filterStep.isActive() || filterDebounce.isActive() || filterDeferred);
+        panel->setProperty("natronSceneGraphFilterExpression", filterWalk.hasExpression());
+        panel->setProperty("natronSceneGraphFilterError", filterError);
+        panel->setProperty("natronSceneGraphFilterUnloaded", filterPattern.isEmpty() ? 0 : filterWalk.getUnloadedBranchCount());
         const SceneGraphStageSourcePtr& source = model->getSource();
         panel->setProperty("natronSceneGraphStageEditCount", QVariant::fromValue<qulonglong>(source ? source->getEditCount() : 0));
         // Twirling a row must not add to it: the rows' open state never reaches the stage.
@@ -1446,13 +1464,22 @@ struct SceneGraphPanel::Implementation {
         filterMatches.clear();
         filterWalk.stop();
         filterCapped = false;
-        if (filterPattern.isEmpty()) {
+        filterError.clear();
+        QString error;
+        const bool parsed = filterWalk.setExpression(isExpressionFilter(filterPattern) ? filterPattern : QString(), &error);
+        if (!parsed) {
+            filterError = error;
+        }
+        if (filterPattern.isEmpty() || !parsed) {
+            filterSelects = false;
             resultsModel->hasMoreRow = false;
             resultsModel->setStringList(QStringList());
+            updateFilterMessage();
             updateStatus();
 
             return;
         }
+        updateFilterMessage();
         filterWildcard = filterPattern.contains(QLatin1Char('*')) || filterPattern.contains(QLatin1Char('?'));
         if (filterWildcard) {
             filterExpression = QRegularExpression(QRegularExpression::wildcardToRegularExpression(filterPattern, QRegularExpression::UnanchoredWildcardConversion),
@@ -1491,6 +1518,51 @@ struct SceneGraphPanel::Implementation {
         return filterWalk.isOver() || filterCapped;
     }
 
+    void updateFilterMessage()
+    {
+        const int unloaded = filterPattern.isEmpty() ? 0 : filterWalk.getUnloadedBranchCount();
+        QString text;
+
+        if (!filterError.isEmpty()) {
+            text = filterError;
+        } else if (unloaded > 0) {
+            text = (unloaded == 1) ? SceneGraphPanel::tr("1 unloaded branch not searched: load it to search inside.")
+                                   : SceneGraphPanel::tr("%1 unloaded branches not searched: load them to search inside.").arg(unloaded);
+        }
+        filterMessage->setText(text);
+        filterMessage->setStyleSheet(filterError.isEmpty() ? QString() : QString::fromUtf8("QLabel { color: #e05050; }"));
+        filterMessage->setVisible(!text.isEmpty());
+        filter->setToolTip(filterError.isEmpty() ? filterToolTip() : filterError);
+        applyButton->setEnabled(filterWalk.hasExpression() && filterError.isEmpty());
+    }
+
+    static QString filterToolTip()
+    {
+        return SceneGraphPanel::tr("Text without /, { or % lists the prims whose names hold it; * and ? match any text and any character.\n"
+                                   "Text that starts with / or holds a {predicate} is a path expression, as prim pattern knobs take it: "
+                                   "/World/* selects the children of /World, //*Light* any prim whose name holds Light, at any depth, "
+                                   "//{kind:component} every component, /World//{isa:Mesh} the meshes below /World. "
+                                   "Separate patterns with spaces for their union, and combine them with &, - and ~.\n"
+                                   "Besides USD's predicates, {loaded:false} matches prims whose payload is unloaded and "
+                                   "{active:false} inactive prims. The matches are selected as they are found; "
+                                   "Apply To Node writes the expression to the prim pattern of the current node.");
+    }
+
+    // Selects the matches of an edited expression in the viewer, and their rows.
+    void selectFilterMatches()
+    {
+        const bool wasSyncing = syncingSelection;
+
+        syncingSelection = true;
+        if (sharesViewerSelection()) {
+            viewport->setSelection(filterMatches);
+        }
+        selectionOrder = filterMatches;
+        // Selecting the tree's rows can read long sibling lists; it waits until the tree shows.
+        treeSelectionOwed = true;
+        syncingSelection = wasSyncing;
+    }
+
     void showFilterResults()
     {
         QStringList rows = filterMatches;
@@ -1505,6 +1577,8 @@ struct SceneGraphPanel::Implementation {
         syncingSelection = wasSyncing;
         if (viewport && sharesViewerSelection()) {
             selectResults(viewport->getSelection());
+        } else if (filterSelects) {
+            selectResults(filterMatches);
         }
     }
 
@@ -1672,8 +1746,21 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
 
     _imp->filter = new QLineEdit(this);
     _imp->filter->setObjectName(QString::fromUtf8("sceneGraphFilter"));
-    _imp->filter->setPlaceholderText(tr("Filter by name (* and ? match any text and any character)"));
+    _imp->filter->setPlaceholderText(tr("Filter by name, or by a path expression such as //{kind:component}"));
+    _imp->filter->setToolTip(Implementation::filterToolTip());
     _imp->filter->setClearButtonEnabled(true);
+    _imp->applyButton = new QToolButton(this);
+    _imp->applyButton->setObjectName(QString::fromUtf8("sceneGraphApplyToNode"));
+    _imp->applyButton->setText(tr("Apply To Node"));
+    _imp->applyButton->setToolTip(tr("Writes the filter's path expression to the prim pattern of the current node, "
+                                     "the one whose settings were opened last, as one undoable edit."));
+    _imp->applyButton->setEnabled(false);
+    _imp->filterMessage = new QLabel(this);
+    _imp->filterMessage->setObjectName(QString::fromUtf8("sceneGraphFilterMessage"));
+    _imp->filterMessage->setContentsMargins(4, 0, 4, 0);
+    _imp->filterMessage->setWordWrap(true);
+    _imp->filterMessage->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    _imp->filterMessage->setVisible(false);
     _imp->changedHereButton = new QToolButton(this);
     _imp->changedHereButton->setObjectName(QString::fromUtf8("sceneGraphChangedHere"));
     _imp->changedHereButton->setText(tr("Changed Here"));
@@ -1684,6 +1771,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     filterLayout->setContentsMargins(0, 0, 2, 0);
     filterLayout->setSpacing(4);
     filterLayout->addWidget(_imp->filter, 1);
+    filterLayout->addWidget(_imp->applyButton);
     filterLayout->addWidget(_imp->changedHereButton);
     _imp->resetDrawStatesButton = new QToolButton(this);
     _imp->resetDrawStatesButton->setObjectName(QString::fromUtf8("sceneGraphResetDrawStates"));
@@ -1692,6 +1780,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->resetDrawStatesButton->setEnabled(false);
     filterLayout->addWidget(_imp->resetDrawStatesButton);
     layout->addLayout(filterLayout);
+    layout->addWidget(_imp->filterMessage);
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, this);
     splitter->setChildrenCollapsible(false);
@@ -1791,6 +1880,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->filter, &QLineEdit::textChanged, &_imp->filterDebounce, qOverload<>(&QTimer::start));
     QObject::connect(&_imp->filterDebounce, &QTimer::timeout, this, &SceneGraphPanel::onFilterEdited);
     QObject::connect(&_imp->filterStep, &QTimer::timeout, this, &SceneGraphPanel::onFilterStep);
+    QObject::connect(_imp->applyButton, &QToolButton::clicked, this, &SceneGraphPanel::onApplyToNode);
     QObject::connect(&_imp->inspectorRefresh, &QTimer::timeout, this, &SceneGraphPanel::refreshInspector);
     QObject::connect(_imp->resetDrawStatesButton, &QToolButton::clicked, this, [this]() {
         if (_imp->viewport) {
@@ -2293,9 +2383,22 @@ SceneGraphPanel::onResultActivated(const QModelIndex& index)
 void
 SceneGraphPanel::onFilterEdited()
 {
-    _imp->filterPattern = _imp->filter->text().trimmed();
+    const QString pattern = _imp->filter->text().trimmed();
+    const bool edited = (pattern != _imp->filterPattern);
+
+    _imp->filterPattern = pattern;
     _imp->filterCap = kFilterCap;
+    _imp->filterSelects = isExpressionFilter(pattern) && (edited || _imp->filterSelects);
     _imp->startFilter();
+}
+
+void
+SceneGraphPanel::onApplyToNode()
+{
+    if (!_imp->filterWalk.hasExpression() || !_imp->filterError.isEmpty()) {
+        return;
+    }
+    SceneSelectionActions::applyPatternToCurrentNode(_imp->gui, _imp->filterPattern.toStdString());
 }
 
 void
@@ -2307,8 +2410,15 @@ SceneGraphPanel::onFilterStep()
         _imp->filterStep.stop();
     }
     if (over || (_imp->filterMatches.size() != _imp->resultsModel->rowCount())) {
+        if (_imp->filterSelects) {
+            _imp->selectFilterMatches();
+        }
         _imp->showFilterResults();
     }
+    if (over) {
+        _imp->filterSelects = false;
+    }
+    _imp->updateFilterMessage();
     _imp->publishState();
 }
 

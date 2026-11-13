@@ -256,6 +256,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class ViewerCurrentFrameRequestScheduler;
     friend class GpuPlacementPlanner;
+    friend struct ViewerInstanceTestAccess;
 
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
@@ -492,6 +493,19 @@ public:
      **/
     void disconnectTextureAfterRender(int index, bool clearRod, U64 renderAge);
 
+    /**
+     * @brief A render request that will not produce an image because it failed outside the
+     * render itself (an exception, a lost UI context): like renderEndedWithoutImage(), and the
+     * render also leaves the viewer's list of ongoing renders.
+     **/
+    void renderFailed(int textureIndex, U64 renderAge);
+
+    /**
+     * @brief A render request that ended aborted or with no image to show. It counts as shown
+     * unless a newer request exists, in which case that one decides what the viewer shows.
+     **/
+    void renderEndedWithoutImage(int textureIndex, U64 renderAge);
+
     double getGain() const WARN_UNUSED_RETURN;
 
     unsigned int getMipmapLevel() const WARN_UNUSED_RETURN;
@@ -524,6 +538,11 @@ public:
 
     bool isLatestRender(int textureIndex, U64 renderAge) const;
 
+    /**
+     * @brief True while the image shown is older than the newest render requested on either input.
+     * A render that failed counts as shown, so a failure with nothing newer queued is not stale.
+     **/
+    bool isStale() const;
 
     void setDisplayChannels(DisplayChannelsEnum channels, bool bothInputs);
 
@@ -735,6 +754,10 @@ Q_SIGNALS:
     void availableComponentsChanged();
 
     void disconnectTextureRequest(int index,bool clearRoD);
+
+    // Emitted queued, so it is safe for it to originate on a render thread. The argument is
+    // the state the viewer entered.
+    void staleChanged(bool stale);
 
     void viewerRenderingStarted();
     void viewerRenderingEnded();

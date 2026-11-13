@@ -293,6 +293,9 @@ Edge::setLabel(const QString &label)
 void
 Edge::turnOnRenderingColor()
 {
+    if (_imp->useRenderingColor) {
+        return;
+    }
     _imp->useRenderingColor = true;
     appearanceChanged();
 }
@@ -300,6 +303,9 @@ Edge::turnOnRenderingColor()
 void
 Edge::turnOffRenderingColor()
 {
+    if (!_imp->useRenderingColor) {
+        return;
+    }
     _imp->useRenderingColor = false;
     appearanceChanged();
 }

@@ -369,6 +369,9 @@ ViewerInstance::ViewerInstance(NodePtr node)
 
     setSupportsRenderScaleMaybe(EffectInstance::eSupportsYes);
 
+    _imp->staleNotifier = [this](bool stale) {
+        QMetaObject::invokeMethod(this, [this, stale]() { Q_EMIT staleChanged(stale); }, Qt::QueuedConnection);
+    };
     _imp->gpuPlacementPlanner = std::make_shared<GpuPlacementPlanner>(this);
 
     QObject::connect( this, SIGNAL(disconnectTextureRequest(int,bool)), this, SLOT(executeDisconnectTextureRequestOnMainThread(int,bool)) );
@@ -2769,6 +2772,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 } else {
                     ///The drawing is already up to date: all changes have been taken into account for this event
                     args[i].reset();
+                    renderEndedWithoutImage(i, abortInfo->getRenderAge());
 
                     return eViewerRenderRetCodeRedraw;
                 }
@@ -2799,6 +2803,9 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
 
 
         if ( (status[i] == eViewerRenderRetCodeFail) || (status[i] == eViewerRenderRetCodeBlack) ) {
+            // The texture is cleared whatever renders are still running, so this counts as shown and an older
+            // running render must not draw over it; a newer request still has a higher age and stays stale.
+            _imp->checkAndUpdateDisplayAge(i, abortInfo->getRenderAge());
             disconnectTextureRequest(i, status[i] == eViewerRenderRetCodeFail);
         } else {
             assert(args[i] && args[i]->params);
@@ -3622,6 +3629,7 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     ScenePayload scene;
     std::string error;
     EffectInstance::RenderRoIRetCode code;
+    EffectInstance::takeLastPullFresh();
     try {
         code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view), &scene, &error);
     } catch (const std::exception& e) {
@@ -3630,8 +3638,13 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     } catch (...) {
         code = EffectInstance::eRenderRoIRetCodeFailed;
     }
+    if (EffectInstance::takeLastPullFresh() && (code == EffectInstance::eRenderRoIRetCodeOk)) {
+        getNode()->noteInputExecution(inArgs.activeInputIndex);
+    }
 
     if (code == EffectInstance::eRenderRoIRetCodeAborted) {
+        renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
+
         return eViewerRenderRetCodeRedraw;
     }
 
@@ -3766,6 +3779,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
     ///Check that we were not aborted already
     if (!isSequentialRender && ((activeInputNode->getHashValue() != inArgs.activeInputHash) || (inArgs.params->time != getTimeline()->currentFrame()))) {
+        renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
         return eViewerRenderRetCodeRedraw;
     }
 
@@ -3810,7 +3825,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         return eViewerRenderRetCodeBlack;
     }
 
-    EffectInstance::NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), inArgs.activeInputIndex);
     std::vector<RectI> splitRoi;
     if (inArgs.isDoingPartialUpdates) {
         for (std::list<UpdateViewerParams::CachedTile>::iterator it = inArgs.params->tiles.begin(); it != inArgs.params->tiles.end(); ++it) {
@@ -3862,6 +3876,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         GpuDeviceImagePtr deviceColor;
 #endif
         bool hasDeviceColor = false;
+        // Whether the input's pixels were computed for this render rather than taken from a cache.
+        bool inputFresh = false;
 
         // If an exception occurs here it is probably fatal, since
         // it comes from Natron itself. All exceptions from plugins are already caught
@@ -3888,7 +3904,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                            inArgs.params->time);
                 DeepImagePtr deepImage;
                 std::list<ImagePtr> flattened;
+                EffectInstance::takeLastPullFresh();
                 retCode = inArgs.activeInputToRender->renderDeepRoIFlattened(deepArgs, requestedComponents, &flattened, &deepImage);
+                inputFresh = EffectInstance::takeLastPullFresh();
                 if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !flattened.empty()) {
                     // Two layers only for the matte overlay, which requested the alpha layer first.
                     if (flattened.size() == 2) {
@@ -3920,6 +3938,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                         placementBuilder->finishGraph(retCode, future->getRegionFallbacks(), frameContext ? &renderedNodes : nullptr);
                     }
                     layers = future->getRootPlanes();
+                    inputFresh = frameContext && frameContext->hasFreshOutput(inArgs.activeInputToRender->getNode().get(), inArgs.params->time, view);
                     if (const SchedulerResultHook hook = schedulerResultHook()) {
                         hook(frameContext, &layers);
                     }
@@ -3967,7 +3986,13 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                        this,
                                                                        eStorageModeRAM /*returnStorage*/,
                                                                        inArgs.params->time));
+                    EffectInstance::takeLastRenderExecuted();
+                    EffectInstance::takeLastPullFresh();
                     retCode = inArgs.activeInputToRender->renderRoI(*renderArgs, &layers);
+                    inputFresh = EffectInstance::takeLastPullFresh();
+                    if (EffectInstance::takeLastRenderExecuted()) {
+                        inArgs.activeInputToRender->getNode()->noteExecution(Node::eExecutionDeviceCpu);
+                    }
                 }
             }
             // Either rendering failed or we have 2 layers (alpha mask and color image) or we have a single layer (color image)
@@ -4008,13 +4033,21 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                        for example when an effect returns a NULL RoD at some point. Don't fail but
                        display a black image
                      */
+                    renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                     return eViewerRenderRetCodeRedraw;
                 }
+            }
+            getNode()->noteExecution(hasDeviceColor ? Node::eExecutionDeviceGpu : Node::eExecutionDeviceCpu);
+            if (inputFresh) {
+                getNode()->noteInputExecution(inArgs.activeInputIndex);
             }
         } catch (...) {
             ///If the plug-in was aborted, this is probably not a failure due to render but because of abortion.
             ///Don't forward the exception in that case.
             if ( inArgs.activeInputToRender->aborted() ) {
+                renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                 return eViewerRenderRetCodeRedraw;
             }
             throw;
@@ -4232,6 +4265,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             const RectI tileBounds(0, 0, inArgs.params->tileSize, inArgs.params->tileSize);
             assert(!tileBounds.isNull());
             if (tileBounds.isNull()) {
+                renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                 return eViewerRenderRetCodeRedraw;
             }
             std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
@@ -6575,6 +6610,27 @@ ViewerInstance::isLatestRender(int textureIndex,
                                U64 renderAge) const
 {
     return _imp->isLatestRender(textureIndex, renderAge);
+}
+
+bool
+ViewerInstance::isStale() const
+{
+    return _imp->isStale();
+}
+
+void
+ViewerInstance::renderFailed(int textureIndex,
+                             U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
+    _imp->removeOngoingRender(textureIndex, renderAge);
+}
+
+void
+ViewerInstance::renderEndedWithoutImage(int textureIndex,
+                                        U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
 }
 
 void

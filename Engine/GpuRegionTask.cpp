@@ -183,13 +183,17 @@ renderMembersOnCpu(const FrameRenderContextPtr& context,
         const FrameGraph::Task& task = graph.tasks[m];
         std::map<ImageLayerDesc, ImagePtr> planes;
         EffectInstance::takeLastRenderCacheState();
+        EffectInstance::takeLastRenderExecuted();
         const EffectInstance::RenderRoIRetCode code = RenderScheduler::renderTaskOnCpu(graph, m, eStorageModeRAM, &planes);
+        const EffectInstance::RenderCacheStateEnum cacheState = EffectInstance::takeLastRenderCacheState();
+        const bool executed = EffectInstance::takeLastRenderExecuted();
         if (report) {
-            report->memberCache.push_back(EffectInstance::takeLastRenderCacheState());
+            report->memberCache.push_back(cacheState);
         }
         if (code != EffectInstance::eRenderRoIRetCodeOk) {
             return code;
         }
+        RenderScheduler::noteTaskRanOnCpu(*context, graph, m, cacheState, executed);
         for (int d : task.dependencies) {
             if (graph.tasks[d].regionId == regionIndex) {
                 store.release(graph.tasks[d].key);
@@ -1347,6 +1351,23 @@ private:
         return true;
     }
 
+    // segment holds indices in _members; the report is in Region::members order.
+    void noteRanOnDevice(const std::vector<int>& segment)
+    {
+        if (!_report || segment.empty()) {
+            return;
+        }
+        if (_report->memberRanOnDevice.size() != _region.members.size()) {
+            _report->memberRanOnDevice.assign(_region.members.size(), 0);
+        }
+        for (int i : segment) {
+            const int position = _position[_members[i].task];
+            if (position >= 0) {
+                _report->memberRanOnDevice[position] = 1;
+            }
+        }
+    }
+
     // Splits ns evenly among the members of segment, for device time no timestamp divides.
     void chargeEvenly(const std::vector<int>& segment,
                       long long ns)
@@ -1445,6 +1466,7 @@ private:
             if (!status) {
                 return failGpu(segment.empty() ? -1 : _members[segment.front()].task, "the device work failed", status);
             }
+            noteRanOnDevice(segment);
             if (timed) {
                 measured = segmentDeviceNs(segment.size(), &memberNs, &deviceNs, &stamps);
             }
@@ -2009,6 +2031,7 @@ private:
                 return failGpu(taskOf(segment), "the device work failed", status);
             }
             segment.submitted = true;
+            noteRanOnDevice(segment.members);
             previous = segment.done;
         }
 
@@ -2741,6 +2764,7 @@ private:
 
             return EffectInstance::eRenderRoIRetCodeFailed;
         }
+        noteRanOnDevice(_stripSegments[flight->index]);
         flight->computeDone = done;
 
         flight->handles.assign(_slots.size(), gpu::GpuBufferHandle());
@@ -3450,8 +3474,11 @@ runGpuRegion(const FrameRenderContextPtr& context,
         }
         for (;;) {
             const bool recordTransfers = report->recordTransfers;
+            std::vector<char> ranOnDevice;
+            ranOnDevice.swap(report->memberRanOnDevice);
             *report = RenderScheduler::RegionReport();
             report->recordTransfers = recordTransfers;
+            report->memberRanOnDevice.swap(ranOnDevice);
             RegionRun::FailureKind kind;
             int rows = 0;
             int inFlight = 1;

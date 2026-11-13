@@ -902,6 +902,10 @@ private:
     QGraphicsSimpleTextItem* _persistentMessage;
     NodeGraphRectItem* _stateIndicator;
     bool _stateIndicatorSelected; //< the selection refreshStateIndicator() last showed
+    // Whether the node executed on each device since the refresh before the last one, as refreshRenderingIndicator()
+    // took the counts.
+    bool _ranOnCpu = false;
+    bool _ranOnGpu = false;
     std::uint64_t _stackingSerial = 0;
 
     QGraphicsItem* edgeParent() const;

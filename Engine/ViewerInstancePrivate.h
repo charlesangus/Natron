@@ -374,6 +374,7 @@ public:
         }
         lastRequest[texIndex] = info;
         lastRequestSequential[texIndex] = isSequential;
+        updateStaleLocked();
 
         return info;
     }
@@ -424,8 +425,67 @@ public:
             return false;
         }
         displayAge[texIndex] = age;
+        updateStaleLocked();
 
         return true;
+    }
+
+    /**
+     * @brief Same as checkAndUpdateDisplayAge() for a render that ended without an image and was
+     * not failed or black, but only when no newer request exists: a newer one is still on its way
+     * to the display, and raising the display age past an older render that is still running would
+     * make the display drop it.
+     **/
+    bool checkAndUpdateDisplayAgeIfNewest(int texIndex,
+                                          U64 age)
+    {
+        QMutexLocker k(&renderAgeMutex);
+
+        const U64 next = (age == std::numeric_limits<U64>::max()) ? 0 : age + 1;
+        if ((next != renderAge[texIndex]) || (age <= displayAge[texIndex])) {
+            return false;
+        }
+        displayAge[texIndex] = age;
+        updateStaleLocked();
+
+        return true;
+    }
+
+    /**
+     * @brief True while either input has a request newer than the last one it displayed or
+     * failed. renderAge is the age the next request will get, so the newest request is renderAge - 1.
+     **/
+    bool isStale() const
+    {
+        QMutexLocker k(&renderAgeMutex);
+
+        return computeStaleLocked();
+    }
+
+    // Called with renderAgeMutex held. The notifier only posts a queued event, so it never
+    // runs a receiver under the lock, and posting under it keeps transitions in order.
+    void updateStaleLocked()
+    {
+        const bool stale = computeStaleLocked();
+
+        if (stale == notifiedStale) {
+            return;
+        }
+        notifiedStale = stale;
+        if (staleNotifier) {
+            staleNotifier(stale);
+        }
+    }
+
+    bool computeStaleLocked() const
+    {
+        for (int i = 0; i < 2; ++i) {
+            if (renderAge[i] > 1 && renderAge[i] - 1 > displayAge[i]) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     bool addOngoingRender(int texIndex,
@@ -590,6 +650,8 @@ public:
     mutable QMutex renderAgeMutex; // protects renderAge lastRenderAge currentRenderAges
     U64 renderAge[2];
     U64 displayAge[2];
+    bool notifiedStale = false; // protected by renderAgeMutex
+    std::function<void(bool)> staleNotifier; // set once at construction, before any request
 
     //A priority list recording the ongoing renders. This is used for abortable renders (i.e: when moving a slider or scrubbing the timeline)
     //The purpose of this is to always at least keep 1 active render (non abortable) and abort more recent renders that do no longer make sense

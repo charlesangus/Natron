@@ -300,9 +300,22 @@ void mapSharedMaterialReach(SceneGraftMemo* memo,
                             std::vector<std::string>* out);
 
 /**
+ * @brief Sets *mapped to the context target evaluates on when consumer evaluates on ctx: ctx is
+ * mapped through each node between them by getSceneInputContext(), and the sets of several routes
+ * are united. False, leaving *mapped alone, when no scene input chain leads from consumer to
+ * target.
+ **/
+bool mapContextDownToNode(const EffectInstance* consumer,
+                          const EffectInstance* target,
+                          const SceneEvaluationContext& ctx,
+                          double time,
+                          ViewIdx view,
+                          SceneEvaluationContext* mapped);
+
+/**
  * @brief The context of the viewer showing effect, for work on effect's scene done outside an
- * evaluation: the active viewer when its scene input reaches effect, else the first viewer whose
- * does. False, leaving *context alone, when no viewer shows effect. Main thread.
+ * evaluation, mapped down to effect's own paths: the active viewer when its scene input reaches
+ * effect, else the first viewer whose does. False, leaving *context alone, when no viewer shows effect. Main thread.
  **/
 bool getShowingViewerContext(EffectInstance* effect,
                              SceneEvaluationContext* context);

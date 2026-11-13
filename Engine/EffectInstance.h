@@ -1895,6 +1895,15 @@ public:
                                    EffectInstancePtr* inputToTransform,
                                    Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
+    // getSceneInputContext() for a caller that maps a context through this node outside evaluateScene().
+    SceneEvaluationContext getSceneInputContext_public(int inputNb,
+                                                       const SceneEvaluationContext& ctx,
+                                                       double time,
+                                                       ViewIdx view) const
+    {
+        return getSceneInputContext(inputNb, ctx, time, view);
+    }
+
 protected:
 /**
  * @brief Can be overloaded to indicates whether the effect is an identity, i.e it doesn't produce

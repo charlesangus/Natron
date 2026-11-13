@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdint>
 #include <list>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -1071,6 +1072,85 @@ graftSharedMaterial(const ScenePayload& material,
     return graftMaterial(material, args, memo, graft, errorMessage);
 }
 
+namespace {
+    bool
+    reachesTarget(const EffectInstance* consumer,
+                  const EffectInstance* target,
+                  std::map<const EffectInstance*, bool>* memo)
+    {
+        if (consumer == target) {
+            return true;
+        }
+        const std::map<const EffectInstance*, bool>::const_iterator known = memo->find(consumer);
+        if (known != memo->end()) {
+            return known->second;
+        }
+        bool reaches = false;
+        const int nInputs = consumer->getNInputs();
+        for (int i = 0; (i < nInputs) && !reaches; ++i) {
+            const EffectInstancePtr input = consumer->getInput(i);
+            reaches = input && input->producesSceneData() && reachesTarget(input.get(), target, memo);
+        }
+        (*memo)[consumer] = reaches;
+
+        return reaches;
+    }
+
+    // Unites into *united the sets target would evaluate on through every route from consumer.
+    void
+    mapThroughRoutes(const EffectInstance* consumer,
+                     const EffectInstance* target,
+                     const SceneEvaluationContext& ctx,
+                     double time,
+                     ViewIdx view,
+                     std::map<const EffectInstance*, bool>* memo,
+                     bool* hasRoute,
+                     SceneLoadSetPtr* united)
+    {
+        if (consumer == target) {
+            *united = *hasRoute ? SceneLoadSet::unite(*united, ctx.loadSet) : ctx.loadSet;
+            *hasRoute = true;
+
+            return;
+        }
+        const int nInputs = consumer->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            const EffectInstancePtr input = consumer->getInput(i);
+            if (!input || !input->producesSceneData() || !reachesTarget(input.get(), target, memo)) {
+                continue;
+            }
+            SceneEvaluationContext inputContext;
+            try {
+                inputContext = consumer->getSceneInputContext_public(i, ctx, time, view);
+            } catch (...) {
+                // A mapping that fails is one nothing is known about, which is every payload.
+                inputContext = SceneEvaluationContext(ctx.id, SceneLoadSetPtr());
+            }
+            mapThroughRoutes(input.get(), target, inputContext, time, view, memo, hasRoute, united);
+        }
+    }
+} // anonymous namespace
+
+bool
+mapContextDownToNode(const EffectInstance* consumer,
+                     const EffectInstance* target,
+                     const SceneEvaluationContext& ctx,
+                     double time,
+                     ViewIdx view,
+                     SceneEvaluationContext* mapped)
+{
+    std::map<const EffectInstance*, bool> memo;
+    if (!consumer || !target || !reachesTarget(consumer, target, &memo)) {
+        return false;
+    }
+    bool hasRoute = false;
+    SceneLoadSetPtr united;
+    mapThroughRoutes(consumer, target, ctx, time, view, &memo, &hasRoute, &united);
+    *mapped = SceneEvaluationContext(ctx.id, united);
+
+    return hasRoute;
+}
+
 bool
 getShowingViewerContext(EffectInstance* effect,
                         SceneEvaluationContext* context)
@@ -1093,7 +1173,10 @@ getShowingViewerContext(EffectInstance* effect,
             break;
         }
     }
-    *context = shown->getSceneEvaluationContext();
+    const SceneEvaluationContext viewerContext = shown->getSceneEvaluationContext();
+    if (!mapContextDownToNode(shown, effect, viewerContext, effect->getCurrentTime(), ViewIdx(0), context)) {
+        *context = viewerContext;
+    }
 
     return true;
 }

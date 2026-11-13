@@ -49,6 +49,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -1479,4 +1480,72 @@ TEST_F(SceneLoadSetCoverageTest, ASecondMenuRefreshSupersedesTheFirst)
     EXPECT_TRUE(effect->applyCameraMenu(second));
     EXPECT_EQ((std::vector<std::string> { "/World/Block_0/B_0/Cam", kSceneMenuUnsearchedId }), entryIds(menu));
     EXPECT_FALSE(effect->applyCameraMenu(first));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AVariantMenuAboveAGraftSearchesTheSetMappedToItsOwnPaths)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = variant(source, "/World//B_*");
+    NodePtr graft = xformPrim(node, "/Grp");
+    ASSERT_TRUE(source && node && graft);
+    const SceneEvaluationContext viewer(SceneEvaluationContext::makeId(), loadingOnly({ "/Grp/World/Block_0" }));
+
+    SceneEvaluationContext mapped;
+    ASSERT_TRUE(SceneNodeAuthoring::mapContextDownToNode(graft->getEffectInstance().get(), node->getEffectInstance().get(), viewer, 1., ViewIdx(0), &mapped));
+    ASSERT_TRUE(mapped.loadSet != nullptr);
+    EXPECT_TRUE(*mapped.loadSet == *loadingOnly({ "/World/Block_0" }));
+
+    // The menu job borrows the variant's input on the context: the other block's buildings stay unsearched.
+    const SceneMenuJob job(false);
+    ScenePayload scene;
+    SceneQueryPool::Lease lease;
+    ASSERT_TRUE(SceneNodeAuthoring::borrowMenuScene(source->getEffectInstance(), 1., mapped, job, &scene, &lease));
+    EXPECT_EQ((std::size_t)2, SceneNodeAuthoring::countMenuUnsearched(lease.getStage(), mapped));
+    SceneQueryPool::Lease unmappedLease;
+    ScenePayload unmappedScene;
+    ASSERT_TRUE(SceneNodeAuthoring::borrowMenuScene(source->getEffectInstance(), 1., viewer, job, &unmappedScene, &unmappedLease));
+    EXPECT_EQ((std::size_t)4, SceneNodeAuthoring::countMenuUnsearched(unmappedLease.getStage(), viewer));
+}
+
+TEST_F(SceneLoadSetCoverageTest, ACentrePivotAboveAGraftUsesTheMappedSet)
+{
+    CarCity city(2, 2, true);
+    NodePtr source = reader(city);
+    NodePtr node = editTransform(source, "/World/Block_0/B_*");
+    NodePtr graft = xformPrim(node, "/Grp");
+    ASSERT_TRUE(source && node && graft);
+    USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+    ASSERT_TRUE(edit != nullptr);
+    const SceneEvaluationContext viewer(SceneEvaluationContext::makeId(), loadingOnly({ "/Grp/World/Block_0" }));
+
+    SceneEvaluationContext mapped;
+    ASSERT_TRUE(SceneNodeAuthoring::mapContextDownToNode(graft->getEffectInstance().get(), node->getEffectInstance().get(), viewer, 1., ViewIdx(0), &mapped));
+    std::shared_ptr<CentrePivotJob> job = centreIn(edit, node, &mapped);
+    ASSERT_EQ(CentrePivotJob::eStateDone, job->wait()) << job->getError();
+    double centre[3];
+    job->getCentre(&centre[0], &centre[1], &centre[2]);
+    for (int d = 0; d < 3; ++d) {
+        EXPECT_DOUBLE_EQ(0., centre[d]) << d;
+    }
+}
+
+TEST_F(SceneLoadSetCoverageTest, ADiamondOfGraftsUnitesTheSetsOfItsRoutes)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr left = xformPrim(source, "/Left");
+    NodePtr right = xformPrim(source, "/Right");
+    ASSERT_TRUE(source && left && right);
+    NodePtr joined = merge({ left, right });
+    ASSERT_TRUE(bool(joined));
+    const SceneEvaluationContext viewer(SceneEvaluationContext::makeId(), loadingOnly({ "/Left/World/Block_0", "/Right/World/Block_1" }));
+
+    SceneEvaluationContext mapped;
+    ASSERT_TRUE(SceneNodeAuthoring::mapContextDownToNode(joined->getEffectInstance().get(), source->getEffectInstance().get(), viewer, 1., ViewIdx(0), &mapped));
+    ASSERT_TRUE(mapped.loadSet != nullptr);
+    EXPECT_TRUE(*mapped.loadSet == *loadingOnly({ "/World/Block_0", "/World/Block_1" }));
+
+    SceneEvaluationContext unrelated;
+    EXPECT_FALSE(SceneNodeAuthoring::mapContextDownToNode(left->getEffectInstance().get(), joined->getEffectInstance().get(), viewer, 1., ViewIdx(0), &unrelated));
 }

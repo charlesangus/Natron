@@ -43,7 +43,12 @@ Natron session can read) to OpenEXR files in a `name_textures` folder beside
 `name.usda`, and points the texture paths at them, following Asset Paths. Each
 is `<node>_<layer>.exr` for an image that does not change over time, and
 `<node>_<layer>.####.exr`, one per frame of the range with its frame number, for
-one that does, the path time-sampled per frame. A texture spans the image's
+one that does, the path time-sampled per frame. A UDIM set, an image whose source
+declares its tiles, is written as a file per declared tile,
+`<node>_<layer>.<tile>.exr` (`<node>_<layer>.<tile>.####.exr` when it changes over
+time), each rendered for its tile, and its path becomes the matching `<UDIM>` path,
+such as `./name_textures/<node>_<layer>.<UDIM>.exr`. A tile that cannot be rendered
+is named in a warning and its file is not written. A texture spans the image's
 format and its data beyond it, overscan included. The files are half-float RGBA, ZIP-compressed, with straight colour rather than
 premultiplied, of the project's first view. They are written before the USD files,
 so a texture that fails leaves the earlier USD files as they were. Off, the

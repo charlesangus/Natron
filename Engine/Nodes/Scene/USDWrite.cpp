@@ -613,6 +613,7 @@ struct LiveTextureExport {
     LiveTextureSource source;
     // A frame whose URI it is.
     double frame = 0.;
+    // For a UDIM set, holds kLiveTextureUdimToken where each tile's file has its tile number.
     QString path;
     bool needed = false;
 };
@@ -635,7 +636,8 @@ fileNameOf(const std::string& name)
 /**
  * @brief Every URI sources author over their frames, keyed to the file in directory it is
  * exported to: <node>_<layer>.exr for a source that does not vary, else <node>_<layer>.<frame>.exr,
- * the frame padded to 4 digits.
+ * the frame padded to 4 digits. A UDIM set has a file per tile, <node>_<layer>.<tile>.exr or
+ * <node>_<layer>.<tile>.<frame>.exr, which its path names with the token for the tile.
  **/
 std::map<std::string, LiveTextureExport>
 planLiveTextureExports(const LiveTextureSourceList& sources,
@@ -651,7 +653,8 @@ planLiveTextureExports(const LiveTextureSourceList& sources,
             LiveTextureExport e;
             e.source = source;
             e.frame = frame;
-            e.path = source.varying ? QString::fromUtf8("%1.%2.exr").arg(stem).arg((int)source.getSourceFrame(frame), 4, 10, QLatin1Char('0')) : stem + QString::fromUtf8(".exr");
+            const QString base = source.isUdim() ? stem + QLatin1Char('.') + QString::fromUtf8(kLiveTextureUdimToken) : stem;
+            e.path = source.varying ? QString::fromUtf8("%1.%2.exr").arg(base).arg((int)source.getSourceFrame(frame), 4, 10, QLatin1Char('0')) : base + QString::fromUtf8(".exr");
             exports.insert(std::make_pair(source.getUri(frame), e));
         }
     }
@@ -1489,6 +1492,7 @@ USDWrite::writeFrameRange(int firstFrame,
     }
     // Before the files that name them, so that a failure leaves the earlier files whole, and after
     // the scene's layers are let go: a render may need to write to a scene of its own.
+    QStringList tileWarnings;
     for (const std::pair<const std::string, LiveTextureExport>& live : liveTextures) {
         if (!live.second.needed) {
             continue;
@@ -1497,6 +1501,28 @@ USDWrite::writeFrameRange(int firstFrame,
             return fail(tr("Cannot create the directory %1.").arg(texturesDir));
         }
         LiveTextureStore& store = LiveTextureStore::instance();
+        if (live.second.source.isUdim()) {
+            store.prepare(LiveTextureSourceList(1, live.second.source), live.second.frame);
+            for (const int tile : live.second.source.tiles) {
+                const std::string tileUri = live.second.source.getTileUri(live.second.frame, tile);
+                const LiveTextureBufferConstPtr tileBuffer = store.find(tileUri);
+                const std::string failure = store.getFailure(tileUri);
+                if (!tileBuffer || !failure.empty()) {
+                    tileWarnings.push_back(tr("The UDIM tile %1 of the live texture %2 could not be rendered, so its file is not written%3")
+                                               .arg(tile)
+                                               .arg(QString::fromStdString(live.first))
+                                               .arg(failure.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(failure)));
+                    continue;
+                }
+                QString tilePath = live.second.path;
+                tilePath.replace(QString::fromUtf8(kLiveTextureUdimToken), QString::number(tile));
+                std::string tileError;
+                if (!writeLiveTextureFile(tileBuffer, tilePath, &tileError)) {
+                    return fail(tr("Cannot write %1: %2").arg(tilePath).arg(QString::fromStdString(tileError)));
+                }
+            }
+            continue;
+        }
         LiveTextureBufferConstPtr buffer = store.find(live.first);
         if (!buffer) {
             store.prepare(LiveTextureSourceList(1, live.second.source), live.second.frame);
@@ -1554,7 +1580,7 @@ USDWrite::writeFrameRange(int firstFrame,
     mark.Clear();
 
     clearPersistentMessage(false);
-    QStringList warnings;
+    QStringList warnings = tileWarnings;
     if (!unexportedLiveTextures.empty()) {
         warnings.push_back(tr("%1 names %2 live textures, such as %3, which only this Natron session can read: "
                               "turn on Export Live Textures to write them beside it.")

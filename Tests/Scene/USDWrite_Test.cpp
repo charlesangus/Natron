@@ -26,6 +26,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usdShade/udimUtils.h>
 
 #include "Global/Macros.h"
 
@@ -57,6 +58,8 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -849,6 +852,96 @@ TEST_F(USDWriteLiveTextureTest, AStaticLiveTextureIsExportedOnce)
     ASSERT_TRUE(file.Get(&asset));
     EXPECT_EQ(std::string("./scene_textures/Constant1_rgba.exr"), asset.GetAssetPath());
     EXPECT_NEAR(0.1, centreRedOf(texturesDir + QString::fromUtf8("/Constant1_rgba.exr")), 1e-3);
+}
+
+// A USDMaterial whose Diffuse Color input is a Constant declaring tiles 1001 and 1002.
+class USDWriteUdimTest
+    : public USDWriteLiveTextureTest {
+protected:
+    NodePtr createUdimMaterial()
+    {
+        NodePtr material = createMaterial(false);
+        NodePtr modify = createNode(QString::fromUtf8(PLUGINID_NATRON_METADATAMODIFY));
+        if (!material || !modify) {
+            ADD_FAILURE() << "MetadataModify or USDMaterial is not registered";
+
+            return NodePtr();
+        }
+        NodePtr constant = material->getInput(kUSDMaterialInputDiffuseColor);
+        EXPECT_TRUE(modify->connectInput(constant, 0));
+        dynamic_cast<KnobChoice*>(modify->getKnobByName("operation1").get())->setValue((int)MetadataModify::eOperationSet);
+        dynamic_cast<KnobStringBase*>(modify->getKnobByName("key1").get())->setValue(std::string(kNatronMetadataKeyUdimTiles));
+        dynamic_cast<KnobChoice*>(modify->getKnobByName("type1").get())->setValue((int)MetadataModify::eValueTypeString);
+        dynamic_cast<KnobStringBase*>(modify->getKnobByName("stringValue1").get())->setValue(std::string("1001,1002"));
+        EXPECT_TRUE(material->connectInput(modify, kUSDMaterialInputDiffuseColor));
+
+        return material;
+    }
+};
+
+TEST_F(USDWriteUdimTest, ATileSetIsExportedOneFilePerTileUnderAUdimPath)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createUdimMaterial();
+    ASSERT_TRUE(bool(material));
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeFlattened, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+    EXPECT_FALSE(writer->hasPersistentMessage());
+
+    const QString texturesDir = tmp.path() + QString::fromUtf8("/scene_textures");
+    const QStringList written = fileNames(texturesDir);
+    ASSERT_EQ(2, written.size());
+    EXPECT_TRUE(written[0].endsWith(QString::fromUtf8(".1001.exr"))) << written[0].toStdString();
+    EXPECT_TRUE(written[1].endsWith(QString::fromUtf8(".1002.exr"))) << written[1].toStdString();
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    const PXR_NS::UsdAttribute file = diffuseFileOf(stage);
+    ASSERT_TRUE(bool(file));
+    PXR_NS::SdfAssetPath asset;
+    ASSERT_TRUE(file.Get(&asset));
+    const std::string prefix = "./scene_textures/";
+    const std::string assetPath = asset.GetAssetPath();
+    EXPECT_EQ(prefix, assetPath.substr(0, prefix.size())) << assetPath;
+    EXPECT_NE(std::string::npos, assetPath.find(".<UDIM>.exr")) << assetPath;
+    const std::vector<PXR_NS::UsdShadeUdimUtils::ResolvedPathAndTile> resolved = PXR_NS::UsdShadeUdimUtils::ResolveUdimTilePaths(assetPath, stage->GetRootLayer());
+    ASSERT_EQ((std::size_t)2, resolved.size());
+    EXPECT_EQ("1001", resolved[0].second);
+    EXPECT_EQ("1002", resolved[1].second);
+    for (const PXR_NS::UsdShadeUdimUtils::ResolvedPathAndTile& tile : resolved) {
+        EXPECT_NEAR(0.1, centreRedOf(QString::fromStdString(tile.first)), 1e-3) << tile.first;
+    }
+}
+
+TEST_F(USDWriteUdimTest, WithoutExportTheTileSetUriIsKeptWithAWarning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createUdimMaterial();
+    ASSERT_TRUE(bool(material));
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeLayered, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    getKnob<KnobBool>(writer, kUSDWriteParamExportLiveTextures)->setValue(false);
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+
+    EXPECT_FALSE(QFileInfo(tmp.path() + QString::fromUtf8("/scene_textures")).exists());
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    const PXR_NS::UsdAttribute file = diffuseFileOf(stage);
+    ASSERT_TRUE(bool(file));
+    PXR_NS::SdfAssetPath asset;
+    ASSERT_TRUE(file.Get(&asset));
+    const std::string uri = asset.GetAssetPath();
+    EXPECT_EQ(0u, uri.rfind(std::string(kLiveTextureScheme) + "://", 0)) << uri;
+    EXPECT_NE(std::string::npos, uri.find(kLiveTextureUdimToken)) << uri;
+    ASSERT_TRUE(writer->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    writer->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromStdString(uri))) << message.toStdString();
 }
 
 TEST_F(USDWriteLiveTextureTest, ATextureThatCannotBeWrittenLeavesNoUsdFile)

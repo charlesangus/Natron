@@ -60,7 +60,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -71,6 +74,12 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#include "Gpu/GpuTestDevice.h"
+#endif
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -222,6 +231,38 @@ public:
     std::size_t stat(const char* key) const
     {
         return VtDictionaryGet<std::size_t>(_engine->GetRenderStats(), key, VtDefault = std::size_t(0));
+    }
+
+    std::string textStat(const char* key) const
+    {
+        return VtDictionaryGet<std::string>(_engine->GetRenderStats(), key, VtDefault = std::string());
+    }
+
+    void setDevice(const char* device)
+    {
+        _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(device)));
+    }
+
+    // A failed frame surfaces as the next Render() throwing. Returns its message, or empty when the
+    // frame converged instead.
+    std::string renderError()
+    {
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+
+        while (std::chrono::steady_clock::now() < end) {
+            try {
+                renderWithoutChecks();
+            } catch (const std::runtime_error& e) {
+                return e.what();
+            }
+            if (_engine->IsConverged()) {
+                return std::string();
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ADD_FAILURE() << "the frame neither converged nor failed";
+
+        return std::string();
     }
 
     void movePoint(const char* path,
@@ -762,3 +803,206 @@ TEST(NatronUtilityRender, RestartingAfterAFinishedFrameRedrawsIt)
     render.render();
     EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
 }
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+class ScopedEnv {
+public:
+    ScopedEnv(const char* name,
+              const char* value)
+        : _name(name)
+    {
+        const char* old = std::getenv(name);
+
+        _hadOld = old != nullptr;
+        if (old) {
+            _old = old;
+        }
+        ::setenv(name, value, 1);
+    }
+
+    ~ScopedEnv()
+    {
+        if (_hadOld) {
+            ::setenv(_name.c_str(), _old.c_str(), 1);
+        } else {
+            ::unsetenv(_name.c_str());
+        }
+    }
+
+private:
+    std::string _name;
+    std::string _old;
+    bool _hadOld;
+};
+
+// Has the delegate render on a runtime of the test's own, so that its options and environment hold.
+// Must outlive every UtilityRender of the test.
+class UtilityGpuRuntime {
+public:
+    // A non-zero poolBudget caps the buffer pool, so that the frame runs out of device memory.
+    explicit UtilityGpuRuntime(std::uint64_t poolBudget = 0)
+    {
+        gpu::GpuRuntimeOptions options;
+
+        options.device = gputest::deviceOptions();
+        options.pool.overrideBudgetBytes = poolBudget;
+        options.pipelines.directory = (std::filesystem::temp_directory_path() / "natron-utility-gpu-pipelines").string();
+        status = gpu::GpuRuntime::create(options, _runtime);
+        if (status) {
+            setUtilityGpuRuntimeForTesting(_runtime.get());
+        }
+    }
+
+    ~UtilityGpuRuntime()
+    {
+        setUtilityGpuRuntimeForTesting(nullptr);
+    }
+
+    std::string missingSupport() const
+    {
+        return WavefrontGpu::missingSupport(*_runtime);
+    }
+
+    gpu::GpuStatus status;
+
+private:
+    std::unique_ptr<gpu::GpuRuntime> _runtime;
+};
+
+const std::uint64_t kStarvedPoolBytes = 1024;
+} // anon namespace
+
+TEST(NatronUtilityRender, GpuDrawsTheRedCubeAsTheCpuDoes)
+{
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+    std::vector<GfVec4f> cpuColor;
+    std::vector<float> cpuDepth;
+    std::vector<int> cpuPrimId;
+    std::vector<int> cpuInstanceId;
+
+    render.setDevice(kUtilityDeviceCpu);
+    render.render();
+    EXPECT_EQ("CPU", render.textStat(kUtilityStatDevice));
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize; ++x) {
+            cpuColor.push_back(render.colorAt(x, y));
+            cpuDepth.push_back(render.windowDepthAt(x, y));
+            cpuPrimId.push_back(render.primIdAt(x, y));
+            cpuInstanceId.push_back(render.instanceIdAt(x, y));
+        }
+    }
+
+    render.setDevice(kUtilityDeviceGpu);
+    render.render();
+    EXPECT_EQ(0u, render.textStat(kUtilityStatDevice).rfind("GPU", 0)) << render.textStat(kUtilityStatDevice);
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+
+    std::size_t index = 0;
+
+    for (int y = 0; y < kRenderSize; ++y) {
+        for (int x = 0; x < kRenderSize; ++x, ++index) {
+            const GfVec4f color = render.colorAt(x, y);
+
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_NEAR(cpuColor[index][c], color[c], 1e-5) << "pixel " << x << ", " << y;
+            }
+            EXPECT_NEAR(cpuDepth[index], render.windowDepthAt(x, y), 1e-5) << "pixel " << x << ", " << y;
+            // Pixels on the face's diagonal may land on either of its triangles, by a tie broken
+            // differently on each device.
+            EXPECT_EQ(cpuPrimId[index] >= 0, render.primIdAt(x, y) >= 0) << "pixel " << x << ", " << y;
+            EXPECT_EQ(cpuInstanceId[index], render.instanceIdAt(x, y)) << "pixel " << x << ", " << y;
+        }
+    }
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
+}
+
+TEST(NatronUtilityRender, ForcedGpuWithoutRayQueryFailsNamingTheExtension)
+{
+    const ScopedEnv noRayQuery("NATRON_GPU_NO_RAY_QUERY", "1");
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.setDevice(kUtilityDeviceGpu);
+
+    const std::string error = render.renderError();
+
+    EXPECT_NE(std::string::npos, error.find("VK_KHR_ray_query")) << error;
+}
+
+TEST(NatronUtilityRender, AutoWithoutRayQueryRendersOnTheCpuWithoutAWarning)
+{
+    const ScopedEnv noRayQuery("NATRON_GPU_NO_RAY_QUERY", "1");
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.setDevice(kUtilityDeviceAuto);
+    render.render();
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
+    EXPECT_EQ("CPU", render.textStat(kUtilityStatDevice));
+    EXPECT_EQ(std::string(), render.textStat(kUtilityStatWarning));
+}
+
+TEST(NatronUtilityRender, AutoRendersOnTheCpuWhenTheGpuRunsOutOfMemory)
+{
+    UtilityGpuRuntime runtime(kStarvedPoolBytes);
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.setDevice(kUtilityDeviceAuto);
+    render.render();
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
+    EXPECT_EQ(-1, render.primIdAt(0, 0));
+    EXPECT_EQ("CPU", render.textStat(kUtilityStatDevice));
+
+    const std::string warning = render.textStat(kUtilityStatWarning);
+
+    EXPECT_NE(std::string::npos, warning.find("out of memory")) << warning;
+    EXPECT_NE(std::string::npos, warning.find(std::to_string(kStarvedPoolBytes))) << warning;
+}
+
+TEST(NatronUtilityRender, ForcedGpuOutOfMemoryFails)
+{
+    UtilityGpuRuntime runtime(kStarvedPoolBytes);
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.setDevice(kUtilityDeviceGpu);
+
+    const std::string error = render.renderError();
+
+    EXPECT_NE(std::string::npos, error.find(std::to_string(kStarvedPoolBytes))) << error;
+}
+#endif // NATRON_HAVE_GPU

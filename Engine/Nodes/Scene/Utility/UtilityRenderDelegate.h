@@ -31,6 +31,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include <pxr/imaging/hd/renderDelegate.h>
 
@@ -47,8 +48,20 @@
 #define kUtilityStatPointUpdates "utilityPointUpdates"
 #define kUtilityStatColorUpdates "utilityColorUpdates"
 #define kUtilityStatSceneVersion "utilitySceneVersion"
+// The device the last frame rendered on, as a std::string.
+#define kUtilityStatDevice "utilityDevice"
+// Why the last frame did not render on the device asked for, as a std::string; empty when it did.
+#define kUtilityStatWarning "utilityWarning"
+
+// Which device draws: a TfToken, one of the three values below.
+#define kUtilitySettingDevice "device"
+#define kUtilityDeviceAuto "auto"
+#define kUtilityDeviceGpu "gpu"
+#define kUtilityDeviceCpu "cpu"
 
 NATRON_NAMESPACE_ENTER
+
+class WavefrontGpu;
 
 /**
  * @brief What the delegate hands its prims when they sync.
@@ -60,7 +73,23 @@ public:
     virtual ~UtilityRenderParam();
 
     UtilityScene* scene() const;
+    // The CPU's executor.
     WavefrontExecutor* executor() const;
+    /**
+     * @brief The GPU's executor, made on the first call after none or a dropped one, so that a
+     * delegate made only to list its settings never touches the device. Null when the GPU cannot
+     * render, with unavailable saying why. Only the frame thread may call this or dropGpuExecutor(),
+     * and the executor lives until dropGpuExecutor() or the param goes.
+     **/
+    WavefrontGpu* gpuExecutor(std::string* unavailable);
+    // Gives the device's memory back, or lets the application recreate a lost device.
+    void dropGpuExecutor();
+
+    // What GetRenderStats() reports of the last frame. MT-safe.
+    void setFrameReport(const std::string& device,
+                        const std::string& warning);
+    void frameReport(std::string* device,
+                     std::string* warning) const;
 
     // What a running frame polls: set by stop() until restart(), and by cancelFrame() until the next
     // frame starts. MT-safe.
@@ -89,6 +118,14 @@ private:
 
     UtilityScene* _scene;
     WavefrontExecutor* _executor;
+    // Before _gpu, so that the executor goes before the runtime it was made on may.
+    std::shared_ptr<void> _gpuHold;
+#ifdef NATRON_HAVE_GPU
+    std::unique_ptr<WavefrontGpu> _gpu;
+#endif
+    mutable std::mutex _reportMutex;
+    std::string _reportDevice;
+    std::string _reportWarning;
     std::atomic<bool> _stop { false };
     std::atomic<bool> _cancel { false };
     std::atomic<bool> _frameRunning { false };
@@ -99,7 +136,8 @@ private:
 
 /**
  * @brief The Natron Utility render delegate: meshes and instancers become a UtilityScene that its
- * render passes draw on the CPU, on a thread of the delegate's between Render() calls. Poll
+ * render passes draw on the CPU or the GPU, as the device setting says, on a thread of the delegate's
+ * between Render() calls. Poll
  * IsConverged() for a finished frame, as for any delegate that renders in the background.
  **/
 class UtilityRenderDelegate : public PXR_NS::HdRenderDelegate {
@@ -134,6 +172,7 @@ public:
     virtual void DestroyBprim(PXR_NS::HdBprim* bprim) OVERRIDE;
     virtual void CommitResources(PXR_NS::HdChangeTracker* tracker) OVERRIDE;
     virtual PXR_NS::HdAovDescriptor GetDefaultAovDescriptor(const PXR_NS::TfToken& name) const OVERRIDE;
+    virtual PXR_NS::HdRenderSettingDescriptorList GetRenderSettingDescriptors() const OVERRIDE;
     virtual PXR_NS::VtDictionary GetRenderStats() const OVERRIDE;
     virtual bool IsStopSupported() const OVERRIDE;
     virtual bool IsStopped() const OVERRIDE;

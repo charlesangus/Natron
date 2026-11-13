@@ -50,6 +50,7 @@
 #include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -159,6 +160,31 @@ setBuffersConverged(const HdRenderPassAovBindingVector& bindings,
     }
 }
 
+void
+clearBuffers(const HdRenderPassAovBindingVector& bindings)
+{
+    for (const HdRenderPassAovBinding& binding : bindings) {
+        UtilityRenderBuffer* buffer = dynamic_cast<UtilityRenderBuffer*>(binding.renderBuffer);
+
+        if (buffer) {
+            buffer->clear(binding.clearValue);
+        }
+    }
+}
+
+std::string
+deviceSettingText(const VtValue& value)
+{
+    if (value.IsHolding<TfToken>()) {
+        return value.UncheckedGet<TfToken>().GetString();
+    }
+    if (value.IsHolding<std::string>()) {
+        return value.UncheckedGet<std::string>();
+    }
+
+    return value.IsEmpty() ? std::string(kUtilityDeviceAuto) : std::string();
+}
+
 bool
 buffersAreConverged(const HdRenderPassAovBindingVector& bindings)
 {
@@ -188,7 +214,7 @@ UtilityRenderPass::~UtilityRenderPass()
 bool
 UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
 {
-    return version == other.version && worldToView == other.worldToView && projection == other.projection
+    return device == other.device && version == other.version && worldToView == other.worldToView && projection == other.projection
         && sameWindow(window, other.window) && bindings == other.bindings;
 }
 
@@ -234,6 +260,17 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         scene->setRenderTags(renderTags);
     }
 
+    const std::string deviceText = deviceSettingText(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingDevice)));
+    Device device = Device::Auto;
+
+    if (deviceText == kUtilityDeviceGpu) {
+        device = Device::Gpu;
+    } else if (deviceText == kUtilityDeviceCpu) {
+        device = Device::Cpu;
+    } else if (deviceText != kUtilityDeviceAuto) {
+        throw std::runtime_error("The Utility renderer's device must be " kUtilityDeviceAuto ", " kUtilityDeviceGpu " or " kUtilityDeviceCpu ", not \"" + deviceText + "\"");
+    }
+
     WavefrontFrame frame;
 
     frame.window = renderWindow(*renderPassState);
@@ -247,6 +284,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
     FrameKey key;
 
+    key.device = device;
     key.version = scene->version();
     key.worldToView = frame.worldToView;
     key.projection = frame.projection;
@@ -281,13 +319,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         _converged.store(false);
         setBuffersConverged(bindings, false);
     }
-    for (const HdRenderPassAovBinding& binding : bindings) {
-        UtilityRenderBuffer* buffer = dynamic_cast<UtilityRenderBuffer*>(binding.renderBuffer);
-
-        if (buffer) {
-            buffer->clear(binding.clearValue);
-        }
-    }
+    clearBuffers(bindings);
 
     const std::shared_ptr<const UtilityScene::Snapshot> snapshot = std::make_shared<UtilityScene::Snapshot>(scene->snapshot());
 
@@ -309,15 +341,57 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     const int threads = std::max(1, appPTR->getNCPUsAvailableForEffect());
     const HdRenderPassAovBindingVector frameBindings = bindings;
 
-    (void)_renderParam->startFrame([this, snapshot, frame, frameBindings, threads]() {
+    (void)_renderParam->startFrame([this, snapshot, frame, frameBindings, threads, device]() {
         const std::atomic<bool>& cancel = _renderParam->cancelFlag();
         bool finished = false;
         std::string failure;
 
         try {
             AovFilm film(frameBindings);
+            std::string renderedOn = "CPU";
+            std::string warning;
+            bool onCpu = device == Device::Cpu;
 
-            finished = _renderParam->executor()->render(*snapshot, frame, film, cancel, threads);
+            if (!onCpu) {
+                std::string unavailable;
+                WavefrontGpu* gpu = _renderParam->gpuExecutor(&unavailable);
+
+                if (!gpu) {
+                    if (device == Device::Gpu) {
+                        throw std::runtime_error("The Utility renderer cannot render on the GPU: " + unavailable);
+                    }
+                    onCpu = true;
+                }
+#ifdef NATRON_HAVE_GPU
+                else {
+                    renderedOn = "GPU (" + gpu->deviceName() + ")";
+                    finished = gpu->render(*snapshot, frame, film, cancel, threads);
+
+                    const Tracer::Outcome outcome = finished ? Tracer::Outcome() : gpu->status();
+                    const bool outOfMemory = outcome.status == Tracer::Status::OutOfMemory;
+                    const bool lost = outcome.status == Tracer::Status::DeviceLost;
+
+                    if (outOfMemory || lost) {
+                        _renderParam->dropGpuExecutor();
+                    }
+                    const bool failed = outcome.status != Tracer::Status::Ok && outcome.status != Tracer::Status::Stopped;
+
+                    if (failed && device == Device::Auto && (outOfMemory || lost)) {
+                        warning = std::string(outOfMemory ? "The GPU ran out of memory" : "The GPU was lost") + ", so the frame was rendered on the CPU: " + outcome.message;
+                        renderedOn = "CPU";
+                        onCpu = true;
+                        // The GPU's batches that landed before the failure must not show through.
+                        clearBuffers(frameBindings);
+                    } else if (failed) {
+                        throw std::runtime_error("The Utility renderer failed on the GPU: " + outcome.message);
+                    }
+                }
+#endif
+            }
+            if (onCpu) {
+                finished = _renderParam->executor()->render(*snapshot, frame, film, cancel, threads);
+            }
+            _renderParam->setFrameReport(renderedOn, warning);
         } catch (const std::exception& e) {
             failure = e.what();
             if (failure.empty()) {

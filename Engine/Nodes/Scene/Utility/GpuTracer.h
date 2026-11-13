@@ -62,23 +62,6 @@ NATRON_NAMESPACE_ENTER
  **/
 class GpuTracer : public Tracer {
 public:
-    enum class Status {
-        Ok,
-        // stop ended the last update early.
-        Stopped,
-        // The device could not hold the structures or a batch; the message gives the sizes involved.
-        OutOfMemory,
-        // The device lacks ray queries, or the kernels could not be created for it.
-        Unsupported,
-        DeviceLost,
-        Failed,
-    };
-
-    struct Outcome {
-        Status status = Status::Ok;
-        std::string message;
-    };
-
     GpuTracer(gpu::GpuKernelRegistry& registry,
               gpu::GpuBufferPool& pool);
     virtual ~GpuTracer();
@@ -94,9 +77,7 @@ public:
     virtual void occluded(const RayBatch& rays,
                           std::uint8_t* blocked) const OVERRIDE;
     virtual Stats stats() const OVERRIDE;
-
-    // The first failure since the last update() began, or the reason the tracer cannot run at all.
-    Outcome status() const;
+    virtual Outcome status() const OVERRIDE;
 
     /**
      * @brief Records a trace of count rays already on the device. rays holds the eight arrays of

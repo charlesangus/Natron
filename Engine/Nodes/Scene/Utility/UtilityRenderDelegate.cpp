@@ -40,6 +40,11 @@
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderPass.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -59,6 +64,7 @@ UtilityRenderParam::UtilityRenderParam(UtilityScene* scene,
 UtilityRenderParam::~UtilityRenderParam()
 {
     cancelFrameAndWait();
+    dropGpuExecutor();
 }
 
 UtilityScene*
@@ -71,6 +77,78 @@ WavefrontExecutor*
 UtilityRenderParam::executor() const
 {
     return _executor;
+}
+
+WavefrontGpu*
+UtilityRenderParam::gpuExecutor(std::string* unavailable)
+{
+#ifdef NATRON_HAVE_GPU
+    if (_gpu) {
+        return _gpu.get();
+    }
+
+    UtilityGpu gpu = acquireUtilityGpu();
+
+    if (!gpu.runtime) {
+        *unavailable = gpu.unavailable;
+
+        return nullptr;
+    }
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime);
+
+    if (!missing.empty()) {
+        *unavailable = missing;
+
+        return nullptr;
+    }
+
+    std::unique_ptr<WavefrontGpu> executor(new WavefrontGpu(gpu.runtime->registry(), gpu.runtime->pool()));
+    const Tracer::Outcome outcome = executor->status();
+
+    if (outcome.status != Tracer::Status::Ok) {
+        *unavailable = outcome.message;
+
+        return nullptr;
+    }
+    _gpuHold = gpu.hold;
+    _gpu = std::move(executor);
+
+    return _gpu.get();
+#else
+    *unavailable = acquireUtilityGpu().unavailable;
+
+    return nullptr;
+#endif
+}
+
+void
+UtilityRenderParam::dropGpuExecutor()
+{
+#ifdef NATRON_HAVE_GPU
+    _gpu.reset();
+#endif
+    _gpuHold.reset();
+}
+
+void
+UtilityRenderParam::setFrameReport(const std::string& device,
+                                   const std::string& warning)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _reportDevice = device;
+    _reportWarning = warning;
+}
+
+void
+UtilityRenderParam::frameReport(std::string* device,
+                                std::string* warning) const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    *device = _reportDevice;
+    *warning = _reportWarning;
 }
 
 const std::atomic<bool>&
@@ -179,6 +257,7 @@ UtilityRenderDelegate::construct()
     _scene.reset(new UtilityScene());
     _executor.reset(new WavefrontCpu());
     _renderParam.reset(new UtilityRenderParam(_scene.get(), _executor.get()));
+    _PopulateDefaultSettings(GetRenderSettingDescriptors());
     ++gLiveDelegates;
 }
 
@@ -367,6 +446,12 @@ UtilityRenderDelegate::Restart()
     return true;
 }
 
+HdRenderSettingDescriptorList
+UtilityRenderDelegate::GetRenderSettingDescriptors() const
+{
+    return { HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) } };
+}
+
 VtDictionary
 UtilityRenderDelegate::GetRenderStats() const
 {
@@ -380,6 +465,13 @@ UtilityRenderDelegate::GetRenderStats() const
     dictionary[kUtilityStatPointUpdates] = VtValue(stats.pointUpdates);
     dictionary[kUtilityStatColorUpdates] = VtValue(stats.colorUpdates);
     dictionary[kUtilityStatSceneVersion] = VtValue(stats.version);
+
+    std::string device;
+    std::string warning;
+
+    _renderParam->frameReport(&device, &warning);
+    dictionary[kUtilityStatDevice] = VtValue(device);
+    dictionary[kUtilityStatWarning] = VtValue(warning);
 
     return dictionary;
 }

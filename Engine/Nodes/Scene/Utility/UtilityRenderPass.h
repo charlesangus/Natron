@@ -46,8 +46,9 @@ NATRON_NAMESPACE_ENTER
 class UtilityRenderParam;
 
 /**
- * @brief Clears the bound AOVs and has the delegate's executor draw the scene into them, on the
- * delegate's frame thread, returning at once. Only a frame that ran to its end converges. A frame
+ * @brief Clears the bound AOVs and has the delegate's executor for the device setting draw the scene
+ * into them, on the delegate's frame thread, returning at once. Auto draws on the GPU when it can trace
+ * rays, and on the CPU when it cannot or when the GPU runs out of memory or is lost mid-frame. Only a frame that ran to its end converges. A frame
  * already in the buffers is not drawn again. A change of what to draw cancels the running frame, and
  * a later Execute() starts the new one when the old has returned.
  **/
@@ -61,7 +62,14 @@ public:
     virtual bool IsConverged() const OVERRIDE;
 
 private:
+    enum class Device {
+        Auto,
+        Gpu,
+        Cpu,
+    };
+
     struct FrameKey {
+        Device device = Device::Auto;
         std::uint64_t version = 0;
         PXR_NS::GfMatrix4d worldToView;
         PXR_NS::GfMatrix4d projection;

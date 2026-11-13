@@ -230,7 +230,8 @@ CarCity::CarCity(int blocks,
             const std::string name = "b" + std::to_string(b) + "_" + std::to_string(n) + ".usda";
             const std::string file = (_dir / "buildings" / name).string();
             std::ofstream building(file);
-            building << "#usda 1.0\n(\n    defaultPrim = \"Building\"\n)\ndef Xform \"Building\"\n{\n"
+            building << "#usda 1.0\n(\n    defaultPrim = \"Building\"\n)\ndef Xform \"Building\" (\n    variantSets = \"look\"\n)\n{\n"
+                     << "    variantSet \"look\" = {\n        \"plain\" {\n        }\n        \"tinted\" {\n            def Cube \"Tint\"\n            {\n            }\n        }\n    }\n"
                      << "    def Cube \"Geo\"\n    {\n    }\n    def Xform \"car_0\"\n    {\n    }\n}\n";
             root << "        def Xform \"B_" << n << "\" (\n            prepend payload = @./buildings/" << name << "@\n        )\n        {\n        }\n";
             _buildingPaths.push_back(file);

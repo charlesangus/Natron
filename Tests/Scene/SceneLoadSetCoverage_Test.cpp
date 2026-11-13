@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDReference.h"
 #include "Engine/Nodes/Scene/USDSetAttribute.h"
+#include "Engine/Nodes/Scene/USDVariant.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -162,6 +163,29 @@ protected:
             fileKnob->setValue(city.rootPath());
             primKnob->setValue(target);
             sourcePrimKnob->setValue(sourcePrim);
+        }
+        EXPECT_TRUE(node->connectInput(input, 0));
+
+        return node;
+    }
+
+    NodePtr variant(const NodePtr& input,
+                    const std::string& pattern)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDVARIANT));
+
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        KnobString* patternKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDVariantParamPrimPattern).get());
+        KnobString* setKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDVariantParamVariantSet).get());
+        KnobString* variantKnob = dynamic_cast<KnobString*>(node->getKnobByName(kUSDVariantParamVariant).get());
+        EXPECT_TRUE(patternKnob && setKnob && variantKnob);
+        if (patternKnob && setKnob && variantKnob) {
+            patternKnob->setValue(pattern);
+            setKnob->setValue(std::string("look"));
+            variantKnob->setValue(std::string("tinted"));
         }
         EXPECT_TRUE(node->connectInput(input, 0));
 
@@ -314,4 +338,36 @@ TEST_F(SceneLoadSetCoverageTest, AReferenceEvaluatesTheSameOnALoadSetAsOnEveryth
     ASSERT_TRUE(source && inside);
 
     expectParity(inside, loadingOnly({ "/World/Block_0" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, AVariantOnABuildingOpensNoBuildingWithNothingLoaded)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = variant(source, "/World/Block_0/B_0");
+    ASSERT_TRUE(source && node);
+    std::string error;
+    ScenePayload payload;
+
+    const SceneEvaluationContext context(SceneEvaluationContext::makeId(), std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error))
+        << error;
+    EXPECT_FALSE(payload.isEmpty());
+    EXPECT_EQ(0, city.openedBuildings());
+
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_FALSE(message.contains(QString::fromUtf8("No variant set"))) << message.toStdString();
+}
+
+TEST_F(SceneLoadSetCoverageTest, AVariantSetAuthoredInAPayloadEvaluatesTheSameOnALoadSetAsOnEverything)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = variant(source, "/World/Block_0/B_0");
+    ASSERT_TRUE(source && node);
+
+    expectParity(node, loadingOnly({ "/World/Block_0" }));
 }

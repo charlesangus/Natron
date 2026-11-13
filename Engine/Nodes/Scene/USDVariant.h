@@ -109,6 +109,7 @@ private:
     void scheduleMenuRefresh();
 
     PrimSelector _primPattern;
+    PrimPatternCache _matches;
     KnobStringWPtr _variantSet;
     KnobChoiceWPtr _variantSets;
     KnobStringWPtr _variant;

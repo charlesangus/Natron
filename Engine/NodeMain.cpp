@@ -55,6 +55,7 @@
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TrackerContext.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -153,6 +154,9 @@ Node::load(const CreateNodeArgs& args)
         }
         if (layout.hasOverlayColor) {
             setOverlayColor(layout.overlayR, layout.overlayG, layout.overlayB);
+        }
+        if (ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(_imp->effect.get())) {
+            viewer->refreshLockDecoration();
         }
     }
 

@@ -48,7 +48,7 @@
 NATRON_NAMESPACE_ENTER
 
 /*The output node was connected from inputNumber to this...*/
-typedef std::map<NodeWPtr, int32_t, std::owner_less<NodeWPtr>> DeactivatedState;
+typedef std::multimap<NodeWPtr, int32_t, std::owner_less<NodeWPtr>> DeactivatedState;
 typedef std::list<Node::KnobLink> KnobLinkList;
 typedef std::vector<NodeWPtr> InputsV;
 

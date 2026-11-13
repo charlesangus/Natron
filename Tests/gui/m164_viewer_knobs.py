@@ -72,7 +72,7 @@ V2 = "Viewer2"
 MISSING_LAYER = "m164Layer"
 
 KNOBS = [
-    "enableGain", "gain", "enableGamma", "gamma", "autoContrast", "enableCheckerBoard",
+    "enableGain", "gain", "enableGamma", "gamma", "enableCheckerBoard",
     "display", "view", "look", "displayChannels", "displayChannelsB", "layer", "alphaChannel",
     "aInput", "bInput", "operation", "wipeCenter", "wipeAmount", "wipeAngle", "activeView",
     "enableFps", "desiredFps", "inPoint", "outPoint", "enableRegionOfInterest", "userRoIBottomLeft",
@@ -416,6 +416,9 @@ try:
     def brightness(p):
         return sum(sum(c) for c in p)
 
+    def shows_image(p):
+        return p is not None and brightness(p) > 0
+
     def viewer_px(name):
         gl = viewer_gl(name)
         return px(gl) if gl is not None else None
@@ -503,17 +506,36 @@ try:
               % (base1["aInput"], base1["bInput"]))
         check(knob_value(viewer1, "enableGain") is False and knob_value(viewer1, "gain") == 0.0,
               "gain starts off at 0 f-stops")
+        # Two equal grabs can both predate the first render, which on a slow machine takes seconds.
+        ok = yield ("until", lambda: shows_image(viewer_px(V1)) and same_px(viewer_px(V1), viewer_px(V2)), POLL_TIMEOUT_S)
+        check(ok, "both viewers show the same image to start with (%r, %r)" % (viewer_px(V1), viewer_px(V2)))
         p1 = yield from settle_px(V1)
         p2 = yield from settle_px(V2)
         require(p1 is not None and p2 is not None, "both viewers settle")
-        check(same_px(p1, p2), "both viewers show the same image to start with")
         gt.shot("m164-baseline.png")
+
+        gt.section("second-row")
+        gain_slider = widget_of(V1, ("ScaleSliderQWidget",), None)
+        require(gain_slider is not None, "found Viewer1's gain slider")
+        row = gain_slider.parentWidget()
+        row_tips = " ".join((w.toolTip() or "") for w in row.findChildren(QWidget)).lower()
+        check("contrast" not in row_tips, "the second control row has no contrast control")
+        for name in ("enableGain", "enableGamma"):
+            check(knob_value(viewer1, name) is not None, name + " is still a knob")
+        top_left = row.mapToGlobal(QPoint(0, 0))
+        row_image = QGuiApplication.primaryScreen().grabWindow(0, top_left.x(), top_left.y(), row.width(), row.height())
+        row_path = os.path.join(gt.OUT, "m164-viewer-second-row.png")
+        if row_image.save(row_path):
+            report("SHOT " + row_path)
+        else:
+            report("NOTE could not save screenshot " + row_path)
 
         gt.section("toolbar-viewer2")
         display2 = widget_of(V2, ("ComboBox",), "display device")
         require(display2 is not None, "found Viewer2's Display menu")
         report("NOTE Display menu items %r, current %r" % (combo_items(display2), combo_current(display2)))
-        chosen = choose_other(display2)
+        # The first other entry can be the very display Project default resolves to, which shows the same pixels.
+        chosen = choose_other(display2, preferred=("rec.1886", "gamma 2.2"))
         if chosen is None:
             report("NOTE only one display in the config; Viewer2's Display cannot change")
         else:
@@ -522,6 +544,9 @@ try:
                   % (chosen, knob_value(viewer2, "display")))
             check(chosen in str(knob_value(viewer2, "display")) or str(knob_value(viewer2, "display")) in chosen,
                   "the display knob names the chosen display")
+            # Two equal grabs can both predate the render with the new display.
+            ok = yield from px_until(V2, lambda p: p is not None and not same_px(p, p2))
+            check(ok, "Viewer2's pixels change with its own Display menu (still %r)" % (viewer_px(V2),))
         snap2 = snap(viewer2)
         check(not differences(snap(viewer1), base1), "Viewer1's knobs did not move with Viewer2's display (%r)"
               % differences(snap(viewer1), base1))
@@ -566,7 +591,7 @@ try:
               % differences(snap(viewer2), snap2))
         yield ("sleep", RENDER_MS)
         q2 = yield from settle_px(V2)
-        check(same_px(q2, p2), "Viewer2's pixels did not move with Viewer1's toolbar")
+        check(same_px(q2, p2), "Viewer2's pixels did not move with Viewer1's toolbar (%r, %r)" % (p2, q2))
         p1_wiped = yield from settle_px(V1)
         check(p1_wiped is not None and not same_px(p1_wiped, p1), "Viewer1's pixels changed with its own toolbar")
 

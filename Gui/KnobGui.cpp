@@ -86,16 +86,14 @@ KnobGui::initialize()
         QObject::connect( handler, SIGNAL(redrawGuiCurve(int,ViewSpec,int)), this, SLOT(onRedrawGuiCurve(int,ViewSpec,int)) );
         QObject::connect( handler, SIGNAL(valueChanged(ViewSpec,int,int)), this, SLOT(onInternalValueChanged(ViewSpec,int,int)) );
         QObject::connect( handler, SIGNAL(keyFrameSet(double,ViewSpec,int,int,bool)), this, SLOT(onInternalKeySet(double,ViewSpec,int,int,bool)) );
-        QObject::connect( handler, SIGNAL(keyFrameRemoved(double,ViewSpec,int,int)), this, SLOT(onInternalKeyRemoved(double,ViewSpec,int,int)) );
-        QObject::connect( handler, SIGNAL(keyFrameMoved(ViewSpec,int,double,double)), this, SLOT(onKeyFrameMoved(ViewSpec,int,double,double)) );
+        QObject::connect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)), this, SLOT(onInternalKeyRemoved(double, ViewSpec, int, int)));
         QObject::connect( handler, SIGNAL(multipleKeyFramesSet(std::list<double>,ViewSpec,int,int)), this,
                           SLOT(onMultipleKeySet(std::list<double>,ViewSpec,int,int)) );
         QObject::connect( handler, SIGNAL(multipleKeyFramesRemoved(std::list<double>,ViewSpec,int,int)), this,
                           SLOT(onMultipleKeyRemoved(std::list<double>,ViewSpec,int,int)) );
         QObject::connect( handler, SIGNAL(secretChanged()), this, SLOT(setSecret()) );
         QObject::connect( handler, SIGNAL(enabledChanged()), this, SLOT(setEnabledSlot()) );
-        QObject::connect( handler, SIGNAL(knobSlaved(int,bool)), this, SLOT(onKnobSlavedChanged(int,bool)) );
-        QObject::connect( handler, SIGNAL(animationAboutToBeRemoved(ViewSpec,int)), this, SLOT(onInternalAnimationAboutToBeRemoved(ViewSpec,int)) );
+        QObject::connect(handler, SIGNAL(knobSlaved(int, bool)), this, SLOT(onKnobSlavedChanged(int, bool)));
         QObject::connect( handler, SIGNAL(animationRemoved(ViewSpec,int)), this, SLOT(onInternalAnimationRemoved()) );
         QObject::connect( handler, SIGNAL(setValueWithUndoStack(Variant,ViewSpec,int)), this, SLOT(onSetValueUsingUndoStack(Variant,ViewSpec,int)) );
         QObject::connect( handler, SIGNAL(dirty(bool)), this, SLOT(onSetDirty(bool)) );

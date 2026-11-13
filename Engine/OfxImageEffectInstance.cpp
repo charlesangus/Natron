@@ -58,6 +58,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Format.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFactory.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
@@ -807,12 +808,33 @@ struct PageOrdered
 typedef std::shared_ptr<PageOrdered> PageOrderedPtr;
 typedef std::list<PageOrderedPtr> PageOrderedPtrList;
 
+// A plugin cannot call KnobFile::createReloadButton(), so the Reload button it declares right after
+// a file param, on the same row, takes the place of the icon.
+static void
+handFileKnobsToTheirReloadButtons(const std::list<OFX::Host::Param::Instance*>& params)
+{
+    KnobFilePtr previousFile;
+
+    for (std::list<OFX::Host::Param::Instance*>::const_iterator it = params.begin(); it != params.end(); ++it) {
+        OfxParamToKnob* isKnownKnob = dynamic_cast<OfxParamToKnob*>(*it);
+        KnobIPtr knob = isKnownKnob ? isKnownKnob->getKnob() : KnobIPtr();
+        KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(knob);
+        if (previousFile && button && !previousFile->isNewLineActivated()
+            && QString::fromStdString(button->getLabel()).contains(QString::fromUtf8("reload"), Qt::CaseInsensitive)) {
+            previousFile->setReloadButton(button);
+        }
+        previousFile = std::dynamic_pointer_cast<KnobFile>(knob);
+    }
+}
+
 void
 OfxImageEffectInstance::addParamsToTheirParents()
 {
     //All parameters in their order of declaration by the plug-in
     const std::list<OFX::Host::Param::Instance*> & params = getParamList();
     OfxEffectInstancePtr effect = getOfxEffectInstance();
+
+    handFileKnobsToTheirReloadButtons(params);
 
     //Extract pages and their children and add knobs to groups
     PageOrderedPtrList finalPages;

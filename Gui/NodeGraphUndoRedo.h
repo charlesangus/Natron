@@ -506,7 +506,7 @@ private:
         int inputIdx;
         NodeWPtr inputNode;
     };
-    typedef std::map<NodeWPtr, OutputLink, std::owner_less<NodeWPtr>> OutputLinksMap;
+    typedef std::multimap<NodeWPtr, OutputLink, std::owner_less<NodeWPtr>> OutputLinksMap;
     OutputLinksMap _outputLinks;
     NodeGuiWPtr _group;
     bool _firstRedoCalled;
@@ -550,6 +550,33 @@ private:
     bool _firstRedoCalled;
 };
 
+/**
+ * @brief Locks a viewer input to a node, or unlocks it when no source is given. Locking also
+ * pipes the input from that node and shows it as input A; unlocking changes nothing else.
+ **/
+class ViewerInputLockCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(ViewerInputLockCommand)
+
+public:
+    ViewerInputLockCommand(NodeGraph* graph,
+                           const NodeGuiPtr& viewer,
+                           Edge* input,
+                           const NodeGuiPtr& source,
+                           QUndoCommand* parent = 0);
+
+    virtual void undo();
+    virtual void redo();
+
+private:
+    void setLock(const std::string& name);
+
+    NodeGuiWPtr _viewer;
+    int _inputNb;
+    bool _locking;
+    std::string _oldLock, _newLock;
+    int _oldActiveA, _oldActiveB;
+};
 
 NATRON_NAMESPACE_EXIT
 

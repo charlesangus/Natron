@@ -5781,6 +5781,9 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = false;
     }
+    if (AppInstancePtr app = getApp()) {
+        app->invalidateNodeKeyframeIndicators();
+    }
     {
         NodeCollectionPtr collection = getGroup();
         if (collection) {
@@ -6015,9 +6018,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
             ///stack follow always the same order.
             NodePtr outputHasInput = output->getInput(it->second);
             if (outputHasInput) {
-                bool ok = getApp()->getProject()->disconnectNodes(outputHasInput, output);
-                assert(ok);
-                Q_UNUSED(ok);
+                ignore_result(output->disconnectInput(it->second));
             }
 
             ///and connect the output to this node
@@ -6028,6 +6029,9 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     {
         QMutexLocker l(&_imp->activatedMutex);
         _imp->activated = true; //< flag it true before notifying the GUI because the gui rely on this flag (especially the Viewer)
+    }
+    if (AppInstancePtr app = getApp()) {
+        app->invalidateNodeKeyframeIndicators();
     }
     LoopEnd::onGraphChanged();
 
@@ -9398,29 +9402,25 @@ Node::setNodeDisabled(bool disabled)
 }
 
 void
-Node::showKeyframesOnTimeline(bool emitSignal)
+Node::showKeyframesOnTimeline(bool /*emitSignal*/)
 {
     assert( QThread::currentThread() == qApp->thread() );
     if ( _imp->keyframesDisplayedOnTimeline || appPTR->isBackground() ) {
         return;
     }
     _imp->keyframesDisplayedOnTimeline = true;
-    std::list<SequenceTime> keys;
-    getAllKnobsKeyframes(&keys);
-    getApp()->addMultipleKeyframeIndicatorsAdded(keys, emitSignal);
+    getApp()->setNodeShownOnTimeline(shared_from_this(), true);
 }
 
 void
-Node::hideKeyframesFromTimeline(bool emitSignal)
+Node::hideKeyframesFromTimeline(bool /*emitSignal*/)
 {
     assert( QThread::currentThread() == qApp->thread() );
     if ( !_imp->keyframesDisplayedOnTimeline || appPTR->isBackground() ) {
         return;
     }
     _imp->keyframesDisplayedOnTimeline = false;
-    std::list<SequenceTime> keys;
-    getAllKnobsKeyframes(&keys);
-    getApp()->removeMultipleKeyframeIndicator(keys, emitSignal);
+    getApp()->setNodeShownOnTimeline(shared_from_this(), false);
 }
 
 bool
@@ -9478,15 +9478,19 @@ Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
             ///skip file knobs
             continue;
         }
+        const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knobs[i].get());
         for (int j = 0; j < dim; ++j) {
-            if ( knobs[i]->canAnimate() && knobs[i]->isAnimated( j, ViewIdx(0) ) ) {
-                KeyFrameSet kfs = knobs[i]->getCurve(ViewIdx(0), j)->getKeyFrames_mt_safe();
+            // An edit made during a render stays on the GUI curve until the render ends, but the
+            // user's editors already show it.
+            CurvePtr curve = (helper && helper->hasGuiCurveChanged(ViewIdx(0), j)) ? knobs[i]->getGuiCurve(ViewIdx(0), j) : knobs[i]->getCurve(ViewIdx(0), j);
+            if (curve) {
+                KeyFrameSet kfs = curve->getKeyFrames_mt_safe();
                 for (KeyFrameSet::iterator it = kfs.begin(); it != kfs.end(); ++it) {
                     keyframes->push_back( it->getTime() );
                 }
             }
         }
-        if (const KnobHelper* helper = dynamic_cast<const KnobHelper*>(knobs[i].get())) {
+        if (helper) {
             helper->getDriverKeyTimes(keyframes);
         }
     }

@@ -85,6 +85,8 @@
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBufferPool.h"
 #include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Gpu/GpuTestDevice.h"
 #endif
 
 NATRON_NAMESPACE_USING
@@ -1257,6 +1259,77 @@ TEST_F(USDRenderRendererTest, ThePurposeKnobsDefaultToRenderOnlyAndChooseWhatEac
     ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateStormId));
     expectToggles();
 }
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+// Has the Utility delegate render on a runtime of the test's own, whose buffer pool is too small
+// for any frame.
+class StarvedUtilityGpuRuntime {
+public:
+    StarvedUtilityGpuRuntime()
+    {
+        gpu::GpuRuntimeOptions options;
+
+        options.device = gputest::deviceOptions();
+        options.pool.overrideBudgetBytes = 1024;
+        status = gpu::GpuRuntime::create(options, _runtime);
+        if (status) {
+            setUtilityGpuRuntimeForTesting(_runtime.get());
+        }
+    }
+
+    ~StarvedUtilityGpuRuntime()
+    {
+        setUtilityGpuRuntimeForTesting(nullptr);
+    }
+
+    std::string missingSupport() const
+    {
+        return WavefrontGpu::missingSupport(*_runtime);
+    }
+
+    gpu::GpuStatus status;
+
+private:
+    std::unique_ptr<gpu::GpuRuntime> _runtime;
+};
+} // anon namespace
+
+TEST_F(USDRenderRendererTest, AnAutoUtilityRenderThatFallsBackToTheCpuWarnsOnTheNode)
+{
+    StarvedUtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.status.ok(), runtime.status.message);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateUtilityId));
+    HydraRender::releaseAll();
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+    ASSERT_TRUE(node->hasPersistentMessage());
+
+    QString message;
+    int type = -1;
+
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("out of memory"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Rendered on CPU"))) << message.toStdString();
+    HydraRender::releaseAll();
+}
+#endif // NATRON_HAVE_GPU
 
 TEST_F(USDRenderRendererTest, TheMetadataFollowsThePurposeKnobs)
 {

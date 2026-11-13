@@ -848,8 +848,13 @@ USDRender::render(const RenderActionArgs& args)
     if (!result.warning.empty()) {
         warning = warning.empty() ? result.warning : warning + "\n" + result.warning;
     }
+    const std::string rendered = result.device.empty() ? std::string() : "Rendered on " + result.device + ".";
     if (!result.errors.empty()) {
         setPersistentMessage(eMessageTypeError, warning.empty() ? result.errors : result.errors + "\n" + warning);
+    } else if (!warning.empty()) {
+        showWarning(rendered.empty() ? warning : warning + "\n" + rendered);
+    } else if (!rendered.empty()) {
+        setPersistentMessage(eMessageTypeInfo, rendered);
     } else {
         showWarning(warning);
     }

@@ -12,10 +12,12 @@ application it shares the viewer's OpenGL. Without a window system
 which Mesa's llvmpipe software renderer provides. If neither is available, the
 node reports why instead of rendering, and image-only graphs are unaffected.
 
-Natron Utility, Natron's own renderer, draws on the CPU with no lighting: `rgba`
+Natron Utility, Natron's own renderer, draws with no lighting: `rgba`
 is each prim's display colour, and `depth.Z` and `primId.id` match Storm's.
 Cancelling stops it between tiles; a change of scene being taken in or a BVH
-being built finishes first. It has no settings.
+being built finishes first. Its Device setting picks Auto, GPU or CPU: Auto uses
+the GPU when it supports ray queries and otherwise renders on the CPU, and the
+node says which device rendered and why a render fell back to the CPU.
 
 The other delegates (Cycles, MoonRay) render on the CPU on their own threads.
 

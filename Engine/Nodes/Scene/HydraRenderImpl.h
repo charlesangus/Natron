@@ -166,6 +166,8 @@ struct Result {
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;
+    // The device the delegate says it rendered on; empty for a delegate that does not say.
+    std::string device;
 };
 
 /**

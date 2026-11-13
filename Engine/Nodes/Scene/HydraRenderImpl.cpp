@@ -95,6 +95,7 @@
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/TLSHolder.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -413,6 +414,7 @@ struct EngineEntry {
     // log, and the errors it logged naming no prim of it; empty for a delegate that reports neither.
     std::string warning;
     std::string errors;
+    std::string device;
     UsdTimeCode time;
     GfMatrix4d view;
     GfMatrix4d projection;
@@ -1395,6 +1397,18 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
         entry.warning = entry.supportWarning;
         entry.errors.clear();
+        entry.device.clear();
+        if (renderer == kRenderDelegateUtilityId) {
+            const VtDictionary utilityStats = engine->GetRenderStats();
+            const VtDictionary::const_iterator device = utilityStats.find(kUtilityStatDevice);
+            const VtDictionary::const_iterator fallback = utilityStats.find(kUtilityStatWarning);
+            if ((device != utilityStats.end()) && device->second.IsHolding<std::string>()) {
+                entry.device = device->second.UncheckedGet<std::string>();
+            }
+            if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + fallback->second.UncheckedGet<std::string>();
+            }
+        }
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();
             const std::string logged = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
@@ -1545,6 +1559,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
 
     result->warning = entry.warning;
     result->errors = entry.errors;
+    result->device = entry.device;
 
     if (!decodeIds(entry, error)) {
         return false;

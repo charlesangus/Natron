@@ -24,6 +24,15 @@ Its `emissiveColor` is, in order of precedence:
   the node then sets a warning that names the path.
 - Emissive Color alone.
 
+An image that declares UDIM tiles in its `natron/udimTiles` metadata (for
+example `1001-1004,1011`) is read as a set: the path is
+`natron://<node>/rgba.<UDIM>?v=<hash>`, one texture per tile, and the texture
+coordinates reach the texture with no `UsdTransform2d`, because the integer part
+of the UVs picks the tile. Storm sizes a whole set from its lowest tile, so the
+tiles should share a size; the others are resampled to it. A declaration that
+does not parse is ignored, the image is read as a single texture, and the node
+warns.
+
 A texture is read at the bound prims' `st` primvar through a
 `UsdPrimvarReader_float2` named `TexCoordReader`, with the colour space left to
 the renderer, and its `rgb` feeds the emission. Emissive Color, white by

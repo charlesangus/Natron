@@ -102,11 +102,17 @@ std::string getAnchoredFilePath(const KnobFilePtr& knob);
  * renders: the node, its content hash and whether it varies over time, without rendering it, over
  * the project's frame range. False when nothing is connected. A node keys its layer on these (appendLiveTextureSource) and
  * authors them through recordLiveTexture().
+ *
+ * With udimError not null, the source's tiles are read from the connected image's
+ * kNatronMetadataKeyUdimTiles metadata at the consumer's current time. A declaration that does not
+ * parse leaves the source a single texture and sets udimError to the reason, empty otherwise. With
+ * udimError null, tiles are not read and the source is always a single texture.
  **/
 bool getLiveTextureSource(const EffectInstance& consumer,
                           int inputNb,
                           const std::string& layer,
-                          LiveTextureSource* source);
+                          LiveTextureSource* source,
+                          std::string* udimError = nullptr);
 
 // What a layer authoring source reads of it.
 void appendLiveTextureSource(const LiveTextureSource& source,

@@ -49,6 +49,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Metadata/MetadataModify.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -570,6 +571,117 @@ TEST_F(USDMaterialTest, TheEmissiveMaterialsLiveImageDrivesTheOpacityWithItsAlph
     stage = compose(material);
     ASSERT_TRUE(bool(stage));
     expectNoOpacity(stage, "/Material1");
+}
+
+namespace {
+// A MetadataModify over source that declares tiles as its natron/udimTiles metadata.
+void
+declareTiles(const NodePtr& modify,
+             const std::string& tiles)
+{
+    dynamic_cast<KnobChoice*>(modify->getKnobByName("operation1").get())->setValue((int)MetadataModify::eOperationSet);
+    dynamic_cast<KnobStringBase*>(modify->getKnobByName("key1").get())->setValue(std::string(kNatronMetadataKeyUdimTiles));
+    dynamic_cast<KnobChoice*>(modify->getKnobByName("type1").get())->setValue((int)MetadataModify::eValueTypeString);
+    dynamic_cast<KnobStringBase*>(modify->getKnobByName("stringValue1").get())->setValue(tiles);
+}
+
+std::string
+assetPathOf(const PXR_NS::UsdShadeShader& texture)
+{
+    PXR_NS::SdfAssetPath path;
+
+    EXPECT_TRUE(texture.GetInput(PXR_NS::TfToken("file")).GetAttr().Get(&path));
+
+    return path.GetAssetPath();
+}
+} // anonymous namespace
+
+TEST_F(USDMaterialTest, AUdimInputAuthorsTheUdimPathWithoutATransform)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr modify = node(PLUGINID_NATRON_METADATAMODIFY, "Modify1", { constant });
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    ASSERT_TRUE(constant && modify && material);
+    declareTiles(modify, "1001,1002");
+    ASSERT_TRUE(material->connectInput(modify, kUSDMaterialInputDiffuseColor));
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdShadeShader texture = textureOf(stage, "/Material1", "diffuseColor");
+    ASSERT_TRUE(bool(texture));
+    const std::string first = assetPathOf(texture);
+    EXPECT_EQ(0u, first.rfind(std::string(kLiveTextureScheme) + "://" + modify->getFullyQualifiedName() + "/rgba." kLiveTextureUdimToken "?v=", 0)) << first;
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/diffuseColorTransform")).IsValid());
+    PXR_NS::UsdShadeConnectableAPI source;
+    PXR_NS::TfToken sourceName;
+    PXR_NS::UsdShadeAttributeType sourceType;
+    ASSERT_TRUE(texture.GetInput(PXR_NS::TfToken("st")).GetConnectedSource(&source, &sourceName, &sourceType));
+    EXPECT_EQ(PXR_NS::SdfPath("/Material1/TexCoordReader"), source.GetPath());
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              material->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
+        << error;
+    const LiveTextureSourceList sources = SceneOps::getLiveTextures(payload);
+    ASSERT_EQ((std::size_t)1, sources.size());
+    EXPECT_EQ((std::vector<int> { 1001, 1002 }), sources[0].tiles);
+
+    // Another set of tiles is another layer, and another path.
+    declareTiles(modify, "1001-1003");
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    const std::string second = assetPathOf(textureOf(stage, "/Material1", "diffuseColor"));
+    EXPECT_NE(first, second);
+    EXPECT_NE(std::string::npos, second.find(kLiveTextureUdimToken));
+}
+
+TEST_F(USDMaterialTest, AnInputDeclaringNoTilesIsASingleTextureWithATransform)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1", { constant });
+    ASSERT_TRUE(constant && material);
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdShadeShader texture = textureOf(stage, "/Material1", "diffuseColor");
+    ASSERT_TRUE(bool(texture));
+    EXPECT_EQ(std::string::npos, assetPathOf(texture).find(kLiveTextureUdimToken));
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/diffuseColorTransform")).IsValid());
+    EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
+}
+
+TEST_F(USDMaterialTest, AMalformedTileDeclarationWarnsAndFallsBackToASingleTexture)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr modify = node(PLUGINID_NATRON_METADATAMODIFY, "Modify1", { constant });
+    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1", { modify });
+    ASSERT_TRUE(constant && modify && material);
+    declareTiles(modify, "1001-");
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdShadeShader texture = textureOf(stage, "/Material1", "diffuseColor");
+    ASSERT_TRUE(bool(texture));
+    EXPECT_EQ(std::string::npos, assetPathOf(texture).find(kLiveTextureUdimToken));
+    EXPECT_TRUE(material->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, warningOf(material).find("Diffuse Color")) << warningOf(material);
+}
+
+TEST_F(USDMaterialTest, TheEmissiveMaterialAuthorsAUdimPathWithoutATransform)
+{
+    NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
+    NodePtr modify = node(PLUGINID_NATRON_METADATAMODIFY, "Modify1", { constant });
+    NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1", { modify });
+    ASSERT_TRUE(constant && modify && material);
+    declareTiles(modify, "1001,1002");
+
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    const PXR_NS::UsdShadeShader texture = textureOf(stage, "/Material1", "emissiveColor");
+    ASSERT_TRUE(bool(texture));
+    EXPECT_NE(std::string::npos, assetPathOf(texture).find(kLiveTextureUdimToken));
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1/emissiveColorTransform")).IsValid());
 }
 
 TEST_F(USDMaterialTest, TheLitMaterialOffersNoShaderChoice)

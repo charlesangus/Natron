@@ -40,10 +40,13 @@
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Metadata/EffectMetadata.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
 
 #include <pxr/usd/usd/collectionAPI.h>
 #include <pxr/usd/usd/primRange.h>
@@ -867,7 +870,8 @@ bool
 getLiveTextureSource(const EffectInstance& consumer,
                      int inputNb,
                      const std::string& layer,
-                     LiveTextureSource* source)
+                     LiveTextureSource* source,
+                     std::string* udimError)
 {
     const EffectInstancePtr connected = consumer.getInput(inputNb);
     NodePtr node = connected ? connected->getNode() : NodePtr();
@@ -890,6 +894,18 @@ getLiveTextureSource(const EffectInstance& consumer,
     if (app && app->getProject()) {
         app->getProject()->getFrameRange(&source->firstFrame, &source->lastFrame);
     }
+    source->tiles.clear();
+    if (udimError) {
+        udimError->clear();
+        const ImageMetadata metadata = getEffectOutputMetadata(input, time, ViewIdx(0));
+        const ImageMetadata::Value* declared = metadata.find(kNatronMetadataKeyUdimTiles);
+        if (declared && !parseUdimTiles(*declared, &source->tiles, udimError)) {
+            source->tiles.clear();
+            if (udimError->empty()) {
+                *udimError = "the declaration is malformed";
+            }
+        }
+    }
 
     return true;
 }
@@ -902,6 +918,10 @@ appendLiveTextureSource(const LiveTextureSource& source,
     h->appendString(source.layer);
     h->appendU64(source.contentHash);
     h->appendBool(source.varying);
+    h->appendU64(source.tiles.size());
+    for (int tile : source.tiles) {
+        h->appendI64(tile);
+    }
 }
 
 LiveTextureSource
@@ -913,6 +933,13 @@ recordLiveTexture(const SceneLayerEdit& edit,
     recorded.firstFrame = edit.firstFrame;
     recorded.lastFrame = edit.lastFrame;
     recorded.windows.clear();
+    if (recorded.isUdim()) {
+        if (edit.liveTextures) {
+            edit.liveTextures->push_back(recorded);
+        }
+
+        return recorded;
+    }
     const NodePtr node = source.node.lock();
     const std::vector<double> frames = source.varying ? getSampleFrames(edit) : std::vector<double>(1, recorded.getSourceFrame(edit.firstFrame));
     recorded.windows.reserve(frames.size());
@@ -938,6 +965,11 @@ connectLiveTextureCoordinates(const PXR_NS::UsdStageRefPtr& stage,
                               const PXR_NS::UsdShadeOutput& coordinates,
                               const PXR_NS::UsdShadeInput& st)
 {
+    // A UDIM set's tiles are each their own format and are picked by the coordinates' integer part,
+    // which a transform would shift.
+    if (recorded.isUdim()) {
+        return coordinates && st && st.ConnectToSource(coordinates);
+    }
     PXR_NS::UsdShadeShader transform = PXR_NS::UsdShadeShader::Define(stage, transformPath);
 
     if (!transform || !transform.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdTransform2d")))) {

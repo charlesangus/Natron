@@ -42,6 +42,19 @@ Metallic read `r` as raw values. Normal takes a tangent-space normal map encoded
 in 0 to 1. It is read as raw `rgb` with a scale of 2 and a bias of -1, and drives
 the shader's `normal`, which the node writes only when the input is connected.
 
+An input whose image declares UDIM tiles in its `natron/udimTiles` metadata (for
+example `1001-1004,1011`, set with MetadataModify as a string) reads the set
+instead: the file is `natron://<node>/rgba.<UDIM>?v=<hash>`, which USD and Storm
+resolve to one texture per tile, each rendered from the image under that tile.
+The texture coordinates reach the texture unchanged, with no `UsdTransform2d`,
+because the integer part of the UVs picks the tile. Changing the set of tiles
+gives the set a new path. Tiles above 1100 are rendered but never read. Storm
+sizes a whole set from its lowest tile, so the tiles should share a size; the
+others are resampled to it. A declaration that does not parse is ignored, the
+input is read as a single texture, and the node warns, naming the input. A
+texture file path containing `<UDIM>` is checked for warnings by resolving its
+tiles.
+
 With Use Alpha on, the default, the alpha of the image on the Diffuse Color
 input, or on Emissive Color when Diffuse Color has none, drives the shader's
 `opacity` from its texture's `a` output, with `opacityMode` set to `presence`.

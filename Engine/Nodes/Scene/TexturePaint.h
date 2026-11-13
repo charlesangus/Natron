@@ -537,7 +537,7 @@ public:
 
     /**
      * @brief The start time of process pid in clock ticks since boot, as seen from this pid
-     * namespace; false when no such process runs.
+     * namespace; false when it could not be read, which does not mean the process is gone.
      **/
     static bool processStartTime(long pid, unsigned long long* ticks) WARN_UNUSED_RETURN;
 

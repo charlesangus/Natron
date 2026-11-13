@@ -45,6 +45,7 @@
 #include <thread>
 #include <vector>
 
+#include <cerrno>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1690,8 +1691,17 @@ TexturePaint::removeStaleBakeTemps(const std::string& directory)
             continue;
         }
         unsigned long long running = 0;
-        if (processStartTime(pid, &running) && (running == recorded)) {
-            continue;
+        if (processStartTime(pid, &running)) {
+            if (running == recorded) {
+                continue;
+            }
+        } else {
+            // Only a /proc entry that is absent means the writer ended; an unreadable one (descriptor
+            // exhaustion, hidepid) may still belong to a live writer, and our own pid is never gone.
+            struct stat entry;
+            if ((pid == (long)::getpid()) || (::stat(("/proc/" + std::to_string(pid)).c_str(), &entry) == 0) || (errno != ENOENT)) {
+                continue;
+            }
         }
         std::error_code removed;
         std::filesystem::remove(it->path(), removed);
@@ -1729,7 +1739,7 @@ TexturePaint::writeBakeTarget(const BakeOutputRun& run,
             continue;
         }
         static std::atomic<unsigned int> written(0);
-        const std::string temp = bakeTempPath(path, bakeProcess().space, (long)::getpid(), bakeProcess().started, ++written);
+        const std::string temp = bakeTempPath(path, bakeProcessSpace(), (long)::getpid(), bakeProcess().started, ++written);
         std::error_code ec;
         if (!TexturePaintCache::writeTile(temp, run.size, *rgba, std::string(), error, true)) {
             std::filesystem::remove(temp, ec);

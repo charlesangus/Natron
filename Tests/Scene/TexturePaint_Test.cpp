@@ -3446,7 +3446,7 @@ dropUndoAfterItsFileStep(const NodePtr& paint,
     const BufferPixel undone = bakedTexelAt(target, kSmallTile, 0.5, 0.5);
     const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.f };
     for (int c = 0; c < 4; ++c) {
-        ASSERT_NEAR(grey[c], undone.rgba[c], 1e-3) << "the undo's step put back the file before the bake, channel " << c;
+        EXPECT_NEAR(grey[c], undone.rgba[c], 1e-3) << "the undo's step put back the file before the bake, channel " << c;
     }
     effect->quitBackgroundWork(true);
     ASSERT_TRUE(drainBaker(effect));

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -34,8 +35,10 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -1204,5 +1207,279 @@ TEST_F(GpuDeviceServeTest, PartialDeviceHitRendersOnlyTheMissingHalfIntoTheGrown
         EXPECT_TRUE(unrendered.empty()) << task.key.node->getScriptName_mt_safe();
     }
     expectMatchesColdRender(grades.back(), run);
+}
+
+class GpuDeviceTierStressTest
+    : public GpuDeviceServeTest {
+protected:
+    // A cached grade chain whose first grade is set to multiply, so that two chains never share a cache key.
+    bool makeDistinctChain(double multiply,
+                           std::vector<NodePtr>* grades)
+    {
+        return makeCachedGradeChain(grades) && setKnobValues(grades->front(), "multiply", { multiply, multiply, multiply, multiply });
+    }
+
+    // Plans the frame as the viewer would: pruned behind its cache hits, every grade left on the GPU.
+    bool planFrame(const std::vector<NodePtr>& grades,
+                   FrameRun* run,
+                   std::string* error)
+    {
+        if (!prepareFrame(grades.back(), run, error)) {
+            return false;
+        }
+        RenderScheduler::pruneBehindCacheHits(run->graph, run->context);
+        placeOnGpu(run, grades);
+
+        return true;
+    }
+
+    // The root of the chain rendered on the CPU from nothing.
+    std::vector<float> cpuReference(const NodePtr& root)
+    {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const RectI window(0, 0, kWidth, kHeight);
+        EXPECT_TRUE(renderNodePlanesDirect(root, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+
+        return planes.size() == 1 ? planes.front().pixels : std::vector<float>();
+    }
+
+    // "" when the root of run is within kTolerance of want.
+    static std::string differsFrom(const std::vector<float>& want,
+                                   const FrameRun& run)
+    {
+        const std::map<ImageLayerDesc, ImagePtr> rootPlanes = run.future->getRootPlanes();
+        if (rootPlanes.empty()) {
+            return "the frame has no root plane";
+        }
+        const std::vector<float> got = readRgba(rootPlanes.begin()->second, RectI(0, 0, kWidth, kHeight));
+        if (got.size() != want.size() || want.empty()) {
+            return "the planes differ in size";
+        }
+        for (std::size_t i = 0; i < want.size(); ++i) {
+            if (!(std::fabs(want[i] - got[i]) <= kTolerance)) {
+                return "pixel " + std::to_string(i / 4) + " channel " + std::to_string(i % 4) + ": CPU " + std::to_string(want[i]) + ", GPU " + std::to_string(got[i]);
+            }
+        }
+
+        return std::string();
+    }
+};
+
+// Two threads render and re-render cached chains, publishing to and serving from the device tier, while a third holds
+// and releases working buffers sized so that the pool must take cached entries, which demote or drop mid-frame.
+TEST_F(GpuDeviceTierStressTest, DemotionDuringConcurrentRendersKeepsOutputsCorrect)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int kThreads = 2;
+    const int kIterations = 20;
+    const qint64 kDeadlineMs = 15000;
+    std::vector<std::vector<NodePtr>> chains(kThreads);
+    std::vector<std::vector<float>> references(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+        ASSERT_TRUE(makeDistinctChain(1.3 + 0.4 * i, &chains[i]));
+        references[i] = cpuReference(chains[i].back());
+        ASSERT_FALSE(references[i].empty());
+    }
+    appPTR->clearAllCaches();
+
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameGraph graph;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(chains[0], &graph, &error)) << error;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    const unsigned long long wholePeak = report->wholePeakDeviceBytes;
+    ASSERT_GT(wholePeak, 0u);
+    appPTR->clearAllCaches();
+    // The recording body is shared by the render threads, so it is put back to the plain one first.
+    _scheduler->setRegionBody(&runGpuRegion);
+
+    GpuContext* context = appPTR->getGpuContext();
+    const std::shared_ptr<void> hold = context->holdRuntime();
+    gpu::GpuRuntime* runtime = context->runtime();
+    ASSERT_TRUE(runtime != nullptr);
+    gpu::GpuBufferPool& pool = runtime->pool();
+    const std::uint64_t budget = pool.budget();
+    pool.setUserBudget(wholePeak * 5 / 2);
+
+    std::atomic<bool> stop(false);
+    std::atomic<int> finished(0);
+    std::mutex errorMutex;
+    std::string firstError;
+    auto noteError = [&](const std::string& text) {
+        std::lock_guard<std::mutex> lock(errorMutex);
+        if (firstError.empty()) {
+            firstError = text;
+        }
+    };
+    QElapsedTimer clock;
+    clock.start();
+
+    std::vector<std::thread> renderers;
+    for (int i = 0; i < kThreads; ++i) {
+        renderers.emplace_back([&, i]() {
+            for (int n = 0; n < kIterations && !stop.load() && clock.elapsed() < kDeadlineMs; ++n) {
+                FrameRun run;
+                std::string threadError;
+                if (!planFrame(chains[i], &run, &threadError)) {
+                    noteError("plan: " + threadError);
+                    break;
+                }
+                if (!render(&run)) {
+                    noteError("the frame did not complete");
+                    break;
+                }
+                const std::string diff = differsFrom(references[i], run);
+                if (!diff.empty()) {
+                    noteError("iteration " + std::to_string(n) + ": " + diff);
+                    break;
+                }
+                if (n % 3 == 2) {
+                    appPTR->clearAllCaches();
+                }
+            }
+            ++finished;
+        });
+    }
+    std::thread pressure([&]() {
+        int round = 0;
+        while (!stop.load()) {
+            gpu::GpuBufferHandle working;
+            if (pool.acquire(wholePeak, working)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            if (++round % 4 == 0) {
+                pool.evict(wholePeak / 2);
+            }
+        }
+    });
+    for (std::thread& t : renderers) {
+        t.join();
+    }
+    stop.store(true);
+    pressure.join();
+    pool.setUserBudget(budget);
+
+    EXPECT_EQ(kThreads, finished.load());
+    EXPECT_LT(clock.elapsed(), kDeadlineMs) << "the renders did not finish their iterations in time";
+    EXPECT_EQ(std::string(), firstError);
+}
+
+// A device loss empties the tier and clears the device bit of its entries while a host copy made before survives; the
+// next frame renders again on the CPU correctly, and once the device is recreated renders on the GPU again.
+TEST_F(GpuDeviceTierStressTest, DeviceLossEmptiesTheTierHostCopiesSurviveAndRendersFallBack)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameGraph graph;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(grades, &graph, &error)) << error;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    ASSERT_GE(membersInDeviceTier(graph), 2);
+
+    GpuContext* context = appPTR->getGpuContext();
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+    const FrameGraph::Task& firstTask = graph.tasks[graph.regions.front().members.front()];
+    const ImageKey demotedKey = outputKey(firstTask);
+    {
+        const CacheDeviceEntryPtr entry = tier->find(demotedKey);
+        ASSERT_TRUE(bool(entry));
+        entry->header()->recomputeCostNs.store(1e9f);
+        ASSERT_TRUE(tier->demote(entry));
+    }
+    {
+        std::list<ImagePtr> cached;
+        ASSERT_TRUE(appPTR->peekImage(demotedKey, &cached)) << "the demotion left no host copy";
+    }
+    ASSERT_GE(membersInDeviceTier(graph), 1);
+
+    {
+        const std::shared_ptr<void> hold = context->holdRuntime();
+        gpu::GpuRuntime* runtime = context->runtime();
+        ASSERT_TRUE(runtime != nullptr);
+        runtime->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+        gpu::GpuBufferHandle handle;
+        EXPECT_FALSE(bool(runtime->acquire(4096, handle)));
+        EXPECT_TRUE(runtime->isLost());
+    }
+    EXPECT_EQ((std::size_t)0, tier->used());
+    EXPECT_EQ(0, membersInDeviceTier(graph));
+    {
+        std::list<ImagePtr> cached;
+        ASSERT_TRUE(appPTR->peekImage(demotedKey, &cached)) << "the device loss took the host copy";
+        ASSERT_FALSE(cached.empty());
+        EXPECT_EQ((unsigned)0, (unsigned)(cached.front()->getEntryHeader()->residency.load() & CacheEntryHeader::eResidencyDevice));
+    }
+
+    FrameRun lostRun;
+    ASSERT_TRUE(planFrame(grades, &lostRun, &error)) << error;
+    ASSERT_TRUE(render(&lostRun)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    const std::vector<RegionFallback> fallbacks = lostRun.future->getRegionFallbacks();
+    ASSERT_FALSE(fallbacks.empty());
+    EXPECT_TRUE(fallbacks.front().deviceLost);
+    expectMatchesColdRender(grades.back(), lostRun);
+
+    ASSERT_TRUE(context->recoverIfLost()) << "the device was not recreated";
+    ASSERT_TRUE(setKnobValues(grades.back(), "multiply", { 0.7, 0.8, 0.9, 1. }));
+    FrameRun recovered;
+    ASSERT_TRUE(planFrame(grades, &recovered, &error)) << error;
+    ASSERT_TRUE(render(&recovered)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    EXPECT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    EXPECT_TRUE(recovered.future->getRegionFallbacks().empty());
+    expectMatchesColdRender(grades.back(), recovered);
+}
+
+// The device tier is full of cached outputs and the pool's budget fits the next region's working set but not that and
+// the cache: the pool takes the cached entries, so the region runs whole on the GPU instead of as strips or on the CPU.
+TEST_F(GpuDeviceTierStressTest, OutOfMemoryWithCachedEntriesEvictsThemBeforeStripsOrTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> cachedChain;
+    ASSERT_TRUE(makeDistinctChain(1.2, &cachedChain));
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    FrameGraph cachedGraph;
+    std::string error;
+    ASSERT_TRUE(renderAsOneRegion(cachedChain, &cachedGraph, &error)) << error;
+    ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    ASSERT_EQ(0, report->strips);
+    const unsigned long long wholePeak = report->wholePeakDeviceBytes;
+    ASSERT_GT(wholePeak, 0u);
+
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+    const std::size_t cachedBytes = tier->used();
+    const int cachedMembers = membersInDeviceTier(cachedGraph);
+    ASSERT_GT(cachedBytes, (std::size_t)0) << "no output was left in the device tier";
+    ASSERT_GE(cachedMembers, 1);
+
+    std::vector<NodePtr> nextChain;
+    ASSERT_TRUE(makeDistinctChain(1.9, &nextChain));
+    const std::vector<float> reference = cpuReference(nextChain.back());
+    ASSERT_FALSE(reference.empty());
+
+    gpu::GpuBufferPool& pool = appPTR->getGpuContext()->runtime()->pool();
+    const std::uint64_t budget = pool.budget();
+    pool.setUserBudget(wholePeak);
+    FrameRun run;
+    const bool planned = planFrame(nextChain, &run, &error);
+    const bool rendered = planned && render(&run);
+    pool.setUserBudget(budget);
+    ASSERT_TRUE(planned) << error;
+    ASSERT_TRUE(rendered) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+
+    EXPECT_EQ(std::string(), report->cpuFallback);
+    EXPECT_EQ(0, report->strips);
+    EXPECT_TRUE(run.future->getRegionFallbacks().empty());
+    EXPECT_LT(membersInDeviceTier(cachedGraph), cachedMembers) << "the cached entries were not evicted to make room";
+    EXPECT_EQ(std::string(), differsFrom(reference, run));
 }
 #endif // NATRON_HAVE_GPU

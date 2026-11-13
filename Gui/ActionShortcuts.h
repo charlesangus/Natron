@@ -521,6 +521,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionGraphShowLinkLines "showLinkLines"
 #define kShortcutDescActionGraphShowLinkLines "Show Link Lines"
 
+#define kShortcutIDActionGraphShowGpuRegions "showGpuRegions"
+#define kShortcutDescActionGraphShowGpuRegions "Show GPU Regions"
+
 #define kShortcutIDActionGraphNavigateUpstream "navigateUp"
 #define kShortcutDescActionGraphNavigateUpstream "Navigate Tree Upward"
 

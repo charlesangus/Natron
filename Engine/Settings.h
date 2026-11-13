@@ -295,6 +295,9 @@ public:
     bool isLinkLinesVisible() const;
     bool isExpressionLinesVisible() const;
 
+    bool isGpuRegionOverlayEnabled() const;
+    void setGpuRegionOverlayEnabled(bool enabled);
+
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
 
@@ -716,6 +719,7 @@ private:
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _showLinkLines;
     KnobBoolPtr _showExpressionLines;
+    KnobBoolPtr _showGpuRegions;
     KnobBoolPtr _usePluginIconsInNodeGraph;
     KnobBoolPtr _useAntiAliasing;
     KnobSeparatorPtr _tabMenuSeparator;

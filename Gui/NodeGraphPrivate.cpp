@@ -70,6 +70,7 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _root(NULL)
     , _nodeRoot(NULL)
     , _loopBlocks(NULL)
+    , _gpuRegions(NULL)
     , lowDetailEdgeLayer(NULL)
     , lowDetailNodeLayer(NULL)
     , _cacheSizeText(NULL)

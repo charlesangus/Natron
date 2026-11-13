@@ -1497,6 +1497,14 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     if (cacheCanServe && (!hasSomethingToRender || partial)) {
         noteImagesServed(*layersToRender, retention, renderSequence);
     }
+    if (const FrameRenderContext* frameContext = AppTLS::currentFrameContext()) {
+        for (const RectToRender& rect : layersToRender->rectsToRender) {
+            if (!rect.isIdentity) {
+                frameContext->noteNodeRendered(getNode().get());
+                break;
+            }
+        }
+    }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// End Determine rectangles left to render /////////////////////////////////////////////////

@@ -420,6 +420,9 @@ FrameRenderContext::FrameRenderContext()
     , _view(0)
     , _store()
     , _isolatedJob(IsolatedJob::current())
+    , _recordsRenderedNodes(false)
+    , _renderedMutex()
+    , _renderedNodes()
 #ifdef NATRON_HAVE_GPU
     , _wantsRootOnDevice(false)
     , _rootDeviceMutex()
@@ -430,6 +433,29 @@ FrameRenderContext::FrameRenderContext()
 
 FrameRenderContext::~FrameRenderContext()
 {
+}
+
+void
+FrameRenderContext::setRecordsRenderedNodes(bool records)
+{
+    _recordsRenderedNodes.store(records, std::memory_order_release);
+}
+
+void
+FrameRenderContext::noteNodeRendered(const Node* node) const
+{
+    if (!node || !_recordsRenderedNodes.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_renderedMutex);
+    _renderedNodes.insert(node);
+}
+
+std::unordered_set<const Node*>
+FrameRenderContext::renderedNodes() const
+{
+    std::lock_guard<std::mutex> lock(_renderedMutex);
+    return _renderedNodes;
 }
 
 #ifdef NATRON_HAVE_GPU

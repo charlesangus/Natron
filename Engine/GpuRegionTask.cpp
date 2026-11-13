@@ -3114,14 +3114,21 @@ private:
         if (_report) {
             GpuTransferModel::session().observeTransfer((double)_report->uploadBytes, (double)ownDownloadBytes(), _report->uploadMs + _report->downloadMs);
         }
-        if (!_stats) {
-            return;
-        }
         std::vector<bool> rendered(_region.members.size(), false);
         for (const Member& member : _members) {
             if (!member.identity) {
                 rendered[_position[member.task]] = true;
             }
+        }
+        if (_context) {
+            for (std::size_t pos = 0; pos < _region.members.size(); ++pos) {
+                if (rendered[pos]) {
+                    _context->noteNodeRendered(_graph.tasks[_region.members[pos]].key.node.get());
+                }
+            }
+        }
+        if (!_stats) {
+            return;
         }
         for (std::size_t pos = 0; pos < _region.members.size(); ++pos) {
             if (rendered[pos]) {
@@ -3453,6 +3460,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
             int rows = 0;
             int inFlight = 1;
             {
+                const gpu::GpuRegionFaultScope faultScope;
                 RegionRun run(context, graph, region, *runtime, forcedRows, !serial, report);
                 const EffectInstance::RenderRoIRetCode code = run.run(rootPlanes);
                 if (code != EffectInstance::eRenderRoIRetCodeFailed) {

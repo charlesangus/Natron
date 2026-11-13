@@ -574,7 +574,7 @@ placeOnGpu(FrameRun* run,
     }
     const FrameRenderContextPtr context = run->context;
     PlacementInputs inputs;
-    inputs.canRenderOnGpu = [gpuNodes, context](const FrameGraph::Task& task) {
+    inputs.canRenderOnGpu = [gpuNodes, context](const FrameGraph::Task& task, GpuRefusal*) {
         std::vector<GpuTaskPlane> planes;
 
         return gpuNodes.count(task.key.node.get()) && makeGpuTaskPlanes(task, *context, &planes);

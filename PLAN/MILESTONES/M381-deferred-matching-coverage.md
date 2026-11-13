@@ -128,7 +128,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: two contexts keep separate matches; the stale-match path opens 0 buildings.
   - size: M
 
-- [ ] M381.P4.T3 — Centre Pivot as a cancellable worker job
+- [x] M381.P4.T3 — Centre Pivot as a cancellable worker job
   - files: `Engine/Nodes/Scene/USDEditTransform.cpp` (`centrePivot` ~:379), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: runs on a worker with the showing viewer's context. Bounds from loaded prims plus authored `extentsHint` for unloaded payloads (never measured, per the design doc).
   - verify: centre equals the fully loaded centre when L covers the matches; probe reads 0; a second press cancels the first.
@@ -163,3 +163,4 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 - 2026-11-13 — Camera inputs that aren't composed into the output read on `withPaths(none, {camera})` rather than the viewer's set (PM call): the viewer's set says nothing about a separate camera branch.
 - 2026-11-13 — P3.T7 implemented (100056752). USD probe (pxr 26.08): a referencing prim's own load rule decides both the payloads above the referenced prim and its own payload, confirming "S's ancestors get T's self rule". The P3.T6 identity shortcut now also requires the same reach object, since a mapped input whose set equals the caller's would otherwise return unmapped reach. autoRename maps conservatively (a root picks up every `D/X_n` rule), over-loading on collisions; accepted as a correct superset (PM). USDReference with no Source Prim reads its source with everything loaded. `graftMaterialInput` is mapped in P3.T2.
 - 2026-11-13 — P4.T1 implemented (94f26acf1). `deriveOutputMetadata` stays an everything borrow but is reached on the main thread (`refreshMetadataSideEffects` → `getMetadata`, the viewer tab, the node graph), a UI stall on heavy scenes; P4.T6 added to remove it (PM, per "UI never stalls"). `prepareRender` keeps everything (render thread; the camera fallback needs the whole stage).
+- 2026-11-13 — P4.T3 implemented (034216bd8). The viewer is the active one if it is downstream, else the first downstream viewer (no recency tracker exists). If that viewer's context has no stored result, the job uses the latest result. A knob-driven button: the gate adds an Xvfb press of Centre Pivot on the city (ctest alone doesn't cover it).

@@ -42,7 +42,7 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
   - verify: syntax-check; covered by P2.T2.
   - size: M
 
-- [ ] M421.P1.T3 — Item-knob key edits refresh the markers (check first)
+- [x] M421.P1.T3 — Item-knob key edits refresh the markers (check first)
   - files: `Engine/RotoCurveContext.cpp` (only if the check fails)
   - approach: item knobs have a null holder, so `invalidateMarkersOfEffect` (`Engine/Knob.cpp` ~:1189-1199) returns early for them; markers rely on `tieItemKnob`'s echo into the proxy. P2.T2 keys an item opacity from Python with two strokes and a Bezier selected, and with a stroke selected through its layer. If markers go stale, call `getApp()->invalidateNodeKeyframeIndicators()` from `onSelectedKnobCurveChanged`/`onSelectedKnobValueChanged`.
   - verify: P2.T2's item-knob section passes.
@@ -56,7 +56,7 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
   - verify: syntax-check; the row draws at the painted frame and refuses a drag (P2.T2).
   - size: M
 
-- [ ] M421.P2.T2 — GUI test
+- [x] M421.P2.T2 — GUI test
   - files: `Tests/gui/m421_stroke_markers.py` (conventions of `m305_keyframe_markers.py`; paint with `m224_brush_strokes.py`'s mouse helpers)
   - approach: a RotoPaint with strokes painted on frames 5, 5 and 12, a Bezier keyed at 1 and 20, and a second RotoPaint inside a Group. After each step compare `TimeLineGui::keyframeMarkerTimes()` with the expected set: current stroke; select one, then several; panel close and reopen; Frame knob edit; Lifetime mode change; delete and undo; stroke undo and redo; Beziers unchanged; the P1.T3 item-knob case. Check the dope sheet's Painted Frame rows. Save screenshots of the timeline and dope sheet.
   - verify: passes with explicit `--gui` and fails on main.
@@ -71,3 +71,4 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 - 2026-11-13 — P1.T1 implemented (93229108c). Markers update one event-loop turn after a signal (coalesced), so GUI scripts process events before reading `keyframeMarkerTimes()`. After undoing a Bezier delete its markers return if it is still selected.
 - 2026-11-13 — P1.T2 implemented (3c58df3a5). The current stroke comes from `GuiAppInstance::getActiveRotoDrawingStroke`; a stroke painted while the panel is closed isn't adopted as current on reopen (confirm at UAT).
 - 2026-11-13 — P2.T1 implemented (18beb7da2); painted-frame keys are filtered at the DopeSheet model entry points, so no command sees them. P1.T3: no stale path found in the code; P2.T2's item-knob section decides.
+- 2026-11-13 — P2.T2 script added (a545e77c7); P1.T3 needed no code (no stale path found; the script's item-knob section is the check). Full gate running with the three GUI scripts.

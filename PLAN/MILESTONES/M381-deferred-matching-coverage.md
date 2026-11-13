@@ -64,7 +64,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: parity with a variant set authored inside the payload; probe reads 0.
   - size: M
 
-- [ ] M381.P2.T5 — USDProjectUV on the load set
+- [x] M381.P2.T5 — USDProjectUV on the load set
   - files: `Engine/Nodes/Scene/USDProjectUV.cpp` (~:835, ~:857, ~:920), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: a named camera through `withPaths`; with no camera named, the context set plus reach "/". Meshes via `matchPattern`; the result key gains the load-set hash.
   - verify: probe, UV parity at L, a camera inside a payload resolves.

@@ -317,9 +317,27 @@ CacheDeviceTier::insert(const ImageKey& key,
         }
     }
 
+    watchEviction(entry);
+
+    return entry;
+#else
+    (void)key;
+    (void)image;
+    (void)header;
+    (void)holderEvict;
+
+    return CacheDeviceEntryPtr();
+#endif
+}
+
+void
+CacheDeviceTier::watchEviction(const CacheDeviceEntryPtr& entry)
+{
+#ifdef NATRON_HAVE_GPU
     const std::weak_ptr<CacheDeviceTier> weakTier = shared_from_this();
     const std::weak_ptr<CacheDeviceEntry> weakEntry = entry;
-    image->setCached([weakTier, weakEntry, holderEvict] {
+    const std::function<void()> holderEvict = entry->holderEvict();
+    entry->image()->setCached([weakTier, weakEntry, holderEvict] {
         {
             const CacheDeviceTierPtr tier = weakTier.lock();
             const CacheDeviceEntryPtr evicted = weakEntry.lock();
@@ -331,16 +349,9 @@ CacheDeviceTier::insert(const ImageKey& key,
             holderEvict();
         }
     },
-                     scoreOf(*entry), header);
-
-    return entry;
+                              scoreOf(*entry), entry->header());
 #else
-    (void)key;
-    (void)image;
-    (void)header;
-    (void)holderEvict;
-
-    return CacheDeviceEntryPtr();
+    (void)entry;
 #endif
 }
 
@@ -378,6 +389,40 @@ CacheDeviceTier::find(const ImageKey& key)
     found->image()->setCachedScore(scoreOf(*found));
 
     return found;
+}
+
+CacheDeviceEntryPtr
+CacheDeviceTier::holdFor(const CacheDeviceEntryPtr& entry,
+                         const std::function<void()>& holderEvict)
+{
+#ifdef NATRON_HAVE_GPU
+    if (!entry || !entry->image()->isResident()) {
+        return CacheDeviceEntryPtr();
+    }
+    const CacheDeviceEntryPtr held = std::make_shared<CacheDeviceEntry>(entry->getKey(), entry->image(), entry->header(), entry->size(), holderEvict);
+    {
+        // Swapped in under the lock, so that an entry another render inserted under the key meanwhile is kept.
+        std::lock_guard<std::mutex> k(_lock);
+        const Table::iterator bucket = _table.find(entry->getHashKey());
+        if (bucket == _table.end()) {
+            return CacheDeviceEntryPtr();
+        }
+        std::list<CacheDeviceEntryPtr>::iterator it = std::find(bucket->second.begin(), bucket->second.end(), entry);
+        if (it == bucket->second.end()) {
+            return CacheDeviceEntryPtr();
+        }
+        *it = held;
+    }
+
+    watchEviction(held);
+
+    return held;
+#else
+    (void)entry;
+    (void)holderEvict;
+
+    return CacheDeviceEntryPtr();
+#endif
 }
 
 ImagePtr

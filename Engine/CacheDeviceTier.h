@@ -206,6 +206,14 @@ public:
     CacheDeviceEntryPtr find(const ImageKey& key);
 
     /**
+     * @brief Makes holderEvict, in place of the entry's, the eviction of another holder of its image, as insert()
+     * takes it, so that a frame store handed the image in place still gets its pixels in RAM when the pool takes the
+     * buffer. The entry that replaces entry, or null once entry left the tier or its image is no longer resident.
+     **/
+    CacheDeviceEntryPtr holdFor(const CacheDeviceEntryPtr& entry,
+                                const std::function<void()>& holderEvict);
+
+    /**
      * @brief Moves the entry's pixels to RAM for a reader that needs them there, whatever the cost rule would say: the
      * entry leaves the tier, and the image, sharing its header, joins the host tier unless one of its key is there
      * already. Null when the pixels could not be read back, as while a render pins them or once the device is lost.
@@ -257,6 +265,9 @@ private:
                         bool* adopted);
 
     CacheDeviceEntryPtr entryOf(const ImageKey& key) const;
+
+    // Hands the pool the entry's image as a cached lease whose eviction demotes the entry, then runs its holderEvict.
+    void watchEviction(const CacheDeviceEntryPtr& entry);
 
     // Off _lock, since it takes the image's mutex.
     static void letGo(const CacheDeviceEntry& entry);

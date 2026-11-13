@@ -303,6 +303,12 @@ struct Slot {
     // The download image is made as an entry of the host tier, which takes it once the run is done.
     bool admitHost = false;
 
+    // For a member output grown from a partial entry of the device tier: that entry's image, pinned until the run is
+    // drained, which the member's buffer is copied from before the member renders the rest, and the entry's bitmap.
+    GpuDeviceImagePtr cachedPart;
+    gpu::GpuBuffer* cachedBuffer = nullptr;
+    Bitmap cachedBitmap;
+
     bool released = false;
 };
 
@@ -336,6 +342,9 @@ struct Member {
 
     // Installed around every call asking effect about the task or recording it; null under no context.
     ParallelRenderArgsPtr contextArgs;
+
+    // What the member renders when its output slot is grown from the device tier; null for the task's renderedRoI.
+    RectI renderRect;
 };
 
 /**
@@ -725,11 +734,109 @@ private:
     // The input slots of a member rendering its plane: one per input it reads, in getGpuInputLayer()'s layer, then one
     // per layer getGpuExtraInputLayers() adds. An input readsGpuInput() leaves out keeps no slot, since the layer it
     // would be read in may be one its task never renders.
+    const RectI& renderRectOf(const Member& member) const
+    {
+        return member.renderRect.isNull() ? _graph.tasks[member.task].renderedRoI : member.renderRect;
+    }
+
+    /**
+     * @brief For a member of a task the device tier holds part of: grows out to the union of the entry's bounds and the
+     * task's renderedRoI, as Image::ensureBounds() would, and makes the member render only the task's
+     * deviceMissingRoI, the rest being copied from the entry on the device. False when the entry cannot be read in
+     * place or misses more than that rectangle, leaving out and the member as they were.
+     **/
+    bool growFromDeviceTier(Member* member,
+                            Slot* out)
+    {
+#ifdef NATRON_HAVE_GPU
+        const FrameGraph::Task& task = _graph.tasks[member->task];
+        const CacheDeviceTierPtr tier = appPTR ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
+        if (task.deviceMissingRoI.isNull() || !tier || (tier->runtime() != &_runtime)) {
+            return false;
+        }
+        const CacheDeviceEntryPtr entry = tier->find(cacheKeyOf(*member, *out));
+        if (!entry) {
+            return false;
+        }
+        const GpuDeviceImagePtr image = entry->image();
+        const GpuImageLayout& cached = image->layout();
+        if ((image->runtime() != &_runtime) || (cached.nComps() != out->layout.nComps()) || !sameLayer(cached.layer, out->layout.layer)
+            || (cached.mipmapLevel != out->layout.mipmapLevel) || cached.bounds.intersect(task.renderedRoI).isNull()) {
+            return false;
+        }
+        const Bitmap bitmap = entry->header()->bitmap;
+        if (bitmap.getBounds() != cached.bounds) {
+            return false;
+        }
+        std::list<RectI> missing;
+        bitmap.minimalNonMarkedRects(task.renderedRoI, missing);
+        for (const RectI& rect : missing) {
+            if (!task.deviceMissingRoI.contains(rect)) {
+                return false;
+            }
+        }
+        gpu::GpuBuffer* buffer = image->pin();
+        if (!buffer) {
+            return false;
+        }
+        RectI bounds = cached.bounds;
+        bounds.merge(task.renderedRoI);
+        out->layout.bounds = bounds;
+        out->cachedPart = image;
+        out->cachedBuffer = buffer;
+        out->cachedBitmap = bitmap;
+        member->renderRect = task.deviceMissingRoI;
+
+        return true;
+#else
+        (void)member;
+        (void)out;
+
+        return false;
+#endif
+    } // growFromDeviceTier
+
+    // The copies bringing the cached part of a grown slot into its buffer, row by row unless both share their width.
+    static std::vector<VkBufferCopy> cachedPartCopies(const Slot& slot)
+    {
+        std::vector<VkBufferCopy> copies;
+        const RectI& from = slot.cachedPart->layout().bounds;
+        const RectI& to = slot.layout.bounds;
+        const VkDeviceSize pixelBytes = (VkDeviceSize)slot.layout.nComps() * sizeof(float);
+        const VkDeviceSize rowBytes = (VkDeviceSize)from.width() * pixelBytes;
+        const auto offsetIn = [pixelBytes](const RectI& bounds, int x, int y) {
+            return ((VkDeviceSize)(y - bounds.y1) * (VkDeviceSize)bounds.width() + (VkDeviceSize)(x - bounds.x1)) * pixelBytes;
+        };
+        if ((from.x1 == to.x1) && (from.x2 == to.x2)) {
+            VkBufferCopy copy {};
+            copy.srcOffset = 0;
+            copy.dstOffset = offsetIn(to, from.x1, from.y1);
+            copy.size = rowBytes * (VkDeviceSize)from.height();
+            if (copy.size > 0) {
+                copies.push_back(copy);
+            }
+
+            return copies;
+        }
+        for (int y = from.y1; y < from.y2; ++y) {
+            VkBufferCopy copy {};
+            copy.srcOffset = offsetIn(from, from.x1, y);
+            copy.dstOffset = offsetIn(to, from.x1, y);
+            copy.size = rowBytes;
+            if (copy.size > 0) {
+                copies.push_back(copy);
+            }
+        }
+
+        return copies;
+    }
+
     bool planInputs(const std::vector<std::pair<int, int>>& edges,
                     Member* member)
     {
         const FrameGraph::Task& task = _graph.tasks[member->task];
         NativeEffectBase* effect = member->effect;
+        const RectI& renderRect = renderRectOf(*member);
 
         member->nInputs = std::max(0, effect->getNInputs());
         member->inputSlots.assign(member->nInputs, -1);
@@ -775,7 +882,7 @@ private:
                 if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
                     return fail(member->task, "an input renders an empty window");
                 }
-                const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, task.renderedRoI, member->query.mappedScale);
+                const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, renderRect, member->query.mappedScale);
                 const int slot = readSlot(edges[e].second, layer, needed);
                 if (slot < 0) {
                     return fail(member->task, "an input produced in the region is not in the layer the node reads");
@@ -794,7 +901,7 @@ private:
             if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
                 return fail(member->task, "an input renders an empty window");
             }
-            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, task.renderedRoI, member->query.mappedScale);
+            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, renderRect, member->query.mappedScale);
             const int slot = readSlot(edges[e].second, layer, needed);
             if (slot < 0) {
                 return fail(member->task, "an input produced in the region is not in the layer the node reads");
@@ -808,7 +915,9 @@ private:
             return fail(member->task, "an input time the node reads has no task to read");
         }
         for (int inputNb = 0; inputNb < member->nInputs; ++inputNb) {
-            if ((member->inputSlots[inputNb] < 0) && !readAtOtherTimes[inputNb] && !unread[inputNb] && effect->getInput(inputNb) && !effect->isInputMask(inputNb)) {
+            // The pruning let go of the inputs that only the cached part of a partial device hit reads.
+            const bool readByRenderRect = !task.servedFromCache || member->renderRect.isNull();
+            if ((member->inputSlots[inputNb] < 0) && !readAtOtherTimes[inputNb] && !unread[inputNb] && readByRenderRect && effect->getInput(inputNb) && !effect->isInputMask(inputNb)) {
                 return fail(member->task, "a connected input has no task to read");
             }
         }
@@ -821,7 +930,7 @@ private:
             if (!effect->getGpuExtraInputLayers(inputNb, member->plane, task.key.time, task.key.view, &layers)) {
                 return fail(member->task, "the node cannot read an input on the GPU");
             }
-            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, task.renderedRoI, member->query.mappedScale);
+            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, renderRect, member->query.mappedScale);
             for (const ImageLayerDesc& layer : layers) {
                 const int slot = readSlot(inputTasks[inputNb], layer, needed);
                 if (slot < 0) {
@@ -848,7 +957,7 @@ private:
                 if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
                     return fail(member->task, "an output requested under a context renders an empty window");
                 }
-                const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, task.renderedRoI, member->query.mappedScale);
+                const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, renderRect, member->query.mappedScale);
                 slot = readSlot(edges[e].second, layer, needed);
                 if (slot < 0) {
                     return fail(member->task, "an output requested under a context is not in the layer the node reads");
@@ -964,11 +1073,18 @@ private:
 
                 member.query = plane.query;
                 member.contextArgs = contextArgs;
-                if (!planInputs(edges, &member)) {
-                    return false;
-                }
                 Slot out;
                 out.layout = layoutOf(task, plane.plane, task.renderedRoI);
+                if (!growFromDeviceTier(&member, &out) && task.servedFromCache) {
+                    return fail(taskIndex, "the device tier no longer holds the part of the output whose inputs the plan let go");
+                }
+                if (!planInputs(edges, &member)) {
+                    if (out.cachedPart) {
+                        out.cachedPart->unpin();
+                    }
+
+                    return false;
+                }
                 out.producer = (int)_members.size();
                 _slots.push_back(out);
                 member.outSlot = (int)_slots.size() - 1;
@@ -1056,6 +1172,14 @@ private:
         for (Slot& slot : _slots) {
             if (slot.download) {
                 slot.downloadAt = std::max(0, std::max(slot.producer, slot.lastRead));
+            }
+        }
+        if (_report) {
+            _report->renderedRects.assign(_region.members.size(), RectI());
+            for (const Member& member : _members) {
+                if (!member.identity) {
+                    _report->renderedRects[_position[member.task]].merge(renderRectOf(member));
+                }
             }
         }
 
@@ -1959,10 +2083,22 @@ private:
                 }
                 out.view = viewOf(&out.handle.buffer(), out.layout);
 
-                const FrameGraph::Task& task = _graph.tasks[member.task];
+                if (out.cachedPart) {
+                    const std::vector<VkBufferCopy> copies = cachedPartCopies(out);
+                    const gpu::GpuStatus copied = recorder.copyBuffer(*out.cachedBuffer, out.handle.buffer(), copies);
+                    if (!copied.ok()) {
+                        fail(member.task, "cannot copy the cached part of the output: " + copied.message);
+
+                        return EffectInstance::eRenderRoIRetCodeFailed;
+                    }
+                    if (_report) {
+                        ++_report->grownFromDevice;
+                    }
+                }
+
                 GpuRenderArgs args(recorder);
                 args.query = member.query;
-                args.outputRect = task.renderedRoI;
+                args.outputRect = renderRectOf(member);
                 if (!setInputs(member, &args)) {
                     fail(member.task, "an input is not on the device");
 
@@ -2238,6 +2374,11 @@ private:
             return fail(NodePtr(), "a strip of the region would read nothing of an input");
         }
         if (!strips->empty()) {
+            for (const Slot& slot : _slots) {
+                if (slot.cachedPart) {
+                    return fail(NodePtr(), "an output grown from the device tier is recorded whole only");
+                }
+            }
             for (Slot& slot : _slots) {
                 if (slot.keep) {
                     slot.download = true;
@@ -2294,7 +2435,15 @@ private:
         header.key = std::make_shared<const ImageKey>(key);
         header.bounds = slot.layout.bounds;
         header.bitmap.initialize(slot.layout.bounds);
-        header.bitmap.setTo1();
+        if (slot.cachedPart) {
+            const RectI cachedPart = slot.cachedBitmap.getBounds().intersect(slot.layout.bounds);
+            if (!cachedPart.isNull()) {
+                header.bitmap.copyBitmapPortion(cachedPart, slot.cachedBitmap);
+            }
+            header.bitmap.markForRendered(renderRectOf(member));
+        } else {
+            header.bitmap.setTo1();
+        }
         const double area = (double)slot.layout.bounds.area();
         const long long ownNs = timed ? _report->memberNs[_position[member.task]] : 0;
         const CacheRetentionSignalsPtr retention = node->getRetentionSignals();
@@ -2406,7 +2555,9 @@ private:
                 continue;
             }
             const double bytes = (double)std::max<std::size_t>(1, slot.layout.deviceBytes());
-            candidates.push_back(std::make_pair((double)expectedCostNs(member) / bytes, member.outSlot));
+            // Unpublished, a grown output would leave the tier holding the smaller entry it replaced.
+            const double rank = slot.cachedPart ? std::numeric_limits<double>::infinity() : (double)expectedCostNs(member) / bytes;
+            candidates.push_back(std::make_pair(rank, member.outSlot));
         }
         std::stable_sort(candidates.begin(), candidates.end(), [](const std::pair<double, int>& a, const std::pair<double, int>& b) {
             return a.first > b.first;
@@ -3437,6 +3588,11 @@ private:
             if (slot.pinned) {
                 slot.pinned->unpin();
                 slot.pinned.reset();
+            }
+            if (slot.cachedPart) {
+                slot.cachedPart->unpin();
+                slot.cachedPart.reset();
+                slot.cachedBuffer = nullptr;
             }
         }
         for (const GpuDeviceImagePtr& image : _unpinAfterSubmit) {

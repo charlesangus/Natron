@@ -798,16 +798,22 @@ RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
                 kept.clear();
                 task.servedFromCache = true;
                 task.servedTier = servedBy;
-            } else if ((coverage == EffectInstance::OutputCacheCoverage::Partial) && !kept.empty() && (!request->globalData.transforms || request->globalData.transforms->empty())) {
-                RoIMap missingPartRoIs;
-                effect->getRegionsOfInterest_public(task.key.time, nodeRequest->second->mappedScale, request->globalData.rod, missing, task.key.view, &missingPartRoIs);
-                const std::size_t before = kept.size();
-                kept.erase(std::remove_if(kept.begin(), kept.end(), [&](int edge) {
-                               return !missingPartReads(graph.tasks[task.dependencies[edge]], *request, requests, missingPartRoIs);
-                           }),
-                           kept.end());
-                task.servedFromCache = kept.size() != before;
+            } else if (coverage == EffectInstance::OutputCacheCoverage::Partial) {
+                // The device tier holds entries at the exact level only, which is the level a region renders at.
+                if ((servedBy == EffectInstance::OutputCacheTier::Device) && !rendersFullScale) {
+                    task.deviceMissingRoI = missing.toPixelEnclosing(task.key.mipmapLevel, task.pixelAspectRatio).intersect(task.renderedRoI);
+                }
                 task.servedTier = servedBy;
+                if (!kept.empty() && (!request->globalData.transforms || request->globalData.transforms->empty())) {
+                    RoIMap missingPartRoIs;
+                    effect->getRegionsOfInterest_public(task.key.time, nodeRequest->second->mappedScale, request->globalData.rod, missing, task.key.view, &missingPartRoIs);
+                    const std::size_t before = kept.size();
+                    kept.erase(std::remove_if(kept.begin(), kept.end(), [&](int edge) {
+                                   return !missingPartReads(graph.tasks[task.dependencies[edge]], *request, requests, missingPartRoIs);
+                               }),
+                               kept.end());
+                    task.servedFromCache = kept.size() != before;
+                }
             }
         }
         droppedAny = droppedAny || (kept.size() != task.dependencies.size());
@@ -1382,7 +1388,8 @@ serveFromDeviceTier(const FrameRenderContext& context,
                     const FrameGraph::Task& task,
                     const EffectInstancePtr& effect,
                     std::map<ImageLayerDesc, ImagePtr>* planes,
-                    std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers)
+                    std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers,
+                    std::vector<CacheDeviceEntryPtr>* inPlace)
 {
 #ifdef NATRON_HAVE_GPU
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
@@ -1414,10 +1421,12 @@ serveFromDeviceTier(const FrameRenderContext& context,
     consumerDevices(graph, task, &onGpu, &onCpu);
     std::map<ImageLayerDesc, ImagePtr> ram;
     std::map<ImageLayerDesc, DeviceImagePtr> device;
+    std::vector<CacheDeviceEntryPtr> readInPlace;
     for (const std::pair<const ImageLayerDesc, CacheDeviceEntryPtr>& entry : entries) {
         // A RAM consumer beside a region downloads from the store, after or instead of the region's read in place.
         if (onGpu) {
             device[entry.first] = entry.second->image();
+            readInPlace.push_back(entry.second);
             continue;
         }
         const ImagePtr image = tier->downloadToHost(entry.second);
@@ -1428,6 +1437,7 @@ serveFromDeviceTier(const FrameRenderContext& context,
     }
     planes->swap(ram);
     deviceLayers->swap(device);
+    inPlace->swap(readInPlace);
 
     return true;
 #else
@@ -1437,6 +1447,7 @@ serveFromDeviceTier(const FrameRenderContext& context,
     (void)effect;
     (void)planes;
     (void)deviceLayers;
+    (void)inPlace;
 
     return false;
 #endif
@@ -1446,7 +1457,8 @@ serveFromDeviceTier(const FrameRenderContext& context,
 // the next frame is served from the device.
 void
 promoteForGpu(const std::map<ImageLayerDesc, ImagePtr>& planes,
-              std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers)
+              std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers,
+              std::vector<CacheDeviceEntryPtr>* inPlace)
 {
 #ifdef NATRON_HAVE_GPU
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
@@ -1463,11 +1475,54 @@ promoteForGpu(const std::map<ImageLayerDesc, ImagePtr>& planes,
         const CacheDeviceEntryPtr entry = tier->find(image->getKey());
         if (entry) {
             (*deviceLayers)[plane.first] = entry->image();
+            inPlace->push_back(entry);
         }
     }
 #else
     (void)planes;
     (void)deviceLayers;
+    (void)inPlace;
+#endif
+}
+
+/**
+ * @brief Makes the frame store's entry of key the other holder of the device tier's images it was handed in place, as
+ * it is of a region's outputs: when the pool takes one of their buffers mid-frame, the tier demotes or drops its entry
+ * and the store still moves the pixels to RAM for the consumers left. Without it the store would keep a device image
+ * nothing reads back, and its consumers would fall back to the CPU.
+ **/
+void
+holdInStore(const FrameRenderContextPtr& context,
+            const FrameStore::TaskKey& key,
+            const std::vector<CacheDeviceEntryPtr>& inPlace)
+{
+#ifdef NATRON_HAVE_GPU
+    if (inPlace.empty()) {
+        return;
+    }
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::shared_ptr<void> runtimeHeld = gpu ? gpu->holdRuntime() : std::shared_ptr<void>();
+    const CacheDeviceTierPtr tier = runtimeHeld ? appPTR->getDeviceCacheTier() : CacheDeviceTierPtr();
+    if (!tier) {
+        return;
+    }
+    const std::weak_ptr<FrameRenderContext> weakContext = context;
+    const std::weak_ptr<RenderStats> weakStats = context->getStats();
+    const std::function<void()> evictFromStore = [weakContext, weakStats, key]() {
+        const FrameRenderContextPtr held = weakContext.lock();
+        if (held && (held->getStore().evictToRam(key) > 0)) {
+            if (const RenderStatsPtr stats = weakStats.lock()) {
+                stats->noteEviction();
+            }
+        }
+    };
+    for (const CacheDeviceEntryPtr& entry : inPlace) {
+        (void)tier->holdFor(entry, evictFromStore);
+    }
+#else
+    (void)context;
+    (void)key;
+    (void)inPlace;
 #endif
 }
 
@@ -1529,11 +1584,12 @@ RenderScheduler::executeTask(const FramePtr& frame,
     std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
     EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
     bool servedInPlace = false;
+    std::vector<CacheDeviceEntryPtr> inPlace;
 
-    if (effect && task.servedFromCache && (task.servedTier == EffectInstance::OutputCacheTier::Device)) {
+    if (effect && task.servedFromCache && (task.servedTier == EffectInstance::OutputCacheTier::Device) && task.deviceMissingRoI.isNull()) {
         ProfileSink& sink = profileSink();
         const std::chrono::steady_clock::time_point serveStart = sink.isEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-        servedInPlace = serveFromDeviceTier(*frame->context, frame->graph, task, effect, &planes, &deviceLayers);
+        servedInPlace = serveFromDeviceTier(*frame->context, frame->graph, task, effect, &planes, &deviceLayers, &inPlace);
         if (servedInPlace) {
             retCode = EffectInstance::eRenderRoIRetCodeOk;
             if (sink.isEnabled()) {
@@ -1605,13 +1661,14 @@ RenderScheduler::executeTask(const FramePtr& frame,
                 bool onCpu = false;
                 consumerDevices(frame->graph, task, &onGpu, &onCpu);
                 if (onGpu) {
-                    promoteForGpu(planes, &deviceLayers);
+                    promoteForGpu(planes, &deviceLayers, &inPlace);
                 }
             }
             if (deviceLayers.empty()) {
                 store.put(task.key, planes, task.renderedRoI, task.consumers);
             } else {
                 store.put(task.key, planes, std::move(deviceLayers), task.renderedRoI, task.consumers);
+                holdInStore(frame->context, task.key, inPlace);
             }
         }
         // A task served in place ran nothing.

@@ -112,6 +112,27 @@ ruleFor(bool self,
 
     return self ? SceneLoadSet::eRuleOnly : SceneLoadSet::eRuleNone;
 }
+
+// rules as a load set without the rules that change nothing, null when none is left.
+SceneLoadSetPtr
+withoutRedundantRules(const RulesByPath& rules)
+{
+    std::vector<SceneLoadSet::Entry> entries;
+    entries.reserve(rules.size());
+    for (const std::pair<const std::string, SceneLoadSet::RuleEnum>& entry : rules) {
+        const SceneLoadSet::RuleEnum* inherited = (entry.first == "/") ? nullptr : nearestRule(rules, parentPath(entry.first));
+        const bool inheritedAll = includesBelow(inherited);
+        const bool redundant = (inheritedAll && (entry.second == SceneLoadSet::eRuleAll)) || (!inheritedAll && (entry.second == SceneLoadSet::eRuleNone));
+        if (!redundant) {
+            entries.push_back(SceneLoadSet::Entry { entry.first, entry.second });
+        }
+    }
+    if (entries.empty()) {
+        return SceneLoadSetPtr();
+    }
+
+    return std::make_shared<const SceneLoadSet>(entries);
+}
 } // anonymous namespace
 
 SceneLoadSet::SceneLoadSet()
@@ -238,21 +259,18 @@ SceneLoadSet::unite(const SceneLoadSetPtr& a,
         }
     }
 
-    std::vector<Entry> entries;
-    entries.reserve(united.size());
-    for (const std::pair<const std::string, RuleEnum>& entry : united) {
-        const RuleEnum* inherited = (entry.first == "/") ? nullptr : nearestRule(united, parentPath(entry.first));
-        const bool inheritedAll = includesBelow(inherited);
-        const bool redundant = (inheritedAll && (entry.second == eRuleAll)) || (!inheritedAll && (entry.second == eRuleNone));
-        if (!redundant) {
-            entries.push_back(Entry { entry.first, entry.second });
-        }
-    }
-    if (entries.empty()) {
-        return SceneLoadSetPtr();
+    return withoutRedundantRules(united);
+}
+
+SceneLoadSetPtr
+SceneLoadSet::minimal(const std::vector<Entry>& entries)
+{
+    RulesByPath rules;
+    for (const Entry& entry : entries) {
+        rules[entry.path] = entry.rule;
     }
 
-    return std::make_shared<const SceneLoadSet>(entries);
+    return withoutRedundantRules(rules);
 }
 
 SceneLoadSet::RuleEnum

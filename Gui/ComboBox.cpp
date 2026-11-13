@@ -1110,7 +1110,7 @@ ComboBox::isItemEnabled(int index) const
 {
     const ComboBoxMenuNode* node = getCurrentIndexNode(index, _rootNode.get());
 
-    return !node || !node->disabled;
+    return node && !node->disabled;
 }
 
 int

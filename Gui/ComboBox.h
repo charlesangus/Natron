@@ -168,7 +168,7 @@ public:
     void enableItem(int index);
 
     // False for an entry disableItem() disabled, which neither the menu, the wheel, the arrow keys
-    // nor setCurrentIndex() can make current.
+    // nor setCurrentIndex() can make current, and for an index that holds no entry.
     bool isItemEnabled(int index) const;
 
     void setItemText(int index, const QString & item);

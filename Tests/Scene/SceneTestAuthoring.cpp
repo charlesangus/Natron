@@ -62,8 +62,16 @@ std::map<std::string, PrimSnapshot>
 snapshot(const PXR_NS::UsdStageRefPtr& stage)
 {
     std::map<std::string, PrimSnapshot> prims;
+    PXR_NS::UsdPrimRange range = PXR_NS::UsdPrimRange::Stage(stage, PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimAllPrimsPredicate));
 
-    for (const PXR_NS::UsdPrim& prim : PXR_NS::UsdPrimRange::Stage(stage, PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimAllPrimsPredicate))) {
+    for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+        const PXR_NS::UsdPrim& prim = *it;
+        // Below an unloaded payload only stronger layers' overs compose, as prims that are not
+        // defined: what an evaluation on everything authored on content the load set leaves out,
+        // which an evaluation on the load set cannot see.
+        if (prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+            it.PruneChildren();
+        }
         PrimSnapshot entry;
         entry.typeName = prim.GetTypeName().GetString();
         entry.active = prim.IsActive();

@@ -896,7 +896,31 @@ getLoadRules(const SceneLoadSet* loadSet)
         }
         entries.emplace_back(path, rule);
     }
-    rules.SetRules(std::move(entries));
+    // USD loads the ancestors of every path a rule loads, so an OnlyRule above another loading
+    // rule says nothing; and UsdStageLoadRules::Minimize() drops an OnlyRule nested under
+    // another as redundant, which would unload the inner path. Keeping only the innermost
+    // OnlyRule of a chain is equivalent and survives Minimize().
+    std::sort(entries.begin(), entries.end(), [](const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& a, const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& b) {
+        return a.first < b.first;
+    });
+    std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>> kept;
+    kept.reserve(entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        bool implied = false;
+        if (entries[i].second == PXR_NS::UsdStageLoadRules::OnlyRule) {
+            // Sorted, so the paths below entries[i] follow it.
+            for (std::size_t j = i + 1; (j < entries.size()) && entries[j].first.HasPrefix(entries[i].first); ++j) {
+                if (entries[j].second != PXR_NS::UsdStageLoadRules::NoneRule) {
+                    implied = true;
+                    break;
+                }
+            }
+        }
+        if (!implied) {
+            kept.push_back(entries[i]);
+        }
+    }
+    rules.SetRules(std::move(kept));
 
     return rules;
 }
@@ -2904,17 +2928,12 @@ namespace {
         appendMovedBelow(loadSet, from, to, entries);
     }
 
-    // entries as a load set, null when every one includes everything.
+    // entries as a load set, null when it includes everything. Redundant entries are dropped so
+    // that a mapped set equals, and hashes as, the same set written directly.
     SceneLoadSetPtr
     makeMappedLoadSet(const std::vector<SceneLoadSet::Entry>& entries)
     {
-        for (const SceneLoadSet::Entry& entry : entries) {
-            if (entry.rule != SceneLoadSet::eRuleAll) {
-                return std::make_shared<const SceneLoadSet>(entries);
-            }
-        }
-
-        return SceneLoadSetPtr();
+        return SceneLoadSet::minimal(entries);
     }
 
     void

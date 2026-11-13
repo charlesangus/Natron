@@ -80,7 +80,8 @@ SceneLoadSetPtr loadingOnly(const std::vector<std::string>& paths);
 
 /**
  * @brief Evaluates node in a viewer context with loadSet and in the default one, opens both
- * results with the payloads of loadSet, and expects the same prims with the same properties.
+ * results with the payloads of loadSet, and expects the same prims with the same properties,
+ * leaving out what lies below a payload loadSet leaves unloaded.
  **/
 void expectParity(const NodePtr& node,
                   const SceneLoadSetPtr& loadSet);

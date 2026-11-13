@@ -1346,9 +1346,10 @@ TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnLoadedPrimsEqualsTheFullyLoadedCe
     const SceneEvaluationContext block(SceneEvaluationContext::makeId(), loadingOnly({ "/World/Block_0" }));
     const SceneEvaluationContext everything(SceneEvaluationContext::makeId(), SceneLoadSetPtr());
 
+    // One at a time: a new request cancels the one before it.
     std::shared_ptr<CentrePivotJob> covered = centreIn(edit, node, &block);
-    std::shared_ptr<CentrePivotJob> full = centreIn(edit, node, &everything);
     ASSERT_EQ(CentrePivotJob::eStateDone, covered->wait()) << covered->getError();
+    std::shared_ptr<CentrePivotJob> full = centreIn(edit, node, &everything);
     ASSERT_EQ(CentrePivotJob::eStateDone, full->wait()) << full->getError();
     double a[3], b[3];
     covered->getCentre(&a[0], &a[1], &a[2]);
@@ -1366,7 +1367,7 @@ TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnNothingLoadedUsesExtentsHintsAndO
 {
     CarCity city(2, 2, true);
     NodePtr source = reader(city);
-    NodePtr node = editTransform(source, "/World/Block_0/B_*");
+    NodePtr node = editTransform(source, "/World/Block_0");
     ASSERT_TRUE(source && node);
     USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
     ASSERT_TRUE(edit != nullptr);
@@ -1386,7 +1387,7 @@ TEST_F(SceneLoadSetCoverageTest, ACentrePivotOnUnloadedPrimsWithoutHintsFailsAnd
 {
     CarCity city(2, 2);
     NodePtr source = reader(city);
-    NodePtr node = editTransform(source, "/World/Block_0/B_*");
+    NodePtr node = editTransform(source, "/World/Block_0");
     ASSERT_TRUE(source && node);
     USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
     ASSERT_TRUE(edit != nullptr);
@@ -1402,7 +1403,7 @@ TEST_F(SceneLoadSetCoverageTest, ASecondCentrePivotRequestCancelsTheFirst)
 {
     CarCity city(2, 2, true);
     NodePtr source = reader(city);
-    NodePtr node = editTransform(source, "/World/Block_0/B_*");
+    NodePtr node = editTransform(source, "/World/Block_0");
     ASSERT_TRUE(source && node);
     USDEditTransform* edit = dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
     ASSERT_TRUE(edit != nullptr);

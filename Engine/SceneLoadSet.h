@@ -106,6 +106,13 @@ public:
      **/
     RuleEnum getRuleAt(const std::string& path) const;
 
+    /**
+     * @brief entries as a load set without the entries that change what it includes nowhere,
+     * so that sets differing only by those compare equal. Of two entries for one path, the later
+     * one is kept. Null when it includes everything.
+     **/
+    static std::shared_ptr<const SceneLoadSet> minimal(const std::vector<Entry>& entries);
+
     U64 getHash() const;
 
     bool operator==(const SceneLoadSet& other) const;

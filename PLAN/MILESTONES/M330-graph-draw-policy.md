@@ -36,7 +36,7 @@ assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
   - verify: gtest — equal stacks with different rules hash equal; a USDWrite export is byte-identical with and without rules; a USDRender stage has no trace of them.
   - size: M
 
-- [ ] M330.P1.T2 — USDRead Initial Draw knob
+- [x] M330.P1.T2 — USDRead Initial Draw knob
   - files: `Engine/Nodes/Scene/USDRead.{h,cpp}`, `Engine/Nodes/Scene/docs/USDRead.md`, `Tests/Scene/USDRead_Test.cpp`, `Tests/gui/scene_initial_draw.py`
   - approach: script name `initialDraw`, label "Initial Draw", plus `levels` and `toKind` shown when relevant. Emits rules scoped to the file's top-level prims; To Kind stops at the first prim of that kind or stronger. Full + Load loads payloads below in viewers only. No scene edit.
   - verify: gtest — each value emits the expected rules; GUI script — a new USDRead on the city draws one box per top-level prim, native primitives merged with it stay Full, and no building layer opens.
@@ -68,3 +68,8 @@ assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
 
 ## Decisions
 - 2026-11-13 — P1.T1 (f83c64de9): rules propagate in `EffectInstance::evaluateScene` for every node (inputs' rules in input order, the node's own last; a repeat keeps its first place), not per merge node. `SceneDrawStateEnum` moved into `ScenePayload.h` so the payload stays free of scene headers. A rules-only change re-resolves on the viewer's worker, with no `requestSync`. Plain-path rules apply without a stage. Known limit: rules keep their authored paths, so a node that moves prims downstream doesn't remap them. Gate deferred to the end of phase 1.
+- 2026-11-13 — P1.T2 (3bacda51d):
+  - Initial Draw emits one rule whose pattern lists the file's root-defined prims (sublayers followed, payloads never opened).
+  - The draw knobs are left out of the node hash, so changing them changes only the rules, not the stack.
+  - The BBox default is kept as specified. 30 existing viewer GUI scripts that inspect drawn geometry now set Initial Draw to Full; the 7 left unchanged never look at the 3D drawing.
+  - Phase-1 gate running with all 31 changed scripts.

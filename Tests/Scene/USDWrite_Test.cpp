@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <thread>
@@ -49,6 +50,7 @@
 
 #include "BaseTest.h"
 #include "SceneTestEffect.h"
+#include "UdimTilesTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -878,6 +880,35 @@ protected:
 
         return material;
     }
+
+    // A USDMaterial whose Diffuse Color input is a Tiles1 UdimTilesTestEffect, which declares tiles
+    // 1001, 1002 and 1011 and fills each with its number less 1000 in red.
+    NodePtr createTilesMaterial(UdimTilesTestEffect** effect)
+    {
+        registerUdimTilesTestEffectOnce();
+        NodePtr tiles = createNode(QString::fromUtf8(kUdimTilesTestPluginID));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        *effect = tiles ? dynamic_cast<UdimTilesTestEffect*>(tiles->getEffectInstance().get()) : NULL;
+        if (!*effect || !material) {
+            ADD_FAILURE() << "The UDIM tiles test effect or USDMaterial is not registered";
+
+            return NodePtr();
+        }
+        tiles->setScriptName("Tiles1");
+        material->setScriptName("Material1");
+        EXPECT_TRUE(material->connectInput(tiles, kUSDMaterialInputDiffuseColor));
+
+        return material;
+    }
+
+    static QString warningOf(const NodePtr& node)
+    {
+        QString message;
+        int type = 0;
+        node->getPersistentMessage(&message, &type, false);
+
+        return message;
+    }
 };
 
 TEST_F(USDWriteUdimTest, ATileSetIsExportedOneFilePerTileUnderAUdimPath)
@@ -913,6 +944,133 @@ TEST_F(USDWriteUdimTest, ATileSetIsExportedOneFilePerTileUnderAUdimPath)
     EXPECT_EQ("1002", resolved[1].second);
     for (const PXR_NS::UsdShadeUdimUtils::ResolvedPathAndTile& tile : resolved) {
         EXPECT_NEAR(0.1, centreRedOf(QString::fromStdString(tile.first)), 1e-3) << tile.first;
+    }
+}
+
+TEST_F(USDWriteUdimTest, EachTileFileHoldsTheRenderOfItsTile)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createUdimMaterial();
+    ASSERT_TRUE(bool(material));
+    KnobColor* color = getKnob<KnobColor>(material->getInput(kUSDMaterialInputDiffuseColor)->getInput(0), kConstantParamColor);
+    ASSERT_TRUE(color != NULL);
+    ASSERT_NO_THROW(color->setExpression(0, "((udim.tile or 1000) - 1000) * 0.25", false, true));
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeFlattened, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+    EXPECT_FALSE(writer->hasPersistentMessage()) << warningOf(writer).toStdString();
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    const PXR_NS::UsdAttribute file = diffuseFileOf(stage);
+    ASSERT_TRUE(bool(file));
+    PXR_NS::SdfAssetPath asset;
+    ASSERT_TRUE(file.Get(&asset, PXR_NS::UsdTimeCode(1.)));
+    const std::vector<PXR_NS::UsdShadeUdimUtils::ResolvedPathAndTile> resolved = PXR_NS::UsdShadeUdimUtils::ResolveUdimTilePaths(asset.GetAssetPath(), stage->GetRootLayer());
+    ASSERT_EQ((std::size_t)2, resolved.size()) << asset.GetAssetPath();
+    EXPECT_EQ("1001", resolved[0].second);
+    EXPECT_EQ("1002", resolved[1].second);
+    EXPECT_NEAR(0.25, centreRedOf(QString::fromStdString(resolved[0].first)), 1e-3) << resolved[0].first;
+    EXPECT_NEAR(0.5, centreRedOf(QString::fromStdString(resolved[1].first)), 1e-3) << resolved[1].first;
+}
+
+TEST_F(USDWriteUdimTest, AFailedTileIsWarnedAndItsEarlierFileRemoved)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    UdimTilesTestEffect* effect = NULL;
+    NodePtr material = createTilesMaterial(&effect);
+    ASSERT_TRUE(material && effect);
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeFlattened, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    const QString texturesDir = tmp.path() + QString::fromUtf8("/scene_textures");
+    const QString failedTile = texturesDir + QString::fromUtf8("/Tiles1_rgba.1002.exr");
+
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+    EXPECT_FALSE(writer->hasPersistentMessage()) << warningOf(writer).toStdString();
+    ASSERT_TRUE(QFileInfo(failedTile).exists());
+
+    // Painting the tile gives it a new version, so the second export renders it again.
+    effect->setFailing(1002, true);
+    effect->paint(1002);
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("Tiles1_rgba.1001.exr") << QString::fromUtf8("Tiles1_rgba.1011.exr"), fileNames(texturesDir));
+    EXPECT_FALSE(QFileInfo(failedTile).exists());
+    ASSERT_TRUE(writer->hasPersistentMessage());
+    const QString warning = warningOf(writer);
+    EXPECT_TRUE(warning.contains(QString::fromUtf8("UDIM tile 1002"))) << warning.toStdString();
+    EXPECT_FALSE(warning.contains(QString::fromUtf8("UDIM tile 1001"))) << warning.toStdString();
+}
+
+TEST_F(USDWriteUdimTest, ATileNoLongerDeclaredLosesItsFileFromAnEarlierExport)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr material = createUdimMaterial();
+    ASSERT_TRUE(bool(material));
+    NodePtr modify = material->getInput(kUSDMaterialInputDiffuseColor);
+    KnobStringBase* tiles = dynamic_cast<KnobStringBase*>(modify->getKnobByName("stringValue1").get());
+    ASSERT_TRUE(tiles != NULL);
+    tiles->setValue(std::string("1001,1002,1003"));
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeFlattened, 1, 1);
+    ASSERT_TRUE(writer && getWriter(writer));
+    const QString texturesDir = tmp.path() + QString::fromUtf8("/scene_textures");
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+    const QStringList first = fileNames(texturesDir);
+    ASSERT_EQ(3, first.size());
+    ASSERT_TRUE(first[2].endsWith(QString::fromUtf8(".1003.exr"))) << first[2].toStdString();
+    // Not a tile of the set, so it is left alone.
+    const QString unrelated = texturesDir + QString::fromUtf8("/Other_rgba.1003.exr");
+    {
+        QFile f(unrelated);
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+    }
+
+    tiles->setValue(std::string("1001,1002"));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+    EXPECT_FALSE(writer->hasPersistentMessage()) << warningOf(writer).toStdString();
+    EXPECT_EQ(QStringList() << first[0] << first[1] << QString::fromUtf8("Other_rgba.1003.exr"), fileNames(texturesDir));
+}
+
+// The range export writes, for each frame, the tiles the source declares at that frame.
+TEST_F(USDWriteUdimTest, ASourceWhoseTilesChangeOverTimeIsExportedWithEachFramesTiles)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    UdimTilesTestEffect* effect = NULL;
+    NodePtr material = createTilesMaterial(&effect);
+    ASSERT_TRUE(material && effect);
+    std::map<int, std::string> byFrame;
+    byFrame[1] = "1001,1002";
+    byFrame[2] = "1001,1003";
+    effect->setTilesByFrame(byFrame);
+    const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+    NodePtr writer = createWriter(material, path, USDWrite::eExportModeFlattened, 1, 2);
+    ASSERT_TRUE(writer && getWriter(writer));
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 2));
+    EXPECT_FALSE(writer->hasPersistentMessage()) << warningOf(writer).toStdString();
+
+    const QString texturesDir = tmp.path() + QString::fromUtf8("/scene_textures");
+    const QStringList expected = QStringList() << QString::fromUtf8("Tiles1_rgba.1001.0001.exr") << QString::fromUtf8("Tiles1_rgba.1001.0002.exr")
+                                               << QString::fromUtf8("Tiles1_rgba.1002.0001.exr") << QString::fromUtf8("Tiles1_rgba.1003.0002.exr");
+    EXPECT_EQ(expected, fileNames(texturesDir));
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    const PXR_NS::UsdAttribute file = diffuseFileOf(stage);
+    ASSERT_TRUE(bool(file));
+    const char* frameTiles[2][2] = { { "1001", "1002" }, { "1001", "1003" } };
+    for (int frame = 1; frame <= 2; ++frame) {
+        PXR_NS::SdfAssetPath asset;
+        ASSERT_TRUE(file.Get(&asset, PXR_NS::UsdTimeCode(frame)));
+        const std::vector<PXR_NS::UsdShadeUdimUtils::ResolvedPathAndTile> resolved = PXR_NS::UsdShadeUdimUtils::ResolveUdimTilePaths(asset.GetAssetPath(), stage->GetRootLayer());
+        ASSERT_EQ((std::size_t)2, resolved.size()) << asset.GetAssetPath();
+        for (int i = 0; i < 2; ++i) {
+            EXPECT_EQ(frameTiles[frame - 1][i], resolved[i].second) << asset.GetAssetPath();
+            EXPECT_NEAR(std::atoi(frameTiles[frame - 1][i]) - 1000, centreRedOf(QString::fromStdString(resolved[i].first)), 1e-3) << resolved[i].first;
+        }
     }
 }
 

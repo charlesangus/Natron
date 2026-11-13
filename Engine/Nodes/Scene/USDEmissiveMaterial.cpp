@@ -250,10 +250,8 @@ USDEmissiveMaterial::renderScene(const SceneRenderActionArgs& args,
                                .arg(QString::fromStdString(udimError)));
     }
     if (connected) {
-        const std::string uri = live.getUri(args.time);
-        const std::string failure = LiveTextureStore::instance().getFailure(uri);
-        if (!failure.empty()) {
-            warnings.push_back(tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
+        for (const std::string& warning : SceneNodeAuthoring::getLiveTextureWarnings(live, args.time)) {
+            warnings.push_back(QString::fromStdString(warning));
         }
     } else {
         const std::string texturePath = SceneNodeAuthoring::getAnchoredFilePath(_emissiveTexture.lock());

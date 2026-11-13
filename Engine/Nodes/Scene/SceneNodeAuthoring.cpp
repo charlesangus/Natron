@@ -43,6 +43,7 @@
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NonTrappingMath.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
@@ -924,6 +925,35 @@ appendLiveTextureSource(const LiveTextureSource& source,
     }
 }
 
+std::vector<std::string>
+getLiveTextureWarnings(const LiveTextureSource& source,
+                       double time)
+{
+    std::vector<std::string> warnings;
+    const std::string uri = source.getUri(time);
+    const std::string failure = LiveTextureStore::instance().getFailure(uri);
+
+    if (!failure.empty()) {
+        if (source.isUdim()) {
+            warnings.push_back(EffectInstance::tr("The UDIM tiles of the live texture %1 that could not be rendered show magenta: %2.")
+                                   .arg(QString::fromStdString(uri))
+                                   .arg(QString::fromStdString(failure))
+                                   .toStdString());
+        } else {
+            warnings.push_back(EffectInstance::tr("The live texture %1 shows the renderer's fallback: %2.")
+                                   .arg(QString::fromStdString(uri))
+                                   .arg(QString::fromStdString(failure))
+                                   .toStdString());
+        }
+    }
+    const std::string beyond = source.getTilesBeyondUsdWarning(time);
+    if (!beyond.empty()) {
+        warnings.push_back(beyond);
+    }
+
+    return warnings;
+}
+
 LiveTextureSource
 recordLiveTexture(const SceneLayerEdit& edit,
                   const LiveTextureSource& source)
@@ -933,14 +963,29 @@ recordLiveTexture(const SceneLayerEdit& edit,
     recorded.firstFrame = edit.firstFrame;
     recorded.lastFrame = edit.lastFrame;
     recorded.windows.clear();
+    recorded.frameTiles.clear();
+    const NodePtr node = source.node.lock();
     if (recorded.isUdim()) {
+        const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+        if (source.varying && effect) {
+            const std::vector<double> frames = getSampleFrames(edit);
+            recorded.frameTiles.reserve(frames.size());
+            for (double frame : frames) {
+                std::vector<int> tiles;
+                const ImageMetadata metadata = getEffectOutputMetadata(effect, frame, ViewIdx(0));
+                const ImageMetadata::Value* declared = metadata.find(kNatronMetadataKeyUdimTiles);
+                if (declared && !parseUdimTiles(*declared, &tiles, nullptr)) {
+                    tiles.clear();
+                }
+                recorded.frameTiles.push_back(tiles);
+            }
+        }
         if (edit.liveTextures) {
             edit.liveTextures->push_back(recorded);
         }
 
         return recorded;
     }
-    const NodePtr node = source.node.lock();
     const std::vector<double> frames = source.varying ? getSampleFrames(edit) : std::vector<double>(1, recorded.getSourceFrame(edit.firstFrame));
     recorded.windows.reserve(frames.size());
     for (double frame : frames) {

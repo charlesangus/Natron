@@ -452,10 +452,8 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
         if (!source.node.lock()) {
             continue;
         }
-        const std::string uri = source.getUri(args.time);
-        const std::string failure = LiveTextureStore::instance().getFailure(uri);
-        if (!failure.empty()) {
-            warnings.push_back(tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
+        for (const std::string& warning : SceneNodeAuthoring::getLiveTextureWarnings(source, args.time)) {
+            warnings.push_back(QString::fromStdString(warning));
         }
     }
     if (warnings.isEmpty()) {

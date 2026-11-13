@@ -48,7 +48,9 @@ instead: the file is `natron://<node>/rgba.<UDIM>?v=<hash>`, which USD and Storm
 resolve to one texture per tile, each rendered from the image under that tile.
 The texture coordinates reach the texture unchanged, with no `UsdTransform2d`,
 because the integer part of the UVs picks the tile. Changing the set of tiles
-gives the set a new path. Tiles above 1100 are rendered but never read. Storm
+gives the set a new path; an image that changes over time can declare other
+tiles at each frame. Tiles above 1100 are rendered but never read, and the node
+warns about them. A tile that cannot be rendered shows magenta, with a warning. Storm
 sizes a whole set from its lowest tile, so the tiles should share a size; the
 others are resampled to it. A declaration that does not parse is ignored, the
 input is read as a single texture, and the node warns, naming the input. A

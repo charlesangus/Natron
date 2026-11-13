@@ -169,6 +169,10 @@ struct LiveTextureSource {
     // duplicates; empty for a single texture. Each tile is rendered over the format the source has
     // under that tile, without the overscan, and windows are not read.
     std::vector<int> tiles;
+    // Filled by SceneNodeAuthoring::recordLiveTexture for a varying UDIM source: the tiles declared
+    // at each frame from firstFrame, as windows are, empty where a frame declares none or does not
+    // parse. Otherwise empty, and tiles holds the set at every frame.
+    std::vector<std::vector<int>> frameTiles;
 
     // The last tile USD and Storm look for: tiles above it are rendered but never read.
     static constexpr int kLastUsdUdimTile = 1100;
@@ -188,8 +192,11 @@ struct LiveTextureSource {
     std::string getTileUri(double frame,
                            int tile) const;
 
-    // The tiles above kLastUsdUdimTile, which nothing reading the set through USD sees.
-    std::vector<int> getTilesBeyondUsd() const;
+    // The tiles of a UDIM set at frame: those recorded for it in frameTiles, else tiles.
+    const std::vector<int>& getTiles(double frame) const;
+
+    // The tiles at frame above kLastUsdUdimTile, which nothing reading the set through USD sees.
+    std::vector<int> getTilesBeyondUsd(double frame) const;
 
     // The warning naming getTilesBeyondUsd() for the set at frame, empty when there are none.
     std::string getTilesBeyondUsdWarning(double frame) const;
@@ -203,6 +210,9 @@ struct LiveTextureSource {
 
 private:
     U64 getVersion(double frame) const;
+
+    // The index of frame in windows and frameTiles: 0 for a source that does not vary.
+    double getRecordedIndex(double frame) const;
 };
 
 typedef std::vector<LiveTextureSource> LiveTextureSourceList;
@@ -247,8 +257,10 @@ public:
      * under an earlier URI of its set is stored under the new one too, without rendering: an edit
      * that changes some tiles renders only those. A tile that cannot be rendered is stored as
      * magenta, so the set still finds it and shows what is missing, and is tried again on the next
-     * call; its consumer gets a warning naming the tile. Tiles above
-     * LiveTextureSource::kLastUsdUdimTile are rendered and warned about.
+     * call; its consumer gets a warning naming the tile. A stand-in whose tile's format is not
+     * known takes another tile's format, else the source's outside any tile. Tiles above
+     * LiveTextureSource::kLastUsdUdimTile are rendered and warned about. A texture that fails is
+     * tried once per call, however many sources name it.
      *
      * Returns how many textures, counting each tile, it could not render.
      **/

@@ -322,6 +322,43 @@ TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
     EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
 }
 
+// A <UDIM> path resolves when any tile's file exists.
+TEST_F(USDMaterialTest, AUdimTexturePathWarnsOnlyWhenNoTileResolves)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string unresolved = dir.filePath(QString::fromUtf8("missing.<UDIM>.exr")).toStdString();
+    const std::string resolved = dir.filePath(QString::fromUtf8("albedo.<UDIM>.exr")).toStdString();
+    {
+        QFile f(dir.filePath(QString::fromUtf8("albedo.1001.exr")));
+        ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write("not read");
+    }
+    const struct
+    {
+        const char* pluginID;
+        const char* name;
+        const char* knob;
+    } materials[] = {
+        { PLUGINID_NATRON_USDMATERIAL, "Material1", kUSDMaterialParamDiffuseTexture },
+        { PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Emissive1", kUSDEmissiveMaterialParamEmissiveTexture },
+    };
+    for (const auto& m : materials) {
+        SCOPED_TRACE(m.pluginID);
+        NodePtr material = node(m.pluginID, m.name);
+        ASSERT_TRUE(bool(material));
+
+        setString(material, m.knob, unresolved);
+        ASSERT_TRUE(bool(compose(material)));
+        const std::string warning = warningOf(material);
+        EXPECT_NE(std::string::npos, warning.find(unresolved)) << warning;
+
+        setString(material, m.knob, resolved);
+        ASSERT_TRUE(bool(compose(material)));
+        EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
+    }
+}
+
 TEST_F(USDMaterialTest, ThePathFollowsARename)
 {
     NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");

@@ -218,7 +218,9 @@ const std::size_t kMaxFailures = 256;
 
 /**
  * The texture of source at frame, or of its UDIM tile when tile is not 0. format receives the
- * format the texture was to span when it could be told, so a stand-in can be of its size.
+ * format the texture was to span when it could be told, so a stand-in can be of its size. A tile
+ * whose format cannot be told sets untiledFormat to the source's format outside any tile, when
+ * that can be told.
  **/
 LiveTextureBufferConstPtr
 renderSource(const LiveTextureSource& source,
@@ -226,6 +228,7 @@ renderSource(const LiveTextureSource& source,
              ViewIdx view,
              int tile,
              RectI* format,
+             RectI* untiledFormat,
              std::string* failure)
 {
     NodePtr node = source.node.lock();
@@ -254,8 +257,16 @@ renderSource(const LiveTextureSource& source,
     if (tile) {
         // A tile spans its format exactly: texture coordinates pick the tile, so no transform can
         // map them into an overscan. The format is the one the source has under the tile.
-        ActionContextScope underTile(true, context);
-        if (!getNodeImageWindow(node, frame, view, &window.format, &window.window)) {
+        bool hasFormat;
+        {
+            ActionContextScope underTile(true, context);
+            hasFormat = getNodeImageWindow(node, frame, view, &window.format, &window.window);
+        }
+        if (!hasFormat) {
+            LiveTextureWindow untiled;
+            if (getNodeImageWindow(node, frame, view, &untiled.format, &untiled.window)) {
+                *untiledFormat = untiled.format;
+            }
             *failure = what + " has no format";
 
             return LiveTextureBufferConstPtr();
@@ -344,21 +355,18 @@ makeMagenta(const RectI& format)
 }
 
 /**
- * One texture prepare() makes: a source's single texture, tile 0, or one tile of its UDIM set,
- * which tileKey names by what it shows.
+ * One texture prepare() makes: a source's single texture, tile 0, or one tile of its UDIM set.
  **/
 struct PrepareJob {
     const LiveTextureSource* source = nullptr;
     std::string uri;
     std::string setUri;
     int tile = 0;
-    U64 tileKey = 0;
 };
 
 std::vector<PrepareJob>
 makeJobs(const LiveTextureSourceList& sources,
-         double frame,
-         bool withTileKeys)
+         double frame)
 {
     std::vector<PrepareJob> jobs;
 
@@ -371,26 +379,40 @@ makeJobs(const LiveTextureSourceList& sources,
             jobs.push_back(job);
             continue;
         }
-        const double sourceFrame = source.getSourceFrame(frame);
-        const NodePtr node = withTileKeys ? source.node.lock() : NodePtr();
-        for (int tile : source.tiles) {
+        for (int tile : source.getTiles(frame)) {
             job.tile = tile;
             job.uri = source.getTileUri(frame, tile);
-            if (node) {
-                ContentHasher h;
-                h.appendString(source.nodeName);
-                h.appendString(source.layer);
-                h.appendI64(tile);
-                // A frame-varying image changes with the frame where its version does not.
-                h.appendDouble(source.varying ? sourceFrame : 0.);
-                h.appendU64(udimTileVersion(node, tile, sourceFrame, kLiveTextureView));
-                job.tileKey = h.finalize();
-            }
             jobs.push_back(job);
         }
     }
 
     return jobs;
+}
+
+/**
+ * What the tile of job shows at frame, by source, layer, tile, frame and tile version, 0 when its
+ * source no longer exists. Walks the graph upstream of the source.
+ **/
+U64
+makeTileKey(const PrepareJob& job,
+            double frame)
+{
+    const LiveTextureSource& source = *job.source;
+    const NodePtr node = source.node.lock();
+
+    if (!node) {
+        return 0;
+    }
+    const double sourceFrame = source.getSourceFrame(frame);
+    ContentHasher h;
+    h.appendString(source.nodeName);
+    h.appendString(source.layer);
+    h.appendI64(job.tile);
+    // A frame-varying image changes with the frame where its version does not.
+    h.appendDouble(source.varying ? sourceFrame : 0.);
+    h.appendU64(udimTileVersion(node, job.tile, sourceFrame, kLiveTextureView));
+
+    return h.finalize();
 }
 
 std::string
@@ -493,8 +515,9 @@ LiveTextureSource::getVersion(double frame) const
         h.appendDouble(getSourceFrame(frame));
     }
     // Storm keeps a set it has loaded under its URI, so a set of other tiles needs another.
-    h.appendU64(tiles.size());
-    for (int tile : tiles) {
+    const std::vector<int>& tilesAtFrame = getTiles(frame);
+    h.appendU64(tilesAtFrame.size());
+    for (int tile : tilesAtFrame) {
         h.appendI64(tile);
     }
 
@@ -514,16 +537,30 @@ LiveTextureSource::getTileUri(double frame,
     return makeUri(nodeName, layer + "." + std::to_string(tile), getVersion(frame));
 }
 
-std::vector<int>
-LiveTextureSource::getTilesBeyondUsd() const
+const std::vector<int>&
+LiveTextureSource::getTiles(double frame) const
 {
-    return std::vector<int>(std::upper_bound(tiles.begin(), tiles.end(), kLastUsdUdimTile), tiles.end());
+    const double index = getRecordedIndex(frame);
+
+    if ((index < 0.) || (index >= (double)frameTiles.size())) {
+        return tiles;
+    }
+
+    return frameTiles[(std::size_t)index];
+}
+
+std::vector<int>
+LiveTextureSource::getTilesBeyondUsd(double frame) const
+{
+    const std::vector<int>& tilesAtFrame = getTiles(frame);
+
+    return std::vector<int>(std::upper_bound(tilesAtFrame.begin(), tilesAtFrame.end(), kLastUsdUdimTile), tilesAtFrame.end());
 }
 
 std::string
 LiveTextureSource::getTilesBeyondUsdWarning(double frame) const
 {
-    const std::vector<int> beyond = getTilesBeyondUsd();
+    const std::vector<int> beyond = getTilesBeyondUsd(frame);
 
     if (beyond.empty()) {
         return std::string();
@@ -533,10 +570,16 @@ LiveTextureSource::getTilesBeyondUsdWarning(double frame) const
         + ", the last tile USD looks for, and do not show.";
 }
 
+double
+LiveTextureSource::getRecordedIndex(double frame) const
+{
+    return varying ? getSourceFrame(frame) - std::ceil(firstFrame) : 0.;
+}
+
 LiveTextureWindow
 LiveTextureSource::getWindow(double frame) const
 {
-    const double index = varying ? getSourceFrame(frame) - std::ceil(firstFrame) : 0.;
+    const double index = getRecordedIndex(frame);
 
     if ((index < 0.) || (index >= (double)windows.size())) {
         return LiveTextureWindow();
@@ -748,8 +791,12 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
     const auto warn = [&warnings](const LiveTextureSource& source,
                                   const std::string& message) {
         const NodePtr consumer = source.consumer.lock();
-        if (consumer) {
-            warnings[consumer].push_back(message);
+        if (!consumer) {
+            return;
+        }
+        std::vector<std::string>& messages = warnings[consumer];
+        if (std::find(messages.begin(), messages.end(), message) == messages.end()) {
+            messages.push_back(message);
         }
     };
     const auto flushWarnings = [&warnings]() {
@@ -768,7 +815,7 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         // Warn rather than leave the consumer silently showing the fallback.
         std::map<const LiveTextureSource*, std::string> missingBySource;
         int numMissing = 0;
-        for (const PrepareJob& job : makeJobs(sources, frame, false)) {
+        for (const PrepareJob& job : makeJobs(sources, frame)) {
             if (contains(job.uri)) {
                 continue;
             }
@@ -796,7 +843,7 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         return 0;
     }
 
-    const std::vector<PrepareJob> jobs = makeJobs(sources, frame, true);
+    const std::vector<PrepareJob> jobs = makeJobs(sources, frame);
     std::set<std::string> uris;
     for (const PrepareJob& job : jobs) {
         uris.insert(job.uri);
@@ -811,10 +858,46 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
     int numFailed = 0;
     // The failures of each UDIM set's tiles, which getFailure() gives for the set's URI.
     std::map<std::string, std::string> setFailures;
+    // The warnings of the textures that failed in this call, which are neither rendered nor
+    // counted again for another source naming them.
+    std::map<std::string, std::string> failedHere;
+    // A format of each UDIM set's tiles, for the stand-in of a tile whose own is not known.
+    std::map<std::string, RectI> setFormats;
+    const auto noteSetFormat = [&setFormats](const PrepareJob& job,
+                                             const LiveTextureBufferConstPtr& buffer) {
+        if (job.tile && buffer) {
+            setFormats.insert(std::make_pair(job.setUri, RectI(0, 0, buffer->getWidth(), buffer->getHeight())));
+        }
+    };
+    // Failed tiles whose format is not known, stood in for once every tile of their set is tried.
+    struct UnsizedTile {
+        std::string uri;
+        std::string setUri;
+        RectI untiledFormat;
+    };
+    std::vector<UnsizedTile> unsizedTiles;
     for (const PrepareJob& job : jobs) {
         const LiveTextureSource& source = *job.source;
         if (job.tile) {
             setFailures.insert(std::make_pair(job.setUri, std::string()));
+        }
+        const std::map<std::string, std::string>::const_iterator failedEarlier = failedHere.find(job.uri);
+        if (failedEarlier != failedHere.end()) {
+            warn(source, failedEarlier->second);
+            continue;
+        }
+        // Computed only for a tile the store lacks, as it walks the whole graph upstream.
+        U64 tileKey = 0;
+        if (job.tile) {
+            bool stored;
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                const std::map<std::string, Entry>::const_iterator found = _entries.find(job.uri);
+                stored = (found != _entries.end()) && !found->second.fallback;
+            }
+            if (!stored) {
+                tileKey = makeTileKey(job, frame);
+            }
         }
         {
             std::unique_lock<std::mutex> lock(_mutex);
@@ -823,14 +906,16 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
             std::map<std::string, Entry>::iterator found = _entries.find(job.uri);
             if ((found != _entries.end()) && !found->second.fallback) {
                 _uses.splice(_uses.begin(), _uses, found->second.use);
+                noteSetFormat(job, found->second.buffer);
                 continue;
             }
-            if (job.tileKey) {
-                std::map<U64, std::weak_ptr<const LiveTextureBuffer>>::iterator held = _tiles.find(job.tileKey);
+            if (tileKey) {
+                std::map<U64, std::weak_ptr<const LiveTextureBuffer>>::iterator held = _tiles.find(tileKey);
                 const LiveTextureBufferConstPtr buffer = (held == _tiles.end()) ? LiveTextureBufferConstPtr() : held->second.lock();
                 if (buffer) {
                     insertLocked(job.uri, buffer, false);
                     _failures.erase(job.uri);
+                    noteSetFormat(job, buffer);
                     continue;
                 }
             }
@@ -841,10 +926,11 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         // the caller may be in the middle of a render of its own (USDRender).
         std::string failure;
         RectI format;
+        RectI untiledFormat;
         LiveTextureBufferConstPtr buffer;
         std::thread renderer([&]() {
             try {
-                buffer = renderSource(source, source.getSourceFrame(frame), kLiveTextureView, job.tile, &format, &failure);
+                buffer = renderSource(source, source.getSourceFrame(frame), kLiveTextureView, job.tile, &format, &untiledFormat, &failure);
             } catch (const std::exception& e) {
                 buffer.reset();
                 failure = e.what();
@@ -854,15 +940,20 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
             }
         });
         renderer.join();
-        const LiveTextureBufferConstPtr magenta = (!buffer && job.tile) ? makeMagenta(format) : LiveTextureBufferConstPtr();
+        if (job.tile && !format.isNull()) {
+            setFormats.insert(std::make_pair(job.setUri, format));
+        }
+        noteSetFormat(job, buffer);
+        const bool unsized = !buffer && job.tile && format.isNull();
+        const LiveTextureBufferConstPtr magenta = (!buffer && job.tile && !unsized) ? makeMagenta(format) : LiveTextureBufferConstPtr();
         {
             std::lock_guard<std::mutex> lock(_mutex);
             _rendering.erase(job.uri);
             ++_renderCounts[job.tile];
             if (buffer) {
                 insertLocked(job.uri, buffer, false);
-                if (job.tileKey) {
-                    _tiles[job.tileKey] = buffer;
+                if (tileKey) {
+                    _tiles[tileKey] = buffer;
                 }
             } else if (magenta) {
                 insertLocked(job.uri, magenta, true);
@@ -874,13 +965,38 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
 
         if (!buffer) {
             ++numFailed;
+            std::string message;
             if (job.tile) {
                 std::string& tileFailures = setFailures[job.setUri];
                 tileFailures += (tileFailures.empty() ? "" : "; ") + failure;
-                warn(source, "The UDIM tile " + std::to_string(job.tile) + " of the live texture " + job.setUri + " shows magenta: " + failure + ".");
+                message = "The UDIM tile " + std::to_string(job.tile) + " of the live texture " + job.setUri + " shows magenta: " + failure + ".";
+                if (unsized) {
+                    UnsizedTile pending;
+                    pending.uri = job.uri;
+                    pending.setUri = job.setUri;
+                    pending.untiledFormat = untiledFormat;
+                    unsizedTiles.push_back(pending);
+                }
             } else {
-                warn(source, "The live texture " + job.uri + " shows the renderer's fallback: " + failure + ".");
+                message = "The live texture " + job.uri + " shows the renderer's fallback: " + failure + ".";
             }
+            failedHere[job.uri] = message;
+            warn(source, message);
+        }
+    }
+    // Storm sizes a whole set from its lowest tile, so a 1x1 stand-in there would shrink every
+    // other tile to a texel.
+    for (const UnsizedTile& pending : unsizedTiles) {
+        const std::map<std::string, RectI>::const_iterator known = setFormats.find(pending.setUri);
+        const LiveTextureBufferConstPtr magenta = makeMagenta((known != setFormats.end()) ? known->second : pending.untiledFormat);
+        if (!magenta) {
+            continue;
+        }
+        std::lock_guard<std::mutex> lock(_mutex);
+        const std::map<std::string, Entry>::const_iterator found = _entries.find(pending.uri);
+        if ((found == _entries.end()) || found->second.fallback) {
+            insertLocked(pending.uri, magenta, true);
+            evictLocked();
         }
     }
     for (const LiveTextureSource& source : sources) {

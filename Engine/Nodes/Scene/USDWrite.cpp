@@ -615,6 +615,8 @@ struct LiveTextureExport {
     double frame = 0.;
     // For a UDIM set, holds kLiveTextureUdimToken where each tile's file has its tile number.
     QString path;
+    // The file name every file of the source starts with, before its tile and frame.
+    QString stem;
     bool needed = false;
 };
 
@@ -637,7 +639,8 @@ fileNameOf(const std::string& name)
  * @brief Every URI sources author over their frames, keyed to the file in directory it is
  * exported to: <node>_<layer>.exr for a source that does not vary, else <node>_<layer>.<frame>.exr,
  * the frame padded to 4 digits. A UDIM set has a file per tile, <node>_<layer>.<tile>.exr or
- * <node>_<layer>.<tile>.<frame>.exr, which its path names with the token for the tile.
+ * <node>_<layer>.<tile>.<frame>.exr, which its path names with the token for the tile. The tiles
+ * are those the set declares at that frame.
  **/
 std::map<std::string, LiveTextureExport>
 planLiveTextureExports(const LiveTextureSourceList& sources,
@@ -646,13 +649,15 @@ planLiveTextureExports(const LiveTextureSourceList& sources,
     std::map<std::string, LiveTextureExport> exports;
 
     for (const LiveTextureSource& source : sources) {
-        const QString stem = QDir(directory).filePath(fileNameOf(source.nodeName) + QLatin1Char('_') + fileNameOf(source.layer));
+        const QString stemName = fileNameOf(source.nodeName) + QLatin1Char('_') + fileNameOf(source.layer);
+        const QString stem = QDir(directory).filePath(stemName);
         const double first = std::ceil(source.firstFrame);
         const double last = source.varying ? std::max(first, std::floor(source.lastFrame)) : first;
         for (double frame = first; frame <= last; frame += 1.) {
             LiveTextureExport e;
             e.source = source;
             e.frame = frame;
+            e.stem = stemName;
             const QString base = source.isUdim() ? stem + QLatin1Char('.') + QString::fromUtf8(kLiveTextureUdimToken) : stem;
             e.path = source.varying ? QString::fromUtf8("%1.%2.exr").arg(base).arg((int)source.getSourceFrame(frame), 4, 10, QLatin1Char('0')) : base + QString::fromUtf8(".exr");
             exports.insert(std::make_pair(source.getUri(frame), e));
@@ -1493,6 +1498,9 @@ USDWrite::writeFrameRange(int firstFrame,
     // Before the files that name them, so that a failure leaves the earlier files whole, and after
     // the scene's layers are let go: a render may need to write to a scene of its own.
     QStringList tileWarnings;
+    // The names of the files written in texturesDir, and the stems of the UDIM sets among them.
+    std::set<QString> writtenTextures;
+    std::set<QString> udimStems;
     for (const std::pair<const std::string, LiveTextureExport>& live : liveTextures) {
         if (!live.second.needed) {
             continue;
@@ -1502,8 +1510,9 @@ USDWrite::writeFrameRange(int firstFrame,
         }
         LiveTextureStore& store = LiveTextureStore::instance();
         if (live.second.source.isUdim()) {
+            udimStems.insert(live.second.stem);
             store.prepare(LiveTextureSourceList(1, live.second.source), live.second.frame);
-            for (const int tile : live.second.source.tiles) {
+            for (const int tile : live.second.source.getTiles(live.second.frame)) {
                 const std::string tileUri = live.second.source.getTileUri(live.second.frame, tile);
                 const LiveTextureBufferConstPtr tileBuffer = store.find(tileUri);
                 const std::string failure = store.getFailure(tileUri);
@@ -1520,6 +1529,7 @@ USDWrite::writeFrameRange(int firstFrame,
                 if (!writeLiveTextureFile(tileBuffer, tilePath, &tileError)) {
                     return fail(tr("Cannot write %1: %2").arg(tilePath).arg(QString::fromStdString(tileError)));
                 }
+                writtenTextures.insert(QFileInfo(tilePath).fileName());
             }
             continue;
         }
@@ -1536,6 +1546,25 @@ USDWrite::writeFrameRange(int firstFrame,
         std::string writeError;
         if (!writeLiveTextureFile(buffer, live.second.path, &writeError)) {
             return fail(tr("Cannot write %1: %2").arg(live.second.path).arg(QString::fromStdString(writeError)));
+        }
+        writtenTextures.insert(QFileInfo(live.second.path).fileName());
+    }
+    // A <UDIM> path is resolved by looking for each tile's file on disk, so a file left by an
+    // earlier export, of a tile the set no longer declares or that failed this time, would show.
+    if (!udimStems.empty()) {
+        const QDir textures(texturesDir);
+        const QStringList names = textures.entryList(QDir::Files | QDir::Hidden | QDir::System);
+        for (const QString& stem : udimStems) {
+            const QRegularExpression tileFile(QString::fromUtf8("^") + QRegularExpression::escape(stem) + QString::fromUtf8("\\.[0-9]{4}(\\.-?[0-9]+)?\\.exr$"));
+            for (const QString& name : names) {
+                if (!tileFile.match(name).hasMatch() || (writtenTextures.count(name) != 0)) {
+                    continue;
+                }
+                if (!QFile::remove(textures.filePath(name))) {
+                    tileWarnings.push_back(tr("%1 is left from an earlier export and could not be removed, so it shows as a tile of its set.")
+                                               .arg(textures.filePath(name)));
+                }
+            }
         }
     }
     // Layers already open on the files, such as a USDRead's of them, would go on showing what

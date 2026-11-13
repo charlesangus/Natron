@@ -105,6 +105,12 @@ RotoLayer::clone(const RotoItem* other)
     if (!isOtherLayer) {
         return;
     }
+    for (std::list<KnobIPtr>::const_iterator it = _imp->hostKnobs.begin(); it != _imp->hostKnobs.end(); ++it) {
+        KnobIPtr otherKnob = isOtherLayer->getHostKnobByName((*it)->getName());
+        if (otherKnob) {
+            (*it)->clone(otherKnob);
+        }
+    }
     RotoLayerPtr this_shared = std::dynamic_pointer_cast<RotoLayer>( shared_from_this() );
     assert(this_shared);
 
@@ -135,6 +141,7 @@ RotoLayer::clone(const RotoItem* other)
             if (isLayer) {
                 // clone() needs the copy owned by a shared_ptr, so it runs after construction.
                 RotoLayerPtr copy(new RotoLayer(getContext(), isLayer->getScriptName(), RotoLayerPtr()));
+                getContext()->onLayerCreated(copy);
                 copy->clone(isLayer.get());
                 copy->setParentLayer(this_shared);
                 copies.push_back(copy);
@@ -275,9 +282,51 @@ RotoLayer::getItems_mt_safe() const
 }
 
 void
+RotoLayer::addHostKnob(const KnobIPtr& knob)
+{
+    if (!knob) {
+        return;
+    }
+    _imp->hostKnobs.push_back(knob);
+    KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+    if (handler) {
+        QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
+            RotoCurveContextPtr context = getContext();
+            if (context) {
+                context->evaluateChange();
+            }
+        });
+    }
+}
+
+const std::list<KnobIPtr>&
+RotoLayer::getHostKnobs() const
+{
+    return _imp->hostKnobs;
+}
+
+KnobIPtr
+RotoLayer::getHostKnobByName(const std::string& name) const
+{
+    for (std::list<KnobIPtr>::const_iterator it = _imp->hostKnobs.begin(); it != _imp->hostKnobs.end(); ++it) {
+        if ((*it)->getName() == name) {
+            return *it;
+        }
+    }
+
+    return KnobIPtr();
+}
+
+void
 RotoLayer::appendLiveContentHash(ContentHasher& h) const
 {
     RotoItem::appendLiveContentHash(h);
+
+    for (std::list<KnobIPtr>::const_iterator it = _imp->hostKnobs.begin(); it != _imp->hostKnobs.end(); ++it) {
+        if ((*it)->isRenderHashed()) {
+            h.appendU64((*it)->getContentHash());
+        }
+    }
 
     // Children render in reverse list order, so the order is part of the content.
     RotoItems items = getItems_mt_safe();

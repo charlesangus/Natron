@@ -639,6 +639,15 @@ public:
     {
     }
 
+    /**
+     * @brief Called by any curve context when a layer other than its base layer is built, before
+     * it is cloned or loaded into: the host may add per-layer knobs with RotoLayer::addHostKnob(),
+     * which are then saved, copied and hashed with the layer. Main thread.
+     **/
+    virtual void onCurveLayerCreated(const RotoLayerPtr& /*layer*/)
+    {
+    }
+
     virtual bool isPaintingOverItselfEnabled() const WARN_UNUSED_RETURN;
 
     /**

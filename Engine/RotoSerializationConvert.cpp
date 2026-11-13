@@ -316,6 +316,12 @@ RotoLayer::toSerialization(Serialization::RotoLayerSerialization* serialization)
         items = _imp->items;
     }
 
+    serialization->knobs.clear();
+    for (std::list<KnobIPtr>::const_iterator it = _imp->hostKnobs.begin(); it != _imp->hostKnobs.end(); ++it) {
+        serialization->knobs.push_back(Serialization::KnobSerialization());
+        (*it)->toSerialization(&serialization->knobs.back());
+    }
+
     serialization->children.clear();
     for (RotoItems::const_iterator it = items.begin(); it != items.end(); ++it) {
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
@@ -346,6 +352,24 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
 
     assert(thisLayer);
     RotoItem::fromSerialization(serialization);
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = serialization.knobs.begin(); it != serialization.knobs.end(); ++it) {
+        KnobIPtr knob = getHostKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name));
+        if (!knob) {
+            continue;
+        }
+        KnobIPtr saved = createDetachedKnobFromSerialization(completeKnobSerializationForKnob(*knob, *it));
+        if (!saved) {
+            continue;
+        }
+        KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+        if (handler) {
+            handler->blockSignals(true);
+        }
+        knob->clone(saved.get());
+        if (handler) {
+            handler->blockSignals(false);
+        }
+    }
     for (std::list<Serialization::RotoLayerChildSerialization>::const_iterator it = serialization.children.begin(); it != serialization.children.end(); ++it) {
         switch (it->type) {
         case Serialization::eRotoLayerChildTypeBezier: {
@@ -372,6 +396,7 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
         }
         case Serialization::eRotoLayerChildTypeLayer: {
             RotoLayerPtr layer(new RotoLayer(getContext(), kRotoLayerBaseName, thisLayer));
+            getContext()->onLayerCreated(layer);
             _imp->items.push_back(layer);
             getContext()->addLayer(layer);
             layer->fromSerialization(it->layer);

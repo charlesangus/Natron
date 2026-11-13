@@ -183,6 +183,12 @@ public:
     virtual void onItemCreated(const RotoDrawableItemPtr& item, bool connectNodes);
 
     /**
+     * @brief Called on every layer made for this context other than the base layer, by creation,
+     * copy or load, before it is loaded or cloned into: the host adds its layer knobs here.
+     **/
+    void onLayerCreated(const RotoLayerPtr& layer);
+
+    /**
      * @brief Registers a node knob that edits the per-item host knob of the same name: on
      * selection it is slaved to the selected item's knob like the Shape page knobs.
      **/

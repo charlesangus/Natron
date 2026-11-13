@@ -257,6 +257,21 @@ forgetDeviceFallback(const void* owner)
 
     gDeviceFallbacks.erase(owner);
 }
+
+void
+rememberDeviceFallback(const void* owner,
+                       const std::map<std::string, VtValue>& settings)
+{
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::uint64_t generation = gpu ? gpu->generation() : 0;
+    const std::uint64_t budget = utilityGpuBudget();
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+    DeviceFallback& fallback = gDeviceFallbacks[owner];
+
+    fallback.generation = generation;
+    fallback.budget = budget;
+    fallback.device = deviceSetting(settings);
+}
 #endif
 
 typedef std::map<std::string, VtValue> RendererSettings;
@@ -1481,6 +1496,10 @@ RenderThread::renderEngine(const HydraRender::Request& request,
 #ifdef NATRON_HAVE_GPU
             if (entry.device.rfind("GPU", 0) == 0) {
                 forgetDeviceFallback(request.owner);
+            } else if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
+                // A frame the scheduler took off the GPU before the delegate saw it, for want of room for the
+                // output, renders here, so the delegate's own fallback is only ever reported on this path.
+                rememberDeviceFallback(request.owner, request.settings);
             }
 #endif
             if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
@@ -2590,12 +2609,7 @@ recordDeviceWindow(const Request& request,
             },
                                                error, whileWaiting);
             if (ran && fellBack) {
-                GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
-                const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
-                DeviceFallback& fallback = gDeviceFallbacks[request.owner];
-                fallback.generation = gpu ? gpu->generation() : 0;
-                fallback.budget = utilityGpuBudget();
-                fallback.device = deviceSetting(request.settings);
+                rememberDeviceFallback(request.owner, request.settings);
             }
             if (!ran || !ok) {
                 return false;

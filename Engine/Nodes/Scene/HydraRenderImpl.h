@@ -295,8 +295,8 @@ bool recordDeviceWindow(const Request& request,
                         std::string* error) WARN_UNUSED_RETURN;
 
 /**
- * @brief Whether owner's last recordDeviceWindow() found the delegate had rendered on the CPU instead,
- * under the same device generation, pool budget and Device setting (kUtilitySettingDevice, "auto" when
+ * @brief Whether a render of owner's found the delegate had rendered on the CPU instead (recordDeviceWindow()
+ * got no frame on the device, or Natron Utility reported falling back from the GPU), under the same device generation, pool budget and Device setting (kUtilitySettingDevice, "auto" when
  * unset), and no render of owner's has been on the GPU since. A caller asking whether to take the GPU
  * path then knows it would fall back. Never waits. MT-safe.
  **/

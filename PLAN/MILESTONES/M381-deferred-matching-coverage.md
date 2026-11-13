@@ -122,7 +122,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: `getRegionOfDefinition` on the city opens 0 buildings with unchanged resolution.
   - size: M
 
-- [ ] M381.P4.T2 — Viewer evaluation context for transform handles
+- [x] M381.P4.T2 — Viewer evaluation context for transform handles
   - files: `Engine/ViewerInstance.h` (~:657), `Engine/ViewerInstancePrivate.h` (~:615), `Engine/Nodes/Scene/USDEditTransform.cpp` (`transformsPrim` ~:333, last-result fields ~:158-175), `Gui/SceneTransformTarget.cpp` (~:531), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: `ViewerInstance::getSceneEvaluationContext()`; `transformsPrim(path, context)` is called with the asking viewer's context; matches cached per context.
   - verify: two contexts keep separate matches; the stale-match path opens 0 buildings.

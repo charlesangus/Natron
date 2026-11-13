@@ -39,7 +39,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`. M327 - Heavy Scene Spike
   - verify: A → empty → A sends notices only for changed prims, ends identical to a filter seeded with A, and no-op calls send nothing.
   - size: M
 
-- [ ] M335.P1.T3 — Confirm the filter takes effect on Cycles and MoonRay
+- [x] M335.P1.T3 — Confirm the filter takes effect on Cycles and MoonRay
   - files: `Tests/Scene/CyclesDelegate_Test.cpp`, `Tests/Scene/MoonRayDelegate_Test.cpp`
   - approach: three meshes and one light, render with a seeded filter, then apply BBox (held invisible), Hidden (removed) and Hidden on the light's row; read the primId AOV.
   - verify: hidden prims absent from primId; the hidden light changes frame brightness. Print whether MoonRay respects `HdVisibilitySchema`; if not, BBox removes the prim for MoonRay and the test asserts that.

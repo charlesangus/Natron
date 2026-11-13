@@ -38,7 +38,7 @@ Design: `PLAN/DESIGN/2026-11-04-scene-graph-design.md`.
   - verify: GUI script on USDPrune — Add appends, Remove takes out, Replace swaps, each undoable; Select Matches on `/a/*` highlights those rows.
   - size: M
 
-- [ ] M334.P1.T2 — Popup tree with current matches
+- [x] M334.P1.T2 — Popup tree with current matches
   - files: `Gui/ScenePrimPickerPopup.{h,cpp}`, `Gui/KnobGuiString.cpp`, `Tests/gui/scene_prim_picker.py`
   - approach: extend M232's popup. Opens on the node's input, unloaded. Current matches are checked and their ancestors opened. Search Unloaded calls M331 - Deferred Pattern Matching's query and shows results marked as unloaded. OK writes literal paths, unless the text was an expression and nothing changed, which leaves it alone.
   - verify: GUI script — opening on `/a /b` shows both checked; OK with no change leaves an expression knob's text intact; Search Unloaded on the city finds a match inside an unloaded payload without loading it on the viewer.

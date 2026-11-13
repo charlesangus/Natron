@@ -40,7 +40,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
 
 ## Phase 381.2: Pattern nodes
 
-- [ ] M381.P2.T1 — USDSetAttribute matches on the load set
+- [x] M381.P2.T1 — USDSetAttribute matches on the load set
   - files: `Engine/Nodes/Scene/USDSetAttribute.cpp` (~:338-350), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: go through `matchPattern`; the schema-type check runs only on prims that exist.
   - verify: on the city with nothing loaded, an edit opens 0 buildings; parity at L={Block_0}; the unsearched note shows.

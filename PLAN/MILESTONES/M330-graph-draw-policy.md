@@ -30,7 +30,7 @@ assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
 
 ## Phase 330.1: Policy along edges
 
-- [ ] M330.P1.T1 — Carry draw policy on ScenePayload
+- [x] M330.P1.T1 — Carry draw policy on ScenePayload
   - files: `Engine/ScenePayload.{h,cpp}`, `Engine/Nodes/Scene/SceneOps.cpp`, `Gui/SceneViewport.cpp`, `Tests/Scene/ScenePayload_Test.cpp`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: a rules list on the payload, free of pxr types like the rest of `ScenePayload`. It feeds the viewer's effective-state resolution as the middle layer of precedence. A change of rules must not change the stack hash, so it never re-authors a layer or recomposes.
   - verify: gtest — equal stacks with different rules hash equal; a USDWrite export is byte-identical with and without rules; a USDRender stage has no trace of them.
@@ -65,3 +65,6 @@ assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
   - size: M
 
 **Verification gate:** release gate green; GUI scripts above pass under Xvfb; a USDWrite export and a USDRender of the city are unaffected by any rule; harness budgets still pass on the GPU host; screenshots of the draw column's origins shared before sign-off; accepted from the UAT AppImage.
+
+## Decisions
+- 2026-11-13 — P1.T1 (f83c64de9): rules propagate in `EffectInstance::evaluateScene` for every node (inputs' rules in input order, the node's own last; a repeat keeps its first place), not per merge node. `SceneDrawStateEnum` moved into `ScenePayload.h` so the payload stays free of scene headers. A rules-only change re-resolves on the viewer's worker, with no `requestSync`. Plain-path rules apply without a stage. Known limit: rules keep their authored paths, so a node that moves prims downstream doesn't remap them. Gate deferred to the end of phase 1.

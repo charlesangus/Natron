@@ -3449,7 +3449,9 @@ private:
                 const std::weak_ptr<RenderStats> weakStats = _stats;
                 const std::function<void()> evictForViewer = [weakImage, weakStats]() {
                     const GpuDeviceImagePtr held = weakImage.lock();
-                    if (held && held->evictToRam()) {
+                    // A root published to the device tier is moved to RAM by the tier first, which leaves nothing for
+                    // evictToRam to do but still takes the root off the device.
+                    if (held && (held->evictToRam() || (held->bytes() == 0))) {
                         if (const RenderStatsPtr stats = weakStats.lock()) {
                             stats->noteEviction();
                         }

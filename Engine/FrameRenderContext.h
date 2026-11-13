@@ -81,6 +81,10 @@ public:
         std::map<ImageLayerDesc, ImagePtr> layers;
         std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
 
+        // What each device layer added to deviceBytes: once the device tier has moved a shared image's pixels to RAM, the
+        // image no longer reports the bytes it held.
+        std::map<ImageLayerDesc, std::size_t> deviceLayerBytes;
+
         // Intersection of the bounds of all layers.
         RectI bounds;
 
@@ -101,6 +105,7 @@ public:
             : lock()
             , layers()
             , deviceLayers()
+            , deviceLayerBytes()
             , bounds()
             , renderedRoI()
             , consumersLeft(0)

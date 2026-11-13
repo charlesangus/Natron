@@ -78,6 +78,8 @@
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRuntime.h"
+
+#include "Gpu/GpuTestSelector.h"
 #endif
 
 NATRON_NAMESPACE_USING
@@ -1337,12 +1339,44 @@ TEST_F(RenderSchedulerTest, AnEntryOnlyOnTheDeviceServesItsTask)
     if (gpuContext) {
         gpuContext->waitForInit(std::chrono::seconds(60));
     }
+    // The application's context may refuse the device (Auto ignores CPU-type ones, such as lavapipe on CI), so a
+    // forced one stands in for the length of the test.
+    struct ForcedContext {
+        std::unique_ptr<GpuContext> previous;
+        bool installed = false;
+        ~ForcedContext()
+        {
+            if (installed) {
+                appPTR->clearAllCaches();
+                std::unique_ptr<GpuContext> forced = appPTR->swapGpuContextForTests(std::move(previous));
+                forced.reset();
+            }
+        }
+    } forcedContext;
+    std::string unavailableReason = "the application has no GPU context";
+    if (!gpuContext || !gpuContext->isAvailable()) {
+        GpuContextOptions options;
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        std::shared_ptr<std::string> unavailable = std::make_shared<std::string>();
+        options.infoLog = [unavailable](const std::string& line) {
+            *unavailable = line;
+        };
+        std::unique_ptr<GpuContext> forced(new GpuContext(options));
+        if (forced->waitForInit(std::chrono::seconds(60)) && forced->isAvailable()) {
+            forcedContext.previous = appPTR->swapGpuContextForTests(std::move(forced));
+            forcedContext.installed = true;
+            gpuContext = appPTR->getGpuContext();
+        } else if (!unavailable->empty()) {
+            unavailableReason = *unavailable;
+        }
+    }
     if (!gpuContext || !gpuContext->isAvailable()) {
         const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
         if (require && (std::strcmp(require, "1") == 0)) {
-            ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU=1 but the application has no GPU context";
+            ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU=1 but " << unavailableReason;
         } else {
-            std::printf("[  SKIPPED ] no GPU context\n");
+            std::printf("[  SKIPPED ] %s\n", unavailableReason.c_str());
         }
 
         return;

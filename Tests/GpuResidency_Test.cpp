@@ -67,6 +67,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/FrameRenderContext.h"
@@ -2112,7 +2113,11 @@ TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
     EXPECT_GT(evictions + thinned, 0) << "the pool was never short, which proves nothing about the budget";
     EXPECT_LE(after.peakBytes, budget);
     EXPECT_EQ(budget, runtime()->pool().budget()) << "the device ran out of memory, which shrinks the budget";
-    EXPECT_EQ(before.liveBytes, after.liveBytes);
+    // Region outputs published to the device tier outlive the frames, as cache entries; nothing else may.
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+    tier->clear();
+    EXPECT_EQ(before.liveBytes, runtime()->pool().stats().liveBytes);
     for (const FrameRun& run : runs) {
         expectReleased(run);
     }

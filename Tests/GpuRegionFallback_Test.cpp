@@ -88,6 +88,7 @@
 #ifdef NATRON_HAVE_GPU
 #include "Engine/CacheDeviceTier.h"
 #include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/Gpu/GpuSizeClass.h"
 #endif
 
 NATRON_NAMESPACE_USING
@@ -876,8 +877,9 @@ TEST_F(GpuRegionFallbackTest, RegionRunAsStripsPublishesNothing)
     }
     std::vector<NodePtr> grades;
     ASSERT_TRUE(makeCachedGradeChain(&grades));
-    // A storage buffer range well under one 96x64 RGBA float image.
-    setGpuStripOverridesForTests(16384, 0);
+    // A storage buffer range under one 96x64 RGBA float image (96 KiB) that still holds the pool's smallest buffer,
+    // which every strip is rounded up to: a smaller one would fit no strip at all.
+    setGpuStripOverridesForTests(gpu::kMinSizeClass, 0);
     const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
     FrameGraph graph;
     std::string error;
@@ -890,14 +892,16 @@ TEST_F(GpuRegionFallbackTest, RegionRunAsStripsPublishesNothing)
     EXPECT_EQ(0u, report->plannedPeakDeviceBytes);
 }
 
-TEST_F(GpuRegionFallbackTest, RegionRunAsStripsAdmitsEveryAdmittedMemberToTheHostTier)
+// Interior members never exist whole in RAM or on the device when stripped, so only the region's outputs, which are
+// downloaded anyway, reach the host tier.
+TEST_F(GpuRegionFallbackTest, RegionRunAsStripsAdmitsItsOutputsToTheHostTier)
 {
     if (!gpuOrSkip()) {
         return;
     }
     std::vector<NodePtr> grades;
     ASSERT_TRUE(makeCachedGradeChain(&grades));
-    setGpuStripOverridesForTests(16384, 0);
+    setGpuStripOverridesForTests(gpu::kMinSizeClass, 0);
     const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
     FrameGraph graph;
     std::string error;
@@ -909,8 +913,12 @@ TEST_F(GpuRegionFallbackTest, RegionRunAsStripsAdmitsEveryAdmittedMemberToTheHos
     const RectI window(0, 0, kWidth, kHeight);
     std::vector<float> lastOutput;
     int hits = 0;
-    for (int member : graph.regions.front().members) {
-        const FrameGraph::Task& task = graph.tasks[member];
+    for (const FrameGraph::Region::Output& output : graph.regions.front().outputs) {
+        if (!output.isRoot && (output.externalConsumers <= 0)) {
+            continue;
+        }
+        const FrameGraph::Task& task = graph.tasks[output.task];
+        ASSERT_TRUE(task.sharesCachedOutput) << task.key.node->getScriptName_mt_safe();
         std::list<ImagePtr> cached;
         ASSERT_TRUE(appPTR->peekImage(outputKey(task), &cached)) << task.key.node->getScriptName_mt_safe();
         ASSERT_FALSE(cached.empty());
@@ -920,6 +928,7 @@ TEST_F(GpuRegionFallbackTest, RegionRunAsStripsAdmitsEveryAdmittedMemberToTheHos
             lastOutput = readRgba(cached.front(), window);
         }
     }
+    EXPECT_EQ(1, hits);
     EXPECT_EQ(hits, report->admittedToHost);
     ASSERT_FALSE(lastOutput.empty());
 
@@ -1100,11 +1109,12 @@ TEST_F(GpuDeviceServeTest, HostHitReadOnTheGpuIsPromotedToTheDeviceTier)
     }
     std::vector<NodePtr> grades;
     ASSERT_TRUE(makeCachedGradeChain(&grades));
-    // Run as strips, the region leaves its outputs in the host tier alone.
-    setGpuStripOverridesForTests(16384, 0);
+    // Run as strips with the middle grade as its root, the region leaves the middle grade's output in the host tier
+    // alone.
+    setGpuStripOverridesForTests(gpu::kMinSizeClass, 0);
     FrameGraph first;
     std::string error;
-    ASSERT_TRUE(renderAsOneRegion(grades, &first, &error)) << error;
+    ASSERT_TRUE(renderAsOneRegion({ grades[0], grades[1] }, &first, &error)) << error;
     ASSERT_EQ(0, membersInDeviceTier(first));
     setGpuStripOverridesForTests(0, 0);
 

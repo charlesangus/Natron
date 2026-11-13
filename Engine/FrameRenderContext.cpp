@@ -149,7 +149,9 @@ FrameStore::putEntry(const TaskKey& key,
     for (std::map<ImageLayerDesc, DeviceImagePtr>::const_iterator it = entry->deviceLayers.begin(); it != entry->deviceLayers.end(); ++it) {
         if (it->second) {
             addBounds(it->second->bounds());
-            entry->deviceBytes += it->second->bytes();
+            const std::size_t bytes = it->second->bytes();
+            entry->deviceLayerBytes[it->first] = bytes;
+            entry->deviceBytes += bytes;
         }
     }
 
@@ -340,7 +342,8 @@ FrameStore::evictToRam(const TaskKey& key)
     std::size_t freed = 0;
     std::map<ImageLayerDesc, DeviceImagePtr>::iterator it = entry->deviceLayers.begin();
     while (it != entry->deviceLayers.end()) {
-        const std::size_t bytes = it->second ? it->second->bytes() : 0;
+        const std::map<ImageLayerDesc, std::size_t>::const_iterator stored = entry->deviceLayerBytes.find(it->first);
+        const std::size_t bytes = (stored != entry->deviceLayerBytes.end()) ? stored->second : 0;
         // A layer already downloaded keeps the RAM image it has.
         const bool inRam = entry->layers.find(it->first) != entry->layers.end();
         ImagePtr image = inRam ? ImagePtr() : (it->second ? it->second->evictToRam() : ImagePtr());
@@ -359,6 +362,7 @@ FrameStore::evictToRam(const TaskKey& key)
             entry->layers[it->first] = image;
         }
         freed += bytes;
+        entry->deviceLayerBytes.erase(it->first);
         it = entry->deviceLayers.erase(it);
     }
     if (!entry->retired) {

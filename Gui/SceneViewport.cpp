@@ -5111,6 +5111,12 @@ SceneViewport::paintGL()
         setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     }
     _imp->renderer.setRecordDrawnGuides(property("natronSceneRecordGuides").toBool());
+    if (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId) {
+        // Storm draws on the GUI thread, for most of a second a frame on software GL, so scripts
+        // need its start to tell a stall before the frame from the frame itself.
+        setProperty("natronSceneStormPaintStartMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
+        setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(property("natronSceneStormPaints").toULongLong() + 1));
+    }
     const SceneViewportRenderer::RenderStatusEnum status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done. A background render

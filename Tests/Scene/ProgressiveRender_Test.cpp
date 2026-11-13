@@ -1081,6 +1081,44 @@ TEST_F(ProgressiveRenderTest, CyclesReturnsAtOnceFromChangesMidPass)
     interruptsMidPass(kRenderDelegateCyclesId, "cycles:samples", moonRayAvailable() ? std::string(kMoonRayRendererId) : std::string());
 }
 
+TEST_F(ProgressiveRenderTest, CyclesSurvivesRepeatedChangesMidPass)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    std::map<std::string, PXR_NS::VtValue> fixed = fixedSampling(kSamples);
+    fixed.erase("cycles:samples");
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixed);
+    const int liveBefore = ProgressiveRender::getLiveCount();
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["cycles:samples"] = PXR_NS::VtValue(2);
+    ASSERT_TRUE(start(settings, kRenderDelegateCyclesId));
+    sync(heavyScene(_base, 24, 160));
+
+    // Each change tears down an engine whose session thread may be writing tiles while the next
+    // engine binds its outputs; varying the delay moves the teardown across the pass, so a race
+    // between the two has many chances to corrupt the heap.
+    for (int i = 0; i < 8; ++i) {
+        settings["cycles:samples"] = PXR_NS::VtValue(16 + i);
+        ASSERT_TRUE(heavyPass(settings));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10 * (i % 4)));
+    }
+    settings["cycles:samples"] = PXR_NS::VtValue(3);
+    const std::size_t mark = publishedCount();
+    _render->setSettings(settings);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(3, frames.back()->maxSamples);
+
+    settings["cycles:samples"] = PXR_NS::VtValue(5);
+    ASSERT_TRUE(heavyPass(settings));
+    _listened = nullptr;
+    _render.reset();
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
+    EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
+}
+
 TEST_F(ProgressiveRenderTest, MoonRayReturnsAtOnceFromChangesMidPass)
 {
     if (!moonRayOrSkip()) {

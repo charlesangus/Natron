@@ -115,14 +115,24 @@ FrameFuture::getRootPlanes() const
     return _rootPlanes;
 }
 
+std::vector<RegionFallback>
+FrameFuture::getRegionFallbacks() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _fallbacks;
+}
+
 void
 FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
-                    std::map<ImageLayerDesc, ImagePtr> rootPlanes)
+                    std::map<ImageLayerDesc, ImagePtr> rootPlanes,
+                    std::vector<RegionFallback> fallbacks)
 {
     QMutexLocker k(&_mutex);
 
     _retCode = retCode;
     _rootPlanes = std::move(rootPlanes);
+    _fallbacks = std::move(fallbacks);
     _finished = true;
     _finishedCond.wakeAll();
 }
@@ -149,6 +159,7 @@ struct RenderScheduler::Frame {
     bool restartOnCpu = false;
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeOk;
     std::map<ImageLayerDesc, ImagePtr> rootPlanes;
+    std::vector<RegionFallback> fallbacks;
 
     // Released only once the store holds no device image any more.
     std::shared_ptr<void> gpuLease;
@@ -603,6 +614,7 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             inputKey.contextKey = it->contextKey;
             const int inputIndex = taskFor(inputKey);
             graph.tasks[index].dependencies.push_back(inputIndex);
+            graph.tasks[index].dependencyInputNbs.push_back(it->inputNb);
             graph.tasks[inputIndex].consumerTasks.push_back(index);
         }
     }
@@ -747,15 +759,19 @@ RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
 
     std::vector<char> needed(count, 0);
     needed[0] = 1;
-    std::vector<std::vector<int>> keptDependencies(count);
+    // Edge positions rather than task indices, so that dependencyInputNbs is filtered alongside dependencies.
+    std::vector<std::vector<int>> keptEdges(count);
     bool droppedAny = false;
     for (const int index : order) {
         if (!needed[index]) {
             continue;
         }
         FrameGraph::Task& task = graph.tasks[index];
-        std::vector<int>& kept = keptDependencies[index];
-        kept = task.dependencies;
+        std::vector<int>& kept = keptEdges[index];
+        kept.resize(task.dependencies.size());
+        for (std::size_t e = 0; e < kept.size(); ++e) {
+            kept[e] = (int)e;
+        }
 
         const NodeCtxKey nodeKey(task.key.node, task.key.contextKey);
         const FrameRequestMap::const_iterator nodeRequest = requests.find(nodeKey);
@@ -782,16 +798,16 @@ RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
                 RoIMap missingPartRoIs;
                 effect->getRegionsOfInterest_public(task.key.time, nodeRequest->second->mappedScale, request->globalData.rod, missing, task.key.view, &missingPartRoIs);
                 const std::size_t before = kept.size();
-                kept.erase(std::remove_if(kept.begin(), kept.end(), [&](int dep) {
-                               return !missingPartReads(graph.tasks[dep], *request, requests, missingPartRoIs);
+                kept.erase(std::remove_if(kept.begin(), kept.end(), [&](int edge) {
+                               return !missingPartReads(graph.tasks[task.dependencies[edge]], *request, requests, missingPartRoIs);
                            }),
                            kept.end());
                 task.servedFromCache = kept.size() != before;
             }
         }
         droppedAny = droppedAny || (kept.size() != task.dependencies.size());
-        for (const int dep : kept) {
-            needed[dep] = 1;
+        for (const int edge : kept) {
+            needed[task.dependencies[edge]] = 1;
         }
     }
     if (!droppedAny) {
@@ -799,21 +815,33 @@ RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
     }
 
     std::vector<int> newIndex(count, -1);
+    int keptCount = 0;
+    for (int i = 0; i < count; ++i) {
+        if (needed[i]) {
+            newIndex[i] = keptCount++;
+        }
+    }
     std::vector<FrameGraph::Task> tasks;
     for (int i = 0; i < count; ++i) {
         if (needed[i]) {
-            newIndex[i] = (int)tasks.size();
-            tasks.push_back(std::move(graph.tasks[i]));
-            tasks.back().dependencies.clear();
-            tasks.back().consumerTasks.clear();
+            FrameGraph::Task task = std::move(graph.tasks[i]);
+            std::vector<int> dependencies;
+            std::vector<int> dependencyInputNbs;
+            for (const int edge : keptEdges[i]) {
+                dependencies.push_back(newIndex[task.dependencies[edge]]);
+                if (edge < (int)task.dependencyInputNbs.size()) {
+                    dependencyInputNbs.push_back(task.dependencyInputNbs[edge]);
+                }
+            }
+            task.dependencies = std::move(dependencies);
+            task.dependencyInputNbs = std::move(dependencyInputNbs);
+            task.consumerTasks.clear();
+            tasks.push_back(std::move(task));
         }
     }
-    for (int i = 0; i < count; ++i) {
-        if (needed[i]) {
-            for (const int dep : keptDependencies[i]) {
-                tasks[newIndex[i]].dependencies.push_back(newIndex[dep]);
-                tasks[newIndex[dep]].consumerTasks.push_back(newIndex[i]);
-            }
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        for (const int dep : tasks[i].dependencies) {
+            tasks[dep].consumerTasks.push_back((int)i);
         }
     }
     for (FrameGraph::Task& task : tasks) {
@@ -892,9 +920,11 @@ RenderScheduler::appendRegionTasks(Frame* frame)
         }
         for (int m : region.members) {
             const FrameGraph::Task& member = graph.tasks[m];
-            for (int d : member.dependencies) {
+            for (std::size_t e = 0; e < member.dependencies.size(); ++e) {
+                const int d = member.dependencies[e];
                 if (graph.tasks[d].regionId != r) {
                     unit.dependencies.push_back(d);
+                    unit.dependencyInputNbs.push_back(member.dependencyInputNbs[e]);
                 }
             }
             for (int c : member.consumerTasks) {
@@ -1533,6 +1563,15 @@ RenderScheduler::executeRegion(const FramePtr& frame,
             sink.append(lines);
         }
         deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
+        if (deviceLost || !report.cpuFallback.empty()) {
+            RegionFallback fallback;
+            fallback.region = region;
+            fallback.reason = report.cpuFallback;
+            fallback.deviceLost = deviceLost;
+            fallback.retries = report.retries;
+            QMutexLocker k(&_mutex);
+            frame->fallbacks.push_back(std::move(fallback));
+        }
     } else if (appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
                                         QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));
@@ -2076,9 +2115,9 @@ RenderScheduler::finalizeFrames(const std::vector<FramePtr>& finished)
         frame->context->getStore().clear();
         frame->gpuLease.reset();
         if (frame->dead) {
-            frame->future->finish(frame->retCode, std::map<ImageLayerDesc, ImagePtr>());
+            frame->future->finish(frame->retCode, std::map<ImageLayerDesc, ImagePtr>(), std::move(frame->fallbacks));
         } else {
-            frame->future->finish(EffectInstance::eRenderRoIRetCodeOk, std::move(frame->rootPlanes));
+            frame->future->finish(EffectInstance::eRenderRoIRetCodeOk, std::move(frame->rootPlanes), std::move(frame->fallbacks));
         }
     }
 }

@@ -51,6 +51,7 @@
 #include "Engine/Cache.h"
 #include "Engine/CacheTier.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
@@ -1442,6 +1443,14 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     }
     if (cacheCanServe && (!hasSomethingToRender || partial)) {
         noteImagesServed(*layersToRender, retention, renderSequence);
+    }
+    if (const FrameRenderContext* frameContext = AppTLS::currentFrameContext()) {
+        for (const RectToRender& rect : layersToRender->rectsToRender) {
+            if (!rect.isIdentity) {
+                frameContext->noteNodeRendered(getNode().get());
+                break;
+            }
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

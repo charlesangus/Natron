@@ -328,6 +328,7 @@ set(GuiTests_SOURCES
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
     GlobalModeTargeting_Test.cpp
+    GpuOverlayMapping_Test.cpp
     GuiGLRequirements_Test.cpp
     GuiThreadGLBinding_Test.cpp
     KnobGuiColorWheelWidth_Test.cpp

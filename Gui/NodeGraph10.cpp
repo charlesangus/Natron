@@ -50,6 +50,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include "Gui/BackdropGui.h"
 #include "Gui/Edge.h"
+#include "Gui/GpuOverlay.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -414,6 +415,9 @@ NodeGraph::noteNodeGeometryChanged(NodeGui* node)
         return;
     }
     NodeGraphLowDetailLayer::applyDetailLevel(node, true, _imp->lowDetail);
+    if (_imp->_gpuRegions) {
+        _imp->_gpuRegions->noteNodeChanged(node);
+    }
     repaintLowDetailItem(node);
     if (_imp->itemGridDirty) {
         return;
@@ -434,6 +438,12 @@ NodeGraph::noteEdgeGeometryChanged(NodeGui* owner,
         return;
     }
     NodeGraphLowDetailLayer::applyDetailLevel(edge, false, _imp->lowDetail);
+    if (_imp->_gpuRegions) {
+        _imp->_gpuRegions->noteNodeChanged(owner);
+        if (edge->hasSource()) {
+            _imp->_gpuRegions->noteNodeChanged(edge->getSource().get());
+        }
+    }
     repaintLowDetailItem(edge);
     if (_imp->itemGridDirty) {
         return;

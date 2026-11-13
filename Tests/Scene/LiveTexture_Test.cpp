@@ -25,34 +25,303 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/sdf/layer.h>
+#include <pxr/usd/usdShade/udimUtils.h>
+
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <list>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QString>
+#include <QStringList>
+
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/LiveTextureImage.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/ViewIdx.h"
+
+#define kUdimTilesTestPluginID "test.natron.built-in.LiveTextureUdimTiles"
+
+NATRON_NAMESPACE_ENTER
+
+namespace {
+/**
+ * @brief A UDIM painter that renders: each tile is filled with its number less 1000 in red, over a
+ * format of its own, and the tile's version moves only with the strokes painted on it.
+ **/
+class UdimTilesTestEffect
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new UdimTilesTestEffect(n);
+    }
+
+    explicit UdimTilesTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    static RectI tileFormat(int tile)
+    {
+        switch (tile) {
+        case 1001:
+            return RectI(0, 0, 16, 16);
+        case 1002:
+            return RectI(0, 0, 8, 4);
+        default:
+            return RectI(0, 0, 4, 4);
+        }
+    }
+
+    void paint(int tile)
+    {
+        {
+            std::lock_guard<std::mutex> locker(_mutex);
+            ++_strokes[tile];
+        }
+        getNode()->markHashDirty();
+    }
+
+    void setFailing(int tile,
+                    bool failing)
+    {
+        std::lock_guard<std::mutex> locker(_mutex);
+        if (failing) {
+            _failing.insert(tile);
+        } else {
+            _failing.erase(tile);
+        }
+    }
+
+    int renders(int tile) const
+    {
+        std::lock_guard<std::mutex> locker(_mutex);
+        std::map<int, int>::const_iterator found = _renders.find(tile);
+
+        return found == _renders.end() ? 0 : found->second;
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual RenderSafetyEnum renderThreadSafety() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return eRenderSafetyFullySafe;
+    }
+
+    virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL
+    {
+        RenderContextReadSet reads;
+        reads.add(RenderContextName::udimTile());
+
+        return reads;
+    }
+
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL
+    {
+        std::lock_guard<std::mutex> locker(_mutex);
+        h.appendU64(_strokes.size());
+        for (std::map<int, int>::const_iterator it = _strokes.begin(); it != _strokes.end(); ++it) {
+            h.appendI64(it->first);
+            h.appendI64(it->second);
+        }
+    }
+
+    virtual U64 getUdimTileHash(int tile,
+                                double /*time*/,
+                                ViewIdx /*view*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        ContentHasher h;
+        h.appendString(getNode()->getPluginID());
+        h.appendI64(tile);
+        std::lock_guard<std::mutex> locker(_mutex);
+        std::map<int, int>::const_iterator found = _strokes.find(tile);
+        h.appendI64(found == _strokes.end() ? 0 : found->second);
+
+        return h.finalize();
+    }
+
+    virtual StatusEnum getPreferredMetadataAt(double /*time*/,
+                                              ViewIdx /*view*/,
+                                              NodeMetadata& metadata) OVERRIDE FINAL
+    {
+        metadata.setOutputFormat(tileFormat(currentTile()));
+
+        return eStatusOK;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double /*time*/,
+                                             const RenderScale& /*scale*/,
+                                             ViewIdx /*view*/,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        const RectI format = tileFormat(currentTile());
+        rod->x1 = format.x1;
+        rod->y1 = format.y1;
+        rod->x2 = format.x2;
+        rod->y2 = format.y2;
+
+        return eStatusOK;
+    }
+
+    virtual void addAcceptedComponents(int /*inputNb*/,
+                                       std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
+    {
+        comps->push_back(ImageLayerDesc::getRGBAComponents());
+    }
+
+    virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL
+    {
+        depths->push_back(eImageBitDepthFloat);
+    }
+
+protected:
+    virtual ImageMetadata deriveOutputMetadata(double /*time*/,
+                                               ViewIdx /*view*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        ImageMetadata m;
+        m.set(kNatronMetadataKeyUdimTiles, ImageMetadata::Value(std::string("1001-1002,1011")));
+
+        return m;
+    }
+
+private:
+    int currentTile() const
+    {
+        const RenderContextPtr context = getCurrentRenderContext();
+        const RenderContextValue* value = context ? context->find(RenderContextName::udimTile()) : nullptr;
+        const std::int64_t* tile = value ? std::get_if<std::int64_t>(value) : nullptr;
+
+        return tile ? (int)*tile : 0;
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+    }
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        const int tile = currentTile();
+        {
+            std::lock_guard<std::mutex> locker(_mutex);
+            ++_renders[tile];
+            if (_failing.count(tile)) {
+                return eStatusFailed;
+            }
+        }
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+            const ImagePtr& image = it->second;
+            if (!image || (image->getBitDepth() != eImageBitDepthFloat) || (image->getComponentsCount() != 4)) {
+                return eStatusFailed;
+            }
+            Image::WriteAccess access(image.get());
+            for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+                for (int x = args.roi.x1; x < args.roi.x2; ++x) {
+                    float* pixel = (float*)access.pixelAt(x, y);
+                    if (!pixel) {
+                        return eStatusFailed;
+                    }
+                    pixel[0] = (float)(tile - 1000);
+                    pixel[1] = 0.f;
+                    pixel[2] = 0.f;
+                    pixel[3] = 1.f;
+                }
+            }
+        }
+
+        return eStatusOK;
+    }
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kUdimTilesTestPluginID,
+        .label = "Test UDIM Tiles",
+        .grouping = "Other/Test",
+        .outputKind = eDataKindImage,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+
+    mutable std::mutex _mutex;
+    std::map<int, int> _strokes;
+    std::map<int, int> _renders;
+    std::set<int> _failing;
+};
+
+void
+registerUdimTilesTestEffectOnce()
+{
+    static std::once_flag once;
+
+    std::call_once(once, []() {
+        EffectInstancePtr node(UdimTilesTestEffect::BuildEffect(NodePtr()));
+        std::map<std::string, void (*)()> functions;
+
+        functions.insert(std::make_pair("BuildEffect", (void (*)())&UdimTilesTestEffect::BuildEffect));
+        LibraryBinary* binary = new LibraryBinary(functions);
+
+        std::list<std::string> grouping;
+        node->getPluginGrouping(&grouping);
+        QStringList qgrouping;
+        for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
+            qgrouping.push_back(QString::fromUtf8(it->c_str()));
+        }
+        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
+                                           QString::fromUtf8(""), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe, node->getMajorVersion(), node->getMinorVersion(), false);
+        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
+    });
+}
+} // namespace
+
+NATRON_NAMESPACE_EXIT
 
 NATRON_NAMESPACE_USING
 
@@ -695,4 +964,203 @@ TEST_F(LiveTextureTest, TheFailuresKeptAreBounded)
     }
     EXPECT_TRUE(LiveTextureStore::instance().getFailure(first).empty());
     EXPECT_FALSE(LiveTextureStore::instance().getFailure(source.getUri(1.)).empty());
+}
+
+class LiveTextureUdimTest
+    : public LiveTextureTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        LiveTextureTest::SetUp();
+        registerUdimTilesTestEffectOnce();
+    }
+
+    NodePtr createTiles(UdimTilesTestEffect** effect)
+    {
+        NodePtr node = createNode(QString::fromUtf8(kUdimTilesTestPluginID));
+        *effect = node ? dynamic_cast<UdimTilesTestEffect*>(node->getEffectInstance().get()) : NULL;
+        EXPECT_TRUE(*effect != NULL);
+
+        return node;
+    }
+
+    // The set node declares in its metadata, as it stands now.
+    static LiveTextureSource udimSource(const NodePtr& node,
+                                        const NodePtr& consumer = NodePtr())
+    {
+        LiveTextureSource source;
+        source.node = node;
+        source.consumer = consumer;
+        source.nodeName = node->getFullyQualifiedName();
+        source.layer = "rgba";
+        source.contentHash = node->getEffectInstance()->getHash();
+        source.firstFrame = 1.;
+        source.lastFrame = 1.;
+        std::string error;
+        EXPECT_TRUE(parseUdimTiles(ImageMetadata::Value(std::string("1001-1002,1011")), &source.tiles, &error)) << error;
+
+        return source;
+    }
+
+    static std::string messageOf(const NodePtr& node)
+    {
+        QString message;
+        int type = 0;
+        node->getPersistentMessage(&message, &type, false);
+
+        return message.toStdString();
+    }
+};
+
+TEST_F(LiveTextureUdimTest, ASetHasAUdimTokenUriAndOneUriPerTile)
+{
+    LiveTextureSource source;
+    source.nodeName = "Paint1";
+    source.layer = "rgba";
+    source.contentHash = 42;
+    EXPECT_EQ(LiveTextureSource::makeUri("Paint1", "rgba", 42), source.getUri(1.));
+
+    source.tiles = { 1001, 1002, 1011 };
+    const std::string set = source.getUri(1.);
+    EXPECT_EQ(0u, set.find("natron://Paint1/rgba.<UDIM>?v=")) << set;
+    // USD finds a tile by putting its number for the token, which keeps the version after it.
+    EXPECT_EQ(source.getTileUri(1., 1002), PXR_NS::UsdShadeUdimUtils::ReplaceUdimPattern(set, "1002"));
+    EXPECT_EQ(0u, source.getTileUri(1., 1002).find("natron://Paint1/rgba.1002?v="));
+    EXPECT_TRUE(source.getTilesBeyondUsd().empty());
+    EXPECT_TRUE(source.getTilesBeyondUsdWarning(1.).empty());
+
+    // Another set of tiles is another set to Storm, which keeps the sets it loaded by URI.
+    LiveTextureSource fewer = source;
+    fewer.tiles = { 1001, 1002 };
+    EXPECT_NE(set, fewer.getUri(1.));
+}
+
+TEST_F(LiveTextureUdimTest, UsdResolvesExactlyTheDeclaredTilesEachAtItsSize)
+{
+    UdimTilesTestEffect* effect = NULL;
+    NodePtr node = createTiles(&effect);
+    ASSERT_TRUE(effect != NULL);
+    const LiveTextureSource source = udimSource(node);
+    const std::string set = source.getUri(1.);
+
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.)) << LiveTextureStore::instance().getFailure(set);
+    EXPECT_EQ(1, effect->renders(1001));
+    EXPECT_EQ(1, effect->renders(1002));
+    EXPECT_EQ(1, effect->renders(1011));
+    // The set URI is no texture of its own.
+    EXPECT_FALSE(LiveTextureStore::instance().contains(set));
+
+    const PXR_NS::SdfLayerRefPtr anonymous = PXR_NS::SdfLayer::CreateAnonymous("udim.usda");
+    for (const PXR_NS::SdfLayerHandle& layer : { PXR_NS::SdfLayerHandle(), PXR_NS::SdfLayerHandle(anonymous) }) {
+        const std::vector<PXR_NS::UsdShadeUdimUtils::ResolvedPathAndTile> resolved = PXR_NS::UsdShadeUdimUtils::ResolveUdimTilePaths(set, layer);
+        std::vector<int> tiles;
+        for (const PXR_NS::UsdShadeUdimUtils::ResolvedPathAndTile& tile : resolved) {
+            EXPECT_EQ(source.getTileUri(1., std::stoi(tile.second)), tile.first);
+            tiles.push_back(std::stoi(tile.second));
+        }
+        EXPECT_EQ(source.tiles, tiles);
+    }
+
+    for (int tile : source.tiles) {
+        const PXR_NS::HioImageSharedPtr image = PXR_NS::HioImage::OpenForReading(source.getTileUri(1., tile));
+        ASSERT_TRUE(bool(image)) << tile;
+        const RectI format = UdimTilesTestEffect::tileFormat(tile);
+        EXPECT_EQ(format.width(), image->GetWidth()) << tile;
+        EXPECT_EQ(format.height(), image->GetHeight()) << tile;
+        std::vector<float> pixels(4 * format.width() * format.height(), -1.f);
+        PXR_NS::HioImage::StorageSpec storage;
+        storage.width = format.width();
+        storage.height = format.height();
+        storage.format = PXR_NS::HioFormatFloat32Vec4;
+        storage.data = pixels.data();
+        ASSERT_TRUE(image->Read(storage)) << tile;
+        EXPECT_FLOAT_EQ((float)(tile - 1000), pixels[0]) << tile;
+        EXPECT_FLOAT_EQ((float)(tile - 1000), pixels[pixels.size() - 4]) << tile;
+        EXPECT_FLOAT_EQ(1.f, pixels[3]) << tile;
+    }
+}
+
+// The edit of one tile gives the set a new URI, under which only that tile is rendered: the others
+// are the buffers already held, which count against the budget once.
+TEST_F(LiveTextureUdimTest, AnEditOfOneTileRendersOnlyThatTile)
+{
+    UdimTilesTestEffect* effect = NULL;
+    NodePtr node = createTiles(&effect);
+    ASSERT_TRUE(effect != NULL);
+    const LiveTextureSource before = udimSource(node);
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, before), 1.)) << LiveTextureStore::instance().getFailure(before.getUri(1.));
+    const std::size_t bytesBefore = LiveTextureStore::instance().getByteSize();
+
+    effect->paint(1002);
+    const LiveTextureSource after = udimSource(node);
+    ASSERT_NE(before.getUri(1.), after.getUri(1.));
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, after), 1.)) << LiveTextureStore::instance().getFailure(after.getUri(1.));
+    EXPECT_EQ(1, effect->renders(1001));
+    EXPECT_EQ(2, effect->renders(1002));
+    EXPECT_EQ(1, effect->renders(1011));
+
+    LiveTextureStore& store = LiveTextureStore::instance();
+    EXPECT_EQ(store.find(before.getTileUri(1., 1001)), store.find(after.getTileUri(1., 1001)));
+    EXPECT_EQ(store.find(before.getTileUri(1., 1011)), store.find(after.getTileUri(1., 1011)));
+    EXPECT_NE(store.find(before.getTileUri(1., 1002)), store.find(after.getTileUri(1., 1002)));
+    EXPECT_EQ(bytesBefore + store.find(after.getTileUri(1., 1002))->getByteSize(), store.getByteSize());
+
+    // Unchanged since: nothing is rendered.
+    ASSERT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, after), 1.));
+    EXPECT_EQ(1, effect->renders(1001));
+    EXPECT_EQ(2, effect->renders(1002));
+    EXPECT_EQ(1, effect->renders(1011));
+}
+
+TEST_F(LiveTextureUdimTest, AFailedTileShowsMagentaAndIsTriedAgain)
+{
+    UdimTilesTestEffect* effect = NULL;
+    NodePtr node = createTiles(&effect);
+    NodePtr consumer = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(effect != NULL);
+    ASSERT_TRUE(bool(consumer));
+    const LiveTextureSource source = udimSource(node, consumer);
+    const std::string failed = source.getTileUri(1., 1011);
+
+    effect->setFailing(1011, true);
+    EXPECT_EQ(1, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    LiveTextureStore& store = LiveTextureStore::instance();
+    const LiveTextureBufferConstPtr magenta = store.find(failed);
+    ASSERT_TRUE(bool(magenta));
+    EXPECT_EQ(4, magenta->getWidth());
+    EXPECT_EQ(4, magenta->getHeight());
+    EXPECT_FLOAT_EQ(1.f, magenta->getRow(0)[0]);
+    EXPECT_FLOAT_EQ(0.f, magenta->getRow(0)[1]);
+    EXPECT_FLOAT_EQ(1.f, magenta->getRow(0)[2]);
+    EXPECT_FALSE(store.getFailure(failed).empty());
+    EXPECT_FALSE(store.getFailure(source.getUri(1.)).empty());
+    EXPECT_TRUE(store.getFailure(source.getTileUri(1., 1001)).empty());
+    EXPECT_NE(std::string::npos, messageOf(consumer).find("UDIM tile 1011")) << messageOf(consumer);
+
+    effect->setFailing(1011, false);
+    EXPECT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    EXPECT_NE(magenta, store.find(failed));
+    EXPECT_TRUE(store.getFailure(failed).empty());
+    EXPECT_TRUE(store.getFailure(source.getUri(1.)).empty());
+    EXPECT_EQ(1, effect->renders(1001));
+    EXPECT_EQ(2, effect->renders(1011));
+}
+
+TEST_F(LiveTextureUdimTest, TilesAboveWhatUsdReadsAreWarned)
+{
+    UdimTilesTestEffect* effect = NULL;
+    NodePtr node = createTiles(&effect);
+    NodePtr consumer = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(effect != NULL);
+    ASSERT_TRUE(bool(consumer));
+    LiveTextureSource source = udimSource(node, consumer);
+    source.tiles = { 1001, 1101 };
+
+    EXPECT_EQ(std::vector<int>(1, 1101), source.getTilesBeyondUsd());
+    EXPECT_EQ(0, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    EXPECT_TRUE(LiveTextureStore::instance().contains(source.getTileUri(1., 1101)));
+    EXPECT_NE(std::string::npos, messageOf(consumer).find("1101")) << messageOf(consumer);
+    const std::vector<PXR_NS::UsdShadeUdimUtils::ResolvedPathAndTile> resolved = PXR_NS::UsdShadeUdimUtils::ResolveUdimTilePaths(source.getUri(1.), PXR_NS::SdfLayerHandle());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ("1001", resolved[0].second);
 }

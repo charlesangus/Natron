@@ -66,13 +66,6 @@ const std::size_t kMaxPendingPaths = 4096;
 // Above this many children, finding a child by name goes through a map.
 const std::size_t kRowMapThreshold = 32;
 
-Usd_PrimFlagsPredicate
-childPredicate()
-{
-    // Unloaded prims are shown, so a payload can be found before it is loaded.
-    return UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract);
-}
-
 // Unfiltered, as a run of prims the walk rejects is as long to skip as a run it lists: the
 // predicate is applied by the caller, where the budget can be checked between prims.
 UsdPrim
@@ -137,34 +130,6 @@ readPrimData(const UsdPrim& prim)
     data.hasChildren = !prim.GetFilteredChildren(childPredicate()).empty() || (data.payload == SceneGraphModel::ePayloadStateUnloaded);
 
     return data;
-}
-
-QIcon
-iconForType(const QString& type)
-{
-    static const QIcon camera(QString::fromUtf8(":/Resources/Images/NativeNodes/USDCamera.png"));
-    static const QIcon light(QString::fromUtf8(":/Resources/Images/NativeNodes/USDLight.png"));
-    static const QIcon material(QString::fromUtf8(":/Resources/Images/NativeNodes/USDMaterial.png"));
-    static const QIcon xform(QString::fromUtf8(":/Resources/Images/NativeNodes/USDXformPrim.png"));
-    static const QIcon scope(QString::fromUtf8(":/Resources/Images/NativeNodes/USDScopePrim.png"));
-
-    if (type == QLatin1String("Camera")) {
-        return camera;
-    }
-    if (type.endsWith(QLatin1String("Light"))) {
-        return light;
-    }
-    if ((type == QLatin1String("Material")) || (type == QLatin1String("Shader")) || (type == QLatin1String("NodeGraph"))) {
-        return material;
-    }
-    if (type == QLatin1String("Xform")) {
-        return xform;
-    }
-    if (type == QLatin1String("Scope")) {
-        return scope;
-    }
-
-    return QIcon();
 }
 
 QVariant
@@ -892,6 +857,41 @@ struct SceneGraphModel::Implementation {
         return item;
     }
 };
+
+Usd_PrimFlagsPredicate
+childPredicate()
+{
+    // Unloaded prims are shown, so a payload can be found before it is loaded.
+    return UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract);
+}
+
+QIcon
+iconForType(const QString& type)
+{
+    static const QIcon camera(QString::fromUtf8(":/Resources/Images/NativeNodes/USDCamera.png"));
+    static const QIcon light(QString::fromUtf8(":/Resources/Images/NativeNodes/USDLight.png"));
+    static const QIcon material(QString::fromUtf8(":/Resources/Images/NativeNodes/USDMaterial.png"));
+    static const QIcon xform(QString::fromUtf8(":/Resources/Images/NativeNodes/USDXformPrim.png"));
+    static const QIcon scope(QString::fromUtf8(":/Resources/Images/NativeNodes/USDScopePrim.png"));
+
+    if (type == QLatin1String("Camera")) {
+        return camera;
+    }
+    if (type.endsWith(QLatin1String("Light"))) {
+        return light;
+    }
+    if ((type == QLatin1String("Material")) || (type == QLatin1String("Shader")) || (type == QLatin1String("NodeGraph"))) {
+        return material;
+    }
+    if (type == QLatin1String("Xform")) {
+        return xform;
+    }
+    if (type == QLatin1String("Scope")) {
+        return scope;
+    }
+
+    return QIcon();
+}
 
 QString
 SceneGraphModel::primPathsMimeType()

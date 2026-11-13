@@ -37,11 +37,29 @@
 #include <QtCore/QSet>
 #include <QtCore/QStringList>
 
+#include <pxr/pxr.h>
+
 #include "Global/GlobalDefines.h"
 
 // Free of USD, like SceneViewport.h: the panel's header includes it.
 
+PXR_NAMESPACE_OPEN_SCOPE
+class Usd_PrimFlagsPredicate;
+PXR_NAMESPACE_CLOSE_SCOPE
+
+class QIcon;
+class QString;
+
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The children the scene graph lists: active, defined and not abstract, instance proxies
+ * and unloaded payloads included. Whatever lists a prim's children uses it, so they agree.
+ **/
+PXR_NS::Usd_PrimFlagsPredicate childPredicate();
+
+// The icon the scene graph gives a prim of this type name, null when it has none.
+QIcon iconForType(const QString& type);
 
 class SceneDrawStates;
 class SceneStage;

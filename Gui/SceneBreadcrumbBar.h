@@ -45,12 +45,14 @@ class SceneViewport;
 /**
  * @brief The strip above the scene view that shows the current selected prim's path as `/` and
  * one button per segment. A click selects the segment's prim, Shift+click adds it and `/` clears
- * the selection. Segments the stage no longer has are greyed and cannot be clicked; when the bar is
- * too narrow the middle segments fold into a "..." button whose menu lists them.
+ * the selection. A chevron after `/` and after each segment lists the prim's children in a
+ * ScenePrimListPopup, and a right-click on a segment lists its siblings with it marked. Segments
+ * the stage no longer has are greyed and cannot be clicked; when the bar is too narrow the middle segments fold into a "..." button whose menu lists them.
  *
  * The widget publishes natronBreadcrumbSegments (see Segment::toVariant()), natronBreadcrumbPath,
  * natronBreadcrumbMore and natronBreadcrumbElided for GUI tests. Its buttons are named
- * "breadcrumbRoot", "breadcrumbSegment", "breadcrumbElision" and "breadcrumbMore".
+ * "breadcrumbRoot", "breadcrumbRootChevron", "breadcrumbSegment", "breadcrumbChevron",
+ * "breadcrumbElision" and "breadcrumbMore".
  **/
 class SceneBreadcrumbBar : public QWidget {
     Q_OBJECT
@@ -65,7 +67,7 @@ public:
         eStateUnknown
     };
 
-    // One step of the path. More kinds of segment (chevron popups, a "+N" badge) extend this.
+    // One step of the path. More kinds of segment (a "+N" badge) extend this.
     struct Segment {
         QString text;
         // The prim the segment stands for, the segment's own path from the root.
@@ -108,6 +110,8 @@ private:
     void clickSegment(const Segment& segment);
     void readStates(QList<Segment>& segments);
     QToolButton* makeButton(const QString& name, const QString& text);
+    QToolButton* makeChevron(const QString& name, const QString& path);
+    void openPopup(const QString& listedPath, const QString& highlightName, QWidget* anchor);
 
     struct Private;
     Private* const _imp;

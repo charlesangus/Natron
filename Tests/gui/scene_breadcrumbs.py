@@ -1,15 +1,21 @@
 """The breadcrumb bar above the 3D view.
 
 Graph: USDRead(a generated hierarchy) -> USDPrune -> Viewer1. The hierarchy has
-/geo/group_1/a_thing/mesh, /geo/group_1/b_thing, /geo/other and a path of long names. The prune
-starts out removing nothing; the script then makes it remove the mesh.
+/geo/group_1/a_thing/mesh, /geo/group_1/b_thing, /geo/group_2, a path of long names, /big with
+10000 children and /pay, a prim whose payload is not loaded. The prune starts out removing
+nothing; the script then makes it remove the mesh.
 
 Checks:
   - the bar sits above the scene view and shows only "/" with nothing selected;
   - selecting /geo/group_1/a_thing/mesh reads geo, group_1, a_thing, mesh, all present, and the
     HUD text no longer has the path;
-  - a click on group_1 selects /geo/group_1, a Shift+click on other adds it, the "/" button clears;
+  - a click on group_1 selects /geo/group_1, a Shift+click on group_1 adds it, the "/" button clears;
   - a "+1" badge shows when two prims are selected;
+  - the chevron on group_1 lists its children with the scene graph's icons; a right-click on group_1
+    lists group_1 and group_2 with group_1 marked, and picking group_2 selects /geo/group_2;
+  - the filter narrows /big's 10000 children to one row, with the main thread within the stall
+    budget while the list is read and the filter is typed;
+  - the chevron on /pay shows a "Not loaded" row whose Load button fills the list;
   - pruning the mesh greys it while its ancestors stay clickable, and a click on a greyed segment
     changes nothing;
   - split to half the screen's width, a path of long names folds its middle segments into a "..."
@@ -19,22 +25,36 @@ Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
 """
 import os
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 POLL_TIMEOUT_S = 20.0
 STARTUP_TIMEOUT_S = 60.0
+LOAD_TIMEOUT_S = 120.0
 SETTLE_MS = 400
 MESH = "/geo/group_1/a_thing/mesh"
 GROUP = "/geo/group_1"
-OTHER = "/geo/other"
+SIBLING = "/geo/group_2"
+BIG = "/big"
+BIG_COUNT = 10000
+PAYLOAD = "/pay"
+PAYLOAD_CHILDREN = ["Floor", "Roof"]
+HEARTBEAT_MS = 10
+HEARTBEAT_BUDGET_MS = 100.0
+HEARTBEAT_BLOCKED_BUDGET_MS = 400.0
 LONG_NAMES = ["a_long_segment_name_%d_for_the_bar" % i for i in range(1, 7)] + ["leaf"]
 LONG_PATH = "/" + "/".join(LONG_NAMES)
 
 
 def write_scene(directory):
     os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, "pay_payload.usda"), "w") as f:
+        f.write('#usda 1.0\n(\n    defaultPrim = "Root"\n)\ndef Xform "Root"\n{\n')
+        for name in PAYLOAD_CHILDREN:
+            f.write('    def Xform "%s"\n    {\n    }\n' % name)
+        f.write('}\n')
     path = os.path.join(directory, "breadcrumbs.usda")
     with open(path, "w") as f:
         f.write('#usda 1.0\n(\n    defaultPrim = "geo"\n    upAxis = "Y"\n)\n')
@@ -43,8 +63,13 @@ def write_scene(directory):
         f.write('        def Xform "a_thing"\n        {\n            def Cube "mesh"\n            {\n                double size = 1\n            }\n        }\n')
         f.write('        def Cube "b_thing"\n        {\n            double size = 1\n        }\n')
         f.write('    }\n')
-        f.write('    def Cube "other"\n    {\n        double size = 1\n    }\n')
+        f.write('    def Xform "group_2"\n    {\n        def Cube "c_thing"\n        {\n            double size = 1\n        }\n    }\n')
         f.write('}\n')
+        f.write('def Scope "big"\n{\n')
+        for i in range(BIG_COUNT):
+            f.write('    def Xform "child_%05d"\n    {\n    }\n' % i)
+        f.write('}\n')
+        f.write('def Xform "pay" (\n    prepend payload = @./pay_payload.usda@\n)\n{\n}\n')
         f.write('def Xform "%s"\n{\n' % LONG_NAMES[0])
         indent = "    "
         for name in LONG_NAMES[1:-1]:
@@ -60,9 +85,10 @@ def write_scene(directory):
 
 try:
     import NatronEngine
-    from PySide6.QtCore import Q_ARG, QMetaObject, Qt
+    from PySide6.QtCore import Q_ARG, QMetaObject, Qt, QTimer
+    from PySide6.QtGui import QIcon
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QToolButton
+    from PySide6.QtWidgets import QApplication, QLineEdit, QListView, QPushButton, QToolButton
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -147,6 +173,60 @@ try:
     def QStringList_arg(paths):
         return Q_ARG("QStringList", list(paths))
 
+    def popup():
+        ps = [w for w in widgets_of("ScenePrimListPopup") if w.isVisible()]
+        return hold(ps[0]) if ps else None
+
+    def popup_rows(p):
+        return [str(r) for r in (p.property("natronPopupRows") or [])]
+
+    def chevron(path):
+        b = bar()
+        for w in b.findChildren(QToolButton, "breadcrumbChevron"):
+            if str(w.property("natronBreadcrumbPath")) == path and w.isVisibleTo(b):
+                return hold(w)
+        return None
+
+    def main_thread_times_ms():
+        with open("/proc/thread-self/schedstat") as f:
+            fields = f.read().split()
+        return int(fields[0]) / 1000000.0, int(fields[1]) / 1000000.0
+
+    class Heartbeat:
+        """The longest the main thread's event loop has gone without running a short timer: the most
+        CPU one gap used, and the gap's length with the time spent ready to run without a CPU left out."""
+
+        def __init__(self):
+            self.timer = QTimer()
+            self.timer.setInterval(HEARTBEAT_MS)
+            self.timer.timeout.connect(self.beat)
+            self.reset()
+
+        def reset(self):
+            self.last = time.monotonic()
+            self.cpu, self.waited = main_thread_times_ms()
+            self.worst_cpu_ms = 0.0
+            self.worst_ms = 0.0
+
+        def beat(self):
+            now = time.monotonic()
+            cpu, waited = main_thread_times_ms()
+            self.worst_ms = max(self.worst_ms, (now - self.last) * 1000.0 - (waited - self.waited))
+            self.worst_cpu_ms = max(self.worst_cpu_ms, cpu - self.cpu)
+            self.last, self.cpu, self.waited = now, cpu, waited
+
+        def start(self):
+            self.reset()
+            self.timer.start()
+
+        def stop(self):
+            self.timer.stop()
+
+    def check_heartbeat(beat, what):
+        report("NOTE worst main-thread gap %s: %.1f ms on a CPU, %.1f ms with blocking" % (what, beat.worst_cpu_ms, beat.worst_ms))
+        check(beat.worst_cpu_ms <= HEARTBEAT_BUDGET_MS, "%s leaves the main thread idle (%.1f ms)" % (what, beat.worst_cpu_ms))
+        check(beat.worst_ms <= HEARTBEAT_BLOCKED_BUDGET_MS, "%s does not block the main thread (%.1f ms)" % (what, beat.worst_ms))
+
     def steps():
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
@@ -194,6 +274,84 @@ try:
         check(ok, "the \"/\" button clears the selection (got %r)" % (selection(),))
         check(texts() == [] and not buttons("breadcrumbMore"), "an empty selection leaves only \"/\"")
         check(b.height() == height, "the bar keeps its height with no selection")
+
+        select([GROUP])
+        ok = yield ("until", lambda: texts() == ["geo", "group_1"] and chevron(GROUP) is not None, POLL_TIMEOUT_S)
+        require(ok, "the bar shows geo, group_1 with a chevron after group_1")
+        click(chevron(GROUP))
+        ok = yield ("until", lambda: popup() is not None and bool(popup().property("natronPopupComplete")), POLL_TIMEOUT_S)
+        require(ok, "the chevron on group_1 opens a popup that finishes reading")
+        p = popup()
+        check(str(p.property("natronPopupParent")) == GROUP, "the popup lists group_1's children (got %r)" % (p.property("natronPopupParent"),))
+        check(popup_rows(p) == ["a_thing", "b_thing"], "the children are a_thing and b_thing (got %r)" % (popup_rows(p),))
+        view_list = hold(p.findChild(QListView, "scenePrimListView"))
+        icon = view_list.model().index(0, 0).data(Qt.DecorationRole)
+        check(isinstance(icon, QIcon) and not icon.isNull(), "the Xform row has the scene graph's icon for its type")
+        check(not p.findChild(QPushButton, "scenePrimListLoad").isVisibleTo(p), "a loaded prim has no Load row")
+        yield ("sleep", SETTLE_MS)
+        shot("scene_breadcrumbs_children.png")
+        p.close()
+        ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
+        check(ok, "the popup closes")
+
+        QTest.mouseClick(segment_button("group_1"), Qt.RightButton)
+        ok = yield ("until", lambda: popup() is not None and bool(popup().property("natronPopupComplete")), POLL_TIMEOUT_S)
+        require(ok, "a right-click on group_1 opens a popup")
+        p = popup()
+        check(str(p.property("natronPopupParent")) == "/geo", "the popup lists geo's children (got %r)" % (p.property("natronPopupParent"),))
+        check(popup_rows(p) == ["group_1", "group_2"], "the siblings are group_1 and group_2 (got %r)" % (popup_rows(p),))
+        check(str(p.property("natronPopupCurrent")) == "group_1", "group_1 is marked (got %r)" % (p.property("natronPopupCurrent"),))
+        check(selection() == [GROUP], "opening the popup leaves the selection (got %r)" % (selection(),))
+        yield ("sleep", SETTLE_MS)
+        shot("scene_breadcrumbs_siblings.png")
+        QMetaObject.invokeMethod(p, "pick", Qt.DirectConnection, Q_ARG("QString", "group_2"))
+        ok = yield ("until", lambda: selection() == [SIBLING], POLL_TIMEOUT_S)
+        check(ok, "picking group_2 selects /geo/group_2 (got %r)" % (selection(),))
+        ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
+        check(ok, "a pick closes the popup")
+
+        select([BIG])
+        ok = yield ("until", lambda: texts() == ["big"] and chevron(BIG) is not None, POLL_TIMEOUT_S)
+        require(ok, "the bar shows big with a chevron")
+        click(chevron(BIG))
+        ok = yield ("until", lambda: popup() is not None and int(popup().property("natronPopupLoadedCount") or 0) > 0, POLL_TIMEOUT_S)
+        p = popup()
+        require(ok, "the chevron on big opens a popup with rows")
+        # Looking a widget up wraps every widget in the application, which would be what the heartbeat
+        # measures, so the popup's widgets are found before it starts and polled from here on.
+        beat = Heartbeat()
+        beat.start()
+        field = hold(p.findChild(QLineEdit, "scenePrimListFilter"))
+        check(int(p.property("natronPopupLoadedCount")) < BIG_COUNT, "the list reads a batch, not all %d children, to open" % (BIG_COUNT,))
+        target = "child_%05d" % (BIG_COUNT - 1)
+        QTest.keyClicks(field, target)
+        ok = yield ("until", lambda: popup_rows(p) == [target] and bool(p.property("natronPopupComplete")), LOAD_TIMEOUT_S)
+        beat.stop()
+        check(ok, "the filter narrows %d children to %s (got %r of %r)" % (BIG_COUNT, target, popup_rows(p)[:3], p.property("natronPopupRowCount")))
+        check(int(p.property("natronPopupLoadedCount")) == BIG_COUNT, "every child is listed, with no cap (got %r)" % (p.property("natronPopupLoadedCount"),))
+        check_heartbeat(beat, "opening and filtering a %d-child list" % (BIG_COUNT,))
+        shot("scene_breadcrumbs_filtered.png")
+        p.close()
+        ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
+
+        select([PAYLOAD])
+        ok = yield ("until", lambda: texts() == ["pay"] and chevron(PAYLOAD) is not None, POLL_TIMEOUT_S)
+        require(ok, "the bar shows pay with a chevron")
+        click(chevron(PAYLOAD))
+        ok = yield ("until", lambda: popup() is not None and bool(popup().property("natronPopupNotLoaded")), POLL_TIMEOUT_S)
+        require(ok, "the popup over an unloaded payload offers a Not loaded row")
+        p = popup()
+        load_button = hold(p.findChild(QPushButton, "scenePrimListLoad"))
+        check(load_button.isVisibleTo(p) and load_button.isEnabled() and popup_rows(p) == [], "the Load button is shown over an empty list (got %r)" % (popup_rows(p),))
+        yield ("sleep", SETTLE_MS)
+        shot("scene_breadcrumbs_not_loaded.png")
+        click(load_button)
+        ok = yield ("until", lambda: popup_rows(p) == PAYLOAD_CHILDREN and not bool(p.property("natronPopupNotLoaded")), LOAD_TIMEOUT_S)
+        check(ok, "Load fills the list with the payload's prims (got %r)" % (popup_rows(p),))
+        check(not load_button.isVisibleTo(p), "the Not loaded row goes once the payload is loaded")
+        shot("scene_breadcrumbs_loaded.png")
+        p.close()
+        ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
 
         select([MESH])
         ok = yield ("until", lambda: texts() == ["geo", "group_1", "a_thing", "mesh"], POLL_TIMEOUT_S)

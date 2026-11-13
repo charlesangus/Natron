@@ -36,6 +36,7 @@
 
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Gui/ScenePrimListPopup.h"
 #include "Gui/SceneViewport.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -48,6 +49,8 @@ namespace {
 const int kRetryReadMs = 50;
 
 const char* const kRootText = "/";
+
+const char* const kChevronText = "\xE2\x80\xBA";
 
 const char*
 stateName(SceneBreadcrumbBar::StateEnum state)
@@ -82,9 +85,11 @@ struct SceneBreadcrumbBar::Private {
     QPointer<SceneViewport> viewport;
     QHBoxLayout* layout = nullptr;
     QToolButton* rootButton = nullptr;
+    QToolButton* rootChevron = nullptr;
     QLabel* pathLabel = nullptr;
     QToolButton* elisionButton = nullptr;
     QLabel* elisionSeparator = nullptr;
+    QPointer<ScenePrimListPopup> popup;
     QToolButton* moreButton = nullptr;
     QTimer retryTimer;
 
@@ -92,7 +97,8 @@ struct SceneBreadcrumbBar::Private {
     QList<Segment> segments;
     // Parallel to segments.
     QList<QToolButton*> buttons;
-    QList<QLabel*> separators;
+    // Parallel to segments: the chevron after each segment's button.
+    QList<QToolButton*> chevrons;
     Qt::KeyboardModifiers pressModifiers = Qt::NoModifier;
     bool rebuilding = false;
 };
@@ -112,12 +118,14 @@ SceneBreadcrumbBar::SceneBreadcrumbBar(SceneViewport* viewport, QWidget* parent)
     _imp->rootButton = makeButton(QStringLiteral("breadcrumbRoot"), QString::fromLatin1(kRootText));
     _imp->rootButton->setToolTip(tr("Clear the selection"));
     _imp->layout->addWidget(_imp->rootButton);
+    _imp->rootChevron = makeChevron(QStringLiteral("breadcrumbRootChevron"), QString::fromLatin1(kRootText));
+    _imp->layout->addWidget(_imp->rootChevron);
 
     _imp->pathLabel = new QLabel(this);
     _imp->pathLabel->setObjectName(QStringLiteral("breadcrumbPath"));
     _imp->layout->addWidget(_imp->pathLabel);
 
-    _imp->elisionSeparator = new QLabel(QString::fromLatin1(kRootText), this);
+    _imp->elisionSeparator = new QLabel(QString::fromUtf8(kChevronText), this);
     _imp->layout->addWidget(_imp->elisionSeparator);
     _imp->elisionButton = makeButton(QStringLiteral("breadcrumbElision"), QString::fromUtf8("\xE2\x80\xA6"));
     _imp->elisionButton->setPopupMode(QToolButton::InstantPopup);
@@ -132,6 +140,9 @@ SceneBreadcrumbBar::SceneBreadcrumbBar(SceneViewport* viewport, QWidget* parent)
     _imp->retryTimer.setSingleShot(true);
     _imp->retryTimer.setInterval(kRetryReadMs);
     QObject::connect(&_imp->retryTimer, &QTimer::timeout, this, &SceneBreadcrumbBar::refresh);
+    QObject::connect(_imp->rootChevron, &QToolButton::clicked, this, [this]() {
+        openPopup(QString::fromLatin1(kRootText), QString(), _imp->rootChevron);
+    });
     QObject::connect(_imp->rootButton, &QToolButton::clicked, this, [this]() {
         _imp->pressModifiers = Qt::NoModifier;
         if (_imp->viewport) {
@@ -162,6 +173,30 @@ SceneBreadcrumbBar::makeButton(const QString& name, const QString& text)
     button->installEventFilter(this);
 
     return button;
+}
+
+QToolButton*
+SceneBreadcrumbBar::makeChevron(const QString& name, const QString& path)
+{
+    QToolButton* chevron = makeButton(name, QString::fromUtf8(kChevronText));
+    chevron->setToolTip(tr("List the children"));
+    chevron->setProperty("natronBreadcrumbPath", path);
+
+    return chevron;
+}
+
+void
+SceneBreadcrumbBar::openPopup(const QString& listedPath, const QString& highlightName, QWidget* anchor)
+{
+    if (!_imp->viewport || !anchor) {
+        return;
+    }
+    if (_imp->popup) {
+        _imp->popup->close();
+    }
+    ScenePrimListPopup* popup = new ScenePrimListPopup(_imp->viewport, listedPath, highlightName, window());
+    _imp->popup = popup;
+    popup->popupAt(anchor->mapToGlobal(anchor->rect().bottomLeft()));
 }
 
 QList<SceneBreadcrumbBar::Segment>
@@ -244,38 +279,31 @@ SceneBreadcrumbBar::rebuild()
         button->hide();
         button->deleteLater();
     }
-    for (QLabel* separator : _imp->separators) {
-        if (separator) {
-            _imp->layout->removeWidget(separator);
-            separator->hide();
-            separator->deleteLater();
-        }
+    for (QToolButton* chevron : _imp->chevrons) {
+        _imp->layout->removeWidget(chevron);
+        chevron->hide();
+        chevron->deleteLater();
     }
     _imp->buttons.clear();
-    _imp->separators.clear();
+    _imp->chevrons.clear();
 
-    // The buttons go between the root button and the elision button.
+    // The buttons go between the root's chevron and the elision button.
     const bool known = !_imp->segments.isEmpty() && (_imp->segments.front().state != eStateUnknown);
-    int at = _imp->layout->indexOf(_imp->rootButton) + 1;
+    int at = _imp->layout->indexOf(_imp->rootChevron) + 1;
     if (known) {
         for (const Segment& segment : _imp->segments) {
-            QLabel* separator = new QLabel(QString::fromLatin1(kRootText), this);
-            separator->setEnabled(segment.state == eStatePresent);
             QToolButton* button = makeButton(QStringLiteral("breadcrumbSegment"), segment.text);
             button->setEnabled(segment.state == eStatePresent);
             button->setProperty("natronBreadcrumbPath", segment.path);
-            // The root button's own slash leads the first segment.
-            if (_imp->separators.isEmpty()) {
-                delete separator;
-                separator = nullptr;
-            } else {
-                _imp->layout->insertWidget(at++, separator);
-            }
+            QToolButton* chevron = makeChevron(QStringLiteral("breadcrumbChevron"), segment.path);
+            chevron->setEnabled(segment.state == eStatePresent);
             _imp->layout->insertWidget(at++, button);
+            _imp->layout->insertWidget(at++, chevron);
             const Segment copy = segment;
             QObject::connect(button, &QToolButton::clicked, this, [this, copy]() { clickSegment(copy); });
+            QObject::connect(chevron, &QToolButton::clicked, this, [this, copy, chevron]() { openPopup(copy.path, QString(), chevron); });
             _imp->buttons.push_back(button);
-            _imp->separators.push_back(separator);
+            _imp->chevrons.push_back(chevron);
         }
     }
 
@@ -298,20 +326,16 @@ SceneBreadcrumbBar::layoutButtons()
     }
     for (int i = 0; i < count; ++i) {
         _imp->buttons[i]->setVisible(true);
-        if (_imp->separators[i]) {
-            _imp->separators[i]->setVisible(true);
-        }
+        _imp->chevrons[i]->setVisible(true);
     }
     _imp->elisionButton->setVisible(false);
     _imp->elisionSeparator->setVisible(false);
 
     const int margins = _imp->layout->contentsMargins().left() + _imp->layout->contentsMargins().right();
-    int needed = margins + _imp->rootButton->sizeHint().width();
+    int needed = margins + _imp->rootButton->sizeHint().width() + _imp->rootChevron->sizeHint().width();
     for (int i = 0; i < count; ++i) {
         needed += _imp->buttons[i]->sizeHint().width();
-        if (_imp->separators[i]) {
-            needed += _imp->separators[i]->sizeHint().width();
-        }
+        needed += _imp->chevrons[i]->sizeHint().width();
     }
     if (_imp->moreButton->isVisibleTo(this)) {
         needed += _imp->moreButton->sizeHint().width();
@@ -323,16 +347,16 @@ SceneBreadcrumbBar::layoutButtons()
         needed += _imp->elisionButton->sizeHint().width() + _imp->elisionSeparator->sizeHint().width();
         _imp->elisionButton->setVisible(true);
         _imp->elisionSeparator->setVisible(true);
-        // The elision button comes right after the first segment.
+        // The elision button comes right after the first segment's chevron.
         _imp->layout->removeWidget(_imp->elisionSeparator);
         _imp->layout->removeWidget(_imp->elisionButton);
-        const int after = _imp->layout->indexOf(_imp->buttons.front()) + 1;
-        _imp->layout->insertWidget(after, _imp->elisionSeparator);
-        _imp->layout->insertWidget(after + 1, _imp->elisionButton);
+        const int after = _imp->layout->indexOf(_imp->chevrons.front()) + 1;
+        _imp->layout->insertWidget(after, _imp->elisionButton);
+        _imp->layout->insertWidget(after + 1, _imp->elisionSeparator);
         for (int i = 1; i < count - 1 && needed > width(); ++i) {
-            needed -= _imp->buttons[i]->sizeHint().width() + _imp->separators[i]->sizeHint().width();
+            needed -= _imp->buttons[i]->sizeHint().width() + _imp->chevrons[i]->sizeHint().width();
             _imp->buttons[i]->setVisible(false);
-            _imp->separators[i]->setVisible(false);
+            _imp->chevrons[i]->setVisible(false);
             _imp->segments[i].elided = true;
         }
         // The menu may be the one whose action started this refresh: it is replaced, not cleared.
@@ -393,7 +417,17 @@ SceneBreadcrumbBar::eventFilter(QObject* watched, QEvent* e)
 {
     // A button's clicked() carries no modifiers.
     if (e->type() == QEvent::MouseButtonPress) {
-        _imp->pressModifiers = static_cast<QMouseEvent*>(e)->modifiers();
+        const QMouseEvent* press = static_cast<QMouseEvent*>(e);
+        _imp->pressModifiers = press->modifiers();
+        QToolButton* button = qobject_cast<QToolButton*>(watched);
+        if ((press->button() == Qt::RightButton) && button && (button->objectName() == QLatin1String("breadcrumbSegment"))) {
+            // The siblings are the children of the parent, with this prim marked.
+            const QString path = button->property("natronBreadcrumbPath").toString();
+            const int slash = path.lastIndexOf(QLatin1Char('/'));
+            openPopup(slash > 0 ? path.left(slash) : QString::fromLatin1(kRootText), path.mid(slash + 1), button);
+
+            return true;
+        }
     }
 
     return QWidget::eventFilter(watched, e);

@@ -531,7 +531,7 @@ future core work has solid ground to build on.
 | F7 | Natron Utility Core | open |  |  | feature/f7-natron-utility-core | A usable Nucleon Utility renderer on CPU and GPU, with materials, lights, sampling, reflection, subdivision and projection modes. Ships only after F9 - Delegate Projection lands, for M364 - Delegate Cancel Responsiveness. |
 | F8 | Motion Vectors | open |  |  | feature/f8-motion-vectors | Generate dense motion vectors classically, on the GPU and with a neural model, and move Roto and SplineWarp curves along them. |
 | F9 | Delegate Projection | open |  |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |
-| F10 | Viewer Polish | shipping | bosley-native-nodes |  | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |
+| F10 | Viewer Polish | shipping | bosley-native-nodes | uat | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |
 | F11 | Texture Painting | open |  |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs. |
 | F12 | Expression Speed | open |  |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
 | F13 | ZDefocus Rework | open |  |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, and revisit its engine from the results. |

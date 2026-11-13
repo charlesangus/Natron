@@ -749,6 +749,7 @@ struct GpuDeviceImage::Imp {
     bool cached = false;
     double score = 0.;
     std::weak_ptr<CacheEntryHeader> cachedHeader;
+    std::function<void()> onDropped;
 #ifdef NATRON_HAVE_GPU
     gpu::GpuBufferHandle buffer;
 
@@ -880,15 +881,26 @@ ImagePtr
 GpuDeviceImage::downloadToRam()
 {
 #ifdef NATRON_HAVE_GPU
-    std::lock_guard<std::mutex> k(_imp->mutex);
-    if (_imp->evicted) {
-        return _imp->evictedCopy;
+    std::function<void()> dropped;
+    ImagePtr image;
+    {
+        std::lock_guard<std::mutex> k(_imp->mutex);
+        if (_imp->evicted) {
+            return _imp->evictedCopy;
+        }
+        if (_imp->pins > 0) {
+            return ImagePtr();
+        }
+        image = _imp->downloadLocked();
+        if (image) {
+            std::swap(dropped, _imp->onDropped);
+        }
     }
-    if (_imp->pins > 0) {
-        return ImagePtr();
+    if (dropped) {
+        dropped();
     }
 
-    return _imp->downloadLocked();
+    return image;
 #else
     return ImagePtr();
 #endif
@@ -899,6 +911,7 @@ GpuDeviceImage::evictToRam()
 {
 #ifdef NATRON_HAVE_GPU
     gpu::GpuBufferHandle freed;
+    std::function<void()> dropped;
     ImagePtr image;
     {
         std::lock_guard<std::mutex> k(_imp->mutex);
@@ -912,7 +925,11 @@ GpuDeviceImage::evictToRam()
         _imp->evicted = true;
         _imp->evictedCopy = image;
         _imp->onEvict = nullptr;
+        std::swap(dropped, _imp->onDropped);
         std::swap(freed, _imp->buffer);
+    }
+    if (dropped) {
+        dropped();
     }
 
     return image;
@@ -974,6 +991,7 @@ GpuDeviceImage::setEvictable(const std::function<void()>& onEvict)
     _imp->onEvict = onEvict;
     _imp->cached = false;
     _imp->cachedHeader.reset();
+    _imp->onDropped = nullptr;
     _imp->markEvictableLocked();
 #else
     Q_UNUSED(onEvict);
@@ -983,19 +1001,27 @@ GpuDeviceImage::setEvictable(const std::function<void()>& onEvict)
 void
 GpuDeviceImage::setCached(const std::function<void()>& onEvict,
                           double score,
-                          const CacheEntryHeaderPtr& header)
+                          const CacheEntryHeaderPtr& header,
+                          const std::function<bool()>& stillCached,
+                          const std::function<void()>& onDropped)
 {
 #ifdef NATRON_HAVE_GPU
     std::lock_guard<std::mutex> k(_imp->mutex);
+    if (stillCached && !stillCached()) {
+        return;
+    }
     _imp->onEvict = onEvict;
     _imp->cached = true;
     _imp->score = score;
     _imp->cachedHeader = header;
+    _imp->onDropped = onDropped;
     _imp->markEvictableLocked();
 #else
     Q_UNUSED(onEvict);
     Q_UNUSED(score);
     Q_UNUSED(header);
+    Q_UNUSED(stillCached);
+    Q_UNUSED(onDropped);
 #endif
 }
 
@@ -1021,6 +1047,7 @@ GpuDeviceImage::clearEvictable()
     _imp->onEvict = nullptr;
     _imp->cached = false;
     _imp->cachedHeader.reset();
+    _imp->onDropped = nullptr;
     if (_imp->buffer) {
         _imp->buffer.clearEvictable();
     }
@@ -1055,6 +1082,7 @@ GpuDeviceImage::evictInto(const ImagePtr& target)
         return false;
     }
     gpu::GpuBufferHandle freed;
+    std::function<void()> dropped;
     {
         std::lock_guard<std::mutex> k(_imp->mutex);
         if ((_imp->pins > 0) || _imp->evicted || _imp->downloaded) {
@@ -1066,7 +1094,11 @@ GpuDeviceImage::evictInto(const ImagePtr& target)
         _imp->evicted = true;
         _imp->evictedCopy = target;
         _imp->onEvict = nullptr;
+        std::swap(dropped, _imp->onDropped);
         std::swap(freed, _imp->buffer);
+    }
+    if (dropped) {
+        dropped();
     }
 
     return true;

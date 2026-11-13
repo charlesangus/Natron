@@ -30,6 +30,7 @@
 #include <functional>
 #include <utility>
 
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/IsolatedJob.h"
@@ -327,7 +328,8 @@ FrameStore::findDevice(const TaskKey& key,
 }
 
 std::size_t
-FrameStore::evictToRam(const TaskKey& key)
+FrameStore::evictToRam(const TaskKey& key,
+                       const DeviceImage* only)
 {
     std::shared_ptr<Entry> entry;
     {
@@ -343,6 +345,10 @@ FrameStore::evictToRam(const TaskKey& key)
     std::size_t freed = 0;
     std::map<ImageLayerDesc, DeviceImagePtr>::iterator it = entry->deviceLayers.begin();
     while (it != entry->deviceLayers.end()) {
+        if (only && (it->second.get() != only)) {
+            ++it;
+            continue;
+        }
         const std::map<ImageLayerDesc, std::size_t>::const_iterator stored = entry->deviceLayerBytes.find(it->first);
         const std::size_t bytes = (stored != entry->deviceLayerBytes.end()) ? stored->second : 0;
         // A layer already downloaded keeps the RAM image it has.
@@ -476,6 +482,7 @@ FrameRenderContext::FrameRenderContext()
     , _wantsRootOnDevice(false)
     , _rootDeviceMutex()
     , _rootDevicePlanes()
+    , _deviceTierGeneration(CacheDeviceTier::purgeGeneration())
 #endif
 {
 }

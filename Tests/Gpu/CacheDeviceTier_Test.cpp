@@ -47,6 +47,7 @@
 #include "Engine/CacheDeviceTier.h"
 #include "Engine/CacheEntry.h"
 #include "Engine/CacheEntryHolder.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/GpuContext.h"
 #include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
@@ -150,6 +151,37 @@ uploadedImage(gpu::GpuRuntime& runtime,
     return GpuDeviceImage::create(runtime, handle, layout, RenderStatsPtr());
 }
 #endif
+
+// A rendered float RAM image of the cache under key, holding pixelsFor(seed), expensive to recompute.
+ImagePtr
+cachedHostImage(Cache<Image>& cache,
+                const ImageKey& key,
+                U64 seed)
+{
+    const RectD rod(kBounds.x1, kBounds.y1, kBounds.x2, kBounds.y2);
+    const ImageParamsPtr params = Image::makeParams(rod, kBounds, 1., 0, false, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat,
+                                                    eImageFieldingOrderNone, eStorageModeRAM);
+    ImagePtr host;
+    if (cache.getOrCreate(key, params, 0, &host) || !host) {
+        return ImagePtr();
+    }
+    host->allocateMemory();
+    {
+        const std::vector<float> pixels = pixelsFor(seed);
+        Image::WriteAccess w = host->getWriteRights();
+        for (int y = kBounds.y1; y < kBounds.y2; ++y) {
+            float* row = (float*)w.pixelAt(kBounds.x1, y);
+            if (!row) {
+                return ImagePtr();
+            }
+            std::memcpy(row, pixels.data() + (std::size_t)(y - kBounds.y1) * kBounds.width() * 4, (std::size_t)kBounds.width() * 4 * sizeof(float));
+        }
+    }
+    host->markForRendered(kBounds);
+    host->getEntryHeader()->recomputeCostNs.store(kExpensiveNs);
+
+    return host;
+}
 
 bool
 onDevice(const CacheEntryHeader& header)
@@ -447,7 +479,318 @@ TEST_F(CacheDeviceTierTest, KeyAndHolderPurgesLeaveTheDeviceTier)
     cache.removeAllEntriesForHolderPublic(&kept, true);
     EXPECT_FALSE(bool(tier->find(untouched)));
     EXPECT_EQ((std::size_t)0, tier->used());
+    for (const ImageKey& key : { byKey, byHolder, untouched }) {
+        std::list<ImagePtr> peeked;
+        EXPECT_FALSE(cache.peek(key, &peeked)) << "a peek found a purged entry";
+    }
     cache.waitForDeleterThread();
+}
+
+// Keeping one tree version of a holder drops its others, and the purge the cleaner thread runs reaches the tier too.
+TEST_F(CacheDeviceTierTest, VersionAndQueuedHolderPurgesLeaveTheDeviceTier)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+    Cache<Image> cache("CacheDeviceTierTest", 1, 64ULL * 1024 * 1024, 1.);
+    cache.addDeviceTier(tier);
+
+    const TestHolder holder("CacheDeviceTierTest.versions");
+    const ImageKey current = deviceEntryKey(61, &holder);
+    const ImageKey stale = deviceEntryKey(62, &holder);
+    std::vector<CacheEntryHeaderPtr> headers;
+    for (const ImageKey& key : { current, stale }) {
+        const GpuDeviceImagePtr image = uploadedImage(*runtime, pixelsFor(key.getHash()));
+        ASSERT_TRUE(bool(image));
+        headers.push_back(renderedHeader(kExpensiveNs));
+        ASSERT_TRUE(bool(tier->insert(key, image, headers.back())));
+    }
+
+    static_cast<CacheAPI&>(cache).removeAllEntriesWithDifferentNodeHashForHolderPrivate(holder.getCacheID(), current.getTreeVersion(), false);
+    EXPECT_TRUE(bool(tier->find(current)));
+    EXPECT_TRUE(onDevice(*headers[0]));
+    EXPECT_FALSE(bool(tier->find(stale)));
+    EXPECT_FALSE(onDevice(*headers[1]));
+    {
+        std::list<ImagePtr> peeked;
+        EXPECT_FALSE(cache.peek(stale, &peeked));
+        EXPECT_TRUE(cache.peek(current, &peeked));
+    }
+
+    cache.removeAllEntriesForHolderPublic(&holder, false);
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (tier->find(current) && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_FALSE(bool(tier->find(current))) << "the queued purge did not reach the tier";
+    EXPECT_FALSE(onDevice(*headers[0]));
+    EXPECT_EQ((std::size_t)0, tier->used());
+    {
+        std::list<ImagePtr> peeked;
+        EXPECT_FALSE(cache.peek(current, &peeked));
+    }
+    cache.waitForDeleterThread();
+}
+
+// Removing one host instance, as an abort does, removes the device copy made from it and nothing else of its key.
+TEST_F(CacheDeviceTierTest, RemovingAHostInstanceRemovesOnlyItsDeviceCopy)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+    Cache<Image> cache("CacheDeviceTierTest", 1, 64ULL * 1024 * 1024, 1.);
+    cache.addDeviceTier(tier);
+
+    // A device entry a region published under the key of a host instance it was not copied from.
+    const ImageKey published = deviceEntryKey(71);
+    const ImagePtr unrelated = cachedHostImage(cache, published, 71);
+    ASSERT_TRUE(bool(unrelated));
+    const GpuDeviceImagePtr image = uploadedImage(*runtime, pixelsFor(72));
+    ASSERT_TRUE(bool(image));
+    const CacheEntryHeaderPtr publishedHeader = renderedHeader(kExpensiveNs);
+    const CacheDeviceEntryPtr publishedEntry = tier->insert(published, image, publishedHeader);
+    ASSERT_TRUE(bool(publishedEntry));
+
+    const ImageKey promoted = deviceEntryKey(73);
+    const ImagePtr source = cachedHostImage(cache, promoted, 73);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(tier->promote(source));
+    const CacheDeviceEntryPtr copy = tier->find(promoted);
+    ASSERT_TRUE(bool(copy));
+    const CacheEntryHeaderPtr copyHeader = copy->header();
+
+    cache.removeEntry(unrelated);
+    EXPECT_EQ(publishedEntry, tier->find(published)) << "removing a host instance removed a device entry not copied from it";
+    EXPECT_TRUE(onDevice(*publishedHeader));
+
+    cache.removeEntry(source);
+    EXPECT_FALSE(bool(tier->find(promoted)));
+    EXPECT_FALSE(onDevice(*copyHeader));
+    EXPECT_EQ(publishedEntry->size(), tier->used());
+    {
+        std::list<ImagePtr> peeked;
+        EXPECT_FALSE(cache.peek(promoted, &peeked));
+    }
+    cache.waitForDeleterThread();
+}
+
+// A peek of a device-only entry hands out a stub that allocates nothing, neither in GL nor in RAM, and that the cache
+// is not told of.
+TEST_F(CacheDeviceTierTest, PeekStubAllocatesNothing)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+    Cache<Image> cache("CacheDeviceTierTest", 1, 64ULL * 1024 * 1024, 1.);
+    cache.addDeviceTier(tier);
+
+    const GpuDeviceImagePtr image = uploadedImage(*runtime, pixelsFor(81));
+    ASSERT_TRUE(bool(image));
+    const ImageKey key = deviceEntryKey(81);
+    const CacheDeviceEntryPtr entry = tier->insert(key, image, renderedHeader(kExpensiveNs));
+    ASSERT_TRUE(bool(entry));
+
+    const std::size_t before = cache.getMemoryCacheSize();
+    {
+        std::list<ImagePtr> peeked;
+        ASSERT_TRUE(cache.peek(key, &peeked));
+        ASSERT_EQ((std::size_t)1, peeked.size());
+        const ImagePtr stub = peeked.front();
+        ASSERT_TRUE(bool(stub));
+        EXPECT_EQ(eStorageModeGLTex, stub->getStorageMode());
+        EXPECT_FALSE(stub->isAllocated()) << "the stub allocated its storage";
+        EXPECT_TRUE(onDevice(*stub->getEntryHeader()));
+        EXPECT_EQ(before, cache.getMemoryCacheSize()) << "the cache was told of an allocation";
+    }
+    EXPECT_EQ(before, cache.getMemoryCacheSize()) << "the stub's destruction was charged to the cache";
+    EXPECT_EQ(entry, tier->find(key));
+    EXPECT_EQ(entry->size(), tier->used());
+}
+
+// Two frames served the same entry both hold it: the second finds the entry the first swapped in, and both get their
+// pixels back when the pool takes the buffer.
+TEST_F(CacheDeviceTierTest, TwoFramesServedOneEntryBothKeepTheirInPlaceReads)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+
+    const GpuDeviceImagePtr image = uploadedImage(*runtime, pixelsFor(91));
+    ASSERT_TRUE(bool(image));
+    const ImageKey key = deviceEntryKey(91);
+    const CacheEntryHeaderPtr header = renderedHeader(kCheapNs);
+    const CacheDeviceEntryPtr served = tier->insert(key, image, header);
+    ASSERT_TRUE(bool(served));
+
+    std::atomic<int> firstEvictions(0);
+    std::atomic<int> secondEvictions(0);
+    const std::shared_ptr<int> firstFrame = std::make_shared<int>(1);
+    const std::shared_ptr<int> secondFrame = std::make_shared<int>(2);
+    const CacheDeviceEntryPtr first = tier->holdFor(served, [&firstEvictions] { ++firstEvictions; }, firstFrame);
+    ASSERT_TRUE(bool(first));
+    const CacheDeviceEntryPtr second = tier->holdFor(served, [&secondEvictions] { ++secondEvictions; }, secondFrame);
+    ASSERT_TRUE(bool(second)) << "the second frame served the entry lost its hold";
+    EXPECT_EQ(second, tier->find(key));
+    EXPECT_EQ((std::size_t)2, second->liveHolders().size());
+    EXPECT_EQ(served->size(), tier->used());
+    EXPECT_TRUE(image->isResident());
+
+    (void)runtime->pool().evict(~(std::uint64_t)0);
+    EXPECT_LE(1, firstEvictions.load()) << "the first frame did not get its pixels back";
+    EXPECT_LE(1, secondEvictions.load()) << "the second frame did not get its pixels back";
+    EXPECT_FALSE(bool(tier->find(key)));
+    EXPECT_EQ((std::size_t)0, tier->used());
+}
+
+// A promoted entry asks the host tier at demotion whether it still holds the pixels, so once the host dropped its copy
+// an expensive entry comes back to RAM instead of being dropped.
+TEST_F(CacheDeviceTierTest, PromotedEntryDownloadsOnceTheHostDroppedItsCopy)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+    Cache<Image> cache("CacheDeviceTierTest", 1, 64ULL * 1024 * 1024, 1.);
+    cache.addDeviceTier(tier);
+
+    const ImageKey key = deviceEntryKey(101);
+    ImagePtr host = cachedHostImage(cache, key, 101);
+    ASSERT_TRUE(bool(host));
+    ASSERT_TRUE(tier->promote(host));
+    const CacheDeviceEntryPtr entry = tier->find(key);
+    ASSERT_TRUE(bool(entry));
+    EXPECT_FALSE(onHost(*entry->header()));
+
+    ASSERT_TRUE(cache.evictLRUInMemoryEntry());
+    {
+        std::list<ImagePtr> found;
+        ASSERT_FALSE(cache.peek(key, &found) && (found.front()->getStorageMode() == eStorageModeRAM)) << "the host kept its copy";
+    }
+    host.reset();
+    cache.waitForDeleterThread();
+
+    ASSERT_TRUE(tier->demote(entry));
+    EXPECT_TRUE(onHost(*entry->header())) << "the demotion dropped the pixels the host no longer had";
+    std::list<ImagePtr> found;
+    ASSERT_TRUE(cache.get(key, &found));
+    ASSERT_EQ((std::size_t)1, found.size());
+    const std::vector<float> pixels = pixelsFor(101);
+    Image::ReadAccess r = found.front()->getReadRights();
+    for (int y = kBounds.y1; y < kBounds.y2; ++y) {
+        const float* row = (const float*)r.pixelAt(kBounds.x1, y);
+        ASSERT_TRUE(row != NULL);
+        const float* expected = pixels.data() + (std::size_t)(y - kBounds.y1) * kBounds.width() * 4;
+        ASSERT_EQ(0, std::memcmp(expected, row, (std::size_t)kBounds.width() * 4 * sizeof(float))) << "row " << y;
+    }
+}
+
+// A hit on either copy of a promoted entry reaches the other's eviction score.
+TEST_F(CacheDeviceTierTest, HitsOnOneCopyReachTheOther)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+    Cache<Image> cache("CacheDeviceTierTest", 1, 64ULL * 1024 * 1024, 1.);
+    cache.addDeviceTier(tier);
+
+    const ImageKey key = deviceEntryKey(111);
+    const ImagePtr host = cachedHostImage(cache, key, 111);
+    ASSERT_TRUE(bool(host));
+    ASSERT_TRUE(tier->promote(host));
+    const CacheDeviceEntryPtr entry = tier->find(key);
+    ASSERT_TRUE(bool(entry));
+    CacheEntryHeader& hostHeader = *host->getEntryHeader();
+    CacheEntryHeader& deviceHeader = *entry->header();
+
+    const unsigned deviceReuse = deviceHeader.reuseCount.load();
+    CacheRetention::noteHit(hostHeader, CacheRetentionSignalsPtr(), 7);
+    EXPECT_EQ(deviceReuse + 1, deviceHeader.reuseCount.load()) << "a host hit did not reach the device copy";
+
+    const unsigned hostReuse = hostHeader.reuseCount.load();
+    CacheRetention::noteHit(deviceHeader, CacheRetentionSignalsPtr(), 8);
+    EXPECT_EQ(hostReuse + 1, hostHeader.reuseCount.load()) << "a device hit did not reach the host copy";
+
+    hostHeader.lastUse.store(1);
+    ASSERT_EQ(entry, tier->find(key));
+    EXPECT_LT((std::uint64_t)1, (std::uint64_t)hostHeader.lastUse.load()) << "a device lookup did not refresh the host copy";
+}
+
+// The store or the viewer taking the buffer of an image the tier caches, by eviction or download, uncharges the entry
+// at once rather than at its next lookup.
+TEST_F(CacheDeviceTierTest, BuffersOtherHoldersTakeLeaveTheTierUncharged)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+
+    const GpuDeviceImagePtr evicted = uploadedImage(*runtime, pixelsFor(121));
+    const GpuDeviceImagePtr downloaded = uploadedImage(*runtime, pixelsFor(122));
+    ASSERT_TRUE(evicted && downloaded);
+    const CacheEntryHeaderPtr evictedHeader = renderedHeader(kExpensiveNs);
+    const CacheEntryHeaderPtr downloadedHeader = renderedHeader(kExpensiveNs);
+    const CacheDeviceEntryPtr evictedEntry = tier->insert(deviceEntryKey(121), evicted, evictedHeader);
+    ASSERT_TRUE(bool(evictedEntry));
+    ASSERT_TRUE(bool(tier->insert(deviceEntryKey(122), downloaded, downloadedHeader)));
+    const std::size_t entryBytes = evictedEntry->size();
+    ASSERT_EQ(2 * entryBytes, tier->used());
+
+    ASSERT_TRUE(bool(evicted->evictToRam()));
+    EXPECT_EQ(entryBytes, tier->used());
+    EXPECT_FALSE(onDevice(*evictedHeader));
+
+    ASSERT_TRUE(bool(downloaded->downloadToRam()));
+    EXPECT_EQ((std::size_t)0, tier->used());
+    EXPECT_FALSE(onDevice(*downloadedHeader));
+}
+
+// The hook a cache sets is not armed once the cache let the image go, so a hook set late never outlives its entry.
+TEST_F(CacheDeviceTierTest, CachedHookIsNotArmedForAnImageTheCacheLetGo)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const std::shared_ptr<void> hold = appPTR->getGpuContext()->holdRuntime();
+    gpu::GpuRuntime* runtime = appPTR->getGpuContext()->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const GpuDeviceImagePtr image = uploadedImage(*runtime, pixelsFor(131));
+    ASSERT_TRUE(bool(image));
+    const CacheEntryHeaderPtr header = renderedHeader(kExpensiveNs);
+    std::atomic<int> runs(0);
+
+    image->setCached([&runs] { ++runs; }, 0., header, [] { return false; });
+    (void)runtime->pool().evict(~(std::uint64_t)0);
+    EXPECT_EQ(0, runs.load()) << "a hook the cache no longer wanted was armed";
+
+    image->setCached([&runs] { ++runs; }, 0., header, [] { return true; });
+    (void)runtime->pool().evict(~(std::uint64_t)0);
+    EXPECT_EQ(1, runs.load());
 }
 
 // A host entry promoted to the device and then grown by a render keeps its grown bounds, bitmap and memory when the
@@ -488,7 +831,7 @@ TEST_F(CacheDeviceTierTest, PeekAndDemoteLeaveAGrownHostCopyAlone)
     const CacheDeviceEntryPtr entry = tier->find(key);
     ASSERT_TRUE(bool(entry));
     EXPECT_NE(host->getEntryHeader(), entry->header());
-    EXPECT_TRUE(onHost(*entry->header()));
+    EXPECT_EQ(host->getEntryHeader(), entry->header()->twin.load().lock());
 
     const RectI grown(kBounds.x1, kBounds.y1, kBounds.x2 * 2, kBounds.y2 * 2);
     ASSERT_TRUE(host->ensureBounds(grown, true));
@@ -591,6 +934,43 @@ TEST_F(CacheDeviceTierTest, InsertsRacingADeviceLossLeaveNothingAfterRecreate)
     const CacheEntryHeaderPtr header = renderedHeader(kExpensiveNs);
     ASSERT_TRUE(bool(tier->insert(keys[0], fresh, header)));
     EXPECT_TRUE(bool(tier->find(keys[0])));
+}
+
+// A loss landing after insert() first checked the device and before it took the tier's lock still leaves nothing in the
+// table: the check under the lock sees it.
+TEST_F(CacheDeviceTierTest, ALossInsideTheInsertWindowLeavesNothing)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    GpuContext* context = appPTR->getGpuContext();
+    gpu::GpuRuntime* runtime = context->runtime();
+    ASSERT_TRUE(runtime != NULL);
+    const CacheDeviceTierPtr tier = std::make_shared<CacheDeviceTier>(runtime);
+    const ImageKey key = deviceEntryKey(141);
+    {
+        const std::shared_ptr<void> hold = context->holdRuntime();
+        const GpuDeviceImagePtr image = uploadedImage(*runtime, pixelsFor(141));
+        ASSERT_TRUE(bool(image));
+        const CacheEntryHeaderPtr header = renderedHeader(kExpensiveNs);
+        bool fired = false;
+        tier->setBeforeInsertLockForTests([runtime, &fired] {
+            fired = true;
+            runtime->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+            gpu::GpuBufferHandle handle;
+            (void)runtime->acquire(4096, handle);
+        });
+        EXPECT_FALSE(bool(tier->insert(key, image, header)));
+        tier->setBeforeInsertLockForTests(std::function<void()>());
+        ASSERT_TRUE(fired);
+        EXPECT_TRUE(runtime->isLost());
+        EXPECT_EQ((std::size_t)0, tier->used()) << "an insert the loss overtook outlived it";
+        EXPECT_FALSE(onDevice(*header));
+    }
+    ASSERT_TRUE(context->recoverIfLost()) << "the device was not recreated";
+    const std::shared_ptr<void> hold = context->holdRuntime();
+    EXPECT_FALSE(bool(tier->find(key)));
+    EXPECT_EQ((std::size_t)0, tier->used());
 }
 
 #endif // NATRON_HAVE_GPU

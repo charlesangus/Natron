@@ -1508,22 +1508,23 @@ holdInStore(const FrameRenderContextPtr& context,
     }
     const std::weak_ptr<FrameRenderContext> weakContext = context;
     const std::weak_ptr<RenderStats> weakStats = context->getStats();
-    const std::function<void()> evictFromStore = [weakContext, weakStats, key]() {
-        const FrameRenderContextPtr held = weakContext.lock();
-        if (held && (held->getStore().evictToRam(key) > 0)) {
-            if (const RenderStatsPtr stats = weakStats.lock()) {
-                stats->noteEviction();
-            }
-        }
-    };
-    bool held = true;
     for (const CacheDeviceEntryPtr& entry : inPlace) {
-        held = tier->holdFor(entry, evictFromStore, weakContext) && held;
-    }
-    if (!held) {
-        // The entry left the tier after the store took the image, so no eviction reaches the store any more and the
-        // pool may have taken the buffer already: the store keeps the pixels in RAM instead.
-        evictFromStore();
+        // Only the layer whose buffer was taken: the others may still be read in place, by this frame and by others
+        // the tier served them to.
+        const DeviceImage* image = entry->image().get();
+        const std::function<void()> evictFromStore = [weakContext, weakStats, key, image]() {
+            const FrameRenderContextPtr held = weakContext.lock();
+            if (held && (held->getStore().evictToRam(key, image) > 0)) {
+                if (const RenderStatsPtr stats = weakStats.lock()) {
+                    stats->noteEviction();
+                }
+            }
+        };
+        if (!tier->holdFor(entry, evictFromStore, weakContext)) {
+            // The image left the tier after the store took it, so no eviction reaches the store any more and the pool
+            // may have taken the buffer already: the store keeps its pixels in RAM instead.
+            evictFromStore();
+        }
     }
 #else
     (void)context;

@@ -157,9 +157,10 @@ public:
 
     /**
      * @brief Moves the device layers of key to RAM and frees their device memory, leaving the consumer count alone.
-     * Returns the device bytes freed.
+     * With only set, just the layer holding that image. Returns the device bytes freed.
      **/
-    std::size_t evictToRam(const TaskKey& key);
+    std::size_t evictToRam(const TaskKey& key,
+                           const DeviceImage* only = nullptr);
 
     /**
      * @brief Called once by each consumer of key when done reading it; the entry is erased by the last one.
@@ -380,6 +381,15 @@ public:
      * @brief Returns the planes setRootDevicePlanes() set and leaves none. Thread safe.
      **/
     std::map<ImageLayerDesc, GpuDeviceImagePtr> takeRootDevicePlanes();
+
+    /**
+     * @brief CacheDeviceTier::purgeGeneration() when the frame was made, before it read any of its sources, for the
+     * frame's inserts into a device tier.
+     **/
+    std::uint64_t deviceTierGeneration() const
+    {
+        return _deviceTierGeneration;
+    }
 #endif
 
 private:
@@ -408,6 +418,7 @@ private:
     std::atomic<bool> _wantsRootOnDevice;
     std::mutex _rootDeviceMutex;
     std::map<ImageLayerDesc, GpuDeviceImagePtr> _rootDevicePlanes;
+    const std::uint64_t _deviceTierGeneration;
 #endif
 };
 

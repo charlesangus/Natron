@@ -581,7 +581,6 @@ protected:
         return run->future->wait() == EffectInstance::eRenderRoIRetCodeOk;
     }
 
-    // The chain's RAM root, rendered on the GPU without asking for the root on the device.
     // The key renderRoI looks the RGBA output of node's task in graph up by.
     static ImageKey outputKey(const FrameGraph& graph,
                               const NodePtr& node)
@@ -611,6 +610,23 @@ protected:
         return false;
     }
 
+    // The bytes of the RAM entry of the host tier under key, 0 without one.
+    static std::size_t hostTierBytes(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return 0;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return (std::size_t)image->getBounds().area() * image->getComponentsCount() * sizeof(float);
+            }
+        }
+
+        return 0;
+    }
+
+    // The chain's RAM root, rendered on the GPU without asking for the root on the device.
     bool renderRamRoot(ImagePtr* root,
                        std::string* error)
     {
@@ -767,11 +783,15 @@ TEST_F(ViewerRootOnDevice, ForcedStripsDownloadTheRootAndCountIt)
     EXPECT_EQ(1, run.stats->getGpuRegionsRun());
     EXPECT_GT(report.strips, 1);
     const std::size_t rootBytes = (std::size_t)ramRoot->getBounds().area() * 4 * sizeof(float);
-    // The root comes back to RAM whole, and the Grade and the Blur reach the host tier.
-    EXPECT_LE(rootBytes, report.downloadBytes);
     EXPECT_GT(run.stats->getDownloadCount(), 0);
     EXPECT_TRUE(inHostTier(gradeKey)) << "the host tier did not admit the Grade";
     EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
+    // The Grade and the Blur reach the host tier, and the root comes back to RAM whole on top of them.
+    const std::size_t gradeBytes = hostTierBytes(gradeKey);
+    const std::size_t blurBytes = hostTierBytes(blurKey);
+    EXPECT_GT(gradeBytes, 0u);
+    EXPECT_GT(blurBytes, 0u);
+    EXPECT_GE(report.downloadBytes, rootBytes + gradeBytes + blurBytes);
     EXPECT_EQ(1, legacyFallbacksOf(run, kStripsReason));
     EXPECT_TRUE(run.context->takeRootDevicePlanes().empty());
 

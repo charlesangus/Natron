@@ -324,10 +324,16 @@ public:
      * @brief Like setEvictable(), for pixels a cache can recompute: the pool takes these before any evictable image,
      * lowest score first. header is the cache entry's, whose device bit a download clears, since pin() refuses the
      * pixels from then on.
+     *
+     * stillCached runs under the image's mutex, and false leaves the image as it is, so that a cache that let the image
+     * go meanwhile is not undone. onDropped runs, once and off the mutex, when evictToRam(), evictInto() or a download
+     * leaves the cache holding pixels pin() refuses, so that the cache stops counting them.
      **/
     void setCached(const std::function<void()>& onEvict,
                    double score,
-                   const CacheEntryHeaderPtr& header);
+                   const CacheEntryHeaderPtr& header,
+                   const std::function<bool()>& stillCached = std::function<bool()>(),
+                   const std::function<void()>& onDropped = std::function<void()>());
 
     void setCachedScore(double score);
 

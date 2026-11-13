@@ -26,6 +26,7 @@
 #include "CacheDeviceTier.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <new>
 #include <vector>
@@ -62,6 +63,10 @@ registry()
 }
 
 const unsigned char kNotOnDevice = (unsigned char)~CacheEntryHeader::eResidencyDevice;
+
+// One for every tier: a purge of a key goes through all of them, and a render cannot tell which tier its pixels will
+// land in when it reads their sources.
+std::atomic<std::uint64_t> g_purgeGeneration { 0 };
 
 float
 costOf(const CacheEntryHeader& header)
@@ -342,7 +347,8 @@ CacheDeviceEntryPtr
 CacheDeviceTier::insert(const ImageKey& key,
                         const std::shared_ptr<GpuDeviceImage>& image,
                         const CacheEntryHeaderPtr& header,
-                        const std::function<void()>& holderEvict)
+                        const std::function<void()>& holderEvict,
+                        std::uint64_t generation)
 {
 #ifdef NATRON_HAVE_GPU
     if (!image || !header || !_runtime || _runtime->isLost() || !image->isResident()) {
@@ -350,6 +356,9 @@ CacheDeviceTier::insert(const ImageKey& key,
     }
     const CacheDeviceEntryPtr entry = std::make_shared<CacheDeviceEntry>(key, image, header, image->bytes(), holderEvict);
     header->lastUse.store(CacheEviction::nowNs());
+    if (_beforeInsertLock) {
+        _beforeInsertLock();
+    }
     // Freed off the lock: the last reference to an image returns its buffer to the pool.
     std::list<CacheDeviceEntryPtr> replaced;
     {
@@ -357,6 +366,11 @@ CacheDeviceTier::insert(const ImageKey& key,
         // Checked again under the lock that a loss's dropAll() takes: the loss either finds the entry in the table or
         // marked the runtime lost before this check.
         if (_runtime->isLost()) {
+            return CacheDeviceEntryPtr();
+        }
+        // A purge moves the generation under the lock it removes entries under, so it either finds this one or is
+        // seen here.
+        if ((generation != kUnchecked) && (generation != g_purgeGeneration.load())) {
             return CacheDeviceEntryPtr();
         }
         std::list<CacheDeviceEntryPtr>& entries = _table[key.getHash()];
@@ -390,9 +404,22 @@ CacheDeviceTier::insert(const ImageKey& key,
     (void)image;
     (void)header;
     (void)holderEvict;
+    (void)generation;
 
     return CacheDeviceEntryPtr();
 #endif
+}
+
+std::uint64_t
+CacheDeviceTier::purgeGeneration()
+{
+    return g_purgeGeneration.load();
+}
+
+void
+CacheDeviceTier::setBeforeInsertLockForTests(const std::function<void()>& hook)
+{
+    _beforeInsertLock = hook;
 }
 
 void
@@ -404,6 +431,18 @@ CacheDeviceTier::watchEviction(const CacheDeviceEntryPtr& entry)
     const GpuDeviceImage* image = entry->image().get();
     // For an image the tier no longer holds, whose letGo() a later hook overwrote.
     const std::vector<CacheDeviceEntry::Holder> fallback = entry->liveHolders();
+    // Checked under the image's mutex, which a removal's letGo() takes after the entry left the table, so that a hook
+    // set here never outlives the entry.
+    const std::function<bool()> stillCached = [weakTier, key, image] {
+        const CacheDeviceTierPtr tier = weakTier.lock();
+
+        return tier && tier->entryHolding(key, image);
+    };
+    const std::function<void()> onDropped = [weakTier, key, image] {
+        if (const CacheDeviceTierPtr tier = weakTier.lock()) {
+            tier->forget(key, image);
+        }
+    };
     entry->image()->setCached([weakTier, key, image, fallback] {
         std::vector<CacheDeviceEntry::Holder> holders = fallback;
         {
@@ -420,7 +459,7 @@ CacheDeviceTier::watchEviction(const CacheDeviceEntryPtr& entry)
             }
         }
     },
-                              scoreOf(*entry), entry->header());
+                              scoreOf(*entry), entry->header(), stillCached, onDropped);
 #else
     (void)entry;
 #endif
@@ -473,7 +512,11 @@ CacheDeviceTier::find(const ImageKey& key)
 
         return CacheDeviceEntryPtr();
     }
-    found->header()->lastUse.store(CacheEviction::nowNs());
+    const std::uint64_t now = CacheEviction::nowNs();
+    found->header()->lastUse.store(now);
+    if (const CacheEntryHeaderPtr twin = found->header()->twin.load().lock()) {
+        twin->lastUse.store(now);
+    }
     found->image()->setCachedScore(scoreOf(*found));
 
     return found;
@@ -488,11 +531,12 @@ CacheDeviceTier::holdFor(const CacheDeviceEntryPtr& entry,
     if (!entry || !entry->image()->isResident()) {
         return CacheDeviceEntryPtr();
     }
-    const CacheDeviceEntryPtr held = std::make_shared<CacheDeviceEntry>(entry->getKey(), entry->image(), entry->header(), entry->size());
-    held->inheritHolders(*entry);
-    held->addHolder(holderEvict, alive);
+    const ImageKey& key = entry->getKey();
+    const GpuDeviceImage* image = entry->image().get();
+    CacheDeviceEntryPtr held;
     {
-        // Swapped in under the lock, so that an entry another render inserted under the key meanwhile is kept.
+        // Swapped in under the lock, so that an entry another render inserted under the key meanwhile is kept, and
+        // a holdFor() of another frame served the same entry is not lost.
         std::lock_guard<std::mutex> k(_lock);
         if (!_runtime || _runtime->isLost()) {
             return CacheDeviceEntryPtr();
@@ -501,10 +545,16 @@ CacheDeviceTier::holdFor(const CacheDeviceEntryPtr& entry,
         if (bucket == _table.end()) {
             return CacheDeviceEntryPtr();
         }
-        std::list<CacheDeviceEntryPtr>::iterator it = std::find(bucket->second.begin(), bucket->second.end(), entry);
+        std::list<CacheDeviceEntryPtr>::iterator it = bucket->second.begin();
+        while ((it != bucket->second.end()) && (((*it)->image().get() != image) || !((*it)->getKey() == key))) {
+            ++it;
+        }
         if (it == bucket->second.end()) {
             return CacheDeviceEntryPtr();
         }
+        held = std::make_shared<CacheDeviceEntry>(key, (*it)->image(), (*it)->header(), (*it)->size());
+        held->inheritHolders(**it);
+        held->addHolder(holderEvict, alive);
         *it = held;
     }
 
@@ -532,6 +582,7 @@ CacheDeviceTier::peekStub(const ImageKey& key,
     try {
         const ImageParamsPtr params = Image::makeParams(layout.rod, layout.bounds, layout.par, layout.mipmapLevel, false,
                                                         layout.layer, eImageBitDepthFloat, layout.fielding, eStorageModeGLTex);
+        // The constructor taking a cache allocates nothing, and a GL texture made here would have no context to live in.
         const ImagePtr stub = std::make_shared<Image>(found->getKey(), params, cache);
         // Nothing else holds the stub's header yet.
         CacheEntryHeader& header = *stub->getEntryHeader();
@@ -594,8 +645,9 @@ CacheDeviceTier::demote(const CacheEntryPtr& entry)
     }
     CacheEntryHeader& header = *device->header();
     const bool resident = device->image()->isResident();
-    // The host tier already holds the pixels, which it would refuse a second copy of.
-    const bool onHost = (header.residency.load() & CacheEntryHeader::eResidencyHost) != 0;
+    // The host tier would refuse a second copy, and asked now rather than at promotion, since it may have dropped its
+    // own since.
+    const bool onHost = hostHolds(device->getKey());
     bool adopted = false;
     if (resident && !onHost && worthDownloading(*device) && moveToHost(*device, &adopted) && adopted) {
         header.residency.fetch_or(CacheEntryHeader::eResidencyHost);
@@ -631,6 +683,15 @@ CacheDeviceTier::downloadToHost(const CacheDeviceEntryPtr& entry)
     letGo(*entry);
 
     return image;
+}
+
+bool
+CacheDeviceTier::hostHolds(const ImageKey& key,
+                           const AbstractCacheEntryBase* instance) const
+{
+    std::shared_lock<std::shared_mutex> k(_hostMutex);
+
+    return _host && _host->hostHolds(key, instance);
 }
 
 ImagePtr
@@ -684,6 +745,12 @@ CacheDeviceTier::promote(const CacheEntryPtr& entry)
     if (existing && existing->image()->isResident()) {
         return true;
     }
+    // Read before the host is asked whether it still holds the image, so that a purge removing it is either seen
+    // there or refuses the insert.
+    const std::uint64_t generation = purgeGeneration();
+    if (!hostHolds(key, host.get())) {
+        return false;
+    }
 
     GpuImageLayout layout;
     layout.layer = host->getComponents();
@@ -723,13 +790,13 @@ CacheDeviceTier::promote(const CacheEntryPtr& entry)
         if (host->getBounds() != layout.bounds) {
             return false;
         }
-        const CacheEntryHeader& hostHeader = *host->getEntryHeader();
+        const CacheEntryHeaderPtr& hostHeader = host->getEntryHeader();
         header->key = std::make_shared<const ImageKey>(key);
         header->bounds = layout.bounds;
         header->bitmap.initialize(layout.bounds);
-        copyBitmapInto(hostHeader.bitmap, &header->bitmap);
-        copyEntryState(hostHeader, header.get());
-        header->residency.store(CacheEntryHeader::eResidencyHost);
+        copyBitmapInto(hostHeader->bitmap, &header->bitmap);
+        copyEntryState(*hostHeader, header.get());
+        header->twin.store(hostHeader);
         const unsigned char* data = access.pixelAt(layout.bounds.x1, layout.bounds.y1);
         if (!data) {
             return false;
@@ -743,8 +810,19 @@ CacheDeviceTier::promote(const CacheEntryPtr& entry)
         }
     }
     const GpuDeviceImagePtr image = GpuDeviceImage::create(*_runtime, handle, layout, RenderStatsPtr());
+    if (!image || !insert(key, image, header, std::function<void()>(), generation)) {
+        return false;
+    }
+    host->getEntryHeader()->twin.store(header);
+    // Removing the host entry alone, as an abort does, moves no generation; it removes the copies it finds, so one
+    // inserted after it looked is caught here.
+    if (!hostHolds(key, host.get())) {
+        removeCopiesOf(host->getEntryHeader().get());
 
-    return image && insert(key, image, header);
+        return false;
+    }
+
+    return true;
 #else
     (void)entry;
 
@@ -781,6 +859,7 @@ CacheDeviceTier::clear()
     Table dropped;
     {
         std::lock_guard<std::mutex> k(_lock);
+        g_purgeGeneration.fetch_add(1);
         dropped.swap(_table);
         _usedBytes.store(0);
     }
@@ -793,12 +872,16 @@ CacheDeviceTier::clear()
 }
 
 void
-CacheDeviceTier::removeIf(const std::function<bool(const CacheDeviceEntry&)>& match)
+CacheDeviceTier::removeIf(const std::function<bool(const CacheDeviceEntry&)>& match,
+                          bool purge)
 {
     const std::shared_ptr<void> held = _hold ? _hold() : std::shared_ptr<void>();
     std::vector<CacheDeviceEntryPtr> removed;
     {
         std::lock_guard<std::mutex> k(_lock);
+        if (purge) {
+            g_purgeGeneration.fetch_add(1);
+        }
         for (Table::iterator bucket = _table.begin(); bucket != _table.end();) {
             std::list<CacheDeviceEntryPtr>& entries = bucket->second;
             for (std::list<CacheDeviceEntryPtr>::iterator it = entries.begin(); it != entries.end();) {
@@ -828,7 +911,8 @@ CacheDeviceTier::removeKey(U64 hash)
 {
     removeIf([hash](const CacheDeviceEntry& entry) {
         return entry.getHashKey() == hash;
-    });
+    },
+             true);
 }
 
 void
@@ -838,7 +922,45 @@ CacheDeviceTier::removeHolder(const std::string& holderID,
 {
     removeIf([&holderID, keepNodeHash, removeAll](const CacheDeviceEntry& entry) {
         return (entry.getKeyHolderID() == holderID) && (removeAll || (entry.getKeyTreeVersion() != keepNodeHash));
-    });
+    },
+             true);
+}
+
+void
+CacheDeviceTier::removeCopiesOf(const CacheEntryHeader* hostHeader)
+{
+    if (!hostHeader) {
+        return;
+    }
+    removeIf([hostHeader](const CacheDeviceEntry& entry) {
+        return entry.header()->twin.load().lock().get() == hostHeader;
+    },
+             false);
+}
+
+void
+CacheDeviceTier::forget(const ImageKey& key,
+                        const GpuDeviceImage* image)
+{
+    CacheDeviceEntryPtr forgotten;
+    {
+        std::lock_guard<std::mutex> k(_lock);
+        const Table::iterator bucket = _table.find(key.getHash());
+        if (bucket != _table.end()) {
+            for (const CacheDeviceEntryPtr& entry : bucket->second) {
+                if ((entry->image().get() == image) && (entry->getKey() == key)) {
+                    forgotten = entry;
+                    break;
+                }
+            }
+        }
+        if (forgotten) {
+            (void)takeLocked(forgotten.get());
+        }
+    }
+    if (forgotten) {
+        forgotten->header()->residency.fetch_and(kNotOnDevice);
+    }
 }
 
 void
@@ -860,12 +982,6 @@ CacheDeviceTier::letGo(const CacheDeviceEntry& entry)
 #else
     (void)entry;
 #endif
-}
-
-void
-CacheDeviceTier::onDeviceLost()
-{
-    const Table dropped = dropAll();
 }
 
 void

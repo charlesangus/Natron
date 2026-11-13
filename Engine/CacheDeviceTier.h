@@ -76,6 +76,12 @@ public:
     virtual bool adoptFromDevice(const CacheEntryPtr& entry,
                                  std::uint64_t generation) const
         = 0;
+
+    // Whether RAM holds an entry of key, or holds instance itself when it is set. Takes the cache lock; touches no
+    // entry's place in the eviction order.
+    virtual bool hostHolds(const ImageKey& key,
+                           const AbstractCacheEntryBase* instance) const
+        = 0;
 };
 
 /**
@@ -158,8 +164,9 @@ typedef std::shared_ptr<CacheDeviceEntry> CacheDeviceEntryPtr;
  * cached leases, which the pool takes first, lowest score first, and whose eviction callback demotes them here.
  *
  * Demotion downloads into a host image, with a copy of the entry's header, when recomputing would cost more than the
- * download at the session's transfer rates and the host tier holds no copy already, and drops the entry otherwise. A device loss empties the table and clears every
- * entry's device bit; host copies are other entries and survive.
+ * download at the session's transfer rates and the host tier holds no entry of the key by then, and drops the entry
+ * otherwise. A device loss empties the table and clears every entry's device bit; host copies are other entries and
+ * survive.
  *
  * Lock order: a GpuDeviceImage's mutex, then the registry of tiers, then a tier's _lock, then the pool's. A download
  * runs under the image's mutex and can lose the device, whose callback takes the registry and every tier lock, so
@@ -168,7 +175,8 @@ typedef std::shared_ptr<CacheDeviceEntry> CacheDeviceEntryPtr;
  * taken before the host cache's locks and is never taken under _lock.
  *
  * Must be made with std::make_shared, and destroyed before the runtime whose pool its images use. Calls other than
- * deviceLost() need the runtime alive and not being recreated, which a GpuContext::holdRuntime() token ensures.
+ * deviceLost() and purgeGeneration() need the runtime alive and not being recreated, which a GpuContext::holdRuntime()
+ * token ensures.
  **/
 class CacheDeviceTier final
     : public CacheTier,
@@ -189,8 +197,9 @@ public:
 
     /**
      * @brief Uploads a float RAM image of the host tier and caches the copy under its key, with a copy of its header
-     * marked as held by the host, so that the host entry stays and a demotion drops the copy. True when the tier holds a resident entry of the key afterwards. False for an image with
-     * no header, one that would only fit by evicting working buffers, and when the device is lost. Off any cache lock.
+     * twinned with the image's, so that a hit on either copy keeps the other too. True when the tier holds a resident
+     * entry of the key afterwards. False for an image with no header, one that would only fit by evicting working
+     * buffers, one the host tier dropped meanwhile, and when the device is lost. Off any cache lock.
      **/
     virtual bool promote(const CacheEntryPtr& entry) override final;
 
@@ -207,24 +216,35 @@ public:
      * holderEvict is the eviction of another holder of the image, such as the frame store, which the tier's own
      * replaces: when the pool takes the buffer it runs after the tier demoted or dropped the entry, or alone once the
      * tier no longer has it, so that the holder still gets its pixels in RAM and the buffer is freed.
+     *
+     * generation is the purgeGeneration() read before the pixels' sources were, so that a purge since, which found
+     * nothing of the key yet to drop, keeps them out. kUnchecked is for a caller whose pixels cannot predate a purge.
      **/
+    static const std::uint64_t kUnchecked = ~(std::uint64_t)0;
+
     CacheDeviceEntryPtr insert(const ImageKey& key,
                                const std::shared_ptr<GpuDeviceImage>& image,
                                const CacheEntryHeaderPtr& header,
-                               const std::function<void()>& holderEvict = std::function<void()>());
+                               const std::function<void()>& holderEvict = std::function<void()>(),
+                               std::uint64_t generation = kUnchecked);
+
+    // Moves on with every purge of a key, a holder or the whole tier, on any tier.
+    static std::uint64_t purgeGeneration();
 
     /**
-     * @brief The entry of key, marked used. Null for an entry whose image was downloaded since it was inserted: pin()
-     * refuses such pixels, so the entry leaves the table and its header loses the device bit.
+     * @brief The entry of key, marked used, along with its host twin. Null for an entry whose image was downloaded
+     * since it was inserted: pin() refuses such pixels, so the entry leaves the table and its header loses the device
+     * bit.
      **/
     CacheDeviceEntryPtr find(const ImageKey& key);
 
     /**
      * @brief Makes holderEvict, in place of the entry's, the eviction of another holder of its image, as insert()
      * takes it, so that a frame store handed the image in place still gets its pixels in RAM when the pool takes the
-     * buffer. The holders the entry already has are kept, so that several frames sharing the image all get their
-     * pixels in RAM, and a holder whose alive token expired is dropped. The entry that replaces entry, or null once
-     * entry left the tier or its image is no longer resident.
+     * buffer. The entry replaced is the one the tier holds now under entry's key with entry's image, which an earlier
+     * holdFor() of another frame served the same entry may have put there; its holders are kept, so that several
+     * frames sharing the image all get their pixels in RAM, and a holder whose alive token expired is dropped. The
+     * entry that replaces it, or null once the image left the tier or is no longer resident.
      **/
     CacheDeviceEntryPtr holdFor(const CacheDeviceEntryPtr& entry,
                                 const std::function<void()>& holderEvict,
@@ -242,7 +262,8 @@ public:
      * costs, for a lookup that must not count as a use: the entry keeps its place, a downloaded or evicted image is
      * left in the table for the next find() to remove, and no device memory is pinned. Null when the tier has no
      * resident entry of key. Its storage mode is eStorageModeGLTex, so a lookup can tell it from a RAM image and has
-     * no pixels to read from it.
+     * no pixels to read from it. Nothing is allocated for it, on the device, in GL or in RAM, and the cache is told of
+     * no allocation.
      **/
     ImagePtr peekStub(const ImageKey& key,
                       const CacheAPI* cache) const;
@@ -264,10 +285,13 @@ public:
                       U64 keepNodeHash,
                       bool removeAll);
 
-    // What a device loss does. Runs on the thread that saw the loss, so it takes no image's lock.
-    void onDeviceLost();
+    // Drops the entries promote() copied from the host entry whose header is hostHeader, as removing that entry does.
+    void removeCopiesOf(const CacheEntryHeader* hostHeader);
 
-    // Calls onDeviceLost() on every tier of runtime. Null does nothing.
+    /**
+     * @brief Empties every tier of runtime with dropAll(), for a device loss. Runs on the thread that saw the loss,
+     * which may hold an image's mutex, so it takes none. Null does nothing.
+     **/
     static void deviceLost(const gpu::GpuRuntime* runtime);
 
     // The eviction score the pool orders the entry by, from its header.
@@ -291,14 +315,23 @@ private:
      **/
     Table dropAll();
 
-    // Takes out the entries match accepts, under a runtime token, and lets them go.
-    void removeIf(const std::function<bool(const CacheDeviceEntry&)>& match);
+    // Takes out the entries match accepts, under a runtime token, and lets them go. A purge moves the purge generation.
+    void removeIf(const std::function<bool(const CacheDeviceEntry&)>& match,
+                  bool purge);
+
+    // Takes out the entry of key holding image, for an image whose buffer a holder other than the tier took.
+    void forget(const ImageKey& key,
+                const GpuDeviceImage* image);
 
     // The entry of key whose image is image, which the eviction hook demotes whichever entry installed it.
     CacheDeviceEntryPtr entryHolding(const ImageKey& key,
                                      const GpuDeviceImage* image) const;
 
     // The RAM image evictInto() filled, null when nothing was read back; adopted tells whether the host tier took it.
+    // Whether the host tier holds an entry of key, or instance itself when it is set. False with no host.
+    bool hostHolds(const ImageKey& key,
+                   const AbstractCacheEntryBase* instance = NULL) const;
+
     ImagePtr moveToHost(const CacheDeviceEntry& entry,
                         bool* adopted);
 
@@ -320,10 +353,16 @@ private:
     mutable std::mutex _lock;
     Table _table;
 
-    std::shared_mutex _hostMutex;
+    mutable std::shared_mutex _hostMutex;
     const CacheDeviceHost* _host;
 
     std::function<std::shared_ptr<void>()> _hold;
+
+    std::function<void()> _beforeInsertLock;
+
+public:
+    // Runs in insert() between its first device-loss check and taking the tier's lock.
+    void setBeforeInsertLockForTests(const std::function<void()>& hook);
 };
 
 typedef std::shared_ptr<CacheDeviceTier> CacheDeviceTierPtr;

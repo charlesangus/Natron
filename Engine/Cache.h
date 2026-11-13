@@ -972,6 +972,31 @@ public:
         return true;
     }
 
+    virtual bool hostHolds(const ImageKey& key,
+                           const AbstractCacheEntryBase* instance) const OVERRIDE FINAL
+    {
+        if constexpr (std::is_same<typename EntryType::key_type, ImageKey>::value) {
+            QMutexLocker locker(&_lock);
+            const CacheIterator found = _memoryCache.peek(key.getHash());
+            if (found == _memoryCache.end()) {
+                return false;
+            }
+            for (const StoredEntryPtr& stored : getValueFromIterator(found)) {
+                const std::shared_ptr<EntryType> typed = std::dynamic_pointer_cast<EntryType>(stored);
+                if (typed && (instance ? (stored.get() == instance) : (typed->getKey() == key))) {
+                    return true;
+                }
+            }
+
+            return false;
+        } else {
+            (void)key;
+            (void)instance;
+
+            return false;
+        }
+    }
+
 private:
 
 
@@ -2001,7 +2026,13 @@ public:
         if (_diskTier) {
             _diskTier->retract(entry, true);
         }
-        removeFromDeviceTiers(entry->getHashKey());
+        // Other entries of the hash, on the device too, may hold pixels unrelated to this instance, as the finished
+        // render of a region whose RAM copy an abort leaves half written.
+        if (const CacheEntryHeader* header = entry->evictionHeader()) {
+            for (const CacheDeviceTierPtr& tier : deviceTiers()) {
+                tier->removeCopiesOf(header);
+            }
+        }
         if ( !toRemove.empty() ) {
             _deleterThread.appendToQueue(toRemove);
 

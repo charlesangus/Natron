@@ -1356,6 +1356,58 @@ TEST_F(GpuDeviceServeTest, PartialDeviceHitInARegionForcedIntoStripsRendersTheWh
     expectMatchesColdRender(grades.back(), run);
 }
 
+// A member whose partial hit let its inputs go cannot render its whole RoI, so a run forced into strips, which cannot
+// copy the cached part into each strip's rows, hands the region to the CPU, whose frame matches a cold render.
+TEST_F(GpuDeviceServeTest, PartialHitServedFromCacheInARegionForcedIntoStripsFallsBackCleanly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    std::vector<NodePtr> grades;
+    ASSERT_TRUE(makeCachedGradeChain(&grades));
+    const std::shared_ptr<RenderScheduler::RegionReport> report = recordRegionReports();
+    const RectI lowerHalf(0, 0, kWidth, kHeight / 2);
+    std::string error;
+
+    FrameGraph first;
+    {
+        FrameRun run;
+        ASSERT_TRUE(prepareFrame(grades.back(), &run, &error, RectD(lowerHalf.x1, lowerHalf.y1, lowerHalf.x2, lowerHalf.y2))) << error;
+        placeOnGpu(&run, grades);
+        ASSERT_EQ(1u, run.graph.regions.size());
+        first = run.graph;
+        ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+        ASSERT_TRUE(report->cpuFallback.empty()) << report->cpuFallback;
+    }
+    ASSERT_GE(membersInDeviceTier(first), 2);
+
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(grades.back(), &run, &error)) << error;
+    RenderScheduler::pruneBehindCacheHits(run.graph, run.context);
+    placeOnGpu(&run, grades);
+    ASSERT_EQ(1u, run.graph.regions.size());
+    const FrameGraph::Region& region = run.graph.regions.front();
+    ASSERT_EQ(grades.size(), region.members.size());
+    // A grade reads its input where it renders, so pruning never lets its inputs go; marked as if it had.
+    FrameGraph::Task* served = nullptr;
+    for (const int member : region.members) {
+        FrameGraph::Task& task = run.graph.tasks[member];
+        if (!task.deviceMissingRoI.isNull()) {
+            served = &task;
+        }
+    }
+    ASSERT_TRUE(served);
+    served->servedFromCache = true;
+
+    setGpuStripOverridesForTests(gpu::kMinSizeClass, 0);
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    setGpuStripOverridesForTests(0, 0);
+    EXPECT_FALSE(report->cpuFallback.empty());
+    EXPECT_EQ(0, report->grownFromDevice);
+    EXPECT_FALSE(run.future->getRegionFallbacks().empty());
+    expectMatchesColdRender(grades.back(), run);
+}
+
 class GpuDeviceTierStressTest
     : public GpuDeviceServeTest {
 protected:
@@ -1546,6 +1598,15 @@ TEST_F(GpuDeviceTierStressTest, DeviceLossEmptiesTheTierHostCopiesSurviveAndRend
         ASSERT_TRUE(appPTR->peekImage(demotedKey, &cached)) << "the demotion left no host copy";
     }
     ASSERT_GE(membersInDeviceTier(graph), 1);
+    // The headers of the entries the loss empties, which are the tier's own and not the host copies'.
+    std::vector<CacheEntryHeaderPtr> deviceHeaders;
+    for (const int member : graph.regions.front().members) {
+        if (const CacheDeviceEntryPtr entry = tier->find(outputKey(graph.tasks[member]))) {
+            EXPECT_NE((unsigned)0, (unsigned)(entry->header()->residency.load() & CacheEntryHeader::eResidencyDevice));
+            deviceHeaders.push_back(entry->header());
+        }
+    }
+    ASSERT_FALSE(deviceHeaders.empty());
 
     {
         const std::shared_ptr<void> hold = context->holdRuntime();
@@ -1558,11 +1619,15 @@ TEST_F(GpuDeviceTierStressTest, DeviceLossEmptiesTheTierHostCopiesSurviveAndRend
     }
     EXPECT_EQ((std::size_t)0, tier->used());
     EXPECT_EQ(0, membersInDeviceTier(graph));
+    for (const CacheEntryHeaderPtr& header : deviceHeaders) {
+        EXPECT_EQ((unsigned)0, (unsigned)(header->residency.load() & CacheEntryHeader::eResidencyDevice));
+    }
     {
         std::list<ImagePtr> cached;
         ASSERT_TRUE(appPTR->peekImage(demotedKey, &cached)) << "the device loss took the host copy";
         ASSERT_FALSE(cached.empty());
-        EXPECT_EQ((unsigned)0, (unsigned)(cached.front()->getEntryHeader()->residency.load() & CacheEntryHeader::eResidencyDevice));
+        EXPECT_EQ(eStorageModeRAM, cached.front()->getStorageMode());
+        EXPECT_TRUE(cached.front()->isAllocated());
     }
 
     FrameRun lostRun;

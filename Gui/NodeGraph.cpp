@@ -57,6 +57,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/BackdropGui.h"
 #include "Gui/DotGui.h"
 #include "Gui/Edge.h"
+#include "Gui/GpuOverlay.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -153,6 +154,7 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_nodeRoot = new NodeGraphTextItem(this, _imp->_root, false);
     scene->addItem(_imp->_root);
     _imp->_loopBlocks = new LoopBlockOverlay(this, _imp->_nodeRoot);
+    _imp->_gpuRegions = new GpuRegionOverlay(this, _imp->_nodeRoot);
 
     _imp->_navigator = new Navigator(&_imp->isDoingPreviewRender);
     scene->addItem(_imp->_navigator);
@@ -334,6 +336,10 @@ NodeGraph::scheduleLoopBlockRefresh(bool topology)
         _imp->_loopBlocks->schedule(topology);
     }
     if (topology) {
+        // Moves and resizes reach the GPU overlay through the geometry notes, region by region.
+        if (_imp->_gpuRegions) {
+            _imp->_gpuRegions->schedule(true);
+        }
         Q_EMIT topologyChanged();
     }
 }

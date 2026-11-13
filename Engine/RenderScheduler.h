@@ -64,6 +64,36 @@ struct FrameGraph {
         Gpu
     };
 
+    /**
+     * @brief Why placeGraph() kept a task out of the region of a dependency: on the CPU, or, for WouldFormCycle only,
+     * possibly in a region of its own or of another dependency.
+     **/
+    enum class PlacementReason {
+        None,
+
+        // The dependencies of the graph have a cycle, so nothing was placed.
+        InvalidGraph,
+
+        // The node cannot render this task on the GPU, for a reason other than DownscaleUnsupported.
+        NoGpuPath,
+
+        // The task is asked for a downscaled image that the node can only render at full scale.
+        DownscaleUnsupported,
+        Cached,
+
+        // An identity task only follows its single dependency into a region, which this one could not.
+        Identity,
+
+        // Another task of its raw run stays on the CPU, and a run is all or nothing.
+        RawRunAllOrNothing,
+
+        // Joining the region of a dependency would have made a path leave that region and come back.
+        WouldFormCycle,
+
+        // The region gains nothing with this task, or was given up with it.
+        CostModel
+    };
+
     struct Task {
         FrameStore::TaskKey key;
 
@@ -79,6 +109,11 @@ struct FrameGraph {
         // One entry per edge, so an input wired to two inputs of the same consumer appears twice in both lists.
         std::vector<int> dependencies;
         std::vector<int> consumerTasks;
+
+        // The input of this task that each entry of dependencies feeds, as TaskEdge::inputNb gives it (negative for
+        // an edge that is not an input read); the same length and order as dependencies. For a task standing for a
+        // region, the input number is the one on the member that owns the edge.
+        std::vector<int> dependencyInputNbs;
 
         // How many times the store entry of this task is released; 0 for the root, whose planes go to the future.
         int consumers = 0;
@@ -116,6 +151,14 @@ struct FrameGraph {
 
         // Index in regions of the region this task belongs to, or -1; every member of a region has device Gpu.
         int regionId = -1;
+
+        // Stored on the consumer because every edge from another region into a task ends that region for the same
+        // reason, so one record answers for all of the task's input edges. It is only meaningful for such an edge: a
+        // task that later merged with the region it first refused keeps its WouldFormCycle.
+        PlacementReason placementReason = PlacementReason::None;
+
+        // What the node said about the refusal, when placementReason comes from asking it and it had something to say.
+        std::string placementDetail;
 
         // Only read or written under the scheduler's mutex once the graph is submitted.
         int remainingDeps = 0;
@@ -160,6 +203,17 @@ struct FrameGraph {
 };
 
 /**
+ * @brief A GPU region that did not run on the GPU. reason is the cause GpuRegionTask names, empty when the device was
+ * lost, in which case the whole frame is rendered again on the CPU.
+ **/
+struct RegionFallback {
+    int region = -1;
+    std::string reason;
+    bool deviceLost = false;
+    int retries = 0;
+};
+
+/**
  * @brief The outcome of a frame submitted to the RenderScheduler.
  **/
 class FrameFuture {
@@ -184,16 +238,24 @@ public:
      **/
     std::map<ImageLayerDesc, ImagePtr> getRootPlanes() const;
 
+    /**
+     * @brief The regions that fell back to the CPU, in the order they ended; empty until the frame finished.
+     **/
+    std::vector<RegionFallback> getRegionFallbacks() const;
+
 private:
     friend class RenderScheduler;
 
-    void finish(EffectInstance::RenderRoIRetCode retCode, std::map<ImageLayerDesc, ImagePtr> rootPlanes);
+    void finish(EffectInstance::RenderRoIRetCode retCode,
+                std::map<ImageLayerDesc, ImagePtr> rootPlanes,
+                std::vector<RegionFallback> fallbacks = std::vector<RegionFallback>());
 
     mutable QMutex _mutex;
     QWaitCondition _finishedCond;
     bool _finished;
     EffectInstance::RenderRoIRetCode _retCode;
     std::map<ImageLayerDesc, ImagePtr> _rootPlanes;
+    std::vector<RegionFallback> _fallbacks;
 };
 
 /**

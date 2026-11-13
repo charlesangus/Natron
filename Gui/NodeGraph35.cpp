@@ -601,6 +601,13 @@ NodeGraph::showMenu(const QPoint & pos)
     QObject::connect( knobLinks, SIGNAL(triggered()), this, SLOT(toggleKnobLinksVisible()) );
     viewMenu->addAction(knobLinks);
 
+    QAction* gpuRegions = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphShowGpuRegions,
+                                                 kShortcutDescActionGraphShowGpuRegions, viewMenu);
+    gpuRegions->setCheckable(true);
+    gpuRegions->setChecked(appPTR->getCurrentSettings()->isGpuRegionOverlayEnabled());
+    QObject::connect(gpuRegions, SIGNAL(triggered()), this, SLOT(toggleGpuRegionOverlay()));
+    viewMenu->addAction(gpuRegions);
+
     QAction* autoPreview = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview,
                                                   kShortcutDescActionGraphToggleAutoPreview, viewMenu);
     autoPreview->setCheckable(true);

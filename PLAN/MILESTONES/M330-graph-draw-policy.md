@@ -78,3 +78,4 @@ assumed here; re-check them at claim time (PLAN-FORMAT.md §5a).
   - P3 (7140d4d7b): graph-set cells get a marker and a tooltip naming the node. Draw edits aren't undoable, so Reset to Graph isn't either.
   - Bake to Node puts descendants' rules before their ancestors'. A new node takes the viewed node's place in every input it fed. The whole bake is one undo step.
   - The phase-1 gate was cancelled in favour of one full gate (35 GUI scripts).
+- 2026-11-13 — Gate run 43433874523 on 7140d4d7b failed: `USDWriteTest.DrawRulesReachDownstreamInInputOrderAndNeverReachAWrite` (both legs) and four GUI scripts (`scene_bake_to_node`, `scene_draw_column`, `scene_prim_inspector`, `scene_expand_hierarchy`). Being diagnosed; the branch may also lack M329 from F4.

@@ -97,22 +97,19 @@ TEST_F(WholeFrameTest, FiniteRegionPassesUnchanged)
     EXPECT_EQ(rod, full);
 }
 
-TEST_F(WholeFrameTest, InfiniteRegionIsClampedToTheFormat)
+TEST_F(WholeFrameTest, InfiniteRegionIsAnError)
 {
-    getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
-    getApp()->getProject()->setOrAddProjectFormat(Format(0, 0, 181, 137, "wholeFrame181x137", 1.));
     NodePtr source = createRegionSource(RectI(0, 0, 16, 16), true);
     NodePtr grade = createAfter(PLUGINID_NATRON_GRADE, source);
     ASSERT_TRUE(bool(grade));
 
     RectI pixels;
-    RectI full;
-    ASSERT_TRUE(frameOf(grade, 0, &pixels, &full));
-    EXPECT_EQ(RectI(0, 0, 181, 137), pixels);
-    EXPECT_EQ(RectI(0, 0, 181, 137), full);
-    ASSERT_TRUE(frameOf(grade, 1, &pixels, &full));
-    EXPECT_EQ(RectI(0, 0, 91, 69), pixels);
-    EXPECT_EQ(RectI(0, 0, 181, 137), full);
+    EXPECT_FALSE(frameOf(grade, 0, &pixels, NULL));
+    QString message;
+    int type = 0;
+    grade->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeError, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("infinite size"))) << message.toStdString();
 }
 
 TEST_F(WholeFrameTest, NoFrameWithoutASource)
@@ -457,14 +454,6 @@ TEST_F(WholeFrameTest, WindowedNodeIsCaught)
     });
 
     EXPECT_FALSE(mismatches.empty());
-}
-
-TEST_F(WholeFrameTest, PassThroughOverAnInfiniteSource)
-{
-    // Grade at its defaults leaves every value as it is.
-    expectInfiniteRoDClamped([this](const NodePtr& source) {
-        return createAfter(PLUGINID_NATRON_GRADE, source);
-    });
 }
 
 } // anonymous namespace

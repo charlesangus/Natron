@@ -29,7 +29,11 @@
 #include <chrono>
 #include <cstdio>
 
+#include <QCoreApplication>
+#include <QString>
+
 #include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Raw/RawNodeSupport.h"
@@ -59,10 +63,13 @@ wholeFramePixels(const EffectInstance& effect,
     const NodeMetadataConstPtr metadata = effect.getRenderMetadata(time, view);
     const double par = metadata ? metadata->getPixelAspectRatio(sourceInput) : 1.;
     if (rod.isInfinite()) {
-        if (!metadata) {
-            return false;
+        const NodePtr node = effect.getNode();
+        if (node) {
+            const QString name = QString::fromStdString(effect.getScriptName_mt_safe());
+            node->setPersistentMessage(eMessageTypeError, QCoreApplication::translate("WholeFrame", "%1: the input has an infinite size; an image must have a finite size.").arg(name).toStdString());
         }
-        rod = rod.intersect(PassExec::toCanonical(metadata->getOutputFormat(), RenderScale::identity, par));
+
+        return false;
     }
     if (rod.isNull()) {
         return false;

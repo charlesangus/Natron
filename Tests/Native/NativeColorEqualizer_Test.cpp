@@ -681,7 +681,7 @@ TEST_F(ColorEqualizerRegionTest, RegionIndependentCpu)
     }
 }
 
-TEST_F(ColorEqualizerRegionTest, RegionIndependentOverAnInfiniteSource)
+TEST_F(ColorEqualizerRegionTest, InfiniteSourceFails)
 {
     setWorkingSpace(kLinearRec2020);
     if (HasFatalFailure()) {
@@ -689,10 +689,10 @@ TEST_F(ColorEqualizerRegionTest, RegionIndependentOverAnInfiniteSource)
     }
     for (int output : outputs()) {
         SCOPED_TRACE("output " + std::to_string(output));
-        expectInfiniteRoDClamped([this, output](const NodePtr& source) {
+        expectInfiniteRoDFails([this, output](const NodePtr& source) {
             return makeEqualizer(source, output);
         },
-                                 regionOptions());
+                               regionOptions());
     }
 }
 

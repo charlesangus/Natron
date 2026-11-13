@@ -314,9 +314,6 @@ struct RegionIndependenceOptions {
     // overhang the frame stay inside it.
     int margin = 8;
 
-    // The project format expectInfiniteRoDClamped() sets.
-    RectI format = RectI(0, 0, 181, 137);
-
 #ifdef NATRON_HAVE_GPU
     // When set, the GPU variants run too.
     GpuParityRuntime* gpu = nullptr;
@@ -628,53 +625,31 @@ public:
     }
 
     /**
-     * @brief Over an infinite source, expects a window straddling the corner of options.format to
-     * equal, inside the format, the node over the source cropped to the format, and outside it the
-     * source itself. With options.gpu set, the GPU render of the window is held to the same: the
-     * GPU render over the cropped source inside the format, and the source outside it, bit for bit.
+     * @brief Over an infinite source, expects the node's render to fail, with an error on the node
+     * about the infinite size, and to write nothing.
      **/
-    void expectInfiniteRoDClamped(const MakeNode& makeNode,
-                                  const RegionIndependenceOptions& options = RegionIndependenceOptions())
+    void expectInfiniteRoDFails(const MakeNode& makeNode,
+                                const RegionIndependenceOptions& options = RegionIndependenceOptions())
     {
-        const RectI& f = options.format;
+        const RectI rod(options.originX, options.originY, options.originX + options.width, options.originY + options.height);
 
-        getApp()->getProject()->setAutoSetProjectFormatEnabled(true);
-        getApp()->getProject()->setOrAddProjectFormat(Format(f.x1, f.y1, f.x2, f.y2, "regionIndependenceFormat", 1.));
         for (unsigned level : options.mipmapLevels) {
-            const RenderScale scale = RenderScale::fromMipmapLevel(level);
-            const RectI format = PassExec::toPixelEnclosing(RectD(f.x1, f.y1, f.x2, f.y2), scale, 1.);
-            const RectI window(format.x2 - std::max(2, format.width() / 5), format.y2 - std::max(2, format.height() / 6), format.x2 + 9, format.y2 + 7);
             std::ostringstream at;
-            at << "mipmap level " << level << ", window " << describe(window) << ": ";
+            at << "mipmap level " << level << ": ";
 
-            const NodePtr infiniteSource = createRegionSource(f, true);
+            const NodePtr infiniteSource = createRegionSource(rod, true);
             const NodePtr overInfinite = infiniteSource ? makeNode(infiniteSource) : NodePtr();
-            const NodePtr croppedSource = createRegionSource(f, false);
-            const NodePtr overCropped = croppedSource ? makeNode(croppedSource) : NodePtr();
             ASSERT_TRUE(bool(overInfinite));
-            ASSERT_TRUE(bool(overCropped));
             RenderedPlane got;
-            RenderedPlane clamped;
-            RenderedPlane source;
             std::string error;
-            ASSERT_TRUE(renderPlane(overInfinite, level, window, options.plane, true, &got, &error)) << at.str() << error;
-            ASSERT_TRUE(renderPlane(overCropped, level, window, options.plane, true, &clamped, &error)) << at.str() << error;
-            ASSERT_TRUE(renderPlane(infiniteSource, level, window, options.plane, true, &source, &error)) << at.str() << error;
+            EXPECT_FALSE(renderPlane(overInfinite, level, RectI(rod.x1, rod.y1, rod.x1 + 32, rod.y1 + 32), options.plane, true, &got, &error)) << at.str() << "the render succeeded over an infinite source";
+            EXPECT_TRUE(got.pixels.empty()) << at.str() << "the failed render wrote pixels";
+            QString message;
+            int type = 0;
+            overInfinite->getPersistentMessage(&message, &type, false);
+            EXPECT_EQ((int)eMessageTypeError, type) << at.str();
+            EXPECT_TRUE(message.contains(QString::fromUtf8("infinite size"))) << at.str() << "the node's message is: " << message.toStdString();
             destroyChain(overInfinite, infiniteSource);
-            destroyChain(overCropped, croppedSource);
-
-            const RectI inside(window.x1, window.y1, format.x2, format.y2);
-            EXPECT_EQ(std::string(), firstMismatch(clamped, got, inside)) << at.str() << "inside the format, against the node over the cropped source";
-            const RectI right(format.x2, window.y1, window.x2, window.y2);
-            const RectI top(window.x1, format.y2, format.x2, window.y2);
-            EXPECT_EQ(std::string(), firstMismatch(source, got, right)) << at.str() << "right of the format, against the source";
-            EXPECT_EQ(std::string(), firstMismatch(source, got, top)) << at.str() << "above the format, against the source";
-
-#ifdef NATRON_HAVE_GPU
-            if (options.gpu) {
-                checkGpuInfiniteRoDClamped(makeNode, options, level, window, format, got, source);
-            }
-#endif
         }
     }
 
@@ -832,57 +807,6 @@ private:
         out->pixels = std::move(run.pixels);
 
         return true;
-    }
-
-    // The GPU half of expectInfiniteRoDClamped(): cpu is the CPU render of window over the
-    // infinite source, which gives the layer and channels, and source the source over window.
-    void checkGpuInfiniteRoDClamped(const MakeNode& makeNode,
-                                    const RegionIndependenceOptions& options,
-                                    unsigned level,
-                                    const RectI& window,
-                                    const RectI& format,
-                                    const RenderedPlane& cpu,
-                                    const RenderedPlane& source)
-    {
-        const RectI& f = options.format;
-        const RenderScale scale = RenderScale::fromMipmapLevel(level);
-        std::ostringstream at;
-        at << "mipmap level " << level << ", GPU window " << describe(window) << ": ";
-
-        RenderedPlane got[2];
-        for (int infinite = 0; infinite < 2; ++infinite) {
-            const NodePtr chainSource = createRegionSource(f, infinite != 0);
-            const NodePtr node = chainSource ? makeNode(chainSource) : NodePtr();
-            NativeEffectBase* effect = node ? dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get()) : NULL;
-            if (!effect) {
-                destroyChain(node, chainSource);
-                ADD_FAILURE() << at.str() << "the node is not native";
-
-                return;
-            }
-            const GpuQuery query = options.gpuQuery ? options.gpuQuery(*effect, scale) : defaultGpuQuery(*effect, options.plane, scale);
-            std::string error;
-            const bool accepted = effect->canRenderOnGpu(query);
-            const bool ok = accepted && renderGpuWindow(*options.gpu, *effect, query, chainSource, level, window, cpu, &got[infinite], &error);
-            destroyChain(node, chainSource);
-            if (!accepted) {
-                ADD_FAILURE() << at.str() << "canRenderOnGpu() refuses the query";
-
-                return;
-            }
-            if (!ok) {
-                ADD_FAILURE() << at.str() << (infinite ? "over the infinite source: " : "over the cropped source: ") << error;
-
-                return;
-            }
-        }
-
-        const RectI inside(window.x1, window.y1, format.x2, format.y2);
-        EXPECT_EQ(std::string(), firstMismatch(got[0], got[1], inside)) << at.str() << "inside the format, against the GPU node over the cropped source";
-        const RectI right(format.x2, window.y1, window.x2, window.y2);
-        const RectI top(window.x1, format.y2, format.x2, window.y2);
-        EXPECT_EQ(std::string(), firstMismatch(source, got[1], right)) << at.str() << "right of the format, against the source";
-        EXPECT_EQ(std::string(), firstMismatch(source, got[1], top)) << at.str() << "above the format, against the source";
     }
 
     void checkGpu(const MakeNode& makeNode,

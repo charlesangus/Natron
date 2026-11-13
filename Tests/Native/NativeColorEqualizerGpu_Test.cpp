@@ -332,24 +332,6 @@ TEST_F(ColorEqualizerGpuRegionTest, RegionIndependentGpu)
     }
 }
 
-// Over an infinite source the GPU passes the source through outside the format, as the CPU does.
-TEST_F(ColorEqualizerGpuRegionTest, RegionIndependentGpuOverAnInfiniteSource)
-{
-    std::unique_ptr<GpuParityRuntime> runtime;
-    if (!createRuntime(runtime)) {
-        return;
-    }
-    RegionIndependenceOptions options;
-    options.gpu = runtime.get();
-    options.gpuTolerance = gpuTolerance();
-    for (int output : { (int)ColorEqualizerParams::eOutputResult, (int)ColorEqualizerParams::eOutputSaturationThreshold }) {
-        SCOPED_TRACE("output " + std::to_string(output));
-        expectInfiniteRoDClamped([this, output](const NodePtr& source) {
-            return makeEqualizer(source, output);
-        },
-                                 options);
-    }
-}
 #endif // NATRON_HAVE_GPU
 
 } // namespace

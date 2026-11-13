@@ -705,11 +705,11 @@ TEST_F(ToneEqualizerRegionTest, RegionIndependentCpu)
     }
 }
 
-TEST_F(ToneEqualizerRegionTest, RegionIndependentOverAnInfiniteSource)
+TEST_F(ToneEqualizerRegionTest, InfiniteSourceFails)
 {
     for (DetailsEnum details : kRegionDetails) {
         SCOPED_TRACE((int)details);
-        expectInfiniteRoDClamped([this, details](const NodePtr& source) {
+        expectInfiniteRoDFails([this, details](const NodePtr& source) {
             return setUpRegionToneEqualizer(createAfter(PLUGINID_NATRON_TONEEQUALIZER, source), details);
         });
     }

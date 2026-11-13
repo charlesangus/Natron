@@ -2149,11 +2149,11 @@ TEST_F(RetouchRegionTest, RegionIndependentCpu)
     }
 }
 
-TEST_F(RetouchRegionTest, RegionIndependentOverAnInfiniteSource)
+TEST_F(RetouchRegionTest, InfiniteSourceFails)
 {
     for (RC::AlgorithmEnum algorithm : algorithms()) {
         SCOPED_TRACE((int)algorithm);
-        expectInfiniteRoDClamped([this, algorithm](const NodePtr& source) {
+        expectInfiniteRoDFails([this, algorithm](const NodePtr& source) {
             return makeRetouch(source, algorithm);
         });
     }

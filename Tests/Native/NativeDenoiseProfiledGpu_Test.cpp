@@ -342,24 +342,6 @@ TEST_F(DenoiseProfiledGpuRegionTest, RegionIndependentGpu)
     }
 }
 
-// Over an infinite source the GPU passes the source through outside the format, as the CPU does.
-TEST_F(DenoiseProfiledGpuRegionTest, RegionIndependentGpuOverAnInfiniteSource)
-{
-    std::unique_ptr<GpuParityRuntime> runtime;
-    if (!createRuntime(runtime)) {
-        return;
-    }
-    RegionIndependenceOptions options;
-    options.gpu = runtime.get();
-    for (const ModeEnum mode : { eModeNlm, eModeWavelets }) {
-        SCOPED_TRACE(mode == eModeWavelets ? "wavelets" : "non-local means");
-        expectInfiniteRoDClamped([this, mode](const NodePtr& source) {
-            return makeDenoise(source, mode, eColorModeRgb);
-        },
-                                 options);
-    }
-}
-
 // A mix of 0 passes the source through on both paths, and a mix of 0.5 blends within the
 // non-local means' bounds.
 TEST_F(NativeDenoiseProfiledGpuTest, MixMatchesTheCpu)

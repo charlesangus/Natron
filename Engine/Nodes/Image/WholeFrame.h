@@ -50,12 +50,11 @@ NATRON_NAMESPACE_ENTER
  * @brief The whole frame a node computes a whole-image result over (the EdgeAware library's
  * contract, EdgeAwareCommon.h), so that its output does not depend on the window rendered.
  *
- * The frame is the region of definition of input sourceInput at identity scale. An infinite one
- * is intersected with the node's output format, so a generator or a transform with an infinite
- * extent still has a finite frame. pixels gets the frame pixel-enclosing at scale and
- * fullScalePixels (when not null) at identity scale, both with the source's pixel aspect ratio.
- * Returns false when the input is not connected, its region cannot be had, or the frame is
- * empty.
+ * The frame is the region of definition of input sourceInput at identity scale. pixels gets the
+ * frame pixel-enclosing at scale and fullScalePixels (when not null) at identity scale, both with
+ * the source's pixel aspect ratio. Returns false when the input is not connected, its region
+ * cannot be had, or the frame is empty. An infinite region is an error: the node gets a
+ * persistent error message and the call returns false.
  **/
 bool wholeFramePixels(const EffectInstance& effect,
                       int sourceInput,

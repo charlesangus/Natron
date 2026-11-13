@@ -574,10 +574,10 @@ TEST_F(ContrastTextureRegionTest, RegionIndependentCpu)
     }
 }
 
-TEST_F(ContrastTextureRegionTest, RegionIndependentOverAnInfiniteSource)
+TEST_F(ContrastTextureRegionTest, InfiniteSourceFails)
 {
     for (const auto& knobs : settings()) {
-        expectInfiniteRoDClamped([this, knobs](const NodePtr& source) {
+        expectInfiniteRoDFails([this, knobs](const NodePtr& source) {
             return makeContrastTexture(source, knobs);
         });
     }

@@ -619,11 +619,11 @@ TEST_F(DenoiseProfiledRegionTest, RegionIndependentCpu)
     }
 }
 
-TEST_F(DenoiseProfiledRegionTest, RegionIndependentOverAnInfiniteSource)
+TEST_F(DenoiseProfiledRegionTest, InfiniteSourceFails)
 {
     for (const RegionCase& c : regionCases()) {
         SCOPED_TRACE(c.name);
-        expectInfiniteRoDClamped([this, c](const NodePtr& source) {
+        expectInfiniteRoDFails([this, c](const NodePtr& source) {
             return makeDenoise(source, c.mode, c.colorMode);
         });
     }

@@ -46,7 +46,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: on the city with nothing loaded, an edit opens 0 buildings; parity at L={Block_0}; the unsearched note shows.
   - size: M
 
-- [ ] M381.P2.T2 — USDEditPrim on load sets
+- [x] M381.P2.T2 — USDEditPrim on load sets
   - files: `Engine/Nodes/Scene/USDEditPrim.cpp` (~:460, ~:544), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: Edit mode via `matchPattern`. Create mode's ancestor check borrows `withPaths(context.loadSet, {path})` and adds the path to the context's reach.
   - verify: both modes open 0 buildings with nothing loaded; parity at L.

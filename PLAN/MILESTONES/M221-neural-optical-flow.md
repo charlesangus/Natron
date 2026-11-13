@@ -50,6 +50,7 @@ Scouted facts (2026-10-25, from the plan; neither dependency is built yet):
     - Verify the SEA-RAFT and RAFT weight and training-data licences, and record the choice.
     - Export with dynamic H×W, check ORT CPU inference on a 1024×576 pair, and package it.
     - Add the `optical-flow` task and the entry, with its sha256, size and licences.
+    - Export with the refinement iteration count as a model input if SEA-RAFT's graph allows it, so `quality` maps to iterations; otherwise export one model per quality level. Then wire `quality` in VectorGenerator.
   - verify: the export script reproduces the archive's sha256. `ctest -R ModelRegistry` lists the entry under `optical-flow`. The licence check is recorded in `## Decisions`.
   - size: M
 
@@ -91,3 +92,4 @@ Scouted facts (2026-10-25, from the plan; neither dependency is built yet):
 - 2026-10-25 — **Neural flow gets its own milestone under E16 - AI Tools (user),** elaborated now and run after M203 and M204.
 - 2026-11-12 — **No shared E16 range wrapper exists:** M207 - Neural Denoise dropped it (user, 2026-10-27) in favour of an OCIO colour-space knob. The runner carries its own odd, invertible wrap (identity for |x| ≤ 1, 1 + ln|x| beyond); P2.T1 adds the same OCIO input-space knob as the denoise and upscale nodes, so the wrap only compresses HDR highlights. P1.T2 implemented in 4dea66ad7; its ctest runs with the phase build.
 - 2026-11-12 — **P1.T1 licence check:** SEA-RAFT code and weights are BSD-3-Clause (GPL-3-compatible); keep SEA-RAFT (RAFT trains on the same datasets, so falling back gains nothing). Variant `Tartan-C-T-TSKH-spring540x960-M`, `config/eval/spring-M.json`, 4 iterations, SEA-RAFT commit 9137517ba24e. Training data: TartanAir CC BY 4.0 confirmed; the rest unverified (sites unreachable). The export waits on the weights download (see the board's Open questions). `tools/ai/update-manifest.py` regenerates the manifest from one darktable-ai tag, so the fork-hosted entry needs a second origin there.
+- 2026-11-13 — Gate green after the test-manifest size fix (5a999f870). Draft PR #268 opened into F8. Review round 1 (Claude reviewer) had 11 findings; 2–10 are being fixed. **Finding 1, `quality` → iterations, is deferred to P1.T1 (PM):** the iteration count is fixed at export time, so it belongs with the model export, and P1.T1's approach now carries it. Finding 11 is the known P1.T1 block.

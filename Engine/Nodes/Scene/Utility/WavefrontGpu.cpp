@@ -49,6 +49,7 @@
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/Nodes/Scene/Utility/GpuTracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 
 #include "utility_raygen_spirv.h"
 #include "utility_shade_flat_spirv.h"
@@ -183,11 +184,13 @@ struct ShadeTableBuffers {
 
 struct WavefrontGpu::Implementation {
     Implementation(gpu::GpuKernelRegistry& registry,
-                   gpu::GpuBufferPool& pool)
+                   gpu::GpuBufferPool& pool,
+                   const std::shared_ptr<void>& runtimeHold)
         : registry(registry)
         , pool(pool)
         , device(registry.device())
         , tracer(registry, pool)
+        , runtimeHold(runtimeHold)
     {
     }
 
@@ -237,7 +240,9 @@ struct WavefrontGpu::Implementation {
     bool renderBatch(const WavefrontFrame& frame,
                      const WavefrontRect& rect,
                      gpu::GpuRecordContext& ctx,
-                     WavefrontFilm& film);
+                     WavefrontFilm& film,
+                     UtilityRenderBuffer* deviceColor);
+    UtilityRenderBuffer* deviceColorOf(const WavefrontFilm& film);
 
     using Outcome = Tracer::Outcome;
     using Status = Tracer::Status;
@@ -248,6 +253,9 @@ struct WavefrontGpu::Implementation {
     GpuTracer tracer;
     std::shared_ptr<gpu::GpuKernel> rayGenKernel;
     std::shared_ptr<gpu::GpuKernel> shadeKernel;
+    const std::shared_ptr<void> runtimeHold;
+    std::shared_ptr<const UtilityFilmKernels> filmKernels;
+    bool filmKernelsTried = false;
     bool usable = false;
     // Set while unusable.
     Outcome unusable;
@@ -300,11 +308,32 @@ WavefrontGpu::Implementation::reserveOutputs(std::size_t rays)
     return true;
 }
 
+UtilityRenderBuffer*
+WavefrontGpu::Implementation::deviceColorOf(const WavefrontFilm& film)
+{
+    UtilityRenderBuffer* buffer = film.deviceColor();
+
+    if (!buffer || !buffer->canRenderOnDevice()) {
+        return nullptr;
+    }
+    if (!filmKernelsTried) {
+        filmKernelsTried = true;
+
+        gpu::GpuStatus status;
+
+        filmKernels = makeUtilityFilmKernels(device, &status);
+    }
+
+    // Without the film's kernels the colour comes back in tiles, as every other AOV does.
+    return filmKernels ? buffer : nullptr;
+}
+
 bool
 WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
                                           const WavefrontRect& rect,
                                           gpu::GpuRecordContext& ctx,
-                                          WavefrontFilm& film)
+                                          WavefrontFilm& film,
+                                          UtilityRenderBuffer* deviceColor)
 {
     const std::size_t count = static_cast<std::size_t>(rect.width) * rect.height;
     const std::array<std::uint32_t, 3> threads = { static_cast<std::uint32_t>(count), 1, 1 };
@@ -315,12 +344,18 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
     gpu::GpuBuffer* rays = nullptr;
     gpu::GpuBuffer* hitValues = nullptr;
+    gpu::GpuBuffer* color = &outputs.color;
 
     if (gpu::GpuStatus s = ctx.scratch(kRayArrays * count * sizeof(float), rays); !s) {
         return fail("WavefrontGpu could not hold a batch of " + std::to_string(count) + " rays", s);
     }
     if (gpu::GpuStatus s = ctx.scratch(kHitArrays * count * sizeof(float), hitValues); !s) {
         return fail("WavefrontGpu could not hold the hits of " + std::to_string(count) + " rays", s);
+    }
+    if (deviceColor) {
+        if (gpu::GpuStatus s = ctx.scratch(count * 4 * sizeof(float), color); !s) {
+            return fail("WavefrontGpu could not hold the colours of " + std::to_string(count) + " rays", s);
+        }
     }
 
     const KernelRayGenParams rayGenParams = makeRayGenParams(frame, rect);
@@ -344,7 +379,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         gpu::GpuBinding::storage(4, tables.colors),
         gpu::GpuBinding::storage(5, tables.triangles),
         gpu::GpuBinding::storage(6, tables.instanceIds),
-        gpu::GpuBinding::storage(7, outputs.color),
+        gpu::GpuBinding::storage(7, *color),
         gpu::GpuBinding::storage(8, outputs.depth),
         gpu::GpuBinding::storage(9, outputs.primId),
         gpu::GpuBinding::storage(10, outputs.instanceId),
@@ -352,6 +387,11 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
     if (gpu::GpuStatus s = ctx.dispatchBindings(shadeKernel, shadeBindings, std::as_bytes(std::span(&shadeParams, 1)), threads); !s) {
         return fail("WavefrontGpu could not shade", s);
+    }
+    if (deviceColor) {
+        if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(ctx, outputs.hitIds, *color, rect.x, rect.y, rect.width, rect.height); !s) {
+            return fail("WavefrontGpu could not write a batch's colours to the film", s);
+        }
     }
     if (gpu::GpuStatus s = ctx.submitAndWait(); !s) {
         return fail("WavefrontGpu could not render a batch of " + std::to_string(count) + " rays", s);
@@ -362,7 +402,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     tile.rect = rect;
     // The geometry array comes first in the hit ids, as Kernels/UtilityTypes.slang lays them out.
     tile.hitGeometry = static_cast<const std::uint32_t*>(outputs.hitIds.mapped());
-    tile.color = static_cast<const float*>(outputs.color.mapped());
+    tile.color = deviceColor ? nullptr : static_cast<const float*>(outputs.color.mapped());
     tile.depth = static_cast<const float*>(outputs.depth.mapped());
     tile.primId = static_cast<const std::int32_t*>(outputs.primId.mapped());
     tile.instanceId = static_cast<const std::int32_t*>(outputs.instanceId.mapped());
@@ -372,8 +412,9 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 }
 
 WavefrontGpu::WavefrontGpu(gpu::GpuKernelRegistry& registry,
-                           gpu::GpuBufferPool& pool)
-    : _imp(new Implementation(registry, pool))
+                           gpu::GpuBufferPool& pool,
+                           const std::shared_ptr<void>& runtimeHold)
+    : _imp(new Implementation(registry, pool, runtimeHold))
 {
     Implementation& imp = *_imp;
     const Tracer::Outcome tracerStatus = imp.tracer.status();
@@ -442,6 +483,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     }
 
     const WavefrontRect& window = frame.window;
+    UtilityRenderBuffer* deviceColor = imp.deviceColorOf(film);
     int row = 0;
 
     while (row < window.height) {
@@ -453,6 +495,12 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
 
         if (gpu::GpuStatus s = gpu::GpuRecordContext::create(imp.registry, ctx, &imp.pool); !s) {
             return imp.fail("WavefrontGpu could not create a record context", s);
+        }
+        if (deviceColor && (row == 0)) {
+            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(*ctx, imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold); !s) {
+                return imp.fail("WavefrontGpu could not hold the film on the device", s);
+            }
+            ctx->computeBarrier();
         }
 
         const std::uint64_t bindable = std::min(ctx->maxScratchBytes(), ctx->maxStorageBufferBytes()) / (kRayArrays * sizeof(float));
@@ -471,7 +519,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
         rect.y = window.y + row;
         rect.width = window.width;
         rect.height = static_cast<int>(rows);
-        if (!imp.renderBatch(frame, rect, *ctx, film)) {
+        if (!imp.renderBatch(frame, rect, *ctx, film, deviceColor)) {
             return false;
         }
         row += rect.height;

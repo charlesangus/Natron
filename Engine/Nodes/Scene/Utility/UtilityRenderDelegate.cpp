@@ -103,7 +103,7 @@ UtilityRenderParam::gpuExecutor(std::string* unavailable)
         return nullptr;
     }
 
-    std::unique_ptr<WavefrontGpu> executor(new WavefrontGpu(gpu.runtime->registry(), gpu.runtime->pool()));
+    std::unique_ptr<WavefrontGpu> executor(new WavefrontGpu(gpu.runtime->registry(), gpu.runtime->pool(), gpu.hold));
     const Tracer::Outcome outcome = executor->status();
 
     if (outcome.status != Tracer::Status::Ok) {

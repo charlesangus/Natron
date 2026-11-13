@@ -74,8 +74,10 @@ void setUtilityGpuRuntimeForTesting(gpu::GpuRuntime* runtime);
  **/
 class WavefrontGpu : public WavefrontExecutor {
 public:
+    // runtimeHold, when given, is kept by the device films the executor leaves in the render buffers.
     WavefrontGpu(gpu::GpuKernelRegistry& registry,
-                 gpu::GpuBufferPool& pool);
+                 gpu::GpuBufferPool& pool,
+                 const std::shared_ptr<void>& runtimeHold = std::shared_ptr<void>());
     virtual ~WavefrontGpu();
 
     // Empty when the device can render, else the Vulkan extensions and features it lacks.

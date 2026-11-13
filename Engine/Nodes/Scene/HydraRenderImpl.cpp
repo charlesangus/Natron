@@ -96,6 +96,13 @@
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDevice.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
+#include "Engine/RectI.h"
+#endif
 #include "Engine/TLSHolder.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -2324,6 +2331,112 @@ packsOnGpu()
 
     return ran && ok;
 }
+
+#ifdef NATRON_HAVE_GPU
+bool
+recordDeviceWindow(const Request& request,
+                   const PlaneWindow& window,
+                   gpu::GpuRecordContext& context,
+                   const GpuImageView& output,
+                   const RectI& outputRect,
+                   Result* info,
+                   std::string* error)
+{
+    if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
+        *error = "Nothing to render.";
+
+        return false;
+    }
+    const int width = window.x2 - window.x1;
+    const int height = window.y2 - window.y1;
+    if ((window.plane != ePlaneColor) || !output.buffer || (width != outputRect.width()) || (height != outputRect.height()) || (window.nComps != output.nComps) || !output.bounds.contains(outputRect)) {
+        *error = "USDRender's GPU output does not match the window it renders.";
+
+        return false;
+    }
+    RenderThread* routed = routeRequest(request, error);
+    if (!routed) {
+        return false;
+    }
+    RenderThread& thread = *routed;
+    if (thread.usesGl()) {
+        *error = "Storm hands its pixels over through GL, not from a frame on the device.";
+
+        return false;
+    }
+    bool ok = false;
+    UtilityDeviceResource film;
+    RenderCancel cancel;
+    std::function<void()> whileWaiting;
+    if (request.aborted) {
+        whileWaiting = [&request, &cancel]() {
+            if (request.aborted()) {
+                cancel.request();
+            }
+        };
+    }
+    const int threadBudget = AppTLS::currentThreadBudget();
+    const bool ran = thread.runAndWait([&]() {
+        // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
+        AppTLS::ThreadBudgetScope budget(threadBudget);
+
+        try {
+            EngineEntry* entry = thread.renderEngine(request, &cancel, error);
+            if (!entry) {
+                return;
+            }
+            HdRenderBuffer* buffer = entry->engine->GetAovRenderBuffer(HdAovTokens->color);
+            if (!buffer) {
+                *error = entry->rendererName + " rendered no color AOV.";
+
+                return;
+            }
+            buffer->Resolve();
+            if (((int)buffer->GetWidth() != entry->width) || ((int)buffer->GetHeight() != entry->height)) {
+                *error = entry->rendererName + "'s color AOV is not the size asked for.";
+
+                return;
+            }
+            const VtValue resource = buffer->GetResource(false);
+            if (!resource.IsHolding<UtilityDeviceResource>()) {
+                *error = entry->rendererName + " did not leave its frame on the GPU.";
+
+                return;
+            }
+            film = resource.UncheckedGet<UtilityDeviceResource>();
+            info->warning = entry->warning;
+            info->errors = entry->errors;
+            info->device = entry->device;
+            ok = true;
+        } catch (const std::exception& e) {
+            *error = std::string("Hydra failed: ") + e.what();
+            ok = false;
+        }
+    },
+                                       error, whileWaiting);
+    if (!ran || !ok) {
+        return false;
+    }
+    // A record context belongs to the thread that made it, so the copy is recorded here, not on the render thread.
+    if (film.device() != &context.device()) {
+        *error = "Natron Utility rendered on another GPU than the one its output is on.";
+
+        return false;
+    }
+    if ((width <= 0) || (height <= 0)) {
+        return true;
+    }
+    const std::int64_t origin = (std::int64_t)(output.byteOffset / sizeof(float)) + ((std::int64_t)(outputRect.y1 - output.bounds.y1) * output.rowStrideFloats) + (std::int64_t)(outputRect.x1 - output.bounds.x1) * output.nComps;
+    const gpu::GpuStatus status = film.recordWindow(context, window.x1, window.y1, window.x2, window.y2, window.nComps, *output.buffer, (std::uint64_t)origin, (std::uint32_t)output.rowStrideFloats);
+    if (!status) {
+        *error = "Natron Utility's frame could not be copied on the GPU: " + status.message;
+
+        return false;
+    }
+
+    return true;
+} // recordDeviceWindow
+#endif // NATRON_HAVE_GPU
 
 void
 release(const void* owner)

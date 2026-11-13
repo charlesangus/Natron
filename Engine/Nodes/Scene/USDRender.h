@@ -216,6 +216,18 @@ private:
     // Shows warning, or clears the node's message when it is empty.
     void showWarning(const std::string& warning);
 
+    /**
+     * @brief Shows what a render that stands left to say: the delegate's errors, else the setup's and
+     * the delegate's warnings, and the device it rendered on when it named one.
+     **/
+    void showRenderMessages(const std::string& setupWarning,
+                            const std::string& resultWarning,
+                            const std::string& errors,
+                            const std::string& device);
+
+    // The Natron Utility device the active settings prim asks for at time and view, Auto without one.
+    std::string utilityDevice(double time, ViewIdx view) const;
+
     // The output format in pixels and its pixel aspect ratio: the active prim's resolution and
     // pixel aspect ratio, the project's format without one.
     void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;

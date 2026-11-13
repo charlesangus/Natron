@@ -47,7 +47,18 @@ class UsdImagingGLEngine;
 class UsdImagingGLRenderParams;
 PXR_NAMESPACE_CLOSE_SCOPE
 
+#ifdef NATRON_HAVE_GPU
+namespace gpu {
+class GpuRecordContext;
+}
+#endif
+
 NATRON_NAMESPACE_ENTER
+
+#ifdef NATRON_HAVE_GPU
+struct GpuImageView;
+class RectI;
+#endif
 
 /**
  * @brief USDRender's Storm render: a composed stage seen through a camera, read back from GL into
@@ -265,6 +276,23 @@ bool renderWindow(const Request& request,
 
 // Whether the render thread's context packs windows on the GPU, making it if need be.
 bool packsOnGpu();
+
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief Renders request as render() does, then records into context the copy of window, a colour
+ * window, into output's outputRect, on the device and from the frame the delegate left there:
+ * Natron Utility's, when it rendered on the GPU. *info gets the render's warning, errors and device.
+ * False with *error set when the frame is not on context's device, so the caller renders on the CPU,
+ * where the frame is read back.
+ **/
+bool recordDeviceWindow(const Request& request,
+                        const PlaneWindow& window,
+                        gpu::GpuRecordContext& context,
+                        const GpuImageView& output,
+                        const RectI& outputRect,
+                        Result* info,
+                        std::string* error) WARN_UNUSED_RETURN;
+#endif
 
 /**
  * @brief Render settings every engine of renderer gets on top of its request's; for tests, to fix

@@ -124,8 +124,10 @@ public:
                 }
                 const unsigned int x = static_cast<unsigned int>(tile.rect.x + column);
 
-                for (UtilityRenderBuffer* buffer : _color) {
-                    buffer->setPixel(x, y, tile.color + index * 4, 4);
+                if (tile.color) {
+                    for (UtilityRenderBuffer* buffer : _color) {
+                        buffer->setPixel(x, y, tile.color + index * 4, 4);
+                    }
                 }
                 for (UtilityRenderBuffer* buffer : _depth) {
                     buffer->setPixel(x, y, tile.depth + index, 1);
@@ -138,6 +140,11 @@ public:
                 }
             }
         }
+    }
+
+    virtual UtilityRenderBuffer* deviceColor() const OVERRIDE
+    {
+        return (_color.size() == 1) ? _color.front() : nullptr;
     }
 
 private:

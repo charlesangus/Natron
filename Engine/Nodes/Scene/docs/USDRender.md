@@ -17,7 +17,9 @@ is each prim's display colour, and `depth.Z` and `primId.id` match Storm's.
 Cancelling stops it between tiles; a change of scene being taken in or a BVH
 being built finishes first. Its Device setting picks Auto, GPU or CPU: Auto uses
 the GPU when it supports ray queries and otherwise renders on the CPU, and the
-node says which device rendered and why a render fell back to the CPU.
+node says which device rendered and why a render fell back to the CPU. A frame
+rendered on the GPU keeps its `rgba` there, so GPU nodes downstream read it
+without a copy through host memory.
 
 The other delegates (Cycles, MoonRay) render on the CPU on their own threads.
 

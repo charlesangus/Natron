@@ -43,6 +43,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class UtilityRenderBuffer;
+
 // A rectangle of pixels in the render buffers. Row 0 is the bottom of the image.
 struct WavefrontRect {
     int x = 0;
@@ -63,7 +65,8 @@ struct WavefrontFrame {
 struct WavefrontTile {
     WavefrontRect rect;
     const std::uint32_t* hitGeometry = nullptr;
-    const float* color = nullptr; // four per pixel
+    // Four per pixel; null when the colour went to the film's deviceColor() on the device.
+    const float* color = nullptr;
     const float* depth = nullptr;
     const std::int32_t* primId = nullptr;
     const std::int32_t* instanceId = nullptr;
@@ -78,6 +81,15 @@ public:
 
     // MT-safe for tiles that do not overlap.
     virtual void writeTile(const WavefrontTile& tile) = 0;
+
+    /**
+     * @brief The one buffer the colour goes to, when an executor on a device may keep it there
+     * rather than hand it over in tiles; null when the colour must come in tiles.
+     **/
+    virtual UtilityRenderBuffer* deviceColor() const
+    {
+        return nullptr;
+    }
 };
 
 /**

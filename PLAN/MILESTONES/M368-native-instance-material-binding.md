@@ -29,19 +29,19 @@ Projection reaches native instanced prims through a direct material binding on t
 
 ## Phase 368.2: Author on instance roots
 
-- [ ] M368.P2.T1 — Bind materials directly on instance roots
+- [x] M368.P2.T1 — Bind materials directly on instance roots
   - files: `Engine/Nodes/Scene/USDAssignMaterial.cpp`, `Engine/Nodes/Scene/SceneNodeAuthoring.cpp` (`authorMaterialBinding` ~:720), `Tests/Scene/USDAssignMaterial_Test.cpp`
   - approach: for each match that is an instance proxy, find its instance root and author a direct binding there with `authorMaterialBinding`, keeping the collection binding for the rest.
   - verify: `USDAssignMaterial_Test`: a match under a native instance gets a direct binding on the instance root and `ComputeBoundMaterial` resolves it for the proxy; a non-instanced match is unchanged.
   - size: M
 
-- [ ] M368.P2.T2 — Author projection primvars on instance roots
+- [x] M368.P2.T2 — Author projection primvars on instance roots
   - files: `Engine/Nodes/Scene/SceneNodeAuthoring.cpp` (`authorProjectionGeometryFrame`), `Engine/Nodes/Scene/SceneProjectionCameras.cpp`, `Engine/Nodes/Scene/USDWrite.cpp` (`eReasonInstanced`), `Tests/Scene/USDProject3D_Test.cpp`
   - approach: author the placement frame primvar, and the sticky reference primvar where P1.T1 showed it works, on each instance root. Drop the instance warning where projection now reaches the prim and keep it where it doesn't. USDWrite bakes instanced projections it can now see.
   - verify: `USDProject3D_Test`: two instances of one prim get their own frames on their instance roots; instanced sticky projections keep their warning.
   - size: M
 
-- [ ] M368.P2.T3 — Update the projection node docs
+- [x] M368.P2.T3 — Update the projection node docs
   - files: the USDAssignMaterial and projection node docs touched by M341 - Per-Placement Geometry Projection and M342 - Sticky Projections On Deforming Geometry
   - approach: replace the instance limit text with what now works and what still doesn't.
   - verify: the docs name native instances as supported and keep the point-instancer limit.
@@ -56,3 +56,4 @@ Projection reaches native instanced prims through a direct material binding on t
 - 2026-11-12 — P2.T1 implemented (b03bcdb95): proxy matches bind at their instance root and drop out of the collection binding; ancestor/root matches also bind each instance root below; `SceneOps::selectPrims` gained `traverseInstanceProxies`. Tests run with the phase build.
 - 2026-11-12 — **USDWrite keeps `eReasonInstanced` for instanced projections (PM, engineering call):** the bake authors `primvars:st` through overs, which can't reach below an instance, and instances share their prototype's UVs while each projects from its own frame, so a bake would silently lose the projection. Instances keep the Storm shader and the warning on export; de-instancing is out of scope. P2.T2's USDWrite verify line is dropped accordingly. P2.T2 implemented in 28bb0d138: frames go on each bound instance root; a gprim offset from its root projects shifted, with a warning; instanced sticky projection stays rigid, with a warning.
 - 2026-11-13 — Gate run 43358457947 failed in 3 USD cases (real bugs: an upstream-bound root still sat in the collection; proxy gprims skipped their deform/offset checks; the narrow warning was too broad); fixed in 8bef2e7a9, gate green (run 43375798672). PR #267 opened into F9. Review round 1 (Claude reviewer) had 8 findings, 7 fixed in 8bbc5e646: nested instances bind the outermost root (`ComputeBoundMaterial` confirmed on pxr 26.08); one walk finds the instance roots; warnings name at most a few roots; already-bound roots get no frame; excludes join the placement key. Finding 7 (sticky status) already matched the code and is pinned by a test. Per-prototype caching of instance deform checks is left as a possible follow-up, since an inherited skeleton binding makes it unsafe.
+- 2026-11-13 — Merged into F9 - Delegate Projection as PR #267 (5261422dd). The Storm screenshot of two projected instances is collected at F9's UAT.

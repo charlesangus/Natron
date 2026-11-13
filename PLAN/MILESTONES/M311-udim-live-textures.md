@@ -74,15 +74,15 @@ Extend M233 - Live Node Textures with a `<UDIM>` token: `natron://` texture URIs
 
 ## Phase 311.4: Delegates
 
-Blocked until F9 - Delegate Projection (with M343 - Live Textures In Delegates) is on main.
+Moved out of this milestone (user, 2026-11-13): this phase becomes its own follow-up milestone, outside F11 - Texture Painting, depending on F9 - Delegate Projection. Kept here as the brief for it.
 
-- [ ] M311.P4.T1 — UDIM live textures in Cycles and MoonRay
+- [ ] ~~M311.P4.T1 — UDIM live textures in Cycles and MoonRay~~ (moved to a follow-up milestone)
   - files: `Engine/Nodes/Scene/LiveTextureSceneIndex.cpp`, `Engine/Nodes/Scene/LiveTextureSharedMemory.cpp`, `Tests/Scene/LiveTexture_Test.cpp`, Cycles and MoonRay goldens
   - approach: the shared-memory path contains `<UDIM>`, one file per tile. hdCycles never fills `ImageTextureNode::tiles`, so the filter sets a `tiles` int array; `ImageManager::add_image` substitutes `%04d`. MoonRay globs `prefix*`, so the prefix must be unique to the set.
   - verify: both goldens show two tiles; a missing tile is magenta with a warning.
   - size: L
 
-**Verification gate:** P1–P3 gtests and `Tests/gui/scene_live_texture_udim.py` pass in a remote `build.sh release --tests` alongside the existing ctest suite, and P4's goldens pass once F9 is on main. Screenshots are collected for F11 - Texture Painting's UAT.
+**Verification gate:** P1–P3 gtests and `Tests/gui/scene_live_texture_udim.py` pass in a remote `build.sh release --tests` alongside the existing ctest suite. Screenshots are collected for F11 - Texture Painting's UAT.
 
 ## Decisions
 
@@ -93,3 +93,4 @@ Blocked until F9 - Delegate Projection (with M343 - Live Textures In Delegates) 
 - 2026-11-12 — P3.T1 (c5fb65d39) and P3.T2 (e4cea16b9) implemented. The Storm test uses USDEmissiveMaterial so colours are exact without lights; golden `Tests/fixtures/native-golden/USDRender/StormUdimTiles.exr` is recorded by the gate run. The viewer publishes per-tile render counts as `natronLiveTextureRenders`. Built-in nodes move every tile on any knob edit, so the one-tile-only re-render is covered at store level (LiveTexture_Test). USDWrite writes one EXR per declared tile, even above 1100, which the store already warns about. Phases 1–3 gate running with golden recording; Phase 311.4 waits on F9.
 - 2026-11-13 — Gate run 43367466484: the USDWrite UDIM tests had a setup bug (diffuse input already occupied, so the tile source never connected), fixed in d3ce91ea4. The Storm UDIM test passed every check except the missing golden: `--record-goldens` has no Storm leg, so Storm goldens are recorded in the published image from the build tree. That recording is pending after the re-run gate.
 - 2026-11-13 — Gate run 43419804120 on b25e9d1d2 green (both ctest legs, `scene_live_texture_udim.py`, `scene_live_texture.py`); its `StormUdimTiles.exr` golden is committed (0e31e0ca2). Phases 1–3 are done in code; Phase 311.4 waits on F9 - Delegate Projection or the split question.
+- 2026-11-13 — Phase 311.4 split out (user): M311 ships phases 1–3 into F11 - Texture Painting; the Cycles/MoonRay phase becomes a new milestone depending on F9 - Delegate Projection, outside F11, so F11 does not wait on F9. The new row is for /cat-plan to add (open question).

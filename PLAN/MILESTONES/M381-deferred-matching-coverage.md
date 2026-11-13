@@ -58,7 +58,7 @@ M331 - Deferred Pattern Matching moved some pattern nodes onto load sets. The re
   - verify: probe plus parity with the target inside a payload.
   - size: M
 
-- [ ] M381.P2.T4 — USDVariant on the load set
+- [x] M381.P2.T4 — USDVariant on the load set
   - files: `Engine/Nodes/Scene/USDVariant.cpp` (`renderScene` ~:294), `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: `matchPattern`; a literal match under an unloaded payload doesn't count as lacking the variant set.
   - verify: parity with a variant set authored inside the payload; probe reads 0.

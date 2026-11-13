@@ -387,9 +387,12 @@ hasUVsUnloaded(const ScenePayload& payload,
 
 /**
  * @brief Writes, next to city's root layer, a layer sublayering it that adds links out of /World:
- * on /World itself and on the Geo of /World/Block_0/B_0 and of /World/Block_1/B_0, inside their
+ * on /World itself and on the Geo of /World/Block_0/B_0 and of /World/Block_1/B_0, below their
  * payloads, each to /Props/Lamp and to a prim no root holds. Adds the roots /Props and
  * /materials. Returns its path.
+ *
+ * The links are opinions of this layer, not of the building files, so every load set composes
+ * them: USD ignores a link authored inside a payload whose target lies outside it.
  **/
 std::string
 writeLinkedCity(const CarCity& city)
@@ -406,6 +409,44 @@ writeLinkedCity(const CarCity& city)
     }
     file << "}\ndef Xform \"Props\"\n{\n    def Xform \"Lamp\"\n    {\n    }\n}\n"
          << "def Scope \"materials\"\n{\n    def Material \"M\"\n    {\n    }\n}\n";
+
+    return path.string();
+}
+
+/**
+ * @brief Writes, next to city's root layer, a layer sublayering it that adds the root /Extra: an
+ * over whose payload, extra.usda, defines it. Until that payload loads /Extra defines nothing, so
+ * a graft has no root there. Returns the layer's path and sets *payloadPath to extra.usda's.
+ **/
+std::string
+writePayloadRootCity(const CarCity& city,
+                     std::string* payloadPath)
+{
+    const std::filesystem::path dir = std::filesystem::path(city.rootPath()).parent_path();
+    const std::filesystem::path path = dir / "payloadroot.usda";
+    *payloadPath = (dir / "extra.usda").string();
+    std::ofstream payload(*payloadPath);
+    payload << "#usda 1.0\n(\n    defaultPrim = \"Holder\"\n)\ndef Xform \"Holder\"\n{\n    def Cube \"Geo\"\n    {\n    }\n}\n";
+    std::ofstream file(path.string());
+    file << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n    subLayers = [@./root.usda@]\n)\n"
+         << "over \"Extra\" (\n    prepend payload = @./extra.usda@\n)\n{\n}\n";
+
+    return path.string();
+}
+
+/**
+ * @brief Writes, next to city's root layer, a layer sublayering it that adds /Props/Lamp with a
+ * relationship aim to /World/Block_1/B_0/Geo, which only that building's payload defines.
+ * Returns its path.
+ **/
+std::string
+writeAimedCity(const CarCity& city)
+{
+    const std::filesystem::path path = std::filesystem::path(city.rootPath()).parent_path() / "aimed.usda";
+    std::ofstream file(path.string());
+
+    file << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n    subLayers = [@./root.usda@]\n)\n"
+         << "def Xform \"Props\"\n{\n    def Xform \"Lamp\"\n    {\n        rel aim = </World/Block_1/B_0/Geo>\n    }\n}\n";
 
     return path.string();
 }
@@ -990,18 +1031,18 @@ TEST_F(SceneLoadSetCoverageTest, AWrapOpensNoBuildingsWhenTheViewerLoadsNone)
     EXPECT_EQ(0, city.openedBuildings());
 }
 
-TEST_F(SceneLoadSetCoverageTest, AWrapRetargetsALinkInsideAPayloadOnceThePayloadLoads)
+TEST_F(SceneLoadSetCoverageTest, AWrapRetargetsALinkIntoAnUnloadedPayloadTheSameOnceItLoads)
 {
     CarCity city(2, 2);
-    NodePtr node = xformPrim(readerOf(writeLinkedCity(city)), "/World");
+    NodePtr node = xformPrim(readerOf(writeAimedCity(city)), "/World");
     ASSERT_TRUE(bool(node));
     setChoice(node, kSceneReparentParamMode, "wrap");
     setString(node, kSceneReparentParamWrapName, "Grp");
-    const std::string link = "/Grp/World/Block_0/B_0/Geo.lookAt";
+    const std::string link = "/Props/Lamp.aim";
     const SceneLoadSetPtr none = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
-    const SceneLoadSetPtr loaded = loadingOnly({ "/Grp/World/Block_0" });
+    const SceneLoadSetPtr loaded = loadingOnly({ "/Grp/World/Block_1" });
     const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
-    const std::vector<std::string> lamp(1, "/Props/Lamp");
+    const std::vector<std::string> moved(1, "/Grp/World/Block_1/B_0/Geo");
 
     ScenePayload before;
     std::string error;
@@ -1009,14 +1050,15 @@ TEST_F(SceneLoadSetCoverageTest, AWrapRetargetsALinkInsideAPayloadOnceThePayload
               node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), none, reach)), &before, &error))
         << error;
     EXPECT_EQ(0, city.openedBuildings());
-    EXPECT_TRUE(relationshipTargets(before, none, link).empty());
+    EXPECT_EQ(moved, relationshipTargets(before, none, link));
     EXPECT_TRUE(SceneOps::loadChangeReaches(none.get(), loaded.get(), reach->getPrefixes()));
 
     ScenePayload after;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
               node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), loaded, std::make_shared<SceneLoadReach>())), &after, &error))
         << error;
-    EXPECT_EQ(lamp, relationshipTargets(after, loaded, link));
+    EXPECT_EQ(2, city.openedBuildings());
+    EXPECT_EQ(moved, relationshipTargets(after, loaded, link));
 }
 
 TEST_F(SceneLoadSetCoverageTest, AGraftRenamingACollidingRootLoadsAtLeastWhatItsOutputLoads)
@@ -1142,24 +1184,39 @@ TEST_F(SceneLoadSetCoverageTest, GraftsAndUnmappedLinksOnALoadSetAreThoseOfEvery
     for (const char* path : { "/World/Block_0/B_0", "/World/Block_1/B_0", "/materials" }) {
         EXPECT_TRUE(std::find(prefixes.begin(), prefixes.end(), std::string(path)) != prefixes.end()) << path;
     }
-    EXPECT_EQ(std::vector<std::string>({ "/Grp/World.lost -> /nowhere", "/Grp/World/Block_0/B_0/Geo.lost -> /nowhere/Inside" }), loaded.unmapped);
+    // The links sit in the root layer stack, so an unloaded building still composes its Geo's.
+    const std::vector<std::string> allLinks({ "/Grp/World.lost -> /nowhere", "/Grp/World/Block_0/B_0/Geo.lost -> /nowhere/Inside", "/Grp/World/Block_1/B_0/Geo.lost -> /nowhere/Inside" });
+    EXPECT_EQ(allLinks, loaded.unmapped);
 
     const GraftReport everything = graftIn(SceneEvaluationContext(), args, &memo);
+    EXPECT_EQ(4, city.openedBuildings());
+    EXPECT_FALSE(everything.grafts.empty());
     EXPECT_EQ(everything.grafts, loaded.grafts);
-    EXPECT_EQ(std::vector<std::string>({ "/Grp/World.lost -> /nowhere", "/Grp/World/Block_0/B_0/Geo.lost -> /nowhere/Inside", "/Grp/World/Block_1/B_0/Geo.lost -> /nowhere/Inside" }), everything.unmapped);
+    EXPECT_EQ(allLinks, everything.unmapped);
 }
 
 TEST_F(SceneLoadSetCoverageTest, AViewerGraftAndARenderGraftKeepTheirOwnMemos)
 {
     CarCity city(2, 2);
-    const SceneReparentArgs args = graftUnderGroup(linkedCityPayload(writeLinkedCity(city)));
+    std::string extraPath;
+    const SceneReparentArgs args = graftUnderGroup(linkedCityPayload(writePayloadRootCity(city, &extraPath)));
     SceneGraftMemo memo;
-    const SceneEvaluationContext viewer(SceneEvaluationContext::makeId(), loadingOnly({ "/World/Block_0" }), std::make_shared<SceneLoadReach>());
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+    const SceneEvaluationContext viewer(SceneEvaluationContext::makeId(), loadingOnly({ "/World/Block_0" }), reach);
     const SceneEvaluationContext render;
+    const auto graftsExtra = [](const GraftReport& report) {
+        return std::any_of(report.grafts.begin(), report.grafts.end(), [](const std::string& graft) { return graft.compare(0, 20, "/Extra -> /Grp/Extra") == 0; });
+    };
 
     const GraftReport firstViewer = graftIn(viewer, args, &memo);
+    EXPECT_EQ(2, city.openedBuildings());
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(extraPath)));
+    EXPECT_FALSE(graftsExtra(firstViewer));
+    EXPECT_TRUE(reachesUnder(reach->getPrefixes(), "/Extra"));
+
     const GraftReport firstRender = graftIn(render, args, &memo);
-    // The two read different links, so neither can take the other's graft layer.
+    EXPECT_TRUE(graftsExtra(firstRender));
+    // The two read different roots, so neither can take the other's read or graft layer.
     EXPECT_EQ(2u, memo.getInputReadCount());
     EXPECT_EQ(2u, memo.getGraftLayerAuthorCount());
     EXPECT_FALSE(firstViewer.output.isSameStack(firstRender.output));
@@ -1169,9 +1226,17 @@ TEST_F(SceneLoadSetCoverageTest, AViewerGraftAndARenderGraftKeepTheirOwnMemos)
         const GraftReport againRender = graftIn(render, args, &memo);
         EXPECT_TRUE(againViewer.output.isSameStack(firstViewer.output)) << round;
         EXPECT_TRUE(againRender.output.isSameStack(firstRender.output)) << round;
-        EXPECT_EQ(2u, againViewer.unmapped.size()) << round;
-        EXPECT_EQ(3u, againRender.unmapped.size()) << round;
+        EXPECT_EQ(firstViewer.grafts, againViewer.grafts) << round;
+        EXPECT_EQ(firstRender.grafts, againRender.grafts) << round;
     }
+    EXPECT_EQ(2u, memo.getInputReadCount());
+    EXPECT_EQ(2u, memo.getGraftLayerAuthorCount());
+
+    // A second viewer on the same load set reads what the first did, so it takes the first's.
+    const SceneEvaluationContext otherViewer(SceneEvaluationContext::makeId(), loadingOnly({ "/World/Block_0" }), std::make_shared<SceneLoadReach>());
+    const GraftReport other = graftIn(otherViewer, args, &memo);
+    EXPECT_EQ(firstViewer.grafts, other.grafts);
+    EXPECT_TRUE(other.output.isSameStack(firstViewer.output));
     EXPECT_EQ(2u, memo.getInputReadCount());
     EXPECT_EQ(2u, memo.getGraftLayerAuthorCount());
 }

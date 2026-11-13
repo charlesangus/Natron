@@ -214,6 +214,8 @@ struct GuiAppInstancePrivate
     RotoPaintData rotoData;
     // Roto shape and tracker marks, which their panels add and remove themselves.
     std::list<SequenceTime> timelineKeyframes, timelineUserKeys;
+    // One sorted, duplicate-free set per owning panel.
+    std::map<const void*, std::vector<SequenceTime>> panelKeys;
     std::map<Node*, NodeWPtr> nodesShownOnTimeline;
     // Sorted, without duplicates, derived from nodesShownOnTimeline.
     std::vector<SequenceTime> nodeKeys;
@@ -237,6 +239,7 @@ struct GuiAppInstancePrivate
         , rotoData()
         , timelineKeyframes()
         , timelineUserKeys()
+        , panelKeys()
         , nodesShownOnTimeline()
         , nodeKeys()
         , nodeKeysDirty(false)
@@ -279,6 +282,9 @@ struct GuiAppInstancePrivate
         refreshNodeKeysIfDirty();
         std::vector<SequenceTime> keys = nodeKeys;
         keys.insert(keys.end(), timelineKeyframes.begin(), timelineKeyframes.end());
+        for (std::map<const void*, std::vector<SequenceTime>>::const_iterator it = panelKeys.begin(); it != panelKeys.end(); ++it) {
+            keys.insert(keys.end(), it->second.begin(), it->second.end());
+        }
         std::sort(keys.begin(), keys.end());
         keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
 
@@ -1670,8 +1676,9 @@ GuiAppInstance::removeAllKeyframesIndicators()
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    bool wasEmpty = _imp->timelineKeyframes.empty() && _imp->nodeKeys.empty();
+    bool wasEmpty = _imp->timelineKeyframes.empty() && _imp->nodeKeys.empty() && _imp->panelKeys.empty();
     _imp->timelineKeyframes.clear();
+    _imp->panelKeys.clear();
     _imp->nodesShownOnTimeline.clear();
     _imp->nodeKeys.clear();
     if (!wasEmpty) {
@@ -1711,6 +1718,45 @@ GuiAppInstance::invalidateNodeKeyframeIndicators()
             _imp->nodeKeysChangedSinceSignal = false;
             Q_EMIT keyframeIndicatorsChanged();
         } }, Qt::QueuedConnection);
+}
+
+void
+GuiAppInstance::setPanelKeyframeIndicators(const void* owner,
+                                           const std::vector<SequenceTime>& keys)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    std::vector<SequenceTime> sorted(keys);
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+
+    std::map<const void*, std::vector<SequenceTime>>::iterator it = _imp->panelKeys.find(owner);
+    if (it != _imp->panelKeys.end()) {
+        if (it->second == sorted) {
+            return;
+        }
+        if (sorted.empty()) {
+            _imp->panelKeys.erase(it);
+        } else {
+            it->second.swap(sorted);
+        }
+    } else {
+        if (sorted.empty()) {
+            return;
+        }
+        _imp->panelKeys.insert(std::make_pair(owner, sorted));
+    }
+    Q_EMIT keyframeIndicatorsChanged();
+}
+
+void
+GuiAppInstance::clearPanelKeyframeIndicators(const void* owner)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    if (_imp->panelKeys.erase(owner) > 0) {
+        Q_EMIT keyframeIndicatorsChanged();
+    }
 }
 
 void
@@ -1910,6 +1956,9 @@ GuiAppInstance::getKeyframes(std::list<SequenceTime>* keys) const
     _imp->refreshNodeKeysIfDirty();
     *keys = _imp->timelineKeyframes;
     keys->insert(keys->end(), _imp->nodeKeys.begin(), _imp->nodeKeys.end());
+    for (std::map<const void*, std::vector<SequenceTime>>::const_iterator it = _imp->panelKeys.begin(); it != _imp->panelKeys.end(); ++it) {
+        keys->insert(keys->end(), it->second.begin(), it->second.end());
+    }
 }
 
 void

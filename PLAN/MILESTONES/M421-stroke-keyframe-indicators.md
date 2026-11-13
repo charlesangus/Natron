@@ -36,7 +36,7 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
   - verify: syntax-check; `rg "KeyframeIndicator" Gui/RotoPanel.cpp` shows only the new calls; existing `m261_roto_keys_editors.py` and `m305_keyframe_markers.py` still pass at the gate.
   - size: M
 
-- [ ] M421.P1.T2 — Stroke painted frames in the set
+- [x] M421.P1.T2 — Stroke painted frames in the set
   - files: `Gui/RotoPanel.{h,cpp}`
   - approach: on insert, rebuild and panel open, follow each `RotoStrokeItem`'s `lifeTimeFrame` and `lifeTime` knobs (valueChanged) and the context's proxies (`onLifeTimeKnobValueChanged`, `RotoCurveContext.cpp` ~:726); follow `setUserIsPainting` for the current stroke. The union adds `getLifeTimeFrameKnob()->getValue()` for each selected or current stroke. Removal and undo go through `onItemRemoved`/`onItemInserted`.
   - verify: syntax-check; covered by P2.T2.
@@ -69,3 +69,4 @@ User request (2026-11-13, from F10 - Viewer Polish UAT): RotoPaint strokes show 
 - 2026-11-13 — **Stroke indicators (user):** show "the actual frame that was painted for current/selected strokes": each current or selected stroke gets one indicator at the frame it was painted on, on the timeline and in the dope sheet. Filed as a follow-up and picked up at once (user: not a regression, so not in F10).
 - 2026-11-13 — **Dope sheet (PM):** a display-only Painted Frame row. Moving it would mean writing `lifeTimeFrame` with undo across Lifetime modes, so it stays out unless the user asks.
 - 2026-11-13 — P1.T1 implemented (93229108c). Markers update one event-loop turn after a signal (coalesced), so GUI scripts process events before reading `keyframeMarkerTimes()`. After undoing a Bezier delete its markers return if it is still selected.
+- 2026-11-13 — P1.T2 implemented (3c58df3a5). The current stroke comes from `GuiAppInstance::getActiveRotoDrawingStroke`; a stroke painted while the panel is closed isn't adopted as current on reopen (confirm at UAT).

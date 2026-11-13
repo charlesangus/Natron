@@ -85,26 +85,107 @@ namespace {
     setProjection(const PXR_NS::SdfLayerRefPtr& layer,
                   const Projection& projection)
     {
-        const PXR_NS::SdfPrimSpecHandle owner = PXR_NS::SdfCreatePrimInLayer(layer, projection.shader);
-        if (!owner) {
+        const PXR_NS::SdfPath material = projection.shader.GetParentPath();
+        std::vector<std::vector<ShaderValue>> samples;
+        for (std::size_t i = 0; i < projection.worldToProjector.size(); ++i) {
+            samples.push_back(projectorValues(projection.worldToProjector[i], projection.origin[i]));
+        }
+        if (samples.empty()) {
             return false;
         }
-        const PXR_NS::SdfAttributeSpecHandle matrix = PXR_NS::SdfAttributeSpec::New(owner, std::string("inputs:") + kUSDProject3DInputWorldToProjector, PXR_NS::SdfValueTypeNames->Matrix4d);
-        const PXR_NS::SdfAttributeSpecHandle origin = PXR_NS::SdfAttributeSpec::New(owner, std::string("inputs:") + kUSDProject3DInputProjectorOrigin, PXR_NS::SdfValueTypeNames->Float4);
-        if (!matrix || !origin) {
-            return false;
-        }
-        if (projection.times.empty()) {
-            return matrix->SetDefaultValue(PXR_NS::VtValue(projection.worldToProjector.front())) && origin->SetDefaultValue(PXR_NS::VtValue(projection.origin.front()));
-        }
-        for (std::size_t i = 0; i < projection.times.size(); ++i) {
-            layer->SetTimeSample(matrix->GetPath(), projection.times[i].GetValue(), projection.worldToProjector[i]);
-            layer->SetTimeSample(origin->GetPath(), projection.times[i].GetValue(), projection.origin[i]);
+        for (std::size_t v = 0; v < samples.front().size(); ++v) {
+            const ShaderValue& value = samples.front()[v];
+            const PXR_NS::SdfPrimSpecHandle owner = PXR_NS::SdfCreatePrimInLayer(layer, material.AppendChild(value.shader));
+            const PXR_NS::SdfAttributeSpecHandle attribute = owner ? PXR_NS::SdfAttributeSpec::New(owner, "inputs:" + value.input.GetString(), value.type) : PXR_NS::SdfAttributeSpecHandle();
+            if (!attribute) {
+                return false;
+            }
+            if (projection.times.empty()) {
+                if (!attribute->SetDefaultValue(value.value)) {
+                    return false;
+                }
+                continue;
+            }
+            for (std::size_t i = 0; i < projection.times.size(); ++i) {
+                layer->SetTimeSample(attribute->GetPath(), projection.times[i].GetValue(), samples[i][v].value);
+            }
         }
 
         return true;
     }
 } // anonymous namespace
+
+std::string
+cyclesProjectorDot(int component)
+{
+    return std::string("CyclesProjectorDot") + "XYZW"[component & 3];
+}
+
+std::string
+cyclesProjectorOffset(int component)
+{
+    return std::string("CyclesProjectorOffset") + "XYZW"[component & 3];
+}
+
+std::string
+cyclesFrameColumn(int column)
+{
+    return "CyclesFrameColumn" + std::to_string(column);
+}
+
+std::vector<ShaderValue>
+projectorValues(const PXR_NS::GfMatrix4d& worldToProjector,
+                const PXR_NS::GfVec4f& origin)
+{
+    const PXR_NS::TfToken surface(kUSDProject3DShaderName);
+    std::vector<ShaderValue> values = {
+        { surface, PXR_NS::TfToken(kUSDProject3DInputWorldToProjector), PXR_NS::SdfValueTypeNames->Matrix4d, PXR_NS::VtValue(worldToProjector) },
+        { surface, PXR_NS::TfToken(kUSDProject3DInputProjectorOrigin), PXR_NS::SdfValueTypeNames->Float4, PXR_NS::VtValue(origin) },
+    };
+    // Row vectors: component k of p * worldToProjector is p's dot with column k plus row 3's k.
+    for (int k = 0; k < 4; ++k) {
+        const PXR_NS::GfVec3f column((float)worldToProjector[0][k], (float)worldToProjector[1][k], (float)worldToProjector[2][k]);
+        values.push_back({ PXR_NS::TfToken(cyclesProjectorDot(k)), PXR_NS::TfToken("vector2"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(column) });
+        values.push_back({ PXR_NS::TfToken(cyclesProjectorOffset(k)), PXR_NS::TfToken("value2"), PXR_NS::SdfValueTypeNames->Float, PXR_NS::VtValue((float)worldToProjector[3][k]) });
+    }
+    // origin.xyz - P * origin.w, toward the camera's position or along its view when orthographic.
+    const PXR_NS::TfToken toward(kSceneProjectionCyclesToward);
+    values.push_back({ toward, PXR_NS::TfToken("vector2"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(PXR_NS::GfVec3f(-origin[3])) });
+    values.push_back({ toward, PXR_NS::TfToken("vector3"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(PXR_NS::GfVec3f(origin[0], origin[1], origin[2])) });
+
+    return values;
+}
+
+std::vector<ShaderValue>
+plateValues(const PXR_NS::GfVec4f& plateTransform)
+{
+    const PXR_NS::TfToken window(kSceneProjectionCyclesPlateTransform);
+
+    return {
+        { PXR_NS::TfToken(kUSDProject3DShaderName), PXR_NS::TfToken(kUSDProject3DInputPlateTransform), PXR_NS::SdfValueTypeNames->Float4, PXR_NS::VtValue(plateTransform) },
+        { window, PXR_NS::TfToken("vector2"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(PXR_NS::GfVec3f(plateTransform[0], plateTransform[1], 0.f)) },
+        { window, PXR_NS::TfToken("vector3"), PXR_NS::SdfValueTypeNames->Vector3f, PXR_NS::VtValue(PXR_NS::GfVec3f(plateTransform[2], plateTransform[3], 0.f)) },
+    };
+}
+
+std::string
+frameColumnPrimvar(const std::string& framePrimvar,
+                   int column)
+{
+    return framePrimvar + "Column" + std::to_string(column);
+}
+
+PXR_NS::VtVec4fArray
+frameColumn(const PXR_NS::GfMatrix4d& frame,
+            int column)
+{
+    PXR_NS::GfVec4f value((float)frame[0][column], (float)frame[1][column], (float)frame[2][column], (float)frame[3][column]);
+    if (column < 3) {
+        value[column] -= 1.f;
+    }
+
+    return PXR_NS::VtVec4fArray(1, value);
+}
 
 bool
 cameraMightVary(const PXR_NS::UsdGeomCamera& camera)

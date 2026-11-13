@@ -63,6 +63,49 @@ bool computeProjector(const PXR_NS::UsdStageRefPtr& stage,
                       PXR_NS::GfVec4f* origin,
                       std::string* errorMessage);
 
+/**
+ * @brief The shaders of the Cycles network USDProject3D authors beside its Storm surface, under
+ * the same material, that take values from the projector, the plate's window or the prim.
+ * cyclesProjectorDot(k) and cyclesProjectorOffset(k) give the projected point's component k
+ * (x, y, z, w) as dot(P, vector2) + value2.
+ **/
+#define kSceneProjectionCyclesToward "CyclesTowardProjector"
+#define kSceneProjectionCyclesPlateTransform "CyclesPlateTransform"
+#define kSceneProjectionCyclesPlateTexture "CyclesPlateTexture"
+#define kSceneProjectionCyclesReferencePoints "CyclesReferencePoints"
+std::string cyclesProjectorDot(int component);
+std::string cyclesProjectorOffset(int component);
+// The attribute node reading frameColumnPrimvar(..., column).
+std::string cyclesFrameColumn(int column);
+
+// One input of a shader under the projection material, by the shader's name there.
+struct ShaderValue {
+    PXR_NS::TfToken shader;
+    PXR_NS::TfToken input;
+    PXR_NS::SdfValueTypeName type;
+    PXR_NS::VtValue value;
+};
+
+/**
+ * @brief Every input the projector sets, on the Storm surface and on the Cycles network alike,
+ * so the two read one source. The list's order and length do not depend on the values.
+ **/
+std::vector<ShaderValue> projectorValues(const PXR_NS::GfMatrix4d& worldToProjector,
+                                         const PXR_NS::GfVec4f& origin);
+
+// As projectorValues(), for the plate's window: (scale u, scale v, offset u, offset v).
+std::vector<ShaderValue> plateValues(const PXR_NS::GfVec4f& plateTransform);
+
+/**
+ * @brief Cycles reads no matrix primvar, so a prim's projection frame is also authored as three
+ * constant float4 primvars, column j of the frame minus the identity: a prim without them reads
+ * zeros, which is the identity, as the Storm surface's fallback.
+ **/
+std::string frameColumnPrimvar(const std::string& framePrimvar,
+                               int column);
+PXR_NS::VtVec4fArray frameColumn(const PXR_NS::GfMatrix4d& frame,
+                                 int column);
+
 struct Unresolved {
     PXR_NS::SdfPath shader;
     std::string camera;

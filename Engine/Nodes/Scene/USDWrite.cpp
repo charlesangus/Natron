@@ -819,9 +819,10 @@ struct UnbakedProjection {
 };
 
 /**
- * @brief Copies a deferred camera's matrix and origin from the composed scene onto shader's prim in
- * out. A layered export writes the scene's own layers, which name the camera but hold no values
- * for it: compose() resolves those into a layer that is not exported.
+ * @brief Copies a deferred camera's values (SceneProjectionCameras::projectorValues()) from the
+ * composed scene onto the shaders of shader's material in out. A layered export writes the
+ * scene's own layers, which name the camera but hold no values for it: compose() resolves those
+ * into a layer that is not exported.
  **/
 bool
 authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
@@ -832,14 +833,17 @@ authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
     if (!camera || !camera.Get(&cameraPath) || cameraPath.empty()) {
         return true;
     }
-    const PXR_NS::UsdPrim over = out->OverridePrim(shader.GetPath());
-    if (!over) {
-        return false;
-    }
-    for (const char* name : { kUSDProject3DInputWorldToProjector, kUSDProject3DInputProjectorOrigin }) {
-        const PXR_NS::UsdShadeInput input = shader.GetInput(PXR_NS::TfToken(name));
+    const PXR_NS::SdfPath material = shader.GetPath().GetParentPath();
+    const PXR_NS::UsdStageRefPtr scene = shader.GetPrim().GetStage();
+    for (const SceneProjectionCameras::ShaderValue& projected : SceneProjectionCameras::projectorValues(PXR_NS::GfMatrix4d(0.), PXR_NS::GfVec4f(0.f))) {
+        const PXR_NS::UsdShadeShader owner(scene->GetPrimAtPath(material.AppendChild(projected.shader)));
+        const PXR_NS::UsdShadeInput input = owner ? owner.GetInput(projected.input) : PXR_NS::UsdShadeInput();
         if (!input) {
             continue;
+        }
+        const PXR_NS::UsdPrim over = out->OverridePrim(owner.GetPath());
+        if (!over) {
+            return false;
         }
         const PXR_NS::UsdAttribute source = input.GetAttr();
         PXR_NS::UsdAttribute target = over.GetAttribute(source.GetName());
@@ -1039,6 +1043,17 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
             for (const PXR_NS::UsdPrim& prim : prims) {
                 locator.addAttribute(frameOf(prim).GetAttr(), &specs->properties);
                 locator.addAttribute(referenceOf(prim).GetAttr(), &specs->properties);
+                for (int column = 0; column < 3; ++column) {
+                    const PXR_NS::TfToken name(SceneProjectionCameras::frameColumnPrimvar(geometryProjection.framePrimvar, column));
+                    locator.addAttribute(PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(name).GetAttr(), &specs->properties);
+                }
+            }
+            const PXR_NS::UsdPrim owner = shader.GetPrim().GetParent();
+            for (const std::string& name : { SceneProjectionCameras::cyclesFrameColumn(0), SceneProjectionCameras::cyclesFrameColumn(1), SceneProjectionCameras::cyclesFrameColumn(2), std::string(kSceneProjectionCyclesReferencePoints) }) {
+                const PXR_NS::UsdPrim reader = owner ? owner.GetChild(PXR_NS::TfToken(name)) : PXR_NS::UsdPrim();
+                if (reader) {
+                    locator.addPrim(reader, &specs->prims);
+                }
             }
             for (const char* name : { kUSDProject3DInputGeometryFrame, kUSDProject3DInputReferencePoints }) {
                 const PXR_NS::UsdShadeInput input = shader.GetInput(PXR_NS::TfToken(name));
